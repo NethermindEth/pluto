@@ -14,6 +14,8 @@
           rust-analyzer
           rustfmt
           clippy
+
+          typos
         ];
         RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
 
