@@ -1,13 +1,27 @@
 [workspace]
-name = "charon-rs"
-members = [ "crates/charon", "crates/charon-cli", "crates/charon-cluster", "crates/charon-consensus", "crates/charon-core", "crates/charon-crypto", "crates/charon-db", "crates/charon-dkg", "crates/charon-errors", "crates/charon-eth2", "crates/charon-observability", "crates/charon-p2p", "crates/charon-serde", "crates/charon-testutil", "crates/charon-types"]
+members = [
+    "crates/charon",
+    "crates/charon-cli",
+    "crates/charon-cluster",
+    "crates/charon-consensus",
+    "crates/charon-core",
+    "crates/charon-crypto",
+    "crates/charon-db",
+    "crates/charon-dkg",
+    "crates/charon-errors",
+    "crates/charon-eth2",
+    "crates/charon-observability",
+    "crates/charon-p2p",
+    "crates/charon-serde",
+    "crates/charon-testutil",
+]
 resolver = "3"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 repository = "https://github.com/NethermindEth/charon-rs"
-license = "Apache-2.0" # TODO(template) update license
+license = "Apache-2.0"                                    # TODO(template) update license
 publish = false
 
 [workspace.dependencies]
