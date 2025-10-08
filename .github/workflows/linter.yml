@@ -13,6 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - run: rustup +nightly component add rustfmt
       - name: Run Fmt
         run: cargo +nightly fmt --all -- --check
 
