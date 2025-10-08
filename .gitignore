@@ -2,11 +2,12 @@
 .vscode
 .idea
 
+# Direnv
+.direnv
+
 # Rust/Cargo
 debug/
 target/
-# TODO(template) Cargo.lock should be tracked in binary crates, but not in libraries
-Cargo.lock
 
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
