@@ -19,7 +19,7 @@ RUN nix develop --command bash -c \
 # Store all required dependencies in `/libs`
 RUN mkdir -p /libs
 RUN nix develop --command bash -c \
-  "ldd /build/target/release/haron | awk '{if (\$3 ~ /^\//) print \$3}' | xargs -I '{}' cp --parents '{}' /libs"
+  "ldd /build/target/release/charon-cli | awk '{if (\$3 ~ /^\//) print \$3}' | xargs -I '{}' cp --parents '{}' /libs"
 
 FROM alpine:3.21.4 AS app
 # Could also use Debian:
@@ -27,13 +27,13 @@ FROM alpine:3.21.4 AS app
 
 # Copy the built application and its dependencies
 COPY --from=builder /libs /
-COPY --from=builder /build/target/release/haron /app/bin/haron
+COPY --from=builder /build/target/release/charon-cli /app/bin/charon-cli
 
 # Fix interpreter path
 RUN cp $(find /nix/store/ -name "*ld-linux*") $(find /nix/store/ -name "*ld-linux*" | sed s/lib64/lib/g)
 # Could also use `patchelf`:
-# RUN patchelf --set-interpreter $(find /nix/store/ -name "*ld-linux*") /app/bin/haron
+# RUN patchelf --set-interpreter $(find /nix/store/ -name "*ld-linux*") /app/bin/charon-cli
 
 # Run the application
 EXPOSE 3000
-CMD ["/app/bin/haron"]
+CMD ["/app/bin/charon-cli"]
