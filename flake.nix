@@ -16,6 +16,9 @@
           rustfmt
           clippy
 
+          cargo-sort
+          cargo-deny
+
           typos
         ];
         RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
