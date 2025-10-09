@@ -1,5 +1,6 @@
 {
   inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/d7f52a7a640bc54c7bb414cca603835bf8dd4b10";
     utils.url = "github:numtide/flake-utils";
   };
   outputs = { nixpkgs, utils, ... }: utils.lib.eachDefaultSystem (system:
@@ -7,7 +8,7 @@
       pkgs = nixpkgs.legacyPackages.${system};
     in
     {
-      devShell = pkgs.mkShell {
+      devShells.default = pkgs.mkShell {
         buildInputs = with pkgs; [
           rustc
           cargo
