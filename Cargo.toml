@@ -24,12 +24,15 @@ repository = "https://github.com/NethermindEth/charon-rs"
 license = "Apache-2.0"                                    # TODO(template) update license
 publish = false
 
-[workspace.dependencies]
-proptest = "1"
-
 [workspace.lints.rust]
 missing_docs = "deny"
 unsafe_code = "forbid"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "^1.0" }
+hex = { version = "^0.4.3" }
+chrono = { version = "0.4", features = ["serde"] }
 
 [workspace.lints.clippy]
 arithmetic_side_effects = "deny"
