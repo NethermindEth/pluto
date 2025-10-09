@@ -14,10 +14,10 @@ async fn main() {
     let app = Router::new().route("/", get(|| async { root() }));
 
     let addr = "0.0.0.0:3000";
-    let listener = TcpListener::bind(addr).await.unwrap();
+    let listener = TcpListener::bind(addr).await.expect("Impossible!");
     println!("Listening on {}", addr);
 
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, app).await.expect("Impossible!");
 }
 
 fn root() -> &'static str {
