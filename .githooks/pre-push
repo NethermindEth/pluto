@@ -1,5 +1,5 @@
 #!/bin/sh
-set -e 
+set -e
 
 # Dependency sorting
 if ! cargo sort --workspace --check; then
@@ -14,8 +14,8 @@ if ! cargo deny check; then
 fi
 
 # Formatting check
-if ! cargo +nightly fmt --all -- --check; then
-    echo "❌ Formatting issues (run 'cargo +nightly fmt --all')"
+if ! cargo fmt --all -- --check; then
+    echo "❌ Formatting issues (run 'cargo fmt --all')"
     exit 3
 fi
 
