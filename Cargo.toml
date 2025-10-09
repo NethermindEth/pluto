@@ -24,6 +24,10 @@ repository = "https://github.com/NethermindEth/charon-rs"
 license = "Apache-2.0"                                    # TODO(template) update license
 publish = false
 
+[workspace.dependencies]
+axum = "0.8.6"
+tokio = { version = "1", features = ["full"] }
+
 [workspace.lints.rust]
 missing_docs = "deny"
 unsafe_code = "forbid"
