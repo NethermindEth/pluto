@@ -14,7 +14,7 @@ RUN echo "experimental-features = nix-command flakes" >> /etc/nix/nix.conf
 COPY . /build
 WORKDIR /build
 RUN nix develop --command bash -c \
-  "cargo build --release"
+  "cargo build --release --package charon-cli --locked --target x86_64-unknown-linux-gnu"
 
 # Store all required dependencies in `/libs`
 RUN mkdir -p /libs
