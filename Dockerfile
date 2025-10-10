@@ -4,7 +4,7 @@ COPY . /build
 WORKDIR /build
 RUN cargo build --release --package charon-cli --locked
 
-FROM debian:trixie-slim AS app
+FROM debian:bookworm-slim AS app
 
 COPY --from=builder /build/target/release/charon-cli /app/bin/charon-cli
 
