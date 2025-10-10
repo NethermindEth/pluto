@@ -13,9 +13,6 @@
           cargo-sort
           cargo-deny
 
-          cargo-sort
-          cargo-deny
-
           typos
         ];
 
