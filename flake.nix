@@ -10,15 +10,11 @@
     {
       devShells.default = pkgs.mkShell {
         buildInputs = with pkgs; [
-          rustc
-          cargo
-          rust-analyzer
-          rustfmt
-          clippy
+          cargo-sort
+          cargo-deny
 
           typos
         ];
-        RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
 
         shellHook = ''
           chmod +x .githooks/* && ln -sf $(pwd)/.githooks/* .git/hooks/
