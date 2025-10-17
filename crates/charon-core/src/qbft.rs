@@ -25,7 +25,7 @@ where
     V: PartialEq,
 {
     /// A deterministic leader election function.
-    pub is_leader: Box<dyn Fn(/* instance */ I, /* round */ i64, /* process */ i64) -> bool>,
+    pub is_leader: Box<dyn Fn(/* instance */ &I, /* round */ i64, /* process */ i64) -> bool>,
 
     /// Returns a new timer channel and stop function for the round
     pub new_timer: Box<dyn Fn(/* rounds */ i64) -> (mpsc::Receiver<()>, Box<dyn Fn()>)>,
@@ -61,7 +61,7 @@ where
     /// Allows debug logging of round changes.
     pub log_round_change: Box<
         dyn Fn(
-            /* instance */ I,
+            /* instance */ &I,
             /* process */ i64,
             /* round */ i64,
             /* newRound */ i64,
@@ -273,7 +273,7 @@ where
 /// justifications.
 fn classify<'a, I, V, C>(
     d: &Definition<I, V, C>,
-    instance: I,
+    instance: &I,
     round: i64,
     process: i64,
     buffer: &'a HashMap<i64, Vec<&SomeMsg<I, V, C>>>,
@@ -392,7 +392,7 @@ where
 /// Returns true if message is justified or if it does not need justification.
 fn is_justified<I, V, C>(
     d: &Definition<I, V, C>,
-    instance: I,
+    instance: &I,
     msg: &SomeMsg<I, V, C>,
     compare_failure_round: i64,
 ) -> bool
@@ -484,7 +484,7 @@ where
 /// Returns true if the PRE-PREPARE message is justified.
 fn is_justified_pre_prepare<I, V, C>(
     d: &Definition<I, V, C>,
-    instance: I,
+    instance: &I,
     msg: &SomeMsg<I, V, C>,
     compare_failure_round: i64,
 ) -> bool
