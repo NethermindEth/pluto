@@ -33,6 +33,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "^1.0" }
 hex = { version = "^0.4.3" }
 chrono = { version = "0.4", features = ["serde"] }
+rand = "0.9"
+blst = "0.3.16"
 
 [workspace.lints.clippy]
 arithmetic_side_effects = "deny"
