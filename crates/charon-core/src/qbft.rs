@@ -4,19 +4,40 @@
 
 use anyhow::{Result, bail};
 use std::{
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
-    fmt::Display,
+    error,
+    fmt::{self, Display},
     hash::Hash,
-    sync::mpsc,
+    sync::{self, mpsc},
+    thread,
 };
 
-type SomeMsg<I, V, C> = Box<dyn Msg<I, V, C> + Send + Sync>;
+type SomeMsg<I, V, C> = sync::Arc<dyn Msg<I, V, C> + Send + Sync>;
 
 struct Transport<I, V, C>
 where
     V: PartialEq,
 {
-    pub broadcast: Box<dyn Fn(MessageType, I, i64, i64, V, i64, V) -> Result<()>>,
+    /// Broadcast sends a message with the provided fields to all other
+    /// processes in the system (including this process).
+    ///
+    /// Note that an error exits the algorithm.
+    pub broadcast: Box<
+        dyn Fn(
+            /* type_ */ MessageType,
+            /* instance */ &I,
+            /* source */ i64,
+            /* round */ i64,
+            /* value */ &V,
+            /* pr */ i64,
+            /* pv */ &V,
+            /* justification */ Option<&Vec<SomeMsg<I, V, C>>>,
+        ) -> Result<()>,
+    >,
+
+    /// Receive returns a stream of messages received
+    /// from other processes in the system (including this process).
     pub receive: mpsc::Receiver<SomeMsg<I, V, C>>,
 }
 
@@ -35,7 +56,7 @@ where
     // turned on.
     pub compare: Box<
         dyn Fn(
-                /* qcommit */ &SomeMsg<I, V, C>,
+                /* qcommit */ SomeMsg<I, V, C>,
                 /* inputValueSourceCh */ mpsc::Receiver<C>,
                 /* inputValueSource */ &C,
                 /* returnErr */ mpsc::SyncSender<Result<()>>,
@@ -45,13 +66,19 @@ where
     >,
 
     // Called when consensus has been reached on a value.
-    pub decide: Box<dyn Fn(I, V, Vec<SomeMsg<I, V, C>>)>,
+    pub decide: Box<
+        dyn Fn(
+            /* instance */ &I,
+            /* value */ &V,
+            /* qcommit */ &Vec<SomeMsg<I, V, C>>,
+        ),
+    >,
 
     /// Allows debug logging of triggered upon rules on message receipt.
     /// It includes the rule that triggered it and all received round messages.
     pub log_upon_rule: Box<
         dyn Fn(
-            /* instance */ I,
+            /* instance */ &I,
             /* process */ i64,
             /* round */ i64,
             /* msg */ SomeMsg<I, V, C>,
@@ -66,12 +93,12 @@ where
             /* round */ i64,
             /* newRound */ i64,
             /* uponRule */ UponRule,
-            /* msgs */ dyn Iterator<Item = &SomeMsg<I, V, C>>,
+            /* msgs */ &Vec<SomeMsg<I, V, C>>,
         ),
     >,
 
     /// Allows debug logging of unjust messages.
-    pub log_unjust: Box<dyn Fn(/* instance */ I, /* process */ i64, /* msg */ SomeMsg<I, V, C>)>,
+    pub log_unjust: Box<dyn Fn(/* instance */ &I, /* process */ i64, /* msg */ SomeMsg<I, V, C>)>,
 
     /// Total number of nodes/processes participating in consensus.
     nodes: i64,
@@ -116,7 +143,7 @@ impl MessageType {
 }
 
 impl Display for MessageType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self.0 {
             0 => "unknown",
             1 => "pre_prepare",
@@ -152,10 +179,11 @@ where
     /// the justified prepared value
     fn prepared_value(&self) -> V;
     // Set of messages that explicitly justifies this message.
-    fn justification(&self) -> Vec<&SomeMsg<I, V, C>>;
+    fn justification(&self) -> Vec<SomeMsg<I, V, C>>;
 }
 
 /// Defines the event based rules that are triggered when messages are received.
+#[derive(PartialEq, Eq, Hash, Clone, Copy)]
 pub struct UponRule(i64);
 
 pub const UPON_NOTHING: UponRule = UponRule(0);
@@ -169,7 +197,7 @@ pub const UPON_JUSTIFIED_DECIDED: UponRule = UponRule(7);
 pub const UPON_ROUND_TIMEOUT: UponRule = UponRule(8); // This is not triggered by a message, but by a timer.
 
 impl Display for UponRule {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self.0 {
             0 => "nothing",
             1 => "justified_pre_prepare",
@@ -187,10 +215,12 @@ impl Display for UponRule {
 }
 
 /// Defines the key used to deduplicate upon rules.
+#[derive(Eq, Hash, PartialEq)]
 struct DedupKey {
     upon_rule: UponRule,
     round: i64,
 }
+
 #[derive(Debug)]
 struct CompareError;
 
@@ -213,17 +243,305 @@ impl Display for TimeoutError {
 
 impl error::Error for TimeoutError {}
 
+/// Executes the consensus algorithm until the context is closed.
+/// The generic type I is the instance of consensus and can be anything.
+/// The generic type V is the arbitrary data value being proposed; it only
+/// requires an Equal method. The generic type C is the compare value, used to
+/// compare leader's proposed value with local value and can be anything.
+fn run<I, V, C>(
+    d: &Definition<I, V, C>,
+    t: &Transport<I, V, C>,
+    instance: &I,
+    process: i64,
+    mut input_value_ch: mpsc::Receiver<V>,
+    input_value_source_ch: mpsc::Receiver<C>,
+) -> Result<()>
+where
+    V: PartialEq + Eq + Hash + Default,
+    C: Clone + Send + Sync,
+{
+    // === State ===
+    let mut round: Cell<i64> = Cell::new(1);
+    let mut input_value: RefCell<V>;
+    let mut input_value_source: C;
+    // Cached pre-prepare justification for the current round (`None` value is
+    // unset).
+    let mut pre_prepare_justification_cache: RefCell<Option<Vec<SomeMsg<I, V, C>>>> =
+        RefCell::new(None);
+    let mut prepared_round: Cell<i64> = Cell::new(0);
+    let mut prepared_value: RefCell<V>;
+    let mut compare_failure_round: i64 = 0;
+    let mut prepared_justification: RefCell<Vec<SomeMsg<I, V, C>>>;
+    let mut q_commit: Vec<SomeMsg<I, V, C>>;
+    let mut buffer: RefCell<HashMap<i64, Vec<SomeMsg<I, V, C>>>> = RefCell::new(HashMap::new());
+    let mut dedup_rules: RefCell<HashMap<DedupKey, bool>> = RefCell::new(HashMap::new());
+    let mut timer_chan: mpsc::Receiver<()>;
+    let mut stop_timer: Box<dyn Fn()> = Box::new(|| {});
+
+    // === Helpers ==
+
+    // Broadcasts a non-ROUND-CHANGE message for current round.
+    let broadcast_msg =
+        |type_: MessageType, value: &V, justification: Option<&Vec<SomeMsg<I, V, C>>>| {
+            (t.broadcast)(
+                type_,
+                instance,
+                process,
+                round.get(),
+                value,
+                0,
+                &Default::default(),
+                justification,
+            )
+        };
+    // Broadcasts a ROUND-CHANGE message with current state.
+    let broadcast_round_change = || {
+        (t.broadcast)(
+            MSG_ROUND_CHANGE,
+            instance,
+            process,
+            round.get(),
+            &Default::default(),
+            prepared_round.get(),
+            &prepared_value.borrow(),
+            Some(&prepared_justification.borrow()),
+        )
+    };
+
+    // Broadcasts a PRE-PREPARE message with current state
+    // and our own input value if present, otherwise it caches the justification
+    // to be used when the input value becomes available.
+    let mut broadcast_own_pre_prepare = |justification: Vec<SomeMsg<I, V, C>>| {
+        if pre_prepare_justification_cache.borrow().is_none() {
+            panic!("bug: justification must not be nil")
+        }
+
+        if input_value == Default::default() {
+            // Can't broadcast a pre-prepare yet, need to wait for an input value.
+            pre_prepare_justification_cache.replace(Some(justification));
+            return Ok(());
+        }
+
+        broadcast_msg(MSG_PRE_PREPARE, &input_value.borrow(), Some(&justification))
+    };
+
+    // Adds a message to each process' FIFO queue
+    let buffer_msg = |msg: SomeMsg<I, V, C>| {
+        let mut b = buffer.borrow_mut();
+        let fifo = b.entry(msg.source()).or_default();
+
+        fifo.push(msg);
+        if fifo.len() as i64 > d.fifo_limit {
+            fifo.drain(0..(fifo.len() - d.fifo_limit as usize));
+        }
+    };
+
+    // Returns true if the rule has been already executed since last round
+    // change.
+    let mut is_duplicated_rule = |upon_rule: UponRule, round: i64| {
+        let k = DedupKey { upon_rule, round };
+
+        let mut dr = dedup_rules.borrow_mut();
+        if !dr.contains_key(&k) {
+            dr.insert(k, true);
+            return false;
+        }
+
+        true
+    };
+
+    // Updates round and clears the rule dedup state.
+    let mut change_round = |new_round: i64, rule: UponRule| {
+        if round.get() == new_round {
+            return;
+        }
+
+        (d.log_round_change)(
+            instance,
+            process,
+            round.get(),
+            new_round,
+            rule,
+            &extract_round_messages(&buffer.borrow(), round.get()),
+        );
+
+        round.set(new_round);
+        dedup_rules.replace(HashMap::new());
+        pre_prepare_justification_cache.replace(None);
+    };
+
+    // Algorithm 1:11
+    {
+        if (d.is_leader)(instance, round.get(), process) {
+            // Note round==1 at this point.
+            broadcast_own_pre_prepare(vec![])?; // Empty justification since round==1
+        }
+
+        let (timer_chan, stop_timer) = (d.new_timer)(round.get());
+    }
+
+    loop {
+        if let Ok(input_value) = input_value_ch.try_recv() {
+            if input_value == Default::default() {
+                bail!("zero input value not supported");
+            }
+
+            if let Some(ppj) = pre_prepare_justification_cache.borrow().as_ref() {
+                // Broadcast the pre-prepare now that we have a input value using the cached
+                // justification.
+                broadcast_msg(MSG_PRE_PREPARE, &input_value, Some(ppj))?;
+            }
+
+            // Don't read from this channel again.
+            input_value_ch = {
+                let (_, never) = mpsc::channel();
+                never
+            }
+        }
+
+        if let Ok(msg) = (t.receive).try_recv() {
+            if !q_commit.is_empty() {
+                if msg.source() != process && msg.type_() == MSG_ROUND_CHANGE {
+                    // Algorithm 3:17
+                    broadcast_msg(MSG_DECIDED, &q_commit[0].value(), Some(&q_commit))?;
+                }
+
+                break;
+            }
+
+            // Drop unjust messages
+            if !is_justified(d, instance, &msg, compare_failure_round) {
+                // d.LogUnjust(ctx, instance, process, msg)
+                break;
+            }
+
+            buffer_msg(msg.clone());
+
+            let (rule, justification) = classify(
+                d,
+                instance,
+                round.get(),
+                process,
+                &buffer.borrow(),
+                msg.clone(),
+            );
+            if rule == UPON_NOTHING || is_duplicated_rule(rule, msg.round()) {
+                // Do nothing more if no rule or duplicate rule was triggered
+                break;
+            }
+
+            // d.LogUponRule(ctx, instance, process, round, msg, rule)
+
+            match rule {
+                // Algorithm 2:1
+                UPON_JUSTIFIED_PRE_PREPARE => {
+                    change_round(msg.round(), rule);
+
+                    stop_timer();
+                    (timer_chan, stop_timer) = (d.new_timer)(round.get());
+
+                    let compare_result = compare(
+                        d,
+                        msg.clone(),
+                        input_value_source_ch, // TODO: Moved value
+                        input_value_source,
+                        timer_chan,
+                    );
+
+                    match compare_result {
+                        Ok(v) => {
+                            input_value_source = v;
+                            broadcast_msg(MSG_PREPARE, &msg.value(), None)?;
+                        }
+                        Err(some_error) => {
+                            if some_error.downcast_ref::<CompareError>().is_some() {
+                                compare_failure_round = msg.round();
+                            } else if some_error.downcast_ref::<TimeoutError>().is_some() {
+                                // As compare function is blocking on waiting local data, round
+                                // might timeout in the meantime. If
+                                // this happens, we trigger round change.
+                                // Algorithm 3:1
+                                change_round(round.get() + 1, UPON_ROUND_TIMEOUT);
+                                stop_timer();
+
+                                (timer_chan, stop_timer) = (d.new_timer)(round.get());
+
+                                broadcast_round_change()?;
+                            } else {
+                                bail!("bug: expected only comparison or timeout error");
+                            }
+                        }
+                    }
+                }
+                UPON_QUORUM_PREPARES => {
+                    // Algorithm 2:4
+                    // Only applicable to current round
+                    prepared_round.set(round.get()); /* == msg.Round */
+                    prepared_value.replace(msg.value());
+                    prepared_justification.replace(justification);
+
+                    broadcast_msg(MSG_COMMIT, &prepared_value.borrow(), None)?;
+                }
+                UPON_QUORUM_COMMITS | UPON_JUSTIFIED_DECIDED => {
+                    // Algorithm 2:8
+                    change_round(msg.round(), rule);
+                    q_commit = justification;
+                    stop_timer();
+
+                    timer_chan = {
+                        let (_, never) = mpsc::channel();
+                        never
+                    };
+
+                    (d.decide)(instance, &msg.value(), &q_commit);
+                }
+                UPON_F_PLUS1_ROUND_CHANGES => {
+                    // Algorithm 3:5
+
+                    // Only applicable to future rounds
+                    change_round(
+                        next_min_round(d, &justification, round.get() /* < msg.Round */),
+                        rule,
+                    );
+
+                    stop_timer();
+                    (timer_chan, stop_timer) = (d.new_timer)(round.get());
+
+                    broadcast_round_change()?;
+                }
+                UPON_QUORUM_ROUND_CHANGES => {
+                    // Algorithm 3:11
+
+                    // Only applicable to current round (round > 1)
+
+                    match get_single_justified_pr_pv(d, &justification) {
+                        Some((pr, pv)) if compare_failure_round != pr => {
+                            broadcast_msg(MSG_PRE_PREPARE, &pv, Some(&justification))?
+                        }
+                        _ => broadcast_own_pre_prepare(justification)?,
+                    }
+                }
+                UPON_UNJUST_QUORUM_ROUND_CHANGES => {
+                    // Ignore bug or byzantine
+                }
+                _ => panic!("bug: invalid rule"),
+            }
+        }
+    }
+
+    bail!("not implemented");
+}
 
 fn compare<I, V, C>(
     d: &Definition<I, V, C>,
-    msg: &SomeMsg<I, V, C>,
+    msg: SomeMsg<I, V, C>,
     input_value_source_ch: mpsc::Receiver<C>,
     mut input_value_source: C,
     timer_chan: mpsc::Receiver<()>,
 ) -> Result<C>
 where
     V: PartialEq,
-    C: Clone + Copy + Send + Sync,
+    C: Clone + Send + Sync,
 {
     let (compare_err_tx, compare_err_rx) = mpsc::sync_channel::<Result<()>>(1);
     let (compare_value_tx, compare_value_rx) = mpsc::sync_channel::<C>(1);
@@ -236,14 +554,15 @@ where
     // If comparison or any other unexpected error occurs, the error is returned on
     // compareErr channel.
 
-    return std::thread::scope(|s| {
-        let compare = d.compare.as_ref();
+    thread::scope(|s| {
+        let compare = &d.compare;
+        let ivs = input_value_source.clone();
 
         s.spawn(move || {
             (compare)(
-                &msg,
+                msg,
                 input_value_source_ch,
-                &input_value_source,
+                &ivs,
                 compare_err_tx,
                 compare_value_tx,
             );
@@ -259,18 +578,18 @@ where
             if let Ok(value) = compare_value_rx.try_recv() {
                 input_value_source = value;
             }
-            if let Ok(_) = timer_chan.try_recv() {
+            if timer_chan.try_recv().is_ok() {
                 bail!(TimeoutError);
             }
         }
-    });
+    })
 }
 
 /// Returns all messages from the provided round.
 fn extract_round_messages<I, V, C>(
     buffer: &HashMap<i64, Vec<SomeMsg<I, V, C>>>,
     round: i64,
-) -> Vec<&SomeMsg<I, V, C>>
+) -> Vec<SomeMsg<I, V, C>>
 where
     V: PartialEq,
 {
@@ -279,7 +598,7 @@ where
     for msgs in buffer.values() {
         for msg in msgs {
             if msg.round() == round {
-                resp.push(msg);
+                resp.push(msg.clone());
             }
         }
     }
@@ -289,14 +608,14 @@ where
 
 /// Returns the rule triggered upon receipt of the last message and its
 /// justifications.
-fn classify<'a, I, V, C>(
+fn classify<I, V, C>(
     d: &Definition<I, V, C>,
     instance: &I,
     round: i64,
     process: i64,
-    buffer: &'a HashMap<i64, Vec<&SomeMsg<I, V, C>>>,
-    msg: &'a SomeMsg<I, V, C>,
-) -> (UponRule, Vec<&'a SomeMsg<I, V, C>>)
+    buffer: &HashMap<i64, Vec<SomeMsg<I, V, C>>>,
+    msg: SomeMsg<I, V, C>,
+) -> (UponRule, Vec<SomeMsg<I, V, C>>)
 where
     V: Eq + Hash + Default,
 {
@@ -316,7 +635,7 @@ where
             }
 
             let prepares =
-                filter_by_round_and_value(flatten(buffer), MSG_PREPARE, msg.round(), msg.value());
+                filter_by_round_and_value(&flatten(buffer), MSG_PREPARE, msg.round(), msg.value());
 
             if prepares.len() as i64 >= d.quorum() {
                 (UPON_QUORUM_PREPARES, prepares)
@@ -331,7 +650,7 @@ where
             }
 
             let commits =
-                filter_by_round_and_value(flatten(buffer), MSG_COMMIT, msg.round(), msg.value());
+                filter_by_round_and_value(&flatten(buffer), MSG_COMMIT, msg.round(), msg.value());
             if commits.len() as i64 >= d.quorum() {
                 (UPON_QUORUM_COMMITS, commits)
             } else {
@@ -348,7 +667,7 @@ where
 
             if msg.round() > round {
                 // Jump ahead if we received F+1 higher ROUND-CHANGEs.
-                if let Some(frc) = get_fplus1_round_changes(d, all.clone(), round) {
+                if let Some(frc) = get_fplus1_round_changes(d, &all, round) {
                     return (UPON_F_PLUS1_ROUND_CHANGES, frc);
                 }
 
@@ -357,12 +676,12 @@ where
 
             /* else msg.Round() == round */
 
-            let qrc = filter_round_change(all.clone(), msg.round());
+            let qrc = filter_round_change(&all, msg.round());
             if (qrc.len() as i64) < d.quorum() {
                 return (UPON_NOTHING, vec![]);
             }
 
-            let Some(qrc) = get_justified_qrc(d, all.clone(), msg.round()) else {
+            let Some(qrc) = get_justified_qrc(d, &all, msg.round()) else {
                 return (UPON_UNJUST_QUORUM_ROUND_CHANGES, vec![]);
             };
 
@@ -380,7 +699,7 @@ where
 
 /// Implements algorithm 3:6 and returns the next minimum round from received
 /// round change messages.
-fn min_next_round<I, V, C>(d: &Definition<I, V, C>, frc: Vec<&SomeMsg<I, V, C>>, round: i64) -> i64
+fn next_min_round<I, V, C>(d: &Definition<I, V, C>, frc: &Vec<SomeMsg<I, V, C>>, round: i64) -> i64
 where
     V: PartialEq,
 {
@@ -456,7 +775,7 @@ where
 
     let mut uniq = uniq_source::<I, V, C>(vec![]);
     for prepare in prepares {
-        if !uniq(prepare) {
+        if !uniq(&prepare) {
             return false;
         }
 
@@ -488,7 +807,7 @@ where
 
     let v = msg.value();
     let commits = filter_msgs(
-        msg.justification(),
+        &msg.justification(),
         MSG_COMMIT,
         msg.round(),
         Some(&v),
@@ -523,7 +842,7 @@ where
         return true;
     }
 
-    let Some(pv) = contains_justified_qrc(d, msg.justification(), msg.round()) else {
+    let Some(pv) = contains_justified_qrc(d, &msg.justification(), msg.round()) else {
         return false;
     };
 
@@ -538,13 +857,13 @@ where
 /// justified quorum ROUND_CHANGEs (Qrc).
 fn contains_justified_qrc<I, V, C>(
     d: &Definition<I, V, C>,
-    justification: Vec<&SomeMsg<I, V, C>>,
+    justification: &Vec<SomeMsg<I, V, C>>,
     round: i64,
 ) -> Option<V>
 where
     V: Eq + Hash + Default,
 {
-    let qrc = filter_round_change(justification.clone(), round);
+    let qrc = filter_round_change(justification, round);
     if (qrc.len() as i64) < d.quorum() {
         return None;
     }
@@ -569,7 +888,7 @@ where
     // with pr and pv equaled to highest pr and pv in Qrc (other than null).
 
     // Get pr and pv from quorum PREPARES
-    let (pr, pv) = get_single_justified_pr_pv(d, justification.clone())?;
+    let (pr, pv) = get_single_justified_pr_pv(d, justification)?;
 
     let mut found = false;
 
@@ -591,7 +910,7 @@ where
 /// messages. It expects only one possible combination.
 fn get_single_justified_pr_pv<I, V, C>(
     d: &Definition<I, V, C>,
-    msgs: Vec<&SomeMsg<I, V, C>>,
+    msgs: &Vec<SomeMsg<I, V, C>>,
 ) -> Option<(i64, V)>
 where
     V: Eq + Hash + Default,
@@ -628,25 +947,25 @@ where
 }
 
 /// Implements algorithm 4:1 and returns a justified quorum ROUND_CHANGEs (Qrc)
-fn get_justified_qrc<'a, I, V, C>(
+fn get_justified_qrc<I, V, C>(
     d: &Definition<I, V, C>,
-    all: Vec<&'a SomeMsg<I, V, C>>,
+    all: &Vec<SomeMsg<I, V, C>>,
     round: i64,
-) -> Option<Vec<&'a SomeMsg<I, V, C>>>
+) -> Option<Vec<SomeMsg<I, V, C>>>
 where
     V: Eq + Hash + Default,
 {
-    if let (qrc, true) = quorum_null_prepared(&d, all.clone(), round) {
+    if let (qrc, true) = quorum_null_prepared(d, all, round) {
         // Return any quorum null pv ROUND_CHANGE messages as Qrc.
         return Some(qrc);
     }
 
-    let round_changes = filter_round_change(all.clone(), round);
+    let round_changes = filter_round_change(all, round);
 
-    for prepares in get_prepare_quorums(&d, all.clone()) {
+    for prepares in get_prepare_quorums(d, all) {
         // See if we have quorum ROUND-CHANGE with HIGHEST_PREPARED(qrc) ==
         // prepares.Round.
-        let mut qrc: Vec<&SomeMsg<I, V, C>> = vec![];
+        let mut qrc: Vec<SomeMsg<I, V, C>> = vec![];
         let mut has_highest_prepared = false;
         let pr = prepares[0].round();
         let pv = prepares[0].value();
@@ -665,11 +984,11 @@ where
                 has_highest_prepared = true;
             }
 
-            qrc.push(*rc);
+            qrc.push(rc.clone());
         }
 
         if (qrc.len() as i64) >= d.quorum() && has_highest_prepared {
-            qrc.extend(prepares.iter());
+            qrc.extend(prepares.into_iter());
             return Some(qrc);
         }
     }
@@ -680,15 +999,15 @@ where
 /// Returns true and Faulty+1 ROUND-CHANGE messages (Frc) with the rounds higher
 /// than the provided round. It returns the highest round per process in order
 /// to jump furthest.
-fn get_fplus1_round_changes<'a, I, V, C>(
+fn get_fplus1_round_changes<I, V, C>(
     d: &Definition<I, V, C>,
-    all: Vec<&'a SomeMsg<I, V, C>>,
+    all: &Vec<SomeMsg<I, V, C>>,
     round: i64,
-) -> Option<Vec<&'a SomeMsg<I, V, C>>>
+) -> Option<Vec<SomeMsg<I, V, C>>>
 where
     V: PartialEq,
 {
-    let mut highest_by_source = HashMap::<i64, &'a SomeMsg<I, V, C>>::new();
+    let mut highest_by_source = HashMap::<i64, SomeMsg<I, V, C>>::new();
 
     for msg in all {
         if msg.type_() != MSG_ROUND_CHANGE {
@@ -705,7 +1024,7 @@ where
             }
         }
 
-        highest_by_source.insert(msg.source(), msg);
+        highest_by_source.insert(msg.source(), msg.clone());
 
         if (highest_by_source.len() as i64) == d.faulty() + 1 {
             break;
@@ -731,14 +1050,14 @@ where
     value: V,
 }
 
-fn get_prepare_quorums<'a, I, V, C>(
+fn get_prepare_quorums<I, V, C>(
     d: &Definition<I, V, C>,
-    all: Vec<&'a SomeMsg<I, V, C>>,
-) -> Vec<Vec<&'a SomeMsg<I, V, C>>>
+    all: &Vec<SomeMsg<I, V, C>>,
+) -> Vec<Vec<SomeMsg<I, V, C>>>
 where
     V: Eq + Hash,
 {
-    let mut sets = HashMap::<PreparedKey<V>, HashMap<i64, &SomeMsg<I, V, C>>>::new();
+    let mut sets = HashMap::<PreparedKey<V>, HashMap<i64, SomeMsg<I, V, C>>>::new();
 
     for msg in all {
         if msg.type_() != MSG_PREPARE {
@@ -750,7 +1069,9 @@ where
             value: msg.value(),
         };
 
-        sets.entry(key).or_default().insert(msg.source(), msg);
+        sets.entry(key)
+            .or_default()
+            .insert(msg.source(), msg.clone());
     }
 
     let mut quorums = vec![];
@@ -774,11 +1095,11 @@ where
 /// Implements condition J1 and returns Qrc and true if a quorum
 /// of round changes messages (Qrc) for the round have null prepared round and
 /// value.
-fn quorum_null_prepared<'a, I, V, C>(
+fn quorum_null_prepared<I, V, C>(
     d: &Definition<I, V, C>,
-    all: Vec<&'a SomeMsg<I, V, C>>,
+    all: &Vec<SomeMsg<I, V, C>>,
     round: i64,
-) -> (Vec<&'a SomeMsg<I, V, C>>, bool)
+) -> (Vec<SomeMsg<I, V, C>>, bool)
 where
     V: PartialEq + Default,
 {
@@ -795,11 +1116,11 @@ where
 
 /// Returns the messages matching the type and value.
 fn filter_by_round_and_value<I, V, C>(
-    msgs: Vec<&SomeMsg<I, V, C>>,
+    msgs: &Vec<SomeMsg<I, V, C>>,
     message_type: MessageType,
     round: i64,
     value: V,
-) -> Vec<&SomeMsg<I, V, C>>
+) -> Vec<SomeMsg<I, V, C>>
 where
     V: PartialEq,
 {
@@ -807,7 +1128,7 @@ where
 }
 
 /// Returns all round change messages for the provided round.
-fn filter_round_change<I, V, C>(msgs: Vec<&SomeMsg<I, V, C>>, round: i64) -> Vec<&SomeMsg<I, V, C>>
+fn filter_round_change<I, V, C>(msgs: &Vec<SomeMsg<I, V, C>>, round: i64) -> Vec<SomeMsg<I, V, C>>
 where
     V: PartialEq,
 {
@@ -816,14 +1137,14 @@ where
 
 /// Returns one message per process matching the provided type and round and
 /// optional value, pr, pv.
-fn filter_msgs<'a, I, V, C>(
-    msgs: Vec<&'a SomeMsg<I, V, C>>,
+fn filter_msgs<I, V, C>(
+    msgs: &Vec<SomeMsg<I, V, C>>,
     message_type: MessageType,
     round: i64,
     value: Option<&V>,
     pr: Option<i64>,
     pv: Option<&V>,
-) -> Vec<&'a SomeMsg<I, V, C>>
+) -> Vec<SomeMsg<I, V, C>>
 where
     V: PartialEq,
 {
@@ -858,7 +1179,7 @@ where
         }
 
         if uniq(msg) {
-            resp.push(msg);
+            resp.push(msg.clone());
         }
     }
 
@@ -867,19 +1188,17 @@ where
 
 /// Produce a vector containing all the buffered messages as well as all their
 /// justifications.
-fn flatten<'a, I, V, C>(
-    buffer: &HashMap<i64, Vec<&'a SomeMsg<I, V, C>>>,
-) -> Vec<&'a SomeMsg<I, V, C>>
+fn flatten<I, V, C>(buffer: &HashMap<i64, Vec<SomeMsg<I, V, C>>>) -> Vec<SomeMsg<I, V, C>>
 where
     V: PartialEq,
 {
-    let mut resp: Vec<&SomeMsg<I, V, C>> = Vec::new();
+    let mut resp: Vec<SomeMsg<I, V, C>> = Vec::new();
 
     for msgs in buffer.values() {
         for msg in msgs {
-            resp.push(msg);
+            resp.push(msg.clone());
             for j in msg.justification() {
-                resp.push(j);
+                resp.push(j.clone());
                 if !j.justification().is_empty() {
                     panic!("bug: nested justifications");
                 }
@@ -911,24 +1230,8 @@ where
 #[cfg(test)]
 mod tests {
 
-    struct Foo {
-        f: Box<dyn Fn(Vec<&i32>) -> i32>,
-    }
-
     #[test]
     fn it_works() {
-        let foo = Foo {
-            f: Box::new(|vec: Vec<&i32>| -> i32 {
-                let mut sum = 0;
-                for v in vec {
-                    sum += *v;
-                }
-                sum
-            }),
-        };
-        let v = [1, 2, 3, 4, 5];
-        let collected: Vec<&i32> = v.iter().collect();
-        let result = (foo.f)(collected);
-        assert_eq!(result, 15);
+        assert_eq!(2 + 2, 4);
     }
 }
