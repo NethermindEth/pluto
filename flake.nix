@@ -17,7 +17,7 @@
         ];
 
         shellHook = ''
-          chmod +x .githooks/* && ln -sf $(pwd)/.githooks/* .git/hooks/
+          chmod +x .githooks/* && git config --local core.hooksPath .githooks/
         '';
       };
 
