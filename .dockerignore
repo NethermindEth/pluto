@@ -1,0 +1,17 @@
+.git
+.githooks
+.gitignore
+.github
+.envrc
+.direnv
+.vscode
+.idea
+
+debug
+target
+
+*.pdb
+**/*.rs.bk
+lcov.info
+
+*.md
