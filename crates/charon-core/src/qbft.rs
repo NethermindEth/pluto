@@ -191,6 +191,28 @@ struct DedupKey {
     upon_rule: UponRule,
     round: i64,
 }
+#[derive(Debug)]
+struct CompareError;
+
+impl Display for CompareError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "compare leader value with local value failed")
+    }
+}
+
+impl error::Error for CompareError {}
+
+#[derive(Debug)]
+struct TimeoutError;
+
+impl Display for TimeoutError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "timeout")
+    }
+}
+
+impl error::Error for TimeoutError {}
+
 
 fn compare<I, V, C>(
     d: &Definition<I, V, C>,
@@ -228,21 +250,17 @@ where
         });
 
         loop {
-            if let Ok(result) = compare_err_rx.try_recv() {
-                match result {
-                    Ok(()) => return Ok(input_value_source),
-                    Err(error) => {
-                        bail!("compare leader value with local value failed: {}", error);
-                    }
+            if let Ok(err) = compare_err_rx.try_recv() {
+                match err {
+                    Ok(_) => return Ok(input_value_source),
+                    Err(_) => bail!(CompareError),
                 }
             }
             if let Ok(value) = compare_value_rx.try_recv() {
                 input_value_source = value;
             }
             if let Ok(_) = timer_chan.try_recv() {
-                bail!(
-                    "timeout on waiting for data used for comparing local and leader proposed data"
-                );
+                bail!(TimeoutError);
             }
         }
     });
