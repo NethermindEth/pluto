@@ -259,9 +259,7 @@ where
     let round: Cell<i64> = Cell::new(1);
     let input_value: RefCell<V> = RefCell::new(Default::default());
     let mut input_value_source: C = Default::default();
-    // Cached pre-prepare justification for the current round (`None` value is
-    // unset).
-    let pre_prepare_justification_cache: RefCell<Option<Vec<Msg<I, V, C>>>> = RefCell::new(None);
+    let ppj_cache: RefCell<Option<Vec<Msg<I, V, C>>>> = RefCell::new(None); // Cached pre-prepare justification for the current round (`None` value is unset).
     let prepared_round: Cell<i64> = Cell::new(0);
     let prepared_value: RefCell<V> = RefCell::new(Default::default());
     let mut compare_failure_round: i64 = 0;
@@ -306,13 +304,13 @@ where
     // and our own input value if present, otherwise it caches the justification
     // to be used when the input value becomes available.
     let broadcast_own_pre_prepare = |justification: Vec<Msg<I, V, C>>| {
-        if pre_prepare_justification_cache.borrow().is_none() {
+        if ppj_cache.borrow().is_none() {
             panic!("bug: justification must not be nil")
         }
 
         if input_value == Default::default() {
             // Can't broadcast a pre-prepare yet, need to wait for an input value.
-            pre_prepare_justification_cache.replace(Some(justification));
+            ppj_cache.replace(Some(justification));
             return Ok(());
         }
 
@@ -361,7 +359,7 @@ where
 
         round.set(new_round);
         dedup_rules.replace(HashMap::new());
-        pre_prepare_justification_cache.replace(None);
+        ppj_cache.replace(None);
     };
 
     // Algorithm 1:11
@@ -380,7 +378,7 @@ where
                 bail!("zero input value not supported");
             }
 
-            if let Some(ppj) = pre_prepare_justification_cache.borrow().as_ref() {
+            if let Some(ppj) = ppj_cache.borrow().as_ref() {
                 // Broadcast the pre-prepare now that we have a input value using the cached
                 // justification.
                 broadcast_msg(MSG_PRE_PREPARE, &input_value, Some(ppj))?;
