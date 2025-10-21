@@ -242,7 +242,7 @@ impl error::Error for TimeoutError {}
 /// The generic type V is the arbitrary data value being proposed; it only
 /// requires an Equal method. The generic type C is the compare value, used to
 /// compare leader's proposed value with local value and can be anything.
-fn run<I, V, C>(
+pub fn run<I, V, C>(
     d: &Definition<I, V, C>,
     t: &Transport<I, V, C>,
     instance: &I,
@@ -255,22 +255,21 @@ where
     C: Clone + Send + Sync,
 {
     // === State ===
-    let mut round: Cell<i64> = Cell::new(1);
+    let round: Cell<i64> = Cell::new(1);
     let mut input_value: RefCell<V>;
     let mut input_value_source: C;
     // Cached pre-prepare justification for the current round (`None` value is
     // unset).
-    let mut pre_prepare_justification_cache: RefCell<Option<Vec<Msg<I, V, C>>>> =
-        RefCell::new(None);
-    let mut prepared_round: Cell<i64> = Cell::new(0);
+    let pre_prepare_justification_cache: RefCell<Option<Vec<Msg<I, V, C>>>> = RefCell::new(None);
+    let prepared_round: Cell<i64> = Cell::new(0);
     let mut prepared_value: RefCell<V>;
     let mut compare_failure_round: i64 = 0;
     let mut prepared_justification: RefCell<Vec<Msg<I, V, C>>>;
     let mut q_commit: Vec<Msg<I, V, C>>;
-    let mut buffer: RefCell<HashMap<i64, Vec<Msg<I, V, C>>>> = RefCell::new(HashMap::new());
-    let mut dedup_rules: RefCell<HashMap<DedupKey, bool>> = RefCell::new(HashMap::new());
+    let buffer: RefCell<HashMap<i64, Vec<Msg<I, V, C>>>> = RefCell::new(HashMap::new());
+    let dedup_rules: RefCell<HashMap<DedupKey, bool>> = RefCell::new(HashMap::new());
     let mut timer_chan: mpsc::Receiver<()>;
-    let mut stop_timer: Box<dyn Fn()> = Box::new(|| {});
+    let mut stop_timer: Box<dyn Fn()>;
 
     // === Helpers ==
 
@@ -305,7 +304,7 @@ where
     // Broadcasts a PRE-PREPARE message with current state
     // and our own input value if present, otherwise it caches the justification
     // to be used when the input value becomes available.
-    let mut broadcast_own_pre_prepare = |justification: Vec<Msg<I, V, C>>| {
+    let broadcast_own_pre_prepare = |justification: Vec<Msg<I, V, C>>| {
         if pre_prepare_justification_cache.borrow().is_none() {
             panic!("bug: justification must not be nil")
         }
@@ -332,7 +331,7 @@ where
 
     // Returns true if the rule has been already executed since last round
     // change.
-    let mut is_duplicated_rule = |upon_rule: UponRule, round: i64| {
+    let is_duplicated_rule = |upon_rule: UponRule, round: i64| {
         let k = DedupKey { upon_rule, round };
 
         let mut dr = dedup_rules.borrow_mut();
@@ -345,7 +344,7 @@ where
     };
 
     // Updates round and clears the rule dedup state.
-    let mut change_round = |new_round: i64, rule: UponRule| {
+    let change_round = |new_round: i64, rule: UponRule| {
         if round.get() == new_round {
             return;
         }
@@ -371,7 +370,7 @@ where
             broadcast_own_pre_prepare(vec![])?; // Empty justification since round==1
         }
 
-        let (timer_chan, stop_timer) = (d.new_timer)(round.get());
+        (timer_chan, stop_timer) = (d.new_timer)(round.get());
     }
 
     loop {
@@ -400,28 +399,22 @@ where
                     broadcast_msg(MSG_DECIDED, &q_commit[0].value(), Some(&q_commit))?;
                 }
 
-                break;
+                continue;
             }
 
             // Drop unjust messages
             if !is_justified(d, instance, &msg, compare_failure_round) {
                 // d.LogUnjust(ctx, instance, process, msg)
-                break;
+                continue;
             }
 
             buffer_msg(&msg);
 
-            let (rule, justification) = classify(
-                d,
-                instance,
-                round.get(),
-                process,
-                &buffer.borrow(),
-                &msg,
-            );
+            let (rule, justification) =
+                classify(d, instance, round.get(), process, &buffer.borrow(), &msg);
             if rule == UPON_NOTHING || is_duplicated_rule(rule, msg.round()) {
                 // Do nothing more if no rule or duplicate rule was triggered
-                break;
+                continue;
             }
 
             // d.LogUponRule(ctx, instance, process, round, msg, rule)
@@ -521,9 +514,17 @@ where
                 _ => panic!("bug: invalid rule"),
             }
         }
-    }
 
-    bail!("not implemented");
+        if let Ok(_) = timer_chan.try_recv() {
+            // Algorithm 3:1
+            change_round(round.get() + 1, UPON_ROUND_TIMEOUT);
+            stop_timer();
+
+            (timer_chan, stop_timer) = (d.new_timer)(round.get());
+
+            broadcast_round_change()?;
+        }
+    }
 }
 
 fn compare<I, V, C>(
