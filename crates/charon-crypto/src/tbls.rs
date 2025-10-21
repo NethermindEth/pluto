@@ -10,8 +10,8 @@ use blsful::vsss_rs::elliptic_curve::rand_core::{CryptoRng, RngCore};
 pub type PublicKey = [u8; 48];
 /// Private key type
 pub type PrivateKey = [u8; 32];
-/// Signature type
-pub type Signature = [u8; 96];
+/// Signature type (BLS12-381 G2 compressed with header)
+pub type Signature = [u8; 97];
 
 /// todo: Error type
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,6 +57,10 @@ pub trait Tbls {
     /// thresholdSplitInsecure splits a compressed secret into total units of
     /// secret keys, with the given threshold. It returns a map that
     /// associates each private, compressed private key to its ID.
+    /// 
+    /// # Limitations
+    /// 
+    /// Maximum of 255 shares (total <= 255) due to underlying BLS library constraints.
     fn threshold_split_insecure(
         &self,
         secret_key: &PrivateKey,
@@ -68,6 +72,10 @@ pub trait Tbls {
     /// ThresholdSplit splits a compressed secret into total units of secret
     /// keys, with the given threshold. It returns a map that associates
     /// each private, compressed private key to its ID.
+    /// 
+    /// # Limitations
+    /// 
+    /// Maximum of 255 shares (total <= 255) due to underlying BLS library constraints.
     fn threshold_split(
         &self,
         secret_key: &PrivateKey,
@@ -76,6 +84,10 @@ pub trait Tbls {
     ) -> Result<HashMap<u64, PrivateKey>, Error>;
 
     /// RecoverSecret recovers a secret from a set of shares
+    /// 
+    /// # Limitations
+    /// 
+    /// Share IDs must be < 255 due to underlying BLS library constraints.
     fn recover_secret(&self, shares: HashMap<u64, PrivateKey>) -> Result<PrivateKey, Error>;
 
     /// Aggregate aggregates a set of signatures into a single signature
@@ -83,6 +95,10 @@ pub trait Tbls {
 
     /// ThresholdAggregate aggregates a set of partial signatures into a single
     /// signature
+    /// 
+    /// # Limitations
+    /// 
+    /// Share IDs must be < 255 due to underlying BLS library constraints.
     fn threshold_aggregate(
         &self,
         partial_signatures_by_idx: HashMap<u64, Signature>,
