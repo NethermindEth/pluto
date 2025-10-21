@@ -265,8 +265,8 @@ where
     let prepared_round: Cell<i64> = Cell::new(0);
     let mut prepared_value: RefCell<V>;
     let mut compare_failure_round: i64 = 0;
-    let mut prepared_justification: RefCell<Vec<Msg<I, V, C>>>;
-    let mut q_commit: Vec<Msg<I, V, C>>;
+    let prepared_justification: RefCell<Option<Vec<Msg<I, V, C>>>> = RefCell::new(None);
+    let mut q_commit: Option<Vec<Msg<I, V, C>>> = None;
     let buffer: RefCell<HashMap<i64, Vec<Msg<I, V, C>>>> = RefCell::new(HashMap::new());
     let dedup_rules: RefCell<HashMap<DedupKey, bool>> = RefCell::new(HashMap::new());
     let mut timer_chan: mpmc::Receiver<()>;
@@ -298,7 +298,7 @@ where
             &Default::default(),
             prepared_round.get(),
             &prepared_value.borrow(),
-            Some(&prepared_justification.borrow()),
+            prepared_justification.borrow().as_ref(),
         )
     };
 
@@ -391,13 +391,15 @@ where
         }
 
         if let Ok(msg) = (t.receive).try_recv() {
-            if !q_commit.is_empty() {
-                if msg.source() != process && msg.type_() == MSG_ROUND_CHANGE {
-                    // Algorithm 3:17
-                    broadcast_msg(MSG_DECIDED, &q_commit[0].value(), Some(&q_commit))?;
-                }
+            if let Some(v) = q_commit.as_ref() {
+                if !v.is_empty() {
+                    if msg.source() != process && msg.type_() == MSG_ROUND_CHANGE {
+                        // Algorithm 3:17
+                        broadcast_msg(MSG_DECIDED, &v[0].value(), Some(v))?;
+                    }
 
-                continue;
+                    continue;
+                }
             }
 
             // Drop unjust messages
@@ -475,10 +477,16 @@ where
 
                     timer_chan = mpmc::never();
 
-                    (d.decide)(instance, &msg.value(), &q_commit);
+                    let justification = q_commit.as_ref()
+                        .expect("Rules `UPON_QUORUM_COMMITS` and `UPON_JUSTIFIED_DECIDED` always include a justification");
+                    (d.decide)(instance, &msg.value(), justification);
                 }
                 UPON_F_PLUS1_ROUND_CHANGES => {
                     // Algorithm 3:5
+
+                    let justification = justification.expect(
+                        "Rule `UPON_F_PLUS1_ROUND_CHANGES` always includes a justification",
+                    );
 
                     // Only applicable to future rounds
                     change_round(
@@ -494,8 +502,10 @@ where
                 UPON_QUORUM_ROUND_CHANGES => {
                     // Algorithm 3:11
 
-                    // Only applicable to current round (round > 1)
+                    let justification = justification
+                        .expect("Rule `UPON_QUORUM_ROUND_CHANGES` always includes a justification");
 
+                    // Only applicable to current round (round > 1)
                     match get_single_justified_pr_pv(d, &justification) {
                         Some((pr, pv)) if compare_failure_round != pr => {
                             broadcast_msg(MSG_PRE_PREPARE, &pv, Some(&justification))?
@@ -605,52 +615,52 @@ fn classify<I, V, C>(
     process: i64,
     buffer: &HashMap<i64, Vec<Msg<I, V, C>>>,
     msg: &Msg<I, V, C>,
-) -> (UponRule, Vec<Msg<I, V, C>>)
+) -> (UponRule, Option<Vec<Msg<I, V, C>>>)
 where
     V: Eq + Hash + Default,
 {
     match msg.type_() {
-        MSG_DECIDED => (UPON_JUSTIFIED_DECIDED, msg.justification()),
+        MSG_DECIDED => (UPON_JUSTIFIED_DECIDED, Some(msg.justification())),
         MSG_PRE_PREPARE => {
             if msg.round() < round {
-                (UPON_NOTHING, vec![])
+                (UPON_NOTHING, None)
             } else {
-                (UPON_JUSTIFIED_PRE_PREPARE, vec![])
+                (UPON_JUSTIFIED_PRE_PREPARE, None)
             }
         }
         MSG_PREPARE => {
             // Ignore other rounds, since PREPARE isn't justified.
             if msg.round() != round {
-                return (UPON_NOTHING, vec![]);
+                return (UPON_NOTHING, None);
             }
 
             let prepares =
                 filter_by_round_and_value(&flatten(buffer), MSG_PREPARE, msg.round(), msg.value());
 
             if prepares.len() as i64 >= d.quorum() {
-                (UPON_QUORUM_PREPARES, prepares)
+                (UPON_QUORUM_PREPARES, Some(prepares))
             } else {
-                (UPON_NOTHING, vec![])
+                (UPON_NOTHING, None)
             }
         }
         MSG_COMMIT => {
             // Ignore other rounds, since COMMIT isn't justified.
             if msg.round() != round {
-                return (UPON_NOTHING, vec![]);
+                return (UPON_NOTHING, None);
             }
 
             let commits =
                 filter_by_round_and_value(&flatten(buffer), MSG_COMMIT, msg.round(), msg.value());
             if commits.len() as i64 >= d.quorum() {
-                (UPON_QUORUM_COMMITS, commits)
+                (UPON_QUORUM_COMMITS, Some(commits))
             } else {
-                (UPON_NOTHING, vec![])
+                (UPON_NOTHING, None)
             }
         }
         MSG_ROUND_CHANGE => {
             // Only ignore old rounds.
             if msg.round() < round {
-                return (UPON_NOTHING, vec![]);
+                return (UPON_NOTHING, None);
             }
 
             let all = flatten(buffer);
@@ -658,28 +668,28 @@ where
             if msg.round() > round {
                 // Jump ahead if we received F+1 higher ROUND-CHANGEs.
                 if let Some(frc) = get_fplus1_round_changes(d, &all, round) {
-                    return (UPON_F_PLUS1_ROUND_CHANGES, frc);
+                    return (UPON_F_PLUS1_ROUND_CHANGES, Some(frc));
                 }
 
-                return (UPON_NOTHING, vec![]);
+                return (UPON_NOTHING, None);
             }
 
             /* else msg.Round() == round */
 
             let qrc = filter_round_change(&all, msg.round());
             if (qrc.len() as i64) < d.quorum() {
-                return (UPON_NOTHING, vec![]);
+                return (UPON_NOTHING, None);
             }
 
             let Some(qrc) = get_justified_qrc(d, &all, msg.round()) else {
-                return (UPON_UNJUST_QUORUM_ROUND_CHANGES, vec![]);
+                return (UPON_UNJUST_QUORUM_ROUND_CHANGES, None);
             };
 
             if !(d.is_leader)(instance, msg.round(), process) {
-                return (UPON_NOTHING, vec![]);
+                return (UPON_NOTHING, None);
             }
 
-            (UPON_QUORUM_ROUND_CHANGES, qrc)
+            (UPON_QUORUM_ROUND_CHANGES, Some(qrc))
         }
         _ => {
             panic!("bug: invalid type");
