@@ -14,7 +14,7 @@ use std::{
     sync, thread,
 };
 
-struct Transport<I, V, C>
+pub struct Transport<I, V, C>
 where
     V: PartialEq,
 {
@@ -40,7 +40,7 @@ where
     pub receive: mpmc::Receiver<Msg<I, V, C>>,
 }
 
-struct Definition<I, V, C>
+pub struct Definition<I, V, C>
 where
     V: PartialEq,
 {
@@ -253,17 +253,17 @@ pub fn run<I, V, C>(
 ) -> Result<()>
 where
     V: PartialEq + Eq + Hash + Default,
-    C: Clone + Send + Sync,
+    C: Clone + Send + Sync + Default,
 {
     // === State ===
     let round: Cell<i64> = Cell::new(1);
-    let mut input_value: RefCell<V>;
-    let mut input_value_source: C;
+    let input_value: RefCell<V> = RefCell::new(Default::default());
+    let mut input_value_source: C = Default::default();
     // Cached pre-prepare justification for the current round (`None` value is
     // unset).
     let pre_prepare_justification_cache: RefCell<Option<Vec<Msg<I, V, C>>>> = RefCell::new(None);
     let prepared_round: Cell<i64> = Cell::new(0);
-    let mut prepared_value: RefCell<V>;
+    let prepared_value: RefCell<V> = RefCell::new(Default::default());
     let mut compare_failure_round: i64 = 0;
     let prepared_justification: RefCell<Option<Vec<Msg<I, V, C>>>> = RefCell::new(None);
     let mut q_commit: Option<Vec<Msg<I, V, C>>> = None;
@@ -431,7 +431,7 @@ where
                         d,
                         &msg,
                         &input_value_source_ch, // TODO: Moved value
-                        input_value_source,
+                        input_value_source.clone(),
                         &timer_chan,
                     );
 
@@ -536,7 +536,7 @@ fn compare<I, V, C>(
     d: &Definition<I, V, C>,
     msg: &Msg<I, V, C>,
     input_value_source_ch: &mpmc::Receiver<C>,
-    mut input_value_source: C,
+    input_value_source: C,
     timer_chan: &mpmc::Receiver<()>,
 ) -> Result<C>
 where
@@ -555,14 +555,14 @@ where
     // compareErr channel.
 
     thread::scope(|s| {
+        let mut result = input_value_source.clone();
         let compare = &d.compare;
-        let ivs = input_value_source.clone();
 
         s.spawn(move || {
             (compare)(
                 msg,
                 &input_value_source_ch,
-                &ivs,
+                &input_value_source,
                 &compare_err_tx,
                 &compare_value_tx,
             );
@@ -571,12 +571,12 @@ where
         loop {
             if let Ok(err) = compare_err_rx.try_recv() {
                 match err {
-                    Ok(_) => return Ok(input_value_source),
+                    Ok(_) => return Ok(result),
                     Err(_) => bail!(CompareError),
                 }
             }
             if let Ok(value) = compare_value_rx.try_recv() {
-                input_value_source = value;
+                result = value;
             }
             if timer_chan.try_recv().is_ok() {
                 bail!(TimeoutError);
