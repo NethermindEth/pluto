@@ -54,7 +54,7 @@ where
     // turned on.
     pub compare: Box<
         dyn Fn(
-                /* qcommit */ Msg<I, V, C>,
+                /* qcommit */ &Msg<I, V, C>,
                 /* inputValueSourceCh */ mpsc::Receiver<C>,
                 /* inputValueSource */ &C,
                 /* returnErr */ mpsc::SyncSender<Result<()>>,
@@ -320,11 +320,11 @@ where
     };
 
     // Adds a message to each process' FIFO queue
-    let buffer_msg = |msg: Msg<I, V, C>| {
+    let buffer_msg = |msg: &Msg<I, V, C>| {
         let mut b = buffer.borrow_mut();
         let fifo = b.entry(msg.source()).or_default();
 
-        fifo.push(msg);
+        fifo.push(msg.clone());
         if fifo.len() as i64 > d.fifo_limit {
             fifo.drain(0..(fifo.len() - d.fifo_limit as usize));
         }
@@ -409,7 +409,7 @@ where
                 break;
             }
 
-            buffer_msg(msg.clone());
+            buffer_msg(&msg);
 
             let (rule, justification) = classify(
                 d,
@@ -417,7 +417,7 @@ where
                 round.get(),
                 process,
                 &buffer.borrow(),
-                msg.clone(),
+                &msg,
             );
             if rule == UPON_NOTHING || is_duplicated_rule(rule, msg.round()) {
                 // Do nothing more if no rule or duplicate rule was triggered
@@ -436,7 +436,7 @@ where
 
                     let compare_result = compare(
                         d,
-                        msg.clone(),
+                        &msg,
                         input_value_source_ch, // TODO: Moved value
                         input_value_source,
                         timer_chan,
@@ -528,7 +528,7 @@ where
 
 fn compare<I, V, C>(
     d: &Definition<I, V, C>,
-    msg: Msg<I, V, C>,
+    msg: &Msg<I, V, C>,
     input_value_source_ch: mpsc::Receiver<C>,
     mut input_value_source: C,
     timer_chan: mpsc::Receiver<()>,
@@ -608,7 +608,7 @@ fn classify<I, V, C>(
     round: i64,
     process: i64,
     buffer: &HashMap<i64, Vec<Msg<I, V, C>>>,
-    msg: Msg<I, V, C>,
+    msg: &Msg<I, V, C>,
 ) -> (UponRule, Vec<Msg<I, V, C>>)
 where
     V: Eq + Hash + Default,
