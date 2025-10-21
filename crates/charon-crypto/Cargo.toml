@@ -8,7 +8,9 @@ publish.workspace = true
 
 [dependencies]
 rand.workspace = true
-blst.workspace = true
+blsful.workspace = true
+rand_core.workspace = true
+serde.workspace = true
 
 [lints]
 workspace = true
