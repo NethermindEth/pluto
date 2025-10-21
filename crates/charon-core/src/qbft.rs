@@ -2,6 +2,8 @@
 #![allow(dead_code)]
 #![allow(clippy::type_complexity)]
 
+use crossbeam::channel as mpmc;
+
 use anyhow::{Result, bail};
 use std::{
     cell::{Cell, RefCell},
@@ -9,8 +11,7 @@ use std::{
     error,
     fmt::{self, Display},
     hash::Hash,
-    sync::{self, mpsc},
-    thread,
+    sync, thread,
 };
 
 struct Transport<I, V, C>
@@ -36,7 +37,7 @@ where
 
     /// Receive returns a stream of messages received
     /// from other processes in the system (including this process).
-    pub receive: mpsc::Receiver<Msg<I, V, C>>,
+    pub receive: mpmc::Receiver<Msg<I, V, C>>,
 }
 
 struct Definition<I, V, C>
@@ -47,7 +48,7 @@ where
     pub is_leader: Box<dyn Fn(/* instance */ &I, /* round */ i64, /* process */ i64) -> bool>,
 
     /// Returns a new timer channel and stop function for the round
-    pub new_timer: Box<dyn Fn(/* rounds */ i64) -> (mpsc::Receiver<()>, Box<dyn Fn()>)>,
+    pub new_timer: Box<dyn Fn(/* rounds */ i64) -> (mpmc::Receiver<()>, Box<dyn Fn()>)>,
 
     // Called when leader proposes value and we compare it with our local value.
     // It's an opt-in feature that should instantly return nil on returnErr channel if it is not
@@ -55,10 +56,10 @@ where
     pub compare: Box<
         dyn Fn(
                 /* qcommit */ &Msg<I, V, C>,
-                /* inputValueSourceCh */ mpsc::Receiver<C>,
+                /* inputValueSourceCh */ &mpmc::Receiver<C>,
                 /* inputValueSource */ &C,
-                /* returnErr */ mpsc::SyncSender<Result<()>>,
-                /* returnValue */ mpsc::SyncSender<C>,
+                /* returnErr */ &mpmc::Sender<Result<()>>,
+                /* returnValue */ &mpmc::Sender<C>,
             ) + Send
             + Sync,
     >,
@@ -247,8 +248,8 @@ pub fn run<I, V, C>(
     t: &Transport<I, V, C>,
     instance: &I,
     process: i64,
-    mut input_value_ch: mpsc::Receiver<V>,
-    input_value_source_ch: mpsc::Receiver<C>,
+    mut input_value_ch: mpmc::Receiver<V>,
+    input_value_source_ch: mpmc::Receiver<C>,
 ) -> Result<()>
 where
     V: PartialEq + Eq + Hash + Default,
@@ -268,7 +269,7 @@ where
     let mut q_commit: Vec<Msg<I, V, C>>;
     let buffer: RefCell<HashMap<i64, Vec<Msg<I, V, C>>>> = RefCell::new(HashMap::new());
     let dedup_rules: RefCell<HashMap<DedupKey, bool>> = RefCell::new(HashMap::new());
-    let mut timer_chan: mpsc::Receiver<()>;
+    let mut timer_chan: mpmc::Receiver<()>;
     let mut stop_timer: Box<dyn Fn()>;
 
     // === Helpers ==
@@ -386,10 +387,7 @@ where
             }
 
             // Don't read from this channel again.
-            input_value_ch = {
-                let (_, never) = mpsc::channel();
-                never
-            }
+            input_value_ch = mpmc::never();
         }
 
         if let Ok(msg) = (t.receive).try_recv() {
@@ -430,9 +428,9 @@ where
                     let compare_result = compare(
                         d,
                         &msg,
-                        input_value_source_ch, // TODO: Moved value
+                        &input_value_source_ch, // TODO: Moved value
                         input_value_source,
-                        timer_chan,
+                        &timer_chan,
                     );
 
                     match compare_result {
@@ -475,10 +473,7 @@ where
                     q_commit = justification;
                     stop_timer();
 
-                    timer_chan = {
-                        let (_, never) = mpsc::channel();
-                        never
-                    };
+                    timer_chan = mpmc::never();
 
                     (d.decide)(instance, &msg.value(), &q_commit);
                 }
@@ -530,16 +525,16 @@ where
 fn compare<I, V, C>(
     d: &Definition<I, V, C>,
     msg: &Msg<I, V, C>,
-    input_value_source_ch: mpsc::Receiver<C>,
+    input_value_source_ch: &mpmc::Receiver<C>,
     mut input_value_source: C,
-    timer_chan: mpsc::Receiver<()>,
+    timer_chan: &mpmc::Receiver<()>,
 ) -> Result<C>
 where
     V: PartialEq,
     C: Clone + Send + Sync,
 {
-    let (compare_err_tx, compare_err_rx) = mpsc::sync_channel::<Result<()>>(1);
-    let (compare_value_tx, compare_value_rx) = mpsc::sync_channel::<C>(1);
+    let (compare_err_tx, compare_err_rx) = mpmc::bounded::<Result<()>>(1);
+    let (compare_value_tx, compare_value_rx) = mpmc::bounded::<C>(1);
 
     // d.Compare has 2 roles:
     // 1. Read from the inputValueSourceCh (if inputValueSource is empty). If it
@@ -556,10 +551,10 @@ where
         s.spawn(move || {
             (compare)(
                 msg,
-                input_value_source_ch,
+                &input_value_source_ch,
                 &ivs,
-                compare_err_tx,
-                compare_value_tx,
+                &compare_err_tx,
+                &compare_value_tx,
             );
         });
 
