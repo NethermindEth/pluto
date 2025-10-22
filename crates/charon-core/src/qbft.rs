@@ -373,159 +373,165 @@ where
     }
 
     loop {
-        if let Ok(input_value) = input_value_ch.try_recv() {
-            if input_value == Default::default() {
-                bail!("zero input value not supported");
-            }
+        mpmc::select! {
+            recv(input_value_ch) -> result => {
+                let input_value = result?;
 
-            if let Some(ppj) = ppj_cache.borrow().as_ref() {
-                // Broadcast the pre-prepare now that we have a input value using the cached
-                // justification.
-                broadcast_msg(MSG_PRE_PREPARE, &input_value, Some(ppj))?;
-            }
+                if input_value == Default::default() {
+                    bail!("zero input value not supported");
+                }
 
-            // Don't read from this channel again.
-            input_value_ch = mpmc::never();
-        }
+                if let Some(ppj) = ppj_cache.borrow().as_ref() {
+                    // Broadcast the pre-prepare now that we have a input value using the cached
+                    // justification.
+                    broadcast_msg(MSG_PRE_PREPARE, &input_value, Some(ppj))?;
+                }
 
-        if let Ok(msg) = (t.receive).try_recv() {
-            if let Some(v) = q_commit.as_ref() {
-                if !v.is_empty() {
-                    if msg.source() != process && msg.type_() == MSG_ROUND_CHANGE {
-                        // Algorithm 3:17
-                        broadcast_msg(MSG_DECIDED, &v[0].value(), Some(v))?;
+                // Don't read from this channel again.
+                input_value_ch = mpmc::never();
+            },
+
+            recv(t.receive) -> result => {
+                let msg = result?;
+                if let Some(v) = q_commit.as_ref() {
+                    if !v.is_empty() {
+                        if msg.source() != process && msg.type_() == MSG_ROUND_CHANGE {
+                            // Algorithm 3:17
+                            broadcast_msg(MSG_DECIDED, &v[0].value(), Some(v))?;
+                        }
+
+                        continue;
                     }
+                }
 
+                // Drop unjust messages
+                if !is_justified(d, instance, &msg, compare_failure_round) {
+                    // d.LogUnjust(ctx, instance, process, msg)
                     continue;
                 }
-            }
 
-            // Drop unjust messages
-            if !is_justified(d, instance, &msg, compare_failure_round) {
-                // d.LogUnjust(ctx, instance, process, msg)
-                continue;
-            }
+                buffer_msg(&msg);
 
-            buffer_msg(&msg);
+                let (rule, justification) =
+                    classify(d, instance, round.get(), process, &buffer.borrow(), &msg);
+                if rule == UPON_NOTHING || is_duplicated_rule(rule, msg.round()) {
+                    // Do nothing more if no rule or duplicate rule was triggered
+                    continue;
+                }
 
-            let (rule, justification) =
-                classify(d, instance, round.get(), process, &buffer.borrow(), &msg);
-            if rule == UPON_NOTHING || is_duplicated_rule(rule, msg.round()) {
-                // Do nothing more if no rule or duplicate rule was triggered
-                continue;
-            }
+                // d.LogUponRule(ctx, instance, process, round, msg, rule)
 
-            // d.LogUponRule(ctx, instance, process, round, msg, rule)
+                match rule {
+                    // Algorithm 2:1
+                    UPON_JUSTIFIED_PRE_PREPARE => {
+                        change_round(msg.round(), rule);
 
-            match rule {
-                // Algorithm 2:1
-                UPON_JUSTIFIED_PRE_PREPARE => {
-                    change_round(msg.round(), rule);
+                        stop_timer();
+                        (timer_chan, stop_timer) = (d.new_timer)(round.get());
 
-                    stop_timer();
-                    (timer_chan, stop_timer) = (d.new_timer)(round.get());
+                        let compare_result = compare(
+                            d,
+                            &msg,
+                            &input_value_source_ch, // TODO: Moved value
+                            input_value_source.clone(),
+                            &timer_chan,
+                        );
 
-                    let compare_result = compare(
-                        d,
-                        &msg,
-                        &input_value_source_ch, // TODO: Moved value
-                        input_value_source.clone(),
-                        &timer_chan,
-                    );
+                        match compare_result {
+                            Ok(v) => {
+                                input_value_source = v;
+                                broadcast_msg(MSG_PREPARE, &msg.value(), None)?;
+                            }
+                            Err(some_error) => {
+                                if some_error.downcast_ref::<CompareError>().is_some() {
+                                    compare_failure_round = msg.round();
+                                } else if some_error.downcast_ref::<TimeoutError>().is_some() {
+                                    // As compare function is blocking on waiting local data, round
+                                    // might timeout in the meantime. If
+                                    // this happens, we trigger round change.
+                                    // Algorithm 3:1
+                                    change_round(round.get() + 1, UPON_ROUND_TIMEOUT);
+                                    stop_timer();
 
-                    match compare_result {
-                        Ok(v) => {
-                            input_value_source = v;
-                            broadcast_msg(MSG_PREPARE, &msg.value(), None)?;
-                        }
-                        Err(some_error) => {
-                            if some_error.downcast_ref::<CompareError>().is_some() {
-                                compare_failure_round = msg.round();
-                            } else if some_error.downcast_ref::<TimeoutError>().is_some() {
-                                // As compare function is blocking on waiting local data, round
-                                // might timeout in the meantime. If
-                                // this happens, we trigger round change.
-                                // Algorithm 3:1
-                                change_round(round.get() + 1, UPON_ROUND_TIMEOUT);
-                                stop_timer();
+                                    (timer_chan, stop_timer) = (d.new_timer)(round.get());
 
-                                (timer_chan, stop_timer) = (d.new_timer)(round.get());
-
-                                broadcast_round_change()?;
-                            } else {
-                                bail!("bug: expected only comparison or timeout error");
+                                    broadcast_round_change()?;
+                                } else {
+                                    bail!("bug: expected only comparison or timeout error");
+                                }
                             }
                         }
                     }
-                }
-                UPON_QUORUM_PREPARES => {
-                    // Algorithm 2:4
-                    // Only applicable to current round
-                    prepared_round.set(round.get()); /* == msg.Round */
-                    prepared_value.replace(msg.value());
-                    prepared_justification.replace(justification);
+                    UPON_QUORUM_PREPARES => {
+                        // Algorithm 2:4
+                        // Only applicable to current round
+                        prepared_round.set(round.get()); /* == msg.Round */
+                        prepared_value.replace(msg.value());
+                        prepared_justification.replace(justification);
 
-                    broadcast_msg(MSG_COMMIT, &prepared_value.borrow(), None)?;
-                }
-                UPON_QUORUM_COMMITS | UPON_JUSTIFIED_DECIDED => {
-                    // Algorithm 2:8
-                    change_round(msg.round(), rule);
-                    q_commit = justification;
-                    stop_timer();
-
-                    timer_chan = mpmc::never();
-
-                    let justification = q_commit.as_ref()
-                        .expect("Rules `UPON_QUORUM_COMMITS` and `UPON_JUSTIFIED_DECIDED` always include a justification");
-                    (d.decide)(instance, &msg.value(), justification);
-                }
-                UPON_F_PLUS1_ROUND_CHANGES => {
-                    // Algorithm 3:5
-
-                    let justification = justification.expect(
-                        "Rule `UPON_F_PLUS1_ROUND_CHANGES` always includes a justification",
-                    );
-
-                    // Only applicable to future rounds
-                    change_round(
-                        next_min_round(d, &justification, round.get() /* < msg.Round */),
-                        rule,
-                    );
-
-                    stop_timer();
-                    (timer_chan, stop_timer) = (d.new_timer)(round.get());
-
-                    broadcast_round_change()?;
-                }
-                UPON_QUORUM_ROUND_CHANGES => {
-                    // Algorithm 3:11
-
-                    let justification = justification
-                        .expect("Rule `UPON_QUORUM_ROUND_CHANGES` always includes a justification");
-
-                    // Only applicable to current round (round > 1)
-                    match get_single_justified_pr_pv(d, &justification) {
-                        Some((pr, pv)) if compare_failure_round != pr => {
-                            broadcast_msg(MSG_PRE_PREPARE, &pv, Some(&justification))?
-                        }
-                        _ => broadcast_own_pre_prepare(justification)?,
+                        broadcast_msg(MSG_COMMIT, &prepared_value.borrow(), None)?;
                     }
+                    UPON_QUORUM_COMMITS | UPON_JUSTIFIED_DECIDED => {
+                        // Algorithm 2:8
+                        change_round(msg.round(), rule);
+                        q_commit = justification;
+                        stop_timer();
+
+                        timer_chan = mpmc::never();
+
+                        let justification = q_commit.as_ref()
+                            .expect("Rules `UPON_QUORUM_COMMITS` and `UPON_JUSTIFIED_DECIDED` always include a justification");
+                        (d.decide)(instance, &msg.value(), justification);
+                    }
+                    UPON_F_PLUS1_ROUND_CHANGES => {
+                        // Algorithm 3:5
+
+                        let justification = justification.expect(
+                            "Rule `UPON_F_PLUS1_ROUND_CHANGES` always includes a justification",
+                        );
+
+                        // Only applicable to future rounds
+                        change_round(
+                            next_min_round(d, &justification, round.get() /* < msg.Round */),
+                            rule,
+                        );
+
+                        stop_timer();
+                        (timer_chan, stop_timer) = (d.new_timer)(round.get());
+
+                        broadcast_round_change()?;
+                    }
+                    UPON_QUORUM_ROUND_CHANGES => {
+                        // Algorithm 3:11
+
+                        let justification = justification
+                            .expect("Rule `UPON_QUORUM_ROUND_CHANGES` always includes a justification");
+
+                        // Only applicable to current round (round > 1)
+                        match get_single_justified_pr_pv(d, &justification) {
+                            Some((pr, pv)) if compare_failure_round != pr => {
+                                broadcast_msg(MSG_PRE_PREPARE, &pv, Some(&justification))?
+                            }
+                            _ => broadcast_own_pre_prepare(justification)?,
+                        }
+                    }
+                    UPON_UNJUST_QUORUM_ROUND_CHANGES => {
+                        // Ignore bug or byzantine
+                    }
+                    _ => panic!("bug: invalid rule"),
                 }
-                UPON_UNJUST_QUORUM_ROUND_CHANGES => {
-                    // Ignore bug or byzantine
-                }
-                _ => panic!("bug: invalid rule"),
+            },
+
+            recv(timer_chan) -> result => {
+                result?;
+
+                change_round(round.get() + 1, UPON_ROUND_TIMEOUT);
+                stop_timer();
+
+                (timer_chan, stop_timer) = (d.new_timer)(round.get());
+
+                broadcast_round_change()?;
             }
-        }
-
-        if let Ok(_) = timer_chan.try_recv() {
-            // Algorithm 3:1
-            change_round(round.get() + 1, UPON_ROUND_TIMEOUT);
-            stop_timer();
-
-            (timer_chan, stop_timer) = (d.new_timer)(round.get());
-
-            broadcast_round_change()?;
         }
     }
 }
@@ -567,17 +573,27 @@ where
         });
 
         loop {
-            if let Ok(err) = compare_err_rx.try_recv() {
-                match err {
-                    Ok(_) => return Ok(result),
-                    Err(_) => bail!(CompareError),
+            mpmc::select! {
+                recv(compare_err_rx) -> msg => {
+                    let err = msg?;
+
+                    match err {
+                        Ok(_) => return Ok(result),
+                        Err(_) => bail!(CompareError),
+                    }
+                },
+
+                recv(compare_value_rx) -> msg => {
+                    let value = msg?;
+
+                    result = value;
+                },
+
+                recv(timer_chan) -> msg => {
+                    msg?;
+
+                    bail!(TimeoutError);
                 }
-            }
-            if let Ok(value) = compare_value_rx.try_recv() {
-                result = value;
-            }
-            if timer_chan.try_recv().is_ok() {
-                bail!(TimeoutError);
             }
         }
     })
