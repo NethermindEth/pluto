@@ -103,10 +103,10 @@ where
     pub log_unjust: Box<dyn Fn(/* instance */ &I, /* process */ i64, /* msg */ Msg<I, V, C>)>,
 
     /// Total number of nodes/processes participating in consensus.
-    nodes: i64,
+    pub nodes: i64,
 
     /// Limits the amount of message buffered for each peer.
-    fifo_limit: i64,
+    pub fifo_limit: i64,
 }
 
 impl<I, V, C> Definition<I, V, C>
@@ -114,14 +114,14 @@ where
     V: PartialEq,
 {
     /// Quorum count for the system.
-    /// See IBFT 2.0 paper for correct formula: https://arxiv.org/pdf/1909.10194.pdf
-    fn quorum(&self) -> i64 {
+    /// See IBFT 2.0 paper for correct formula: <https://arxiv.org/pdf/1909.10194.pdf>
+    pub fn quorum(&self) -> i64 {
         ((self.nodes as f64 * 2.0) / 3.0).ceil() as i64
     }
 
     /// Maximum number of faulty/byzantium nodes supported in the system.
-    /// See IBFT 2.0 paper for correct formula: https://arxiv.org/pdf/1909.10194.pdf
-    fn faulty(&self) -> i64 {
+    /// See IBFT 2.0 paper for correct formula: <https://arxiv.org/pdf/1909.10194.pdf>
+    pub fn faulty(&self) -> i64 {
         ((self.nodes - 1) as f64 / 3.0).floor() as i64
     }
 }
@@ -130,6 +130,8 @@ where
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub struct MessageType(i64);
 
+// NOTE: message type ordering MUST not change, since it breaks backwards
+// compatibility.
 pub const MSG_UNKNOWN: MessageType = MessageType(0);
 pub const MSG_PRE_PREPARE: MessageType = MessageType(1);
 pub const MSG_PREPARE: MessageType = MessageType(2);
@@ -140,7 +142,7 @@ pub const MSG_DECIDED: MessageType = MessageType(5);
 const MSG_SENTINEL: MessageType = MessageType(6); // intentionally not public
 
 impl MessageType {
-    fn valid(&self) -> bool {
+    pub fn valid(&self) -> bool {
         self.0 > MSG_UNKNOWN.0 && self.0 < MSG_SENTINEL.0
     }
 }
