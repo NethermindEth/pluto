@@ -1,5 +1,5 @@
 // TODO: Remove these checks
-#![allow(dead_code)]
+#![allow(missing_docs)]
 #![allow(clippy::type_complexity)]
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::cast_sign_loss)]
@@ -19,6 +19,7 @@ use std::{
     sync, thread,
 };
 
+/// Abstracts the transport layer between processes in the consensus system.
 pub struct Transport<I, V, C>
 where
     V: PartialEq,
@@ -45,6 +46,9 @@ where
     pub receive: mpmc::Receiver<Msg<I, V, C>>,
 }
 
+/// Defines the consensus system parameters that are external to the qbft
+/// algorithm. This remains constant across multiple instances of consensus
+/// (calls to Run).
 pub struct Definition<I, V, C>
 where
     V: PartialEq,
@@ -55,9 +59,9 @@ where
     /// Returns a new timer channel and stop function for the round
     pub new_timer: Box<dyn Fn(/* rounds */ i64) -> (mpmc::Receiver<()>, Box<dyn Fn()>)>,
 
-    // Called when leader proposes value and we compare it with our local value.
-    // It's an opt-in feature that should instantly return nil on returnErr channel if it is not
-    // turned on.
+    /// Called when leader proposes value and we compare it with our local
+    /// value. It's an opt-in feature that should instantly return nil on
+    /// returnErr channel if it is not turned on.
     pub compare: Box<
         dyn Fn(
                 /* qcommit */ &Msg<I, V, C>,
@@ -69,7 +73,7 @@ where
             + Sync,
     >,
 
-    // Called when consensus has been reached on a value.
+    /// Called when consensus has been reached on a value.
     pub decide: Box<dyn Fn(/* instance */ &I, /* value */ &V, /* qcommit */ &Vec<Msg<I, V, C>>)>,
 
     /// Allows debug logging of triggered upon rules on message receipt.
@@ -122,6 +126,7 @@ where
     }
 }
 
+/// Defines the QBFT message types
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub struct MessageType(i64);
 
@@ -174,13 +179,14 @@ where
     fn value_source(&self) -> Result<C>;
     /// The justified prepared round.
     fn prepared_round(&self) -> i64;
-    /// the justified prepared value
+    /// The justified prepared value.
     fn prepared_value(&self) -> V;
-    // Set of messages that explicitly justifies this message.
+    /// Set of messages that explicitly justifies this message.
     fn justification(&self) -> Vec<Msg<I, V, C>>;
 }
 
-type Msg<I, V, C> = sync::Arc<dyn SomeMsg<I, V, C> + Send + Sync>;
+/// Alias for any `Msg` implementation tracked by reference counting.
+pub type Msg<I, V, C> = sync::Arc<dyn SomeMsg<I, V, C> + Send + Sync>;
 
 /// Defines the event based rules that are triggered when messages are received.
 #[derive(PartialEq, Eq, Hash, Clone, Copy)]
@@ -244,9 +250,9 @@ impl Display for TimeoutError {
 impl error::Error for TimeoutError {}
 
 /// Executes the consensus algorithm until the context is closed.
-/// The generic type I is the instance of consensus and can be anything.
-/// The generic type V is the arbitrary data value being proposed; it only
-/// requires an Equal method. The generic type C is the compare value, used to
+/// The generic type `I` is the instance of consensus and can be anything.
+/// The generic type `V` is the arbitrary data value being proposed; it only
+/// requires an Equal method. The generic type `C` is the compare value, used to
 /// compare leader's proposed value with local value and can be anything.
 pub fn run<I, V, C>(
     d: &Definition<I, V, C>,
