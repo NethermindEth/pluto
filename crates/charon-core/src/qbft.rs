@@ -1,10 +1,14 @@
 // TODO: Remove these checks
 #![allow(dead_code)]
 #![allow(clippy::type_complexity)]
-
-use crossbeam::channel as mpmc;
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::arithmetic_side_effects)]
+#![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::cast_sign_loss)]
 
 use anyhow::{Result, bail};
+use crossbeam::channel as mpmc;
 use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
@@ -332,14 +336,7 @@ where
     // change.
     let is_duplicated_rule = |upon_rule: UponRule, round: i64| {
         let k = DedupKey { upon_rule, round };
-
-        let mut dr = dedup_rules.borrow_mut();
-        if !dr.contains_key(&k) {
-            dr.insert(k, true);
-            return false;
-        }
-
-        true
+        dedup_rules.borrow_mut().insert(k, true).is_some()
     };
 
     // Updates round and clears the rule dedup state.
@@ -565,7 +562,7 @@ where
         s.spawn(move || {
             (compare)(
                 msg,
-                &input_value_source_ch,
+                input_value_source_ch,
                 &input_value_source,
                 &compare_err_tx,
                 &compare_value_tx,
