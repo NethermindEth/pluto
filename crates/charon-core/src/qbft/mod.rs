@@ -83,7 +83,7 @@ where
             /* instance */ &I,
             /* process */ i64,
             /* round */ i64,
-            /* msg */ Msg<I, V, C>,
+            /* msg */ &Msg<I, V, C>,
             /* uponRule */ UponRule,
         ),
     >,
@@ -410,7 +410,7 @@ where
 
                 // Drop unjust messages
                 if !is_justified(d, instance, &msg, compare_failure_round) {
-                    // d.LogUnjust(ctx, instance, process, msg)
+                    (d.log_unjust)(instance, process, msg);
                     continue;
                 }
 
@@ -423,7 +423,7 @@ where
                     continue;
                 }
 
-                // d.LogUponRule(ctx, instance, process, round, msg, rule)
+                (d.log_upon_rule)(instance, process, round.get(), &msg, rule);
 
                 match rule {
                     // Algorithm 2:1
