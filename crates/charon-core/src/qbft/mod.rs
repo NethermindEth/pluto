@@ -1,11 +1,12 @@
 // TODO: Remove these checks
 #![allow(dead_code)]
 #![allow(clippy::type_complexity)]
-#![allow(clippy::cast_possible_truncation)]
-#![allow(clippy::cast_precision_loss)]
-#![allow(clippy::arithmetic_side_effects)]
-#![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::collapsible_if)]
 #![allow(clippy::cast_sign_loss)]
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::arithmetic_side_effects)]
 
 use anyhow::{Result, bail};
 use crossbeam::channel as mpmc;
