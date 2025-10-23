@@ -189,7 +189,7 @@ where
     fn round(&self) -> i64;
     /// The value being proposed, usually a hash.
     fn value(&self) -> V;
-    /// Uusually the value that was hashed and is returned in `value`.
+    /// Usually the value that was hashed and is returned in `value`.
     fn value_source(&self) -> Result<C>;
     /// The justified prepared round.
     fn prepared_round(&self) -> i64;
