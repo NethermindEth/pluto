@@ -28,7 +28,7 @@ use std::{
     error,
     fmt::{self, Display},
     hash::Hash,
-    sync, thread,
+    sync, thread, time,
 };
 
 /// Abstracts the transport layer between processes in the consensus system.
@@ -69,7 +69,7 @@ where
     pub is_leader: Box<dyn Fn(/* instance */ &I, /* round */ i64, /* process */ i64) -> bool>,
 
     /// Returns a new timer channel and stop function for the round
-    pub new_timer: Box<dyn Fn(/* rounds */ i64) -> (mpmc::Receiver<()>, Box<dyn Fn()>)>,
+    pub new_timer: Box<dyn Fn(/* rounds */ i64) -> (mpmc::Receiver<time::Instant>, Box<dyn Fn()>)>,
 
     /// Called when leader proposes value and we compare it with our local
     /// value. It's an opt-in feature that should instantly return nil on
@@ -139,7 +139,7 @@ where
 }
 
 /// Defines the QBFT message types
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub struct MessageType(i64);
 
 // NOTE: message type ordering MUST not change, since it breaks backwards
@@ -292,7 +292,7 @@ where
     let mut q_commit: Option<Vec<Msg<I, V, C>>> = None;
     let buffer: RefCell<HashMap<i64, Vec<Msg<I, V, C>>>> = RefCell::new(HashMap::new());
     let dedup_rules: RefCell<HashMap<DedupKey, bool>> = RefCell::new(HashMap::new());
-    let mut timer_chan: mpmc::Receiver<()>;
+    let mut timer_chan: mpmc::Receiver<time::Instant>;
     let mut stop_timer: Box<dyn Fn()>;
 
     // === Helpers ==
@@ -559,7 +559,7 @@ fn compare<I, V, C>(
     msg: &Msg<I, V, C>,
     input_value_source_ch: &mpmc::Receiver<C>,
     input_value_source: C,
-    timer_chan: &mpmc::Receiver<()>,
+    timer_chan: &mpmc::Receiver<time::Instant>,
 ) -> Result<C>
 where
     V: PartialEq,
