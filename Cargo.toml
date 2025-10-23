@@ -36,6 +36,9 @@ chrono = { version = "0.4", features = ["serde"] }
 rand = "0.9"
 blsful = "2.5.7"
 rand_core = "0.9.3"
+prost = "0.14"
+prost-types = "0.14"
+prost-build = "0.14"
 
 [workspace.lints.clippy]
 arithmetic_side_effects = "deny"
