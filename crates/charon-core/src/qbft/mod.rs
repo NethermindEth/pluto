@@ -333,7 +333,7 @@ where
             panic!("bug: justification must not be nil")
         }
 
-        if input_value == Default::default() {
+        if *input_value.borrow() == Default::default() {
             // Can't broadcast a pre-prepare yet, need to wait for an input value.
             ppj_cache.replace(Some(justification));
             return Ok(());
