@@ -4,8 +4,17 @@
 //! node. This crate provides cryptographic functions, key management, and
 //! security operations required for distributed validator operations.
 
-/// Herumi implementation
-pub mod herumi;
+/// Blsful implementation of TBLS
+pub mod blsful;
 
-/// tbls
+/// TBLS trait definition
 pub mod tbls;
+
+/// Type conversions for TBLS
+pub mod tblsconv;
+
+/// Error types and constants
+pub mod types;
+
+/// Utility functions
+pub mod utils;

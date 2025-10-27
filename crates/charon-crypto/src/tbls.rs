@@ -6,37 +6,7 @@ use std::collections::HashMap;
 
 use blsful::vsss_rs::elliptic_curve::rand_core::{CryptoRng, RngCore};
 
-/// Public key type
-pub type PublicKey = [u8; 48];
-/// Private key type
-pub type PrivateKey = [u8; 32];
-/// Signature type (BLS12-381 G2 compressed with header)
-pub type Signature = [u8; 97];
-
-/// todo: Error type
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Error {
-    /// Invalid secret key length.
-    InvalidSecretKeyLength,
-    /// Invalid public key length.
-    InvalidPublicKeyLength,
-    /// Invalid signature length.
-    InvalidSignatureLength,
-    /// Failed to generate secret key.
-    FailedToGenerateSecretKey,
-    /// Failed to deserialize secret key.
-    FailedToDeserializeSecretKey,
-    /// Failed to deserialize public key.
-    FailedToDeserializePublicKey,
-    /// Invalid threshold.
-    InvalidThreshold,
-    /// Failed to deserialize signature key.
-    FailedToDeserializeSignatureKey,
-    /// Failed to verify signature.
-    FailedToVerifySignature,
-    /// Failed to generate signature.
-    FailedToGenerateSignature,
-}
+use crate::types::{Error, Index, PrivateKey, PublicKey, Signature};
 
 /// Tbls trait
 pub trait Tbls {
@@ -57,51 +27,53 @@ pub trait Tbls {
     /// thresholdSplitInsecure splits a compressed secret into total units of
     /// secret keys, with the given threshold. It returns a map that
     /// associates each private, compressed private key to its ID.
-    /// 
+    ///
     /// # Limitations
-    /// 
-    /// Maximum of 255 shares (total <= 255) due to underlying BLS library constraints.
+    ///
+    /// Maximum of 255 shares (total <= 255) due to underlying BLS library
+    /// constraints.
     fn threshold_split_insecure(
         &self,
         secret_key: &PrivateKey,
-        total: u64,
-        threshold: u64,
+        total: Index,
+        threshold: Index,
         rng: impl RngCore + CryptoRng,
-    ) -> Result<HashMap<u64, PrivateKey>, Error>;
+    ) -> Result<HashMap<Index, PrivateKey>, Error>;
 
     /// ThresholdSplit splits a compressed secret into total units of secret
     /// keys, with the given threshold. It returns a map that associates
     /// each private, compressed private key to its ID.
-    /// 
+    ///
     /// # Limitations
-    /// 
-    /// Maximum of 255 shares (total <= 255) due to underlying BLS library constraints.
+    ///
+    /// Maximum of 255 shares (total <= 255) due to underlying BLS library
+    /// constraints.
     fn threshold_split(
         &self,
         secret_key: &PrivateKey,
-        total: u64,
-        threshold: u64,
-    ) -> Result<HashMap<u64, PrivateKey>, Error>;
+        total: Index,
+        threshold: Index,
+    ) -> Result<HashMap<Index, PrivateKey>, Error>;
 
     /// RecoverSecret recovers a secret from a set of shares
-    /// 
+    ///
     /// # Limitations
-    /// 
+    ///
     /// Share IDs must be < 255 due to underlying BLS library constraints.
-    fn recover_secret(&self, shares: HashMap<u64, PrivateKey>) -> Result<PrivateKey, Error>;
+    fn recover_secret(&self, shares: HashMap<Index, PrivateKey>) -> Result<PrivateKey, Error>;
 
     /// Aggregate aggregates a set of signatures into a single signature
     fn aggregate(&self, signatures: Vec<Signature>) -> Result<Signature, Error>;
 
     /// ThresholdAggregate aggregates a set of partial signatures into a single
     /// signature
-    /// 
+    ///
     /// # Limitations
-    /// 
+    ///
     /// Share IDs must be < 255 due to underlying BLS library constraints.
     fn threshold_aggregate(
         &self,
-        partial_signatures_by_idx: HashMap<u64, Signature>,
+        partial_signatures_by_idx: HashMap<Index, Signature>,
     ) -> Result<Signature, Error>;
 
     /// Verify verifies a signature
