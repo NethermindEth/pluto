@@ -314,7 +314,7 @@ mod tests {
         fn test_original_generate_secret_key() {
             let herumi = setup();
             let secret = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
 
             assert!(!secret.is_empty());
@@ -324,7 +324,7 @@ mod tests {
         fn test_original_secret_to_public_key() {
             let herumi = setup();
             let secret = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             assert!(!secret.is_empty());
 
@@ -336,7 +336,7 @@ mod tests {
         fn test_original_threshold_split() {
             let herumi = setup();
             let secret = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             assert!(!secret.is_empty());
 
@@ -349,7 +349,7 @@ mod tests {
         fn test_original_recover_secret() {
             let herumi = setup();
             let secret = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             assert!(!secret.is_empty());
 
@@ -370,7 +370,7 @@ mod tests {
             let data = b"hello obol!";
 
             let secret = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             assert!(!secret.is_empty());
 
@@ -398,7 +398,7 @@ mod tests {
             let data = b"hello obol!";
 
             let secret = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             assert!(!secret.is_empty());
 
@@ -417,7 +417,7 @@ mod tests {
             let data = b"hello obol!";
 
             let secret = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             assert!(!secret.is_empty());
 
@@ -439,7 +439,7 @@ mod tests {
 
             for _ in 0..10 {
                 let secret = herumi
-                    .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                    .generate_secret_key(elliptic_curve::rand_core::OsRng)
                     .unwrap();
                 assert!(!secret.is_empty());
 
@@ -475,7 +475,7 @@ mod tests {
         fn test_generate_secret_key_succeeds() {
             let herumi = setup();
             let sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
 
             // Verify key length is correct
@@ -489,10 +489,10 @@ mod tests {
         fn test_generate_secret_key_produces_different_keys() {
             let herumi = setup();
             let sk1 = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let sk2 = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
 
             // Two generated keys should be different
@@ -508,7 +508,7 @@ mod tests {
         fn test_secret_to_public_key_succeeds() {
             let herumi = setup();
             let sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let pk = herumi.secret_to_public_key(&sk).unwrap();
 
@@ -523,7 +523,7 @@ mod tests {
         fn test_secret_to_public_key_is_deterministic() {
             let herumi = setup();
             let sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
 
             let pk1 = herumi.secret_to_public_key(&sk).unwrap();
@@ -537,10 +537,10 @@ mod tests {
         fn test_secret_to_public_key_different_secrets_produce_different_keys() {
             let herumi = setup();
             let sk1 = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let sk2 = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
 
             let pk1 = herumi.secret_to_public_key(&sk1).unwrap();
@@ -574,7 +574,7 @@ mod tests {
         fn test_sign_and_verify_succeeds() {
             let herumi = setup();
             let sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let pk = herumi.secret_to_public_key(&sk).unwrap();
             let data = b"test message";
@@ -593,10 +593,10 @@ mod tests {
         fn test_verify_fails_with_wrong_public_key() {
             let herumi = setup();
             let sk1 = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let sk2 = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let pk2 = herumi.secret_to_public_key(&sk2).unwrap();
             let data = b"test message";
@@ -616,7 +616,7 @@ mod tests {
         fn test_verify_fails_with_wrong_message() {
             let herumi = setup();
             let sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let pk = herumi.secret_to_public_key(&sk).unwrap();
             let data1 = b"test message";
@@ -652,7 +652,7 @@ mod tests {
         fn test_verify_with_invalid_signature() {
             let herumi = setup();
             let sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let pk = herumi.secret_to_public_key(&sk).unwrap();
             let data = b"test message";
@@ -667,7 +667,7 @@ mod tests {
         fn test_sign_empty_message() {
             let herumi = setup();
             let sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let pk = herumi.secret_to_public_key(&sk).unwrap();
             let data = b"";
@@ -687,7 +687,7 @@ mod tests {
         fn test_threshold_split_succeeds() {
             let herumi = setup();
             let sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
 
             let shares = herumi.threshold_split(&sk, 5, 3).unwrap();
@@ -713,11 +713,11 @@ mod tests {
         fn test_threshold_split_insecure_succeeds() {
             let herumi = setup();
             let sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
 
             let shares = herumi
-                .threshold_split_insecure(&sk, 5, 3, &mut elliptic_curve::rand_core::OsRng)
+                .threshold_split_insecure(&sk, 5, 3, elliptic_curve::rand_core::OsRng)
                 .unwrap();
 
             // Should have 5 shares
@@ -736,7 +736,7 @@ mod tests {
         fn test_threshold_split_minimum_threshold() {
             let herumi = setup();
             let sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
 
             // Threshold of 2 (minimum supported by blsful)
@@ -755,7 +755,7 @@ mod tests {
         fn test_threshold_split_threshold_equals_total() {
             let herumi = setup();
             let sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
 
             // Threshold equals total
@@ -805,7 +805,7 @@ mod tests {
         fn test_recover_secret_with_exact_threshold() {
             let herumi = setup();
             let sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let threshold = 3;
             let total = 5;
@@ -829,7 +829,7 @@ mod tests {
         fn test_recover_secret_with_more_than_threshold() {
             let herumi = setup();
             let sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let threshold = 3;
             let total = 5;
@@ -850,7 +850,7 @@ mod tests {
         fn test_recover_secret_with_all_shares() {
             let herumi = setup();
             let sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let threshold = 3;
             let total = 5;
@@ -868,7 +868,7 @@ mod tests {
         fn test_recover_secret_different_share_combinations() {
             let herumi = setup();
             let sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let threshold = 3;
             let total = 5;
@@ -928,13 +928,13 @@ mod tests {
 
             // Create multiple keys and signatures
             let sk1 = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let sk2 = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let sk3 = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
 
             let sig1 = herumi.sign(&sk1, data).unwrap();
@@ -952,7 +952,7 @@ mod tests {
             let herumi = setup();
             let data = b"test message";
             let sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
 
             let sig = herumi.sign(&sk, data).unwrap();
@@ -987,13 +987,13 @@ mod tests {
 
             // Create multiple keys and signatures
             let sk1 = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let sk2 = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let sk3 = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
 
             let pk1 = herumi.secret_to_public_key(&sk1).unwrap();
@@ -1018,10 +1018,10 @@ mod tests {
             let data2 = b"different message";
 
             let sk1 = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let sk2 = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
 
             let pk1 = herumi.secret_to_public_key(&sk1).unwrap();
@@ -1047,13 +1047,13 @@ mod tests {
             let data = b"test message";
 
             let sk1 = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let sk2 = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let sk3 = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
 
             let pk3 = herumi.secret_to_public_key(&sk3).unwrap();
@@ -1084,7 +1084,7 @@ mod tests {
             // threshold secret sharing by recovering the secret and signing with it.
             let herumi = setup();
             let sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let pk = herumi.secret_to_public_key(&sk).unwrap();
             let data = b"test message";
@@ -1118,7 +1118,7 @@ mod tests {
         fn test_threshold_aggregate_with_more_than_threshold() {
             let herumi = setup();
             let sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let pk = herumi.secret_to_public_key(&sk).unwrap();
             let data = b"test message";
@@ -1148,7 +1148,7 @@ mod tests {
         fn test_threshold_aggregate_different_share_combinations() {
             let herumi = setup();
             let sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let pk = herumi.secret_to_public_key(&sk).unwrap();
             let data = b"test message";
@@ -1216,7 +1216,7 @@ mod tests {
 
             // Step 1: Generate secret key and derive public key
             let sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let pk = herumi.secret_to_public_key(&sk).unwrap();
 
@@ -1250,7 +1250,7 @@ mod tests {
 
             // Generate original key
             let original_sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let original_pk = herumi.secret_to_public_key(&original_sk).unwrap();
 
@@ -1277,7 +1277,7 @@ mod tests {
         fn test_multiple_message_signatures() {
             let herumi = setup();
             let sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let pk = herumi.secret_to_public_key(&sk).unwrap();
 
@@ -1300,7 +1300,7 @@ mod tests {
         fn test_threshold_edge_case_minimum_threshold() {
             let herumi = setup();
             let sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let pk = herumi.secret_to_public_key(&sk).unwrap();
             let data = b"test message";
@@ -1323,7 +1323,7 @@ mod tests {
         fn test_large_threshold_scheme() {
             let herumi = setup();
             let sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let pk = herumi.secret_to_public_key(&sk).unwrap();
             let data = b"test message";
@@ -1352,7 +1352,7 @@ mod tests {
         fn test_binary_data_signing() {
             let herumi = setup();
             let sk = herumi
-                .generate_secret_key(&mut elliptic_curve::rand_core::OsRng)
+                .generate_secret_key(elliptic_curve::rand_core::OsRng)
                 .unwrap();
             let pk = herumi.secret_to_public_key(&sk).unwrap();
 
