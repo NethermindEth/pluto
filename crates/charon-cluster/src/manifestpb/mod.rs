@@ -7,4 +7,3 @@
 pub mod v1 {
     include!("cluster.manifestpb.v1.rs");
 }
-

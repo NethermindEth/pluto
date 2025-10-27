@@ -2,8 +2,7 @@
 //!
 //! This build script compiles the protobuf file for the cluster manifest.
 
-use std::io::Result;
-use std::path::PathBuf;
+use std::{io::Result, path::PathBuf};
 
 fn main() -> Result<()> {
     let proto_file = "src/manifestpb/manifest.proto";

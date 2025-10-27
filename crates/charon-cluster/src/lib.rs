@@ -4,10 +4,6 @@
 //! This crate handles the formation, management, and coordination of validator
 //! clusters in the Charon network.
 
-/// Manifest
-pub mod manifest;
-/// Manifest protocol buffers.
-pub mod manifestpb;
 /// Cluster definition management and coordination.
 pub mod definition;
 /// Cluster deposit management and coordination.
@@ -22,6 +18,10 @@ pub mod eip712sigs;
 pub mod helpers;
 /// Cluster lock management and coordination.
 pub mod lock;
+/// Manifest
+pub mod manifest;
+/// Manifest protocol buffers.
+pub mod manifestpb;
 /// Cluster operator management and coordination.
 pub mod operator;
 /// Cluster registration management and coordination.
