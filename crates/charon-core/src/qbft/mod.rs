@@ -23,6 +23,7 @@
 use anyhow::{Result, bail};
 use crossbeam::channel as mpmc;
 use std::{
+    any,
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     error,
@@ -197,6 +198,9 @@ where
     fn prepared_value(&self) -> V;
     /// Set of messages that explicitly justifies this message.
     fn justification(&self) -> Vec<Msg<I, V, C>>;
+
+    /// Cast as `Any` to allow downcasting.
+    fn as_any(&self) -> &dyn any::Any;
 }
 
 /// Alias for any `Msg` implementation tracked by reference counting.
