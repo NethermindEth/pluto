@@ -26,6 +26,11 @@ jobs:
         # cargo-semver-checks needs the full git history to compare versions
         fetch-depth: 0
     
+    - name: Install protobuf compiler
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler
+    
     - name: Cache cargo registry
       uses: actions/cache@v4
       with:
