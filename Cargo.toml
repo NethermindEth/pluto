@@ -38,6 +38,8 @@ prost = "0.14"
 prost-types = "0.14"
 prost-build = "0.14"
 rand = {version = "0.8", features = ["std_rng"]}
+uuid = {version = "1.16", features = ["serde"] }
+serde_with = { version = "3", features = ["hex"] }
 
 [workspace.lints.rust]
 missing_docs = "deny"
