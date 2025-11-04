@@ -8,10 +8,24 @@ publish.workspace = true
 
 [dependencies]
 rand.workspace = true
-blsful.workspace = true
+blst.workspace = true
 rand_core.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+hex.workspace = true
 
-[lints]
-workspace = true
+[lints.rust]
+# Allow unsafe code for blst C bindings (overrides workspace forbid)
+unsafe_code = "allow"
+missing_docs = "deny"
+
+[lints.clippy]
+arithmetic_side_effects = "deny"
+cast_lossless = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_precision_loss = "deny"
+cast_sign_loss = "deny"
+needless_return = "deny"
+panicking_overflow_checks = "deny"
+unwrap_used = "deny"
