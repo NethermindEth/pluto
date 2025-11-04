@@ -1,23 +1,19 @@
 //! # charon-crypto types
 
-/// Maximum share ID.
-pub const MAX_SHARE_ID: Index = 255;
-/// Share secret key length
-pub const SHARE_SECRET_KEY_LENGTH: usize = 33;
-/// Signature share length
-pub const SIGNATURE_SHARE_LENGTH: usize = 98;
+use blst::BLST_ERROR;
+
 /// Public key length
 pub const PUBLIC_KEY_LENGTH: usize = 48;
 /// Private key length
 pub const PRIVATE_KEY_LENGTH: usize = 32;
-/// Signature length
-pub const SIGNATURE_LENGTH: usize = 97;
+/// Signature length (BLS12-381 G2 compressed)
+pub const SIGNATURE_LENGTH: usize = 96;
 
 /// Public key type
 pub type PublicKey = [u8; PUBLIC_KEY_LENGTH];
 /// Private key type
 pub type PrivateKey = [u8; PRIVATE_KEY_LENGTH];
-/// Signature type (BLS12-381 G2 compressed with header)
+/// Signature type (BLS12-381 G2 compressed)
 pub type Signature = [u8; SIGNATURE_LENGTH];
 /// Index type & total shares / threshold
 pub type Index = u8;
@@ -27,132 +23,39 @@ pub type Index = u8;
 /// This enum represents all possible errors that can occur during cryptographic
 /// operations in the charon-crypto library, including key management, signature
 /// operations, and threshold cryptography.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// The provided secret key bytes have an invalid length.
-    ///
-    /// Secret keys must be exactly 32 bytes in the BLS signature scheme.
-    #[error("Invalid secret key length. Expected {expected}, got {got}")]
-    InvalidSecretKeyLength {
-        /// The expected number of bytes for a valid secret key.
-        expected: usize,
-        /// The actual number of bytes provided.
-        got: usize,
-    },
-
-    /// The provided public key bytes have an invalid length.
-    #[error("Invalid public key length. Expected {expected}, got {got}")]
-    InvalidPublicKeyLength {
-        /// The expected number of bytes for a valid public key.
-        expected: usize,
-        /// The actual number of bytes provided.
-        got: usize,
-    },
-
-    /// The provided signature bytes have an invalid length.
-    #[error("Invalid signature length. Expected {expected}, got {got}")]
-    InvalidSignatureLength {
-        /// The expected number of bytes for a valid signature.
-        expected: usize,
-        /// The actual number of bytes provided.
-        got: usize,
-    },
-
-    /// Generic error for invalid byte array length.
-    ///
-    /// Used when converting between different byte representations where the
-    /// length doesn't match the expected size.
-    #[error("Invalid bytes length. Expected {expected}, got {got}")]
-    InvalidBytesLength {
-        /// The expected number of bytes.
-        expected: usize,
-        /// The actual number of bytes provided.
-        got: usize,
-    },
-
-    /// The provided share secret key bytes have an invalid length.
-    ///
-    /// Share secret keys are used in threshold cryptography and must match
-    /// the expected format for Shamir's Secret Sharing.
-    #[error("Invalid share secret key length. Expected {expected}, got {got}")]
-    InvalidShareSecretKeyLength {
-        /// The expected number of bytes for a valid share secret key.
-        expected: usize,
-        /// The actual number of bytes provided.
-        got: usize,
-    },
-
-    /// Failed to deserialize a share secret key from bytes.
-    ///
-    /// This error occurs when the bytes represent an invalid share secret key
-    /// according to the BLS signature scheme rules.
-    #[error("Failed to deserialize share secret key. Bls error: {bls_error}")]
-    FailedToDeserializeShareSecretKey {
-        /// The underlying BLS error message.
-        /// We use String as BlsError does not implement PartialEq.
-        bls_error: String,
-    },
-
     /// Failed to deserialize a secret key from bytes.
     ///
     /// This error occurs when the provided bytes don't represent a valid
     /// BLS secret key (e.g., out of valid scalar field range).
-    #[error("Failed to deserialize secret key.")]
-    FailedToDeserializeSecretKey {
-        /// The underlying BLS error message.
-        /// We use String as BlsError does not implement PartialEq.
-        bls_error: String,
-    },
+    #[error("Failed to deserialize secret key: {0}")]
+    InvalidSecretKey(#[from] BlsError),
+
+    /// BLST error.
+    #[error("BLST error: {0}")]
+    BlsError(BlsError),
 
     /// Failed to deserialize a public key from bytes.
-    #[error("Failed to deserialize public key.")]
-    FailedToDeserializePublicKey {
-        /// The underlying BLS error message.
-        /// We use String as BlsError does not implement PartialEq.
-        bls_error: String,
-    },
+    #[error("Failed to deserialize public key: {0}")]
+    InvalidPublicKey(BlsError),
 
-    /// Failed to split a secret key into shares using Shamir's Secret Sharing.
-    ///
-    /// This error can occur due to invalid parameters such as threshold being
-    /// greater than the number of shares.
-    #[error("Failed to split secret key. Bls error: {bls_error}")]
-    FailedToSplitSecretKey {
-        /// The underlying BLS error message.
-        /// We use String as BlsError does not implement PartialEq.
-        bls_error: String,
-    },
-
-    /// Failed to recover a secret key from shares using Shamir's Secret
-    /// Sharing.
-    ///
-    /// This error can occur when the provided shares are invalid, corrupted,
-    /// or insufficient to reconstruct the original secret.
-    #[error("Failed to recover secret key. Bls error: {bls_error}")]
-    FailedToRecoverSecretKey {
-        /// The underlying BLS error message.
-        /// We use String as BlsError does not implement PartialEq.
-        bls_error: String,
-    },
+    /// Failed to deserialize a signature from bytes.
+    #[error("Failed to deserialize signature: {0}")]
+    InvalidSignature(BlsError),
 
     /// The threshold value provided for threshold cryptography is invalid.
     ///
-    /// In threshold cryptography, the threshold must be at least 1 and at most
+    /// In threshold cryptography, the threshold must be at least 2 and at most
     /// equal to the total number of shares.
-    #[error("Invalid threshold. Expected {expected}, got {got}")]
+    #[error(
+        "Invalid threshold. Must be >= 2 and <= total. Got threshold={threshold}, total={total}"
+    )]
     InvalidThreshold {
-        /// The expected threshold value or range.
-        expected: Index,
-        /// The actual threshold value provided.
-        got: Index,
-    },
-
-    /// Failed to deserialize a signature from bytes.
-    #[error("Failed to deserialize signature key.")]
-    FailedToDeserializeSignatureKey {
-        /// The underlying BLS error message.
-        /// We use String as BlsError does not implement PartialEq.
-        bls_error: String,
+        /// The threshold value provided.
+        threshold: Index,
+        /// The total number of shares.
+        total: Index,
     },
 
     /// Failed to verify a BLS signature.
@@ -160,54 +63,116 @@ pub enum Error {
     /// This error occurs when signature verification fails, indicating either
     /// an invalid signature or a mismatch between the signature, message, and
     /// public key.
-    #[error("Failed to verify signature.")]
-    FailedToVerifySignature {
-        /// The underlying BLS error message.
-        /// We use String as BlsError does not implement PartialEq.
-        bls_error: String,
-    },
+    #[error("Signature verification failed: {0}")]
+    VerificationFailed(BlsError),
 
-    /// Failed to generate a BLS signature.
+    /// Failed to aggregate signatures.
     ///
-    /// This error can occur during the signing process, typically due to
-    /// invalid input data or internal cryptographic failures.
-    #[error("Failed to generate signature.")]
-    FailedToGenerateSignature {
-        /// The underlying BLS error message.
-        /// We use String as BlsError does not implement PartialEq.
-        bls_error: String,
-    },
+    /// This error can occur during the signature aggregation process.
+    #[error("Signature aggregation failed: {0}")]
+    AggregationFailed(BlsError),
 
     /// The signature array is empty.
     ///
     /// This error occurs when the provided signature array is empty.
-    #[error("Signature array is empty.")]
-    SignatureArrayIsEmpty,
+    #[error("Signature array is empty")]
+    EmptySignatureArray,
 
-    /// Math error.
+    /// Math error during field operations.
     #[error("Math error: {0}")]
     MathError(#[from] MathError),
+}
+
+/// BLST-specific error wrapper.
+///
+/// Wraps BLST_ERROR enum to provide idiomatic Rust error handling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum BlsError {
+    /// Generic BLS error during key generation.
+    #[error("Key generation failed")]
+    KeyGeneration,
+
+    /// Invalid encoding or compression.
+    #[error("Bad encoding")]
+    BadEncoding,
+
+    /// Point not in correct subgroup.
+    #[error("Point not in group")]
+    PointNotInGroup,
+
+    /// Point not on curve.
+    #[error("Point not on curve")]
+    PointNotOnCurve,
+
+    /// Aggregate verification failed.
+    #[error("Aggregate mismatch")]
+    AggregateMismatch,
+
+    /// Generic verification failure.
+    #[error("Verification failed")]
+    VerifyFailed,
+
+    /// Invalid public key.
+    #[error("Invalid public key")]
+    InvalidPublicKey,
+
+    /// Invalid secret key.
+    #[error("Invalid secret key")]
+    InvalidSecretKey,
+
+    /// Invalid signature.
+    #[error("Invalid signature")]
+    InvalidSignature,
+
+    /// Invalid scalar.
+    #[error("Invalid scalar")]
+    InvalidScalar,
+
+    /// Unknown BLST error.
+    #[error("Unknown error")]
+    Unknown,
+}
+
+impl From<BLST_ERROR> for BlsError {
+    fn from(err: BLST_ERROR) -> Self {
+        match err {
+            BLST_ERROR::BLST_BAD_ENCODING => Self::BadEncoding,
+            BLST_ERROR::BLST_POINT_NOT_ON_CURVE => Self::PointNotOnCurve,
+            BLST_ERROR::BLST_POINT_NOT_IN_GROUP => Self::PointNotInGroup,
+            BLST_ERROR::BLST_AGGR_TYPE_MISMATCH => Self::AggregateMismatch,
+            BLST_ERROR::BLST_VERIFY_FAIL => Self::VerifyFailed,
+            BLST_ERROR::BLST_PK_IS_INFINITY => Self::InvalidPublicKey,
+            BLST_ERROR::BLST_BAD_SCALAR => Self::InvalidScalar,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+impl From<BLST_ERROR> for Error {
+    fn from(err: BLST_ERROR) -> Self {
+        Error::BlsError(BlsError::from(err))
+    }
 }
 
 /// Math error type.
 ///
 /// This enum represents all possible math errors that can occur during
 /// arithmetic operations in the charon-crypto library.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum MathError {
-    /// Integer overflow.
-    #[error("Share ID overflow.")]
+    /// Integer overflow during share ID calculation.
+    #[error("Integer overflow")]
     IntegerOverflow,
 
-    /// Integer underflow.
-    #[error("Integer underflow.")]
+    /// Integer underflow during arithmetic operation.
+    #[error("Integer underflow")]
     IntegerUnderflow,
 
-    /// Division by zero.
-    #[error("Division by zero.")]
+    /// Division by zero attempted.
+    #[error("Division by zero")]
     DivisionByZero,
 
-    /// Modulo by zero.
-    #[error("Modulo by zero.")]
+    /// Modulo by zero attempted.
+    #[error("Modulo by zero")]
     ModuloByZero,
 }

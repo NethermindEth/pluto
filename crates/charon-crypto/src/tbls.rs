@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use blsful::vsss_rs::elliptic_curve::rand_core::{CryptoRng, RngCore};
+use rand_core::{CryptoRng, RngCore};
 
 use crate::types::{Error, Index, PrivateKey, PublicKey, Signature};
 
