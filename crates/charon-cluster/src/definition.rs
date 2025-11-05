@@ -32,10 +32,10 @@ pub struct Definition {
     pub timestamp: DateTime<Utc>,
     /// NumValidators is the number of DVs to be created in the cluster lock
     /// file.
-    pub num_validators: u32,
+    pub num_validators: u64,
     /// Threshold required for signature reconstruction. Defaults to safe value
     /// for number of nodes/peers.
-    pub threshold: u32,
+    pub threshold: u64,
     /// DKGAlgorithm to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
     /// ForkVersion defines the cluster's 4 byte beacon chain fork version
@@ -59,7 +59,7 @@ pub struct Definition {
     /// cluster, e.g. "abft".
     pub consensus_protocol: String,
     /// TargetGasLimit is the target block gas limit for the cluster.
-    pub target_gas_limit: u32,
+    pub target_gas_limit: u64,
     /// Compounding flag enables compounding rewards for validators by using
     /// 0x02 withdrawal credentials.
     pub compounding: bool,
