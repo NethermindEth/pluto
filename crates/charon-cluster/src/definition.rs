@@ -170,10 +170,8 @@ impl Definition {
         for (i, validator_addresses) in self.validator_addresses.iter().enumerate() {
             if i == 0 {
                 result_validator_addresses = validator_addresses.clone();
-            } else {
-                if validator_addresses != &result_validator_addresses {
-                    return Err(DefinitionError::InvalidValidatorAddresses);
-                }
+            } else if validator_addresses != &result_validator_addresses {
+                return Err(DefinitionError::InvalidValidatorAddresses);
             }
         }
 
