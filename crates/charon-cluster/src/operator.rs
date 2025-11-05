@@ -21,6 +21,7 @@ pub struct Operator {
 
 /// operatorJSONv1x1 is the json formatter of Operator for versions v1.0.0 and
 /// v1.1.0.
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub struct OperatorV1X1 {
@@ -31,9 +32,11 @@ pub struct OperatorV1X1 {
     /// The nonce of the operator (always 0)
     nonce: u64,
     /// The config signature of the operator
-    config_signature: Vec<u8>,
+    #[serde_as(as = "EthHex")]
+    pub config_signature: Vec<u8>,
     /// The ENR signature of the operator
-    enr_signature: Vec<u8>,
+    #[serde_as(as = "EthHex")]
+    pub enr_signature: Vec<u8>,
 }
 
 /// OperatorV1X2OrLater is the json formatter of Operator for versions v1.2.0

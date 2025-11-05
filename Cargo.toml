@@ -39,7 +39,7 @@ prost-types = "0.14"
 prost-build = "0.14"
 rand = {version = "0.8", features = ["std_rng"]}
 uuid = {version = "1.16", features = ["serde"] }
-serde_with = { version = "3", features = ["hex"] }
+serde_with = { version = "3", features = ["hex", "base64"] }
 charon-crypto = { path = "crates/charon-crypto" }
 
 [workspace.lints.rust]
