@@ -109,7 +109,8 @@ impl<'de> DeserializeAs<'de, DateTime<Utc>> for TimestampSeconds {
         D: Deserializer<'de>,
     {
         let timestamp = i64::deserialize(deserializer)?;
-        Ok(DateTime::<Utc>::from_timestamp(timestamp, 0).unwrap())
+        DateTime::<Utc>::from_timestamp(timestamp, 0)
+            .ok_or(serde::de::Error::custom("invalid timestamp"))
     }
 }
 
