@@ -5,18 +5,18 @@ use serde_with::{DisplayFromStr, serde_as};
 /// DepositData defines the deposit data to activate a validator.
 /// https://github.com/ethereum/consensus-specs/blob/dev/specs/phase0/beacon-chain.md#depositdata
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct DepositData {
-    /// PubKey is the validator's public key.
+    /// Validator's public key.
     #[serde_as(as = "EthHex")]
     #[serde(rename = "pubkey")]
     pub pub_key: Vec<u8>,
 
-    /// WithdrawalCredentials included in the deposit.
+    /// Withdrawal credentials included in the deposit.
     #[serde_as(as = "EthHex")]
     pub withdrawal_credentials: Vec<u8>,
 
-    /// Amount is the amount in Gwei to be deposited [1ETH..2048ETH].
+    /// Amount in Gwei to be deposited [1ETH..2048ETH].
     /// We use DisplayFromStr to allow for easy conversion from string to u64.
     #[serde_as(as = "DisplayFromStr")]
     pub amount: u64,

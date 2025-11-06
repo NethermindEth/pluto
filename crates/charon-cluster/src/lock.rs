@@ -1,36 +1,389 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::{definition::Definition, distvalidator::DistValidator, helpers::EthHex};
-use serde_with::serde_as;
+use crate::{
+    definition::Definition,
+    distvalidator::{
+        DistValidator, DistValidatorV1x0or1, DistValidatorV1x2to5, DistValidatorV1x6,
+        DistValidatorV1x7, DistValidatorV1x8orLater,
+    },
+    helpers::EthHex,
+    version::versions::*,
+};
+use serde_with::{
+    base64::{Base64, Standard},
+    serde_as,
+};
+
+/// Lock extends the cluster config Definition with bls threshold public keys
+/// and checksums.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Lock {
+    /// Definition is embedded and extended by Lock.
+    pub definition: Definition,
+
+    /// Validators are the distributed validators managed by the cluster.
+    pub distributed_validators: Vec<DistValidator>,
+
+    /// Lock hash uniquely identifies a cluster lock.
+    pub lock_hash: Vec<u8>,
+
+    /// BLS aggregate signature of the lock hash
+    /// signed by all the private key shares of all the distributed
+    /// validators. It acts as an attestation by all the distributed
+    /// validators of the charon cluster they are part of.
+    pub signature_aggregate: Vec<u8>,
+
+    /// Signatures of the lock hash for each operator
+    /// defined in the Definition.
+    pub node_signatures: Vec<Vec<u8>>,
+}
+
+impl Serialize for Lock {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self.definition.version.as_str() {
+            V1_0 | V1_1 => LockV1x0or1::from(self.clone()).serialize(serializer),
+            V1_2 | V1_3 | V1_4 | V1_5 => LockV1x2to5::from(self.clone()).serialize(serializer),
+            V1_6 => LockV1x6::from(self.clone()).serialize(serializer),
+            V1_7 => LockV1x7::from(self.clone()).serialize(serializer),
+            V1_8 | V1_9 | V1_10 => LockV1x8orLater::from(self.clone()).serialize(serializer),
+            _ => Err(serde::ser::Error::custom(format!(
+                "Unsupported version: {}",
+                self.definition.version
+            ))),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Lock {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::Error;
+
+        let value = serde_json::Value::deserialize(deserializer)?;
+
+        let version = value
+            .get("cluster_definition")
+            .and_then(|v| v.get("version"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| Error::custom("Missing 'version' field"))?;
+
+        match version {
+            V1_0 | V1_1 => {
+                let lock: LockV1x0or1 = serde_json::from_value(value).map_err(Error::custom)?;
+                Ok(lock.into())
+            }
+            V1_2 | V1_3 | V1_4 | V1_5 => {
+                let lock: LockV1x2to5 = serde_json::from_value(value).map_err(Error::custom)?;
+                Ok(lock.into())
+            }
+            V1_6 => {
+                let lock: LockV1x6 = serde_json::from_value(value).map_err(Error::custom)?;
+                Ok(lock.into())
+            }
+            V1_7 => {
+                let lock: LockV1x7 = serde_json::from_value(value).map_err(Error::custom)?;
+                Ok(lock.into())
+            }
+            V1_8 | V1_9 | V1_10 => {
+                let lock: LockV1x8orLater = serde_json::from_value(value).map_err(Error::custom)?;
+                Ok(lock.into())
+            }
+            _ => Err(Error::custom(format!("Unsupported version: {}", version))),
+        }
+    }
+}
 
 /// Lock extends the cluster config Definition with bls threshold public keys
 /// and checksums.
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Lock {
+pub struct LockV1x0or1 {
     /// Definition is embedded and extended by Lock.
     #[serde(rename = "cluster_definition")]
     pub definition: Definition,
 
     /// Validators are the distributed validators managed by the cluster.
     #[serde(rename = "distributed_validators")]
-    pub distributed_validators: Vec<DistValidator>,
+    pub distributed_validators: Vec<DistValidatorV1x0or1>,
+
+    /// Lock hash uniquely identifies a cluster lock.
+    #[serde_as(as = "Base64<Standard>")]
+    pub lock_hash: Vec<u8>,
+
+    /// BLS aggregate signature of the lock hash
+    /// signed by all the private key shares of all the distributed
+    /// validators. It acts as an attestation by all the distributed
+    /// validators of the charon cluster they are part of.
+    #[serde_as(as = "Base64<Standard>")]
+    pub signature_aggregate: Vec<u8>,
+}
+
+impl From<Lock> for LockV1x0or1 {
+    fn from(lock: Lock) -> Self {
+        Self {
+            definition: lock.definition,
+            distributed_validators: lock
+                .distributed_validators
+                .into_iter()
+                .map(DistValidatorV1x0or1::from)
+                .collect(),
+            lock_hash: lock.lock_hash,
+            signature_aggregate: lock.signature_aggregate,
+        }
+    }
+}
+
+impl From<LockV1x0or1> for Lock {
+    fn from(lock: LockV1x0or1) -> Self {
+        Self {
+            definition: lock.definition,
+            distributed_validators: lock
+                .distributed_validators
+                .into_iter()
+                .map(DistValidator::from)
+                .collect(),
+            lock_hash: lock.lock_hash,
+            signature_aggregate: lock.signature_aggregate,
+            node_signatures: Vec::new(),
+        }
+    }
+}
+/// Lock extends the cluster config Definition with bls threshold public keys
+/// and checksums.
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockV1x2to5 {
+    /// Definition is embedded and extended by Lock.
+    #[serde(rename = "cluster_definition")]
+    pub definition: Definition,
+
+    /// Validators are the distributed validators managed by the cluster.
+    #[serde(rename = "distributed_validators")]
+    pub distributed_validators: Vec<DistValidatorV1x2to5>,
 
     /// LockHash uniquely identifies a cluster lock.
     #[serde_as(as = "EthHex")]
     pub lock_hash: Vec<u8>,
 
-    /// SignatureAggregate is the bls aggregate signature of the lock hash
+    /// BLS aggregate signature of the lock hash
+    /// signed by all the private key shares of all the distributed
+    /// validators. It acts as an attestation by all the distributed
+    /// validators of the charon cluster they are part of.
+    #[serde_as(as = "EthHex")]
+    pub signature_aggregate: Vec<u8>,
+}
+
+impl From<Lock> for LockV1x2to5 {
+    fn from(lock: Lock) -> Self {
+        Self {
+            definition: lock.definition,
+            distributed_validators: lock
+                .distributed_validators
+                .into_iter()
+                .map(DistValidatorV1x2to5::from)
+                .collect(),
+            lock_hash: lock.lock_hash,
+            signature_aggregate: lock.signature_aggregate,
+        }
+    }
+}
+
+impl From<LockV1x2to5> for Lock {
+    fn from(lock: LockV1x2to5) -> Self {
+        Self {
+            definition: lock.definition,
+            distributed_validators: lock
+                .distributed_validators
+                .into_iter()
+                .map(DistValidator::from)
+                .collect(),
+            lock_hash: lock.lock_hash,
+            signature_aggregate: lock.signature_aggregate,
+            node_signatures: Vec::new(),
+        }
+    }
+}
+/// Lock extends the cluster config Definition with bls threshold public keys
+/// and checksums.
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockV1x6 {
+    /// Definition is embedded and extended by Lock.
+    #[serde(rename = "cluster_definition")]
+    pub definition: Definition,
+
+    /// Validators are the distributed validators managed by the cluster.
+    #[serde(rename = "distributed_validators")]
+    pub distributed_validators: Vec<DistValidatorV1x6>,
+
+    /// Lock hash uniquely identifies a cluster lock.
+    #[serde_as(as = "EthHex")]
+    pub lock_hash: Vec<u8>,
+
+    /// BLS aggregate signature of the lock hash
+    /// signed by all the private key shares of all the distributed
+    /// validators. It acts as an attestation by all the distributed
+    /// validators of the charon cluster they are part of.
+    #[serde_as(as = "EthHex")]
+    pub signature_aggregate: Vec<u8>,
+}
+
+impl From<Lock> for LockV1x6 {
+    fn from(lock: Lock) -> Self {
+        Self {
+            definition: lock.definition,
+            distributed_validators: lock
+                .distributed_validators
+                .into_iter()
+                .map(DistValidatorV1x6::from)
+                .collect(),
+            lock_hash: lock.lock_hash,
+            signature_aggregate: lock.signature_aggregate,
+        }
+    }
+}
+
+impl From<LockV1x6> for Lock {
+    fn from(lock: LockV1x6) -> Self {
+        Self {
+            definition: lock.definition,
+            distributed_validators: lock
+                .distributed_validators
+                .into_iter()
+                .map(DistValidator::from)
+                .collect(),
+            lock_hash: lock.lock_hash,
+            signature_aggregate: lock.signature_aggregate,
+            node_signatures: Vec::new(),
+        }
+    }
+}
+/// Lock extends the cluster config Definition with bls threshold public keys
+/// and checksums.
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockV1x7 {
+    /// Definition is embedded and extended by Lock.
+    #[serde(rename = "cluster_definition")]
+    pub definition: Definition,
+
+    /// Validators are the distributed validators managed by the cluster.
+    #[serde(rename = "distributed_validators")]
+    pub distributed_validators: Vec<DistValidatorV1x7>,
+
+    /// Lock hash uniquely identifies a cluster lock.
+    #[serde_as(as = "EthHex")]
+    pub lock_hash: Vec<u8>,
+
+    /// BLS aggregate signature of the lock hash
     /// signed by all the private key shares of all the distributed
     /// validators. It acts as an attestation by all the distributed
     /// validators of the charon cluster they are part of.
     #[serde_as(as = "EthHex")]
     pub signature_aggregate: Vec<u8>,
 
-    /// NodeSignatures contains a signature of the lock hash for each operator
+    /// Signatures of the lock hash for each operator
     /// defined in the Definition.
     #[serde_as(as = "Vec<EthHex>")]
     pub node_signatures: Vec<Vec<u8>>,
+}
+
+impl From<Lock> for LockV1x7 {
+    fn from(lock: Lock) -> Self {
+        Self {
+            definition: lock.definition,
+            distributed_validators: lock
+                .distributed_validators
+                .into_iter()
+                .map(DistValidatorV1x7::from)
+                .collect(),
+            lock_hash: lock.lock_hash,
+            signature_aggregate: lock.signature_aggregate,
+            node_signatures: lock.node_signatures,
+        }
+    }
+}
+
+impl From<LockV1x7> for Lock {
+    fn from(lock: LockV1x7) -> Self {
+        Self {
+            definition: lock.definition,
+            distributed_validators: lock
+                .distributed_validators
+                .into_iter()
+                .map(DistValidator::from)
+                .collect(),
+            lock_hash: lock.lock_hash,
+            signature_aggregate: lock.signature_aggregate,
+            node_signatures: lock.node_signatures,
+        }
+    }
+}
+/// Lock extends the cluster config Definition with bls threshold public keys
+/// and checksums.
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockV1x8orLater {
+    /// Definition is embedded and extended by Lock.
+    #[serde(rename = "cluster_definition")]
+    pub definition: Definition,
+
+    /// Validators are the distributed validators managed by the cluster.
+    #[serde(rename = "distributed_validators")]
+    pub distributed_validators: Vec<DistValidatorV1x8orLater>,
+
+    /// Lock hash uniquely identifies a cluster lock.
+    #[serde_as(as = "EthHex")]
+    pub lock_hash: Vec<u8>,
+
+    /// BLS aggregate signature of the lock hash
+    /// signed by all the private key shares of all the distributed
+    /// validators. It acts as an attestation by all the distributed
+    /// validators of the charon cluster they are part of.
+    #[serde_as(as = "EthHex")]
+    pub signature_aggregate: Vec<u8>,
+
+    /// Signatures of the lock hash for each operator
+    /// defined in the Definition.
+    #[serde_as(as = "Vec<EthHex>")]
+    pub node_signatures: Vec<Vec<u8>>,
+}
+
+impl From<Lock> for LockV1x8orLater {
+    fn from(lock: Lock) -> Self {
+        Self {
+            definition: lock.definition,
+            distributed_validators: lock
+                .distributed_validators
+                .into_iter()
+                .map(DistValidatorV1x8orLater::from)
+                .collect(),
+            lock_hash: lock.lock_hash,
+            signature_aggregate: lock.signature_aggregate,
+            node_signatures: lock.node_signatures,
+        }
+    }
+}
+
+impl From<LockV1x8orLater> for Lock {
+    fn from(lock: LockV1x8orLater) -> Self {
+        Self {
+            definition: lock.definition,
+            distributed_validators: lock
+                .distributed_validators
+                .into_iter()
+                .map(DistValidator::from)
+                .collect(),
+            lock_hash: lock.lock_hash,
+            signature_aggregate: lock.signature_aggregate,
+            node_signatures: lock.node_signatures,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -202,8 +555,85 @@ mod tests {
             .unwrap();
 
         let serialized = serde_json::to_string(&lock).unwrap();
-        println!("{}", serialized);
         let deserialized: Lock = serde_json::from_str(&serialized).unwrap();
         assert_eq!(lock, deserialized);
+    }
+
+    #[test]
+    fn test_cluster_lock_v1_10_0() {
+        let json_str = include_str!("testdata/cluster_lock_v1_10_0.json");
+        let _ = serde_json::from_str::<LockV1x8orLater>(json_str).unwrap();
+        let _ = serde_json::from_str::<Lock>(include_str!("testdata/cluster_lock_v1_10_0.json"))
+            .unwrap();
+    }
+
+    #[test]
+    fn test_cluster_lock_v1_9_0() {
+        let json_str = include_str!("testdata/cluster_lock_v1_9_0.json");
+        let _ = serde_json::from_str::<LockV1x8orLater>(json_str).unwrap();
+        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+    }
+
+    #[test]
+    fn test_cluster_lock_v1_8_0() {
+        let json_str = include_str!("testdata/cluster_lock_v1_8_0.json");
+        let _ = serde_json::from_str::<LockV1x8orLater>(json_str).unwrap();
+        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+    }
+
+    #[test]
+    fn test_cluster_lock_v1_7_0() {
+        let json_str = include_str!("testdata/cluster_lock_v1_7_0.json");
+        let _ = serde_json::from_str::<LockV1x7>(json_str).unwrap();
+        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+    }
+
+    #[test]
+    fn test_cluster_lock_v1_6_0() {
+        let json_str = include_str!("testdata/cluster_lock_v1_6_0.json");
+        let _ = serde_json::from_str::<LockV1x6>(json_str).unwrap();
+        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+    }
+
+    #[test]
+    fn test_cluster_lock_v1_5_0() {
+        let json_str = include_str!("testdata/cluster_lock_v1_5_0.json");
+        let _ = serde_json::from_str::<LockV1x2to5>(json_str).unwrap();
+        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+    }
+
+    #[test]
+    fn test_cluster_lock_v1_4_0() {
+        let json_str = include_str!("testdata/cluster_lock_v1_4_0.json");
+        let _ = serde_json::from_str::<LockV1x2to5>(json_str).unwrap();
+        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+    }
+
+    #[test]
+    fn test_cluster_lock_v1_3_0() {
+        let json_str = include_str!("testdata/cluster_lock_v1_3_0.json");
+        let _ = serde_json::from_str::<LockV1x2to5>(json_str).unwrap();
+        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+    }
+
+    #[test]
+    fn test_cluster_lock_v1_2_0() {
+        let json_str = include_str!("testdata/cluster_lock_v1_2_0.json");
+        let _ = serde_json::from_str::<LockV1x2to5>(json_str).unwrap();
+        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+    }
+
+    #[test]
+    fn test_cluster_lock_v1_1_0() {
+        let json_str = include_str!("testdata/cluster_lock_v1_1_0.json");
+        let _ = serde_json::from_str::<LockV1x0or1>(json_str).unwrap();
+        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+    }
+
+    #[test]
+    fn test_cluster_lock_v1_0_0() {
+        let json_str = include_str!("testdata/cluster_lock_v1_0_0.json");
+        let _ = serde_json::from_str::<LockV1x0or1>(json_str).unwrap();
+        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
     }
 }

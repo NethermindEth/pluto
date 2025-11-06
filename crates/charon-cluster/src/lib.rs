@@ -10,8 +10,6 @@ pub mod definition;
 pub mod deposit;
 /// Cluster distributed validator management and coordination.
 pub mod distvalidator;
-/// Cluster documentation management and coordination.
-pub mod doc;
 /// Cluster EIP-712 signatures management and coordination.
 pub mod eip712sigs;
 /// Cluster helpers management and coordination.

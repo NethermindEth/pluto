@@ -16,50 +16,50 @@ use uuid::Uuid;
 /// validators.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Definition {
-    /// UUID is a human-readable random unique identifier. Max 64 chars.
+    /// Human-readable random unique identifier. Max 64 chars.
     pub uuid: Uuid,
-    /// Name is a human-readable cosmetic identifier. Max 256 chars.
+    /// Human-readable cosmetic identifier. Max 256 chars.
     pub name: String,
-    /// Version is the schema version of this definition. Max 16 chars.
+    /// Schema version of this definition. Max 16 chars.
     pub version: String,
-    /// Timestamp is the human-readable timestamp of this definition. Max 32
+    /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
     pub timestamp: DateTime<Utc>,
-    /// NumValidators is the number of DVs to be created in the cluster lock
+    /// Number of DVs to be created in the cluster lock
     /// file.
     pub num_validators: u64,
     /// Threshold required for signature reconstruction. Defaults to safe value
     /// for number of nodes/peers.
     pub threshold: u64,
-    /// DKGAlgorithm to use for key generation. Max 32 chars.
+    /// DKG algorithm to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
-    /// ForkVersion defines the cluster's 4 byte beacon chain fork version
+    /// Cluster's 4 byte beacon chain fork version
     /// (network/chain identifier).
     pub fork_version: Vec<u8>,
-    /// Operators define the charon nodes in the cluster and their operators.
+    /// Charon nodes in the cluster and their operators.
     /// Max 256 operators.
     pub operators: Vec<Operator>,
     /// Creator identifies the creator of a cluster definition. They may also be
     /// an operator.
     pub creator: Creator,
-    /// ValidatorAddresses define addresses of each validator.
+    /// Addresses of each validator.
     pub validator_addresses: Vec<ValidatorAddresses>,
-    /// DepositAmounts specifies partial deposit amounts that sum up to at least
+    /// Partial deposit amounts that sum up to at least
     /// 32ETH.
     pub deposit_amounts: Vec<u64>,
-    /// ConsensusProtocol is the consensus protocol name preferred by the
+    /// Consensus protocol name preferred by the
     /// cluster, e.g. "abft".
     pub consensus_protocol: String,
-    /// TargetGasLimit is the target block gas limit for the cluster.
+    /// Target block gas limit for the cluster.
     pub target_gas_limit: u64,
     /// Compounding flag enables compounding rewards for validators by using
     /// 0x02 withdrawal credentials.
     pub compounding: bool,
-    /// ConfigHash uniquely identifies a cluster definition excluding operator
+    /// Config hash uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.
     pub config_hash: Vec<u8>,
-    /// DefinitionHash uniquely identifies a cluster definition including
+    /// Definition hash uniquely identifies a cluster definition including
     /// operator ENRs and signatures.
     pub definition_hash: Vec<u8>,
 }
@@ -155,14 +155,14 @@ impl<'de> Deserialize<'de> for Definition {
 /// DefinitionError is an error type for definition errors.
 #[derive(Debug, thiserror::Error)]
 pub enum DefinitionError {
-    /// InvalidValidatorAddresses is returned when multiple validator addresses
+    /// Multiple withdrawal or fee recipient addresses found
     /// are found.
     #[error("Multiple withdrawal or fee recipient addresses found")]
     InvalidValidatorAddresses,
 }
 
 impl Definition {
-    /// LegacyValidatorAddresses returns the legacy single withdrawal and single
+    /// Legacy single withdrawal and single
     /// fee recipient addresses or an error if multiple addresses are found.
     pub fn legacy_validator_addresses(&self) -> Result<ValidatorAddresses, DefinitionError> {
         let mut result_validator_addresses = ValidatorAddresses::default();
@@ -191,7 +191,7 @@ pub struct Creator {
     pub config_signature: Vec<u8>,
 }
 
-/// ValidatorAddresses define addresses for a validator
+/// Addresses for a validator
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ValidatorAddresses {
     /// The fee recipient address for the validator
@@ -204,42 +204,42 @@ pub struct ValidatorAddresses {
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x0or1 {
-    /// Name is a human-readable cosmetic identifier. Max 256 chars.
+    /// Human-readable cosmetic identifier. Max 256 chars.
     pub name: String,
-    /// Operators define the charon nodes in the cluster and their operators.
+    /// Charon nodes in the cluster and their operators.
     /// Max 256 operators.
     pub operators: Vec<OperatorV1X1>,
-    /// UUID is a human-readable random unique identifier. Max 64 chars.
+    /// Human-readable random unique identifier. Max 64 chars.
     pub uuid: Uuid,
-    /// Version is the schema version of this definition. Max 16 chars.
+    /// Schema version of this definition. Max 16 chars.
     pub version: String,
-    /// Timestamp is the human-readable timestamp of this definition. Max 32
+    /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
     pub timestamp: DateTime<Utc>,
-    /// NumValidators is the number of DVs to be created in the cluster lock
+    /// Number of DVs to be created in the cluster lock
     /// file.
     pub num_validators: u64,
     /// Threshold required for signature reconstruction. Defaults to safe value
     /// for number of nodes/peers.
     pub threshold: u64,
-    /// FeeRecipientAddress is the address of the fee recipient for the
+    /// Fee recipient address for the
     /// validator.
     pub fee_recipient_address: String,
-    /// WithdrawalAddress is the address of the withdrawal address for the
+    /// Withdrawal address for the
     /// validator.
     pub withdrawal_address: String,
-    /// DKGAlgorithm to use for key generation. Max 32 chars.
+    /// DKG algorithm to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
-    /// ForkVersion defines the cluster's 4 byte beacon chain fork version
+    /// Cluster's 4 byte beacon chain fork version
     /// (network/chain identifier).
     #[serde_as(as = "EthHex")]
     pub fork_version: Vec<u8>,
-    /// ConfigHash uniquely identifies a cluster definition excluding operator
+    /// Config hash uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.
     #[serde_as(as = "Base64<Standard>")]
     pub config_hash: Vec<u8>,
-    /// DefinitionHash uniquely identifies a cluster definition including
+    /// Definition hash uniquely identifies a cluster definition including
     /// operator ENRs and signatures.
     #[serde_as(as = "Base64<Standard>")]
     pub definition_hash: Vec<u8>,
@@ -315,42 +315,42 @@ impl TryFrom<DefinitionV1x0or1> for Definition {
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x2or3 {
-    /// Name is a human-readable cosmetic identifier. Max 256 chars.
+    /// Human-readable cosmetic identifier. Max 256 chars.
     pub name: String,
-    /// Operators define the charon nodes in the cluster and their operators.
+    /// Charon nodes in the cluster and their operators.
     /// Max 256 operators.
     pub operators: Vec<OperatorV1X2OrLater>,
-    /// UUID is a human-readable random unique identifier. Max 64 chars.
+    /// Human-readable random unique identifier. Max 64 chars.
     pub uuid: Uuid,
-    /// Version is the schema version of this definition. Max 16 chars.
+    /// Schema version of this definition. Max 16 chars.
     pub version: String,
-    /// Timestamp is the human-readable timestamp of this definition. Max 32
+    /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
     pub timestamp: DateTime<Utc>,
-    /// NumValidators is the number of DVs to be created in the cluster lock
+    /// Number of DVs to be created in the cluster lock
     /// file.
     pub num_validators: u64,
     /// Threshold required for signature reconstruction. Defaults to safe value
     /// for number of nodes/peers.
     pub threshold: u64,
-    /// FeeRecipientAddress is the address of the fee recipient for the
+    /// Fee recipient address for the
     /// validator.
     pub fee_recipient_address: String,
-    /// WithdrawalAddress is the address of the withdrawal address for the
+    /// Withdrawal address for the
     /// validator.
     pub withdrawal_address: String,
     /// DKGAlgorithm to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
-    /// ForkVersion defines the cluster's 4 byte beacon chain fork version
+    /// Cluster's 4 byte beacon chain fork version
     /// (network/chain identifier).
     #[serde_as(as = "EthHex")]
     pub fork_version: Vec<u8>,
-    /// ConfigHash uniquely identifies a cluster definition excluding operator
+    /// Config hash uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.
     #[serde_as(as = "EthHex")]
     pub config_hash: Vec<u8>,
-    /// DefinitionHash uniquely identifies a cluster definition including
+    /// Definition hash uniquely identifies a cluster definition including
     /// operator ENRs and signatures.
     #[serde_as(as = "EthHex")]
     pub definition_hash: Vec<u8>,
@@ -426,7 +426,7 @@ impl TryFrom<DefinitionV1x2or3> for Definition {
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x4 {
-    /// Name is a human-readable cosmetic identifier. Max 256 chars.
+    /// Human-readable cosmetic identifier. Max 256 chars.
     pub name: String,
     /// Creator identifies the creator of a cluster definition. They may also be
     /// an operator.
@@ -434,37 +434,37 @@ pub struct DefinitionV1x4 {
     /// Operators define the charon nodes in the cluster and their operators.
     /// Max 256 operators.
     pub operators: Vec<OperatorV1X2OrLater>,
-    /// UUID is a human-readable random unique identifier. Max 64 chars.
+    /// Human-readable random unique identifier. Max 64 chars.
     pub uuid: Uuid,
-    /// Version is the schema version of this definition. Max 16 chars.
+    /// Schema version of this definition. Max 16 chars.
     pub version: String,
-    /// Timestamp is the human-readable timestamp of this definition. Max 32
+    /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
     pub timestamp: DateTime<Utc>,
-    /// NumValidators is the number of DVs to be created in the cluster lock
+    /// Number of DVs to be created in the cluster lock
     /// file.
     pub num_validators: u64,
     /// Threshold required for signature reconstruction. Defaults to safe value
     /// for number of nodes/peers.
     pub threshold: u64,
-    /// FeeRecipientAddress is the address of the fee recipient for the
+    /// Fee recipient address for the
     /// validator.
     pub fee_recipient_address: String,
-    /// WithdrawalAddress is the address of the withdrawal address for the
+    /// Withdrawal address for the
     /// validator.
     pub withdrawal_address: String,
-    /// DKGAlgorithm to use for key generation. Max 32 chars.
+    /// DKG algorithm to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
-    /// ForkVersion defines the cluster's 4 byte beacon chain fork version
+    /// Cluster's 4 byte beacon chain fork version
     /// (network/chain identifier).
     #[serde_as(as = "EthHex")]
     pub fork_version: Vec<u8>,
-    /// ConfigHash uniquely identifies a cluster definition excluding operator
+    /// Config hash uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.
     #[serde_as(as = "EthHex")]
     pub config_hash: Vec<u8>,
-    /// DefinitionHash uniquely identifies a cluster definition including
+    /// Definition hash uniquely identifies a cluster definition including
     /// operator ENRs and signatures.
     #[serde_as(as = "EthHex")]
     pub definition_hash: Vec<u8>,
@@ -541,42 +541,42 @@ impl TryFrom<DefinitionV1x4> for Definition {
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x5to7 {
-    /// Name is a human-readable cosmetic identifier. Max 256 chars.
+    /// Human-readable cosmetic identifier. Max 256 chars.
     pub name: String,
     /// Creator identifies the creator of a cluster definition. They may also be
     /// an operator.
     pub creator: Creator,
-    /// Operators define the charon nodes in the cluster and their operators.
+    /// Charon nodes in the cluster and their operators.
     /// Max 256 operators.
     pub operators: Vec<OperatorV1X2OrLater>,
-    /// UUID is a human-readable random unique identifier. Max 64 chars.
+    /// Human-readable random unique identifier. Max 64 chars.
     pub uuid: Uuid,
-    /// Version is the schema version of this definition. Max 16 chars.
+    /// Schema version of this definition. Max 16 chars.
     pub version: String,
-    /// Timestamp is the human-readable timestamp of this definition. Max 32
+    /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
     pub timestamp: DateTime<Utc>,
-    /// NumValidators is the number of DVs to be created in the cluster lock
+    /// Number of DVs to be created in the cluster lock
     /// file.
     pub num_validators: u64,
     /// Threshold required for signature reconstruction. Defaults to safe value
     /// for number of nodes/peers.
     pub threshold: u64,
-    /// ValidatorAddresses define addresses of each validator.
+    /// Addresses of each validator.
     #[serde(rename = "validators")]
     pub validator_addresses: Vec<ValidatorAddresses>,
-    /// DKGAlgorithm to use for key generation. Max 32 chars.
+    /// DKG algorithm to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
-    /// ForkVersion defines the cluster's 4 byte beacon chain fork version
+    /// Cluster's 4 byte beacon chain fork version
     /// (network/chain identifier).
     #[serde_as(as = "EthHex")]
     pub fork_version: Vec<u8>,
-    /// ConfigHash uniquely identifies a cluster definition excluding operator
+    /// Config hash uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.
     #[serde_as(as = "EthHex")]
     pub config_hash: Vec<u8>,
-    /// DefinitionHash uniquely identifies a cluster definition including
+    /// Definition hash uniquely identifies a cluster definition including
     /// operator ENRs and signatures.
     #[serde_as(as = "EthHex")]
     pub definition_hash: Vec<u8>,
@@ -846,54 +846,54 @@ impl From<DefinitionV1x9> for Definition {
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x10 {
-    /// Name is a human-readable cosmetic identifier. Max 256 chars.
+    /// Human-readable cosmetic identifier. Max 256 chars.
     pub name: String,
     /// Creator identifies the creator of a cluster definition. They may also be
     /// an operator.
     pub creator: Creator,
-    /// Operators define the charon nodes in the cluster and their operators.
+    /// Charon nodes in the cluster and their operators.
     /// Max 256 operators.
     pub operators: Vec<OperatorV1X2OrLater>,
-    /// UUID is a human-readable random unique identifier. Max 64 chars.
+    /// Human-readable random unique identifier. Max 64 chars.
     pub uuid: Uuid,
-    /// Version is the schema version of this definition. Max 16 chars.
+    /// Schema version of this definition. Max 16 chars.
     pub version: String,
-    /// Timestamp is the human-readable timestamp of this definition. Max 32
+    /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
     pub timestamp: DateTime<Utc>,
-    /// NumValidators is the number of DVs to be created in the cluster lock
+    /// Number of DVs to be created in the cluster lock
     /// file.
     pub num_validators: u64,
     /// Threshold required for signature reconstruction. Defaults to safe value
     /// for number of nodes/peers.
     pub threshold: u64,
-    /// ValidatorAddresses define addresses of each validator.
+    /// Addresses of each validator.
     #[serde(rename = "validators")]
     pub validator_addresses: Vec<ValidatorAddresses>,
-    /// DKGAlgorithm to use for key generation. Max 32 chars.
+    /// DKG algorithm to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
-    /// ForkVersion defines the cluster's 4 byte beacon chain fork version
+    /// Cluster's 4 byte beacon chain fork version
     /// (network/chain identifier).
     #[serde_as(as = "EthHex")]
     pub fork_version: Vec<u8>,
-    /// DepositAmounts specifies partial deposit amounts that sum up to at least
+    /// Partial deposit amounts that sum up to at least
     /// 32ETH.
     #[serde_as(as = "Vec<PickFirst<(DisplayFromStr, _)>>")]
     pub deposit_amounts: Vec<u64>,
-    /// ConsensusProtocol is the consensus protocol name preferred by the
+    /// Consensus protocol name preferred by the
     /// cluster, e.g. "abft".
     pub consensus_protocol: String,
-    /// TargetGasLimit is the target block gas limit for the cluster.
+    /// Target block gas limit for the cluster.
     pub target_gas_limit: u64,
     /// Compounding flag enables compounding rewards for validators by using
     /// 0x02 withdrawal credentials.
     pub compounding: bool,
-    /// ConfigHash uniquely identifies a cluster definition excluding operator
+    /// Config hash uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.
     #[serde_as(as = "EthHex")]
     pub config_hash: Vec<u8>,
-    /// DefinitionHash uniquely identifies a cluster definition including
+    /// Definition hash uniquely identifies a cluster definition including
     /// operator ENRs and signatures.
     #[serde_as(as = "EthHex")]
     pub definition_hash: Vec<u8>,
