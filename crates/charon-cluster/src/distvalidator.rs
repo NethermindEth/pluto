@@ -16,9 +16,9 @@ pub struct DistValidator {
     #[serde_as(as = "EthHex")]
     pub pub_key: Vec<u8>,
 
-    /// Public shares are the public keys corresponding to each node's secret key
-    /// share. It can be used to verify a partial signature created by any
-    /// node in the cluster.
+    /// Public shares are the public keys corresponding to each node's secret
+    /// key share. It can be used to verify a partial signature created by
+    /// any node in the cluster.
     #[serde(rename = "public_shares")]
     #[serde_as(as = "Vec<EthHex>")]
     pub pub_shares: Vec<Vec<u8>>,
@@ -109,9 +109,9 @@ pub struct DistValidatorV1x0or1 {
     #[serde_as(as = "EthHex")]
     pub pub_key: Vec<u8>,
 
-    /// Public shares are the public keys corresponding to each node's secret key
-    /// share. It can be used to verify a partial signature created by any
-    /// node in the cluster.
+    /// Public shares are the public keys corresponding to each node's secret
+    /// key share. It can be used to verify a partial signature created by
+    /// any node in the cluster.
     #[serde(rename = "public_shares")]
     #[serde_as(as = "Vec<Base64<Standard>>")]
     pub pub_shares: Vec<Vec<u8>>,
@@ -152,9 +152,9 @@ pub struct DistValidatorV1x2to5 {
     #[serde_as(as = "EthHex")]
     pub pub_key: Vec<u8>,
 
-    /// Public shares are the public keys corresponding to each node's secret key
-    /// share. It can be used to verify a partial signature created by any
-    /// node in the cluster.
+    /// Public shares are the public keys corresponding to each node's secret
+    /// key share. It can be used to verify a partial signature created by
+    /// any node in the cluster.
     #[serde(rename = "public_shares")]
     #[serde_as(as = "Vec<EthHex>")]
     pub pub_shares: Vec<Vec<u8>>,
@@ -195,9 +195,9 @@ pub struct DistValidatorV1x6 {
     #[serde_as(as = "EthHex")]
     pub pub_key: Vec<u8>,
 
-    /// Public shares are the public keys corresponding to each node's secret key
-    /// share. It can be used to verify a partial signature created by any
-    /// node in the cluster.
+    /// Public shares are the public keys corresponding to each node's secret
+    /// key share. It can be used to verify a partial signature created by
+    /// any node in the cluster.
     #[serde(rename = "public_shares")]
     #[serde_as(as = "Vec<EthHex>")]
     pub pub_shares: Vec<Vec<u8>>,
@@ -241,9 +241,9 @@ pub struct DistValidatorV1x7 {
     #[serde_as(as = "EthHex")]
     pub pub_key: Vec<u8>,
 
-    /// Public shares are the public keys corresponding to each node's secret key
-    /// share. It can be used to verify a partial signature created by any
-    /// node in the cluster.
+    /// Public shares are the public keys corresponding to each node's secret
+    /// key share. It can be used to verify a partial signature created by
+    /// any node in the cluster.
     #[serde(rename = "public_shares")]
     #[serde_as(as = "Vec<EthHex>")]
     pub pub_shares: Vec<Vec<u8>>,
@@ -291,9 +291,9 @@ pub struct DistValidatorV1x8orLater {
     #[serde_as(as = "EthHex")]
     pub pub_key: Vec<u8>,
 
-    /// Public shares are the public keys corresponding to each node's secret key
-    /// share. It can be used to verify a partial signature created by any
-    /// node in the cluster.
+    /// Public shares are the public keys corresponding to each node's secret
+    /// key share. It can be used to verify a partial signature created by
+    /// any node in the cluster.
     #[serde(rename = "public_shares")]
     #[serde_as(as = "Vec<EthHex>")]
     pub pub_shares: Vec<Vec<u8>>,
