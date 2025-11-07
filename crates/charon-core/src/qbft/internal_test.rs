@@ -1,26 +1,21 @@
 use crate::qbft::*;
 use anyhow::{Result, bail};
 use crossbeam::channel as mpmc;
-use std::{
-    any,
-    collections::HashMap,
-    sync::{Arc, Mutex},
-    thread,
-    time::{self, Duration},
-};
+use std::{any, collections::HashMap, sync::Arc, thread, time::Duration};
 
 const WRITE_CHAN_ERR: &str = "Failed to write to channel";
 const READ_CHAN_ERR: &str = "Failed to read from channel";
 
+#[derive(Default, Debug)]
 struct Test {
     /// Consensus instance, only affects leader election.
     pub instance: i64,
     /// Results in 1s round timeout, otherwise exponential (1s,2s,4s...)
     pub const_period: bool,
     /// Delays start of certain processes
-    pub start_delay: HashMap<i64, time::Duration>,
+    pub start_delay: HashMap<i64, Duration>,
     /// Delays input value availability of certain processes
-    pub value_delay: HashMap<i64, time::Duration>,
+    pub value_delay: HashMap<i64, Duration>,
     /// [0..1] - probability of dropped messages per processes
     pub drop_prob: HashMap<i64, f64>,
     /// Add random delays to broadcast of messages.
@@ -338,7 +333,7 @@ fn bcast(broadcast: mpmc::Sender<Msg<i64, i64, i64>>, msg: Msg<i64, i64, i64>, j
 
     thread::spawn(move || {
         let delta_ms = (f64::from(jitter_ms) * rand::random::<f64>()) as i32;
-        let delay = time::Duration::from_millis((jitter_ms + delta_ms) as u64);
+        let delay = Duration::from_millis((jitter_ms + delta_ms) as u64);
         thread::sleep(delay);
 
         broadcast.send(msg).expect(WRITE_CHAN_ERR);
@@ -407,6 +402,10 @@ impl SomeMsg<i64, i64, i64> for TestMsg {
 }
 
 #[test]
-fn it_works() {
-    assert_eq!(2 + 2, 4);
+fn happy_0() {
+    test_qbft(Test {
+        instance: 0,
+        decide_round: 1,
+        ..Default::default()
+    });
 }
