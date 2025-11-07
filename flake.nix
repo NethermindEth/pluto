@@ -14,6 +14,7 @@
           cargo-deny
 
           typos
+          protobuf
         ];
 
         shellHook = ''
