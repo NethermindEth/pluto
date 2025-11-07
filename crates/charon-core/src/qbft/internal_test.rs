@@ -28,14 +28,12 @@ struct Test {
     pub prepared_val: i32,
     /// Non-deterministic consensus at random round.
     pub random_round: bool,
-    /// Enables fuzzing by Node 1.
-    pub fuzz: bool,
 }
 
 fn test_qbft(test: Test) {
-    const n: usize = 4;
-    const max_round: usize = 50;
-    const fifo_limit: usize = 100;
+    const N: usize = 4;
+    const MAX_ROUND: usize = 50;
+    const FIFO_LIMIT: usize = 100;
 
     let mut receives = HashMap::<
         i64,
@@ -45,10 +43,10 @@ fn test_qbft(test: Test) {
         ),
     >::new();
     let (broadcast_tx, broadcast_rx) = mpmc::unbounded::<Msg<i64, i64, i64>>();
-    let (result_chan_tx, result_chan_rx) = mpmc::bounded::<Vec<Msg<i64, i64, i64>>>(n);
-    let (run_chan_tx, run_chan_rx) = mpmc::bounded::<Result<()>>(n);
+    let (result_chan_tx, result_chan_rx) = mpmc::bounded::<Vec<Msg<i64, i64, i64>>>(N);
+    let (run_chan_tx, run_chan_rx) = mpmc::bounded::<Result<()>>(N);
 
-    let is_leader = make_is_leader(n as i64);
+    let is_leader = make_is_leader(N as i64);
 
     let defs = Arc::new(Definition {
         is_leader: Box::new(is_leader),
@@ -79,8 +77,8 @@ fn test_qbft(test: Test) {
                 return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
             },
         ),
-        nodes: n as i64,
-        fifo_limit: fifo_limit as i64,
+        nodes: N as i64,
+        fifo_limit: FIFO_LIMIT as i64,
         /* Ignored logging */
         log_round_change: Box::new(|_, _, _, _, _, _| {}),
         log_unjust: Box::new(|_, _, _| {}),
@@ -88,7 +86,7 @@ fn test_qbft(test: Test) {
     });
 
     thread::scope(|s| {
-        for i in 1..=n as i64 {
+        for i in 1..=N as i64 {
             let (sender, receiver) = mpmc::bounded::<Msg<i64, i64, i64>>(1000);
             let broadcast_tx = broadcast_tx.clone();
             receives.insert(i, (sender.clone(), receiver.clone()));
@@ -103,7 +101,7 @@ fn test_qbft(test: Test) {
                           pr,
                           pv,
                           justification| {
-                        if round > max_round as i64 {
+                        if round > MAX_ROUND as i64 {
                             bail!("max round reach")
                         }
 
@@ -149,7 +147,7 @@ fn test_qbft(test: Test) {
                 }
 
                 let (v_chan_tx, v_chan_rx) = mpmc::bounded::<i64>(1);
-                let (vs_chan_tx, vs_chan_rx) = mpmc::bounded::<i64>(1);
+                let (_, vs_chan_rx) = mpmc::bounded::<i64>(1);
 
                 if let Some(delay) = value_delay {
                     s.spawn(move || {
@@ -161,7 +159,7 @@ fn test_qbft(test: Test) {
                     s.spawn(move || {
                         v_chan_tx.send(i).expect(WRITE_CHAN_ERR);
                     });
-                } else if is_leader_n(n as i64, test.instance, 1, i) {
+                } else if is_leader_n(N as i64, test.instance, 1, i) {
                     s.spawn(move || {
                         v_chan_tx.send(i).expect(WRITE_CHAN_ERR);
                     });
@@ -222,7 +220,7 @@ fn test_qbft(test: Test) {
                             if test.prepared_val != 0 { // Check prepared value if set
                                 assert_eq!(i64::from(test.prepared_val), commit.value(), "wrong prepared value");
                             } else { // Otherwise check that leader value was used.
-                                assert!(is_leader_n(n as i64, test.instance, commit.round(), commit.value()), "not leader");
+                                assert!(is_leader_n(N as i64, test.instance, commit.round(), commit.value()), "not leader");
                             }
                         }
 
@@ -230,7 +228,7 @@ fn test_qbft(test: Test) {
                     }
 
                     count += 1;
-                    if count != n {
+                    if count != N {
                         continue;
                     }
 
@@ -246,7 +244,7 @@ fn test_qbft(test: Test) {
                         }
 
                         done += 1;
-                        if done == n {
+                        if done == N {
                             return;
                         }
                     }
@@ -270,6 +268,7 @@ fn is_leader_n(n: i64, instance: i64, round: i64, process: i64) -> bool {
 }
 
 /// Returns a new message to be broadcast.
+#[allow(clippy::too_many_arguments)]
 fn new_msg(
     type_: MessageType,
     instance: i64,
@@ -307,20 +306,6 @@ fn new_msg(
         pr,
         pv,
         justify: Some(msgs),
-    })
-}
-
-fn random_msg(instance: i64, peer_idx: i64) -> Msg<i64, i64, i64> {
-    Arc::new(TestMsg {
-        msg_type: MessageType(1 + rand::random_range(0..MSG_DECIDED.0)),
-        instance,
-        peer_idx,
-        round: rand::random_range(0..10),
-        value: rand::random_range(0..10),
-        value_source: rand::random_range(0..10),
-        pr: rand::random_range(0..10),
-        pv: rand::random_range(0..10),
-        justify: None,
     })
 }
 
