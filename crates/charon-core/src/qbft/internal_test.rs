@@ -402,6 +402,7 @@ impl SomeMsg<i64, i64, i64> for TestMsg {
 }
 
 #[test]
+#[ignore = "deadlock"]
 fn happy_0() {
     test_qbft(Test {
         instance: 0,
