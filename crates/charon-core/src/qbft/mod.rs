@@ -43,15 +43,17 @@ where
     /// Note that an error exits the algorithm.
     pub broadcast: Box<
         dyn Fn(
-            /* type_ */ MessageType,
-            /* instance */ &I,
-            /* source */ i64,
-            /* round */ i64,
-            /* value */ &V,
-            /* pr */ i64,
-            /* pv */ &V,
-            /* justification */ Option<&Vec<Msg<I, V, C>>>,
-        ) -> Result<()> + Send + Sync
+                /* type_ */ MessageType,
+                /* instance */ &I,
+                /* source */ i64,
+                /* round */ i64,
+                /* value */ &V,
+                /* pr */ i64,
+                /* pv */ &V,
+                /* justification */ Option<&Vec<Msg<I, V, C>>>,
+            ) -> Result<()>
+            + Send
+            + Sync,
     >,
 
     /// Receive returns a stream of messages received
@@ -67,10 +69,17 @@ where
     V: PartialEq,
 {
     /// A deterministic leader election function.
-    pub is_leader: Box<dyn Fn(/* instance */ &I, /* round */ i64, /* process */ i64) -> bool + Send + Sync>,
+    pub is_leader:
+        Box<dyn Fn(/* instance */ &I, /* round */ i64, /* process */ i64) -> bool + Send + Sync>,
 
     /// Returns a new timer channel and stop function for the round
-    pub new_timer: Box<dyn Fn(/* rounds */ i64) -> (mpmc::Receiver<time::Instant>, Box<dyn Fn() + Send + Sync>) + Send + Sync>,
+    pub new_timer: Box<
+        dyn Fn(
+                /* rounds */ i64,
+            ) -> (mpmc::Receiver<time::Instant>, Box<dyn Fn() + Send + Sync>)
+            + Send
+            + Sync,
+    >,
 
     /// Called when leader proposes value and we compare it with our local
     /// value. It's an opt-in feature that should instantly return nil on
@@ -87,33 +96,38 @@ where
     >,
 
     /// Called when consensus has been reached on a value.
-    pub decide: Box<dyn Fn(/* instance */ &I, /* value */ &V, /* qcommit */ &Vec<Msg<I, V, C>>) + Send + Sync>,
+    pub decide: Box<
+        dyn Fn(/* instance */ &I, /* value */ &V, /* qcommit */ &Vec<Msg<I, V, C>>) + Send + Sync,
+    >,
 
     /// Allows debug logging of triggered upon rules on message receipt.
     /// It includes the rule that triggered it and all received round messages.
     pub log_upon_rule: Box<
         dyn Fn(
-            /* instance */ &I,
-            /* process */ i64,
-            /* round */ i64,
-            /* msg */ &Msg<I, V, C>,
-            /* uponRule */ UponRule,
-        ) + Send + Sync,
+                /* instance */ &I,
+                /* process */ i64,
+                /* round */ i64,
+                /* msg */ &Msg<I, V, C>,
+                /* uponRule */ UponRule,
+            ) + Send
+            + Sync,
     >,
     /// Allows debug logging of round changes.
     pub log_round_change: Box<
         dyn Fn(
-            /* instance */ &I,
-            /* process */ i64,
-            /* round */ i64,
-            /* newRound */ i64,
-            /* uponRule */ UponRule,
-            /* msgs */ &Vec<Msg<I, V, C>>,
-        ) + Send + Sync,
+                /* instance */ &I,
+                /* process */ i64,
+                /* round */ i64,
+                /* newRound */ i64,
+                /* uponRule */ UponRule,
+                /* msgs */ &Vec<Msg<I, V, C>>,
+            ) + Send
+            + Sync,
     >,
 
     /// Allows debug logging of unjust messages.
-    pub log_unjust: Box<dyn Fn(/* instance */ &I, /* process */ i64, /* msg */ Msg<I, V, C>) + Send + Sync>,
+    pub log_unjust:
+        Box<dyn Fn(/* instance */ &I, /* process */ i64, /* msg */ Msg<I, V, C>) + Send + Sync>,
 
     /// Total number of nodes/processes participating in consensus.
     pub nodes: i64,
