@@ -11,9 +11,9 @@ anyhow.workspace = true
 chrono.workspace = true
 crossbeam.workspace = true
 hex.workspace = true
+rand = "0.9.2"
 serde.workspace = true
 serde_json.workspace = true
-rand = "0.9.2"
 
 [lints]
 workspace = true
