@@ -1,4 +1,4 @@
-use crate::qbft::*;
+use crate::qbft::{self, *};
 use anyhow::{Result, bail};
 use crossbeam::channel as mpmc;
 use std::{any, collections::HashMap, sync::Arc, thread, time::Duration};
@@ -167,7 +167,7 @@ fn test_qbft(test: Test) {
                 }
 
                 run_chan_tx
-                    .send(crate::qbft::run(
+                    .send(qbft::run(
                         &defs,
                         &trans,
                         &test.instance,
