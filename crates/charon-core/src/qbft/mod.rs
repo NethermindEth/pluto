@@ -190,7 +190,7 @@ impl Display for MessageType {
 }
 
 /// Defines the inter process messages.
-pub trait SomeMsg<I, V, C>
+pub trait SomeMsg<I, V, C>: Send + Sync + fmt::Debug
 where
     V: PartialEq,
 {
@@ -218,7 +218,7 @@ where
 }
 
 /// Alias for any `Msg` implementation tracked by reference counting.
-pub type Msg<I, V, C> = sync::Arc<dyn SomeMsg<I, V, C> + Send + Sync>;
+pub type Msg<I, V, C> = sync::Arc<dyn SomeMsg<I, V, C>>;
 
 /// Defines the event based rules that are triggered when messages are received.
 #[derive(PartialEq, Eq, Hash, Clone, Copy)]

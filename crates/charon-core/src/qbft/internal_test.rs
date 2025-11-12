@@ -210,7 +210,7 @@ fn test_qbft(test: Test) {
                 recv(result_chan_rx) -> res => {
                     let q_commit = res.expect(READ_CHAN_ERR);
 
-                    for commit in q_commit {
+                    for commit in q_commit.clone() {
                         for (_, previous) in results.iter() {
                             assert_eq!(previous.value(), commit.value(), "commit values");
                         }
@@ -232,6 +232,9 @@ fn test_qbft(test: Test) {
                     if count != N {
                         continue;
                     }
+
+                    let round = q_commit.first().expect("missing first commit").round();
+                    println!("Got all results in round {}: {:?}", round, results);
 
                     decided = true;
                 }
