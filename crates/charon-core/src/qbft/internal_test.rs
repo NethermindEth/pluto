@@ -46,10 +46,10 @@ fn test_qbft(test: Test) {
     let (result_chan_tx, result_chan_rx) = mpmc::bounded::<Vec<Msg<i64, i64, i64>>>(N);
     let (run_chan_tx, run_chan_rx) = mpmc::bounded::<Result<()>>(N);
 
-    let is_leader = make_is_leader(N as i64);
+    let is_leader = Box::new(make_is_leader(N as i64));
 
     let defs = Arc::new(Definition {
-        is_leader: Box::new(is_leader),
+        is_leader: is_leader.clone(),
         new_timer: Box::new(move |round: i64| {
             let d: Duration = if test.const_period {
                 Duration::from_secs(1)
@@ -136,6 +136,7 @@ fn test_qbft(test: Test) {
             let decide_round = test.decide_round;
             let run_chan_tx = run_chan_tx.clone();
             let defs = defs.clone();
+            let is_leader = is_leader.clone();
 
             s.spawn(move || {
                 if let Some(delay) = start_delay {
@@ -159,7 +160,7 @@ fn test_qbft(test: Test) {
                     s.spawn(move || {
                         v_chan_tx.send(i).expect(WRITE_CHAN_ERR);
                     });
-                } else if is_leader_n(N as i64, test.instance, 1, i) {
+                } else if is_leader(&test.instance, 1, i) {
                     s.spawn(move || {
                         v_chan_tx.send(i).expect(WRITE_CHAN_ERR);
                     });
@@ -220,7 +221,7 @@ fn test_qbft(test: Test) {
                             if test.prepared_val != 0 { // Check prepared value if set
                                 assert_eq!(i64::from(test.prepared_val), commit.value(), "wrong prepared value");
                             } else { // Otherwise check that leader value was used.
-                                assert!(is_leader_n(N as i64, test.instance, commit.round(), commit.value()), "not leader");
+                                assert!(is_leader(&test.instance, commit.round(), commit.value()), "not leader");
                             }
                         }
 
@@ -259,12 +260,8 @@ fn test_qbft(test: Test) {
 }
 
 /// Construct a leader election function.
-fn make_is_leader(n: i64) -> impl Fn(&i64, i64, i64) -> bool {
+fn make_is_leader(n: i64) -> impl Fn(&i64, i64, i64) -> bool + Clone {
     move |instance: &i64, round: i64, process: i64| -> bool { (instance + round) % n == process }
-}
-
-fn is_leader_n(n: i64, instance: i64, round: i64, process: i64) -> bool {
-    (instance + round) % n == process
 }
 
 /// Returns a new message to be broadcast.
