@@ -347,8 +347,8 @@ where
     // and our own input value if present, otherwise it caches the justification
     // to be used when the input value becomes available.
     let broadcast_own_pre_prepare = |justification: Vec<Msg<I, V, C>>| {
-        if ppj_cache.borrow().is_none() {
-            panic!("bug: justification must not be nil")
+        if ppj_cache.borrow().is_some() {
+            panic!("bug: justification cache must be none")
         }
 
         if *input_value.borrow() == Default::default() {
