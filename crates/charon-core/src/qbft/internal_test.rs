@@ -36,6 +36,8 @@ fn test_qbft(test: Test) {
     const MAX_ROUND: usize = 50;
     const FIFO_LIMIT: usize = 100;
 
+    let start_time = time::Instant::now();
+
     let cts = CancellationTokenSource::new();
     let mut receives = HashMap::<
         i64,
@@ -85,10 +87,35 @@ fn test_qbft(test: Test) {
         ),
         nodes: N as i64,
         fifo_limit: FIFO_LIMIT as i64,
-        /* Ignored logging */
-        log_round_change: Box::new(|_, _, _, _, _, _| {}),
-        log_unjust: Box::new(|_, _, _| {}),
-        log_upon_rule: Box::new(|_, _, _, _, _| {}),
+        log_round_change: Box::new(
+            move |_, process: i64, round: i64, new_round: i64, upon_rule: UponRule, _| {
+                println!(
+                    "{:?} - {}@{} change to {} ~= {}",
+                    start_time.elapsed(),
+                    process,
+                    round,
+                    new_round,
+                    upon_rule,
+                );
+            },
+        ),
+        log_unjust: Box::new(|_, _, msg: Msg<i64, i64, i64>| {
+            println!("Unjust: {:?}", msg);
+        }),
+        log_upon_rule: Box::new(
+            move |_, process: i64, round: i64, msg: &Msg<i64, i64, i64>, upon_rule: UponRule| {
+                println!(
+                    "{:?} {} => {}@{} -> {}@{} ~= {}",
+                    start_time.elapsed(),
+                    msg.source(),
+                    msg.type_(),
+                    msg.round(),
+                    process,
+                    round,
+                    upon_rule,
+                );
+            },
+        ),
     });
 
     thread::scope(|s| {
@@ -113,8 +140,22 @@ fn test_qbft(test: Test) {
                         }
 
                         if type_ == MSG_COMMIT && round <= test.commits_after.into() {
+                            println!(
+                                "{:?} {} dropping commit for round {}",
+                                start_time.elapsed(),
+                                source,
+                                round
+                            );
                             return Ok(());
                         }
+
+                        println!(
+                            "{:?} {} => {}@{}",
+                            start_time.elapsed(),
+                            source,
+                            type_,
+                            round
+                        );
 
                         let msg = new_msg(
                             type_,
@@ -204,6 +245,7 @@ fn test_qbft(test: Test) {
 
                         if let Some(p) = test.drop_prob.get(&msg.source()) {
                             if rand::random::<f64>() < *p {
+                                println!("{:?} {} => {}@{} => {} (dropped)", start_time.elapsed(), msg.source(), msg.type_(), msg.round(), target);
                                 continue; // Drop
                             }
                         }
@@ -242,6 +284,10 @@ fn test_qbft(test: Test) {
                         continue;
                     }
 
+                    let round = q_commit[0].round();
+                    println!("Got all results in round {} after {:?}: {:?}", round, start_time.elapsed(), results);
+
+                    // Trigger shutdown
                     decided = true;
 
                     cts.cancel();
