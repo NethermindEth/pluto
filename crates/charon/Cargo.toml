@@ -7,6 +7,18 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+thiserror.workspace = true
+k256.workspace = true
+hex.workspace = true
+libp2p.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "k1util"
+harness = false
+path = "benches/k1util.rs"
 
 [lints]
 workspace = true
