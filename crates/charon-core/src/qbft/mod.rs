@@ -21,6 +21,7 @@
 #![allow(clippy::arithmetic_side_effects)]
 
 use anyhow::{Result, bail};
+use cancellation::CancellationToken;
 use crossbeam::channel as mpmc;
 use std::{
     any,
@@ -43,6 +44,7 @@ where
     /// Note that an error exits the algorithm.
     pub broadcast: Box<
         dyn Fn(
+                /* ct */ &CancellationToken,
                 /* type_ */ MessageType,
                 /* instance */ &I,
                 /* source */ i64,
@@ -86,6 +88,7 @@ where
     /// returnErr channel if it is not turned on.
     pub compare: Box<
         dyn Fn(
+                /* ct */ &CancellationToken,
                 /* qcommit */ &Msg<I, V, C>,
                 /* inputValueSourceCh */ &mpmc::Receiver<C>,
                 /* inputValueSource */ &C,
@@ -97,7 +100,13 @@ where
 
     /// Called when consensus has been reached on a value.
     pub decide: Box<
-        dyn Fn(/* instance */ &I, /* value */ &V, /* qcommit */ &Vec<Msg<I, V, C>>) + Send + Sync,
+        dyn Fn(
+                /* ct */ &CancellationToken,
+                /* instance */ &I,
+                /* value */ &V,
+                /* qcommit */ &Vec<Msg<I, V, C>>,
+            ) + Send
+            + Sync,
     >,
 
     /// Allows debug logging of triggered upon rules on message receipt.
@@ -287,6 +296,7 @@ impl error::Error for TimeoutError {}
 /// requires an Equal method. The generic type `C` is the compare value, used to
 /// compare leader's proposed value with local value and can be anything.
 pub fn run<I, V, C>(
+    ct: &CancellationToken,
     d: &Definition<I, V, C>,
     t: &Transport<I, V, C>,
     instance: &I,
@@ -319,6 +329,7 @@ where
     let broadcast_msg =
         |type_: MessageType, value: &V, justification: Option<&Vec<Msg<I, V, C>>>| {
             (t.broadcast)(
+                ct,
                 type_,
                 instance,
                 process,
@@ -332,6 +343,7 @@ where
     // Broadcasts a ROUND-CHANGE message with current state.
     let broadcast_round_change = || {
         (t.broadcast)(
+            ct,
             MSG_ROUND_CHANGE,
             instance,
             process,
@@ -408,7 +420,7 @@ where
         (timer_chan, stop_timer) = (d.new_timer)(round.get());
     }
 
-    loop {
+    while !ct.is_canceled() {
         mpmc::select! {
             recv(input_value_ch) -> result => {
                 let input_value = result?;
@@ -466,6 +478,7 @@ where
                         (timer_chan, stop_timer) = (d.new_timer)(round.get());
 
                         let compare_result = compare(
+                            ct,
                             d,
                             &msg,
                             &input_value_source_ch, // TODO: Moved value
@@ -517,7 +530,7 @@ where
 
                         let justification = q_commit.as_ref()
                             .expect("Rules `UPON_QUORUM_COMMITS` and `UPON_JUSTIFIED_DECIDED` always include a justification");
-                        (d.decide)(instance, &msg.value(), justification);
+                        (d.decide)(ct, instance, &msg.value(), justification);
                     }
                     UPON_F_PLUS1_ROUND_CHANGES => {
                         // Algorithm 3:5
@@ -570,9 +583,12 @@ where
             }
         }
     }
+
+    Ok(())
 }
 
 fn compare<I, V, C>(
+    ct: &CancellationToken,
     d: &Definition<I, V, C>,
     msg: &Msg<I, V, C>,
     input_value_source_ch: &mpmc::Receiver<C>,
@@ -600,6 +616,7 @@ where
 
         s.spawn(move || {
             (compare)(
+                ct,
                 msg,
                 input_value_source_ch,
                 &input_value_source,

@@ -1,5 +1,6 @@
 use crate::qbft::{self, *};
 use anyhow::{Result, bail};
+use cancellation::CancellationTokenSource;
 use crossbeam::channel as mpmc;
 use std::{any, collections::HashMap, sync::Arc, thread, time::Duration};
 
@@ -35,6 +36,7 @@ fn test_qbft(test: Test) {
     const MAX_ROUND: usize = 50;
     const FIFO_LIMIT: usize = 100;
 
+    let cts = CancellationTokenSource::new();
     let mut receives = HashMap::<
         i64,
         (
@@ -63,13 +65,17 @@ fn test_qbft(test: Test) {
         decide: {
             let result_chan_tx = result_chan_tx.clone();
             Box::new(
-                move |_: &i64, _: &i64, q_commit: &Vec<Msg<i64, i64, i64>>| {
+                move |_: &CancellationToken,
+                      _: &i64,
+                      _: &i64,
+                      q_commit: &Vec<Msg<i64, i64, i64>>| {
                     result_chan_tx.send(q_commit.clone()).expect(WRITE_CHAN_ERR);
                 },
             )
         },
         compare: Box::new(
-            |_: &Msg<i64, i64, i64>,
+            |_: &CancellationToken,
+             _: &Msg<i64, i64, i64>,
              _: &mpmc::Receiver<i64>,
              _: &i64,
              return_err: &mpmc::Sender<Result<()>>,
@@ -93,7 +99,8 @@ fn test_qbft(test: Test) {
 
             let trans = Transport {
                 broadcast: Box::new(
-                    move |type_: MessageType,
+                    move |_: &CancellationToken,
+                          type_: MessageType,
                           instance,
                           source,
                           round,
@@ -130,6 +137,7 @@ fn test_qbft(test: Test) {
                 receive: receiver.clone(),
             };
 
+            let token = cts.token();
             let receiver = receiver.clone();
             let start_delay = test.start_delay.get(&i).copied();
             let value_delay = test.value_delay.get(&i).copied();
@@ -168,6 +176,7 @@ fn test_qbft(test: Test) {
 
                 run_chan_tx
                     .send(qbft::run(
+                        token,
                         &defs,
                         &trans,
                         &test.instance,
@@ -237,6 +246,8 @@ fn test_qbft(test: Test) {
                     println!("Got all results in round {}: {:?}", round, results);
 
                     decided = true;
+
+                    cts.cancel();
                 }
 
                 recv(run_chan_rx) -> res => {
