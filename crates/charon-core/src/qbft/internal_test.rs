@@ -242,9 +242,6 @@ fn test_qbft(test: Test) {
                         continue;
                     }
 
-                    let round = q_commit.first().expect("missing first commit").round();
-                    println!("Got all results in round {}: {:?}", round, results);
-
                     decided = true;
 
                     cts.cancel();
@@ -257,11 +254,11 @@ fn test_qbft(test: Test) {
                         if !decided {
                             panic!("unexpected run error");
                         }
+                    }
 
-                        done += 1;
-                        if done == N {
-                            return;
-                        }
+                    done += 1;
+                    if done == N {
+                        return;
                     }
                 }
 
@@ -398,7 +395,6 @@ impl SomeMsg<i64, i64, i64> for TestMsg {
 }
 
 #[test]
-#[ignore = "deadlock"]
 fn happy_0() {
     test_qbft(Test {
         instance: 0,

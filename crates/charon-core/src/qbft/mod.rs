@@ -581,6 +581,12 @@ where
 
                 broadcast_round_change()?;
             }
+
+            default => {
+                if ct.is_canceled() {
+                    break;
+                }
+            }
         }
     }
 
