@@ -448,3 +448,23 @@ fn happy_0() {
         ..Default::default()
     });
 }
+
+#[test]
+fn happy_1() {
+    test_qbft(Test {
+        instance: 1,
+        decide_round: 1,
+        ..Default::default()
+    });
+}
+
+#[test]
+fn prepare_round_1_decide_round_2() {
+    test_qbft(Test {
+        instance: 0,
+        commits_after: 1,
+        decide_round: 2,
+        prepared_val: 1,
+        ..Default::default()
+    });
+}
