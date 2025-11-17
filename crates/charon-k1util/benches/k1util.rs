@@ -9,7 +9,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use k256::{SecretKey, elliptic_curve::rand_core::OsRng};
 
 // Assuming your crate is named "charon" - adjust if different
-use charon::k1util::{K1_HASH_LEN, SIGNATURE_LEN, recover, sign, verify_64};
+use charon_k1util::{K1_HASH_LEN, SIGNATURE_LEN, recover, sign, verify_64};
 
 fn setup() -> (SecretKey, Vec<u8>, Vec<u8>) {
     let key = SecretKey::random(&mut OsRng);

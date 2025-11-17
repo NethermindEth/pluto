@@ -448,13 +448,6 @@ dependencies = [
 [[package]]
 name = "charon"
 version = "0.1.0"
-dependencies = [
- "criterion",
- "hex",
- "k256",
- "libp2p",
- "thiserror 2.0.17",
-]
 
 [[package]]
 name = "charon-cli"
@@ -528,11 +521,22 @@ name = "charon-eth2"
 version = "0.1.0"
 dependencies = [
  "base64",
- "charon",
+ "charon-k1util",
  "charon-testutil",
  "hex",
  "k256",
  "sha3",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "charon-k1util"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "hex",
+ "k256",
+ "libp2p",
  "thiserror 2.0.17",
 ]
 
@@ -544,8 +548,8 @@ version = "0.1.0"
 name = "charon-p2p"
 version = "0.1.0"
 dependencies = [
- "charon",
  "charon-eth2",
+ "charon-k1util",
  "charon-testutil",
  "k256",
  "libp2p",

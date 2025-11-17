@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt::Display, net::Ipv4Addr};
 
 use base64::Engine;
-use charon::k1util::{self, SIGNATURE_LEN_WITHOUT_V};
+use charon_k1util::{self, self as k1util, SIGNATURE_LEN_WITHOUT_V};
 use k256::{PublicKey, SecretKey, elliptic_curve};
 use sha3::{Digest, Keccak256};
 

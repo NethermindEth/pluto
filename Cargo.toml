@@ -14,6 +14,7 @@ members = [
     "crates/charon-p2p",
     "crates/charon-serde",
     "crates/charon-testutil",
+    "crates/charon-k1util",
 ]
 resolver = "3"
 
@@ -47,9 +48,9 @@ k256 = { version = "0.13.4", features = ["ecdsa", "sha256"] }
 criterion = "0.7.0"
 
 # Crates in the workspace
-charon = { path = "crates/charon" }
 charon-crypto = { path = "crates/charon-crypto" }
 charon-eth2 = { path = "crates/charon-eth2" }
+charon-k1util = { path = "crates/charon-k1util" }
 charon-p2p = { path = "crates/charon-p2p" }
 charon-testutil = { path = "crates/charon-testutil" }
 

@@ -4,8 +4,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use charon::k1util;
 use charon_eth2::enr::Record;
+use charon_k1util::{self as k1util};
 use k256::{PublicKey as K256PublicKey, SecretKey};
 use libp2p::{Multiaddr, PeerId, identity::PublicKey as Libp2pPublicKey};
 

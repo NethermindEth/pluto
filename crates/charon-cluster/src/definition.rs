@@ -330,12 +330,6 @@ impl Definition {
         def.set_definition_hashes()
     }
 
-    /// Sets the definition hashes.
-    pub fn set_definition_hashes(self) -> Result<Self, DefinitionError> {
-        // todo
-        Ok(self)
-    }
-
     /// Returns the node index for a given peer ID.
     pub fn node_idx(&self, pid: &PeerId) -> Result<NodeIdx, DefinitionError> {
         let peers = self.peers()?;
@@ -349,9 +343,13 @@ impl Definition {
             }
         }
 
-        Err(DefinitionError::PeerNotFound {
-            peer_id: pid.clone(),
-        })
+        Err(DefinitionError::PeerNotFound { peer_id: *pid })
+    }
+
+    /// VerifySignatures returns nil if all config signatures are fully
+    /// populated and valid. A verified definition is ready for use in DKG.
+    pub fn verify_signatures(&self) -> Result<(), DefinitionError> {
+        todo!("implement this after eth1wrap.EthClientRunner is implemented");
     }
 
     /// Returns the peers in the cluster.
@@ -377,6 +375,13 @@ impl Definition {
         Ok(peers)
     }
 
+    /// `peer_ids` is a convenience function that returns the operators p2p peer
+    /// IDs.
+    pub fn peer_ids(&self) -> Result<Vec<PeerId>, DefinitionError> {
+        let peers = self.peers()?;
+        Ok(peers.iter().map(|p| p.id).collect())
+    }
+
     /// Legacy single withdrawal and single
     /// fee recipient addresses or an error if multiple addresses are found.
     pub fn legacy_validator_addresses(&self) -> Result<ValidatorAddresses, DefinitionError> {
@@ -393,16 +398,48 @@ impl Definition {
         Ok(result_validator_addresses)
     }
 
+    /// `withdrawal_addresses` is a convenience function to return all
+    /// withdrawal address from the validator addresses slice.
+    pub fn withdrawal_addresses(&self) -> Vec<String> {
+        self.validator_addresses
+            .iter()
+            .map(|v| v.withdrawal_address.clone())
+            .collect()
+    }
+
+    /// `fee_recipient_addresses` is a convenience function to return all fee
+    /// recipient address from the validator addresses slice.
+    pub fn fee_recipient_addresses(&self) -> Vec<String> {
+        self.validator_addresses
+            .iter()
+            .map(|v| v.fee_recipient_address.clone())
+            .collect()
+    }
+
+    /// Sets the definition hashes.
+    pub fn set_definition_hashes(self) -> Result<Self, DefinitionError> {
+        // todo
+        Ok(self)
+    }
+
+    /// `verify_hashes` returns an error if hashes populated from json object
+    /// doesn't matches actual hashes.
+    pub fn verify_hashes(self) -> Result<Self, DefinitionError> {
+        // todo
+        Ok(self)
+    }
+
     /// Returns true if the provided definition version supports EIP712
     /// signatures. Note that Definition versions prior to v1.3.0 don't
     /// support EIP712 signatures.
-    pub fn support_eip712_sigs(version: &str) -> bool {
+    #[allow(unused)]
+    fn support_eip712_sigs(version: &str) -> bool {
         !matches!(version, V1_0 | V1_1 | V1_2)
     }
 
     /// Returns true if the provided definition version supports partial
     /// deposits.
-    pub fn support_partial_deposits(version: &str) -> bool {
+    fn support_partial_deposits(version: &str) -> bool {
         !matches!(
             version,
             V1_0 | V1_1 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7
@@ -411,7 +448,7 @@ impl Definition {
 
     /// Returns true if the provided definition version supports custom target
     /// gas limit.
-    pub fn support_target_gas_limit(version: &str) -> bool {
+    fn support_target_gas_limit(version: &str) -> bool {
         !matches!(
             version,
             V1_0 | V1_1 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7 | V1_8 | V1_9
@@ -419,7 +456,7 @@ impl Definition {
     }
 
     /// Returns true if the provided definition version supports compounding.
-    pub fn support_compounding(version: &str) -> bool {
+    fn support_compounding(version: &str) -> bool {
         !matches!(
             version,
             V1_0 | V1_1 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7 | V1_8 | V1_9
