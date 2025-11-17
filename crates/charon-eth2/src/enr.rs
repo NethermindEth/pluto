@@ -25,7 +25,7 @@ pub const KEY_UDP: &str = "udp";
 pub enum RecordError {
     /// The format of the record is invalid.
     #[error("The format of the record is invalid: {0}")]
-    InvalidFormat(String),
+    InvalidFormat(#[from] InvalidFormatError),
 
     /// The record is too short.
     #[error("The record is too short: expected {expected}, actual {actual}")]
@@ -67,6 +67,26 @@ pub enum RecordError {
     /// Failed to convert the signature.
     #[error("Failed to convert the signature: {0}")]
     FailedToConvertSignature(std::array::TryFromSliceError),
+}
+
+/// InvalidFormatError is an error type for invalid format errors.
+#[derive(Debug, thiserror::Error)]
+pub enum InvalidFormatError {
+    /// Record does not start with 'enr:'.
+    #[error("Record does not start with 'enr:'")]
+    DoesNotStartWithEnr,
+
+    /// Invalid enr record, odd number of elements.
+    #[error("Invalid enr record, odd number of elements")]
+    OddNumberOfElements,
+
+    /// Non-v4 identity scheme not supported.
+    #[error("Non-v4 identity scheme not supported")]
+    NonV4IdentitySchemeNotSupported,
+
+    /// Public key is not set.
+    #[error("Public key is not set")]
+    PublicKeyNotSet,
 }
 
 /// A record in the ENR.
@@ -193,7 +213,7 @@ impl TryFrom<&str> for Record {
     fn try_from(enr_str: &str) -> Result<Self, Self::Error> {
         if !enr_str.starts_with("enr:") {
             return Err(RecordError::InvalidFormat(
-                "Record does not start with 'enr:'".to_string(),
+                InvalidFormatError::DoesNotStartWithEnr,
             ));
         }
 
@@ -218,7 +238,7 @@ impl TryFrom<&str> for Record {
 
         if elements.len() % 2 != 0 {
             return Err(RecordError::InvalidFormat(
-                "Invalid enr record, odd number of elements".to_string(),
+                InvalidFormatError::OddNumberOfElements,
             ));
         }
 
@@ -248,7 +268,7 @@ impl TryFrom<&str> for Record {
                     let value_str = String::from_utf8_lossy(&value).to_string();
                     if value_str != VAL_ID {
                         return Err(RecordError::InvalidFormat(
-                            "Non-v4 identity scheme not supported".to_string(),
+                            InvalidFormatError::NonV4IdentitySchemeNotSupported,
                         ));
                     }
                 }
@@ -258,16 +278,16 @@ impl TryFrom<&str> for Record {
 
         if record.public_key.is_none() {
             return Err(RecordError::InvalidFormat(
-                "Invalid enr record, public key is not set".to_string(),
+                InvalidFormatError::PublicKeyNotSet,
             ));
         }
 
         let encoded_elements = encode_bytes_list(&elements[1..]);
 
         verify(
-            &record.public_key.ok_or(RecordError::InvalidFormat(
-                "Public key is not set".to_string(),
-            ))?,
+            &record
+                .public_key
+                .unwrap_or_else(|| unreachable!("Public key expected to be set")),
             &record.signature,
             &encoded_elements,
         )?;
