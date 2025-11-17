@@ -199,23 +199,22 @@ pub enum DefinitionError {
 
     /// Invalid target gas limit
     #[error("Invalid target gas limit: {0}")]
-    InvalidTargetGasLimit(&'static str),
+    InvalidTargetGasLimit(#[from] InvalidGasLimitError),
 
     /// Invalid deposit amounts
-    #[error("Invalid deposit amounts: {0}")]
-    InvalidDepositAmounts(&'static str),
+    #[error("Invalid deposit amounts: the version does not support partial deposits")]
+    InvalidDepositAmounts,
 
     /// Invalid compounding
-    #[error("Invalid deposit amounts: {0}")]
-    InvalidCompounding(&'static str),
-
-    /// Invalid gas limit
-    #[error("Invalid gas limit: {0}")]
-    InvalidGasLimit(&'static str),
+    #[error("Invalid compounding: the version does not support compounding")]
+    InvalidCompounding,
 
     /// Peer not found
-    #[error("Peer not in definition: {0}")]
-    PeerNotFound(String),
+    #[error("Peer not in definition: {peer_id}")]
+    PeerNotFound {
+        /// The peer ID
+        peer_id: PeerId,
+    },
 
     /// Duplicate peer ENRs
     #[error("Duplicate peer ENRs: {0}")]
@@ -228,6 +227,18 @@ pub enum DefinitionError {
     /// Failed to create peer
     #[error("Failed to create peer: {0}")]
     FailedToCreatePeer(#[from] PeerError),
+}
+
+/// InvalidGasLimitError is an error type for invalid gas limit errors.
+#[derive(Debug, thiserror::Error)]
+pub enum InvalidGasLimitError {
+    /// The version does not support custom target gas limit
+    #[error("the version does not support custom target gas limit")]
+    VersionDoesNotSupportCustomTargetGasLimit,
+
+    /// The gas limit is not set
+    #[error("target gas limit should be set")]
+    GasLimitNotSet,
 }
 
 impl Definition {
@@ -300,27 +311,19 @@ impl Definition {
         }
 
         if def.deposit_amounts.len() > 1 && !Self::support_partial_deposits(&def.version) {
-            return Err(DefinitionError::InvalidDepositAmounts(
-                "the version does not support partial deposits",
-            ));
+            return Err(DefinitionError::InvalidDepositAmounts);
         }
 
         if def.target_gas_limit != 0 && !Self::support_target_gas_limit(&def.version) {
-            return Err(DefinitionError::InvalidTargetGasLimit(
-                "the version does not support custom target gas limit",
-            ));
+            return Err(InvalidGasLimitError::VersionDoesNotSupportCustomTargetGasLimit.into());
         }
 
         if def.compounding && !Self::support_compounding(&def.version) {
-            return Err(DefinitionError::InvalidCompounding(
-                "the version does not support compounding",
-            ));
+            return Err(DefinitionError::InvalidCompounding);
         }
 
         if def.target_gas_limit == 0 && Self::support_target_gas_limit(&def.version) {
-            return Err(DefinitionError::InvalidTargetGasLimit(
-                "target gas limit should be set",
-            ));
+            return Err(InvalidGasLimitError::GasLimitNotSet.into());
         }
 
         // TODO: Construct and return a Definition. Placeholder for now.
@@ -346,7 +349,9 @@ impl Definition {
             }
         }
 
-        Err(DefinitionError::PeerNotFound(pid.to_string()))
+        Err(DefinitionError::PeerNotFound {
+            peer_id: pid.clone(),
+        })
     }
 
     /// Returns the peers in the cluster.
