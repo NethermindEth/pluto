@@ -432,8 +432,7 @@ impl Definition {
     /// Returns true if the provided definition version supports EIP712
     /// signatures. Note that Definition versions prior to v1.3.0 don't
     /// support EIP712 signatures.
-    #[allow(unused)]
-    fn support_eip712_sigs(version: &str) -> bool {
+    pub(crate) fn support_eip712_sigs(version: &str) -> bool {
         !matches!(version, V1_0 | V1_1 | V1_2)
     }
 

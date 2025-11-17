@@ -21,6 +21,8 @@ rand_core.workspace = true
 libp2p.workspace = true
 charon-p2p.workspace = true
 charon-eth2.workspace = true
+charon-k1util.workspace = true
+k256.workspace = true
 
 [build-dependencies]
 prost-build.workspace = true

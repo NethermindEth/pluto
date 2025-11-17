@@ -9,3 +9,9 @@ pub mod enr;
 
 /// RLP utilities.
 pub mod rlp;
+
+/// EIP712 utilities.
+pub mod eip712;
+
+/// Network utilities.
+pub mod network;
