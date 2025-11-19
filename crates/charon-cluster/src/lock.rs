@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
@@ -13,6 +15,12 @@ use serde_with::{
     base64::{Base64, Standard},
     serde_as,
 };
+
+/// LockError is the error type for Lock errors.
+#[derive(Debug, thiserror::Error)]
+pub enum LockError {}
+
+type Result<T> = std::result::Result<T, LockError>;
 
 /// Lock extends the cluster config Definition with bls threshold public keys
 /// and checksums.
@@ -38,8 +46,17 @@ pub struct Lock {
     pub node_signatures: Vec<Vec<u8>>,
 }
 
+/// Deref for Lock to allow access to the definition field.
+impl Deref for Lock {
+    type Target = Definition;
+
+    fn deref(&self) -> &Self::Target {
+        &self.definition
+    }
+}
+
 impl Serialize for Lock {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -58,7 +75,7 @@ impl Serialize for Lock {
 }
 
 impl<'de> Deserialize<'de> for Lock {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -95,6 +112,37 @@ impl<'de> Deserialize<'de> for Lock {
             }
             _ => Err(Error::custom(format!("Unsupported version: {}", version))),
         }
+    }
+}
+
+impl Lock {
+    /// `set_lock_hash` returns a copy of the lock with the lock hash populated.
+    pub fn set_lock_hash(&mut self) -> Result<()> {
+        todo!()
+    }
+
+    /// `verify_hashes` returns an error if hashes populated from json object
+    /// doesn't matches actual hashes.
+    pub fn verify_hashes(&self) -> Result<()> {
+        todo!()
+    }
+
+    /// `verify_signatures` returns true if all config signatures are fully
+    /// populated and valid. A verified lock is ready for use in charon run.
+    pub fn verify_signatures(&self) -> Result<()> {
+        todo!("Implement this after eth1wrap.EthClientRunner is implemented");
+    }
+
+    /// `verify_node_signatures` returns true an error if the node signatures
+    /// field is not correctly populated or otherwise invalid.
+    pub fn verify_node_signatures(&self) -> Result<()> {
+        todo!()
+    }
+
+    /// `verify_builder_registrations` returns an error if the populated builder
+    /// registrations are invalid.
+    pub fn verify_builder_registrations(&self) -> Result<()> {
+        todo!()
     }
 }
 

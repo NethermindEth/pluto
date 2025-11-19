@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::{
     helpers::{EthHex, from_0x_hex_str},
-    operator::{Operator, OperatorV1X1, OperatorV1X2OrLater},
+    operator::{Operator, OperatorSSZ, OperatorV1X1, OperatorV1X2OrLater},
     version::{CURRENT_VERSION, DKG_ALGO, versions::*},
 };
 use charon_eth2::enr::{Record, RecordError};
@@ -15,6 +15,7 @@ use serde_with::{
     base64::{Base64, Standard},
     serde_as,
 };
+use ssz_derive::{Decode, Encode};
 use uuid::Uuid;
 
 /// Length of the fork version in bytes.
@@ -463,6 +464,129 @@ impl Definition {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub(crate) struct DefinitionSSZ {
+    /// Human-readable random unique identifier. Max 64 chars.
+    pub uuid: Vec<u8>,
+    /// Human-readable cosmetic identifier. Max 256 chars.
+    pub name: Vec<u8>,
+    /// Schema version of this definition. Max 16 chars.
+    pub version: Vec<u8>,
+    /// Human-readable timestamp of this definition. Max 32
+    /// chars. Note that this was added in v1.1.0, so may be empty for older
+    /// versions.
+    pub timestamp: Vec<u8>,
+    /// Number of DVs to be created in the cluster lock
+    /// file.
+    pub num_validators: u64,
+    /// Threshold required for signature reconstruction. Defaults to safe value
+    /// for number of nodes/peers.
+    pub threshold: u64,
+    /// DKG algorithm to use for key generation. Max 32 chars.
+    pub dkg_algorithm: Vec<u8>,
+    /// Cluster's 4 byte beacon chain fork version
+    /// (network/chain identifier).
+    pub fork_version: [u8; 4],
+    /// Charon nodes in the cluster and their operators.
+    /// Max 256 operators.
+    pub operators: Vec<OperatorSSZ>,
+    /// Creator identifies the creator of a cluster definition. They may also be
+    /// an operator.
+    pub creator: CreatorSSZ,
+    /// Addresses of each validator.
+    pub validator_addresses: Vec<ValidatorAddressesSSZ>,
+    /// Partial deposit amounts that sum up to at least
+    /// 32ETH.
+    /// todo: check type
+    pub deposit_amounts: Vec<u64>,
+    /// Consensus protocol name preferred by the
+    /// cluster, e.g. "abft".
+    pub consensus_protocol: Vec<u8>,
+    /// Target block gas limit for the cluster.
+    pub target_gas_limit: u64,
+    /// Compounding flag enables compounding rewards for validators by using
+    /// 0x02 withdrawal credentials.
+    pub compounding: bool,
+    /// Config hash uniquely identifies a cluster definition excluding operator
+    /// ENRs and signatures.
+    pub config_hash: [u8; 32],
+    /// Definition hash uniquely identifies a cluster definition including
+    /// operator ENRs and signatures.
+    pub definition_hash: [u8; 32],
+}
+
+impl From<Definition> for DefinitionSSZ {
+    fn from(definition: Definition) -> Self {
+        Self {
+            uuid: definition.uuid.to_string().as_bytes().to_vec(),
+            name: definition.name.as_bytes().to_vec(),
+            version: definition.version.as_bytes().to_vec(),
+            timestamp: definition.timestamp.timestamp().to_be_bytes().to_vec(),
+            num_validators: definition.num_validators,
+            threshold: definition.threshold,
+            dkg_algorithm: definition.dkg_algorithm.as_bytes().to_vec(),
+            fork_version: definition.fork_version.try_into().unwrap(),
+            operators: definition
+                .operators
+                .into_iter()
+                .map(OperatorSSZ::from)
+                .collect(),
+            creator: CreatorSSZ::from(definition.creator),
+            validator_addresses: definition
+                .validator_addresses
+                .into_iter()
+                .map(ValidatorAddressesSSZ::from)
+                .collect(),
+            deposit_amounts: definition.deposit_amounts,
+            consensus_protocol: definition.consensus_protocol.as_bytes().to_vec(),
+            target_gas_limit: definition.target_gas_limit,
+            compounding: definition.compounding,
+            config_hash: definition.config_hash.try_into().unwrap(),
+            definition_hash: definition.definition_hash.try_into().unwrap(),
+        }
+    }
+}
+
+impl TryFrom<DefinitionSSZ> for Definition {
+    type Error = DefinitionError;
+
+    fn try_from(definition: DefinitionSSZ) -> Result<Self, Self::Error> {
+        Ok(Self {
+            uuid: Uuid::from_slice(&definition.uuid).unwrap(),
+            name: String::from_utf8(definition.name).unwrap(),
+            version: String::from_utf8(definition.version).unwrap(),
+            timestamp: DateTime::from_timestamp(
+                i64::from_be_bytes(definition.timestamp.try_into().unwrap()),
+                0,
+            )
+            .unwrap(),
+            num_validators: definition.num_validators,
+            threshold: definition.threshold,
+            dkg_algorithm: String::from_utf8(definition.dkg_algorithm).unwrap(),
+            fork_version: definition.fork_version.to_vec(),
+            operators: definition
+                .operators
+                .into_iter()
+                .map(Operator::try_from)
+                .collect::<Result<Vec<Operator>, DefinitionError>>()
+                .unwrap(),
+            creator: Creator::try_from(definition.creator).unwrap(),
+            validator_addresses: definition
+                .validator_addresses
+                .into_iter()
+                .map(ValidatorAddresses::try_from)
+                .collect::<Result<Vec<ValidatorAddresses>, DefinitionError>>()
+                .unwrap(),
+            deposit_amounts: definition.deposit_amounts,
+            consensus_protocol: String::from_utf8(definition.consensus_protocol).unwrap(),
+            target_gas_limit: definition.target_gas_limit,
+            compounding: definition.compounding,
+            config_hash: definition.config_hash.to_vec(),
+            definition_hash: definition.definition_hash.to_vec(),
+        })
+    }
+}
+
 /// Creator identifies the creator of a cluster definition. They may also be an
 /// operator.
 #[serde_as]
@@ -475,6 +599,34 @@ pub struct Creator {
     pub config_signature: Vec<u8>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub(crate) struct CreatorSSZ {
+    /// The Ethereum address of the creator
+    pub address: [u8; 20],
+    /// The creator's signature over the config hash
+    pub config_signature: [u8; 65],
+}
+
+impl From<Creator> for CreatorSSZ {
+    fn from(creator: Creator) -> Self {
+        Self {
+            address: creator.address.as_bytes().to_vec().try_into().unwrap(),
+            config_signature: creator.config_signature.try_into().unwrap(),
+        }
+    }
+}
+
+impl TryFrom<CreatorSSZ> for Creator {
+    type Error = DefinitionError;
+
+    fn try_from(creator: CreatorSSZ) -> Result<Self, Self::Error> {
+        Ok(Self {
+            address: String::from_utf8(creator.address.to_vec()).unwrap(),
+            config_signature: creator.config_signature.to_vec(),
+        })
+    }
+}
+
 /// Addresses for a validator
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ValidatorAddresses {
@@ -482,6 +634,48 @@ pub struct ValidatorAddresses {
     pub fee_recipient_address: String,
     /// The withdrawal address for the validator
     pub withdrawal_address: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub(crate) struct ValidatorAddressesSSZ {
+    /// The fee recipient address for the validator
+    pub fee_recipient_address: [u8; 20],
+    /// The withdrawal address for the validator
+    pub withdrawal_address: [u8; 20],
+}
+
+impl From<ValidatorAddresses> for ValidatorAddressesSSZ {
+    fn from(validator_addresses: ValidatorAddresses) -> Self {
+        Self {
+            fee_recipient_address: validator_addresses
+                .fee_recipient_address
+                .as_bytes()
+                .to_vec()
+                .try_into()
+                .unwrap(),
+            withdrawal_address: validator_addresses
+                .withdrawal_address
+                .as_bytes()
+                .to_vec()
+                .try_into()
+                .unwrap(),
+        }
+    }
+}
+
+impl TryFrom<ValidatorAddressesSSZ> for ValidatorAddresses {
+    type Error = DefinitionError;
+
+    fn try_from(validator_addresses: ValidatorAddressesSSZ) -> Result<Self, Self::Error> {
+        Ok(Self {
+            fee_recipient_address: String::from_utf8(
+                validator_addresses.fee_recipient_address.to_vec(),
+            )
+            .unwrap(),
+            withdrawal_address: String::from_utf8(validator_addresses.withdrawal_address.to_vec())
+                .unwrap(),
+        })
+    }
 }
 
 /// DefinitionV1x0or1 is a cluster definition for version 1.0.0 or 1.1.0

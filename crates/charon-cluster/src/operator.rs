@@ -1,6 +1,7 @@
-use crate::{helpers::EthHex, version::ZERO_NONCE};
+use crate::{definition::DefinitionError, helpers::EthHex, version::ZERO_NONCE};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use ssz_derive::{Decode, Encode};
 
 /// Operator represents a charon node operator.
 #[serde_as]
@@ -17,6 +18,42 @@ pub struct Operator {
     /// The ENR signature of the operator
     #[serde_as(as = "EthHex")]
     pub enr_signature: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub(crate) struct OperatorSSZ {
+    /// The Ethereum address of the operator
+    pub address: [u8; 20],
+    /// The ENR of the operator
+    pub enr: Vec<u8>,
+    /// The config signature of the operator
+    pub config_signature: [u8; 65],
+    /// The ENR signature of the operator
+    pub enr_signature: [u8; 65],
+}
+
+impl From<Operator> for OperatorSSZ {
+    fn from(operator: Operator) -> Self {
+        Self {
+            address: operator.address.as_bytes().to_vec().try_into().unwrap(),
+            enr: operator.enr.as_bytes().to_vec(),
+            config_signature: operator.config_signature.try_into().unwrap(),
+            enr_signature: operator.enr_signature.try_into().unwrap(),
+        }
+    }
+}
+
+impl TryFrom<OperatorSSZ> for Operator {
+    type Error = DefinitionError;
+
+    fn try_from(operator: OperatorSSZ) -> Result<Self, Self::Error> {
+        Ok(Self {
+            address: String::from_utf8(operator.address.to_vec()).unwrap(),
+            enr: String::from_utf8(operator.enr.to_vec()).unwrap(),
+            config_signature: operator.config_signature.to_vec(),
+            enr_signature: operator.enr_signature.to_vec(),
+        })
+    }
 }
 
 /// operatorJSONv1x1 is the json formatter of Operator for versions v1.0.0 and

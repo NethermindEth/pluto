@@ -3,6 +3,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{DeserializeAs, SerializeAs};
 use std::borrow::Cow;
 
+use crate::{definition::ADDRESS_LEN, ssz::SSZError, ssz_hasher::HashWalker};
+
 /// EthHex represents byte slices that are json formatted as 0x prefixed hex.
 /// Can be used both as a standalone type and with serde_as.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,6 +124,75 @@ pub fn from_0x_hex_str(s: &str, len: usize) -> Result<Vec<u8>, hex::FromHexError
         return Err(hex::FromHexError::InvalidStringLength);
     }
     Ok(bytes)
+}
+
+/// `put_byte_list` appends a ssz byte list.
+/// See reference:
+/// github.com/attestantio/go-eth2-client/spec/bellatrix/
+/// executionpayload_encoding.go:277-284.
+pub fn put_byte_list<H: HashWalker>(
+    hh: &mut H,
+    bytes: &[u8],
+    limit: usize,
+    field: &str,
+) -> Result<(), SSZError<H>> {
+    let elem_indx = hh.index();
+
+    let byte_len = bytes.len();
+
+    if byte_len > limit {
+        return Err(SSZError::<H>::IncorrectListSize {
+            namespace: "put_byte_list",
+            field: field.to_string(),
+            actual: byte_len,
+            expected: limit,
+        });
+    }
+
+    let mut bytes32 = [0; 32];
+    bytes32[..].copy_from_slice(bytes);
+
+    hh.append_bytes32(&bytes32)
+        .map_err(SSZError::<H>::HashWalkerError)?;
+
+    hh.merkleize_with_mixin(elem_indx, byte_len, (limit + 31) / 32)
+        .map_err(SSZError::<H>::HashWalkerError)?;
+
+    Ok(())
+}
+
+/// `put_bytes_n` appends b as a ssz fixed size byte array of length n.
+pub fn put_bytes_n<H: HashWalker>(hh: &mut H, bytes: &[u8], n: usize) -> Result<(), SSZError<H>> {
+    if bytes.len() > n {
+        return Err(SSZError::<H>::IncorrectListSize {
+            namespace: "put_bytes_n",
+            field: "".to_string(),
+            actual: bytes.len(),
+            expected: n,
+        });
+    }
+
+    hh.put_bytes(&left_pad(bytes, n))
+        .map_err(SSZError::<H>::HashWalkerError)?;
+
+    Ok(())
+}
+
+/// `put_hex_bytes_20` appends a 20 byte fixed size byte ssz array from the
+/// 0xhex address.
+pub fn put_hex_bytes_20<H: HashWalker>(hh: &mut H, address: &str) -> Result<(), SSZError<H>> {
+    let bytes = from_0x_hex_str(address, ADDRESS_LEN)?;
+    hh.put_bytes(&left_pad(&bytes, ADDRESS_LEN))
+        .map_err(SSZError::<H>::HashWalkerError)?;
+    Ok(())
+}
+
+/// `left_pad` returns the byte slice left padded with zero to ensure a length
+/// of at least len.
+pub fn left_pad(bytes: &[u8], len: usize) -> Vec<u8> {
+    let mut padded = vec![0; len];
+    padded[len - bytes.len()..].copy_from_slice(&bytes);
+    padded
 }
 
 #[cfg(test)]
