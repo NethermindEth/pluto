@@ -89,6 +89,31 @@ pub trait HashWalker {
 /// Hash function for hashing SSZ data.
 pub type HashFn = fn(src: &[u8]) -> Result<Vec<u8>, HasherError>;
 
+/// Errors that may occur during hashing/merkleization.
+#[derive(Debug, thiserror::Error)]
+pub enum HasherError {
+    /// Invalid buffer length
+    #[error("Invalid buffer length")]
+    InvalidBufferLength,
+    /// Unsupported version
+    #[error("Unsupported version: {0}")]
+    UnsupportedVersion(String),
+    /// Integer overflow
+    #[error("Integer overflow")]
+    IntegerOverflow,
+    /// Integer underflow
+    #[error("Integer underflow")]
+    IntegerUnderflow,
+    /// Count greater than limit
+    #[error("Count greater than limit: count {count}, limit {limit}")]
+    CountGreaterThanLimit {
+        /// Count
+        count: usize,
+        /// Limit
+        limit: usize,
+    },
+}
+
 /// SSZ hasher for calculating merkle roots.
 #[derive(Debug)]
 pub struct Hasher {
@@ -165,8 +190,7 @@ impl Hasher {
         if limit == 0 {
             limit = count;
         } else if count > limit {
-            // todo can we return an error here?
-            panic!("BUG: count {} > limit {}", count, limit);
+            return Err(HasherError::CountGreaterThanLimit { count, limit });
         }
 
         if limit == 0 {
@@ -214,23 +238,6 @@ impl Hasher {
     pub fn reset(&mut self) {
         self.buf.clear();
     }
-}
-
-/// Errors that may occur during hashing/merkleization.
-#[derive(Debug, thiserror::Error)]
-pub enum HasherError {
-    /// Invalid buffer length
-    #[error("Invalid buffer length")]
-    InvalidBufferLength,
-    /// Unsupported version
-    #[error("Unsupported version: {0}")]
-    UnsupportedVersion(String),
-    /// Integer overflow
-    #[error("Integer overflow")]
-    IntegerOverflow,
-    /// Integer underflow
-    #[error("Integer underflow")]
-    IntegerUnderflow,
 }
 
 impl HashWalker for Hasher {

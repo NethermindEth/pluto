@@ -353,7 +353,6 @@ impl Definition {
             return Err(InvalidGasLimitError::GasLimitNotSet.into());
         }
 
-        // TODO: Construct and return a Definition. Placeholder for now.
         def.set_definition_hashes()
     }
 
@@ -456,8 +455,17 @@ impl Definition {
     }
 
     /// Sets the definition hashes.
-    pub fn set_definition_hashes(self) -> Result<Self, DefinitionError> {
-        // todo
+    pub fn set_definition_hashes(mut self) -> Result<Self, DefinitionError> {
+        let config_hash =
+            hash_definition(&self, true).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
+
+        self.config_hash = config_hash.to_vec();
+
+        let definition_hash =
+            hash_definition(&self, false).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
+
+        self.definition_hash = definition_hash.to_vec();
+
         Ok(self)
     }
 

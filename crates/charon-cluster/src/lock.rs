@@ -1,5 +1,6 @@
 use std::ops::Deref;
 
+use charon_k1util::verify_65;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
@@ -13,6 +14,8 @@ use crate::{
     ssz_hasher::Hasher,
     version::versions::*,
 };
+use charon_eth2::enr::{Record, RecordError};
+use charon_k1util::K1UtilError;
 use serde_with::{
     base64::{Base64, Standard},
     serde_as,
@@ -21,6 +24,20 @@ use serde_with::{
 /// LockError is the error type for Lock errors.
 #[derive(Debug, thiserror::Error)]
 pub enum LockError {
+    /// Unexpected validator registration
+    #[error("Unexpected validator registration")]
+    UnexpectedValidatorRegistration {
+        /// Operator index
+        operator_idx: usize,
+    },
+
+    /// Missing validator registration
+    #[error("Missing validator registration")]
+    MissingValidatorRegistration {
+        /// Operator index
+        operator_idx: usize,
+    },
+
     /// Definition hashes verification failed
     #[error("Definition hashes verification failed: {0}")]
     DefinitionHashesVerificationFailed(#[from] DefinitionError),
@@ -37,6 +54,40 @@ pub enum LockError {
         /// Actual lock hash
         actual: Vec<u8>,
     },
+
+    /// Unexpected node signatures
+    #[error("Unexpected node signatures")]
+    UnexpectedNodeSignatures,
+
+    /// Invalid node signatures count
+    #[error("Invalid node signatures count: expected {expected}, actual {actual}")]
+    InvalidNodeSignaturesCount {
+        /// Expected count of node signatures
+        expected: usize,
+        /// Actual count of node signatures
+        actual: usize,
+    },
+
+    /// Failed to parse ENR
+    #[error("Failed to parse ENR: {0}")]
+    FailedToParseENR(#[from] RecordError),
+
+    /// Missing public key
+    #[error("Missing public key")]
+    MissingPublicKey,
+
+    /// Node signature verification failed
+    #[error("Node signature verification failed")]
+    NodeSignatureVerificationFailed {
+        /// Operator index
+        operator_idx: usize,
+        /// Signature
+        signature: Vec<u8>,
+    },
+
+    /// Failed to verify node signature
+    #[error("Failed to verify node signature: {0}")]
+    FailedToVerifyNodeSignature(#[from] K1UtilError),
 }
 
 type Result<T> = std::result::Result<T, LockError>;
@@ -137,7 +188,11 @@ impl<'de> Deserialize<'de> for Lock {
 impl Lock {
     /// `set_lock_hash` returns a copy of the lock with the lock hash populated.
     pub fn set_lock_hash(&mut self) -> Result<()> {
-        todo!()
+        let lock_hash = hash_lock(self)?;
+
+        self.lock_hash = lock_hash.to_vec();
+
+        Ok(())
     }
 
     /// `verify_hashes` returns an error if hashes populated from json object
@@ -165,14 +220,52 @@ impl Lock {
 
     /// `verify_node_signatures` returns true an error if the node signatures
     /// field is not correctly populated or otherwise invalid.
-    pub fn verify_node_signatures(&self) -> Result<()> {
-        todo!()
+    fn _verify_node_signatures(&self) -> Result<()> {
+        if matches!(
+            self.version.as_str(),
+            V1_0 | V1_1 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6
+        ) {
+            if self.node_signatures.is_empty() {
+                return Err(LockError::UnexpectedNodeSignatures);
+            }
+
+            return Ok(());
+        }
+
+        // Ensure correct count of node signatures
+        if self.node_signatures.len() != self.operators.len() {
+            return Err(LockError::InvalidNodeSignaturesCount {
+                expected: self.operators.len(),
+                actual: self.node_signatures.len(),
+            });
+        }
+
+        // Verify the node signatures
+        for idx in 0..self.operators.len() {
+            let record = Record::try_from(self.operators[idx].enr.as_str())
+                .map_err(LockError::FailedToParseENR)?;
+
+            let pub_key = record
+                .public_key
+                .ok_or_else(|| LockError::MissingPublicKey)?;
+
+            let verified = verify_65(&pub_key, &self.lock_hash, &self.node_signatures[idx])?;
+
+            if !verified {
+                return Err(LockError::NodeSignatureVerificationFailed {
+                    operator_idx: idx,
+                    signature: self.node_signatures[idx].clone(),
+                });
+            }
+        }
+
+        Ok(())
     }
 
     /// `verify_builder_registrations` returns an error if the populated builder
     /// registrations are invalid.
     pub fn verify_builder_registrations(&self) -> Result<()> {
-        todo!()
+        todo!("Implement this after eth2util.registration is implemented");
     }
 }
 
