@@ -3,12 +3,14 @@ use std::ops::Deref;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
-    definition::Definition,
+    definition::{Definition, DefinitionError},
     distvalidator::{
         DistValidator, DistValidatorV1x0or1, DistValidatorV1x2to5, DistValidatorV1x6,
         DistValidatorV1x7, DistValidatorV1x8orLater,
     },
     helpers::EthHex,
+    ssz::{SSZError, hash_lock},
+    ssz_hasher::Hasher,
     version::versions::*,
 };
 use serde_with::{
@@ -18,7 +20,24 @@ use serde_with::{
 
 /// LockError is the error type for Lock errors.
 #[derive(Debug, thiserror::Error)]
-pub enum LockError {}
+pub enum LockError {
+    /// Definition hashes verification failed
+    #[error("Definition hashes verification failed: {0}")]
+    DefinitionHashesVerificationFailed(#[from] DefinitionError),
+
+    /// SSZ error
+    #[error("Lock hash verification failed: {0}")]
+    SSZError(#[from] SSZError<Hasher>),
+
+    /// Invalid lock hash
+    #[error("Invalid lock hash")]
+    InvalidLockHash {
+        /// Expected lock hash
+        expected: Vec<u8>,
+        /// Actual lock hash
+        actual: Vec<u8>,
+    },
+}
 
 type Result<T> = std::result::Result<T, LockError>;
 
@@ -124,7 +143,18 @@ impl Lock {
     /// `verify_hashes` returns an error if hashes populated from json object
     /// doesn't matches actual hashes.
     pub fn verify_hashes(&self) -> Result<()> {
-        todo!()
+        self.definition.verify_hashes()?;
+
+        let lock_hash = hash_lock(self)?;
+
+        if lock_hash.to_vec() != self.lock_hash {
+            return Err(LockError::InvalidLockHash {
+                expected: self.lock_hash.clone(),
+                actual: lock_hash.to_vec(),
+            });
+        }
+
+        Ok(())
     }
 
     /// `verify_signatures` returns true if all config signatures are fully
@@ -611,77 +641,89 @@ mod tests {
     fn test_cluster_lock_v1_10_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_10_0.json");
         let _ = serde_json::from_str::<LockV1x8orLater>(json_str).unwrap();
-        let _ = serde_json::from_str::<Lock>(include_str!("testdata/cluster_lock_v1_10_0.json"))
+        let lock = serde_json::from_str::<Lock>(include_str!("testdata/cluster_lock_v1_10_0.json"))
             .unwrap();
+
+        assert!(lock.verify_hashes().is_ok());
     }
 
     #[test]
     fn test_cluster_lock_v1_9_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_9_0.json");
         let _ = serde_json::from_str::<LockV1x8orLater>(json_str).unwrap();
-        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
+        assert!(lock.verify_hashes().is_ok());
     }
 
     #[test]
     fn test_cluster_lock_v1_8_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_8_0.json");
         let _ = serde_json::from_str::<LockV1x8orLater>(json_str).unwrap();
-        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
+        assert!(lock.verify_hashes().is_ok());
     }
 
     #[test]
     fn test_cluster_lock_v1_7_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_7_0.json");
         let _ = serde_json::from_str::<LockV1x7>(json_str).unwrap();
-        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
+        assert!(lock.verify_hashes().is_ok());
     }
 
     #[test]
     fn test_cluster_lock_v1_6_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_6_0.json");
         let _ = serde_json::from_str::<LockV1x6>(json_str).unwrap();
-        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
+        assert!(lock.verify_hashes().is_ok());
     }
 
     #[test]
     fn test_cluster_lock_v1_5_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_5_0.json");
         let _ = serde_json::from_str::<LockV1x2to5>(json_str).unwrap();
-        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
+        assert!(lock.verify_hashes().is_ok());
     }
 
     #[test]
     fn test_cluster_lock_v1_4_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_4_0.json");
         let _ = serde_json::from_str::<LockV1x2to5>(json_str).unwrap();
-        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
+        assert!(lock.verify_hashes().is_ok());
     }
 
     #[test]
     fn test_cluster_lock_v1_3_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_3_0.json");
         let _ = serde_json::from_str::<LockV1x2to5>(json_str).unwrap();
-        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
+        assert!(lock.verify_hashes().is_ok());
     }
 
     #[test]
     fn test_cluster_lock_v1_2_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_2_0.json");
         let _ = serde_json::from_str::<LockV1x2to5>(json_str).unwrap();
-        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
+        assert!(lock.verify_hashes().is_ok());
     }
 
     #[test]
     fn test_cluster_lock_v1_1_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_1_0.json");
         let _ = serde_json::from_str::<LockV1x0or1>(json_str).unwrap();
-        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
+        assert!(lock.verify_hashes().is_ok());
     }
 
     #[test]
     fn test_cluster_lock_v1_0_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_0_0.json");
         let _ = serde_json::from_str::<LockV1x0or1>(json_str).unwrap();
-        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
+        assert!(lock.verify_hashes().is_ok());
     }
 }

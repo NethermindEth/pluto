@@ -118,6 +118,10 @@ impl<'de> DeserializeAs<'de, DateTime<Utc>> for TimestampSeconds {
 
 /// Converts a 0x prefixed hex string to a byte slice.
 pub fn from_0x_hex_str(s: &str, len: usize) -> Result<Vec<u8>, hex::FromHexError> {
+    if s.is_empty() {
+        return Ok(vec![]);
+    }
+
     let s = s.strip_prefix("0x").unwrap_or(s);
     let bytes = hex::decode(s)?;
     if bytes.len() != len {
@@ -149,13 +153,10 @@ pub fn put_byte_list<H: HashWalker>(
         });
     }
 
-    let mut bytes32 = [0; 32];
-    bytes32[..].copy_from_slice(bytes);
-
-    hh.append_bytes32(&bytes32)
+    hh.append_bytes32(bytes)
         .map_err(SSZError::<H>::HashWalkerError)?;
 
-    hh.merkleize_with_mixin(elem_indx, byte_len, (limit + 31) / 32)
+    hh.merkleize_with_mixin(elem_indx, byte_len, limit.div_ceil(32))
         .map_err(SSZError::<H>::HashWalkerError)?;
 
     Ok(())
@@ -190,15 +191,36 @@ pub fn put_hex_bytes_20<H: HashWalker>(hh: &mut H, address: &str) -> Result<(), 
 /// `left_pad` returns the byte slice left padded with zero to ensure a length
 /// of at least len.
 pub fn left_pad(bytes: &[u8], len: usize) -> Vec<u8> {
-    let mut padded = vec![0; len];
-    padded[len - bytes.len()..].copy_from_slice(&bytes);
+    if bytes.len() >= len {
+        return bytes.to_vec();
+    }
+
+    let pad_count = len.saturating_sub(bytes.len());
+    let mut padded = vec![0; pad_count];
+    padded.extend_from_slice(bytes);
     padded
+}
+/// `to_0x_hex` converts a byte slice to a 0x prefixed hex string.
+pub fn to_0x_hex(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return String::new();
+    }
+
+    format!("0x{}", hex::encode(bytes))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_with::serde_as;
+
+    #[test]
+    fn test_left_pad() {
+        assert_eq!(left_pad(&[0x12, 0x34], 4), vec![0x00, 0x00, 0x12, 0x34]);
+        assert_eq!(left_pad(&[0xab], 3), vec![0x00, 0x00, 0xab]);
+        assert_eq!(left_pad(&[1, 2, 3], 3), vec![1, 2, 3]);
+        assert_eq!(left_pad(&[1, 2, 3], 2), vec![1, 2, 3]);
+    }
 
     #[test]
     fn test_eth_hex_serialize_deserialize() {

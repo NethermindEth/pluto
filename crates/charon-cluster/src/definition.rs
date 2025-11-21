@@ -2,12 +2,13 @@ use std::collections::HashSet;
 
 use crate::{
     helpers::{EthHex, from_0x_hex_str},
-    operator::{Operator, OperatorSSZ, OperatorV1X1, OperatorV1X2OrLater},
+    operator::{Operator, OperatorV1X1, OperatorV1X2OrLater},
+    ssz::hash_definition,
     version::{CURRENT_VERSION, DKG_ALGO, versions::*},
 };
 use charon_eth2::enr::{Record, RecordError};
 use charon_p2p::peer::{Peer, PeerError};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use libp2p::PeerId;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{
@@ -15,7 +16,6 @@ use serde_with::{
     base64::{Base64, Standard},
     serde_as,
 };
-use ssz_derive::{Decode, Encode};
 use uuid::Uuid;
 
 /// Length of the fork version in bytes.
@@ -39,7 +39,7 @@ pub struct NodeIdx {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Definition {
     /// Human-readable random unique identifier. Max 64 chars.
-    pub uuid: Uuid,
+    pub uuid: String,
     /// Human-readable cosmetic identifier. Max 256 chars.
     pub name: String,
     /// Schema version of this definition. Max 16 chars.
@@ -47,7 +47,7 @@ pub struct Definition {
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
     pub num_validators: u64,
@@ -228,6 +228,28 @@ pub enum DefinitionError {
     /// Failed to create peer
     #[error("Failed to create peer: {0}")]
     FailedToCreatePeer(#[from] PeerError),
+
+    /// Invalid config hash
+    #[error("Invalid config hash")]
+    InvalidConfigHash {
+        /// Expected config hash
+        expected: Vec<u8>,
+        /// Actual config hash
+        actual: Vec<u8>,
+    },
+
+    /// SSZ error
+    #[error("SSZ error: {0}")]
+    SSZError(#[from] Box<crate::ssz::SSZError<crate::ssz_hasher::Hasher>>),
+
+    /// Invalid definition hash
+    #[error("Invalid definition hash")]
+    InvalidDefinitionHash {
+        /// Expected definition hash
+        expected: Vec<u8>,
+        /// Actual definition hash
+        actual: Vec<u8>,
+    },
 }
 
 /// InvalidGasLimitError is an error type for invalid gas limit errors.
@@ -277,10 +299,10 @@ impl Definition {
         let uuid = Uuid::new_v4();
 
         let mut def = Definition {
-            uuid,
+            uuid: uuid.to_string(),
             name,
             version: CURRENT_VERSION.to_string(),
-            timestamp: Utc::now(),
+            timestamp: Utc::now().to_string(),
             num_validators,
             threshold,
             dkg_algorithm: DKG_ALGO.to_string(),
@@ -425,9 +447,28 @@ impl Definition {
 
     /// `verify_hashes` returns an error if hashes populated from json object
     /// doesn't matches actual hashes.
-    pub fn verify_hashes(self) -> Result<Self, DefinitionError> {
-        // todo
-        Ok(self)
+    pub fn verify_hashes(&self) -> Result<(), DefinitionError> {
+        let config_hash =
+            hash_definition(self, true).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
+
+        if config_hash.to_vec() != self.config_hash {
+            return Err(DefinitionError::InvalidConfigHash {
+                expected: self.config_hash.clone(),
+                actual: config_hash.to_vec(),
+            });
+        }
+
+        let definition_hash =
+            hash_definition(self, false).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
+
+        if definition_hash.to_vec() != self.definition_hash {
+            return Err(DefinitionError::InvalidDefinitionHash {
+                expected: self.definition_hash.clone(),
+                actual: definition_hash.to_vec(),
+            });
+        }
+
+        Ok(())
     }
 
     /// Returns true if the provided definition version supports EIP712
@@ -464,129 +505,6 @@ impl Definition {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub(crate) struct DefinitionSSZ {
-    /// Human-readable random unique identifier. Max 64 chars.
-    pub uuid: Vec<u8>,
-    /// Human-readable cosmetic identifier. Max 256 chars.
-    pub name: Vec<u8>,
-    /// Schema version of this definition. Max 16 chars.
-    pub version: Vec<u8>,
-    /// Human-readable timestamp of this definition. Max 32
-    /// chars. Note that this was added in v1.1.0, so may be empty for older
-    /// versions.
-    pub timestamp: Vec<u8>,
-    /// Number of DVs to be created in the cluster lock
-    /// file.
-    pub num_validators: u64,
-    /// Threshold required for signature reconstruction. Defaults to safe value
-    /// for number of nodes/peers.
-    pub threshold: u64,
-    /// DKG algorithm to use for key generation. Max 32 chars.
-    pub dkg_algorithm: Vec<u8>,
-    /// Cluster's 4 byte beacon chain fork version
-    /// (network/chain identifier).
-    pub fork_version: [u8; 4],
-    /// Charon nodes in the cluster and their operators.
-    /// Max 256 operators.
-    pub operators: Vec<OperatorSSZ>,
-    /// Creator identifies the creator of a cluster definition. They may also be
-    /// an operator.
-    pub creator: CreatorSSZ,
-    /// Addresses of each validator.
-    pub validator_addresses: Vec<ValidatorAddressesSSZ>,
-    /// Partial deposit amounts that sum up to at least
-    /// 32ETH.
-    /// todo: check type
-    pub deposit_amounts: Vec<u64>,
-    /// Consensus protocol name preferred by the
-    /// cluster, e.g. "abft".
-    pub consensus_protocol: Vec<u8>,
-    /// Target block gas limit for the cluster.
-    pub target_gas_limit: u64,
-    /// Compounding flag enables compounding rewards for validators by using
-    /// 0x02 withdrawal credentials.
-    pub compounding: bool,
-    /// Config hash uniquely identifies a cluster definition excluding operator
-    /// ENRs and signatures.
-    pub config_hash: [u8; 32],
-    /// Definition hash uniquely identifies a cluster definition including
-    /// operator ENRs and signatures.
-    pub definition_hash: [u8; 32],
-}
-
-impl From<Definition> for DefinitionSSZ {
-    fn from(definition: Definition) -> Self {
-        Self {
-            uuid: definition.uuid.to_string().as_bytes().to_vec(),
-            name: definition.name.as_bytes().to_vec(),
-            version: definition.version.as_bytes().to_vec(),
-            timestamp: definition.timestamp.timestamp().to_be_bytes().to_vec(),
-            num_validators: definition.num_validators,
-            threshold: definition.threshold,
-            dkg_algorithm: definition.dkg_algorithm.as_bytes().to_vec(),
-            fork_version: definition.fork_version.try_into().unwrap(),
-            operators: definition
-                .operators
-                .into_iter()
-                .map(OperatorSSZ::from)
-                .collect(),
-            creator: CreatorSSZ::from(definition.creator),
-            validator_addresses: definition
-                .validator_addresses
-                .into_iter()
-                .map(ValidatorAddressesSSZ::from)
-                .collect(),
-            deposit_amounts: definition.deposit_amounts,
-            consensus_protocol: definition.consensus_protocol.as_bytes().to_vec(),
-            target_gas_limit: definition.target_gas_limit,
-            compounding: definition.compounding,
-            config_hash: definition.config_hash.try_into().unwrap(),
-            definition_hash: definition.definition_hash.try_into().unwrap(),
-        }
-    }
-}
-
-impl TryFrom<DefinitionSSZ> for Definition {
-    type Error = DefinitionError;
-
-    fn try_from(definition: DefinitionSSZ) -> Result<Self, Self::Error> {
-        Ok(Self {
-            uuid: Uuid::from_slice(&definition.uuid).unwrap(),
-            name: String::from_utf8(definition.name).unwrap(),
-            version: String::from_utf8(definition.version).unwrap(),
-            timestamp: DateTime::from_timestamp(
-                i64::from_be_bytes(definition.timestamp.try_into().unwrap()),
-                0,
-            )
-            .unwrap(),
-            num_validators: definition.num_validators,
-            threshold: definition.threshold,
-            dkg_algorithm: String::from_utf8(definition.dkg_algorithm).unwrap(),
-            fork_version: definition.fork_version.to_vec(),
-            operators: definition
-                .operators
-                .into_iter()
-                .map(Operator::try_from)
-                .collect::<Result<Vec<Operator>, DefinitionError>>()
-                .unwrap(),
-            creator: Creator::try_from(definition.creator).unwrap(),
-            validator_addresses: definition
-                .validator_addresses
-                .into_iter()
-                .map(ValidatorAddresses::try_from)
-                .collect::<Result<Vec<ValidatorAddresses>, DefinitionError>>()
-                .unwrap(),
-            deposit_amounts: definition.deposit_amounts,
-            consensus_protocol: String::from_utf8(definition.consensus_protocol).unwrap(),
-            target_gas_limit: definition.target_gas_limit,
-            compounding: definition.compounding,
-            config_hash: definition.config_hash.to_vec(),
-            definition_hash: definition.definition_hash.to_vec(),
-        })
-    }
-}
-
 /// Creator identifies the creator of a cluster definition. They may also be an
 /// operator.
 #[serde_as]
@@ -599,34 +517,6 @@ pub struct Creator {
     pub config_signature: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub(crate) struct CreatorSSZ {
-    /// The Ethereum address of the creator
-    pub address: [u8; 20],
-    /// The creator's signature over the config hash
-    pub config_signature: [u8; 65],
-}
-
-impl From<Creator> for CreatorSSZ {
-    fn from(creator: Creator) -> Self {
-        Self {
-            address: creator.address.as_bytes().to_vec().try_into().unwrap(),
-            config_signature: creator.config_signature.try_into().unwrap(),
-        }
-    }
-}
-
-impl TryFrom<CreatorSSZ> for Creator {
-    type Error = DefinitionError;
-
-    fn try_from(creator: CreatorSSZ) -> Result<Self, Self::Error> {
-        Ok(Self {
-            address: String::from_utf8(creator.address.to_vec()).unwrap(),
-            config_signature: creator.config_signature.to_vec(),
-        })
-    }
-}
-
 /// Addresses for a validator
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ValidatorAddresses {
@@ -634,48 +524,6 @@ pub struct ValidatorAddresses {
     pub fee_recipient_address: String,
     /// The withdrawal address for the validator
     pub withdrawal_address: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub(crate) struct ValidatorAddressesSSZ {
-    /// The fee recipient address for the validator
-    pub fee_recipient_address: [u8; 20],
-    /// The withdrawal address for the validator
-    pub withdrawal_address: [u8; 20],
-}
-
-impl From<ValidatorAddresses> for ValidatorAddressesSSZ {
-    fn from(validator_addresses: ValidatorAddresses) -> Self {
-        Self {
-            fee_recipient_address: validator_addresses
-                .fee_recipient_address
-                .as_bytes()
-                .to_vec()
-                .try_into()
-                .unwrap(),
-            withdrawal_address: validator_addresses
-                .withdrawal_address
-                .as_bytes()
-                .to_vec()
-                .try_into()
-                .unwrap(),
-        }
-    }
-}
-
-impl TryFrom<ValidatorAddressesSSZ> for ValidatorAddresses {
-    type Error = DefinitionError;
-
-    fn try_from(validator_addresses: ValidatorAddressesSSZ) -> Result<Self, Self::Error> {
-        Ok(Self {
-            fee_recipient_address: String::from_utf8(
-                validator_addresses.fee_recipient_address.to_vec(),
-            )
-            .unwrap(),
-            withdrawal_address: String::from_utf8(validator_addresses.withdrawal_address.to_vec())
-                .unwrap(),
-        })
-    }
 }
 
 /// DefinitionV1x0or1 is a cluster definition for version 1.0.0 or 1.1.0
@@ -688,13 +536,13 @@ pub struct DefinitionV1x0or1 {
     /// Max 256 operators.
     pub operators: Vec<OperatorV1X1>,
     /// Human-readable random unique identifier. Max 64 chars.
-    pub uuid: Uuid,
+    pub uuid: String,
     /// Schema version of this definition. Max 16 chars.
     pub version: String,
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
     pub num_validators: u64,
@@ -799,13 +647,13 @@ pub struct DefinitionV1x2or3 {
     /// Max 256 operators.
     pub operators: Vec<OperatorV1X2OrLater>,
     /// Human-readable random unique identifier. Max 64 chars.
-    pub uuid: Uuid,
+    pub uuid: String,
     /// Schema version of this definition. Max 16 chars.
     pub version: String,
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
     pub num_validators: u64,
@@ -913,13 +761,13 @@ pub struct DefinitionV1x4 {
     /// Max 256 operators.
     pub operators: Vec<OperatorV1X2OrLater>,
     /// Human-readable random unique identifier. Max 64 chars.
-    pub uuid: Uuid,
+    pub uuid: String,
     /// Schema version of this definition. Max 16 chars.
     pub version: String,
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
     pub num_validators: u64,
@@ -1028,13 +876,13 @@ pub struct DefinitionV1x5to7 {
     /// Max 256 operators.
     pub operators: Vec<OperatorV1X2OrLater>,
     /// Human-readable random unique identifier. Max 64 chars.
-    pub uuid: Uuid,
+    pub uuid: String,
     /// Schema version of this definition. Max 16 chars.
     pub version: String,
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
     pub num_validators: u64,
@@ -1125,13 +973,13 @@ pub struct DefinitionV1x8 {
     /// Max 256 operators.
     pub operators: Vec<OperatorV1X2OrLater>,
     /// UUID is a human-readable random unique identifier. Max 64 chars.
-    pub uuid: Uuid,
+    pub uuid: String,
     /// Version is the schema version of this definition. Max 16 chars.
     pub version: String,
     /// Timestamp is the human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: String,
     /// NumValidators is the number of DVs to be created in the cluster lock
     /// file.
     pub num_validators: u64,
@@ -1227,13 +1075,13 @@ pub struct DefinitionV1x9 {
     /// Max 256 operators.
     pub operators: Vec<OperatorV1X2OrLater>,
     /// UUID is a human-readable random unique identifier. Max 64 chars.
-    pub uuid: Uuid,
+    pub uuid: String,
     /// Version is the schema version of this definition. Max 16 chars.
     pub version: String,
     /// Timestamp is the human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: String,
     /// NumValidators is the number of DVs to be created in the cluster lock
     /// file.
     pub num_validators: u64,
@@ -1333,13 +1181,13 @@ pub struct DefinitionV1x10 {
     /// Max 256 operators.
     pub operators: Vec<OperatorV1X2OrLater>,
     /// Human-readable random unique identifier. Max 64 chars.
-    pub uuid: Uuid,
+    pub uuid: String,
     /// Schema version of this definition. Max 16 chars.
     pub version: String,
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
     pub num_validators: u64,
@@ -1548,6 +1396,8 @@ mod tests {
             hex::decode("59a8d3ffa9010f54965a11248e2835e716049d508f4f64bf43bd5a6ca56037c0")
                 .unwrap()
         );
+
+        assert!(definition.verify_hashes().is_ok());
     }
 
     #[test]
@@ -1556,7 +1406,9 @@ mod tests {
 
         let _ = serde_json::from_str::<DefinitionV1x0or1>(json_str).unwrap();
 
-        let _ = serde_json::from_str::<Definition>(json_str).unwrap();
+        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
+
+        assert!(definition.verify_hashes().is_ok());
     }
 
     #[test]
@@ -1565,7 +1417,9 @@ mod tests {
 
         let _ = serde_json::from_str::<DefinitionV1x0or1>(json_str).unwrap();
 
-        let _ = serde_json::from_str::<Definition>(json_str).unwrap();
+        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
+
+        assert!(definition.verify_hashes().is_ok());
     }
 
     #[test]
@@ -1574,7 +1428,9 @@ mod tests {
 
         let _ = serde_json::from_str::<DefinitionV1x2or3>(json_str).unwrap();
 
-        let _ = serde_json::from_str::<Definition>(json_str).unwrap();
+        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
+
+        assert!(definition.verify_hashes().is_ok());
     }
 
     #[test]
@@ -1583,7 +1439,9 @@ mod tests {
 
         let _ = serde_json::from_str::<DefinitionV1x2or3>(json_str).unwrap();
 
-        let _ = serde_json::from_str::<Definition>(json_str).unwrap();
+        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
+
+        assert!(definition.verify_hashes().is_ok());
     }
 
     #[test]
@@ -1592,7 +1450,9 @@ mod tests {
 
         let _ = serde_json::from_str::<DefinitionV1x4>(json_str).unwrap();
 
-        let _ = serde_json::from_str::<Definition>(json_str).unwrap();
+        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
+
+        assert!(definition.verify_hashes().is_ok());
     }
 
     #[test]
@@ -1601,7 +1461,9 @@ mod tests {
 
         let _ = serde_json::from_str::<DefinitionV1x5to7>(json_str).unwrap();
 
-        let _ = serde_json::from_str::<Definition>(json_str).unwrap();
+        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
+
+        assert!(definition.verify_hashes().is_ok());
     }
 
     #[test]
@@ -1610,7 +1472,9 @@ mod tests {
 
         let _ = serde_json::from_str::<DefinitionV1x5to7>(json_str).unwrap();
 
-        let _ = serde_json::from_str::<Definition>(json_str).unwrap();
+        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
+
+        assert!(definition.verify_hashes().is_ok());
     }
 
     #[test]
@@ -1619,7 +1483,9 @@ mod tests {
 
         let _ = serde_json::from_str::<DefinitionV1x5to7>(json_str).unwrap();
 
-        let _ = serde_json::from_str::<Definition>(json_str).unwrap();
+        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
+
+        assert!(definition.verify_hashes().is_ok());
     }
 
     #[test]
@@ -1628,7 +1494,9 @@ mod tests {
 
         let _ = serde_json::from_str::<DefinitionV1x8>(json_str).unwrap();
 
-        let _ = serde_json::from_str::<Definition>(json_str).unwrap();
+        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
+
+        assert!(definition.verify_hashes().is_ok());
     }
 
     #[test]
@@ -1637,7 +1505,9 @@ mod tests {
 
         let _ = serde_json::from_str::<DefinitionV1x9>(json_str).unwrap();
 
-        let _ = serde_json::from_str::<Definition>(json_str).unwrap();
+        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
+
+        assert!(definition.verify_hashes().is_ok());
     }
 
     #[test]
@@ -1646,7 +1516,9 @@ mod tests {
 
         let _ = serde_json::from_str::<DefinitionV1x10>(json_str).unwrap();
 
-        let _ = serde_json::from_str::<Definition>(json_str).unwrap();
+        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
+
+        assert!(definition.verify_hashes().is_ok());
     }
 
     // test incorrect version

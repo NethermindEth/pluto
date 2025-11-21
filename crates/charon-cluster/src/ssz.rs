@@ -3,10 +3,10 @@
 use ssz::Encode;
 
 use crate::{
-    definition::{ADDRESS_LEN, Definition, DefinitionSSZ},
+    definition::{ADDRESS_LEN, Definition},
     deposit::DepositData,
     distvalidator::DistValidator,
-    helpers::{from_0x_hex_str, put_byte_list, put_bytes_n, put_hex_bytes_20},
+    helpers::{from_0x_hex_str, put_byte_list, put_bytes_n, put_hex_bytes_20, to_0x_hex},
     lock::Lock,
     manifestpb::v1::Validator,
     registration::{BuilderRegistration, Registration},
@@ -87,6 +87,10 @@ pub enum SSZError<H: HashWalker> {
     /// Failed to convert hex string
     #[error("Failed to convert hex string: {0}")]
     FailedToConvertHexString(#[from] hex::FromHexError),
+
+    /// Failed to convert timestamp
+    #[error("Failed to convert timestamp")]
+    FailedToConvertTimestamp,
 }
 
 impl From<HasherError> for SSZError<Hasher> {
@@ -110,14 +114,14 @@ fn get_definition_hash_func<H: HashWalker>(
 }
 
 pub(crate) fn hash_definition(
-    definition: Definition,
+    definition: &Definition,
     config_only: bool,
 ) -> Result<[u8; 32], SSZError<Hasher>> {
     let hash_func = get_definition_hash_func::<Hasher>(&definition.version)?;
 
-    let mut hh = Hasher::new();
+    let mut hh = Hasher::default();
 
-    hash_func(&definition, &mut hh, config_only)?;
+    hash_func(definition, &mut hh, config_only)?;
 
     Ok(hh.hash_root()?)
 }
@@ -164,7 +168,7 @@ pub(crate) fn hash_definition_legacy<H: HashWalker>(
         .map_err(SSZError::<H>::HashWalkerError)?;
 
     // Field (8) 'forkVersion'
-    hh.put_bytes(&definition.fork_version)
+    hh.put_bytes(to_0x_hex(&definition.fork_version).as_bytes())
         .map_err(SSZError::<H>::HashWalkerError)?;
 
     // Field (9) 'addresses'
@@ -214,11 +218,8 @@ pub(crate) fn hash_definition_legacy<H: HashWalker>(
     }
 
     // Field (10) 'timestamp' (optional for backwards compatibility)
-    if config_only && definition.timestamp.timestamp() != 0 {
-        hh.put_bytes(&definition.timestamp.to_rfc3339().as_bytes())
-            .map_err(SSZError::<H>::HashWalkerError)?;
-    } else if definition.version != V1_0 {
-        hh.put_bytes(&definition.timestamp.to_rfc3339().as_bytes())
+    if config_only && !definition.timestamp.is_empty() || definition.version != V1_0 {
+        hh.put_bytes(definition.timestamp.as_bytes())
             .map_err(SSZError::<H>::HashWalkerError)?;
     }
 
@@ -240,17 +241,27 @@ pub(crate) fn hash_definition_v1x3or4<H: HashWalker>(
     let indx = hh.index();
 
     // Field (0) 'uuid'
-    hh.put_bytes(definition.uuid.as_bytes())
-        .map_err(SSZError::<H>::HashWalkerError)?;
+    put_byte_list(hh, definition.uuid.as_bytes(), SSZ_MAX_UUID, "uuid")?;
+
     // Field (1) 'name'
-    hh.put_bytes(definition.name.as_bytes())
-        .map_err(SSZError::<H>::HashWalkerError)?;
+    put_byte_list(hh, definition.name.as_bytes(), SSZ_MAX_NAME, "name")?;
+
     // Field (2) 'version'
-    hh.put_bytes(definition.version.as_bytes())
-        .map_err(SSZError::<H>::HashWalkerError)?;
+    put_byte_list(
+        hh,
+        definition.version.as_bytes(),
+        SSZ_MAX_VERSION,
+        "version",
+    )?;
+
     // Field (3) 'timestamp'
-    hh.put_bytes(definition.timestamp.to_rfc3339().as_bytes())
-        .map_err(SSZError::<H>::HashWalkerError)?;
+    put_byte_list(
+        hh,
+        definition.timestamp.as_bytes(),
+        SSZ_MAX_TIMESTAMP,
+        "timestamp",
+    )?;
+
     // Field (4) 'numValidators'
     hh.put_uint64(definition.num_validators)
         .map_err(SSZError::<H>::HashWalkerError)?;
@@ -264,8 +275,12 @@ pub(crate) fn hash_definition_v1x3or4<H: HashWalker>(
     hh.put_bytes(&withdrawal_address)
         .map_err(SSZError::<H>::HashWalkerError)?;
     // Field (8) 'dkgAlgorithm'
-    hh.put_bytes(definition.dkg_algorithm.as_bytes())
-        .map_err(SSZError::<H>::HashWalkerError)?;
+    put_byte_list(
+        hh,
+        definition.dkg_algorithm.as_bytes(),
+        SSZ_MAX_DKG_ALGORITHM,
+        "dkg_algorithm",
+    )?;
     // Field (9) 'forkVersion'
     hh.put_bytes(&definition.fork_version)
         .map_err(SSZError::<H>::HashWalkerError)?;
@@ -279,8 +294,22 @@ pub(crate) fn hash_definition_v1x3or4<H: HashWalker>(
             // Field (0) 'Address'
             hh.put_bytes(from_0x_hex_str(&o.address, ADDRESS_LEN)?.as_slice())
                 .map_err(SSZError::<H>::HashWalkerError)?;
+
+            if !config_only {
+                // Field (1) 'ENR' ByteList[1024]
+                put_byte_list(hh, o.enr.as_bytes(), SSZ_MAX_ENR, "enr")?;
+
+                // Field (2) 'ConfigSignature' Bytes65
+                put_bytes_n(hh, &o.config_signature, SSZ_LEN_K1_SIG)?;
+
+                // Field (3) 'ENRSignature' Bytes65
+                put_bytes_n(hh, &o.enr_signature, SSZ_LEN_K1_SIG)?;
+            }
+
+            hh.merkleize(op_sub_idx)
+                .map_err(SSZError::<H>::HashWalkerError)?;
         }
-        hh.merkleize_with_mixin(operators_idx, num, num)
+        hh.merkleize_with_mixin(operators_idx, num, SSZ_MAX_OPERATORS)
             .map_err(SSZError::<H>::HashWalkerError)?;
     }
 
@@ -326,20 +355,27 @@ where
     let indx = hh.index();
 
     // Field (0) 'uuid' ByteList[64]
-    hh.put_bytes(definition.uuid.as_bytes())
-        .map_err(SSZError::<H>::HashWalkerError)?;
+
+    put_byte_list(hh, definition.uuid.as_bytes(), SSZ_MAX_UUID, "uuid")?;
 
     // Field (1) 'name' ByteList[256]
-    hh.put_bytes(definition.name.as_bytes())
-        .map_err(SSZError::<H>::HashWalkerError)?;
+    put_byte_list(hh, definition.name.as_bytes(), SSZ_MAX_NAME, "name")?;
 
     // Field (2) 'version' ByteList[16]
-    hh.put_bytes(definition.version.as_bytes())
-        .map_err(SSZError::<H>::HashWalkerError)?;
+    put_byte_list(
+        hh,
+        definition.version.as_bytes(),
+        SSZ_MAX_VERSION,
+        "version",
+    )?;
 
     // Field (3) 'timestamp' ByteList[32]
-    hh.put_bytes(definition.timestamp.to_rfc3339().as_bytes())
-        .map_err(SSZError::<H>::HashWalkerError)?;
+    put_byte_list(
+        hh,
+        definition.timestamp.as_bytes(),
+        SSZ_MAX_TIMESTAMP,
+        "timestamp",
+    )?;
 
     // Field (4) 'numValidators' Uint64
     hh.put_uint64(definition.num_validators)
@@ -350,12 +386,15 @@ where
         .map_err(SSZError::<H>::HashWalkerError)?;
 
     // Field (6) 'DKGAlgorithm' ByteList[32]
-    hh.put_bytes(definition.dkg_algorithm.as_bytes())
-        .map_err(SSZError::<H>::HashWalkerError)?;
+    put_byte_list(
+        hh,
+        definition.dkg_algorithm.as_bytes(),
+        SSZ_MAX_DKG_ALGORITHM,
+        "dkg_algorithm",
+    )?;
 
     // Field (7) 'forkVersion' ByteList[4]
-    hh.put_bytes(&definition.fork_version)
-        .map_err(SSZError::<H>::HashWalkerError)?;
+    put_bytes_n(hh, &definition.fork_version, SSZ_LEN_FORK_VERSION)?;
 
     // Field (8) 'Operators' CompositeList[256]
     {
@@ -432,8 +471,7 @@ where
 
     if !config_only {
         // Field (last) 'ConfigHash' Bytes32
-        hh.put_bytes(&definition.config_hash)
-            .map_err(SSZError::<H>::HashWalkerError)?;
+        put_bytes_n(hh, &definition.config_hash, SSZ_LEN_HASH)?;
     }
 
     hh.merkleize(indx).map_err(SSZError::<H>::HashWalkerError)?;
@@ -474,13 +512,7 @@ where
         vec![Box::new(
             |definition: &Definition, hh: &mut H| -> Result<(), SSZError<H>> {
                 // Field (11) 'DepositAmounts' Uint64[256]
-                let amounts64: Vec<u64> = definition
-                    .deposit_amounts
-                    .iter()
-                    .map(|a| *a as u64)
-                    .collect();
-
-                hh.put_uint64_array(&amounts64, SSZ_MAX_DEPOSIT_AMOUNTS)
+                hh.put_uint64_array(&definition.deposit_amounts, Some(SSZ_MAX_DEPOSIT_AMOUNTS))
                     .map_err(SSZError::<H>::HashWalkerError)?;
 
                 for f in extra {
@@ -566,7 +598,7 @@ pub(crate) fn hash_lock(lock: &Lock) -> Result<[u8; 32], SSZError<Hasher>> {
         _ => return Err(SSZError::UnsupportedVersion(lock.version.clone())),
     };
 
-    let mut hh = Hasher::new();
+    let mut hh = Hasher::default();
     hash_func(lock, &mut hh)?;
     Ok(hh.hash_root()?)
 }
@@ -671,7 +703,7 @@ pub(crate) fn hash_validator_v1x5to7<H: HashWalker>(
     let deposit_hash_func = get_deposit_data_hash_func(version)?;
 
     // Field (2) 'DepositData' Composite
-    let deposit_data = if validator.partial_deposit_data.len() > 0 {
+    let deposit_data = if !validator.partial_deposit_data.is_empty() {
         &validator.partial_deposit_data[0]
     } else {
         &DepositData::default()
@@ -759,7 +791,7 @@ pub(crate) fn hash_validator_legacy<H: HashWalker>(
     let indx = hh.index();
 
     // Field (0) 'Pubkey' Bytes48
-    hh.put_bytes(&validator.pub_key)
+    hh.put_bytes(to_0x_hex(&validator.pub_key).as_bytes())
         .map_err(SSZError::<H>::HashWalkerError)?;
 
     // Field (1) 'PubShares'
@@ -899,8 +931,11 @@ pub(crate) fn hash_registration<H: HashWalker>(
         .map_err(SSZError::<H>::HashWalkerError)?;
 
     // Field (2) 'Timestamp' Uint64
-    hh.put_uint64(registration.timestamp.timestamp() as u64)
-        .map_err(SSZError::<H>::HashWalkerError)?;
+    hh.put_uint64(
+        u64::try_from(registration.timestamp.timestamp())
+            .map_err(|_| SSZError::<H>::FailedToConvertTimestamp)?,
+    )
+    .map_err(SSZError::<H>::HashWalkerError)?;
 
     // Field (3) 'Pubkey' Bytes48
     put_bytes_n(hh, &registration.pub_key, SSZ_LEN_PUB_KEY)?;
