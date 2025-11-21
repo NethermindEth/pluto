@@ -8,7 +8,7 @@ use crate::{
 };
 use charon_eth2::enr::{Record, RecordError};
 use charon_p2p::peer::{Peer, PeerError};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use libp2p::PeerId;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{
@@ -250,6 +250,10 @@ pub enum DefinitionError {
         /// Actual definition hash
         actual: Vec<u8>,
     },
+
+    /// Failed to convert timestamp
+    #[error("Failed to convert timestamp")]
+    FailedToConvertTimestamp(#[from] serde_json::Error),
 }
 
 /// InvalidGasLimitError is an error type for invalid gas limit errors.
@@ -351,6 +355,18 @@ impl Definition {
 
         // TODO: Construct and return a Definition. Placeholder for now.
         def.set_definition_hashes()
+    }
+
+    /// Returns the timestamp of the definition.
+    pub fn timestamp(&self) -> Result<Option<DateTime<Utc>>, DefinitionError> {
+        if self.timestamp.is_empty() {
+            return Ok(None);
+        }
+
+        let timestamp = serde_json::from_str::<DateTime<Utc>>(&self.timestamp)
+            .map_err(DefinitionError::FailedToConvertTimestamp)?;
+
+        Ok(Some(timestamp))
     }
 
     /// Returns the node index for a given peer ID.
