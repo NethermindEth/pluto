@@ -44,7 +44,8 @@ pub trait HashWalker {
     fn append_u32(&mut self, i: u32) -> Result<(), Self::Error>;
     /// Append a u64 integer.
     fn append_u64(&mut self, i: u64) -> Result<(), Self::Error>;
-    /// Append a 32-byte array.
+    /// Append a bytes array, and fill up to `k * 32` bytes if the length is not
+    /// a multiple of 32.
     fn append_bytes32(&mut self, b: &[u8]) -> Result<(), Self::Error>;
     /// Append an array of 32 u64 values.
     fn put_uint64_array(
@@ -68,7 +69,9 @@ pub trait HashWalker {
     fn put_bitlist(&mut self, bb: &[u8], max_size: usize) -> Result<(), Self::Error>;
     /// Append a boolean value.
     fn put_bool(&mut self, b: bool) -> Result<(), Self::Error>;
-    /// Append a byte slice (copy).
+    /// Append a byte slice, if the length is less than or equal to 32, it will
+    /// be appended as is + padding to 32 bytes, otherwise it will be
+    /// merkleized.
     fn put_bytes(&mut self, b: &[u8]) -> Result<(), Self::Error>;
     /// Current byte index or position in buffer.
     fn index(&self) -> usize;
@@ -178,12 +181,7 @@ impl Hasher {
         64 - i.leading_zeros() as usize - 1
     }
 
-    /// Perform merkleization implementation.
-    pub fn merkleize_impl(
-        &mut self,
-        input: &[u8],
-        mut limit: usize,
-    ) -> Result<Vec<u8>, HasherError> {
+    fn merkleize_impl(&mut self, input: &[u8], mut limit: usize) -> Result<Vec<u8>, HasherError> {
         let count = input.len().div_ceil(32);
         let mut input = input.to_vec();
 
@@ -269,7 +267,8 @@ impl HashWalker for Hasher {
         self.append(&i.to_le_bytes())
     }
 
-    /// Append a 32-byte array.
+    /// Append a bytes array, and fill up to `k * 32` bytes if the length is not
+    /// a multiple of 32.
     fn append_bytes32(&mut self, b: &[u8]) -> Result<(), Self::Error> {
         self.buf.extend_from_slice(b);
         let rest = b.len() % 32;

@@ -3,7 +3,8 @@ use std::collections::HashSet;
 use crate::{
     helpers::{EthHex, from_0x_hex_str},
     operator::{Operator, OperatorV1X1, OperatorV1X2OrLater},
-    ssz::hash_definition,
+    ssz::{SSZError, hash_definition},
+    ssz_hasher::Hasher,
     version::{CURRENT_VERSION, DKG_ALGO, versions::*},
 };
 use charon_eth2::enr::{Record, RecordError};
@@ -240,7 +241,7 @@ pub enum DefinitionError {
 
     /// SSZ error
     #[error("SSZ error: {0}")]
-    SSZError(#[from] Box<crate::ssz::SSZError<crate::ssz_hasher::Hasher>>),
+    SSZError(#[from] Box<SSZError<Hasher>>),
 
     /// Invalid definition hash
     #[error("Invalid definition hash")]

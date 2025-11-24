@@ -15,35 +15,35 @@ use crate::{
 };
 
 /// Maximum length of the ENR.
-pub const SSZ_MAX_ENR: usize = 1024;
+pub(crate) const SSZ_MAX_ENR: usize = 1024;
 /// Maximum length of a name.
-pub const SSZ_MAX_NAME: usize = 256;
+pub(crate) const SSZ_MAX_NAME: usize = 256;
 /// Maximum length of a UUID.
-pub const SSZ_MAX_UUID: usize = 64;
+pub(crate) const SSZ_MAX_UUID: usize = 64;
 /// Maximum length of a version identifier.
-pub const SSZ_MAX_VERSION: usize = 16;
+pub(crate) const SSZ_MAX_VERSION: usize = 16;
 /// Maximum length of a timestamp.
-pub const SSZ_MAX_TIMESTAMP: usize = 32;
+pub(crate) const SSZ_MAX_TIMESTAMP: usize = 32;
 /// Maximum length of a DKG (Distributed Key Generation) algorithm name.
-pub const SSZ_MAX_DKG_ALGORITHM: usize = 32;
+pub(crate) const SSZ_MAX_DKG_ALGORITHM: usize = 32;
 /// Maximum number of operators.
-pub const SSZ_MAX_OPERATORS: usize = 256;
+pub(crate) const SSZ_MAX_OPERATORS: usize = 256;
 /// Maximum number of validators.
-pub const SSZ_MAX_VALIDATORS: usize = 65536;
+pub(crate) const SSZ_MAX_VALIDATORS: usize = 65536;
 /// Maximum number of deposit amounts.
-pub const SSZ_MAX_DEPOSIT_AMOUNTS: usize = 256;
+pub(crate) const SSZ_MAX_DEPOSIT_AMOUNTS: usize = 256;
 /// Length of the fork version.
-pub const SSZ_LEN_FORK_VERSION: usize = 4;
+pub(crate) const SSZ_LEN_FORK_VERSION: usize = 4;
 /// Length of a K1 signature.
-pub const SSZ_LEN_K1_SIG: usize = 65;
+pub(crate) const SSZ_LEN_K1_SIG: usize = 65;
 /// Length of a BLS signature.
-pub const SSZ_LEN_BLS_SIG: usize = 96;
+pub(crate) const SSZ_LEN_BLS_SIG: usize = 96;
 /// Length of a hash.
-pub const SSZ_LEN_HASH: usize = 32;
+pub(crate) const SSZ_LEN_HASH: usize = 32;
 /// Length of withdrawal credentials.
-pub const SSZ_LEN_WITHDRAW_CREDS: usize = 32;
+pub(crate) const SSZ_LEN_WITHDRAW_CREDS: usize = 32;
 /// Length of a public key.
-pub const SSZ_LEN_PUB_KEY: usize = 48;
+pub(crate) const SSZ_LEN_PUB_KEY: usize = 48;
 
 /// HashFunc is a function that hashes a definition
 pub type HashFuncWithBool<T, H> = fn(&T, &mut H, bool) -> Result<(), SSZError<H>>;
