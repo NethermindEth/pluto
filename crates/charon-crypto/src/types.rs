@@ -101,6 +101,10 @@ pub enum Error {
     /// Shares are empty.
     #[error("Shares are empty")]
     SharesAreEmpty,
+
+    /// Failed to convert scalar to secret key.
+    #[error("Failed to convert scalar to secret key")]
+    FailedToConvertScalarToSecretKey,
 }
 
 /// BLST-specific error wrapper.

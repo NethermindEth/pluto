@@ -429,7 +429,9 @@ fn scalar_mult_secret(
 /// Add two secret keys
 fn scalar_add_secret(sk1: &BlstSecretKey, sk2: &BlstSecretKey) -> Result<BlstSecretKey, Error> {
     let result = scalar_add(sk1.into(), sk2.into())?;
-    let sk: &BlstSecretKey = (&result).try_into().unwrap();
+    let sk: &BlstSecretKey = (&result)
+        .try_into()
+        .map_err(|_| Error::FailedToConvertScalarToSecretKey)?;
     Ok(sk.clone())
 }
 
