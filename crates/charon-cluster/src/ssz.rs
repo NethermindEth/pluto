@@ -1,7 +1,5 @@
 #![allow(unused)]
 
-use ssz::Encode;
-
 use crate::{
     definition::{ADDRESS_LEN, Definition},
     deposit::DepositData,

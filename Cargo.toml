@@ -46,8 +46,6 @@ base64 = { version = "0.22.1" }
 sha3 = { version = "0.10.8" }
 k256 = { version = "0.13.4", features = ["ecdsa", "sha256"] }
 criterion = "0.7.0"
-ethereum_ssz = "0.10.0"
-ethereum_ssz_derive = "0.10.0"
 
 # Crates in the workspace
 charon-crypto = { path = "crates/charon-crypto" }
