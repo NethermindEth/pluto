@@ -1,12 +1,9 @@
-#![allow(unused)]
-
 use crate::{
     definition::{ADDRESS_LEN, Definition},
     deposit::DepositData,
     distvalidator::DistValidator,
     helpers::{from_0x_hex_str, put_byte_list, put_bytes_n, put_hex_bytes_20, to_0x_hex},
     lock::Lock,
-    manifestpb::v1::Validator,
     registration::{BuilderRegistration, Registration},
     ssz_hasher::{HashWalker, Hasher, HasherError},
     version::{ZERO_NONCE, versions::*},
@@ -666,7 +663,7 @@ pub(crate) fn hash_validator_pubshares_field<H: HashWalker>(
 pub(crate) fn hash_validator_v1x3or4<H: HashWalker>(
     validator: &DistValidator,
     hh: &mut H,
-    version: &str,
+    _version: &str,
 ) -> Result<(), SSZError<H>> {
     let indx = hh.index();
 
@@ -678,7 +675,7 @@ pub(crate) fn hash_validator_v1x3or4<H: HashWalker>(
     hash_validator_pubshares_field(validator, hh)?;
 
     // Field (2) 'FeeRecipientAddress' Bytes20
-    hh.put_bytes(&[]);
+    hh.put_bytes(&[]).map_err(SSZError::<H>::HashWalkerError)?;
 
     hh.merkleize(indx).map_err(SSZError::<H>::HashWalkerError)?;
 
@@ -808,7 +805,7 @@ pub(crate) fn hash_validator_legacy<H: HashWalker>(
     }
 
     // Field (2) 'FeeRecipientAddress'
-    hh.put_bytes(&[]);
+    hh.put_bytes(&[]).map_err(SSZError::<H>::HashWalkerError)?;
 
     hh.merkleize(indx).map_err(SSZError::<H>::HashWalkerError)?;
 
@@ -846,8 +843,6 @@ pub(crate) fn hash_deposit_data_v1x6<H: HashWalker>(
     deposit_data: &DepositData,
     hh: &mut H,
 ) -> Result<(), SSZError<H>> {
-    let indx = hh.index();
-
     // Field (0) 'Pubkey' Bytes48
     put_bytes_n(hh, &deposit_data.pub_key, SSZ_LEN_PUB_KEY)?;
 
@@ -863,10 +858,7 @@ pub(crate) fn hash_deposit_data_v1x6<H: HashWalker>(
         .map_err(SSZError::<H>::HashWalkerError)?;
 
     // Field (3) 'Signature' Bytes96
-    put_bytes_n(hh, &deposit_data.signature, SSZ_LEN_BLS_SIG)?;
-
-    // todo(varex83): question why we don't merkleize here?
-    Ok(())
+    put_bytes_n(hh, &deposit_data.signature, SSZ_LEN_BLS_SIG)
 }
 
 pub(crate) fn hash_deposit_data_v1x7_or_later<H: HashWalker>(
