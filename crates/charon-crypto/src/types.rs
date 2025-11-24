@@ -105,6 +105,18 @@ pub enum Error {
     /// Failed to convert scalar to secret key.
     #[error("Failed to convert scalar to secret key")]
     FailedToConvertScalarToSecretKey,
+
+    /// Indices and shares mismatch.
+    #[error("Indices and shares mismatch")]
+    IndicesSharesMismatch,
+
+    /// Polynomial is empty.
+    #[error("Polynomial is empty")]
+    PolynomialIsEmpty,
+
+    /// Public key array is empty.
+    #[error("Public key array is empty")]
+    EmptyPublicKeyArray,
 }
 
 /// BLST-specific error wrapper.

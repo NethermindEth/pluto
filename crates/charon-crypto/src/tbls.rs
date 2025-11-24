@@ -90,7 +90,7 @@ pub trait Tbls {
     /// Verifies an aggregate signature
     fn verify_aggregate(
         &self,
-        public_keys: Vec<PublicKey>,
+        public_keys: &[PublicKey],
         signature: Signature,
         data: &[u8],
     ) -> Result<(), Error>;

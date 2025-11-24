@@ -102,8 +102,7 @@ impl Tbls for BlstImpl {
         threshold: Index,
     ) -> Result<HashMap<Index, PrivateKey>, Error> {
         // Use OsRng for secure random number generation
-        use rand::rngs::OsRng;
-        self.threshold_split_insecure(secret_key, total, threshold, OsRng)
+        self.threshold_split_insecure(secret_key, total, threshold, rand::rngs::OsRng)
     }
 
     fn recover_secret(&self, shares: &HashMap<Index, PrivateKey>) -> Result<PrivateKey, Error> {
@@ -211,12 +210,12 @@ impl Tbls for BlstImpl {
 
     fn verify_aggregate(
         &self,
-        public_keys: Vec<PublicKey>,
+        public_keys: &[PublicKey],
         signature: Signature,
         data: &[u8],
     ) -> Result<(), Error> {
         if public_keys.is_empty() {
-            return Err(Error::EmptySignatureArray);
+            return Err(Error::EmptyPublicKeyArray);
         }
 
         let pks: Vec<BlstPublicKey> = public_keys
@@ -245,7 +244,7 @@ impl Tbls for BlstImpl {
 /// Aggregate public keys
 fn aggregate_public_keys(pks: &[BlstPublicKey]) -> Result<BlstPublicKey, Error> {
     if pks.is_empty() {
-        return Err(Error::EmptySignatureArray);
+        return Err(Error::EmptyPublicKeyArray);
     }
 
     let mut agg = blst::blst_p1::default();
@@ -271,10 +270,7 @@ fn aggregate_public_keys(pks: &[BlstPublicKey]) -> Result<BlstPublicKey, Error> 
 /// poly(x) = a_0 + a_1*x + a_2*x^2 + ... + a_n*x^n
 fn evaluate_polynomial(poly: &[BlstSecretKey], x: Index) -> Result<BlstSecretKey, Error> {
     if poly.is_empty() {
-        return Err(Error::InvalidThreshold {
-            threshold: 0,
-            total: 0,
-        });
+        return Err(Error::PolynomialIsEmpty);
     }
 
     // Start with the constant term
@@ -305,18 +301,15 @@ fn lagrange_interpolate_secret(
     shares: &[BlstSecretKey],
 ) -> Result<BlstSecretKey, Error> {
     if indices.len() != shares.len() || indices.is_empty() {
-        return Err(Error::InvalidThreshold {
-            threshold: 0,
-            total: 0,
-        });
+        return Err(Error::IndicesSharesMismatch);
     }
 
     // Compute Lagrange coefficients and interpolate
     let coeffs = compute_lagrange_coefficients(indices)?;
 
-    let mut result = scalar_mult_secret(&shares[0], &coeffs[0])?;
+    let mut result = BlstSecretKey::default();
 
-    for i in 1..shares.len() {
+    for i in 0..shares.len() {
         let term = scalar_mult_secret(&shares[i], &coeffs[i])?;
         result = scalar_add_secret(&result, &term)?;
     }
@@ -511,6 +504,11 @@ fn scalar_div(
     numerator: &blst::blst_scalar,
     denominator: &blst::blst_scalar,
 ) -> Result<blst::blst_scalar, Error> {
+    let zero = blst::blst_scalar::default();
+    if *denominator == zero {
+        return Err(Error::MathError(MathError::DivisionByZero));
+    }
+
     let mut inv_scalar = blst::blst_scalar::default();
 
     unsafe {
@@ -760,7 +758,7 @@ mod tests {
         let aggregated_sig = blst.aggregate(signatures).unwrap();
 
         // Verify aggregate
-        let result = blst.verify_aggregate(public_keys, aggregated_sig, data);
+        let result = blst.verify_aggregate(&public_keys, aggregated_sig, data);
         assert!(result.is_ok(), "Aggregate verification should succeed");
     }
 
@@ -793,7 +791,7 @@ mod tests {
         let aggregated_sig = blst.aggregate(signatures).unwrap();
 
         // Verify with data2 (wrong data)
-        let result = blst.verify_aggregate(public_keys, aggregated_sig, data2);
+        let result = blst.verify_aggregate(&public_keys, aggregated_sig, data2);
         assert!(
             result.is_err(),
             "Aggregate verification should fail with wrong data"
