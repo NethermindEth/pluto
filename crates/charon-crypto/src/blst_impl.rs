@@ -3,6 +3,7 @@
 //! Implementation of threshold BLS signatures using the blst library.
 //! This implementation is compatible with the Herumi BLS library used in the Go
 //! implementation.
+#![allow(unsafe_code)]
 
 use std::collections::HashMap;
 
@@ -107,7 +108,7 @@ impl Tbls for BlstImpl {
         self.threshold_split_insecure(secret_key, total, threshold, OsRng)
     }
 
-    fn recover_secret(&self, shares: HashMap<Index, PrivateKey>) -> Result<PrivateKey, Error> {
+    fn recover_secret(&self, shares: &HashMap<Index, PrivateKey>) -> Result<PrivateKey, Error> {
         if shares.is_empty() {
             return Err(Error::InvalidThreshold {
                 threshold: 0,
@@ -161,7 +162,7 @@ impl Tbls for BlstImpl {
 
     fn threshold_aggregate(
         &self,
-        partial_signatures_by_idx: HashMap<Index, Signature>,
+        partial_signatures_by_idx: &HashMap<Index, Signature>,
     ) -> Result<Signature, Error> {
         if partial_signatures_by_idx.is_empty() {
             return Err(Error::EmptySignatureArray);
@@ -598,7 +599,7 @@ mod tests {
         }
 
         // Aggregate the threshold signatures
-        let total_sig = blst.threshold_aggregate(signatures).unwrap();
+        let total_sig = blst.threshold_aggregate(&signatures).unwrap();
 
         // Expected signature from the Go implementation
         let expected_sig = hex::decode("b46736c3a1fb5d7977acc6abf3cb3a10fd1a5aed301437022f28cf616326186654d747fda7cd530c2bf18c640e4c024b01d7ba38d90e4abe0cc5356ef63b8e20f717ef0a1f68c3292bd62b4f891345ecafa89a8604f8f6c3ce193dc239215adf").unwrap();
@@ -658,7 +659,7 @@ mod tests {
             .map(|(k, v)| (*k, *v))
             .collect();
 
-        let recovered_sk = blst.recover_secret(subset).unwrap();
+        let recovered_sk = blst.recover_secret(&subset).unwrap();
         assert_eq!(sk, recovered_sk);
     }
 
@@ -675,7 +676,7 @@ mod tests {
         assert_eq!(shares.len(), total as usize);
 
         // Recover using all shares
-        let recovered = blst.recover_secret(shares).unwrap();
+        let recovered = blst.recover_secret(&shares).unwrap();
         assert_eq!(
             secret, recovered,
             "Secret recovered from all shares should match original"
@@ -703,7 +704,7 @@ mod tests {
         }
 
         // Aggregate threshold signatures
-        let aggregated_sig = blst.threshold_aggregate(signatures).unwrap();
+        let aggregated_sig = blst.threshold_aggregate(&signatures).unwrap();
 
         // Both signatures should be identical
         assert_eq!(
@@ -891,7 +892,7 @@ mod tests {
         let subset: HashMap<Index, PrivateKey> =
             shares.iter().take(2).map(|(k, v)| (*k, *v)).collect();
 
-        let recovered = blst.recover_secret(subset).unwrap();
+        let recovered = blst.recover_secret(&subset).unwrap();
         assert_eq!(sk, recovered);
     }
 
