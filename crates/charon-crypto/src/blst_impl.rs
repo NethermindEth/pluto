@@ -5,7 +5,7 @@
 //! implementation.
 #![allow(unsafe_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use blst::{
     BLST_ERROR,
@@ -89,10 +89,7 @@ impl Tbls for BlstImpl {
         let mut shares = HashMap::new();
         for i in 1..=total {
             let share = evaluate_polynomial(&poly, i)?;
-            shares.insert(
-                i.checked_sub(1).ok_or(MathError::IntegerUnderflow)?,
-                share.to_bytes(),
-            );
+            shares.insert(i.saturating_sub(1), share.to_bytes());
         }
 
         Ok(shares)
@@ -111,10 +108,7 @@ impl Tbls for BlstImpl {
 
     fn recover_secret(&self, shares: &HashMap<Index, PrivateKey>) -> Result<PrivateKey, Error> {
         if shares.is_empty() {
-            return Err(Error::InvalidThreshold {
-                threshold: 0,
-                total: 0,
-            });
+            return Err(Error::SharesAreEmpty);
         }
 
         // Convert share indices to 1-indexed (shares are stored 0-indexed, but
@@ -158,7 +152,7 @@ impl Tbls for BlstImpl {
         let agg = blst::min_pk::AggregateSignature::aggregate(&sigs[..], true)
             .map_err(|e| Error::AggregationFailed(e.into()))?;
 
-        Ok(signature_to_bytes(&agg.to_signature()))
+        Ok(agg.to_signature().to_bytes())
     }
 
     fn threshold_aggregate(
@@ -185,7 +179,7 @@ impl Tbls for BlstImpl {
 
         // Perform Lagrange interpolation on signatures at x=0
         let recovered_sig = lagrange_interpolate_signature(&indices, &signatures)?;
-        Ok(signature_to_bytes(&recovered_sig))
+        Ok(recovered_sig.to_bytes())
     }
 
     fn verify(
@@ -212,7 +206,7 @@ impl Tbls for BlstImpl {
     fn sign(&self, private_key: &PrivateKey, data: &[u8]) -> Result<Signature, Error> {
         let sk = BlstSecretKey::from_bytes(private_key)?;
         let sig = sk.sign(data, ETH2_DST, &[]);
-        Ok(signature_to_bytes(&sig))
+        Ok(sig.to_bytes())
     }
 
     fn verify_aggregate(
@@ -258,16 +252,12 @@ fn aggregate_public_keys(pks: &[BlstPublicKey]) -> Result<BlstPublicKey, Error> 
 
     unsafe {
         // Convert first key to projective form
-        let first_compressed = pks[0].compress();
-        let mut first_affine = blst::blst_p1_affine::default();
-        blst::blst_p1_uncompress(&mut first_affine, first_compressed.as_ptr());
-        blst::blst_p1_from_affine(&mut agg, &first_affine);
+        let first_affine: &blst::blst_p1_affine = (&pks[0]).into();
+        blst::blst_p1_from_affine(&mut agg, first_affine);
 
         for pk in pks.iter().skip(1) {
-            let compressed = pk.compress();
-            let mut pk_affine = blst::blst_p1_affine::default();
-            blst::blst_p1_uncompress(&mut pk_affine, compressed.as_ptr());
-            blst::blst_p1_add_or_double_affine(&mut agg, &agg, &pk_affine);
+            let pk_affine: &blst::blst_p1_affine = pk.into();
+            blst::blst_p1_add_or_double_affine(&mut agg, &agg, pk_affine);
         }
 
         // Convert back to affine
@@ -353,17 +343,13 @@ fn lagrange_interpolate_signature(
 
     unsafe {
         // Convert first scaled signature to projective
-        let first_compressed = first_sig_scaled.compress();
-        let mut first_affine = blst::blst_p2_affine::default();
-        blst::blst_p2_uncompress(&mut first_affine, first_compressed.as_ptr());
-        blst::blst_p2_from_affine(&mut result_p2, &first_affine);
+        let first_affine: &blst::blst_p2_affine = (&first_sig_scaled).into();
+        blst::blst_p2_from_affine(&mut result_p2, first_affine);
 
         for i in 1..signatures.len() {
             let sig_scaled = signature_mult(&signatures[i], &coeffs[i])?;
-            let compressed = sig_scaled.compress();
-            let mut sig_affine = blst::blst_p2_affine::default();
-            blst::blst_p2_uncompress(&mut sig_affine, compressed.as_ptr());
-            blst::blst_p2_add_or_double_affine(&mut result_p2, &result_p2, &sig_affine);
+            let sig_affine: &blst::blst_p2_affine = (&sig_scaled).into();
+            blst::blst_p2_add_or_double_affine(&mut result_p2, &result_p2, sig_affine);
         }
 
         // Convert back to affine
@@ -376,6 +362,11 @@ fn lagrange_interpolate_signature(
 /// Compute Lagrange coefficients for interpolation at x=0
 /// λ_i = ∏_{j≠i} (0 - x_j) / (x_i - x_j) = ∏_{j≠i} x_j / (x_j - x_i)
 fn compute_lagrange_coefficients(indices: &[Index]) -> Result<Vec<blst::blst_scalar>, Error> {
+    // Check if indices are unique
+    if indices.len() != indices.iter().collect::<HashSet<_>>().len() {
+        return Err(Error::IndicesNotUnique);
+    }
+
     let mut coeffs = Vec::with_capacity(indices.len());
 
     for (i, &x_i) in indices.iter().enumerate() {
@@ -393,12 +384,12 @@ fn compute_lagrange_coefficients(indices: &[Index]) -> Result<Vec<blst::blst_sca
 
             // denominator *= (x_j - x_i)
             let diff = if x_j > x_i {
-                let diff_val = x_j.checked_sub(x_i).ok_or(MathError::IntegerUnderflow)?;
+                let diff_val = x_j.abs_diff(x_i);
                 scalar_from_u64(u64::from(diff_val))
             } else {
                 // For negative differences, we need to work in the scalar field
                 // x_j - x_i (mod r) where r is the curve order
-                let diff_val = x_i.checked_sub(x_j).ok_or(MathError::IntegerUnderflow)?;
+                let diff_val = x_i.abs_diff(x_j);
                 scalar_negate(&scalar_from_u64(u64::from(diff_val)))?
             };
 
@@ -415,12 +406,9 @@ fn compute_lagrange_coefficients(indices: &[Index]) -> Result<Vec<blst::blst_sca
 
 /// Convert u64 to blst scalar
 fn scalar_from_u64(val: u64) -> blst::blst_scalar {
-    let mut bytes = [0u8; 32];
-    bytes[24..32].copy_from_slice(&val.to_be_bytes());
-
     let mut scalar = blst::blst_scalar::default();
     unsafe {
-        blst::blst_scalar_from_be_bytes(&mut scalar, bytes.as_ptr(), bytes.len());
+        blst::blst_scalar_from_uint64(&mut scalar, &val);
     }
     scalar
 }
@@ -430,31 +418,31 @@ fn scalar_mult_secret(
     sk: &BlstSecretKey,
     scalar: &blst::blst_scalar,
 ) -> Result<BlstSecretKey, Error> {
-    let sk_scalar = secret_to_scalar(sk);
-    let result_scalar = scalar_mult_scalars(&sk_scalar, scalar)?;
-    scalar_to_secret(&result_scalar)
+    let sk_scalar = sk.into();
+    let result_scalar = scalar_mult_scalars(sk_scalar, scalar)?;
+    let sk: &BlstSecretKey = (&result_scalar)
+        .try_into()
+        .map_err(|_| Error::FailedToConvertSkToBlstScalar)?;
+    Ok(sk.clone())
 }
 
 /// Add two secret keys
 fn scalar_add_secret(sk1: &BlstSecretKey, sk2: &BlstSecretKey) -> Result<BlstSecretKey, Error> {
-    let s1 = secret_to_scalar(sk1);
-    let s2 = secret_to_scalar(sk2);
-    let result = scalar_add(&s1, &s2)?;
-    scalar_to_secret(&result)
+    let result = scalar_add(sk1.into(), sk2.into())?;
+    let sk: &BlstSecretKey = (&result).try_into().unwrap();
+    Ok(sk.clone())
 }
 
 /// Multiply signature by scalar
 fn signature_mult(sig: &BlstSignature, scalar: &blst::blst_scalar) -> Result<BlstSignature, Error> {
-    let compressed = sig.compress();
     let mut sig_proj = blst::blst_p2::default();
     let mut result_p2 = blst::blst_p2::default();
     let mut result_affine = blst::blst_p2_affine::default();
 
     unsafe {
-        let mut sig_affine = blst::blst_p2_affine::default();
-        blst::blst_p2_uncompress(&mut sig_affine, compressed.as_ptr());
         // Convert affine to projective
-        blst::blst_p2_from_affine(&mut sig_proj, &sig_affine);
+        let sig_affine: &blst::blst_p2_affine = sig.into();
+        blst::blst_p2_from_affine(&mut sig_proj, sig_affine);
         // Multiply
         blst::blst_p2_mult(&mut result_p2, &sig_proj, scalar.b.as_ptr(), 255);
         // Convert back to affine
@@ -464,33 +452,16 @@ fn signature_mult(sig: &BlstSignature, scalar: &blst::blst_scalar) -> Result<Bls
     Ok(BlstSignature::from(result_affine))
 }
 
-/// Convert secret key to scalar
-fn secret_to_scalar(sk: &BlstSecretKey) -> blst::blst_scalar {
-    let bytes = sk.to_bytes();
-    let mut scalar = blst::blst_scalar::default();
-    unsafe {
-        blst::blst_scalar_from_be_bytes(&mut scalar, bytes.as_ptr(), bytes.len());
-    }
-    scalar
-}
-
-/// Convert scalar to secret key
-fn scalar_to_secret(scalar: &blst::blst_scalar) -> Result<BlstSecretKey, Error> {
-    let mut bytes = [0u8; 32];
-    unsafe {
-        blst::blst_bendian_from_scalar(bytes.as_mut_ptr(), scalar);
-    }
-
-    BlstSecretKey::from_bytes(&bytes).map_err(|e| Error::InvalidSecretKey(e.into()))
-}
-
 /// Add two scalars
 fn scalar_add(a: &blst::blst_scalar, b: &blst::blst_scalar) -> Result<blst::blst_scalar, Error> {
     let mut result = blst::blst_scalar::default();
     unsafe {
-        blst::blst_sk_add_n_check(&mut result, a, b);
+        if blst::blst_sk_add_n_check(&mut result, a, b) {
+            Ok(result)
+        } else {
+            Err(Error::FailedToAddScalars)
+        }
     }
-    Ok(result)
 }
 
 /// Multiply two scalars
@@ -500,9 +471,12 @@ fn scalar_mult_scalars(
 ) -> Result<blst::blst_scalar, Error> {
     let mut result = blst::blst_scalar::default();
     unsafe {
-        blst::blst_sk_mul_n_check(&mut result, a, b);
+        if blst::blst_sk_mul_n_check(&mut result, a, b) {
+            Ok(result)
+        } else {
+            Err(Error::FailedToMultiplyScalars)
+        }
     }
-    Ok(result)
 }
 
 /// Negate a scalar
@@ -517,13 +491,6 @@ fn scalar_negate(a: &blst::blst_scalar) -> Result<blst::blst_scalar, Error> {
         // Convert scalars to fr for arithmetic
         let mut a_fr = blst::blst_fr::default();
         let mut zero_fr = blst::blst_fr::default();
-
-        // blst_scalar.b is [u8; 32], blst_fr.l is [u64; 4]
-        // We need to convert through bytes
-        let mut a_bytes = [0u8; 32];
-        let mut zero_bytes = [0u8; 32];
-        blst::blst_bendian_from_scalar(a_bytes.as_mut_ptr(), a);
-        blst::blst_bendian_from_scalar(zero_bytes.as_mut_ptr(), &zero);
 
         blst::blst_fr_from_scalar(&mut a_fr, a);
         blst::blst_fr_from_scalar(&mut zero_fr, &zero);
@@ -545,24 +512,10 @@ fn scalar_div(
     let mut inv_scalar = blst::blst_scalar::default();
 
     unsafe {
-        // Convert denominator to fr
-        let mut denom_fr = blst::blst_fr::default();
-        blst::blst_fr_from_scalar(&mut denom_fr, denominator);
-
-        // Compute multiplicative inverse
-        let mut inv_fr = blst::blst_fr::default();
-        blst::blst_fr_eucl_inverse(&mut inv_fr, &denom_fr);
-
-        // Convert back to scalar
-        blst::blst_scalar_from_fr(&mut inv_scalar, &inv_fr);
+        blst::blst_sk_inverse(&mut inv_scalar, denominator);
     }
 
     scalar_mult_scalars(numerator, &inv_scalar)
-}
-
-/// Convert signature to bytes
-fn signature_to_bytes(sig: &BlstSignature) -> Signature {
-    sig.to_bytes()
 }
 
 #[cfg(test)]
