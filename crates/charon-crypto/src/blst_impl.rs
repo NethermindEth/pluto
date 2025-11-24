@@ -43,14 +43,15 @@ impl Tbls for BlstImpl {
         &self,
         mut rng: impl RngCore + CryptoRng,
     ) -> Result<PrivateKey, Error> {
-        // For insecure/test key generation, we just use random bytes directly
-        let mut bytes = [0u8; 32];
-        rng.fill_bytes(&mut bytes);
+        for _ in 0..100 {
+            let mut bytes = [0u8; 32];
+            rng.fill_bytes(&mut bytes);
 
-        // Validate it's a valid secret key
-        let _ = BlstSecretKey::from_bytes(&bytes)?;
-
-        Ok(bytes)
+            if BlstSecretKey::from_bytes(&bytes).is_ok() {
+                return Ok(bytes);
+            }
+        }
+        Err(Error::InvalidSecretKey(BlsError::KeyGeneration))
     }
 
     fn secret_to_public_key(&self, secret_key: &PrivateKey) -> Result<PublicKey, Error> {
@@ -570,6 +571,13 @@ mod tests {
 
     fn setup() -> BlstImpl {
         BlstImpl
+    }
+
+    #[test]
+    fn test_generate_insecure_secret() {
+        let blst = setup();
+        let sk = blst.generate_insecure_secret(rand::rngs::OsRng).unwrap();
+        assert_eq!(sk.len(), 32);
     }
 
     #[test]
