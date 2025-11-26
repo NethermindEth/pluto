@@ -6,3 +6,6 @@
 
 /// Types for the Charon core.
 pub mod types;
+
+/// Consensus-related functionality.
+pub mod consensus;
