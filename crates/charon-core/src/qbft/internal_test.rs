@@ -468,3 +468,222 @@ fn prepare_round_1_decide_round_2() {
         ..Default::default()
     });
 }
+
+#[test]
+#[ignore = "wrong prepared value"]
+fn prepare_round_2_decide_round_3() {
+    test_qbft(Test {
+        instance: 0,
+        commits_after: 2,
+        value_delay: HashMap::from([(1, Duration::from_millis(200))]),
+        decide_round: 3,
+        prepared_val: 2,
+        const_period: true,
+        ..Default::default()
+    });
+}
+
+#[test]
+#[ignore = "wrong decide round"]
+fn leader_late_xp() {
+    test_qbft(Test {
+        instance: 0,
+        start_delay: HashMap::from([(1, Duration::from_millis(200))]),
+        decide_round: 2,
+        ..Default::default()
+    });
+}
+
+#[test]
+#[ignore = "deadlocks"]
+fn leader_down_const() {
+    test_qbft(Test {
+        instance: 3,
+        start_delay: HashMap::from([
+            (1, Duration::from_millis(50)),
+            (2, Duration::from_millis(100)),
+        ]),
+        decide_round: 4,
+        ..Default::default()
+    });
+}
+
+#[test]
+#[ignore = "non termination"]
+fn very_late_exp() {
+    test_qbft(Test {
+        instance: 3,
+        start_delay: HashMap::from([(1, Duration::from_secs(5)), (2, Duration::from_secs(10))]),
+        decide_round: 4,
+        ..Default::default()
+    });
+}
+
+#[test]
+#[ignore = "non termination"]
+fn very_late_const() {
+    test_qbft(Test {
+        instance: 1,
+        start_delay: HashMap::from([(1, Duration::from_secs(5)), (2, Duration::from_secs(10))]),
+        const_period: true,
+        random_round: true,
+        ..Default::default()
+    });
+}
+
+#[test]
+#[ignore = "non termination"]
+fn stagger_start_exp() {
+    test_qbft(Test {
+        instance: 0,
+        start_delay: HashMap::from([
+            (1, Duration::from_secs(0)),
+            (2, Duration::from_secs(1)),
+            (3, Duration::from_secs(2)),
+            (4, Duration::from_secs(3)),
+        ]),
+        random_round: true, // Takes 1 or 2 rounds.
+        ..Default::default()
+    });
+}
+
+#[test]
+#[ignore = "non termination"]
+fn stagger_start_const() {
+    test_qbft(Test {
+        instance: 0,
+        start_delay: HashMap::from([
+            (1, Duration::from_secs(0)),
+            (2, Duration::from_secs(1)),
+            (3, Duration::from_secs(2)),
+            (4, Duration::from_secs(3)),
+        ]),
+        const_period: true,
+        random_round: true, // Takes 1 or 2 rounds.
+        ..Default::default()
+    });
+}
+
+#[test]
+#[ignore = "`unexpected run error`"]
+fn very_delayed_value_exp() {
+    test_qbft(Test {
+        instance: 3,
+        value_delay: HashMap::from([(1, Duration::from_secs(5)), (2, Duration::from_secs(10))]),
+        decide_round: 4,
+        ..Default::default()
+    });
+}
+
+#[test]
+#[ignore = "`unexpected run error`"]
+fn very_delayed_value_const() {
+    test_qbft(Test {
+        instance: 1,
+        value_delay: HashMap::from([(1, Duration::from_secs(5)), (2, Duration::from_secs(10))]),
+        const_period: true,
+        random_round: true,
+        ..Default::default()
+    });
+}
+
+#[test]
+#[ignore = "write channel error"]
+fn stagger_delayed_value_exp() {
+    test_qbft(Test {
+        instance: 0,
+        value_delay: HashMap::from([
+            (1, Duration::from_secs(0)),
+            (2, Duration::from_secs(1)),
+            (3, Duration::from_secs(2)),
+            (4, Duration::from_secs(3)),
+        ]),
+        random_round: true,
+        ..Default::default()
+    });
+}
+
+#[test]
+#[ignore = "write channel error"]
+fn stagger_delayed_value_const() {
+    test_qbft(Test {
+        instance: 0,
+        value_delay: HashMap::from([
+            (1, Duration::from_secs(0)),
+            (2, Duration::from_secs(1)),
+            (3, Duration::from_secs(2)),
+            (4, Duration::from_secs(3)),
+        ]),
+        const_period: true,
+        random_round: true,
+        ..Default::default()
+    });
+}
+
+#[test]
+#[ignore = "non termination"]
+fn round1_leader_no_value_round2_leader_offline() {
+    test_qbft(Test {
+        instance: 0,
+        value_delay: HashMap::from([(1, Duration::from_secs(1))]),
+        start_delay: HashMap::from([(2, Duration::from_secs(2))]),
+        const_period: true,
+        decide_round: 3,
+        ..Default::default()
+    });
+}
+
+#[test]
+#[ignore = "deadlock"]
+fn jitter_500ms_exp() {
+    test_qbft(Test {
+        instance: 3,
+        bcast_jitter_ms: 500,
+        random_round: true,
+        ..Default::default()
+    });
+}
+
+#[test]
+#[ignore = "non termination"]
+fn jitter_200ms_const() {
+    test_qbft(Test {
+        instance: 3,
+        bcast_jitter_ms: 200, // 0.2-0.4s network delay * 3msgs/round == 0.6-1.2s delay per 1s round.
+        const_period: true,
+        random_round: true,
+        ..Default::default()
+    });
+}
+
+#[test]
+fn drop_10_percent_const() {
+    test_qbft(Test {
+        instance: 1,
+        drop_prob: HashMap::from([
+            (1, 0.1),
+            (2, 0.1),
+            (3, 0.1),
+            (4, 0.1),
+        ]),
+        const_period: true,
+        random_round: true,
+        ..Default::default()
+    });
+}
+
+#[test]
+fn drop_30_percent_const() {
+    test_qbft(Test {
+        instance: 1,
+        drop_prob: HashMap::from([
+            (1, 0.3),
+            (2, 0.3),
+            (3, 0.3),
+            (4, 0.3),
+        ]),
+        const_period: true,
+        random_round: true,
+        ..Default::default()
+    });
+}
