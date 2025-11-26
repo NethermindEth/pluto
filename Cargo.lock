@@ -467,6 +467,11 @@ version = "0.1.0"
 [[package]]
 name = "charon-dkg"
 version = "0.1.0"
+dependencies = [
+ "charon-build-proto",
+ "prost",
+ "prost-types",
+]
 
 [[package]]
 name = "charon-errors"
