@@ -423,7 +423,8 @@ where
     while !ct.is_canceled() {
         mpmc::select! {
             recv(input_value_ch) -> result => {
-                let input_value = result?;
+                let iv = result?;
+                input_value.replace(iv);
 
                 if input_value == Default::default() {
                     bail!("zero input value not supported");
@@ -432,7 +433,7 @@ where
                 if let Some(ppj) = ppj_cache.borrow().as_ref() {
                     // Broadcast the pre-prepare now that we have a input value using the cached
                     // justification.
-                    broadcast_msg(MSG_PRE_PREPARE, &input_value, Some(ppj))?;
+                    broadcast_msg(MSG_PRE_PREPARE, &input_value.borrow(), Some(ppj))?;
                 }
 
                 // Don't read from this channel again.

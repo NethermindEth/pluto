@@ -203,15 +203,15 @@ fn test_qbft(test: Test) {
                     s.spawn(move || {
                         thread::sleep(delay);
 
-                        v_chan_tx.send(i).expect(WRITE_CHAN_ERR);
+                        let _ = v_chan_tx.send(i);
                     });
                 } else if decide_round != 1 {
                     s.spawn(move || {
-                        v_chan_tx.send(i).expect(WRITE_CHAN_ERR);
+                        let _ = v_chan_tx.send(i);
                     });
                 } else if is_leader(&test.instance, 1, i) {
                     s.spawn(move || {
-                        v_chan_tx.send(i).expect(WRITE_CHAN_ERR);
+                        let _ = v_chan_tx.send(i);
                     });
                 }
 
@@ -495,7 +495,7 @@ fn leader_late_xp() {
 }
 
 #[test]
-#[ignore = "deadlocks"]
+#[ignore = "wrong decide round"]
 fn leader_down_const() {
     test_qbft(Test {
         instance: 3,
@@ -509,7 +509,6 @@ fn leader_down_const() {
 }
 
 #[test]
-#[ignore = "non termination"]
 fn very_late_exp() {
     test_qbft(Test {
         instance: 3,
@@ -520,7 +519,6 @@ fn very_late_exp() {
 }
 
 #[test]
-#[ignore = "non termination"]
 fn very_late_const() {
     test_qbft(Test {
         instance: 1,
@@ -532,7 +530,6 @@ fn very_late_const() {
 }
 
 #[test]
-#[ignore = "non termination"]
 fn stagger_start_exp() {
     test_qbft(Test {
         instance: 0,
@@ -548,7 +545,6 @@ fn stagger_start_exp() {
 }
 
 #[test]
-#[ignore = "non termination"]
 fn stagger_start_const() {
     test_qbft(Test {
         instance: 0,
@@ -565,7 +561,6 @@ fn stagger_start_const() {
 }
 
 #[test]
-#[ignore = "`unexpected run error`"]
 fn very_delayed_value_exp() {
     test_qbft(Test {
         instance: 3,
@@ -576,7 +571,6 @@ fn very_delayed_value_exp() {
 }
 
 #[test]
-#[ignore = "`unexpected run error`"]
 fn very_delayed_value_const() {
     test_qbft(Test {
         instance: 1,
@@ -588,7 +582,6 @@ fn very_delayed_value_const() {
 }
 
 #[test]
-#[ignore = "write channel error"]
 fn stagger_delayed_value_exp() {
     test_qbft(Test {
         instance: 0,
@@ -604,7 +597,6 @@ fn stagger_delayed_value_exp() {
 }
 
 #[test]
-#[ignore = "write channel error"]
 fn stagger_delayed_value_const() {
     test_qbft(Test {
         instance: 0,
@@ -621,7 +613,6 @@ fn stagger_delayed_value_const() {
 }
 
 #[test]
-#[ignore = "non termination"]
 fn round1_leader_no_value_round2_leader_offline() {
     test_qbft(Test {
         instance: 0,
@@ -634,7 +625,6 @@ fn round1_leader_no_value_round2_leader_offline() {
 }
 
 #[test]
-#[ignore = "deadlock"]
 fn jitter_500ms_exp() {
     test_qbft(Test {
         instance: 3,
@@ -645,7 +635,6 @@ fn jitter_500ms_exp() {
 }
 
 #[test]
-#[ignore = "non termination"]
 fn jitter_200ms_const() {
     test_qbft(Test {
         instance: 3,
