@@ -687,3 +687,94 @@ fn drop_30_percent_const() {
         ..Default::default()
     });
 }
+
+fn noop_definition() -> Definition<i64, i64, i64> {
+    Definition {
+        is_leader: Box::new(|_, _, _| false),
+        new_timer: Box::new(|_| (mpmc::never(), Box::new(|| {}))),
+        decide: Box::new(|_, _, _, _| {}),
+        compare: Box::new(|_, _, _, _, _, _| {}),
+        nodes: 0,
+        fifo_limit: 0,
+        log_round_change: Box::new(|_, _, _, _, _, _| {}),
+        log_unjust: Box::new(|_, _, _| {}),
+        log_upon_rule: Box::new(|_, _, _, _, _| {}),
+    }
+}
+
+fn noop_transport() -> Transport<i64, i64, i64> {
+    Transport {
+        broadcast: Box::new(|_, _, _, _, _, _, _, _, _| Ok(())),
+        receive: mpmc::never(),
+    }
+}
+
+#[test]
+fn duplicate_pre_prepare_rules() {
+    let cts = CancellationTokenSource::new();
+    let ct = &cts.token().clone();
+
+    const NO_LEADER: i64 = 1;
+    const LEADER: i64 = 2;
+
+    let new_preprepare = |round: i64| -> Msg<i64, i64, i64> {
+        new_msg(
+            MSG_PRE_PREPARE,
+            0,
+            LEADER,
+            round,
+            0,
+            0,
+            0,
+            0,
+            // Justification not required since nodes and quorum both 0.
+            None,
+        )
+    };
+
+    let mut def = noop_definition();
+    def.is_leader = Box::new(|_, _, process| process == LEADER);
+    def.log_upon_rule = Box::new(move |_, _, round, msg, upon_rule| {
+        println!("UponRule: rule={} round={} ", upon_rule, msg.round());
+
+        assert!(upon_rule == UPON_JUSTIFIED_PRE_PREPARE);
+
+        if msg.round() == 1 {
+            return;
+        }
+
+        if msg.round() == 2 {
+            cts.cancel();
+            return;
+        }
+
+        panic!("unexpected round {}", round);
+    });
+    def.compare = Box::new(|_, _, _, _, return_err, _| {
+        let _ = return_err.send(Ok(()));
+    });
+
+    let (r_chan_tx, r_chan_rx) = mpmc::bounded::<Msg<i64, i64, i64>>(2);
+    r_chan_tx.send(new_preprepare(1)).expect(WRITE_CHAN_ERR);
+    r_chan_tx.send(new_preprepare(2)).expect(WRITE_CHAN_ERR);
+
+    let mut transport = noop_transport();
+    transport.receive = r_chan_rx;
+
+    let (ch, input_value_ch) = mpmc::bounded::<i64>(1);
+    ch.send(1).expect(WRITE_CHAN_ERR);
+    let (ch, input_value_source_ch) = mpmc::bounded::<i64>(1);
+    ch.send(2).expect(WRITE_CHAN_ERR);
+
+    let res = qbft::run(
+        ct,
+        &def,
+        &transport,
+        &0,
+        NO_LEADER,
+        input_value_ch,
+        input_value_source_ch,
+    );
+
+    assert!(res.is_ok());
+}
