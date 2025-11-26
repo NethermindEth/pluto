@@ -9,3 +9,6 @@ pub mod types;
 
 /// Consensus-related functionality.
 pub mod consensus;
+
+/// Protobuf definitions.
+pub mod corepb;

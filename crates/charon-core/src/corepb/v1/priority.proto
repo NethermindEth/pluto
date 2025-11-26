@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package priority;
+
+import "core.proto";
+import "google/protobuf/any.proto";
+
+// PriorityResult defines a cluster wide priority result of the Prioritiser protocol.
+message PriorityResult {
+  repeated PriorityMsg           msgs = 1;
+  repeated PriorityTopicResult topics = 2;
+}
+
+// PriorityMsg defines all the priorities and metadata of a single peer in the Prioritiser protocol.
+message PriorityMsg {
+  core.Duty                duty = 1;
+  repeated PriorityTopicProposal   topics = 2;
+  string                          peer_id = 3;
+  bytes                         signature = 4;
+}
+
+// PriorityTopicProposal defines a single peers proposed priorities for a single topic in the Prioritiser protocol.
+message PriorityTopicProposal {
+  google.protobuf.Any               topic = 1;
+  repeated google.protobuf.Any priorities = 2;
+}
+
+// PriorityTopicResult defines the cluster wide resulting priorities for a
+// single topic in the Prioritiser protocol.
+message PriorityTopicResult {
+  google.protobuf.Any                topic = 1;
+  // priorities are ordered by decreasing score, ties are broken by peer with lowest peer ID.
+  repeated PriorityScoredResult priorities = 2;
+}
+
+// PriorityScoredResult defines the cluster wide priority score in the Prioritiser protocol.
+message PriorityScoredResult {
+  google.protobuf.Any priority = 1;
+  int64                  score = 2;
+}
