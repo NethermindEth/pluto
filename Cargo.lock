@@ -420,6 +420,13 @@ name = "charon"
 version = "0.1.0"
 
 [[package]]
+name = "charon-build-proto"
+version = "0.1.0"
+dependencies = [
+ "prost-build",
+]
+
+[[package]]
 name = "charon-cli"
 version = "0.1.0"
 dependencies = [
@@ -439,11 +446,11 @@ version = "0.1.0"
 name = "charon-core"
 version = "0.1.0"
 dependencies = [
+ "charon-build-proto",
  "chrono",
  "hex",
  "libp2p",
  "prost",
- "prost-build",
  "prost-types",
  "serde",
  "serde_json",
