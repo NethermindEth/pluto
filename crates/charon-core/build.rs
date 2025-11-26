@@ -2,7 +2,7 @@
 //!
 //! This build script compiles the protobuf files.
 
-use std::{fs, io::Result, path::PathBuf};
+use std::{fs, io::Result, path::PathBuf, process::Command};
 
 fn main() -> Result<()> {
     let proto_dir = "src/corepb/v1";
@@ -27,6 +27,7 @@ fn main() -> Result<()> {
     )?;
 
     add_file_attributes(proto_dir)?;
+    format_generated_files(proto_dir)?;
 
     for proto_file in &proto_files {
         println!("cargo:rerun-if-changed={}", proto_file.display());
@@ -71,6 +72,27 @@ fn add_file_attributes(proto_dir: &str) -> Result<()> {
         };
         let new_content = format!("{}{}", header, rest);
         fs::write(&file_path, new_content)?;
+    }
+
+    Ok(())
+}
+
+fn format_generated_files(proto_dir: &str) -> Result<()> {
+    let output = Command::new("cargo")
+        .args(["+nightly", "fmt", "--", proto_dir])
+        .output()
+        .or_else(|_| {
+            println!("cargo:warning=Nightly rustfmt not available, using stable");
+            Command::new("cargo")
+                .args(["fmt", "--", proto_dir])
+                .output()
+        })?;
+
+    if !output.status.success() {
+        println!(
+            "cargo:warning=Failed to format generated files: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     Ok(())
