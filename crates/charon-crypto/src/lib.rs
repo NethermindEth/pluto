@@ -3,37 +3,16 @@
 //! Cryptographic primitives and utilities for the Charon distributed validator
 //! node. This crate provides cryptographic functions, key management, and
 //! security operations required for distributed validator operations.
+//!
+//! This crate implements threshold BLS signatures compatible with the Herumi
+//! BLS library used in the Go implementation, using the BLST library which
+//! provides high-performance BLS12-381 cryptography.
 
-/// Adds two numbers together.
-///
-/// # Arguments
-///
-/// * `left` - The first number to add
-/// * `right` - The second number to add
-///
-/// # Returns
-///
-/// The sum of the two numbers
-///
-/// # Examples
-///
-/// ```
-/// use charon_crypto::add;
-///
-/// let result = add(2, 2);
-/// assert_eq!(result, 4);
-/// ```
-pub fn add(left: u64, right: u64) -> u64 {
-    left.wrapping_add(right)
-}
+/// BLST implementation of TBLS (Herumi-compatible)
+pub mod blst_impl;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// TBLS trait definition
+pub mod tbls;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+/// Error types and constants
+pub mod types;
