@@ -649,7 +649,7 @@ fn jitter_500ms_exp() {
 fn jitter_200ms_const() {
     test_qbft(Test {
         instance: 3,
-        bcast_jitter_ms: 200, // 0.2-0.4s network delay * 3msgs/round == 0.6-1.2s delay per 1s round.
+        bcast_jitter_ms: 200, // 0.2-0.4s network delay * 3msgs/round == 0.6-1.2s delay per 1s round
         const_period: true,
         random_round: true,
         ..Default::default()
@@ -660,12 +660,7 @@ fn jitter_200ms_const() {
 fn drop_10_percent_const() {
     test_qbft(Test {
         instance: 1,
-        drop_prob: HashMap::from([
-            (1, 0.1),
-            (2, 0.1),
-            (3, 0.1),
-            (4, 0.1),
-        ]),
+        drop_prob: HashMap::from([(1, 0.1), (2, 0.1), (3, 0.1), (4, 0.1)]),
         const_period: true,
         random_round: true,
         ..Default::default()
@@ -676,12 +671,7 @@ fn drop_10_percent_const() {
 fn drop_30_percent_const() {
     test_qbft(Test {
         instance: 1,
-        drop_prob: HashMap::from([
-            (1, 0.3),
-            (2, 0.3),
-            (3, 0.3),
-            (4, 0.3),
-        ]),
+        drop_prob: HashMap::from([(1, 0.3), (2, 0.3), (3, 0.3), (4, 0.3)]),
         const_period: true,
         random_round: true,
         ..Default::default()
