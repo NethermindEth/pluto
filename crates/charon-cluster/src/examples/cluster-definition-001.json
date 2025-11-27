@@ -1,0 +1,30 @@
+{
+  "name": "test definition",
+  "creator": {
+    "address": "0xB7198Ae265d32ef906c013150788D84BD96740c9",
+    "config_signature": "0xa271673fb0a5c034bcd43ee678d4ca3234fbbd35166e6d8d014204c8c0a540323721960d22910a9f8e5cebf15583af96031446421e5c57db0afac4b3ed65e03501"
+  },
+  "operators": [
+    {
+      "address": "0x5Ca6C7B015CD787D63ec6Ec4A84825A5e72431BF",
+      "enr": "enr://682e485ac549c4eb6071dd2d01508d094dd06caf98818bb5fee5878fcdbe11fa",
+      "config_signature": "0xeee537c65713fb3507e28b53f47cfb0300576f32f0df0742352ac0d0178863b82b2eddf6d0d0a4a96c7f866db955abfc36e4e29cabd26a7e21a9ffeca74755d200",
+      "enr_signature": "0xbb732121abd2898eb9bba82479796374afd4bce679e3d248b7215e47524aaca9531753afb9feff77285a0fac2c4337af453dd12710a3bb7e7f919967a35452f000"
+    },
+    {
+      "address": "0x67091b84d845f296F6e02DA8Fb2cfdDBC36A5c24",
+      "enr": "enr://8736809d4af7e2d92cd13259fc1a0023489ea8b6c839a42b2d70d907f79e02e2",
+      "config_signature": "0xef3ebd6d87d6dba50d8449bbbc1d0de543ef4f3a76254244d10e9240391530b2358aea3a30b9055d4ffea47e9cb18eada5091c75ab1e34a2c61a771c923c3fa700",
+      "enr_signature": "0x45c849904b00501391d30c78626992f9c19520339b7b9329869f12609b77f6440926008678e522496de6db41b186cf5987ec2485305d5cd372dc46830c30ab8201"
+    }
+  ],
+  "uuid": "52FDFC07-2182-654F-163F-5F0F9A621D72",
+  "version": "v1.4.0",
+  "timestamp": "2022-11-09T13:05:07+02:00",
+  "num_validators": 1,
+  "threshold": 2,
+  "dkg_algorithm": "default",
+  "fork_version": "0x90000069",
+  "config_hash": "0x5eef717d12871eab4adf3eaddb39832e71eeffecf8b1838c8e4d189a5c3b6449",
+  "definition_hash": "0x88f20d7dd95ef49f3694e8c8a80fe9cdbd8c2ce9aa8c7613f0f45fcbf4a49d2e"
+}

@@ -4,36 +4,31 @@
 //! This crate handles the formation, management, and coordination of validator
 //! clusters in the Charon network.
 
-/// Adds two numbers together.
-///
-/// # Arguments
-///
-/// * `left` - The first number to add
-/// * `right` - The second number to add
-///
-/// # Returns
-///
-/// The sum of the two numbers
-///
-/// # Examples
-///
-/// ```
-/// use charon_cluster::add;
-///
-/// let result = add(2, 2);
-/// assert_eq!(result, 4);
-/// ```
-pub fn add(left: u64, right: u64) -> u64 {
-    left.wrapping_add(right)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+/// Cluster definition management and coordination.
+pub mod definition;
+/// Cluster deposit management and coordination.
+pub mod deposit;
+/// Cluster distributed validator management and coordination.
+pub mod distvalidator;
+/// Cluster documentation management and coordination.
+pub mod doc;
+/// Cluster EIP-712 signatures management and coordination.
+pub mod eip712sigs;
+/// Cluster helpers management and coordination.
+pub mod helpers;
+/// Cluster lock management and coordination.
+pub mod lock;
+/// Manifest
+pub mod manifest;
+/// Manifest protocol buffers.
+pub mod manifestpb;
+/// Cluster operator management and coordination.
+pub mod operator;
+/// Cluster registration management and coordination.
+pub mod registration;
+/// Cluster SSZ management and coordination.
+pub mod ssz;
+/// Cluster test cluster management and coordination.
+pub mod test_cluster;
+/// Cluster version management and coordination.
+pub mod version;

@@ -3,3 +3,9 @@ extend-ignore-re = [
     "0x[0-9a-fA-F]+", # Hexadecimal numbers
 ]
 
+
+[files]
+extend-exclude = [
+    "crates/charon-cluster/src/manifest/testdata/**",
+    "crates/charon-cluster/src/examples/**",
+]
