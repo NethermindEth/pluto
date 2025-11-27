@@ -59,7 +59,7 @@ fn test_qbft(test: Test) {
                 Duration::from_secs(1)
             } else {
                 // If not constant periods, then exponential.
-                Duration::from_secs_f64(f64::powf(2.0, (round - 1) as f64))
+                Duration::from_secs(u64::pow(2, (round as u32) - 1))
             };
 
             (mpmc::after(d), Box::new(|| {}))
