@@ -1302,6 +1302,6 @@ where
 }
 
 #[cfg(test)]
-mod internal_test;
-#[cfg(test)]
 mod fake_clock;
+#[cfg(test)]
+mod internal_test;
