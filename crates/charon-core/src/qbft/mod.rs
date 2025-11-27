@@ -3,11 +3,11 @@
 //!
 //! ## Features
 //!
-//! - Simple API, just a single function: `qbft.Run`.
+//! - Simple API, just a single function: `qbft::run`.
 //! - Consensus on arbitrary data.
 //! - Transport abstracted and not provided.
 //! - Decoupled from process authentication and message signing (not provided).
-//! - No dependencies.
+//! - No domain-specific dependencies.
 //! - Explicit justifications.
 
 // TODO: Remove these checks
@@ -426,7 +426,7 @@ where
                 let iv = result?;
                 input_value.replace(iv);
 
-                if input_value == Default::default() {
+                if *input_value.borrow() == Default::default() {
                     bail!("zero input value not supported");
                 }
 

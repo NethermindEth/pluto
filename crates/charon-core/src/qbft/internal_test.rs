@@ -368,6 +368,7 @@ fn new_msg(
 fn bcast(broadcast: mpmc::Sender<Msg<i64, i64, i64>>, msg: Msg<i64, i64, i64>, jitter_ms: i32) {
     if jitter_ms == 0 {
         broadcast.send(msg.clone()).expect(WRITE_CHAN_ERR);
+        return;
     }
 
     thread::spawn(move || {
