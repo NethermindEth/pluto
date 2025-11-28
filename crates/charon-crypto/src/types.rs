@@ -81,6 +81,42 @@ pub enum Error {
     /// Math error during field operations.
     #[error("Math error: {0}")]
     MathError(#[from] MathError),
+
+    /// Failed to convert secret key to blst scalar.
+    #[error("Failed to convert secret key to blst scalar")]
+    FailedToConvertSkToBlstScalar,
+
+    /// Failed to add scalars.
+    #[error("Failed to add scalars")]
+    FailedToAddScalars,
+
+    /// Failed to multiply scalars.
+    #[error("Failed to multiply scalars")]
+    FailedToMultiplyScalars,
+
+    /// Indices are not unique.
+    #[error("Indices are not unique")]
+    IndicesNotUnique,
+
+    /// Shares are empty.
+    #[error("Shares are empty")]
+    SharesAreEmpty,
+
+    /// Failed to convert scalar to secret key.
+    #[error("Failed to convert scalar to secret key")]
+    FailedToConvertScalarToSecretKey,
+
+    /// Indices and shares mismatch.
+    #[error("Indices and shares mismatch")]
+    IndicesSharesMismatch,
+
+    /// Polynomial is empty.
+    #[error("Polynomial is empty")]
+    PolynomialIsEmpty,
+
+    /// Public key array is empty.
+    #[error("Public key array is empty")]
+    EmptyPublicKeyArray,
 }
 
 /// BLST-specific error wrapper.

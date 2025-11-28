@@ -10,21 +10,21 @@ use crate::types::{Error, Index, PrivateKey, PublicKey, Signature};
 
 /// Tbls trait
 pub trait Tbls {
-    /// GenerateSecretKey generates a secret key and returns its compressed
+    /// Generates a secret key and returns its compressed
     /// serialized representation.
     fn generate_secret_key(&self, rng: impl RngCore + CryptoRng) -> Result<PrivateKey, Error>;
 
-    /// generateInsecureSecret generates a secret that is not cryptographically
+    /// Generates a secret that is not cryptographically
     /// secure using the provided random number generator. This is useful
     /// for testing.
     fn generate_insecure_secret(&self, rng: impl RngCore + CryptoRng) -> Result<PrivateKey, Error>;
 
-    /// SecretToPublicKey extracts the public key associated with the secret
+    /// Extracts the public key associated with the secret
     /// passed in input, and returns its compressed serialized
     /// representation.
     fn secret_to_public_key(&self, secret_key: &PrivateKey) -> Result<PublicKey, Error>;
 
-    /// thresholdSplitInsecure splits a compressed secret into total units of
+    /// Splits a compressed secret into total units of
     /// secret keys, with the given threshold. It returns a map that
     /// associates each private, compressed private key to its ID.
     ///
@@ -55,17 +55,17 @@ pub trait Tbls {
         threshold: Index,
     ) -> Result<HashMap<Index, PrivateKey>, Error>;
 
-    /// RecoverSecret recovers a secret from a set of shares
+    /// Recovers a secret from a set of shares
     ///
     /// # Limitations
     ///
     /// Share IDs must be < 255 due to underlying BLS library constraints.
-    fn recover_secret(&self, shares: HashMap<Index, PrivateKey>) -> Result<PrivateKey, Error>;
+    fn recover_secret(&self, shares: &HashMap<Index, PrivateKey>) -> Result<PrivateKey, Error>;
 
-    /// Aggregate aggregates a set of signatures into a single signature
+    /// Aggregates a set of signatures into a single signature
     fn aggregate(&self, signatures: Vec<Signature>) -> Result<Signature, Error>;
 
-    /// ThresholdAggregate aggregates a set of partial signatures into a single
+    /// Aggregates a set of partial signatures into a single
     /// signature
     ///
     /// # Limitations
@@ -73,7 +73,7 @@ pub trait Tbls {
     /// Share IDs must be < 255 due to underlying BLS library constraints.
     fn threshold_aggregate(
         &self,
-        partial_signatures_by_idx: HashMap<Index, Signature>,
+        partial_signatures_by_idx: &HashMap<Index, Signature>,
     ) -> Result<Signature, Error>;
 
     /// Verify verifies a signature
@@ -84,13 +84,13 @@ pub trait Tbls {
         raw_signature: &Signature,
     ) -> Result<(), Error>;
 
-    /// Sign signs a message with a private key
+    /// Signs a message with a private key
     fn sign(&self, private_key: &PrivateKey, data: &[u8]) -> Result<Signature, Error>;
 
-    /// ThresholdSign signs a message with a set of private keys
+    /// Verifies an aggregate signature
     fn verify_aggregate(
         &self,
-        public_keys: Vec<PublicKey>,
+        public_keys: &[PublicKey],
         signature: Signature,
         data: &[u8],
     ) -> Result<(), Error>;

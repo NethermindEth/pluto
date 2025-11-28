@@ -32,7 +32,11 @@
   ],
   "uuid": "B6AE17B3-78F5-147B-2C37-2572B93437DF",
   "version": "v1.8.0",
+<<<<<<< HEAD
   "timestamp": "2023-05-18T15: 12: 46+02: 00",
+=======
+  "timestamp": "2023-05-18T15:12:46+02:00",
+>>>>>>> origin/main
   "num_validators": 2,
   "threshold": 3,
   "validators": [
