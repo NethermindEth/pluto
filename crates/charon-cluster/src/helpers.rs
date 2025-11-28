@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{DeserializeAs, SerializeAs};
 use std::borrow::Cow;
@@ -87,6 +88,29 @@ impl TryFrom<&str> for EthHex {
         let s = value.strip_prefix("0x").unwrap_or(value);
         let bytes = hex::decode(s)?;
         Ok(EthHex(bytes))
+    }
+}
+
+/// TimestampSeconds represents a timestamp in seconds since the Unix epoch.
+pub struct TimestampSeconds;
+
+impl SerializeAs<DateTime<Utc>> for TimestampSeconds {
+    fn serialize_as<S>(value: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_i64(value.timestamp())
+    }
+}
+
+impl<'de> DeserializeAs<'de, DateTime<Utc>> for TimestampSeconds {
+    fn deserialize_as<D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let timestamp = i64::deserialize(deserializer)?;
+        DateTime::<Utc>::from_timestamp(timestamp, 0)
+            .ok_or(serde::de::Error::custom("invalid timestamp"))
     }
 }
 
