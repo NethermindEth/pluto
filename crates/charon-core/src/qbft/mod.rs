@@ -1,4 +1,4 @@
-//! Package `qbft` is an implementation of the ["The Istanbul BFT Consensus Algorithm"](https://arxiv.org/pdf/2002.03613.pdf) by Henrique Moniz
+//! Package `qbft` is an implementation of ["The Istanbul BFT Consensus Algorithm"](https://arxiv.org/pdf/2002.03613.pdf) by Henrique Moniz
 //! as referenced by the [QBFT spec](https://github.com/ConsenSys/qbft-formal-spec-and-verification).
 //!
 //! ## Features
@@ -84,7 +84,7 @@ where
     >,
 
     /// Called when leader proposes value and we compare it with our local
-    /// value. It's an opt-in feature that should instantly return nil on
+    /// value. It's an opt-in feature that should instantly return `None` on
     /// returnErr channel if it is not turned on.
     pub compare: Box<
         dyn Fn(
@@ -209,7 +209,7 @@ where
     fn instance(&self) -> I;
     /// Process that sent the message.
     fn source(&self) -> i64;
-    /// The message pertains to.
+    /// The round the message pertains to.
     fn round(&self) -> i64;
     /// The value being proposed, usually a hash.
     fn value(&self) -> V;
