@@ -91,6 +91,11 @@ impl FakeClock {
         let inner = self.inner.lock().unwrap();
         inner.now - inner.start
     }
+
+    pub fn cancel(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.clients.clear();
+    }
 }
 
 #[test]

@@ -1,8 +1,7 @@
-use crate::qbft::{self, *};
-use anyhow::{Result, bail};
+use crate::qbft::{self, fake_clock::FakeClock, *};
 use cancellation::CancellationTokenSource;
 use crossbeam::channel as mpmc;
-use std::{any, collections::HashMap, sync::Arc, thread, time::Duration};
+use std::{collections::HashMap, sync::Arc, thread, time::Duration};
 
 const WRITE_CHAN_ERR: &str = "Failed to write to channel";
 const READ_CHAN_ERR: &str = "Failed to read from channel";
@@ -37,6 +36,7 @@ fn test_qbft(test: Test) {
     const FIFO_LIMIT: usize = 100;
 
     let start_time = time::Instant::now();
+    let clock = FakeClock::new(start_time);
 
     let cts = CancellationTokenSource::new();
     let mut receives = HashMap::<
@@ -54,59 +54,54 @@ fn test_qbft(test: Test) {
 
     let defs = Arc::new(Definition {
         is_leader: is_leader.clone(),
-        new_timer: Box::new(move |round: i64| {
-            let d: Duration = if test.const_period {
-                Duration::from_secs(1)
-            } else {
-                // If not constant periods, then exponential.
-                Duration::from_secs(u64::pow(2, (round as u32) - 1))
-            };
+        new_timer: {
+            let clock = clock.clone();
 
-            (mpmc::after(d), Box::new(|| {}))
-        }),
+            Box::new(move |round| {
+                let d: Duration = if test.const_period {
+                    Duration::from_secs(1)
+                } else {
+                    // If not constant periods, then exponential.
+                    Duration::from_secs(u64::pow(2, (round as u32) - 1))
+                };
+
+                clock.new_timer(d)
+            })
+        },
         decide: {
             let result_chan_tx = result_chan_tx.clone();
-            Box::new(
-                move |_: &CancellationToken,
-                      _: &i64,
-                      _: &i64,
-                      q_commit: &Vec<Msg<i64, i64, i64>>| {
-                    result_chan_tx.send(q_commit.clone()).expect(WRITE_CHAN_ERR);
-                },
-            )
+            Box::new(move |_, _, _, q_commit| {
+                result_chan_tx.send(q_commit.clone()).expect(WRITE_CHAN_ERR);
+            })
         },
-        compare: Box::new(
-            |_: &CancellationToken,
-             _: &Msg<i64, i64, i64>,
-             _: &mpmc::Receiver<i64>,
-             _: &i64,
-             return_err: &mpmc::Sender<Result<()>>,
-             _: &mpmc::Sender<i64>| {
-                return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
-            },
-        ),
+        compare: Box::new(|_, _, _, _, return_err, _| {
+            return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
+        }),
         nodes: N as i64,
         fifo_limit: FIFO_LIMIT as i64,
-        log_round_change: Box::new(
-            move |_, process: i64, round: i64, new_round: i64, upon_rule: UponRule, _| {
+        log_round_change: {
+            let clock = clock.clone();
+
+            Box::new(move |_, process, round, new_round, upon_rule, _| {
                 println!(
                     "{:?} - {}@{} change to {} ~= {}",
-                    start_time.elapsed(),
+                    clock.elapsed(),
                     process,
                     round,
                     new_round,
                     upon_rule,
                 );
-            },
-        ),
-        log_unjust: Box::new(|_, _, msg: Msg<i64, i64, i64>| {
+            })
+        },
+        log_unjust: Box::new(|_, _, msg| {
             println!("Unjust: {:?}", msg);
         }),
-        log_upon_rule: Box::new(
-            move |_, process: i64, round: i64, msg: &Msg<i64, i64, i64>, upon_rule: UponRule| {
+        log_upon_rule: {
+            let clock = clock.clone();
+            Box::new(move |_, process, round, msg, upon_rule| {
                 println!(
                     "{:?} {} => {}@{} -> {}@{} ~= {}",
-                    start_time.elapsed(),
+                    clock.elapsed(),
                     msg.source(),
                     msg.type_(),
                     msg.round(),
@@ -114,8 +109,8 @@ fn test_qbft(test: Test) {
                     round,
                     upon_rule,
                 );
-            },
-        ),
+            })
+        },
     });
 
     thread::scope(|s| {
@@ -125,60 +120,56 @@ fn test_qbft(test: Test) {
             receives.insert(i, (sender.clone(), receiver.clone()));
 
             let trans = Transport {
-                broadcast: Box::new(
-                    move |_: &CancellationToken,
-                          type_: MessageType,
-                          instance,
-                          source,
-                          round,
-                          value,
-                          pr,
-                          pv,
-                          justification| {
-                        if round > MAX_ROUND as i64 {
-                            bail!("max round reach")
-                        }
+                broadcast: {
+                    let clock = clock.clone();
 
-                        if type_ == MSG_COMMIT && round <= test.commits_after.into() {
-                            println!(
-                                "{:?} {} dropping commit for round {}",
-                                start_time.elapsed(),
+                    Box::new(
+                        move |_, type_, instance, source, round, value, pr, pv, justification| {
+                            if round > MAX_ROUND as i64 {
+                                bail!("max round reach")
+                            }
+
+                            if type_ == MSG_COMMIT && round <= test.commits_after.into() {
+                                println!(
+                                    "{:?} {} dropping commit for round {}",
+                                    clock.elapsed(),
+                                    source,
+                                    round
+                                );
+                                return Ok(());
+                            }
+
+                            println!("{:?} {} => {}@{}", clock.elapsed(), source, type_, round);
+
+                            let msg = new_msg(
+                                type_,
+                                *instance,
                                 source,
-                                round
+                                round,
+                                *value,
+                                *value,
+                                pr,
+                                *pv,
+                                justification,
                             );
-                            return Ok(());
-                        }
+                            sender.send(msg.clone()).expect(WRITE_CHAN_ERR);
 
-                        println!(
-                            "{:?} {} => {}@{}",
-                            start_time.elapsed(),
-                            source,
-                            type_,
-                            round
-                        );
+                            bcast(
+                                broadcast_tx.clone(),
+                                msg.clone(),
+                                test.bcast_jitter_ms,
+                                clock.clone(),
+                            ); // TODO: Add clock
 
-                        let msg = new_msg(
-                            type_,
-                            *instance,
-                            source,
-                            round,
-                            *value,
-                            *value,
-                            pr,
-                            *pv,
-                            justification,
-                        );
-                        sender.send(msg.clone()).expect(WRITE_CHAN_ERR);
-
-                        bcast(broadcast_tx.clone(), msg.clone(), test.bcast_jitter_ms);
-
-                        Ok(())
-                    },
-                ),
+                            Ok(())
+                        },
+                    )
+                },
                 receive: receiver.clone(),
             };
 
             let token = cts.token();
+            let clock = clock.clone();
             let receiver = receiver.clone();
             let start_delay = test.start_delay.get(&i).copied();
             let value_delay = test.value_delay.get(&i).copied();
@@ -189,9 +180,13 @@ fn test_qbft(test: Test) {
 
             s.spawn(move || {
                 if let Some(delay) = start_delay {
-                    thread::sleep(delay);
+                    println!("{:?} Node {} start delay {:?}", clock.elapsed(), i, delay);
+                    let (delay_ch, _) = clock.new_timer(delay);
+                    _ = delay_ch.recv();
+                    println!("{:?} Node {} starting", clock.elapsed(), i);
                 }
 
+                // Drain any buffered messages
                 while !receiver.is_empty() {
                     _ = receiver.recv().expect(READ_CHAN_ERR);
                 }
@@ -201,17 +196,19 @@ fn test_qbft(test: Test) {
 
                 if let Some(delay) = value_delay {
                     s.spawn(move || {
-                        thread::sleep(delay);
+                        let (delay_ch, cancel) = clock.new_timer(delay);
+                        _ = delay_ch.recv();
+                        _ = v_chan_tx.send(i);
 
-                        let _ = v_chan_tx.send(i);
+                        cancel();
                     });
                 } else if decide_round != 1 {
                     s.spawn(move || {
-                        let _ = v_chan_tx.send(i);
+                        _ = v_chan_tx.send(i);
                     });
                 } else if is_leader(&test.instance, 1, i) {
                     s.spawn(move || {
-                        let _ = v_chan_tx.send(i);
+                        _ = v_chan_tx.send(i);
                     });
                 }
 
@@ -245,7 +242,7 @@ fn test_qbft(test: Test) {
 
                         if let Some(p) = test.drop_prob.get(&msg.source()) {
                             if rand::random::<f64>() < *p {
-                                println!("{:?} {} => {}@{} => {} (dropped)", start_time.elapsed(), msg.source(), msg.type_(), msg.round(), target);
+                                println!("{:?} {} => {}@{} => {} (dropped)", clock.elapsed(), msg.source(), msg.type_(), msg.round(), target);
                                 continue; // Drop
                             }
                         }
@@ -285,11 +282,12 @@ fn test_qbft(test: Test) {
                     }
 
                     let round = q_commit[0].round();
-                    println!("Got all results in round {} after {:?}: {:?}", round, start_time.elapsed(), results);
+                    println!("Got all results in round {} after {:?}: {:?}", round, clock.elapsed(), results);
 
                     // Trigger shutdown
                     decided = true;
 
+                    clock.cancel();
                     cts.cancel();
                 }
 
@@ -309,7 +307,8 @@ fn test_qbft(test: Test) {
                 }
 
                 default => {
-                    thread::sleep(time::Duration::from_millis(1));
+                    thread::sleep(time::Duration::from_micros(1));
+                    clock.advance(Duration::from_millis(1));
                 }
             }
         }
@@ -365,7 +364,12 @@ fn new_msg(
 
 // Delays the message broadcast by between 1x and 2x jitter_ms and drops
 // messages.
-fn bcast(broadcast: mpmc::Sender<Msg<i64, i64, i64>>, msg: Msg<i64, i64, i64>, jitter_ms: i32) {
+fn bcast(
+    broadcast: mpmc::Sender<Msg<i64, i64, i64>>,
+    msg: Msg<i64, i64, i64>,
+    jitter_ms: i32,
+    clock: FakeClock,
+) {
     if jitter_ms == 0 {
         broadcast.send(msg.clone()).expect(WRITE_CHAN_ERR);
         return;
@@ -374,7 +378,16 @@ fn bcast(broadcast: mpmc::Sender<Msg<i64, i64, i64>>, msg: Msg<i64, i64, i64>, j
     thread::spawn(move || {
         let delta_ms = (f64::from(jitter_ms) * rand::random::<f64>()) as i32;
         let delay = Duration::from_millis((jitter_ms + delta_ms) as u64);
-        thread::sleep(delay);
+        println!(
+            "{:?} {} => {}@{} (bcast delay {:?})",
+            clock.elapsed(),
+            msg.source(),
+            msg.type_(),
+            msg.round(),
+            delay
+        );
+        let (delay_ch, _) = clock.new_timer(delay);
+        _ = delay_ch.recv();
 
         broadcast.send(msg).expect(WRITE_CHAN_ERR);
     });
@@ -731,7 +744,7 @@ fn duplicate_pre_prepare_rules() {
         panic!("unexpected round {}", round);
     });
     def.compare = Box::new(|_, _, _, _, return_err, _| {
-        let _ = return_err.send(Ok(()));
+        _ = return_err.send(Ok(()));
     });
 
     let (r_chan_tx, r_chan_rx) = mpmc::bounded::<Msg<i64, i64, i64>>(2);
