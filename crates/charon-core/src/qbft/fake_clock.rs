@@ -121,3 +121,27 @@ fn multiple_threads_timers() {
 
     println!("start={:?}, clock={:?}", start.elapsed(), clock.elapsed());
 }
+
+#[test]
+fn multiple_threads_cancellation() {
+    let clock = FakeClock::new(Instant::now());
+
+    let start = Instant::now();
+    thread::scope(|s| {
+        let c1 = clock.clone();
+        let (ch_1, _) = c1.new_timer(Duration::from_secs(5));
+        s.spawn(move || {
+            let _ = ch_1.recv();
+        });
+
+        let c2 = clock.clone();
+        let (ch_2, _) = c2.new_timer(Duration::from_secs(5));
+        s.spawn(move || {
+            let _ = ch_2.recv();
+        });
+
+        clock.cancel();
+    });
+
+    println!("start={:?}, clock={:?}", start.elapsed(), clock.elapsed());
+}
