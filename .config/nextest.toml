@@ -1,0 +1,9 @@
+[profile.default]
+slow-timeout = { period = "15s", terminate-after = 2 }
+
+[test-groups]
+qbft = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'test(/^qbft::internal_test::/)'
+test-group = 'qbft'

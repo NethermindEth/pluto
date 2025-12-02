@@ -32,7 +32,7 @@ if ! cargo clippy --all-targets --all-features -- -D warnings; then
 fi
 
 # Tests
-if ! cargo test --workspace --verbose; then
+if ! cargo nextest run; then
     echo "❌ Test failures detected"
     exit 6
 fi
