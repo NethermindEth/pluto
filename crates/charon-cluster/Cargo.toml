@@ -17,6 +17,12 @@ hex.workspace = true
 serde_with.workspace = true
 charon-crypto.workspace = true
 thiserror.workspace = true
+rand_core.workspace = true
+libp2p.workspace = true
+charon-p2p.workspace = true
+charon-eth2.workspace = true
+charon-k1util.workspace = true
+k256.workspace = true
 
 [build-dependencies]
 prost-build.workspace = true

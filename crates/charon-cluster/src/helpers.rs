@@ -114,6 +114,16 @@ impl<'de> DeserializeAs<'de, DateTime<Utc>> for TimestampSeconds {
     }
 }
 
+/// Converts a 0x prefixed hex string to a byte slice.
+pub fn from_0x_hex_str(s: &str, len: usize) -> Result<Vec<u8>, hex::FromHexError> {
+    let s = s.strip_prefix("0x").unwrap_or(s);
+    let bytes = hex::decode(s)?;
+    if bytes.len() != len {
+        return Err(hex::FromHexError::InvalidStringLength);
+    }
+    Ok(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -4,7 +4,7 @@ use serde_with::serde_as;
 
 /// Operator represents a charon node operator.
 #[serde_as]
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct Operator {
     /// The Ethereum address of the operator

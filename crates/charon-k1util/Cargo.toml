@@ -1,5 +1,5 @@
 [package]
-name = "charon-eth2"
+name = "charon-k1util"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
@@ -7,14 +7,18 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-k256.workspace = true
 thiserror.workspace = true
-base64.workspace = true
-sha3.workspace = true
+k256.workspace = true
 hex.workspace = true
-charon-testutil.workspace = true
-charon-k1util.workspace = true
-chrono.workspace = true
+libp2p.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "k1util"
+harness = false
+path = "benches/k1util.rs"
 
 [lints]
 workspace = true

@@ -1,9 +1,14 @@
+use std::collections::HashSet;
+
 use crate::{
-    helpers::EthHex,
+    helpers::{EthHex, from_0x_hex_str},
     operator::{Operator, OperatorV1X1, OperatorV1X2OrLater},
-    version::versions::*,
+    version::{CURRENT_VERSION, DKG_ALGO, versions::*},
 };
+use charon_eth2::enr::{Record, RecordError};
+use charon_p2p::peer::{Peer, PeerError};
 use chrono::{DateTime, Utc};
+use libp2p::PeerId;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{
     DisplayFromStr, PickFirst,
@@ -11,6 +16,22 @@ use serde_with::{
     serde_as,
 };
 use uuid::Uuid;
+
+/// Length of the fork version in bytes.
+pub const FORK_VERSION_LEN: usize = 4;
+
+/// Length of the address in bytes.
+pub const ADDRESS_LEN: usize = 20;
+
+/// NodeIdx represents the index of a node/peer/share in the cluster as operator
+/// order in cluster definition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeIdx {
+    /// Index of a peer in the peer list (it's 0-indexed).
+    pub peer_idx: usize,
+    /// tbls share identifier (it is 1-indexed).
+    pub share_idx: usize,
+}
 
 /// Definition defines an intended charon cluster configuration excluding
 /// validators.
@@ -159,9 +180,208 @@ pub enum DefinitionError {
     /// are found.
     #[error("Multiple withdrawal or fee recipient addresses found")]
     InvalidValidatorAddresses,
+
+    /// Insufficient fee-recipient addresses
+    #[error("Insufficient fee-recipient addresses")]
+    InsufficientFeeRecipientAddresses,
+
+    /// Insufficient withdrawal addresses
+    #[error("Insufficient withdrawal addresses")]
+    InsufficientWithdrawalAddresses,
+
+    /// Failed to convert length
+    #[error("Failed to convert length")]
+    FailedToConvertLength,
+
+    /// Failed to convert hex string
+    #[error("Failed to convert hex string")]
+    FailedToConvertHexString(#[from] hex::FromHexError),
+
+    /// Invalid target gas limit
+    #[error("Invalid target gas limit: {0}")]
+    InvalidTargetGasLimit(#[from] InvalidGasLimitError),
+
+    /// Invalid deposit amounts
+    #[error("Invalid deposit amounts: the version does not support partial deposits")]
+    InvalidDepositAmounts,
+
+    /// Invalid compounding
+    #[error("Invalid compounding: the version does not support compounding")]
+    InvalidCompounding,
+
+    /// Peer not found
+    #[error("Peer not in definition: {peer_id}")]
+    PeerNotFound {
+        /// The peer ID
+        peer_id: PeerId,
+    },
+
+    /// Duplicate peer ENRs
+    #[error("Duplicate peer ENRs: {0}")]
+    DuplicatePeerENRs(String),
+
+    /// Failed to parse ENR
+    #[error("Failed to parse ENR: {0}")]
+    FailedToParseENR(#[from] RecordError),
+
+    /// Failed to create peer
+    #[error("Failed to create peer: {0}")]
+    FailedToCreatePeer(#[from] PeerError),
+}
+
+/// InvalidGasLimitError is an error type for invalid gas limit errors.
+#[derive(Debug, thiserror::Error)]
+pub enum InvalidGasLimitError {
+    /// The version does not support custom target gas limit
+    #[error("the version does not support custom target gas limit")]
+    VersionDoesNotSupportCustomTargetGasLimit,
+
+    /// The gas limit is not set
+    #[error("target gas limit should be set")]
+    GasLimitNotSet,
 }
 
 impl Definition {
+    /// Create a new cluster definition.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        name: String,
+        num_validators: u64,
+        threshold: u64,
+        fee_recipient_addresses: Vec<String>,
+        withdrawal_addresses: Vec<String>,
+        fork_version_hex: String,
+        creator: Creator,
+        operators: Vec<Operator>,
+        deposit_amounts: Vec<u64>,
+        consensus_protocol: String,
+        target_gas_limit: u64,
+        compounding: bool,
+        opts: Vec<fn(&mut Self) -> Self>,
+    ) -> Result<Self, DefinitionError> {
+        if u64::try_from(fee_recipient_addresses.len())
+            .map_err(|_| DefinitionError::FailedToConvertLength)?
+            != num_validators
+        {
+            return Err(DefinitionError::InsufficientFeeRecipientAddresses);
+        }
+
+        if u64::try_from(withdrawal_addresses.len())
+            .map_err(|_| DefinitionError::FailedToConvertLength)?
+            != num_validators
+        {
+            return Err(DefinitionError::InsufficientWithdrawalAddresses);
+        }
+
+        let uuid = Uuid::new_v4();
+
+        let mut def = Definition {
+            uuid,
+            name,
+            version: CURRENT_VERSION.to_string(),
+            timestamp: Utc::now(),
+            num_validators,
+            threshold,
+            dkg_algorithm: DKG_ALGO.to_string(),
+            fork_version: Default::default(),
+            operators,
+            creator,
+            validator_addresses: Vec::new(),
+            deposit_amounts,
+            consensus_protocol,
+            target_gas_limit,
+            compounding,
+            config_hash: Default::default(),
+            definition_hash: Default::default(),
+        };
+
+        def.validator_addresses = fee_recipient_addresses
+            .into_iter()
+            .enumerate()
+            .map(|(i, address)| ValidatorAddresses {
+                fee_recipient_address: address,
+                withdrawal_address: withdrawal_addresses[i].clone(),
+            })
+            .collect();
+
+        def.fork_version = from_0x_hex_str(&fork_version_hex, FORK_VERSION_LEN)?;
+
+        for opt in opts {
+            opt(&mut def);
+        }
+
+        if def.deposit_amounts.len() > 1 && !Self::support_partial_deposits(&def.version) {
+            return Err(DefinitionError::InvalidDepositAmounts);
+        }
+
+        if def.target_gas_limit != 0 && !Self::support_target_gas_limit(&def.version) {
+            return Err(InvalidGasLimitError::VersionDoesNotSupportCustomTargetGasLimit.into());
+        }
+
+        if def.compounding && !Self::support_compounding(&def.version) {
+            return Err(DefinitionError::InvalidCompounding);
+        }
+
+        if def.target_gas_limit == 0 && Self::support_target_gas_limit(&def.version) {
+            return Err(InvalidGasLimitError::GasLimitNotSet.into());
+        }
+
+        // TODO: Construct and return a Definition. Placeholder for now.
+        def.set_definition_hashes()
+    }
+
+    /// Returns the node index for a given peer ID.
+    pub fn node_idx(&self, pid: &PeerId) -> Result<NodeIdx, DefinitionError> {
+        let peers = self.peers()?;
+
+        for (i, peer) in peers.iter().enumerate() {
+            if peer.id == *pid {
+                return Ok(NodeIdx {
+                    peer_idx: i,
+                    share_idx: peer.share_idx(),
+                });
+            }
+        }
+
+        Err(DefinitionError::PeerNotFound { peer_id: *pid })
+    }
+
+    /// VerifySignatures returns nil if all config signatures are fully
+    /// populated and valid. A verified definition is ready for use in DKG.
+    pub fn verify_signatures(&self) -> Result<(), DefinitionError> {
+        todo!("implement this after eth1wrap.EthClientRunner is implemented");
+    }
+
+    /// Returns the peers in the cluster.
+    pub fn peers(&self) -> Result<Vec<Peer>, DefinitionError> {
+        let mut peers = Vec::new();
+
+        let mut dedup: HashSet<String> = HashSet::new();
+
+        for (i, operator) in self.operators.iter().enumerate() {
+            if dedup.contains(&operator.enr) {
+                return Err(DefinitionError::DuplicatePeerENRs(operator.enr.clone()));
+            }
+
+            dedup.insert(operator.enr.clone());
+
+            let enr = Record::try_from(operator.enr.as_str())?;
+
+            let peer = Peer::from_enr(&enr, i)?;
+
+            peers.push(peer);
+        }
+
+        Ok(peers)
+    }
+
+    /// `peer_ids` is a convenience function that returns the operators p2p peer
+    /// IDs.
+    pub fn peer_ids(&self) -> Result<Vec<PeerId>, DefinitionError> {
+        let peers = self.peers()?;
+        Ok(peers.iter().map(|p| p.id).collect())
+    }
+
     /// Legacy single withdrawal and single
     /// fee recipient addresses or an error if multiple addresses are found.
     pub fn legacy_validator_addresses(&self) -> Result<ValidatorAddresses, DefinitionError> {
@@ -176,6 +396,70 @@ impl Definition {
         }
 
         Ok(result_validator_addresses)
+    }
+
+    /// `withdrawal_addresses` is a convenience function to return all
+    /// withdrawal address from the validator addresses slice.
+    pub fn withdrawal_addresses(&self) -> Vec<String> {
+        self.validator_addresses
+            .iter()
+            .map(|v| v.withdrawal_address.clone())
+            .collect()
+    }
+
+    /// `fee_recipient_addresses` is a convenience function to return all fee
+    /// recipient address from the validator addresses slice.
+    pub fn fee_recipient_addresses(&self) -> Vec<String> {
+        self.validator_addresses
+            .iter()
+            .map(|v| v.fee_recipient_address.clone())
+            .collect()
+    }
+
+    /// Sets the definition hashes.
+    pub fn set_definition_hashes(self) -> Result<Self, DefinitionError> {
+        // todo
+        Ok(self)
+    }
+
+    /// `verify_hashes` returns an error if hashes populated from json object
+    /// doesn't matches actual hashes.
+    pub fn verify_hashes(self) -> Result<Self, DefinitionError> {
+        // todo
+        Ok(self)
+    }
+
+    /// Returns true if the provided definition version supports EIP712
+    /// signatures. Note that Definition versions prior to v1.3.0 don't
+    /// support EIP712 signatures.
+    pub(crate) fn support_eip712_sigs(version: &str) -> bool {
+        !matches!(version, V1_0 | V1_1 | V1_2)
+    }
+
+    /// Returns true if the provided definition version supports partial
+    /// deposits.
+    fn support_partial_deposits(version: &str) -> bool {
+        !matches!(
+            version,
+            V1_0 | V1_1 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7
+        )
+    }
+
+    /// Returns true if the provided definition version supports custom target
+    /// gas limit.
+    fn support_target_gas_limit(version: &str) -> bool {
+        !matches!(
+            version,
+            V1_0 | V1_1 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7 | V1_8 | V1_9
+        )
+    }
+
+    /// Returns true if the provided definition version supports compounding.
+    fn support_compounding(version: &str) -> bool {
+        !matches!(
+            version,
+            V1_0 | V1_1 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7 | V1_8 | V1_9
+        )
     }
 }
 
