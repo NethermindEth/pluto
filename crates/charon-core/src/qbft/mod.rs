@@ -65,7 +65,7 @@ where
 
 /// Defines the consensus system parameters that are external to the qbft
 /// algorithm. This remains constant across multiple instances of consensus
-/// (calls to Run).
+/// (calls to `run`).
 pub struct Definition<I, V, C>
 where
     V: PartialEq,
@@ -76,24 +76,22 @@ where
 
     /// Returns a new timer channel and stop function for the round
     pub new_timer: Box<
-        dyn Fn(
-                /* rounds */ i64,
-            ) -> (mpmc::Receiver<time::Instant>, Box<dyn Fn() + Send + Sync>)
+        dyn Fn(/* round */ i64) -> (mpmc::Receiver<time::Instant>, Box<dyn Fn() + Send + Sync>)
             + Send
             + Sync,
     >,
 
     /// Called when leader proposes value and we compare it with our local
     /// value. It's an opt-in feature that should instantly return `None` on
-    /// returnErr channel if it is not turned on.
+    /// `return_err` channel if it is not turned on.
     pub compare: Box<
         dyn Fn(
                 /* ct */ &CancellationToken,
                 /* qcommit */ &Msg<I, V, C>,
-                /* inputValueSourceCh */ &mpmc::Receiver<C>,
-                /* inputValueSource */ &C,
-                /* returnErr */ &mpmc::Sender<Result<()>>,
-                /* returnValue */ &mpmc::Sender<C>,
+                /* input_value_source_ch */ &mpmc::Receiver<C>,
+                /* input_value_source */ &C,
+                /* return_err */ &mpmc::Sender<Result<()>>,
+                /* return_value */ &mpmc::Sender<C>,
             ) + Send
             + Sync,
     >,
@@ -117,7 +115,7 @@ where
                 /* process */ i64,
                 /* round */ i64,
                 /* msg */ &Msg<I, V, C>,
-                /* uponRule */ UponRule,
+                /* upon_rule */ UponRule,
             ) + Send
             + Sync,
     >,
@@ -127,8 +125,8 @@ where
                 /* instance */ &I,
                 /* process */ i64,
                 /* round */ i64,
-                /* newRound */ i64,
-                /* uponRule */ UponRule,
+                /* new_round */ i64,
+                /* upon_rule */ UponRule,
                 /* msgs */ &Vec<Msg<I, V, C>>,
             ) + Send
             + Sync,
@@ -152,13 +150,13 @@ where
     /// Quorum count for the system.
     /// See IBFT 2.0 paper for correct formula: <https://arxiv.org/pdf/1909.10194.pdf>
     pub fn quorum(&self) -> i64 {
-        ((self.nodes as f64 * 2.0) / 3.0).ceil() as i64
+        (self.nodes as u64 * 2).div_ceil(3) as i64
     }
 
-    /// Maximum number of faulty/byzantium nodes supported in the system.
+    /// Maximum number of faulty/byzantine nodes supported in the system.
     /// See IBFT 2.0 paper for correct formula: <https://arxiv.org/pdf/1909.10194.pdf>
     pub fn faulty(&self) -> i64 {
-        ((self.nodes - 1) as f64 / 3.0).floor() as i64
+        (self.nodes - 1) / 3
     }
 }
 
@@ -515,7 +513,7 @@ where
                     UPON_QUORUM_PREPARES => {
                         // Algorithm 2:4
                         // Only applicable to current round
-                        prepared_round.set(round.get()); /* == msg.Round */
+                        prepared_round.set(round.get()); /* == msg.round() */
                         prepared_value.replace(msg.value());
                         prepared_justification.replace(justification);
 
@@ -542,7 +540,7 @@ where
 
                         // Only applicable to future rounds
                         change_round(
-                            next_min_round(d, &justification, round.get() /* < msg.Round */),
+                            next_min_round(d, &justification, round.get() /* < msg.round() */),
                             rule,
                         );
 
@@ -610,12 +608,14 @@ where
     let (compare_value_tx, compare_value_rx) = mpmc::bounded::<C>(1);
 
     // d.Compare has 2 roles:
-    // 1. Read from the inputValueSourceCh (if inputValueSource is empty). If it
-    //    read from the channel, it returns the value on compareValue channel.
-    // 2. Compare the value read from inputValueSourceCh (or inputValueSource if it
-    //    is not empty) to the value proposed by the leader.
+    // 1. Read from the `input_value_source_ch` (if `input_value_source` is empty).
+    //    If it read from the channel, it returns the value on `compare_value`
+    //    channel.
+    // 2. Compare the value read from `input_value_source_ch` (or
+    //    `input_value_source` if it is not empty) to the value proposed by the
+    //    leader.
     // If comparison or any other unexpected error occurs, the error is returned on
-    // compareErr channel.
+    // `compare_err` channel.
 
     thread::scope(|s| {
         let mut result = input_value_source.clone();
@@ -748,7 +748,7 @@ where
                 return (UPON_NOTHING, None);
             }
 
-            /* else msg.Round() == round */
+            /* else msg.round() == round */
 
             let qrc = filter_round_change(&all, msg.round());
             if (qrc.len() as i64) < d.quorum() {
