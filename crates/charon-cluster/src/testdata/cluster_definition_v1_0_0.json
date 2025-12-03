@@ -1,0 +1,30 @@
+{
+ "name": "test definition",
+ "operators": [
+  {
+   "address": "0x019192c24224e2cafccae3a61fb586b14323a6bc",
+   "enr": "enr://ea6f5b3af6de0374366c4719e43a1b067d89bc7f01f1f573981659a44ff17a4c",
+   "nonce": 0,
+   "config_signature": "",
+   "enr_signature": ""
+  },
+  {
+   "address": "0xa6430105220d0b29688b734b8ea0f3ca9936e846",
+   "enr": "enr://f6a63b7f3dfd2567c18979e4d60f26686d9bf2fb26c901ff354cde1607ee294b",
+   "nonce": 0,
+   "config_signature": "",
+   "enr_signature": ""
+  }
+ ],
+ "uuid": "0194FDC2-FA2F-4CC0-81D3-FF12045B73C8",
+ "version": "v1.0.0",
+ "timestamp": "2022-07-19T18:19:58+02:00",
+ "num_validators": 2,
+ "threshold": 3,
+ "fee_recipient_address": "0x52fdfc072182654f163f5f0f9a621d729566c74d",
+ "withdrawal_address": "0x81855ad8681d0d86d1e91e00167939cb6694d2c4",
+ "dkg_algorithm": "default",
+ "fork_version": "0x90000069",
+ "config_hash": "6eBaByH7P1+7rWYvuRYvkxgblJYSc82LCqg5gBq8M/Q=",
+ "definition_hash": "EYXgPCxrUnzekSxzHncD3nheXvyTlreO4WjSQpD49aM="
+}
