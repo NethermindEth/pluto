@@ -8,5 +8,8 @@ publish.workspace = true
 
 [dependencies]
 
+[dev-dependencies]
+
+
 [lints]
 workspace = true
