@@ -20,18 +20,36 @@
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::arithmetic_side_effects)]
 
-use anyhow::{Result, bail};
 use cancellation::CancellationToken;
 use crossbeam::channel as mpmc;
 use std::{
     any,
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
-    error,
     fmt::{self, Display},
     hash::Hash,
     sync, thread, time,
 };
+
+type Result<T> = std::result::Result<T, QbftError>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum QbftError {
+    #[error("Timeout")]
+    TimeoutError,
+
+    #[error("Compare leader value with local value failed")]
+    CompareError,
+
+    #[error("Maximum round reached")]
+    MaxRoundReached,
+
+    #[error("Zero input value not supported")]
+    ZeroInputValue,
+
+    #[error("Failed to read from channel: {0}")]
+    ChannelError(#[from] mpmc::RecvError),
+}
 
 /// Abstracts the transport layer between processes in the consensus system.
 pub struct Transport<I, V, C>
@@ -266,28 +284,6 @@ struct DedupKey {
     round: i64,
 }
 
-#[derive(Debug)]
-struct CompareError;
-
-impl Display for CompareError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "compare leader value with local value failed")
-    }
-}
-
-impl error::Error for CompareError {}
-
-#[derive(Debug)]
-struct TimeoutError;
-
-impl Display for TimeoutError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "timeout")
-    }
-}
-
-impl error::Error for TimeoutError {}
-
 /// Executes the consensus algorithm until the context is closed.
 /// The generic type `I` is the instance of consensus and can be anything.
 /// The generic type `V` is the arbitrary data value being proposed; it only
@@ -425,7 +421,7 @@ where
                 input_value.replace(iv);
 
                 if *input_value.borrow() == Default::default() {
-                    bail!("zero input value not supported");
+                    return Err(QbftError::ZeroInputValue);
                 }
 
                 if let Some(ppj) = ppj_cache.borrow().as_ref() {
@@ -490,22 +486,24 @@ where
                                 input_value_source = v;
                                 broadcast_msg(MSG_PREPARE, &msg.value(), None)?;
                             }
-                            Err(some_error) => {
-                                if some_error.downcast_ref::<CompareError>().is_some() {
-                                    compare_failure_round = msg.round();
-                                } else if some_error.downcast_ref::<TimeoutError>().is_some() {
-                                    // As compare function is blocking on waiting local data, round
-                                    // might timeout in the meantime. If
-                                    // this happens, we trigger round change.
-                                    // Algorithm 3:1
-                                    change_round(round.get() + 1, UPON_ROUND_TIMEOUT);
-                                    stop_timer();
+                            Err(qbft_err) => {
+                                match qbft_err {
+                                    QbftError::CompareError => {
+                                        compare_failure_round = msg.round();
+                                    }
+                                    QbftError::TimeoutError => {
+                                        // As compare function is blocking on waiting local data, round
+                                        // might timeout in the meantime. If
+                                        // this happens, we trigger round change.
+                                        // Algorithm 3:1
+                                        change_round(round.get() + 1, UPON_ROUND_TIMEOUT);
+                                        stop_timer();
 
-                                    (timer_chan, stop_timer) = (d.new_timer)(round.get());
+                                        (timer_chan, stop_timer) = (d.new_timer)(round.get());
 
-                                    broadcast_round_change()?;
-                                } else {
-                                    bail!("bug: expected only comparison or timeout error");
+                                        broadcast_round_change()?;
+                                    }
+                                    _ => panic!("bug: expected only {} or {} error", QbftError::CompareError, QbftError::TimeoutError)
                                 }
                             }
                         }
@@ -637,10 +635,10 @@ where
                 recv(compare_err_rx) -> msg => {
                     let err = msg?;
 
-                    match err {
-                        Ok(_) => return Ok(result),
-                        Err(_) => bail!(CompareError),
-                    }
+                    return match err {
+                        Ok(_) => Ok(result),
+                        Err(_) => Err(QbftError::CompareError),
+                    };
                 },
 
                 recv(compare_value_rx) -> msg => {
@@ -652,7 +650,7 @@ where
                 recv(timer_chan) -> msg => {
                     msg?;
 
-                    bail!(TimeoutError);
+                    return Err(QbftError::TimeoutError);
                 }
             }
         }

@@ -126,7 +126,7 @@ fn test_qbft(test: Test) {
                     Box::new(
                         move |_, type_, instance, source, round, value, pr, pv, justification| {
                             if round > MAX_ROUND as i64 {
-                                bail!("max round reach")
+                                return Err(QbftError::MaxRoundReached);
                             }
 
                             if type_ == MSG_COMMIT && round <= test.commits_after.into() {
