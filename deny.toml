@@ -59,6 +59,9 @@ allow = [
     "Xnet",
     "Zlib",
 ]
+exceptions = [
+    { crate = "attohttpc", allow = ["MPL-2.0"] },
+]
 confidence-threshold = 0.8
 unused-allowed-license = "allow"
 

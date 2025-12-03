@@ -3,7 +3,7 @@ use libp2p::StreamProtocol;
 const PROTOCOL_ID_PREFIX: &str = "/charon/consensus/";
 
 /// QBFT v2 protocol ID.
-pub const QBFT_V2_PROTOCOL_ID: &str = "/charon/consensus/qbft/v2";
+pub const QBFT_V2_PROTOCOL_ID: &str = "/charon/consensus/qbft/2.0.0";
 
 /// Protocols supported by the Charon core.
 pub fn protocols() -> Vec<StreamProtocol> {

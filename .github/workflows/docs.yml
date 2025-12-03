@@ -19,6 +19,11 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Install protobuf compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
       - name: Setup pages
         id: pages
         uses: actions/configure-pages@v5
