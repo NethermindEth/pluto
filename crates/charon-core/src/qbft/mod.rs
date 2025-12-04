@@ -208,7 +208,7 @@ impl Display for MessageType {
             3 => "commit",
             4 => "round_change",
             5 => "decided",
-            _ => panic!("invalid message type"),
+            _ => panic!("bug: invalid message type"),
         };
         write!(f, "{}", s)
     }
@@ -271,7 +271,7 @@ impl Display for UponRule {
             6 => "quorum_round_changes",
             7 => "justified_decided",
             8 => "round_timeout",
-            _ => panic!("invalid upon rule"),
+            _ => panic!("bug: invalid upon rule"),
         };
         write!(f, "{}", s)
     }
@@ -476,7 +476,7 @@ where
                             ct,
                             d,
                             &msg,
-                            &input_value_source_ch, // TODO: Moved value
+                            &input_value_source_ch,
                             input_value_source.clone(),
                             &timer_chan,
                         );
