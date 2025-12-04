@@ -488,10 +488,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "charon-consensus"
-version = "0.1.0"
-
-[[package]]
 name = "charon-core"
 version = "0.1.0"
 dependencies = [
@@ -518,15 +514,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "charon-db"
-version = "0.1.0"
-
-[[package]]
 name = "charon-dkg"
-version = "0.1.0"
-
-[[package]]
-name = "charon-errors"
 version = "0.1.0"
 
 [[package]]
@@ -555,10 +543,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "charon-observability"
-version = "0.1.0"
-
-[[package]]
 name = "charon-p2p"
 version = "0.1.0"
 dependencies = [
@@ -569,10 +553,6 @@ dependencies = [
  "libp2p",
  "thiserror 2.0.17",
 ]
-
-[[package]]
-name = "charon-serde"
-version = "0.1.0"
 
 [[package]]
 name = "charon-testutil"
