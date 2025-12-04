@@ -25,7 +25,6 @@ license = "Apache-2.0"                                    # TODO(template) updat
 publish = false
 
 [workspace.dependencies]
-anyhow = "1.0.100"
 axum = "0.8.6"
 blst = "0.3.13"
 cancellation = "0.1.0"

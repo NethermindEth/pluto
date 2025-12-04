@@ -171,7 +171,6 @@ version = "0.1.0"
 name = "charon-core"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "cancellation",
  "chrono",
  "crossbeam",
