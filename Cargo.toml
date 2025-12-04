@@ -14,6 +14,7 @@ members = [
     "crates/charon-p2p",
     "crates/charon-serde",
     "crates/charon-testutil",
+    "crates/charon-build-proto",
     "crates/charon-k1util",
 ]
 resolver = "3"
@@ -32,22 +33,23 @@ hex = { version = "^0.4.3" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "^1.0" }
 tokio = { version = "1", features = ["full"] }
-blst = "0.3.13"
-rand_core = "0.6"
-thiserror = "2.0.12"
+libp2p = { version = "0.56", features = ["full", "secp256k1"] }
 prost = "0.14"
 prost-types = "0.14"
 prost-build = "0.14"
+blst = "0.3.13"
+rand_core = "0.6"
+thiserror = "2.0.12"
 rand = {version = "0.8", features = ["std_rng"]}
 uuid = {version = "1.16", features = ["serde", "v4"] }
 serde_with = { version = "3", features = ["hex", "base64"] }
-libp2p = { version = "0.56", features = ["full", "secp256k1"] }
 base64 = { version = "0.22.1" }
 sha3 = { version = "0.10.8" }
 k256 = { version = "0.13.4", features = ["ecdsa", "sha256"] }
 criterion = "0.7.0"
 
 # Crates in the workspace
+charon-build-proto = { path = "crates/charon-build-proto" }
 charon-crypto = { path = "crates/charon-crypto" }
 charon-eth2 = { path = "crates/charon-eth2" }
 charon-k1util = { path = "crates/charon-k1util" }
