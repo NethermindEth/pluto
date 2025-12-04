@@ -462,6 +462,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "charon-build-proto"
+version = "0.1.0"
+dependencies = [
+ "prost-build",
+]
+
+[[package]]
 name = "charon-cli"
 version = "0.1.0"
 dependencies = [
