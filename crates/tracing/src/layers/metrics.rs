@@ -18,11 +18,11 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for MetricsLayer {
         _ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
         // check level
-        match event.metadata().level() {
-            &tracing::Level::ERROR => {
+        match *event.metadata().level() {
+            tracing::Level::ERROR => {
                 inc_error_count();
             }
-            &tracing::Level::WARN => {
+            tracing::Level::WARN => {
                 inc_warn_count();
             }
             _ => {

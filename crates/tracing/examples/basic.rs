@@ -33,15 +33,21 @@ async fn main() {
 
     let background_task = init(&config)
         .expect("Failed to initialize tracing")
-        .unwrap();
+        .expect("Background task should be Some");
 
     tokio::spawn(background_task);
 
     let bind_address = SocketAddr::from(([0, 0, 0, 0], 9464));
 
-    let exporter = MetricsExporter::default().bind(bind_address).await.unwrap();
+    let exporter = MetricsExporter::default()
+        .bind(bind_address)
+        .await
+        .expect("Failed to bind metrics exporter");
     tokio::spawn(async move {
-        exporter.start().await.unwrap();
+        exporter
+            .start()
+            .await
+            .expect("Failed to start metrics exporter");
     });
 
     // Test various log levels
