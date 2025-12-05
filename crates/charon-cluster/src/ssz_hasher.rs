@@ -84,9 +84,6 @@ pub trait HashWalker {
         num: usize,
         limit: usize,
     ) -> Result<(), Self::Error>;
-
-    /// Get the current buffer.
-    fn get_buf(&self) -> &Vec<u8>;
 }
 
 /// Hash function for hashing SSZ data.
@@ -129,7 +126,7 @@ pub struct Hasher {
 
 impl Default for Hasher {
     fn default() -> Self {
-        Self::new(Self::default_hash_fn())
+        Self::new(Self::default_hash_fn)
     }
 }
 
@@ -144,19 +141,17 @@ impl Hasher {
     }
 
     /// Default hash function.
-    pub fn default_hash_fn() -> HashFn {
-        |src: &[u8]| -> Result<Vec<u8>, HasherError> {
-            let mut result = Vec::with_capacity(src.len() / 2);
+    pub fn default_hash_fn(src: &[u8]) -> Result<Vec<u8>, HasherError> {
+        let mut result = Vec::with_capacity(src.len() / 2);
 
-            for pair in src.chunks(64) {
-                let mut hasher = Sha256::new();
-                hasher.update(&pair[..32]);
-                hasher.update(&pair[32..]);
-                result.extend_from_slice(&hasher.finalize());
-            }
-
-            Ok(result)
+        for pair in src.chunks(64) {
+            let mut hasher = Sha256::new();
+            hasher.update(&pair[..32]);
+            hasher.update(&pair[32..]);
+            result.extend_from_slice(&hasher.finalize());
         }
+
+        Ok(result)
     }
 
     #[allow(clippy::arithmetic_side_effects)]
@@ -227,9 +222,7 @@ impl Hasher {
         if self.buf.len() != 32 {
             return Err(HasherError::InvalidBufferLength);
         }
-        let mut result = [0; 32];
-        result.copy_from_slice(&self.hash()?);
-        Ok(result)
+        self.hash()
     }
 
     /// Reset the hasher.
@@ -409,7 +402,7 @@ impl HashWalker for Hasher {
         self.fill_up_to_32()?;
 
         // merkleize the input
-        let mut input = self.buf[index..].to_vec();
+        let mut input: Vec<u8> = self.buf[index..].to_vec();
 
         input = self.merkleize_impl(&input, limit)?;
         self.buf.truncate(index);
@@ -427,10 +420,6 @@ impl HashWalker for Hasher {
         self.buf.extend_from_slice(&result);
 
         Ok(())
-    }
-
-    fn get_buf(&self) -> &Vec<u8> {
-        &self.buf
     }
 }
 
@@ -457,14 +446,16 @@ fn parse_bitlist(tmp: &mut Vec<u8>, buf: &[u8]) -> Result<usize, HasherError> {
     }
 
     // Find the most significant bit in the last byte
-    let last_byte = buf[buf.len() - 1];
-    let msb = 8 - last_byte.leading_zeros() as u8 - 1;
-    let size = 8 * (buf.len() - 1) + msb as usize;
+    let last_byte = buf[buf.len().wrapping_sub(1)];
+    let msb = 8u8
+        .wrapping_sub(last_byte.leading_zeros() as u8)
+        .wrapping_sub(1);
+    let size = 8 * (buf.len().wrapping_sub(1)) + msb as usize;
 
     tmp.clear();
     tmp.extend_from_slice(buf);
 
-    let last_idx = tmp.len() - 1;
+    let last_idx = tmp.len().wrapping_sub(1);
     tmp[last_idx] &= !(1u8 << msb);
 
     let mut new_len = tmp.len();

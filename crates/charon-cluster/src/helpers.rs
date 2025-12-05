@@ -162,7 +162,7 @@ pub fn put_byte_list<H: HashWalker>(
     Ok(())
 }
 
-/// `put_bytes_n` appends b as a ssz fixed size byte array of length n.
+/// `put_bytes_n` appends bytes as a ssz fixed size byte array of length n.
 pub fn put_bytes_n<H: HashWalker>(hh: &mut H, bytes: &[u8], n: usize) -> Result<(), SSZError<H>> {
     if bytes.len() > n {
         return Err(SSZError::<H>::IncorrectListSize {

@@ -476,7 +476,7 @@ impl Definition {
         let config_hash =
             hash_definition(self, true).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
 
-        if config_hash.to_vec() != self.config_hash {
+        if config_hash != self.config_hash.as_slice() {
             return Err(DefinitionError::InvalidConfigHash {
                 expected: self.config_hash.clone(),
                 actual: config_hash.to_vec(),
@@ -486,7 +486,7 @@ impl Definition {
         let definition_hash =
             hash_definition(self, false).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
 
-        if definition_hash.to_vec() != self.definition_hash {
+        if definition_hash != self.definition_hash.as_slice() {
             return Err(DefinitionError::InvalidDefinitionHash {
                 expected: self.definition_hash.clone(),
                 actual: definition_hash.to_vec(),

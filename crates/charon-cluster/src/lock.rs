@@ -186,7 +186,7 @@ impl<'de> Deserialize<'de> for Lock {
 }
 
 impl Lock {
-    /// `set_lock_hash` returns a copy of the lock with the lock hash populated.
+    /// `set_lock_hash` sets the lock hash for the lock.
     pub fn set_lock_hash(&mut self) -> Result<()> {
         let lock_hash = hash_lock(self)?;
 
@@ -220,7 +220,8 @@ impl Lock {
 
     /// `verify_node_signatures` returns true an error if the node signatures
     /// field is not correctly populated or otherwise invalid.
-    fn _verify_node_signatures(&self) -> Result<()> {
+    #[allow(dead_code)] // todo: remove this once we use this function
+    fn verify_node_signatures(&self) -> Result<()> {
         if matches!(
             self.version.as_str(),
             V1_0 | V1_1 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6
