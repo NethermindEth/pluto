@@ -1,0 +1,25 @@
+[package]
+name = "charon-tracing"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-loki.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+vise.workspace = true
+
+[[example]]
+name = "basic"
+
+[dev-dependencies]
+vise-exporter.workspace = true
+tokio = { workspace = true, features = ["full"] }
+
+[lints]
+workspace = true
