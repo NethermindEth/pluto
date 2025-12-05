@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package nodesigs;
+
+message MsgNodeSig {
+  bytes signature = 1;
+  uint32 peer_index = 2;
+}
