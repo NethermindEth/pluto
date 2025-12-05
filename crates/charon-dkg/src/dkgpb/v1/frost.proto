@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package frost;
+
+message FrostMsgKey {    // dkg.msgKey
+  uint32 val_idx = 1;
+  uint32 source_id = 2;
+  uint32 target_id = 3;
+}
+
+message FrostRound1Casts {            // Reliable-broadcast
+  repeated FrostRound1Cast casts = 1; // One per validator
+}
+
+message FrostRound1Cast {
+  FrostMsgKey key  = 1;
+  bytes wi = 2;
+  bytes ci = 3;
+  repeated bytes commitments = 4;
+}
+
+message FrostRound1P2P {                       // Direct peer-to-peer
+  repeated FrostRound1ShamirShare shares = 1;  // One per validator
+}
+
+message FrostRound1ShamirShare {
+  FrostMsgKey key  = 1;
+  uint32 id = 2;
+  bytes value = 3;
+}
+
+
+message FrostRound2Casts {             // Reliable-broadcast
+  repeated FrostRound2Cast casts = 1;  // One per validator
+}
+
+message FrostRound2Cast {
+  FrostMsgKey key  = 1;
+  bytes verification_key = 2;
+  bytes vk_share = 3;
+}
