@@ -6,3 +6,6 @@
 
 /// Peerinfo.
 pub mod peerinfo;
+
+/// Log
+pub mod log;
