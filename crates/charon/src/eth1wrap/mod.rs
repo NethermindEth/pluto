@@ -47,6 +47,7 @@ impl std::ops::Deref for EthClient {
     }
 }
 
+#[allow(dead_code)] // TODO: Remove when used
 impl EthClient {
     async fn new(address: impl AsRef<str>) -> Result<EthClient> {
         // The maximum number of retries for rate limit errors
