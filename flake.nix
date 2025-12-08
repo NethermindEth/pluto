@@ -10,10 +10,8 @@
     {
       devShells.default = pkgs.mkShell {
         buildInputs = with pkgs; [
-          cargo-sort
           cargo-deny
-
-          typos
+          protobuf
         ];
 
         shellHook = ''
