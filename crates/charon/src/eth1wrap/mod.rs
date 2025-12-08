@@ -49,7 +49,9 @@ impl std::ops::Deref for EthClient {
 
 #[allow(dead_code)] // TODO: Remove when used
 impl EthClient {
-    async fn new(address: impl AsRef<str>) -> Result<EthClient> {
+    /// Create a new `EthClient` connected to the given address using defaults
+    /// for retry.
+    pub async fn new(address: impl AsRef<str>) -> Result<EthClient> {
         // The maximum number of retries for rate limit errors
         const MAX_RETRY: u32 = 10;
         // The initial backoff in milliseconds
@@ -70,12 +72,14 @@ impl EthClient {
         Ok(EthClient(provider.erased()))
     }
 
-    async fn verify_smart_contract_based_signature(
+    /// Check if `sig` is a valid signature of `hash` according to ERC-1271.
+    pub async fn verify_smart_contract_based_signature(
         &self,
         contract_address: impl AsRef<str>,
         hash: [u8; 32],
         sig: &[u8],
     ) -> Result<bool> {
+        // Magic value defined in [ERC-1271](https://eips.ethereum.org/EIPS/eip-1271)
         const MAGIC_VALUE: [u8; 4] = [0x16, 0x26, 0xba, 0x7e];
 
         let address = alloy::primitives::Address::parse_checksummed(contract_address, None)?;
