@@ -220,6 +220,7 @@ impl TryFrom<&str> for Record {
         // Ensure backwards compatibility with older versions with encoded ENR strings.
         // ENR strings in older versions of charon (<= v0.9.0) were base64 padded
         // strings with "=" as the padding character. Refer: https://github.com/ObolNetwork/charon/issues/970
+        let enr_str = enr_str.trim_end_matches('=');
         let enr_str = enr_str.strip_prefix("enr:").unwrap_or(enr_str);
 
         let base64_engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;

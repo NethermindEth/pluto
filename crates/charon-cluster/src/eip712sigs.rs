@@ -40,7 +40,6 @@ struct EIP712Type {
     pub fields: Vec<EIP712TypeField>,
 }
 
-#[allow(dead_code)] // todo: remove this once it's used
 fn eip712_creator_config_hash() -> EIP712Type {
     EIP712Type {
         primary_type: "CreatorConfigHash",
@@ -54,7 +53,6 @@ fn eip712_creator_config_hash() -> EIP712Type {
     }
 }
 
-#[allow(dead_code)] // todo: remove this once it's used
 fn eip712_operator_config_hash() -> EIP712Type {
     EIP712Type {
         primary_type: "OperatorConfigHash",
@@ -68,7 +66,6 @@ fn eip712_operator_config_hash() -> EIP712Type {
     }
 }
 
-#[allow(dead_code)] // todo: remove this once it's used
 fn eip712_v1x3_config_hash() -> EIP712Type {
     EIP712Type {
         primary_type: "ConfigHash",

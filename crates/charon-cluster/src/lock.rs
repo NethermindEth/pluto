@@ -1,18 +1,96 @@
+use std::ops::Deref;
+
+use charon_k1util::verify_65;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
-    definition::Definition,
+    definition::{Definition, DefinitionError},
     distvalidator::{
         DistValidator, DistValidatorV1x0or1, DistValidatorV1x2to5, DistValidatorV1x6,
         DistValidatorV1x7, DistValidatorV1x8orLater,
     },
     helpers::EthHex,
+    ssz::{SSZError, hash_lock},
+    ssz_hasher::Hasher,
     version::versions::*,
 };
+use charon_eth2::enr::{Record, RecordError};
+use charon_k1util::K1UtilError;
 use serde_with::{
     base64::{Base64, Standard},
     serde_as,
 };
+
+/// LockError is the error type for Lock errors.
+#[derive(Debug, thiserror::Error)]
+pub enum LockError {
+    /// Unexpected validator registration
+    #[error("Unexpected validator registration")]
+    UnexpectedValidatorRegistration {
+        /// Operator index
+        operator_idx: usize,
+    },
+
+    /// Missing validator registration
+    #[error("Missing validator registration")]
+    MissingValidatorRegistration {
+        /// Operator index
+        operator_idx: usize,
+    },
+
+    /// Definition hashes verification failed
+    #[error("Definition hashes verification failed: {0}")]
+    DefinitionHashesVerificationFailed(#[from] DefinitionError),
+
+    /// SSZ error
+    #[error("Lock hash verification failed: {0}")]
+    SSZError(#[from] SSZError<Hasher>),
+
+    /// Invalid lock hash
+    #[error("Invalid lock hash")]
+    InvalidLockHash {
+        /// Expected lock hash
+        expected: Vec<u8>,
+        /// Actual lock hash
+        actual: Vec<u8>,
+    },
+
+    /// Unexpected node signatures
+    #[error("Unexpected node signatures")]
+    UnexpectedNodeSignatures,
+
+    /// Invalid node signatures count
+    #[error("Invalid node signatures count: expected {expected}, actual {actual}")]
+    InvalidNodeSignaturesCount {
+        /// Expected count of node signatures
+        expected: usize,
+        /// Actual count of node signatures
+        actual: usize,
+    },
+
+    /// Failed to parse ENR
+    #[error("Failed to parse ENR: {0}")]
+    FailedToParseENR(#[from] RecordError),
+
+    /// Missing public key
+    #[error("Missing public key")]
+    MissingPublicKey,
+
+    /// Node signature verification failed
+    #[error("Node signature verification failed")]
+    NodeSignatureVerificationFailed {
+        /// Operator index
+        operator_idx: usize,
+        /// Signature
+        signature: Vec<u8>,
+    },
+
+    /// Failed to verify node signature
+    #[error("Failed to verify node signature: {0}")]
+    FailedToVerifyNodeSignature(#[from] K1UtilError),
+}
+
+type Result<T> = std::result::Result<T, LockError>;
 
 /// Lock extends the cluster config Definition with bls threshold public keys
 /// and checksums.
@@ -38,8 +116,17 @@ pub struct Lock {
     pub node_signatures: Vec<Vec<u8>>,
 }
 
+/// Deref for Lock to allow access to the definition field.
+impl Deref for Lock {
+    type Target = Definition;
+
+    fn deref(&self) -> &Self::Target {
+        &self.definition
+    }
+}
+
 impl Serialize for Lock {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -58,7 +145,7 @@ impl Serialize for Lock {
 }
 
 impl<'de> Deserialize<'de> for Lock {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -95,6 +182,91 @@ impl<'de> Deserialize<'de> for Lock {
             }
             _ => Err(Error::custom(format!("Unsupported version: {}", version))),
         }
+    }
+}
+
+impl Lock {
+    /// `set_lock_hash` sets the lock hash for the lock.
+    pub fn set_lock_hash(&mut self) -> Result<()> {
+        let lock_hash = hash_lock(self)?;
+
+        self.lock_hash = lock_hash.to_vec();
+
+        Ok(())
+    }
+
+    /// `verify_hashes` returns an error if hashes populated from json object
+    /// doesn't matches actual hashes.
+    pub fn verify_hashes(&self) -> Result<()> {
+        self.definition.verify_hashes()?;
+
+        let lock_hash = hash_lock(self)?;
+
+        if lock_hash.to_vec() != self.lock_hash {
+            return Err(LockError::InvalidLockHash {
+                expected: self.lock_hash.clone(),
+                actual: lock_hash.to_vec(),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// `verify_signatures` returns true if all config signatures are fully
+    /// populated and valid. A verified lock is ready for use in charon run.
+    pub fn verify_signatures(&self) -> Result<()> {
+        todo!("Implement this after eth1wrap.EthClientRunner is implemented");
+    }
+
+    /// `verify_node_signatures` returns true an error if the node signatures
+    /// field is not correctly populated or otherwise invalid.
+    #[allow(dead_code)] // todo: remove this once we use this function
+    fn verify_node_signatures(&self) -> Result<()> {
+        if matches!(
+            self.version.as_str(),
+            V1_0 | V1_1 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6
+        ) {
+            if self.node_signatures.is_empty() {
+                return Err(LockError::UnexpectedNodeSignatures);
+            }
+
+            return Ok(());
+        }
+
+        // Ensure correct count of node signatures
+        if self.node_signatures.len() != self.operators.len() {
+            return Err(LockError::InvalidNodeSignaturesCount {
+                expected: self.operators.len(),
+                actual: self.node_signatures.len(),
+            });
+        }
+
+        // Verify the node signatures
+        for idx in 0..self.operators.len() {
+            let record = Record::try_from(self.operators[idx].enr.as_str())
+                .map_err(LockError::FailedToParseENR)?;
+
+            let pub_key = record
+                .public_key
+                .ok_or_else(|| LockError::MissingPublicKey)?;
+
+            let verified = verify_65(&pub_key, &self.lock_hash, &self.node_signatures[idx])?;
+
+            if !verified {
+                return Err(LockError::NodeSignatureVerificationFailed {
+                    operator_idx: idx,
+                    signature: self.node_signatures[idx].clone(),
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// `verify_builder_registrations` returns an error if the populated builder
+    /// registrations are invalid.
+    pub fn verify_builder_registrations(&self) -> Result<()> {
+        todo!("Implement this after eth2util.registration is implemented");
     }
 }
 
@@ -563,77 +735,89 @@ mod tests {
     fn test_cluster_lock_v1_10_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_10_0.json");
         let _ = serde_json::from_str::<LockV1x8orLater>(json_str).unwrap();
-        let _ = serde_json::from_str::<Lock>(include_str!("testdata/cluster_lock_v1_10_0.json"))
+        let lock = serde_json::from_str::<Lock>(include_str!("testdata/cluster_lock_v1_10_0.json"))
             .unwrap();
+
+        assert!(lock.verify_hashes().is_ok());
     }
 
     #[test]
     fn test_cluster_lock_v1_9_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_9_0.json");
         let _ = serde_json::from_str::<LockV1x8orLater>(json_str).unwrap();
-        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
+        assert!(lock.verify_hashes().is_ok());
     }
 
     #[test]
     fn test_cluster_lock_v1_8_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_8_0.json");
         let _ = serde_json::from_str::<LockV1x8orLater>(json_str).unwrap();
-        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
+        assert!(lock.verify_hashes().is_ok());
     }
 
     #[test]
     fn test_cluster_lock_v1_7_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_7_0.json");
         let _ = serde_json::from_str::<LockV1x7>(json_str).unwrap();
-        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
+        assert!(lock.verify_hashes().is_ok());
     }
 
     #[test]
     fn test_cluster_lock_v1_6_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_6_0.json");
         let _ = serde_json::from_str::<LockV1x6>(json_str).unwrap();
-        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
+        assert!(lock.verify_hashes().is_ok());
     }
 
     #[test]
     fn test_cluster_lock_v1_5_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_5_0.json");
         let _ = serde_json::from_str::<LockV1x2to5>(json_str).unwrap();
-        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
+        assert!(lock.verify_hashes().is_ok());
     }
 
     #[test]
     fn test_cluster_lock_v1_4_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_4_0.json");
         let _ = serde_json::from_str::<LockV1x2to5>(json_str).unwrap();
-        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
+        assert!(lock.verify_hashes().is_ok());
     }
 
     #[test]
     fn test_cluster_lock_v1_3_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_3_0.json");
         let _ = serde_json::from_str::<LockV1x2to5>(json_str).unwrap();
-        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
+        assert!(lock.verify_hashes().is_ok());
     }
 
     #[test]
     fn test_cluster_lock_v1_2_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_2_0.json");
         let _ = serde_json::from_str::<LockV1x2to5>(json_str).unwrap();
-        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
+        assert!(lock.verify_hashes().is_ok());
     }
 
     #[test]
     fn test_cluster_lock_v1_1_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_1_0.json");
         let _ = serde_json::from_str::<LockV1x0or1>(json_str).unwrap();
-        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
+        assert!(lock.verify_hashes().is_ok());
     }
 
     #[test]
     fn test_cluster_lock_v1_0_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_0_0.json");
         let _ = serde_json::from_str::<LockV1x0or1>(json_str).unwrap();
-        let _ = serde_json::from_str::<Lock>(json_str).unwrap();
+        let lock = serde_json::from_str::<Lock>(json_str).unwrap();
+        assert!(lock.verify_hashes().is_ok());
     }
 }
