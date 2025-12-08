@@ -11,6 +11,7 @@ git config commit.gpgsign true
 ## Prerequisites
 
 * [Rust](https://www.rust-lang.org/tools/install)
+* [cargo deny](https://github.com/EmbarkStudios/cargo-deny)
 
 ## Code quality assurance
 
