@@ -3,6 +3,8 @@ use std::collections::HashSet;
 use crate::{
     helpers::{EthHex, from_0x_hex_str},
     operator::{Operator, OperatorV1X1, OperatorV1X2OrLater},
+    ssz::{SSZError, hash_definition},
+    ssz_hasher::Hasher,
     version::{CURRENT_VERSION, DKG_ALGO, versions::*},
 };
 use charon_eth2::enr::{Record, RecordError};
@@ -38,7 +40,7 @@ pub struct NodeIdx {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Definition {
     /// Human-readable random unique identifier. Max 64 chars.
-    pub uuid: Uuid,
+    pub uuid: String,
     /// Human-readable cosmetic identifier. Max 256 chars.
     pub name: String,
     /// Schema version of this definition. Max 16 chars.
@@ -46,7 +48,7 @@ pub struct Definition {
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
     pub num_validators: u64,
@@ -227,6 +229,32 @@ pub enum DefinitionError {
     /// Failed to create peer
     #[error("Failed to create peer: {0}")]
     FailedToCreatePeer(#[from] PeerError),
+
+    /// Invalid config hash
+    #[error("Invalid config hash")]
+    InvalidConfigHash {
+        /// Expected config hash
+        expected: Vec<u8>,
+        /// Actual config hash
+        actual: Vec<u8>,
+    },
+
+    /// SSZ error
+    #[error("SSZ error: {0}")]
+    SSZError(#[from] Box<SSZError<Hasher>>),
+
+    /// Invalid definition hash
+    #[error("Invalid definition hash")]
+    InvalidDefinitionHash {
+        /// Expected definition hash
+        expected: Vec<u8>,
+        /// Actual definition hash
+        actual: Vec<u8>,
+    },
+
+    /// Failed to convert timestamp
+    #[error("Failed to convert timestamp")]
+    FailedToConvertTimestamp(#[from] serde_json::Error),
 }
 
 /// InvalidGasLimitError is an error type for invalid gas limit errors.
@@ -276,10 +304,10 @@ impl Definition {
         let uuid = Uuid::new_v4();
 
         let mut def = Definition {
-            uuid,
+            uuid: uuid.to_string(),
             name,
             version: CURRENT_VERSION.to_string(),
-            timestamp: Utc::now(),
+            timestamp: Utc::now().to_string(),
             num_validators,
             threshold,
             dkg_algorithm: DKG_ALGO.to_string(),
@@ -326,8 +354,19 @@ impl Definition {
             return Err(InvalidGasLimitError::GasLimitNotSet.into());
         }
 
-        // TODO: Construct and return a Definition. Placeholder for now.
         def.set_definition_hashes()
+    }
+
+    /// Returns the timestamp of the definition.
+    pub fn timestamp(&self) -> Result<Option<DateTime<Utc>>, DefinitionError> {
+        if self.timestamp.is_empty() {
+            return Ok(None);
+        }
+
+        let timestamp = serde_json::from_str::<DateTime<Utc>>(&self.timestamp)
+            .map_err(DefinitionError::FailedToConvertTimestamp)?;
+
+        Ok(Some(timestamp))
     }
 
     /// Returns the node index for a given peer ID.
@@ -417,16 +456,44 @@ impl Definition {
     }
 
     /// Sets the definition hashes.
-    pub fn set_definition_hashes(self) -> Result<Self, DefinitionError> {
-        // todo
+    pub fn set_definition_hashes(mut self) -> Result<Self, DefinitionError> {
+        let config_hash =
+            hash_definition(&self, true).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
+
+        self.config_hash = config_hash.to_vec();
+
+        let definition_hash =
+            hash_definition(&self, false).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
+
+        self.definition_hash = definition_hash.to_vec();
+
         Ok(self)
     }
 
     /// `verify_hashes` returns an error if hashes populated from json object
     /// doesn't matches actual hashes.
-    pub fn verify_hashes(self) -> Result<Self, DefinitionError> {
-        // todo
-        Ok(self)
+    pub fn verify_hashes(&self) -> Result<(), DefinitionError> {
+        let config_hash =
+            hash_definition(self, true).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
+
+        if config_hash != self.config_hash.as_slice() {
+            return Err(DefinitionError::InvalidConfigHash {
+                expected: self.config_hash.clone(),
+                actual: config_hash.to_vec(),
+            });
+        }
+
+        let definition_hash =
+            hash_definition(self, false).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
+
+        if definition_hash != self.definition_hash.as_slice() {
+            return Err(DefinitionError::InvalidDefinitionHash {
+                expected: self.definition_hash.clone(),
+                actual: definition_hash.to_vec(),
+            });
+        }
+
+        Ok(())
     }
 
     /// Returns true if the provided definition version supports EIP712
@@ -494,13 +561,13 @@ pub struct DefinitionV1x0or1 {
     /// Max 256 operators.
     pub operators: Vec<OperatorV1X1>,
     /// Human-readable random unique identifier. Max 64 chars.
-    pub uuid: Uuid,
+    pub uuid: String,
     /// Schema version of this definition. Max 16 chars.
     pub version: String,
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
     pub num_validators: u64,
@@ -605,13 +672,13 @@ pub struct DefinitionV1x2or3 {
     /// Max 256 operators.
     pub operators: Vec<OperatorV1X2OrLater>,
     /// Human-readable random unique identifier. Max 64 chars.
-    pub uuid: Uuid,
+    pub uuid: String,
     /// Schema version of this definition. Max 16 chars.
     pub version: String,
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
     pub num_validators: u64,
@@ -719,13 +786,13 @@ pub struct DefinitionV1x4 {
     /// Max 256 operators.
     pub operators: Vec<OperatorV1X2OrLater>,
     /// Human-readable random unique identifier. Max 64 chars.
-    pub uuid: Uuid,
+    pub uuid: String,
     /// Schema version of this definition. Max 16 chars.
     pub version: String,
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
     pub num_validators: u64,
@@ -834,13 +901,13 @@ pub struct DefinitionV1x5to7 {
     /// Max 256 operators.
     pub operators: Vec<OperatorV1X2OrLater>,
     /// Human-readable random unique identifier. Max 64 chars.
-    pub uuid: Uuid,
+    pub uuid: String,
     /// Schema version of this definition. Max 16 chars.
     pub version: String,
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
     pub num_validators: u64,
@@ -931,13 +998,13 @@ pub struct DefinitionV1x8 {
     /// Max 256 operators.
     pub operators: Vec<OperatorV1X2OrLater>,
     /// UUID is a human-readable random unique identifier. Max 64 chars.
-    pub uuid: Uuid,
+    pub uuid: String,
     /// Version is the schema version of this definition. Max 16 chars.
     pub version: String,
     /// Timestamp is the human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: String,
     /// NumValidators is the number of DVs to be created in the cluster lock
     /// file.
     pub num_validators: u64,
@@ -1033,13 +1100,13 @@ pub struct DefinitionV1x9 {
     /// Max 256 operators.
     pub operators: Vec<OperatorV1X2OrLater>,
     /// UUID is a human-readable random unique identifier. Max 64 chars.
-    pub uuid: Uuid,
+    pub uuid: String,
     /// Version is the schema version of this definition. Max 16 chars.
     pub version: String,
     /// Timestamp is the human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: String,
     /// NumValidators is the number of DVs to be created in the cluster lock
     /// file.
     pub num_validators: u64,
@@ -1139,13 +1206,13 @@ pub struct DefinitionV1x10 {
     /// Max 256 operators.
     pub operators: Vec<OperatorV1X2OrLater>,
     /// Human-readable random unique identifier. Max 64 chars.
-    pub uuid: Uuid,
+    pub uuid: String,
     /// Schema version of this definition. Max 16 chars.
     pub version: String,
     /// Human-readable timestamp of this definition. Max 32
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: String,
     /// Number of DVs to be created in the cluster lock
     /// file.
     pub num_validators: u64,
@@ -1354,6 +1421,8 @@ mod tests {
             hex::decode("59a8d3ffa9010f54965a11248e2835e716049d508f4f64bf43bd5a6ca56037c0")
                 .unwrap()
         );
+
+        assert!(definition.verify_hashes().is_ok());
     }
 
     #[test]
@@ -1362,7 +1431,9 @@ mod tests {
 
         let _ = serde_json::from_str::<DefinitionV1x0or1>(json_str).unwrap();
 
-        let _ = serde_json::from_str::<Definition>(json_str).unwrap();
+        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
+
+        assert!(definition.verify_hashes().is_ok());
     }
 
     #[test]
@@ -1371,7 +1442,9 @@ mod tests {
 
         let _ = serde_json::from_str::<DefinitionV1x0or1>(json_str).unwrap();
 
-        let _ = serde_json::from_str::<Definition>(json_str).unwrap();
+        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
+
+        assert!(definition.verify_hashes().is_ok());
     }
 
     #[test]
@@ -1380,7 +1453,9 @@ mod tests {
 
         let _ = serde_json::from_str::<DefinitionV1x2or3>(json_str).unwrap();
 
-        let _ = serde_json::from_str::<Definition>(json_str).unwrap();
+        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
+
+        assert!(definition.verify_hashes().is_ok());
     }
 
     #[test]
@@ -1389,7 +1464,9 @@ mod tests {
 
         let _ = serde_json::from_str::<DefinitionV1x2or3>(json_str).unwrap();
 
-        let _ = serde_json::from_str::<Definition>(json_str).unwrap();
+        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
+
+        assert!(definition.verify_hashes().is_ok());
     }
 
     #[test]
@@ -1398,7 +1475,9 @@ mod tests {
 
         let _ = serde_json::from_str::<DefinitionV1x4>(json_str).unwrap();
 
-        let _ = serde_json::from_str::<Definition>(json_str).unwrap();
+        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
+
+        assert!(definition.verify_hashes().is_ok());
     }
 
     #[test]
@@ -1407,7 +1486,9 @@ mod tests {
 
         let _ = serde_json::from_str::<DefinitionV1x5to7>(json_str).unwrap();
 
-        let _ = serde_json::from_str::<Definition>(json_str).unwrap();
+        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
+
+        assert!(definition.verify_hashes().is_ok());
     }
 
     #[test]
@@ -1416,7 +1497,9 @@ mod tests {
 
         let _ = serde_json::from_str::<DefinitionV1x5to7>(json_str).unwrap();
 
-        let _ = serde_json::from_str::<Definition>(json_str).unwrap();
+        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
+
+        assert!(definition.verify_hashes().is_ok());
     }
 
     #[test]
@@ -1425,7 +1508,9 @@ mod tests {
 
         let _ = serde_json::from_str::<DefinitionV1x5to7>(json_str).unwrap();
 
-        let _ = serde_json::from_str::<Definition>(json_str).unwrap();
+        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
+
+        assert!(definition.verify_hashes().is_ok());
     }
 
     #[test]
@@ -1434,7 +1519,9 @@ mod tests {
 
         let _ = serde_json::from_str::<DefinitionV1x8>(json_str).unwrap();
 
-        let _ = serde_json::from_str::<Definition>(json_str).unwrap();
+        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
+
+        assert!(definition.verify_hashes().is_ok());
     }
 
     #[test]
@@ -1443,7 +1530,9 @@ mod tests {
 
         let _ = serde_json::from_str::<DefinitionV1x9>(json_str).unwrap();
 
-        let _ = serde_json::from_str::<Definition>(json_str).unwrap();
+        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
+
+        assert!(definition.verify_hashes().is_ok());
     }
 
     #[test]
@@ -1452,7 +1541,9 @@ mod tests {
 
         let _ = serde_json::from_str::<DefinitionV1x10>(json_str).unwrap();
 
-        let _ = serde_json::from_str::<Definition>(json_str).unwrap();
+        let definition = serde_json::from_str::<Definition>(json_str).unwrap();
+
+        assert!(definition.verify_hashes().is_ok());
     }
 
     // test incorrect version
