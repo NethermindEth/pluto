@@ -9,3 +9,6 @@ pub mod peerinfo;
 
 /// Log
 pub mod log;
+
+/// Ethereum EL RPC client management
+pub mod eth1wrap;
