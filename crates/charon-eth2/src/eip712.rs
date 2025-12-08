@@ -38,17 +38,17 @@ pub struct Field {
     /// Name of the field.
     pub name: String,
     /// Type of the field.
-    pub field_type: String,
+    pub field_type: Primitive,
     /// Value of the field.
     pub value: Value,
 }
 
 impl Field {
     /// Creates a new field.
-    pub fn new(name: String, field_type: String, value: Value) -> Self {
+    pub fn new(name: impl Into<String>, field_type: impl Into<String>, value: Value) -> Self {
         Self {
-            name,
-            field_type,
+            name: name.into(),
+            field_type: field_type.into(),
             value,
         }
     }
@@ -156,9 +156,9 @@ fn encode_field(field: &Field) -> Result<Vec<u8>> {
     match (field.field_type.as_str(), &field.value) {
         (PRIMITIVE_STRING, Value::String(s)) => Ok(keccak_hash(s.as_bytes())?),
         (PRIMITIVE_UINT256, Value::Number(n)) => {
-            let mut bytes = [0u8; 32];
+            let mut bytes = vec![0u8; 32];
             bytes[24..].copy_from_slice(&n.to_be_bytes());
-            Ok(bytes.to_vec())
+            Ok(bytes)
         }
         _ => Err(Eip712Error::UnsupportedFieldType {
             field_type: field.field_type.clone(),
