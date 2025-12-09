@@ -41,10 +41,8 @@ pub enum K1UtilError {
     InvalidSignature(ecdsa::Error),
 
     /// The hash length is invalid.
-    #[error("The hash length is invalid: expected {expected}, actual {actual}")]
+    #[error("The hash length is invalid: expected {K1_HASH_LEN}, actual {actual}")]
     InvalidHashLength {
-        /// The expected hash length.
-        expected: usize,
         /// The actual hash length.
         actual: usize,
     },
@@ -95,10 +93,7 @@ pub fn public_key_from_libp2p(pk: &Libp2pPublicKey) -> Result<PublicKey> {
 /// or 1.
 pub fn sign(key: &SecretKey, hash: &[u8]) -> Result<[u8; SIGNATURE_LEN]> {
     if hash.len() != K1_HASH_LEN {
-        return Err(K1UtilError::InvalidHashLength {
-            expected: K1_HASH_LEN,
-            actual: hash.len(),
-        });
+        return Err(K1UtilError::InvalidHashLength { actual: hash.len() });
     }
 
     let mut hash_bytes = [0u8; K1_HASH_LEN];
@@ -142,10 +137,7 @@ pub fn verify_64(pubkey: &PublicKey, hash: &[u8], sig: &[u8]) -> Result<bool> {
     }
 
     if hash.len() != K1_HASH_LEN {
-        return Err(K1UtilError::InvalidHashLength {
-            expected: K1_HASH_LEN,
-            actual: hash.len(),
-        });
+        return Err(K1UtilError::InvalidHashLength { actual: hash.len() });
     }
 
     let signature = Signature::from_slice(sig).map_err(K1UtilError::InvalidSignature)?;
@@ -163,10 +155,7 @@ pub fn verify_64(pubkey: &PublicKey, hash: &[u8], sig: &[u8]) -> Result<bool> {
 /// Recover recovers the public key from a signature.
 pub fn recover(hash: &[u8], sig: &[u8]) -> Result<PublicKey> {
     if hash.len() != K1_HASH_LEN {
-        return Err(K1UtilError::InvalidHashLength {
-            expected: K1_HASH_LEN,
-            actual: hash.len(),
-        });
+        return Err(K1UtilError::InvalidHashLength { actual: hash.len() });
     }
 
     if sig.len() != SIGNATURE_LEN {
@@ -176,7 +165,11 @@ pub fn recover(hash: &[u8], sig: &[u8]) -> Result<PublicKey> {
         });
     }
 
-    let recovery_byte = sig[K1_REC_IDX];
+    let mut recovery_byte = sig[K1_REC_IDX];
+
+    if recovery_byte == 27 || recovery_byte == 28 {
+        recovery_byte = recovery_byte.wrapping_sub(27);
+    }
 
     let signature =
         Signature::from_slice(&sig[..SIGNATURE_LEN - 1]).map_err(K1UtilError::InvalidSignature)?;
