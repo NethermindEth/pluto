@@ -549,6 +549,7 @@ dependencies = [
  "hex",
  "k256",
  "libp2p",
+ "tempfile",
  "thiserror 2.0.17",
 ]
 
@@ -559,8 +560,11 @@ dependencies = [
  "charon-eth2",
  "charon-k1util",
  "charon-testutil",
+ "chrono",
  "k256",
  "libp2p",
+ "rand 0.8.5",
+ "tempfile",
  "thiserror 2.0.17",
 ]
 

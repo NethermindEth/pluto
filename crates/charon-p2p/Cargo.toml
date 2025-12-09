@@ -12,9 +12,12 @@ thiserror.workspace = true
 k256.workspace = true
 charon-eth2.workspace = true
 charon-k1util.workspace = true
+chrono.workspace = true
+rand.workspace = true
 
 [dev-dependencies]
 charon-testutil.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true
