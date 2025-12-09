@@ -51,8 +51,7 @@ async fn main() {
     P2P_METRICS.peer_connection_total["rust"].inc();
     P2P_METRICS.peer_network_receive_bytes_total[&PeerNetworkLabels::new("rust", Protocol::Tcp)]
         .inc();
-    P2P_METRICS.peer_network_sent_bytes_total[&PeerNetworkLabels::new("rust", Protocol::Tcp)]
-        .inc();
+    P2P_METRICS.peer_network_sent_bytes_total[&PeerNetworkLabels::new("rust", Protocol::Tcp)].inc();
 
     // Wait for 10 seconds to see the logs in Loki
     std::thread::sleep(std::time::Duration::from_secs(20));
