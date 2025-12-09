@@ -182,8 +182,6 @@ mod tests {
 
     #[test]
     fn test_config_multiaddrs() {
-        // IPv6linklocalallnodes      = IP{0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        // 0, 0, 0x01}
         let ipv6_linklocal_all_nodes = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1);
 
         let config = P2PConfig {
