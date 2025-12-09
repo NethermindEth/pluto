@@ -562,6 +562,9 @@ dependencies = [
  "k256",
  "libp2p",
  "thiserror 2.0.17",
+ "tokio",
+ "vise",
+ "vise-exporter",
 ]
 
 [[package]]

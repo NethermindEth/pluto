@@ -13,3 +13,6 @@ pub mod name;
 
 /// P2P configuration.
 pub mod config;
+
+/// Metrics.
+pub mod metrics;
