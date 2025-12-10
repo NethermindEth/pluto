@@ -9,6 +9,9 @@ publish.workspace = true
 [dependencies]
 prost.workspace = true
 prost-types.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tower.workspace = true
 
 [build-dependencies]
 charon-build-proto.workspace = true

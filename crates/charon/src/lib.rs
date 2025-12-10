@@ -9,3 +9,6 @@ pub mod peerinfo;
 
 /// Log
 pub mod log;
+
+/// Exponential backoff
+pub mod expbackoff;
