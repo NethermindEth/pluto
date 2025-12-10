@@ -1,5 +1,8 @@
-use std::{marker::PhantomData, time};
-use tower::{retry::backoff::Backoff, util::rng::Rng};
+use std::time;
+use tower::{
+    retry::backoff::Backoff,
+    util::rng::{HasherRng, Rng},
+};
 
 /// A jittered [exponential backoff] strategy.
 ///
@@ -63,9 +66,9 @@ where
     type Future = tokio::time::Sleep;
 
     fn next_backoff(&mut self) -> Self::Future {
-        self.retries += 1;
-
         let duration = self.backoff();
+        self.tried();
+
         tokio::time::sleep(duration)
     }
 }
@@ -76,7 +79,7 @@ pub struct ExponentialBackoffBuilder<R> {
     multiplier: f64,
     jitter: f64,
     max_delay: time::Duration,
-    _rng: PhantomData<R>,
+    rng: R,
 }
 
 type Result<T> = std::result::Result<T, InvalidBackoff>;
@@ -86,34 +89,31 @@ type Result<T> = std::result::Result<T, InvalidBackoff>;
 #[error("Invalid backoff configuration: {0}")]
 pub struct InvalidBackoff(&'static str);
 
-impl<R> ExponentialBackoffBuilder<R>
-where
-    R: Rng + Default,
-{
+impl<R> ExponentialBackoffBuilder<R> {
     /// Backoff configuration with the default values specified at https://github.com/grpc/grpc/blob/master/doc/connection-backoff.md.
     ///
     /// This should be useful for callers who want to configure backoff with
     /// non-default values only for a subset of the options.
     ///
     /// Copied from [google.golang.org/grpc@v1.48.0/backoff/backoff.go]
-    pub fn default() -> Self {
-        Self {
+    pub fn default() -> ExponentialBackoffBuilder<HasherRng> {
+        ExponentialBackoffBuilder {
             base_delay: time::Duration::from_secs(1),
             multiplier: 1.6,
             jitter: 0.2,
             max_delay: time::Duration::from_secs(120),
-            _rng: PhantomData,
+            rng: HasherRng::default(),
         }
     }
 
     /// Common configuration for fast backoff.
-    pub fn fast_config() -> Self {
-        Self {
+    pub fn fast_config() -> ExponentialBackoffBuilder<HasherRng> {
+        ExponentialBackoffBuilder {
             base_delay: time::Duration::from_millis(100),
             multiplier: 1.6,
             jitter: 0.2,
             max_delay: time::Duration::from_secs(5),
-            _rng: PhantomData,
+            rng: HasherRng::default(),
         }
     }
 
@@ -142,6 +142,17 @@ where
         self
     }
 
+    /// Set the random number generator to use for jittering.
+    pub fn with_rng<T>(self, rng: T) -> ExponentialBackoffBuilder<T> {
+        ExponentialBackoffBuilder {
+            base_delay: self.base_delay,
+            multiplier: self.multiplier,
+            jitter: self.jitter,
+            max_delay: self.max_delay,
+            rng,
+        }
+    }
+
     /// Construct a new [`ExponentialBackoff`] instance from the builder.
     pub fn build(self) -> Result<ExponentialBackoff<R>> {
         if self.base_delay > self.max_delay {
@@ -168,7 +179,7 @@ where
             jitter: self.jitter,
             multiplier: self.multiplier,
             max_delay: self.max_delay,
-            rng: R::default(),
+            rng: self.rng,
             retries: 0,
         })
     }
@@ -180,26 +191,20 @@ mod tests {
     use core::time::Duration;
     use tower::util::rng::Rng;
 
+    struct Const(f64);
+
+    impl Rng for Const {
+        fn next_f64(&mut self) -> f64 {
+            self.0
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            0
+        }
+    }
+
     #[test]
     fn default_config() {
-        struct ConstRng;
-
-        impl Rng for ConstRng {
-            fn next_f64(&mut self) -> f64 {
-                0.5
-            }
-
-            fn next_u64(&mut self) -> u64 {
-                panic!("not implemented")
-            }
-        }
-
-        impl Default for ConstRng {
-            fn default() -> Self {
-                ConstRng
-            }
-        }
-
         let backoffs: Vec<Duration> = vec![
             Duration::from_secs(1),
             Duration::from_secs(1) + Duration::from_millis(600),
@@ -216,8 +221,39 @@ mod tests {
             Duration::from_mins(2),
         ];
 
-        let mut backoff: ExponentialBackoff<ConstRng> = ExponentialBackoffBuilder::default()
-            .with_jitter(0.5)
+        let mut backoff = ExponentialBackoffBuilder::<Const>::default()
+            .with_rng(Const(0.5))
+            .build()
+            .unwrap();
+
+        for expected in backoffs {
+            let duration = backoff.backoff();
+            backoff.tried();
+
+            assert!(duration - expected <= Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn default_config_max_jitter() {
+        let backoffs: Vec<Duration> = vec![
+            Duration::from_secs(1),
+            Duration::from_secs(1) + Duration::from_millis(920),
+            Duration::from_secs(3) + Duration::from_millis(70),
+            Duration::from_secs(4) + Duration::from_millis(910),
+            Duration::from_secs(7) + Duration::from_millis(860),
+            Duration::from_secs(12) + Duration::from_millis(580),
+            Duration::from_secs(20) + Duration::from_millis(130),
+            Duration::from_secs(32) + Duration::from_millis(210),
+            Duration::from_secs(51) + Duration::from_millis(530),
+            Duration::from_mins(1) + Duration::from_secs(22) + Duration::from_millis(460),
+            Duration::from_mins(2) + Duration::from_secs(11) + Duration::from_millis(940),
+            Duration::from_mins(2) + Duration::from_secs(24),
+            Duration::from_mins(2) + Duration::from_secs(24),
+        ];
+
+        let mut backoff: ExponentialBackoff<Const> = ExponentialBackoffBuilder::<Const>::default()
+            .with_rng(Const(1.0))
             .build()
             .unwrap();
 
