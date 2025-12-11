@@ -4,6 +4,7 @@
 //! This crate provides the fundamental building blocks, data structures, and
 //! core algorithms used throughout the Charon system.
 
+pub mod qbft;
 /// Types for the Charon core.
 pub mod types;
 
