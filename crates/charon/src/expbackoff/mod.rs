@@ -34,6 +34,8 @@ where
         let mut backoff = self.base_delay;
         let mut retries = self.retries;
 
+        // SAFE: Substraction is only performed when retries > 0
+        #[allow(clippy::arithmetic_side_effects)]
         while backoff < self.max_delay && retries > 0 {
             backoff = backoff.mul_f64(self.multiplier);
             retries -= 1;
@@ -50,7 +52,7 @@ where
 
     /// Assume a retry has occurred.
     pub fn tried(&mut self) {
-        self.retries += 1;
+        self.retries = self.retries.saturating_add(1);
     }
 
     /// Resets the backoff duration to the base delay.
@@ -89,14 +91,14 @@ pub struct ExponentialBackoffBuilder<R = HasherRng> {
     rng: R,
 }
 
-impl ExponentialBackoffBuilder {
+impl Default for ExponentialBackoffBuilder {
     /// Backoff configuration with the default values specified at https://github.com/grpc/grpc/blob/master/doc/connection-backoff.md.
     ///
     /// This should be useful for callers who want to configure backoff with
     /// non-default values only for a subset of the options.
     ///
     /// Copied from [google.golang.org/grpc@v1.48.0/backoff/backoff.go]
-    pub fn default() -> Self {
+    fn default() -> Self {
         Self {
             base_delay: time::Duration::from_secs(1),
             multiplier: 1.6,
@@ -105,7 +107,9 @@ impl ExponentialBackoffBuilder {
             rng: HasherRng::default(),
         }
     }
+}
 
+impl ExponentialBackoffBuilder {
     /// Common configuration for fast backoff.
     pub fn fast_config() -> Self {
         Self {
@@ -220,7 +224,7 @@ mod tests {
                 Duration::from_secs(1),
                 Duration::from_secs(1) + Duration::from_millis(600),
                 Duration::from_secs(2) + Duration::from_millis(560),
-                Duration::from_secs(4) + Duration::from_millis(090),
+                Duration::from_secs(4) + Duration::from_millis(90),
                 Duration::from_secs(6) + Duration::from_millis(550),
                 Duration::from_secs(10) + Duration::from_millis(480),
                 Duration::from_secs(16) + Duration::from_millis(770),
@@ -281,6 +285,8 @@ mod tests {
     fn assert_test_case(tc: TestCase) {
         let mut instance = tc.config.with_rng(Const(tc.rng)).build().unwrap();
 
+        // SAFE: Used for testing purposes only
+        #[allow(clippy::arithmetic_side_effects)]
         for expected in tc.backoffs {
             let duration = instance.backoff();
             instance.tried();
