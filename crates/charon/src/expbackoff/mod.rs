@@ -288,4 +288,46 @@ mod tests {
             assert!(duration - expected <= Duration::from_millis(10));
         }
     }
+
+    #[test]
+    fn reset() {
+        let mut instance = ExponentialBackoffBuilder::default()
+            .with_base_delay(Duration::from_secs(1))
+            .with_multiplier(2.0)
+            .with_jitter(0.0)
+            .with_rng(Const(0.0))
+            .with_max_delay(Duration::from_hours(1))
+            .build()
+            .unwrap();
+
+        let mut total_time = Duration::default();
+
+        // first backoff
+        total_time += instance.backoff();
+        instance.tried();
+        assert_eq!(total_time, Duration::from_secs(1));
+
+        // second backoff
+        total_time += instance.backoff();
+        instance.tried();
+        assert_eq!(total_time, Duration::from_secs(3));
+
+        // third backoff
+        total_time += instance.backoff();
+        instance.tried();
+        assert_eq!(total_time, Duration::from_secs(7));
+
+        // third backoff
+        total_time += instance.backoff();
+        instance.tried();
+        assert_eq!(total_time, Duration::from_secs(15));
+
+        // reset
+        instance.reset();
+
+        // fourth backoff
+        total_time += instance.backoff();
+        instance.tried();
+        assert_eq!(total_time, Duration::from_secs(16));
+    }
 }
