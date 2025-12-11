@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package parsigex;
+
+import "core.proto";
+
+message ParSigExMsg {
+  core.Duty duty = 1;
+  core.ParSignedDataSet data_set = 2;
+}

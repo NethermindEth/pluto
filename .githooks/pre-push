@@ -1,11 +1,6 @@
-#!/bin/sh
-set -e
+#!/usr/bin/env bash
 
-# Dependency sorting
-if ! cargo sort --workspace --check; then
-    echo "❌ Dependencies should be sorted (run 'cargo sort --workspace')"
-    exit 1
-fi
+set -e
 
 # Dependency audit
 if ! cargo deny check; then
@@ -17,12 +12,6 @@ fi
 if ! cargo +nightly fmt --all -- --check; then
     echo "❌ Formatting issues (run 'cargo +nightly fmt --all')"
     exit 3
-fi
-
-# Typo check
-if ! typos; then
-    echo "❌ Spelling mistakes found (run 'typos --write-changes')"
-    exit 4
 fi
 
 # Linting
