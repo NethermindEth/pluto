@@ -98,6 +98,12 @@ impl FakeClock {
     }
 }
 
+impl Drop for FakeClock {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
 #[test]
 fn multiple_threads_timers() {
     let clock = FakeClock::new(Instant::now());
