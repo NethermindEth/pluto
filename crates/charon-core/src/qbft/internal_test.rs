@@ -389,7 +389,7 @@ fn bcast(
         let (delay_ch, _) = clock.new_timer(delay);
         _ = delay_ch.recv();
 
-        broadcast.send(msg).expect(WRITE_CHAN_ERR);
+        _ = broadcast.send(msg);
     });
 }
 
