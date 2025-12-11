@@ -12,7 +12,6 @@
         buildInputs = with pkgs; [
           cargo-sort
           cargo-deny
-          cargo-nextest
 
           typos
           protobuf

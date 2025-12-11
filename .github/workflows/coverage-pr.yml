@@ -24,10 +24,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
 
-      - run: cargo install cargo-nextest
       - run: cargo install cargo-llvm-cov
       - run: rustup component add llvm-tools-preview
-      - run: cargo llvm-cov nextest --workspace --lcov --output-path lcov.info --ignore-filename-regex '^examples/'
+      - run: cargo llvm-cov --workspace --lcov --output-path lcov.info --ignore-filename-regex '^examples/'
 
       - name: Upload head coverage artifact (for stacked PRs)
         uses: actions/upload-artifact@v4

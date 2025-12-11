@@ -1,8 +1,0 @@
-[test-groups]
-qbft = { max-threads = 1 }
-
-[[profile.default.overrides]]
-filter = 'test(/^qbft::internal_test::/)'
-test-group = 'qbft'
-slow-timeout = { period = "5s", terminate-after = 2 }
-retries = { backoff = "fixed", count = 2, delay = "1s" }
