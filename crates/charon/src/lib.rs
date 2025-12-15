@@ -9,3 +9,6 @@ pub mod peerinfo;
 
 /// Log
 pub mod log;
+
+/// Retry
+pub mod retry;

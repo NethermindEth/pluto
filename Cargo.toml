@@ -28,6 +28,7 @@ blst = "0.3.13"
 cancellation = "0.1.0"
 chrono = { version = "0.4", features = ["serde"] }
 crossbeam = "0.8.4"
+backon = "1.6.0"
 hex = { version = "^0.4.3" }
 prost = "0.14"
 prost-build = "0.14"
@@ -52,6 +53,7 @@ vise = "0.3.2"
 vise-exporter = "0.3.2"
 
 # Crates in the workspace
+charon = { path = "crates/charon" }
 charon-build-proto = { path = "crates/charon-build-proto" }
 charon-crypto = { path = "crates/charon-crypto" }
 charon-eth2 = { path = "crates/charon-eth2" }
