@@ -25,9 +25,12 @@ impl<R> ExponentialBackoff<R>
 where
     R: Rng,
 {
-    /// Compute the amount of time to wait before the next retry.
-    pub fn backoff(&mut self) -> time::Duration {
+    /// Compute the amount of time to wait before the next retry, updating the
+    /// retry count.
+    pub fn next_backoff(&mut self) -> time::Duration {
         if self.retries == 0 {
+            self.retries = self.retries.saturating_add(1);
+
             return self.base_delay;
         }
 
@@ -47,15 +50,12 @@ where
         // the same time, they won't operate in lockstep.
         backoff = backoff.mul_f64(1.0 + (self.jitter * (self.rng.next_f64() * 2.0 - 1.0)));
 
+        self.retries = self.retries.saturating_add(1);
+
         backoff
     }
 
-    /// Assume a retry has occurred.
-    pub fn tried(&mut self) {
-        self.retries = self.retries.saturating_add(1);
-    }
-
-    /// Resets the backoff duration to the base delay.
+    /// Resets the retry count.
     pub fn reset(&mut self) {
         self.retries = 0;
     }
@@ -68,10 +68,7 @@ where
     type Future = tokio::time::Sleep;
 
     fn next_backoff(&mut self) -> Self::Future {
-        let duration = self.backoff();
-        self.tried();
-
-        tokio::time::sleep(duration)
+        tokio::time::sleep(self.next_backoff())
     }
 }
 
@@ -295,8 +292,7 @@ mod tests {
         // SAFE: Used for testing purposes only
         #[allow(clippy::arithmetic_side_effects)]
         for expected in tc.backoffs {
-            let duration = instance.backoff();
-            instance.tried();
+            let duration = instance.next_backoff();
 
             assert!(duration - expected <= Duration::from_millis(10));
         }
@@ -316,31 +312,26 @@ mod tests {
         let mut total_time = Duration::default();
 
         // first backoff
-        total_time += instance.backoff();
-        instance.tried();
+        total_time += instance.next_backoff();
         assert_eq!(total_time, Duration::from_secs(1));
 
         // second backoff
-        total_time += instance.backoff();
-        instance.tried();
+        total_time += instance.next_backoff();
         assert_eq!(total_time, Duration::from_secs(3));
 
         // third backoff
-        total_time += instance.backoff();
-        instance.tried();
+        total_time += instance.next_backoff();
         assert_eq!(total_time, Duration::from_secs(7));
 
         // fourth backoff
-        total_time += instance.backoff();
-        instance.tried();
+        total_time += instance.next_backoff();
         assert_eq!(total_time, Duration::from_secs(15));
 
         // reset
         instance.reset();
 
         // fifth backoff
-        total_time += instance.backoff();
-        instance.tried();
+        total_time += instance.next_backoff();
         assert_eq!(total_time, Duration::from_secs(16));
     }
 }
