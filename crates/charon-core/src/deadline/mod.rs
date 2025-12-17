@@ -7,7 +7,8 @@ use core::time;
 pub const MARGIN_FACTOR: u32 = 12;
 
 /// A function that returns the deadline for a duty.
-pub type DeadlineFunc = Box<dyn Fn(crate::types::Duty) -> Option<chrono::DateTime<chrono::Utc>>>;
+pub type DeadlineFunc =
+    Box<dyn Fn(crate::types::Duty) -> Option<chrono::DateTime<chrono::Utc>> + Send + Sync>;
 
 /// Error type for deadline-related operations.
 #[derive(Debug, thiserror::Error)]
@@ -15,7 +16,7 @@ pub enum DeadlineError {}
 
 type Result<T> = std::result::Result<T, DeadlineError>;
 
-/// Create a function that provides duty deadlines or false if the duty never
+/// Create a function that provides duty deadline or [`None`] if the duty never
 /// deadlines.
 pub fn new_duty_deadline_func() -> Result<DeadlineFunc> {
     let genesis_time: chrono::DateTime<chrono::Utc> = todo!("Fetch genesis time from eth2 client");
@@ -25,6 +26,7 @@ pub fn new_duty_deadline_func() -> Result<DeadlineFunc> {
     Ok(Box::new(move |duty: Duty| match duty.duty_type {
         DutyType::Exit | DutyType::BuilderRegistration => None,
         _ => {
+            // TODO: Unsafe cast
             let start = genesis_time + (slot_duration * (u64::from(duty.slot) as u32));
             let margin = slot_duration / MARGIN_FACTOR;
 

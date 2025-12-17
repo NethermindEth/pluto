@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 backon.workspace = true
+chrono.workspace = true
 tokio.workspace = true
 prost.workspace = true
 prost-types.workspace = true

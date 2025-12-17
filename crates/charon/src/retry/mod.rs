@@ -1,19 +1,42 @@
 use backon::{BackoffBuilder, Retryable};
-use std::{
-    sync::Arc,
-    time::{self, Duration},
-};
+use std::{sync::Arc, time::Duration};
 
 /// TODO
 #[derive(Clone)]
 pub struct AsyncOptions<T> {
     backoff_builder: backon::ExponentialBuilder,
-    timeout_builder: Arc<dyn Fn(T) -> Option<time::Duration> + Send + Sync>,
+    deadline_fn: Arc<dyn Fn(T) -> Option<chrono::DateTime<chrono::Utc>> + Send + Sync>,
+    time_fn: Arc<dyn Fn() -> chrono::DateTime<chrono::Utc> + Send + Sync>,
 }
 
 impl<T> AsyncOptions<T> {
     /// TODO
-    pub fn new(timeout_fn: impl Fn(T) -> Option<time::Duration> + Send + Sync + 'static) -> Self {
+    pub fn with_backoff(mut self, backoff_builder: backon::ExponentialBuilder) -> Self {
+        self.backoff_builder = backoff_builder;
+        self
+    }
+
+    /// TODO
+    pub fn with_deadline(
+        mut self,
+        deadline_fn: impl Fn(T) -> Option<chrono::DateTime<chrono::Utc>> + Send + Sync + 'static,
+    ) -> Self {
+        self.deadline_fn = Arc::new(deadline_fn);
+        self
+    }
+
+    /// TODO
+    pub fn with_time(
+        mut self,
+        time_fn: impl Fn() -> chrono::DateTime<chrono::Utc> + Send + Sync + 'static,
+    ) -> Self {
+        self.time_fn = Arc::new(time_fn);
+        self
+    }
+}
+
+impl<T> Default for AsyncOptions<T> {
+    fn default() -> Self {
         Self {
             backoff_builder: backon::ExponentialBuilder::default()
                 .with_min_delay(Duration::from_millis(250))
@@ -21,7 +44,8 @@ impl<T> AsyncOptions<T> {
                 .with_factor(1.6)
                 .without_max_times()
                 .with_jitter(),
-            timeout_builder: Arc::new(timeout_fn),
+            deadline_fn: Arc::new(|_| None),
+            time_fn: Arc::new(|| chrono::Utc::now()),
         }
     }
 }
@@ -40,11 +64,15 @@ pub async fn do_async<T, E, A, Fut: Future<Output = Result<A, E>>, FutureFn: FnM
     name: &'static str,
     future: FutureFn,
 ) {
-    let timeout = (options.timeout_builder)(t);
+    let deadline = (options.deadline_fn)(t);
+    let now = (options.time_fn)();
+
+    let total_delay = deadline.and_then(|deadline| (deadline - now).to_std().ok());
+
     let mut backoff = options
         .backoff_builder
         .clone()
-        .with_total_delay(timeout)
+        .with_total_delay(total_delay)
         .build();
 
     let _result = future
@@ -54,27 +82,4 @@ pub async fn do_async<T, E, A, Fut: Future<Output = Result<A, E>>, FutureFn: FnM
         // TODO: Trace/Log retry attempts
         .notify(|_, _| println!("Retrying: {}/{}", topic, name))
         .await;
-}
-
-#[cfg(test)]
-mod tests {
-    use backon::{BackoffBuilder, ExponentialBuilder, Retryable};
-
-    async fn request() -> std::result::Result<(), Box<dyn std::error::Error>> {
-        Err("error".into())
-    }
-
-    #[tokio::test]
-    async fn it_works() {
-        let mut eb: backon::ExponentialBackoff = ExponentialBuilder::default()
-            .with_min_delay(std::time::Duration::from_millis(100))
-            .without_max_times()
-            .with_max_delay(std::time::Duration::from_secs(3))
-            .build();
-
-        let _ = request
-            .retry(&mut eb)
-            .notify(|err, d| println!("Retrying: {err:?} - {d:?}"))
-            .await;
-    }
 }

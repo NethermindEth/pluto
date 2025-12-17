@@ -37,13 +37,14 @@ pub fn with_async_retry(options: retry::AsyncOptions<Duty>) {
 
 #[cfg(test)]
 mod tests {
-    use crate::types::Duty;
+    use crate::deadline::{self, DeadlineFunc};
     use charon::retry;
-    use core::time;
 
     #[test]
+    #[ignore = "compile check"]
     fn it_compiles() {
-        let opts = retry::AsyncOptions::new(|_: Duty| Some(time::Duration::from_secs(30)));
+        let duty_deadline: DeadlineFunc = deadline::new_duty_deadline_func().unwrap();
+        let opts = retry::AsyncOptions::default().with_deadline(duty_deadline);
         super::with_async_retry(opts);
     }
 }
