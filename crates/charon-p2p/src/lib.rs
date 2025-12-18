@@ -13,3 +13,9 @@ pub mod name;
 
 /// P2P configuration.
 pub mod config;
+
+/// Metrics.
+pub mod metrics;
+
+/// K1 utilities.
+pub mod k1;
