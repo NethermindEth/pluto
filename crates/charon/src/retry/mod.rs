@@ -1,6 +1,6 @@
 use backon::{BackoffBuilder, Retryable};
-use charon_core::types::{Duty, DutyDefinitionSet, DutyType};
 use std::{sync::Arc, time::Duration};
+use tokio_util::sync::CancellationToken;
 
 /// TODO
 #[derive(Clone)]
@@ -8,6 +8,7 @@ pub struct AsyncOptions<T> {
     backoff_builder: backon::ExponentialBuilder,
     deadline_fn: Arc<dyn Fn(T) -> Option<chrono::DateTime<chrono::Utc>> + Send + Sync>,
     time_fn: Arc<dyn Fn() -> chrono::DateTime<chrono::Utc> + Send + Sync>,
+    cancellation_token: Option<CancellationToken>,
 }
 
 impl<T> AsyncOptions<T> {
@@ -34,6 +35,12 @@ impl<T> AsyncOptions<T> {
         self.time_fn = Arc::new(time_fn);
         self
     }
+
+    /// TODO
+    pub fn with_cancellation_token(mut self, cancellation_token: CancellationToken) -> Self {
+        self.cancellation_token = Some(cancellation_token);
+        self
+    }
 }
 
 impl<T> Default for AsyncOptions<T> {
@@ -47,9 +54,28 @@ impl<T> Default for AsyncOptions<T> {
                 .with_jitter(),
             deadline_fn: Arc::new(|_| None),
             time_fn: Arc::new(|| chrono::Utc::now()),
+            cancellation_token: None,
         }
     }
 }
+
+/// TODO
+#[derive(Debug, thiserror::Error)]
+pub enum DoAsyncError {
+    /// TODO
+    #[error("Network error")]
+    NetworkError,
+
+    /// TODO
+    #[error("Temporary error")]
+    TemporaryError,
+
+    /// TODO
+    #[error("Other error")]
+    OtherError,
+}
+
+/// TODO: Implement `From` for various error types (ex. Alloy RPC errors)
 
 /// Execute a provided function with retries and a maximum timeout according to
 /// the provided options.
@@ -58,7 +84,12 @@ impl<T> Default for AsyncOptions<T> {
 /// ```ignore
 /// tokio::spawn(retry::do_async(...))
 /// ```
-pub async fn do_async<T, E, A, Fut: Future<Output = Result<A, E>>, FutureFn: FnMut() -> Fut>(
+pub async fn do_async<
+    T,
+    A,
+    Fut: Future<Output = Result<A, DoAsyncError>>,
+    FutureFn: FnMut() -> Fut,
+>(
     options: AsyncOptions<T>,
     t: T,
     topic: &'static str,
@@ -78,8 +109,21 @@ pub async fn do_async<T, E, A, Fut: Future<Output = Result<A, E>>, FutureFn: FnM
 
     let _result = future
         .retry(&mut backoff)
-        // TODO: Use correct when (check errors, check cancellation, etc.)
-        .when(|_| true)
+        .when(|e| {
+            if options
+                .cancellation_token
+                .as_ref()
+                .is_some_and(|t| t.is_cancelled())
+            {
+                return false;
+            }
+
+            match e {
+                // Retry on network and temporary errors only while not cancelled
+                DoAsyncError::NetworkError | DoAsyncError::TemporaryError => true,
+                DoAsyncError::OtherError => false,
+            }
+        })
         // TODO: Trace/Log retry attempts
         .notify(|_, _| println!("Retrying: {}/{}", topic, name))
         .await;
@@ -121,13 +165,15 @@ pub fn with_async_retry(options: AsyncOptions<Duty>) {
 
 #[cfg(test)]
 mod tests {
-    use crate::{deadline, retry};
+    use tokio_util::sync::CancellationToken;
+
+    use crate::retry::{self, DoAsyncError};
     use core::time;
     use std::sync::{Arc, Mutex};
 
     struct TestCase {
         options: retry::AsyncOptions<()>,
-        func: Arc<dyn Fn(usize) -> Result<(), ()> + Send + Sync>,
+        func: Arc<dyn Fn(usize) -> Result<(), DoAsyncError> + Send + Sync>,
         expected_attempts: usize,
     }
 
@@ -143,10 +189,7 @@ mod tests {
     async fn no_retries() {
         run_test(TestCase {
             options: retry::AsyncOptions::default().with_backoff(test_backoff()),
-            func: Arc::new(|_: usize| {
-                let result: Result<(), ()> = Ok(());
-                result
-            }),
+            func: Arc::new(|_: usize| Ok(())),
             expected_attempts: 1,
         })
         .await;
@@ -156,11 +199,13 @@ mod tests {
     async fn one_retry() {
         run_test(TestCase {
             options: retry::AsyncOptions::default().with_backoff(test_backoff()),
-            func: Arc::new(
-                |attempts: usize| {
-                    if attempts < 2 { Err(()) } else { Ok(()) }
-                },
-            ),
+            func: Arc::new(|attempts: usize| {
+                if attempts < 2 {
+                    Err(DoAsyncError::TemporaryError)
+                } else {
+                    Ok(())
+                }
+            }),
             expected_attempts: 2,
         })
         .await;
@@ -170,11 +215,13 @@ mod tests {
     async fn multiple_retries() {
         run_test(TestCase {
             options: retry::AsyncOptions::default().with_backoff(test_backoff()),
-            func: Arc::new(
-                |attempts: usize| {
-                    if attempts < 5 { Err(()) } else { Ok(()) }
-                },
-            ),
+            func: Arc::new(|attempts: usize| {
+                if attempts < 5 {
+                    Err(DoAsyncError::TemporaryError)
+                } else {
+                    Ok(())
+                }
+            }),
             expected_attempts: 5,
         })
         .await;
@@ -185,7 +232,22 @@ mod tests {
     async fn non_retryable_error() {
         run_test(TestCase {
             options: retry::AsyncOptions::default().with_backoff(test_backoff()),
-            func: Arc::new(|_| todo!("Return non-retryable error")),
+            func: Arc::new(|_| Err(DoAsyncError::OtherError)),
+            expected_attempts: 1,
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn one_attempt_on_cancellation() {
+        let cancellation_token = CancellationToken::new();
+        cancellation_token.cancel();
+
+        run_test(TestCase {
+            options: retry::AsyncOptions::default()
+                .with_backoff(test_backoff())
+                .with_cancellation_token(cancellation_token),
+            func: Arc::new(|_| Err(DoAsyncError::TemporaryError)),
             expected_attempts: 1,
         })
         .await;

@@ -1398,6 +1398,7 @@ dependencies = [
  "prost-types 0.14.1",
  "thiserror 2.0.17",
  "tokio",
+ "tokio-util",
  "url",
 ]
 
