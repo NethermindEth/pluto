@@ -1,5 +1,5 @@
 use crate::types::{Duty, DutyType};
-use core::time;
+use std::time;
 
 /// Defines the fraction of the slot duration to use as a margin.
 /// This is to consider network delays and other factors that may affect the
