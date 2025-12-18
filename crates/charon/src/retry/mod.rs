@@ -1,4 +1,3 @@
-use crate::retry;
 use backon::{BackoffBuilder, Retryable};
 use charon_core::types::{Duty, DutyDefinitionSet, DutyType};
 use std::{sync::Arc, time::Duration};
@@ -98,9 +97,9 @@ async fn consensus_participate(_duty: Duty) -> std::result::Result<(), Box<dyn s
 }
 
 /// TODO
-pub fn with_async_retry(options: retry::AsyncOptions<Duty>) {
+pub fn with_async_retry(options: AsyncOptions<Duty>) {
     let fetcher_fetch = |duty: Duty, set: DutyDefinitionSet<DutyType>| {
-        tokio::spawn(retry::do_async(
+        tokio::spawn(do_async(
             options.clone(),
             duty.clone(),
             "fetcher",
@@ -109,7 +108,7 @@ pub fn with_async_retry(options: retry::AsyncOptions<Duty>) {
         ));
     };
     let consensus_participate = |duty: Duty| {
-        tokio::spawn(retry::do_async(
+        tokio::spawn(do_async(
             options.clone(),
             duty.clone(),
             "consensus",
