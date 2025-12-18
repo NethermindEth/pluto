@@ -2,6 +2,8 @@
 //!
 //! Helper functions for working with secp256k1 keys.
 
+use std::path::Path;
+
 use k256::{
     AffinePoint, FieldBytes, PublicKey, SecretKey,
     ecdsa::{self, RecoveryId, Signature, SigningKey, hazmat::VerifyPrimitive},
@@ -185,9 +187,30 @@ pub fn recover(hash: &[u8], sig: &[u8]) -> Result<PublicKey> {
     Ok(pubkey.into())
 }
 
+/// Load loads a secret key from a file.
+pub fn load(file: &Path) -> Result<SecretKey> {
+    let contents = std::fs::read_to_string(file).map_err(K1UtilError::FailedToReadFile)?;
+
+    let decoded = hex::decode(contents.trim())?;
+
+    let key = SecretKey::from_slice(&decoded).map_err(K1UtilError::FailedToParseSecretKey)?;
+
+    Ok(key)
+}
+
+/// Save saves a secret key to a file.
+pub fn save(key: &SecretKey, file: &Path) -> Result<()> {
+    let encoded = hex::encode(key.to_bytes());
+
+    std::fs::write(file, encoded).map_err(K1UtilError::FailedToWriteFile)?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use k256::elliptic_curve::rand_core::OsRng;
+    use std::io::Write;
 
     use super::*;
 
@@ -257,5 +280,51 @@ mod tests {
             key.public_key(),
             "Recovered public key should match"
         );
+    }
+
+    #[test]
+    fn test_load_nonexistent_file() {
+        let file = Path::new("nonexistent-file");
+        let result = load(file);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_invalid_hex_encoded_file() {
+        let mut temp_file = tempfile::NamedTempFile::new().unwrap();
+        write!(temp_file, "abcXYZ123").unwrap(); // invalid hex encoded file
+
+        let result = load(temp_file.path());
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            K1UtilError::FailedToDecodeHex(_)
+        ));
+    }
+
+    #[test]
+    fn test_valid_hex_strings() {
+        let key = SecretKey::random(&mut OsRng);
+        let key_str = hex::encode(key.to_bytes()).to_string();
+
+        let hex_strs = vec![
+            format!("{}\n", key_str.clone()),
+            format!("{}\r\n", key_str.clone()),
+            format!("{} ", key_str.clone()),
+            key_str.clone(),
+        ];
+
+        for hex_str in hex_strs {
+            let mut temp_file = tempfile::NamedTempFile::new().unwrap();
+            write!(temp_file, "{}", hex_str).unwrap();
+
+            let result = load(Path::new(&temp_file.path()));
+            assert!(
+                result.is_ok(),
+                "Failed to load key from file: {:?}",
+                &hex_str[hex_str.len().saturating_sub(2)..].to_string()
+            );
+            assert_eq!(result.unwrap(), key, "Key should match");
+        }
     }
 }
