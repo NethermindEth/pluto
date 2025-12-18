@@ -5,7 +5,10 @@ use charon_k1util::{self, self as k1util, SIGNATURE_LEN_WITHOUT_V};
 use k256::{PublicKey, SecretKey, elliptic_curve};
 use sha3::{Digest, Keccak256};
 
-use crate::rlp::{RlpError, decode_bytes_list, encode_bytes_list};
+use crate::{
+    rlp::{RlpError, decode_bytes_list, encode_bytes_list},
+    utils,
+};
 
 /// The key for the secp256k1 public key in the ENR.
 pub const KEY_SECP256K1: &str = "secp256k1";
@@ -154,45 +157,27 @@ impl Record {
     ///
     /// Returns None if the IP address is not set.
     pub fn ip(&self) -> Option<Ipv4Addr> {
-        self.kvs.get(KEY_IP).and_then(|value| {
-            if value.len() != 4 {
-                return None;
-            }
-
-            let mut bytes = [0u8; 4];
-            bytes.copy_from_slice(value);
-            Some(Ipv4Addr::from(bytes))
-        })
+        let value = self.kvs.get(KEY_IP)?;
+        let bytes: [u8; 4] = value.as_slice().try_into().ok()?;
+        Some(Ipv4Addr::from(bytes))
     }
 
     /// Returns the TCP port of the record.
     ///
     /// Returns None if the TCP port is not set.
     pub fn tcp(&self) -> Option<u16> {
-        self.kvs.get(KEY_TCP).and_then(|value| {
-            if value.len() != 2 {
-                return None;
-            }
-
-            let mut bytes = [0u8; 2];
-            bytes.copy_from_slice(value);
-            Some(u16::from_be_bytes(bytes))
-        })
+        let value = self.kvs.get(KEY_TCP)?;
+        let bytes = value.as_slice().try_into().ok()?;
+        Some(u16::from_be_bytes(bytes))
     }
 
     /// Returns the UDP port of the record.
     ///
     /// Returns None if the UDP port is not set.
     pub fn udp(&self) -> Option<u16> {
-        self.kvs.get(KEY_UDP).and_then(|value| {
-            if value.len() != 2 {
-                return None;
-            }
-
-            let mut bytes = [0u8; 2];
-            bytes.copy_from_slice(value);
-            Some(u16::from_be_bytes(bytes))
-        })
+        let value = self.kvs.get(KEY_UDP)?;
+        let bytes = value.as_slice().try_into().ok()?;
+        Some(u16::from_be_bytes(bytes))
     }
 }
 
@@ -249,9 +234,11 @@ impl TryFrom<&str> for Record {
             kvs: HashMap::new(),
         };
 
-        for i in (2..elements.len()).step_by(2) {
-            let key = String::from_utf8_lossy(&elements[i]).to_string();
-            let value = elements[i.wrapping_add(1)].clone();
+        for pair in elements.chunks_exact(2).skip(1) {
+            let [key, value] = pair else {
+                unreachable!("Expected even number of elements");
+            };
+            let key = String::from_utf8_lossy(key).to_string();
 
             if record.kvs.contains_key(&key) {
                 return Err(RecordError::DuplicateKey(key));
@@ -262,11 +249,11 @@ impl TryFrom<&str> for Record {
             match key.as_str() {
                 KEY_SECP256K1 => {
                     record.public_key = Some(
-                        PublicKey::from_sec1_bytes(&value).map_err(RecordError::Secp256k1Error)?,
+                        PublicKey::from_sec1_bytes(value).map_err(RecordError::Secp256k1Error)?,
                     );
                 }
                 KEY_ID => {
-                    let value_str = String::from_utf8_lossy(&value).to_string();
+                    let value_str = String::from_utf8_lossy(value).to_string();
                     if value_str != VAL_ID {
                         return Err(RecordError::InvalidFormat(
                             InvalidFormatError::NonV4IdentitySchemeNotSupported,
@@ -277,21 +264,15 @@ impl TryFrom<&str> for Record {
             }
         }
 
-        if record.public_key.is_none() {
+        let Some(public_key) = record.public_key else {
             return Err(RecordError::InvalidFormat(
                 InvalidFormatError::PublicKeyNotSet,
             ));
-        }
+        };
 
         let encoded_elements = encode_bytes_list(&elements[1..]);
 
-        verify(
-            &record
-                .public_key
-                .unwrap_or_else(|| unreachable!("Public key expected to be set")),
-            &record.signature,
-            &encoded_elements,
-        )?;
+        verify(&public_key, &record.signature, &encoded_elements)?;
 
         Ok(record)
     }
@@ -307,8 +288,9 @@ pub(crate) fn sign(
     let digest = hasher.finalize();
 
     let signature = k1util::sign(private_key, &digest).map_err(RecordError::FailedToSign)?;
-    let mut signature_without_v = [0u8; SIGNATURE_LEN_WITHOUT_V];
-    signature_without_v.copy_from_slice(&signature[..SIGNATURE_LEN_WITHOUT_V]);
+    let signature_without_v = signature[..SIGNATURE_LEN_WITHOUT_V]
+        .try_into()
+        .expect("SIGNATURE_LEN_WITHOUT_V < SIGNATURE_LEN");
 
     Ok(signature_without_v)
 }
@@ -335,7 +317,7 @@ pub(crate) fn encode_elements(signature: &[u8], kvs: &HashMap<String, Vec<u8>>) 
     keys.sort();
 
     // Start with sequence number = 0
-    let mut elements: Vec<Vec<u8>> = vec![to_big_endian(0)];
+    let mut elements: Vec<Vec<u8>> = vec![utils::to_big_endian(0)];
 
     for key in keys {
         elements.push(key.as_bytes().to_vec());
@@ -349,18 +331,9 @@ pub(crate) fn encode_elements(signature: &[u8], kvs: &HashMap<String, Vec<u8>>) 
     encode_bytes_list(&elements)
 }
 
-/// Converts an integer to big-endian bytes without leading zeros.
-fn to_big_endian(mut n: u64) -> Vec<u8> {
-    let mut result = Vec::new();
-    while n > 0 {
-        result.insert(0, (n & 0xFF) as u8);
-        n >>= 8;
-    }
-    result
-}
-
 #[cfg(test)]
 mod tests {
+    use crate::utils;
     use charon_testutil::random::generate_insecure_k1_key;
     use k256::{
         Secp256k1,
@@ -491,7 +464,7 @@ mod tests {
             keys.sort();
 
             // Start with sequence number = 0
-            let mut elements: Vec<Vec<u8>> = vec![to_big_endian(0), to_big_endian(0)];
+            let mut elements: Vec<Vec<u8>> = vec![utils::to_big_endian(0), utils::to_big_endian(0)];
 
             for key in keys {
                 elements.push(key.as_bytes().to_vec());

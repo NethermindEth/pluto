@@ -57,20 +57,21 @@ pub struct AddrInfo {
     pub addrs: Vec<Multiaddr>,
 }
 
-/// Peer represents a peer in the Charon network.
+/// Peer represents a peer in the libp2p network, either a charon node or a
+/// relay.
 #[derive(Clone, Debug)]
 pub struct Peer {
-    /// Peer ID.
+    /// LibP2P peer identity.
     pub id: PeerId,
 
-    /// Multiaddresses of the peer.
+    /// List of libp2p multiaddresses of the peer.
     pub addresses: Vec<Multiaddr>,
 
     /// Index is the order of this node in the cluster.
     /// This is only applicable to charon nodes, not relays.
     pub index: usize,
 
-    /// Name of the peer.
+    /// Represents a human friendly name for the peer.
     pub name: String,
 }
 
@@ -131,13 +132,16 @@ pub struct MutablePeer {
     inner: Arc<Mutex<MutablePeerInner>>,
 }
 
+/// Subscriber is a function that is called when the peer is updated.
+pub type Subscriber = Box<dyn Fn(&Peer) + Send + 'static>;
+
 /// MutablePeerInner is the inner state of a MutablePeer.
 pub struct MutablePeerInner {
     /// Peer.
     peer: Option<Peer>,
 
     /// Subscribers.
-    subs: Vec<Box<dyn Fn(Peer) + Send + 'static>>,
+    subs: Vec<Subscriber>,
 }
 
 type MutablePeerResult<T> = std::result::Result<T, MutablePeerError>;
@@ -160,7 +164,7 @@ impl MutablePeer {
             .lock()
             .map_err(|_| MutablePeerError::PoisonError)?;
         inner.peer = Some(peer.clone());
-        inner.subs.iter().for_each(|sub| sub(peer.clone()));
+        inner.subs.iter().for_each(|sub| sub(&peer.clone()));
         Ok(())
     }
 
@@ -174,15 +178,12 @@ impl MutablePeer {
     }
 
     /// Registers a function that is called when the peer is updated.
-    pub fn subscribe<F>(&self, sub: F) -> MutablePeerResult<()>
-    where
-        F: Fn(Peer) + Send + 'static,
-    {
+    pub fn subscribe(&self, sub: Subscriber) -> MutablePeerResult<()> {
         let mut inner = self
             .inner
             .lock()
             .map_err(|_| MutablePeerError::PoisonError)?;
-        inner.subs.push(Box::new(sub));
+        inner.subs.push(sub);
         Ok(())
     }
 }

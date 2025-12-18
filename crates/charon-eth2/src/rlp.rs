@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use crate::utils;
+
 /// An error that can occur when decoding or encoding RLP data.
 #[derive(Debug, Error)]
 pub enum RlpError {
@@ -132,24 +134,13 @@ fn encode_length(length: usize, offset: u8) -> Vec<u8> {
         ];
     }
 
-    let big_endian = to_big_endian(length);
+    let big_endian = utils::to_big_endian(length);
     let prefix = u8::try_from(big_endian.len())
         .expect("big_endian.len() is always less than 256")
         .wrapping_add(offset)
         .wrapping_add(55);
 
     [vec![prefix], big_endian].concat()
-}
-
-/// Converts an integer to big-endian byte representation without leading zeros.
-fn to_big_endian(mut value: usize) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    while value > 0 {
-        bytes.push(u8::try_from(value % 256).expect("value % 256 is always less than 256"));
-        value >>= 8;
-    }
-    bytes.reverse();
-    bytes
 }
 
 /// Decodes a big-endian integer from a byte slice at the given offset and

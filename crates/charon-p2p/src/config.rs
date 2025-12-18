@@ -1,0 +1,235 @@
+//! # Charon P2P Configuration
+
+use std::{
+    net::{IpAddr, SocketAddr},
+    str::FromStr,
+};
+
+use libp2p::{Multiaddr, multiaddr};
+
+/// P2P configuration error.
+#[derive(Debug, thiserror::Error)]
+pub enum P2PConfigError {
+    /// Failed to parse the TCP addresses.
+    #[error("Failed to parse the TCP addresses")]
+    FailedToParseTcpAddresses(std::net::AddrParseError),
+
+    /// Failed to parse the UDP addresses.
+    #[error("Failed to parse the UDP addresses")]
+    FailedToParseUdpAddresses(std::net::AddrParseError),
+
+    /// Failed to parse the multiaddress.
+    #[error("Failed to parse the multiaddress")]
+    FailedToParseMultiaddr(#[from] multiaddr::Error),
+
+    /// Unspecified IP address.
+    #[error("Unspecified IP address: {0}")]
+    UnspecifiedIP(String),
+}
+
+// Note: this is only for testing purposes!
+#[cfg(test)]
+impl PartialEq for P2PConfigError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                P2PConfigError::FailedToParseTcpAddresses(x),
+                P2PConfigError::FailedToParseTcpAddresses(y),
+            ) if x == y => true,
+            (
+                P2PConfigError::FailedToParseUdpAddresses(x),
+                P2PConfigError::FailedToParseUdpAddresses(y),
+            ) if x == y => true,
+            (
+                P2PConfigError::FailedToParseMultiaddr(x),
+                P2PConfigError::FailedToParseMultiaddr(y),
+            ) if x.to_string() == y.to_string() => true,
+            (P2PConfigError::UnspecifiedIP(x), P2PConfigError::UnspecifiedIP(y)) if x == y => true,
+            _ => false,
+        }
+    }
+}
+
+type Result<T> = std::result::Result<T, P2PConfigError>;
+
+/// P2P configuration.
+#[derive(Debug, Clone, Default)]
+pub struct P2PConfig {
+    /// Defines the libp2p relay multiaddrs or URLs.
+    pub relays: Vec<String>,
+
+    /// The external IP address of the node.
+    pub external_ip: String,
+
+    /// The external host of the node.
+    pub external_host: String,
+
+    /// The TCP addresses of the node.
+    pub tcp_addrs: Vec<String>,
+
+    /// The UDP addresses of the node.
+    pub udp_addrs: Vec<String>,
+
+    /// Whether to disable the reuse port.
+    pub disable_reuse_port: bool,
+}
+
+impl P2PConfig {
+    /// Returns the TCP addresses of the node.
+    pub fn parse_tcp_addrs(&self) -> Result<Vec<SocketAddr>> {
+        self.tcp_addrs.iter().map(resolve_listen_tcp_addr).collect()
+    }
+
+    /// Returns the UDP addresses of the node.
+    pub fn parse_udp_addrs(&self) -> Result<Vec<SocketAddr>> {
+        self.udp_addrs.iter().map(resolve_listen_udp_addr).collect()
+    }
+
+    /// Returns the UDP multiaddresses of the node.
+    pub fn udp_multiaddrs(&self) -> Result<Vec<Multiaddr>> {
+        let addrs = self.parse_udp_addrs()?;
+
+        addrs.into_iter().map(multi_addr_from_ip_udp_port).collect()
+    }
+
+    /// Returns the TCP multiaddresses of the node.
+    pub fn tcp_multiaddrs(&self) -> Result<Vec<Multiaddr>> {
+        let addrs = self.parse_tcp_addrs()?;
+
+        addrs.into_iter().map(multi_addr_from_ip_tcp_port).collect()
+    }
+}
+
+/// Resolves a TCP address string to a SocketAddr, ensuring the IP is specified.
+fn resolve_listen_tcp_addr(addr: impl AsRef<str>) -> Result<SocketAddr> {
+    let socket_addr: SocketAddr = addr
+        .as_ref()
+        .parse()
+        .map_err(P2PConfigError::FailedToParseTcpAddresses)?;
+
+    // Go version checks if IP is nil (unspecified)
+    if socket_addr.ip().is_unspecified() {
+        return Err(P2PConfigError::UnspecifiedIP("TCP".to_string()));
+    }
+
+    Ok(socket_addr)
+}
+
+/// Resolves a UDP address string to a SocketAddr, ensuring the IP is specified.
+fn resolve_listen_udp_addr(addr: impl AsRef<str>) -> Result<SocketAddr> {
+    let socket_addr: SocketAddr = addr
+        .as_ref()
+        .parse()
+        .map_err(P2PConfigError::FailedToParseUdpAddresses)?;
+
+    if socket_addr.ip().is_unspecified() {
+        return Err(P2PConfigError::UnspecifiedIP("UDP".to_string()));
+    }
+
+    Ok(socket_addr)
+}
+
+fn multi_addr_from_ip_udp_port(socket_addr: SocketAddr) -> Result<Multiaddr> {
+    let typ = match socket_addr.ip() {
+        IpAddr::V4(_) => "ip4",
+        IpAddr::V6(_) => "ip6",
+    };
+
+    Multiaddr::from_str(&format!(
+        "/{}/{}/udp/{}/quic-v1",
+        typ,
+        socket_addr.ip(),
+        socket_addr.port()
+    ))
+    .map_err(P2PConfigError::FailedToParseMultiaddr)
+}
+
+fn multi_addr_from_ip_tcp_port(socket_addr: SocketAddr) -> Result<Multiaddr> {
+    let typ = match socket_addr.ip() {
+        IpAddr::V4(_) => "ip4",
+        IpAddr::V6(_) => "ip6",
+    };
+
+    Multiaddr::from_str(&format!(
+        "/{}/{}/tcp/{}",
+        typ,
+        socket_addr.ip(),
+        socket_addr.port()
+    ))
+    .map_err(P2PConfigError::FailedToParseMultiaddr)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    use super::*;
+
+    #[test]
+    fn test_resolve_listen_addr_ip_not_specified() {
+        let err = resolve_listen_tcp_addr(":1234").unwrap_err();
+        assert!(matches!(err, P2PConfigError::FailedToParseTcpAddresses(_)));
+    }
+
+    #[test]
+    fn test_resolve_listen_addr_ip() {
+        let addr = resolve_listen_tcp_addr("10.4.3.3:1234").unwrap();
+        assert_eq!(
+            addr,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 4, 3, 3)), 1234)
+        );
+    }
+
+    #[test]
+    fn test_config_multiaddrs() {
+        let ipv6_linklocal_all_nodes = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1);
+
+        let config = P2PConfig {
+            tcp_addrs: vec![
+                "10.0.0.2:0".to_string(),
+                format!("[{}]:0", ipv6_linklocal_all_nodes),
+            ],
+            udp_addrs: vec![
+                "10.0.0.2:0".to_string(),
+                format!("[{}]:0", ipv6_linklocal_all_nodes),
+            ],
+            ..Default::default()
+        };
+
+        let tcp_multiaddrs = config.tcp_multiaddrs().unwrap();
+        let udp_multiaddrs = config.udp_multiaddrs().unwrap();
+
+        let tcp_addrs_str = tcp_multiaddrs
+            .iter()
+            .map(|addr| addr.to_string())
+            .collect::<Vec<String>>();
+        let udp_addrs_str = udp_multiaddrs
+            .iter()
+            .map(|addr| addr.to_string())
+            .collect::<Vec<String>>();
+
+        let merged_addrs_str = tcp_addrs_str
+            .into_iter()
+            .chain(udp_addrs_str)
+            .collect::<Vec<String>>();
+
+        let expected_addrs_str = vec![
+            "/ip4/10.0.0.2/tcp/0",
+            "/ip6/ff02::1/tcp/0",
+            "/ip4/10.0.0.2/udp/0/quic-v1",
+            "/ip6/ff02::1/udp/0/quic-v1",
+        ];
+
+        assert_eq!(merged_addrs_str, expected_addrs_str);
+    }
+
+    #[test]
+    fn test_config_invalid_multiaddrs() {
+        let config = P2PConfig {
+            tcp_addrs: vec!["not_a_valid_addr".to_string()],
+            ..Default::default()
+        };
+
+        assert!(config.tcp_multiaddrs().is_err());
+    }
+}

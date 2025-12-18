@@ -7,12 +7,12 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-rand.workspace = true
 blst.workspace = true
+hex.workspace = true
+rand.workspace = true
 rand_core.workspace = true
 serde.workspace = true
 thiserror.workspace = true
-hex.workspace = true
 
 [lints.rust]
 # Allow unsafe code for blst C bindings (overrides workspace forbid)

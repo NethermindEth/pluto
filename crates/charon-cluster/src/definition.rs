@@ -324,11 +324,11 @@ impl Definition {
         };
 
         def.validator_addresses = fee_recipient_addresses
-            .into_iter()
-            .enumerate()
-            .map(|(i, address)| ValidatorAddresses {
-                fee_recipient_address: address,
-                withdrawal_address: withdrawal_addresses[i].clone(),
+            .iter()
+            .zip(withdrawal_addresses.iter())
+            .map(|(fee, wa)| ValidatorAddresses {
+                fee_recipient_address: fee.clone(),
+                withdrawal_address: wa.clone(),
             })
             .collect();
 

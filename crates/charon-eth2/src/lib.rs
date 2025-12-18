@@ -15,3 +15,6 @@ pub mod eip712;
 
 /// Network utilities.
 pub mod network;
+
+/// Utilities.
+pub(crate) mod utils;

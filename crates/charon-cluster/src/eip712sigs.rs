@@ -134,7 +134,17 @@ fn digest_eip712(
 ) -> Result<Vec<u8>> {
     let chain_id = fork_version_to_chain_id(definition.fork_version.as_ref())?;
 
-    let mut data = TypedData {
+    let fields = typ
+        .fields
+        .iter()
+        .map(|f| Field {
+            name: f.field.to_string(),
+            field_type: f.field_type.to_string(),
+            value: (f.value_func)(definition, operator),
+        })
+        .collect::<Vec<_>>();
+
+    let data = TypedData {
         domain: Domain {
             name: "Obol".to_string(),
             version: "1".to_string(),
@@ -142,17 +152,9 @@ fn digest_eip712(
         },
         primary_type: Type {
             name: typ.primary_type.to_string(),
-            fields: vec![],
+            fields,
         },
     };
-
-    for field in typ.fields.iter() {
-        data.primary_type.fields.push(Field {
-            name: field.field.to_string(),
-            field_type: field.field_type.to_string(),
-            value: (field.value_func)(definition, operator),
-        });
-    }
 
     let digest = hash_typed_data(&data).map_err(EIP712Error::FailedToHashTypedData)?;
 

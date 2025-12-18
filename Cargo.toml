@@ -11,6 +11,7 @@ members = [
     "crates/charon-k1util",
     "crates/charon-p2p",
     "crates/charon-testutil",
+    "crates/tracing",
 ]
 resolver = "3"
 
@@ -24,26 +25,34 @@ publish = false
 [workspace.dependencies]
 alloy = { version = "1.1.3", features = ["essentials"] }
 axum = "0.8.6"
+blst = "0.3.13"
+cancellation = "0.1.0"
 chrono = { version = "0.4", features = ["serde"] }
+crossbeam = "0.8.4"
 hex = { version = "^0.4.3" }
+prost = "0.14"
+prost-build = "0.14"
+prost-types = "0.14"
+rand = { version = "0.8", features = ["std_rng"] }
+rand_core = "0.6"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "^1.0" }
+thiserror = "2.0.12"
 tokio = { version = "1", features = ["full"] }
 libp2p = { version = "0.56", features = ["full", "secp256k1"] }
-prost = "0.14"
-prost-types = "0.14"
-prost-build = "0.14"
-blst = "0.3.13"
-rand_core = "0.6"
-thiserror = "2.0.12"
-rand = {version = "0.8", features = ["std_rng"]}
 url = { version = "2.5.7" }
-uuid = {version = "1.16", features = ["serde", "v4"] }
+uuid = { version = "1.16", features = ["serde", "v4"] }
 serde_with = { version = "3", features = ["hex", "base64"] }
 base64 = { version = "0.22.1" }
 sha3 = { version = "0.10.8" }
 k256 = { version = "0.13.4", features = ["ecdsa", "sha256"] }
 criterion = "0.7.0"
+tempfile = "3.10.0"
+tracing = "0.1.32"
+tracing-subscriber = { version = "0.3.9", features = ["env-filter"] }
+tracing-loki = "0.2.6"
+vise = "0.3.2"
+vise-exporter = "0.3.2"
 
 # Crates in the workspace
 charon-build-proto = { path = "crates/charon-build-proto" }

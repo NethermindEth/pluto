@@ -11,9 +11,8 @@ git config commit.gpgsign true
 ## Prerequisites
 
 * [Rust](https://www.rust-lang.org/tools/install)
+* [Protobuf](https://protobuf.dev/installation/)
 * [cargo deny](https://github.com/EmbarkStudios/cargo-deny)
-* [typos](https://github.com/crate-ci/typos?tab=readme-ov-file#install)
-* [cargo sort](https://github.com/DevinR528/cargo-sort)
 
 ## Code quality assurance
 
@@ -49,15 +48,15 @@ Criterion is still recommended for more rigorous statistical analysis, but Divan
 For performance, the profiling cycle is a 3-step process in which you need to first measure the resources consumed by your application, then isolate the most consuming ones, and finally optimize them.
 This cycle repeats until the performance goals are met.
 To carry out this optimization cycle, we recommend the following profiling tools, as they are powerful, general-purpose, and are either written or well integrated with Rust:
-* [Hyperfine](https://crates.io/crates/hyperfine): Provides a simple CLI interface that allows us to benchmark compiled binaries. 
-* [Samply](https://crates.io/crates/samply): Generates a detailed graphic of the different operations and their time in the application. We recommend it over [FlameGraph](https://crates.io/crates/flamegraph) as it allows for filtering, and the webserver viewer provides a better experience than the `.svg` your get from Flamegraph. 
+* [Hyperfine](https://crates.io/crates/hyperfine): Provides a simple CLI interface that allows us to benchmark compiled binaries.
+* [Samply](https://crates.io/crates/samply): Generates a detailed graphic of the different operations and their time in the application. We recommend it over [FlameGraph](https://crates.io/crates/flamegraph) as it allows for filtering, and the webserver viewer provides a better experience than the `.svg` your get from Flamegraph.
 * [Dhat](https://crates.io/crates/dhat): Measures memory allocations within the application.
 
 ### Hyperfine
 
 Once [installed](https://github.com/sharkdp/hyperfine?tab=readme-ov-file#installation), we can simply run:
 ```sh
-hyperfine 'TODO(template) update with your binary e.g. ./target/release/...' 
+hyperfine 'TODO(template) update with your binary e.g. ./target/release/...'
 ```
 ### Samply
 
@@ -84,7 +83,7 @@ Then, we can run:
 ```sh
 samply record 'TODO(template) update with your binary e.g. ./target/release/...'
 ```
-This command will open a browser page that contains a graphic representation of where the time is being spent in our application. 
+This command will open a browser page that contains a graphic representation of where the time is being spent in our application.
 
 ### Dhat
 We can add Dhat as a dependency:
