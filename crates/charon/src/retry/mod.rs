@@ -129,40 +129,6 @@ pub async fn do_async<
         .await;
 }
 
-async fn fetcher_fetch(
-    _duty: Duty,
-    _set: DutyDefinitionSet<DutyType>,
-) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    Ok(())
-}
-
-async fn consensus_participate(_duty: Duty) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    Ok(())
-}
-
-/// TODO
-pub fn with_async_retry(options: AsyncOptions<Duty>) {
-    let fetcher_fetch = |duty: Duty, set: DutyDefinitionSet<DutyType>| {
-        tokio::spawn(do_async(
-            options.clone(),
-            duty.clone(),
-            "fetcher",
-            "fetch",
-            move || fetcher_fetch(duty.clone(), set.clone()),
-        ));
-    };
-    let consensus_participate = |duty: Duty| {
-        tokio::spawn(do_async(
-            options.clone(),
-            duty.clone(),
-            "consensus",
-            "participate",
-            move || consensus_participate(duty.clone()),
-        ));
-    };
-    // ... other funcs
-}
-
 #[cfg(test)]
 mod tests {
     use tokio_util::sync::CancellationToken;
@@ -228,7 +194,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "not implemented"]
     async fn non_retryable_error() {
         run_test(TestCase {
             options: retry::AsyncOptions::default().with_backoff(test_backoff()),
@@ -278,13 +243,5 @@ mod tests {
         .await;
 
         assert_eq!(*attempts.lock().unwrap(), expected_attempts);
-    }
-
-    #[test]
-    #[ignore = "compile check"]
-    fn it_compiles() {
-        let duty_deadline: deadline::DeadlineFunc = deadline::new_duty_deadline_func().unwrap();
-        let opts = retry::AsyncOptions::default().with_deadline(duty_deadline);
-        super::with_async_retry(opts);
     }
 }
