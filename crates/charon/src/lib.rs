@@ -15,3 +15,6 @@ pub mod retry;
 
 /// Deadline
 pub mod deadline;
+
+/// Ethereum EL RPC client management
+pub mod eth1wrap;

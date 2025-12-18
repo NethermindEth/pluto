@@ -14,12 +14,13 @@ tokio.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 thiserror.workspace = true
+alloy.workspace = true
+url.workspace = true
 
 [build-dependencies]
 charon-build-proto.workspace = true
 
 [dev-dependencies]
-
 
 [lints]
 workspace = true
