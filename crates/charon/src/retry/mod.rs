@@ -2,7 +2,7 @@ use backon::{BackoffBuilder, Retryable};
 use std::{sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
-/// TODO
+/// Options for the asynchronous retry executor.
 #[derive(Clone)]
 pub struct AsyncOptions<T> {
     backoff_builder: backon::ExponentialBuilder,
@@ -12,13 +12,13 @@ pub struct AsyncOptions<T> {
 }
 
 impl<T> AsyncOptions<T> {
-    /// TODO
+    /// Set the backoff strategy.
     pub fn with_backoff(mut self, backoff_builder: backon::ExponentialBuilder) -> Self {
         self.backoff_builder = backoff_builder;
         self
     }
 
-    /// TODO
+    /// Set the deadline function.
     pub fn with_deadline(
         mut self,
         deadline_fn: impl Fn(T) -> Option<chrono::DateTime<chrono::Utc>> + Send + Sync + 'static,
@@ -27,7 +27,9 @@ impl<T> AsyncOptions<T> {
         self
     }
 
-    /// TODO
+    /// Set the time provider function. This function should return the "current
+    /// time", which will be compared with the deadline computed by the
+    /// `deadline_fn`.
     pub fn with_time(
         mut self,
         time_fn: impl Fn() -> chrono::DateTime<chrono::Utc> + Send + Sync + 'static,
@@ -36,7 +38,7 @@ impl<T> AsyncOptions<T> {
         self
     }
 
-    /// TODO
+    /// Set the [`CancellationToken`] if any. By default, no token is used.
     pub fn with_cancellation_token(mut self, cancellation_token: CancellationToken) -> Self {
         self.cancellation_token = Some(cancellation_token);
         self
@@ -59,23 +61,19 @@ impl<T> Default for AsyncOptions<T> {
     }
 }
 
-/// TODO
+/// Errors that can occur during the execution of the async function with
+/// retries.
 #[derive(Debug, thiserror::Error)]
 pub enum DoAsyncError {
-    /// TODO
-    #[error("Network error")]
-    NetworkError,
+    /// An error that can be retried.
+    #[error("Retryable error")]
+    RetryableError,
 
-    /// TODO
-    #[error("Temporary error")]
-    TemporaryError,
-
-    /// TODO
-    #[error("Other error")]
-    OtherError,
+    /// An error that cannot be retried.
+    #[error("Non-retryable error")]
+    NonRetryableError,
 }
-
-/// TODO: Implement `From` for various error types (ex. Alloy RPC errors)
+// TODO: Implement `From` for various error types (ex. Alloy RPC errors)
 
 /// Execute a provided function with retries and a maximum timeout according to
 /// the provided options.
@@ -119,9 +117,8 @@ pub async fn do_async<
             }
 
             match e {
-                // Retry on network and temporary errors only while not cancelled
-                DoAsyncError::NetworkError | DoAsyncError::TemporaryError => true,
-                DoAsyncError::OtherError => false,
+                DoAsyncError::RetryableError => true,
+                DoAsyncError::NonRetryableError => false,
             }
         })
         // TODO: Trace/Log retry attempts
@@ -167,7 +164,7 @@ mod tests {
             options: retry::AsyncOptions::default().with_backoff(test_backoff()),
             func: Arc::new(|attempts: usize| {
                 if attempts < 2 {
-                    Err(DoAsyncError::TemporaryError)
+                    Err(DoAsyncError::RetryableError)
                 } else {
                     Ok(())
                 }
@@ -183,7 +180,7 @@ mod tests {
             options: retry::AsyncOptions::default().with_backoff(test_backoff()),
             func: Arc::new(|attempts: usize| {
                 if attempts < 5 {
-                    Err(DoAsyncError::TemporaryError)
+                    Err(DoAsyncError::RetryableError)
                 } else {
                     Ok(())
                 }
@@ -197,7 +194,7 @@ mod tests {
     async fn non_retryable_error() {
         run_test(TestCase {
             options: retry::AsyncOptions::default().with_backoff(test_backoff()),
-            func: Arc::new(|_| Err(DoAsyncError::OtherError)),
+            func: Arc::new(|_| Err(DoAsyncError::NonRetryableError)),
             expected_attempts: 1,
         })
         .await;
@@ -212,7 +209,7 @@ mod tests {
             options: retry::AsyncOptions::default()
                 .with_backoff(test_backoff())
                 .with_cancellation_token(cancellation_token),
-            func: Arc::new(|_| Err(DoAsyncError::TemporaryError)),
+            func: Arc::new(|_| Err(DoAsyncError::RetryableError)),
             expected_attempts: 1,
         })
         .await;
