@@ -54,6 +54,7 @@ vise-exporter = "0.3.2"
 
 # Crates in the workspace
 charon = { path = "crates/charon" }
+charon-core = { path = "crates/charon-core" }
 charon-build-proto = { path = "crates/charon-build-proto" }
 charon-crypto = { path = "crates/charon-crypto" }
 charon-eth2 = { path = "crates/charon-eth2" }

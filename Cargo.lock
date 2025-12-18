@@ -468,9 +468,11 @@ version = "0.1.0"
 dependencies = [
  "backon",
  "charon-build-proto",
+ "charon-core",
  "chrono",
  "prost 0.14.1",
  "prost-types 0.14.1",
+ "thiserror 2.0.17",
  "tokio",
 ]
 
@@ -517,7 +519,6 @@ name = "charon-core"
 version = "0.1.0"
 dependencies = [
  "cancellation",
- "charon",
  "charon-build-proto",
  "chrono",
  "crossbeam",

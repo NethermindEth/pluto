@@ -1,4 +1,6 @@
+use crate::retry;
 use backon::{BackoffBuilder, Retryable};
+use charon_core::types::{Duty, DutyDefinitionSet, DutyType};
 use std::{sync::Arc, time::Duration};
 
 /// TODO
@@ -84,9 +86,43 @@ pub async fn do_async<T, E, A, Fut: Future<Output = Result<A, E>>, FutureFn: FnM
         .await;
 }
 
+async fn fetcher_fetch(
+    _duty: Duty,
+    _set: DutyDefinitionSet<DutyType>,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    Ok(())
+}
+
+async fn consensus_participate(_duty: Duty) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    Ok(())
+}
+
+/// TODO
+pub fn with_async_retry(options: retry::AsyncOptions<Duty>) {
+    let fetcher_fetch = |duty: Duty, set: DutyDefinitionSet<DutyType>| {
+        tokio::spawn(retry::do_async(
+            options.clone(),
+            duty.clone(),
+            "fetcher",
+            "fetch",
+            move || fetcher_fetch(duty.clone(), set.clone()),
+        ));
+    };
+    let consensus_participate = |duty: Duty| {
+        tokio::spawn(retry::do_async(
+            options.clone(),
+            duty.clone(),
+            "consensus",
+            "participate",
+            move || consensus_participate(duty.clone()),
+        ));
+    };
+    // ... other funcs
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::retry;
+    use crate::{deadline, retry};
     use core::time;
     use std::sync::{Arc, Mutex};
 
@@ -181,5 +217,13 @@ mod tests {
         .await;
 
         assert_eq!(*attempts.lock().unwrap(), expected_attempts);
+    }
+
+    #[test]
+    #[ignore = "compile check"]
+    fn it_compiles() {
+        let duty_deadline: deadline::DeadlineFunc = deadline::new_duty_deadline_func().unwrap();
+        let opts = retry::AsyncOptions::default().with_deadline(duty_deadline);
+        super::with_async_retry(opts);
     }
 }

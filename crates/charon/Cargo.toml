@@ -9,9 +9,11 @@ publish.workspace = true
 [dependencies]
 backon.workspace = true
 chrono.workspace = true
+charon-core.workspace = true
 tokio.workspace = true
 prost.workspace = true
 prost-types.workspace = true
+thiserror.workspace = true
 
 [build-dependencies]
 charon-build-proto.workspace = true

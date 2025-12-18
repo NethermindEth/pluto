@@ -12,7 +12,6 @@ chrono.workspace = true
 crossbeam.workspace = true
 hex.workspace = true
 serde.workspace = true
-charon.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

@@ -1,4 +1,4 @@
-use crate::types::{Duty, DutyType};
+use charon_core::types::{Duty, DutyType};
 use std::time;
 
 /// Defines the fraction of the slot duration to use as a margin.
@@ -7,8 +7,7 @@ use std::time;
 pub const MARGIN_FACTOR: u32 = 12;
 
 /// A function that returns the deadline for a duty.
-pub type DeadlineFunc =
-    Box<dyn Fn(crate::types::Duty) -> Option<chrono::DateTime<chrono::Utc>> + Send + Sync>;
+pub type DeadlineFunc = Box<dyn Fn(Duty) -> Option<chrono::DateTime<chrono::Utc>> + Send + Sync>;
 
 /// Error type for deadline-related operations.
 #[derive(Debug, thiserror::Error)]

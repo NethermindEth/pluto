@@ -12,3 +12,6 @@ pub mod log;
 
 /// Retry
 pub mod retry;
+
+/// Deadline
+pub mod deadline;
