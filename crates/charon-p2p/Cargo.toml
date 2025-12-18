@@ -18,6 +18,10 @@ tokio.workspace = true
 [dev-dependencies]
 charon-testutil.workspace = true
 vise-exporter.workspace = true
+anyhow.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+mdns = ["libp2p/mdns"]

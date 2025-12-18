@@ -16,3 +16,9 @@ pub mod config;
 
 /// Metrics.
 pub mod metrics;
+
+/// P2P.
+pub mod p2p;
+
+/// Gater
+pub mod gater;

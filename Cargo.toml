@@ -23,6 +23,7 @@ license = "Apache-2.0"                                    # TODO(template) updat
 publish = false
 
 [workspace.dependencies]
+anyhow = "*" # for testing purposes only
 axum = "0.8.6"
 chrono = { version = "0.4", features = ["serde"] }
 hex = { version = "^0.4.3" }

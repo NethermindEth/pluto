@@ -556,6 +556,7 @@ dependencies = [
 name = "charon-p2p"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "charon-eth2",
  "charon-k1util",
  "charon-testutil",
