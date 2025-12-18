@@ -83,3 +83,103 @@ pub async fn do_async<T, E, A, Fut: Future<Output = Result<A, E>>, FutureFn: FnM
         .notify(|_, _| println!("Retrying: {}/{}", topic, name))
         .await;
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::retry;
+    use core::time;
+    use std::sync::{Arc, Mutex};
+
+    struct TestCase {
+        options: retry::AsyncOptions<()>,
+        func: Arc<dyn Fn(usize) -> Result<(), ()> + Send + Sync>,
+        expected_attempts: usize,
+    }
+
+    fn test_backoff() -> backon::ExponentialBuilder {
+        backon::ExponentialBuilder::default()
+            .with_min_delay(time::Duration::from_millis(1))
+            .with_max_delay(time::Duration::from_millis(1))
+            .with_factor(2.0)
+            .without_max_times()
+    }
+
+    #[tokio::test]
+    async fn no_retries() {
+        run_test(TestCase {
+            options: retry::AsyncOptions::default().with_backoff(test_backoff()),
+            func: Arc::new(|_: usize| {
+                let result: Result<(), ()> = Ok(());
+                result
+            }),
+            expected_attempts: 1,
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn one_retry() {
+        run_test(TestCase {
+            options: retry::AsyncOptions::default().with_backoff(test_backoff()),
+            func: Arc::new(
+                |attempts: usize| {
+                    if attempts < 2 { Err(()) } else { Ok(()) }
+                },
+            ),
+            expected_attempts: 2,
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn multiple_retries() {
+        run_test(TestCase {
+            options: retry::AsyncOptions::default().with_backoff(test_backoff()),
+            func: Arc::new(
+                |attempts: usize| {
+                    if attempts < 5 { Err(()) } else { Ok(()) }
+                },
+            ),
+            expected_attempts: 5,
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "not implemented"]
+    async fn non_retryable_error() {
+        run_test(TestCase {
+            options: retry::AsyncOptions::default().with_backoff(test_backoff()),
+            func: Arc::new(|_| todo!("Return non-retryable error")),
+            expected_attempts: 1,
+        })
+        .await;
+    }
+
+    async fn run_test(tc: TestCase) {
+        let TestCase {
+            options,
+            func,
+            expected_attempts,
+        } = tc;
+
+        let attempts = Arc::new(Mutex::new(0));
+
+        retry::do_async(options, (), "test", "test", {
+            let attempts = attempts.clone();
+            move || {
+                let attempts = attempts.clone();
+                let func = func.clone();
+                async move {
+                    let mut inner = attempts.lock().unwrap();
+                    *inner += 1;
+
+                    func(*inner)
+                }
+            }
+        })
+        .await;
+
+        assert_eq!(*attempts.lock().unwrap(), expected_attempts);
+    }
+}
