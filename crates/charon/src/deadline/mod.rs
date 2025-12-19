@@ -36,7 +36,7 @@ pub fn new_duty_deadline_func() -> Result<DeadlineFunc> {
         _ => {
             #[allow(
                 clippy::cast_possible_truncation,
-                reason = "TODO: unsuported operation in u64"
+                reason = "TODO: unsupported operation in u64"
             )]
             let start = genesis_time + (slot_duration * (u64::from(duty.slot)) as u32);
             let margin = slot_duration / MARGIN_FACTOR;

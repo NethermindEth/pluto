@@ -10,8 +10,8 @@ pub mod peerinfo;
 /// Log
 pub mod log;
 
-/// Provides a generic async function [`do_async`] executor with retries for
-/// robustness against network failures. Functions are linked to a deadline,
+/// Provides a generic async function [`retry::do_async`] executor with retries
+/// for robustness against network failures. Functions are linked to a deadline,
 /// executed asynchronously and network errors are retried with backoff
 /// until the deadline has elapsed.
 pub mod retry;

@@ -79,7 +79,7 @@ pub enum DoAsyncError {
 /// Execute a provided function with retries and a maximum timeout according to
 /// the provided options.
 ///
-/// Intended to be used withing a `tokio` task:
+/// Intended to be used within a `tokio` task:
 /// ```ignore
 /// tokio::spawn(retry::do_async(...))
 /// ```
