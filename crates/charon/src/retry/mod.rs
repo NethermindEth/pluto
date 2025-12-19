@@ -56,7 +56,7 @@ impl<T> Default for AsyncOptions<T> {
                 .without_max_times()
                 .with_jitter(),
             deadline_fn: Arc::new(|_| None),
-            time_fn: Arc::new(|| chrono::Utc::now()),
+            time_fn: Arc::new(chrono::Utc::now),
             cancellation_token: None,
         }
     }
@@ -98,11 +98,14 @@ pub async fn do_async<
     let deadline = (options.deadline_fn)(t);
     let now = (options.time_fn)();
 
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "chrono to std conversion is safe for negative values"
+    )]
     let total_delay = deadline.and_then(|deadline| (deadline - now).to_std().ok());
 
     let mut backoff = options
         .backoff_builder
-        .clone()
         .with_total_delay(total_delay)
         .build();
 
@@ -115,10 +118,10 @@ pub async fn do_async<
                 .is_some_and(|t| t.is_cancelled())
         };
 
-        let mut attempt = 0;
+        let mut attempt = 0u64;
         let future = || {
             debug!(attempt);
-            attempt += 1;
+            attempt = attempt.saturating_add(1);
             future()
         };
 
@@ -268,7 +271,7 @@ mod tests {
             expected_attempts,
         } = tc;
 
-        let attempts = Arc::new(Mutex::new(0));
+        let attempts = Arc::new(Mutex::new(0usize));
 
         retry::do_async(options, (), "test", "test", {
             let attempts = attempts.clone();
@@ -277,7 +280,7 @@ mod tests {
                 let func = func.clone();
                 async move {
                     let mut inner = attempts.lock().unwrap();
-                    *inner += 1;
+                    *inner = (*inner).saturating_add(1);
 
                     func(*inner)
                 }

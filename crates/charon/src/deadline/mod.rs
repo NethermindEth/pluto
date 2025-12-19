@@ -1,3 +1,8 @@
+// TODO: Requires `eth2client`
+#![allow(unreachable_code)]
+#![allow(unused_variables)]
+#![allow(clippy::diverging_sub_expression)]
+
 use charon_core::types::{Duty, DutyType};
 use std::time;
 
@@ -22,11 +27,18 @@ pub fn new_duty_deadline_func() -> Result<DeadlineFunc> {
 
     let slot_duration: time::Duration = todo!("Fetch slot duration from eth2 client");
 
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "Matches original implementation"
+    )]
     Ok(Box::new(move |duty: Duty| match duty.duty_type {
         DutyType::Exit | DutyType::BuilderRegistration => None,
         _ => {
-            // TODO: Unsafe cast
-            let start = genesis_time + (slot_duration * (u64::from(duty.slot) as u32));
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "TODO: unsuported operation in u64"
+            )]
+            let start = genesis_time + (slot_duration * (u64::from(duty.slot)) as u32);
             let margin = slot_duration / MARGIN_FACTOR;
 
             let duration = match duty.duty_type {
