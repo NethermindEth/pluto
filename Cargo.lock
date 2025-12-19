@@ -1393,12 +1393,15 @@ dependencies = [
  "backon",
  "charon-build-proto",
  "charon-core",
+ "charon-tracing",
  "chrono",
  "prost 0.14.1",
  "prost-types 0.14.1",
  "thiserror 2.0.17",
  "tokio",
  "tokio-util",
+ "tracing",
+ "tracing-subscriber",
  "url",
 ]
 

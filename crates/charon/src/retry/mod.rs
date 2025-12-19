@@ -1,6 +1,7 @@
 use backon::{BackoffBuilder, Retryable};
 use std::{sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
+use tracing::{Instrument, debug, error, info, warn};
 
 /// Options for the asynchronous retry executor.
 #[derive(Clone)]
@@ -92,7 +93,7 @@ pub async fn do_async<
     t: T,
     topic: &'static str,
     name: &'static str,
-    future: FutureFn,
+    mut future: FutureFn,
 ) {
     let deadline = (options.deadline_fn)(t);
     let now = (options.time_fn)();
@@ -105,25 +106,55 @@ pub async fn do_async<
         .with_total_delay(total_delay)
         .build();
 
-    let _result = future
-        .retry(&mut backoff)
-        .when(|e| {
-            if options
+    let span = tracing::debug_span!("retry::do_async", topic, name);
+    async move {
+        let cancelled = || {
+            options
                 .cancellation_token
                 .as_ref()
                 .is_some_and(|t| t.is_cancelled())
-            {
-                return false;
-            }
+        };
 
-            match e {
-                DoAsyncError::RetryableError => true,
-                DoAsyncError::NonRetryableError => false,
+        let mut attempt = 0;
+        let future = || {
+            debug!(attempt);
+            attempt += 1;
+            future()
+        };
+
+        let result = future
+            .retry(&mut backoff)
+            .when(|e| {
+                if cancelled() {
+                    return false;
+                }
+
+                match e {
+                    DoAsyncError::RetryableError => true,
+                    DoAsyncError::NonRetryableError => false,
+                }
+            })
+            .notify(|error, _| {
+                warn!(?error, "retryable error");
+            })
+            .await;
+
+        match result {
+            Ok(_) => info!(status = "success"),
+            Err(error) => {
+                let status = if cancelled() {
+                    "cancelled"
+                } else if backoff.next().is_none() {
+                    "timeout"
+                } else {
+                    "error"
+                };
+                error!(status, ?error);
             }
-        })
-        // TODO: Trace/Log retry attempts
-        .notify(|_, _| println!("Retrying: {}/{}", topic, name))
-        .await;
+        }
+    }
+    .instrument(span)
+    .await;
 }
 
 #[cfg(test)]
@@ -209,6 +240,21 @@ mod tests {
             options: retry::AsyncOptions::default()
                 .with_backoff(test_backoff())
                 .with_cancellation_token(cancellation_token),
+            func: Arc::new(|_| Err(DoAsyncError::RetryableError)),
+            expected_attempts: 1,
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn one_attempt_timeout() {
+        let now = chrono::Utc::now();
+
+        run_test(TestCase {
+            options: retry::AsyncOptions::default()
+                .with_backoff(test_backoff())
+                .with_time(move || now)
+                .with_deadline(move |_| Some(now)),
             func: Arc::new(|_| Err(DoAsyncError::RetryableError)),
             expected_attempts: 1,
         })

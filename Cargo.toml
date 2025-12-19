@@ -65,6 +65,7 @@ charon-eth2 = { path = "crates/charon-eth2" }
 charon-k1util = { path = "crates/charon-k1util" }
 charon-p2p = { path = "crates/charon-p2p" }
 charon-testutil = { path = "crates/charon-testutil" }
+charon-tracing = { path = "crates/tracing" }
 
 [workspace.lints.rust]
 missing_docs = "deny"

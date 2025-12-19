@@ -10,11 +10,14 @@ publish.workspace = true
 backon.workspace = true
 chrono.workspace = true
 charon-core.workspace = true
+charon-tracing.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 alloy.workspace = true
 url.workspace = true
 
