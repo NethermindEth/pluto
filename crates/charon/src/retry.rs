@@ -62,6 +62,38 @@ impl<T> Default for AsyncOptions<T> {
     }
 }
 
+/// A wrapper over an iterator that tracks when it has been exhausted.
+///
+/// The inner iterator is assumed to be exhausted once it returns the first
+/// [`None`].
+struct ExhaustedIterator<I: Iterator> {
+    inner: I,
+    is_exhausted: bool,
+}
+
+impl<I: Iterator> From<I> for ExhaustedIterator<I> {
+    fn from(value: I) -> Self {
+        Self {
+            inner: value,
+            is_exhausted: false,
+        }
+    }
+}
+
+impl<I: Iterator> Iterator for ExhaustedIterator<I> {
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.inner.next() {
+            Some(item) => Some(item),
+            None => {
+                self.is_exhausted = true;
+                None
+            }
+        }
+    }
+}
+
 /// Errors that can occur during the execution of the async function with
 /// retries.
 #[derive(Debug, thiserror::Error)]
@@ -104,10 +136,12 @@ pub async fn do_async<
     )]
     let total_delay = deadline.and_then(|deadline| (deadline - now).to_std().ok());
 
-    let mut backoff = options
-        .backoff_builder
-        .with_total_delay(total_delay)
-        .build();
+    let mut backoff = ExhaustedIterator::from(
+        options
+            .backoff_builder
+            .with_total_delay(total_delay)
+            .build(),
+    );
 
     let span = tracing::debug_span!("retry::do_async", topic, name);
     async move {
@@ -147,7 +181,7 @@ pub async fn do_async<
             Err(error) => {
                 let status = if cancelled() {
                     "cancelled"
-                } else if backoff.next().is_none() {
+                } else if backoff.is_exhausted {
                     "timeout"
                 } else {
                     "error"
