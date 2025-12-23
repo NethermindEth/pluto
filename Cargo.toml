@@ -29,6 +29,7 @@ blst = "0.3.13"
 cancellation = "0.1.0"
 chrono = { version = "0.4", features = ["serde"] }
 crossbeam = "0.8.4"
+backon = "1.6.0"
 hex = { version = "^0.4.3" }
 prost = "0.14"
 prost-build = "0.14"
@@ -39,6 +40,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "^1.0" }
 thiserror = "2.0.12"
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7" }
 libp2p = { version = "0.56", features = ["full", "secp256k1"] }
 url = { version = "2.5.7" }
 uuid = { version = "1.16", features = ["serde", "v4"] }
@@ -55,12 +57,15 @@ vise = "0.3.2"
 vise-exporter = "0.3.2"
 
 # Crates in the workspace
+charon = { path = "crates/charon" }
+charon-core = { path = "crates/charon-core" }
 charon-build-proto = { path = "crates/charon-build-proto" }
 charon-crypto = { path = "crates/charon-crypto" }
 charon-eth2 = { path = "crates/charon-eth2" }
 charon-k1util = { path = "crates/charon-k1util" }
 charon-p2p = { path = "crates/charon-p2p" }
 charon-testutil = { path = "crates/charon-testutil" }
+charon-tracing = { path = "crates/tracing" }
 
 [workspace.lints.rust]
 missing_docs = "deny"
