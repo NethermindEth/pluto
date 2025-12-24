@@ -30,6 +30,7 @@ chrono.workspace = true
 
 [build-dependencies]
 charon-build-proto.workspace = true
+built.workspace = true
 
 [lints]
 workspace = true

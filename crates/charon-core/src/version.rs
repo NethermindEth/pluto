@@ -10,22 +10,14 @@ pub enum SemVerError {
     InvalidFormat,
 }
 
-// TODO: Override at build time
-const VERSION_STR: &'static str = "v1.7.1";
-
 /// The branch version of the codebase.
 ///     - Main branch: v0.X-dev
 ///     - Release branch: v0.Y-rc
-pub static VERSION: LazyLock<SemVer> = LazyLock::new(|| SemVer::try_from(VERSION_STR).unwrap());
+pub static VERSION: LazyLock<SemVer> = LazyLock::new(|| {
+    let str = option_env!("CHARON_VERSION").unwrap_or("v0.1.0-dev");
 
-// TODO: Populate at build time
-const VCS_REVISION: &'static str = "";
-const VCS_TIME: &'static str = "";
-
-/// Git commit hash and timestamp from build info.
-pub const fn git_commit() -> (&'static str, &'static str) {
-    todo!()
-}
+    SemVer::try_from(str).unwrap()
+});
 
 /// Supported minor versions in order of precedence.
 pub const SUPPORTED: &'static [SemVer] = {
@@ -50,6 +42,20 @@ pub const SUPPORTED: &'static [SemVer] = {
         v(1, 0),
     ]
 };
+
+/// Git commit hash and timestamp from build info.
+pub fn git_commit() -> (String, String) {
+    mod built_info {
+        include!(concat!(env!("OUT_DIR"), "/built.rs"));
+    }
+
+    let hash = built_info::GIT_COMMIT_HASH.unwrap_or("unknown").into();
+    let timestamp = chrono::DateTime::parse_from_rfc2822(built_info::BUILT_TIME_UTC)
+        .map(|dt| dt.timestamp().to_string())
+        .unwrap_or("unknown".into());
+
+    (hash, timestamp)
+}
 
 /// The type of semantic version, i.e., minor, patch, or pre-release.
 #[derive(Eq, PartialEq, Debug, Copy, Clone)]
@@ -204,8 +210,8 @@ impl str::FromStr for SemVer {
 
 #[cfg(test)]
 mod tests {
-    use crate::version::{SUPPORTED, SemVer, SemVerError, SemVerType, VERSION, VERSION_STR};
-    use std::cmp;
+    use crate::version::{SUPPORTED, SemVer, SemVerError, SemVerType, VERSION};
+    use std::{cmp, panic};
 
     #[test]
     fn compare() {
@@ -254,8 +260,8 @@ mod tests {
 
     #[test]
     fn valid_version() {
-        let version = VERSION_STR.parse::<SemVer>().unwrap();
-        assert_eq!(*VERSION, version);
+        let result = panic::catch_unwind(|| VERSION.clone());
+        assert!(result.is_ok());
     }
 
     struct ParseTestCase {
