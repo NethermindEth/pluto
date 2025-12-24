@@ -1,4 +1,4 @@
-// #![allow(missing_docs)]
+use std::{cmp, fmt, str, sync::LazyLock};
 
 use std::{cmp, fmt, sync::LazyLock};
 
@@ -77,6 +77,9 @@ pub struct SemVer {
     pre_release: String,
 }
 
+static SEMVER_REGEX: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"^v(\d+)\.(\d+)(?:\.(\d+))?(?:-(.+))?$").unwrap());
+
 impl SemVer {
     /// Returns true if the [`SemVer`] represents a tag for a pre-release.
     pub fn is_pre_release(&self) -> bool {
@@ -93,6 +96,39 @@ impl SemVer {
             patch: 0,
             pre_release: String::new(),
         }
+    }
+
+    /// Try to parse a semantic version from a string.
+    pub fn parse(value: &str) -> Result<SemVer> {
+        let matches = SEMVER_REGEX
+            .captures(value)
+            .filter(|matches| !(matches.len() == 0 || matches.len() != 5))
+            .ok_or(SemVerError::InvalidFormat)?;
+
+        let major = matches[1].parse().expect("regex ensures number");
+        let minor = matches[2].parse().expect("regex ensures number");
+
+        let mut patch = 0;
+        let mut pre_release = "";
+        let mut sem_ver_type = SemVerType::Minor;
+
+        if let Some(m) = matches.get(3) {
+            patch = m.as_str().parse().expect("regex ensures number");
+            sem_ver_type = SemVerType::Patch;
+        }
+
+        if let Some(m) = matches.get(4) {
+            pre_release = m.as_str();
+            sem_ver_type = SemVerType::PreRelease;
+        }
+
+        Ok(SemVer {
+            major,
+            minor,
+            patch,
+            pre_release: pre_release.to_string(),
+            sem_ver_type,
+        })
     }
 }
 
@@ -153,42 +189,19 @@ impl PartialOrd for SemVer {
     }
 }
 
-static SEMVER_REGEX: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"^v(\d+)\.(\d+)(?:\.(\d+))?(?:-(.+))?$").unwrap());
-
 impl TryFrom<&str> for SemVer {
-    type Error = VersionError;
+    type Error = SemVerError;
 
     fn try_from(value: &str) -> Result<Self> {
-        let matches = SEMVER_REGEX
-            .captures(value)
-            .filter(|matches| !(matches.len() == 0 || matches.len() != 5))
-            .ok_or(VersionError::InvalidFormat)?;
+        SemVer::parse(value)
+    }
+}
 
-        let major = matches[1].parse().expect("regex ensures number");
-        let minor = matches[2].parse().expect("regex ensures number");
+impl str::FromStr for SemVer {
+    type Err = SemVerError;
 
-        let mut patch = 0;
-        let mut pre_release = "";
-        let mut sem_ver_type = SemVerType::Minor;
-
-        if let Some(m) = matches.get(3) {
-            patch = m.as_str().parse().expect("regex ensures number");
-            sem_ver_type = SemVerType::Patch;
-        }
-
-        if let Some(m) = matches.get(4) {
-            pre_release = m.as_str();
-            sem_ver_type = SemVerType::PreRelease;
-        }
-
-        Ok(SemVer {
-            major,
-            minor,
-            patch,
-            pre_release: pre_release.to_string(),
-            sem_ver_type,
-        })
+    fn from_str(s: &str) -> Result<Self> {
+        SemVer::parse(s)
     }
 }
 
