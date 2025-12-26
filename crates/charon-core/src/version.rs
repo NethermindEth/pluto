@@ -92,7 +92,8 @@ impl SemVer {
     }
 
     /// Produces the minor version of the semantic version.
-    /// It strips the [`patch`] version and [`pre_release`] label if present.
+    /// It strips the `patch` version and `pre_release` label if
+    /// present.
     pub const fn to_minor(&self) -> SemVer {
         Self {
             sem_ver_type: SemVerType::Minor,
@@ -107,7 +108,7 @@ impl SemVer {
     pub fn parse(value: &str) -> Result<SemVer> {
         let matches = SEMVER_REGEX
             .captures(value)
-            .filter(|matches| !(matches.len() == 0 || matches.len() != 5))
+            .filter(|matches| matches.len() == 5)
             .ok_or(SemVerError::InvalidFormat)?;
 
         let major = matches[1].parse().expect("invalid regex");
@@ -153,46 +154,52 @@ impl fmt::Display for SemVer {
     }
 }
 
-impl PartialEq for SemVer {
-    fn eq(&self, other: &Self) -> bool {
-        self.partial_cmp(other)
-            .expect("SemVer comparison should always succeed")
-            == cmp::Ordering::Equal
-    }
-}
+impl Eq for SemVer {}
 
-impl PartialOrd for SemVer {
+impl Ord for SemVer {
     // Only major and minor versions are used for comparison, unless both self and
     // other have patch versions, in which case the patch version is also used.
     // Pre-release labels are ignored.
-    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
         if self.major != other.major {
             if self.major < other.major {
-                return Some(cmp::Ordering::Less);
+                return cmp::Ordering::Less;
             }
 
-            return Some(cmp::Ordering::Greater);
+            return cmp::Ordering::Greater;
         }
 
         if self.minor != other.minor {
             if self.minor < other.minor {
-                return Some(cmp::Ordering::Less);
+                return cmp::Ordering::Less;
             }
 
-            return Some(cmp::Ordering::Greater);
+            return cmp::Ordering::Greater;
         }
 
         if self.sem_ver_type != SemVerType::Patch || other.sem_ver_type != SemVerType::Patch {
-            return Some(cmp::Ordering::Equal);
+            return cmp::Ordering::Equal;
         }
 
         if self.patch == other.patch {
-            return Some(cmp::Ordering::Equal);
+            return cmp::Ordering::Equal;
         } else if self.patch < other.patch {
-            return Some(cmp::Ordering::Less);
+            return cmp::Ordering::Less;
         }
 
-        Some(cmp::Ordering::Greater)
+        cmp::Ordering::Greater
+    }
+}
+
+impl PartialEq for SemVer {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == cmp::Ordering::Equal
+    }
+}
+
+impl PartialOrd for SemVer {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 
