@@ -27,7 +27,7 @@ fn minimum_beacon_node_version(name: &str) -> Option<version::SemVer> {
         "lodestar" => Some(version::SemVer::try_from("v1.35.0-rc.1").unwrap()),
         "nimbus" => Some(version::SemVer::try_from("v25.9.2").unwrap()),
         "prysm" => Some(version::SemVer::try_from("v6.1.0").unwrap()),
-        "grandine" => Some(version::SemVer::try_from("v2.0.0.rc0").unwrap()),
+        "grandine" => Some(version::SemVer::try_from("v2.0.0-rc0").unwrap()),
         _ => None,
     }
 }
