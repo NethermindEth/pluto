@@ -1409,6 +1409,7 @@ dependencies = [
  "chrono",
  "prost 0.14.1",
  "prost-types 0.14.1",
+ "regex",
  "thiserror 2.0.17",
  "tokio",
  "tokio-util",
