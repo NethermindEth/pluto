@@ -20,6 +20,7 @@ use crate::{
     Failure,
     config::Config,
     handler::{Handler, Success},
+    metrics::{PEERINFO_METRICS, PeerGitHashLabels, PeerNicknameLabels, PeerVersionLabels},
     peerinfopb::v1::peerinfo::PeerInfo,
 };
 
@@ -60,6 +61,31 @@ pub struct Behaviour {
 impl Behaviour {
     /// Creates a new [`Behaviour`] with the given configuration.
     pub fn new(config: Config) -> Self {
+        let name = config.local_info.nickname.clone();
+
+        PEERINFO_METRICS.version[&PeerVersionLabels::new(&name, &config.local_info.charon_version)]
+            .set(1);
+        PEERINFO_METRICS.git_commit[&PeerGitHashLabels::new(&name, &config.local_info.git_hash)]
+            .set(1);
+        PEERINFO_METRICS.nickname[&PeerNicknameLabels::new(&name, &config.local_info.nickname)]
+            .set(1);
+
+        let started_at = if let Some(started_at) = config.local_info.started_at {
+            started_at.seconds
+        } else {
+            chrono::Utc::now().timestamp()
+        };
+
+        let started_at = started_at as f64;
+
+        PEERINFO_METRICS.start_time_secs[&name].set(started_at);
+
+        if config.local_info.builder_api_enabled {
+            PEERINFO_METRICS.builder_api_enabled[&name].set(1);
+        } else {
+            PEERINFO_METRICS.builder_api_enabled[&name].set(0);
+        }
+
         Self {
             config,
             events: VecDeque::new(),
