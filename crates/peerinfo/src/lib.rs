@@ -49,6 +49,9 @@ pub mod handler;
 /// Peerinfo protobuf definitions.
 pub mod peerinfopb;
 
+/// Metrics for the peerinfo protocol.
+pub mod metrics;
+
 /// Wire protocol implementation.
 pub mod protocol;
 

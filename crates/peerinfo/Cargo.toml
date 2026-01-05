@@ -16,6 +16,7 @@ futures-timer = "3.0"
 tracing.workspace = true
 chrono.workspace = true
 unsigned-varint = { version = "0.8", features = ["futures"] }
+vise.workspace = true
 
 [build-dependencies]
 charon-build-proto.workspace = true
