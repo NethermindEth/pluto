@@ -15,12 +15,15 @@ use std::io;
 use futures::prelude::*;
 use libp2p::swarm::Stream;
 use prost::Message;
+use tracing::warn;
 use unsigned_varint::aio::read_usize;
 
 use crate::peerinfopb::v1::peerinfo::PeerInfo;
 
 /// Maximum message size (64KB should be plenty for peer info).
 const MAX_MESSAGE_SIZE: usize = 64 * 1024;
+
+const GIT_HASH_REGEX: &str = r"^[0-9a-f]{7}$";
 
 /// Writes a protobuf message with unsigned varint length prefix to the stream.
 ///
@@ -68,6 +71,22 @@ async fn read_protobuf<M: Message + Default>(stream: &mut Stream) -> io::Result<
     M::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
+fn validate_peer_info(peer_info: &PeerInfo) -> io::Result<()> {
+    // Git hash match
+    let regex = regex::Regex::new(GIT_HASH_REGEX).unwrap();
+    if !regex.is_match(&peer_info.git_hash) {
+        warn!("Invalid git hash: {}", peer_info.git_hash);
+    }
+
+    let rtt = 10;
+    let expected_sent_at = chrono::Utc::now().timestamp().saturating_add(-rtt / 2);
+    let actual_sent_at = peer_info.sent_at.unwrap_or_default().seconds;
+
+    let clock_offset = actual_sent_at.saturating_sub(expected_sent_at);
+
+    Ok(())
+}
+
 /// Sends a peer info request and waits for a response.
 ///
 /// Returns the response `PeerInfo` on success.
@@ -77,6 +96,9 @@ pub async fn send_peer_info(
 ) -> io::Result<(Stream, PeerInfo)> {
     write_protobuf(&mut stream, request).await?;
     let response = read_protobuf(&mut stream).await?;
+
+    validate_peer_info(&response)?;
+
     Ok((stream, response))
 }
 
@@ -90,4 +112,15 @@ pub async fn recv_peer_info(
     let request = read_protobuf(&mut stream).await?;
     write_protobuf(&mut stream, local_info).await?;
     Ok((stream, request))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_git_hash_regex_correct() {
+        let regex = regex::Regex::new(GIT_HASH_REGEX).unwrap();
+        assert!(regex.is_match("abc1234"));
+    }
 }

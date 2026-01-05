@@ -60,7 +60,10 @@ pub struct CombinedBehaviour {
 
 pub type CombinedEvent = CombinedBehaviourEvent;
 
-fn build_swarm(peerinfo_config: Config) -> anyhow::Result<Swarm<CombinedBehaviour>> {
+fn build_swarm(
+    peerinfo_config: LocalPeerInfo,
+    interval: Duration,
+) -> anyhow::Result<Swarm<CombinedBehaviour>> {
     let swarm = SwarmBuilder::with_new_identity()
         .with_tokio()
         .with_tcp(
@@ -70,7 +73,9 @@ fn build_swarm(peerinfo_config: Config) -> anyhow::Result<Swarm<CombinedBehaviou
         )?
         .with_behaviour(|key| {
             Ok(CombinedBehaviour {
-                peer_info: Behaviour::new(peerinfo_config),
+                peer_info: Behaviour::new(
+                    Config::new(peerinfo_config, key.public().to_peer_id()).with_interval(interval),
+                ),
                 identify: identify::Behaviour::new(identify::Config::new(
                     "/peerinfo-example/1.0.0".to_string(),
                     key.public(),
@@ -181,12 +186,7 @@ async fn main() -> anyhow::Result<()> {
         &args.nickname,               // nickname
     );
 
-    // Create peerinfo config with custom interval for demonstration
-    let peerinfo_config = Config::new(local_info)
-        .with_interval(Duration::from_secs(args.interval))
-        .with_timeout(Duration::from_secs(10));
-
-    let mut swarm = build_swarm(peerinfo_config)?;
+    let mut swarm = build_swarm(local_info, Duration::from_secs(args.interval))?;
 
     let local_peer_id = *swarm.local_peer_id();
     tracing::info!("Local peer id: {local_peer_id}");

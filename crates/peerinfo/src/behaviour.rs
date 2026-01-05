@@ -61,16 +61,17 @@ pub struct Behaviour {
 impl Behaviour {
     /// Creates a new [`Behaviour`] with the given configuration.
     pub fn new(config: Config) -> Self {
-        let name = config.local_info.nickname.clone();
+        let name = config.local_info().nickname.clone();
 
-        PEERINFO_METRICS.version[&PeerVersionLabels::new(&name, &config.local_info.charon_version)]
+        PEERINFO_METRICS.version
+            [&PeerVersionLabels::new(&name, &config.local_info().charon_version)]
             .set(1);
-        PEERINFO_METRICS.git_commit[&PeerGitHashLabels::new(&name, &config.local_info.git_hash)]
+        PEERINFO_METRICS.git_commit[&PeerGitHashLabels::new(&name, &config.local_info().git_hash)]
             .set(1);
-        PEERINFO_METRICS.nickname[&PeerNicknameLabels::new(&name, &config.local_info.nickname)]
+        PEERINFO_METRICS.nickname[&PeerNicknameLabels::new(&name, &config.local_info().nickname)]
             .set(1);
 
-        let started_at = if let Some(started_at) = config.local_info.started_at {
+        let started_at = if let Some(started_at) = config.local_info().started_at {
             started_at.seconds
         } else {
             chrono::Utc::now().timestamp()
@@ -80,7 +81,7 @@ impl Behaviour {
 
         PEERINFO_METRICS.start_time_secs[&name].set(started_at);
 
-        if config.local_info.builder_api_enabled {
+        if config.local_info().builder_api_enabled {
             PEERINFO_METRICS.builder_api_enabled[&name].set(1);
         } else {
             PEERINFO_METRICS.builder_api_enabled[&name].set(0);

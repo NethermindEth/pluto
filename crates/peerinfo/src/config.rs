@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use libp2p::PeerId;
 use prost_types::Timestamp;
 
 use crate::peerinfopb::v1::peerinfo::PeerInfo;
@@ -16,11 +17,13 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
 #[derive(Debug, Clone)]
 pub struct Config {
     /// The timeout for peer info requests.
-    pub(crate) timeout: Duration,
+    timeout: Duration,
     /// The interval between peer info exchanges.
-    pub(crate) interval: Duration,
+    interval: Duration,
     /// Local peer info to send to other peers.
-    pub(crate) local_info: LocalPeerInfo,
+    local_info: LocalPeerInfo,
+    /// Peer ID of the local peer.
+    peer_id: PeerId,
 }
 
 /// Local peer information to be shared with other peers.
@@ -91,11 +94,12 @@ impl Config {
     /// * A peer info request is sent every 60 seconds on a healthy connection.
     /// * Every request must yield a response within 20 seconds to be
     ///   successful.
-    pub fn new(local_info: LocalPeerInfo) -> Self {
+    pub fn new(local_info: LocalPeerInfo, peer_id: PeerId) -> Self {
         Self {
             timeout: DEFAULT_TIMEOUT,
             interval: DEFAULT_INTERVAL,
             local_info,
+            peer_id,
         }
     }
 
@@ -116,10 +120,30 @@ impl Config {
         self.local_info = info;
         self
     }
-}
 
-impl Default for Config {
-    fn default() -> Self {
-        Self::new(LocalPeerInfo::default())
+    /// Sets the peer ID.
+    pub fn with_peer_id(mut self, peer_id: PeerId) -> Self {
+        self.peer_id = peer_id;
+        self
+    }
+
+    /// Returns the local peer info.
+    pub fn local_info(&self) -> &LocalPeerInfo {
+        &self.local_info
+    }
+
+    /// Returns the peer ID.
+    pub fn peer_id(&self) -> &PeerId {
+        &self.peer_id
+    }
+
+    /// Returns the timeout.
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
+    /// Returns the interval.
+    pub fn interval(&self) -> Duration {
+        self.interval
     }
 }

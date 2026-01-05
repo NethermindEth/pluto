@@ -13,6 +13,7 @@ thiserror.workspace = true
 libp2p.workspace = true
 futures = "0.3"
 futures-timer = "3.0"
+regex.workspace = true
 tracing.workspace = true
 chrono.workspace = true
 unsigned-varint = { version = "0.8", features = ["futures"] }

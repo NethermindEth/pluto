@@ -72,7 +72,7 @@ enum State {
 impl Handler {
     /// Builds a new [`Handler`] with the given configuration.
     pub fn new(config: Config) -> Self {
-        let interval = config.interval;
+        let interval = config.interval();
         Handler {
             config,
             interval: Delay::new(interval),
@@ -159,7 +159,7 @@ impl ConnectionHandler for Handler {
                 Poll::Ready(Ok((stream, _request))) => {
                     tracing::trace!("Answered inbound peerinfo request from peer");
                     self.inbound =
-                        Some(recv_peer_info(stream, self.config.local_info.to_proto()).boxed());
+                        Some(recv_peer_info(stream, self.config.local_info().to_proto()).boxed());
                 }
             }
         }
@@ -188,14 +188,14 @@ impl ConnectionHandler for Handler {
                     }
                     Poll::Ready(Ok((stream, peer_info))) => {
                         self.failures = 0;
-                        self.interval.reset(self.config.interval);
+                        self.interval.reset(self.config.interval());
                         self.outbound = Some(OutboundState::Idle(stream));
                         return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(Ok(Success {
                             peer_info,
                         })));
                     }
                     Poll::Ready(Err(e)) => {
-                        self.interval.reset(self.config.interval);
+                        self.interval.reset(self.config.interval());
                         self.pending_errors.push_front(e);
                     }
                 },
@@ -208,8 +208,8 @@ impl ConnectionHandler for Handler {
                         self.outbound = Some(OutboundState::Request(
                             send_peer_info(
                                 stream,
-                                self.config.local_info.to_proto(),
-                                self.config.timeout,
+                                self.config.local_info().to_proto(),
+                                self.config.timeout(),
                             )
                             .boxed(),
                         ));
@@ -245,7 +245,7 @@ impl ConnectionHandler for Handler {
                 ..
             }) => {
                 stream.ignore_for_keep_alive();
-                let local_info = self.config.local_info.to_proto();
+                let local_info = self.config.local_info().to_proto();
                 self.inbound = Some(recv_peer_info(stream, local_info).boxed());
             }
             ConnectionEvent::FullyNegotiatedOutbound(FullyNegotiatedOutbound {
@@ -254,9 +254,9 @@ impl ConnectionHandler for Handler {
             }) => {
                 stream.ignore_for_keep_alive();
                 self.interval.reset(Duration::new(0, 0));
-                let request = self.config.local_info.to_proto();
+                let request = self.config.local_info().to_proto();
                 self.outbound = Some(OutboundState::Request(
-                    send_peer_info(stream, request, self.config.timeout).boxed(),
+                    send_peer_info(stream, request, self.config.timeout()).boxed(),
                 ));
             }
             ConnectionEvent::DialUpgradeError(dial_upgrade_error) => {
