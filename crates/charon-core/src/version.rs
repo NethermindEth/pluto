@@ -14,10 +14,9 @@ pub enum SemVerError {
 ///     - Main branch: v0.X-dev
 ///     - Release branch: v0.Y-rc
 pub static VERSION: LazyLock<SemVer> = LazyLock::new(|| {
-    // Overwritten at build-time with the git tag for official releases
-    let str = option_env!("CHARON_VERSION").unwrap_or("v1.7-rc");
+    let str = env!("CARGO_PKG_VERSION");
 
-    SemVer::try_from(str).expect("invalid semantic version")
+    SemVer::parse(format!("v{}", str)).expect("invalid semantic version")
 });
 
 /// Supported minor versions in order of precedence.
@@ -53,7 +52,7 @@ pub fn git_commit() -> (String, String) {
     let hash = built_info::GIT_COMMIT_HASH.unwrap_or("unknown").into();
     let timestamp = chrono::DateTime::parse_from_rfc2822(built_info::BUILT_TIME_UTC)
         .map(|dt| dt.timestamp().to_string())
-        .unwrap_or("unknown".into());
+        .unwrap_or_else(|_| "unknown".into());
 
     (hash, timestamp)
 }
