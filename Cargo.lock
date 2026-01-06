@@ -1399,7 +1399,7 @@ dependencies = [
 
 [[package]]
 name = "charon"
-version = "0.1.0"
+version = "1.7.1"
 dependencies = [
  "alloy",
  "backon",
@@ -1419,14 +1419,14 @@ dependencies = [
 
 [[package]]
 name = "charon-build-proto"
-version = "0.1.0"
+version = "1.7.1"
 dependencies = [
  "prost-build",
 ]
 
 [[package]]
 name = "charon-cli"
-version = "0.1.0"
+version = "1.7.1"
 dependencies = [
  "axum",
  "tokio",
@@ -1434,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "charon-cluster"
-version = "0.1.0"
+version = "1.7.1"
 dependencies = [
  "charon-crypto",
  "charon-eth2",
@@ -1457,7 +1457,7 @@ dependencies = [
 
 [[package]]
 name = "charon-core"
-version = "0.1.0"
+version = "1.7.1"
 dependencies = [
  "built",
  "cancellation",
@@ -1478,7 +1478,7 @@ dependencies = [
 
 [[package]]
 name = "charon-crypto"
-version = "0.1.0"
+version = "1.7.1"
 dependencies = [
  "blst",
  "hex",
@@ -1490,7 +1490,7 @@ dependencies = [
 
 [[package]]
 name = "charon-dkg"
-version = "0.1.0"
+version = "1.7.1"
 dependencies = [
  "charon-build-proto",
  "prost 0.14.1",
@@ -1499,7 +1499,7 @@ dependencies = [
 
 [[package]]
 name = "charon-eth2"
-version = "0.1.0"
+version = "1.7.1"
 dependencies = [
  "base64",
  "charon-k1util",
@@ -1513,7 +1513,7 @@ dependencies = [
 
 [[package]]
 name = "charon-k1util"
-version = "0.1.0"
+version = "1.7.1"
 dependencies = [
  "criterion",
  "hex",
@@ -1525,7 +1525,7 @@ dependencies = [
 
 [[package]]
 name = "charon-p2p"
-version = "0.1.0"
+version = "1.7.1"
 dependencies = [
  "charon-eth2",
  "charon-k1util",
@@ -1543,7 +1543,7 @@ dependencies = [
 
 [[package]]
 name = "charon-testutil"
-version = "0.1.0"
+version = "1.7.1"
 dependencies = [
  "hex",
  "k256",
@@ -1553,7 +1553,7 @@ dependencies = [
 
 [[package]]
 name = "charon-tracing"
-version = "0.1.0"
+version = "1.7.1"
 dependencies = [
  "thiserror 2.0.17",
  "tokio",
