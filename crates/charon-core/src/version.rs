@@ -104,9 +104,9 @@ impl SemVer {
     }
 
     /// Try to parse a semantic version from a string.
-    pub fn parse(value: &str) -> Result<SemVer> {
+    pub fn parse<T: AsRef<str>>(value: T) -> Result<SemVer> {
         let matches = SEMVER_REGEX
-            .captures(value)
+            .captures(value.as_ref())
             .filter(|matches| matches.len() == 5)
             .ok_or(SemVerError::InvalidFormat)?;
 
@@ -202,22 +202,6 @@ impl PartialOrd for SemVer {
     }
 }
 
-impl TryFrom<&str> for SemVer {
-    type Error = SemVerError;
-
-    fn try_from(value: &str) -> Result<Self> {
-        SemVer::parse(value)
-    }
-}
-
-impl str::FromStr for SemVer {
-    type Err = SemVerError;
-
-    fn from_str(s: &str) -> Result<Self> {
-        SemVer::parse(s)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::version::{SUPPORTED, SemVer, SemVerError, SemVerType, VERSION};
@@ -236,18 +220,18 @@ mod tests {
         ];
 
         for (a, b, expected) in tc {
-            let ver_a = SemVer::try_from(a).unwrap();
-            let ver_b = SemVer::try_from(b).unwrap();
+            let ver_a = SemVer::parse(a).unwrap();
+            let ver_b = SemVer::parse(b).unwrap();
             assert_eq!(ver_a.partial_cmp(&ver_b).unwrap(), expected);
         }
     }
 
     #[test]
     fn is_pre_release() {
-        let pre_release = SemVer::try_from("v0.17.1-rc1").unwrap();
+        let pre_release = SemVer::parse("v0.17.1-rc1").unwrap();
         assert!(pre_release.is_pre_release());
 
-        let release = SemVer::try_from("v0.17.1").unwrap();
+        let release = SemVer::parse("v0.17.1").unwrap();
         assert!(!release.is_pre_release());
     }
 
