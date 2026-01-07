@@ -30,7 +30,7 @@ pub enum Status {
     Sentinel = 4,
     /// Enable explicitly enables a feature.
     /// This ensures enable >= any status, so it's always enabled.
-    Enable = i64::MAX as isize,
+    Enable = i32::MAX as isize,
 }
 
 impl fmt::Display for Status {
@@ -380,7 +380,7 @@ mod tests {
 
         for feature in features {
             let state = GLOBAL_STATE.lock().expect("mutex poisoned");
-            let status = state.state.get(&feature);
+            let status = state.state.get(feature);
             assert!(status.is_some(), "feature {} should have status", feature);
             assert!(
                 *status.unwrap() != Status::Disable,
