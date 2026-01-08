@@ -56,7 +56,7 @@ type Result<T> = std::result::Result<T, P2PConfigError>;
 #[derive(Debug, Clone, Default)]
 pub struct P2PConfig {
     /// Defines the libp2p relay multiaddrs or URLs.
-    pub relays: Vec<String>,
+    pub relays: Vec<Multiaddr>,
 
     /// The external IP address of the node.
     pub external_ip: String,

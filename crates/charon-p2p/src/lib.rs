@@ -17,5 +17,14 @@ pub mod config;
 /// Metrics.
 pub mod metrics;
 
+/// P2P.
+pub mod p2p;
+
+/// Gater
+pub mod gater;
+
+/// Behaviours.
+pub mod behaviours;
+
 /// K1 utilities.
 pub mod k1;
