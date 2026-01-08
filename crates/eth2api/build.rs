@@ -10,8 +10,6 @@ const BEACON_NODE_OAPI_PATH: &str = "build/beacon-node-oapi.json";
 /// Generate the required code from the OpenAPI specification.
 pub fn main() -> Result<()> {
     println!("cargo:rerun-if-changed={}", BEACON_NODE_OAPI_PATH);
-    println!("cargo:rerun-if-changed=src/client.rs");
-    println!("cargo:rerun-if-changed=src/types.rs");
 
     std::process::Command::new("oas3-gen")
         .args([
