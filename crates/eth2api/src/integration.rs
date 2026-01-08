@@ -20,6 +20,7 @@ async fn lighthouse_beacon_headers_head() {
             "--network",
             "mainnet",
             "--execution-jwt-secret-key",
+            // Intentionally insecure all-zeros JWT secret used only for this test container.
             "0000000000000000000000000000000000000000000000000000000000000000",
             "--allow-insecure-genesis-sync",
             "--execution-endpoint",
@@ -55,7 +56,7 @@ async fn lighthouse_beacon_headers_head() {
         .expect("Failed to get block header");
 
     let GetBlockHeaderResponse::Ok(headers) = response else {
-        panic!("Expected Ok response")
+        panic!("Expected Ok response, got: {:?}", response)
     };
 
     // Validate the response
