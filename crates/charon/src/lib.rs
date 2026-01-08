@@ -21,6 +21,3 @@ pub mod deadline;
 
 /// Ethereum EL RPC client management
 pub mod eth1wrap;
-
-/// Ethereum CL RPC client management
-pub mod eth2wrap;
