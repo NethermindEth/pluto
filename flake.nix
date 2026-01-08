@@ -6,12 +6,29 @@
   outputs = { nixpkgs, utils, ... }: utils.lib.eachDefaultSystem (system:
     let
       pkgs = nixpkgs.legacyPackages.${system};
+
+      oas3-gen = pkgs.rustPlatform.buildRustPackage (finalAttrs: {
+        pname = "oas3-gen";
+        version = "0.24.0";
+
+        src = pkgs.fetchCrate {
+          inherit (finalAttrs) pname version;
+          hash = "sha256-Hui8hGTAIqTBanObEDWZP9ZbGknu3zKyd2zd2DiseX0=";
+        };
+
+        cargoHash = "sha256-mGIQ7L5hm+2/bVndLVqSosSUmvPBfDi+LUYrvAanNdQ=";
+        cargoDepsName = finalAttrs.pname;
+
+        buildInputs = [ pkgs.openssl ];
+        nativeBuildInputs = [ pkgs.pkg-config ];
+      });
     in
     {
       devShells.default = pkgs.mkShell {
         buildInputs = with pkgs; [
           cargo-deny
           protobuf
+          oas3-gen
         ];
 
         shellHook = ''
