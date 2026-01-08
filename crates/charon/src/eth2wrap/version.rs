@@ -84,3 +84,69 @@ pub fn check_beacon_node_version(bn_version: &str) {
         Ok(()) => { /* Do nothing */ }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_beacon_node_version_status() {
+        let tc = vec![
+            // Teku
+            (
+                "teku/v25.9.3/linux-x86_64/-eclipseadoptium-openjdk64bitservervm-java-21",
+                Ok(()),
+            ),
+            (
+                "teku/vUNKNOWN+g40561a9/linux-x86_64/-eclipseadoptium-openjdk64bitservervm-java-21",
+                Err(BeaconNodeVersionError::InvalidFormat),
+            ),
+            // Lighthouse
+            ("Lighthouse/v8.0.1-e42406d/x86_64-linux", Ok(())),
+            ("Lighthouse/v8.0.0-54f7bc5/aarch64-linux", Ok(())),
+            // Lodestar
+            ("Lodestar/v1.35.0/8335180", Ok(())),
+            ("Lodestar/v1.36.0/1a34f98", Ok(())),
+            // Nimbus
+            ("Nimbus/v26.4.1-77cfa7-stateofus", Ok(())),
+            ("Nimbus/v26.5.0-d2f233-stateofus", Ok(())),
+            (
+                "Nimbus/v25.9.0-c7e5ca-stateofus",
+                Err(BeaconNodeVersionError::TooOld {
+                    client: version::SemVer::try_from("v25.9.0").unwrap(),
+                    minimum: version::SemVer::try_from("v25.9.2").unwrap(),
+                }),
+            ),
+            // Prysm
+            (
+                "Prysm/v5.3.2 (linux amd64)",
+                Err(BeaconNodeVersionError::TooOld {
+                    client: version::SemVer::try_from("v5.3.2").unwrap(),
+                    minimum: version::SemVer::try_from("v6.1.0").unwrap(),
+                }),
+            ),
+            ("Prysm/v6.1.2 (linux amd64)", Ok(())),
+            ("Prysm/v6.2.0 (linux amd64)", Ok(())),
+            // Grandine
+            ("Grandine/2.1.0-29cb5c1/x86_64-linux2025-05-19", Ok(())),
+            // Additional error cases
+            ("", Err(BeaconNodeVersionError::InvalidFormat)),
+            ("justastring", Err(BeaconNodeVersionError::InvalidFormat)),
+            ("/v7.0.0", Err(BeaconNodeVersionError::InvalidFormat)),
+            (
+                "UnknownClient/v7.0.0",
+                Err(BeaconNodeVersionError::UnknownClient),
+            ),
+            ("Lighthouse/", Err(BeaconNodeVersionError::InvalidFormat)),
+            (
+                "Lighthouse/vBAD",
+                Err(BeaconNodeVersionError::InvalidFormat),
+            ),
+        ];
+
+        for (input, expected) in tc {
+            let result = super::check_beacon_node_version_status(input);
+            assert_eq!(result, expected);
+        }
+    }
+}
