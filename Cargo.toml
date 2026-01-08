@@ -28,6 +28,7 @@ axum = "0.8.6"
 blst = "0.3.13"
 cancellation = "0.1.0"
 chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.5", features = ["derive", "env", "cargo"] }
 crossbeam = "0.8.4"
 backon = "1.6.0"
 hex = { version = "^0.4.3" }
