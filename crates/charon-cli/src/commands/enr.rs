@@ -1,10 +1,12 @@
 //! ENR command implementation.
 //!
-//! This module implements the `pluto enr` command, which prints the Ethereum Node Record (ENR)
-//! that identifies this client to its peers.
+//! This module implements the `pluto enr` command, which prints the Ethereum
+//! Node Record (ENR) that identifies this client to its peers.
 
-use std::io::{self, Write};
-use std::path::PathBuf;
+use std::{
+    io::{self, Write},
+    path::PathBuf,
+};
 
 use charon_eth2::enr::Record;
 use charon_k1util;
