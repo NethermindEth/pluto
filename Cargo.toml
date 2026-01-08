@@ -12,6 +12,7 @@ members = [
     "crates/charon-p2p",
     "crates/charon-testutil",
     "crates/tracing",
+    "crates/eth2api",
 ]
 resolver = "3"
 
@@ -53,12 +54,17 @@ sha3 = "0.10"
 k256 = { version = "0.13.4", features = ["ecdsa", "sha256"] }
 criterion = "0.8.0"
 regex = "1.12"
+reqwest = "0.13"
+http = "1.4"
 tempfile = "3.24"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-loki = "0.2"
 vise = "0.3"
 vise-exporter = "0.3"
+validator = { version = "0.20", features = ["derive"] }
+oas3-gen-support = "0.24"
+bon = "3.8"
 
 # Crates in the workspace
 charon = { path = "crates/charon" }
@@ -70,6 +76,7 @@ charon-k1util = { path = "crates/charon-k1util" }
 charon-p2p = { path = "crates/charon-p2p" }
 charon-testutil = { path = "crates/charon-testutil" }
 charon-tracing = { path = "crates/tracing" }
+eth2api = { path = "crates/eth2api" }
 
 [workspace.lints.rust]
 missing_docs = "deny"
