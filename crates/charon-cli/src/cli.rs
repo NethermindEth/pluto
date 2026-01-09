@@ -2,10 +2,7 @@
 
 use clap::{Parser, Subcommand};
 
-use crate::commands::{
-    create_enr::CreateEnrArgs,
-    enr::EnrArgs,
-};
+use crate::commands::{create_enr::CreateEnrArgs, enr::EnrArgs};
 
 /// Pluto - Proof of Stake Ethereum Distributed Validator Client
 #[derive(Parser)]
@@ -50,6 +47,7 @@ pub struct CreateArgs {
 /// Create subcommands
 #[derive(Subcommand)]
 pub enum CreateCommands {
-    /// Create an Ethereum Node Record (ENR) private key to identify this charon client
+    /// Create an Ethereum Node Record (ENR) private key to identify this charon
+    /// client
     Enr(CreateEnrArgs),
 }

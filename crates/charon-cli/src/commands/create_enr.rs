@@ -17,18 +17,14 @@ use crate::error::{CliError, Result};
 #[derive(clap::Args)]
 pub struct CreateEnrArgs {
     /// The directory where pluto will store all its internal data.
-    #[arg(
-        long = "data-dir",
-        env = "CHARON_DATA_DIR",
-        default_value = ".charon"
-    )]
+    #[arg(long = "data-dir", env = "CHARON_DATA_DIR", default_value = ".charon")]
     pub data_dir: PathBuf,
 }
 
 /// Runs the create enr command
 ///
-/// Stores a new charon-enr-private-key to disk and prints the ENR for the provided config.
-/// It returns an error if the key already exists.
+/// Stores a new charon-enr-private-key to disk and prints the ENR for the
+/// provided config. It returns an error if the key already exists.
 pub fn run(args: CreateEnrArgs) -> Result<()> {
     if k1::load_priv_key(&args.data_dir).is_ok() {
         let enr_path = k1::key_path(&args.data_dir);
@@ -51,14 +47,23 @@ pub fn run(args: CreateEnrArgs) -> Result<()> {
 /// Writes backup key warning to the terminal
 fn write_enr_warning(w: &mut dyn Write, key_path: &Path) -> Result<()> {
     writeln!(w)?;
-    writeln!(w, "***************** WARNING: Backup key **********************")?;
-    writeln!(w, " PLEASE BACKUP YOUR KEY IMMEDIATELY! IF YOU LOSE YOUR KEY,")?;
+    writeln!(
+        w,
+        "***************** WARNING: Backup key **********************"
+    )?;
+    writeln!(
+        w,
+        " PLEASE BACKUP YOUR KEY IMMEDIATELY! IF YOU LOSE YOUR KEY,"
+    )?;
     writeln!(
         w,
         " YOU WON'T BE ABLE TO PARTICIPATE IN RUNNING A CHARON CLUSTER.\n"
     )?;
     writeln!(w, " YOU CAN FIND YOUR KEY IN {}", key_path.display())?;
-    writeln!(w, "****************************************************************")?;
+    writeln!(
+        w,
+        "****************************************************************"
+    )?;
     writeln!(w)?;
     Ok(())
 }
