@@ -8,10 +8,10 @@ pub type Result<T> = std::result::Result<T, CliError>;
 
 /// Errors that can occur in the Pluto CLI.
 #[derive(Error, Debug)]
-pub enum CliError {
+pub(crate) enum CliError {
     /// Private key file not found.
     #[error(
-        "private key not found. If this is your first time running this client, create one with `pluto create enr`."
+        "Private key not found. If this is your first time running this client, create one with `pluto create enr`."
     )]
     PrivateKeyNotFound {
         /// Path where the ENR private key was expected.

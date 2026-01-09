@@ -11,22 +11,11 @@ name = "pluto"
 path = "src/main.rs"
 
 [dependencies]
-# CLI Framework
 clap.workspace = true
-
-# Error Handling
 thiserror.workspace = true
-
-# Cryptography
 k256.workspace = true
-
-# Hex encoding for verbose output
 hex.workspace = true
-
-# Async Runtime
 tokio.workspace = true
-
-# Workspace Dependencies
 charon-p2p.workspace = true
 charon-eth2.workspace = true
 charon-k1util.workspace = true
