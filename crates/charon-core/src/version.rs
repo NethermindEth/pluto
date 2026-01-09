@@ -1,4 +1,4 @@
-use std::{cmp, fmt, str, sync::LazyLock};
+use std::{cmp, fmt, sync::LazyLock};
 
 type Result<T> = std::result::Result<T, SemVerError>;
 
