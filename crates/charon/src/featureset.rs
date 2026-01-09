@@ -286,11 +286,115 @@ pub fn init(config: Config) -> Result<()> {
     Ok(())
 }
 
+/// Test utilities for enabling/disabling features in tests.
+/// Available when running tests or when the `test-utils` feature is enabled.
+///
+/// # Warning: Global State and Concurrency
+///
+/// These utilities modify global state and are **not thread-safe** when used
+/// in parallel tests. When using the `test-utils` feature, tests that call
+/// `enable_for_test` or `disable_for_test` must be serialized using a tool
+/// like `serial_test` to avoid race conditions.
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_utils {
+    use super::*;
+
+    /// This is used by test helper functions to ensure cleanup happens.
+    ///
+    /// # Note
+    ///
+    /// This guard must be bound to a variable to remain in effect. If not bound
+    /// (e.g., as a temporary expression), it will be dropped immediately,
+    /// restoring the feature status before your test code runs.
+    pub struct FeatureGuard {
+        feature: Feature,
+        cached_status: Status,
+    }
+
+    impl Drop for FeatureGuard {
+        fn drop(&mut self) {
+            if let Ok(mut state) = GLOBAL_STATE.write() {
+                state.state.insert(self.feature, self.cached_status);
+            }
+        }
+    }
+
+    /// Enables a feature for testing and returns a guard that restores the
+    /// original status when dropped.
+    ///
+    /// # Example
+    /// ```
+    /// use charon::featureset::{Feature, test_utils::enable_for_test};
+    ///
+    /// let _guard = enable_for_test(Feature::MockAlpha);
+    /// // Feature is enabled here
+    /// // Feature is automatically restored when _guard is dropped
+    /// ```
+    ///
+    /// # Note
+    ///
+    /// The returned guard should be bound to a variable. See [`FeatureGuard`]
+    /// for details.
+    pub fn enable_for_test(feature: Feature) -> Result<FeatureGuard> {
+        let mut state = GLOBAL_STATE
+            .write()
+            .map_err(|_| FeaturesetError::RwLockPoisoned)?;
+
+        let cached_status = state
+            .state
+            .get(&feature)
+            .copied()
+            .unwrap_or(Status::Disable);
+
+        state.state.insert(feature, Status::Enable);
+
+        Ok(FeatureGuard {
+            feature,
+            cached_status,
+        })
+    }
+
+    /// Disables a feature for testing and returns a guard that restores the
+    /// original status when dropped.
+    ///
+    /// # Example
+    /// ```
+    /// use charon::featureset::{Feature, test_utils::disable_for_test};
+    ///
+    /// let _guard = disable_for_test(Feature::MockAlpha);
+    /// // Feature is disabled here
+    /// // Feature is automatically restored when _guard is dropped
+    /// ```
+    ///
+    /// # Note
+    ///
+    /// The returned guard should be bound to a variable. See [`FeatureGuard`]
+    /// for details.
+    pub fn disable_for_test(feature: Feature) -> Result<FeatureGuard> {
+        let mut state = GLOBAL_STATE
+            .write()
+            .map_err(|_| FeaturesetError::RwLockPoisoned)?;
+
+        let cached_status = state
+            .state
+            .get(&feature)
+            .copied()
+            .unwrap_or(Status::Disable);
+
+        state.state.insert(feature, Status::Disable);
+
+        Ok(FeatureGuard {
+            feature,
+            cached_status,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serial_test::serial;
 
-    use super::*;
+    use super::{test_utils::*, *};
 
     /// Setup initialises global variable per test.
     fn setup() {
@@ -299,51 +403,6 @@ mod tests {
             *state = State::new();
         }
         init(Default::default()).expect("setup should initialize state");
-    }
-
-    #[test]
-    #[serial(featureset)]
-    fn test_enable_for_test() {
-        setup();
-        init(Default::default()).expect("init should work");
-
-        // Test with a known feature
-        assert!(!enabled(Feature::MockAlpha).expect("should not error"));
-
-        // Temporarily enable the feature
-        {
-            let mut state = GLOBAL_STATE.write().expect("rwlock poisoned");
-            state.state.insert(Feature::MockAlpha, Status::Enable);
-        }
-        assert!(enabled(Feature::MockAlpha).expect("should not error"));
-
-        // Restore to default (disabled)
-        {
-            let mut state = GLOBAL_STATE.write().expect("rwlock poisoned");
-            state.state.insert(Feature::MockAlpha, Status::Disable);
-        }
-        assert!(!enabled(Feature::MockAlpha).expect("should not error"));
-    }
-
-    #[test]
-    #[serial(featureset)]
-    fn test_disable_for_test() {
-        setup();
-        init(Default::default()).expect("init should work");
-
-        // First enable a feature
-        {
-            let mut state = GLOBAL_STATE.write().expect("rwlock poisoned");
-            state.state.insert(Feature::MockAlpha, Status::Enable);
-        }
-        assert!(enabled(Feature::MockAlpha).expect("should not error"));
-
-        // Then disable it
-        {
-            let mut state = GLOBAL_STATE.write().expect("rwlock poisoned");
-            state.state.insert(Feature::MockAlpha, Status::Disable);
-        }
-        assert!(!enabled(Feature::MockAlpha).expect("should not error"));
     }
 
     #[test]
@@ -415,5 +474,52 @@ mod tests {
 
         // MockAlpha is Alpha status, min_status is now Alpha, so it should be enabled
         assert!(enabled(Feature::MockAlpha).expect("should not error"));
+    }
+
+    #[test]
+    #[serial(featureset)]
+    fn test_enable_for_test_helper() {
+        setup();
+        init(Default::default()).expect("init should work");
+
+        // Initially disabled
+        assert!(!enabled(Feature::MockAlpha).expect("should not error"));
+
+        // Enable using helper
+        let _guard = enable_for_test(Feature::MockAlpha).expect("should not error");
+        assert!(enabled(Feature::MockAlpha).expect("should not error"));
+
+        // Drop the guard
+        drop(_guard);
+
+        // Should be restored to disabled
+        assert!(!enabled(Feature::MockAlpha).expect("should not error"));
+    }
+
+    #[test]
+    #[serial(featureset)]
+    fn test_disable_for_test_helper() {
+        setup();
+
+        // First enable a stable feature
+        init(Config {
+            min_status: Status::Stable,
+            enabled: vec![Feature::EagerDoubleLinear],
+            disabled: vec![],
+        })
+        .expect("init should work");
+
+        // Should be enabled (it's Stable status)
+        assert!(enabled(Feature::EagerDoubleLinear).expect("should not error"));
+
+        // Disable using helper
+        let _guard = disable_for_test(Feature::EagerDoubleLinear).expect("should not error");
+        assert!(!enabled(Feature::EagerDoubleLinear).expect("should not error"));
+
+        // Drop the guard
+        drop(_guard);
+
+        // Should be restored to enabled
+        assert!(enabled(Feature::EagerDoubleLinear).expect("should not error"));
     }
 }
