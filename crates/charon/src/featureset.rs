@@ -8,12 +8,10 @@
 use std::{
     collections::HashMap,
     fmt,
-    sync::{LazyLock, Mutex},
+    sync::{LazyLock, RwLock},
 };
 
 use thiserror::Error;
-
-use tracing::warn;
 
 /// Enumerates the rollout status of a feature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -158,9 +156,9 @@ pub enum FeaturesetError {
         /// The invalid minimum status string that was provided.
         min_status: String,
     },
-    /// Mutex was poisoned, indicating a panic occurred while holding the lock.
-    #[error("mutex poisoned")]
-    MutexPoisoned,
+    /// RwLock was poisoned, indicating a panic occurred while holding the lock.
+    #[error("rwlock poisoned")]
+    RwLockPoisoned,
 }
 
 type Result<T> = std::result::Result<T, FeaturesetError>;
@@ -199,13 +197,13 @@ impl State {
     }
 }
 
-static GLOBAL_STATE: LazyLock<Mutex<State>> = LazyLock::new(|| Mutex::new(State::new()));
+static GLOBAL_STATE: LazyLock<RwLock<State>> = LazyLock::new(|| RwLock::new(State::new()));
 
 /// Returns true if the feature is enabled.
 pub fn enabled(feature: Feature) -> Result<bool> {
     let state = GLOBAL_STATE
-        .lock()
-        .map_err(|_| FeaturesetError::MutexPoisoned)?;
+        .read()
+        .map_err(|_| FeaturesetError::RwLockPoisoned)?;
 
     // Get feature status, default to Disable (0) if not found
     let feature_status = state
@@ -220,8 +218,8 @@ pub fn enabled(feature: Feature) -> Result<bool> {
 /// CustomEnabledAll returns all custom enabled features.
 pub fn custom_enabled_all() -> Result<Vec<Feature>> {
     let state = GLOBAL_STATE
-        .lock()
-        .map_err(|_| FeaturesetError::MutexPoisoned)?;
+        .read()
+        .map_err(|_| FeaturesetError::RwLockPoisoned)?;
 
     let mut custom_enabled_features: Vec<Feature> = Vec::new();
 
@@ -259,8 +257,8 @@ impl Default for Config {
 /// Initialises the global feature set state.
 pub fn init(config: Config) -> Result<()> {
     let mut state = GLOBAL_STATE
-        .lock()
-        .map_err(|_| FeaturesetError::MutexPoisoned)?;
+        .write()
+        .map_err(|_| FeaturesetError::RwLockPoisoned)?;
 
     // Set min status
     // Validate min_status is one of the allowed values
@@ -288,28 +286,6 @@ pub fn init(config: Config) -> Result<()> {
     Ok(())
 }
 
-/// EnableGnosisBlockHotfixIfNotDisabled enables GnosisBlockHotfix if it was not
-/// disabled by the user. This is still a temporary workaround for the gnosis
-/// chain. When go-eth2-client is fully supporting custom specs, this function
-/// has to be removed with GnosisBlockHotfix feature.
-pub fn enable_gnosis_block_hotfix_if_not_disabled(config: &Config) -> Result<()> {
-    let mut state = GLOBAL_STATE
-        .lock()
-        .map_err(|_| FeaturesetError::MutexPoisoned)?;
-
-    let disabled = config.disabled.contains(&Feature::GnosisBlockHotfix);
-
-    if disabled {
-        warn!("Feature gnosis_block_hotfix is required by gnosis/chiado, but explicitly disabled");
-    } else {
-        state
-            .state
-            .insert(Feature::GnosisBlockHotfix, Status::Enable);
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use serial_test::serial;
@@ -319,7 +295,7 @@ mod tests {
     /// Setup initialises global variable per test.
     fn setup() {
         // Reset state to defaults first, then initialize with default config
-        if let Ok(mut state) = GLOBAL_STATE.lock() {
+        if let Ok(mut state) = GLOBAL_STATE.write() {
             *state = State::new();
         }
         init(Default::default()).expect("setup should initialize state");
@@ -336,14 +312,14 @@ mod tests {
 
         // Temporarily enable the feature
         {
-            let mut state = GLOBAL_STATE.lock().expect("mutex poisoned");
+            let mut state = GLOBAL_STATE.write().expect("rwlock poisoned");
             state.state.insert(Feature::MockAlpha, Status::Enable);
         }
         assert!(enabled(Feature::MockAlpha).expect("should not error"));
 
         // Restore to default (disabled)
         {
-            let mut state = GLOBAL_STATE.lock().expect("mutex poisoned");
+            let mut state = GLOBAL_STATE.write().expect("rwlock poisoned");
             state.state.insert(Feature::MockAlpha, Status::Disable);
         }
         assert!(!enabled(Feature::MockAlpha).expect("should not error"));
@@ -357,14 +333,14 @@ mod tests {
 
         // First enable a feature
         {
-            let mut state = GLOBAL_STATE.lock().expect("mutex poisoned");
+            let mut state = GLOBAL_STATE.write().expect("rwlock poisoned");
             state.state.insert(Feature::MockAlpha, Status::Enable);
         }
         assert!(enabled(Feature::MockAlpha).expect("should not error"));
 
         // Then disable it
         {
-            let mut state = GLOBAL_STATE.lock().expect("mutex poisoned");
+            let mut state = GLOBAL_STATE.write().expect("rwlock poisoned");
             state.state.insert(Feature::MockAlpha, Status::Disable);
         }
         assert!(!enabled(Feature::MockAlpha).expect("should not error"));
@@ -379,7 +355,7 @@ mod tests {
         let features = Feature::all();
 
         for feature in features {
-            let state = GLOBAL_STATE.lock().expect("mutex poisoned");
+            let state = GLOBAL_STATE.read().expect("rwlock poisoned");
             let status = state.state.get(feature);
             assert!(status.is_some(), "feature {} should have status", feature);
             assert!(
@@ -439,27 +415,5 @@ mod tests {
 
         // MockAlpha is Alpha status, min_status is now Alpha, so it should be enabled
         assert!(enabled(Feature::MockAlpha).expect("should not error"));
-    }
-
-    #[test]
-    #[serial(featureset)]
-    fn test_enable_gnosis_block_hotfix_if_not_disabled() {
-        let config = Config::default();
-
-        setup();
-        init(config.clone()).expect("init should work");
-
-        enable_gnosis_block_hotfix_if_not_disabled(&config).expect("should not error");
-        assert!(enabled(Feature::GnosisBlockHotfix).expect("should not error"));
-
-        // Test disabled explicitly
-        let mut config_disabled = Config::default();
-        config_disabled.disabled.push(Feature::GnosisBlockHotfix);
-
-        setup();
-        init(config_disabled.clone()).expect("init should work");
-
-        enable_gnosis_block_hotfix_if_not_disabled(&config_disabled).expect("should not error");
-        assert!(!enabled(Feature::GnosisBlockHotfix).expect("should not error"));
     }
 }
