@@ -25,7 +25,6 @@ publish = false
 [workspace.dependencies]
 anyhow = "1"
 alloy = { version = "1.3", features = ["essentials"] }
-axum = "0.8"
 blst = "0.3"
 cancellation = "0.1.0"
 chrono = { version = "0.4", features = ["serde"] }
