@@ -40,11 +40,8 @@ pub fn run(args: EnrArgs) -> Result<()> {
             let enr_path = k1::key_path(&args.data_dir);
             return Err(CliError::PrivateKeyNotFound { enr_path });
         }
-        Err(k1::K1Error::K1UtilError(e)) => {
-            return Err(CliError::KeyLoadError(e.to_string()));
-        }
-        Err(k1::K1Error::IoError(e)) => {
-            return Err(CliError::IoError(e));
+        Err(e) => {
+            return Err(CliError::KeyLoadError(e));
         }
     };
 
