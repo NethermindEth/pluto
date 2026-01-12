@@ -3,7 +3,7 @@
 //! Abstraction to multiple Ethereum 2 beacon nodes. Its external API follows
 //! the official [Ethereum beacon APIs specification](https://ethereum.github.io/beacon-APIs/).
 
-use std::io::Result;
+use std::io::{Error, ErrorKind, Result};
 
 const BEACON_NODE_OAPI_PATH: &str = "build/beacon-node-oapi.json";
 
@@ -20,7 +20,17 @@ pub fn main() -> Result<()> {
             "-o",
             "src",
         ])
-        .status()?;
+        .status()
+        .map_err(|error| {
+            if error.kind() == ErrorKind::NotFound {
+                Error::new(
+                    ErrorKind::NotFound,
+                    "Could not find `oas3-gen`. To install it, run `cargo install oas3-gen`",
+                )
+            } else {
+                error
+            }
+        })?;
 
     std::fs::remove_file("src/mod.rs")?;
 
