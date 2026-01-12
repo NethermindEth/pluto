@@ -1,8 +1,6 @@
 #![allow(missing_docs)] // we need to allow missing docs for the derive macro
 //! Relay server behaviour.
 
-use std::time::Duration;
-
 use libp2p::{identify, identity::Keypair, ping, relay, swarm::NetworkBehaviour};
 
 use charon_p2p::gater::ConnGater;
@@ -36,8 +34,6 @@ impl RelayServerBehaviour {
 pub struct RelayServerBehaviourBuilder {
     gater: Option<ConnGater>,
     identify_protocol: String,
-    ping_interval: Duration,
-    ping_timeout: Duration,
     relay_config: Option<relay::Config>,
 }
 
@@ -46,8 +42,6 @@ impl Default for RelayServerBehaviourBuilder {
         Self {
             gater: None,
             identify_protocol: "/pluto/relay/1.0.0-alpha".into(),
-            ping_interval: Duration::from_secs(1),
-            ping_timeout: Duration::from_secs(2),
             relay_config: None,
         }
     }
@@ -71,18 +65,6 @@ impl RelayServerBehaviourBuilder {
         self
     }
 
-    /// Sets the ping interval.
-    pub fn with_ping_interval(mut self, interval: Duration) -> Self {
-        self.ping_interval = interval;
-        self
-    }
-
-    /// Sets the ping timeout.
-    pub fn with_ping_timeout(mut self, timeout: Duration) -> Self {
-        self.ping_timeout = timeout;
-        self
-    }
-
     /// Sets the relay server configuration.
     pub fn with_relay_config(mut self, config: relay::Config) -> Self {
         self.relay_config = Some(config);
@@ -100,11 +82,7 @@ impl RelayServerBehaviourBuilder {
                 self.identify_protocol,
                 key.public(),
             )),
-            ping: ping::Behaviour::new(
-                ping::Config::new()
-                    .with_interval(self.ping_interval)
-                    .with_timeout(self.ping_timeout),
-            ),
+            ping: ping::Behaviour::new(charon_p2p::config::default_ping_config()),
             gater: self
                 .gater
                 .unwrap_or_else(|| ConnGater::new_conn_gater(vec![], vec![])),

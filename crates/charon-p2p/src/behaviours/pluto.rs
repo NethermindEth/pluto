@@ -1,10 +1,8 @@
 //! Pluto behaviour.
 
-use std::time::Duration;
-
 use libp2p::{identify, identity::Keypair, ping, relay, swarm::NetworkBehaviour};
 
-use crate::gater::ConnGater;
+use crate::{config::default_ping_config, gater::ConnGater};
 
 /// Pluto network behaviour.
 #[derive(NetworkBehaviour)]
@@ -36,8 +34,6 @@ impl PlutoBehaviour {
 pub struct PlutoBehaviourBuilder {
     gater: Option<ConnGater>,
     identify_protocol: String,
-    ping_interval: Duration,
-    ping_timeout: Duration,
 }
 
 impl Default for PlutoBehaviourBuilder {
@@ -45,8 +41,6 @@ impl Default for PlutoBehaviourBuilder {
         Self {
             gater: None,
             identify_protocol: "/pluto/1.0.0-alpha".into(),
-            ping_interval: Duration::from_secs(1),
-            ping_timeout: Duration::from_secs(2),
         }
     }
 }
@@ -69,18 +63,6 @@ impl PlutoBehaviourBuilder {
         self
     }
 
-    /// Sets the ping interval.
-    pub fn with_ping_interval(mut self, interval: Duration) -> Self {
-        self.ping_interval = interval;
-        self
-    }
-
-    /// Sets the ping timeout.
-    pub fn with_ping_timeout(mut self, timeout: Duration) -> Self {
-        self.ping_timeout = timeout;
-        self
-    }
-
     /// Builds the [`PlutoBehaviour`] with the provided keypair and relay
     /// client.
     pub fn build(self, key: &Keypair, relay_client: relay::client::Behaviour) -> PlutoBehaviour {
@@ -93,11 +75,7 @@ impl PlutoBehaviourBuilder {
                 self.identify_protocol,
                 key.public(),
             )),
-            ping: ping::Behaviour::new(
-                ping::Config::new()
-                    .with_interval(self.ping_interval)
-                    .with_timeout(self.ping_timeout),
-            ),
+            ping: ping::Behaviour::new(default_ping_config()),
         }
     }
 }
