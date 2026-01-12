@@ -155,15 +155,12 @@ pub enum FeaturesetError {
         /// The invalid minimum status string that was provided.
         min_status: String,
     },
-    /// RwLock was poisoned, indicating a panic occurred while holding the lock.
-    #[error("rwlock poisoned")]
-    RwLockPoisoned,
 }
 
 type Result<T> = std::result::Result<T, FeaturesetError>;
 
 /// Global state for feature statuses.
-struct FeatureSet {
+pub struct FeatureSet {
     /// Defines the current rollout status of each feature.
     pub state: HashMap<Feature, Status>,
     /// Defines the minimum enabled status.
@@ -172,7 +169,7 @@ struct FeatureSet {
 
 impl FeatureSet {
     /// Creates a new state with default feature statuses.
-    fn new() -> Self {
+    pub fn new() -> Self {
         let state = HashMap::from([
             (Feature::EagerDoubleLinear, Status::Stable),
             (Feature::ConsensusParticipate, Status::Stable),
@@ -194,51 +191,87 @@ impl FeatureSet {
             min_status: Status::Stable,
         }
     }
-}
 
-static GLOBAL_STATE: LazyLock<RwLock<FeatureSet>> = LazyLock::new(|| RwLock::new(FeatureSet::new()));
+    /// Returns true if the feature is enabled.
+    pub fn enabled(&self, feature: Feature) -> bool {
+        // Get feature status, default to Disable (0) if not found
+        let feature_status = self.state.get(&feature).copied().unwrap_or(Status::Disable);
 
-/// Returns true if the feature is enabled.
-pub fn enabled(feature: Feature) -> Result<bool> {
-    let state = GLOBAL_STATE
-        .read()
-        .map_err(|_| FeaturesetError::RwLockPoisoned)?;
-
-    // Get feature status, default to Disable (0) if not found
-    let feature_status = state
-        .state
-        .get(&feature)
-        .copied()
-        .unwrap_or(Status::Disable);
-
-    Ok(feature_status >= state.min_status)
-}
-
-/// Returns all custom enabled features.
-pub fn custom_enabled_all() -> Result<Vec<Feature>> {
-    let state = GLOBAL_STATE
-        .read()
-        .map_err(|_| FeaturesetError::RwLockPoisoned)?;
-
-    let mut custom_enabled_features: Vec<Feature> = Vec::new();
-
-    for (feature, status) in &state.state {
-        if *status > Status::Stable {
-            custom_enabled_features.push(*feature);
-        }
+        feature_status >= self.min_status
     }
 
-    Ok(custom_enabled_features)
+    /// Returns all custom enabled features.
+    pub fn custom_enabled_all(&self) -> Vec<Feature> {
+        let mut custom_enabled_features: Vec<Feature> = Vec::new();
+
+        for (feature, status) in &self.state {
+            if *status > Status::Stable {
+                custom_enabled_features.push(*feature);
+            }
+        }
+
+        custom_enabled_features
+    }
+
+    /// Initializes the feature set with the given configuration.
+    pub fn init(&mut self, config: Config) -> Result<()> {
+        // Set min status
+        // Validate min_status is one of the allowed values
+        match config.min_status {
+            Status::Alpha | Status::Beta | Status::Stable => {
+                self.min_status = config.min_status;
+            }
+            _ => {
+                return Err(FeaturesetError::UnknownMinStatus {
+                    min_status: config.min_status.to_string(),
+                });
+            }
+        }
+
+        // Enable features
+        for feature in config.enabled {
+            self.state.insert(feature, Status::Enable);
+        }
+
+        // Disable features
+        for feature in config.disabled {
+            self.state.insert(feature, Status::Disable);
+        }
+
+        Ok(())
+    }
+
+    /// Enables GnosisBlockHotfix if it was not disabled by the user.
+    ///
+    /// This is still a temporary workaround for the gnosis chain.
+    /// When go-eth2-client is fully supporting custom specs, this function has
+    /// to be removed with GnosisBlockHotfix feature.
+    pub fn enable_gnosis_block_hotfix_if_not_disabled(&mut self, config: &Config) {
+        let disabled = config.disabled.contains(&Feature::GnosisBlockHotfix);
+
+        if disabled {
+            tracing::warn!(
+                "Feature gnosis_block_hotfix is required by gnosis/chiado, but explicitly disabled"
+            );
+        } else {
+            self.state
+                .insert(Feature::GnosisBlockHotfix, Status::Enable);
+        }
+    }
 }
+
+/// Global feature set state.
+pub static GLOBAL_STATE: LazyLock<RwLock<FeatureSet>> =
+    LazyLock::new(|| RwLock::new(FeatureSet::new()));
 
 /// Config configures the feature set package.
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// MinStatus defines the minimum enabled status.
+    /// The minimum enabled status.
     pub min_status: Status,
-    /// Enabled overrides min status and enables a list of features.
+    /// Overrides min status and enables a list of features.
     pub enabled: Vec<Feature>,
-    /// Disabled overrides min status and disables a list of features.
+    /// Overrides min status and disables a list of features.
     pub disabled: Vec<Feature>,
 }
 
@@ -253,168 +286,45 @@ impl Default for Config {
     }
 }
 
-/// Initialises the global feature set state.
-pub fn init(config: Config) -> Result<()> {
-    let mut state = GLOBAL_STATE
-        .write()
-        .map_err(|_| FeaturesetError::RwLockPoisoned)?;
-
-    // Set min status
-    // Validate min_status is one of the allowed values
-    match config.min_status {
-        Status::Alpha | Status::Beta | Status::Stable => {
-            state.min_status = config.min_status;
-        }
-        _ => {
-            return Err(FeaturesetError::UnknownMinStatus {
-                min_status: config.min_status.to_string(),
-            });
-        }
-    }
-
-    // Enable features
-    for feature in &config.enabled {
-        state.state.insert(*feature, Status::Enable);
-    }
-
-    // Disable features
-    for feature in &config.disabled {
-        state.state.insert(*feature, Status::Disable);
-    }
-
-    Ok(())
-}
-
-/// Test utilities for enabling/disabling features in tests.
-/// Available when running tests or when the `test-utils` feature is enabled.
-///
-/// # Warning: Global State and Concurrency
-///
-/// These utilities modify global state and are **not thread-safe** when used
-/// in parallel tests. When using the `test-utils` feature, tests that call
-/// `enable_for_test` or `disable_for_test` must be serialized using a tool
-/// like `serial_test` to avoid race conditions.
-#[cfg(any(test, feature = "test-utils"))]
-pub mod test_utils {
-    use super::*;
-
-    /// This is used by test helper functions to ensure cleanup happens.
+impl FeatureSet {
+    /// Temporarily enables a feature for testing.
     ///
-    /// # Note
-    ///
-    /// This guard must be bound to a variable to remain in effect. If not bound
-    /// (e.g., as a temporary expression), it will be dropped immediately,
-    /// restoring the feature status before your test code runs.
-    pub struct FeatureGuard {
-        feature: Feature,
-        cached_status: Status,
-    }
-
-    impl Drop for FeatureGuard {
-        fn drop(&mut self) {
-            if let Ok(mut state) = GLOBAL_STATE.write() {
-                state.state.insert(self.feature, self.cached_status);
-            }
-        }
-    }
-
-    /// Enables a feature for testing and returns a guard that restores the
-    /// original status when dropped.
-    ///
-    /// # Example
+    /// Returns the previous status so it can be restored later.
     /// ```
-    /// use charon::featureset::{Feature, test_utils::enable_for_test};
-    ///
-    /// let _guard = enable_for_test(Feature::MockAlpha);
-    /// // Feature is enabled here
-    /// // Feature is automatically restored when _guard is dropped
-    /// ```
-    ///
-    /// # Note
-    ///
-    /// The returned guard should be bound to a variable. See [`FeatureGuard`]
-    /// for details.
-    pub fn enable_for_test(feature: Feature) -> Result<FeatureGuard> {
-        let mut state = GLOBAL_STATE
-            .write()
-            .map_err(|_| FeaturesetError::RwLockPoisoned)?;
-
-        let cached_status = state
-            .state
-            .get(&feature)
-            .copied()
-            .unwrap_or(Status::Disable);
-
-        state.state.insert(feature, Status::Enable);
-
-        Ok(FeatureGuard {
-            feature,
-            cached_status,
-        })
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn enable_for_test(&mut self, feature: Feature) -> Status {
+        let prev = self.state.get(&feature).copied().unwrap_or(Status::Disable);
+        self.state.insert(feature, Status::Enable);
+        prev
     }
 
-    /// Disables a feature for testing and returns a guard that restores the
-    /// original status when dropped.
+    /// Temporarily disables a feature for testing.
     ///
-    /// # Example
+    /// Returns the previous status so it can be restored later.
     /// ```
-    /// use charon::featureset::{Feature, test_utils::disable_for_test};
-    ///
-    /// let _guard = disable_for_test(Feature::MockAlpha);
-    /// // Feature is disabled here
-    /// // Feature is automatically restored when _guard is dropped
-    /// ```
-    ///
-    /// # Note
-    ///
-    /// The returned guard should be bound to a variable. See [`FeatureGuard`]
-    /// for details.
-    pub fn disable_for_test(feature: Feature) -> Result<FeatureGuard> {
-        let mut state = GLOBAL_STATE
-            .write()
-            .map_err(|_| FeaturesetError::RwLockPoisoned)?;
-
-        let cached_status = state
-            .state
-            .get(&feature)
-            .copied()
-            .unwrap_or(Status::Disable);
-
-        state.state.insert(feature, Status::Disable);
-
-        Ok(FeatureGuard {
-            feature,
-            cached_status,
-        })
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn disable_for_test(&mut self, feature: Feature) -> Status {
+        let prev = self.state.get(&feature).copied().unwrap_or(Status::Disable);
+        self.state.insert(feature, Status::Disable);
+        prev
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use serial_test::serial;
-
-    use super::{test_utils::*, *};
-
-    /// Setup initialises global variable per test.
-    fn setup() {
-        // Reset state to defaults first, then initialize with default config
-        if let Ok(mut state) = GLOBAL_STATE.write() {
-            *state = FeatureSet::new();
-        }
-        init(Default::default()).expect("setup should initialize state");
-    }
+    use super::*;
 
     #[test]
-    #[serial(featureset)]
     fn test_all_feature_status() {
-        setup();
-        init(Default::default()).expect("init should work");
+        let mut featureset = FeatureSet::new();
+        featureset
+            .init(Default::default())
+            .expect("init should work");
 
         let features = Feature::all();
 
         for feature in features {
-            let state = GLOBAL_STATE.read().expect("rwlock poisoned");
-            let status = state.state.get(feature);
+            let status = featureset.state.get(feature);
             assert!(status.is_some(), "feature {} should have status", feature);
             assert!(
                 *status.unwrap() != Status::Disable,
@@ -435,90 +345,163 @@ mod tests {
     }
 
     #[test]
-    #[serial(featureset)]
     fn test_custom_enabled_all() {
-        setup();
-        init(Default::default()).expect("init should work");
+        let mut featureset = FeatureSet::new();
+        featureset
+            .init(Default::default())
+            .expect("init should work");
 
         // Initially no custom enabled features
-        let custom = custom_enabled_all().expect("should not error");
+        let custom = featureset.custom_enabled_all();
         assert!(custom.is_empty());
 
         // Enable a feature
-        init(Config {
-            min_status: Status::Stable,
-            enabled: vec![Feature::MockAlpha],
-            disabled: Vec::new(),
-        })
-        .expect("init should work");
+        featureset
+            .init(Config {
+                min_status: Status::Stable,
+                enabled: vec![Feature::MockAlpha],
+                disabled: Vec::new(),
+            })
+            .expect("init should work");
 
-        let custom = custom_enabled_all().expect("should not error");
+        let custom = featureset.custom_enabled_all();
         assert!(custom.contains(&Feature::MockAlpha));
         assert_eq!(custom.len(), 1);
     }
 
     #[test]
-    #[serial(featureset)]
     fn test_config() {
-        setup();
+        let mut featureset = FeatureSet::new();
 
-        init(Default::default()).expect("default config should work");
+        featureset
+            .init(Default::default())
+            .expect("default config should work");
 
-        init(Config {
-            min_status: Status::Alpha,
-            enabled: vec![],
-            disabled: vec![],
-        })
-        .expect("alpha config should work");
+        featureset
+            .init(Config {
+                min_status: Status::Alpha,
+                enabled: vec![],
+                disabled: vec![],
+            })
+            .expect("alpha config should work");
 
         // MockAlpha is Alpha status, min_status is now Alpha, so it should be enabled
-        assert!(enabled(Feature::MockAlpha).expect("should not error"));
+        assert!(featureset.enabled(Feature::MockAlpha));
     }
 
     #[test]
-    #[serial(featureset)]
-    fn test_enable_for_test_helper() {
-        setup();
-        init(Default::default()).expect("init should work");
+    fn test_enable_feature() {
+        let mut featureset = FeatureSet::new();
+        featureset
+            .init(Default::default())
+            .expect("init should work");
 
         // Initially disabled
-        assert!(!enabled(Feature::MockAlpha).expect("should not error"));
+        assert!(!featureset.enabled(Feature::MockAlpha));
 
-        // Enable using helper
-        let _guard = enable_for_test(Feature::MockAlpha).expect("should not error");
-        assert!(enabled(Feature::MockAlpha).expect("should not error"));
+        // Enable the feature
+        featureset
+            .init(Config {
+                min_status: Status::Stable,
+                enabled: vec![Feature::MockAlpha],
+                disabled: vec![],
+            })
+            .expect("should not error");
 
-        // Drop the guard
-        drop(_guard);
-
-        // Should be restored to disabled
-        assert!(!enabled(Feature::MockAlpha).expect("should not error"));
+        assert!(featureset.enabled(Feature::MockAlpha));
     }
 
     #[test]
-    #[serial(featureset)]
-    fn test_disable_for_test_helper() {
-        setup();
+    fn test_disable_feature() {
+        let mut featureset = FeatureSet::new();
 
         // First enable a stable feature
-        init(Config {
-            min_status: Status::Stable,
-            enabled: vec![Feature::EagerDoubleLinear],
-            disabled: vec![],
-        })
-        .expect("init should work");
+        featureset
+            .init(Config {
+                min_status: Status::Stable,
+                enabled: vec![Feature::EagerDoubleLinear],
+                disabled: vec![],
+            })
+            .expect("init should work");
 
         // Should be enabled (it's Stable status)
-        assert!(enabled(Feature::EagerDoubleLinear).expect("should not error"));
+        assert!(featureset.enabled(Feature::EagerDoubleLinear));
+
+        // Now disable it
+        featureset
+            .init(Config {
+                min_status: Status::Stable,
+                enabled: vec![],
+                disabled: vec![Feature::EagerDoubleLinear],
+            })
+            .expect("should not error");
+
+        assert!(!featureset.enabled(Feature::EagerDoubleLinear));
+    }
+
+    #[test]
+    fn test_enable_for_test_helper() {
+        let mut featureset = FeatureSet::new();
+        featureset
+            .init(Default::default())
+            .expect("init should work");
+
+        // Initially disabled
+        assert!(!featureset.enabled(Feature::MockAlpha));
+
+        // Enable using helper
+        let prev = featureset.enable_for_test(Feature::MockAlpha);
+        assert!(featureset.enabled(Feature::MockAlpha));
+
+        // Restore to previous state
+        featureset.state.insert(Feature::MockAlpha, prev);
+        assert!(!featureset.enabled(Feature::MockAlpha));
+    }
+
+    #[test]
+    fn test_disable_for_test_helper() {
+        let mut featureset = FeatureSet::new();
+        featureset
+            .init(Config {
+                min_status: Status::Stable,
+                enabled: vec![Feature::EagerDoubleLinear],
+                disabled: vec![],
+            })
+            .expect("init should work");
+
+        // Should be enabled (it's Stable status)
+        assert!(featureset.enabled(Feature::EagerDoubleLinear));
 
         // Disable using helper
-        let _guard = disable_for_test(Feature::EagerDoubleLinear).expect("should not error");
-        assert!(!enabled(Feature::EagerDoubleLinear).expect("should not error"));
+        let prev = featureset.disable_for_test(Feature::EagerDoubleLinear);
+        assert!(!featureset.enabled(Feature::EagerDoubleLinear));
 
-        // Drop the guard
-        drop(_guard);
+        // Restore to previous state
+        featureset.state.insert(Feature::EagerDoubleLinear, prev);
+        assert!(featureset.enabled(Feature::EagerDoubleLinear));
+    }
 
-        // Should be restored to enabled
-        assert!(enabled(Feature::EagerDoubleLinear).expect("should not error"));
+    #[test]
+    fn test_enable_gnosis_block_hotfix_if_not_disabled() {
+        let mut featureset = FeatureSet::new();
+        let config = Config::default();
+
+        // Test when not disabled explicitly
+        featureset.init(config.clone()).expect("init should work");
+        featureset.enable_gnosis_block_hotfix_if_not_disabled(&config);
+        assert!(featureset.enabled(Feature::GnosisBlockHotfix));
+
+        // Test when disabled explicitly
+        let mut featureset = FeatureSet::new();
+        let config_with_disabled = Config {
+            min_status: Status::Stable,
+            enabled: vec![],
+            disabled: vec![Feature::GnosisBlockHotfix],
+        };
+        featureset
+            .init(config_with_disabled.clone())
+            .expect("init should work");
+        featureset.enable_gnosis_block_hotfix_if_not_disabled(&config_with_disabled);
+        assert!(!featureset.enabled(Feature::GnosisBlockHotfix));
     }
 }

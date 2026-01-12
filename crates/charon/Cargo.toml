@@ -24,9 +24,6 @@ url.workspace = true
 [build-dependencies]
 charon-build-proto.workspace = true
 
-[dev-dependencies]
-serial_test.workspace = true
-
 [features]
 # Enables test utilities for use in other crates' tests
 test-utils = []

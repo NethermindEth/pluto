@@ -56,7 +56,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-loki = "0.2"
 vise = "0.3"
 vise-exporter = "0.3"
-serial_test = "3.3.1"
 
 # Crates in the workspace
 charon = { path = "crates/charon" }
