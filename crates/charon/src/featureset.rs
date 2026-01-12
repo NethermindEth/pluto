@@ -16,17 +16,17 @@ use thiserror::Error;
 /// Enumerates the rollout status of a feature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Status {
-    /// Disable explicitly disables a feature.
+    /// Explicitly disables a feature.
     Disable = 0,
-    /// Alpha is for internal devnet testing.
+    /// For internal devnet testing.
     Alpha = 1,
-    /// Beta is for internal and external testnet testing.
+    /// For internal and external testnet testing.
     Beta = 2,
-    /// Stable is for stable feature ready for production.
+    /// For stable feature ready for production.
     Stable = 3,
-    /// Sentinel is an internal tail-end placeholder.
+    /// An internal tail-end placeholder.
     Sentinel = 4,
-    /// Enable explicitly enables a feature.
+    /// Explicitly enables a feature.
     /// This ensures enable >= any status, so it's always enabled.
     Enable = i32::MAX as isize,
 }
@@ -44,48 +44,47 @@ impl fmt::Display for Status {
     }
 }
 
-/// Feature is a feature being rolled out.
+/// A feature being rolled out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Feature {
-    /// MockAlpha is a mock feature in alpha status for testing.
+    /// A mock feature in alpha status for testing.
     MockAlpha,
-    /// EagerDoubleLinear enables Eager Double Linear round timer for consensus
-    /// rounds.
+    /// Enables Eager Double Linear round timer for consensus rounds.
     EagerDoubleLinear,
-    /// ConsensusParticipate enables consensus participate feature in order to
-    /// participate in an ongoing consensus round while still waiting for an
-    /// unsigned data from beacon node.
+    /// Enables consensus participate feature in order to participate in an
+    /// ongoing consensus round while still waiting for unsigned data from
+    /// beacon node.
     ConsensusParticipate,
-    /// AggSigDBV2 enables a newer, simpler implementation of `aggsigdb`.
+    /// Enables a newer, simpler implementation of `aggsigdb`.
     AggSigDBV2,
-    /// JSONRequests enables JSON requests for eth2 client.
+    /// Enables JSON requests for eth2 client.
     JsonRequests,
-    /// GnosisBlockHotfix enables Gnosis/Chiado SSZ fix.
+    /// Enables Gnosis/Chiado SSZ fix.
     /// The feature gets automatically enabled when the current network is
     /// gnosis|chiado, unless the user disabled this feature explicitly.
     GnosisBlockHotfix,
-    /// Linear enables Linear round timer for consensus rounds.
+    /// Enables Linear round timer for consensus rounds.
     /// When active has precedence over EagerDoubleLinear round timer.
     Linear,
-    /// SSEReorgDuties enables Scheduler to refresh duties when reorg occurs.
+    /// Enables Scheduler to refresh duties when reorg occurs.
     SseReorgDuties,
-    /// AttestationInclusion enables tracking of on-chain inclusion for
-    /// attestations. Previously this was the default behaviour, however,
-    /// tracking on-chain inclusions post-electra is costly. The extra load
-    /// that Charon puts the beacon node is deemed so high that it can throttle
-    /// the completion of other duties.
+    /// Enables tracking of on-chain inclusion for attestations. Previously
+    /// this was the default behaviour, however, tracking on-chain inclusions
+    /// post-electra is costly. The extra load that Charon puts the beacon
+    /// node is deemed so high that it can throttle the completion of other
+    /// duties.
     AttestationInclusion,
-    /// ProposalTimeout enables a longer first consensus round timeout of 1.5
-    /// seconds for proposal duty.
+    /// Enables a longer first consensus round timeout of 1.5 seconds for
+    /// proposal duty.
     ProposalTimeout,
-    /// QUIC enables the QUIC transport protocol in libp2p.
+    /// Enables the QUIC transport protocol in libp2p.
     Quic,
-    /// FetchOnlyCommIdx0 enables querying the beacon node for attestation data
-    /// only for committee index 0.
+    /// Enables querying the beacon node for attestation data only for
+    /// committee index 0.
     FetchOnlyCommIdx0,
-    /// ChainSplitHalt compares locally fetched attestation's target and source
-    /// to leader's proposed target and source attestation. In case they
-    /// differ, Charon does not sign the attestation.
+    /// Compares locally fetched attestation's target and source to leader's
+    /// proposed target and source attestation. In case they differ, Charon
+    /// does not sign the attestation.
     ChainSplitHalt,
 }
 
@@ -164,14 +163,14 @@ pub enum FeaturesetError {
 type Result<T> = std::result::Result<T, FeaturesetError>;
 
 /// Global state for feature statuses.
-struct State {
+struct FeatureSet {
     /// Defines the current rollout status of each feature.
     pub state: HashMap<Feature, Status>,
     /// Defines the minimum enabled status.
     pub min_status: Status,
 }
 
-impl State {
+impl FeatureSet {
     /// Creates a new state with default feature statuses.
     fn new() -> Self {
         let state = HashMap::from([
@@ -197,7 +196,7 @@ impl State {
     }
 }
 
-static GLOBAL_STATE: LazyLock<RwLock<State>> = LazyLock::new(|| RwLock::new(State::new()));
+static GLOBAL_STATE: LazyLock<RwLock<FeatureSet>> = LazyLock::new(|| RwLock::new(FeatureSet::new()));
 
 /// Returns true if the feature is enabled.
 pub fn enabled(feature: Feature) -> Result<bool> {
@@ -215,7 +214,7 @@ pub fn enabled(feature: Feature) -> Result<bool> {
     Ok(feature_status >= state.min_status)
 }
 
-/// CustomEnabledAll returns all custom enabled features.
+/// Returns all custom enabled features.
 pub fn custom_enabled_all() -> Result<Vec<Feature>> {
     let state = GLOBAL_STATE
         .read()
@@ -400,7 +399,7 @@ mod tests {
     fn setup() {
         // Reset state to defaults first, then initialize with default config
         if let Ok(mut state) = GLOBAL_STATE.write() {
-            *state = State::new();
+            *state = FeatureSet::new();
         }
         init(Default::default()).expect("setup should initialize state");
     }
