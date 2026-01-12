@@ -167,6 +167,12 @@ pub struct FeatureSet {
     pub min_status: Status,
 }
 
+impl Default for FeatureSet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FeatureSet {
     /// Creates a new state with default feature statuses.
     pub fn new() -> Self {
