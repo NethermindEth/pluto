@@ -292,12 +292,7 @@ async fn resolve_external_host_periodically(
 ) {
     info!("Starting external host resolver");
 
-    // Resolve immediately on startup
-    resolve_external_host(state.clone(), &external_host).await;
-
-    // Then resolve periodically
     let mut interval = tokio::time::interval(EXTERNAL_HOST_RESOLVE_INTERVAL);
-    interval.tick().await; // Skip the first immediate tick
 
     loop {
         tokio::select! {
