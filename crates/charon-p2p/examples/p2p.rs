@@ -12,6 +12,7 @@ use charon_p2p::{
         pluto_mdns::{PlutoMdnsBehaviour, PlutoMdnsBehaviourEvent},
     },
     config::P2PConfig,
+    gater::ConnGater,
     p2p::{Node, NodeType},
 };
 use clap::Parser;

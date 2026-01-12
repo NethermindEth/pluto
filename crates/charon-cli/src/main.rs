@@ -1,35 +1,22 @@
-//! # Charon CLI
+//! # Pluto CLI
 //!
-//! Command-line interface for the Charon distributed validator node.
+//! Command-line interface for the Pluto distributed validator node.
 //! This crate provides the CLI tools and commands for managing and operating
-//! Charon validator nodes.
-//!
-//! TODO: This is a placeholder to have an executable crate in the workspace.
+//! Pluto validator nodes.
 
-use axum::{Router, routing::get};
-use tokio::net::TcpListener;
+use clap::Parser;
 
-#[tokio::main]
-async fn main() {
-    let app = Router::new().route("/", get(|| async { root() }));
+mod cli;
+mod commands;
+mod error;
 
-    let addr = "0.0.0.0:3000";
-    let listener = TcpListener::bind(addr).await.expect("Impossible!");
-    println!("Listening on {}", addr);
+use cli::{Cli, Commands};
+use error::Result;
 
-    axum::serve(listener, app).await.expect("Impossible!");
-}
+fn main() -> Result<()> {
+    let cli = Cli::parse();
 
-fn root() -> &'static str {
-    "Hello, World!"
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn root_says_hello() {
-        assert_eq!(root(), "Hello, World!");
+    match cli.command {
+        Commands::Enr(args) => commands::enr::run(args),
     }
 }
