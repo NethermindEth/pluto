@@ -18,5 +18,6 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Enr(args) => commands::enr::run(args),
+        Commands::Version(args) => commands::version::run(args),
     }
 }

@@ -2,7 +2,7 @@
 
 use clap::{Parser, Subcommand};
 
-use crate::commands::enr::EnrArgs;
+use crate::commands::{enr::EnrArgs, version::VersionArgs};
 
 /// Pluto - Proof of Stake Ethereum Distributed Validator Client
 #[derive(Parser)]
@@ -26,8 +26,10 @@ pub enum Commands {
         long_about = "Prints an Ethereum Node Record (ENR) from this client's charon-enr-private-key. This serves as a public key that identifies this client to its peers."
     )]
     Enr(EnrArgs),
+
+    #[command(about = "Print version and exit", long_about = "Output version info")]
+    Version(VersionArgs),
     // Future commands will be added here:
-    // Version(VersionArgs),
     // Run(RunArgs),
     // Create(CreateArgs),
 }

@@ -1429,6 +1429,7 @@ dependencies = [
 name = "charon-cli"
 version = "1.7.1"
 dependencies = [
+ "charon-core",
  "charon-eth2",
  "charon-k1util",
  "charon-p2p",
