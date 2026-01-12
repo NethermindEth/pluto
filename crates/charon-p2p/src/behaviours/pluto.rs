@@ -1,5 +1,7 @@
 //! Pluto behaviour.
 
+use std::sync::LazyLock;
+
 use libp2p::{identify, identity::Keypair, ping, relay, swarm::NetworkBehaviour};
 
 use crate::{config::default_ping_config, gater::ConnGater};
@@ -29,18 +31,28 @@ impl PlutoBehaviour {
     }
 }
 
+/// The default user agent for the Pluto network.
+pub static DEFAULT_USER_AGENT: LazyLock<String> =
+    LazyLock::new(|| format!("pluto/{}", *charon_core::version::VERSION));
+
+/// The default identify protocol for the Pluto network.
+pub static DEFAULT_IDENTIFY_PROTOCOL: LazyLock<String> =
+    LazyLock::new(|| format!("/pluto/{}", *charon_core::version::VERSION));
+
 /// Builder for [`PlutoBehaviour`].
 #[derive(Debug, Clone)]
 pub struct PlutoBehaviourBuilder {
     gater: Option<ConnGater>,
     identify_protocol: String,
+    user_agent: String,
 }
 
 impl Default for PlutoBehaviourBuilder {
     fn default() -> Self {
         Self {
             gater: None,
-            identify_protocol: "/pluto/1.0.0-alpha".into(),
+            identify_protocol: DEFAULT_IDENTIFY_PROTOCOL.clone(),
+            user_agent: DEFAULT_USER_AGENT.clone(),
         }
     }
 }
@@ -63,6 +75,12 @@ impl PlutoBehaviourBuilder {
         self
     }
 
+    /// Sets the user agent string.
+    pub fn with_user_agent(mut self, user_agent: impl Into<String>) -> Self {
+        self.user_agent = user_agent.into();
+        self
+    }
+
     /// Builds the [`PlutoBehaviour`] with the provided keypair and relay
     /// client.
     pub fn build(self, key: &Keypair, relay_client: relay::client::Behaviour) -> PlutoBehaviour {
@@ -71,10 +89,10 @@ impl PlutoBehaviourBuilder {
                 .gater
                 .unwrap_or_else(|| ConnGater::new_conn_gater(vec![], vec![])),
             relay: relay_client,
-            identify: identify::Behaviour::new(identify::Config::new(
-                self.identify_protocol,
-                key.public(),
-            )),
+            identify: identify::Behaviour::new(
+                identify::Config::new(self.identify_protocol, key.public())
+                    .with_agent_version(self.user_agent),
+            ),
             ping: ping::Behaviour::new(default_ping_config()),
         }
     }

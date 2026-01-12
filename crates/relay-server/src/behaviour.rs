@@ -35,6 +35,7 @@ pub struct RelayServerBehaviourBuilder {
     gater: Option<ConnGater>,
     identify_protocol: String,
     relay_config: Option<relay::Config>,
+    user_agent: Option<String>,
 }
 
 impl Default for RelayServerBehaviourBuilder {
@@ -43,6 +44,7 @@ impl Default for RelayServerBehaviourBuilder {
             gater: None,
             identify_protocol: "/pluto/relay/1.0.0-alpha".into(),
             relay_config: None,
+            user_agent: None,
         }
     }
 }
@@ -71,6 +73,12 @@ impl RelayServerBehaviourBuilder {
         self
     }
 
+    /// Sets the user agent string.
+    pub fn with_user_agent(mut self, user_agent: impl Into<String>) -> Self {
+        self.user_agent = Some(user_agent.into());
+        self
+    }
+
     /// Builds the [`RelayServerBehaviour`] with the provided keypair.
     pub fn build(self, key: &Keypair) -> RelayServerBehaviour {
         RelayServerBehaviour {
@@ -78,10 +86,13 @@ impl RelayServerBehaviourBuilder {
                 key.public().to_peer_id(),
                 self.relay_config.unwrap_or_default(),
             ),
-            identify: identify::Behaviour::new(identify::Config::new(
-                self.identify_protocol,
-                key.public(),
-            )),
+            identify: identify::Behaviour::new(
+                identify::Config::new(self.identify_protocol, key.public()).with_agent_version(
+                    self.user_agent.unwrap_or_else(|| {
+                        charon_p2p::behaviours::pluto::DEFAULT_USER_AGENT.clone()
+                    }),
+                ),
+            ),
             ping: ping::Behaviour::new(charon_p2p::config::default_ping_config()),
             gater: self
                 .gater

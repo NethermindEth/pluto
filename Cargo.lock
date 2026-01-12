@@ -1614,6 +1614,7 @@ version = "1.7.1"
 dependencies = [
  "anyhow",
  "axum",
+ "charon-core",
  "charon-eth2",
  "charon-k1util",
  "charon-testutil",
