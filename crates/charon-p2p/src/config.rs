@@ -165,7 +165,7 @@ impl P2PConfigBuilder {
 /// The default ping interval.
 pub const DEFAULT_PING_INTERVAL: Duration = Duration::from_secs(1);
 /// The default ping timeout.
-pub const DEFAULT_PING_TIMEOUT: Duration = Duration::from_secs(5);
+pub const DEFAULT_PING_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Returns the default ping configuration.
 pub fn default_ping_config() -> ping::Config {
