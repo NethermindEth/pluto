@@ -30,7 +30,9 @@ pub fn run(args: VersionArgs) -> Result<()> {
     writeln!(writer, "Package: {}", env!("CARGO_PKG_NAME"))?;
     writeln!(writer, "Dependencies:")?;
 
-    writeln!(writer, "\t(??? find solution)")?;
+    for dependency in charon_core::version::dependencies() {
+        writeln!(writer, "\t{dependency}")?;
+    }
 
     writeln!(writer, "Consensus protocols:")?;
     for protocol in charon_core::consensus::protocols::protocols() {
@@ -43,7 +45,7 @@ pub fn run(args: VersionArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_version_output() {
         let args = VersionArgs { verbose: false };
