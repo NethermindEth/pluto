@@ -49,12 +49,10 @@ pub fn git_commit() -> (String, String) {
         include!(concat!(env!("OUT_DIR"), "/built.rs"));
     }
 
-    let hash = built_info::GIT_COMMIT_HASH.unwrap_or("unknown");
-    let hash = if hash == "unknown" {
-        hash.to_string()
-    } else {
-        hash.chars().take(7).collect()
-    };
+    let hash = built_info::GIT_COMMIT_HASH
+        .map(|h| h.chars().take(7).collect())
+        .unwrap_or_else(|| "unknown".into());
+
     let timestamp = chrono::DateTime::parse_from_rfc2822(built_info::BUILT_TIME_UTC)
         .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
         .unwrap_or_else(|_| "unknown".into());

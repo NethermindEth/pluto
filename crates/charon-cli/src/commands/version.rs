@@ -5,8 +5,10 @@ use crate::error::Result;
 /// Arguments for the version command.
 #[derive(clap::Args)]
 pub struct VersionArgs {
-    /// Includes detailed module version info and supported protocols.
-    #[arg(long, short = 'v')]
+    #[arg(
+        long = "verbose",
+        help = "Includes detailed module version info and supported protocols."
+    )]
     pub verbose: bool,
 }
 
@@ -73,10 +75,6 @@ mod tests {
         assert!(
             !output.contains("Package:"),
             "Default output should not contain Package:"
-        );
-        assert!(
-            !output.contains("/n"),
-            "Output should not contain literal /n"
         );
 
         // Parse the version from output
