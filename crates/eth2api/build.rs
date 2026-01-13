@@ -11,7 +11,7 @@ const BEACON_NODE_OAPI_PATH: &str = "build/beacon-node-oapi.json";
 pub fn main() -> Result<()> {
     println!("cargo:rerun-if-changed={}", BEACON_NODE_OAPI_PATH);
 
-    std::process::Command::new("oas3-gen")
+    let generator = std::process::Command::new("oas3-gen")
         .args([
             "generate",
             "client-mod",
@@ -31,6 +31,9 @@ pub fn main() -> Result<()> {
                 error
             }
         })?;
+    if !generator.success() {
+        return Err(Error::new(ErrorKind::Other, "`oas3-gen` command failed"));
+    }
 
     std::fs::remove_file("src/mod.rs")?;
 
