@@ -32,7 +32,7 @@ pub fn main() -> Result<()> {
             }
         })?;
     if !generator.success() {
-        return Err(Error::new(ErrorKind::Other, "`oas3-gen` command failed"));
+        return Err(Error::other("`oas3-gen` command failed"));
     }
 
     std::fs::remove_file("src/mod.rs")?;
