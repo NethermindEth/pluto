@@ -6,7 +6,7 @@ use libp2p::{
     Swarm, SwarmBuilder, identity::Keypair, noise, relay, swarm::NetworkBehaviour, tcp, yamux,
 };
 
-use crate::{config::P2PConfig, gater::ConnGater};
+use crate::config::P2PConfig;
 
 /// P2P error.
 #[derive(Debug, thiserror::Error)]
@@ -22,6 +22,14 @@ pub enum P2PError {
     /// Failed to decode the libp2p keypair.
     #[error("Failed to decode the libp2p keypair: {0}")]
     FailedToDecodeLibp2pKeypair(#[from] libp2p::identity::DecodingError),
+
+    /// Failed to listen on address.
+    #[error("Failed to listen on address: {0}")]
+    FailedToListen(#[from] libp2p::TransportError<std::io::Error>),
+
+    /// Failed to dial peer.
+    #[error("Failed to dial peer: {0}")]
+    FailedToDialPeer(#[from] libp2p::swarm::DialError),
 }
 
 impl P2PError {
@@ -52,7 +60,6 @@ impl<B: NetworkBehaviour> Node<B> {
     pub fn new<F>(
         cfg: P2PConfig,
         key: k256::SecretKey,
-        conn_gater: ConnGater,
         filter_private_addrs: bool,
         node_type: NodeType,
         behaviour_fn: F,
@@ -61,12 +68,8 @@ impl<B: NetworkBehaviour> Node<B> {
         F: Fn(&Keypair, relay::client::Behaviour) -> B,
     {
         match node_type {
-            NodeType::TCP => {
-                Self::new_with_tcp(cfg, key, conn_gater, filter_private_addrs, behaviour_fn)
-            }
-            NodeType::QUIC => {
-                Self::new_with_quic(cfg, key, conn_gater, filter_private_addrs, behaviour_fn)
-            }
+            NodeType::TCP => Self::new_with_tcp(cfg, key, filter_private_addrs, behaviour_fn),
+            NodeType::QUIC => Self::new_with_quic(cfg, key, filter_private_addrs, behaviour_fn),
         }
     }
 
@@ -82,7 +85,6 @@ impl<B: NetworkBehaviour> Node<B> {
     fn new_with_quic<F>(
         _cfg: P2PConfig,
         key: k256::SecretKey,
-        _conn_gater: ConnGater,
         _filter_private_addrs: bool,
         behaviour_fn: F,
     ) -> Result<Self>
@@ -117,7 +119,6 @@ impl<B: NetworkBehaviour> Node<B> {
     fn new_with_tcp<F>(
         _cfg: P2PConfig,
         key: k256::SecretKey,
-        _conn_gater: ConnGater,
         _filter_private_addrs: bool,
         behaviour_fn: F,
     ) -> Result<Self>
@@ -138,6 +139,37 @@ impl<B: NetworkBehaviour> Node<B> {
             .with_dns()
             .map_err(P2PError::failed_to_build_swarm)?
             .with_relay_client(noise::Config::new, yamux::Config::default)
+            .map_err(P2PError::failed_to_build_swarm)?
+            .with_behaviour(behaviour_fn)
+            .map_err(P2PError::failed_to_build_swarm)?
+            .with_swarm_config(Self::default_swarm_config)
+            .build();
+
+        Ok(Node { swarm })
+    }
+
+    /// Creates a new node with relay server.
+    pub fn new_relay_server<F>(
+        _cfg: P2PConfig,
+        key: k256::SecretKey,
+        _filter_private_addrs: bool,
+        behaviour_fn: F,
+    ) -> Result<Self>
+    where
+        F: Fn(&Keypair) -> B,
+    {
+        let mut der = key.to_sec1_der()?;
+        let keypair = Keypair::secp256k1_from_der(&mut der)?;
+
+        let swarm = SwarmBuilder::with_existing_identity(keypair.clone())
+            .with_tokio()
+            .with_tcp(
+                Self::default_tcp_config(),
+                noise::Config::new,
+                yamux::Config::default,
+            )
+            .map_err(P2PError::failed_to_build_swarm)?
+            .with_dns()
             .map_err(P2PError::failed_to_build_swarm)?
             .with_behaviour(behaviour_fn)
             .map_err(P2PError::failed_to_build_swarm)?

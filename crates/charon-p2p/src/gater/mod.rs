@@ -26,7 +26,7 @@ use crate::peer::MutablePeer;
 mod handler;
 
 /// Configuration for the connection gater.
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Config {
     peer_ids: HashSet<PeerId>,
     relays: Vec<Arc<MutablePeer>>,
@@ -68,7 +68,7 @@ impl Config {
 }
 
 /// ConnGater filters incoming and outgoing connections by the cluster peers.
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ConnGater {
     config: Config,
     events: VecDeque<Event>,

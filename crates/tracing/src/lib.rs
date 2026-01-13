@@ -17,3 +17,5 @@ pub mod layers;
 pub mod metrics;
 
 pub use config::{ConsoleConfig, LokiConfig, TracingConfig, TracingConfigBuilder};
+
+pub use init::init;
