@@ -49,12 +49,29 @@ pub fn git_commit() -> (String, String) {
         include!(concat!(env!("OUT_DIR"), "/built.rs"));
     }
 
-    let hash = built_info::GIT_COMMIT_HASH.unwrap_or("unknown").into();
+    let hash = built_info::GIT_COMMIT_HASH
+        .map(|h| h.chars().take(7).collect())
+        .unwrap_or_else(|| "unknown".into());
+
     let timestamp = chrono::DateTime::parse_from_rfc2822(built_info::BUILT_TIME_UTC)
-        .map(|dt| dt.timestamp().to_string())
+        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
         .unwrap_or_else(|_| "unknown".into());
 
     (hash, timestamp)
+}
+
+/// Dependency list from build info in `name v{version}` format.
+pub fn dependencies() -> Vec<String> {
+    mod built_info {
+        include!(concat!(env!("OUT_DIR"), "/built.rs"));
+    }
+
+    let mut deps: Vec<String> = built_info::DEPENDENCIES
+        .iter()
+        .map(|(name, version)| format!("{name} v{version}"))
+        .collect();
+    deps.sort_unstable();
+    deps
 }
 
 /// The type of semantic version, i.e., minor, patch, or pre-release.

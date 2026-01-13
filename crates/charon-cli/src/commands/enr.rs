@@ -18,16 +18,19 @@ use crate::error::{CliError, Result};
 /// Arguments for the ENR command.
 #[derive(clap::Args)]
 pub struct EnrArgs {
-    /// The directory where pluto will store all its internal data.
-    #[arg(long = "data-dir", env = "CHARON_DATA_DIR", default_value = ".charon")]
+    #[arg(
+        long = "data-dir",
+        env = "CHARON_DATA_DIR",
+        default_value = ".charon",
+        help = "The directory where pluto will store all its internal data."
+    )]
     pub data_dir: PathBuf,
 
-    /// Prints the expanded form of ENR.
-    #[arg(long, short = 'v')]
+    #[arg(long, help = "Prints the expanded form of ENR.")]
     pub verbose: bool,
 }
 
-/// loads the p2pkey from disk and prints the ENR for the provided config.
+/// Loads the p2pkey from disk and prints the ENR for the provided config.
 pub fn run(args: EnrArgs) -> Result<()> {
     let mut writer = io::stdout();
 
@@ -40,11 +43,8 @@ pub fn run(args: EnrArgs) -> Result<()> {
             let enr_path = k1::key_path(&args.data_dir);
             return Err(CliError::PrivateKeyNotFound { enr_path });
         }
-        Err(k1::K1Error::K1UtilError(e)) => {
-            return Err(CliError::KeyLoadError(e.to_string()));
-        }
-        Err(k1::K1Error::IoError(e)) => {
-            return Err(CliError::IoError(e));
+        Err(e) => {
+            return Err(CliError::KeyLoadError(e));
         }
     };
 
