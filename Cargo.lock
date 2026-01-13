@@ -1641,6 +1641,7 @@ version = "1.7.1"
 dependencies = [
  "axum",
  "bon",
+ "charon-core",
  "charon-eth2",
  "charon-p2p",
  "charon-tracing",

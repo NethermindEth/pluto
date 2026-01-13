@@ -20,6 +20,7 @@ rand.workspace = true
 charon-tracing.workspace = true
 tracing.workspace = true
 charon-p2p.workspace = true
+charon-core.workspace = true
 
 [dev-dependencies]
 vise-exporter.workspace = true

@@ -1,6 +1,8 @@
 #![allow(missing_docs)] // we need to allow missing docs for the derive macro
 //! Relay server behaviour.
 
+use std::sync::LazyLock;
+
 use libp2p::{identify, identity::Keypair, ping, relay, swarm::NetworkBehaviour};
 
 use charon_p2p::gater::ConnGater;
@@ -38,11 +40,15 @@ pub struct RelayServerBehaviourBuilder {
     user_agent: Option<String>,
 }
 
+/// The default identify protocol for the Pluto network.
+pub static DEFAULT_IDENTIFY_PROTOCOL: LazyLock<String> =
+    LazyLock::new(|| format!("/pluto/relay/{}", *charon_core::version::VERSION));
+
 impl Default for RelayServerBehaviourBuilder {
     fn default() -> Self {
         Self {
             gater: None,
-            identify_protocol: "/pluto/relay/1.0.0-alpha".into(),
+            identify_protocol: DEFAULT_IDENTIFY_PROTOCOL.clone(),
             relay_config: None,
             user_agent: None,
         }
