@@ -13,3 +13,6 @@ pub mod consensus;
 
 /// Protobuf definitions.
 pub mod corepb;
+
+/// Semver version parsing utilities.
+pub mod version;

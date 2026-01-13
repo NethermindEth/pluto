@@ -21,5 +21,6 @@ fn main() -> Result<()> {
             CreateCommands::Enr(args) => commands::create_enr::run(args),
         },
         Commands::Enr(args) => commands::enr::run(args),
+        Commands::Version(args) => commands::version::run(args),
     }
 }

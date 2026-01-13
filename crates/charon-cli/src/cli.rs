@@ -2,7 +2,7 @@
 
 use clap::{Parser, Subcommand};
 
-use crate::commands::{create_enr::CreateEnrArgs, enr::EnrArgs};
+use crate::commands::{create_enr::CreateEnrArgs, enr::EnrArgs, version::VersionArgs};
 
 /// Pluto - Proof of Stake Ethereum Distributed Validator Client
 #[derive(Parser)]
@@ -32,8 +32,10 @@ pub enum Commands {
         long_about = "Create artifacts for a distributed validator cluster. These commands can be used to facilitate the creation of a distributed validator cluster between a group of operators by performing a distributed key generation ceremony, or they can be used to create a local cluster for single operator use cases."
     )]
     Create(CreateArgs),
+
+    #[command(about = "Print version and exit", long_about = "Output version info")]
+    Version(VersionArgs),
     // Future commands will be added here:
-    // Version(VersionArgs),
     // Run(RunArgs),
 }
 

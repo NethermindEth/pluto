@@ -40,7 +40,7 @@ async fn main() -> Result<()> {
     let mut p2p: Node<_> = Node::new(
         P2PConfig::default(),
         key.clone(),
-        ConnGater,
+        ConnGater::new_open_gater(),
         false,
         NodeType::QUIC,
         PlutoMdnsBehaviour::new,
