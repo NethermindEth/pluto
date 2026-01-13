@@ -292,30 +292,6 @@ impl Default for Config {
     }
 }
 
-impl FeatureSet {
-    /// Temporarily enables a feature for testing.
-    ///
-    /// Returns the previous status so it can be restored later.
-    /// ```
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn enable_for_test(&mut self, feature: Feature) -> Status {
-        let prev = self.state.get(&feature).copied().unwrap_or(Status::Disable);
-        self.state.insert(feature, Status::Enable);
-        prev
-    }
-
-    /// Temporarily disables a feature for testing.
-    ///
-    /// Returns the previous status so it can be restored later.
-    /// ```
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn disable_for_test(&mut self, feature: Feature) -> Status {
-        let prev = self.state.get(&feature).copied().unwrap_or(Status::Disable);
-        self.state.insert(feature, Status::Disable);
-        prev
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,48 +419,6 @@ mod tests {
             .expect("should not error");
 
         assert!(!featureset.enabled(Feature::EagerDoubleLinear));
-    }
-
-    #[test]
-    fn test_enable_for_test_helper() {
-        let mut featureset = FeatureSet::new();
-        featureset
-            .init(Default::default())
-            .expect("init should work");
-
-        // Initially disabled
-        assert!(!featureset.enabled(Feature::MockAlpha));
-
-        // Enable using helper
-        let prev = featureset.enable_for_test(Feature::MockAlpha);
-        assert!(featureset.enabled(Feature::MockAlpha));
-
-        // Restore to previous state
-        featureset.state.insert(Feature::MockAlpha, prev);
-        assert!(!featureset.enabled(Feature::MockAlpha));
-    }
-
-    #[test]
-    fn test_disable_for_test_helper() {
-        let mut featureset = FeatureSet::new();
-        featureset
-            .init(Config {
-                min_status: Status::Stable,
-                enabled: vec![Feature::EagerDoubleLinear],
-                disabled: vec![],
-            })
-            .expect("init should work");
-
-        // Should be enabled (it's Stable status)
-        assert!(featureset.enabled(Feature::EagerDoubleLinear));
-
-        // Disable using helper
-        let prev = featureset.disable_for_test(Feature::EagerDoubleLinear);
-        assert!(!featureset.enabled(Feature::EagerDoubleLinear));
-
-        // Restore to previous state
-        featureset.state.insert(Feature::EagerDoubleLinear, prev);
-        assert!(featureset.enabled(Feature::EagerDoubleLinear));
     }
 
     #[test]

@@ -24,9 +24,5 @@ url.workspace = true
 [build-dependencies]
 charon-build-proto.workspace = true
 
-[features]
-# Enables test utilities for use in other crates' tests
-test-utils = []
-
 [lints]
 workspace = true
