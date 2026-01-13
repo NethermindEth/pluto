@@ -401,6 +401,51 @@ mod tests {
     }
 
     #[test]
+    // Verifies FeatureSet::new() matches Go's
+    // featureset.Init(featureset.DefaultConfig()) Reference:
+    // app/featureset/featureset.go and app/featureset/config.go
+    fn test_default_matches_go_implementation() {
+        // Verify Config::default() matches Go's DefaultConfig()
+        let config = Config::default();
+        assert_eq!(config.min_status, Status::Stable);
+        assert!(config.enabled.is_empty());
+        assert!(config.disabled.is_empty());
+
+        // Verify FeatureSet::new() matches Go's state after
+        // featureset.Init(featureset.DefaultConfig())
+        let featureset = FeatureSet::new();
+        assert_eq!(featureset.min_status, Status::Stable);
+
+        assert_eq!(featureset.state.len(), 13);
+
+        // Stable features in Go
+        let stable_features = [Feature::EagerDoubleLinear, Feature::ConsensusParticipate];
+        for feature in stable_features {
+            assert_eq!(featureset.state.get(&feature), Some(&Status::Stable));
+            assert!(featureset.enabled(feature));
+        }
+
+        // Alpha features in Go
+        let alpha_features = [
+            Feature::MockAlpha,
+            Feature::AggSigDBV2,
+            Feature::JsonRequests,
+            Feature::GnosisBlockHotfix,
+            Feature::Linear,
+            Feature::SseReorgDuties,
+            Feature::AttestationInclusion,
+            Feature::ProposalTimeout,
+            Feature::Quic,
+            Feature::FetchOnlyCommIdx0,
+            Feature::ChainSplitHalt,
+        ];
+        for feature in alpha_features {
+            assert_eq!(featureset.state.get(&feature), Some(&Status::Alpha));
+            assert!(!featureset.enabled(feature));
+        }
+    }
+
+    #[test]
     fn test_enable_gnosis_block_hotfix_if_not_disabled() {
         // Test method when not disabled explicitly
         let config = Config::default();
