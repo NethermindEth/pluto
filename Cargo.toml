@@ -24,7 +24,7 @@ publish = false
 
 [workspace.dependencies]
 alloy = { version = "1.3", features = ["essentials"] }
-built = { version = "0.8.0", features = ["git2", "chrono"] }
+built = { version = "0.8.0", features = ["git2", "chrono", "cargo-lock"] }
 blst = "0.3"
 anyhow = "1"
 cancellation = "0.1.0"

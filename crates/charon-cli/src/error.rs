@@ -18,9 +18,16 @@ pub(crate) enum CliError {
         enr_path: PathBuf,
     },
 
+    /// Private key already exists.
+    #[error("charon-enr-private-key already exists")]
+    PrivateKeyAlreadyExists {
+        /// Path where the ENR private key exists.
+        enr_path: PathBuf,
+    },
+
     /// Failed to load private key.
     #[error("Failed to load private key: {0}")]
-    KeyLoadError(String),
+    KeyLoadError(#[from] charon_p2p::k1::K1Error),
 
     /// ENR generation failed.
     #[error("ENR generation failed: {0}")]
