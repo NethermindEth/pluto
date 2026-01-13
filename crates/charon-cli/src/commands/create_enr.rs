@@ -16,8 +16,12 @@ use crate::error::{CliError, Result};
 /// Arguments for the create enr command
 #[derive(clap::Args)]
 pub struct CreateEnrArgs {
-    /// The directory where pluto will store all its internal data.
-    #[arg(long = "data-dir", env = "CHARON_DATA_DIR", default_value = ".charon")]
+    #[arg(
+        long = "data-dir",
+        env = "CHARON_DATA_DIR",
+        default_value = ".charon",
+        help = "The directory where pluto will store all its internal data."
+    )]
     pub data_dir: PathBuf,
 }
 

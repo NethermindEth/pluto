@@ -6,7 +6,7 @@ use crate::error::Result;
 #[derive(clap::Args)]
 pub struct VersionArgs {
     #[arg(
-        long = "verbose",
+        long,
         help = "Includes detailed module version info and supported protocols."
     )]
     pub verbose: bool,
