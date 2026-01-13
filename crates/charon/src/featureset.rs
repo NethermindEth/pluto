@@ -174,9 +174,25 @@ impl Default for FeatureSet {
 }
 
 impl FeatureSet {
-    /// Creates a new state with default feature statuses.
+    /// Creates a new feature set with default configuration.
     pub fn new() -> Self {
-        let state = HashMap::from([
+        Self::from_config(Default::default()).expect("default config should always be valid")
+    }
+
+    /// Creates a feature set from the given configuration.
+    pub fn from_config(config: Config) -> Result<Self> {
+        // Validate min_status is one of the allowed values
+        match config.min_status {
+            Status::Alpha | Status::Beta | Status::Stable => {}
+            _ => {
+                return Err(FeaturesetError::UnknownMinStatus {
+                    min_status: config.min_status.to_string(),
+                });
+            }
+        }
+
+        // Initialize with default feature statuses
+        let mut state = HashMap::from([
             (Feature::EagerDoubleLinear, Status::Stable),
             (Feature::ConsensusParticipate, Status::Stable),
             (Feature::MockAlpha, Status::Alpha),
@@ -192,9 +208,37 @@ impl FeatureSet {
             (Feature::ChainSplitHalt, Status::Alpha),
         ]);
 
-        Self {
+        // Enable features
+        for feature in config.enabled {
+            state.insert(feature, Status::Enable);
+        }
+
+        // Disable features
+        for feature in config.disabled {
+            state.insert(feature, Status::Disable);
+        }
+
+        Ok(Self {
             state,
-            min_status: Status::Stable,
+            min_status: config.min_status,
+        })
+    }
+
+    /// Enables GnosisBlockHotfix if it was not disabled by the user.
+    ///
+    /// This is still a temporary workaround for the gnosis chain.
+    /// When go-eth2-client is fully supporting custom specs, this function has
+    /// to be removed with GnosisBlockHotfix feature.
+    pub fn enable_gnosis_block_hotfix_if_not_disabled(&mut self, config: &Config) {
+        let disabled = config.disabled.contains(&Feature::GnosisBlockHotfix);
+
+        if disabled {
+            tracing::warn!(
+                "Feature gnosis_block_hotfix is required by gnosis/chiado, but explicitly disabled"
+            );
+        } else {
+            self.state
+                .insert(Feature::GnosisBlockHotfix, Status::Enable);
         }
     }
 
@@ -217,52 +261,6 @@ impl FeatureSet {
         }
 
         custom_enabled_features
-    }
-
-    /// Initializes the feature set with the given configuration.
-    pub fn init(&mut self, config: Config) -> Result<()> {
-        // Set min status
-        // Validate min_status is one of the allowed values
-        match config.min_status {
-            Status::Alpha | Status::Beta | Status::Stable => {
-                self.min_status = config.min_status;
-            }
-            _ => {
-                return Err(FeaturesetError::UnknownMinStatus {
-                    min_status: config.min_status.to_string(),
-                });
-            }
-        }
-
-        // Enable features
-        for feature in config.enabled {
-            self.state.insert(feature, Status::Enable);
-        }
-
-        // Disable features
-        for feature in config.disabled {
-            self.state.insert(feature, Status::Disable);
-        }
-
-        Ok(())
-    }
-
-    /// Enables GnosisBlockHotfix if it was not disabled by the user.
-    ///
-    /// This is still a temporary workaround for the gnosis chain.
-    /// When go-eth2-client is fully supporting custom specs, this function has
-    /// to be removed with GnosisBlockHotfix feature.
-    pub fn enable_gnosis_block_hotfix_if_not_disabled(&mut self, config: &Config) {
-        let disabled = config.disabled.contains(&Feature::GnosisBlockHotfix);
-
-        if disabled {
-            tracing::warn!(
-                "Feature gnosis_block_hotfix is required by gnosis/chiado, but explicitly disabled"
-            );
-        } else {
-            self.state
-                .insert(Feature::GnosisBlockHotfix, Status::Enable);
-        }
     }
 }
 
@@ -298,10 +296,7 @@ mod tests {
 
     #[test]
     fn test_all_feature_status() {
-        let mut featureset = FeatureSet::new();
-        featureset
-            .init(Default::default())
-            .expect("init should work");
+        let featureset = FeatureSet::new();
 
         let features = Feature::all();
 
@@ -328,23 +323,19 @@ mod tests {
 
     #[test]
     fn test_custom_enabled_all() {
-        let mut featureset = FeatureSet::new();
-        featureset
-            .init(Default::default())
-            .expect("init should work");
+        let featureset = FeatureSet::new();
 
         // Initially no custom enabled features
         let custom = featureset.custom_enabled_all();
         assert!(custom.is_empty());
 
         // Enable a feature
-        featureset
-            .init(Config {
-                min_status: Status::Stable,
-                enabled: vec![Feature::MockAlpha],
-                disabled: Vec::new(),
-            })
-            .expect("init should work");
+        let featureset = FeatureSet::from_config(Config {
+            min_status: Status::Stable,
+            enabled: vec![Feature::MockAlpha],
+            disabled: Vec::new(),
+        })
+        .expect("from_config should work");
 
         let custom = featureset.custom_enabled_all();
         assert!(custom.contains(&Feature::MockAlpha));
@@ -353,19 +344,15 @@ mod tests {
 
     #[test]
     fn test_config() {
-        let mut featureset = FeatureSet::new();
+        let featureset = FeatureSet::new();
+        assert_eq!(featureset.min_status, Status::Stable);
 
-        featureset
-            .init(Default::default())
-            .expect("default config should work");
-
-        featureset
-            .init(Config {
-                min_status: Status::Alpha,
-                enabled: vec![],
-                disabled: vec![],
-            })
-            .expect("alpha config should work");
+        let featureset = FeatureSet::from_config(Config {
+            min_status: Status::Alpha,
+            enabled: vec![],
+            disabled: vec![],
+        })
+        .expect("alpha config should work");
 
         // MockAlpha is Alpha status, min_status is now Alpha, so it should be enabled
         assert!(featureset.enabled(Feature::MockAlpha));
@@ -373,74 +360,63 @@ mod tests {
 
     #[test]
     fn test_enable_feature() {
-        let mut featureset = FeatureSet::new();
-        featureset
-            .init(Default::default())
-            .expect("init should work");
+        let featureset = FeatureSet::new();
 
-        // Initially disabled
+        // Initially disabled (MockAlpha is Alpha status, min_status is Stable)
         assert!(!featureset.enabled(Feature::MockAlpha));
 
         // Enable the feature
-        featureset
-            .init(Config {
-                min_status: Status::Stable,
-                enabled: vec![Feature::MockAlpha],
-                disabled: vec![],
-            })
-            .expect("should not error");
+        let featureset = FeatureSet::from_config(Config {
+            min_status: Status::Stable,
+            enabled: vec![Feature::MockAlpha],
+            disabled: vec![],
+        })
+        .expect("should not error");
 
         assert!(featureset.enabled(Feature::MockAlpha));
     }
 
     #[test]
     fn test_disable_feature() {
-        let mut featureset = FeatureSet::new();
-
-        // First enable a stable feature
-        featureset
-            .init(Config {
-                min_status: Status::Stable,
-                enabled: vec![Feature::EagerDoubleLinear],
-                disabled: vec![],
-            })
-            .expect("init should work");
+        // First create with a stable feature (EagerDoubleLinear is Stable by default)
+        let featureset = FeatureSet::from_config(Config {
+            min_status: Status::Stable,
+            enabled: vec![],
+            disabled: vec![],
+        })
+        .expect("from_config should work");
 
         // Should be enabled (it's Stable status)
         assert!(featureset.enabled(Feature::EagerDoubleLinear));
 
         // Now disable it
-        featureset
-            .init(Config {
-                min_status: Status::Stable,
-                enabled: vec![],
-                disabled: vec![Feature::EagerDoubleLinear],
-            })
-            .expect("should not error");
+        let featureset = FeatureSet::from_config(Config {
+            min_status: Status::Stable,
+            enabled: vec![],
+            disabled: vec![Feature::EagerDoubleLinear],
+        })
+        .expect("should not error");
 
         assert!(!featureset.enabled(Feature::EagerDoubleLinear));
     }
 
     #[test]
     fn test_enable_gnosis_block_hotfix_if_not_disabled() {
-        let mut featureset = FeatureSet::new();
+        // Test method when not disabled explicitly
         let config = Config::default();
-
-        // Test when not disabled explicitly
-        featureset.init(config.clone()).expect("init should work");
+        let mut featureset =
+            FeatureSet::from_config(config.clone()).expect("from_config should work");
         featureset.enable_gnosis_block_hotfix_if_not_disabled(&config);
         assert!(featureset.enabled(Feature::GnosisBlockHotfix));
 
-        // Test when disabled explicitly
-        let mut featureset = FeatureSet::new();
+        // Test method when disabled explicitly
         let config_with_disabled = Config {
             min_status: Status::Stable,
             enabled: vec![],
             disabled: vec![Feature::GnosisBlockHotfix],
         };
-        featureset
-            .init(config_with_disabled.clone())
-            .expect("init should work");
+        let mut featureset =
+            FeatureSet::from_config(config_with_disabled.clone()).expect("from_config should work");
         featureset.enable_gnosis_block_hotfix_if_not_disabled(&config_with_disabled);
         assert!(!featureset.enabled(Feature::GnosisBlockHotfix));
     }
