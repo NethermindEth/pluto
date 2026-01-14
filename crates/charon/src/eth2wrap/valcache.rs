@@ -114,9 +114,8 @@ impl ValidatorCache {
         Ok(())
     }
 
-    /// Returns the cached active and complete validators, or fetches them
-    /// from the beacon node using the head state and populates the cache if
-    /// not already cached.
+    /// Returns the cached active validators and complete validators response,
+    /// or fetches them if not available populating the cache.
     pub async fn get_by_head(&self) -> Result<(ActiveValidators, CompleteValidators)> {
         {
             // Limit the scope of the lock
@@ -166,12 +165,12 @@ impl ValidatorCache {
         Ok((active_validators, complete_validators))
     }
 
-    /// Fetches active and complete validators by slot and populates the
-    /// cache. If it fails to fetch by slot, it falls back to the head state.
+    /// Fetches active and complete validators response by slot populating the
+    /// cache. If it fails to fetch by slot, it falls back to head state.
     ///
-    /// Returns a tuple containing the active validators, complete validators,
-    /// and a boolean indicating whether the data was fetched by slot (`true`)
-    /// or fell back to head (`false`).
+    /// Returns a tuple containing the active validators, complete validators
+    /// response, and a boolean indicating whether the data was fetched by
+    /// slot (`true`) or fell back to head (`false`).
     pub async fn get_by_slot(
         &self,
         slot: u64,
