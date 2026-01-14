@@ -224,7 +224,7 @@ impl TryFrom<&str> for PubKey {
     type Error = PubKeyError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        let value = value.strip_prefix("0x").unwrap_or(&value);
+        let value = value.strip_prefix("0x").unwrap_or(value);
         let hex_value = hex::decode(value).map_err(|_| PubKeyError::InvalidString)?;
         PubKey::try_from(hex_value.as_slice())
     }

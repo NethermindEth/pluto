@@ -197,7 +197,7 @@ impl ValidatorCache {
                         .eth2_cl
                         .get_state_validators(opts)
                         .await
-                        .map_err(|e| EthBeaconNodeApiClientError::RequestError(e))
+                        .map_err(EthBeaconNodeApiClientError::RequestError)
                         .and_then(|response| match response {
                             GetStateValidatorsResponse::Ok(response) => Ok(response),
                             _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
