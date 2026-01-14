@@ -22,12 +22,12 @@ enum BeaconNodeVersionError {
 fn minimum_beacon_node_version(name: &str) -> Option<version::SemVer> {
     let name = name.to_lowercase();
     match name.as_str() {
-        "lighthouse" => Some(version::SemVer::try_from("v8.0.0-rc.0").unwrap()),
-        "teku" => Some(version::SemVer::try_from("v25.9.3").unwrap()),
-        "lodestar" => Some(version::SemVer::try_from("v1.35.0-rc.1").unwrap()),
-        "nimbus" => Some(version::SemVer::try_from("v25.9.2").unwrap()),
-        "prysm" => Some(version::SemVer::try_from("v6.1.0").unwrap()),
-        "grandine" => Some(version::SemVer::try_from("v2.0.0-rc0").unwrap()),
+        "lighthouse" => Some(version::SemVer::parse("v8.0.0-rc.0").unwrap()),
+        "teku" => Some(version::SemVer::parse("v25.9.3").unwrap()),
+        "lodestar" => Some(version::SemVer::parse("v1.35.0-rc.1").unwrap()),
+        "nimbus" => Some(version::SemVer::parse("v25.9.2").unwrap()),
+        "prysm" => Some(version::SemVer::parse("v6.1.0").unwrap()),
+        "grandine" => Some(version::SemVer::parse("v2.0.0-rc0").unwrap()),
         _ => None,
     }
 }
@@ -113,16 +113,16 @@ mod tests {
             (
                 "Nimbus/v25.9.0-c7e5ca-stateofus",
                 Err(BeaconNodeVersionError::TooOld {
-                    client: version::SemVer::try_from("v25.9.0").unwrap(),
-                    minimum: version::SemVer::try_from("v25.9.2").unwrap(),
+                    client: version::SemVer::parse("v25.9.0").unwrap(),
+                    minimum: version::SemVer::parse("v25.9.2").unwrap(),
                 }),
             ),
             // Prysm
             (
                 "Prysm/v5.3.2 (linux amd64)",
                 Err(BeaconNodeVersionError::TooOld {
-                    client: version::SemVer::try_from("v5.3.2").unwrap(),
-                    minimum: version::SemVer::try_from("v6.1.0").unwrap(),
+                    client: version::SemVer::parse("v5.3.2").unwrap(),
+                    minimum: version::SemVer::parse("v6.1.0").unwrap(),
                 }),
             ),
             ("Prysm/v6.1.2 (linux amd64)", Ok(())),
