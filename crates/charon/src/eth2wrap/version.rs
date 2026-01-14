@@ -19,18 +19,17 @@ enum BeaconNodeVersionError {
     },
 }
 
-fn minimum_beacon_node_version(name: &str) -> Option<version::SemVer> {
-    let name = name.to_lowercase();
-    match name.as_str() {
-        "lighthouse" => Some(version::SemVer::parse("v8.0.0-rc.0").unwrap()),
-        "teku" => Some(version::SemVer::parse("v25.9.3").unwrap()),
-        "lodestar" => Some(version::SemVer::parse("v1.35.0-rc.1").unwrap()),
-        "nimbus" => Some(version::SemVer::parse("v25.9.2").unwrap()),
-        "prysm" => Some(version::SemVer::parse("v6.1.0").unwrap()),
-        "grandine" => Some(version::SemVer::parse("v2.0.0-rc0").unwrap()),
-        _ => None,
-    }
-}
+static MINIMUM_BEACON_NODE_VERSIONS: LazyLock<std::collections::HashMap<&str, version::SemVer>> =
+    LazyLock::new(|| {
+        std::collections::HashMap::from([
+            ("lighthouse", version::SemVer::parse("v8.0.0-rc.0").unwrap()),
+            ("teku", version::SemVer::parse("v25.9.3").unwrap()),
+            ("lodestar", version::SemVer::parse("v1.35.0-rc.1").unwrap()),
+            ("nimbus", version::SemVer::parse("v25.9.2").unwrap()),
+            ("prysm", version::SemVer::parse("v6.1.0").unwrap()),
+            ("grandine", version::SemVer::parse("v2.0.0-rc0").unwrap()),
+        ])
+    });
 
 static VERSION_EXTRACT_REGEX: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"^([^/]+)/v?([0-9]+\.[0-9]+\.[0-9]+)").expect("invalid regex")
@@ -49,7 +48,10 @@ fn check_beacon_node_version_status(bn_version: &str) -> Result<()> {
         .map_err(|_| BeaconNodeVersionError::InvalidFormat)?;
 
     let name = &matches[1];
-    let minimum = minimum_beacon_node_version(name).ok_or(BeaconNodeVersionError::UnknownClient)?;
+    let minimum = MINIMUM_BEACON_NODE_VERSIONS
+        .get(&name.to_lowercase().as_str())
+        .ok_or(BeaconNodeVersionError::UnknownClient)?
+        .clone();
 
     if client < minimum {
         return Err(BeaconNodeVersionError::TooOld { client, minimum });
@@ -146,7 +148,7 @@ mod tests {
 
         for (input, expected) in tc {
             let result = super::check_beacon_node_version_status(input);
-            assert_eq!(result, expected);
+            assert_eq!(result, expected, "input = {input}");
         }
     }
 }
