@@ -99,7 +99,7 @@ impl ValidatorCache {
     /// Returns the cached active validators, cached complete validators
     /// response, or fetches them if not available populating the cache.
     pub async fn get_by_head(&self) -> Result<(ActiveValidators, CompleteValidators)> {
-        let inner = self
+        let mut inner = self
             .0
             .lock()
             .map_err(|_| ValidatorCacheError::PoisonError)?;
@@ -108,6 +108,59 @@ impl ValidatorCache {
             return Ok((active.clone(), complete.clone()));
         };
 
-        todo!();
+        let opts = GetStateValidatorsRequest {
+            path: GetStateValidatorsRequestPath {
+                state_id: "head".into(),
+            },
+            query: GetStateValidatorsRequestQuery {
+                id: Some(inner.pubkeys.iter().map(|pk| pk.to_string()).collect()),
+                ..Default::default()
+            },
+        };
+
+        let state_validators = inner
+            .eth2_cl
+            .get_state_validators(opts)
+            .await
+            .map_err(|e| EthBeaconNodeApiClientError::RequestError(e))
+            .and_then(|response| match response {
+                GetStateValidatorsResponse::Ok(response) => Ok(response),
+                _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
+            })?;
+
+        let all_validators = state_validators
+            .data
+            .into_iter()
+            .map(|datum| {
+                let index: ValidatorIndex = datum
+                    .index
+                    .parse()
+                    .map_err(|_| EthBeaconNodeApiClientError::UnexpectedType)?;
+
+                let validator: Validator = datum.try_into()?;
+
+                Ok((index, validator))
+            })
+            .collect::<Result<HashMap<ValidatorIndex, Validator>>>()?;
+
+        let active_validators = all_validators
+            .iter()
+            .filter(|(_, validator)| validator.status.is_active())
+            .map(|(index, validator)| {
+                let index = *index;
+                let pubkey = PubKey::try_from(validator.validator.pubkey.as_str())
+                    .map_err(|_| EthBeaconNodeApiClientError::UnexpectedType)?;
+
+                Ok((index, pubkey))
+            })
+            .collect::<Result<HashMap<ValidatorIndex, PubKey>>>()?;
+
+        let complete_validators = CompleteValidators(all_validators);
+        let active_validators = ActiveValidators(active_validators);
+
+        inner.active = Some(active_validators.clone());
+        inner.complete = Some(complete_validators.clone());
+
+        return Ok((active_validators, complete_validators));
     }
 }
