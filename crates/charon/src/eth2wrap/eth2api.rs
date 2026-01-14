@@ -1,10 +1,6 @@
 #![allow(missing_docs)]
 
-use eth2api::{
-    GetStateValidatorsResponseResponseDatum, ValidatorResponseValidator, ValidatorStatus,
-};
-
-type Result<T> = std::result::Result<T, EthBeaconNodeApiClientError>;
+use eth2api::ValidatorStatus;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EthBeaconNodeApiClientError {
@@ -34,32 +30,5 @@ impl ValidatorStatusExt for ValidatorStatus {
                 | ValidatorStatus::ActiveExiting
                 | ValidatorStatus::ActiveSlashed
         )
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Validator {
-    pub index: ValidatorIndex,
-    pub balance: Gwei,
-    pub status: ValidatorStatus,
-    pub validator: ValidatorResponseValidator,
-}
-
-impl TryFrom<GetStateValidatorsResponseResponseDatum> for Validator {
-    type Error = EthBeaconNodeApiClientError;
-
-    fn try_from(datum: GetStateValidatorsResponseResponseDatum) -> Result<Self> {
-        Ok(Self {
-            index: datum
-                .index
-                .parse()
-                .map_err(|_| EthBeaconNodeApiClientError::UnexpectedType)?,
-            balance: datum
-                .balance
-                .parse()
-                .map_err(|_| EthBeaconNodeApiClientError::UnexpectedType)?,
-            status: datum.status,
-            validator: datum.validator,
-        })
     }
 }

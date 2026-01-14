@@ -1,4 +1,4 @@
-/// Validate Beacon Node versions
+/// Validate Beacon node versions
 pub mod version;
 
 /// TODO

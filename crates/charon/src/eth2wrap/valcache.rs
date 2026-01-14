@@ -1,10 +1,9 @@
-use crate::eth2wrap::eth2api::{
-    EthBeaconNodeApiClientError, Validator, ValidatorIndex, ValidatorStatusExt,
-};
+use crate::eth2wrap::eth2api::{EthBeaconNodeApiClientError, ValidatorIndex, ValidatorStatusExt};
 use charon_core::types::PubKey;
 use eth2api::{
     EthBeaconNodeApiClient, GetStateValidatorsRequest, GetStateValidatorsRequestPath,
     GetStateValidatorsRequestQuery, GetStateValidatorsResponse, GetStateValidatorsResponseResponse,
+    GetStateValidatorsResponseResponseDatum,
 };
 use std::{
     collections::HashMap,
@@ -45,10 +44,10 @@ impl std::ops::Deref for ActiveValidators {
 
 /// Complete response of the Beacon node validators endpoint.
 #[derive(Debug, Clone, Default)]
-pub struct CompleteValidators(HashMap<ValidatorIndex, Validator>);
+pub struct CompleteValidators(HashMap<ValidatorIndex, GetStateValidatorsResponseResponseDatum>);
 
 impl std::ops::Deref for CompleteValidators {
-    type Target = HashMap<ValidatorIndex, Validator>;
+    type Target = HashMap<ValidatorIndex, GetStateValidatorsResponseResponseDatum>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -230,17 +229,20 @@ fn validators_from_response(
                 .index
                 .parse()
                 .map_err(|_| EthBeaconNodeApiClientError::UnexpectedType)?;
-            let validator = datum.try_into()?;
 
-            Ok((index, validator))
+            Ok((index, datum))
         })
-        .collect::<Result<HashMap<ValidatorIndex, Validator>>>()?;
+        .collect::<Result<HashMap<ValidatorIndex, GetStateValidatorsResponseResponseDatum>>>()?;
 
     let active_validators = all_validators
         .iter()
         .filter(|(_, v)| v.status.is_active())
         .map(|(&index, v)| {
-            let pubkey = PubKey::try_from(v.validator.pubkey.as_str())
+            let pubkey = v
+                .validator
+                .pubkey
+                .as_str()
+                .try_into()
                 .map_err(|_| EthBeaconNodeApiClientError::UnexpectedType)?;
 
             Ok((index, pubkey))
