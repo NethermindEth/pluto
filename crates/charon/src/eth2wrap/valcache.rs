@@ -1,10 +1,18 @@
 #![allow(missing_docs)]
 
-use crate::eth2wrap::client::{BeaconClient, ValidatorIndex};
-use alloy::primitives::map::HashMap;
+use crate::eth2wrap::eth2api::{
+    EthBeaconNodeApiClientError, Validator, ValidatorIndex, ValidatorStatusExt,
+};
 use charon_core::types::PubKey;
-// TODO: Should we use Tokio's Mutex instead?
-use std::sync::{Arc, Mutex};
+use eth2api::{
+    EthBeaconNodeApiClient, GetStateValidatorsRequest, GetStateValidatorsRequestPath,
+    GetStateValidatorsRequestQuery, GetStateValidatorsResponse,
+};
+use std::{
+    collections::HashMap,
+    // TODO: Should we use Tokio's Mutex instead?
+    sync::{Arc, Mutex},
+};
 
 type Result<T> = std::result::Result<T, ValidatorCacheError>;
 
@@ -13,6 +21,9 @@ pub enum ValidatorCacheError {
     /// Failed to lock the Beacon Client.
     #[error("Failed to lock the Beacon Client")]
     PoisonError,
+
+    #[error("Beacon client error: {0}")]
+    BeaconClientError(#[from] EthBeaconNodeApiClientError),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -27,10 +38,10 @@ impl std::ops::Deref for ActiveValidators {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct CompleteValidators(HashMap<ValidatorIndex, PubKey>);
+pub struct CompleteValidators(HashMap<ValidatorIndex, Validator>);
 
 impl std::ops::Deref for CompleteValidators {
-    type Target = HashMap<ValidatorIndex, PubKey>;
+    type Target = HashMap<ValidatorIndex, Validator>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -57,14 +68,14 @@ trait CachedValidatorsProvider {
 pub struct ValidatorCache(Arc<Mutex<ValidatorCacheInner>>);
 
 struct ValidatorCacheInner {
-    eth2_cl: BeaconClient,
+    eth2_cl: EthBeaconNodeApiClient,
     pubkeys: Vec<PubKey>,
     active: Option<ActiveValidators>,
     complete: Option<CompleteValidators>,
 }
 
 impl ValidatorCache {
-    pub fn new(eth2_cl: BeaconClient, pubkeys: Vec<PubKey>) -> Self {
+    pub fn new(eth2_cl: EthBeaconNodeApiClient, pubkeys: Vec<PubKey>) -> Self {
         Self(Arc::new(Mutex::new(ValidatorCacheInner {
             eth2_cl,
             pubkeys,
@@ -83,16 +94,6 @@ impl ValidatorCache {
         inner.active = None;
         inner.complete = None;
         Ok(())
-    }
-
-    // Returns the cached active validators and true if they are available.
-    fn active_cached() -> Result<ActiveValidators> {
-        todo!();
-    }
-
-    /// Returns the cached complete validators and true if they are available.
-    fn cached() {
-        todo!();
     }
 
     /// Returns the cached active validators, cached complete validators
