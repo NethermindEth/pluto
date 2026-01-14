@@ -1,0 +1,29 @@
+[package]
+name = "charon-relay-server"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+axum.workspace = true
+bon.workspace = true
+libp2p.workspace = true
+thiserror.workspace = true
+k256.workspace = true
+charon-eth2.workspace = true
+vise.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+rand.workspace = true
+charon-tracing.workspace = true
+tracing.workspace = true
+charon-p2p.workspace = true
+charon-core.workspace = true
+
+[dev-dependencies]
+vise-exporter.workspace = true
+
+[lints]
+workspace = true

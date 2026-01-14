@@ -127,13 +127,14 @@ pub enum MutablePeerError {
 }
 
 /// MutablePeer is a mutable peer that can be updated.
+#[derive(Debug, Clone)]
 pub struct MutablePeer {
     /// Inner state of the mutable peer.
     inner: Arc<Mutex<MutablePeerInner>>,
 }
 
 /// Subscriber is a function that is called when the peer is updated.
-pub type Subscriber = Box<dyn Fn(&Peer) + Send + 'static>;
+pub type Subscriber = Box<dyn Fn(&Peer) + Send + Sync + 'static>;
 
 /// MutablePeerInner is the inner state of a MutablePeer.
 pub struct MutablePeerInner {
@@ -142,6 +143,15 @@ pub struct MutablePeerInner {
 
     /// Subscribers.
     subs: Vec<Subscriber>,
+}
+
+impl std::fmt::Debug for MutablePeerInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MutablePeerInner")
+            .field("peer", &self.peer)
+            .field("subs", &format!("[{} subscribers]", self.subs.len()))
+            .finish()
+    }
 }
 
 type MutablePeerResult<T> = std::result::Result<T, MutablePeerError>;

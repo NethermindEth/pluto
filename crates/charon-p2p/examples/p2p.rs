@@ -12,7 +12,6 @@ use charon_p2p::{
         pluto_mdns::{PlutoMdnsBehaviour, PlutoMdnsBehaviourEvent},
     },
     config::P2PConfig,
-    gater::ConnGater,
     p2p::{Node, NodeType},
 };
 use clap::Parser;
@@ -40,7 +39,6 @@ async fn main() -> Result<()> {
     let mut p2p: Node<_> = Node::new(
         P2PConfig::default(),
         key.clone(),
-        ConnGater,
         false,
         NodeType::QUIC,
         PlutoMdnsBehaviour::new,

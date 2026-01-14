@@ -19,6 +19,8 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y protobuf-compiler
+    - name: Install `oas3-gen`
+      run: cargo install oas3-gen
     - name: Build
       run: cargo test --workspace --verbose --no-run
     - name: Run tests
