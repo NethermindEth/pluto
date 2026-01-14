@@ -21,6 +21,7 @@ enum BeaconNodeVersionError {
 
 static MINIMUM_BEACON_NODE_VERSIONS: LazyLock<std::collections::HashMap<&str, version::SemVer>> =
     LazyLock::new(|| {
+        #[allow(clippy::unwrap_used, reason = "literals should be valid semver")]
         std::collections::HashMap::from([
             ("lighthouse", version::SemVer::parse("v8.0.0-rc.0").unwrap()),
             ("teku", version::SemVer::parse("v25.9.3").unwrap()),
@@ -44,7 +45,7 @@ fn check_beacon_node_version_status(bn_version: &str) -> Result<()> {
         return Err(BeaconNodeVersionError::InvalidFormat);
     }
 
-    let client = version::SemVer::parse(&format!("v{}", &matches[2]))
+    let client = version::SemVer::parse(format!("v{}", &matches[2]))
         .map_err(|_| BeaconNodeVersionError::InvalidFormat)?;
 
     let name = &matches[1];
