@@ -10,22 +10,27 @@ use eth2api::{
 };
 use std::{
     collections::HashMap,
-    // TODO: Should we use Tokio's Mutex instead?
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
 type Result<T> = std::result::Result<T, ValidatorCacheError>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ValidatorCacheError {
-    /// Failed to lock the Beacon Client.
-    #[error("Failed to lock the Beacon Client")]
+    #[error("Failed to lock the cache state")]
     PoisonError,
 
     #[error("Beacon client error: {0}")]
     BeaconClientError(#[from] EthBeaconNodeApiClientError),
 }
 
+impl<T> From<PoisonError<MutexGuard<'_, T>>> for ValidatorCacheError {
+    fn from(_: PoisonError<MutexGuard<'_, T>>) -> Self {
+        Self::PoisonError
+    }
+}
+
+/// Active validators indexed by their validator index.
 #[derive(Debug, Clone, Default)]
 pub struct ActiveValidators(HashMap<ValidatorIndex, PubKey>);
 
@@ -49,11 +54,11 @@ impl std::ops::Deref for CompleteValidators {
 }
 
 impl ActiveValidators {
-    pub fn indices(&self) -> impl Iterator<Item = ValidatorIndex> {
+    pub fn indices(&self) -> impl Iterator<Item = ValidatorIndex> + '_ {
         self.0.keys().copied()
     }
 
-    pub fn pubkeys(&self) -> impl Iterator<Item = &PubKey> {
+    pub fn pubkeys(&self) -> impl Iterator<Item = &PubKey> + '_ {
         self.0.values()
     }
 }
@@ -90,16 +95,13 @@ impl ValidatorCache {
         }))
     }
 
-    /// Trims the cache. This should be called on epoch boundary.
-    pub fn trim(&mut self) -> Result<()> {
-        let mut state = self
-            .0
-            .state
-            .lock()
-            .map_err(|_| ValidatorCacheError::PoisonError)?;
+    /// Clears the cache. This should be called on epoch boundary.
+    pub fn trim(&self) -> Result<()> {
+        let mut state = self.0.state.lock()?;
 
         state.active = None;
         state.complete = None;
+
         Ok(())
     }
 
@@ -134,7 +136,7 @@ impl ValidatorCache {
             .eth2_cl
             .get_state_validators(opts)
             .await
-            .map_err(|e| EthBeaconNodeApiClientError::RequestError(e))
+            .map_err(EthBeaconNodeApiClientError::RequestError)
             .and_then(|response| match response {
                 GetStateValidatorsResponse::Ok(response) => Ok(response),
                 _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
@@ -151,7 +153,7 @@ impl ValidatorCache {
         state.active = Some(active_validators.clone());
         state.complete = Some(complete_validators.clone());
 
-        return Ok((active_validators, complete_validators));
+        Ok((active_validators, complete_validators))
     }
 
     /// Fetches active and complete validator by slot populating the cache.
@@ -197,16 +199,12 @@ impl ValidatorCache {
 
         let (active_validators, complete_validators) = validators_from_response(response)?;
 
-        let mut state = self
-            .0
-            .state
-            .lock()
-            .map_err(|_| ValidatorCacheError::PoisonError)?;
+        let mut state = self.0.state.lock()?;
 
         state.active = Some(active_validators.clone());
         state.complete = Some(complete_validators.clone());
 
-        return Ok((active_validators, complete_validators, refreshed_by_slot));
+        Ok((active_validators, complete_validators, refreshed_by_slot))
     }
 }
 
@@ -229,10 +227,9 @@ fn validators_from_response(
 
     let active_validators = all_validators
         .iter()
-        .filter(|(_, validator)| validator.status.is_active())
-        .map(|(index, validator)| {
-            let index = *index;
-            let pubkey = PubKey::try_from(validator.validator.pubkey.as_str())
+        .filter(|(_, v)| v.status.is_active())
+        .map(|(&index, v)| {
+            let pubkey = PubKey::try_from(v.validator.pubkey.as_str())
                 .map_err(|_| EthBeaconNodeApiClientError::UnexpectedType)?;
 
             Ok((index, pubkey))
