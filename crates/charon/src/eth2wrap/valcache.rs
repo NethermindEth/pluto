@@ -1,5 +1,3 @@
-#![allow(missing_docs)]
-
 use crate::eth2wrap::eth2api::{
     EthBeaconNodeApiClientError, Validator, ValidatorIndex, ValidatorStatusExt,
 };
@@ -15,11 +13,14 @@ use std::{
 
 type Result<T> = std::result::Result<T, ValidatorCacheError>;
 
+/// Errors that can occur when interacting with the validator cache.
 #[derive(Debug, thiserror::Error)]
 pub enum ValidatorCacheError {
+    /// Failed to lock the cache state.
     #[error("Failed to lock the cache state")]
     PoisonError,
 
+    /// Beacon client API error.
     #[error("Beacon client error: {0}")]
     BeaconClientError(#[from] EthBeaconNodeApiClientError),
 }
@@ -30,7 +31,7 @@ impl<T> From<PoisonError<MutexGuard<'_, T>>> for ValidatorCacheError {
     }
 }
 
-/// Active validators indexed by their validator index.
+/// Active validators as [`PubKey`] indexed by their validator index.
 #[derive(Debug, Clone, Default)]
 pub struct ActiveValidators(HashMap<ValidatorIndex, PubKey>);
 
@@ -42,6 +43,7 @@ impl std::ops::Deref for ActiveValidators {
     }
 }
 
+/// Complete response of the Beacon node validators endpoint.
 #[derive(Debug, Clone, Default)]
 pub struct CompleteValidators(HashMap<ValidatorIndex, Validator>);
 
@@ -54,17 +56,24 @@ impl std::ops::Deref for CompleteValidators {
 }
 
 impl ActiveValidators {
+    /// An [`Iterator`] of active validator indices.
     pub fn indices(&self) -> impl Iterator<Item = ValidatorIndex> + '_ {
         self.0.keys().copied()
     }
 
+    /// An [`Iterator`] of active validator public keys.
     pub fn pubkeys(&self) -> impl Iterator<Item = &PubKey> + '_ {
         self.0.values()
     }
 }
 
+/// A provider of cached validator information for the current epoch,
+/// including both active validators and complete validator data.
 pub trait CachedValidatorsProvider {
+    /// Get the cached active validators.
     fn active_validators(&self) -> Result<ActiveValidators>;
+
+    /// Get all the cached validators.
     fn complete_validators(&self) -> Result<CompleteValidators>;
 }
 
@@ -84,6 +93,7 @@ struct ValidatorCacheState {
 }
 
 impl ValidatorCache {
+    /// Creates a new, empty validator cache.
     pub fn new(eth2_cl: EthBeaconNodeApiClient, pubkeys: Vec<PubKey>) -> Self {
         Self(Arc::new(ValidatorCacheInner {
             eth2_cl,
@@ -105,8 +115,9 @@ impl ValidatorCache {
         Ok(())
     }
 
-    /// Returns the cached active validators, cached complete validators
-    /// response, or fetches them if not available populating the cache.
+    /// Returns the cached active and complete validators, or fetches them
+    /// from the beacon node using the head state and populates the cache if
+    /// not already cached.
     pub async fn get_by_head(&self) -> Result<(ActiveValidators, CompleteValidators)> {
         {
             // Limit the scope of the lock
@@ -156,12 +167,12 @@ impl ValidatorCache {
         Ok((active_validators, complete_validators))
     }
 
-    /// Fetches active and complete validator by slot populating the cache.
-    /// If it fails to fetch by slot, it falls back to head state and retries to
-    /// fetch by slot next slot.
+    /// Fetches active and complete validators by slot and populates the
+    /// cache. If it fails to fetch by slot, it falls back to the head state.
     ///
-    /// It returns a boolean indicating whether the data was actually refreshed
-    /// by slot.
+    /// Returns a tuple containing the active validators, complete validators,
+    /// and a boolean indicating whether the data was fetched by slot (`true`)
+    /// or fell back to head (`false`).
     pub async fn get_by_slot(
         &self,
         slot: u64,
