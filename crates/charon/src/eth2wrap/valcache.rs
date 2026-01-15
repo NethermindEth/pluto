@@ -5,29 +5,17 @@ use eth2api::{
     GetStateValidatorsResponseResponseDatum, PostStateValidatorsRequest,
     PostStateValidatorsRequestPath, PostStateValidatorsResponse, ValidatorRequestBody,
 };
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
-};
+use std::{collections::HashMap, sync::Arc};
+use tokio::sync::Mutex;
 
 type Result<T> = std::result::Result<T, ValidatorCacheError>;
 
 /// Errors that can occur when interacting with the validator cache.
 #[derive(Debug, thiserror::Error)]
 pub enum ValidatorCacheError {
-    /// Failed to lock the cache state.
-    #[error("Failed to lock the cache state")]
-    PoisonError,
-
     /// Beacon client API error.
     #[error("Beacon client error: {0}")]
     BeaconClientError(#[from] EthBeaconNodeApiClientError),
-}
-
-impl<T> From<PoisonError<MutexGuard<'_, T>>> for ValidatorCacheError {
-    fn from(_: PoisonError<MutexGuard<'_, T>>) -> Self {
-        Self::PoisonError
-    }
 }
 
 /// Active validators as [`PubKey`] indexed by their validator index.
@@ -78,15 +66,11 @@ pub trait CachedValidatorsProvider {
 
 /// A cache for active validators.
 #[derive(Clone)]
-pub struct ValidatorCache(Arc<ValidatorCacheInner>);
+pub struct ValidatorCache(Arc<Mutex<ValidatorCacheInner>>);
 
 struct ValidatorCacheInner {
     eth2_cl: EthBeaconNodeApiClient,
     pubkeys: Vec<PubKey>,
-    state: Mutex<ValidatorCacheState>,
-}
-
-struct ValidatorCacheState {
     active: Option<ActiveValidators>,
     complete: Option<CompleteValidators>,
 }
@@ -94,54 +78,42 @@ struct ValidatorCacheState {
 impl ValidatorCache {
     /// Creates a new, empty validator cache.
     pub fn new(eth2_cl: EthBeaconNodeApiClient, pubkeys: Vec<PubKey>) -> Self {
-        Self(Arc::new(ValidatorCacheInner {
+        Self(Arc::new(Mutex::new(ValidatorCacheInner {
             eth2_cl,
             pubkeys,
-            state: Mutex::new(ValidatorCacheState {
-                active: None,
-                complete: None,
-            }),
-        }))
+            active: None,
+            complete: None,
+        })))
     }
 
     /// Clears the cache. This should be called on epoch boundary.
-    pub fn trim(&self) -> Result<()> {
-        let mut state = self.0.state.lock()?;
+    pub async fn trim(&self) {
+        let mut inner = self.0.lock().await;
 
-        state.active = None;
-        state.complete = None;
-
-        Ok(())
+        inner.active = None;
+        inner.complete = None;
     }
 
     /// Returns the cached active validators and complete validators response,
     /// or fetches them if not available populating the cache.
     pub async fn get_by_head(&self) -> Result<(ActiveValidators, CompleteValidators)> {
-        {
-            // Limit the scope of the lock
-            let state = self
-                .0
-                .state
-                .lock()
-                .map_err(|_| ValidatorCacheError::PoisonError)?;
+        let mut inner = self.0.lock().await;
 
-            if let (Some(active), Some(complete)) = (&state.active, &state.complete) {
-                return Ok((active.clone(), complete.clone()));
-            };
-        }
+        if let (Some(active), Some(complete)) = (&inner.active, &inner.complete) {
+            return Ok((active.clone(), complete.clone()));
+        };
 
         let request = PostStateValidatorsRequest {
             path: PostStateValidatorsRequestPath {
                 state_id: "head".into(),
             },
             body: ValidatorRequestBody {
-                ids: Some(self.0.pubkeys.iter().map(|pk| pk.to_string()).collect()),
+                ids: Some(inner.pubkeys.iter().map(|pk| pk.to_string()).collect()),
                 ..Default::default()
             },
         };
 
-        let response = self
-            .0
+        let response = inner
             .eth2_cl
             .post_state_validators(request)
             .await
@@ -153,14 +125,8 @@ impl ValidatorCache {
 
         let (active_validators, complete_validators) = validators_from_response(response)?;
 
-        let mut state = self
-            .0
-            .state
-            .lock()
-            .map_err(|_| ValidatorCacheError::PoisonError)?;
-
-        state.active = Some(active_validators.clone());
-        state.complete = Some(complete_validators.clone());
+        inner.active = Some(active_validators.clone());
+        inner.complete = Some(complete_validators.clone());
 
         Ok((active_validators, complete_validators))
     }
@@ -175,25 +141,26 @@ impl ValidatorCache {
         &self,
         slot: u64,
     ) -> Result<(ActiveValidators, CompleteValidators, bool)> {
+        let mut inner = self.0.lock().await;
+
         let mut request = PostStateValidatorsRequest {
             path: PostStateValidatorsRequestPath {
                 state_id: slot.to_string(),
             },
             body: ValidatorRequestBody {
-                ids: Some(self.0.pubkeys.iter().map(|pk| pk.to_string()).collect()),
+                ids: Some(inner.pubkeys.iter().map(|pk| pk.to_string()).collect()),
                 ..Default::default()
             },
         };
 
         let (response, refreshed_by_slot) =
-            match self.0.eth2_cl.post_state_validators(request.clone()).await {
+            match inner.eth2_cl.post_state_validators(request.clone()).await {
                 Ok(PostStateValidatorsResponse::Ok(response)) => (response, true),
                 _ => {
                     // Failed to fetch by slot, fall back to head state
                     request.path.state_id = "head".into();
 
-                    let response = self
-                        .0
+                    let response = inner
                         .eth2_cl
                         .post_state_validators(request)
                         .await
@@ -209,10 +176,8 @@ impl ValidatorCache {
 
         let (active_validators, complete_validators) = validators_from_response(response)?;
 
-        let mut state = self.0.state.lock()?;
-
-        state.active = Some(active_validators.clone());
-        state.complete = Some(complete_validators.clone());
+        inner.active = Some(active_validators.clone());
+        inner.complete = Some(complete_validators.clone());
 
         Ok((active_validators, complete_validators, refreshed_by_slot))
     }
@@ -327,7 +292,7 @@ mod tests {
         assert_eq!(actual_complete.0, expected_complete);
 
         // Trim cache.
-        cache.trim().expect("`trim` succeeds");
+        cache.trim().await;
 
         // Check cache is populated again.
         let (actual_active, actual_complete) =
@@ -357,9 +322,9 @@ mod tests {
 
         // Verify cache is initially empty
         {
-            let state = cache.0.state.lock().unwrap();
-            assert!(state.active.is_none());
-            assert!(state.complete.is_none());
+            let inner = cache.0.lock().await;
+            assert!(inner.active.is_none());
+            assert!(inner.complete.is_none());
         }
 
         let result = cache.get_by_head().await;
@@ -367,9 +332,9 @@ mod tests {
 
         // Verify cache remains empty after failed request
         {
-            let state = cache.0.state.lock().unwrap();
-            assert!(state.active.is_none());
-            assert!(state.complete.is_none());
+            let inner = cache.0.lock().await;
+            assert!(inner.active.is_none());
+            assert!(inner.complete.is_none());
         }
     }
 
