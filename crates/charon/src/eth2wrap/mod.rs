@@ -1,7 +1,7 @@
 /// Validate Beacon node versions
 pub mod version;
 
-/// TODO
+/// Cache of Validators retrieved from the Beacon node
 pub mod valcache;
 
 /// Extensions module to the Eth2Api crate
