@@ -21,11 +21,12 @@ use std::{
 
 use charon_p2p::{
     config::P2PConfig,
-    k1,
+    k1::{self, key_path},
     p2p::{Node, NodeType},
 };
 use charon_peerinfo::{Behaviour, Config, Event, LocalPeerInfo};
 use clap::Parser;
+use k256::SecretKey;
 use libp2p::{
     Multiaddr, Swarm,
     futures::StreamExt,
@@ -41,13 +42,16 @@ use vise_exporter::MetricsExporter;
 #[command(name = "peerinfo-example")]
 #[command(about = "Demonstrates the peerinfo protocol with mDNS discovery")]
 pub struct Args {
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
     /// The port to listen on
     #[arg(short, long, default_value = "4001")]
     pub port: u16,
 
-    /// Optional address to dial
+    /// Optional addresses to dial
     #[arg(short, long)]
-    pub dial: Option<Multiaddr>,
+    pub dial: Vec<Multiaddr>,
 
     /// Nickname for this node
     #[arg(short, long, default_value = "example-node")]
@@ -64,6 +68,20 @@ pub struct Args {
     /// Metrics port to bind to
     #[arg(long, default_value = "9465")]
     pub metrics_port: u16,
+}
+
+#[derive(Debug, Parser)]
+pub enum Command {
+    /// Initialize the node with a private key
+    Init {
+        /// Data directory for storing the private key
+        #[arg(long, default_value = ".charon-example")]
+        data_dir: PathBuf,
+
+        /// Private key as a hex string
+        #[arg(long)]
+        private_key: String,
+    },
 }
 
 /// Combined behaviour with peerinfo, identify, ping, and mdns
@@ -149,6 +167,28 @@ fn handle_event(event: SwarmEvent<CombinedEvent>, swarm: &mut Swarm<CombinedBeha
     }
 }
 
+fn init_node(data_dir: &PathBuf, private_key: &str) -> anyhow::Result<()> {
+    // Decode the hex string
+    let key_bytes = hex::decode(private_key.trim().trim_start_matches("0x"))?;
+
+    // Parse the secret key
+    let key = SecretKey::from_slice(&key_bytes)?;
+
+    // Create the data directory
+    std::fs::create_dir_all(data_dir)?;
+
+    // Save the key
+    let key_file = key_path(data_dir);
+    std::fs::write(&key_file, hex::encode(key.to_bytes()))?;
+
+    tracing::info!(
+        "Initialized node with private key in {}",
+        key_file.display()
+    );
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize logging
@@ -157,6 +197,15 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
+
+    // Handle init subcommand
+    if let Some(Command::Init {
+        data_dir,
+        private_key,
+    }) = args.command
+    {
+        return init_node(&data_dir, &private_key);
+    }
 
     // Run the metrics exporter
     let bind_address = SocketAddr::from(([0, 0, 0, 0], args.metrics_port));
@@ -238,8 +287,8 @@ async fn main() -> anyhow::Result<()> {
     let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{}", args.port).parse()?;
     swarm.listen_on(listen_addr)?;
 
-    // Dial the specified address if provided
-    if let Some(dial_addr) = &args.dial {
+    // Dial the specified addresses if provided
+    for dial_addr in &args.dial {
         tracing::info!("Dialing {dial_addr}");
         swarm.dial(dial_addr.clone())?;
     }

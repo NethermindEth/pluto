@@ -5,7 +5,7 @@ global:
 scrape_configs:
   - job_name: 'local-exporter'
     static_configs:
-      - targets: ['host.docker.internal:9464']
+      - targets: ['host.docker.internal:9464', 'host.docker.internal:9465', 'host.docker.internal:9466']
         labels:
           instance: 'local-exporter'
           environment: 'dev'
