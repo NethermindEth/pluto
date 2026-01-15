@@ -253,3 +253,84 @@ fn validators_from_response(
         CompleteValidators(all_validators),
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eth2api::{
+        GetStateValidatorsResponseResponseDatum, ValidatorResponseValidator, ValidatorStatus,
+    };
+
+    #[tokio::test]
+    async fn get_by_head_returns_cached_values_when_cache_is_populated() {
+        let pubkey1 = test_pubkey(1);
+        let validator = test_validator_datum(1, &pubkey1, ValidatorStatus::ActiveOngoing);
+        let cache = ValidatorCache::new(
+            EthBeaconNodeApiClient::with_base_url("http://0.0.0.0")
+                .expect("can create a Beacon client"),
+            vec![pubkey1.clone()],
+        );
+        {
+            // Manually populate the cache with test data
+            let mut state = cache.0.state.lock().unwrap();
+
+            let mut active_map = HashMap::new();
+            active_map.insert(1, pubkey1);
+
+            let mut complete_map = HashMap::new();
+            complete_map.insert(1, validator.clone());
+
+            state.active = Some(ActiveValidators(active_map));
+            state.complete = Some(CompleteValidators(complete_map));
+        };
+
+        let (active, complete) = cache
+            .get_by_head()
+            .await
+            .expect("`get_by_head` succeeds when cache is populated");
+
+        // Verify the returned active validators
+        {
+            assert_eq!(active.len(), 1);
+            assert!(active.contains_key(&1));
+            assert_eq!(active.get(&1), Some(&pubkey1));
+        }
+
+        // Verify the returned complete validators
+        {
+            assert_eq!(complete.len(), 1);
+            assert!(complete.contains_key(&1));
+            assert_eq!(complete.get(&1), Some(&validator));
+        }
+    }
+
+    fn test_pubkey(seed: u8) -> PubKey {
+        let mut bytes = [0u8; 48];
+        bytes[0] = seed;
+        PubKey::new(bytes)
+    }
+
+    fn test_validator_datum(
+        index: u64,
+        pubkey: &PubKey,
+        status: ValidatorStatus,
+    ) -> GetStateValidatorsResponseResponseDatum {
+        // NOTE: these values are placeholders intended for testing only
+        GetStateValidatorsResponseResponseDatum {
+            index: index.to_string(),
+            balance: "32000000000".to_string(),
+            status,
+            validator: ValidatorResponseValidator {
+                pubkey: pubkey.to_string(),
+                withdrawal_credentials:
+                    "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+                effective_balance: "32000000000".to_string(),
+                slashed: false,
+                activation_eligibility_epoch: "0".to_string(),
+                activation_epoch: "0".to_string(),
+                exit_epoch: "18446744073709551615".to_string(),
+                withdrawable_epoch: "18446744073709551615".to_string(),
+            },
+        }
+    }
+}
