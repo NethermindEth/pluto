@@ -264,11 +264,11 @@ mod tests {
     };
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
-        matchers::{method, path_regex},
+        matchers::{method, path},
     };
 
     #[tokio::test]
-    async fn validator_cache() {
+    async fn get_by_head_successful_fetch() {
         // Create a set of validators with different statuses (some active, some not)
         let pubkeys = (0..10)
             .map(|i| test_pubkey(i as u8))
@@ -305,11 +305,7 @@ mod tests {
 
         // Create a mock server that tracks request count
         let mock_server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path_regex(r"/eth/v1/beacon/states/head/validators"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(success_response_body(datums.to_vec())),
-            )
+        post_state_validators_success("head", datums.to_vec())
             .expect(2) // Should be called exactly twice (once before trim, once after)
             .mount(&mock_server)
             .await;
@@ -349,12 +345,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_by_head_returns_error_when_request_fails() {
+    async fn get_by_head_fail_fetch() {
         // Create a mock server that returns a 404 error
         let mock_server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path_regex(r"/eth/v1/beacon/states/head/validators"))
-            .respond_with(ResponseTemplate::new(404).set_body_json(not_found_response_body()))
+
+        post_state_validators_not_found("head")
             .expect(1)
             .mount(&mock_server)
             .await;
@@ -388,7 +383,7 @@ mod tests {
         // Set up mock server with different responses based on slot
         let mock_server = MockServer::start().await;
 
-        endpoint_success(
+        post_state_validators_success(
             "1",
             vec![
                 test_validator_datum(0, &pubkeys[0], ValidatorStatus::PendingQueued),
@@ -398,7 +393,7 @@ mod tests {
         .mount(&mock_server)
         .await;
 
-        endpoint_success(
+        post_state_validators_success(
             "2",
             vec![
                 test_validator_datum(0, &pubkeys[0], ValidatorStatus::ActiveOngoing),
@@ -408,7 +403,7 @@ mod tests {
         .mount(&mock_server)
         .await;
 
-        endpoint_success(
+        post_state_validators_success(
             "11",
             vec![
                 test_validator_datum(0, &pubkeys[0], ValidatorStatus::PendingQueued),
@@ -418,12 +413,17 @@ mod tests {
         .mount(&mock_server)
         .await;
 
-        endpoint_not_found("3").mount(&mock_server).await;
-        endpoint_not_found("head").mount(&mock_server).await;
+        post_state_validators_not_found("3")
+            .mount(&mock_server)
+            .await;
+        post_state_validators_not_found("head")
+            .mount(&mock_server)
+            .await;
 
         let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock_server.uri())
             .expect("Failed to create client");
 
+        // Create a cache.
         let cache = ValidatorCache::new(eth2_cl, pubkeys.clone());
 
         // Test slot 1: 1 active validator (index 1), 2 complete, refreshed_by_slot=true
@@ -490,44 +490,36 @@ mod tests {
         }
     }
 
-    fn endpoint_success(
+    fn post_state_validators_success(
         state_id: impl AsRef<str>,
         validators: Vec<GetStateValidatorsResponseResponseDatum>,
     ) -> Mock {
         Mock::given(method("POST"))
-            .and(path_regex(format!(
+            .and(path(format!(
+                "/eth/v1/beacon/states/{}/validators",
+                state_id.as_ref()
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                GetStateValidatorsResponseResponse {
+                    execution_optimistic: false,
+                    finalized: true,
+                    data: validators,
+                },
+            ))
+    }
+
+    fn post_state_validators_not_found(state_id: impl AsRef<str>) -> Mock {
+        Mock::given(method("POST"))
+            .and(path(format!(
                 "/eth/v1/beacon/states/{}/validators",
                 state_id.as_ref()
             )))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(success_response_body(validators)),
+                ResponseTemplate::new(404).set_body_json(BlindedBlock400Response {
+                    code: 404.0,
+                    message: "State not found".to_string(),
+                    stacktraces: None,
+                }),
             )
-    }
-
-    fn endpoint_not_found(state_id: impl AsRef<str>) -> Mock {
-        Mock::given(method("POST"))
-            .and(path_regex(format!(
-                "/eth/v1/beacon/states/{}/validators",
-                state_id.as_ref()
-            )))
-            .respond_with(ResponseTemplate::new(404).set_body_json(not_found_response_body()))
-    }
-
-    fn success_response_body(
-        validators: Vec<GetStateValidatorsResponseResponseDatum>,
-    ) -> GetStateValidatorsResponseResponse {
-        GetStateValidatorsResponseResponse {
-            execution_optimistic: false,
-            finalized: true,
-            data: validators,
-        }
-    }
-
-    fn not_found_response_body() -> BlindedBlock400Response {
-        BlindedBlock400Response {
-            code: 404.0,
-            message: "State not found".to_string(),
-            stacktraces: None,
-        }
     }
 }
