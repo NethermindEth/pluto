@@ -199,11 +199,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Create local peer info
     let local_info = LocalPeerInfo::new(
-        "v1.0.0",                     // charon_version
-        vec![0x00, 0x00, 0x00, 0x00], // lock_hash (example)
-        "abc1234",                    // git_hash
-        false,                        // builder_api_enabled
-        &args.nickname,               // nickname
+        "v1.0.0",
+        vec![0x00, 0x00, 0x00, 0x00],
+        "abc1234",
+        false,
+        &args.nickname,
     );
 
     let Node { mut swarm } = Node::new(
