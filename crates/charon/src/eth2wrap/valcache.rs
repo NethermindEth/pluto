@@ -268,6 +268,87 @@ mod tests {
     };
 
     #[tokio::test]
+    async fn validator_cache() {
+        // Create a set of validators with different statuses (some active, some not)
+        let pubkeys = (0..10)
+            .map(|i| test_pubkey(i as u8))
+            .collect::<Vec<PubKey>>();
+        let datums = [
+            test_validator_datum(0, &pubkeys[0], ValidatorStatus::PendingInitialized), /* not active */
+            test_validator_datum(1, &pubkeys[1], ValidatorStatus::PendingQueued), /* not active */
+            test_validator_datum(2, &pubkeys[2], ValidatorStatus::ActiveOngoing), /* active */
+            test_validator_datum(3, &pubkeys[3], ValidatorStatus::ActiveExiting), /* active */
+            test_validator_datum(4, &pubkeys[4], ValidatorStatus::ActiveSlashed), /* active */
+            test_validator_datum(5, &pubkeys[5], ValidatorStatus::ExitedUnslashed), /* not active */
+            test_validator_datum(6, &pubkeys[6], ValidatorStatus::ExitedSlashed), // not active
+            test_validator_datum(7, &pubkeys[7], ValidatorStatus::WithdrawalPossible), /* not active */
+            test_validator_datum(8, &pubkeys[8], ValidatorStatus::WithdrawalDone), /* not active */
+            test_validator_datum(9, &pubkeys[9], ValidatorStatus::ActiveOngoing),  /* active */
+        ];
+
+        let expected_complete = datums
+            .iter()
+            .map(|datum| {
+                let index = datum.index.parse().unwrap();
+                (index, datum.clone())
+            })
+            .collect::<HashMap<ValidatorIndex, GetStateValidatorsResponseResponseDatum>>();
+
+        let expected_active = expected_complete
+            .iter()
+            .filter(|(_, datum)| datum.status.is_active())
+            .map(|(&index, datum)| {
+                let pubkey: PubKey = datum.validator.pubkey.as_str().try_into().unwrap();
+                (index, pubkey)
+            })
+            .collect::<HashMap<ValidatorIndex, PubKey>>();
+
+        // Create a mock server that tracks request count
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"/eth/v1/beacon/states/head/validators"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(success_response_body(datums.to_vec())),
+            )
+            .expect(2) // Should be called exactly twice (once before trim, once after)
+            .mount(&mock_server)
+            .await;
+
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock_server.uri())
+            .expect("Failed to create client");
+
+        // Create a cache.
+        let cache = ValidatorCache::new(eth2_cl, pubkeys);
+
+        // Check cache is populated.
+        let (actual_active, actual_complete) =
+            cache.get_by_head().await.expect("`get_by_head` succeeds");
+        assert_eq!(actual_active.0, expected_active);
+        assert_eq!(actual_complete.0, expected_complete);
+
+        // Check cache is used (no additional request).
+        let (actual_active, actual_complete) =
+            cache.get_by_head().await.expect("`get_by_head` succeeds");
+        assert_eq!(actual_active.0, expected_active);
+        assert_eq!(actual_complete.0, expected_complete);
+
+        // Trim cache.
+        cache.trim().expect("`trim` succeeds");
+
+        // Check cache is populated again.
+        let (actual_active, actual_complete) =
+            cache.get_by_head().await.expect("`get_by_head` succeeds");
+        assert_eq!(actual_active.0, expected_active);
+        assert_eq!(actual_complete.0, expected_complete);
+
+        // Check cache is used again (no additional request).
+        let (actual_active, actual_complete) =
+            cache.get_by_head().await.expect("`get_by_head` succeeds");
+        assert_eq!(actual_active.0, expected_active);
+        assert_eq!(actual_complete.0, expected_complete);
+    }
+
+    #[tokio::test]
     async fn get_by_head_returns_cached_values_when_cache_is_populated() {
         let pubkey1 = test_pubkey(1);
         let validator = test_validator_datum(1, &pubkey1, ValidatorStatus::ActiveOngoing);
