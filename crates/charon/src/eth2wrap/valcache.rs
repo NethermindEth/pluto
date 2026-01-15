@@ -31,7 +31,7 @@ impl<T> From<PoisonError<MutexGuard<'_, T>>> for ValidatorCacheError {
 }
 
 /// Active validators as [`PubKey`] indexed by their validator index.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ActiveValidators(HashMap<ValidatorIndex, PubKey>);
 
 impl std::ops::Deref for ActiveValidators {
@@ -43,7 +43,7 @@ impl std::ops::Deref for ActiveValidators {
 }
 
 /// Complete response of the Beacon node validators endpoint.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct CompleteValidators(HashMap<ValidatorIndex, GetStateValidatorsResponseResponseDatum>);
 
 impl std::ops::Deref for CompleteValidators {
@@ -340,6 +340,69 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn get_by_head_populates_cache_on_successful_request() {
+        let pubkey1 = test_pubkey(1);
+        let pubkey2 = test_pubkey(2);
+        let pubkey3 = test_pubkey(3);
+
+        let datum1 = test_validator_datum(1, &pubkey1, ValidatorStatus::ActiveOngoing);
+        let datum2 = test_validator_datum(2, &pubkey2, ValidatorStatus::ActiveExiting);
+        let datum3 = test_validator_datum(3, &pubkey3, ValidatorStatus::PendingQueued);
+
+        let validators = vec![datum1.clone(), datum2.clone(), datum3.clone()];
+
+        // Create a mock server with successful response
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"/eth/v1/beacon/states/head/validators"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(success_response_body(validators)),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock_server.uri())
+            .expect("Failed to create client");
+
+        let cache = ValidatorCache::new(
+            eth2_cl,
+            vec![pubkey1.clone(), pubkey2.clone(), pubkey3.clone()],
+        );
+
+        // Verify cache is initially empty
+        {
+            let state = cache.0.state.lock().unwrap();
+            assert!(state.active.is_none());
+            assert!(state.complete.is_none());
+        }
+
+        let (active, complete) = cache.get_by_head().await.expect("`get_by_head` succeeds");
+
+        // Verify returned active validators (only active statuses)
+        {
+            assert_eq!(active.len(), 2, "Should have 2 active validators");
+            assert_eq!(active.get(&1), Some(&pubkey1));
+            assert_eq!(active.get(&2), Some(&pubkey2));
+        }
+
+        // Verify returned complete validators (all validators)
+        {
+            assert_eq!(complete.len(), 3, "Should have 3 complete validators");
+            assert_eq!(complete.get(&1), Some(&datum1));
+            assert_eq!(complete.get(&2), Some(&datum2));
+            assert_eq!(complete.get(&3), Some(&datum3));
+        }
+
+        // Verify cache is now populated
+        {
+            let state = cache.0.state.lock().unwrap();
+            assert_eq!(state.active, Some(active));
+            assert_eq!(state.complete, Some(complete));
+        }
+    }
+
     fn test_pubkey(seed: u8) -> PubKey {
         let mut bytes = [0u8; 48];
         bytes[0] = seed;
@@ -367,6 +430,16 @@ mod tests {
                 exit_epoch: "18446744073709551615".to_string(),
                 withdrawable_epoch: "18446744073709551615".to_string(),
             },
+        }
+    }
+
+    fn success_response_body(
+        validators: Vec<GetStateValidatorsResponseResponseDatum>,
+    ) -> GetStateValidatorsResponseResponse {
+        GetStateValidatorsResponseResponse {
+            execution_optimistic: false,
+            finalized: true,
+            data: validators,
         }
     }
 
