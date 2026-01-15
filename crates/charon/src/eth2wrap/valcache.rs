@@ -270,9 +270,7 @@ mod tests {
     #[tokio::test]
     async fn get_by_head_successful_fetch() {
         // Create a set of validators with different statuses (some active, some not)
-        let pubkeys = (0..10)
-            .map(|i| test_pubkey(i as u8))
-            .collect::<Vec<PubKey>>();
+        let pubkeys = (0..10u8).map(test_pubkey).collect::<Vec<PubKey>>();
         let datums = [
             test_validator_datum(0, &pubkeys[0], ValidatorStatus::PendingInitialized), /* not active */
             test_validator_datum(1, &pubkeys[1], ValidatorStatus::PendingQueued), /* not active */
