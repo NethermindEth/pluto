@@ -27,5 +27,8 @@ url.workspace = true
 [build-dependencies]
 charon-build-proto.workspace = true
 
+[dev-dependencies]
+wiremock.workspace = true
+
 [lints]
 workspace = true

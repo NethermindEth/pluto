@@ -1,9 +1,9 @@
 use crate::eth2wrap::eth2api::{EthBeaconNodeApiClientError, ValidatorIndex, ValidatorStatusExt};
 use charon_core::types::PubKey;
 use eth2api::{
-    EthBeaconNodeApiClient, GetStateValidatorsRequest, GetStateValidatorsRequestPath,
-    GetStateValidatorsRequestQuery, GetStateValidatorsResponse, GetStateValidatorsResponseResponse,
-    GetStateValidatorsResponseResponseDatum,
+    EthBeaconNodeApiClient, GetStateValidatorsResponseResponse,
+    GetStateValidatorsResponseResponseDatum, PostStateValidatorsRequest,
+    PostStateValidatorsRequestPath, PostStateValidatorsResponse, ValidatorRequestBody,
 };
 use std::{
     collections::HashMap,
@@ -130,12 +130,12 @@ impl ValidatorCache {
             };
         }
 
-        let opts = GetStateValidatorsRequest {
-            path: GetStateValidatorsRequestPath {
+        let request = PostStateValidatorsRequest {
+            path: PostStateValidatorsRequestPath {
                 state_id: "head".into(),
             },
-            query: GetStateValidatorsRequestQuery {
-                id: Some(self.0.pubkeys.iter().map(|pk| pk.to_string()).collect()),
+            body: ValidatorRequestBody {
+                ids: Some(self.0.pubkeys.iter().map(|pk| pk.to_string()).collect()),
                 ..Default::default()
             },
         };
@@ -143,11 +143,11 @@ impl ValidatorCache {
         let response = self
             .0
             .eth2_cl
-            .get_state_validators(opts)
+            .post_state_validators(request)
             .await
             .map_err(EthBeaconNodeApiClientError::RequestError)
             .and_then(|response| match response {
-                GetStateValidatorsResponse::Ok(response) => Ok(response),
+                PostStateValidatorsResponse::Ok(response) => Ok(response),
                 _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
             })?;
 
@@ -175,30 +175,31 @@ impl ValidatorCache {
         &self,
         slot: u64,
     ) -> Result<(ActiveValidators, CompleteValidators, bool)> {
-        let mut opts = GetStateValidatorsRequest {
-            path: GetStateValidatorsRequestPath {
+        let mut request = PostStateValidatorsRequest {
+            path: PostStateValidatorsRequestPath {
                 state_id: slot.to_string(),
             },
-            query: GetStateValidatorsRequestQuery {
-                id: Some(self.0.pubkeys.iter().map(|pk| pk.to_string()).collect()),
+            body: ValidatorRequestBody {
+                ids: Some(self.0.pubkeys.iter().map(|pk| pk.to_string()).collect()),
                 ..Default::default()
             },
         };
+
         let (response, refreshed_by_slot) =
-            match self.0.eth2_cl.get_state_validators(opts.clone()).await {
-                Ok(GetStateValidatorsResponse::Ok(response)) => (response, true),
+            match self.0.eth2_cl.post_state_validators(request.clone()).await {
+                Ok(PostStateValidatorsResponse::Ok(response)) => (response, true),
                 _ => {
                     // Failed to fetch by slot, fall back to head state
-                    opts.path.state_id = "head".into();
+                    request.path.state_id = "head".into();
 
                     let response = self
                         .0
                         .eth2_cl
-                        .get_state_validators(opts)
+                        .post_state_validators(request)
                         .await
                         .map_err(EthBeaconNodeApiClientError::RequestError)
                         .and_then(|response| match response {
-                            GetStateValidatorsResponse::Ok(response) => Ok(response),
+                            PostStateValidatorsResponse::Ok(response) => Ok(response),
                             _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
                         })?;
 
@@ -258,18 +259,21 @@ fn validators_from_response(
 mod tests {
     use super::*;
     use eth2api::{
-        GetStateValidatorsResponseResponseDatum, ValidatorResponseValidator, ValidatorStatus,
+        BlindedBlock400Response, GetStateValidatorsResponseResponseDatum,
+        ValidatorResponseValidator, ValidatorStatus,
+    };
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path_regex},
     };
 
     #[tokio::test]
     async fn get_by_head_returns_cached_values_when_cache_is_populated() {
         let pubkey1 = test_pubkey(1);
         let validator = test_validator_datum(1, &pubkey1, ValidatorStatus::ActiveOngoing);
-        let cache = ValidatorCache::new(
-            EthBeaconNodeApiClient::with_base_url("http://0.0.0.0")
-                .expect("can create a Beacon client"),
-            vec![pubkey1.clone()],
-        );
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url("http://0.0.0.0")
+            .expect("Failed to create client");
+        let cache = ValidatorCache::new(eth2_cl, vec![pubkey1.clone()]);
         {
             // Manually populate the cache with test data
             let mut state = cache.0.state.lock().unwrap();
@@ -304,6 +308,38 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn get_by_head_returns_error_when_request_fails() {
+        // Create a mock server that returns a 404 error
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"/eth/v1/beacon/states/head/validators"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(not_found_response_body()))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock_server.uri())
+            .expect("Failed to create client");
+        let cache = ValidatorCache::new(eth2_cl, vec![test_pubkey(1)]);
+
+        // Verify cache is initially empty
+        {
+            let state = cache.0.state.lock().unwrap();
+            assert!(state.active.is_none());
+            assert!(state.complete.is_none());
+        }
+
+        let result = cache.get_by_head().await;
+        assert!(result.is_err());
+
+        // Verify cache remains empty after failed request
+        {
+            let state = cache.0.state.lock().unwrap();
+            assert!(state.active.is_none());
+            assert!(state.complete.is_none());
+        }
+    }
+
     fn test_pubkey(seed: u8) -> PubKey {
         let mut bytes = [0u8; 48];
         bytes[0] = seed;
@@ -331,6 +367,14 @@ mod tests {
                 exit_epoch: "18446744073709551615".to_string(),
                 withdrawable_epoch: "18446744073709551615".to_string(),
             },
+        }
+    }
+
+    fn not_found_response_body() -> BlindedBlock400Response {
+        BlindedBlock400Response {
+            code: 404.0,
+            message: "State not found".to_string(),
+            stacktraces: None,
         }
     }
 }

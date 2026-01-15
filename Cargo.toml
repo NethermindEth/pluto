@@ -13,7 +13,7 @@ members = [
     "crates/charon-testutil",
     "crates/tracing",
     "crates/eth2api",
-    "crates/relay-server"
+    "crates/relay-server",
 ]
 resolver = "3"
 
@@ -67,6 +67,7 @@ oas3-gen-support = "0.24"
 bon = "3.8"
 testcontainers = "0.26"
 vise = "0.3"
+wiremock = "0.6"
 
 # Crates in the workspace
 charon = { path = "crates/charon" }
