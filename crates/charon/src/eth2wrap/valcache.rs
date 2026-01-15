@@ -380,6 +380,86 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn get_by_slot_successful_fetch() {
+        // Create two validator pubkeys
+        let pubkeys = vec![test_pubkey(0), test_pubkey(1)];
+
+        // Set up mock server with different responses based on slot
+        let mock_server = MockServer::start().await;
+
+        endpoint_success(
+            "1",
+            vec![
+                test_validator_datum(0, &pubkeys[0], ValidatorStatus::PendingQueued),
+                test_validator_datum(1, &pubkeys[1], ValidatorStatus::ActiveOngoing),
+            ],
+        )
+        .mount(&mock_server)
+        .await;
+
+        endpoint_success(
+            "2",
+            vec![
+                test_validator_datum(0, &pubkeys[0], ValidatorStatus::ActiveOngoing),
+                test_validator_datum(1, &pubkeys[1], ValidatorStatus::ActiveOngoing),
+            ],
+        )
+        .mount(&mock_server)
+        .await;
+
+        endpoint_success(
+            "11",
+            vec![
+                test_validator_datum(0, &pubkeys[0], ValidatorStatus::PendingQueued),
+                test_validator_datum(1, &pubkeys[1], ValidatorStatus::PendingQueued),
+            ],
+        )
+        .mount(&mock_server)
+        .await;
+
+        endpoint_not_found("3").mount(&mock_server).await;
+        endpoint_not_found("head").mount(&mock_server).await;
+
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock_server.uri())
+            .expect("Failed to create client");
+
+        let cache = ValidatorCache::new(eth2_cl, pubkeys.clone());
+
+        // Test slot 1: 1 active validator (index 1), 2 complete, refreshed_by_slot=true
+        let (active, complete, refreshed_by_slot) = cache
+            .get_by_slot(1)
+            .await
+            .expect("`get_by_slot(1)` succeeds");
+        assert_eq!(active.len(), 1);
+        assert_eq!(active.get(&1), Some(&pubkeys[1]));
+        assert_eq!(complete.len(), 2);
+        assert!(refreshed_by_slot);
+
+        // Test slot 2: 2 active validators, 2 complete, refreshed_by_slot=true
+        let (active, complete, refreshed_by_slot) = cache
+            .get_by_slot(2)
+            .await
+            .expect("`get_by_slot(2)` succeeds");
+        assert_eq!(active.len(), 2);
+        assert_eq!(complete.len(), 2);
+        assert!(refreshed_by_slot);
+
+        // Test slot 11: 0 active validators, 2 complete, refreshed_by_slot=true
+        let (active, complete, refreshed_by_slot) = cache
+            .get_by_slot(11)
+            .await
+            .expect("`get_by_slot(11)` succeeds");
+        assert!(active.is_empty());
+        assert_eq!(complete.len(), 2);
+        assert!(refreshed_by_slot);
+
+        // Test slot 3: error (both slot and head fallback fail),
+        // refreshed_by_slot=false
+        let result = cache.get_by_slot(3).await;
+        assert!(result.is_err());
+    }
+
     fn test_pubkey(seed: u8) -> PubKey {
         let mut bytes = [0u8; 48];
         bytes[0] = seed;
@@ -408,6 +488,29 @@ mod tests {
                 withdrawable_epoch: "18446744073709551615".to_string(),
             },
         }
+    }
+
+    fn endpoint_success(
+        state_id: impl AsRef<str>,
+        validators: Vec<GetStateValidatorsResponseResponseDatum>,
+    ) -> Mock {
+        Mock::given(method("POST"))
+            .and(path_regex(format!(
+                "/eth/v1/beacon/states/{}/validators",
+                state_id.as_ref()
+            )))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(success_response_body(validators)),
+            )
+    }
+
+    fn endpoint_not_found(state_id: impl AsRef<str>) -> Mock {
+        Mock::given(method("POST"))
+            .and(path_regex(format!(
+                "/eth/v1/beacon/states/{}/validators",
+                state_id.as_ref()
+            )))
+            .respond_with(ResponseTemplate::new(404).set_body_json(not_found_response_body()))
     }
 
     fn success_response_body(
