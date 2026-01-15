@@ -403,6 +403,44 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn test_get_by_head_second_call_uses_cache() {
+        let pubkey1 = test_pubkey(1);
+        let datum = test_validator_datum(100, &pubkey1, ValidatorStatus::ActiveOngoing);
+        let validators = vec![datum];
+
+        // Create a mock server that tracks request count
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"/eth/v1/beacon/states/head/validators"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(success_response_body(validators)),
+            )
+            .expect(1) // Should only be called once
+            .mount(&mock_server)
+            .await;
+
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock_server.uri())
+            .expect("Failed to create client");
+
+        let cache = ValidatorCache::new(eth2_cl, vec![pubkey1]);
+
+        // First call - should hit the server
+        let (active1, complete1) = cache.get_by_head().await.expect("`get_by_head` succeeds");
+
+        // Second call - should use cache (no server request)
+        let (active2, complete2) = cache.get_by_head().await.expect("``get_by_head` succeeds");
+
+        // Both results should be equal, and the same as the cached values
+        assert_eq!(active1, active2);
+        assert_eq!(complete1, complete2);
+        {
+            let state = cache.0.state.lock().unwrap();
+            assert_eq!(state.active, Some(active1));
+            assert_eq!(state.complete, Some(complete1));
+        }
+    }
+
     fn test_pubkey(seed: u8) -> PubKey {
         let mut bytes = [0u8; 48];
         bytes[0] = seed;
