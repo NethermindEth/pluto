@@ -460,6 +460,44 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[tokio::test]
+    async fn get_by_slot_fallback_to_head() {
+        // Create two validator pubkeys
+        let pubkeys = vec![test_pubkey(0), test_pubkey(1)];
+
+        // Set up mock server: slot requests fail, but head succeeds
+        let mock_server = MockServer::start().await;
+
+        post_state_validators_not_found("1")
+            .mount(&mock_server)
+            .await;
+
+        post_state_validators_success(
+            "head",
+            vec![
+                test_validator_datum(0, &pubkeys[0], ValidatorStatus::ActiveOngoing),
+                test_validator_datum(1, &pubkeys[1], ValidatorStatus::ActiveOngoing),
+            ],
+        )
+        .mount(&mock_server)
+        .await;
+
+        let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock_server.uri())
+            .expect("Failed to create client");
+
+        let cache = ValidatorCache::new(eth2_cl, pubkeys);
+
+        // Test slot 1: fails, falls back to head, returns 2 active, 2 complete,
+        // refreshed_by_slot=false
+        let (active, complete, refreshed_by_slot) = cache
+            .get_by_slot(1)
+            .await
+            .expect("`get_by_slot(1)` succeeds via head fallback");
+        assert_eq!(active.len(), 2);
+        assert_eq!(complete.len(), 2);
+        assert!(!refreshed_by_slot);
+    }
+
     fn test_pubkey(seed: u8) -> PubKey {
         let mut bytes = [0u8; 48];
         bytes[0] = seed;
