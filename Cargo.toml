@@ -72,6 +72,7 @@ vise = "0.3"
 charon = { path = "crates/charon" }
 charon-core = { path = "crates/charon-core" }
 charon-build-proto = { path = "crates/charon-build-proto" }
+charon-cluster = { path = "crates/charon-cluster" }
 charon-crypto = { path = "crates/charon-crypto" }
 charon-eth2 = { path = "crates/charon-eth2" }
 charon-k1util = { path = "crates/charon-k1util" }
