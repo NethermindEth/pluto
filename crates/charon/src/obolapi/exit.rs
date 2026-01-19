@@ -16,14 +16,58 @@ use eth2api::types::{
     GetPoolVoluntaryExitsResponseResponseDatum, Phase0SignedVoluntaryExitMessage,
 };
 
-/// Type alias for signed voluntary exit from eth2api.
-pub type SignedVoluntaryExit = GetPoolVoluntaryExitsResponseResponseDatum;
-
 use crate::obolapi::{
     client::Client,
     error::{Error, Result},
     helper::{bearer_string, from_0x, to_0x},
 };
+
+/// Type alias for signed voluntary exit from eth2api.
+pub type SignedVoluntaryExit = GetPoolVoluntaryExitsResponseResponseDatum;
+
+/// Trait for types that can be hashed using SSZ hash tree root.
+pub trait SszHashable {
+    /// Hashes this value into the provided hasher.
+    fn hash_with<H: HashWalker>(&self, hh: &mut H) -> Result<()>;
+
+    /// Computes the SSZ hash tree root of this value.
+    fn hash_tree_root(&self) -> Result<[u8; 32]> {
+        let mut hh = Hasher::default();
+        self.hash_with(&mut hh)?;
+        hh.hash_root().map_err(map_hasher_error)
+    }
+}
+
+impl SszHashable for SignedVoluntaryExit {
+    fn hash_with<H: HashWalker>(&self, hh: &mut H) -> Result<()> {
+        let index = hh.index();
+
+        self.message.hash_with(hh)?;
+        let sig_bytes = from_0x(&self.signature, SSZ_LEN_BLS_SIG)?;
+        put_bytes_n(hh, &sig_bytes, SSZ_LEN_BLS_SIG)?;
+
+        hh.merkleize(index).map_err(map_walker_error)?;
+        Ok(())
+    }
+}
+
+impl SszHashable for Phase0SignedVoluntaryExitMessage {
+    fn hash_with<H: HashWalker>(&self, hh: &mut H) -> Result<()> {
+        let index = hh.index();
+
+        let epoch = self.epoch.parse::<u64>().map_err(Error::EpochParse)?;
+        let validator_index = self
+            .validator_index
+            .parse::<u64>()
+            .map_err(Error::EpochParse)?;
+
+        hh.put_uint64(epoch).map_err(map_walker_error)?;
+        hh.put_uint64(validator_index).map_err(map_walker_error)?;
+
+        hh.merkleize(index).map_err(map_walker_error)?;
+        Ok(())
+    }
+}
 
 /// An exit message alongside its BLS12-381 hex-encoded signature.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,10 +80,23 @@ pub struct ExitBlob {
     pub signed_exit_message: SignedVoluntaryExit,
 }
 
-impl ExitBlob {
-    /// Computes the SSZ hash tree root of this ExitBlob.
-    pub fn hash_tree_root(&self) -> Result<[u8; 32]> {
-        hash_exit_blob(self)
+impl SszHashable for ExitBlob {
+    fn hash_with<H: HashWalker>(&self, hh: &mut H) -> Result<()> {
+        let index = hh.index();
+
+        let pk = self.public_key.as_ref().ok_or_else(|| {
+            use charon_cluster::ssz::SSZError;
+            Error::Ssz(SSZError::UnsupportedVersion(
+                "missing public key".to_string(),
+            ))
+        })?;
+        let pk_bytes = from_0x(pk, SSZ_LEN_PUB_KEY)?;
+        hh.put_bytes(&pk_bytes).map_err(map_walker_error)?;
+
+        self.signed_exit_message.hash_with(hh)?;
+
+        hh.merkleize(index).map_err(map_walker_error)?;
+        Ok(())
     }
 }
 
@@ -48,36 +105,24 @@ impl ExitBlob {
 #[serde(transparent)]
 pub struct PartialExits(pub Vec<ExitBlob>);
 
-impl PartialExits {
-    /// Computes the SSZ hash tree root of the partial exits list.
-    pub fn hash_tree_root(&self) -> Result<[u8; 32]> {
-        hash_partial_exits(&self.0)
-    }
-}
+impl SszHashable for PartialExits {
+    fn hash_with<H: HashWalker>(&self, hh: &mut H) -> Result<()> {
+        let index = hh.index();
+        let num = self.0.len();
 
-impl std::ops::Deref for PartialExits {
-    type Target = Vec<ExitBlob>;
+        for exit_blob in &self.0 {
+            exit_blob.hash_with(hh)?;
+        }
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for PartialExits {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+        hh.merkleize_with_mixin(index, num, SSZ_MAX_EXITS)
+            .map_err(map_walker_error)?;
+        Ok(())
     }
 }
 
 impl From<Vec<ExitBlob>> for PartialExits {
     fn from(v: Vec<ExitBlob>) -> Self {
         Self(v)
-    }
-}
-
-impl From<PartialExits> for Vec<ExitBlob> {
-    fn from(p: PartialExits) -> Self {
-        p.0
     }
 }
 
@@ -93,10 +138,15 @@ pub struct UnsignedPartialExitRequest {
     pub share_idx: u64,
 }
 
-impl UnsignedPartialExitRequest {
-    /// Computes the SSZ hash tree root of this UnsignedPartialExitRequest.
-    pub fn hash_tree_root(&self) -> Result<[u8; 32]> {
-        hash_unsigned_partial_exit_request(self)
+impl SszHashable for UnsignedPartialExitRequest {
+    fn hash_with<H: HashWalker>(&self, hh: &mut H) -> Result<()> {
+        let index = hh.index();
+
+        self.partial_exits.hash_with(hh)?;
+        hh.put_uint64(self.share_idx).map_err(map_walker_error)?;
+
+        hh.merkleize(index).map_err(map_walker_error)?;
+        Ok(())
     }
 }
 
@@ -181,10 +231,16 @@ pub struct FullExitAuthBlob {
     pub share_index: u64,
 }
 
-impl FullExitAuthBlob {
-    /// Computes the SSZ hash tree root of this FullExitAuthBlob.
-    pub fn hash_tree_root(&self) -> Result<[u8; 32]> {
-        hash_full_exit_auth_blob(self)
+impl SszHashable for FullExitAuthBlob {
+    fn hash_with<H: HashWalker>(&self, hh: &mut H) -> Result<()> {
+        let index = hh.index();
+
+        hh.put_bytes(&self.lock_hash).map_err(map_walker_error)?;
+        put_bytes_n(hh, &self.validator_pubkey, SSZ_LEN_PUB_KEY)?;
+        hh.put_uint64(self.share_index).map_err(map_walker_error)?;
+
+        hh.merkleize(index).map_err(map_walker_error)?;
+        Ok(())
     }
 }
 const SSZ_MAX_EXITS: usize = 65536;
@@ -404,118 +460,6 @@ fn put_bytes_n<H: HashWalker>(hh: &mut H, bytes: &[u8], expected_len: usize) -> 
     }
     let padded: Vec<u8> = left_pad(bytes, expected_len);
     hh.put_bytes(&padded).map_err(map_walker_error)
-}
-
-fn hash_exit_blob(blob: &ExitBlob) -> Result<[u8; 32]> {
-    let mut hh = Hasher::default();
-    hash_exit_blob_with(blob, &mut hh)?;
-    hh.hash_root().map_err(map_hasher_error)
-}
-
-fn hash_exit_blob_with<H: HashWalker>(blob: &ExitBlob, hh: &mut H) -> Result<()> {
-    let index = hh.index();
-
-    let pk = blob.public_key.as_ref().ok_or_else(|| {
-        use charon_cluster::ssz::SSZError;
-        Error::Ssz(SSZError::UnsupportedVersion(
-            "missing public key".to_string(),
-        ))
-    })?;
-    let pk_bytes = from_0x(pk, SSZ_LEN_PUB_KEY)?;
-    hh.put_bytes(&pk_bytes).map_err(map_walker_error)?;
-
-    hash_signed_voluntary_exit_with(&blob.signed_exit_message, hh)?;
-
-    hh.merkleize(index).map_err(map_walker_error)?;
-    Ok(())
-}
-
-fn hash_partial_exits(exits: &[ExitBlob]) -> Result<[u8; 32]> {
-    let mut hh = Hasher::default();
-    hash_partial_exits_with(exits, &mut hh)?;
-    hh.hash_root().map_err(map_hasher_error)
-}
-
-fn hash_unsigned_partial_exit_request(req: &UnsignedPartialExitRequest) -> Result<[u8; 32]> {
-    let mut hh = Hasher::default();
-    hash_unsigned_partial_exit_request_with(req, &mut hh)?;
-    hh.hash_root().map_err(map_hasher_error)
-}
-
-fn hash_unsigned_partial_exit_request_with<H: HashWalker>(
-    req: &UnsignedPartialExitRequest,
-    hh: &mut H,
-) -> Result<()> {
-    let index = hh.index();
-
-    hash_partial_exits_with(&req.partial_exits, hh)?;
-    hh.put_uint64(req.share_idx).map_err(map_walker_error)?;
-
-    hh.merkleize(index).map_err(map_walker_error)?;
-    Ok(())
-}
-
-fn hash_partial_exits_with<H: HashWalker>(exits: &[ExitBlob], hh: &mut H) -> Result<()> {
-    let index = hh.index();
-    let num = exits.len();
-
-    for exit_blob in exits {
-        hash_exit_blob_with(exit_blob, hh)?;
-    }
-
-    hh.merkleize_with_mixin(index, num, SSZ_MAX_EXITS)
-        .map_err(map_walker_error)?;
-    Ok(())
-}
-
-fn hash_full_exit_auth_blob(blob: &FullExitAuthBlob) -> Result<[u8; 32]> {
-    let mut hh = Hasher::default();
-    hash_full_exit_auth_blob_with(blob, &mut hh)?;
-    hh.hash_root().map_err(map_hasher_error)
-}
-
-fn hash_full_exit_auth_blob_with<H: HashWalker>(blob: &FullExitAuthBlob, hh: &mut H) -> Result<()> {
-    let index = hh.index();
-
-    hh.put_bytes(&blob.lock_hash).map_err(map_walker_error)?;
-    put_bytes_n(hh, &blob.validator_pubkey, SSZ_LEN_PUB_KEY)?;
-    hh.put_uint64(blob.share_index).map_err(map_walker_error)?;
-
-    hh.merkleize(index).map_err(map_walker_error)?;
-    Ok(())
-}
-
-fn hash_signed_voluntary_exit_with<H: HashWalker>(
-    exit: &SignedVoluntaryExit,
-    hh: &mut H,
-) -> Result<()> {
-    let index = hh.index();
-
-    hash_voluntary_exit_with(&exit.message, hh)?;
-    let sig_bytes = from_0x(&exit.signature, SSZ_LEN_BLS_SIG)?;
-    put_bytes_n(hh, &sig_bytes, SSZ_LEN_BLS_SIG)?;
-
-    hh.merkleize(index).map_err(map_walker_error)?;
-    Ok(())
-}
-
-fn hash_voluntary_exit_with<H: HashWalker>(
-    message: &Phase0SignedVoluntaryExitMessage,
-    hh: &mut H,
-) -> Result<()> {
-    let index = hh.index();
-
-    let epoch = message.epoch.parse::<u64>().map_err(Error::EpochParse)?;
-    let validator_index = message
-        .validator_index
-        .parse::<u64>()
-        .map_err(Error::EpochParse)?;
-
-    hh.put_uint64(epoch).map_err(map_walker_error)?;
-    hh.put_uint64(validator_index).map_err(map_walker_error)?;
-
-    hh.merkleize(index).map_err(map_walker_error)?;
-    Ok(())
 }
 
 #[cfg(test)]
