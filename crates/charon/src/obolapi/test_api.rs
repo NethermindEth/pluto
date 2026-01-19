@@ -17,3 +17,23 @@ impl Client {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::obolapi::ClientOptions;
+
+    #[test]
+    fn test_build_post_test_url_root_base() {
+        let client = Client::new("https://api.obol.tech", ClientOptions::default()).unwrap();
+        let url = client.build_url(POST_TEST_PATH);
+        assert_eq!(url.as_str(), "https://api.obol.tech/test");
+    }
+
+    #[test]
+    fn test_build_post_test_url_v1_base() {
+        let client = Client::new("https://api.obol.tech/v1", ClientOptions::default()).unwrap();
+        let url = client.build_url(POST_TEST_PATH);
+        assert_eq!(url.as_str(), "https://api.obol.tech/v1/test");
+    }
+}

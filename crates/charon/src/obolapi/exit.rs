@@ -213,8 +213,7 @@ impl Client {
         let lock_hash_str = to_0x(lock_hash);
         let path = submit_partial_exit_url(&lock_hash_str);
 
-        let mut url = self.url();
-        url.set_path(&path);
+        let url = self.build_url(&path);
 
         // Sort by validator index ascending
         exit_blobs.sort_by_key(|blob| {
@@ -260,8 +259,7 @@ impl Client {
 
         let path = fetch_full_exit_url(val_pubkey, &to_0x(lock_hash), share_index);
 
-        let mut url = self.url();
-        url.set_path(&path);
+        let url = self.build_url(&path);
 
         // Create authentication blob
         let exit_auth_data = FullExitAuthBlob {
@@ -343,8 +341,7 @@ impl Client {
 
         let path = delete_partial_exit_url(val_pubkey, &to_0x(lock_hash), share_index);
 
-        let mut url = self.url();
-        url.set_path(&path);
+        let url = self.build_url(&path);
 
         let exit_auth_data = FullExitAuthBlob {
             lock_hash: lock_hash.to_vec(),
@@ -526,6 +523,7 @@ fn hash_voluntary_exit_with<H: HashWalker>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::obolapi::ClientOptions;
 
     #[test]
     fn test_submit_partial_exit_url() {
@@ -543,5 +541,71 @@ mod tests {
     fn test_fetch_full_exit_url() {
         let url = fetch_full_exit_url("0xpubkey", "0xlockhash", 5);
         assert_eq!(url, "/exp/exit/0xlockhash/5/0xpubkey");
+    }
+
+    #[test]
+    fn test_build_submit_partial_exit_url_root_base() {
+        let client = Client::new("https://api.obol.tech", ClientOptions::default()).unwrap();
+        let path = submit_partial_exit_url("0xabcd1234");
+        let url = client.build_url(&path);
+        assert_eq!(
+            url.as_str(),
+            "https://api.obol.tech/exp/partial_exits/0xabcd1234"
+        );
+    }
+
+    #[test]
+    fn test_build_submit_partial_exit_url_v1_base() {
+        let client = Client::new("https://api.obol.tech/v1", ClientOptions::default()).unwrap();
+        let path = submit_partial_exit_url("0xabcd1234");
+        let url = client.build_url(&path);
+        assert_eq!(
+            url.as_str(),
+            "https://api.obol.tech/v1/exp/partial_exits/0xabcd1234"
+        );
+    }
+
+    #[test]
+    fn test_build_delete_partial_exit_url_root_base() {
+        let client = Client::new("https://api.obol.tech", ClientOptions::default()).unwrap();
+        let path = delete_partial_exit_url("0xpubkey", "0xlockhash", 5);
+        let url = client.build_url(&path);
+        assert_eq!(
+            url.as_str(),
+            "https://api.obol.tech/exp/partial_exits/0xlockhash/5/0xpubkey"
+        );
+    }
+
+    #[test]
+    fn test_build_delete_partial_exit_url_v1_base() {
+        let client = Client::new("https://api.obol.tech/v1", ClientOptions::default()).unwrap();
+        let path = delete_partial_exit_url("0xpubkey", "0xlockhash", 5);
+        let url = client.build_url(&path);
+        assert_eq!(
+            url.as_str(),
+            "https://api.obol.tech/v1/exp/partial_exits/0xlockhash/5/0xpubkey"
+        );
+    }
+
+    #[test]
+    fn test_build_fetch_full_exit_url_root_base() {
+        let client = Client::new("https://api.obol.tech", ClientOptions::default()).unwrap();
+        let path = fetch_full_exit_url("0xpubkey", "0xlockhash", 5);
+        let url = client.build_url(&path);
+        assert_eq!(
+            url.as_str(),
+            "https://api.obol.tech/exp/exit/0xlockhash/5/0xpubkey"
+        );
+    }
+
+    #[test]
+    fn test_build_fetch_full_exit_url_v1_base() {
+        let client = Client::new("https://api.obol.tech/v1", ClientOptions::default()).unwrap();
+        let path = fetch_full_exit_url("0xpubkey", "0xlockhash", 5);
+        let url = client.build_url(&path);
+        assert_eq!(
+            url.as_str(),
+            "https://api.obol.tech/v1/exp/exit/0xlockhash/5/0xpubkey"
+        );
     }
 }
