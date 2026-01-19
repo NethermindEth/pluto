@@ -202,7 +202,7 @@ const FETCH_FULL_EXIT_TMPL: &str = "/exp/exit/{lock_hash}/{share_index}/{validat
 
 impl Client {
     /// Posts the set of msg's to the Obol API, for a given lock hash.
-    // It respects the timeout specified in the Client instance.
+    /// It respects the timeout specified in the Client instance.
     pub async fn post_partial_exits(
         &self,
         lock_hash: &[u8],
@@ -301,11 +301,9 @@ impl Client {
             let mut sig = [0u8; 96];
             sig.copy_from_slice(&sig_bytes);
 
-            // Signature indices are 1-based in threshold BLS
-            let share_idx = sig_idx
-                .checked_add(1)
-                .and_then(|idx| u8::try_from(idx).ok())
-                .ok_or_else(|| Error::InvalidSignatureSize(sig_idx.saturating_add(1)))?;
+            // `BlstImpl::threshold_aggregate` shifts the index to 1-based internally
+            let share_idx = u8::try_from(sig_idx)
+                .map_err(|_| Error::InvalidSignatureSize(sig_idx.saturating_add(1)))?;
             raw_signatures.insert(share_idx, sig);
         }
 
@@ -328,7 +326,7 @@ impl Client {
 
     /// Deletes the partial exit message for a given validator public key, lock
     /// hash and share index.
-    // It respects the timeout specified in the Client instance.
+    /// It respects the timeout specified in the Client instance.
     pub async fn delete_partial_exit(
         &self,
         val_pubkey: &str,
@@ -607,5 +605,75 @@ mod tests {
             url.as_str(),
             "https://api.obol.tech/v1/exp/exit/0xlockhash/5/0xpubkey"
         );
+    }
+
+    /// These test vectors were generated from Go `charon/app/obolapi` using
+    /// fastssz
+    #[test]
+    fn test_ssz_root_parity_exit_models() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        fn decode_hex(s: &str) -> std::result::Result<Vec<u8>, hex::FromHexError> {
+            hex::decode(s)
+        }
+
+        fn decode_hex_32(s: &str) -> std::result::Result<[u8; 32], Box<dyn std::error::Error>> {
+            let bytes = decode_hex(s)?;
+            let len = bytes.len();
+            let arr: [u8; 32] = bytes
+                .try_into()
+                .map_err(|_| format!("expected 32 bytes, got {}", len))?;
+            Ok(arr)
+        }
+
+        let lock_hash: Vec<u8> =
+            decode_hex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")?;
+        let validator_pubkey: Vec<u8> = decode_hex(
+            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20\
+2122232425262728292a2b2c2d2e2f30",
+        )?;
+        let bls_sig_hex = "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\
+202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f\
+404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f";
+
+        let exit_blob = ExitBlob {
+            public_key: Some(to_0x(&validator_pubkey)),
+            signed_exit_message: SignedVoluntaryExit {
+                message: Phase0SignedVoluntaryExitMessage {
+                    epoch: "194048".to_string(),
+                    validator_index: "42".to_string(),
+                },
+                signature: bls_sig_hex.to_string(),
+            },
+        };
+        let partial_exits: PartialExits = vec![exit_blob.clone()].into();
+        let unsigned = UnsignedPartialExitRequest {
+            partial_exits: partial_exits.clone(),
+            share_idx: 3,
+        };
+        let auth = FullExitAuthBlob {
+            lock_hash,
+            validator_pubkey,
+            share_index: 3,
+        };
+
+        let got_exit = exit_blob.hash_tree_root()?;
+        let got_partial = partial_exits.hash_tree_root()?;
+        let got_unsigned = unsigned.hash_tree_root()?;
+        let got_auth = auth.hash_tree_root()?;
+
+        let want_exit =
+            decode_hex_32("af0b1a9d98ac628035219391f59ee2708d813a3d860c6d17fa8cae0fb0746d20")?;
+        let want_partial =
+            decode_hex_32("9f310361788c9dfc6b0a3cfd77febad4c9a834c368be91ae0e570a40f82e810e")?;
+        let want_unsigned =
+            decode_hex_32("b58b5989634e567fa82b7c141918e30e44051c1ed6d0c36c3269021c531f4669")?;
+        let want_auth =
+            decode_hex_32("f7fec0dccbdeba7a7aa5978058df8891d1c403bb455a481677ecb5360b2f7fd6")?;
+
+        assert_eq!(got_exit, want_exit);
+        assert_eq!(got_partial, want_partial);
+        assert_eq!(got_unsigned, want_unsigned);
+        assert_eq!(got_auth, want_auth);
+
+        Ok(())
     }
 }

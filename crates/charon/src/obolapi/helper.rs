@@ -35,6 +35,7 @@ pub fn to_0x(data: &[u8]) -> String {
 pub fn bearer_string(data: &[u8]) -> String {
     format!("Bearer {}", to_0x(data))
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;

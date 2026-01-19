@@ -77,8 +77,7 @@ impl Client {
     /// Returns the Launchpad cluster dashboard page for a
     /// given lock, on the given Obol API client.
     pub fn launchpad_url_for_lock(&self, lock: &Lock) -> String {
-        let mut url = self.url();
-        url.set_path(&launchpad_url_path(lock));
+        let url = self.build_url(&launchpad_url_path(lock));
         url.to_string()
     }
 
