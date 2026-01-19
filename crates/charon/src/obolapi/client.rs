@@ -81,14 +81,7 @@ impl Client {
         url.set_path(&launchpad_url_path(lock));
         url.to_string()
     }
-}
 
-fn launchpad_url_path(lock: &Lock) -> String {
-    let hash_hex = hex::encode(&lock.lock_hash).to_uppercase();
-    LAUNCHPAD_RETURN_PATH_FMT.replace("{}", &hash_hex)
-}
-
-impl Client {
     /// Returns a reference to the HTTP client for making requests.
     pub(crate) fn http_client(&self) -> &reqwest::Client {
         &self.http_client
@@ -108,111 +101,119 @@ impl Client {
 
         base
     }
+
+    /// Makes an HTTP POST request.
+    pub(crate) async fn http_post(
+        &self,
+        url: Url,
+        body: Vec<u8>,
+        headers: Option<&[(String, String)]>,
+    ) -> Result<()> {
+        let mut request = self
+            .http_client()
+            .post(url)
+            .header("Content-Type", "application/json");
+
+        if let Some(headers) = headers {
+            for (key, value) in headers {
+                request = request.header(key, value);
+            }
+        }
+
+        let response = request.body(body).send().await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| String::from("failed to read body"));
+
+            return Err(Error::HttpError {
+                method: "POST".to_string(),
+                status: status.as_u16(),
+                body: body_text,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Makes an HTTP GET request.
+    pub(crate) async fn http_get(
+        &self,
+        url: Url,
+        headers: Option<&[(String, String)]>,
+    ) -> Result<Vec<u8>> {
+        let mut request = self.http_client().get(url);
+
+        if let Some(headers) = headers {
+            for (key, value) in headers {
+                request = request.header(key, value);
+            }
+        }
+
+        let response = request.send().await?;
+
+        let status = response.status();
+
+        if !status.is_success() {
+            if status == StatusCode::NOT_FOUND {
+                return Err(Error::NoExit);
+            }
+
+            let body_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| String::from("failed to read body"));
+
+            return Err(Error::HttpError {
+                method: "GET".to_string(),
+                status: status.as_u16(),
+                body: body_text,
+            });
+        }
+
+        let body_bytes = response.bytes().await?.to_vec();
+        Ok(body_bytes)
+    }
+
+    /// Makes an HTTP DELETE request.
+    pub(crate) async fn http_delete(
+        &self,
+        url: Url,
+        headers: Option<&[(String, String)]>,
+    ) -> Result<()> {
+        let mut request = self.http_client().delete(url);
+
+        if let Some(headers) = headers {
+            for (key, value) in headers {
+                request = request.header(key, value);
+            }
+        }
+
+        let response = request.send().await?;
+
+        let status = response.status();
+
+        if !status.is_success() {
+            if status == StatusCode::NOT_FOUND {
+                return Err(Error::NoExit);
+            }
+            return Err(Error::HttpError {
+                method: "DELETE".to_string(),
+                status: status.as_u16(),
+                body: String::new(),
+            });
+        }
+
+        Ok(())
+    }
 }
 
-pub(crate) async fn http_post(
-    client: &Client,
-    url: Url,
-    body: Vec<u8>,
-    headers: Option<&[(String, String)]>,
-) -> Result<()> {
-    let mut request = client
-        .http_client()
-        .post(url)
-        .header("Content-Type", "application/json");
-
-    if let Some(headers) = headers {
-        for (key, value) in headers {
-            request = request.header(key, value);
-        }
-    }
-
-    let response = request.body(body).send().await?;
-
-    let status = response.status();
-    if !status.is_success() {
-        let body_text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| String::from("failed to read body"));
-
-        return Err(Error::HttpError {
-            method: "POST".to_string(),
-            status: status.as_u16(),
-            body: body_text,
-        });
-    }
-
-    Ok(())
-}
-
-pub(crate) async fn http_get(
-    client: &Client,
-    url: Url,
-    headers: Option<&[(String, String)]>,
-) -> Result<Vec<u8>> {
-    let mut request = client.http_client().get(url);
-
-    if let Some(headers) = headers {
-        for (key, value) in headers {
-            request = request.header(key, value);
-        }
-    }
-
-    let response = request.send().await?;
-
-    let status = response.status();
-
-    if !status.is_success() {
-        if status == StatusCode::NOT_FOUND {
-            return Err(Error::NoExit);
-        }
-
-        let body_text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| String::from("failed to read body"));
-
-        return Err(Error::HttpError {
-            method: "GET".to_string(),
-            status: status.as_u16(),
-            body: body_text,
-        });
-    }
-
-    let body_bytes = response.bytes().await?.to_vec();
-    Ok(body_bytes)
-}
-
-pub(crate) async fn http_delete(
-    client: &Client,
-    url: Url,
-    headers: Option<&[(String, String)]>,
-) -> Result<()> {
-    let mut request = client.http_client().delete(url);
-
-    if let Some(headers) = headers {
-        for (key, value) in headers {
-            request = request.header(key, value);
-        }
-    }
-
-    let response = request.send().await?;
-
-    let status = response.status();
-
-    if !status.is_success() {
-        if status == StatusCode::NOT_FOUND {
-            return Err(Error::NoExit);
-        }
-        return Err(Error::HttpError {
-            method: "DELETE".to_string(),
-            status: status.as_u16(),
-            body: String::new(),
-        });
-    }
-
-    Ok(())
+fn launchpad_url_path(lock: &Lock) -> String {
+    let hash_hex = hex::encode(&lock.lock_hash).to_uppercase();
+    LAUNCHPAD_RETURN_PATH_FMT.replace("{}", &hash_hex)
 }
 
 #[cfg(test)]

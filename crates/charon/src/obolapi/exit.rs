@@ -20,9 +20,9 @@ use eth2api::types::{
 pub type SignedVoluntaryExit = GetPoolVoluntaryExitsResponseResponseDatum;
 
 use crate::obolapi::{
-    client::{Client, http_delete, http_get, http_post},
+    client::Client,
     error::{Error, Result},
-    serde_helpers::{bearer_string, from_0x, to_0x},
+    helper::{bearer_string, from_0x, to_0x},
 };
 
 /// An exit message alongside its BLS12-381 hex-encoded signature.
@@ -240,7 +240,7 @@ impl Client {
 
         let body = serde_json::to_vec(&signed_req)?;
 
-        http_post(self, url, body, None).await?;
+        self.http_post(url, body, None).await?;
 
         Ok(())
     }
@@ -279,7 +279,7 @@ impl Client {
             bearer_string(&lock_hash_signature),
         )];
 
-        let response_body = http_get(self, url, Some(&headers)).await?;
+        let response_body = self.http_get(url, Some(&headers)).await?;
 
         let exit_response: FullExitResponse = serde_json::from_slice(&response_body)?;
 
@@ -361,7 +361,7 @@ impl Client {
             bearer_string(&lock_hash_signature),
         )];
 
-        http_delete(self, url, Some(&headers)).await?;
+        self.http_delete(url, Some(&headers)).await?;
 
         Ok(())
     }

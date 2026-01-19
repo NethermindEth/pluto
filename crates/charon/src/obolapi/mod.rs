@@ -2,7 +2,7 @@
 
 mod client;
 mod error;
-mod serde_helpers;
+mod helper;
 mod test_api;
 
 pub mod exit;

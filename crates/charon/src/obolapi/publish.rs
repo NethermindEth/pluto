@@ -7,9 +7,9 @@ use charon_cluster::lock::Lock;
 use serde::{Deserialize, Serialize};
 
 use crate::obolapi::{
-    client::{Client, http_post},
+    client::Client,
     error::Result,
-    serde_helpers::{bearer_string, to_0x},
+    helper::{bearer_string, to_0x},
 };
 
 /// Request to sign Obol's Terms and Conditions.
@@ -50,7 +50,7 @@ impl Client {
 
         let body = serde_json::to_vec(&lock)?;
 
-        http_post(self, url, body, None).await?;
+        self.http_post(url, body, None).await?;
 
         Ok(())
     }
@@ -69,7 +69,7 @@ impl Client {
 
         let headers = vec![("Authorization".to_string(), bearer_string(signature))];
 
-        http_post(self, url, body, Some(&headers)).await?;
+        self.http_post(url, body, Some(&headers)).await?;
 
         Ok(())
     }
@@ -97,7 +97,7 @@ impl Client {
         // Add authorization header with bearer token
         let headers = vec![("Authorization".to_string(), bearer_string(signature))];
 
-        http_post(self, url, body, Some(&headers)).await?;
+        self.http_post(url, body, Some(&headers)).await?;
 
         Ok(())
     }
