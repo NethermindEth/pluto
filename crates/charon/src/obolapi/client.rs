@@ -57,10 +57,7 @@ impl Client {
 
         let req_timeout = options.timeout.unwrap_or(DEFAULT_TIMEOUT);
 
-        let http_client = reqwest::Client::builder()
-            .timeout(req_timeout)
-            .build()
-            .map_err(Error::Reqwest)?;
+        let http_client = reqwest::Client::builder().timeout(req_timeout).build()?;
 
         Ok(Self {
             base_url: url_str.to_string(),

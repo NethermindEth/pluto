@@ -69,4 +69,8 @@ pub enum Error {
     /// Epoch parsing error.
     #[error("epoch parsing error: {0}")]
     EpochParse(#[from] std::num::ParseIntError),
+
+    /// SSZ hasher error.
+    #[error("SSZ hasher error: {0}")]
+    HasherError(#[from] charon_cluster::ssz_hasher::HasherError),
 }

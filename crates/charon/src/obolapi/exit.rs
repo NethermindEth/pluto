@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use charon_cluster::{
     helpers::left_pad,
-    ssz_hasher::{HashWalker, Hasher, HasherError},
+    ssz_hasher::{HashWalker, Hasher},
 };
 use eth2api::types::{
     GetPoolVoluntaryExitsResponseResponseDatum, Phase0SignedVoluntaryExitMessage,
@@ -28,43 +28,40 @@ pub type SignedVoluntaryExit = GetPoolVoluntaryExitsResponseResponseDatum;
 /// Trait for types that can be hashed using SSZ hash tree root.
 pub trait SszHashable {
     /// Hashes this value into the provided hasher.
-    fn hash_with<H: HashWalker>(&self, hh: &mut H) -> Result<()>;
+    fn hash_with(&self, hh: &mut Hasher) -> Result<()>;
 
     /// Computes the SSZ hash tree root of this value.
     fn hash_tree_root(&self) -> Result<[u8; 32]> {
         let mut hh = Hasher::default();
         self.hash_with(&mut hh)?;
-        hh.hash_root().map_err(map_hasher_error)
+        Ok(hh.hash_root()?)
     }
 }
 
 impl SszHashable for SignedVoluntaryExit {
-    fn hash_with<H: HashWalker>(&self, hh: &mut H) -> Result<()> {
+    fn hash_with(&self, hh: &mut Hasher) -> Result<()> {
         let index = hh.index();
 
         self.message.hash_with(hh)?;
         let sig_bytes = from_0x(&self.signature, SSZ_LEN_BLS_SIG)?;
         put_bytes_n(hh, &sig_bytes, SSZ_LEN_BLS_SIG)?;
 
-        hh.merkleize(index).map_err(map_walker_error)?;
+        hh.merkleize(index)?;
         Ok(())
     }
 }
 
 impl SszHashable for Phase0SignedVoluntaryExitMessage {
-    fn hash_with<H: HashWalker>(&self, hh: &mut H) -> Result<()> {
+    fn hash_with(&self, hh: &mut Hasher) -> Result<()> {
         let index = hh.index();
 
-        let epoch = self.epoch.parse::<u64>().map_err(Error::EpochParse)?;
-        let validator_index = self
-            .validator_index
-            .parse::<u64>()
-            .map_err(Error::EpochParse)?;
+        let epoch = self.epoch.parse::<u64>()?;
+        let validator_index = self.validator_index.parse::<u64>()?;
 
-        hh.put_uint64(epoch).map_err(map_walker_error)?;
-        hh.put_uint64(validator_index).map_err(map_walker_error)?;
+        hh.put_uint64(epoch)?;
+        hh.put_uint64(validator_index)?;
 
-        hh.merkleize(index).map_err(map_walker_error)?;
+        hh.merkleize(index)?;
         Ok(())
     }
 }
@@ -81,7 +78,7 @@ pub struct ExitBlob {
 }
 
 impl SszHashable for ExitBlob {
-    fn hash_with<H: HashWalker>(&self, hh: &mut H) -> Result<()> {
+    fn hash_with(&self, hh: &mut Hasher) -> Result<()> {
         let index = hh.index();
 
         let pk = self.public_key.as_ref().ok_or_else(|| {
@@ -91,11 +88,11 @@ impl SszHashable for ExitBlob {
             ))
         })?;
         let pk_bytes = from_0x(pk, SSZ_LEN_PUB_KEY)?;
-        hh.put_bytes(&pk_bytes).map_err(map_walker_error)?;
+        hh.put_bytes(&pk_bytes)?;
 
         self.signed_exit_message.hash_with(hh)?;
 
-        hh.merkleize(index).map_err(map_walker_error)?;
+        hh.merkleize(index)?;
         Ok(())
     }
 }
@@ -106,7 +103,7 @@ impl SszHashable for ExitBlob {
 pub struct PartialExits(pub Vec<ExitBlob>);
 
 impl SszHashable for PartialExits {
-    fn hash_with<H: HashWalker>(&self, hh: &mut H) -> Result<()> {
+    fn hash_with(&self, hh: &mut Hasher) -> Result<()> {
         let index = hh.index();
         let num = self.0.len();
 
@@ -114,8 +111,7 @@ impl SszHashable for PartialExits {
             exit_blob.hash_with(hh)?;
         }
 
-        hh.merkleize_with_mixin(index, num, SSZ_MAX_EXITS)
-            .map_err(map_walker_error)?;
+        hh.merkleize_with_mixin(index, num, SSZ_MAX_EXITS)?;
         Ok(())
     }
 }
@@ -139,13 +135,13 @@ pub struct UnsignedPartialExitRequest {
 }
 
 impl SszHashable for UnsignedPartialExitRequest {
-    fn hash_with<H: HashWalker>(&self, hh: &mut H) -> Result<()> {
+    fn hash_with(&self, hh: &mut Hasher) -> Result<()> {
         let index = hh.index();
 
         self.partial_exits.hash_with(hh)?;
-        hh.put_uint64(self.share_idx).map_err(map_walker_error)?;
+        hh.put_uint64(self.share_idx)?;
 
-        hh.merkleize(index).map_err(map_walker_error)?;
+        hh.merkleize(index)?;
         Ok(())
     }
 }
@@ -232,14 +228,14 @@ pub struct FullExitAuthBlob {
 }
 
 impl SszHashable for FullExitAuthBlob {
-    fn hash_with<H: HashWalker>(&self, hh: &mut H) -> Result<()> {
+    fn hash_with(&self, hh: &mut Hasher) -> Result<()> {
         let index = hh.index();
 
-        hh.put_bytes(&self.lock_hash).map_err(map_walker_error)?;
+        hh.put_bytes(&self.lock_hash)?;
         put_bytes_n(hh, &self.validator_pubkey, SSZ_LEN_PUB_KEY)?;
-        hh.put_uint64(self.share_index).map_err(map_walker_error)?;
+        hh.put_uint64(self.share_index)?;
 
-        hh.merkleize(index).map_err(map_walker_error)?;
+        hh.merkleize(index)?;
         Ok(())
     }
 }
@@ -439,17 +435,7 @@ fn fetch_full_exit_url(val_pubkey: &str, lock_hash: &str, share_index: u64) -> S
         .replace(SHARE_INDEX_PATH, &share_index.to_string())
 }
 
-fn map_hasher_error(err: HasherError) -> Error {
-    use charon_cluster::ssz::SSZError;
-    Error::Ssz(SSZError::HashWalkerError(err))
-}
-
-fn map_walker_error<E: std::error::Error>(err: E) -> Error {
-    use charon_cluster::ssz::SSZError;
-    Error::Ssz(SSZError::UnsupportedVersion(err.to_string()))
-}
-
-fn put_bytes_n<H: HashWalker>(hh: &mut H, bytes: &[u8], expected_len: usize) -> Result<()> {
+fn put_bytes_n(hh: &mut Hasher, bytes: &[u8], expected_len: usize) -> Result<()> {
     if bytes.len() > expected_len {
         use charon_cluster::ssz::SSZError;
         return Err(Error::Ssz(SSZError::UnsupportedVersion(format!(
@@ -459,7 +445,7 @@ fn put_bytes_n<H: HashWalker>(hh: &mut H, bytes: &[u8], expected_len: usize) -> 
         ))));
     }
     let padded: Vec<u8> = left_pad(bytes, expected_len);
-    hh.put_bytes(&padded).map_err(map_walker_error)
+    Ok(hh.put_bytes(&padded)?)
 }
 
 #[cfg(test)]
