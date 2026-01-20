@@ -43,6 +43,9 @@ pub struct ProtocolState {
     /// The peer ID.
     peer_id: PeerId,
 
+    /// The peer name.
+    name: String,
+
     nicknames: Arc<Mutex<HashMap<String, String>>>,
 
     local_info: LocalPeerInfo,
@@ -139,25 +142,22 @@ fn format_hex(data: &[u8]) -> String {
 impl ProtocolState {
     /// Creates a new protocol state.
     pub fn new(peer_id: PeerId, local_info: LocalPeerInfo) -> Self {
+        let name = charon_p2p::name::peer_name(&peer_id);
         let mut nicknames = HashMap::new();
-        nicknames.insert(
-            charon_p2p::name::peer_name(&peer_id),
-            local_info.nickname.clone(),
-        );
+        nicknames.insert(name.clone(), local_info.nickname.clone());
         Self {
             peer_id,
+            name,
             nicknames: Arc::new(Mutex::new(nicknames)),
             local_info,
         }
     }
 
     async fn validate_peer_info(&self, peer_info: &PeerInfo, rtt: Duration) {
-        let name = charon_p2p::name::peer_name(&self.peer_id);
-
         let prev_nickname = {
             let mut nicknames = self.nicknames.lock();
-            let prev_nickname = nicknames.get(&name).cloned();
-            nicknames.insert(name.clone(), peer_info.nickname.clone());
+            let prev_nickname = nicknames.get(&self.name).cloned();
+            nicknames.insert(self.name.clone(), peer_info.nickname.clone());
 
             if prev_nickname.as_ref() != Some(&peer_info.nickname) {
                 info!(nicknames = ?nicknames, "Peer name to nickname mappings");
@@ -168,12 +168,12 @@ impl ProtocolState {
 
         // Validator git hash with regex.
         if !GIT_HASH_RE.is_match(&peer_info.git_hash) {
-            warn!(peer = name, "Invalid peer git hash");
+            warn!(peer = self.name, "Invalid peer git hash");
             return;
         }
 
         let Some(sent_at) = peer_info.sent_at else {
-            warn!(peer = name, "Peer sent at not provided");
+            warn!(peer = self.name, "Peer sent at not provided");
             return;
         };
         #[allow(
@@ -186,31 +186,31 @@ impl ProtocolState {
             sent_at.seconds,
             u32::try_from(sent_at.nanos).unwrap_or(0),
         ) else {
-            warn!(peer = name, sent_at = ?sent_at, "Invalid peer sent at");
+            warn!(peer = self.name, sent_at = ?sent_at, "Invalid peer sent at");
             return;
         };
         let clock_offset = actual_sent_at.signed_duration_since(expected_sent_at);
 
         if supported_peer_version(&peer_info.charon_version, version::SUPPORTED).is_err() {
-            PEERINFO_METRICS.version_support[&name].set(0);
+            PEERINFO_METRICS.version_support[&self.name].set(0);
 
-            tracing::error!(peer = name, peer_version = peer_info.charon_version, supported_versions = ?version::SUPPORTED, "Invalid peer version");
+            tracing::error!(peer = self.name, peer_version = peer_info.charon_version, supported_versions = ?version::SUPPORTED, "Invalid peer version");
 
             return;
         }
 
         // Set peer compatibility to true.
-        PEERINFO_METRICS.version_support[&name].set(1);
+        PEERINFO_METRICS.version_support[&self.name].set(1);
 
         let Some(started_at) = peer_info.started_at else {
-            warn!(peer = name, "Invalid peer started at");
+            warn!(peer = self.name, "Invalid peer started at");
             return;
         };
         let Some(started_at) = chrono::DateTime::<chrono::Utc>::from_timestamp(
             started_at.seconds,
             u32::try_from(started_at.nanos).unwrap_or(0),
         ) else {
-            warn!(peer = name, started_at = ?started_at, "Invalid peer started at");
+            warn!(peer = self.name, started_at = ?started_at, "Invalid peer started at");
             return;
         };
 
@@ -227,7 +227,7 @@ impl ProtocolState {
         // Log unexpected lock hash
         if peer_info.lock_hash != self.local_info.lock_hash {
             warn!(
-                peer = name,
+                peer = self.name,
                 lock_hash = format_hex(&peer_info.lock_hash),
                 "Mismatching peer lock hash"
             );
@@ -236,7 +236,7 @@ impl ProtocolState {
         // Builder API shall be either enabled or disabled for both.
         if peer_info.builder_api_enabled != self.local_info.builder_api_enabled {
             warn!(
-                peer = name,
+                peer = self.name,
                 builder_api_enabled = peer_info.builder_api_enabled,
                 "Mismatching peer builder API status"
             );
