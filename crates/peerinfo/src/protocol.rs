@@ -147,6 +147,22 @@ impl ProtocolState {
     }
 
     async fn validate_peer_info(&self, peer_info: &PeerInfo, rtt: Duration) {
+        let Some(started_at) = peer_info.started_at else {
+            warn!(
+                peer = self.name,
+                "Invalid peer info response: started at not provided"
+            );
+            return;
+        };
+
+        let Some(sent_at) = peer_info.sent_at else {
+            warn!(
+                peer = self.name,
+                "Invalid peer info response: sent at not provided"
+            );
+            return;
+        };
+
         let prev_nickname = {
             let mut nicknames = self.nicknames.lock();
             let prev_nickname = nicknames.get(&self.name).cloned();
@@ -165,10 +181,6 @@ impl ProtocolState {
             return;
         }
 
-        let Some(sent_at) = peer_info.sent_at else {
-            warn!(peer = self.name, "Peer sent at not provided");
-            return;
-        };
         #[allow(
             clippy::cast_precision_loss,
             clippy::arithmetic_side_effects,
@@ -195,10 +207,6 @@ impl ProtocolState {
         // Set peer compatibility to true.
         PEERINFO_METRICS.version_support[&self.name].set(1);
 
-        let Some(started_at) = peer_info.started_at else {
-            warn!(peer = self.name, "Invalid peer started at");
-            return;
-        };
         let Some(started_at) = chrono::DateTime::<chrono::Utc>::from_timestamp(
             started_at.seconds,
             u32::try_from(started_at.nanos).unwrap_or(0),
