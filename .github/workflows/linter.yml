@@ -19,6 +19,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
 
+      - name: Install `oas3-gen`
+        run: cargo install oas3-gen
+
       - run: rustup +nightly component add rustfmt
       - name: Run Fmt
         run: cargo +nightly fmt --all -- --check

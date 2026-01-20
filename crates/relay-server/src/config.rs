@@ -1,9 +1,9 @@
 use std::{path::PathBuf, time::Duration};
 
+use bon::Builder;
+use charon_p2p::config::P2PConfig;
 use charon_tracing::TracingConfig;
 use libp2p::relay;
-
-use charon_p2p::config::P2PConfig;
 
 /// One hour in seconds.
 pub const ONE_HOUR_SECONDS: u64 = 60 * 60;
@@ -15,123 +15,33 @@ pub const MB_32: u64 = 32 * 1024 * 1024;
 pub const EXTERNAL_HOST_RESOLVE_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 /// Configuration for the relay P2P layer.
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, Builder)]
 pub struct Config {
     /// The directory to store the relay data.
-    pub data_dir: PathBuf,
+    pub data_dir: Option<PathBuf>,
     /// The HTTP address to listen on.
     pub http_addr: Option<String>,
     /// The monitoring address to listen on.
-    pub monitoring_addr: String,
+    pub monitoring_addr: Option<String>,
     /// The debug address to listen on.
-    pub debug_addr: String,
+    pub debug_addr: Option<String>,
     /// The P2P configuration.
     pub p2p_config: P2PConfig,
     /// The logging configuration.
-    pub log_config: TracingConfig,
+    pub log_config: Option<TracingConfig>,
     /// Whether to automatically generate a P2P key.
+    #[builder(default = false)]
     pub auto_p2p_key: bool,
     /// The maximum number of resources per peer.
     pub max_res_per_peer: usize,
     /// The maximum number of connections.
     pub max_conns: usize,
     /// Whether to filter private addresses.
+    #[builder(default = false)]
     pub filter_private_addrs: bool,
     /// LibP2PLogLevel.
+    #[builder(default = "Info".to_string())]
     pub libp2p_log_level: String,
-}
-
-impl Config {
-    /// Returns a new builder for configuring a relay P2P layer.
-    pub fn builder() -> ConfigBuilder {
-        ConfigBuilder::new()
-    }
-}
-
-/// Builder for [`Config`].
-#[derive(Default, Debug, Clone)]
-pub struct ConfigBuilder {
-    config: Config,
-}
-
-impl ConfigBuilder {
-    /// Creates a new builder with default configuration.
-    pub fn new() -> Self {
-        Self {
-            config: Config::default(),
-        }
-    }
-
-    /// Sets the data directory.
-    pub fn with_data_dir(mut self, data_dir: PathBuf) -> Self {
-        self.config.data_dir = data_dir;
-        self
-    }
-
-    /// Sets the HTTP address.
-    pub fn with_http_addr(mut self, http_addr: Option<String>) -> Self {
-        self.config.http_addr = http_addr;
-        self
-    }
-
-    /// Sets the monitoring address.
-    pub fn with_monitoring_addr(mut self, monitoring_addr: String) -> Self {
-        self.config.monitoring_addr = monitoring_addr;
-        self
-    }
-
-    /// Sets the debug address.
-    pub fn with_debug_addr(mut self, debug_addr: String) -> Self {
-        self.config.debug_addr = debug_addr;
-        self
-    }
-
-    /// Sets the P2P configuration.
-    pub fn with_p2p_config(mut self, p2p_config: P2PConfig) -> Self {
-        self.config.p2p_config = p2p_config;
-        self
-    }
-
-    /// Sets the logging configuration.
-    pub fn with_log_config(mut self, log_config: TracingConfig) -> Self {
-        self.config.log_config = log_config;
-        self
-    }
-
-    /// Sets whether to automatically generate a P2P key.
-    pub fn with_auto_p2p_key(mut self, auto_p2p_key: bool) -> Self {
-        self.config.auto_p2p_key = auto_p2p_key;
-        self
-    }
-
-    /// Sets the maximum number of resources per peer.
-    pub fn with_max_res_per_peer(mut self, max_res_per_peer: usize) -> Self {
-        self.config.max_res_per_peer = max_res_per_peer;
-        self
-    }
-
-    /// Sets the maximum number of connections.
-    pub fn with_max_conns(mut self, max_conns: usize) -> Self {
-        self.config.max_conns = max_conns;
-        self
-    }
-
-    /// Sets whether to filter private addresses.
-    pub fn with_filter_private_addrs(mut self, filter_private_addrs: bool) -> Self {
-        self.config.filter_private_addrs = filter_private_addrs;
-        self
-    }
-
-    /// Sets the LibP2P log level.
-    pub fn with_libp2p_log_level(mut self, libp2p_log_level: String) -> Self {
-        self.config.libp2p_log_level = libp2p_log_level;
-        self
-    }
-
-    /// Builds the [`Config`].
-    pub fn build(self) -> Config {
-        self.config
-    }
 }
 
 pub(crate) fn create_relay_config(config: &Config) -> relay::Config {

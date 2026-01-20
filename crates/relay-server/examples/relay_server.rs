@@ -15,7 +15,7 @@ async fn main() {
     charon_tracing::init(&TracingConfig::default()).expect("Failed to initialize tracing");
 
     let config = Config::builder()
-        .with_p2p_config(
+        .p2p_config(
             P2PConfig::builder()
                 .with_tcp_addrs(vec![
                     multiaddr::Multiaddr::from_str("/ip4/0.0.0.0/tcp/0")
@@ -24,9 +24,9 @@ async fn main() {
                 ])
                 .build(),
         )
-        .with_max_conns(100)
-        .with_max_res_per_peer(10)
-        .with_http_addr(Some("0.0.0.0:8888".to_string()))
+        .max_conns(100)
+        .max_res_per_peer(10)
+        .http_addr("0.0.0.0:8888".to_string())
         .build();
     let key = SecretKey::random(&mut OsRng);
 

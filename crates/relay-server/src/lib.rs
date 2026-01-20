@@ -10,7 +10,7 @@ pub mod config;
 pub mod metrics;
 
 /// Web.
-pub mod web;
+pub(crate) mod web;
 
 /// Error.
 pub mod error;
