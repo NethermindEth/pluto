@@ -3,7 +3,7 @@
 mod client;
 mod error;
 mod helper;
-mod test_api;
+mod test;
 
 pub mod exit;
 pub mod publish;

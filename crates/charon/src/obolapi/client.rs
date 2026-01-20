@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use charon_cluster::lock::Lock;
-use reqwest::StatusCode;
+use reqwest::{Method, StatusCode};
 use url::Url;
 
 use crate::obolapi::error::{Error, Result};
@@ -110,14 +110,11 @@ impl Client {
 
         let status = response.status();
         if !status.is_success() {
-            let body_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| String::from("failed to read body"));
+            let body_text = response.text().await.unwrap_or_default();
 
             return Err(Error::HttpError {
-                method: "POST".to_string(),
-                status: status.as_u16(),
+                method: Method::POST,
+                status,
                 body: body_text,
             });
         }
@@ -148,14 +145,11 @@ impl Client {
                 return Err(Error::NoExit);
             }
 
-            let body_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| String::from("failed to read body"));
+            let body_text = response.text().await.unwrap_or_default();
 
             return Err(Error::HttpError {
-                method: "GET".to_string(),
-                status: status.as_u16(),
+                method: Method::GET,
+                status,
                 body: body_text,
             });
         }
@@ -187,8 +181,8 @@ impl Client {
                 return Err(Error::NoExit);
             }
             return Err(Error::HttpError {
-                method: "DELETE".to_string(),
-                status: status.as_u16(),
+                method: Method::default(),
+                status,
                 body: String::new(),
             });
         }

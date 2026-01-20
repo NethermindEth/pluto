@@ -1,5 +1,7 @@
 //! Error types for the Obol API client.
 
+use reqwest::{Method, StatusCode};
+
 /// Result type for Obol API operations.
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -14,9 +16,9 @@ pub enum Error {
     #[error("HTTP {method} request failed: status {status}, body: {body}")]
     HttpError {
         /// HTTP method (GET, POST, DELETE).
-        method: String,
+        method: Method,
         /// HTTP status code.
-        status: u16,
+        status: StatusCode,
         /// Response body.
         body: String,
     },
@@ -36,15 +38,6 @@ pub enum Error {
     /// Hex decoding error.
     #[error("hex decoding error: {0}")]
     HexDecode(#[from] hex::FromHexError),
-
-    /// Invalid hex string length.
-    #[error("invalid hex length: expected {expected} bytes, got {actual} bytes")]
-    InvalidHexLength {
-        /// Expected length in bytes.
-        expected: usize,
-        /// Actual length in bytes.
-        actual: usize,
-    },
 
     /// Empty hex string.
     #[error("empty hex string")]

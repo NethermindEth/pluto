@@ -6,11 +6,9 @@
 use charon_cluster::lock::Lock;
 use serde::{Deserialize, Serialize};
 
-use crate::obolapi::{
-    client::Client,
-    error::Result,
-    helper::{bearer_string, to_0x},
-};
+use charon_cluster::helpers::to_0x_hex;
+
+use crate::obolapi::{client::Client, error::Result, helper::bearer_string};
 
 /// Request to sign Obol's Terms and Conditions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,7 +86,7 @@ impl Client {
             address: user_addr.to_string(),
             version: 1,
             terms_and_conditions_hash: TERMS_AND_CONDITIONS_HASH.to_string(),
-            fork_version: to_0x(fork_version),
+            fork_version: to_0x_hex(fork_version),
         };
 
         let body = serde_json::to_vec(&request)?;

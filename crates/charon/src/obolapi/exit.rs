@@ -9,7 +9,8 @@ use charon_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::Signature};
 use serde::{Deserialize, Serialize};
 
 use charon_cluster::{
-    helpers::left_pad,
+    helpers::to_0x_hex,
+    ssz::{SSZ_LEN_BLS_SIG, SSZ_LEN_PUB_KEY},
     ssz_hasher::{HashWalker, Hasher},
 };
 use eth2api::types::{
@@ -19,12 +20,15 @@ use eth2api::types::{
 use crate::obolapi::{
     client::Client,
     error::{Error, Result},
-    helper::{bearer_string, from_0x, to_0x},
+    helper::{bearer_string, from_0x},
 };
 
 /// Type alias for signed voluntary exit from eth2api.
 pub type SignedVoluntaryExit = GetPoolVoluntaryExitsResponseResponseDatum;
 
+// TODO: Unify SSZ hashing across the workspace. `charon-cluster` already has
+// SSZ hashing utilities. Consider extracting a shared SSZ crate (or promoting
+// the existing hasher) so all crates share one SSZ interface and error type.
 /// Trait for types that can be hashed using SSZ hash tree root.
 pub trait SszHashable {
     /// Hashes this value into the provided hasher.
@@ -44,7 +48,7 @@ impl SszHashable for SignedVoluntaryExit {
 
         self.message.hash_with(hh)?;
         let sig_bytes = from_0x(&self.signature, SSZ_LEN_BLS_SIG)?;
-        put_bytes_n(hh, &sig_bytes, SSZ_LEN_BLS_SIG)?;
+        charon_cluster::helpers::put_bytes_n(hh, &sig_bytes, SSZ_LEN_BLS_SIG)?;
 
         hh.merkleize(index)?;
         Ok(())
@@ -190,7 +194,7 @@ impl From<PartialExitRequest> for PartialExitRequestDto {
     fn from(req: PartialExitRequest) -> Self {
         Self {
             unsigned: req.unsigned,
-            signature: to_0x(&req.signature),
+            signature: to_0x_hex(&req.signature),
         }
     }
 }
@@ -232,7 +236,7 @@ impl SszHashable for FullExitAuthBlob {
         let index = hh.index();
 
         hh.put_bytes(&self.lock_hash)?;
-        put_bytes_n(hh, &self.validator_pubkey, SSZ_LEN_PUB_KEY)?;
+        charon_cluster::helpers::put_bytes_n(hh, &self.validator_pubkey, SSZ_LEN_PUB_KEY)?;
         hh.put_uint64(self.share_index)?;
 
         hh.merkleize(index)?;
@@ -240,8 +244,6 @@ impl SszHashable for FullExitAuthBlob {
     }
 }
 const SSZ_MAX_EXITS: usize = 65536;
-const SSZ_LEN_PUB_KEY: usize = 48;
-const SSZ_LEN_BLS_SIG: usize = 96;
 
 impl Client {
     /// Posts the set of msg's to the Obol API, for a given lock hash.
@@ -253,7 +255,7 @@ impl Client {
         identity_key: &k256::SecretKey,
         mut exit_blobs: Vec<ExitBlob>,
     ) -> Result<()> {
-        let lock_hash_str = to_0x(lock_hash);
+        let lock_hash_str = to_0x_hex(lock_hash);
         let path = submit_partial_exit_url(&lock_hash_str);
 
         let url = self.build_url(&path)?;
@@ -300,7 +302,7 @@ impl Client {
         // Validate public key is 48 bytes
         let val_pubkey_bytes = from_0x(val_pubkey, 48)?;
 
-        let path = fetch_full_exit_url(val_pubkey, &to_0x(lock_hash), share_index);
+        let path = fetch_full_exit_url(val_pubkey, &to_0x_hex(lock_hash), share_index);
 
         let url = self.build_url(&path)?;
 
@@ -362,7 +364,7 @@ impl Client {
                     epoch: epoch_u64.to_string(),
                     validator_index: exit_response.validator_index.to_string(),
                 },
-                signature: to_0x(&full_sig),
+                signature: to_0x_hex(&full_sig),
             },
         })
     }
@@ -380,7 +382,7 @@ impl Client {
         // Validate public key is 48 bytes
         let val_pubkey_bytes = from_0x(val_pubkey, 48)?;
 
-        let path = delete_partial_exit_url(val_pubkey, &to_0x(lock_hash), share_index);
+        let path = delete_partial_exit_url(val_pubkey, &to_0x_hex(lock_hash), share_index);
 
         let url = self.build_url(&path)?;
 
@@ -421,19 +423,6 @@ fn delete_partial_exit_url(val_pubkey: &str, lock_hash: &str, share_index: u64) 
 /// Returns the full exit Obol API URL.
 fn fetch_full_exit_url(val_pubkey: &str, lock_hash: &str, share_index: u64) -> String {
     format!("/exp/exit/{}/{}/{}", lock_hash, share_index, val_pubkey)
-}
-
-fn put_bytes_n(hh: &mut Hasher, bytes: &[u8], expected_len: usize) -> Result<()> {
-    if bytes.len() > expected_len {
-        use charon_cluster::ssz::SSZError;
-        return Err(Error::Ssz(SSZError::UnsupportedVersion(format!(
-            "bytes too long: expected {}, got {}",
-            expected_len,
-            bytes.len()
-        ))));
-    }
-    let padded: Vec<u8> = left_pad(bytes, expected_len);
-    Ok(hh.put_bytes(&padded)?)
 }
 
 #[cfg(test)]
@@ -486,7 +475,7 @@ mod tests {
 404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f";
 
         let exit_blob = ExitBlob {
-            public_key: Some(to_0x(&validator_pubkey)),
+            public_key: Some(to_0x_hex(&validator_pubkey)),
             signed_exit_message: SignedVoluntaryExit {
                 message: Phase0SignedVoluntaryExitMessage {
                     epoch: "194048".to_string(),
