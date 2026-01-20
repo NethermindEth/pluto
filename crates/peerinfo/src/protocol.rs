@@ -132,13 +132,6 @@ fn supported_peer_version(version: &str, supported: &[SemVer]) -> Result<(), Pro
     })
 }
 
-fn format_hex(data: &[u8]) -> String {
-    data.iter()
-        .map(|b| format!("{:02x}", b))
-        .collect::<Vec<String>>()
-        .join("")
-}
-
 impl ProtocolState {
     /// Creates a new protocol state.
     pub fn new(peer_id: PeerId, local_info: LocalPeerInfo) -> Self {
@@ -228,7 +221,7 @@ impl ProtocolState {
         if peer_info.lock_hash != self.local_info.lock_hash {
             warn!(
                 peer = self.name,
-                lock_hash = format_hex(&peer_info.lock_hash),
+                lock_hash = hex::encode(&peer_info.lock_hash),
                 "Mismatching peer lock hash"
             );
         }
