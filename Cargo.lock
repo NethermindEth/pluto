@@ -1632,6 +1632,7 @@ version = "1.7.1"
 dependencies = [
  "alloy",
  "backon",
+ "bon",
  "charon-build-proto",
  "charon-cluster",
  "charon-core",

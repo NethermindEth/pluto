@@ -5,6 +5,7 @@
 
 use std::time::Duration;
 
+use bon::Builder;
 use charon_cluster::lock::Lock;
 use reqwest::{Method, StatusCode};
 use url::Url;
@@ -28,23 +29,10 @@ pub struct Client {
 }
 
 /// Options for configuring the Obol API client.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Builder)]
 pub struct ClientOptions {
-    /// HTTP request timeout (defaults to 10 seconds).
+    /// Optional HTTP request timeout override (defaults to 10 seconds).
     pub timeout: Option<Duration>,
-}
-
-impl ClientOptions {
-    /// Creates new default client options.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Sets the HTTP request timeout for all Client calls.
-    pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
-        self
-    }
 }
 
 impl Client {
@@ -231,7 +219,15 @@ mod tests {
 
     #[test]
     fn test_new_client_valid_url() {
-        assert!(Client::new("https://api.obol.tech", ClientOptions::default()).is_ok());
+        assert!(
+            Client::new(
+                "https://api.obol.tech",
+                ClientOptions::builder()
+                    .timeout(Duration::from_secs(10))
+                    .build()
+            )
+            .is_ok()
+        );
     }
 
     #[test]

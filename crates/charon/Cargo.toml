@@ -25,6 +25,7 @@ serde.workspace = true
 serde_json.workspace = true
 hex.workspace = true
 k256.workspace = true
+bon.workspace = true
 charon-cluster = { workspace = true }
 charon-k1util = { workspace = true }
 charon-crypto = { workspace = true }
