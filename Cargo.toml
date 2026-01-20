@@ -59,8 +59,8 @@ tempfile = "3.10.0"
 tracing = "0.1.32"
 tracing-subscriber = { version = "0.3.9", features = ["env-filter"] }
 tracing-loki = "0.2.6"
-vise = "0.3.2"
-vise-exporter = "0.3.2"
+vise = { git = "https://github.com/varex83/vise", rev = "afd1ac771c168de54f8e3c0da96b3942429f12cc" }
+vise-exporter = { git = "https://github.com/varex83/vise", rev = "afd1ac771c168de54f8e3c0da96b3942429f12cc" }
 parking_lot = "0.12.2"
 
 # Crates in the workspace

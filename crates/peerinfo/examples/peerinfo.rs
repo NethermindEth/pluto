@@ -35,6 +35,7 @@ use libp2p::{
 };
 use tokio::signal;
 use tracing_subscriber::EnvFilter;
+use vise::MetricsCollection;
 use vise_exporter::MetricsExporter;
 
 /// Command line arguments
@@ -210,10 +211,16 @@ async fn main() -> anyhow::Result<()> {
     // Run the metrics exporter
     let bind_address = SocketAddr::from(([0, 0, 0, 0], args.metrics_port));
 
-    let exporter = MetricsExporter::default()
-        .bind(bind_address)
-        .await
-        .expect("Failed to bind metrics exporter");
+    let exporter = MetricsExporter::new(
+        MetricsCollection::default()
+            .with_prefix("pluto")
+            .collect()
+            .into(),
+    )
+    .bind(bind_address)
+    .await
+    .expect("Failed to bind metrics exporter");
+
     tokio::spawn(async move {
         exporter
             .start()
