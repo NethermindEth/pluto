@@ -35,6 +35,8 @@ cancellation = "0.1.0"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5.53", features = ["derive", "env", "cargo"] }
 crossbeam = "0.8.4"
+futures = "0.3"
+futures-timer = "3.0"
 backon = "1.6.0"
 hex = { version = "0.4.3" }
 prost = "0.14"
@@ -50,6 +52,7 @@ tokio-util = "0.7.11"
 libp2p = { version = "0.56", features = ["full", "secp256k1"] }
 url = "2.5"
 uuid = { version = "1.19", features = ["serde", "v4"] }
+unsigned-varint = { version = "0.8", features = ["futures"] }
 serde_with = { version = "3.16", features = ["hex", "base64"] }
 base64 = "0.22"
 sha3 = "0.10"

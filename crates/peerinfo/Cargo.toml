@@ -11,11 +11,11 @@ prost.workspace = true
 prost-types.workspace = true
 thiserror.workspace = true
 libp2p.workspace = true
-futures = "0.3"
-futures-timer = "3.0"
+futures.workspace = true
+futures-timer.workspace = true
 tracing.workspace = true
 chrono.workspace = true
-unsigned-varint = { version = "0.8", features = ["futures"] }
+unsigned-varint.workspace = true
 
 [build-dependencies]
 charon-build-proto.workspace = true
