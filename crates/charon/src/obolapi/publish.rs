@@ -45,7 +45,7 @@ impl Client {
     /// Publishes the lockfile to obol-api.
     /// It respects the timeout specified in the Client instance.
     pub async fn publish_lock(&self, lock: Lock) -> Result<()> {
-        let url = self.build_url(PUBLISH_LOCK_PATH);
+        let url = self.build_url(PUBLISH_LOCK_PATH)?;
 
         let body = serde_json::to_vec(&lock)?;
 
@@ -62,7 +62,7 @@ impl Client {
         definition: charon_cluster::definition::Definition,
         signature: &[u8],
     ) -> Result<()> {
-        let url = self.build_url(PUBLISH_DEFINITION_PATH);
+        let url = self.build_url(PUBLISH_DEFINITION_PATH)?;
 
         let body = serde_json::to_vec(&definition)?;
 
@@ -82,7 +82,7 @@ impl Client {
         fork_version: &[u8],
         signature: &[u8],
     ) -> Result<()> {
-        let url = self.build_url(TERMS_AND_CONDITIONS_PATH);
+        let url = self.build_url(TERMS_AND_CONDITIONS_PATH)?;
 
         let request = RequestSignTermsAndConditions {
             address: user_addr.to_string(),
@@ -99,53 +99,5 @@ impl Client {
         self.http_post(url, body, Some(&headers)).await?;
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::obolapi::ClientOptions;
-
-    #[test]
-    fn test_build_publish_lock_url_root_base() {
-        let client = Client::new("https://api.obol.tech", ClientOptions::default()).unwrap();
-        let url = client.build_url(PUBLISH_LOCK_PATH);
-        assert_eq!(url.as_str(), "https://api.obol.tech/lock");
-    }
-
-    #[test]
-    fn test_build_publish_lock_url_v1_base() {
-        let client = Client::new("https://api.obol.tech/v1", ClientOptions::default()).unwrap();
-        let url = client.build_url(PUBLISH_LOCK_PATH);
-        assert_eq!(url.as_str(), "https://api.obol.tech/v1/lock");
-    }
-
-    #[test]
-    fn test_build_publish_definition_url_root_base() {
-        let client = Client::new("https://api.obol.tech", ClientOptions::default()).unwrap();
-        let url = client.build_url(PUBLISH_DEFINITION_PATH);
-        assert_eq!(url.as_str(), "https://api.obol.tech/definition");
-    }
-
-    #[test]
-    fn test_build_publish_definition_url_v1_base() {
-        let client = Client::new("https://api.obol.tech/v1", ClientOptions::default()).unwrap();
-        let url = client.build_url(PUBLISH_DEFINITION_PATH);
-        assert_eq!(url.as_str(), "https://api.obol.tech/v1/definition");
-    }
-
-    #[test]
-    fn test_build_terms_and_conditions_url_root_base() {
-        let client = Client::new("https://api.obol.tech", ClientOptions::default()).unwrap();
-        let url = client.build_url(TERMS_AND_CONDITIONS_PATH);
-        assert_eq!(url.as_str(), "https://api.obol.tech/termsAndConditions");
-    }
-
-    #[test]
-    fn test_build_terms_and_conditions_url_v1_base() {
-        let client = Client::new("https://api.obol.tech/v1", ClientOptions::default()).unwrap();
-        let url = client.build_url(TERMS_AND_CONDITIONS_PATH);
-        assert_eq!(url.as_str(), "https://api.obol.tech/v1/termsAndConditions");
     }
 }

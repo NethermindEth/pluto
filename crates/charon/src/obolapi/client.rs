@@ -14,14 +14,11 @@ use crate::obolapi::error::{Error, Result};
 /// Default HTTP request timeout if not specified.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Launchpad URL path format string for a given cluster lock hash.
-const LAUNCHPAD_RETURN_PATH_FMT: &str = "/lock/0x{}/launchpad";
-
 /// REST client for Obol API requests.
 #[derive(Debug, Clone)]
 pub struct Client {
     /// Base Obol API URL.
-    base_url: String,
+    base_url: Url,
 
     /// HTTP request timeout.
     _req_timeout: Duration,
@@ -53,29 +50,30 @@ impl ClientOptions {
 impl Client {
     /// Creates a new Obol API client.
     pub fn new(url_str: &str, options: ClientOptions) -> Result<Self> {
-        Url::parse(url_str)?;
-
         let req_timeout = options.timeout.unwrap_or(DEFAULT_TIMEOUT);
 
         let http_client = reqwest::Client::builder().timeout(req_timeout).build()?;
 
+        // Ensure base_url ends with a trailing slash for proper URL joining
+        let normalized_url = if url_str.ends_with('/') {
+            url_str.to_string()
+        } else {
+            format!("{}/", url_str)
+        };
+        let base_url = Url::parse(&normalized_url)?;
+
         Ok(Self {
-            base_url: url_str.to_string(),
+            base_url,
             _req_timeout: req_timeout,
             http_client,
         })
     }
 
-    /// Returns the base URL from the baseURL stored in client.
-    pub(crate) fn url(&self) -> Url {
-        Url::parse(&self.base_url).expect("parse Obol API URL, this should never happen")
-    }
-
     /// Returns the Launchpad cluster dashboard page for a
     /// given lock, on the given Obol API client.
-    pub fn launchpad_url_for_lock(&self, lock: &Lock) -> String {
-        let url = self.build_url(&launchpad_url_path(lock));
-        url.to_string()
+    pub fn launchpad_url_for_lock(&self, lock: &Lock) -> Result<String> {
+        let url = self.build_url(&launchpad_url_path(lock))?;
+        Ok(url.to_string())
     }
 
     /// Returns a reference to the HTTP client for making requests.
@@ -84,18 +82,10 @@ impl Client {
     }
 
     /// Builds a URL by safely appending a path to the base URL.
-    pub(crate) fn build_url(&self, path: &str) -> Url {
-        let mut base = self.url();
-        let current = base.path().trim_end_matches('/');
-        let new_path = path.trim_start_matches('/');
-
-        if current.is_empty() {
-            base.set_path(&format!("/{}", new_path));
-        } else {
-            base.set_path(&format!("{}/{}", current, new_path));
-        }
-
-        base
+    /// Strip leading '/' from path for proper URL joining
+    pub(crate) fn build_url(&self, path: &str) -> Result<Url> {
+        let path = path.trim_start_matches('/');
+        Ok(self.base_url.join(path)?)
     }
 
     /// Makes an HTTP POST request.
@@ -209,7 +199,7 @@ impl Client {
 
 fn launchpad_url_path(lock: &Lock) -> String {
     let hash_hex = hex::encode(&lock.lock_hash).to_uppercase();
-    LAUNCHPAD_RETURN_PATH_FMT.replace("{}", &hash_hex)
+    format!("/lock/0x{}/launchpad", &hash_hex)
 }
 
 #[cfg(test)]
@@ -247,73 +237,89 @@ mod tests {
 
     #[test]
     fn test_new_client_valid_url() {
-        let client = Client::new("https://api.obol.tech", ClientOptions::default());
-        assert!(client.is_ok());
+        assert!(Client::new("https://api.obol.tech", ClientOptions::default()).is_ok());
     }
 
     #[test]
     fn test_new_client_invalid_url() {
-        let client = Client::new("not-a-url", ClientOptions::default());
-        assert!(client.is_err());
+        assert!(Client::new("not-a-url", ClientOptions::default()).is_err());
+    }
+
+    #[test]
+    fn test_base_url_normalization() {
+        let c1 = Client::new("https://api.obol.tech", ClientOptions::default()).unwrap();
+        assert_eq!(c1.base_url.as_str(), "https://api.obol.tech/");
+
+        let c2 = Client::new("https://api.obol.tech/", ClientOptions::default()).unwrap();
+        assert_eq!(c2.base_url.as_str(), "https://api.obol.tech/");
+
+        let c3 = Client::new("https://api.obol.tech/v1", ClientOptions::default()).unwrap();
+        assert_eq!(c3.base_url.as_str(), "https://api.obol.tech/v1/");
+
+        let c4 = Client::new("https://api.obol.tech/v1/", ClientOptions::default()).unwrap();
+        assert_eq!(c4.base_url.as_str(), "https://api.obol.tech/v1/");
+    }
+
+    #[test]
+    fn test_build_url_root_base() {
+        let client = Client::new("https://api.obol.tech", ClientOptions::default()).unwrap();
+        assert_eq!(
+            client.build_url("definition").unwrap().as_str(),
+            "https://api.obol.tech/definition"
+        );
+        assert_eq!(
+            client.build_url("/definition").unwrap().as_str(),
+            "https://api.obol.tech/definition"
+        );
+        assert_eq!(
+            client
+                .build_url("exp/partial_exits/0xabc")
+                .unwrap()
+                .as_str(),
+            "https://api.obol.tech/exp/partial_exits/0xabc"
+        );
+    }
+
+    #[test]
+    fn test_build_url_versioned_base() {
+        let client = Client::new("https://api.obol.tech/v1", ClientOptions::default()).unwrap();
+        assert_eq!(
+            client.build_url("definition").unwrap().as_str(),
+            "https://api.obol.tech/v1/definition"
+        );
+        assert_eq!(
+            client.build_url("/lock").unwrap().as_str(),
+            "https://api.obol.tech/v1/lock"
+        );
+        assert_eq!(
+            client
+                .build_url("exp/exit/0xlock/5/0xkey")
+                .unwrap()
+                .as_str(),
+            "https://api.obol.tech/v1/exp/exit/0xlock/5/0xkey"
+        );
     }
 
     #[test]
     fn test_launchpad_url_path() {
         let lock = test_lock_with_hash(vec![0x12, 0x34, 0xab, 0xcd]);
-        let path = launchpad_url_path(&lock);
-        assert_eq!(path, "/lock/0x1234ABCD/launchpad");
+        assert_eq!(launchpad_url_path(&lock), "/lock/0x1234ABCD/launchpad");
     }
 
     #[test]
     fn test_launchpad_url_for_lock() {
-        let client = Client::new("https://api.obol.tech", ClientOptions::default()).unwrap();
         let lock = test_lock_with_hash(vec![0x12, 0x34, 0xab, 0xcd]);
-        let url = client.launchpad_url_for_lock(&lock);
-        assert_eq!(url, "https://api.obol.tech/lock/0x1234ABCD/launchpad");
-    }
 
-    #[test]
-    fn test_build_url_with_root_base() {
-        // Base path is "/" (root)
-        let client = Client::new("https://api.obol.tech/", ClientOptions::default()).unwrap();
+        let c1 = Client::new("https://api.obol.tech", ClientOptions::default()).unwrap();
+        assert_eq!(
+            c1.launchpad_url_for_lock(&lock).unwrap(),
+            "https://api.obol.tech/lock/0x1234ABCD/launchpad"
+        );
 
-        let url = client.build_url("/definition");
-        assert_eq!(url.path(), "/definition");
-
-        let url = client.build_url("definition");
-        assert_eq!(url.path(), "/definition");
-    }
-
-    #[test]
-    fn test_build_url_with_non_root_base() {
-        // Base path is "/v1"
-        let client = Client::new("https://api.obol.tech/v1", ClientOptions::default()).unwrap();
-
-        let url = client.build_url("/definition");
-        assert_eq!(url.path(), "/v1/definition");
-
-        let url = client.build_url("definition");
-        assert_eq!(url.path(), "/v1/definition");
-    }
-
-    #[test]
-    fn test_build_url_with_trailing_slash() {
-        // Base path has trailing slash
-        let client = Client::new("https://api.obol.tech/api/", ClientOptions::default()).unwrap();
-
-        let url = client.build_url("/definition");
-        assert_eq!(url.path(), "/api/definition");
-
-        let url = client.build_url("definition");
-        assert_eq!(url.path(), "/api/definition");
-    }
-
-    #[test]
-    fn test_build_url_empty_base() {
-        // Edge case: empty path (should be treated as root)
-        let client = Client::new("https://api.obol.tech", ClientOptions::default()).unwrap();
-
-        let url = client.build_url("/definition");
-        assert_eq!(url.path(), "/definition");
+        let c2 = Client::new("https://api.obol.tech/v1", ClientOptions::default()).unwrap();
+        assert_eq!(
+            c2.launchpad_url_for_lock(&lock).unwrap(),
+            "https://api.obol.tech/v1/lock/0x1234ABCD/launchpad"
+        );
     }
 }
