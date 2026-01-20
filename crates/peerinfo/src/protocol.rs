@@ -139,9 +139,14 @@ fn format_hex(data: &[u8]) -> String {
 impl ProtocolState {
     /// Creates a new protocol state.
     pub fn new(peer_id: PeerId, local_info: LocalPeerInfo) -> Self {
+        let mut nicknames = HashMap::new();
+        nicknames.insert(
+            charon_p2p::name::peer_name(&peer_id),
+            local_info.nickname.clone(),
+        );
         Self {
             peer_id,
-            nicknames: Arc::new(Mutex::new(HashMap::new())),
+            nicknames: Arc::new(Mutex::new(nicknames)),
             local_info,
         }
     }
