@@ -170,8 +170,7 @@ impl ProtocolState {
 
         let prev_nickname = {
             let mut nicknames = self.nicknames.lock();
-            let prev_nickname = nicknames.get(&self.name).cloned();
-            nicknames.insert(self.name.clone(), peer_info.nickname.clone());
+            let prev_nickname = nicknames.insert(self.name.clone(), peer_info.nickname.clone());
 
             if prev_nickname.as_ref() != Some(&peer_info.nickname) {
                 info!(nicknames = ?nicknames, "Peer name to nickname mappings");
