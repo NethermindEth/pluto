@@ -16,6 +16,7 @@ futures-timer.workspace = true
 tracing.workspace = true
 chrono.workspace = true
 unsigned-varint.workspace = true
+hex.workspace = true
 
 [build-dependencies]
 charon-build-proto.workspace = true
@@ -25,7 +26,7 @@ anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true
 tracing-subscriber.workspace = true
-hex.workspace = true
+hex-literal.workspace = true
 
 [lints]
 workspace = true
