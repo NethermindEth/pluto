@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 axum.workspace = true
+bon.workspace = true
 libp2p.workspace = true
 thiserror.workspace = true
 k256.workspace = true
@@ -19,6 +20,7 @@ rand.workspace = true
 charon-tracing.workspace = true
 tracing.workspace = true
 charon-p2p.workspace = true
+charon-core.workspace = true
 
 [dev-dependencies]
 vise-exporter.workspace = true

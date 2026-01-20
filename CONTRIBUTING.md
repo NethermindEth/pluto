@@ -13,6 +13,7 @@ git config commit.gpgsign true
 * [Rust](https://www.rust-lang.org/tools/install)
 * [Protobuf](https://protobuf.dev/installation/)
 * [cargo deny](https://github.com/EmbarkStudios/cargo-deny)
+* [oas3-gen](https://github.com/eklipse2k8/oas3-gen)
 
 ## Code quality assurance
 

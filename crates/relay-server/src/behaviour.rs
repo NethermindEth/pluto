@@ -1,7 +1,7 @@
 #![allow(missing_docs)] // we need to allow missing docs for the derive macro
 //! Relay server behaviour.
 
-use std::time::Duration;
+use std::sync::LazyLock;
 
 use libp2p::{identify, identity::Keypair, ping, relay, swarm::NetworkBehaviour};
 
@@ -36,19 +36,21 @@ impl RelayServerBehaviour {
 pub struct RelayServerBehaviourBuilder {
     gater: Option<ConnGater>,
     identify_protocol: String,
-    ping_interval: Duration,
-    ping_timeout: Duration,
     relay_config: Option<relay::Config>,
+    user_agent: Option<String>,
 }
+
+/// The default identify protocol for the Pluto network.
+pub static DEFAULT_IDENTIFY_PROTOCOL: LazyLock<String> =
+    LazyLock::new(|| format!("/pluto/relay/{}", *charon_core::version::VERSION));
 
 impl Default for RelayServerBehaviourBuilder {
     fn default() -> Self {
         Self {
             gater: None,
-            identify_protocol: "/pluto/relay/1.0.0-alpha".into(),
-            ping_interval: Duration::from_secs(1),
-            ping_timeout: Duration::from_secs(2),
+            identify_protocol: DEFAULT_IDENTIFY_PROTOCOL.clone(),
             relay_config: None,
+            user_agent: None,
         }
     }
 }
@@ -71,21 +73,15 @@ impl RelayServerBehaviourBuilder {
         self
     }
 
-    /// Sets the ping interval.
-    pub fn with_ping_interval(mut self, interval: Duration) -> Self {
-        self.ping_interval = interval;
-        self
-    }
-
-    /// Sets the ping timeout.
-    pub fn with_ping_timeout(mut self, timeout: Duration) -> Self {
-        self.ping_timeout = timeout;
-        self
-    }
-
     /// Sets the relay server configuration.
     pub fn with_relay_config(mut self, config: relay::Config) -> Self {
         self.relay_config = Some(config);
+        self
+    }
+
+    /// Sets the user agent string.
+    pub fn with_user_agent(mut self, user_agent: impl Into<String>) -> Self {
+        self.user_agent = Some(user_agent.into());
         self
     }
 
@@ -96,15 +92,14 @@ impl RelayServerBehaviourBuilder {
                 key.public().to_peer_id(),
                 self.relay_config.unwrap_or_default(),
             ),
-            identify: identify::Behaviour::new(identify::Config::new(
-                self.identify_protocol,
-                key.public(),
-            )),
-            ping: ping::Behaviour::new(
-                ping::Config::new()
-                    .with_interval(self.ping_interval)
-                    .with_timeout(self.ping_timeout),
+            identify: identify::Behaviour::new(
+                identify::Config::new(self.identify_protocol, key.public()).with_agent_version(
+                    self.user_agent.unwrap_or_else(|| {
+                        charon_p2p::behaviours::pluto::DEFAULT_USER_AGENT.clone()
+                    }),
+                ),
             ),
+            ping: ping::Behaviour::new(charon_p2p::config::default_ping_config()),
             gater: self
                 .gater
                 .unwrap_or_else(|| ConnGater::new_conn_gater(vec![], vec![])),

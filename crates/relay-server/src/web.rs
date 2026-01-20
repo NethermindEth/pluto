@@ -58,12 +58,6 @@ impl AppState {
         }
     }
 
-    /// Updates the addresses.
-    pub async fn update_addrs(&self, addrs: Vec<Multiaddr>) {
-        let mut current_addrs = self.addrs.write().await;
-        *current_addrs = addrs;
-    }
-
     /// Gets the external host IP if set.
     async fn get_external_host_ip(&self) -> Option<Ipv4Addr> {
         *self.external_host_ip.read().await
@@ -169,15 +163,17 @@ pub async fn enr_handler(
 
     let addrs = state.addrs.read().await;
 
-    if addrs.is_empty() {
+    // Sort addresses with public addresses first
+    let mut sorted_addrs: Vec<Multiaddr> = addrs.clone();
+    drop(addrs);
+
+    if sorted_addrs.is_empty() {
         return Err(HandlerError {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: "no addresses".to_string(),
         });
     }
 
-    // Sort addresses with public addresses first
-    let mut sorted_addrs: Vec<Multiaddr> = addrs.clone();
     sorted_addrs.sort_by(|a, b| {
         let a_public = utils::is_public_addr(a);
         let b_public = utils::is_public_addr(b);
@@ -292,12 +288,7 @@ async fn resolve_external_host_periodically(
 ) {
     info!("Starting external host resolver");
 
-    // Resolve immediately on startup
-    resolve_external_host(state.clone(), &external_host).await;
-
-    // Then resolve periodically
     let mut interval = tokio::time::interval(EXTERNAL_HOST_RESOLVE_INTERVAL);
-    interval.tick().await; // Skip the first immediate tick
 
     loop {
         tokio::select! {

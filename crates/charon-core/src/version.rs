@@ -1,4 +1,4 @@
-use std::{cmp, fmt, str, sync::LazyLock};
+use std::{cmp, fmt, sync::LazyLock};
 
 type Result<T> = std::result::Result<T, SemVerError>;
 
@@ -14,10 +14,9 @@ pub enum SemVerError {
 ///     - Main branch: v0.X-dev
 ///     - Release branch: v0.Y-rc
 pub static VERSION: LazyLock<SemVer> = LazyLock::new(|| {
-    // Overwritten at build-time with the git tag for official releases
-    let str = option_env!("CHARON_VERSION").unwrap_or("v1.7-rc");
+    let str = env!("CARGO_PKG_VERSION");
 
-    SemVer::try_from(str).expect("invalid semantic version")
+    SemVer::parse(format!("v{}", str)).expect("invalid semantic version")
 });
 
 /// Supported minor versions in order of precedence.
@@ -50,12 +49,29 @@ pub fn git_commit() -> (String, String) {
         include!(concat!(env!("OUT_DIR"), "/built.rs"));
     }
 
-    let hash = built_info::GIT_COMMIT_HASH.unwrap_or("unknown").into();
+    let hash = built_info::GIT_COMMIT_HASH
+        .map(|h| h.chars().take(7).collect())
+        .unwrap_or_else(|| "unknown".into());
+
     let timestamp = chrono::DateTime::parse_from_rfc2822(built_info::BUILT_TIME_UTC)
-        .map(|dt| dt.timestamp().to_string())
-        .unwrap_or("unknown".into());
+        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .unwrap_or_else(|_| "unknown".into());
 
     (hash, timestamp)
+}
+
+/// Dependency list from build info in `name v{version}` format.
+pub fn dependencies() -> Vec<String> {
+    mod built_info {
+        include!(concat!(env!("OUT_DIR"), "/built.rs"));
+    }
+
+    let mut deps: Vec<String> = built_info::DEPENDENCIES
+        .iter()
+        .map(|(name, version)| format!("{name} v{version}"))
+        .collect();
+    deps.sort_unstable();
+    deps
 }
 
 /// The type of semantic version, i.e., minor, patch, or pre-release.
@@ -105,9 +121,9 @@ impl SemVer {
     }
 
     /// Try to parse a semantic version from a string.
-    pub fn parse(value: &str) -> Result<SemVer> {
+    pub fn parse<T: AsRef<str>>(value: T) -> Result<SemVer> {
         let matches = SEMVER_REGEX
-            .captures(value)
+            .captures(value.as_ref())
             .filter(|matches| matches.len() == 5)
             .ok_or(SemVerError::InvalidFormat)?;
 
@@ -203,22 +219,6 @@ impl PartialOrd for SemVer {
     }
 }
 
-impl TryFrom<&str> for SemVer {
-    type Error = SemVerError;
-
-    fn try_from(value: &str) -> Result<Self> {
-        SemVer::parse(value)
-    }
-}
-
-impl str::FromStr for SemVer {
-    type Err = SemVerError;
-
-    fn from_str(s: &str) -> Result<Self> {
-        SemVer::parse(s)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::version::{SUPPORTED, SemVer, SemVerError, SemVerType, VERSION};
@@ -237,18 +237,18 @@ mod tests {
         ];
 
         for (a, b, expected) in tc {
-            let ver_a = SemVer::try_from(a).unwrap();
-            let ver_b = SemVer::try_from(b).unwrap();
+            let ver_a = SemVer::parse(a).unwrap();
+            let ver_b = SemVer::parse(b).unwrap();
             assert_eq!(ver_a.partial_cmp(&ver_b).unwrap(), expected);
         }
     }
 
     #[test]
     fn is_pre_release() {
-        let pre_release = SemVer::try_from("v0.17.1-rc1").unwrap();
+        let pre_release = SemVer::parse("v0.17.1-rc1").unwrap();
         assert!(pre_release.is_pre_release());
 
-        let release = SemVer::try_from("v0.17.1").unwrap();
+        let release = SemVer::parse("v0.17.1").unwrap();
         assert!(!release.is_pre_release());
     }
 

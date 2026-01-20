@@ -3,9 +3,10 @@
 use std::{
     net::{IpAddr, SocketAddr},
     str::FromStr,
+    time::Duration,
 };
 
-use libp2p::{Multiaddr, multiaddr};
+use libp2p::{Multiaddr, multiaddr, ping};
 
 /// P2P configuration error.
 #[derive(Debug, thiserror::Error)]
@@ -159,6 +160,18 @@ impl P2PConfigBuilder {
     pub fn build(self) -> P2PConfig {
         self.config
     }
+}
+
+/// The default ping interval.
+pub const DEFAULT_PING_INTERVAL: Duration = Duration::from_secs(1);
+/// The default ping timeout.
+pub const DEFAULT_PING_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Returns the default ping configuration.
+pub fn default_ping_config() -> ping::Config {
+    ping::Config::new()
+        .with_interval(DEFAULT_PING_INTERVAL)
+        .with_timeout(DEFAULT_PING_TIMEOUT)
 }
 
 /// Resolves a TCP address string to a SocketAddr, ensuring the IP is specified.

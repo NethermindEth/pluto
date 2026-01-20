@@ -24,7 +24,5 @@ url.workspace = true
 [build-dependencies]
 charon-build-proto.workspace = true
 
-[dev-dependencies]
-
 [lints]
 workspace = true

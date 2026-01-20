@@ -24,6 +24,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
 
+      - name: Install `oas3-gen`
+        run: cargo install oas3-gen
+
       - run: cargo install cargo-llvm-cov
       - run: rustup component add llvm-tools-preview
       - run: cargo llvm-cov --workspace --lcov --output-path lcov.info --ignore-filename-regex '^examples/'
@@ -81,6 +84,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
+
+      - name: Install `oas3-gen`
+        if: ${{ steps.base_art.outputs.found == 'false' }}
+        run: cargo install oas3-gen
 
       - name: Install cargo-llvm-cov (fallback path)
         if: ${{ steps.base_art.outputs.found == 'false' }}
