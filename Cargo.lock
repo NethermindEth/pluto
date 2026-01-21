@@ -6836,7 +6836,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vise"
 version = "0.3.2"
-source = "git+https://github.com/varex83/vise?rev=afd1ac771c168de54f8e3c0da96b3942429f12cc#afd1ac771c168de54f8e3c0da96b3942429f12cc"
+source = "git+https://github.com/matter-labs/vise?rev=73c654303d8190023cf30034d627b74cf3101b23#73c654303d8190023cf30034d627b74cf3101b23"
 dependencies = [
  "compile-fmt",
  "ctor",
@@ -6849,7 +6849,7 @@ dependencies = [
 [[package]]
 name = "vise-exporter"
 version = "0.3.2"
-source = "git+https://github.com/varex83/vise?rev=afd1ac771c168de54f8e3c0da96b3942429f12cc#afd1ac771c168de54f8e3c0da96b3942429f12cc"
+source = "git+https://github.com/matter-labs/vise?rev=73c654303d8190023cf30034d627b74cf3101b23#73c654303d8190023cf30034d627b74cf3101b23"
 dependencies = [
  "http-body-util",
  "hyper",
@@ -6863,7 +6863,7 @@ dependencies = [
 [[package]]
 name = "vise-macros"
 version = "0.3.2"
-source = "git+https://github.com/varex83/vise?rev=afd1ac771c168de54f8e3c0da96b3942429f12cc#afd1ac771c168de54f8e3c0da96b3942429f12cc"
+source = "git+https://github.com/matter-labs/vise?rev=73c654303d8190023cf30034d627b74cf3101b23#73c654303d8190023cf30034d627b74cf3101b23"
 dependencies = [
  "proc-macro2",
  "quote",
