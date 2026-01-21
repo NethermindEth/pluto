@@ -16,5 +16,8 @@ pub mod eip712;
 /// Network utilities.
 pub mod network;
 
+/// Deposit data creation and management.
+pub mod deposit;
+
 /// Utilities.
 pub(crate) mod utils;
