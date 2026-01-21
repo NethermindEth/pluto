@@ -6,7 +6,7 @@ use eth2api::{
     PostStateValidatorsRequestPath, PostStateValidatorsResponse, ValidatorRequestBody,
 };
 use std::{collections::HashMap, sync::Arc};
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 type Result<T> = std::result::Result<T, ValidatorCacheError>;
 
@@ -66,7 +66,7 @@ pub trait CachedValidatorsProvider {
 
 /// A cache for active validators.
 #[derive(Clone)]
-pub struct ValidatorCache(Arc<Mutex<ValidatorCacheInner>>);
+pub struct ValidatorCache(Arc<RwLock<ValidatorCacheInner>>);
 
 struct ValidatorCacheInner {
     eth2_cl: EthBeaconNodeApiClient,
@@ -78,7 +78,7 @@ struct ValidatorCacheInner {
 impl ValidatorCache {
     /// Creates a new, empty validator cache.
     pub fn new(eth2_cl: EthBeaconNodeApiClient, pubkeys: Vec<PubKey>) -> Self {
-        Self(Arc::new(Mutex::new(ValidatorCacheInner {
+        Self(Arc::new(RwLock::new(ValidatorCacheInner {
             eth2_cl,
             pubkeys,
             active: None,
@@ -88,7 +88,7 @@ impl ValidatorCache {
 
     /// Clears the cache. This should be called on epoch boundary.
     pub async fn trim(&self) {
-        let mut inner = self.0.lock().await;
+        let mut inner = self.0.write().await;
 
         inner.active = None;
         inner.complete = None;
@@ -97,7 +97,7 @@ impl ValidatorCache {
     /// Returns the cached active validators and complete validators response,
     /// or fetches them if not available populating the cache.
     pub async fn get_by_head(&self) -> Result<(ActiveValidators, CompleteValidators)> {
-        let mut inner = self.0.lock().await;
+        let mut inner = self.0.write().await;
 
         if let (Some(active), Some(complete)) = (&inner.active, &inner.complete) {
             return Ok((active.clone(), complete.clone()));
@@ -141,7 +141,7 @@ impl ValidatorCache {
         &self,
         slot: u64,
     ) -> Result<(ActiveValidators, CompleteValidators, bool)> {
-        let mut inner = self.0.lock().await;
+        let mut inner = self.0.write().await;
 
         let mut request = PostStateValidatorsRequest {
             path: PostStateValidatorsRequestPath {
@@ -322,7 +322,7 @@ mod tests {
 
         // Verify cache is initially empty
         {
-            let inner = cache.0.lock().await;
+            let inner = cache.0.write().await;
             assert!(inner.active.is_none());
             assert!(inner.complete.is_none());
         }
@@ -332,7 +332,7 @@ mod tests {
 
         // Verify cache remains empty after failed request
         {
-            let inner = cache.0.lock().await;
+            let inner = cache.0.write().await;
             assert!(inner.active.is_none());
             assert!(inner.complete.is_none());
         }
