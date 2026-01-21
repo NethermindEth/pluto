@@ -21,3 +21,6 @@ pub mod eth1wrap;
 
 /// Featureset defines a set of global features and their rollout status.
 pub mod featureset;
+
+/// Obol API client for interacting with the Obol network API.
+pub mod obolapi;
