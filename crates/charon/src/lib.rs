@@ -4,9 +4,6 @@
 //! coordination for Ethereum 2.0 validators. This crate serves as the primary
 //! entry point for the Charon distributed validator node implementation.
 
-/// Peerinfo.
-pub mod peerinfo;
-
 /// Log
 pub mod log;
 
@@ -24,6 +21,9 @@ pub mod eth1wrap;
 
 /// Featureset defines a set of global features and their rollout status.
 pub mod featureset;
+
+/// Obol API client for interacting with the Obol network API.
+pub mod obolapi;
 
 /// Ethereum CL RPC client management.
 pub mod eth2wrap;

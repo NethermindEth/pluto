@@ -32,13 +32,13 @@ pub(crate) const SSZ_LEN_FORK_VERSION: usize = 4;
 /// Length of a K1 signature.
 pub(crate) const SSZ_LEN_K1_SIG: usize = 65;
 /// Length of a BLS signature.
-pub(crate) const SSZ_LEN_BLS_SIG: usize = 96;
+pub const SSZ_LEN_BLS_SIG: usize = 96;
 /// Length of a hash.
 pub(crate) const SSZ_LEN_HASH: usize = 32;
 /// Length of withdrawal credentials.
 pub(crate) const SSZ_LEN_WITHDRAW_CREDS: usize = 32;
 /// Length of a public key.
-pub(crate) const SSZ_LEN_PUB_KEY: usize = 48;
+pub const SSZ_LEN_PUB_KEY: usize = 48;
 
 /// HashFunc is a function that hashes a definition
 pub type HashFuncWithBool<T, H> = fn(&T, &mut H, bool) -> Result<(), SSZError<H>>;
