@@ -12,6 +12,7 @@ members = [
     "crates/charon-p2p",
     "crates/charon-testutil",
     "crates/tracing",
+    "crates/peerinfo",
     "crates/eth2api",
     "crates/relay-server"
 ]
@@ -34,8 +35,11 @@ cancellation = "0.1.0"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5.53", features = ["derive", "env", "cargo"] }
 crossbeam = "0.8.4"
+futures = "0.3"
+futures-timer = "3.0"
 backon = "1.6.0"
 hex = { version = "0.4.3" }
+hex-literal = "0.4"
 prost = "0.14"
 prost-build = "0.14"
 prost-types = "0.14"
@@ -49,6 +53,7 @@ tokio-util = "0.7.11"
 libp2p = { version = "0.56", features = ["full", "secp256k1"] }
 url = "2.5"
 uuid = { version = "1.19", features = ["serde", "v4"] }
+unsigned-varint = { version = "0.8", features = ["futures"] }
 serde_with = { version = "3.16", features = ["hex", "base64"] }
 base64 = "0.22"
 sha3 = "0.10"
@@ -80,6 +85,7 @@ charon-p2p = { path = "crates/charon-p2p" }
 charon-testutil = { path = "crates/charon-testutil" }
 charon-tracing = { path = "crates/tracing" }
 charon-relay-server = { path = "crates/relay-server" }
+charon-peerinfo = { path = "crates/peerinfo" }
 eth2api = { path = "crates/eth2api" }
 
 [workspace.lints.rust]
