@@ -1,28 +1,35 @@
 name: Linter check
 
 on:
-  workflow_dispatch:
-  # push
+  push:
+    branches: ["main"] # Runs on pushes to main branch
+  pull_request:
+    types: [synchronize, opened, reopened, ready_for_review]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  # Make sure CI fails on all warnings, including Clippy lints
   RUSTFLAGS: "-Dwarnings"
 
 jobs:
   linter_check:
-    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install protobuf compiler
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
 
-      - name: Install `oas3-gen`
-        run: cargo install oas3-gen
+      - name: Install `protobuf`
+        uses: awalsh128/cache-apt-pkgs-action@v1.6.0
+        with:
+          packages: protobuf-compiler
+          version: "3.21.12-8.2ubuntu0.2"
 
       - run: rustup +nightly component add rustfmt
       - name: Run Fmt
