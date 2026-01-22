@@ -9,9 +9,16 @@ permissions:
   contents: read
   pages: write
   id-token: write
+
 concurrency:
   group: deploy
   cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # Treat all warnings as errors
+  RUSTFLAGS: "-Dwarnings"
 
 jobs:
   build:
