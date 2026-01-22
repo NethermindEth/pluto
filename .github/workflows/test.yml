@@ -14,6 +14,10 @@ on:
     # and when a draft PR becomes ready for review.
     types: [synchronize, opened, reopened, ready_for_review]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
