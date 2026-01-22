@@ -287,20 +287,17 @@ pub fn write_deposit_data_file(
         }
     }
 
-    // Marshal to JSON
     let bytes =
         marshal_deposit_data(deposit_datas, network).map_err(|e| DepositError::InvalidData {
             field: "deposit_data".to_string(),
             message: e.to_string(),
         })?;
 
-    // Get file path
     let file_path = get_deposit_file_path(data_dir, first_amount);
 
-    // Write file with read-only permissions (0o444)
     std::fs::write(&file_path, bytes)?;
 
-    // Set permissions to read-only
+    // Set permissions to read-only (0o444)
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -353,16 +350,12 @@ pub fn read_deposit_data_files(cluster_dir: &Path) -> Result<Vec<Vec<DepositData
     let mut deposit_datas_list = Vec::new();
 
     for file in files {
-        // Read file
         let bytes = std::fs::read(&file)?;
 
-        // Parse JSON
         let dd_list: Vec<DepositDataJson> = serde_json::from_slice(&bytes)?;
 
-        // Convert to DepositData
         let mut deposit_datas = Vec::new();
         for d in dd_list {
-            // Decode pubkey
             let pubkey_bytes = hex::decode(&d.pubkey)?;
             let pub_key: PublicKey =
                 pubkey_bytes
@@ -377,7 +370,6 @@ pub fn read_deposit_data_files(cluster_dir: &Path) -> Result<Vec<Vec<DepositData
                         ),
                     })?;
 
-            // Decode withdrawal credentials
             let wc_bytes = hex::decode(&d.withdrawal_credentials)?;
             let withdrawal_credentials: [u8; 32] =
                 wc_bytes
@@ -388,7 +380,6 @@ pub fn read_deposit_data_files(cluster_dir: &Path) -> Result<Vec<Vec<DepositData
                         message: format!("Expected 32 bytes, got {}", wc_bytes.len()),
                     })?;
 
-            // Decode signature
             let sig_bytes = hex::decode(&d.signature)?;
             let signature: Signature =
                 sig_bytes
@@ -430,24 +421,20 @@ pub fn merge_deposit_data_sets(
         return a;
     }
 
-    // Create map by amount
     let mut ddm: HashMap<Gwei, Vec<DepositData>> = HashMap::new();
 
-    // Add all from a
     for deposit_set in a {
         for dd in deposit_set {
             ddm.entry(dd.amount).or_default().push(dd);
         }
     }
 
-    // Add all from b
     for deposit_set in b {
         for dd in deposit_set {
             ddm.entry(dd.amount).or_default().push(dd);
         }
     }
 
-    // Convert back to Vec<Vec<DepositData>>
     ddm.into_values().collect()
 }
 

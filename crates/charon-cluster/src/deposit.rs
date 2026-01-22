@@ -4,7 +4,6 @@ use serde_with::{DisplayFromStr, serde_as};
 
 /// DepositData defines the deposit data to activate a validator.
 /// https://github.com/ethereum/consensus-specs/blob/dev/specs/phase0/beacon-chain.md#depositdata
-/// TODO: unify it with eth2/deposit
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct DepositData {

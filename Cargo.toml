@@ -67,6 +67,9 @@ oas3-gen-support = "0.24"
 bon = "3.8"
 testcontainers = "0.26"
 vise = "0.3"
+tree_hash = "0.12"
+tree_hash_derive = "0.12"
+glob = "0.3"
 
 # Crates in the workspace
 charon = { path = "crates/charon" }
