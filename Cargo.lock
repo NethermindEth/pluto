@@ -1746,6 +1746,7 @@ dependencies = [
  "glob",
  "hex",
  "k256",
+ "regex",
  "serde",
  "serde_json",
  "sha3",

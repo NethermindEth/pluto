@@ -378,4 +378,157 @@ mod tests {
             assert_eq!(deposit_set.len(), 2);
         }
     }
+
+    /// Comprehensive test for deposit file path formatting to match Go's strconv.FormatFloat(eth, 'f', -1, 64).
+    ///
+    /// Verifies that Rust's format!("{}", f64) produces identical output to Go for:
+    /// - Whole numbers (no ".0" suffix)
+    /// - Decimals (no trailing zeros)
+    /// - Small numbers (fixed-point, not scientific notation)
+    /// - Large numbers (no scientific notation)
+    /// - Problematic floats (0.3, 0.7)
+    ///
+    /// If this test fails, implement explicit Go-compatible formatting.
+    #[test]
+    fn test_deposit_file_path_go_formatting_compatibility() {
+        use std::path::Path;
+
+        let data_dir = Path::new("/tmp/deposits");
+
+        struct TestCase {
+            gwei: u64,
+            expected_filename: &'static str,
+            description: &'static str,
+        }
+
+        let test_cases = vec![
+            // Legacy filename for default amount
+            TestCase {
+                gwei: 32_000_000_000,
+                expected_filename: "deposit-data.json",
+                description: "32 ETH - legacy filename",
+            },
+            // Whole numbers - no decimal point or trailing zeros
+            TestCase {
+                gwei: 1_000_000_000,
+                expected_filename: "deposit-data-1eth.json",
+                description: "1 ETH - no trailing .0",
+            },
+            TestCase {
+                gwei: 16_000_000_000,
+                expected_filename: "deposit-data-16eth.json",
+                description: "16 ETH - no trailing .0",
+            },
+            TestCase {
+                gwei: 100_000_000_000,
+                expected_filename: "deposit-data-100eth.json",
+                description: "100 ETH - no trailing .0",
+            },
+            TestCase {
+                gwei: 1_000_000_000_000_000,
+                expected_filename: "deposit-data-1000000eth.json",
+                description: "1M ETH - large number, no scientific notation",
+            },
+            // Decimals - no trailing zeros
+            TestCase {
+                gwei: 100_000_000,
+                expected_filename: "deposit-data-0.1eth.json",
+                description: "0.1 ETH - one decimal",
+            },
+            TestCase {
+                gwei: 500_000_000,
+                expected_filename: "deposit-data-0.5eth.json",
+                description: "0.5 ETH - one decimal",
+            },
+            TestCase {
+                gwei: 1_500_000_000,
+                expected_filename: "deposit-data-1.5eth.json",
+                description: "1.5 ETH - one decimal",
+            },
+            TestCase {
+                gwei: 1_250_000_000,
+                expected_filename: "deposit-data-1.25eth.json",
+                description: "1.25 ETH - two decimals",
+            },
+            TestCase {
+                gwei: 125_000_000,
+                expected_filename: "deposit-data-0.125eth.json",
+                description: "0.125 ETH - three decimals",
+            },
+            TestCase {
+                gwei: 62_500_000,
+                expected_filename: "deposit-data-0.0625eth.json",
+                description: "0.0625 ETH - four decimals",
+            },
+            TestCase {
+                gwei: 24_500_000_000,
+                expected_filename: "deposit-data-24.5eth.json",
+                description: "24.5 ETH - non-standard amount",
+            },
+            TestCase {
+                gwei: 32_100_000_000,
+                expected_filename: "deposit-data-32.1eth.json",
+                description: "32.1 ETH - slightly more than default",
+            },
+            TestCase {
+                gwei: 10_100_000_000,
+                expected_filename: "deposit-data-10.1eth.json",
+                description: "10.1 ETH - decimal precision",
+            },
+            // Problematic floats (binary representation issues)
+            TestCase {
+                gwei: 300_000_000,
+                expected_filename: "deposit-data-0.3eth.json",
+                description: "0.3 ETH - known problematic float",
+            },
+            TestCase {
+                gwei: 700_000_000,
+                expected_filename: "deposit-data-0.7eth.json",
+                description: "0.7 ETH - known problematic float",
+            },
+            // Very small amounts - must use fixed-point notation, not scientific
+            TestCase {
+                gwei: 1_000,
+                expected_filename: "deposit-data-0.000001eth.json",
+                description: "0.000001 ETH - 6 decimals, no scientific notation",
+            },
+            TestCase {
+                gwei: 10,
+                expected_filename: "deposit-data-0.00000001eth.json",
+                description: "10 Gwei - 8 decimals, no scientific notation",
+            },
+            TestCase {
+                gwei: 1,
+                expected_filename: "deposit-data-0.000000001eth.json",
+                description: "1 Gwei - 9 decimals, no scientific notation",
+            },
+        ];
+
+        for test_case in test_cases {
+            let amount = Gwei::new(test_case.gwei);
+            let path = get_deposit_file_path(data_dir, amount);
+            let actual_filename = path.file_name().unwrap().to_str().unwrap();
+
+            // Check exact filename match
+            assert_eq!(
+                actual_filename, test_case.expected_filename,
+                "Failed for {}: expected '{}', got '{}'",
+                test_case.description, test_case.expected_filename, actual_filename
+            );
+
+            // For non-legacy filenames, verify no scientific notation in the number part
+            if test_case.gwei != 32_000_000_000 {
+                let number_part = actual_filename
+                    .strip_prefix("deposit-data-")
+                    .and_then(|s| s.strip_suffix("eth.json"))
+                    .expect("filename should have correct prefix/suffix");
+                
+                assert!(
+                    !number_part.contains('e') && !number_part.contains('E'),
+                    "Number part '{}' should not use scientific notation for {}",
+                    number_part, test_case.description
+                );
+            }
+        }
+    }
 }

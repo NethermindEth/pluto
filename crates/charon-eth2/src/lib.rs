@@ -19,5 +19,8 @@ pub mod network;
 /// Deposit data creation and management.
 pub mod deposit;
 
+/// Ethereum address helpers (matches Go's eth2util/helpers.go).
+pub mod helpers;
+
 /// Utilities.
 pub(crate) mod utils;

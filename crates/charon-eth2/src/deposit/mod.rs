@@ -185,8 +185,14 @@ pub fn marshal_deposit_data(
     // Sort by pubkey
     dd_list.sort_by(|a, b| a.pubkey.cmp(&b.pubkey));
 
-    // Serialize to JSON with pretty printing
-    let bytes = serde_json::to_vec_pretty(&dd_list)?;
+    let bytes = {
+        use serde::Serialize;
+        let mut buf = Vec::new();
+        let formatter = serde_json::ser::PrettyFormatter::with_indent(b" "); // Single space
+        let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
+        dd_list.serialize(&mut ser)?;
+        buf
+    };
 
     Ok(bytes)
 }

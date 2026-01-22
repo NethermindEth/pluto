@@ -9,7 +9,7 @@ use super::{
     constants::*,
     types::{DepositMessage, ForkData, SigningData},
 };
-use crate::network;
+use crate::{helpers, network};
 
 use super::constants::{Domain, Root, Version};
 
@@ -28,35 +28,34 @@ pub enum DomainError {
     #[error("Network error: {0}")]
     NetworkError(#[from] network::NetworkError),
 
-    /// Invalid address checksum
-    #[error("Invalid address checksum: {0}")]
-    InvalidChecksum(String),
+    /// Helper error
+    #[error("Address validation error: {0}")]
+    HelperError(#[from] helpers::HelperError),
 }
 
 /// Converts an Ethereum address to withdrawal credentials.
 ///
 /// # Arguments
-/// * `addr` - Ethereum address (with or without 0x prefix)
+/// * `addr` - Ethereum address with 0x prefix (format validation only, checksum not enforced)
 /// * `compounding` - Whether to use EIP-7251 compounding withdrawal credentials
 ///
 /// # Returns
 /// 32-byte withdrawal credentials
 ///
 /// # Errors
-/// Returns error if address is invalid or checksum fails
-/// NOTE: Done
+/// Returns error if address format is invalid
+/// NOTE: Done - Uses helpers::checksum_address to match Go's eth2util.ChecksumAddress behavior
+/// Go's ChecksumAddress accepts any valid hex without validating existing EIP-55 checksums
 pub(crate) fn withdrawal_creds_from_addr(
     addr: &str,
     compounding: bool,
 ) -> Result<[u8; 32], DomainError> {
-    // Validate checksum
-    validate_checksum(addr)?;
+    // Validate address format and get checksummed version
+    // This matches Go's eth2util.ChecksumAddress: validates format but doesn't validate checksums
+    helpers::checksum_address(addr)?;
 
-    // Remove 0x prefix if present
-    let addr_hex = addr.strip_prefix("0x").unwrap_or(addr);
-
-    // Decode address bytes
-    let addr_bytes = hex::decode(addr_hex)?;
+    // Decode address bytes (we already validated format, so this should succeed)
+    let addr_bytes = hex::decode(&addr[2..])?;
 
     let mut creds = [0u8; 32];
 
@@ -79,58 +78,6 @@ pub(crate) fn withdrawal_creds_from_addr(
     Ok(creds)
 }
 
-/// Validates Ethereum address checksum using EIP-55.
-///
-/// # Arguments
-/// * `addr` - Ethereum address to validate
-///
-/// # Errors
-/// Returns error if checksum validation fails
-/// NOTE: Consider to use alloy-primitive
-/// NOTE: or create eth2util/helper
-fn validate_checksum(addr: &str) -> Result<(), DomainError> {
-    let addr_no_prefix = addr.strip_prefix("0x").unwrap_or(addr);
-
-    // Check length
-    if addr_no_prefix.len() != 40 {
-        return Err(DomainError::InvalidAddress(format!(
-            "Address must be 40 hex characters, got {}",
-            addr_no_prefix.len()
-        )));
-    }
-
-    // If all lowercase or all uppercase, skip checksum validation
-    let has_uppercase = addr_no_prefix.chars().any(|c| c.is_uppercase());
-    let has_lowercase = addr_no_prefix.chars().any(|c| c.is_lowercase());
-
-    if !has_uppercase || !has_lowercase {
-        // Mixed case not present, skip validation
-        return Ok(());
-    }
-
-    // Compute checksum using Keccak256
-    use sha3::{Digest, Keccak256};
-    let hash = Keccak256::digest(addr_no_prefix.to_lowercase().as_bytes());
-
-    for (i, ch) in addr_no_prefix.chars().enumerate() {
-        if ch.is_alphabetic() {
-            let hash_byte = hash[i / 2];
-            let hash_nibble = if i % 2 == 0 {
-                hash_byte >> 4
-            } else {
-                hash_byte & 0x0f
-            };
-
-            let should_be_uppercase = hash_nibble >= 8;
-
-            if ch.is_uppercase() != should_be_uppercase {
-                return Err(DomainError::InvalidChecksum(addr.to_string()));
-            }
-        }
-    }
-
-    Ok(())
-}
 
 /// Returns the deposit domain for the given fork version.
 ///
@@ -225,46 +172,63 @@ mod tests {
 
     #[test]
     fn test_withdrawal_creds_without_prefix() {
+        // Address without 0x prefix should fail (matching Go's behavior)
         let addr = "321dcb529f3945bc94fecea9d3bc5caf35253b94";
-        let creds = withdrawal_creds_from_addr(addr, false).unwrap();
-        assert_eq!(creds[0], ETH1_ADDRESS_WITHDRAWAL_PREFIX);
+        let err = withdrawal_creds_from_addr(addr, false).unwrap_err();
+        // Error is HelperError wrapped in DomainError
+        assert!(matches!(err, DomainError::HelperError(_)));
     }
 
     #[test]
     fn test_invalid_address_length() {
         let addr = "0x321dcb5"; // Too short
         let err = withdrawal_creds_from_addr(addr, false).unwrap_err();
-        assert!(matches!(err, DomainError::InvalidAddress(_)));
+        // Error is HelperError wrapped in DomainError
+        assert!(matches!(err, DomainError::HelperError(_)));
     }
 
     #[test]
-    fn test_validate_checksum_all_lowercase() {
-        // All lowercase should pass
-        assert!(validate_checksum("0x321dcb529f3945bc94fecea9d3bc5caf35253b94").is_ok());
+    fn test_address_parsing_all_lowercase() {
+        // All lowercase with 0x prefix should pass (matching Go's lenient behavior)
+        let addr = "0x321dcb529f3945bc94fecea9d3bc5caf35253b94";
+        assert!(helpers::checksum_address(addr).is_ok());
+        assert!(withdrawal_creds_from_addr(addr, false).is_ok());
     }
 
     #[test]
-    fn test_validate_checksum_all_uppercase() {
-        // All uppercase should pass
-        assert!(validate_checksum("0x321DCB529F3945BC94FECEA9D3BC5CAF35253B94").is_ok());
+    fn test_address_parsing_all_uppercase() {
+        // All uppercase with 0x prefix should pass (matching Go's lenient behavior)
+        let addr = "0x321DCB529F3945BC94FECEA9D3BC5CAF35253B94";
+        assert!(helpers::checksum_address(addr).is_ok());
+        assert!(withdrawal_creds_from_addr(addr, false).is_ok());
     }
 
     #[test]
-    fn test_validate_checksum_valid_mixed_case() {
-        // Valid EIP-55 checksummed address
+    fn test_address_parsing_valid_checksum() {
+        // Valid EIP-55 checksummed address should pass
         let addr = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
-        assert!(validate_checksum(addr).is_ok());
+        assert!(helpers::checksum_address(addr).is_ok());
+        assert!(withdrawal_creds_from_addr(addr, false).is_ok());
     }
 
     #[test]
-    fn test_validate_checksum_invalid() {
-        // Invalid checksum (wrong case for some letters)
-        let addr = "0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed"; // Should have some uppercase
-        // This is all lowercase, so it passes (no checksum validation)
-        assert!(validate_checksum(addr).is_ok());
-
-        // But this should fail (mixed case but wrong checksum)
-        let addr_wrong = "0x5aAeb6053f3E94C9b9A09f33669435E7Ef1BeAed"; // Wrong case
-        assert!(validate_checksum(addr_wrong).is_err());
+    fn test_address_parsing_invalid_checksum_accepted() {
+        // Mixed case with WRONG checksum is ACCEPTED (matching Go's lenient behavior)
+        // Go doesn't validate checksums, just accepts valid hex
+        let addr_wrong = "0x5aAeb6053f3E94C9b9A09f33669435E7Ef1BeAed";
+        assert!(helpers::checksum_address(addr_wrong).is_ok());
+        assert!(withdrawal_creds_from_addr(addr_wrong, false).is_ok());
     }
+
+    #[test]
+    fn test_address_requires_prefix() {
+        // Address without 0x prefix should fail (matching Go's behavior)
+        let addr = "321dcb529f3945bc94fecea9d3bc5caf35253b94";
+        assert!(withdrawal_creds_from_addr(addr, false).is_err());
+
+        // With prefix should work
+        let addr_with_prefix = "0x321dcb529f3945bc94fecea9d3bc5caf35253b94";
+        assert!(withdrawal_creds_from_addr(addr_with_prefix, false).is_ok());
+    }
+
 }
