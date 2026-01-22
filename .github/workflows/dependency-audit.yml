@@ -5,6 +5,7 @@ on:
     paths:
       - "**/Cargo.toml"
       - "**/Cargo.lock"
+      - "deny.toml"
 
 env:
   CARGO_TERM_COLOR: always
