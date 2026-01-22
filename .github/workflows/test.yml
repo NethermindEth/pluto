@@ -1,4 +1,4 @@
-name: Cargo Test
+name: Build and test code
 
 on:
   push:
