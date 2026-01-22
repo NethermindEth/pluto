@@ -1,8 +1,9 @@
 name: Coverage (Push)
 
 on:
-  push:
-    branches: ['**']  # all branches, including main
+  workflow_dispatch:
+  # push:
+  #   branches: ['**']  # all branches, including main
 
 permissions:
   contents: read

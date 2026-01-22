@@ -1,6 +1,8 @@
 name: Linter check
 
-on: push
+on:
+  workflow_dispatch:
+  # push
 
 env:
   CARGO_TERM_COLOR: always

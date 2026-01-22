@@ -1,10 +1,11 @@
 name: Dependency security audit
 
 on:
-  push:
-    paths:
-      - '**/Cargo.toml'
-      - '**/Cargo.lock'
+  workflow_dispatch:
+  # push:
+  #   paths:
+  #     - '**/Cargo.toml'
+  #     - '**/Cargo.lock'
 
 env:
   CARGO_TERM_COLOR: always
