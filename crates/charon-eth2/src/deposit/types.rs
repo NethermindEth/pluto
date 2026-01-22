@@ -69,7 +69,7 @@ pub struct DepositDataJson {
     /// Withdrawal credentials as hex string (without 0x prefix)
     pub withdrawal_credentials: String,
     /// Amount in Gwei
-    pub amount: Gwei,
+    pub amount: u64,
     /// Signature as hex string (without 0x prefix)
     pub signature: String,
     /// Deposit message root as hex string (without 0x prefix)

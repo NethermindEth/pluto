@@ -590,6 +590,47 @@ mod tests {
     }
 
     #[test]
+    fn test_marshal_deposit_data_matches_fixture() {
+        let pub_key = hex::decode(
+            "80d0436ccacd2b263f5e9e7ebaa14015fe5c80d3e57dc7c37bcbda783895e3491019d3ed694ecbb49c8c80a0480c0392",
+        )
+        .unwrap();
+        let withdrawal_credentials =
+            hex::decode("02000000000000000000000005f9f73f74c205f2b9267c04296e3069767531fb")
+                .unwrap();
+        let signature = hex::decode(
+            "aed3c99949ab93622f2d1baaeb047d30cb33e744e1a8464eebe1a2a634f0f23529ce753c54035968e9f3f683bca02f6704c933ca9ff2b181897de4eb27b0b2568721fe625084d5cc9030be55ceb1bc573df61a8a67bad87d94187ee4d28fc36f",
+        )
+        .unwrap();
+
+        let deposit_data = DepositData {
+            pub_key: pub_key.as_slice().try_into().unwrap(),
+            withdrawal_credentials: withdrawal_credentials.as_slice().try_into().unwrap(),
+            amount: DEFAULT_DEPOSIT_AMOUNT,
+            signature: signature.as_slice().try_into().unwrap(),
+        };
+
+        let bytes = marshal_deposit_data(&[deposit_data], "goerli").unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        let expected = serde_json::json!([
+            {
+                "pubkey": "80d0436ccacd2b263f5e9e7ebaa14015fe5c80d3e57dc7c37bcbda783895e3491019d3ed694ecbb49c8c80a0480c0392",
+                "withdrawal_credentials": "02000000000000000000000005f9f73f74c205f2b9267c04296e3069767531fb",
+                "amount": 32000000000u64,
+                "signature": "aed3c99949ab93622f2d1baaeb047d30cb33e744e1a8464eebe1a2a634f0f23529ce753c54035968e9f3f683bca02f6704c933ca9ff2b181897de4eb27b0b2568721fe625084d5cc9030be55ceb1bc573df61a8a67bad87d94187ee4d28fc36f",
+                "deposit_message_root": "0ed9775278db27ab7ef0efeea0861750d1f0e917deecfe68398321468201f2f8",
+                "deposit_data_root": "10e0a77c03f4420198571cf957ce3cd7cc85ae310664c77ff9556eba18ec8689",
+                "fork_version": "00001020",
+                "network_name": "goerli",
+                "deposit_cli_version": DEPOSIT_CLI_VERSION,
+            }
+        ]);
+
+        assert_eq!(value, expected);
+    }
+
+    #[test]
     fn test_address_parsing_valid_checksum() {
         // Valid EIP-55 checksummed address should pass
         let addr = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
