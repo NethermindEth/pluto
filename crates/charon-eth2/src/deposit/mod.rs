@@ -154,7 +154,7 @@ pub fn marshal_deposit_data(
 
     for deposit_data in deposit_datas {
         // Create deposit message
-        let msg = deposit_data.to_message();
+        let msg = DepositMessage::from(deposit_data);
 
         // Compute deposit message root
         let msg_root = msg.tree_hash_root();

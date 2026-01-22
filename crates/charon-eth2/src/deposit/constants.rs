@@ -133,3 +133,4 @@ pub type Domain = [u8; 32];
 /// Root type (32 bytes).
 /// Corresponds to eth2p0.Root in Go implementation.
 pub type Root = [u8; 32];
+
