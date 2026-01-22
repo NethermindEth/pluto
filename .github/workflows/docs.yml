@@ -1,31 +1,34 @@
-name: Docs
+name: Build and deploy documentation
 
-# TODO(template)
-# GH pages seems to work properly for public repos
 on:
   workflow_dispatch:
 
 jobs:
-  # TODO(template) remove docs publishing, when the crate is published to crates.io
-  docs:
+  build:
     permissions:
       contents: write
     name: Documentation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - name: Checkout source code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Install protobuf compiler
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install `protobuf`
+        uses: awalsh128/cache-apt-pkgs-action@v1.6.0
+        with:
+          packages: protobuf-compiler
+          version: "3.21.12-8.2ubuntu0.2"
 
       - name: Install `oas3-gen`
-        run: cargo install oas3-gen
+        uses: baptiste0928/cargo-install@v3
+        with:
+          crate: oas3-gen
+          version: "0.24.0"
 
       - name: Setup pages
         id: pages
@@ -34,12 +37,8 @@ jobs:
       - name: Clean docs folder
         run: cargo clean --doc
 
-      # Documentation with Latex support
-      # TODO(template) if Latex is not needed
-      # just remove katex-header.html at the root and RUSTDOCFLAGS here
-      # TODO(template) update the crate name
       - name: Build documentation
-        run: RUSTDOCFLAGS="--html-in-header katex-header.html" cargo doc --no-deps -p template_crate
+        run: cargo doc --no-deps -p pluto
 
       - name: Remove lock file
         run: rm target/doc/.lock
@@ -49,15 +48,15 @@ jobs:
         with:
           path: target/doc
 
-  publish-docs:
+  publish:
     permissions:
       pages: write
       id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    needs: docs
+    runs-on: ubuntu-24.04
+    needs: build
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
