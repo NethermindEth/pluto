@@ -3,17 +3,20 @@ name: Build and deploy documentation
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
 jobs:
   build:
-    permissions:
-      contents: write
     name: Documentation
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-          persist-credentials: false
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
@@ -49,9 +52,6 @@ jobs:
           path: target/doc
 
   publish:
-    permissions:
-      pages: write
-      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
