@@ -1,6 +1,7 @@
 name: Build and deploy documentation
 
 on:
+  workflow_dispatch: # Run manually from Actions tab
   push:
     branches: ["main"] # Runs on pushes to main branch
 
