@@ -20,9 +20,9 @@ use charon_core::version::{self, SemVer, SemVerError};
 use chrono::{DateTime, Utc};
 use futures::prelude::*;
 use libp2p::{PeerId, swarm::Stream};
-use parking_lot::Mutex;
 use prost::Message;
 use regex::Regex;
+use tokio::sync::Mutex;
 use tracing::{info, warn};
 use unsigned_varint::aio::read_usize;
 
@@ -169,7 +169,7 @@ impl ProtocolState {
         };
 
         let prev_nickname = {
-            let mut nicknames = self.nicknames.lock();
+            let mut nicknames = self.nicknames.lock().await;
             let prev_nickname = nicknames.insert(self.name.clone(), peer_info.nickname.clone());
 
             if prev_nickname.as_ref() != Some(&peer_info.nickname) {

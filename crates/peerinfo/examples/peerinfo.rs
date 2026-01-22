@@ -175,7 +175,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     // Run the metrics exporter
-    let bind_address = SocketAddr::from(([0, 0, 0, 0], 9465));
+    let bind_address = SocketAddr::from(([0, 0, 0, 0], 9466));
 
     let exporter = MetricsExporter::default()
         .bind(bind_address)
