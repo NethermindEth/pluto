@@ -2,7 +2,17 @@ use charon_crypto::types::{PublicKey, Signature};
 use serde::{Deserialize, Serialize};
 use tree_hash_derive::TreeHash;
 
-use super::constants::{Domain, Gwei, Root, Version};
+/// Gwei represents an amount in Gwei (1 ETH = 1,000,000,000 Gwei)
+pub type Gwei = u64;
+
+/// Fork version type (4 bytes).
+pub type Version = [u8; 4];
+
+/// Domain type (32 bytes).
+pub type Domain = [u8; 32];
+
+/// Root type (32 bytes).
+pub type Root = [u8; 32];
 
 /// DepositMessage represents the deposit message to be signed.
 /// See: https://github.com/ethereum/consensus-specs/blob/dev/specs/phase0/beacon-chain.md#depositmessage
@@ -59,7 +69,7 @@ pub struct DepositDataJson {
     /// Withdrawal credentials as hex string (without 0x prefix)
     pub withdrawal_credentials: String,
     /// Amount in Gwei
-    pub amount: u64,
+    pub amount: Gwei,
     /// Signature as hex string (without 0x prefix)
     pub signature: String,
     /// Deposit message root as hex string (without 0x prefix)
@@ -89,28 +99,25 @@ mod tests {
     use super::*;
     use tree_hash::TreeHash;
 
-    /// Test against known good values from Go implementation golden file.
-    /// Data from: charon/eth2util/deposit/testdata/TestMarshalDepositData.golden
     #[test]
-    fn test_deposit_data_tree_hash_against_go_golden() {
-        // First entry from TestMarshalDepositData.golden
+    fn test_deposit_data_tree_hash() {
         let pub_key = hex::decode(
             "80d0436ccacd2b263f5e9e7ebaa14015fe5c80d3e57dc7c37bcbda783895e3491019d3ed694ecbb49c8c80a0480c0392"
         ).unwrap();
-        let withdrawal_credentials = hex::decode(
-            "02000000000000000000000005f9f73f74c205f2b9267c04296e3069767531fb"
-        ).unwrap();
+        let withdrawal_credentials =
+            hex::decode("02000000000000000000000005f9f73f74c205f2b9267c04296e3069767531fb")
+                .unwrap();
         let signature = hex::decode(
             "aed3c99949ab93622f2d1baaeb047d30cb33e744e1a8464eebe1a2a634f0f23529ce753c54035968e9f3f683bca02f6704c933ca9ff2b181897de4eb27b0b2568721fe625084d5cc9030be55ceb1bc573df61a8a67bad87d94187ee4d28fc36f"
         ).unwrap();
-        let expected_root = hex::decode(
-            "10e0a77c03f4420198571cf957ce3cd7cc85ae310664c77ff9556eba18ec8689"
-        ).unwrap();
+        let expected_root =
+            hex::decode("10e0a77c03f4420198571cf957ce3cd7cc85ae310664c77ff9556eba18ec8689")
+                .unwrap();
 
         let deposit_data = DepositData {
             pub_key: pub_key.as_slice().try_into().unwrap(),
             withdrawal_credentials: withdrawal_credentials.as_slice().try_into().unwrap(),
-            amount: Gwei::new(32_000_000_000),
+            amount: 32_000_000_000,
             signature: signature.as_slice().try_into().unwrap(),
         };
 
@@ -119,28 +126,26 @@ mod tests {
         assert_eq!(
             root.as_slice(),
             expected_root.as_slice(),
-            "TreeHash implementation doesn't match Go golden file!"
+            "TreeHash implementation doesn't match!"
         );
     }
 
-    /// Test DepositMessage tree hash against Go golden file
     #[test]
-    fn test_deposit_message_tree_hash_against_go_golden() {
-        // First entry from TestMarshalDepositData.golden
+    fn test_deposit_message_tree_hash() {
         let pub_key = hex::decode(
             "80d0436ccacd2b263f5e9e7ebaa14015fe5c80d3e57dc7c37bcbda783895e3491019d3ed694ecbb49c8c80a0480c0392"
         ).unwrap();
-        let withdrawal_credentials = hex::decode(
-            "02000000000000000000000005f9f73f74c205f2b9267c04296e3069767531fb"
-        ).unwrap();
-        let expected_root = hex::decode(
-            "0ed9775278db27ab7ef0efeea0861750d1f0e917deecfe68398321468201f2f8"
-        ).unwrap();
+        let withdrawal_credentials =
+            hex::decode("02000000000000000000000005f9f73f74c205f2b9267c04296e3069767531fb")
+                .unwrap();
+        let expected_root =
+            hex::decode("0ed9775278db27ab7ef0efeea0861750d1f0e917deecfe68398321468201f2f8")
+                .unwrap();
 
         let deposit_message = DepositMessage {
             pub_key: pub_key.as_slice().try_into().unwrap(),
             withdrawal_credentials: withdrawal_credentials.as_slice().try_into().unwrap(),
-            amount: Gwei::new(32_000_000_000),
+            amount: 32_000_000_000,
         };
 
         let root = deposit_message.tree_hash_root();
@@ -148,7 +153,7 @@ mod tests {
         assert_eq!(
             root.as_slice(),
             expected_root.as_slice(),
-            "DepositMessage TreeHash implementation doesn't match Go golden file!"
+            "DepositMessage TreeHash implementation doesn't match!"
         );
     }
 }

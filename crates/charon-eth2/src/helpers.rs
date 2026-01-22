@@ -1,8 +1,16 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::LazyLock};
 
 use k256::{PublicKey, elliptic_curve::sec1::ToEncodedPoint};
 use regex::Regex;
 use sha3::{Digest, Keccak256};
+
+// The pattern ([^=,]+) captures any string that does not contain '=' or ','.
+// The pattern ([^,]+) captures any string that does not contain ','.
+// The composition of patterns ([^=,]+)=([^,]+) captures a pair of header and
+// its corresponding value. We use ^ at the start and $ at the end to ensure
+// exact match.
+static HEADER_PATTERN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^([^=,]+)=([^,]+)$").expect("invalid regex"));
 
 /// Error type for helper operations
 #[derive(Debug, thiserror::Error)]
@@ -26,14 +34,8 @@ pub fn validate_http_headers(headers: &[String]) -> Result<(), HelperError> {
         return Ok(());
     }
 
-    // The pattern ([^=,]+) captures any string that does not contain '=' or ','.
-    // The pattern ([^,]+) captures any string that does not contain ','.
-    // The composition of patterns ([^=,]+)=([^,]+) captures a pair of header and its corresponding value.
-    // We use ^ at the start and $ at the end to ensure exact match.
-    let header_pattern = Regex::new(r"^([^=,]+)=([^,]+)$").unwrap();
-
     for header in headers {
-        if !header_pattern.is_match(header) {
+        if !HEADER_PATTERN_RE.is_match(header) {
             return Err(HelperError::InvalidHTTPHeader);
         }
     }
@@ -64,7 +66,8 @@ pub fn parse_http_headers(headers: &[String]) -> Result<HashMap<String, String>,
 
 /// Returns an EIP55-compliant checksummed address.
 pub fn checksum_address(address: &str) -> Result<String, HelperError> {
-    // Validate format: must have "0x" prefix and be exactly 42 chars (0x + 40 hex chars)
+    // Validate format: must have "0x" prefix and be exactly 42 chars (0x + 40 hex
+    // chars)
     if !address.starts_with("0x") || address.len() != 2 + 20 * 2 {
         return Err(HelperError::InvalidAddress(address.to_string()));
     }
@@ -75,7 +78,8 @@ pub fn checksum_address(address: &str) -> Result<String, HelperError> {
     Ok(checksum_address_bytes(&bytes))
 }
 
-/// Returns an EIP55-compliant 0xhex representation of the binary ethereum address.
+/// Returns an EIP55-compliant 0xhex representation of the binary ethereum
+/// address.
 pub fn checksum_address_bytes(address_bytes: &[u8]) -> String {
     let hex_addr = hex::encode(address_bytes);
 
@@ -156,7 +160,8 @@ mod tests {
     fn test_public_key_to_address() {
         // Test fixtures from geth/crypto package.
         const TEST_ADDR_HEX: &str = "0x970E8128AB834E8EAC17Ab8E3812F010678CF791";
-        const TEST_PRIV_HEX: &str = "289c2857d4598e37fb9647507e47a309d6133539bf21a8b9cb6df88fd5232032";
+        const TEST_PRIV_HEX: &str =
+            "289c2857d4598e37fb9647507e47a309d6133539bf21a8b9cb6df88fd5232032";
 
         let priv_bytes = hex::decode(TEST_PRIV_HEX).unwrap();
         let secret_key = SecretKey::from_slice(&priv_bytes).unwrap();
@@ -166,7 +171,6 @@ mod tests {
         assert_eq!(TEST_ADDR_HEX, actual);
     }
 
-    // Port of TestValidateHTTPHeaders from Go
     #[test]
     fn test_validate_http_headers() {
         struct TestCase {
@@ -188,7 +192,10 @@ mod tests {
             },
             TestCase {
                 name: "two pairs",
-                headers: vec!["header-1=value-1".to_string(), "header-2=value-2".to_string()],
+                headers: vec![
+                    "header-1=value-1".to_string(),
+                    "header-2=value-2".to_string(),
+                ],
                 valid: true,
             },
             TestCase {
@@ -254,7 +261,6 @@ mod tests {
         }
     }
 
-    // Port of TestParseHTTPHeaders from Go
     #[test]
     fn test_parse_http_headers() {
         struct TestCase {
@@ -280,7 +286,10 @@ mod tests {
             },
             TestCase {
                 name: "two pairs",
-                headers: vec!["header-1=value-1".to_string(), "header-2=value-2".to_string()],
+                headers: vec![
+                    "header-1=value-1".to_string(),
+                    "header-2=value-2".to_string(),
+                ],
                 want: {
                     let mut m = HashMap::new();
                     m.insert("header-1".to_string(), "value-1".to_string());
@@ -293,7 +302,10 @@ mod tests {
                 headers: vec!["Authorization=Basic bmljZXRyeQ==".to_string()],
                 want: {
                     let mut m = HashMap::new();
-                    m.insert("Authorization".to_string(), "Basic bmljZXRyeQ==".to_string());
+                    m.insert(
+                        "Authorization".to_string(),
+                        "Basic bmljZXRyeQ==".to_string(),
+                    );
                     m
                 },
             },
@@ -301,8 +313,11 @@ mod tests {
 
         for tt in tests {
             let parsed = parse_http_headers(&tt.headers);
-            if let Err(_) = parsed {
-                panic!("Test '{}': Header ({:?}) failed to parse", tt.name, tt.headers);
+            if parsed.is_err() {
+                panic!(
+                    "Test '{}': Header ({:?}) failed to parse",
+                    tt.name, tt.headers
+                );
             }
 
             let parsed = parsed.unwrap();
