@@ -1,7 +1,8 @@
 name: Build and deploy documentation
 
 on:
-  workflow_dispatch:
+  push:
+    branches: ["main"] # Runs on pushes to main branch
 
 permissions:
   contents: read
