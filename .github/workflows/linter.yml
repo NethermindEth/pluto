@@ -31,6 +31,12 @@ jobs:
           packages: protobuf-compiler
           version: "3.21.12-8.2ubuntu0.2"
 
+      - name: Install `oas3-gen`
+        uses: baptiste0928/cargo-install@v3
+        with:
+          crate: oas3-gen
+          version: "0.24.0"
+
       - run: rustup +nightly component add rustfmt
       - name: Run Fmt
         run: cargo +nightly fmt --all -- --check
