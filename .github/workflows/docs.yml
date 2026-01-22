@@ -41,7 +41,7 @@ jobs:
         run: cargo clean --doc
 
       - name: Build documentation
-        run: cargo doc --no-deps -p pluto
+        run: cargo doc --no-deps --workspace --all-features
 
       - name: Remove lock file
         run: rm target/doc/.lock
