@@ -41,7 +41,7 @@ jobs:
           version: "0.24.0"
 
       - name: Build (all features)
-        run: cargo test --workspace --all-features --no-run
+        run: cargo test --locked --workspace --all-features --no-run
 
       - name: Run tests (all features)
-        run: cargo test --workspace --all-features
+        run: cargo test --locked --workspace --all-features
