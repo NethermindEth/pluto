@@ -5,25 +5,25 @@ set -e
 # Dependency audit
 if ! cargo deny check; then
     echo "❌ Critical: Vulnerable dependencies detected (run 'cargo deny check')"
-    exit 2
+    exit 1
 fi
 
 # Formatting check
 if ! cargo +nightly fmt --all -- --check; then
     echo "❌ Formatting issues (run 'cargo +nightly fmt --all')"
-    exit 3
+    exit 1
 fi
 
 # Linting
 if ! cargo clippy --all-targets --all-features -- -D warnings; then
     echo "❌ Clippy violations (check warnings above)"
-    exit 5
+    exit 1
 fi
 
 # Tests
-if ! cargo test --workspace --verbose; then
+if ! cargo test --locked --workspace --all-features; then
     echo "❌ Test failures detected"
-    exit 6
+    exit 1
 fi
 
 echo "✅ All checks passed!"
