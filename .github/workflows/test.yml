@@ -40,7 +40,7 @@ jobs:
       - name: Install `protobuf`
         uses: awalsh128/cache-apt-pkgs-action@v1.6.0
         with:
-          packages: protobuf-compiler=3.21.\*
+          packages: protobuf-compiler
 
       - name: Install `oas3-gen`
         uses: baptiste0928/cargo-install@v3
