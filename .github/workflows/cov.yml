@@ -50,4 +50,12 @@ jobs:
             /^LF:/ {lf += $2}
             END { if (lf>0) printf "%.2f", (lh/lf)*100; else print "0.00" }
           ' lcov.info)
-          echo "coverage=$pct" >> "$GITHUB_OUTPUT"
+          echo '{"schemaVersion": 1,"label":"coverage","message":"'$pct%'","color":"orange"}' >> shields.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shields.json
+          path: shields.json
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
