@@ -14,7 +14,7 @@ members = [
     "crates/tracing",
     "crates/peerinfo",
     "crates/eth2api",
-    "crates/relay-server"
+    "crates/relay-server",
 ]
 resolver = "3"
 
@@ -72,6 +72,7 @@ validator = { version = "0.20", features = ["derive"] }
 oas3-gen-support = "0.24"
 bon = "3.8"
 testcontainers = "0.26"
+wiremock = "0.6"
 
 # Crates in the workspace
 charon = { path = "crates/charon" }

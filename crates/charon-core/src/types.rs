@@ -220,11 +220,11 @@ impl Serialize for PubKey {
     }
 }
 
-impl TryFrom<String> for PubKey {
+impl TryFrom<&str> for PubKey {
     type Error = PubKeyError;
 
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        let value = value.strip_prefix("0x").unwrap_or(&value);
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let value = value.strip_prefix("0x").unwrap_or(value);
         let hex_value = hex::decode(value).map_err(|_| PubKeyError::InvalidString)?;
         PubKey::try_from(hex_value.as_slice())
     }
@@ -890,7 +890,7 @@ mod tests {
     #[test]
     fn test_pub_key_from_string() {
         let pk_str = "0x7f790ba343adf8891fac21a94b02d6ca93d0bc2199a5ec083ff6676e8c2f9f78b08bb122f1093675f9d24c8b5e7af241".to_string();
-        let pk = PubKey::try_from(pk_str).unwrap();
+        let pk = PubKey::try_from(pk_str.as_str()).unwrap();
         assert_eq!(
             pk,
             PubKey::new([
@@ -904,7 +904,7 @@ mod tests {
     #[test]
     fn test_pub_key_from_string_invalid_length() {
         let pk_str = "0x7f790ba343adf8891fac21a94b02d6ca93d0bc2199a5ec083ff6676e8c2f9f78b08bb121093675f9d24c8b5e7af241".to_string();
-        let result = PubKey::try_from(pk_str);
+        let result = PubKey::try_from(pk_str.as_str());
         assert!(result.is_err());
     }
 }

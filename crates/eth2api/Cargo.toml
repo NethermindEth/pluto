@@ -22,6 +22,9 @@ validator.workspace = true
 testcontainers.workspace = true
 tokio.workspace = true
 
+[build-dependencies]
+regex.workspace = true
+
 [lints]
 workspace = true
 
