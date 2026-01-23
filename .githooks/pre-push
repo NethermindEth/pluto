@@ -15,7 +15,7 @@ if ! cargo +nightly fmt --all -- --check; then
 fi
 
 # Linting
-if ! cargo clippy --all-targets --all-features -- -D warnings; then
+if ! cargo clippy --locked --all-targets --all-features -- -D warnings; then
     echo "❌ Clippy violations (check warnings above)"
     exit 1
 fi
