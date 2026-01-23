@@ -64,6 +64,7 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+    timeout-minutes: 5
     runs-on: ubuntu-24.04
     needs: build
     steps:
