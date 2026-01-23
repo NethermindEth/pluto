@@ -30,8 +30,6 @@ pub fn compile_protos(proto_dir: &str) -> Result<()> {
     for proto_file in &proto_files {
         println!("cargo:rerun-if-changed={}", proto_file.display());
     }
-    println!("cargo:rerun-if-changed={}", proto_dir);
-    println!("cargo:rerun-if-changed=build.rs");
 
     Ok(())
 }
