@@ -1,7 +1,6 @@
 name: Update code coverage
 
 on:
-  workflow_dispatch: # Temporary manual trigger
   push:
     branches: ["main"]
     paths-ignore:
