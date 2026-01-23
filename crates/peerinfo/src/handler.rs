@@ -8,6 +8,7 @@
 use std::{
     collections::VecDeque,
     convert::Infallible,
+    sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
@@ -15,6 +16,7 @@ use std::{
 use futures::{future::BoxFuture, prelude::*};
 use futures_timer::Delay;
 use libp2p::{
+    PeerId,
     core::upgrade::ReadyUpgrade,
     swarm::{
         ConnectionHandler, ConnectionHandlerEvent, Stream, StreamProtocol, StreamUpgradeError,
@@ -26,7 +28,8 @@ use libp2p::{
 };
 
 use crate::{
-    PROTOCOL_NAME, config::Config, failure::Failure, peerinfopb::v1::peerinfo::PeerInfo, protocol,
+    PROTOCOL_NAME, config::Config, failure::Failure, peerinfopb::v1::peerinfo::PeerInfo,
+    protocol::ProtocolState,
 };
 
 /// Result of a successful peer info exchange.
@@ -55,6 +58,8 @@ pub struct Handler {
     inbound: Option<InboundFuture>,
     /// Tracks the state of our handler.
     state: State,
+    /// The protocol state.
+    protocol: Arc<ProtocolState>,
 }
 
 /// Tracks the state of the handler.
@@ -71,8 +76,9 @@ enum State {
 
 impl Handler {
     /// Builds a new [`Handler`] with the given configuration.
-    pub fn new(config: Config) -> Self {
-        let interval = config.interval;
+    pub fn new(config: Config, peer: PeerId) -> Self {
+        let interval = config.interval();
+        let local_info = config.local_info().clone();
         Handler {
             config,
             interval: Delay::new(interval),
@@ -81,6 +87,7 @@ impl Handler {
             outbound: None,
             inbound: None,
             state: State::Active,
+            protocol: Arc::new(ProtocolState::new(peer, local_info)),
         }
     }
 
@@ -158,8 +165,14 @@ impl ConnectionHandler for Handler {
                 }
                 Poll::Ready(Ok((stream, _request))) => {
                     tracing::trace!("Answered inbound peerinfo request from peer");
-                    self.inbound =
-                        Some(recv_peer_info(stream, self.config.local_info.to_proto()).boxed());
+                    self.inbound = Some(
+                        recv_peer_info(
+                            self.protocol.clone(),
+                            stream,
+                            self.config.local_info().to_proto(),
+                        )
+                        .boxed(),
+                    );
                 }
             }
         }
@@ -188,14 +201,14 @@ impl ConnectionHandler for Handler {
                     }
                     Poll::Ready(Ok((stream, peer_info))) => {
                         self.failures = 0;
-                        self.interval.reset(self.config.interval);
+                        self.interval.reset(self.config.interval());
                         self.outbound = Some(OutboundState::Idle(stream));
                         return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(Ok(Success {
                             peer_info,
                         })));
                     }
                     Poll::Ready(Err(e)) => {
-                        self.interval.reset(self.config.interval);
+                        self.interval.reset(self.config.interval());
                         self.pending_errors.push_front(e);
                     }
                 },
@@ -207,9 +220,10 @@ impl ConnectionHandler for Handler {
                     Poll::Ready(_) => {
                         self.outbound = Some(OutboundState::Request(
                             send_peer_info(
+                                self.protocol.clone(),
                                 stream,
-                                self.config.local_info.to_proto(),
-                                self.config.timeout,
+                                self.config.local_info().to_proto(),
+                                self.config.timeout(),
                             )
                             .boxed(),
                         ));
@@ -245,8 +259,9 @@ impl ConnectionHandler for Handler {
                 ..
             }) => {
                 stream.ignore_for_keep_alive();
-                let local_info = self.config.local_info.to_proto();
-                self.inbound = Some(recv_peer_info(stream, local_info).boxed());
+                let local_info = self.config.local_info().to_proto();
+                self.inbound =
+                    Some(recv_peer_info(self.protocol.clone(), stream, local_info).boxed());
             }
             ConnectionEvent::FullyNegotiatedOutbound(FullyNegotiatedOutbound {
                 protocol: mut stream,
@@ -254,9 +269,15 @@ impl ConnectionHandler for Handler {
             }) => {
                 stream.ignore_for_keep_alive();
                 self.interval.reset(Duration::new(0, 0));
-                let request = self.config.local_info.to_proto();
+                let request = self.config.local_info().to_proto();
                 self.outbound = Some(OutboundState::Request(
-                    send_peer_info(stream, request, self.config.timeout).boxed(),
+                    send_peer_info(
+                        self.protocol.clone(),
+                        stream,
+                        request,
+                        self.config.timeout(),
+                    )
+                    .boxed(),
                 ));
             }
             ConnectionEvent::DialUpgradeError(dial_upgrade_error) => {
@@ -282,11 +303,12 @@ enum OutboundState {
 
 /// A wrapper around [`protocol::send_peer_info`] that enforces a timeout.
 async fn send_peer_info(
+    protocol: Arc<ProtocolState>,
     stream: Stream,
     request: PeerInfo,
     timeout: Duration,
 ) -> Result<(Stream, PeerInfo), Failure> {
-    let send = protocol::send_peer_info(stream, &request);
+    let send = protocol.send_peer_info(stream, &request);
     futures::pin_mut!(send);
 
     match future::select(send, Delay::new(timeout)).await {
@@ -299,8 +321,9 @@ async fn send_peer_info(
 /// A wrapper around [`protocol::recv_peer_info`] that returns only the stream
 /// and request (for use in inbound handling).
 async fn recv_peer_info(
+    protocol: Arc<ProtocolState>,
     stream: Stream,
     local_info: PeerInfo,
 ) -> Result<(Stream, PeerInfo), std::io::Error> {
-    protocol::recv_peer_info(stream, &local_info).await
+    protocol.recv_peer_info(stream, &local_info).await
 }

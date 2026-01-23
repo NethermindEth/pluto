@@ -11,12 +11,17 @@ prost.workspace = true
 prost-types.workspace = true
 thiserror.workspace = true
 libp2p.workspace = true
-futures.workspace = true
-futures-timer.workspace = true
+regex.workspace = true
 tracing.workspace = true
 chrono.workspace = true
+vise.workspace = true
+charon-core.workspace = true
+charon-p2p.workspace = true
+futures.workspace = true
+futures-timer.workspace = true
 unsigned-varint.workspace = true
 hex.workspace = true
+tokio.workspace = true
 
 [build-dependencies]
 charon-build-proto.workspace = true
@@ -24,8 +29,8 @@ charon-build-proto.workspace = true
 [dev-dependencies]
 anyhow.workspace = true
 clap.workspace = true
-tokio.workspace = true
 tracing-subscriber.workspace = true
+vise-exporter.workspace = true
 hex-literal.workspace = true
 
 [lints]

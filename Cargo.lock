@@ -1829,6 +1829,8 @@ version = "1.7.1"
 dependencies = [
  "anyhow",
  "charon-build-proto",
+ "charon-core",
+ "charon-p2p",
  "chrono",
  "clap",
  "futures",
@@ -1838,11 +1840,14 @@ dependencies = [
  "libp2p",
  "prost 0.14.3",
  "prost-types 0.14.3",
+ "regex",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "unsigned-varint 0.8.0",
+ "vise",
+ "vise-exporter",
 ]
 
 [[package]]
