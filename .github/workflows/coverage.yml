@@ -1,35 +1,50 @@
-name: Coverage (Push)
+name: Update code coverage
 
 on:
-  workflow_dispatch:
-  # push:
-  #   branches: ['**']  # all branches, including main
+  push:
+    branches: ["main"]
+    paths-ignore:
+      - "**/coverage.svg"
+  pull_request:
+    types: [synchronize, opened, reopened, ready_for_review]
 
-permissions:
-  contents: read
-  actions: write
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: "-Dwarnings -C debuginfo=0"
 
 jobs:
-  coverage-push:
-    runs-on: ubuntu-latest
+  coverage:
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install protobuf compiler
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install `protobuf`
+        uses: awalsh128/cache-apt-pkgs-action@v1.6.0
+        with:
+          packages: protobuf-compiler
+          version: 3.21.12-8.2ubuntu0.2
 
       - name: Install `oas3-gen`
-        run: cargo install oas3-gen
+        run: cargo install oas3-gen@0.24.0
 
-      - run: cargo install cargo-llvm-cov
-      - run: rustup component add llvm-tools-preview
-      - run: cargo llvm-cov --workspace --lcov --output-path lcov.info --ignore-filename-regex '^examples/'
+      - name: Install `llvm-tools-preview`
+        run: rustup component add llvm-tools-preview
 
-      - name: Upload branch coverage artifact
-        uses: actions/upload-artifact@v4
+      - name: Install `cargo-llvm-cov`
+        run: cargo install cargo-llvm-cov@0.6.24
+
+      - name: Generate coverage report
+        run: cargo llvm-cov --locked --workspace --lcov --output-path lcov.info --ignore-filename-regex '^examples/'
+
+      - uses: ImBIOS/lcov-coverage-badge@v1
         with:
-          name: coverage-lcov
-          path: lcov.info
-          retention-days: 21
+          file: lcov.info
