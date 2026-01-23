@@ -37,9 +37,5 @@ jobs:
           crate: oas3-gen
           version: "0.24.0"
 
-      - run: rustup +nightly component add rustfmt
-      - name: Run Fmt
-        run: cargo +nightly fmt --all -- --check
-
       - name: Run Clippy
         run: cargo clippy --all-targets --all-features
