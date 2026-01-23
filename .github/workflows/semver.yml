@@ -14,7 +14,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  RUSTFLAGS: "-Dwarnings"
+  RUSTFLAGS: "-Dwarnings -C debuginfo=0"
 
 jobs:
   semver:
@@ -33,13 +33,10 @@ jobs:
         uses: awalsh128/cache-apt-pkgs-action@v1.6.0
         with:
           packages: protobuf-compiler
-          version: "3.21.12-8.2ubuntu0.2"
+          version: 3.21.12-8.2ubuntu0.2
 
       - name: Install `oas3-gen`
-        uses: baptiste0928/cargo-install@v3
-        with:
-          crate: oas3-gen
-          version: "0.24.0"
+        run: cargo install oas3-gen@0.24.0
 
       - name: Get latest version tag
         id: get-baseline

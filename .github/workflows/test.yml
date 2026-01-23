@@ -21,7 +21,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  # Treat all warnings as errors
   RUSTFLAGS: "-Dwarnings -C debuginfo=0"
 
 jobs:
