@@ -85,9 +85,7 @@ impl PlutoBehaviourBuilder {
     /// client.
     pub fn build(self, key: &Keypair, relay_client: relay::client::Behaviour) -> PlutoBehaviour {
         PlutoBehaviour {
-            gater: self
-                .gater
-                .unwrap_or_else(|| ConnGater::new_conn_gater(vec![], vec![])),
+            gater: self.gater.unwrap_or_else(ConnGater::new_open_gater),
             relay: relay_client,
             identify: identify::Behaviour::new(
                 identify::Config::new(self.identify_protocol, key.public())
