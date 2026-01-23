@@ -1,17 +1,18 @@
 //! Test result output formatting and file I/O.
 
-use crate::ascii::{append_score, get_category_ascii, get_score_ascii};
 use super::types::{AllCategoriesResult, TestCategoryResult, TestResultError};
-use crate::error::{CliError, Result};
-use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
-use std::path::Path;
+use crate::{
+    ascii::{append_score, get_category_ascii, get_score_ascii},
+    error::{CliError, Result},
+};
+use std::{
+    fs::{File, OpenOptions},
+    io::{self, Write},
+    path::Path,
+};
 
 /// Writes test results to a writer (stdout or file).
-pub fn write_result_to_writer<W: Write>(
-    result: &TestCategoryResult,
-    writer: &mut W,
-) -> Result<()> {
+pub fn write_result_to_writer<W: Write>(result: &TestCategoryResult, writer: &mut W) -> Result<()> {
     let mut lines = Vec::new();
 
     // Add category ASCII art
@@ -136,7 +137,7 @@ pub fn write_result_to_file(result: &TestCategoryResult, path: &Path) -> Result<
             return Err(CliError::Other(format!(
                 "unknown category: {}",
                 result.category_name
-            )))
+            )));
         }
     }
 

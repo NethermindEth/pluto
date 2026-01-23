@@ -1,7 +1,6 @@
 //! Peer connectivity tests.
 
-use super::config::TestConfigArgs;
-use super::types::TestCategoryResult;
+use super::{config::TestConfigArgs, types::TestCategoryResult};
 use crate::error::Result;
 use clap::Args;
 use std::io::Write;
@@ -15,7 +14,6 @@ pub struct TestPeersArgs {
     /// Comma-separated list of each peer ENR address.
     #[arg(long = "enrs", value_delimiter = ',')]
     pub enrs: Option<Vec<String>>,
-
     // TODO: Add remaining flags from Go implementation
 }
 

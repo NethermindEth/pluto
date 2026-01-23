@@ -1,8 +1,7 @@
 //! Test scoring and evaluation logic.
 
 use super::types::{CategoryScore, Duration, TestCaseName, TestResult, TestVerdict};
-use std::collections::HashMap;
-use std::time::Duration as StdDuration;
+use std::{collections::HashMap, time::Duration as StdDuration};
 
 /// Calculates the overall score for a list of test results.
 pub fn calculate_score(results: &[TestResult]) -> CategoryScore {

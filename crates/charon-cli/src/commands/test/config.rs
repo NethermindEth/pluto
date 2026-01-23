@@ -1,8 +1,7 @@
 //! Shared test configuration types.
 
 use clap::Args;
-use std::path::PathBuf;
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 /// Base test configuration shared by all test commands.
 #[derive(Args, Clone, Debug)]
@@ -31,7 +30,8 @@ pub struct TestConfigArgs {
     #[arg(long = "publish-address", default_value = "https://api.obol.tech/v1")]
     pub publish_addr: String,
 
-    /// The path to the charon enr private key file, used for signing the publish request.
+    /// The path to the charon enr private key file, used for signing the
+    /// publish request.
     #[arg(
         long = "publish-private-key-file",
         default_value = ".charon/charon-enr-private-key"

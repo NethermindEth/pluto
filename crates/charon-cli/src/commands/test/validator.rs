@@ -1,7 +1,6 @@
 //! Validator client connectivity tests.
 
-use super::config::TestConfigArgs;
-use super::types::TestCategoryResult;
+use super::{config::TestConfigArgs, types::TestCategoryResult};
 use crate::error::Result;
 use clap::Args;
 use std::io::Write;
@@ -30,10 +29,7 @@ pub struct TestValidatorArgs {
 }
 
 /// Runs the validator client tests.
-pub async fn run(
-    _args: TestValidatorArgs,
-    _writer: &mut dyn Write,
-) -> Result<TestCategoryResult> {
+pub async fn run(_args: TestValidatorArgs, _writer: &mut dyn Write) -> Result<TestCategoryResult> {
     // TODO: Implement validator tests
     // - Ping
     // - PingMeasure

@@ -9,6 +9,7 @@ use clap::Parser;
 mod ascii;
 mod cli;
 mod commands;
+pub mod duration;
 mod error;
 
 use cli::{Cli, Commands, CreateCommands, TestCommands};

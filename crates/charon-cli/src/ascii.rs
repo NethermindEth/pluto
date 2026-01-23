@@ -134,10 +134,7 @@ pub fn get_score_ascii(score: CategoryScore) -> &'static [&'static str] {
 }
 
 /// Appends score ASCII to category ASCII lines.
-pub fn append_score(
-    mut category_lines: Vec<String>,
-    score_lines: &[&str],
-) -> Vec<String> {
+pub fn append_score(mut category_lines: Vec<String>, score_lines: &[&str]) -> Vec<String> {
     for (i, line) in category_lines.iter_mut().enumerate() {
         if i < score_lines.len() {
             line.push_str(score_lines[i]);
