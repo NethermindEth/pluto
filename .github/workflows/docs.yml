@@ -50,7 +50,7 @@ jobs:
         run: cargo clean --doc
 
       - name: Build documentation
-        run: cargo doc --no-deps --workspace --all-features
+        run: cargo doc --locked --no-deps --workspace --all-features
 
       - name: Remove lock file
         run: rm target/doc/.lock
