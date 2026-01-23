@@ -13,7 +13,7 @@
 //! Terminal 1: `cargo run --example peerinfo -p charon-peerinfo -- --port 4001`
 //! Terminal 2: `cargo run --example peerinfo -p charon-peerinfo -- --port 4002`
 #![allow(missing_docs)]
-use std::time::Duration;
+use std::{net::SocketAddr, time::Duration};
 
 use charon_peerinfo::{Behaviour, Config, Event, LocalPeerInfo};
 use clap::Parser;
@@ -26,6 +26,7 @@ use libp2p::{
 };
 use tokio::signal;
 use tracing_subscriber::EnvFilter;
+use vise_exporter::MetricsExporter;
 
 /// Command line arguments
 #[derive(Debug, Parser)]
@@ -60,7 +61,10 @@ pub struct CombinedBehaviour {
 
 pub type CombinedEvent = CombinedBehaviourEvent;
 
-fn build_swarm(peerinfo_config: Config) -> anyhow::Result<Swarm<CombinedBehaviour>> {
+fn build_swarm(
+    peerinfo_config: LocalPeerInfo,
+    interval: Duration,
+) -> anyhow::Result<Swarm<CombinedBehaviour>> {
     let swarm = SwarmBuilder::with_new_identity()
         .with_tokio()
         .with_tcp(
@@ -70,7 +74,7 @@ fn build_swarm(peerinfo_config: Config) -> anyhow::Result<Swarm<CombinedBehaviou
         )?
         .with_behaviour(|key| {
             Ok(CombinedBehaviour {
-                peer_info: Behaviour::new(peerinfo_config),
+                peer_info: Behaviour::new(Config::new(peerinfo_config).with_interval(interval)),
                 identify: identify::Behaviour::new(identify::Config::new(
                     "/peerinfo-example/1.0.0".to_string(),
                     key.public(),
@@ -170,6 +174,20 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::from_default_env().add_directive("debug".parse()?))
         .init();
 
+    // Run the metrics exporter
+    let bind_address = SocketAddr::from(([0, 0, 0, 0], 9466));
+
+    let exporter = MetricsExporter::default()
+        .bind(bind_address)
+        .await
+        .expect("Failed to bind metrics exporter");
+    tokio::spawn(async move {
+        exporter
+            .start()
+            .await
+            .expect("Failed to start metrics exporter");
+    });
+
     let args = Args::parse();
 
     // Create local peer info
@@ -181,12 +199,7 @@ async fn main() -> anyhow::Result<()> {
         &args.nickname,               // nickname
     );
 
-    // Create peerinfo config with custom interval for demonstration
-    let peerinfo_config = Config::new(local_info)
-        .with_interval(Duration::from_secs(args.interval))
-        .with_timeout(Duration::from_secs(10));
-
-    let mut swarm = build_swarm(peerinfo_config)?;
+    let mut swarm = build_swarm(local_info, Duration::from_secs(args.interval))?;
 
     let local_peer_id = *swarm.local_peer_id();
     tracing::info!("Local peer id: {local_peer_id}");
