@@ -2,7 +2,15 @@
 
 use clap::{Parser, Subcommand};
 
-use crate::commands::{create_enr::CreateEnrArgs, enr::EnrArgs, version::VersionArgs};
+use crate::commands::{
+    create_enr::CreateEnrArgs,
+    enr::EnrArgs,
+    test::{
+        all::TestAllArgs, beacon::TestBeaconArgs, infra::TestInfraArgs, mev::TestMevArgs,
+        peers::TestPeersArgs, validator::TestValidatorArgs,
+    },
+    version::VersionArgs,
+};
 
 /// Pluto - Proof of Stake Ethereum Distributed Validator Client
 #[derive(Parser)]
@@ -35,8 +43,43 @@ pub enum Commands {
 
     #[command(about = "Print version and exit", long_about = "Output version info")]
     Version(VersionArgs),
+
+    #[command(
+        about = "Test subcommands provide test suite to evaluate current cluster setup",
+        long_about = "Test subcommands provide test suite to evaluate current cluster setup. The full validator stack can be tested - charon peers, consensus layer, validator client, MEV. Current machine's infra can be examined as well."
+    )]
+    Test(TestArgs),
     // Future commands will be added here:
     // Run(RunArgs),
+}
+
+/// Arguments for the test command
+#[derive(clap::Args)]
+pub struct TestArgs {
+    #[command(subcommand)]
+    pub command: TestCommands,
+}
+
+/// Test subcommands
+#[derive(clap::Subcommand)]
+pub enum TestCommands {
+    /// Run multiple tests towards peer nodes
+    Peers(TestPeersArgs),
+
+    /// Run multiple tests towards beacon nodes
+    Beacon(TestBeaconArgs),
+
+    /// Run multiple tests towards validator client
+    Validator(TestValidatorArgs),
+
+    /// Run multiple tests towards MEV relays
+    Mev(TestMevArgs),
+
+    /// Run multiple hardware and internet connectivity tests
+    Infra(TestInfraArgs),
+
+    /// Run all tests
+    All(TestAllArgs),
 }
 
 /// Arguments for the create command

@@ -34,6 +34,30 @@ pub(crate) enum CliError {
     EnrError(#[from] charon_eth2::enr::RecordError),
 
     /// IO error occurred.
-    #[error("IO error: {0}")]
-    IoError(#[from] std::io::Error),
+    #[error("IO error: {source}")]
+    Io {
+        source: std::io::Error,
+        context: String,
+    },
+
+    /// JSON serialization/deserialization error.
+    #[error("JSON error: {source}")]
+    Json {
+        source: serde_json::Error,
+        context: String,
+    },
+
+    /// Generic error with message.
+    #[error("{0}")]
+    Other(String),
+}
+
+// Implement From<std::io::Error> for backwards compatibility
+impl From<std::io::Error> for CliError {
+    fn from(err: std::io::Error) -> Self {
+        CliError::Io {
+            source: err,
+            context: String::new(),
+        }
+    }
 }
