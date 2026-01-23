@@ -34,6 +34,9 @@ jobs:
       - name: Install `oas3-gen`
         run: cargo install oas3-gen@0.24.0
 
+      - name: Install `rustfmt`
+        run: rustup +nightly component add rustfmt
+
       - name: Check formatting
         run: cargo +nightly fmt --all -- --check
 
