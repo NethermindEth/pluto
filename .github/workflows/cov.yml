@@ -1,6 +1,10 @@
 name: Update code coverage
 
 on:
+  push:
+    branches: ["main"]
+    paths-ignore:
+      - "**/coverage.svg"
   pull_request:
     types: [synchronize, opened, reopened, ready_for_review]
 
@@ -41,21 +45,6 @@ jobs:
       - name: Generate coverage report
         run: cargo llvm-cov --locked --workspace --lcov --output-path lcov.info --ignore-filename-regex '^examples/'
 
-      - name: Extract total coverage (%)
-        id: cov
-        shell: bash
-        run: |
-          pct=$(awk -F: '
-            /^LH:/ {lh += $2}
-            /^LF:/ {lf += $2}
-            END { if (lf>0) printf "%.2f", (lh/lf)*100; else print "0.00" }
-          ' lcov.info)
-          echo '{"schemaVersion": 1,"label":"coverage","message":"'$pct%'","color":"orange"}' >> shields.json
-
-      - uses: actions/upload-artifact@v4
+      - uses: ImBIOS/lcov-coverage-badge@v1
         with:
-          name: shields.json
-          path: shields.json
-          if-no-files-found: error
-          compression-level: 0
-          overwrite: true
+          file: lcov.info
