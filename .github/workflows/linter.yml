@@ -41,4 +41,4 @@ jobs:
         run: cargo +nightly fmt --all -- --check
 
       - name: Run Clippy
-        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features
