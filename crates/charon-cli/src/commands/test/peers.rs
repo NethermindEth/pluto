@@ -1,6 +1,6 @@
 //! Peer connectivity tests.
 
-use super::{config::TestConfigArgs, types::TestCategoryResult};
+use super::{TestCategoryResult, TestConfigArgs};
 use crate::error::Result;
 use clap::Args;
 use std::io::Write;

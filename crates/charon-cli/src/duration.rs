@@ -22,6 +22,7 @@ impl Duration {
 
     /// Rounds the duration based on its magnitude (matching Go's
     /// RoundDuration).
+    #[allow(clippy::cast_possible_truncation, clippy::arithmetic_side_effects)]
     pub fn round(self) -> Self {
         let rounded = if self.inner > StdDuration::from_secs(1) {
             // Round to 10ms
@@ -101,10 +102,10 @@ impl<'de> Deserialize<'de> for Duration {
             if let Ok(n) = val.parse::<u64>() {
                 return Ok(Self::new(StdDuration::from_millis(n)));
             }
-        } else if let Some(val) = s.strip_suffix('s') {
-            if let Ok(n) = val.parse::<f64>() {
-                return Ok(Self::new(StdDuration::from_secs_f64(n)));
-            }
+        } else if let Some(val) = s.strip_suffix('s')
+            && let Ok(n) = val.parse::<f64>()
+        {
+            return Ok(Self::new(StdDuration::from_secs_f64(n)));
         }
 
         Err(serde::de::Error::custom("invalid duration"))

@@ -1,8 +1,8 @@
 //! Run all test categories.
 
 use super::{
-    beacon::TestBeaconArgs, config::TestConfigArgs, infra::TestInfraArgs, mev::TestMevArgs,
-    peers::TestPeersArgs, validator::TestValidatorArgs,
+    beacon::TestBeaconArgs, infra::TestInfraArgs, mev::TestMevArgs, peers::TestPeersArgs,
+    validator::TestValidatorArgs, TestConfigArgs,
 };
 use crate::error::Result;
 use clap::Args;

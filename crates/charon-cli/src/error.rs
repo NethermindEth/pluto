@@ -47,6 +47,22 @@ pub(crate) enum CliError {
         context: String,
     },
 
+    /// K1 utility error.
+    #[error("K1 utility error: {0}")]
+    K1Util(#[from] charon_k1util::K1UtilError),
+
+    /// Obol API error.
+    #[error("Obol API error: {0}")]
+    ObolApi(#[from] charon::obolapi::ObolApiError),
+
+    /// Test timeout or interrupted.
+    #[error("timeout/interrupted")]
+    TimeoutInterrupted,
+
+    /// Test case not supported.
+    #[error("test case not supported")]
+    TestCaseNotSupported,
+
     /// Generic error with message.
     #[error("{0}")]
     Other(String),
@@ -56,6 +72,16 @@ pub(crate) enum CliError {
 impl From<std::io::Error> for CliError {
     fn from(err: std::io::Error) -> Self {
         CliError::Io {
+            source: err,
+            context: String::new(),
+        }
+    }
+}
+
+// Implement From<serde_json::Error> for convenience
+impl From<serde_json::Error> for CliError {
+    fn from(err: serde_json::Error) -> Self {
+        CliError::Json {
             source: err,
             context: String::new(),
         }

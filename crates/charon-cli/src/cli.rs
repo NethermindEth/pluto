@@ -48,7 +48,7 @@ pub enum Commands {
         about = "Test subcommands provide test suite to evaluate current cluster setup",
         long_about = "Test subcommands provide test suite to evaluate current cluster setup. The full validator stack can be tested - charon peers, consensus layer, validator client, MEV. Current machine's infra can be examined as well."
     )]
-    Test(TestArgs),
+    Test(Box<TestArgs>),
     // Future commands will be added here:
     // Run(RunArgs),
 }
@@ -63,23 +63,41 @@ pub struct TestArgs {
 /// Test subcommands
 #[derive(clap::Subcommand)]
 pub enum TestCommands {
-    /// Run multiple tests towards peer nodes
+    #[command(
+        about = "Run multiple tests towards peer nodes",
+        long_about = "Run multiple tests towards peer nodes. Verify that Charon can efficiently interact with Validator Client."
+    )]
     Peers(TestPeersArgs),
 
-    /// Run multiple tests towards beacon nodes
+    #[command(
+        about = "Run multiple tests towards beacon nodes",
+        long_about = "Run multiple tests towards beacon nodes. Verify that Charon can efficiently interact with Beacon Node(s)."
+    )]
     Beacon(TestBeaconArgs),
 
-    /// Run multiple tests towards validator client
+    #[command(
+        about = "Run multiple tests towards validator client",
+        long_about = "Run multiple tests towards validator client. Verify that Charon can efficiently interact with its validator client."
+    )]
     Validator(TestValidatorArgs),
 
-    /// Run multiple tests towards MEV relays
+    #[command(
+        about = "Run multiple tests towards MEV relays",
+        long_about = "Run multiple tests towards MEV relays. Verify that Charon can efficiently interact with MEV relay(s)."
+    )]
     Mev(TestMevArgs),
 
-    /// Run multiple hardware and internet connectivity tests
+    #[command(
+        about = "Run multiple hardware and internet connectivity tests",
+        long_about = "Run multiple hardware and internet connectivity tests. Verify that Charon is running on host with sufficient capabilities."
+    )]
     Infra(TestInfraArgs),
 
-    /// Run all tests
-    All(TestAllArgs),
+    #[command(
+        about = "Run tests towards peer nodes, beacon nodes, validator client, MEV relays, own hardware and internet connectivity.",
+        long_about = "Run tests towards peer nodes, beacon nodes, validator client, MEV relays, own hardware and internet connectivity. Verify that Pluto can efficiently do its duties on the tested setup."
+    )]
+    All(Box<TestAllArgs>),
 }
 
 /// Arguments for the create command
