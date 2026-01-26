@@ -38,11 +38,38 @@ jobs:
       - name: Install `cargo-llvm-cov`
         run: cargo install cargo-llvm-cov@0.6.24
 
-      - name: Generate coverage report
-        run: cargo llvm-cov --locked --workspace --json --output-path coverage.json --ignore-filename-regex '^examples/'
-
-      - name: Coverage Diff
-        uses: greatwizard/coverage-diff-action@v1
+      - name: Checkout the wiki repository
+        uses: actions/checkout@v2
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          coverage-filename: coverage.json
+          repository: "${{ github.repository }}.wiki"
+          # As of Jul 2021, the default branch of a GitHub wiki is `master`, not `main`
+          ref: master
+          path: .wiki
+
+      - uses: actions/setup-node@v2
+      - name: Generate the Coverage Badge
+        run: curl -sSL 'https://img.shields.io/badge/coverage-50%25-blue' -o coverage.svg
+
+      - name: Configure the GitHub wiki identity
+        working-directory: .wiki
+        run: |
+          git config user.name  "[bot] ${GITHUB_ACTOR}"
+          git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+
+      - name: Update the wiki page
+        working-directory: .wiki
+        run: |
+          git add .
+          git commit --allow-empty -m "Update coverage badge (${GITHUB_WORKFLOW})"
+          git push origin master
+
+      # - name: Generate coverage report
+      #   run: cargo llvm-cov --workspace --lcov --output-path lcov.info --ignore-filename-regex '^examples/'
+
+      # - name: Upload branch coverage artifact
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: coverage-lcov
+      #     path: lcov.info
+      #     retention-days: 21
+
