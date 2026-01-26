@@ -1,10 +1,16 @@
 # Pluto
 [![Docs](https://github.com/NethermindEth/charon-rs/actions/workflows/docs.yml/badge.svg)](https://github.com/NethermindEth/charon-rs/actions/workflows/docs.yml)
+
 [![Lint](https://github.com/NethermindEth/charon-rs/actions/workflows/linter.yml/badge.svg)](https://github.com/NethermindEth/charon-rs/actions/workflows/linter.yml)
+
 [![Build](https://github.com/NethermindEth/charon-rs/actions/workflows/test.yml/badge.svg)](https://github.com/NethermindEth/charon-rs/actions/workflows/test.yml)
+
 [![Dependencies](https://github.com/NethermindEth/charon-rs/actions/workflows/dependency-audit.yml/badge.svg)](https://github.com/NethermindEth/charon-rs/actions/workflows/dependency-audit.yml)
-![Coverage](coverage.svg)
+
+![Coverage](https://github.com/NethermindEth/charon-rs/wiki/coverage.svg)
+
 ![Rust](https://img.shields.io/badge/rust-1.89-orange.svg)
+
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 Pluto is an alternative implementation of [Charon](https://github.com/ObolNetwork/charon/), a distributed validator middleware client for Ethereum Staking. It enables a group of independent operators to safely run a single validator by coordinating duties across multiple nodes.
