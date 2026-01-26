@@ -1,5 +1,9 @@
 name: Update code coverage
 
+permissions:
+  contents: write
+  actions: write
+
 on:
   push:
     branches: ["main"]
@@ -72,4 +76,3 @@ jobs:
       #     name: coverage-lcov
       #     path: lcov.info
       #     retention-days: 21
-
