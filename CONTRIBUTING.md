@@ -22,7 +22,7 @@ To build the project with all its crates, run:
 cargo build --workspace --all-features
 ```
 
-## Run Unit and Integration Test
+## Run Unit and Integration Tests
 To run all tests - unit and integration - run:
 
 ```sh
