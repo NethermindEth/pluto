@@ -19,13 +19,7 @@ git config core.hooksPath .githooks
 After cloning the repository, follow the instructions below to run the documentation locally:
 
 ```sh
-cargo doc
-```
-
-Docs for `TODO(template) template_crate`:
-
-```sh
-RUSTDOCFLAGS="--html-in-header katex-header.html" cargo doc --no-deps -p template_crate --open
+cargo doc --locked --no-deps --workspace --all-features
 ```
 
 ## Performance
