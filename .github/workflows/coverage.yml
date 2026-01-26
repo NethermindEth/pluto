@@ -3,10 +3,6 @@ name: Update code coverage
 on:
   push:
     branches: ["main"]
-    paths-ignore:
-      - "**/coverage.svg"
-  pull_request:
-    types: [synchronize, opened, reopened, ready_for_review]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -43,8 +39,9 @@ jobs:
         run: cargo install cargo-llvm-cov@0.6.24
 
       - name: Generate coverage report
-        run: cargo llvm-cov --locked --workspace --lcov --output-path lcov.info --ignore-filename-regex '^examples/'
+        run: cargo llvm-cov --locked --workspace --json --output-path coverage.json --ignore-filename-regex '^examples/'
 
-      - uses: ImBIOS/lcov-coverage-badge@v1
+      - name: Coverage Diff
+        uses: greatwizard/coverage-diff-action@v1
         with:
-          file: lcov.info
+          github-token: ${{ secrets.GITHUB_TOKEN }}
