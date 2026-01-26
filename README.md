@@ -1,5 +1,5 @@
-[![Coverage]](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fwiki%2FNethermindEth%2Fcharon-rs%2FCode-Coverage-Badge.md)
-[![Coverage (token)]](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fwiki%2FNethermindEth%2Fcharon-rs%2FCode-Coverage-Badge.md%3Ftoken%3DGHSAT0AAAAAADDVC443EFUQQA7ZFTYLC7QM2LXYGFA)
+![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fwiki%2FNethermindEth%2Fcharon-rs%2FCode-Coverage-Badge.md)
+![coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fwiki%2FNethermindEth%2Fcharon-rs%2FCode-Coverage-Badge.md%3Ftoken%3DGHSAT0AAAAAADDVC443EFUQQA7ZFTYLC7QM2LXYGFA)
 
 # :crab: RUST PROJECT TEMPLATE - TODO(template) PUT PROJECT NAME HERE
 <!--`TODO(template) update each badge with your username and repository name.`-->
