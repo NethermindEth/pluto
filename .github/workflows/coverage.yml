@@ -18,8 +18,10 @@ env:
   RUSTFLAGS: "-Dwarnings -C debuginfo=0"
 
 jobs:
-  coverage:
+  compute:
     timeout-minutes: 20
+    outputs:
+      percentage: ${{ steps.cov.outputs.percentage }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -42,17 +44,35 @@ jobs:
       - name: Install `cargo-llvm-cov`
         run: cargo install cargo-llvm-cov@0.6.24
 
+      - name: Generate coverage report
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info --ignore-filename-regex '^examples/'
+
+      - name: Extract total coverage % (head)
+        id: cov
+        shell: bash
+        run: |
+          pct=$(awk -F: '
+            /^LH:/ {lh += $2}
+            /^LF:/ {lf += $2}
+            END { if (lf>0) printf "%.2f", (lh/lf)*100; else print "0.00" }
+          ' lcov.info)
+          echo "percentage=$pct" >> "$GITHUB_OUTPUT"
+
+  wiki:
+    timeout-minutes: 5
+    needs: compute
+    runs-on: ubuntu-24.04
+    steps:
       - name: Checkout the wiki repository
         uses: actions/checkout@v2
         with:
           repository: "${{ github.repository }}.wiki"
-          # As of Jul 2021, the default branch of a GitHub wiki is `master`, not `main`
           ref: master
           path: .wiki
 
-      - uses: actions/setup-node@v2
       - name: Generate the Coverage Badge
-        run: curl -sSL 'https://img.shields.io/badge/coverage-50%25-blue' -o coverage.svg
+        working-directory: .wiki
+        run: curl -sSL 'https://img.shields.io/badge/coverage-${{ needs.compute.outputs.percentage }}%25-blue' -o coverage.svg
 
       - name: Configure the GitHub wiki identity
         working-directory: .wiki
@@ -66,13 +86,3 @@ jobs:
           git add .
           git commit --allow-empty -m "Update coverage badge (${GITHUB_WORKFLOW})"
           git push origin master
-
-      # - name: Generate coverage report
-      #   run: cargo llvm-cov --workspace --lcov --output-path lcov.info --ignore-filename-regex '^examples/'
-
-      # - name: Upload branch coverage artifact
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: coverage-lcov
-      #     path: lcov.info
-      #     retention-days: 21
