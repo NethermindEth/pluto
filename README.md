@@ -1,5 +1,5 @@
 # Pluto
-[![Docs](https://github.com/NethermindEth/charon-rs/actions/workflows/docs.yml/badge.svg)](https://github.com/NethermindEth/charon-rs/actions/workflows/docs.yml)
+[![Docs](https://github.com/NethermindEth/charon-rs/actions/workflows/docs.yml/badge.svg?label=Docs)](https://github.com/NethermindEth/charon-rs/actions/workflows/docs.yml)
 
 [![Lint](https://github.com/NethermindEth/charon-rs/actions/workflows/linter.yml/badge.svg)](https://github.com/NethermindEth/charon-rs/actions/workflows/linter.yml)
 
