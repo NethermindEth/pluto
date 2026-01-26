@@ -48,6 +48,9 @@ jobs:
       - name: Build documentation
         run: cargo doc --locked --no-deps --workspace --all-features
 
+      - name: Add redirect
+        run: echo '<meta http-equiv="refresh" content="0;url=charon/index.html">' > target/doc/index.html
+
       - name: Remove lock file
         run: rm target/doc/.lock
 
