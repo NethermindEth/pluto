@@ -1,4 +1,4 @@
-name: Update code coverage
+name: Code Coverage
 
 on:
   push:

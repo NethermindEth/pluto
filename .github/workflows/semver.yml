@@ -1,4 +1,4 @@
-name: Semver checks
+name: Semver
 
 on:
   pull_request:
