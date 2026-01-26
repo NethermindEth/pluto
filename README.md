@@ -12,7 +12,7 @@ Pluto is an alternative implementation of [Charon](https://github.com/ObolNetwor
 
 Pluto, like Charon, is used by stakers to distribute the responsibility of running Ethereum Validators across a number of different instances and client implementations.
 
-See the official docs at https://docs.obol.tech for introductions and key concepts.
+See the official docs at https://docs.obol.org/ for introductions and key concepts.
 
 ## Documentation
 
