@@ -15,11 +15,25 @@ Install a pre-push git hook:
 git config core.hooksPath .githooks
 ```
 
-## Running the Rust Documentation Locally
-After cloning the repository, follow the instructions below to run the documentation locally:
+## Building
+To build the project with all its crates, run:
 
 ```sh
-cargo doc --locked --no-deps --workspace --all-features
+cargo build --workspace --all-features
+```
+
+## Run Unit and Integration Test
+To run all tests - unit and integration - run:
+
+```sh
+cargo test --workspace --all-features
+```
+
+## Running the Rust Documentation Locally
+To build the documentation locally:
+
+```sh
+cargo doc -workspace --all-features --no-deps
 ```
 
 ## Performance
