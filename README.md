@@ -37,8 +37,8 @@ The `charon dkg` subcommand **is more restrictive** than this general compatibil
 
 Examples are located in crate-specific example folders:
 
-- [Cluster](crates/charon-cluster/src/examples/)
-- [P2P](crates/charon-p2p/examples/)
+- [Cluster](crates/charon-cluster/src/examples)
+- [P2P](crates/charon-p2p/examples)
 - [Peerinfo](crates/peerinfo/examples)
 - [Relay Server](crates/relay-server/examples)
 - [Tracing](crates/tracing/examples)
