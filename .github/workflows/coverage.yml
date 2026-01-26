@@ -1,12 +1,12 @@
 name: Code Coverage
 
+permissions:
+  contents: write
+  actions: write
+
 on:
   push:
     branches: ["main"]
-    paths-ignore:
-      - "**/coverage.svg"
-  pull_request:
-    types: [synchronize, opened, reopened, ready_for_review]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -18,8 +18,10 @@ env:
   RUSTFLAGS: "-Dwarnings -C debuginfo=0"
 
 jobs:
-  coverage:
+  compute:
     timeout-minutes: 20
+    outputs:
+      percentage: ${{ steps.cov.outputs.percentage }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -43,8 +45,44 @@ jobs:
         run: cargo install cargo-llvm-cov@0.6.24
 
       - name: Generate coverage report
-        run: cargo llvm-cov --locked --workspace --lcov --output-path lcov.info --ignore-filename-regex '^examples/'
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info --ignore-filename-regex '^examples/'
 
-      - uses: ImBIOS/lcov-coverage-badge@v1
+      - name: Extract total coverage % (head)
+        id: cov
+        shell: bash
+        run: |
+          pct=$(awk -F: '
+            /^LH:/ {lh += $2}
+            /^LF:/ {lf += $2}
+            END { if (lf>0) printf "%.2f", (lh/lf)*100; else print "0.00" }
+          ' lcov.info)
+          echo "percentage=$pct" >> "$GITHUB_OUTPUT"
+
+  wiki:
+    timeout-minutes: 5
+    needs: compute
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout the wiki repository
+        uses: actions/checkout@v2
         with:
-          file: lcov.info
+          repository: "${{ github.repository }}.wiki"
+          ref: master
+          path: .wiki
+
+      - name: Generate the Coverage Badge
+        working-directory: .wiki
+        run: curl -sSL 'https://img.shields.io/badge/coverage-${{ needs.compute.outputs.percentage }}%25-blue' -o coverage.svg
+
+      - name: Configure the GitHub wiki identity
+        working-directory: .wiki
+        run: |
+          git config user.name  "[bot] ${GITHUB_ACTOR}"
+          git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+
+      - name: Update the wiki page
+        working-directory: .wiki
+        run: |
+          git add .
+          git commit --allow-empty -m "Update coverage badge (${GITHUB_WORKFLOW})"
+          git push origin master
