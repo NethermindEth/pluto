@@ -3,7 +3,7 @@
 [![Lint](https://github.com/NethermindEth/charon-rs/actions/workflows/linter.yml/badge.svg)](https://github.com/NethermindEth/charon-rs/actions/workflows/linter.yml)
 [![Build](https://github.com/NethermindEth/charon-rs/actions/workflows/test.yml/badge.svg)](https://github.com/NethermindEth/charon-rs/actions/workflows/test.yml)
 [![Dependencies](https://github.com/NethermindEth/charon-rs/actions/workflows/dependency-audit.yml/badge.svg)](https://github.com/NethermindEth/charon-rs/actions/workflows/dependency-audit.yml)
-[![Coverage](coverage.svg)
+![Coverage](coverage.svg)
 ![Rust](https://img.shields.io/badge/rust-1.89-orange.svg)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
@@ -15,9 +15,9 @@ See the official docs at https://docs.obol.tech for introductions and key concep
 
 ## Documentation
 
-The [Obol Docs](https://docs.obol.tech/) website is the best place to get started.
+The [Obol Docs](https://docs.obol.org/) website is the best place to get started.
 The important sections are [intro](https://docs.obol.org/learn/charon),
-[key concepts](https://docs.obol.tech/docs/int/key-concepts) and [charon](https://docs.obol.tech/docs/charon/intro).
+[key concepts](https://docs.obol.org/docs/int/key-concepts) and [charon](https://docs.obol.org/docs/charon/intro).
 
 ## Version compatibility
 
@@ -30,7 +30,7 @@ There are several reasons to justify a new `MAJOR` release, for example:
  - an old Ethereum hardfork is removed due to network inactivity
  - modifications to the internal P2P network or consensus mechanism requiring deep changes to the codebase
 
-The `charon dkg` subcommand **is more restrictive** than this general compatibility promise; all peers should use matching`MAJOR` and`MINOR` versions of Charon for the DKG process, patch versions may differ though it is recommended to use the latest patch of any version.
+The `charon dkg` subcommand **is more restrictive** than this general compatibility promise; all peers should use matching `MAJOR` and `MINOR` versions of Charon for the DKG process, patch versions may differ though it is recommended to use the latest patch of any version.
 
 ## Examples
 

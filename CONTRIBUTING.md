@@ -33,7 +33,7 @@ cargo test --workspace --all-features
 To build the documentation locally:
 
 ```sh
-cargo doc -workspace --all-features --no-deps
+cargo doc --workspace --all-features --no-deps
 ```
 
 ## Performance
