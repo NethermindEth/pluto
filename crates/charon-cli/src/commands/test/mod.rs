@@ -404,7 +404,10 @@ pub async fn publish_result_to_obol_api(
 ) -> CliResult<()> {
     let private_key = load_or_generate_key(private_key_file)?;
     let enr = create_enr(&private_key)?;
-    let sign_data_bytes = serde_json::to_vec(&data)?;
+    let sign_data_bytes = serde_json::to_vec(&data).map_err(|e| CliError::Json {
+        source: e,
+        context: "marshal all test categories signing data".to_string(),
+    })?;
     let hash = hash_ssz(&sign_data_bytes)?;
     let sig = sign(&private_key, &hash)?;
 
@@ -414,7 +417,10 @@ pub async fn publish_result_to_obol_api(
         data,
     };
 
-    let obol_api_json = serde_json::to_vec(&result)?;
+    let obol_api_json = serde_json::to_vec(&result).map_err(|e| CliError::Json {
+        source: e,
+        context: "marshal Obol API test struct".to_string(),
+    })?;
     let client = Client::new(api_url, ClientOptions::default())?;
     client.post_test_result(obol_api_json).await?;
 
@@ -680,11 +686,6 @@ fn create_enr(secret_key: &SecretKey) -> CliResult<Record> {
     Ok(Record::new(secret_key.clone(), vec![])?)
 }
 
-/// Hashes data using SSZ merkleization.
-/// - Empty data: Returns zero bytes (all 0x00)
-/// - Data 1-32 bytes: Returns data padded to 32 bytes
-/// - Data > 32 bytes: Chunks into 32-byte pieces, builds merkle tree with
-///   SHA256
 fn hash_ssz(data: &[u8]) -> CliResult<[u8; 32]> {
     if data.is_empty() {
         return Ok([0u8; 32]);
@@ -708,6 +709,33 @@ fn hash_ssz(data: &[u8]) -> CliResult<[u8; 32]> {
     hasher
         .hash_root()
         .map_err(|e| CliError::Other(format!("hash root: {}", e)))
+}
+
+/// Updates the `--test-cases` argument help text to include available tests dynamically.
+pub fn update_test_cases_help(mut cmd: clap::Command) -> clap::Command {
+    if let Some(test_cmd) = cmd.find_subcommand_mut("test") {
+        for category in &[
+            TestCategory::Validator,
+            TestCategory::Beacon,
+            TestCategory::Mev,
+            TestCategory::Peers,
+            TestCategory::Infra,
+            TestCategory::All,
+        ] {
+            if let Some(category_cmd) = test_cmd.find_subcommand_mut(category.as_str()) {
+                let available_tests = list_test_cases(*category);
+                let help_text = format!(
+                    "Comma-separated list of test names to execute. Available tests are: {}",
+                    available_tests.join(", ")
+                );
+
+                *category_cmd = category_cmd.clone().mut_arg("test_cases", |arg| {
+                    arg.help(help_text.clone()).long_help(help_text)
+                });
+            }
+        }
+    }
+    cmd
 }
 
 #[cfg(test)]

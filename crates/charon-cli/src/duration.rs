@@ -49,7 +49,20 @@ impl From<StdDuration> for Duration {
 
 impl fmt::Display for Duration {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", humantime::format_duration(self.inner))
+        // Keep formatting stable for hashing/tests.
+        // Note: this is not identical to Go's `time.Duration.String()`.
+        let duration = self.inner;
+        if duration.is_zero() {
+            write!(f, "0s")
+        } else if duration >= StdDuration::from_secs(1) {
+            write!(f, "{:.3}s", duration.as_secs_f64())
+        } else if duration >= StdDuration::from_millis(1) {
+            write!(f, "{}ms", duration.as_millis())
+        } else if duration >= StdDuration::from_micros(1) {
+            write!(f, "{}µs", duration.as_micros())
+        } else {
+            write!(f, "{}ns", duration.as_nanos())
+        }
     }
 }
 
@@ -67,15 +80,46 @@ impl<'de> Deserialize<'de> for Duration {
     where
         D: serde::Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
-
-        if let Ok(nanos) = s.parse::<u64>() {
-            return Ok(Self::new(StdDuration::from_nanos(nanos)));
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Num(f64),
+            Str(String),
         }
 
-        humantime::parse_duration(&s)
-            .map(Self::new)
-            .map_err(serde::de::Error::custom)
+        match Repr::deserialize(deserializer)? {
+            // Matches Go's `json.Unmarshal`: JSON numbers become float64 and are cast to time.Duration
+            // (nanoseconds), truncating toward zero.
+            Repr::Num(n) => {
+                if !n.is_finite() || n < 0.0 {
+                    return Err(serde::de::Error::custom("invalid duration"));
+                }
+
+                let max = u64::MAX as f64;
+                if n > max {
+                    return Err(serde::de::Error::custom("invalid duration"));
+                }
+
+                Ok(Self::new(StdDuration::from_nanos(n.trunc() as u64)))
+            }
+            Repr::Str(s) => {
+                // Matches Go's `UnmarshalText`: if it's an integer string, interpret as nanoseconds.
+                if let Ok(nanos) = s.parse::<u64>() {
+                    return Ok(Self::new(StdDuration::from_nanos(nanos)));
+                }
+
+                // humantime doesn't accept the micro sign; normalize "µs" -> "us".
+                let normalized = if s.contains('µ') {
+                    s.replace('µ', "u")
+                } else {
+                    s
+                };
+
+                humantime::parse_duration(&normalized)
+                    .map(Self::new)
+                    .map_err(serde::de::Error::custom)
+            }
+        }
     }
 }
 
