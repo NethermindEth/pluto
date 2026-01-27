@@ -57,11 +57,11 @@ pub(crate) enum CliError {
 
     /// Test timeout or interrupted.
     #[error("timeout/interrupted")]
-    TimeoutInterrupted,
+    _TimeoutInterrupted,
 
     /// Test case not supported.
     #[error("test case not supported")]
-    TestCaseNotSupported,
+    _TestCaseNotSupported,
 
     /// Generic error with message.
     #[error("{0}")]
