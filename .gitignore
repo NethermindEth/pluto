@@ -19,3 +19,6 @@ target/
 lcov.info
 
 .charon*
+
+crates/eth2api/src/client.rs
+crates/eth2api/src/types.rs
