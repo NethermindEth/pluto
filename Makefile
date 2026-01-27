@@ -28,6 +28,8 @@ peerinfo:
 		--nickname $(NICKNAME) \
 		--data-dir $(DATA_DIR) \
 		--metrics-port $(METRICS_PORT) \
+		--loki-url http://localhost:3100 \
+		--loki-label cluster=peerinfo-example \
 		$(DIAL_ARGS)
 
 # Initialize peerinfo with a private key

@@ -36,6 +36,7 @@ vise-exporter.workspace = true
 charon-eth2.workspace = true
 k256.workspace = true
 hex-literal.workspace = true
+charon-tracing.workspace = true
 
 [lints]
 workspace = true

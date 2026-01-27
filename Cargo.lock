@@ -1832,6 +1832,7 @@ dependencies = [
  "charon-core",
  "charon-eth2",
  "charon-p2p",
+ "charon-tracing",
  "chrono",
  "clap",
  "futures",

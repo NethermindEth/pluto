@@ -12,8 +12,14 @@
 //!
 //! Terminal 1: `cargo run --example peerinfo -p charon-peerinfo -- --port 4001`
 //! Terminal 2: `cargo run --example peerinfo -p charon-peerinfo -- --port 4002`
+//!
+//! With Loki logging enabled:
+//! ```sh
+//! cargo run --example peerinfo -p charon-peerinfo -- --loki-url http://localhost:3100
+//! ```
 #![allow(missing_docs)]
 use std::{
+    collections::HashMap,
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
     time::Duration,
@@ -25,6 +31,7 @@ use charon_p2p::{
     p2p::{Node, NodeType},
 };
 use charon_peerinfo::{Behaviour, Config, Event, LocalPeerInfo};
+use charon_tracing::{LokiConfig, TracingConfig};
 use clap::Parser;
 use k256::SecretKey;
 use libp2p::{
@@ -34,7 +41,6 @@ use libp2p::{
     swarm::{NetworkBehaviour, SwarmEvent},
 };
 use tokio::signal;
-use tracing_subscriber::EnvFilter;
 use vise::MetricsCollection;
 use vise_exporter::MetricsExporter;
 
@@ -69,6 +75,23 @@ pub struct Args {
     /// Metrics port to bind to
     #[arg(long, default_value = "9465")]
     pub metrics_port: u16,
+
+    /// Loki URL for log aggregation (e.g., http://localhost:3100)
+    #[arg(long)]
+    pub loki_url: Option<String>,
+
+    /// Additional Loki labels in key=value format (can be specified multiple
+    /// times)
+    #[arg(long = "loki-label", value_parser = parse_key_value)]
+    pub loki_labels: Vec<(String, String)>,
+}
+
+fn parse_key_value(s: &str) -> Result<(String, String), String> {
+    let parts: Vec<&str> = s.splitn(2, '=').collect();
+    if parts.len() != 2 {
+        return Err(format!("Invalid key=value format: {}", s));
+    }
+    Ok((parts[0].to_string(), parts[1].to_string()))
 }
 
 #[derive(Debug, Parser)]
@@ -168,6 +191,31 @@ fn handle_event(event: SwarmEvent<CombinedEvent>, swarm: &mut Swarm<CombinedBeha
     }
 }
 
+fn build_tracing_config(args: &Args) -> TracingConfig {
+    let mut builder = TracingConfig::builder()
+        .with_default_console()
+        .override_env_filter("debug");
+
+    if let Some(loki_url) = &args.loki_url {
+        let mut labels: HashMap<String, String> = HashMap::new();
+        labels.insert("app".to_string(), "peerinfo-example".to_string());
+        labels.insert("nickname".to_string(), args.nickname.clone());
+
+        // Add user-provided labels
+        for (key, value) in &args.loki_labels {
+            labels.insert(key.clone(), value.clone());
+        }
+
+        builder = builder.loki(LokiConfig {
+            loki_url: loki_url.clone(),
+            labels,
+            extra_fields: HashMap::new(),
+        });
+    }
+
+    builder.build()
+}
+
 fn init_node(data_dir: &PathBuf, private_key: &str) -> anyhow::Result<()> {
     // Decode the hex string
     let key_bytes = hex::decode(private_key.trim().trim_start_matches("0x"))?;
@@ -192,12 +240,17 @@ fn init_node(data_dir: &PathBuf, private_key: &str) -> anyhow::Result<()> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("debug".parse()?))
-        .init();
-
     let args = Args::parse();
+
+    // Initialize tracing with optional Loki support
+    let tracing_config = build_tracing_config(&args);
+    let loki_task = charon_tracing::init(&tracing_config)?;
+
+    // Spawn Loki background task if configured
+    if let Some(task) = loki_task {
+        tokio::spawn(task);
+        tracing::info!("Loki logging enabled");
+    }
 
     // Handle init subcommand
     if let Some(Command::Init {
@@ -267,7 +320,7 @@ async fn main() -> anyhow::Result<()> {
         &args.nickname,
     );
 
-    let Node { mut swarm } = Node::new(
+    let Node { mut swarm, .. } = Node::new(
         P2PConfig::default(),
         key,
         false,
