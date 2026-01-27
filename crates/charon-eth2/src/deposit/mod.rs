@@ -297,9 +297,18 @@ pub async fn write_deposit_data_file(
 
     tokio::fs::write(&file_path, bytes).await?;
 
-    let mut perms = tokio::fs::metadata(&file_path).await?.permissions();
-    perms.set_readonly(true);
-    tokio::fs::set_permissions(&file_path, perms).await?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o444);
+        tokio::fs::set_permissions(&file_path, perms).await?;
+    }
+    #[cfg(not(unix))]
+    {
+        let mut perms = tokio::fs::metadata(&file_path).await?.permissions();
+        perms.set_readonly(true);
+        tokio::fs::set_permissions(&file_path, perms).await?;
+    }
 
     Ok(())
 }
@@ -327,7 +336,7 @@ pub fn read_deposit_data_files(cluster_dir: &Path) -> Result<Vec<Vec<DepositData
         .to_str()
         .ok_or_else(|| DepositError::invalid_data("path", "Invalid UTF-8 in path"))?;
 
-    let files: Vec<PathBuf> = glob::glob(pattern_str)
+    let mut files: Vec<PathBuf> = glob::glob(pattern_str)
         .map_err(|e| DepositError::invalid_data("glob_pattern", e.to_string()))?
         .filter_map(Result::ok)
         .collect();
@@ -337,6 +346,8 @@ pub fn read_deposit_data_files(cluster_dir: &Path) -> Result<Vec<Vec<DepositData
             cluster_dir.display().to_string(),
         ));
     }
+
+    files.sort_unstable();
 
     let mut deposit_datas_list = Vec::new();
 
@@ -414,87 +425,199 @@ pub fn merge_deposit_data_sets(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    use tempfile::tempdir;
+
+    /// Get the private and public keys from a hex-encoded private key.
+    fn get_keys(
+        priv_key_hex: &str,
+    ) -> Result<(charon_crypto::types::PrivateKey, PublicKey), String> {
+        let priv_key_bytes = hex::decode(priv_key_hex).map_err(|e| e.to_string())?;
+        let priv_key: charon_crypto::types::PrivateKey = priv_key_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| "private key is 32 bytes".to_string())?;
+
+        let tbls = BlstImpl;
+        let pub_key = tbls
+            .secret_to_public_key(&priv_key)
+            .map_err(|e| format!("{e:?}"))?;
+
+        Ok((priv_key, pub_key))
+    }
+
+    /// Generate properly signed deposit data for testing.
+    fn generate_deposit_datas(amount: Gwei) -> Result<Vec<DepositData>, String> {
+        const NETWORK: &str = "goerli";
+        let priv_keys = [
+            "01477d4bfbbcebe1fef8d4d6f624ecbb6e3178558bb1b0d6286c816c66842a6d",
+            "5b77c0f0ef7c4ddc123d55b8bd93daeefbd7116764a941c0061a496649e145b5",
+            "1dabcbfc9258f0f28606bf9e3b1c9f06d15a6e4eb0fbc28a43835eaaed7623fc",
+            "002ff4fd29d3deb6de9f5d115182a49c618c97acaa365ad66a0b240bd825c4ff",
+        ];
+        let withdrawal_addrs = [
+            "0x321dcb529f3945bc94fecea9d3bc5caf35253b94",
+            "0x08ef6a66a4f315aa250d2e748de0bfe5a6121096",
+            "0x05f9f73f74c205f2b9267c04296e3069767531fb",
+            "0x67f5df029ae8d3f941abef0bec6462a6b4e4b522",
+        ];
+
+        let tbls = BlstImpl;
+        let mut datas = Vec::new();
+
+        for i in 0..priv_keys.len() {
+            let (priv_key, pub_key) = get_keys(priv_keys[i])?;
+
+            let msg = new_message(pub_key, withdrawal_addrs[i], amount, true)
+                .map_err(|e| e.to_string())?;
+
+            let sig_root = get_message_signing_root(&msg, NETWORK).map_err(|e| e.to_string())?;
+
+            let signature = tbls
+                .sign(&priv_key, &sig_root)
+                .map_err(|e| format!("{e:?}"))?;
+
+            datas.push(DepositData {
+                pub_key: msg.pub_key,
+                withdrawal_credentials: msg.withdrawal_credentials,
+                amount: msg.amount,
+                signature,
+            });
+        }
+
+        Ok(datas)
+    }
 
     #[test]
-    fn test_new_message() {
-        let pubkey = [0u8; 48];
-        let addr = "0x321dcb529f3945bc94fecea9d3bc5caf35253b94";
+    fn test_new_message() -> Result<(), String> {
+        const PRIV_KEY: &str = "01477d4bfbbcebe1fef8d4d6f624ecbb6e3178558bb1b0d6286c816c66842a6d";
+        const ADDR: &str = "0x321dcb529f3945bc94fecea9d3bc5caf35253b94";
+
         let amount = DEFAULT_DEPOSIT_AMOUNT;
+        let (_priv_key, pub_key) = get_keys(PRIV_KEY)?;
 
-        let msg = new_message(pubkey, addr, amount, false).unwrap();
+        let msg = new_message(pub_key, ADDR, amount, false).map_err(|e| e.to_string())?;
 
-        assert_eq!(msg.pub_key, pubkey);
+        assert_eq!(msg.pub_key, pub_key);
         assert_eq!(msg.amount, amount);
         assert_eq!(
             msg.withdrawal_credentials[0],
             ETH1_ADDRESS_WITHDRAWAL_PREFIX
         );
+        Ok(())
     }
 
     #[test]
-    fn test_new_message_below_minimum() {
-        let pubkey = [0u8; 48];
-        let addr = "0x321dcb529f3945bc94fecea9d3bc5caf35253b94";
+    fn test_new_message_below_minimum() -> Result<(), String> {
+        const PRIV_KEY: &str = "01477d4bfbbcebe1fef8d4d6f624ecbb6e3178558bb1b0d6286c816c66842a6d";
+        const ADDR: &str = "0x321dcb529f3945bc94fecea9d3bc5caf35253b94";
+
+        let (_priv_key, pub_key) = get_keys(PRIV_KEY)?;
         let amount = MIN_DEPOSIT_AMOUNT - 1;
 
-        let err = new_message(pubkey, addr, amount, false).unwrap_err();
-        assert!(matches!(err, DepositError::MinimumAmountNotMet(_)));
+        match new_message(pub_key, ADDR, amount, false) {
+            Err(DepositError::MinimumAmountNotMet(_)) => Ok(()),
+            other => Err(format!("expected MinimumAmountNotMet, got {other:?}")),
+        }
     }
 
     #[test]
-    fn test_new_message_above_maximum() {
-        let pubkey = [0u8; 48];
-        let addr = "0x321dcb529f3945bc94fecea9d3bc5caf35253b94";
+    fn test_new_message_above_maximum() -> Result<(), String> {
+        const PRIV_KEY: &str = "01477d4bfbbcebe1fef8d4d6f624ecbb6e3178558bb1b0d6286c816c66842a6d";
+        const ADDR: &str = "0x321dcb529f3945bc94fecea9d3bc5caf35253b94";
+
+        let (_priv_key, pub_key) = get_keys(PRIV_KEY)?;
 
         // Non-compounding: max is 32 ETH
         let amount = MAX_STANDARD_DEPOSIT_AMOUNT + 1;
-        let err = new_message(pubkey, addr, amount, false).unwrap_err();
-        assert!(matches!(err, DepositError::MaximumAmountExceeded { .. }));
+        match new_message(pub_key, ADDR, amount, false) {
+            Err(DepositError::MaximumAmountExceeded { .. }) => {}
+            other => return Err(format!("expected MaximumAmountExceeded, got {other:?}")),
+        }
 
         // Should work with compounding
-        assert!(new_message(pubkey, addr, amount, true).is_ok());
+        new_message(pub_key, ADDR, amount, true).map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     #[test]
-    fn test_max_deposit_amount() {
+    fn test_max_deposit_amount() -> Result<(), String> {
         assert_eq!(max_deposit_amount(false), MAX_STANDARD_DEPOSIT_AMOUNT);
         assert_eq!(max_deposit_amount(true), MAX_COMPOUNDING_DEPOSIT_AMOUNT);
+        Ok(())
     }
 
     #[test]
-    fn test_verify_deposit_amounts_valid() {
+    fn test_verify_deposit_amounts_empty_slice_ok() -> Result<(), String> {
+        verify_deposit_amounts(&[], false).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_verify_deposit_amounts_valid() -> Result<(), String> {
         let amounts = vec![16_000_000_000, 16_000_000_000]; // 16 ETH + 16 ETH = 32 ETH
-        assert!(verify_deposit_amounts(&amounts, false).is_ok());
+        verify_deposit_amounts(&amounts, false).map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     #[test]
-    fn test_verify_deposit_amounts_below_minimum() {
+    fn test_verify_deposit_amounts_below_minimum() -> Result<(), String> {
         let amounts = vec![500_000_000, 31_500_000_000]; // 0.5 ETH + 31.5 ETH
-        let err = verify_deposit_amounts(&amounts, false).unwrap_err();
-        assert!(matches!(err, DepositError::AmountBelowMinimum(_)));
+        match verify_deposit_amounts(&amounts, false) {
+            Err(DepositError::AmountBelowMinimum(_)) => Ok(()),
+            other => Err(format!("expected AmountBelowMinimum, got {other:?}")),
+        }
     }
 
     #[test]
-    fn test_verify_deposit_amounts_sum_below_default() {
+    fn test_verify_deposit_amounts_exceeds_max_unless_compounding() -> Result<(), String> {
+        let amounts = vec![
+            MIN_DEPOSIT_AMOUNT,
+            DEFAULT_DEPOSIT_AMOUNT + MIN_DEPOSIT_AMOUNT,
+        ]; // 1 ETH + 33 ETH
+        match verify_deposit_amounts(&amounts, false) {
+            Err(DepositError::AmountExceedsMaximum { .. }) => {}
+            other => return Err(format!("expected AmountExceedsMaximum, got {other:?}")),
+        }
+
+        verify_deposit_amounts(&amounts, true).map_err(|e| e.to_string())?;
+
+        let too_large = MAX_COMPOUNDING_DEPOSIT_AMOUNT
+            .checked_add(MIN_DEPOSIT_AMOUNT)
+            .ok_or_else(|| "overflow".to_string())?;
+        let amounts = vec![MIN_DEPOSIT_AMOUNT, too_large];
+        match verify_deposit_amounts(&amounts, true) {
+            Err(DepositError::AmountExceedsMaximum { .. }) => Ok(()),
+            other => Err(format!("expected AmountExceedsMaximum, got {other:?}")),
+        }
+    }
+
+    #[test]
+    fn test_verify_deposit_amounts_sum_below_default() -> Result<(), String> {
         let amounts = vec![8_000_000_000, 16_000_000_000]; // 8 ETH + 16 ETH = 24 ETH
-        let err = verify_deposit_amounts(&amounts, false).unwrap_err();
-        assert!(matches!(err, DepositError::AmountSumBelowDefault(_)));
+        match verify_deposit_amounts(&amounts, false) {
+            Err(DepositError::AmountSumBelowDefault(_)) => Ok(()),
+            other => Err(format!("expected AmountSumBelowDefault, got {other:?}")),
+        }
     }
 
     #[test]
-    fn test_eths_to_gweis() {
+    fn test_eths_to_gweis() -> Result<(), String> {
         assert_eq!(eths_to_gweis(&[]), Vec::<Gwei>::new());
         assert_eq!(eths_to_gweis(&[1, 5]), vec![1_000_000_000, 5_000_000_000]);
+        Ok(())
     }
 
     #[test]
-    fn test_dedup_amounts() {
+    fn test_dedup_amounts() -> Result<(), String> {
         let amounts = vec![100, 500, 100, 0, 0, 300];
         assert_eq!(dedup_amounts(&amounts), vec![0, 100, 300, 500]);
+        Ok(())
     }
 
     #[test]
-    fn test_default_deposit_amounts() {
+    fn test_default_deposit_amounts() -> Result<(), String> {
         assert_eq!(
             default_deposit_amounts(false),
             vec![MIN_DEPOSIT_AMOUNT, DEFAULT_DEPOSIT_AMOUNT]
@@ -509,116 +632,119 @@ mod tests {
                 256 * ONE_ETH_IN_GWEI
             ]
         );
+        Ok(())
     }
 
     #[test]
-    fn test_withdrawal_creds_from_addr() {
+    fn test_withdrawal_creds_from_addr() -> Result<(), String> {
         let addr = "0x321dcb529f3945bc94fecea9d3bc5caf35253b94";
 
         // Test non-compounding (0x01 prefix)
-        let creds = withdrawal_creds_from_addr(addr, false).unwrap();
+        let creds = withdrawal_creds_from_addr(addr, false).map_err(|e| e.to_string())?;
         assert_eq!(creds[0], ETH1_ADDRESS_WITHDRAWAL_PREFIX);
         assert_eq!(
             &creds[12..32],
-            &hex::decode("321dcb529f3945bc94fecea9d3bc5caf35253b94").unwrap()[..]
+            &hex::decode("321dcb529f3945bc94fecea9d3bc5caf35253b94").map_err(|e| e.to_string())?[..]
         );
 
         // Test compounding (0x02 prefix)
-        let creds = withdrawal_creds_from_addr(addr, true).unwrap();
+        let creds = withdrawal_creds_from_addr(addr, true).map_err(|e| e.to_string())?;
         assert_eq!(creds[0], EIP7251_ADDRESS_WITHDRAWAL_PREFIX);
         assert_eq!(
             &creds[12..32],
-            &hex::decode("321dcb529f3945bc94fecea9d3bc5caf35253b94").unwrap()[..]
+            &hex::decode("321dcb529f3945bc94fecea9d3bc5caf35253b94").map_err(|e| e.to_string())?[..]
         );
+        Ok(())
     }
 
     #[test]
-    fn test_withdrawal_creds_without_prefix() {
+    fn test_withdrawal_creds_without_prefix() -> Result<(), String> {
         // Address without 0x prefix should fail (matching Go's behavior)
         let addr = "321dcb529f3945bc94fecea9d3bc5caf35253b94";
-        let err = withdrawal_creds_from_addr(addr, false).unwrap_err();
-        // Error is HelperError wrapped in DepositError
-        assert!(matches!(err, DepositError::AddressValidationError(_)));
+        match withdrawal_creds_from_addr(addr, false) {
+            Err(DepositError::AddressValidationError(_)) => Ok(()),
+            other => Err(format!("expected AddressValidationError, got {other:?}")),
+        }
     }
 
     #[test]
-    fn test_invalid_address_length() {
+    fn test_invalid_address_length() -> Result<(), String> {
         let addr = "0x321dcb5"; // Too short
-        let err = withdrawal_creds_from_addr(addr, false).unwrap_err();
-        // Error is HelperError wrapped in DepositError
-        assert!(matches!(err, DepositError::AddressValidationError(_)));
+        match withdrawal_creds_from_addr(addr, false) {
+            Err(DepositError::AddressValidationError(_)) => Ok(()),
+            other => Err(format!("expected AddressValidationError, got {other:?}")),
+        }
     }
 
     #[test]
-    fn test_marshal_deposit_data_matches_fixture() {
-        let pub_key = hex::decode(
-            "80d0436ccacd2b263f5e9e7ebaa14015fe5c80d3e57dc7c37bcbda783895e3491019d3ed694ecbb49c8c80a0480c0392",
-        )
-        .unwrap();
-        let withdrawal_credentials =
-            hex::decode("02000000000000000000000005f9f73f74c205f2b9267c04296e3069767531fb")
-                .unwrap();
-        let signature = hex::decode(
-            "aed3c99949ab93622f2d1baaeb047d30cb33e744e1a8464eebe1a2a634f0f23529ce753c54035968e9f3f683bca02f6704c933ca9ff2b181897de4eb27b0b2568721fe625084d5cc9030be55ceb1bc573df61a8a67bad87d94187ee4d28fc36f",
-        )
-        .unwrap();
+    fn test_marshal_deposit_data_matches() -> Result<(), String> {
+        let datas = generate_deposit_datas(DEFAULT_DEPOSIT_AMOUNT)?;
+        let bytes = marshal_deposit_data(&datas, "goerli").map_err(|e| e.to_string())?;
+        let actual = String::from_utf8(bytes).map_err(|e| e.to_string())?;
 
-        let deposit_data = DepositData {
-            pub_key: pub_key.as_slice().try_into().unwrap(),
-            withdrawal_credentials: withdrawal_credentials.as_slice().try_into().unwrap(),
-            amount: DEFAULT_DEPOSIT_AMOUNT,
-            signature: signature.as_slice().try_into().unwrap(),
-        };
-
-        let bytes = marshal_deposit_data(&[deposit_data], "goerli").unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-
-        let expected = serde_json::json!([
-            {
-                "pubkey": "80d0436ccacd2b263f5e9e7ebaa14015fe5c80d3e57dc7c37bcbda783895e3491019d3ed694ecbb49c8c80a0480c0392",
-                "withdrawal_credentials": "02000000000000000000000005f9f73f74c205f2b9267c04296e3069767531fb",
-                "amount": 32000000000u64,
-                "signature": "aed3c99949ab93622f2d1baaeb047d30cb33e744e1a8464eebe1a2a634f0f23529ce753c54035968e9f3f683bca02f6704c933ca9ff2b181897de4eb27b0b2568721fe625084d5cc9030be55ceb1bc573df61a8a67bad87d94187ee4d28fc36f",
-                "deposit_message_root": "0ed9775278db27ab7ef0efeea0861750d1f0e917deecfe68398321468201f2f8",
-                "deposit_data_root": "10e0a77c03f4420198571cf957ce3cd7cc85ae310664c77ff9556eba18ec8689",
-                "fork_version": "00001020",
-                "network_name": "goerli",
-                "deposit_cli_version": DEPOSIT_CLI_VERSION,
+        let expected_raw = include_str!("testdata/TestMarshalDepositData.golden");
+        let expected = expected_raw.strip_suffix('\n').unwrap_or(expected_raw);
+        if actual != expected {
+            let mut i = 0usize;
+            let mut a_it = actual.bytes();
+            let mut e_it = expected.bytes();
+            loop {
+                match (a_it.next(), e_it.next()) {
+                    (Some(a), Some(e)) if a == e => {
+                        i = i.saturating_add(1);
+                        continue;
+                    }
+                    (None, None) => break,
+                    _ => {
+                        let start = i.saturating_sub(20);
+                        let end = (i.saturating_add(20)).min(actual.len()).min(expected.len());
+                        let a_snip = actual.get(start..end).unwrap_or("");
+                        let e_snip = expected.get(start..end).unwrap_or("");
+                        return Err(format!(
+                            "marshal_deposit_data output didn't match golden file (first mismatch at byte {i}).\nactual:   {a_snip:?}\nexpected: {e_snip:?}"
+                        ));
+                    }
+                }
             }
-        ]);
 
-        assert_eq!(value, expected);
+            return Err("marshal_deposit_data output didn't match golden file".to_string());
+        }
+
+        Ok(())
     }
 
     #[test]
-    fn test_address_parsing_valid_checksum() {
+    fn test_address_parsing_valid_checksum() -> Result<(), String> {
         // Valid EIP-55 checksummed address should pass
         let addr = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
-        assert!(crate::helpers::checksum_address(addr).is_ok());
-        assert!(withdrawal_creds_from_addr(addr, false).is_ok());
+        crate::helpers::checksum_address(addr).map_err(|e| e.to_string())?;
+        withdrawal_creds_from_addr(addr, false).map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     #[test]
-    fn test_address_parsing_invalid_checksum_accepted() {
+    fn test_address_parsing_invalid_checksum_accepted() -> Result<(), String> {
         // Mixed case with WRONG checksum is ACCEPTED
         let addr_wrong = "0x5aAeb6053f3E94C9b9A09f33669435E7Ef1BeAed";
-        assert!(crate::helpers::checksum_address(addr_wrong).is_ok());
-        assert!(withdrawal_creds_from_addr(addr_wrong, false).is_ok());
+        crate::helpers::checksum_address(addr_wrong).map_err(|e| e.to_string())?;
+        withdrawal_creds_from_addr(addr_wrong, false).map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     #[test]
-    fn test_address_requires_prefix() {
+    fn test_address_requires_prefix() -> Result<(), String> {
         // Address without 0x prefix should fail
         let addr = "321dcb529f3945bc94fecea9d3bc5caf35253b94";
         assert!(withdrawal_creds_from_addr(addr, false).is_err());
 
         // With prefix should work
         let addr_with_prefix = "0x321dcb529f3945bc94fecea9d3bc5caf35253b94";
-        assert!(withdrawal_creds_from_addr(addr_with_prefix, false).is_ok());
+        withdrawal_creds_from_addr(addr_with_prefix, false).map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     #[test]
-    fn test_get_deposit_file_path() {
+    fn test_get_deposit_file_path() -> Result<(), String> {
         let dir = Path::new("/tmp/test");
 
         // Default amount (32 ETH) should use old filename
@@ -631,19 +757,16 @@ mod tests {
 
         // 31.999999999 ETH (DEFAULT - 1 Gwei)
         let path = get_deposit_file_path(dir, DEFAULT_DEPOSIT_AMOUNT - 1);
-        assert!(
-            path.to_str()
-                .unwrap()
-                .contains("deposit-data-31.999999999eth.json")
-        );
+        assert_eq!(path, dir.join("deposit-data-31.999999999eth.json"));
 
         // 16 ETH
         let path = get_deposit_file_path(dir, 16 * ONE_ETH_IN_GWEI);
         assert_eq!(path, dir.join("deposit-data-16eth.json"));
+        Ok(())
     }
 
     #[test]
-    fn test_merge_deposit_data_sets_empty() {
+    fn test_merge_deposit_data_sets_empty() -> Result<(), String> {
         let a: Vec<Vec<DepositData>> = vec![];
         let b = vec![vec![DepositData {
             pub_key: [1u8; 48],
@@ -657,35 +780,301 @@ mod tests {
 
         let merged = merge_deposit_data_sets(b, a);
         assert_eq!(merged.len(), 1);
+        Ok(())
     }
 
     #[test]
-    fn test_merge_deposit_data_sets() {
-        let dd1 = DepositData {
-            pub_key: [1u8; 48],
-            withdrawal_credentials: [0u8; 32],
-            amount: DEFAULT_DEPOSIT_AMOUNT,
-            signature: [0u8; 96],
-        };
+    fn test_merge_deposit_data_sets() -> Result<(), String> {
+        let deposit_datas1 = generate_deposit_datas(DEFAULT_DEPOSIT_AMOUNT)?;
+        let half = DEFAULT_DEPOSIT_AMOUNT
+            .checked_div(2)
+            .ok_or_else(|| "overflow".to_string())?;
+        let deposit_datas2 = generate_deposit_datas(half)?;
 
-        let dd2 = DepositData {
-            pub_key: [2u8; 48],
-            withdrawal_credentials: [0u8; 32],
-            amount: DEFAULT_DEPOSIT_AMOUNT / 2,
-            signature: [0u8; 96],
-        };
+        let set1 = vec![deposit_datas1[0..2].to_vec(), deposit_datas2[0..2].to_vec()];
+        let set2 = vec![deposit_datas1[2..4].to_vec(), deposit_datas2[2..4].to_vec()];
 
-        let a = vec![vec![dd1.clone()], vec![dd2.clone()]];
-        let b = vec![vec![dd1.clone()], vec![dd2.clone()]];
+        let mut merged = merge_deposit_data_sets(set1, set2);
 
-        let merged = merge_deposit_data_sets(a, b);
-
-        // Should have 2 distinct amounts
+        // Two distinct amounts.
         assert_eq!(merged.len(), 2);
 
-        // Each amount should have 2 entries (from a and b)
-        for deposit_set in merged {
-            assert_eq!(deposit_set.len(), 2);
+        // Deterministic validation regardless of hashmap order.
+        merged.sort_by_key(|s| s.first().map(|d| d.amount).unwrap_or(0));
+
+        for dd in &merged {
+            assert_eq!(dd.len(), 4);
+            let a0 = dd[0].amount;
+            assert_eq!(a0, dd[1].amount);
+            assert_eq!(a0, dd[2].amount);
+            assert_eq!(a0, dd[3].amount);
         }
+
+        assert_ne!(merged[0][0].amount, merged[1][0].amount);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_write_deposit_data_file() -> Result<(), String> {
+        let dir = tempdir().map_err(|e| e.to_string())?;
+        let datas = generate_deposit_datas(DEFAULT_DEPOSIT_AMOUNT)?;
+
+        write_deposit_data_file(&datas, "goerli", dir.path())
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let expected = marshal_deposit_data(&datas, "goerli").map_err(|e| e.to_string())?;
+        let file_path = get_deposit_file_path(dir.path(), DEFAULT_DEPOSIT_AMOUNT);
+        let actual = tokio::fs::read(&file_path)
+            .await
+            .map_err(|e| e.to_string())?;
+        assert_eq!(expected, actual);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = tokio::fs::metadata(&file_path)
+                .await
+                .map_err(|e| e.to_string())?
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o444);
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_write_deposit_data_file_errors() -> Result<(), String> {
+        let dir = tempdir().map_err(|e| e.to_string())?;
+
+        // empty deposit datas
+        let err = write_deposit_data_file(&[], "goerli", dir.path())
+            .await
+            .err()
+            .ok_or_else(|| "expected error".to_string())?;
+        match err {
+            DepositError::EmptyDepositData => {}
+            other => return Err(format!("expected EmptyDepositData, got {other:?}")),
+        }
+
+        // not equal amounts
+        let mut datas = generate_deposit_datas(DEFAULT_DEPOSIT_AMOUNT)?;
+        let half = datas[1]
+            .amount
+            .checked_div(2)
+            .ok_or_else(|| "overflow".to_string())?;
+        datas[1].amount = half;
+        let err = write_deposit_data_file(&datas, "goerli", dir.path())
+            .await
+            .err()
+            .ok_or_else(|| "expected error".to_string())?;
+        match err {
+            DepositError::UnequalAmounts(_) => {}
+            other => return Err(format!("expected UnequalAmounts, got {other:?}")),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_read_deposit_data_files_errors() -> Result<(), String> {
+        // no files found
+        let dir = tempdir().map_err(|e| e.to_string())?;
+        let err = read_deposit_data_files(dir.path())
+            .err()
+            .ok_or_else(|| "expected error".to_string())?;
+        match err {
+            DepositError::NoFilesFound(_) => {}
+            other => return Err(format!("expected NoFilesFound, got {other:?}")),
+        }
+
+        // invalid json in file
+        let file = dir.path().join("deposit-data.json");
+        std::fs::write(&file, b"{invalid json").map_err(|e| e.to_string())?;
+        let err = read_deposit_data_files(dir.path())
+            .err()
+            .ok_or_else(|| "expected error".to_string())?;
+        match err {
+            DepositError::SerializationError(_) => {}
+            other => return Err(format!("expected SerializationError, got {other:?}")),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_read_deposit_data_files_decode_and_length_errors() -> Result<(), String> {
+        // Use a fresh dir per case (files are made read-only).
+        fn mk_dir() -> Result<tempfile::TempDir, String> {
+            tempdir().map_err(|e| e.to_string())
+        }
+
+        // helper: write a valid deposit file, then rewrite it with a modified JSON
+        // payload
+        fn rewrite_file(path: &Path, bytes: Vec<u8>) -> Result<(), String> {
+            if path.exists() {
+                std::fs::remove_file(path).map_err(|e| e.to_string())?;
+            }
+            std::fs::write(path, bytes).map_err(|e| e.to_string())?;
+            Ok(())
+        }
+
+        // invalid pubkey hex
+        {
+            let dir = mk_dir()?;
+            let datas = generate_deposit_datas(DEFAULT_DEPOSIT_AMOUNT)?;
+            let bytes = marshal_deposit_data(&datas, "goerli").map_err(|e| e.to_string())?;
+            let file = get_deposit_file_path(dir.path(), DEFAULT_DEPOSIT_AMOUNT);
+            std::fs::write(&file, &bytes).map_err(|e| e.to_string())?;
+
+            let mut v: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            v[0]["pubkey"] = serde_json::Value::String("zzzz".to_string());
+            let corrupt = serde_json::to_vec(&v).map_err(|e| e.to_string())?;
+            rewrite_file(&file, corrupt)?;
+
+            let err = read_deposit_data_files(dir.path())
+                .err()
+                .ok_or_else(|| "expected error".to_string())?;
+            match err {
+                DepositError::HexError(_) => {}
+                other => return Err(format!("expected HexError, got {other:?}")),
+            }
+        }
+
+        // invalid pubkey length
+        {
+            let dir = mk_dir()?;
+            let datas = generate_deposit_datas(DEFAULT_DEPOSIT_AMOUNT)?;
+            let bytes = marshal_deposit_data(&datas, "goerli").map_err(|e| e.to_string())?;
+            let file = get_deposit_file_path(dir.path(), DEFAULT_DEPOSIT_AMOUNT);
+            std::fs::write(&file, &bytes).map_err(|e| e.to_string())?;
+
+            let mut v: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            v[0]["pubkey"] = serde_json::Value::String("abcd".to_string()); // too short
+            let corrupt = serde_json::to_vec(&v).map_err(|e| e.to_string())?;
+            rewrite_file(&file, corrupt)?;
+
+            let err = read_deposit_data_files(dir.path())
+                .err()
+                .ok_or_else(|| "expected error".to_string())?;
+            match err {
+                DepositError::InvalidDataLength { .. } => {}
+                other => return Err(format!("expected InvalidDataLength, got {other:?}")),
+            }
+        }
+
+        // invalid withdrawal credentials hex
+        {
+            let dir = mk_dir()?;
+            let datas = generate_deposit_datas(DEFAULT_DEPOSIT_AMOUNT)?;
+            let bytes = marshal_deposit_data(&datas, "goerli").map_err(|e| e.to_string())?;
+            let file = get_deposit_file_path(dir.path(), DEFAULT_DEPOSIT_AMOUNT);
+            std::fs::write(&file, &bytes).map_err(|e| e.to_string())?;
+
+            let mut v: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            v[0]["withdrawal_credentials"] = serde_json::Value::String("badhex".to_string());
+            let corrupt = serde_json::to_vec(&v).map_err(|e| e.to_string())?;
+            rewrite_file(&file, corrupt)?;
+
+            let err = read_deposit_data_files(dir.path())
+                .err()
+                .ok_or_else(|| "expected error".to_string())?;
+            match err {
+                DepositError::HexError(_) => {}
+                other => return Err(format!("expected HexError, got {other:?}")),
+            }
+        }
+
+        // invalid signature hex
+        {
+            let dir = mk_dir()?;
+            let datas = generate_deposit_datas(DEFAULT_DEPOSIT_AMOUNT)?;
+            let bytes = marshal_deposit_data(&datas, "goerli").map_err(|e| e.to_string())?;
+            let file = get_deposit_file_path(dir.path(), DEFAULT_DEPOSIT_AMOUNT);
+            std::fs::write(&file, &bytes).map_err(|e| e.to_string())?;
+
+            let mut v: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            v[0]["signature"] = serde_json::Value::String("badhex".to_string());
+            let corrupt = serde_json::to_vec(&v).map_err(|e| e.to_string())?;
+            rewrite_file(&file, corrupt)?;
+
+            let err = read_deposit_data_files(dir.path())
+                .err()
+                .ok_or_else(|| "expected error".to_string())?;
+            match err {
+                DepositError::HexError(_) => {}
+                other => return Err(format!("expected HexError, got {other:?}")),
+            }
+        }
+
+        // invalid signature length
+        {
+            let dir = mk_dir()?;
+            let datas = generate_deposit_datas(DEFAULT_DEPOSIT_AMOUNT)?;
+            let bytes = marshal_deposit_data(&datas, "goerli").map_err(|e| e.to_string())?;
+            let file = get_deposit_file_path(dir.path(), DEFAULT_DEPOSIT_AMOUNT);
+            std::fs::write(&file, &bytes).map_err(|e| e.to_string())?;
+
+            let mut v: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            v[0]["signature"] = serde_json::Value::String("abcd".to_string()); // too short
+            let corrupt = serde_json::to_vec(&v).map_err(|e| e.to_string())?;
+            rewrite_file(&file, corrupt)?;
+
+            let err = read_deposit_data_files(dir.path())
+                .err()
+                .ok_or_else(|| "expected error".to_string())?;
+            match err {
+                DepositError::InvalidDataLength { .. } => {}
+                other => return Err(format!("expected InvalidDataLength, got {other:?}")),
+            }
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_write_cluster_deposit_data_files() -> Result<(), String> {
+        const NUM_NODES: usize = 4;
+        let dir = tempdir().map_err(|e| e.to_string())?;
+
+        for n in 0..NUM_NODES {
+            std::fs::create_dir_all(dir.path().join(format!("node{n}")))
+                .map_err(|e| e.to_string())?;
+        }
+
+        let half = DEFAULT_DEPOSIT_AMOUNT
+            .checked_div(2)
+            .ok_or_else(|| "overflow".to_string())?;
+        let quarter = DEFAULT_DEPOSIT_AMOUNT
+            .checked_div(4)
+            .ok_or_else(|| "overflow".to_string())?;
+        let datas1 = generate_deposit_datas(half)?;
+        let datas2 = generate_deposit_datas(quarter)?;
+        let deposit_sets: Vec<&[DepositData]> = vec![&datas1, &datas2];
+
+        write_cluster_deposit_data_files(&deposit_sets, "goerli", dir.path(), NUM_NODES)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        for set in [&datas1, &datas2] {
+            let expected = marshal_deposit_data(set, "goerli").map_err(|e| e.to_string())?;
+            for n in 0..NUM_NODES {
+                let node_dir = dir.path().join(format!("node{n}"));
+                let file_path = get_deposit_file_path(&node_dir, set[0].amount);
+                let actual = tokio::fs::read(&file_path)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                assert_eq!(expected, actual);
+            }
+        }
+
+        Ok(())
     }
 }
