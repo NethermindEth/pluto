@@ -1,0 +1,49 @@
+name: Build and test code
+
+on:
+  push:
+    branches: ["main"] # Runs on pushes to main branch
+  pull_request:
+    # Runs on pull_request events with these activity types:
+    # - opened: triggered when a new pull request is created.
+    # - reopened: triggered when a previously closed pull request is reopened.
+    # - synchronize: triggered when commits are pushed to the pull request branch (includes new commits and force-pushes).
+    # - ready_for_review: triggered when a draft pull request is marked as ready for review.
+    #
+    # In short: the workflow executes for new PRs, PRs reopened, PRs that receive updated commits,
+    # and when a draft PR becomes ready for review.
+    types: [synchronize, opened, reopened, ready_for_review]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: "-Dwarnings -C debuginfo=0"
+
+jobs:
+  test:
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install `protobuf`
+        uses: awalsh128/cache-apt-pkgs-action@v1.6.0
+        with:
+          packages: protobuf-compiler
+          version: 3.21.12-8.2ubuntu0.2
+
+      - name: Install `oas3-gen`
+        run: cargo install oas3-gen@0.24.0
+
+      - name: Build (all features)
+        run: cargo test --locked --workspace --all-features --no-run
+
+      - name: Run tests (all features)
+        run: cargo test --locked --workspace --all-features

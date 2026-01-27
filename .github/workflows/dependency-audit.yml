@@ -3,39 +3,31 @@ name: Dependency security audit
 on:
   push:
     paths:
-      - '**/Cargo.toml'
-      - '**/Cargo.lock'
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "deny.toml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  RUSTFLAGS: "-Dwarnings -C debuginfo=0"
 
 jobs:
   security_audit:
-    timeout-minutes: 10
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      checks: write
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04
     steps:
-      - name: Check out
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Cache audit-check build
-        id: cache-audit-check
-        uses: actions/cache@v4
-        continue-on-error: false
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
 
-      - name: Run audit-check action
-        run: |
-          which cargo-deny || cargo install cargo-deny
-          cargo deny check
+      - name: Install `cargo-deny`
+        run: cargo install cargo-deny@0.19.0
+
+      - name: Run `cargo-deny` audit
+        run: cargo deny check

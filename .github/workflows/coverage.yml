@@ -1,34 +1,88 @@
-name: Coverage (Push)
+name: Update code coverage
+
+permissions:
+  contents: write
+  actions: write
 
 on:
   push:
-    branches: ['**']  # all branches, including main
+    branches: ["main"]
 
-permissions:
-  contents: read
-  actions: write
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: "-Dwarnings -C debuginfo=0"
 
 jobs:
-  coverage-push:
-    runs-on: ubuntu-latest
+  compute:
+    timeout-minutes: 20
+    outputs:
+      percentage: ${{ steps.cov.outputs.percentage }}
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install protobuf compiler
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install `protobuf`
+        uses: awalsh128/cache-apt-pkgs-action@v1.6.0
+        with:
+          packages: protobuf-compiler
+          version: 3.21.12-8.2ubuntu0.2
 
       - name: Install `oas3-gen`
-        run: cargo install oas3-gen
+        run: cargo install oas3-gen@0.24.0
 
-      - run: cargo install cargo-llvm-cov
-      - run: rustup component add llvm-tools-preview
-      - run: cargo llvm-cov --workspace --lcov --output-path lcov.info --ignore-filename-regex '^examples/'
+      - name: Install `llvm-tools-preview`
+        run: rustup component add llvm-tools-preview
 
-      - name: Upload branch coverage artifact
-        uses: actions/upload-artifact@v4
+      - name: Install `cargo-llvm-cov`
+        run: cargo install cargo-llvm-cov@0.6.24
+
+      - name: Generate coverage report
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info --ignore-filename-regex '^examples/'
+
+      - name: Extract total coverage % (head)
+        id: cov
+        shell: bash
+        run: |
+          pct=$(awk -F: '
+            /^LH:/ {lh += $2}
+            /^LF:/ {lf += $2}
+            END { if (lf>0) printf "%.2f", (lh/lf)*100; else print "0.00" }
+          ' lcov.info)
+          echo "percentage=$pct" >> "$GITHUB_OUTPUT"
+
+  wiki:
+    timeout-minutes: 5
+    needs: compute
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout the wiki repository
+        uses: actions/checkout@v2
         with:
-          name: coverage-lcov
-          path: lcov.info
-          retention-days: 21
+          repository: "${{ github.repository }}.wiki"
+          ref: master
+          path: .wiki
+
+      - name: Generate the Coverage Badge
+        working-directory: .wiki
+        run: curl -sSL 'https://img.shields.io/badge/coverage-${{ needs.compute.outputs.percentage }}%25-blue' -o coverage.svg
+
+      - name: Configure the GitHub wiki identity
+        working-directory: .wiki
+        run: |
+          git config user.name  "[bot] ${GITHUB_ACTOR}"
+          git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+
+      - name: Update the wiki page
+        working-directory: .wiki
+        run: |
+          git add .
+          git commit --allow-empty -m "Update coverage badge (${GITHUB_WORKFLOW})"
+          git push origin master

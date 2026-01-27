@@ -27,6 +27,7 @@
       devShells.default = pkgs.mkShell {
         buildInputs = with pkgs; [
           cargo-deny
+          cargo-llvm-cov
           protobuf
           oas3-gen
         ];

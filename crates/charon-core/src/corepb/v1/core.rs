@@ -29,7 +29,10 @@ pub struct UnsignedDataSet {
 pub struct ParSignedDataSet {
     /// map\[core.PubKey\]core.ParSignedData
     #[prost(btree_map = "string, message", tag = "1")]
-    pub set: ::prost::alloc::collections::BTreeMap<::prost::alloc::string::String, ParSignedData>,
+    pub set: ::prost::alloc::collections::BTreeMap<
+        ::prost::alloc::string::String,
+        ParSignedData,
+    >,
 }
 /// core.ParSignedData
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
