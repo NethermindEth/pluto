@@ -4,6 +4,7 @@ use super::{TestCategoryResult, TestConfigArgs};
 use crate::error::Result;
 use clap::Args;
 use std::io::Write;
+use std::time::Duration;
 
 /// Arguments for the validator test command.
 #[derive(Args, Clone, Debug)]
@@ -19,13 +20,14 @@ pub struct TestValidatorArgs {
     )]
     pub api_address: String,
 
-    /// Time to keep running the load tests in seconds.
+    /// Time to keep running the load tests.
     #[arg(
         long = "load-test-duration",
         default_value = "5s",
-        help = "Time to keep running the load tests in seconds. For each second a new continuous ping instance is spawned."
+        value_parser = humantime::parse_duration,
+        help = "Time to keep running the load tests. For each second a new continuous ping instance is spawned."
     )]
-    pub load_test_duration: String,
+    pub load_test_duration: Duration,
 }
 
 /// Runs the validator client tests.

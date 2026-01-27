@@ -23,8 +23,9 @@ serde.workspace = true
 serde_json.workspace = true
 serde_with = { workspace = true, features = ["base64"] }
 rand.workspace = true
-tree_hash.workspace = true
+tempfile.workspace = true
 charon-core.workspace = true
+charon-cluster.workspace = true
 charon-p2p.workspace = true
 charon-eth2.workspace = true
 charon-k1util.workspace = true
@@ -32,6 +33,8 @@ charon.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+tree_hash.workspace = true
+tree_hash_derive.workspace = true
 
 [lints]
 workspace = true

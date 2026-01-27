@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{fmt, time::Duration as StdDuration};
 
 /// Custom Duration wrapper with JSON serialization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Duration {
     inner: StdDuration,
 }
@@ -55,7 +55,10 @@ impl fmt::Display for Duration {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Format duration as Go does: "1.234s", "123ms", "1.234µs", etc.
         let duration = self.inner;
-        if duration >= StdDuration::from_secs(1) {
+        if duration.is_zero() {
+            // Go's `time.Duration(0).String()` is "0s".
+            write!(f, "0s")
+        } else if duration >= StdDuration::from_secs(1) {
             write!(f, "{:.3}s", duration.as_secs_f64())
         } else if duration >= StdDuration::from_millis(1) {
             write!(f, "{}ms", duration.as_millis())

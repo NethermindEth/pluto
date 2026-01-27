@@ -1681,6 +1681,7 @@ name = "charon-cli"
 version = "1.7.1"
 dependencies = [
  "charon",
+ "charon-cluster",
  "charon-core",
  "charon-eth2",
  "charon-k1util",
@@ -1699,6 +1700,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tree_hash",
+ "tree_hash_derive",
 ]
 
 [[package]]
@@ -7705,6 +7707,18 @@ dependencies = [
  "ethereum_ssz",
  "smallvec",
  "typenum",
+]
+
+[[package]]
+name = "tree_hash_derive"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8840ad4d852e325d3afa7fde8a50b2412f89dce47d7eb291c0cc7f87cd040f38"
+dependencies = [
+ "darling 0.23.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.114",
 ]
 
 [[package]]

@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fmt,
-    fs::File,
+    fs::OpenOptions,
     io::Write,
     path::{Path, PathBuf},
     time::Duration as StdDuration,
@@ -32,14 +32,15 @@ use crate::{
 };
 
 use charon::obolapi::{Client, ClientOptions};
+use charon_cluster::ssz_hasher::{HashWalker, Hasher};
 use charon_eth2::enr::Record;
 use charon_k1util::{load, sign};
 use k256::SecretKey;
 use serde_with::{base64::Base64, serde_as};
-use tree_hash::MerkleHasher;
 
 /// Test category identifiers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum TestCategory {
     Peers,
     Beacon,
@@ -126,7 +127,6 @@ pub struct TestConfigArgs {
 /// Lists available test case names for a given test category.
 pub fn list_test_cases(category: TestCategory) -> Vec<String> {
     // Returns available test case names for each category.
-    // These match the test cases defined in supportedXTestCases() in the Go implementation.
     match category {
         TestCategory::Validator => {
             // From validator::supported_validator_test_cases()
@@ -323,8 +323,8 @@ impl TestCaseName {
 /// Result of a test category.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestCategoryResult {
-    #[serde(rename = "category_name", skip_serializing_if = "String::is_empty", default)]
-    pub category_name: String,
+    #[serde(rename = "category_name", skip_serializing_if = "Option::is_none", default)]
+    pub category_name: Option<TestCategory>,
 
     #[serde(rename = "targets", skip_serializing_if = "HashMap::is_empty", default)]
     pub targets: HashMap<String, Vec<TestResult>>,
@@ -338,9 +338,9 @@ pub struct TestCategoryResult {
 
 impl TestCategoryResult {
     /// Creates a new test category result with the given name.
-    pub fn new(category_name: impl Into<String>) -> Self {
+    pub fn new(category_name: TestCategory) -> Self {
         Self {
-            category_name: category_name.into(),
+            category_name: Some(category_name),
             targets: HashMap::new(),
             execution_time: None,
             score: None,
@@ -410,65 +410,69 @@ pub async fn publish_result_to_obol_api(
 
 /// Writes test results to a JSON file.
 pub fn write_result_to_file(result: &TestCategoryResult, path: &Path) -> CliResult<()> {
-    // Read existing content first (before any truncation)
-    let mut all_results: AllCategoriesResult = match std::fs::read(path) {
-        Ok(content) if !content.is_empty() => {
-            serde_json::from_slice(&content).map_err(|e| CliError::Json {
-                source: e,
-                context: format!("failed to parse existing JSON file: {}", path.display()),
-            })?
-        }
-        Ok(_) => AllCategoriesResult::default(), // Empty file
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => AllCategoriesResult::default(),
-        Err(e) => {
-            return Err(CliError::Io {
-                source: e,
-                context: format!("failed to read file: {}", path.display()),
-            });
-        }
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+
+    let mut existing_file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .mode(0o644)
+        .open(path)?;
+
+    let stat = existing_file.metadata()?;
+
+    let mut all_results: AllCategoriesResult = if stat.len() == 0 {
+        AllCategoriesResult::default()
+    } else {
+        serde_json::from_reader(&mut existing_file)?
     };
 
-    match result.category_name.as_str() {
-        name if name == TestCategory::Peers.as_str() => all_results.peers = Some(result.clone()),
-        name if name == TestCategory::Beacon.as_str() => all_results.beacon = Some(result.clone()),
-        name if name == TestCategory::Validator.as_str() => {
-            all_results.validator = Some(result.clone())
-        }
-        name if name == TestCategory::Mev.as_str() => all_results.mev = Some(result.clone()),
-        name if name == TestCategory::Infra.as_str() => all_results.infra = Some(result.clone()),
-        _ => {
-            return Err(CliError::Other(format!(
-                "unknown category: {}",
-                result.category_name
-            )));
+    let category = result
+        .category_name
+        .ok_or_else(|| CliError::Other("unknown category: (missing)".to_string()))?;
+
+    match category {
+        TestCategory::Peers => all_results.peers = Some(result.clone()),
+        TestCategory::Beacon => all_results.beacon = Some(result.clone()),
+        TestCategory::Validator => all_results.validator = Some(result.clone()),
+        TestCategory::Mev => all_results.mev = Some(result.clone()),
+        TestCategory::Infra => all_results.infra = Some(result.clone()),
+        TestCategory::All => {
+            return Err(CliError::Other("unknown category: all".to_string()));
         }
     }
 
-    let temp_path = path.with_extension("json.tmp");
-    let mut temp_file = File::create(&temp_path).map_err(|e| CliError::Io {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let base = path
+        .file_name()
+        .ok_or_else(|| CliError::Other(format!("no filename in path: {}", path.display())))?
+        .to_string_lossy()
+        .to_string();
+
+    // Match Go's `os.CreateTemp(dir, fmt.Sprintf("%v-tmp-*.json", base))`.
+    let mut tmp = tempfile::Builder::new()
+        .prefix(&format!("{base}-tmp-"))
+        .suffix(".json")
+        .tempfile_in(dir)
+        .map_err(|e| CliError::Io {
+            source: e,
+            context: "create temp file".to_string(),
+        })?;
+
+    tmp.as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o644))?;
+
+    let file_content_json = serde_json::to_vec(&all_results).map_err(|e| CliError::Json {
         source: e,
-        context: format!("failed to create temp file: {}", temp_path.display()),
+        context: "marshal fileResult to JSON".to_string(),
     })?;
 
-    serde_json::to_writer_pretty(&mut temp_file, &all_results).map_err(|e| CliError::Json {
-        source: e,
-        context: "failed to write JSON to temp file".to_string(),
-    })?;
+    tmp.as_file_mut()
+        .write_all(&file_content_json)?;
 
-    temp_file.sync_all().map_err(|e| CliError::Io {
-        source: e,
-        context: "failed to sync temp file".to_string(),
-    })?;
-
-    drop(temp_file);
-
-    std::fs::rename(&temp_path, path).map_err(|e| CliError::Io {
-        source: e,
-        context: format!(
-            "failed to rename {} to {}",
-            temp_path.display(),
-            path.display()
-        ),
+    tmp.persist(path).map_err(|e| CliError::Io {
+        source: e.error,
+        context: "rename temp file".to_string(),
     })?;
 
     Ok(())
@@ -482,12 +486,15 @@ pub fn write_result_to_writer<W: Write + ?Sized>(
     let mut lines = Vec::new();
 
     // Add category ASCII art
-    let category_ascii = get_category_ascii(&result.category_name);
-    for line in category_ascii {
-        lines.push(line.to_string());
-    }
+    let category_ascii = get_category_ascii(
+        result
+            .category_name
+            .as_ref()
+            .map(|c| c.as_str())
+            .unwrap_or(""),
+    );
+    lines.extend(category_ascii.iter().map(|line| line.to_string()));
 
-    // Append score ASCII if present
     if let Some(score) = result.score {
         let score_ascii = get_score_ascii(score);
         lines = append_score(lines, score_ascii);
@@ -512,18 +519,18 @@ pub fn write_result_to_writer<W: Write + ?Sized>(
         for test_result in test_results {
             let mut test_output = format!("{:<64}", test_result.name);
 
-            // Add measurement if present
-            if !test_result.measurement.is_empty() {
-                // Trim trailing spaces equal to measurement length + 1
-                if let Some(trim_len) = test_result.measurement.len().checked_add(1) {
-                    let current_len = test_output.len();
-                    if let Some(new_len) = current_len.checked_sub(trim_len) {
-                        test_output.truncate(new_len);
-                    }
-                }
-                test_output.push_str(&test_result.measurement);
-                test_output.push(' ');
-            }
+  if !test_result.measurement.is_empty() {
+      let trim_count = test_result.measurement.chars().count() + 1;
+      let spaces_to_trim = " ".repeat(trim_count);
+
+      if test_output.ends_with(&spaces_to_trim) {
+          let new_len = test_output.len() - spaces_to_trim.len();
+          test_output.truncate(new_len);
+      }
+
+      test_output.push_str(&test_result.measurement);
+      test_output.push(' ');
+  }
 
             // Add verdict
             test_output.push_str(&test_result.verdict.to_string());
@@ -535,8 +542,7 @@ pub fn write_result_to_writer<W: Write + ?Sized>(
 
             // Add error if present
             if let Some(err_msg) = test_result.error.message() {
-                test_output.push_str(" - ");
-                test_output.push_str(err_msg);
+                test_output.push_str(&format!(" - {}", err_msg));
             }
 
             lines.push(test_output);
@@ -552,9 +558,12 @@ pub fn write_result_to_writer<W: Write + ?Sized>(
 
     // Add execution time
     lines.push(String::new());
-    if let Some(exec_time) = result.execution_time {
-        lines.push(exec_time.to_string());
-    }
+    lines.push(
+        result
+            .execution_time
+            .unwrap_or_default()
+            .to_string(),
+    );
 
     // Write all lines
     lines.push(String::new());
@@ -597,8 +606,8 @@ pub fn evaluate_rtt(
 
 /// Calculates the overall score for a list of test results.
 pub fn calculate_score(results: &[TestResult]) -> CategoryScore {
-    // TODO: More elaborate calculation with weights
-    let mut avg = 0i32;
+	// TODO: calculate score more elaborately (potentially use weights)
+    let mut avg: i32 = 0;
 
     for test in results {
         match test.verdict {
@@ -619,25 +628,22 @@ pub fn calculate_score(results: &[TestResult]) -> CategoryScore {
 }
 
 /// Filters tests based on configuration.
-/// Generic over the HashMap value type to support different test function types.
 pub fn filter_tests<V>(
-    supported: &HashMap<TestCaseName, V>,
+    supported_test_cases: &HashMap<TestCaseName, V>,
     test_cases: Option<&[String]>,
 ) -> Vec<TestCaseName> {
-    match test_cases {
-        None => supported.keys().cloned().collect(),
-        Some(cases) => {
-            let mut filtered = Vec::new();
-            for case in cases {
-                for supported_case in supported.keys() {
-                    if &supported_case.name == case {
-                        filtered.push(supported_case.clone());
-                    }
-                }
-            }
-            filtered
-        }
-    }
+    let Some(cases) = test_cases else {
+        return supported_test_cases.keys().cloned().collect();
+    };
+    cases
+        .iter()
+        .flat_map(|case| {
+            supported_test_cases
+                .keys()
+                .filter(move |supported_case| supported_case.name.as_str() == case.as_str())
+                .cloned()
+        })
+        .collect()
 }
 
 /// Sorts tests by their order field.
@@ -645,55 +651,14 @@ pub fn sort_tests(tests: &mut [TestCaseName]) {
     tests.sort_by_key(|t| t.order);
 }
 
-/// Validates that requested test cases are supported and provides helpful error messages.
-///
-/// Used after `filter_tests()` to detect if any requested tests were not found.
-///
-/// # Arguments
-/// * `requested` - Test cases requested by user
-/// * `filtered` - Test cases that were successfully matched
-/// * `category` - The test category for error messages
-///
-/// # Returns
-/// Ok(()) if all requested tests were found, Err with helpful message if not
-pub fn validate_test_cases(
-    requested: &[String],
-    filtered: &[TestCaseName],
-    category: TestCategory,
-) -> std::result::Result<(), String> {
-    if filtered.len() < requested.len() {
-        // Some tests were not found
-        let found: Vec<String> = filtered.iter().map(|tc| tc.name.clone()).collect();
-        let mut missing = Vec::new();
-
-        for req in requested {
-            if !found.contains(req) {
-                missing.push(req.clone());
-            }
-        }
-
-        let available = list_test_cases(category);
-        let available_str = if available.is_empty() {
-            "(test list not yet implemented for this category)".to_string()
-        } else {
-            available.join(", ")
-        };
-
-        return Err(format!(
-            "Unknown test case(s): {}. Available tests for '{}': {}",
-            missing.join(", "),
-            category,
-            available_str
-        ));
-    }
-
-    Ok(())
-}
-
 fn load_or_generate_key(path: &Path) -> CliResult<SecretKey> {
     if path.exists() {
         Ok(load(path)?)
     } else {
+        tracing::warn!(
+            private_key_file = %path.display(),
+            "Private key file does not exist, will generate a temporary key"
+        );
         use k256::elliptic_curve::rand_core::OsRng;
         Ok(SecretKey::random(&mut OsRng))
     }
@@ -703,21 +668,38 @@ fn create_enr(secret_key: &SecretKey) -> CliResult<Record> {
     Ok(Record::new(secret_key.clone(), vec![])?)
 }
 
+/// Hashes data using SSZ merkleization.
+/// - Empty data: Returns zero bytes (all 0x00)
+/// - Data 1-32 bytes: Returns data padded to 32 bytes
+/// - Data > 32 bytes: Chunks into 32-byte pieces, builds merkle tree with SHA256
 fn hash_ssz(data: &[u8]) -> CliResult<[u8; 32]> {
-    let mut hasher = MerkleHasher::with_leaves(0);
-    hasher
-        .write(data)
-        .map_err(|e| CliError::Other(format!("tree hash write: {:?}", e)))?;
+    if data.is_empty() {
+        return Ok([0u8; 32]);
+    }
 
-    Ok(hasher
-        .finish()
-        .map_err(|e| CliError::Other(format!("tree hash finish: {:?}", e)))?
-        .0)
+    let mut hasher: Hasher = Hasher::default();
+    let index = hasher.index();
+
+    hasher
+        .put_bytes(data)
+        .map_err(|e: charon_cluster::ssz_hasher::HasherError| {
+            CliError::Other(format!("put bytes: {}", e))
+        })?;
+
+    hasher
+        .merkleize(index)
+        .map_err(|e: charon_cluster::ssz_hasher::HasherError| {
+            CliError::Other(format!("merkleize: {}", e))
+        })?;
+
+    hasher.hash_root()
+        .map_err(|e| CliError::Other(format!("hash root: {}", e)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn test_calculate_score() {
         let mut results = vec![
@@ -755,7 +737,7 @@ mod tests {
 
     #[test]
     fn test_write_result_to_writer_smoke() {
-        let mut result = TestCategoryResult::new("peers");
+        let mut result = TestCategoryResult::new(TestCategory::Peers);
         result.score = Some(CategoryScore::A);
         result.execution_time = Some(Duration::new(StdDuration::from_secs(10)));
 
@@ -779,48 +761,54 @@ mod tests {
         assert!(must_output_to_file_on_quiet(true, "").is_err());
     }
 
-    #[test]
-    fn test_list_test_cases() {
-        // Validator test cases are implemented
-        assert_eq!(
-            list_test_cases(TestCategory::Validator),
-            vec!["Ping", "PingMeasure", "PingLoad"]
-        );
 
-        // Other categories not yet implemented
-        assert_eq!(list_test_cases(TestCategory::Beacon), Vec::<String>::new());
-        assert_eq!(
-            list_test_cases(TestCategory::Mev),
-            vec!["Ping", "PingMeasure", "CreateBlock"]
-        );
-        assert_eq!(list_test_cases(TestCategory::Peers), Vec::<String>::new());
-        assert_eq!(list_test_cases(TestCategory::Infra), Vec::<String>::new());
-        assert_eq!(list_test_cases(TestCategory::All), Vec::<String>::new());
+    // Ground truth from Go fastssz (with Duration as string format matching Rust)
+    const GO_HASH_EMPTY: &str =
+        "7b7d000000000000000000000000000000000000000000000000000000000000";
+    const GO_HASH_SINGLE_CATEGORY: &str =
+        "bf90f36739059294e479cc3c35f5ca8762af9313fe72603b3f40ef38e3418801";
+
+    fn assert_hash(data: &AllCategoriesResult, expected_go_hash: &str) {
+        let json_bytes = serde_json::to_vec(data).expect("Failed to serialize to JSON");
+        let rust_hash = hash_ssz(&json_bytes).expect("hash_ssz failed");
+        assert_eq!(hex::encode(rust_hash), expected_go_hash);
     }
 
     #[test]
-    fn test_validate_test_cases() {
-        // Valid: all requested tests found
-        let requested = vec!["test1".to_string(), "test2".to_string()];
-        let filtered = vec![TestCaseName::new("test1", 1), TestCaseName::new("test2", 2)];
-        assert!(validate_test_cases(&requested, &filtered, TestCategory::Validator).is_ok());
+    fn test_hash_ssz_empty_all_categories_result() {
+        assert_hash(&AllCategoriesResult::default(), GO_HASH_EMPTY);
+    }
 
-        // Invalid: some tests not found
-        let requested = vec!["test1".to_string(), "invalid".to_string()];
-        let filtered = vec![TestCaseName::new("test1", 1)];
-        let result = validate_test_cases(&requested, &filtered, TestCategory::Validator);
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("Unknown test case(s): invalid"));
+    #[test]
+    fn test_hash_ssz_single_category_one_test() {
+        let mut targets = HashMap::new();
+        targets.insert(
+            "peer1".to_string(),
+            vec![TestResult {
+                name: "Ping".to_string(),
+                verdict: TestVerdict::Ok,
+                measurement: "10ms".to_string(),
+                suggestion: String::new(),
+                error: TestResultError::empty(),
+                is_acceptable: false,
+            }],
+        );
 
-        // Invalid: no tests found
-        let requested = vec!["invalid1".to_string(), "invalid2".to_string()];
-        let filtered = vec![];
-        let result = validate_test_cases(&requested, &filtered, TestCategory::Validator);
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("Unknown test case(s): invalid1, invalid2"));
+        let peers = TestCategoryResult {
+            category_name: Some(TestCategory::Peers),
+            targets,
+            execution_time: Some(Duration::new(StdDuration::from_nanos(1_500_000_000))),
+            score: Some(CategoryScore::A),
+        };
+
+        let data = AllCategoriesResult {
+            peers: Some(peers),
+            beacon: None,
+            validator: None,
+            mev: None,
+            infra: None,
+        };
+
+        assert_hash(&data, GO_HASH_SINGLE_CATEGORY);
     }
 }
