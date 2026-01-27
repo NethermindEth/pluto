@@ -22,6 +22,7 @@ tree_hash.workspace = true
 tree_hash_derive.workspace = true
 charon-crypto.workspace = true
 glob.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

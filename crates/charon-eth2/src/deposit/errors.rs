@@ -1,4 +1,4 @@
-use super::types::Gwei;
+use super::{constants::MIN_DEPOSIT_AMOUNT, types::Gwei};
 use crate::{helpers, network};
 
 /// Error type for deposit operations
@@ -36,7 +36,7 @@ pub enum DepositError {
     AmountSumBelowDefault(Gwei),
 
     /// Deposit message minimum amount not met
-    #[error("Deposit message minimum amount must be >= 1ETH, got {0} Gwei")]
+    #[error("Deposit message minimum amount must be >= {MIN_DEPOSIT_AMOUNT} ETH, got {0} Gwei")]
     MinimumAmountNotMet(Gwei),
 
     /// Deposit message maximum amount exceeded
@@ -75,6 +75,17 @@ pub enum DepositError {
         message: String,
     },
 
+    /// Invalid data length
+    #[error("Invalid {field}: Expected {expected} bytes, got {actual}")]
+    InvalidDataLength {
+        /// Field name
+        field: String,
+        /// Expected length
+        expected: usize,
+        /// Actual length
+        actual: usize,
+    },
+
     /// Empty deposit data
     #[error("Empty deposit data")]
     EmptyDepositData,
@@ -99,4 +110,24 @@ pub enum DepositError {
     /// Serialization error
     #[error("Serialization error: {0}")]
     SerializationError(#[from] serde_json::Error),
+}
+
+impl DepositError {
+    /// Creates an InvalidData error with the given field and message
+    pub fn invalid_data(field: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::InvalidData {
+            field: field.into(),
+            message: message.into(),
+        }
+    }
+
+    /// Creates an InvalidDataLength error with the given field, expected and
+    /// actual lengths
+    pub fn invalid_data_length(field: impl Into<String>, expected: usize, actual: usize) -> Self {
+        Self::InvalidDataLength {
+            field: field.into(),
+            expected,
+            actual,
+        }
+    }
 }

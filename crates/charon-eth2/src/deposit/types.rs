@@ -14,6 +14,9 @@ pub type Domain = [u8; 32];
 /// Root type (32 bytes).
 pub type Root = [u8; 32];
 
+/// Withdrawal credentials type (32 bytes).
+pub type WithdrawalCredentials = [u8; 32];
+
 /// DepositMessage represents the deposit message to be signed.
 /// See: https://github.com/ethereum/consensus-specs/blob/dev/specs/phase0/beacon-chain.md#depositmessage
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash)]
@@ -21,7 +24,7 @@ pub struct DepositMessage {
     /// Validator's BLS public key (48 bytes)
     pub pub_key: PublicKey,
     /// Withdrawal credentials (32 bytes)
-    pub withdrawal_credentials: [u8; 32],
+    pub withdrawal_credentials: WithdrawalCredentials,
     /// Amount in Gwei to be deposited
     pub amount: Gwei,
 }
@@ -33,7 +36,7 @@ pub struct DepositData {
     /// Validator's BLS public key (48 bytes)
     pub pub_key: PublicKey,
     /// Withdrawal credentials (32 bytes)
-    pub withdrawal_credentials: [u8; 32],
+    pub withdrawal_credentials: WithdrawalCredentials,
     /// Amount in Gwei to be deposited
     pub amount: Gwei,
     /// BLS signature of the deposit message (96 bytes)
