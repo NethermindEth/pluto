@@ -67,8 +67,6 @@ tempfile = "3.24"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-loki = "0.2"
-tree_hash = "0.12"
-tree_hash_derive = "0.12"
 vise-exporter = "0.3"
 validator = { version = "0.20", features = ["derive"] }
 oas3-gen-support = "0.24"
