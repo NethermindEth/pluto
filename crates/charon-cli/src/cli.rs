@@ -45,12 +45,27 @@ pub enum Commands {
     Version(VersionArgs),
 
     #[command(
+        about = "Alpha subcommands provide early access to in-development features",
+        long_about = "Alpha subcommands represent features that are currently under development. They're not yet released for general use, but offer a glimpse into future functionalities planned for the distributed cluster system."
+    )]
+    Alpha(AlphaArgs),
+}
+
+/// Arguments for the alpha command
+#[derive(clap::Args)]
+pub struct AlphaArgs {
+    #[command(subcommand)]
+    pub command: AlphaCommands,
+}
+
+/// Alpha subcommands
+#[derive(clap::Subcommand)]
+pub enum AlphaCommands {
+    #[command(
         about = "Test subcommands provide test suite to evaluate current cluster setup",
         long_about = "Test subcommands provide test suite to evaluate current cluster setup. The full validator stack can be tested - charon peers, consensus layer, validator client, MEV. Current machine's infra can be examined as well."
     )]
     Test(Box<TestArgs>),
-    // Future commands will be added here:
-    // Run(RunArgs),
 }
 
 /// Arguments for the test command
