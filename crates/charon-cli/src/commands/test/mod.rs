@@ -711,7 +711,8 @@ fn hash_ssz(data: &[u8]) -> CliResult<[u8; 32]> {
         .map_err(|e| CliError::Other(format!("hash root: {}", e)))
 }
 
-/// Updates the `--test-cases` argument help text to include available tests dynamically.
+/// Updates the `--test-cases` argument help text to include available tests
+/// dynamically.
 pub fn update_test_cases_help(mut cmd: clap::Command) -> clap::Command {
     if let Some(test_cmd) = cmd.find_subcommand_mut("test") {
         for category in &[

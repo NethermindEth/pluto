@@ -47,22 +47,80 @@ impl From<StdDuration> for Duration {
     }
 }
 
+impl std::str::FromStr for Duration {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // Try parsing as integer (nanoseconds)
+        if let Ok(nanos) = s.parse::<u64>() {
+            return Ok(Self::new(StdDuration::from_nanos(nanos)));
+        }
+
+        // Use humantime for duration string parsing
+        humantime::parse_duration(s)
+            .map(Self::new)
+            .map_err(|e| e.to_string())
+    }
+}
+
 impl fmt::Display for Duration {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Keep formatting stable for hashing/tests.
-        // Note: this is not identical to Go's `time.Duration.String()`.
+        // Match Go's time.Duration.String() format exactly
         let duration = self.inner;
+
         if duration.is_zero() {
-            write!(f, "0s")
-        } else if duration >= StdDuration::from_secs(1) {
-            write!(f, "{:.3}s", duration.as_secs_f64())
-        } else if duration >= StdDuration::from_millis(1) {
-            write!(f, "{}ms", duration.as_millis())
-        } else if duration >= StdDuration::from_micros(1) {
-            write!(f, "{}µs", duration.as_micros())
-        } else {
-            write!(f, "{}ns", duration.as_nanos())
+            return write!(f, "0s");
         }
+
+        let nanos = duration.as_nanos();
+
+        // For durations < 1 second, use the most appropriate unit
+        if nanos < 1_000_000_000 {
+            if nanos < 1_000 {
+                return write!(f, "{}ns", nanos);
+            } else if nanos < 1_000_000 {
+                return write!(f, "{}µs", nanos / 1_000);
+            } else {
+                return write!(f, "{}ms", nanos / 1_000_000);
+            }
+        }
+
+        let mut remaining = nanos;
+        let mut parts = Vec::new();
+
+        // Hours
+        let hours = remaining / 3_600_000_000_000;
+        if hours > 0 {
+            parts.push(format!("{}h", hours));
+            remaining %= 3_600_000_000_000;
+        }
+
+        // Minutes
+        let minutes = remaining / 60_000_000_000;
+        if minutes > 0 || hours > 0 {
+            parts.push(format!("{}m", minutes));
+            remaining %= 60_000_000_000;
+        }
+
+        // Seconds and sub-seconds
+        let seconds = remaining / 1_000_000_000;
+        remaining %= 1_000_000_000;
+
+        if remaining == 0 {
+            parts.push(format!("{}s", seconds));
+        } else if hours > 0 || minutes > 0 {
+            // For h/m/s format, include fractional seconds without padding
+            let mut subsec_str = format!("{:09}", remaining);
+            subsec_str = subsec_str.trim_end_matches('0').to_string();
+            parts.push(format!("{}.{}s", seconds, subsec_str));
+        } else {
+            #[allow(clippy::cast_precision_loss)]
+            // For >= 1 second durations without h/m, use 3 decimal places
+            let total_seconds = (nanos as f64) / 1_000_000_000.0;
+            parts.push(format!("{:.3}s", total_seconds));
+        }
+
+        write!(f, "{}", parts.join(""))
     }
 }
 
@@ -80,46 +138,33 @@ impl<'de> Deserialize<'de> for Duration {
     where
         D: serde::Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Repr {
-            Num(f64),
-            Str(String),
-        }
+        use serde::de::{self, Visitor};
 
-        match Repr::deserialize(deserializer)? {
-            // Matches Go's `json.Unmarshal`: JSON numbers become float64 and are cast to time.Duration
-            // (nanoseconds), truncating toward zero.
-            Repr::Num(n) => {
-                if !n.is_finite() || n < 0.0 {
-                    return Err(serde::de::Error::custom("invalid duration"));
-                }
+        struct DurationVisitor;
 
-                let max = u64::MAX as f64;
-                if n > max {
-                    return Err(serde::de::Error::custom("invalid duration"));
-                }
+        impl<'de> Visitor<'de> for DurationVisitor {
+            type Value = Duration;
 
-                Ok(Self::new(StdDuration::from_nanos(n.trunc() as u64)))
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a duration string or integer nanoseconds")
             }
-            Repr::Str(s) => {
-                // Matches Go's `UnmarshalText`: if it's an integer string, interpret as nanoseconds.
-                if let Ok(nanos) = s.parse::<u64>() {
-                    return Ok(Self::new(StdDuration::from_nanos(nanos)));
-                }
 
-                // humantime doesn't accept the micro sign; normalize "µs" -> "us".
-                let normalized = if s.contains('µ') {
-                    s.replace('µ', "u")
-                } else {
-                    s
-                };
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                v.parse::<Duration>().map_err(de::Error::custom)
+            }
 
-                humantime::parse_duration(&normalized)
-                    .map(Self::new)
-                    .map_err(serde::de::Error::custom)
+            fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(Duration::new(StdDuration::from_nanos(v)))
             }
         }
+
+        deserializer.deserialize_any(DurationVisitor)
     }
 }
 
@@ -198,5 +243,187 @@ mod tests {
 
         let d = Duration::new(StdDuration::from_micros(1));
         assert_eq!(d.round().inner, StdDuration::from_micros(1));
+    }
+
+    // Tests converted from Go's cmd/duration_test.go
+
+    #[test]
+    fn test_serialize() {
+        let tests = vec![
+            ("millisecond", StdDuration::from_millis(1), "\"1ms\""),
+            ("day", StdDuration::from_secs(24 * 3600), "\"24h0m0s\""),
+            ("1000 nanoseconds", StdDuration::from_nanos(1000), "\"1µs\""),
+            ("60 seconds", StdDuration::from_secs(60), "\"1m0s\""),
+            ("empty", StdDuration::from_secs(0), "\"0s\""),
+        ];
+
+        for (name, duration, expected) in tests {
+            let d = Duration::new(duration);
+            let json = serde_json::to_string(&d).expect(name);
+            assert_eq!(json, expected, "test case: {}", name);
+        }
+    }
+
+    #[test]
+    fn test_deserialize() {
+        let tests = vec![
+            ("millisecond", "\"1ms\"", StdDuration::from_millis(1), false),
+            (
+                "day",
+                "\"24h0m0s\"",
+                StdDuration::from_secs(24 * 3600),
+                false,
+            ),
+            (
+                "1000 nanoseconds",
+                "\"1µs\"",
+                StdDuration::from_nanos(1000),
+                false,
+            ),
+            ("60 seconds", "\"1m0s\"", StdDuration::from_secs(60), false),
+            ("zero", "\"0s\"", StdDuration::from_secs(0), false),
+            (
+                "millisecond number",
+                "1000000",
+                StdDuration::from_millis(1),
+                false,
+            ),
+            (
+                "day number",
+                "86400000000000",
+                StdDuration::from_secs(24 * 3600),
+                false,
+            ),
+            (
+                "1000 nanoseconds number",
+                "1000",
+                StdDuration::from_nanos(1000),
+                false,
+            ),
+            (
+                "60 seconds number",
+                "60000000000",
+                StdDuration::from_secs(60),
+                false,
+            ),
+            ("zero number", "0", StdDuration::from_secs(0), false),
+            ("text string", "\"second\"", StdDuration::from_secs(0), true),
+            ("invalid json", "second", StdDuration::from_secs(0), true),
+        ];
+
+        for (name, input, expected, should_error) in tests {
+            let result: Result<Duration, _> = serde_json::from_str(input);
+            if should_error {
+                assert!(result.is_err(), "test case: {} should error", name);
+            } else {
+                let d = result.expect(name);
+                assert_eq!(d.inner, expected, "test case: {}", name);
+            }
+        }
+    }
+
+    #[test]
+    fn test_display() {
+        let tests = vec![
+            ("millisecond", StdDuration::from_millis(1), "1ms"),
+            ("day", StdDuration::from_secs(24 * 3600), "24h0m0s"),
+            ("1000 nanoseconds", StdDuration::from_nanos(1000), "1µs"),
+            ("60 seconds", StdDuration::from_secs(60), "1m0s"),
+            ("empty", StdDuration::from_secs(0), "0s"),
+        ];
+
+        for (name, duration, expected) in tests {
+            let d = Duration::new(duration);
+            assert_eq!(d.to_string(), expected, "test case: {}", name);
+        }
+    }
+
+    #[test]
+    fn test_from_str() {
+        let tests = vec![
+            ("millisecond", "1ms", StdDuration::from_millis(1), false),
+            ("day", "24h0m0s", StdDuration::from_secs(24 * 3600), false),
+            (
+                "1000 nanoseconds",
+                "1µs",
+                StdDuration::from_nanos(1000),
+                false,
+            ),
+            ("60 seconds", "1m0s", StdDuration::from_secs(60), false),
+            ("zero", "0s", StdDuration::from_secs(0), false),
+            (
+                "millisecond number",
+                "1000000",
+                StdDuration::from_millis(1),
+                false,
+            ),
+            (
+                "day number",
+                "86400000000000",
+                StdDuration::from_secs(24 * 3600),
+                false,
+            ),
+            (
+                "1000 nanoseconds number",
+                "1000",
+                StdDuration::from_nanos(1000),
+                false,
+            ),
+            (
+                "60 seconds number",
+                "60000000000",
+                StdDuration::from_secs(60),
+                false,
+            ),
+            ("zero number", "0", StdDuration::from_secs(0), false),
+            ("text string", "second", StdDuration::from_secs(0), true),
+        ];
+
+        for (name, input, expected, should_error) in tests {
+            let result = input.parse::<Duration>();
+            if should_error {
+                assert!(result.is_err(), "test case: {} should error", name);
+            } else {
+                let d = result.expect(name);
+                assert_eq!(d.inner, expected, "test case: {}", name);
+            }
+        }
+    }
+
+    #[test]
+    fn test_round() {
+        let tests = vec![
+            (
+                "15.151 milliseconds",
+                StdDuration::from_micros(15151),
+                StdDuration::from_millis(15),
+            ),
+            (
+                "15.151515 milliseconds",
+                StdDuration::from_nanos(15151515),
+                StdDuration::from_millis(15),
+            ),
+            (
+                "2.344444 seconds",
+                StdDuration::from_micros(2344444),
+                StdDuration::from_millis(2340),
+            ),
+            (
+                "2.345555 seconds",
+                StdDuration::from_micros(2345555),
+                StdDuration::from_millis(2350),
+            ),
+            (
+                "15.151 microsecond",
+                StdDuration::from_nanos(15151),
+                StdDuration::from_micros(15),
+            ),
+        ];
+
+        for (name, input, expected) in tests {
+            let d = Duration::new(input);
+            let rounded = d.round();
+            assert_eq!(rounded.inner, expected, "test case: {}", name);
+        }
     }
 }
