@@ -141,7 +141,6 @@ pub fn list_test_cases(category: TestCategory) -> Vec<String> {
             vec![]
         }
         TestCategory::Mev => {
-            // Matches Go supported MEV test cases (at least the core set).
             vec![
                 "Ping".to_string(),
                 "PingMeasure".to_string(),
@@ -149,7 +148,8 @@ pub fn list_test_cases(category: TestCategory) -> Vec<String> {
             ]
         }
         TestCategory::Peers => {
-            // TODO: Extract from peers::supported_peer_test_cases() + supported_self_test_cases()
+            // TODO: Extract from peers::supported_peer_test_cases() +
+            // supported_self_test_cases()
             vec![]
         }
         TestCategory::Infra => {
@@ -259,10 +259,18 @@ pub struct TestResult {
     #[serde(rename = "verdict")]
     pub verdict: TestVerdict,
 
-    #[serde(rename = "measurement", skip_serializing_if = "String::is_empty", default)]
+    #[serde(
+        rename = "measurement",
+        skip_serializing_if = "String::is_empty",
+        default
+    )]
     pub measurement: String,
 
-    #[serde(rename = "suggestion", skip_serializing_if = "String::is_empty", default)]
+    #[serde(
+        rename = "suggestion",
+        skip_serializing_if = "String::is_empty",
+        default
+    )]
     pub suggestion: String,
 
     #[serde(
@@ -323,7 +331,11 @@ impl TestCaseName {
 /// Result of a test category.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestCategoryResult {
-    #[serde(rename = "category_name", skip_serializing_if = "Option::is_none", default)]
+    #[serde(
+        rename = "category_name",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     pub category_name: Option<TestCategory>,
 
     #[serde(rename = "targets", skip_serializing_if = "HashMap::is_empty", default)]
@@ -374,7 +386,8 @@ struct ObolApiResult {
     enr: String,
 
     /// Base64-encoded signature (65 bytes)
-    /// TODO: double check with obol - API docs show "0x..." but Go []byte marshals to base64
+    /// TODO: double check with obol - API docs show "0x..." but Go []byte
+    /// marshals to base64
     #[serde_as(as = "Base64")]
     #[serde(rename = "sig")]
     sig: Vec<u8>,
@@ -414,6 +427,7 @@ pub fn write_result_to_file(result: &TestCategoryResult, path: &Path) -> CliResu
 
     let mut existing_file = OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .mode(0o644)
@@ -467,8 +481,7 @@ pub fn write_result_to_file(result: &TestCategoryResult, path: &Path) -> CliResu
         context: "marshal fileResult to JSON".to_string(),
     })?;
 
-    tmp.as_file_mut()
-        .write_all(&file_content_json)?;
+    tmp.as_file_mut().write_all(&file_content_json)?;
 
     tmp.persist(path).map_err(|e| CliError::Io {
         source: e.error,
@@ -519,18 +532,18 @@ pub fn write_result_to_writer<W: Write + ?Sized>(
         for test_result in test_results {
             let mut test_output = format!("{:<64}", test_result.name);
 
-  if !test_result.measurement.is_empty() {
-      let trim_count = test_result.measurement.chars().count() + 1;
-      let spaces_to_trim = " ".repeat(trim_count);
+            if !test_result.measurement.is_empty() {
+                let trim_count = test_result.measurement.chars().count().saturating_add(1);
+                let spaces_to_trim = " ".repeat(trim_count);
 
-      if test_output.ends_with(&spaces_to_trim) {
-          let new_len = test_output.len() - spaces_to_trim.len();
-          test_output.truncate(new_len);
-      }
+                if test_output.ends_with(&spaces_to_trim) {
+                    let new_len = test_output.len().saturating_sub(trim_count);
+                    test_output.truncate(new_len);
+                }
 
-      test_output.push_str(&test_result.measurement);
-      test_output.push(' ');
-  }
+                test_output.push_str(&test_result.measurement);
+                test_output.push(' ');
+            }
 
             // Add verdict
             test_output.push_str(&test_result.verdict.to_string());
@@ -558,12 +571,7 @@ pub fn write_result_to_writer<W: Write + ?Sized>(
 
     // Add execution time
     lines.push(String::new());
-    lines.push(
-        result
-            .execution_time
-            .unwrap_or_default()
-            .to_string(),
-    );
+    lines.push(result.execution_time.unwrap_or_default().to_string());
 
     // Write all lines
     lines.push(String::new());
@@ -606,7 +614,7 @@ pub fn evaluate_rtt(
 
 /// Calculates the overall score for a list of test results.
 pub fn calculate_score(results: &[TestResult]) -> CategoryScore {
-	// TODO: calculate score more elaborately (potentially use weights)
+    // TODO: calculate score more elaborately (potentially use weights)
     let mut avg: i32 = 0;
 
     for test in results {
@@ -624,7 +632,11 @@ pub fn calculate_score(results: &[TestResult]) -> CategoryScore {
         }
     }
 
-    if avg < 0 { CategoryScore::B } else { CategoryScore::A }
+    if avg < 0 {
+        CategoryScore::B
+    } else {
+        CategoryScore::A
+    }
 }
 
 /// Filters tests based on configuration.
@@ -671,7 +683,8 @@ fn create_enr(secret_key: &SecretKey) -> CliResult<Record> {
 /// Hashes data using SSZ merkleization.
 /// - Empty data: Returns zero bytes (all 0x00)
 /// - Data 1-32 bytes: Returns data padded to 32 bytes
-/// - Data > 32 bytes: Chunks into 32-byte pieces, builds merkle tree with SHA256
+/// - Data > 32 bytes: Chunks into 32-byte pieces, builds merkle tree with
+///   SHA256
 fn hash_ssz(data: &[u8]) -> CliResult<[u8; 32]> {
     if data.is_empty() {
         return Ok([0u8; 32]);
@@ -692,7 +705,8 @@ fn hash_ssz(data: &[u8]) -> CliResult<[u8; 32]> {
             CliError::Other(format!("merkleize: {}", e))
         })?;
 
-    hasher.hash_root()
+    hasher
+        .hash_root()
         .map_err(|e| CliError::Other(format!("hash root: {}", e)))
 }
 
@@ -761,10 +775,8 @@ mod tests {
         assert!(must_output_to_file_on_quiet(true, "").is_err());
     }
 
-
     // Ground truth from Go fastssz (with Duration as string format matching Rust)
-    const GO_HASH_EMPTY: &str =
-        "7b7d000000000000000000000000000000000000000000000000000000000000";
+    const GO_HASH_EMPTY: &str = "7b7d000000000000000000000000000000000000000000000000000000000000";
     const GO_HASH_SINGLE_CATEGORY: &str =
         "bf90f36739059294e479cc3c35f5ca8762af9313fe72603b3f40ef38e3418801";
 

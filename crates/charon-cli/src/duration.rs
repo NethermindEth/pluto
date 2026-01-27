@@ -13,8 +13,8 @@ impl Duration {
     /// Creates a new Duration from a std::time::Duration.
     pub fn new(duration: StdDuration) -> Self {
         Self { inner: duration }
-    }    
-    
+    }
+
     /// Rounds the duration based on its magnitude
     #[allow(clippy::cast_possible_truncation, clippy::arithmetic_side_effects)]
     pub fn round(self) -> Self {

@@ -3,8 +3,7 @@
 use super::{TestCategoryResult, TestConfigArgs};
 use crate::error::Result;
 use clap::Args;
-use std::io::Write;
-use std::time::Duration;
+use std::{io::Write, time::Duration};
 
 /// Arguments for the validator test command.
 #[derive(Args, Clone, Debug)]

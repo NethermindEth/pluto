@@ -15,12 +15,14 @@ mod error;
 use cli::{Cli, Commands, CreateCommands, TestCommands};
 use error::Result;
 
-/// Updates the --test-cases argument help text to include available tests dynamically.
-/// This matches Go's behavior: `fmt.Sprintf("Available tests are: %v", listTestCases(cmd))`.
+/// Updates the --test-cases argument help text to include available tests
+/// dynamically. This matches Go's behavior: `fmt.Sprintf("Available tests are:
+/// %v", listTestCases(cmd))`.
 fn update_test_cases_help(mut cmd: clap::Command) -> clap::Command {
     use commands::test::TestCategory;
 
-    // Navigate to test subcommand and update each test category's --test-cases help text
+    // Navigate to test subcommand and update each test category's --test-cases help
+    // text
     if let Some(test_cmd) = cmd.find_subcommand_mut("test") {
         for category in &[
             TestCategory::Validator,
@@ -33,14 +35,13 @@ fn update_test_cases_help(mut cmd: clap::Command) -> clap::Command {
             if let Some(category_cmd) = test_cmd.find_subcommand_mut(category.as_str()) {
                 let available_tests = commands::test::list_test_cases(*category);
                 let help_text = format!(
-                        "Comma-separated list of test names to execute. Available tests are: {}",
-                        available_tests.join(", ")
-                    );
+                    "Comma-separated list of test names to execute. Available tests are: {}",
+                    available_tests.join(", ")
+                );
 
-                *category_cmd = category_cmd.clone()
-                    .mut_arg("test_cases", |arg| {
-                        arg.help(help_text.clone()).long_help(help_text)
-                    });
+                *category_cmd = category_cmd.clone().mut_arg("test_cases", |arg| {
+                    arg.help(help_text.clone()).long_help(help_text)
+                });
             }
         }
     }
@@ -52,8 +53,7 @@ async fn main() -> Result<()> {
     // Build the command structure and inject dynamic help text
     let cmd = update_test_cases_help(Cli::command());
     let matches = cmd.get_matches();
-    let cli = Cli::from_arg_matches(&matches)
-        .map_err(|e| error::CliError::Other(e.to_string()))?;
+    let cli = Cli::from_arg_matches(&matches).map_err(|e| error::CliError::Other(e.to_string()))?;
 
     match cli.command {
         Commands::Create(args) => match args.command {
