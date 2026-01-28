@@ -30,14 +30,14 @@ use crate::{
     error::{CliError, Result as CliResult},
 };
 
-use std::os::unix::fs::PermissionsExt as _;
-use tokio::io::AsyncReadExt;
 use charon::obolapi::{Client, ClientOptions};
 use charon_cluster::ssz_hasher::{HashWalker, Hasher};
 use charon_eth2::enr::Record;
 use charon_k1util::{load, sign};
 use k256::SecretKey;
 use serde_with::{base64::Base64, serde_as};
+use std::os::unix::fs::PermissionsExt as _;
+use tokio::io::AsyncReadExt;
 
 /// Test category identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -492,7 +492,7 @@ pub async fn write_result_to_file(result: &TestCategoryResult, path: &Path) -> C
                 source: e,
                 context: "create temp file".to_string(),
             })?;
-        
+
         tmp.as_file()
             .set_permissions(std::fs::Permissions::from_mode(0o644))?;
 
@@ -938,10 +938,9 @@ mod tests {
 
         let mut second = TestCategoryResult::new(TestCategory::Peers);
         second.score = Some(CategoryScore::C);
-        second.targets.insert(
-            "peer2".to_string(),
-            vec![TestResult::new("PingMeasure")],
-        );
+        second
+            .targets
+            .insert("peer2".to_string(), vec![TestResult::new("PingMeasure")]);
         write_result_to_file(&second, &path).await.unwrap();
 
         let content = tokio::fs::read_to_string(&path).await.unwrap();
