@@ -1650,29 +1650,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "charon-cluster"
-version = "1.7.1"
-dependencies = [
- "charon-crypto",
- "charon-eth2",
- "charon-k1util",
- "charon-p2p",
- "chrono",
- "hex",
- "k256",
- "libp2p",
- "prost 0.14.3",
- "prost-build",
- "prost-types 0.14.3",
- "rand_core 0.6.4",
- "serde",
- "serde_json",
- "serde_with",
- "thiserror 2.0.18",
- "uuid",
-]
-
-[[package]]
 name = "charon-core"
 version = "1.7.1"
 dependencies = [
@@ -5516,7 +5493,6 @@ dependencies = [
  "anyhow",
  "backon",
  "bon",
- "charon-cluster",
  "charon-core",
  "charon-crypto",
  "charon-k1util",
@@ -5526,6 +5502,7 @@ dependencies = [
  "hex",
  "k256",
  "pluto-build-proto",
+ "pluto-cluster",
  "prost 0.14.3",
  "prost-types 0.14.3",
  "regex",
@@ -5562,6 +5539,29 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "pluto-cluster"
+version = "1.7.1"
+dependencies = [
+ "charon-crypto",
+ "charon-eth2",
+ "charon-k1util",
+ "charon-p2p",
+ "chrono",
+ "hex",
+ "k256",
+ "libp2p",
+ "prost 0.14.3",
+ "prost-build",
+ "prost-types 0.14.3",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "thiserror 2.0.18",
+ "uuid",
 ]
 
 [[package]]

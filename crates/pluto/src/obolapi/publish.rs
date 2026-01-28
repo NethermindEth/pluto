@@ -3,10 +3,8 @@
 //! This module provides methods for publishing cluster locks and definitions
 //! to the Obol API, along with the associated data structures.
 
-use charon_cluster::lock::Lock;
+use pluto_cluster::lock::Lock;
 use serde::{Deserialize, Serialize};
-
-use charon_cluster::helpers::to_0x_hex;
 
 use crate::obolapi::{client::Client, error::Result, helper::bearer_string};
 
@@ -57,7 +55,7 @@ impl Client {
     /// Conditions.
     pub async fn publish_definition(
         &self,
-        definition: charon_cluster::definition::Definition,
+        definition: pluto_cluster::definition::Definition,
         signature: &[u8],
     ) -> Result<()> {
         let url = self.build_url(PUBLISH_DEFINITION_PATH)?;
@@ -86,7 +84,7 @@ impl Client {
             address: user_addr.to_string(),
             version: 1,
             terms_and_conditions_hash: TERMS_AND_CONDITIONS_HASH.to_string(),
-            fork_version: to_0x_hex(fork_version),
+            fork_version: pluto_cluster::helpers::to_0x_hex(fork_version),
         };
 
         let body = serde_json::to_vec(&request)?;

@@ -45,7 +45,7 @@ pub enum Error {
 
     /// SSZ hashing error from charon-cluster.
     #[error("SSZ hashing error: {0}")]
-    Ssz(#[from] charon_cluster::ssz::SSZError<charon_cluster::ssz_hasher::Hasher>),
+    Ssz(#[from] pluto_cluster::ssz::SSZError<pluto_cluster::ssz_hasher::Hasher>),
 
     /// K1 signing error.
     #[error("K1 signing error: {0}")]
@@ -65,5 +65,5 @@ pub enum Error {
 
     /// SSZ hasher error.
     #[error("SSZ hasher error: {0}")]
-    HasherError(#[from] charon_cluster::ssz_hasher::HasherError),
+    HasherError(#[from] pluto_cluster::ssz_hasher::HasherError),
 }

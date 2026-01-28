@@ -1,5 +1,3 @@
-use charon_cluster::helpers::to_0x_hex;
-
 use crate::obolapi::error::{Error, Result};
 
 /// Decodes a hex-encoded string and expects it to be exactly `expected_len`
@@ -8,15 +6,12 @@ pub(crate) fn from_0x(data: &str, expected_len: usize) -> Result<Vec<u8>> {
     if data.is_empty() {
         return Err(Error::EmptyHex);
     }
-    Ok(charon_cluster::helpers::from_0x_hex_str(
-        data,
-        expected_len,
-    )?)
+    Ok(pluto_cluster::helpers::from_0x_hex_str(data, expected_len)?)
 }
 
 /// Formats bytes as a bearer token string.
 pub(crate) fn bearer_string(data: &[u8]) -> String {
-    format!("Bearer {}", to_0x_hex(data))
+    format!("Bearer {}", pluto_cluster::helpers::to_0x_hex(data))
 }
 
 #[cfg(test)]

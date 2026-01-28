@@ -1,5 +1,5 @@
 [package]
-name = "charon-cluster"
+name = "pluto-cluster"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true

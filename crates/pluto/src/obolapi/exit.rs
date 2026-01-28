@@ -8,13 +8,13 @@ use std::collections::HashMap;
 use charon_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::Signature};
 use serde::{Deserialize, Serialize};
 
-use charon_cluster::{
+use eth2api::types::{
+    GetPoolVoluntaryExitsResponseResponseDatum, Phase0SignedVoluntaryExitMessage,
+};
+use pluto_cluster::{
     helpers::to_0x_hex,
     ssz::{SSZ_LEN_BLS_SIG, SSZ_LEN_PUB_KEY},
     ssz_hasher::{HashWalker, Hasher},
-};
-use eth2api::types::{
-    GetPoolVoluntaryExitsResponseResponseDatum, Phase0SignedVoluntaryExitMessage,
 };
 
 use crate::obolapi::{
@@ -48,7 +48,7 @@ impl SszHashable for SignedVoluntaryExit {
 
         self.message.hash_with(hh)?;
         let sig_bytes = from_0x(&self.signature, SSZ_LEN_BLS_SIG)?;
-        charon_cluster::helpers::put_bytes_n(hh, &sig_bytes, SSZ_LEN_BLS_SIG)?;
+        pluto_cluster::helpers::put_bytes_n(hh, &sig_bytes, SSZ_LEN_BLS_SIG)?;
 
         hh.merkleize(index)?;
         Ok(())
@@ -86,7 +86,7 @@ impl SszHashable for ExitBlob {
         let index = hh.index();
 
         let pk = self.public_key.as_ref().ok_or_else(|| {
-            use charon_cluster::ssz::SSZError;
+            use pluto_cluster::ssz::SSZError;
             Error::Ssz(SSZError::UnsupportedVersion(
                 "missing public key".to_string(),
             ))
@@ -236,7 +236,7 @@ impl SszHashable for FullExitAuthBlob {
         let index = hh.index();
 
         hh.put_bytes(&self.lock_hash)?;
-        charon_cluster::helpers::put_bytes_n(hh, &self.validator_pubkey, SSZ_LEN_PUB_KEY)?;
+        pluto_cluster::helpers::put_bytes_n(hh, &self.validator_pubkey, SSZ_LEN_PUB_KEY)?;
         hh.put_uint64(self.share_index)?;
 
         hh.merkleize(index)?;

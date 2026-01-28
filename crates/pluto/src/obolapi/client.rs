@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use bon::Builder;
-use charon_cluster::lock::Lock;
+use pluto_cluster::lock::Lock;
 use reqwest::{Method, StatusCode};
 use url::Url;
 
@@ -187,7 +187,7 @@ fn launchpad_url_path(lock: &Lock) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use charon_cluster::definition::Definition;
+    use pluto_cluster::definition::Definition;
 
     fn test_lock_with_hash(hash: Vec<u8>) -> Lock {
         Lock {
