@@ -1,5 +1,6 @@
 use charon_crypto::types::{PublicKey, Signature};
 use serde::{Deserialize, Serialize};
+use tree_hash::TreeHash;
 use tree_hash_derive::TreeHash;
 
 /// Gwei represents an amount in Gwei (1 ETH = 1,000,000,000 Gwei)
@@ -18,7 +19,7 @@ pub type Root = [u8; 32];
 pub type WithdrawalCredentials = [u8; 32];
 
 /// DepositMessage represents the deposit message to be signed.
-/// See: https://github.com/ethereum/consensus-specs/blob/dev/specs/phase0/beacon-chain.md#depositmessage
+/// See: https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#depositmessage
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash)]
 pub struct DepositMessage {
     /// Validator's BLS public key (48 bytes)
@@ -30,7 +31,7 @@ pub struct DepositMessage {
 }
 
 /// DepositData defines the deposit data to activate a validator.
-/// See: https://github.com/ethereum/consensus-specs/blob/dev/specs/phase0/beacon-chain.md#depositdata
+/// See: https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#depositdata
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash)]
 pub struct DepositData {
     /// Validator's BLS public key (48 bytes)
@@ -44,7 +45,7 @@ pub struct DepositData {
 }
 
 /// ForkData is used for computing the deposit domain.
-/// See: https://github.com/ethereum/consensus-specs/blob/dev/specs/phase0/beacon-chain.md#forkdata
+/// See: https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#forkdata
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash)]
 pub(crate) struct ForkData {
     /// Current fork version
@@ -54,7 +55,7 @@ pub(crate) struct ForkData {
 }
 
 /// SigningData is used for computing the signing root.
-/// See: https://github.com/ethereum/consensus-specs/blob/dev/specs/phase0/beacon-chain.md#signingdata
+/// See: https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#signingdata
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash)]
 pub(crate) struct SigningData {
     /// Object root being signed
@@ -63,8 +64,7 @@ pub(crate) struct SigningData {
     pub domain: Domain,
 }
 
-/// DepositDataJson is the JSON representation of deposit data for file
-/// serialization. This matches the format expected by the Ethereum deposit CLI.
+/// DepositDataJson is the json representation of Deposit Data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DepositDataJson {
     /// Validator public key as hex string (without 0x prefix)
@@ -85,6 +85,62 @@ pub struct DepositDataJson {
     pub network_name: String,
     /// Deposit CLI version
     pub deposit_cli_version: String,
+}
+
+impl DepositMessage {
+    /// Creates a new deposit message with the given parameters.
+    pub fn new(
+        pubkey: PublicKey,
+        withdrawal_addr: &str,
+        amount: Gwei,
+        compounding: bool,
+    ) -> Result<Self, super::DepositError> {
+        let withdrawal_credentials =
+            super::withdrawal_creds_from_addr(withdrawal_addr, compounding)?;
+
+        if amount < super::MIN_DEPOSIT_AMOUNT {
+            return Err(super::DepositError::MinimumAmountNotMet(amount));
+        }
+
+        let max_amount = super::max_deposit_amount(compounding);
+        if amount > max_amount {
+            return Err(super::DepositError::MaximumAmountExceeded {
+                amount,
+                max: max_amount,
+            });
+        }
+
+        Ok(Self {
+            pub_key: pubkey,
+            withdrawal_credentials,
+            amount,
+        })
+    }
+
+    /// Returns the signing root for this deposit message on the given network.
+    pub fn get_message_signing_root(&self, network: &str) -> Result<Root, super::DepositError> {
+        let msg_root = self.tree_hash_root();
+
+        let fork_version_bytes =
+            super::network::network_to_fork_version_bytes(network)?;
+
+        let fork_version: Version = fork_version_bytes.as_slice().try_into().map_err(|_| {
+            super::DepositError::NetworkError(
+                super::network::NetworkError::InvalidForkVersion {
+                    fork_version: hex::encode(&fork_version_bytes),
+                },
+            )
+        })?;
+
+        let domain = super::get_deposit_domain(fork_version);
+
+        let signing_data = SigningData {
+            object_root: msg_root.0,
+            domain,
+        };
+
+        Ok(signing_data.tree_hash_root().0)
+    }
 }
 
 impl From<&DepositData> for DepositMessage {

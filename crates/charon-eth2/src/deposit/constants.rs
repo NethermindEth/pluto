@@ -16,16 +16,17 @@ pub const MAX_COMPOUNDING_DEPOSIT_AMOUNT: Gwei = 2_048_000_000_000;
 pub const MAX_STANDARD_DEPOSIT_AMOUNT: Gwei = 32_000_000_000;
 
 /// Deposit CLI version for compatibility
-pub(crate) const DEPOSIT_CLI_VERSION: &str = "2.7.0";
+pub const DEPOSIT_CLI_VERSION: &str = "2.7.0";
 
 /// ETH1 address withdrawal prefix (0x01)
-pub(crate) const ETH1_ADDRESS_WITHDRAWAL_PREFIX: u8 = 0x01;
+pub const ETH1_ADDRESS_WITHDRAWAL_PREFIX: u8 = 0x01;
 
 /// EIP-7251 address withdrawal prefix for compounding (0x02)
-pub(crate) const EIP7251_ADDRESS_WITHDRAWAL_PREFIX: u8 = 0x02;
+pub const EIP7251_ADDRESS_WITHDRAWAL_PREFIX: u8 = 0x02;
 
 /// DOMAIN_DEPOSIT type as per ETH2 spec
 /// See: https://benjaminion.xyz/eth2-annotated-spec/phase0/beacon-chain/#domain-types
-pub(crate) const DEPOSIT_DOMAIN_TYPE: [u8; 4] = [0x03, 0x00, 0x00, 0x00];
+pub const DEPOSIT_DOMAIN_TYPE: [u8; 4] = [0x03, 0x00, 0x00, 0x00];
 
-pub(crate) const WITHDRAWAL_CREDENTIALS_LENGTH: usize = 32;
+/// Withdrawal credentials length (32 bytes)
+pub const WITHDRAWAL_CREDENTIALS_LENGTH: usize = 32;

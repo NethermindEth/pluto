@@ -19,36 +19,6 @@ use charon_crypto::{
 };
 use tree_hash::TreeHash;
 
-/// Creates a new deposit message with the given parameters.
-pub fn new_message(
-    pubkey: PublicKey,
-    withdrawal_addr: &str,
-    amount: Gwei,
-    compounding: bool,
-) -> Result<DepositMessage, DepositError> {
-    // Get withdrawal credentials
-    let withdrawal_credentials = withdrawal_creds_from_addr(withdrawal_addr, compounding)?;
-
-    // Validate amount
-    if amount < MIN_DEPOSIT_AMOUNT {
-        return Err(DepositError::MinimumAmountNotMet(amount));
-    }
-
-    let max_amount = max_deposit_amount(compounding);
-    if amount > max_amount {
-        return Err(DepositError::MaximumAmountExceeded {
-            amount,
-            max: max_amount,
-        });
-    }
-
-    Ok(DepositMessage {
-        pub_key: pubkey,
-        withdrawal_credentials,
-        amount,
-    })
-}
-
 /// Returns the maximum deposit amount based on compounding flag.
 pub fn max_deposit_amount(compounding: bool) -> Gwei {
     if compounding {
@@ -78,7 +48,7 @@ pub fn marshal_deposit_data(
         let msg_root = msg.tree_hash_root();
 
         // Verify signature
-        let sig_data = get_message_signing_root(&msg, network)?;
+        let sig_data = msg.get_message_signing_root(network)?;
 
         BlstImpl
             .verify(&deposit_data.pub_key, &sig_data, &deposit_data.signature)
@@ -117,7 +87,7 @@ pub fn marshal_deposit_data(
 }
 
 /// Returns the deposit signature domain.
-fn get_deposit_domain(fork_version: Version) -> Domain {
+pub(crate) fn get_deposit_domain(fork_version: Version) -> Domain {
     let fork_data = ForkData {
         current_version: fork_version,
         genesis_validators_root: Root::default(),
@@ -132,36 +102,8 @@ fn get_deposit_domain(fork_version: Version) -> Domain {
     domain
 }
 
-/// Returns the deposit message signing root created by the provided parameters.
-pub fn get_message_signing_root(msg: &DepositMessage, network: &str) -> Result<Root, DepositError> {
-    // Get message root
-    let msg_root = msg.tree_hash_root();
-
-    // Get fork version for network
-    let fork_version_bytes = network::network_to_fork_version_bytes(network)?;
-
-    let fork_version: Version = fork_version_bytes.as_slice().try_into().map_err(|_| {
-        DepositError::NetworkError(network::NetworkError::InvalidForkVersion {
-            fork_version: hex::encode(&fork_version_bytes),
-        })
-    })?;
-
-    // Get deposit domain
-    let domain = get_deposit_domain(fork_version);
-
-    // Create signing data
-    let signing_data = SigningData {
-        object_root: msg_root.0,
-        domain,
-    };
-
-    // Return signing root
-    let signing_root = signing_data.tree_hash_root();
-    Ok(signing_root.0)
-}
-
 /// Converts an Ethereum address to withdrawal credentials.
-fn withdrawal_creds_from_addr(
+pub(crate) fn withdrawal_creds_from_addr(
     addr: &str,
     compounding: bool,
 ) -> Result<WithdrawalCredentials, DepositError> {
@@ -469,10 +411,10 @@ mod tests {
         for i in 0..priv_keys.len() {
             let (priv_key, pub_key) = get_keys(priv_keys[i])?;
 
-            let msg = new_message(pub_key, withdrawal_addrs[i], amount, true)
+            let msg = DepositMessage::new(pub_key, withdrawal_addrs[i], amount, true)
                 .map_err(|e| e.to_string())?;
 
-            let sig_root = get_message_signing_root(&msg, NETWORK).map_err(|e| e.to_string())?;
+            let sig_root = msg.get_message_signing_root(NETWORK).map_err(|e| e.to_string())?;
 
             let signature = tbls
                 .sign(&priv_key, &sig_root)
@@ -497,7 +439,7 @@ mod tests {
         let amount = DEFAULT_DEPOSIT_AMOUNT;
         let (_priv_key, pub_key) = get_keys(PRIV_KEY)?;
 
-        let msg = new_message(pub_key, ADDR, amount, false).map_err(|e| e.to_string())?;
+        let msg = DepositMessage::new(pub_key, ADDR, amount, false).map_err(|e| e.to_string())?;
 
         assert_eq!(msg.pub_key, pub_key);
         assert_eq!(msg.amount, amount);
@@ -516,7 +458,7 @@ mod tests {
         let (_priv_key, pub_key) = get_keys(PRIV_KEY)?;
         let amount = MIN_DEPOSIT_AMOUNT - 1;
 
-        match new_message(pub_key, ADDR, amount, false) {
+        match DepositMessage::new(pub_key, ADDR, amount, false) {
             Err(DepositError::MinimumAmountNotMet(_)) => Ok(()),
             other => Err(format!("expected MinimumAmountNotMet, got {other:?}")),
         }
@@ -531,13 +473,13 @@ mod tests {
 
         // Non-compounding: max is 32 ETH
         let amount = MAX_STANDARD_DEPOSIT_AMOUNT + 1;
-        match new_message(pub_key, ADDR, amount, false) {
+        match DepositMessage::new(pub_key, ADDR, amount, false) {
             Err(DepositError::MaximumAmountExceeded { .. }) => {}
             other => return Err(format!("expected MaximumAmountExceeded, got {other:?}")),
         }
 
         // Should work with compounding
-        new_message(pub_key, ADDR, amount, true).map_err(|e| e.to_string())?;
+        DepositMessage::new(pub_key, ADDR, amount, true).map_err(|e| e.to_string())?;
         Ok(())
     }
 
