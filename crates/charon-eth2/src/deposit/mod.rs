@@ -274,10 +274,16 @@ pub fn read_deposit_data_files(cluster_dir: &Path) -> Result<Vec<Vec<DepositData
     let pattern = cluster_dir.join("deposit-data*.json");
     let pattern_str = pattern
         .to_str()
-        .ok_or_else(|| DepositError::invalid_data("path", "Invalid UTF-8 in path"))?;
+        .ok_or_else(|| DepositError::InvalidData {
+            field: "path".into(),
+            message: "Invalid UTF-8 in path".into(),
+        })?;
 
     let mut files: Vec<PathBuf> = glob::glob(pattern_str)
-        .map_err(|e| DepositError::invalid_data("glob_pattern", e.to_string()))?
+        .map_err(|e| DepositError::InvalidData {
+            field: "glob_pattern".into(),
+            message: e.to_string(),
+        })?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -300,22 +306,30 @@ pub fn read_deposit_data_files(cluster_dir: &Path) -> Result<Vec<Vec<DepositData
         for d in dd_list {
             let pubkey_bytes = hex::decode(&d.pubkey)?;
             let pub_key: PublicKey = pubkey_bytes.as_slice().try_into().map_err(|_| {
-                DepositError::invalid_data_length("pubkey", PUBLIC_KEY_LENGTH, pubkey_bytes.len())
+                DepositError::InvalidDataLength {
+                    field: "pubkey".into(),
+                    expected: PUBLIC_KEY_LENGTH,
+                    actual: pubkey_bytes.len(),
+                }
             })?;
 
             let wc_bytes = hex::decode(&d.withdrawal_credentials)?;
             let withdrawal_credentials: WithdrawalCredentials =
                 wc_bytes.as_slice().try_into().map_err(|_| {
-                    DepositError::invalid_data_length(
-                        "withdrawal_credentials",
-                        WITHDRAWAL_CREDENTIALS_LENGTH,
-                        wc_bytes.len(),
-                    )
+                    DepositError::InvalidDataLength {
+                        field: "withdrawal_credentials".into(),
+                        expected: WITHDRAWAL_CREDENTIALS_LENGTH,
+                        actual: wc_bytes.len(),
+                    }
                 })?;
 
             let sig_bytes = hex::decode(&d.signature)?;
             let signature: Signature = sig_bytes.as_slice().try_into().map_err(|_| {
-                DepositError::invalid_data_length("signature", SIGNATURE_LENGTH, sig_bytes.len())
+                DepositError::InvalidDataLength {
+                    field: "signature".into(),
+                    expected: SIGNATURE_LENGTH,
+                    actual: sig_bytes.len(),
+                }
             })?;
 
             deposit_datas.push(DepositData {

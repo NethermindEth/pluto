@@ -113,23 +113,3 @@ pub enum DepositError {
 }
 
 pub(crate) type Result<T> = std::result::Result<T, DepositError>;
-
-impl DepositError {
-    /// Creates an InvalidData error with the given field and message
-    pub fn invalid_data(field: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::InvalidData {
-            field: field.into(),
-            message: message.into(),
-        }
-    }
-
-    /// Creates an InvalidDataLength error with the given field, expected and
-    /// actual lengths
-    pub fn invalid_data_length(field: impl Into<String>, expected: usize, actual: usize) -> Self {
-        Self::InvalidDataLength {
-            field: field.into(),
-            expected,
-            actual,
-        }
-    }
-}
