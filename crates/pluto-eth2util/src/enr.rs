@@ -1,8 +1,8 @@
 use std::{collections::HashMap, fmt::Display, net::Ipv4Addr};
 
 use base64::Engine;
-use charon_k1util::{self, self as k1util, SIGNATURE_LEN_WITHOUT_V};
 use k256::{PublicKey, SecretKey, elliptic_curve};
+use pluto_k1util::{self, SIGNATURE_LEN_WITHOUT_V};
 use sha3::{Digest, Keccak256};
 
 use crate::{
@@ -61,11 +61,11 @@ pub enum RecordError {
 
     /// The signature is invalid.
     #[error("The verification failed: {0}")]
-    InvalidSignature(k1util::K1UtilError),
+    InvalidSignature(pluto_k1util::K1UtilError),
 
     /// Failed to sign the record.
     #[error("Failed to sign the record: {0}")]
-    FailedToSign(k1util::K1UtilError),
+    FailedToSign(pluto_k1util::K1UtilError),
 
     /// Failed to convert the signature.
     #[error("Failed to convert the signature: {0}")]
@@ -287,7 +287,7 @@ pub(crate) fn sign(
     hasher.update(raw_excl_sig);
     let digest = hasher.finalize();
 
-    let signature = k1util::sign(private_key, &digest).map_err(RecordError::FailedToSign)?;
+    let signature = pluto_k1util::sign(private_key, &digest).map_err(RecordError::FailedToSign)?;
     let signature_without_v = signature[..SIGNATURE_LEN_WITHOUT_V]
         .try_into()
         .expect("SIGNATURE_LEN_WITHOUT_V < SIGNATURE_LEN");
@@ -305,7 +305,7 @@ pub(crate) fn verify(
     hasher.update(raw_excl_sig);
     let digest = hasher.finalize();
 
-    match k1util::verify_64(pubkey, &digest, signature) {
+    match pluto_k1util::verify_64(pubkey, &digest, signature) {
         Ok(true) => Ok(()),
         Ok(false) => Err(RecordError::FailedToVerifySignature),
         Err(e) => Err(RecordError::InvalidSignature(e)),

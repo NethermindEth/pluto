@@ -2,7 +2,6 @@
 
 use std::path::{Path, PathBuf};
 
-use charon_k1util as k1util;
 use k256::{SecretKey, elliptic_curve::rand_core::OsRng};
 use rand::RngCore;
 
@@ -16,7 +15,7 @@ type Result<T> = std::result::Result<T, K1Error>;
 pub enum K1Error {
     /// K1 utility error.
     #[error("K1 utility error: {0}")]
-    K1UtilError(#[from] k1util::K1UtilError),
+    K1UtilError(#[from] pluto_k1util::K1UtilError),
 
     /// IOError.
     #[error("IO error: {0}")]
@@ -30,7 +29,7 @@ pub fn key_path(data_dir: &Path) -> PathBuf {
 
 /// Loads the private key from the data dir.
 pub fn load_priv_key(data_dir: &Path) -> Result<SecretKey> {
-    k1util::load(&key_path(data_dir)).map_err(K1Error::K1UtilError)
+    pluto_k1util::load(&key_path(data_dir)).map_err(K1Error::K1UtilError)
 }
 
 /// Generates a new private key and saves it to the data dir.
@@ -41,7 +40,7 @@ pub fn new_saved_priv_key(data_dir: &Path) -> Result<SecretKey> {
 
     let key = SecretKey::random(&mut OsRng);
 
-    k1util::save(&key, &key_path(data_dir)).map_err(K1Error::K1UtilError)?;
+    pluto_k1util::save(&key, &key_path(data_dir)).map_err(K1Error::K1UtilError)?;
 
     Ok(key)
 }
@@ -90,7 +89,7 @@ mod tests {
 
     fn create_test_key_file(data_dir: &Path) -> Result<SecretKey> {
         let key = SecretKey::random(&mut OsRng);
-        k1util::save(&key, &key_path(data_dir))?;
+        pluto_k1util::save(&key, &key_path(data_dir))?;
         Ok(key)
     }
 

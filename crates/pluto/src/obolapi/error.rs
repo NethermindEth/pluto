@@ -43,13 +43,13 @@ pub enum Error {
     #[error("empty hex string")]
     EmptyHex,
 
-    /// SSZ hashing error from charon-cluster.
+    /// SSZ hashing error from [`pluto_cluster`].
     #[error("SSZ hashing error: {0}")]
     Ssz(#[from] pluto_cluster::ssz::SSZError<pluto_cluster::ssz_hasher::Hasher>),
 
     /// K1 signing error.
     #[error("K1 signing error: {0}")]
-    K1Sign(#[from] charon_k1util::K1UtilError),
+    K1Sign(#[from] pluto_k1util::K1UtilError),
 
     /// Crypto/threshold aggregation error.
     #[error("crypto error: {0}")]

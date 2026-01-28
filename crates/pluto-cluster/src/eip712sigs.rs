@@ -1,5 +1,4 @@
 use crate::{definition::Definition, operator::Operator, version::V1_3};
-use charon_k1util::{self as k1util, K1UtilError};
 use k256::SecretKey;
 use pluto_eth2util::{
     eip712::{
@@ -26,7 +25,7 @@ pub enum EIP712Error {
 
     /// Failed to sign EIP-712.
     #[error("Failed to sign EIP-712: {0}")]
-    FailedToSign(K1UtilError),
+    FailedToSign(pluto_k1util::K1UtilError),
 }
 
 struct EIP712TypeField {
@@ -168,7 +167,7 @@ fn sign_eip712(
     operator: &Operator,
 ) -> Result<Vec<u8>> {
     let digest = digest_eip712(typ, definition, operator)?;
-    let signature = k1util::sign(secret_key, &digest).map_err(EIP712Error::FailedToSign)?;
+    let signature = pluto_k1util::sign(secret_key, &digest).map_err(EIP712Error::FailedToSign)?;
     Ok(signature.to_vec())
 }
 

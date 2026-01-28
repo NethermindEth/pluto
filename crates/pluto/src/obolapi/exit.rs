@@ -275,7 +275,7 @@ impl Client {
         };
 
         let msg_root = unsigned_msg.hash_tree_root()?;
-        let signature = charon_k1util::sign(identity_key, &msg_root)?;
+        let signature = pluto_k1util::sign(identity_key, &msg_root)?;
 
         let signed_req = PartialExitRequest {
             unsigned: unsigned_msg,
@@ -315,7 +315,7 @@ impl Client {
 
         let exit_auth_data_root = exit_auth_data.hash_tree_root()?;
 
-        let lock_hash_signature = charon_k1util::sign(identity_key, &exit_auth_data_root)?;
+        let lock_hash_signature = pluto_k1util::sign(identity_key, &exit_auth_data_root)?;
 
         let headers = vec![(
             "Authorization".to_string(),
@@ -394,7 +394,7 @@ impl Client {
 
         let exit_auth_data_root = exit_auth_data.hash_tree_root()?;
 
-        let lock_hash_signature = charon_k1util::sign(identity_key, &exit_auth_data_root)?;
+        let lock_hash_signature = pluto_k1util::sign(identity_key, &exit_auth_data_root)?;
 
         let headers = vec![(
             "Authorization".to_string(),

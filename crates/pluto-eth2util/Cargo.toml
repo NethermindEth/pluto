@@ -13,7 +13,7 @@ base64.workspace = true
 sha3.workspace = true
 hex.workspace = true
 charon-testutil.workspace = true
-charon-k1util.workspace = true
+pluto-k1util.workspace = true
 chrono.workspace = true
 
 [lints]

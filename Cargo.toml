@@ -8,7 +8,7 @@ members = [
     "crates/pluto-crypto",
     "crates/pluto-dkg",
     "crates/pluto-eth2util",
-    "crates/charon-k1util",
+    "crates/pluto-k1util",
     "crates/charon-p2p",
     "crates/charon-testutil",
     "crates/tracing",
@@ -83,7 +83,7 @@ pluto-core = { path = "crates/pluto-core" }
 pluto-crypto = { path = "crates/pluto-crypto" }
 pluto-dkg = { path = "crates/pluto-dkg" }
 pluto-eth2util = { path = "crates/pluto-eth2util" }
-charon-k1util = { path = "crates/charon-k1util" }
+pluto-k1util = { path = "crates/pluto-k1util" }
 charon-p2p = { path = "crates/charon-p2p" }
 charon-testutil = { path = "crates/charon-testutil" }
 charon-tracing = { path = "crates/tracing" }

@@ -19,7 +19,7 @@ tokio.workspace = true
 pluto-core.workspace = true
 charon-p2p.workspace = true
 pluto-eth2util.workspace = true
-charon-k1util.workspace = true
+pluto-k1util.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

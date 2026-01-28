@@ -1,6 +1,5 @@
 use std::ops::Deref;
 
-use charon_k1util::verify_65;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
@@ -14,8 +13,8 @@ use crate::{
     ssz_hasher::Hasher,
     version::versions::*,
 };
-use charon_k1util::K1UtilError;
 use pluto_eth2util::enr::{Record, RecordError};
+use pluto_k1util::K1UtilError;
 use serde_with::{
     base64::{Base64, Standard},
     serde_as,
@@ -250,7 +249,8 @@ impl Lock {
                 .public_key
                 .ok_or_else(|| LockError::MissingPublicKey)?;
 
-            let verified = verify_65(&pub_key, &self.lock_hash, &self.node_signatures[idx])?;
+            let verified =
+                pluto_k1util::verify_65(&pub_key, &self.lock_hash, &self.node_signatures[idx])?;
 
             if !verified {
                 return Err(LockError::NodeSignatureVerificationFailed {

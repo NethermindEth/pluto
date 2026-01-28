@@ -8,7 +8,6 @@ use std::{
     path::PathBuf,
 };
 
-use charon_k1util;
 use charon_p2p::k1;
 use k256::SecretKey;
 use pluto_eth2util::enr::Record;
@@ -36,7 +35,7 @@ pub fn run(args: EnrArgs) -> Result<()> {
 
     let key = match k1::load_priv_key(&args.data_dir) {
         Ok(key) => key,
-        Err(k1::K1Error::K1UtilError(charon_k1util::K1UtilError::FailedToReadFile(io_err)))
+        Err(k1::K1Error::K1UtilError(pluto_k1util::K1UtilError::FailedToReadFile(io_err)))
             if io_err.kind() == std::io::ErrorKind::NotFound =>
         {
             // File not found
