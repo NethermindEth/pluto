@@ -3,7 +3,7 @@ members = [
     "crates/app",
     "crates/build-proto",
     "crates/cli",
-    "crates/pluto-cluster",
+    "crates/cluster",
     "crates/pluto-core",
     "crates/pluto-crypto",
     "crates/pluto-dkg",
@@ -78,7 +78,7 @@ wiremock = "0.6"
 pluto-app = { path = "crates/app" }
 pluto-build-proto = { path = "crates/build-proto" }
 pluto-cli = { path = "crates/cli" }
-pluto-cluster = { path = "crates/pluto-cluster" }
+pluto-cluster = { path = "crates/cluster" }
 pluto-core = { path = "crates/pluto-core" }
 pluto-crypto = { path = "crates/pluto-crypto" }
 pluto-dkg = { path = "crates/pluto-dkg" }
