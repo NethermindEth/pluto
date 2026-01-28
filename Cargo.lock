@@ -1650,22 +1650,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "charon-cli"
-version = "1.7.1"
-dependencies = [
- "charon-core",
- "charon-eth2",
- "charon-k1util",
- "charon-p2p",
- "clap",
- "hex",
- "k256",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
 name = "charon-cluster"
 version = "1.7.1"
 dependencies = [
@@ -5562,6 +5546,22 @@ name = "pluto-build-proto"
 version = "1.7.1"
 dependencies = [
  "prost-build",
+]
+
+[[package]]
+name = "pluto-cli"
+version = "1.7.1"
+dependencies = [
+ "charon-core",
+ "charon-eth2",
+ "charon-k1util",
+ "charon-p2p",
+ "clap",
+ "hex",
+ "k256",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
