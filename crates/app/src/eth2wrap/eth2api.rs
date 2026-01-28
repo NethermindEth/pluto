@@ -1,10 +1,11 @@
 use pluto_eth2api::ValidatorStatus;
 
-/// Error that can occur when using the [`eth2api::EthBeaconNodeApiClient`].
+/// Error that can occur when using the
+/// [`pluto_eth2api::EthBeaconNodeApiClient`].
 #[derive(Debug, thiserror::Error)]
 pub enum EthBeaconNodeApiClientError {
-    /// Underlying error from [`eth2api::EthBeaconNodeApiClient`] when making a
-    /// request.
+    /// Underlying error from [`pluto_eth2api::EthBeaconNodeApiClient`] when
+    /// making a request.
     #[error("Request error: {0}")]
     RequestError(#[from] anyhow::Error),
 
