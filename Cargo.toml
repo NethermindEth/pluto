@@ -88,7 +88,7 @@ pluto-k1util = { path = "crates/k1util" }
 pluto-relay-server = { path = "crates/relay-server" }
 pluto-testutil = { path = "crates/testutil" }
 pluto-tracing = { path = "crates/tracing" }
-# TODO: Rename to `pluto-9`
+# TODO: Rename to `pluto-*`
 charon-p2p = { path = "crates/charon-p2p" }
 charon-peerinfo = { path = "crates/peerinfo" }
 
