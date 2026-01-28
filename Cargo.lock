@@ -1650,15 +1650,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "charon-dkg"
-version = "1.7.1"
-dependencies = [
- "pluto-build-proto",
- "prost 0.14.3",
- "prost-types 0.14.3",
-]
-
-[[package]]
 name = "charon-eth2"
 version = "1.7.1"
 dependencies = [
@@ -5562,6 +5553,15 @@ dependencies = [
  "rand_core 0.6.4",
  "serde",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "pluto-dkg"
+version = "1.7.1"
+dependencies = [
+ "pluto-build-proto",
+ "prost 0.14.3",
+ "prost-types 0.14.3",
 ]
 
 [[package]]
