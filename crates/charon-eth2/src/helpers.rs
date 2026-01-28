@@ -26,6 +26,14 @@ pub enum HelperError {
     /// Invalid HTTP header format
     #[error("HTTP headers must be comma separated values formatted as header=value")]
     InvalidHTTPHeader,
+
+    /// Failed to get the beacon node spec
+    #[error("getting spec: {0}")]
+    GettingSpec(String),
+
+    /// Failed to fetch a required value from the spec
+    #[error("fetch slots per epoch")]
+    FetchSlotsPerEpoch,
 }
 
 type Result<T> = std::result::Result<T, HelperError>;
@@ -110,7 +118,37 @@ pub fn public_key_to_address(pubkey: &PublicKey) -> String {
     checksum_address_bytes(&hash[12..])
 }
 
-// TODO: missing EpochFromSlot https://github.com/ObolNetwork/charon/blob/v1.7.1/eth2util/helpers.go#L62
+/// Returns epoch calculated from given slot.
+pub async fn epoch_from_slot(
+    client: &eth2api::client::EthBeaconNodeApiClient,
+    slot: u64,
+) -> Result<u64> {
+    let resp = match client
+        .get_spec(eth2api::GetSpecRequest {})
+        .await
+        .map_err(|e| HelperError::GettingSpec(e.to_string()))?
+    {
+        eth2api::GetSpecResponse::Ok(resp) => resp,
+        eth2api::GetSpecResponse::InternalServerError(err) => {
+            return Err(HelperError::GettingSpec(err.message));
+        }
+        eth2api::GetSpecResponse::Unknown => {
+            return Err(HelperError::GettingSpec("unknown response".into()));
+        }
+    };
+
+    let slots_per_epoch: u64 = resp
+        .data
+        .as_object()
+        .and_then(|obj| obj.get("SLOTS_PER_EPOCH"))
+        .and_then(|v| v.as_str())
+        .ok_or(HelperError::FetchSlotsPerEpoch)?
+        .parse()
+        .map_err(|_| HelperError::FetchSlotsPerEpoch)?;
+
+    slot.checked_div(slots_per_epoch)
+        .ok_or(HelperError::FetchSlotsPerEpoch)
+}
 
 #[cfg(test)]
 mod tests {

@@ -1743,6 +1743,7 @@ dependencies = [
  "charon-k1util",
  "charon-testutil",
  "chrono",
+ "eth2api",
  "glob",
  "hex",
  "k256",

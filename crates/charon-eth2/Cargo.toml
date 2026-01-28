@@ -23,6 +23,7 @@ tree_hash_derive.workspace = true
 charon-crypto.workspace = true
 glob.workspace = true
 tokio.workspace = true
+eth2api.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
