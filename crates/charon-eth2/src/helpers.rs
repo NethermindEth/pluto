@@ -28,8 +28,10 @@ pub enum HelperError {
     InvalidHTTPHeader,
 }
 
+type Result<T> = std::result::Result<T, HelperError>;
+
 /// Validates the format of HTTP headers.
-pub fn validate_http_headers(headers: &[String]) -> Result<(), HelperError> {
+pub fn validate_http_headers(headers: &[String]) -> Result<()> {
     if headers.is_empty() {
         return Ok(());
     }
@@ -45,7 +47,7 @@ pub fn validate_http_headers(headers: &[String]) -> Result<(), HelperError> {
 
 /// Validates and parses HTTP headers into a map of key-value pairs.
 /// Returns empty map if headers is empty.
-pub fn parse_http_headers(headers: &[String]) -> Result<HashMap<String, String>, HelperError> {
+pub fn parse_http_headers(headers: &[String]) -> Result<HashMap<String, String>> {
     let mut parsed_headers = HashMap::new();
 
     if headers.is_empty() {
@@ -65,7 +67,7 @@ pub fn parse_http_headers(headers: &[String]) -> Result<HashMap<String, String>,
 }
 
 /// Returns an EIP55-compliant checksummed address.
-pub fn checksum_address(address: &str) -> Result<String, HelperError> {
+pub fn checksum_address(address: &str) -> Result<String> {
     // Validate format: must have "0x" prefix and be exactly 42 chars (0x + 40 hex
     // chars)
     if !address.starts_with("0x") || address.len() != 2 + 20 * 2 {

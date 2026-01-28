@@ -11,6 +11,8 @@ pub use constants::*;
 pub use errors::DepositError;
 pub use types::*;
 
+use errors::Result;
+
 use crate::network;
 use charon_crypto::{
     blst_impl::BlstImpl,
@@ -29,10 +31,7 @@ pub fn max_deposit_amount(compounding: bool) -> Gwei {
 }
 
 /// Serializes a list of deposit data into a single file.
-pub fn marshal_deposit_data(
-    deposit_datas: &[DepositData],
-    network: &str,
-) -> Result<Vec<u8>, DepositError> {
+pub fn marshal_deposit_data(deposit_datas: &[DepositData], network: &str) -> Result<Vec<u8>> {
     let fork_version = crate::network::network_to_fork_version(network)?;
 
     let mut dd_list = Vec::new();
@@ -106,7 +105,7 @@ pub(crate) fn get_deposit_domain(fork_version: Version) -> Domain {
 pub(crate) fn withdrawal_creds_from_addr(
     addr: &str,
     compounding: bool,
-) -> Result<WithdrawalCredentials, DepositError> {
+) -> Result<WithdrawalCredentials> {
     crate::helpers::checksum_address(addr)?;
 
     // Decode address bytes (we already validated format, so this should succeed)
@@ -134,7 +133,7 @@ pub(crate) fn withdrawal_creds_from_addr(
 }
 
 /// Verifies various conditions about partial deposit amounts.
-pub fn verify_deposit_amounts(amounts: &[Gwei], compounding: bool) -> Result<(), DepositError> {
+pub fn verify_deposit_amounts(amounts: &[Gwei], compounding: bool) -> Result<()> {
     if amounts.is_empty() {
         // If no partial amounts specified, the implementation shall default to 32ETH
         return Ok(());
@@ -201,7 +200,7 @@ pub async fn write_cluster_deposit_data_files(
     network: &str,
     cluster_dir: &Path,
     num_nodes: usize,
-) -> Result<(), DepositError> {
+) -> Result<()> {
     for deposit_data_set in deposit_datas {
         for n in 0..num_nodes {
             let node_dir = cluster_dir.join(format!("node{}", n));
@@ -219,7 +218,7 @@ pub async fn write_deposit_data_file(
     deposit_datas: &[DepositData],
     network: &str,
     data_dir: &Path,
-) -> Result<(), DepositError> {
+) -> Result<()> {
     if deposit_datas.is_empty() {
         return Err(DepositError::EmptyDepositData);
     }
@@ -232,8 +231,7 @@ pub async fn write_deposit_data_file(
         }
     }
 
-    let bytes = marshal_deposit_data(deposit_datas, network)
-        .map_err(|e| DepositError::invalid_data("deposit_data", e.to_string()))?;
+    let bytes = marshal_deposit_data(deposit_datas, network)?;
 
     let file_path = get_deposit_file_path(data_dir, first_amount);
 
@@ -271,7 +269,7 @@ pub fn get_deposit_file_path(data_dir: &Path, amount: Gwei) -> PathBuf {
 }
 
 /// Reads all deposit data files from a cluster directory.d
-pub fn read_deposit_data_files(cluster_dir: &Path) -> Result<Vec<Vec<DepositData>>, DepositError> {
+pub fn read_deposit_data_files(cluster_dir: &Path) -> Result<Vec<Vec<DepositData>>> {
     // Find all deposit-data*.json files
     let pattern = cluster_dir.join("deposit-data*.json");
     let pattern_str = pattern
@@ -280,7 +278,7 @@ pub fn read_deposit_data_files(cluster_dir: &Path) -> Result<Vec<Vec<DepositData
 
     let mut files: Vec<PathBuf> = glob::glob(pattern_str)
         .map_err(|e| DepositError::invalid_data("glob_pattern", e.to_string()))?
-        .filter_map(Result::ok)
+        .filter_map(|r| r.ok())
         .collect();
 
     if files.is_empty() {
@@ -371,10 +369,10 @@ mod tests {
 
     use tempfile::tempdir;
 
+    type Result<T> = std::result::Result<T, String>;
+
     /// Get the private and public keys from a hex-encoded private key.
-    fn get_keys(
-        priv_key_hex: &str,
-    ) -> Result<(charon_crypto::types::PrivateKey, PublicKey), String> {
+    fn get_keys(priv_key_hex: &str) -> Result<(charon_crypto::types::PrivateKey, PublicKey)> {
         let priv_key_bytes = hex::decode(priv_key_hex).map_err(|e| e.to_string())?;
         let priv_key: charon_crypto::types::PrivateKey = priv_key_bytes
             .as_slice()
@@ -390,7 +388,7 @@ mod tests {
     }
 
     /// Generate properly signed deposit data for testing.
-    fn generate_deposit_datas(amount: Gwei) -> Result<Vec<DepositData>, String> {
+    fn generate_deposit_datas(amount: Gwei) -> Result<Vec<DepositData>> {
         const NETWORK: &str = "goerli";
         let priv_keys = [
             "01477d4bfbbcebe1fef8d4d6f624ecbb6e3178558bb1b0d6286c816c66842a6d",
@@ -414,7 +412,9 @@ mod tests {
             let msg = DepositMessage::new(pub_key, withdrawal_addrs[i], amount, true)
                 .map_err(|e| e.to_string())?;
 
-            let sig_root = msg.get_message_signing_root(NETWORK).map_err(|e| e.to_string())?;
+            let sig_root = msg
+                .get_message_signing_root(NETWORK)
+                .map_err(|e| e.to_string())?;
 
             let signature = tbls
                 .sign(&priv_key, &sig_root)
@@ -432,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_message() -> Result<(), String> {
+    fn test_new_message() -> Result<()> {
         const PRIV_KEY: &str = "01477d4bfbbcebe1fef8d4d6f624ecbb6e3178558bb1b0d6286c816c66842a6d";
         const ADDR: &str = "0x321dcb529f3945bc94fecea9d3bc5caf35253b94";
 
@@ -451,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_message_below_minimum() -> Result<(), String> {
+    fn test_new_message_below_minimum() -> Result<()> {
         const PRIV_KEY: &str = "01477d4bfbbcebe1fef8d4d6f624ecbb6e3178558bb1b0d6286c816c66842a6d";
         const ADDR: &str = "0x321dcb529f3945bc94fecea9d3bc5caf35253b94";
 
@@ -465,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_message_above_maximum() -> Result<(), String> {
+    fn test_new_message_above_maximum() -> Result<()> {
         const PRIV_KEY: &str = "01477d4bfbbcebe1fef8d4d6f624ecbb6e3178558bb1b0d6286c816c66842a6d";
         const ADDR: &str = "0x321dcb529f3945bc94fecea9d3bc5caf35253b94";
 
@@ -484,27 +484,27 @@ mod tests {
     }
 
     #[test]
-    fn test_max_deposit_amount() -> Result<(), String> {
+    fn test_max_deposit_amount() -> Result<()> {
         assert_eq!(max_deposit_amount(false), MAX_STANDARD_DEPOSIT_AMOUNT);
         assert_eq!(max_deposit_amount(true), MAX_COMPOUNDING_DEPOSIT_AMOUNT);
         Ok(())
     }
 
     #[test]
-    fn test_verify_deposit_amounts_empty_slice_ok() -> Result<(), String> {
+    fn test_verify_deposit_amounts_empty_slice_ok() -> Result<()> {
         verify_deposit_amounts(&[], false).map_err(|e| e.to_string())?;
         Ok(())
     }
 
     #[test]
-    fn test_verify_deposit_amounts_valid() -> Result<(), String> {
+    fn test_verify_deposit_amounts_valid() -> Result<()> {
         let amounts = vec![16_000_000_000, 16_000_000_000]; // 16 ETH + 16 ETH = 32 ETH
         verify_deposit_amounts(&amounts, false).map_err(|e| e.to_string())?;
         Ok(())
     }
 
     #[test]
-    fn test_verify_deposit_amounts_below_minimum() -> Result<(), String> {
+    fn test_verify_deposit_amounts_below_minimum() -> Result<()> {
         let amounts = vec![500_000_000, 31_500_000_000]; // 0.5 ETH + 31.5 ETH
         match verify_deposit_amounts(&amounts, false) {
             Err(DepositError::AmountBelowMinimum(_)) => Ok(()),
@@ -513,7 +513,7 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_deposit_amounts_exceeds_max_unless_compounding() -> Result<(), String> {
+    fn test_verify_deposit_amounts_exceeds_max_unless_compounding() -> Result<()> {
         let amounts = vec![
             MIN_DEPOSIT_AMOUNT,
             DEFAULT_DEPOSIT_AMOUNT + MIN_DEPOSIT_AMOUNT,
@@ -536,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_deposit_amounts_sum_below_default() -> Result<(), String> {
+    fn test_verify_deposit_amounts_sum_below_default() -> Result<()> {
         let amounts = vec![8_000_000_000, 16_000_000_000]; // 8 ETH + 16 ETH = 24 ETH
         match verify_deposit_amounts(&amounts, false) {
             Err(DepositError::AmountSumBelowDefault(_)) => Ok(()),
@@ -545,21 +545,21 @@ mod tests {
     }
 
     #[test]
-    fn test_eths_to_gweis() -> Result<(), String> {
+    fn test_eths_to_gweis() -> Result<()> {
         assert_eq!(eths_to_gweis(&[]), Vec::<Gwei>::new());
         assert_eq!(eths_to_gweis(&[1, 5]), vec![1_000_000_000, 5_000_000_000]);
         Ok(())
     }
 
     #[test]
-    fn test_dedup_amounts() -> Result<(), String> {
+    fn test_dedup_amounts() -> Result<()> {
         let amounts = vec![100, 500, 100, 0, 0, 300];
         assert_eq!(dedup_amounts(&amounts), vec![0, 100, 300, 500]);
         Ok(())
     }
 
     #[test]
-    fn test_default_deposit_amounts() -> Result<(), String> {
+    fn test_default_deposit_amounts() -> Result<()> {
         assert_eq!(
             default_deposit_amounts(false),
             vec![MIN_DEPOSIT_AMOUNT, DEFAULT_DEPOSIT_AMOUNT]
@@ -578,7 +578,7 @@ mod tests {
     }
 
     #[test]
-    fn test_withdrawal_creds_from_addr() -> Result<(), String> {
+    fn test_withdrawal_creds_from_addr() -> Result<()> {
         let addr = "0x321dcb529f3945bc94fecea9d3bc5caf35253b94";
 
         // Test non-compounding (0x01 prefix)
@@ -600,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn test_withdrawal_creds_without_prefix() -> Result<(), String> {
+    fn test_withdrawal_creds_without_prefix() -> Result<()> {
         // Address without 0x prefix should fail (matching Go's behavior)
         let addr = "321dcb529f3945bc94fecea9d3bc5caf35253b94";
         match withdrawal_creds_from_addr(addr, false) {
@@ -610,7 +610,7 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_address_length() -> Result<(), String> {
+    fn test_invalid_address_length() -> Result<()> {
         let addr = "0x321dcb5"; // Too short
         match withdrawal_creds_from_addr(addr, false) {
             Err(DepositError::AddressValidationError(_)) => Ok(()),
@@ -619,7 +619,7 @@ mod tests {
     }
 
     #[test]
-    fn test_marshal_deposit_data_matches() -> Result<(), String> {
+    fn test_marshal_deposit_data_matches() -> Result<()> {
         let datas = generate_deposit_datas(DEFAULT_DEPOSIT_AMOUNT)?;
         let bytes = marshal_deposit_data(&datas, "goerli").map_err(|e| e.to_string())?;
         let actual = String::from_utf8(bytes).map_err(|e| e.to_string())?;
@@ -656,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn test_address_parsing_valid_checksum() -> Result<(), String> {
+    fn test_address_parsing_valid_checksum() -> Result<()> {
         // Valid EIP-55 checksummed address should pass
         let addr = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
         crate::helpers::checksum_address(addr).map_err(|e| e.to_string())?;
@@ -665,7 +665,7 @@ mod tests {
     }
 
     #[test]
-    fn test_address_parsing_invalid_checksum_accepted() -> Result<(), String> {
+    fn test_address_parsing_invalid_checksum_accepted() -> Result<()> {
         // Mixed case with WRONG checksum is ACCEPTED
         let addr_wrong = "0x5aAeb6053f3E94C9b9A09f33669435E7Ef1BeAed";
         crate::helpers::checksum_address(addr_wrong).map_err(|e| e.to_string())?;
@@ -674,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn test_address_requires_prefix() -> Result<(), String> {
+    fn test_address_requires_prefix() -> Result<()> {
         // Address without 0x prefix should fail
         let addr = "321dcb529f3945bc94fecea9d3bc5caf35253b94";
         assert!(withdrawal_creds_from_addr(addr, false).is_err());
@@ -686,7 +686,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_deposit_file_path() -> Result<(), String> {
+    fn test_get_deposit_file_path() -> Result<()> {
         let dir = Path::new("/tmp/test");
 
         // Default amount (32 ETH) should use old filename
@@ -708,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_deposit_data_sets_empty() -> Result<(), String> {
+    fn test_merge_deposit_data_sets_empty() -> Result<()> {
         let a: Vec<Vec<DepositData>> = vec![];
         let b = vec![vec![DepositData {
             pub_key: [1u8; 48],
@@ -726,7 +726,7 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_deposit_data_sets() -> Result<(), String> {
+    fn test_merge_deposit_data_sets() -> Result<()> {
         let deposit_datas1 = generate_deposit_datas(DEFAULT_DEPOSIT_AMOUNT)?;
         let half = DEFAULT_DEPOSIT_AMOUNT
             .checked_div(2)
@@ -757,7 +757,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_write_deposit_data_file() -> Result<(), String> {
+    async fn test_write_deposit_data_file() -> Result<()> {
         let dir = tempdir().map_err(|e| e.to_string())?;
         let datas = generate_deposit_datas(DEFAULT_DEPOSIT_AMOUNT)?;
 
@@ -788,7 +788,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_write_deposit_data_file_errors() -> Result<(), String> {
+    async fn test_write_deposit_data_file_errors() -> Result<()> {
         let dir = tempdir().map_err(|e| e.to_string())?;
 
         // empty deposit datas
@@ -821,7 +821,7 @@ mod tests {
     }
 
     #[test]
-    fn test_read_deposit_data_files_errors() -> Result<(), String> {
+    fn test_read_deposit_data_files_errors() -> Result<()> {
         // no files found
         let dir = tempdir().map_err(|e| e.to_string())?;
         let err = read_deposit_data_files(dir.path())
@@ -847,15 +847,15 @@ mod tests {
     }
 
     #[test]
-    fn test_read_deposit_data_files_decode_and_length_errors() -> Result<(), String> {
+    fn test_read_deposit_data_files_decode_and_length_errors() -> Result<()> {
         // Use a fresh dir per case (files are made read-only).
-        fn mk_dir() -> Result<tempfile::TempDir, String> {
+        fn mk_dir() -> Result<tempfile::TempDir> {
             tempdir().map_err(|e| e.to_string())
         }
 
         // helper: write a valid deposit file, then rewrite it with a modified JSON
         // payload
-        fn rewrite_file(path: &Path, bytes: Vec<u8>) -> Result<(), String> {
+        fn rewrite_file(path: &Path, bytes: Vec<u8>) -> Result<()> {
             if path.exists() {
                 std::fs::remove_file(path).map_err(|e| e.to_string())?;
             }
@@ -982,7 +982,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_write_cluster_deposit_data_files() -> Result<(), String> {
+    async fn test_write_cluster_deposit_data_files() -> Result<()> {
         const NUM_NODES: usize = 4;
         let dir = tempdir().map_err(|e| e.to_string())?;
 

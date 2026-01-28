@@ -112,6 +112,8 @@ pub enum DepositError {
     SerializationError(#[from] serde_json::Error),
 }
 
+pub(crate) type Result<T> = std::result::Result<T, DepositError>;
+
 impl DepositError {
     /// Creates an InvalidData error with the given field and message
     pub fn invalid_data(field: impl Into<String>, message: impl Into<String>) -> Self {

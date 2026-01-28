@@ -94,7 +94,7 @@ impl DepositMessage {
         withdrawal_addr: &str,
         amount: Gwei,
         compounding: bool,
-    ) -> Result<Self, super::DepositError> {
+    ) -> super::Result<Self> {
         let withdrawal_credentials =
             super::withdrawal_creds_from_addr(withdrawal_addr, compounding)?;
 
@@ -118,18 +118,15 @@ impl DepositMessage {
     }
 
     /// Returns the signing root for this deposit message on the given network.
-    pub fn get_message_signing_root(&self, network: &str) -> Result<Root, super::DepositError> {
+    pub fn get_message_signing_root(&self, network: &str) -> super::Result<Root> {
         let msg_root = self.tree_hash_root();
 
-        let fork_version_bytes =
-            super::network::network_to_fork_version_bytes(network)?;
+        let fork_version_bytes = super::network::network_to_fork_version_bytes(network)?;
 
         let fork_version: Version = fork_version_bytes.as_slice().try_into().map_err(|_| {
-            super::DepositError::NetworkError(
-                super::network::NetworkError::InvalidForkVersion {
-                    fork_version: hex::encode(&fork_version_bytes),
-                },
-            )
+            super::DepositError::NetworkError(super::network::NetworkError::InvalidForkVersion {
+                fork_version: hex::encode(&fork_version_bytes),
+            })
         })?;
 
         let domain = super::get_deposit_domain(fork_version);
