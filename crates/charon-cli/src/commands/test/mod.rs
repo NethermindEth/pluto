@@ -19,7 +19,6 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fmt,
-    fs::OpenOptions,
     io::Write,
     path::{Path, PathBuf},
     time::Duration as StdDuration,
@@ -31,6 +30,8 @@ use crate::{
     error::{CliError, Result as CliResult},
 };
 
+use std::os::unix::fs::PermissionsExt as _;
+use tokio::io::AsyncReadExt;
 use charon::obolapi::{Client, ClientOptions};
 use charon_cluster::ssz_hasher::{HashWalker, Hasher};
 use charon_eth2::enr::Record;
@@ -217,7 +218,7 @@ impl fmt::Display for CategoryScore {
 }
 
 /// Wrapper for test error with custom serialization.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TestResultError(String);
 
 impl TestResultError {
@@ -251,7 +252,7 @@ impl<E: std::error::Error> From<E> for TestResultError {
 }
 
 /// Result of a single test.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TestResult {
     #[serde(rename = "name")]
     pub name: String,
@@ -329,7 +330,7 @@ impl TestCaseName {
 }
 
 /// Result of a test category.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TestCategoryResult {
     #[serde(
         rename = "category_name",
@@ -361,7 +362,7 @@ impl TestCategoryResult {
 }
 
 /// All test categories result for JSON output.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct AllCategoriesResult {
     #[serde(rename = "charon_peers", skip_serializing_if = "Option::is_none")]
     pub peers: Option<TestCategoryResult>,
@@ -402,7 +403,7 @@ pub async fn publish_result_to_obol_api(
     api_url: &str,
     private_key_file: &Path,
 ) -> CliResult<()> {
-    let private_key = load_or_generate_key(private_key_file)?;
+    let private_key = load_or_generate_key(private_key_file).await?;
     let enr = create_enr(&private_key)?;
     let sign_data_bytes = serde_json::to_vec(&data).map_err(|e| CliError::Json {
         source: e,
@@ -428,23 +429,24 @@ pub async fn publish_result_to_obol_api(
 }
 
 /// Writes test results to a JSON file.
-pub fn write_result_to_file(result: &TestCategoryResult, path: &Path) -> CliResult<()> {
-    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
-
-    let mut existing_file = OpenOptions::new()
+pub async fn write_result_to_file(result: &TestCategoryResult, path: &Path) -> CliResult<()> {
+    let mut existing_file: tokio::fs::File = tokio::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
         .mode(0o644)
-        .open(path)?;
+        .open(path)
+        .await?;
 
-    let stat = existing_file.metadata()?;
+    let stat = existing_file.metadata().await?;
 
     let mut all_results: AllCategoriesResult = if stat.len() == 0 {
         AllCategoriesResult::default()
     } else {
-        serde_json::from_reader(&mut existing_file)?
+        let mut buf = Vec::new();
+        existing_file.read_to_end(&mut buf).await?;
+        serde_json::from_slice(&buf)?
     };
 
     let category = result
@@ -462,37 +464,49 @@ pub fn write_result_to_file(result: &TestCategoryResult, path: &Path) -> CliResu
         }
     }
 
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let dir = path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
     let base = path
         .file_name()
         .ok_or_else(|| CliError::Other(format!("no filename in path: {}", path.display())))?
         .to_string_lossy()
         .to_string();
-
-    // Match Go's `os.CreateTemp(dir, fmt.Sprintf("%v-tmp-*.json", base))`.
-    let mut tmp = tempfile::Builder::new()
-        .prefix(&format!("{base}-tmp-"))
-        .suffix(".json")
-        .tempfile_in(dir)
-        .map_err(|e| CliError::Io {
-            source: e,
-            context: "create temp file".to_string(),
-        })?;
-
-    tmp.as_file()
-        .set_permissions(std::fs::Permissions::from_mode(0o644))?;
+    let path = path.to_path_buf();
 
     let file_content_json = serde_json::to_vec(&all_results).map_err(|e| CliError::Json {
         source: e,
         context: "marshal fileResult to JSON".to_string(),
     })?;
 
-    tmp.as_file_mut().write_all(&file_content_json)?;
+    // tempfile is a synchronous crate
+    tokio::task::spawn_blocking(move || -> CliResult<()> {
+        use std::io::Write as _;
 
-    tmp.persist(path).map_err(|e| CliError::Io {
-        source: e.error,
-        context: "rename temp file".to_string(),
-    })?;
+        let mut tmp = tempfile::Builder::new()
+            .prefix(&format!("{base}-tmp-"))
+            .suffix(".json")
+            .tempfile_in(&dir)
+            .map_err(|e| CliError::Io {
+                source: e,
+                context: "create temp file".to_string(),
+            })?;
+        
+        tmp.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o644))?;
+
+        tmp.as_file_mut().write_all(&file_content_json)?;
+
+        tmp.persist(&path).map_err(|e| CliError::Io {
+            source: e.error,
+            context: "rename temp file".to_string(),
+        })?;
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| CliError::Other(format!("spawn_blocking: {}", e)))??;
 
     Ok(())
 }
@@ -669,8 +683,8 @@ pub fn sort_tests(tests: &mut [TestCaseName]) {
     tests.sort_by_key(|t| t.order);
 }
 
-fn load_or_generate_key(path: &Path) -> CliResult<SecretKey> {
-    if path.exists() {
+async fn load_or_generate_key(path: &Path) -> CliResult<SecretKey> {
+    if tokio::fs::try_exists(path).await? {
         Ok(load(path)?)
     } else {
         tracing::warn!(
@@ -853,5 +867,144 @@ mod tests {
         };
 
         assert_hash(&data, GO_HASH_SINGLE_CATEGORY);
+    }
+
+    #[tokio::test]
+    async fn test_write_result_to_file_creates_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output.json");
+
+        let mut result = TestCategoryResult::new(TestCategory::Peers);
+        result.score = Some(CategoryScore::A);
+        let mut tests = vec![TestResult::new("Ping")];
+        tests[0].verdict = TestVerdict::Ok;
+        tests[0].measurement = "5ms".to_string();
+        result.targets.insert("peer1".to_string(), tests);
+
+        write_result_to_file(&result, &path).await.unwrap();
+
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        let written: AllCategoriesResult = serde_json::from_str(&content).unwrap();
+
+        let expected = AllCategoriesResult {
+            peers: Some(result),
+            ..Default::default()
+        };
+        assert_eq!(written, expected);
+    }
+
+    #[tokio::test]
+    async fn test_write_result_to_file_merges_categories() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output.json");
+
+        let mut peers = TestCategoryResult::new(TestCategory::Peers);
+        peers.score = Some(CategoryScore::A);
+        peers
+            .targets
+            .insert("peer1".to_string(), vec![TestResult::new("Ping")]);
+        write_result_to_file(&peers, &path).await.unwrap();
+
+        let mut beacon = TestCategoryResult::new(TestCategory::Beacon);
+        beacon.score = Some(CategoryScore::B);
+        beacon.targets.insert(
+            "http://beacon:5052".to_string(),
+            vec![TestResult::new("Version")],
+        );
+        write_result_to_file(&beacon, &path).await.unwrap();
+
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        let written: AllCategoriesResult = serde_json::from_str(&content).unwrap();
+
+        let expected = AllCategoriesResult {
+            peers: Some(peers),
+            beacon: Some(beacon),
+            ..Default::default()
+        };
+        assert_eq!(written, expected);
+    }
+
+    #[tokio::test]
+    async fn test_write_result_to_file_overwrites_same_category() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output.json");
+
+        let mut first = TestCategoryResult::new(TestCategory::Peers);
+        first.score = Some(CategoryScore::A);
+        first
+            .targets
+            .insert("peer1".to_string(), vec![TestResult::new("Ping")]);
+        write_result_to_file(&first, &path).await.unwrap();
+
+        let mut second = TestCategoryResult::new(TestCategory::Peers);
+        second.score = Some(CategoryScore::C);
+        second.targets.insert(
+            "peer2".to_string(),
+            vec![TestResult::new("PingMeasure")],
+        );
+        write_result_to_file(&second, &path).await.unwrap();
+
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        let written: AllCategoriesResult = serde_json::from_str(&content).unwrap();
+
+        let expected = AllCategoriesResult {
+            peers: Some(second),
+            ..Default::default()
+        };
+        assert_eq!(written, expected);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_write_result_to_file_sets_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output.json");
+
+        let result = TestCategoryResult::new(TestCategory::Infra);
+        write_result_to_file(&result, &path).await.unwrap();
+
+        let metadata = tokio::fs::metadata(&path).await.unwrap();
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o644);
+    }
+
+    #[tokio::test]
+    async fn test_write_result_to_file_all_categories() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output.json");
+
+        let mut expected = AllCategoriesResult::default();
+        let categories = [
+            TestCategory::Peers,
+            TestCategory::Beacon,
+            TestCategory::Validator,
+            TestCategory::Mev,
+            TestCategory::Infra,
+        ];
+
+        for category in &categories {
+            let mut result = TestCategoryResult::new(*category);
+            result.score = Some(CategoryScore::A);
+            result.targets.insert(
+                format!("target-{}", category),
+                vec![TestResult::new("Ping")],
+            );
+            write_result_to_file(&result, &path).await.unwrap();
+
+            match category {
+                TestCategory::Peers => expected.peers = Some(result),
+                TestCategory::Beacon => expected.beacon = Some(result),
+                TestCategory::Validator => expected.validator = Some(result),
+                TestCategory::Mev => expected.mev = Some(result),
+                TestCategory::Infra => expected.infra = Some(result),
+                TestCategory::All => unreachable!(),
+            }
+        }
+
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        let written: AllCategoriesResult = serde_json::from_str(&content).unwrap();
+
+        assert_eq!(written, expected);
     }
 }
