@@ -11,9 +11,9 @@ members = [
     "crates/eth2util",
     "crates/k1util",
     "crates/relay-server",
-    "crates/charon-p2p",
+    "crates/charon-p2p",   # TODO: Rename to `p2p`
     "crates/testutil",
-    "crates/pluto-tracing",
+    "crates/tracing",
     "crates/peerinfo",
 ]
 resolver = "3"
@@ -85,10 +85,11 @@ pluto-dkg = { path = "crates/dkg" }
 pluto-eth2api = { path = "crates/eth2api" }
 pluto-eth2util = { path = "crates/eth2util" }
 pluto-k1util = { path = "crates/k1util" }
-charon-p2p = { path = "crates/charon-p2p" }
 pluto-relay-server = { path = "crates/relay-server" }
 pluto-testutil = { path = "crates/testutil" }
-pluto-tracing = { path = "crates/pluto-tracing" }
+pluto-tracing = { path = "crates/tracing" }
+# TODO: Rename to `pluto-9`
+charon-p2p = { path = "crates/charon-p2p" }
 charon-peerinfo = { path = "crates/peerinfo" }
 
 [workspace.lints.rust]
