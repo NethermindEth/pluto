@@ -1655,7 +1655,6 @@ version = "1.7.1"
 dependencies = [
  "anyhow",
  "axum",
- "charon-tracing",
  "chrono",
  "clap",
  "k256",
@@ -1664,6 +1663,7 @@ dependencies = [
  "pluto-eth2util",
  "pluto-k1util",
  "pluto-testutil",
+ "pluto-tracing",
  "rand 0.8.5",
  "serde",
  "serde_json",
@@ -1710,29 +1710,16 @@ dependencies = [
  "axum",
  "bon",
  "charon-p2p",
- "charon-tracing",
  "k256",
  "libp2p",
  "pluto-core",
  "pluto-eth2util",
+ "pluto-tracing",
  "rand 0.8.5",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "tracing",
- "vise",
- "vise-exporter",
-]
-
-[[package]]
-name = "charon-tracing"
-version = "1.7.1"
-dependencies = [
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-loki",
- "tracing-subscriber",
  "vise",
  "vise-exporter",
 ]
@@ -5415,7 +5402,6 @@ dependencies = [
  "anyhow",
  "backon",
  "bon",
- "charon-tracing",
  "chrono",
  "eth2api",
  "hex",
@@ -5425,6 +5411,7 @@ dependencies = [
  "pluto-core",
  "pluto-crypto",
  "pluto-k1util",
+ "pluto-tracing",
  "prost 0.14.3",
  "prost-types 0.14.3",
  "regex",
@@ -5562,6 +5549,19 @@ dependencies = [
  "k256",
  "rand_core 0.6.4",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "pluto-tracing"
+version = "1.7.1"
+dependencies = [
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-loki",
+ "tracing-subscriber",
+ "vise",
+ "vise-exporter",
 ]
 
 [[package]]
