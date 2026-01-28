@@ -1650,39 +1650,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "charon"
-version = "1.7.1"
-dependencies = [
- "alloy",
- "anyhow",
- "backon",
- "bon",
- "charon-build-proto",
- "charon-cluster",
- "charon-core",
- "charon-crypto",
- "charon-k1util",
- "charon-tracing",
- "chrono",
- "eth2api",
- "hex",
- "k256",
- "prost 0.14.3",
- "prost-types 0.14.3",
- "regex",
- "reqwest 0.13.1",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "url",
- "wiremock",
-]
-
-[[package]]
 name = "charon-build-proto"
 version = "1.7.1"
 dependencies = [
@@ -5562,6 +5529,39 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51bae2ac328883f7acdfea3d66a7c35751187f870bc81f94563733a154d7a670"
 dependencies = [
  "plotters-backend",
+]
+
+[[package]]
+name = "pluto"
+version = "1.7.1"
+dependencies = [
+ "alloy",
+ "anyhow",
+ "backon",
+ "bon",
+ "charon-build-proto",
+ "charon-cluster",
+ "charon-core",
+ "charon-crypto",
+ "charon-k1util",
+ "charon-tracing",
+ "chrono",
+ "eth2api",
+ "hex",
+ "k256",
+ "prost 0.14.3",
+ "prost-types 0.14.3",
+ "regex",
+ "reqwest 0.13.1",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "wiremock",
 ]
 
 [[package]]

@@ -1,5 +1,5 @@
 [package]
-name = "charon"
+name = "pluto"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
@@ -29,9 +29,9 @@ serde_json.workspace = true
 hex.workspace = true
 k256.workspace = true
 bon.workspace = true
-charon-cluster = { workspace = true }
-charon-k1util = { workspace = true }
-charon-crypto = { workspace = true }
+charon-cluster.workspace = true
+charon-k1util.workspace = true
+charon-crypto.workspace = true
 
 [build-dependencies]
 charon-build-proto.workspace = true

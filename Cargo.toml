@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "crates/charon",
+    "crates/pluto",
     "crates/charon-build-proto",
     "crates/charon-cli",
     "crates/charon-cluster",
@@ -75,7 +75,7 @@ testcontainers = "0.26"
 wiremock = "0.6"
 
 # Crates in the workspace
-charon = { path = "crates/charon" }
+pluto = { path = "crates/pluto" }
 charon-core = { path = "crates/charon-core" }
 charon-build-proto = { path = "crates/charon-build-proto" }
 charon-cluster = { path = "crates/charon-cluster" }
