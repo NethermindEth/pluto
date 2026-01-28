@@ -1744,7 +1744,6 @@ dependencies = [
  "charon-testutil",
  "chrono",
  "eth2api",
- "glob",
  "hex",
  "k256",
  "regex",

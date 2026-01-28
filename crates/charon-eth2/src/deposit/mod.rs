@@ -109,7 +109,7 @@ pub(crate) fn withdrawal_creds_from_addr(
     crate::helpers::checksum_address(addr)?;
 
     // Decode address bytes (we already validated format, so this should succeed)
-    let addr_bytes = hex::decode(&addr[2..])?;
+    let addr_bytes = hex::decode(addr.strip_prefix("0x").unwrap_or(addr))?;
 
     let mut creds = [0u8; 32];
 
@@ -195,8 +195,8 @@ pub fn default_deposit_amounts(compounding: bool) -> Vec<Gwei> {
 }
 
 /// Writes deposit-data-*eth.json files for each distinct amount.
-pub async fn write_cluster_deposit_data_files(
-    deposit_datas: &[&[DepositData]],
+pub async fn write_cluster_deposit_data_files<D: AsRef<[DepositData]>>(
+    deposit_datas: &[D],
     network: &str,
     cluster_dir: &Path,
     num_nodes: usize,
@@ -204,16 +204,16 @@ pub async fn write_cluster_deposit_data_files(
     for deposit_data_set in deposit_datas {
         for n in 0..num_nodes {
             let node_dir = cluster_dir.join(format!("node{}", n));
-            write_deposit_data_file(deposit_data_set, network, &node_dir).await?;
+            write_deposit_data_file(deposit_data_set.as_ref(), network, &node_dir).await?;
         }
     }
 
     Ok(())
 }
 
-/// Writes deposit-data-*eth.json file for the provided depositDatas.
+/// Writes deposit-data-*eth.json file for the provided `deposit_datas``.
 // The amount will be reflected in the filename in ETH.
-// All depositDatas amounts shall have equal values.
+// All `deposit_datas` amounts shall have equal values.
 pub async fn write_deposit_data_file(
     deposit_datas: &[DepositData],
     network: &str,
@@ -237,18 +237,9 @@ pub async fn write_deposit_data_file(
 
     tokio::fs::write(&file_path, bytes).await?;
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o444);
-        tokio::fs::set_permissions(&file_path, perms).await?;
-    }
-    #[cfg(not(unix))]
-    {
-        let mut perms = tokio::fs::metadata(&file_path).await?.permissions();
-        perms.set_readonly(true);
-        tokio::fs::set_permissions(&file_path, perms).await?;
-    }
+    let mut perms = tokio::fs::metadata(&file_path).await?.permissions();
+    perms.set_readonly(true);
+    tokio::fs::set_permissions(&file_path, perms).await?;
 
     Ok(())
 }
@@ -268,24 +259,17 @@ pub fn get_deposit_file_path(data_dir: &Path, amount: Gwei) -> PathBuf {
     data_dir.join(filename)
 }
 
-/// Reads all deposit data files from a cluster directory.d
-pub fn read_deposit_data_files(cluster_dir: &Path) -> Result<Vec<Vec<DepositData>>> {
-    // Find all deposit-data*.json files
-    let pattern = cluster_dir.join("deposit-data*.json");
-    let pattern_str = pattern
-        .to_str()
-        .ok_or_else(|| DepositError::InvalidData {
-            field: "path".into(),
-            message: "Invalid UTF-8 in path".into(),
-        })?;
-
-    let mut files: Vec<PathBuf> = glob::glob(pattern_str)
-        .map_err(|e| DepositError::InvalidData {
-            field: "glob_pattern".into(),
-            message: e.to_string(),
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
+/// Reads all deposit data files from a cluster directory.
+pub async fn read_deposit_data_files(cluster_dir: &Path) -> Result<Vec<Vec<DepositData>>> {
+    let mut files = Vec::new();
+    let mut entries = tokio::fs::read_dir(cluster_dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with("deposit-data") && name_str.ends_with(".json") {
+            files.push(entry.path());
+        }
+    }
 
     if files.is_empty() {
         return Err(DepositError::NoFilesFound(
@@ -293,12 +277,10 @@ pub fn read_deposit_data_files(cluster_dir: &Path) -> Result<Vec<Vec<DepositData
         ));
     }
 
-    files.sort_unstable();
-
     let mut deposit_datas_list = Vec::new();
 
     for file in files {
-        let bytes = std::fs::read(&file)?;
+        let bytes = tokio::fs::read(&file).await?;
 
         let dd_list: Vec<DepositDataJson> = serde_json::from_slice(&bytes)?;
 
@@ -786,17 +768,12 @@ mod tests {
             .map_err(|e| e.to_string())?;
         assert_eq!(expected, actual);
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = tokio::fs::metadata(&file_path)
-                .await
-                .map_err(|e| e.to_string())?
-                .permissions()
-                .mode()
-                & 0o777;
-            assert_eq!(mode, 0o444);
-        }
+        let is_readonly = tokio::fs::metadata(&file_path)
+            .await
+            .map_err(|e| e.to_string())?
+            .permissions()
+            .readonly();
+        assert!(is_readonly);
 
         Ok(())
     }
@@ -834,11 +811,12 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_read_deposit_data_files_errors() -> Result<()> {
+    #[tokio::test]
+    async fn test_read_deposit_data_files_errors() -> Result<()> {
         // no files found
         let dir = tempdir().map_err(|e| e.to_string())?;
         let err = read_deposit_data_files(dir.path())
+            .await
             .err()
             .ok_or_else(|| "expected error".to_string())?;
         match err {
@@ -850,6 +828,7 @@ mod tests {
         let file = dir.path().join("deposit-data.json");
         std::fs::write(&file, b"{invalid json").map_err(|e| e.to_string())?;
         let err = read_deposit_data_files(dir.path())
+            .await
             .err()
             .ok_or_else(|| "expected error".to_string())?;
         match err {
@@ -860,8 +839,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_read_deposit_data_files_decode_and_length_errors() -> Result<()> {
+    #[tokio::test]
+    async fn test_read_deposit_data_files_decode_and_length_errors() -> Result<()> {
         // Use a fresh dir per case (files are made read-only).
         fn mk_dir() -> Result<tempfile::TempDir> {
             tempdir().map_err(|e| e.to_string())
@@ -892,6 +871,7 @@ mod tests {
             rewrite_file(&file, corrupt)?;
 
             let err = read_deposit_data_files(dir.path())
+                .await
                 .err()
                 .ok_or_else(|| "expected error".to_string())?;
             match err {
@@ -915,6 +895,7 @@ mod tests {
             rewrite_file(&file, corrupt)?;
 
             let err = read_deposit_data_files(dir.path())
+                .await
                 .err()
                 .ok_or_else(|| "expected error".to_string())?;
             match err {
@@ -938,6 +919,7 @@ mod tests {
             rewrite_file(&file, corrupt)?;
 
             let err = read_deposit_data_files(dir.path())
+                .await
                 .err()
                 .ok_or_else(|| "expected error".to_string())?;
             match err {
@@ -961,6 +943,7 @@ mod tests {
             rewrite_file(&file, corrupt)?;
 
             let err = read_deposit_data_files(dir.path())
+                .await
                 .err()
                 .ok_or_else(|| "expected error".to_string())?;
             match err {
@@ -984,6 +967,7 @@ mod tests {
             rewrite_file(&file, corrupt)?;
 
             let err = read_deposit_data_files(dir.path())
+                .await
                 .err()
                 .ok_or_else(|| "expected error".to_string())?;
             match err {
