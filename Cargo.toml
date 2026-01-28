@@ -4,7 +4,7 @@ members = [
     "crates/build-proto",
     "crates/cli",
     "crates/cluster",
-    "crates/pluto-core",
+    "crates/core",
     "crates/pluto-crypto",
     "crates/pluto-dkg",
     "crates/pluto-eth2util",
@@ -79,7 +79,7 @@ pluto-app = { path = "crates/app" }
 pluto-build-proto = { path = "crates/build-proto" }
 pluto-cli = { path = "crates/cli" }
 pluto-cluster = { path = "crates/cluster" }
-pluto-core = { path = "crates/pluto-core" }
+pluto-core = { path = "crates/core" }
 pluto-crypto = { path = "crates/pluto-crypto" }
 pluto-dkg = { path = "crates/pluto-dkg" }
 pluto-eth2util = { path = "crates/pluto-eth2util" }
