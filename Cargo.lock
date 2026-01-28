@@ -1704,27 +1704,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "charon-relay-server"
-version = "1.7.1"
-dependencies = [
- "axum",
- "bon",
- "charon-p2p",
- "k256",
- "libp2p",
- "pluto-core",
- "pluto-eth2util",
- "pluto-tracing",
- "rand 0.8.5",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "vise",
- "vise-exporter",
-]
-
-[[package]]
 name = "chrono"
 version = "0.4.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5539,6 +5518,27 @@ dependencies = [
  "libp2p",
  "tempfile",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "pluto-relay-server"
+version = "1.7.1"
+dependencies = [
+ "axum",
+ "bon",
+ "charon-p2p",
+ "k256",
+ "libp2p",
+ "pluto-core",
+ "pluto-eth2util",
+ "pluto-tracing",
+ "rand 0.8.5",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "vise",
+ "vise-exporter",
 ]
 
 [[package]]
