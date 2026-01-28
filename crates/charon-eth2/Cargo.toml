@@ -26,6 +26,7 @@ eth2api.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+assert-json-diff.workspace = true
 
 [lints]
 workspace = true
