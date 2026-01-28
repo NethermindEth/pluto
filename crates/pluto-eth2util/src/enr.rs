@@ -334,11 +334,11 @@ pub(crate) fn encode_elements(signature: &[u8], kvs: &HashMap<String, Vec<u8>>) 
 #[cfg(test)]
 mod tests {
     use crate::utils;
-    use charon_testutil::random::generate_insecure_k1_key;
     use k256::{
         Secp256k1,
         elliptic_curve::{SecretKey, rand_core::OsRng},
     };
+    use pluto_testutil::random::generate_insecure_k1_key;
 
     use super::*;
 

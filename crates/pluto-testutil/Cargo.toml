@@ -1,5 +1,5 @@
 [package]
-name = "charon-testutil"
+name = "pluto-testutil"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true

@@ -243,10 +243,11 @@ pub fn verify_p2p_key(peers: &[Peer], key: &SecretKey) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pluto_testutil::random::generate_insecure_k1_key;
 
     #[test]
     fn test_new_peer() {
-        let p2p_key = charon_testutil::random::generate_insecure_k1_key(1);
+        let p2p_key = generate_insecure_k1_key(1);
 
         let record = Record::new(p2p_key, vec![]).unwrap();
 
