@@ -419,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_message() {
+    fn new_message() {
         const PRIV_KEY: &str = "01477d4bfbbcebe1fef8d4d6f624ecbb6e3178558bb1b0d6286c816c66842a6d";
         const ADDR: &str = "0x321dcb529f3945bc94fecea9d3bc5caf35253b94";
 
@@ -437,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_message_below_minimum() {
+    fn new_message_below_minimum() {
         const PRIV_KEY: &str = "01477d4bfbbcebe1fef8d4d6f624ecbb6e3178558bb1b0d6286c816c66842a6d";
         const ADDR: &str = "0x321dcb529f3945bc94fecea9d3bc5caf35253b94";
 
@@ -449,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_message_above_maximum() {
+    fn new_message_above_maximum() {
         const PRIV_KEY: &str = "01477d4bfbbcebe1fef8d4d6f624ecbb6e3178558bb1b0d6286c816c66842a6d";
         const ADDR: &str = "0x321dcb529f3945bc94fecea9d3bc5caf35253b94";
 
@@ -465,18 +465,18 @@ mod tests {
     }
 
     #[test]
-    fn test_max_deposit_amount() {
+    fn max_deposit_amount_by_compounding() {
         assert_eq!(max_deposit_amount(false), MAX_STANDARD_DEPOSIT_AMOUNT);
         assert_eq!(max_deposit_amount(true), MAX_COMPOUNDING_DEPOSIT_AMOUNT);
     }
 
     #[test]
-    fn test_verify_deposit_amounts_empty_slice_ok() {
+    fn verify_deposit_amounts_empty_slice_ok() {
         verify_deposit_amounts(&[], false).unwrap();
     }
 
     #[test]
-    fn test_verify_deposit_amounts_valid() {
+    fn verify_deposit_amounts_valid() {
         let amounts = vec![16_000_000_000, 16_000_000_000]; // 16 ETH + 16 ETH = 32 ETH
         verify_deposit_amounts(&amounts, false).unwrap();
     }
@@ -489,7 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_deposit_amounts_exceeds_standard_max() {
+    fn verify_deposit_amounts_exceeds_standard_max() {
         let amounts = vec![
             MIN_DEPOSIT_AMOUNT,
             DEFAULT_DEPOSIT_AMOUNT + MIN_DEPOSIT_AMOUNT,
@@ -499,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_deposit_amounts_exceeds_standard_max_compounding() {
+    fn verify_deposit_amounts_exceeds_standard_max_compounding() {
         let amounts = vec![
             MIN_DEPOSIT_AMOUNT,
             DEFAULT_DEPOSIT_AMOUNT + MIN_DEPOSIT_AMOUNT,
@@ -508,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_deposit_amounts_exceeds_compounding_max() {
+    fn verify_deposit_amounts_exceeds_compounding_max() {
         let too_large = MAX_COMPOUNDING_DEPOSIT_AMOUNT + MIN_DEPOSIT_AMOUNT;
         let amounts = vec![MIN_DEPOSIT_AMOUNT, too_large];
         let err = verify_deposit_amounts(&amounts, true).unwrap_err();
@@ -516,26 +516,26 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_deposit_amounts_sum_below_default() {
+    fn verify_deposit_amounts_sum_below_default() {
         let amounts = vec![8_000_000_000, 16_000_000_000]; // 8 ETH + 16 ETH = 24 ETH
         let err = verify_deposit_amounts(&amounts, false).unwrap_err();
         assert!(matches!(err, DepositError::AmountSumBelowDefault(_)));
     }
 
     #[test]
-    fn test_eths_to_gweis() {
+    fn eths_to_gweis_conversion() {
         assert_eq!(eths_to_gweis(&[]), Vec::<Gwei>::new());
         assert_eq!(eths_to_gweis(&[1, 5]), vec![1_000_000_000, 5_000_000_000]);
     }
 
     #[test]
-    fn test_dedup_amounts() {
+    fn dedup_amounts_sorts_and_deduplicates() {
         let amounts = vec![100, 500, 100, 0, 0, 300];
         assert_eq!(dedup_amounts(&amounts), vec![0, 100, 300, 500]);
     }
 
     #[test]
-    fn test_default_deposit_amounts() {
+    fn default_deposit_amounts_by_compounding() {
         assert_eq!(
             default_deposit_amounts(false),
             vec![MIN_DEPOSIT_AMOUNT, DEFAULT_DEPOSIT_AMOUNT]
@@ -553,7 +553,7 @@ mod tests {
     }
 
     #[test]
-    fn test_withdrawal_creds_from_addr() {
+    fn withdrawal_creds_from_addr_sets_prefix() {
         let addr = "0x321dcb529f3945bc94fecea9d3bc5caf35253b94";
         let expected = hex::decode("321dcb529f3945bc94fecea9d3bc5caf35253b94").unwrap();
 
@@ -571,7 +571,7 @@ mod tests {
     }
 
     #[test]
-    fn test_withdrawal_creds_without_prefix() {
+    fn withdrawal_creds_without_prefix() {
         // Address without 0x prefix should fail (matching Go's behavior)
         let addr = "321dcb529f3945bc94fecea9d3bc5caf35253b94";
         let err = withdrawal_creds_from_addr(addr, false).unwrap_err();
@@ -579,14 +579,14 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_address_length() {
+    fn invalid_address_length() {
         let addr = "0x321dcb5"; // Too short
         let err = withdrawal_creds_from_addr(addr, false).unwrap_err();
         assert!(matches!(err, DepositError::AddressValidationError(_)));
     }
 
     #[test]
-    fn test_marshal_deposit_data_matches() {
+    fn marshal_deposit_data_matches() {
         let datas = generate_deposit_datas(DEFAULT_DEPOSIT_AMOUNT);
         let bytes = marshal_deposit_data(&datas, "goerli").unwrap();
         let actual: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -598,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_deposit_file_path() {
+    fn get_deposit_file_path_formats_by_amount() {
         let dir = Path::new("/tmp/test");
 
         // Default amount (32 ETH) should use old filename
@@ -627,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_deposit_data_sets_empty() {
+    fn merge_deposit_data_sets_empty() {
         let a: Vec<Vec<DepositData>> = vec![];
         let b = vec![vec![DepositData {
             pub_key: [1u8; 48],
@@ -644,7 +644,7 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_deposit_data_sets() {
+    fn merge_deposit_data_sets_combines_by_amount() {
         let deposit_datas1 = generate_deposit_datas(DEFAULT_DEPOSIT_AMOUNT);
         let half = DEFAULT_DEPOSIT_AMOUNT / 2;
         let deposit_datas2 = generate_deposit_datas(half);
@@ -669,7 +669,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_write_deposit_data_file() {
+    async fn write_deposit_data_file_creates_readonly() {
         let dir = tempdir().unwrap();
         let datas = generate_deposit_datas(DEFAULT_DEPOSIT_AMOUNT);
 
@@ -691,7 +691,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_write_deposit_data_file_errors() {
+    async fn write_deposit_data_file_errors() {
         let dir = tempdir().unwrap();
 
         // empty deposit datas
@@ -711,7 +711,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_read_deposit_data_files_errors() {
+    async fn read_deposit_data_files_errors() {
         // no files found
         let dir = tempdir().unwrap();
         let err = read_deposit_data_files(dir.path()).await.unwrap_err();
@@ -725,7 +725,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_read_deposit_data_files_invalid_pubkey_hex() {
+    async fn read_deposit_data_files_invalid_pubkey_hex() {
         let dir = tempdir().unwrap();
         let datas = generate_deposit_datas(DEFAULT_DEPOSIT_AMOUNT);
         let bytes = marshal_deposit_data(&datas, "goerli").unwrap();
@@ -743,7 +743,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_read_deposit_data_files_invalid_pubkey_length() {
+    async fn read_deposit_data_files_invalid_pubkey_length() {
         let dir = tempdir().unwrap();
         let datas = generate_deposit_datas(DEFAULT_DEPOSIT_AMOUNT);
         let bytes = marshal_deposit_data(&datas, "goerli").unwrap();
@@ -761,7 +761,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_read_deposit_data_files_invalid_withdrawal_creds_hex() {
+    async fn read_deposit_data_files_invalid_withdrawal_creds_hex() {
         let dir = tempdir().unwrap();
         let datas = generate_deposit_datas(DEFAULT_DEPOSIT_AMOUNT);
         let bytes = marshal_deposit_data(&datas, "goerli").unwrap();
@@ -779,7 +779,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_read_deposit_data_files_invalid_signature_hex() {
+    async fn read_deposit_data_files_invalid_signature_hex() {
         let dir = tempdir().unwrap();
         let datas = generate_deposit_datas(DEFAULT_DEPOSIT_AMOUNT);
         let bytes = marshal_deposit_data(&datas, "goerli").unwrap();
@@ -797,7 +797,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_read_deposit_data_files_invalid_signature_length() {
+    async fn read_deposit_data_files_invalid_signature_length() {
         let dir = tempdir().unwrap();
         let datas = generate_deposit_datas(DEFAULT_DEPOSIT_AMOUNT);
         let bytes = marshal_deposit_data(&datas, "goerli").unwrap();
@@ -815,7 +815,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_write_cluster_deposit_data_files() {
+    async fn write_cluster_deposit_data_files_per_node() {
         const NUM_NODES: usize = 4;
         let dir = tempdir().unwrap();
 

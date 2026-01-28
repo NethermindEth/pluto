@@ -156,7 +156,7 @@ mod tests {
     use tree_hash::TreeHash;
 
     #[test]
-    fn test_deposit_data_tree_hash() {
+    fn deposit_data_tree_hash() {
         let pub_key = hex::decode(
             "80d0436ccacd2b263f5e9e7ebaa14015fe5c80d3e57dc7c37bcbda783895e3491019d3ed694ecbb49c8c80a0480c0392"
         ).unwrap();
@@ -187,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn test_deposit_message_tree_hash() {
+    fn deposit_message_tree_hash() {
         let pub_key = hex::decode(
             "80d0436ccacd2b263f5e9e7ebaa14015fe5c80d3e57dc7c37bcbda783895e3491019d3ed694ecbb49c8c80a0480c0392"
         ).unwrap();
