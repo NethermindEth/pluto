@@ -7,13 +7,13 @@ members = [
     "crates/core",
     "crates/crypto",
     "crates/dkg",
+    "crates/eth2api",
     "crates/eth2util",
     "crates/pluto-k1util",
     "crates/charon-p2p",
     "crates/pluto-testutil",
     "crates/pluto-tracing",
     "crates/peerinfo",
-    "crates/pluto-eth2api",
     "crates/pluto-relay-server",
 ]
 resolver = "3"
@@ -82,7 +82,7 @@ pluto-cluster = { path = "crates/cluster" }
 pluto-core = { path = "crates/core" }
 pluto-crypto = { path = "crates/crypto" }
 pluto-dkg = { path = "crates/dkg" }
-pluto-eth2api = { path = "crates/pluto-eth2api" }
+pluto-eth2api = { path = "crates/eth2api" }
 pluto-eth2util = { path = "crates/eth2util" }
 pluto-k1util = { path = "crates/pluto-k1util" }
 charon-p2p = { path = "crates/charon-p2p" }
