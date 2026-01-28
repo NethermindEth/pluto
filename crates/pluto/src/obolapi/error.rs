@@ -53,7 +53,7 @@ pub enum Error {
 
     /// Crypto/threshold aggregation error.
     #[error("crypto error: {0}")]
-    Crypto(#[from] charon_crypto::types::Error),
+    Crypto(#[from] pluto_crypto::types::Error),
 
     /// Invalid signature string size.
     #[error("signature string has invalid size: {0}")]

@@ -1,4 +1,4 @@
-use charon_crypto::types::{PUBLIC_KEY_LENGTH, PublicKey};
+use pluto_crypto::types::{PUBLIC_KEY_LENGTH, PublicKey};
 use serde::{Deserialize, Serialize};
 
 use crate::{deposit::DepositData, helpers::EthHex, registration::BuilderRegistration};

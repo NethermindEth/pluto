@@ -31,7 +31,7 @@ k256.workspace = true
 bon.workspace = true
 pluto-cluster.workspace = true
 charon-k1util.workspace = true
-charon-crypto.workspace = true
+pluto-crypto.workspace = true
 
 [build-dependencies]
 pluto-build-proto.workspace = true

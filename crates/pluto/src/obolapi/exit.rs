@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use charon_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::Signature};
+use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::Signature};
 use serde::{Deserialize, Serialize};
 
 use eth2api::types::{
