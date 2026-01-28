@@ -29,7 +29,7 @@ hex.workspace = true
 chrono.workspace = true
 
 [build-dependencies]
-charon-build-proto.workspace = true
+pluto-build-proto.workspace = true
 built.workspace = true
 
 [lints]

@@ -24,7 +24,7 @@ hex.workspace = true
 tokio.workspace = true
 
 [build-dependencies]
-charon-build-proto.workspace = true
+pluto-build-proto.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true

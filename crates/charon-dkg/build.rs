@@ -5,5 +5,5 @@
 use std::io::Result;
 
 fn main() -> Result<()> {
-    charon_build_proto::compile_protos("src/dkgpb/v1")
+    pluto_build_proto::compile_protos("src/dkgpb/v1")
 }

@@ -1650,13 +1650,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "charon-build-proto"
-version = "1.7.1"
-dependencies = [
- "prost-build",
-]
-
-[[package]]
 name = "charon-cli"
 version = "1.7.1"
 dependencies = [
@@ -1701,11 +1694,11 @@ version = "1.7.1"
 dependencies = [
  "built",
  "cancellation",
- "charon-build-proto",
  "chrono",
  "crossbeam",
  "hex",
  "libp2p",
+ "pluto-build-proto",
  "prost 0.14.3",
  "prost-types 0.14.3",
  "rand 0.8.5",
@@ -1732,7 +1725,7 @@ dependencies = [
 name = "charon-dkg"
 version = "1.7.1"
 dependencies = [
- "charon-build-proto",
+ "pluto-build-proto",
  "prost 0.14.3",
  "prost-types 0.14.3",
 ]
@@ -1795,7 +1788,6 @@ name = "charon-peerinfo"
 version = "1.7.1"
 dependencies = [
  "anyhow",
- "charon-build-proto",
  "charon-core",
  "charon-p2p",
  "chrono",
@@ -1805,6 +1797,7 @@ dependencies = [
  "hex",
  "hex-literal",
  "libp2p",
+ "pluto-build-proto",
  "prost 0.14.3",
  "prost-types 0.14.3",
  "regex",
@@ -5539,7 +5532,6 @@ dependencies = [
  "anyhow",
  "backon",
  "bon",
- "charon-build-proto",
  "charon-cluster",
  "charon-core",
  "charon-crypto",
@@ -5549,6 +5541,7 @@ dependencies = [
  "eth2api",
  "hex",
  "k256",
+ "pluto-build-proto",
  "prost 0.14.3",
  "prost-types 0.14.3",
  "regex",
@@ -5562,6 +5555,13 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "wiremock",
+]
+
+[[package]]
+name = "pluto-build-proto"
+version = "1.7.1"
+dependencies = [
+ "prost-build",
 ]
 
 [[package]]

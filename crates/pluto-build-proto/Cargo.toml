@@ -1,5 +1,5 @@
 [package]
-name = "charon-build-proto"
+name = "pluto-build-proto"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true

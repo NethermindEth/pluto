@@ -34,7 +34,7 @@ charon-k1util.workspace = true
 charon-crypto.workspace = true
 
 [build-dependencies]
-charon-build-proto.workspace = true
+pluto-build-proto.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true
