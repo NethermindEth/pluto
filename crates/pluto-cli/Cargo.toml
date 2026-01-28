@@ -18,7 +18,7 @@ hex.workspace = true
 tokio.workspace = true
 pluto-core.workspace = true
 charon-p2p.workspace = true
-charon-eth2.workspace = true
+pluto-eth2util.workspace = true
 charon-k1util.workspace = true
 
 [dev-dependencies]

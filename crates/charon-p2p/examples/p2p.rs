@@ -5,7 +5,6 @@
 //! feature).
 
 use anyhow::Result;
-use charon_eth2::enr::Record;
 use charon_p2p::{
     behaviours::{
         pluto::PlutoBehaviourEvent,
@@ -17,6 +16,7 @@ use charon_p2p::{
 use clap::Parser;
 use k256::elliptic_curve::rand_core::OsRng;
 use libp2p::{Multiaddr, futures::StreamExt, identify, multiaddr::Protocol, swarm::SwarmEvent};
+use pluto_eth2util::enr::Record;
 use tokio::signal;
 
 /// Command line arguments

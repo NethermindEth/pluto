@@ -1,13 +1,13 @@
 use crate::{definition::Definition, operator::Operator, version::V1_3};
-use charon_eth2::{
+use charon_k1util::{self as k1util, K1UtilError};
+use k256::SecretKey;
+use pluto_eth2util::{
     eip712::{
         Domain, Field, PRIMITIVE_STRING, PRIMITIVE_UINT256, Primitive, Type, TypedData, Value,
         hash_typed_data,
     },
     network::fork_version_to_chain_id,
 };
-use charon_k1util::{self as k1util, K1UtilError};
-use k256::SecretKey;
 
 type ValueFunc = Box<dyn Fn(&Definition, &Operator) -> Value>;
 
@@ -18,11 +18,11 @@ type Result<T> = std::result::Result<T, EIP712Error>;
 pub enum EIP712Error {
     /// Failed to convert fork version to chain ID.
     #[error("Network error: {0}")]
-    NetworkError(#[from] charon_eth2::network::NetworkError),
+    NetworkError(#[from] pluto_eth2util::network::NetworkError),
 
     /// Failed to hash typed data.
     #[error("Failed to hash typed data: {0}")]
-    FailedToHashTypedData(charon_eth2::eip712::Eip712Error),
+    FailedToHashTypedData(pluto_eth2util::eip712::Eip712Error),
 
     /// Failed to sign EIP-712.
     #[error("Failed to sign EIP-712: {0}")]

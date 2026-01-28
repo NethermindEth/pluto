@@ -14,8 +14,8 @@ use crate::{
     ssz_hasher::Hasher,
     version::versions::*,
 };
-use charon_eth2::enr::{Record, RecordError};
 use charon_k1util::K1UtilError;
+use pluto_eth2util::enr::{Record, RecordError};
 use serde_with::{
     base64::{Base64, Standard},
     serde_as,

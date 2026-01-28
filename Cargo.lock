@@ -1650,20 +1650,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "charon-eth2"
-version = "1.7.1"
-dependencies = [
- "base64 0.22.1",
- "charon-k1util",
- "charon-testutil",
- "chrono",
- "hex",
- "k256",
- "sha3",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "charon-k1util"
 version = "1.7.1"
 dependencies = [
@@ -1681,7 +1667,6 @@ version = "1.7.1"
 dependencies = [
  "anyhow",
  "axum",
- "charon-eth2",
  "charon-k1util",
  "charon-testutil",
  "charon-tracing",
@@ -1690,6 +1675,7 @@ dependencies = [
  "k256",
  "libp2p",
  "pluto-core",
+ "pluto-eth2util",
  "rand 0.8.5",
  "serde",
  "serde_json",
@@ -1735,12 +1721,12 @@ version = "1.7.1"
 dependencies = [
  "axum",
  "bon",
- "charon-eth2",
  "charon-p2p",
  "charon-tracing",
  "k256",
  "libp2p",
  "pluto-core",
+ "pluto-eth2util",
  "rand 0.8.5",
  "thiserror 2.0.18",
  "tokio",
@@ -5487,13 +5473,13 @@ dependencies = [
 name = "pluto-cli"
 version = "1.7.1"
 dependencies = [
- "charon-eth2",
  "charon-k1util",
  "charon-p2p",
  "clap",
  "hex",
  "k256",
  "pluto-core",
+ "pluto-eth2util",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -5503,7 +5489,6 @@ dependencies = [
 name = "pluto-cluster"
 version = "1.7.1"
 dependencies = [
- "charon-eth2",
  "charon-k1util",
  "charon-p2p",
  "chrono",
@@ -5511,6 +5496,7 @@ dependencies = [
  "k256",
  "libp2p",
  "pluto-crypto",
+ "pluto-eth2util",
  "prost 0.14.3",
  "prost-build",
  "prost-types 0.14.3",
@@ -5562,6 +5548,20 @@ dependencies = [
  "pluto-build-proto",
  "prost 0.14.3",
  "prost-types 0.14.3",
+]
+
+[[package]]
+name = "pluto-eth2util"
+version = "1.7.1"
+dependencies = [
+ "base64 0.22.1",
+ "charon-k1util",
+ "charon-testutil",
+ "chrono",
+ "hex",
+ "k256",
+ "sha3",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

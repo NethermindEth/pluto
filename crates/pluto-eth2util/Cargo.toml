@@ -1,5 +1,5 @@
 [package]
-name = "charon-eth2"
+name = "pluto-eth2util"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true

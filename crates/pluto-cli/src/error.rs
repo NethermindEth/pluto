@@ -31,7 +31,7 @@ pub(crate) enum CliError {
 
     /// ENR generation failed.
     #[error("ENR generation failed: {0}")]
-    EnrError(#[from] charon_eth2::enr::RecordError),
+    EnrError(#[from] pluto_eth2util::enr::RecordError),
 
     /// IO error occurred.
     #[error("IO error: {0}")]

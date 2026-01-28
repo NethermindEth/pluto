@@ -8,10 +8,10 @@ use std::{
     path::PathBuf,
 };
 
-use charon_eth2::enr::Record;
 use charon_k1util;
 use charon_p2p::k1;
 use k256::SecretKey;
+use pluto_eth2util::enr::Record;
 
 use crate::error::{CliError, Result};
 
