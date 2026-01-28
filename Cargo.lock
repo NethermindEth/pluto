@@ -5356,7 +5356,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pluto"
+name = "pluto-app"
 version = "1.7.1"
 dependencies = [
  "alloy",
