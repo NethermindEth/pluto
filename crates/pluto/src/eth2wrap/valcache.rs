@@ -1,10 +1,10 @@
 use crate::eth2wrap::eth2api::{EthBeaconNodeApiClientError, ValidatorIndex, ValidatorStatusExt};
-use charon_core::types::PubKey;
 use eth2api::{
     EthBeaconNodeApiClient, GetStateValidatorsResponseResponse,
     GetStateValidatorsResponseResponseDatum, PostStateValidatorsRequest,
     PostStateValidatorsRequestPath, PostStateValidatorsResponse, ValidatorRequestBody,
 };
+use pluto_core::types::PubKey;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 

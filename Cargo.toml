@@ -4,7 +4,7 @@ members = [
     "crates/pluto-build-proto",
     "crates/pluto-cli",
     "crates/pluto-cluster",
-    "crates/charon-core",
+    "crates/pluto-core",
     "crates/charon-crypto",
     "crates/charon-dkg",
     "crates/charon-eth2",
@@ -76,10 +76,10 @@ wiremock = "0.6"
 
 # Crates in the workspace
 pluto = { path = "crates/pluto" }
-charon-core = { path = "crates/charon-core" }
 pluto-build-proto = { path = "crates/pluto-build-proto" }
 pluto-cli = { path = "crates/pluto-cli" }
 pluto-cluster = { path = "crates/pluto-cluster" }
+pluto-core = { path = "crates/pluto-core" }
 charon-crypto = { path = "crates/charon-crypto" }
 charon-eth2 = { path = "crates/charon-eth2" }
 charon-k1util = { path = "crates/charon-k1util" }

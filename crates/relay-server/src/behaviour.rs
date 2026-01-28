@@ -42,7 +42,7 @@ pub struct RelayServerBehaviourBuilder {
 
 /// The default identify protocol for the Pluto network.
 pub static DEFAULT_IDENTIFY_PROTOCOL: LazyLock<String> =
-    LazyLock::new(|| format!("/pluto/relay/{}", *charon_core::version::VERSION));
+    LazyLock::new(|| format!("/pluto/relay/{}", *pluto_core::version::VERSION));
 
 impl Default for RelayServerBehaviourBuilder {
     fn default() -> Self {

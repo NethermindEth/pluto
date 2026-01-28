@@ -3,7 +3,7 @@
 #![allow(unused_variables)]
 #![allow(clippy::diverging_sub_expression)]
 
-use charon_core::types::{Duty, DutyType};
+use pluto_core::types::{Duty, DutyType};
 use std::time;
 
 /// Defines the fraction of the slot duration to use as a margin.

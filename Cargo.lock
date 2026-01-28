@@ -1650,27 +1650,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "charon-core"
-version = "1.7.1"
-dependencies = [
- "built",
- "cancellation",
- "chrono",
- "crossbeam",
- "hex",
- "libp2p",
- "pluto-build-proto",
- "prost 0.14.3",
- "prost-types 0.14.3",
- "rand 0.8.5",
- "regex",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
 name = "charon-crypto"
 version = "1.7.1"
 dependencies = [
@@ -1723,7 +1702,6 @@ version = "1.7.1"
 dependencies = [
  "anyhow",
  "axum",
- "charon-core",
  "charon-eth2",
  "charon-k1util",
  "charon-testutil",
@@ -1732,6 +1710,7 @@ dependencies = [
  "clap",
  "k256",
  "libp2p",
+ "pluto-core",
  "rand 0.8.5",
  "serde",
  "serde_json",
@@ -1749,7 +1728,6 @@ name = "charon-peerinfo"
 version = "1.7.1"
 dependencies = [
  "anyhow",
- "charon-core",
  "charon-p2p",
  "chrono",
  "clap",
@@ -1759,6 +1737,7 @@ dependencies = [
  "hex-literal",
  "libp2p",
  "pluto-build-proto",
+ "pluto-core",
  "prost 0.14.3",
  "prost-types 0.14.3",
  "regex",
@@ -1777,12 +1756,12 @@ version = "1.7.1"
 dependencies = [
  "axum",
  "bon",
- "charon-core",
  "charon-eth2",
  "charon-p2p",
  "charon-tracing",
  "k256",
  "libp2p",
+ "pluto-core",
  "rand 0.8.5",
  "thiserror 2.0.18",
  "tokio",
@@ -5493,7 +5472,6 @@ dependencies = [
  "anyhow",
  "backon",
  "bon",
- "charon-core",
  "charon-crypto",
  "charon-k1util",
  "charon-tracing",
@@ -5503,6 +5481,7 @@ dependencies = [
  "k256",
  "pluto-build-proto",
  "pluto-cluster",
+ "pluto-core",
  "prost 0.14.3",
  "prost-types 0.14.3",
  "regex",
@@ -5529,13 +5508,13 @@ dependencies = [
 name = "pluto-cli"
 version = "1.7.1"
 dependencies = [
- "charon-core",
  "charon-eth2",
  "charon-k1util",
  "charon-p2p",
  "clap",
  "hex",
  "k256",
+ "pluto-core",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -5562,6 +5541,27 @@ dependencies = [
  "serde_with",
  "thiserror 2.0.18",
  "uuid",
+]
+
+[[package]]
+name = "pluto-core"
+version = "1.7.1"
+dependencies = [
+ "built",
+ "cancellation",
+ "chrono",
+ "crossbeam",
+ "hex",
+ "libp2p",
+ "pluto-build-proto",
+ "prost 0.14.3",
+ "prost-types 0.14.3",
+ "rand 0.8.5",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

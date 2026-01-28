@@ -19,11 +19,11 @@ pub fn run(args: VersionArgs) -> Result<()> {
 
 /// Runs the version command with a custom writer (used for testing).
 fn run_with_writer<W: Write>(args: VersionArgs, writer: &mut W) -> Result<()> {
-    let (hash, timestamp) = charon_core::version::git_commit();
+    let (hash, timestamp) = pluto_core::version::git_commit();
     writeln!(
         writer,
         "{} [git_commit_hash={},git_commit_time={}]",
-        *charon_core::version::VERSION,
+        *pluto_core::version::VERSION,
         hash,
         timestamp
     )?;
@@ -35,12 +35,12 @@ fn run_with_writer<W: Write>(args: VersionArgs, writer: &mut W) -> Result<()> {
     writeln!(writer, "Package: {}", env!("CARGO_PKG_NAME"))?;
     writeln!(writer, "Dependencies:")?;
 
-    for dependency in charon_core::version::dependencies() {
+    for dependency in pluto_core::version::dependencies() {
         writeln!(writer, "\t{dependency}")?;
     }
 
     writeln!(writer, "Consensus protocols:")?;
-    for protocol in charon_core::consensus::protocols::protocols() {
+    for protocol in pluto_core::consensus::protocols::protocols() {
         writeln!(writer, "\t{}", protocol)?;
     }
 
@@ -89,11 +89,10 @@ mod tests {
 
         // Parse the version string
         let version_str = parts[0];
-        let parsed_version =
-            charon_core::version::SemVer::parse(version_str).expect("valid semver");
+        let parsed_version = pluto_core::version::SemVer::parse(version_str).expect("valid semver");
         assert_eq!(
             parsed_version,
-            *charon_core::version::VERSION,
+            *pluto_core::version::VERSION,
             "Parsed version should match VERSION constant"
         );
     }
@@ -133,7 +132,7 @@ mod tests {
         );
 
         // Check that the first protocol is listed
-        let protocols = charon_core::consensus::protocols::protocols();
+        let protocols = pluto_core::consensus::protocols::protocols();
         assert!(!protocols.is_empty(), "Should have at least one protocol");
         let first_protocol = protocols[0].to_string();
         assert!(

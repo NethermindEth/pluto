@@ -1,4 +1,4 @@
-use charon_core::version::{self};
+use pluto_core::version::{self};
 use std::sync::LazyLock;
 use tracing::warn;
 
