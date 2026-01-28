@@ -13,7 +13,7 @@ members = [
     "crates/pluto-testutil",
     "crates/pluto-tracing",
     "crates/peerinfo",
-    "crates/eth2api",
+    "crates/pluto-eth2api",
     "crates/relay-server",
 ]
 resolver = "3"
@@ -89,7 +89,7 @@ pluto-testutil = { path = "crates/pluto-testutil" }
 pluto-tracing = { path = "crates/pluto-tracing" }
 charon-relay-server = { path = "crates/relay-server" }
 charon-peerinfo = { path = "crates/peerinfo" }
-eth2api = { path = "crates/eth2api" }
+pluto-eth2api = { path = "crates/pluto-eth2api" }
 
 [workspace.lints.rust]
 missing_docs = "deny"

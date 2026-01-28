@@ -2602,24 +2602,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "eth2api"
-version = "1.7.1"
-dependencies = [
- "anyhow",
- "bon",
- "http",
- "oas3-gen-support",
- "regex",
- "reqwest 0.13.1",
- "serde",
- "serde_json",
- "serde_with",
- "testcontainers",
- "tokio",
- "validator",
-]
-
-[[package]]
 name = "event-listener"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5403,13 +5385,13 @@ dependencies = [
  "backon",
  "bon",
  "chrono",
- "eth2api",
  "hex",
  "k256",
  "pluto-build-proto",
  "pluto-cluster",
  "pluto-core",
  "pluto-crypto",
+ "pluto-eth2api",
  "pluto-k1util",
  "pluto-tracing",
  "prost 0.14.3",
@@ -5513,6 +5495,24 @@ dependencies = [
  "pluto-build-proto",
  "prost 0.14.3",
  "prost-types 0.14.3",
+]
+
+[[package]]
+name = "pluto-eth2api"
+version = "1.7.1"
+dependencies = [
+ "anyhow",
+ "bon",
+ "http",
+ "oas3-gen-support",
+ "regex",
+ "reqwest 0.13.1",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "testcontainers",
+ "tokio",
+ "validator",
 ]
 
 [[package]]

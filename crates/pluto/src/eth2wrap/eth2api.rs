@@ -1,4 +1,4 @@
-use eth2api::ValidatorStatus;
+use pluto_eth2api::ValidatorStatus;
 
 /// Error that can occur when using the [`eth2api::EthBeaconNodeApiClient`].
 #[derive(Debug, thiserror::Error)]

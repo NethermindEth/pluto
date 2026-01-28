@@ -1,10 +1,10 @@
 use crate::eth2wrap::eth2api::{EthBeaconNodeApiClientError, ValidatorIndex, ValidatorStatusExt};
-use eth2api::{
+use pluto_core::types::PubKey;
+use pluto_eth2api::{
     EthBeaconNodeApiClient, GetStateValidatorsResponseResponse,
     GetStateValidatorsResponseResponseDatum, PostStateValidatorsRequest,
     PostStateValidatorsRequestPath, PostStateValidatorsResponse, ValidatorRequestBody,
 };
-use pluto_core::types::PubKey;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 
@@ -223,7 +223,7 @@ fn validators_from_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eth2api::{
+    use pluto_eth2api::{
         BlindedBlock400Response, GetStateValidatorsResponseResponseDatum,
         ValidatorResponseValidator, ValidatorStatus,
     };

@@ -8,13 +8,13 @@ use std::collections::HashMap;
 use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::Signature};
 use serde::{Deserialize, Serialize};
 
-use eth2api::types::{
-    GetPoolVoluntaryExitsResponseResponseDatum, Phase0SignedVoluntaryExitMessage,
-};
 use pluto_cluster::{
     helpers::to_0x_hex,
     ssz::{SSZ_LEN_BLS_SIG, SSZ_LEN_PUB_KEY},
     ssz_hasher::{HashWalker, Hasher},
+};
+use pluto_eth2api::types::{
+    GetPoolVoluntaryExitsResponseResponseDatum, Phase0SignedVoluntaryExitMessage,
 };
 
 use crate::obolapi::{
@@ -359,8 +359,8 @@ impl Client {
 
         Ok(ExitBlob {
             public_key: Some(val_pubkey.to_string()),
-            signed_exit_message: eth2api::types::GetPoolVoluntaryExitsResponseResponseDatum {
-                message: eth2api::types::Phase0SignedVoluntaryExitMessage {
+            signed_exit_message: pluto_eth2api::types::GetPoolVoluntaryExitsResponseResponseDatum {
+                message: pluto_eth2api::types::Phase0SignedVoluntaryExitMessage {
                     epoch: epoch_u64.to_string(),
                     validator_index: exit_response.validator_index.to_string(),
                 },
