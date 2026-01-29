@@ -16,11 +16,18 @@ use error::Result;
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    match cli.command {
+    let result = match cli.command {
         Commands::Create(args) => match args.command {
             CreateCommands::Enr(args) => commands::create_enr::run(args),
         },
         Commands::Enr(args) => commands::enr::run(args),
         Commands::Version(args) => commands::version::run(args),
+    };
+
+    if let Err(err) = result {
+        println!("Error: {}", err);
+
+        std::process::exit(1);
     }
+    Ok(())
 }
