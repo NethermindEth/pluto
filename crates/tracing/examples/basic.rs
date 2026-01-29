@@ -13,7 +13,7 @@
 //! You can see the logs in Grafana at http://localhost:3000.
 use std::{collections::HashMap, net::SocketAddr};
 
-use charon_tracing::{LokiConfig, config::TracingConfig, init::init};
+use pluto_tracing::{LokiConfig, config::TracingConfig, init::init};
 use tracing::{debug, error, info, instrument, trace, warn};
 use vise_exporter::MetricsExporter;
 

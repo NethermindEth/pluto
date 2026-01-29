@@ -1,5 +1,5 @@
 [package]
-name = "charon-tracing"
+name = "pluto-tracing"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true

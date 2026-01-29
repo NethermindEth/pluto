@@ -33,11 +33,11 @@ impl PlutoBehaviour {
 
 /// The default user agent for the Pluto network.
 pub static DEFAULT_USER_AGENT: LazyLock<String> =
-    LazyLock::new(|| format!("pluto/{}", *charon_core::version::VERSION));
+    LazyLock::new(|| format!("pluto/{}", *pluto_core::version::VERSION));
 
 /// The default identify protocol for the Pluto network.
 pub static DEFAULT_IDENTIFY_PROTOCOL: LazyLock<String> =
-    LazyLock::new(|| format!("/pluto/{}", *charon_core::version::VERSION));
+    LazyLock::new(|| format!("/pluto/{}", *pluto_core::version::VERSION));
 
 /// Builder for [`PlutoBehaviour`].
 #[derive(Debug, Clone)]

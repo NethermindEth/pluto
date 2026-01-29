@@ -1650,167 +1650,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "charon"
-version = "1.7.1"
-dependencies = [
- "alloy",
- "anyhow",
- "backon",
- "bon",
- "charon-build-proto",
- "charon-cluster",
- "charon-core",
- "charon-crypto",
- "charon-k1util",
- "charon-tracing",
- "chrono",
- "eth2api",
- "hex",
- "k256",
- "prost 0.14.3",
- "prost-types 0.14.3",
- "regex",
- "reqwest 0.13.1",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "url",
- "wiremock",
-]
-
-[[package]]
-name = "charon-build-proto"
-version = "1.7.1"
-dependencies = [
- "prost-build",
-]
-
-[[package]]
-name = "charon-cli"
-version = "1.7.1"
-dependencies = [
- "charon-core",
- "charon-eth2",
- "charon-k1util",
- "charon-p2p",
- "clap",
- "hex",
- "k256",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "charon-cluster"
-version = "1.7.1"
-dependencies = [
- "charon-crypto",
- "charon-eth2",
- "charon-k1util",
- "charon-p2p",
- "chrono",
- "hex",
- "k256",
- "libp2p",
- "prost 0.14.3",
- "prost-build",
- "prost-types 0.14.3",
- "rand_core 0.6.4",
- "serde",
- "serde_json",
- "serde_with",
- "thiserror 2.0.18",
- "uuid",
-]
-
-[[package]]
-name = "charon-core"
-version = "1.7.1"
-dependencies = [
- "built",
- "cancellation",
- "charon-build-proto",
- "chrono",
- "crossbeam",
- "hex",
- "libp2p",
- "prost 0.14.3",
- "prost-types 0.14.3",
- "rand 0.8.5",
- "regex",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "charon-crypto"
-version = "1.7.1"
-dependencies = [
- "blst",
- "hex",
- "rand 0.8.5",
- "rand_core 0.6.4",
- "serde",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "charon-dkg"
-version = "1.7.1"
-dependencies = [
- "charon-build-proto",
- "prost 0.14.3",
- "prost-types 0.14.3",
-]
-
-[[package]]
-name = "charon-eth2"
-version = "1.7.1"
-dependencies = [
- "base64 0.22.1",
- "charon-k1util",
- "charon-testutil",
- "chrono",
- "hex",
- "k256",
- "sha3",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "charon-k1util"
-version = "1.7.1"
-dependencies = [
- "criterion",
- "hex",
- "k256",
- "libp2p",
- "tempfile",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "charon-p2p"
 version = "1.7.1"
 dependencies = [
  "anyhow",
  "axum",
- "charon-core",
- "charon-eth2",
- "charon-k1util",
- "charon-testutil",
- "charon-tracing",
  "chrono",
  "clap",
  "k256",
  "libp2p",
+ "pluto-core",
+ "pluto-eth2util",
+ "pluto-k1util",
+ "pluto-testutil",
+ "pluto-tracing",
  "rand 0.8.5",
  "serde",
  "serde_json",
@@ -1828,8 +1681,6 @@ name = "charon-peerinfo"
 version = "1.7.1"
 dependencies = [
  "anyhow",
- "charon-build-proto",
- "charon-core",
  "charon-p2p",
  "chrono",
  "clap",
@@ -1838,6 +1689,8 @@ dependencies = [
  "hex",
  "hex-literal",
  "libp2p",
+ "pluto-build-proto",
+ "pluto-core",
  "prost 0.14.3",
  "prost-types 0.14.3",
  "regex",
@@ -1846,50 +1699,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unsigned-varint 0.8.0",
- "vise",
- "vise-exporter",
-]
-
-[[package]]
-name = "charon-relay-server"
-version = "1.7.1"
-dependencies = [
- "axum",
- "bon",
- "charon-core",
- "charon-eth2",
- "charon-p2p",
- "charon-tracing",
- "k256",
- "libp2p",
- "rand 0.8.5",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "vise",
- "vise-exporter",
-]
-
-[[package]]
-name = "charon-testutil"
-version = "1.7.1"
-dependencies = [
- "hex",
- "k256",
- "rand_core 0.6.4",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "charon-tracing"
-version = "1.7.1"
-dependencies = [
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-loki",
- "tracing-subscriber",
  "vise",
  "vise-exporter",
 ]
@@ -2769,24 +2578,6 @@ checksum = "de48cc4d1c1d97a20fd819def54b890cadde72ed3ad0c614822a0a433361be96"
 dependencies = [
  "cfg-if",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "eth2api"
-version = "1.7.1"
-dependencies = [
- "anyhow",
- "bon",
- "http",
- "oas3-gen-support",
- "regex",
- "reqwest 0.13.1",
- "serde",
- "serde_json",
- "serde_with",
- "testcontainers",
- "tokio",
- "validator",
 ]
 
 [[package]]
@@ -5562,6 +5353,215 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51bae2ac328883f7acdfea3d66a7c35751187f870bc81f94563733a154d7a670"
 dependencies = [
  "plotters-backend",
+]
+
+[[package]]
+name = "pluto-app"
+version = "1.7.1"
+dependencies = [
+ "alloy",
+ "anyhow",
+ "backon",
+ "bon",
+ "chrono",
+ "hex",
+ "k256",
+ "pluto-build-proto",
+ "pluto-cluster",
+ "pluto-core",
+ "pluto-crypto",
+ "pluto-eth2api",
+ "pluto-k1util",
+ "pluto-tracing",
+ "prost 0.14.3",
+ "prost-types 0.14.3",
+ "regex",
+ "reqwest 0.13.1",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "wiremock",
+]
+
+[[package]]
+name = "pluto-build-proto"
+version = "1.7.1"
+dependencies = [
+ "prost-build",
+]
+
+[[package]]
+name = "pluto-cli"
+version = "1.7.1"
+dependencies = [
+ "charon-p2p",
+ "clap",
+ "hex",
+ "k256",
+ "pluto-core",
+ "pluto-eth2util",
+ "pluto-k1util",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "pluto-cluster"
+version = "1.7.1"
+dependencies = [
+ "charon-p2p",
+ "chrono",
+ "hex",
+ "k256",
+ "libp2p",
+ "pluto-crypto",
+ "pluto-eth2util",
+ "pluto-k1util",
+ "prost 0.14.3",
+ "prost-build",
+ "prost-types 0.14.3",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "pluto-core"
+version = "1.7.1"
+dependencies = [
+ "built",
+ "cancellation",
+ "chrono",
+ "crossbeam",
+ "hex",
+ "libp2p",
+ "pluto-build-proto",
+ "prost 0.14.3",
+ "prost-types 0.14.3",
+ "rand 0.8.5",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "pluto-crypto"
+version = "1.7.1"
+dependencies = [
+ "blst",
+ "hex",
+ "rand 0.8.5",
+ "rand_core 0.6.4",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "pluto-dkg"
+version = "1.7.1"
+dependencies = [
+ "pluto-build-proto",
+ "prost 0.14.3",
+ "prost-types 0.14.3",
+]
+
+[[package]]
+name = "pluto-eth2api"
+version = "1.7.1"
+dependencies = [
+ "anyhow",
+ "bon",
+ "http",
+ "oas3-gen-support",
+ "regex",
+ "reqwest 0.13.1",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "testcontainers",
+ "tokio",
+ "validator",
+]
+
+[[package]]
+name = "pluto-eth2util"
+version = "1.7.1"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "hex",
+ "k256",
+ "pluto-k1util",
+ "pluto-testutil",
+ "sha3",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "pluto-k1util"
+version = "1.7.1"
+dependencies = [
+ "criterion",
+ "hex",
+ "k256",
+ "libp2p",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "pluto-relay-server"
+version = "1.7.1"
+dependencies = [
+ "axum",
+ "bon",
+ "charon-p2p",
+ "k256",
+ "libp2p",
+ "pluto-core",
+ "pluto-eth2util",
+ "pluto-tracing",
+ "rand 0.8.5",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "vise",
+ "vise-exporter",
+]
+
+[[package]]
+name = "pluto-testutil"
+version = "1.7.1"
+dependencies = [
+ "hex",
+ "k256",
+ "rand_core 0.6.4",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "pluto-tracing"
+version = "1.7.1"
+dependencies = [
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-loki",
+ "tracing-subscriber",
+ "vise",
+ "vise-exporter",
 ]
 
 [[package]]

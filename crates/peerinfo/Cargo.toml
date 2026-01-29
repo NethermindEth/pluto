@@ -15,7 +15,7 @@ regex.workspace = true
 tracing.workspace = true
 chrono.workspace = true
 vise.workspace = true
-charon-core.workspace = true
+pluto-core.workspace = true
 charon-p2p.workspace = true
 futures.workspace = true
 futures-timer.workspace = true
@@ -24,7 +24,7 @@ hex.workspace = true
 tokio.workspace = true
 
 [build-dependencies]
-charon-build-proto.workspace = true
+pluto-build-proto.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
