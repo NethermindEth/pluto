@@ -163,16 +163,11 @@ impl ConnectionHandler for Handler {
                     tracing::debug!("Inbound peerinfo error: {:?}", e);
                     self.inbound = None;
                 }
-                Poll::Ready(Ok((stream, _request))) => {
+                Poll::Ready(Ok((_stream, _request))) => {
                     tracing::trace!("Answered inbound peerinfo request from peer");
-                    self.inbound = Some(
-                        recv_peer_info(
-                            self.protocol.clone(),
-                            stream,
-                            self.config.local_info().to_proto(),
-                        )
-                        .boxed(),
-                    );
+                    // Don't try to read again - Charon closes the stream after each exchange.
+                    // A new inbound stream will be opened for the next request.
+                    self.inbound = None;
                 }
             }
         }
@@ -199,10 +194,13 @@ impl ConnectionHandler for Handler {
                         self.outbound = Some(OutboundState::Request(request));
                         break;
                     }
-                    Poll::Ready(Ok((stream, peer_info))) => {
+                    Poll::Ready(Ok((_stream, peer_info))) => {
                         self.failures = 0;
                         self.interval.reset(self.config.interval());
-                        self.outbound = Some(OutboundState::Idle(stream));
+                        // Don't keep the stream idle for reuse - Charon closes streams after each
+                        // exchange. A new outbound stream will be opened
+                        // for the next request.
+                        self.outbound = None;
                         return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(Ok(Success {
                             peer_info,
                         })));
@@ -210,23 +208,6 @@ impl ConnectionHandler for Handler {
                     Poll::Ready(Err(e)) => {
                         self.interval.reset(Duration::new(0, 0));
                         self.pending_errors.push_front(e);
-                    }
-                },
-                Some(OutboundState::Idle(stream)) => match self.interval.poll_unpin(cx) {
-                    Poll::Pending => {
-                        self.outbound = Some(OutboundState::Idle(stream));
-                        break;
-                    }
-                    Poll::Ready(_) => {
-                        self.outbound = Some(OutboundState::Request(
-                            send_peer_info(
-                                self.protocol.clone(),
-                                stream,
-                                self.config.local_info().to_proto(),
-                                self.config.timeout(),
-                            )
-                            .boxed(),
-                        ));
                     }
                 },
                 Some(OutboundState::OpenStream) => {
@@ -295,8 +276,6 @@ type InboundFuture = BoxFuture<'static, Result<(Stream, PeerInfo), std::io::Erro
 enum OutboundState {
     /// A new substream is being negotiated for the peerinfo protocol.
     OpenStream,
-    /// The stream is idle and waiting for the next request.
-    Idle(Stream),
     /// A request is being sent and the response awaited.
     Request(RequestFuture),
 }

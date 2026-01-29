@@ -1,6 +1,7 @@
 # IDEs
 .vscode
 .idea
+.claude
 
 # Direnv
 .direnv

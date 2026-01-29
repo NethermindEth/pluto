@@ -214,12 +214,12 @@ async fn main() -> anyhow::Result<()> {
             );
             key
         }
-        Err(_) => {
+        Err(err) => {
             tracing::error!(
                 "Failed to load private key from {}",
                 args.data_dir.display()
             );
-            anyhow::bail!("Failed to load private key")
+            anyhow::bail!("Failed to load private key: {err}")
         }
     };
 
