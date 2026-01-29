@@ -15,7 +15,7 @@ use crate::{
     error::RelayP2PError,
     web::enr_server,
 };
-use charon_p2p::{gater::ConnGater, p2p::Node};
+use pluto_p2p::{gater::ConnGater, p2p::Node};
 
 /// Runs a relay P2P node.
 #[instrument(skip(config, key, ct))]

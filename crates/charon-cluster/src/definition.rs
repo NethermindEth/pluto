@@ -7,8 +7,8 @@ use crate::{
     ssz_hasher::Hasher,
     version::{CURRENT_VERSION, DKG_ALGO, versions::*},
 };
-use charon_eth2::enr::{Record, RecordError};
-use charon_p2p::peer::{Peer, PeerError};
+use pluto_eth2::enr::{Record, RecordError};
+use pluto_p2p::peer::{Peer, PeerError};
 use chrono::{DateTime, Utc};
 use libp2p::PeerId;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};

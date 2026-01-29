@@ -1,0 +1,16 @@
+[package]
+name = "pluto-testutil"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+k256.workspace = true
+rand_core.workspace = true
+thiserror.workspace = true
+hex.workspace = true
+
+[lints]
+workspace = true

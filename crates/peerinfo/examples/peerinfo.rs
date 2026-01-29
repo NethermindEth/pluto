@@ -10,16 +10,16 @@ use std::{
     time::Duration,
 };
 
-use charon_cluster::lock::Lock;
-use charon_core::version::{VERSION, git_commit};
-use charon_p2p::{
+use pluto_cluster::lock::Lock;
+use pluto_core::version::{VERSION, git_commit};
+use pluto_p2p::{
     config::P2PConfig,
     k1,
     name::peer_name,
     p2p::{Node, NodeType},
 };
-use charon_peerinfo::{Behaviour, Config, Event, LocalPeerInfo};
-use charon_tracing::{LokiConfig, TracingConfig};
+use pluto_peerinfo::{Behaviour, Config, Event, LocalPeerInfo};
+use pluto_tracing::{LokiConfig, TracingConfig};
 use clap::Parser;
 use libp2p::{
     Multiaddr, Swarm,
@@ -119,7 +119,7 @@ fn handle_event(event: SwarmEvent<CombinedEvent>, swarm: &mut Swarm<CombinedBeha
                  │  Nickname: {}\n\
                  │  Builder API: {}\n\
                  │  Lock Hash: {:?}",
-                info.charon_version,
+                info.pluto_version,
                 info.git_hash,
                 info.nickname,
                 info.builder_api_enabled,
@@ -197,7 +197,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize tracing with optional Loki support
     let tracing_config = build_tracing_config(&args);
-    let loki_task = charon_tracing::init(&tracing_config)?;
+    let loki_task = pluto_tracing::init(&tracing_config)?;
 
     // Spawn Loki background task if configured
     if let Some(task) = loki_task {
@@ -223,12 +223,12 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let enr = charon_eth2::enr::Record::new(
+    let enr = pluto_eth2util::enr::Record::new(
         key.clone(),
         vec![
-            charon_eth2::enr::with_ip_impl(Ipv4Addr::from([0, 0, 0, 0])),
-            charon_eth2::enr::with_tcp_impl(args.port),
-            charon_eth2::enr::with_udp_impl(args.port),
+            pluto_eth2util::enr::with_ip_impl(Ipv4Addr::from([0, 0, 0, 0])),
+            pluto_eth2util::enr::with_tcp_impl(args.port),
+            pluto_eth2util::enr::with_udp_impl(args.port),
         ],
     )?;
 
@@ -318,7 +318,7 @@ async fn main() -> anyhow::Result<()> {
         if h.len() <= 7 { h } else { h[..7].to_string() }
     };
     let metrics_collection = MetricsCollection::default().with_labels([
-        ("charon_version", VERSION.to_string()),
+        ("pluto_version", VERSION.to_string()),
         ("cluster_hash", cluster_hash_hex7),
         ("cluster_name", cluster_name),
         ("cluster_network", "mainnet".to_string()),

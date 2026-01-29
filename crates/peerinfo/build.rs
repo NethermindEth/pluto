@@ -5,7 +5,7 @@
 use std::io::Result;
 
 fn main() -> Result<()> {
-    charon_build_proto::compile_protos("src/peerinfopb/v1")?;
+    pluto_build_proto::compile_protos("src/peerinfopb/v1")?;
 
     Ok(())
 }
