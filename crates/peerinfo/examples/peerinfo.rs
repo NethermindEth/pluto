@@ -1,22 +1,6 @@
 //! Peerinfo example
 //!
-//! This example demonstrates the peerinfo protocol by creating two nodes
-//! that exchange peer information with each other using mDNS auto-discovery.
-//!
-//! Run with:
-//! ```sh
-//! cargo run --example peerinfo -p charon-peerinfo
-//! ```
-//!
-//! Run two instances on different ports - they will auto-discover each other:
-//!
-//! Terminal 1: `cargo run --example peerinfo -p charon-peerinfo -- --port 4001`
-//! Terminal 2: `cargo run --example peerinfo -p charon-peerinfo -- --port 4002`
-//!
-//! With Loki logging enabled:
-//! ```sh
-//! cargo run --example peerinfo -p charon-peerinfo -- --loki-url http://localhost:3100
-//! ```
+//! See the [README](./README.md) for usage instructions.
 #![allow(missing_docs)]
 use std::{
     collections::HashMap,
@@ -27,13 +11,12 @@ use std::{
 
 use charon_p2p::{
     config::P2PConfig,
-    k1::{self, key_path},
+    k1,
     p2p::{Node, NodeType},
 };
 use charon_peerinfo::{Behaviour, Config, Event, LocalPeerInfo};
 use charon_tracing::{LokiConfig, TracingConfig};
 use clap::Parser;
-use k256::SecretKey;
 use libp2p::{
     Multiaddr, Swarm,
     futures::StreamExt,
@@ -49,14 +32,12 @@ use vise_exporter::MetricsExporter;
 #[command(name = "peerinfo-example")]
 #[command(about = "Demonstrates the peerinfo protocol with mDNS discovery")]
 pub struct Args {
-    #[command(subcommand)]
-    pub command: Option<Command>,
-
     /// The port to listen on
     #[arg(short, long, default_value = "4001")]
     pub port: u16,
 
-    /// Optional addresses to dial
+    /// Addresses to dial (multiaddr format, e.g., /ip4/127.0.0.1/tcp/3610). Can
+    /// be specified multiple times.
     #[arg(short, long)]
     pub dial: Vec<Multiaddr>,
 
@@ -69,12 +50,16 @@ pub struct Args {
     pub interval: u64,
 
     /// Data directory for storing the private key
-    #[arg(long, default_value = ".charon-example")]
+    #[arg(long, default_value = ".peerinfo-example")]
     pub data_dir: PathBuf,
 
     /// Metrics port to bind to
     #[arg(long, default_value = "9465")]
     pub metrics_port: u16,
+
+    /// Log level (trace, debug, info, warn, error)
+    #[arg(long, default_value = "info")]
+    pub log_level: String,
 
     /// Loki URL for log aggregation (e.g., http://localhost:3100)
     #[arg(long)]
@@ -92,20 +77,6 @@ fn parse_key_value(s: &str) -> Result<(String, String), String> {
         return Err(format!("Invalid key=value format: {}", s));
     }
     Ok((parts[0].to_string(), parts[1].to_string()))
-}
-
-#[derive(Debug, Parser)]
-pub enum Command {
-    /// Initialize the node with a private key
-    Init {
-        /// Data directory for storing the private key
-        #[arg(long, default_value = ".charon-example")]
-        data_dir: PathBuf,
-
-        /// Private key as a hex string
-        #[arg(long)]
-        private_key: String,
-    },
 }
 
 /// Combined behaviour with peerinfo, identify, ping, and mdns
@@ -194,7 +165,7 @@ fn handle_event(event: SwarmEvent<CombinedEvent>, swarm: &mut Swarm<CombinedBeha
 fn build_tracing_config(args: &Args) -> TracingConfig {
     let mut builder = TracingConfig::builder()
         .with_default_console()
-        .override_env_filter("debug");
+        .override_env_filter(&args.log_level);
 
     if let Some(loki_url) = &args.loki_url {
         let mut labels: HashMap<String, String> = HashMap::new();
@@ -216,28 +187,6 @@ fn build_tracing_config(args: &Args) -> TracingConfig {
     builder.build()
 }
 
-fn init_node(data_dir: &PathBuf, private_key: &str) -> anyhow::Result<()> {
-    // Decode the hex string
-    let key_bytes = hex::decode(private_key.trim().trim_start_matches("0x"))?;
-
-    // Parse the secret key
-    let key = SecretKey::from_slice(&key_bytes)?;
-
-    // Create the data directory
-    std::fs::create_dir_all(data_dir)?;
-
-    // Save the key
-    let key_file = key_path(data_dir);
-    std::fs::write(&key_file, hex::encode(key.to_bytes()))?;
-
-    tracing::info!(
-        "Initialized node with private key in {}",
-        key_file.display()
-    );
-
-    Ok(())
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
@@ -250,15 +199,6 @@ async fn main() -> anyhow::Result<()> {
     if let Some(task) = loki_task {
         tokio::spawn(task);
         tracing::info!("Loki logging enabled");
-    }
-
-    // Handle init subcommand
-    if let Some(Command::Init {
-        data_dir,
-        private_key,
-    }) = args.command
-    {
-        return init_node(&data_dir, &private_key);
     }
 
     // Load existing key or create a new one
@@ -352,7 +292,7 @@ async fn main() -> anyhow::Result<()> {
     let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{}", args.port).parse()?;
     swarm.listen_on(listen_addr)?;
 
-    // Dial the specified addresses if provided
+    // Dial the specified addresses
     for dial_addr in &args.dial {
         tracing::info!("Dialing {dial_addr}");
         swarm.dial(dial_addr.clone())?;

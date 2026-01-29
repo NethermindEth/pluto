@@ -62,6 +62,7 @@ k256 = { version = "0.13.4", features = ["ecdsa", "sha256"] }
 tracing = "0.1.32"
 tracing-subscriber = { version = "0.3.9", features = ["env-filter"] }
 tracing-loki = "0.2.6"
+# todo: remove this once vise is published https://github.com/NethermindEth/charon-rs/issues/126
 vise = { git = "https://github.com/matter-labs/vise", rev = "73c654303d8190023cf30034d627b74cf3101b23" }
 vise-exporter = { git = "https://github.com/matter-labs/vise", rev = "73c654303d8190023cf30034d627b74cf3101b23" }
 criterion = "0.8.0"

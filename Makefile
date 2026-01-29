@@ -4,12 +4,12 @@
 ifneq ($(filter node1,$(MAKECMDGOALS)),)
 PORT := 4001
 NICKNAME := node1
-DATA_DIR := .charon-example-peerinfo-1
+DATA_DIR := .peerinfo-example_node1
 METRICS_PORT := 9465
 else ifneq ($(filter node2,$(MAKECMDGOALS)),)
 PORT := 4002
 NICKNAME := node2
-DATA_DIR := .charon-example-peerinfo-2
+DATA_DIR := .peerinfo-example_node2
 METRICS_PORT := 9466
 endif
 
@@ -32,12 +32,10 @@ peerinfo:
 		--loki-label cluster=peerinfo-example \
 		$(DIAL_ARGS)
 
-# Initialize peerinfo with a private key
-# Usage: make init node1 KEY=<private_key>
+# Initialize peerinfo by copying private key from cluster
+# Usage: make init-peerinfo node1 CHARON_PATH=<path_to_charon>
 init-peerinfo:
-	cargo run -p charon-peerinfo --example peerinfo -- init \
-		--data-dir $(DATA_DIR) \
-		--private-key $(KEY)
+	mkdir -p $(DATA_DIR) && cp $(CHARON_PATH)/test-cluster/$(NICKNAME)/charon-enr-private-key $(DATA_DIR)
 
 # No-op targets for profile selection
 node1 node2:
