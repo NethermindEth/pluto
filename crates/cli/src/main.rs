@@ -25,7 +25,7 @@ fn main() -> Result<()> {
     };
 
     if let Err(err) = result {
-        println!("Error: {}", err);
+        eprintln!("Error: {}", err);
 
         std::process::exit(1);
     }
