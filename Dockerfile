@@ -1,6 +1,12 @@
 # Use the official Ubuntu image as the base
 FROM ubuntu:24.04 AS builder
 
+ARG GIT_COMMIT_HASH_SHORT
+ENV GIT_COMMIT_HASH_SHORT=${GIT_COMMIT_HASH_SHORT}
+
+ARG SOURCE_DATE_EPOCH
+ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
+
 # Install necessary system dependencies for Rust compilation
 RUN apt-get update && \
   apt-get install -y curl build-essential pkg-config \
