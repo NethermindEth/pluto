@@ -208,7 +208,7 @@ impl ConnectionHandler for Handler {
                         })));
                     }
                     Poll::Ready(Err(e)) => {
-                        self.interval.reset(self.config.interval());
+                        self.interval.reset(Duration::new(0, 0));
                         self.pending_errors.push_front(e);
                     }
                 },
