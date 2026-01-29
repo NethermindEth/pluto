@@ -26,6 +26,9 @@ impl<'de> Deserialize<'de> for EthHex {
         D: Deserializer<'de>,
     {
         let cow = Cow::<str>::deserialize(deserializer)?;
+        if cow.is_empty() {
+            return Ok(EthHex(vec![]));
+        }
         let hex_str = cow.strip_prefix("0x").unwrap_or(&cow);
         let bytes = hex::decode(hex_str).map_err(serde::de::Error::custom)?;
         Ok(EthHex(bytes))
@@ -87,6 +90,9 @@ impl TryFrom<&str> for EthHex {
     type Error = hex::FromHexError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
+        if value.is_empty() {
+            return Ok(EthHex(vec![]));
+        }
         let s = value.strip_prefix("0x").unwrap_or(value);
         let bytes = hex::decode(s)?;
         Ok(EthHex(bytes))
@@ -238,6 +244,17 @@ mod tests {
         assert_eq!(serialized, "\"0x\"");
         let deserialized: EthHex = serde_json::from_str(&serialized).unwrap();
         assert_eq!(deserialized, eth_hex);
+    }
+
+    #[test]
+    fn test_empty_string_deserialize() {
+        // Empty string should deserialize to empty EthHex
+        let deserialized: EthHex = serde_json::from_str("\"\"").unwrap();
+        assert_eq!(deserialized, EthHex(vec![]));
+
+        // TryFrom should also handle empty string
+        let from_str = EthHex::try_from("").unwrap();
+        assert_eq!(from_str, EthHex(vec![]));
     }
 
     #[serde_as]

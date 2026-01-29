@@ -4,14 +4,18 @@
 #![allow(missing_docs)]
 use std::{
     collections::HashMap,
+    fs,
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
     time::Duration,
 };
 
+use charon_cluster::lock::Lock;
+use charon_core::version::{VERSION, git_commit};
 use charon_p2p::{
     config::P2PConfig,
     k1,
+    name::peer_name,
     p2p::{Node, NodeType},
 };
 use charon_peerinfo::{Behaviour, Config, Event, LocalPeerInfo};
@@ -49,8 +53,8 @@ pub struct Args {
     #[arg(short, long, default_value = "5")]
     pub interval: u64,
 
-    /// Data directory for storing the private key
-    #[arg(long, default_value = ".peerinfo-example")]
+    /// Data directory for storing the private key and cluster lock
+    #[arg(long)]
     pub data_dir: PathBuf,
 
     /// Metrics port to bind to
@@ -211,10 +215,14 @@ async fn main() -> anyhow::Result<()> {
             key
         }
         Err(_) => {
-            tracing::info!("Creating new private key in {}", args.data_dir.display());
-            k1::new_saved_priv_key(&args.data_dir)?
+            tracing::error!(
+                "Failed to load private key from {}",
+                args.data_dir.display()
+            );
+            anyhow::bail!("Failed to load private key")
         }
     };
+
     let enr = charon_eth2::enr::Record::new(
         key.clone(),
         vec![
@@ -229,33 +237,42 @@ async fn main() -> anyhow::Result<()> {
     // Run the metrics exporter
     let bind_address = SocketAddr::from(([0, 0, 0, 0], args.metrics_port));
 
-    let nickname = args.nickname.to_string();
-    let metrics_collection = MetricsCollection::default().with_labels([
-        ("charon_version", "v1.7.0-dev".to_string()),
-        ("cluster_hash", "0000000".to_string()),
-        ("cluster_name", "".to_string()),
-        ("cluster_network", "mainnet".to_string()),
-        ("cluster_peer", "".to_string()),
-        ("nickname", nickname),
-    ]);
+    // Load cluster lock from data_dir/cluster-lock.json
+    let lock_path = args.data_dir.join("cluster-lock.json");
+    let lock: Option<Lock> = if lock_path.exists() {
+        let lock_json = fs::read_to_string(&lock_path)?;
+        let lock: Lock = serde_json::from_str(&lock_json)?;
+        tracing::info!(
+            "Loaded cluster lock from {}: {} peers, lock_hash: {}",
+            lock_path.display(),
+            lock.operators.len(),
+            hex::encode(&lock.lock_hash)
+        );
+        Some(lock)
+    } else {
+        tracing::warn!(
+            "No lock file found at {}, using default values",
+            lock_path.display()
+        );
+        None
+    };
 
-    let exporter = MetricsExporter::new(metrics_collection.collect().into())
-        .bind(bind_address)
-        .await
-        .expect("Failed to bind metrics exporter");
-
-    tokio::spawn(async move {
-        exporter
-            .start()
-            .await
-            .expect("Failed to start metrics exporter");
-    });
+    let lock_hash = lock
+        .as_ref()
+        .map(|l| l.lock_hash.clone())
+        .unwrap_or(vec![0x00, 0x00, 0x00, 0x00]);
+    let peers = lock
+        .as_ref()
+        .map(|l| l.peer_ids())
+        .transpose()?
+        .unwrap_or_default();
 
     // Create local peer info
+    let (git_hash, _) = git_commit();
     let local_info = LocalPeerInfo::new(
-        "v1.0.0",
-        vec![0x00, 0x00, 0x00, 0x00],
-        "abc1234",
+        VERSION.to_string(),
+        lock_hash.clone(),
+        &git_hash,
         false,
         &args.nickname,
     );
@@ -267,7 +284,9 @@ async fn main() -> anyhow::Result<()> {
         NodeType::TCP,
         |key, relay_client| CombinedBehaviour {
             peer_info: Behaviour::new(
-                Config::new(local_info.clone()).with_interval(Duration::from_secs(args.interval)),
+                Config::new(local_info.clone())
+                    .with_peers(peers.clone())
+                    .with_interval(Duration::from_secs(args.interval)),
             ),
             identify: identify::Behaviour::new(identify::Config::new(
                 "/peerinfo-example/1.0.0".to_string(),
@@ -287,6 +306,37 @@ async fn main() -> anyhow::Result<()> {
     let local_peer_id = *swarm.local_peer_id();
     tracing::info!("Local peer id: {local_peer_id}");
     tracing::info!("mDNS auto-discovery enabled");
+
+    let cluster_peer = peer_name(&local_peer_id);
+
+    let cluster_name = lock.as_ref().map(|l| l.name.clone()).unwrap_or_default();
+
+    // Setup metrics exporter with real data
+    // cluster_hash uses first 7 hex chars (or less if shorter)
+    let cluster_hash_hex7 = {
+        let h = hex::encode(&lock_hash);
+        if h.len() <= 7 { h } else { h[..7].to_string() }
+    };
+    let metrics_collection = MetricsCollection::default().with_labels([
+        ("charon_version", VERSION.to_string()),
+        ("cluster_hash", cluster_hash_hex7),
+        ("cluster_name", cluster_name),
+        ("cluster_network", "mainnet".to_string()),
+        ("cluster_peer", cluster_peer),
+        ("nickname", args.nickname.clone()),
+    ]);
+
+    let exporter = MetricsExporter::new(metrics_collection.collect().into())
+        .bind(bind_address)
+        .await
+        .expect("Failed to bind metrics exporter");
+
+    tokio::spawn(async move {
+        exporter
+            .start()
+            .await
+            .expect("Failed to start metrics exporter");
+    });
 
     // Listen on the specified port
     let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{}", args.port).parse()?;

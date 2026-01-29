@@ -63,22 +63,6 @@ Run the first charon node (`node0`):
 - `--no-verify`: Skips signature verification (for testing purposes only)
 - `--validator-api-address`: Address for the validator client API endpoint
 
-### Initializing the Peerinfo Example
-
-To connect to `node0`, we need to set up two Pluto node profiles (node1, node2) with the private keys from the cluster.
-
-Copy the private key from the cluster for `node1`:
-
-```bash
-mkdir -p .peerinfo-example_node1 && cp $CHARON_PATH/test-cluster/node1/charon-enr-private-key .peerinfo-example_node1
-```
-
-Copy the private key from the cluster for `node2`:
-
-```bash
-mkdir -p .peerinfo-example_node2 && cp $CHARON_PATH/test-cluster/node2/charon-enr-private-key .peerinfo-example_node2
-```
-
 ### Running Pluto Nodes
 
 > **Important:** Start the Charon node before starting Pluto nodes, otherwise Pluto will hang waiting for the connection.
@@ -89,7 +73,7 @@ Run `node1` in a separate terminal:
 cargo run -p charon-peerinfo --example peerinfo -- \
     --port 4001 \
     --nickname node1 \
-    --data-dir .peerinfo-example_node1 \
+    --data-dir $CHARON_PATH/test-cluster/node1 \
     --metrics-port 9465 \
     --loki-url http://localhost:3100 \
     --loki-label cluster=peerinfo-example \
@@ -102,12 +86,21 @@ Run `node2` in another terminal:
 cargo run -p charon-peerinfo --example peerinfo -- \
     --port 4002 \
     --nickname node2 \
-    --data-dir .peerinfo-example_node2 \
+    --data-dir $CHARON_PATH/test-cluster/node2 \
     --metrics-port 9466 \
     --loki-url http://localhost:3100 \
     --loki-label cluster=peerinfo-example \
     --dial /ip4/127.0.0.1/tcp/3610
 ```
+
+**Notes on `--data-dir`:**
+
+- The `--data-dir` argument specifies the node directory created by `charon create cluster`
+- The directory should contain:
+  - `charon-enr-private-key`: The node's private key (required)
+  - `cluster-lock.json`: The cluster lock file (optional, but needed for proper peer identification)
+- When `cluster-lock.json` is present, the lock hash and peer IDs are extracted from it
+- This enables proper peer identification and lock hash verification with the Charon node
 
 **Notes on `--dial`:**
 
@@ -118,8 +111,8 @@ cargo run -p charon-peerinfo --example peerinfo -- \
 > **Note:** You can also run nodes using `make` from the project root:
 >
 > ```bash
-> make peerinfo node1 /ip4/127.0.0.1/tcp/3610
-> make peerinfo node2 /ip4/127.0.0.1/tcp/3610
+> make peerinfo node1 CHARON_PATH=$CHARON_PATH /ip4/127.0.0.1/tcp/3610
+> make peerinfo node2 CHARON_PATH=$CHARON_PATH /ip4/127.0.0.1/tcp/3610
 > ```
 >
 > The dial addresses are optional and can be omitted if using mDNS discovery.

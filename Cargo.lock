@@ -1829,6 +1829,7 @@ version = "1.7.1"
 dependencies = [
  "anyhow",
  "charon-build-proto",
+ "charon-cluster",
  "charon-core",
  "charon-eth2",
  "charon-p2p",
@@ -1844,6 +1845,7 @@ dependencies = [
  "prost 0.14.3",
  "prost-types 0.14.3",
  "regex",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
