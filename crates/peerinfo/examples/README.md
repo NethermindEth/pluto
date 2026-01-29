@@ -70,7 +70,7 @@ Run the first charon node (`node0`):
 Run `node1` in a separate terminal:
 
 ```bash
-cargo run -p charon-peerinfo --example peerinfo -- \
+cargo run -p pluto-peerinfo --example peerinfo -- \
     --port 4001 \
     --nickname node1 \
     --data-dir $CHARON_PATH/test-cluster/node1 \
@@ -83,7 +83,7 @@ cargo run -p charon-peerinfo --example peerinfo -- \
 Run `node2` in another terminal:
 
 ```bash
-cargo run -p charon-peerinfo --example peerinfo -- \
+cargo run -p pluto-peerinfo --example peerinfo -- \
     --port 4002 \
     --nickname node2 \
     --data-dir $CHARON_PATH/test-cluster/node2 \

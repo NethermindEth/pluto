@@ -7,10 +7,10 @@ use crate::{
     ssz_hasher::Hasher,
     version::{CURRENT_VERSION, DKG_ALGO, versions::*},
 };
-use pluto_p2p::peer::{Peer, PeerError};
 use chrono::{DateTime, Utc};
 use libp2p::PeerId;
 use pluto_eth2util::enr::{Record, RecordError};
+use pluto_p2p::peer::{Peer, PeerError};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{
     DefaultOnNull, DisplayFromStr, PickFirst,

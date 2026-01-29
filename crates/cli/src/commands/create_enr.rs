@@ -8,8 +8,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use pluto_p2p::k1;
 use pluto_eth2util::enr::Record;
+use pluto_p2p::k1;
 
 use crate::error::{CliError, Result};
 

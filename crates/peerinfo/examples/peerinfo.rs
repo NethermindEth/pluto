@@ -10,6 +10,13 @@ use std::{
     time::Duration,
 };
 
+use clap::Parser;
+use libp2p::{
+    Multiaddr, Swarm,
+    futures::StreamExt,
+    identify, mdns, ping, relay,
+    swarm::{NetworkBehaviour, SwarmEvent},
+};
 use pluto_cluster::lock::Lock;
 use pluto_core::version::{VERSION, git_commit};
 use pluto_p2p::{
@@ -20,13 +27,6 @@ use pluto_p2p::{
 };
 use pluto_peerinfo::{Behaviour, Config, Event, LocalPeerInfo};
 use pluto_tracing::{LokiConfig, TracingConfig};
-use clap::Parser;
-use libp2p::{
-    Multiaddr, Swarm,
-    futures::StreamExt,
-    identify, mdns, ping, relay,
-    swarm::{NetworkBehaviour, SwarmEvent},
-};
 use tokio::signal;
 use vise::MetricsCollection;
 use vise_exporter::MetricsExporter;

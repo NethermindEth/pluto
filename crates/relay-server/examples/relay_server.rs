@@ -1,9 +1,9 @@
 #![allow(missing_docs)]
 use std::str::FromStr;
 
-use pluto_p2p::config::P2PConfig;
 use k256::SecretKey;
 use libp2p::multiaddr;
+use pluto_p2p::config::P2PConfig;
 use pluto_relay_server::{config::Config, p2p::run_relay_p2p_node};
 use pluto_tracing::TracingConfig;
 use rand::rngs::OsRng;
