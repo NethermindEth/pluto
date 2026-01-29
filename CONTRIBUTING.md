@@ -1,17 +1,10 @@
 # Contributor's guide
 
-## Commit signing
-
-Enable [commit signing](https://docs.github.com/en/authentication/managing-commit-signature-verification/signing-commits)
-
-```sh
-git config commit.gpgsign true
-```
-
 ## Prerequisites
 
 * [Rust](https://www.rust-lang.org/tools/install)
 * [Protobuf](https://protobuf.dev/installation/)
+* [Docker](https://www.docker.com/)
 * [cargo deny](https://github.com/EmbarkStudios/cargo-deny)
 * [oas3-gen](https://github.com/eklipse2k8/oas3-gen)
 
@@ -23,17 +16,25 @@ Install a pre-push git hook:
 git config core.hooksPath .githooks
 ```
 
-## Running the Rust Documentation Locally
-After cloning the repository, follow the instructions below to run the documentation locally:
+## Building
+To build the project with all its crates, run:
 
 ```sh
-cargo doc
+cargo build --workspace --all-features
 ```
 
-Docs for `TODO(template) template_crate`:
+## Run Unit and Integration Tests
+To run all tests - unit and integration - run:
 
 ```sh
-RUSTDOCFLAGS="--html-in-header katex-header.html" cargo doc --no-deps -p template_crate --open
+cargo test --workspace --all-features
+```
+
+## Running the Rust Documentation Locally
+To build the documentation locally:
+
+```sh
+cargo doc --workspace --all-features --no-deps
 ```
 
 ## Performance
