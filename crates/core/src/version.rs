@@ -43,12 +43,12 @@ pub const SUPPORTED: &[SemVer] = {
     ]
 };
 
+mod built_info {
+    include!(concat!(env!("OUT_DIR"), "/built.rs"));
+}
+
 /// Git commit hash and timestamp from build info.
 pub fn git_commit() -> (String, String) {
-    mod built_info {
-        include!(concat!(env!("OUT_DIR"), "/built.rs"));
-    }
-
     let hash = option_env!("GIT_COMMIT_HASH_SHORT")
         .or(built_info::GIT_COMMIT_HASH_SHORT)
         .unwrap_or_else(|| "unknown")
@@ -63,10 +63,6 @@ pub fn git_commit() -> (String, String) {
 
 /// Dependency list from build info in `name v{version}` format.
 pub fn dependencies() -> Vec<String> {
-    mod built_info {
-        include!(concat!(env!("OUT_DIR"), "/built.rs"));
-    }
-
     let mut deps: Vec<String> = built_info::DEPENDENCIES
         .iter()
         .map(|(name, version)| format!("{name} v{version}"))
