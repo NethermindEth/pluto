@@ -21,6 +21,11 @@ RUN cargo build --locked --release --package pluto-cli
 
 FROM debian:bookworm-slim AS app
 
+# Install runtime dependencies for TLS/HTTPS
+RUN apt-get update && \
+  apt-get install -y ca-certificates libssl3 && \
+  apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Copy the compiled binary from the builder stage
 COPY --from=builder /build/target/release/pluto /app/bin/pluto
 
