@@ -108,15 +108,6 @@ cargo run -p charon-peerinfo --example peerinfo -- \
 - Multiple addresses can be specified by repeating `--dial`: `--dial /ip4/.../tcp/3610 --dial /ip4/.../tcp/3611`
 - Addresses use [multiaddr format](https://multiformats.io/multiaddr/) (e.g., `/ip4/127.0.0.1/tcp/3610`).
 
-> **Note:** You can also run nodes using `make` from the project root:
->
-> ```bash
-> make peerinfo node1 CHARON_PATH=$CHARON_PATH /ip4/127.0.0.1/tcp/3610
-> make peerinfo node2 CHARON_PATH=$CHARON_PATH /ip4/127.0.0.1/tcp/3610
-> ```
->
-> The dial addresses are optional and can be omitted if using mDNS discovery.
-
 ### Working with Results
 
 Pluto node is configured to send `peerinfo` every 5 seconds and you will be able to see corresponding logs in the terminal.
