@@ -119,7 +119,7 @@ cargo run -p charon-peerinfo --example peerinfo -- \
 
 ### Working with Results
 
-Charon node is configured to send `peerinfo` every 5 seconds and you will be able to see corresponding logs in the terminal.
+Pluto node is configured to send `peerinfo` every 5 seconds and you will be able to see corresponding logs in the terminal.
 
 On charon's side you can track the metrics endpoint by:
 
