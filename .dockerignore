@@ -10,8 +10,11 @@
 debug
 target
 
+test-infra
+
 *.pdb
 **/*.rs.bk
 lcov.info
 
 *.md
+.charon*
