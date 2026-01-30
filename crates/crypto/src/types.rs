@@ -1,4 +1,4 @@
-//! # charon-crypto types
+//! # pluto-crypto types
 
 use blst::BLST_ERROR;
 

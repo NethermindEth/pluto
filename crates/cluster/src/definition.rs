@@ -7,13 +7,13 @@ use crate::{
     ssz_hasher::Hasher,
     version::{CURRENT_VERSION, DKG_ALGO, versions::*},
 };
-use charon_p2p::peer::{Peer, PeerError};
 use chrono::{DateTime, Utc};
 use libp2p::PeerId;
 use pluto_eth2util::enr::{Record, RecordError};
+use pluto_p2p::peer::{Peer, PeerError};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{
-    DisplayFromStr, PickFirst,
+    DefaultOnNull, DisplayFromStr, PickFirst,
     base64::{Base64, Standard},
     serde_as,
 };
@@ -1022,7 +1022,7 @@ pub struct DefinitionV1x8 {
     pub fork_version: Vec<u8>,
     /// DepositAmounts specifies partial deposit amounts that sum up to at least
     /// 32ETH.
-    #[serde_as(as = "Vec<PickFirst<(DisplayFromStr, _)>>")]
+    #[serde_as(as = "DefaultOnNull<Vec<PickFirst<(DisplayFromStr, _)>>>")]
     pub deposit_amounts: Vec<u64>,
     /// ConfigHash uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.
@@ -1124,7 +1124,7 @@ pub struct DefinitionV1x9 {
     pub fork_version: Vec<u8>,
     /// DepositAmounts specifies partial deposit amounts that sum up to at least
     /// 32ETH.
-    #[serde_as(as = "Vec<PickFirst<(DisplayFromStr, _)>>")]
+    #[serde_as(as = "DefaultOnNull<Vec<PickFirst<(DisplayFromStr, _)>>>")]
     pub deposit_amounts: Vec<u64>,
     /// ConsensusProtocol is the consensus protocol name preferred by the
     /// cluster, e.g. "abft".
@@ -1198,6 +1198,7 @@ impl From<DefinitionV1x9> for Definition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x10 {
     /// Human-readable cosmetic identifier. Max 256 chars.
+    #[serde(default)]
     pub name: String,
     /// Creator identifies the creator of a cluster definition. They may also be
     /// an operator.
@@ -1230,7 +1231,7 @@ pub struct DefinitionV1x10 {
     pub fork_version: Vec<u8>,
     /// Partial deposit amounts that sum up to at least
     /// 32ETH.
-    #[serde_as(as = "Vec<PickFirst<(DisplayFromStr, _)>>")]
+    #[serde_as(as = "DefaultOnNull<Vec<PickFirst<(DisplayFromStr, _)>>>")]
     pub deposit_amounts: Vec<u64>,
     /// Consensus protocol name preferred by the
     /// cluster, e.g. "abft".

@@ -1,8 +1,8 @@
 use std::{path::PathBuf, time::Duration};
 
 use bon::Builder;
-use charon_p2p::config::P2PConfig;
 use libp2p::relay;
+use pluto_p2p::config::P2PConfig;
 use pluto_tracing::TracingConfig;
 
 /// One hour in seconds.

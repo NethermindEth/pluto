@@ -26,7 +26,7 @@ use crate::obolapi::{
 /// Type alias for signed voluntary exit from eth2api.
 pub type SignedVoluntaryExit = GetPoolVoluntaryExitsResponseResponseDatum;
 
-// TODO: Unify SSZ hashing across the workspace. `charon-cluster` already has
+// TODO: Unify SSZ hashing across the workspace. `pluto-cluster` already has
 // SSZ hashing utilities. Consider extracting a shared SSZ crate (or promoting
 // the existing hasher) so all crates share one SSZ interface and error type.
 /// Trait for types that can be hashed using SSZ hash tree root.

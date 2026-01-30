@@ -1,6 +1,6 @@
 use vise::*;
 
-use charon_p2p::metrics::BUCKETS;
+use pluto_p2p::metrics::BUCKETS;
 
 /// Metrics for the relay P2P layer.
 #[derive(Debug, Metrics)]

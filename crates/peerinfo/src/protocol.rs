@@ -140,7 +140,7 @@ fn supported_peer_version(version: &str, supported: &[SemVer]) -> Result<(), Pro
 impl ProtocolState {
     /// Creates a new protocol state.
     pub fn new(peer_id: PeerId, local_info: LocalPeerInfo) -> Self {
-        let name = charon_p2p::name::peer_name(&peer_id);
+        let name = pluto_p2p::name::peer_name(&peer_id);
         let mut nicknames = HashMap::new();
         nicknames.insert(name.clone(), local_info.nickname.clone());
         Self {
@@ -200,10 +200,10 @@ impl ProtocolState {
         };
         let clock_offset = actual_sent_at.signed_duration_since(expected_sent_at);
 
-        if supported_peer_version(&peer_info.charon_version, version::SUPPORTED).is_err() {
+        if supported_peer_version(&peer_info.pluto_version, version::SUPPORTED).is_err() {
             PEERINFO_METRICS.version_support[&self.name].set(0);
 
-            tracing::error!(peer = self.name, peer_version = peer_info.charon_version, supported_versions = ?version::SUPPORTED, "Invalid peer version");
+            tracing::error!(peer = self.name, peer_version = peer_info.pluto_version, supported_versions = ?version::SUPPORTED, "Invalid peer version");
 
             return;
         }
@@ -221,7 +221,7 @@ impl ProtocolState {
 
         self.metrics_submitter(
             clock_offset,
-            &peer_info.charon_version,
+            &peer_info.pluto_version,
             &peer_info.git_hash,
             started_at,
             peer_info.builder_api_enabled,
@@ -259,7 +259,7 @@ impl ProtocolState {
         nickname: &str,
         prev_nickname: Option<&String>,
     ) {
-        let peer_name = charon_p2p::name::peer_name(&self.peer_id);
+        let peer_name = pluto_p2p::name::peer_name(&self.peer_id);
 
         // Reset previous peer nickname if it changed
         if let Some(prev) = prev_nickname {
@@ -398,7 +398,7 @@ mod tests {
     /// Helper to create a PeerInfo with minimal fields
     fn make_minimal_peerinfo() -> PeerInfo {
         PeerInfo {
-            charon_version: "v1.0.0".to_string(),
+            pluto_version: "v1.0.0".to_string(),
             lock_hash: vec![0xde, 0xad, 0xbe, 0xef].into(),
             sent_at: None,
             git_hash: String::new(),
@@ -411,7 +411,7 @@ mod tests {
     /// Helper to create a PeerInfo with git hash
     fn make_with_git_hash_peerinfo() -> PeerInfo {
         PeerInfo {
-            charon_version: "v1.7.1".to_string(),
+            pluto_version: "v1.7.1".to_string(),
             lock_hash: vec![0u8; 32].into(),
             sent_at: None,
             git_hash: "abc1234".to_string(),
@@ -424,7 +424,7 @@ mod tests {
     /// Helper to create a full PeerInfo with all fields
     fn make_full_peerinfo() -> PeerInfo {
         PeerInfo {
-            charon_version: "v1.7.1".to_string(),
+            pluto_version: "v1.7.1".to_string(),
             lock_hash: (1u8..=32).collect::<Vec<_>>().into(),
             sent_at: Some(prost_types::Timestamp {
                 seconds: 1736944245, // 2025-01-15T13:00:45Z
@@ -443,7 +443,7 @@ mod tests {
     /// Helper to create a PeerInfo with builder disabled
     fn make_builder_disabled_peerinfo() -> PeerInfo {
         PeerInfo {
-            charon_version: "v1.5.0".to_string(),
+            pluto_version: "v1.5.0".to_string(),
             lock_hash: vec![0xff, 0xff, 0xff, 0xff].into(),
             sent_at: Some(prost_types::Timestamp {
                 seconds: 1733011200, // 2024-12-01T00:00:00Z
@@ -462,7 +462,7 @@ mod tests {
     /// Helper to create a PeerInfo with empty optional fields
     fn make_empty_optional_peerinfo() -> PeerInfo {
         PeerInfo {
-            charon_version: "v1.6.0".to_string(),
+            pluto_version: "v1.6.0".to_string(),
             lock_hash: vec![0xca, 0xfe, 0xba, 0xbe].into(),
             sent_at: None,
             git_hash: String::new(),

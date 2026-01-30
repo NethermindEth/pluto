@@ -27,7 +27,7 @@ pub(crate) enum CliError {
 
     /// Failed to load private key.
     #[error("Failed to load private key: {0}")]
-    KeyLoadError(#[from] charon_p2p::k1::K1Error),
+    KeyLoadError(#[from] pluto_p2p::k1::K1Error),
 
     /// ENR generation failed.
     #[error("ENR generation failed: {0}")]

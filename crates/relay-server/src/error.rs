@@ -1,13 +1,13 @@
 use libp2p::multiaddr;
 
-use charon_p2p::p2p::P2PError;
+use pluto_p2p::p2p::P2PError;
 
 /// Relay P2P error.
 #[derive(Debug, thiserror::Error)]
 pub enum RelayP2PError {
     /// Failed to load private key.
     #[error("Failed to load private key")]
-    FailedToLoadPrivateKey(#[from] charon_p2p::k1::K1Error),
+    FailedToLoadPrivateKey(#[from] pluto_p2p::k1::K1Error),
 
     /// P2P error.
     #[error("P2P error: {0}")]

@@ -19,7 +19,7 @@ tokio-util.workspace = true
 rand.workspace = true
 pluto-tracing.workspace = true
 tracing.workspace = true
-charon-p2p.workspace = true
+pluto-p2p.workspace = true
 pluto-core.workspace = true
 
 [dev-dependencies]

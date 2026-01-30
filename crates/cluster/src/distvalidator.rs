@@ -94,7 +94,7 @@ impl DistValidator {
     /// Validator's Eth2 registration.
     pub fn eth2_registration(&self) -> Result<(), DistValidatorError> {
         unimplemented!(
-            "Eth2 registration requires to have ethereum types library which is not yet integrated in charon-cluster"
+            "Eth2 registration requires to have ethereum types library which is not yet integrated in pluto-cluster"
         )
     }
 }

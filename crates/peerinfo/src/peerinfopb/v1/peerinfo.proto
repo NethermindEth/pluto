@@ -5,7 +5,7 @@ package peerinfo;
 import "google/protobuf/timestamp.proto";
 
 message PeerInfo {
-  string                         charon_version = 1;
+  string                         pluto_version = 1;
   bytes                               lock_hash = 2;
   optional google.protobuf.Timestamp    sent_at = 3;
   string                               git_hash = 4;

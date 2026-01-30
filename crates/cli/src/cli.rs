@@ -23,7 +23,7 @@ pub struct Cli {
 pub enum Commands {
     #[command(
         about = "Print the ENR that identifies this client",
-        long_about = "Prints an Ethereum Node Record (ENR) from this client's charon-enr-private-key. This serves as a public key that identifies this client to its peers."
+        long_about = "Prints an Ethereum Node Record (ENR) from this client's pluto-enr-private-key. This serves as a public key that identifies this client to its peers."
     )]
     Enr(EnrArgs),
 

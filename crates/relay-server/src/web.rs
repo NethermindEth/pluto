@@ -24,7 +24,7 @@ use crate::{
     config::{Config, EXTERNAL_HOST_RESOLVE_INTERVAL},
     error::RelayP2PError,
 };
-use charon_p2p::{config::P2PConfig, name::peer_name};
+use pluto_p2p::{config::P2PConfig, name::peer_name};
 
 /// Shared application state for HTTP handlers.
 #[derive(Clone)]

@@ -15,7 +15,7 @@
 //! ## Usage
 //!
 //! ```rust,ignore
-//! use charon_peerinfo::{Behaviour, Config, LocalPeerInfo};
+//! use pluto_peerinfo::{Behaviour, Config, LocalPeerInfo};
 //!
 //! let local_info = LocalPeerInfo::new(
 //!     "v1.0.0",

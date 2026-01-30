@@ -1,4 +1,4 @@
-//! Example demonstrating the charon-p2p metrics functionality.
+//! Example demonstrating the pluto-p2p metrics functionality.
 //!
 //! To run this example, run the local Prometheus and Grafana containers:
 //! ```bash
@@ -7,14 +7,14 @@
 //!
 //! Then run the example:
 //! ```bash
-//! cargo run --example metrics -p charon-p2p
+//! cargo run --example metrics -p pluto-p2p
 //! ```
 //!
 //! Metrics will be available in Grafana at http://localhost:3000.
 
 use std::net::SocketAddr;
 
-use charon_p2p::metrics::{
+use pluto_p2p::metrics::{
     ConnectionType, Direction, P2P_METRICS, PeerConnectionLabels, PeerNetworkLabels,
     PeerStreamLabels, Protocol, RelayConnectionLabels,
 };

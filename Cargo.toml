@@ -11,7 +11,7 @@ members = [
     "crates/eth2util",
     "crates/k1util",
     "crates/relay-server",
-    "crates/charon-p2p",   # TODO: Rename to `p2p`
+    "crates/p2p",
     "crates/testutil",
     "crates/tracing",
     "crates/peerinfo",
@@ -62,8 +62,9 @@ k256 = { version = "0.13.4", features = ["ecdsa", "sha256"] }
 tracing = "0.1.32"
 tracing-subscriber = { version = "0.3.9", features = ["env-filter"] }
 tracing-loki = "0.2.6"
-vise = "0.3.2"
-vise-exporter = "0.3.2"
+# todo: remove this once vise is published https://github.com/NethermindEth/charon-rs/issues/126
+vise = { git = "https://github.com/matter-labs/vise", rev = "73c654303d8190023cf30034d627b74cf3101b23" }
+vise-exporter = { git = "https://github.com/matter-labs/vise", rev = "73c654303d8190023cf30034d627b74cf3101b23" }
 criterion = "0.8.0"
 reqwest = "0.13"
 http = "1.4"
@@ -88,9 +89,8 @@ pluto-k1util = { path = "crates/k1util" }
 pluto-relay-server = { path = "crates/relay-server" }
 pluto-testutil = { path = "crates/testutil" }
 pluto-tracing = { path = "crates/tracing" }
-# TODO: Rename to `pluto-*`
-charon-p2p = { path = "crates/charon-p2p" }
-charon-peerinfo = { path = "crates/peerinfo" }
+pluto-p2p = { path = "crates/p2p" }
+pluto-peerinfo = { path = "crates/peerinfo" }
 
 [workspace.lints.rust]
 missing_docs = "deny"

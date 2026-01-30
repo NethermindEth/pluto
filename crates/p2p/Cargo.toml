@@ -1,5 +1,5 @@
 [package]
-name = "charon-p2p"
+name = "pluto-p2p"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
