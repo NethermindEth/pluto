@@ -393,7 +393,7 @@ pub fn peer_name(id: &PeerId) -> String {
 mod tests {
     use std::str::FromStr;
 
-    use charon_eth2::enr::Record;
+    use pluto_eth2util::enr::Record;
 
     use crate::{name::peer_name, peer::Peer};
 

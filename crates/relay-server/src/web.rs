@@ -227,12 +227,12 @@ pub async fn enr_handler(
     };
 
     // Create ENR record
-    let record = charon_eth2::enr::Record::new(
+    let record = pluto_eth2util::enr::Record::new(
         state.secret_key.clone(),
         vec![
-            charon_eth2::enr::with_ip_impl(ip),
-            charon_eth2::enr::with_tcp_impl(tcp_port),
-            charon_eth2::enr::with_udp_impl(udp_port),
+            pluto_eth2util::enr::with_ip_impl(ip),
+            pluto_eth2util::enr::with_tcp_impl(tcp_port),
+            pluto_eth2util::enr::with_udp_impl(udp_port),
         ],
     )
     .map_err(|e| HandlerError {

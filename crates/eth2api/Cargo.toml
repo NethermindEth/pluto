@@ -1,5 +1,5 @@
 [package]
-name = "eth2api"
+name = "pluto-eth2api"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
@@ -21,6 +21,9 @@ validator.workspace = true
 [dev-dependencies]
 testcontainers.workspace = true
 tokio.workspace = true
+
+[build-dependencies]
+regex.workspace = true
 
 [lints]
 workspace = true

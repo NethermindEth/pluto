@@ -17,3 +17,6 @@ target/
 
 # Code coverage output
 lcov.info
+coverage.json
+
+.charon*

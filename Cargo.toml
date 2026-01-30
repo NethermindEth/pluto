@@ -1,19 +1,20 @@
 [workspace]
 members = [
-    "crates/charon",
-    "crates/charon-build-proto",
-    "crates/charon-cli",
-    "crates/charon-cluster",
-    "crates/charon-core",
-    "crates/charon-crypto",
-    "crates/charon-dkg",
-    "crates/charon-eth2",
-    "crates/charon-k1util",
-    "crates/charon-p2p",
-    "crates/charon-testutil",
-    "crates/tracing",
+    "crates/app",
+    "crates/build-proto",
+    "crates/cli",
+    "crates/cluster",
+    "crates/core",
+    "crates/crypto",
+    "crates/dkg",
     "crates/eth2api",
-    "crates/relay-server"
+    "crates/eth2util",
+    "crates/k1util",
+    "crates/relay-server",
+    "crates/charon-p2p",   # TODO: Rename to `p2p`
+    "crates/testutil",
+    "crates/tracing",
+    "crates/peerinfo",
 ]
 resolver = "3"
 
@@ -34,13 +35,17 @@ cancellation = "0.1.0"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5.53", features = ["derive", "env", "cargo"] }
 crossbeam = "0.8.4"
+futures = "0.3"
+futures-timer = "3.0"
 backon = "1.6.0"
 hex = { version = "0.4.3" }
+hex-literal = "0.4"
 prost = "0.14"
 prost-build = "0.14"
 prost-types = "0.14"
 rand = { version = "0.8", features = ["std_rng"] }
 rand_core = "0.6"
+regex = "1.12"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0" }
 thiserror = "2.0"
@@ -49,40 +54,46 @@ tokio-util = "0.7.11"
 libp2p = { version = "0.56", features = ["full", "secp256k1"] }
 url = "2.5"
 uuid = { version = "1.19", features = ["serde", "v4"] }
+unsigned-varint = { version = "0.8", features = ["futures"] }
 serde_with = { version = "3.16", features = ["hex", "base64"] }
 base64 = "0.22"
 sha3 = "0.10"
 k256 = { version = "0.13.4", features = ["ecdsa", "sha256"] }
+tracing = "0.1.32"
+tracing-subscriber = { version = "0.3.9", features = ["env-filter"] }
+tracing-loki = "0.2.6"
+vise = "0.3.2"
+vise-exporter = "0.3.2"
 criterion = "0.8.0"
-regex = "1.12"
 reqwest = "0.13"
 http = "1.4"
 tempfile = "3.24"
 assert-json-diff = "0.2"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tracing-loki = "0.2"
-vise-exporter = "0.3"
 validator = { version = "0.20", features = ["derive"] }
 oas3-gen-support = "0.24"
 bon = "3.8"
 testcontainers = "0.26"
-vise = "0.3"
 tree_hash = "0.12"
 tree_hash_derive = "0.12"
+wiremock = "0.6"
 
 # Crates in the workspace
-charon = { path = "crates/charon" }
-charon-core = { path = "crates/charon-core" }
-charon-build-proto = { path = "crates/charon-build-proto" }
-charon-crypto = { path = "crates/charon-crypto" }
-charon-eth2 = { path = "crates/charon-eth2" }
-charon-k1util = { path = "crates/charon-k1util" }
+pluto-app = { path = "crates/app" }
+pluto-build-proto = { path = "crates/build-proto" }
+pluto-cli = { path = "crates/cli" }
+pluto-cluster = { path = "crates/cluster" }
+pluto-core = { path = "crates/core" }
+pluto-crypto = { path = "crates/crypto" }
+pluto-dkg = { path = "crates/dkg" }
+pluto-eth2api = { path = "crates/eth2api" }
+pluto-eth2util = { path = "crates/eth2util" }
+pluto-k1util = { path = "crates/k1util" }
+pluto-relay-server = { path = "crates/relay-server" }
+pluto-testutil = { path = "crates/testutil" }
+pluto-tracing = { path = "crates/tracing" }
+# TODO: Rename to `pluto-*`
 charon-p2p = { path = "crates/charon-p2p" }
-charon-testutil = { path = "crates/charon-testutil" }
-charon-tracing = { path = "crates/tracing" }
-charon-relay-server = { path = "crates/relay-server" }
-eth2api = { path = "crates/eth2api" }
+charon-peerinfo = { path = "crates/peerinfo" }
 
 [workspace.lints.rust]
 missing_docs = "deny"

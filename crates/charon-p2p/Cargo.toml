@@ -12,21 +12,21 @@ chrono.workspace = true
 libp2p.workspace = true
 thiserror.workspace = true
 k256.workspace = true
-charon-eth2.workspace = true
-charon-k1util.workspace = true
+pluto-eth2util.workspace = true
+pluto-k1util.workspace = true
 vise.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 rand.workspace = true
 tempfile.workspace = true
-charon-tracing.workspace = true
+pluto-tracing.workspace = true
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-charon-core.workspace = true
+pluto-core.workspace = true
 
 [dev-dependencies]
-charon-testutil.workspace = true
+pluto-testutil.workspace = true
 vise-exporter.workspace = true
 anyhow.workspace = true
 clap.workspace = true

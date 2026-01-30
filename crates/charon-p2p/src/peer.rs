@@ -4,10 +4,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use charon_eth2::enr::Record;
-use charon_k1util::{self as k1util};
 use k256::{PublicKey as K256PublicKey, SecretKey};
 use libp2p::{Multiaddr, PeerId, identity::PublicKey as Libp2pPublicKey};
+use pluto_eth2util::enr::Record;
 
 use crate::name::peer_name;
 
@@ -36,7 +35,7 @@ pub enum PeerError {
 
     /// Failed to convert the public key.
     #[error("Failed to convert the public key: {0}")]
-    FailedToConvertPublicKey(#[from] k1util::K1UtilError),
+    FailedToConvertPublicKey(#[from] pluto_k1util::K1UtilError),
 
     /// Unknown public key.
     #[error(
@@ -202,7 +201,7 @@ impl MutablePeer {
 /// Only works for secp256k1 keys.
 pub fn peer_id_to_public_key(peer_id: &PeerId) -> Result<K256PublicKey> {
     let libp2p_pk = peer_id_to_libp2p_pk(peer_id)?;
-    k1util::public_key_from_libp2p(&libp2p_pk).map_err(Into::into)
+    pluto_k1util::public_key_from_libp2p(&libp2p_pk).map_err(Into::into)
 }
 
 /// Extracts the libp2p PublicKey from a PeerId.
@@ -231,7 +230,7 @@ pub fn verify_p2p_key(peers: &[Peer], key: &SecretKey) -> Result<()> {
     for peer in peers {
         let pub_key = peer_id_to_libp2p_pk(&peer.id)?;
 
-        let got = k1util::public_key_from_libp2p(&pub_key)?;
+        let got = pluto_k1util::public_key_from_libp2p(&pub_key)?;
 
         if got == want {
             return Ok(());
@@ -244,10 +243,11 @@ pub fn verify_p2p_key(peers: &[Peer], key: &SecretKey) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pluto_testutil::random::generate_insecure_k1_key;
 
     #[test]
     fn test_new_peer() {
-        let p2p_key = charon_testutil::random::generate_insecure_k1_key(1);
+        let p2p_key = generate_insecure_k1_key(1);
 
         let record = Record::new(p2p_key, vec![]).unwrap();
 
