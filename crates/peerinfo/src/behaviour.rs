@@ -61,7 +61,7 @@ pub struct Behaviour {
 impl Behaviour {
     /// Creates a new [`Behaviour`] with the given configuration.
     pub fn new(config: Config) -> Self {
-        let name = config.local_info().nickname.clone();
+        let name = config.local_info().nickname;
 
         PEERINFO_METRICS.version
             [&PeerVersionLabels::new(&name, &config.local_info().pluto_version)]
