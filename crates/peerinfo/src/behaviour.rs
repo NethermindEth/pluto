@@ -63,8 +63,7 @@ impl Behaviour {
     pub fn new(config: Config) -> Self {
         let name = &config.local_info().nickname;
 
-        PEERINFO_METRICS.version
-            [&PeerVersionLabels::new(name, &config.local_info().pluto_version)]
+        PEERINFO_METRICS.version[&PeerVersionLabels::new(name, &config.local_info().pluto_version)]
             .set(1);
         PEERINFO_METRICS.git_commit[&PeerGitHashLabels::new(name, &config.local_info().git_hash)]
             .set(1);
