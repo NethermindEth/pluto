@@ -1012,6 +1012,16 @@ checksum = "155a5a185e42c6b77ac7b88a15143d930a9e9727a5b7b77eed417404ab15c247"
 
 [[package]]
 name = "assert-json-diff"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4bb138a39b134b69051e53152a66489ecf44769b89f8d4c54d5854cd2d66faa"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "assert-json-diff"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47e4f2b81832e72834d7518d8487a0396a28cc408186a2e8854c0f98011faf12"
@@ -2523,6 +2533,45 @@ checksum = "de48cc4d1c1d97a20fd819def54b890cadde72ed3ad0c614822a0a433361be96"
 dependencies = [
  "cfg-if",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "ethereum_hashing"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5aa93f58bb1eb3d1e556e4f408ef1dac130bad01ac37db4e7ade45de40d1c86a"
+dependencies = [
+ "cpufeatures",
+ "ring",
+ "sha2",
+]
+
+[[package]]
+name = "ethereum_serde_utils"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3dc1355dbb41fbbd34ec28d4fb2a57d9a70c67ac3c19f6a5ca4d4a176b9e997a"
+dependencies = [
+ "alloy-primitives",
+ "hex",
+ "serde",
+ "serde_derive",
+ "serde_json",
+]
+
+[[package]]
+name = "ethereum_ssz"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2128a84f7a3850d54ee343334e3392cca61f9f6aa9441eec481b9394b43c238b"
+dependencies = [
+ "alloy-primitives",
+ "ethereum_serde_utils",
+ "itertools 0.14.0",
+ "serde",
+ "serde_derive",
+ "smallvec",
+ "typenum",
 ]
 
 [[package]]
@@ -5443,14 +5492,25 @@ dependencies = [
 name = "pluto-eth2util"
 version = "1.7.1"
 dependencies = [
+ "alloy",
+ "assert-json-diff 0.2.1",
  "base64 0.22.1",
  "chrono",
  "hex",
  "k256",
+ "pluto-crypto",
+ "pluto-eth2api",
  "pluto-k1util",
  "pluto-testutil",
+ "regex",
+ "serde",
+ "serde_json",
  "sha3",
+ "tempfile",
  "thiserror 2.0.18",
+ "tokio",
+ "tree_hash",
+ "tree_hash_derive",
 ]
 
 [[package]]
@@ -7654,6 +7714,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree_hash"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7fd51aa83d2eb83b04570808430808b5d24fdbf479a4d5ac5dee4a2e2dd2be4"
+dependencies = [
+ "alloy-primitives",
+ "ethereum_hashing",
+ "ethereum_ssz",
+ "smallvec",
+ "typenum",
+]
+
+[[package]]
+name = "tree_hash_derive"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8840ad4d852e325d3afa7fde8a50b2412f89dce47d7eb291c0cc7f87cd040f38"
+dependencies = [
+ "darling 0.23.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.114",
+]
+
+[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8594,7 +8679,7 @@ version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08db1edfb05d9b3c1542e521aea074442088292f00b5f28e435c714a98f85031"
 dependencies = [
- "assert-json-diff",
+ "assert-json-diff 2.0.2",
  "base64 0.22.1",
  "deadpool",
  "futures",

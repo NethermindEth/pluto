@@ -69,10 +69,13 @@ criterion = "0.8.0"
 reqwest = "0.13"
 http = "1.4"
 tempfile = "3.24"
+assert-json-diff = "0.2"
 validator = { version = "0.20", features = ["derive"] }
 oas3-gen-support = "0.24"
 bon = "3.8"
 testcontainers = "0.26"
+tree_hash = "0.12"
+tree_hash_derive = "0.12"
 wiremock = "0.6"
 
 # Crates in the workspace
