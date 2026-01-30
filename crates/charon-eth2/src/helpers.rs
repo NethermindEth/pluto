@@ -1,8 +1,8 @@
 use std::{collections::HashMap, sync::LazyLock};
 
+use alloy::primitives::Address;
 use k256::{PublicKey, elliptic_curve::sec1::ToEncodedPoint};
 use regex::Regex;
-use sha3::{Digest, Keccak256};
 
 // The pattern ([^=,]+) captures any string that does not contain '=' or ','.
 // The pattern ([^,]+) captures any string that does not contain ','.
@@ -76,46 +76,29 @@ pub fn parse_http_headers(headers: &[String]) -> Result<HashMap<String, String>>
 
 /// Returns an EIP55-compliant checksummed address.
 pub fn checksum_address(address: &str) -> Result<String> {
-    // Validate format: must have "0x" prefix and be exactly 42 chars (0x + 40 hex
-    // chars)
-    if !address.starts_with("0x") || address.len() != 2 + 20 * 2 {
-        return Err(HelperError::InvalidAddress(address.to_string()));
-    }
-
-    let bytes = hex::decode(&address[2..])
-        .map_err(|e| HelperError::InvalidHexAddress(format!("{}: {}", address, e)))?;
-
-    Ok(checksum_address_bytes(&bytes))
-}
-
-/// Returns an EIP55-compliant 0xhex representation of the binary ethereum
-/// address.
-pub fn checksum_address_bytes(address_bytes: &[u8]) -> String {
-    let hex_addr = hex::encode(address_bytes);
-
-    let hash = Keccak256::digest(hex_addr.as_bytes());
-    let hex_hash = hex::encode(hash);
-
-    let mut result = String::from("0x");
-
-    for (i, c) in hex_addr.chars().enumerate() {
-        if c > '9' && hex_hash.as_bytes()[i] > b'7' {
-            result.push(c.to_ascii_uppercase());
-        } else {
-            result.push(c);
-        }
-    }
-
-    result
+    let addr = verify_address(address)?;
+    Ok(addr.to_checksum(None))
 }
 
 /// Returns the EIP55-compliant 0xhex ethereum address of the public key.
 pub fn public_key_to_address(pubkey: &PublicKey) -> String {
+    // Alloy expects the 64-byte uncompressed public key without the 0x04 prefix
     let uncompressed = pubkey.to_encoded_point(false);
     let uncompressed_bytes = uncompressed.as_bytes();
-    let hash = Keccak256::digest(&uncompressed_bytes[1..]);
 
-    checksum_address_bytes(&hash[12..])
+    // Skip the first byte (0x04 prefix) and pass the 64-byte key to Alloy
+    Address::from_raw_public_key(&uncompressed_bytes[1..]).to_checksum(None)
+}
+
+pub(crate) fn verify_address(address: &str) -> Result<Address> {
+    // Validate that address starts with "0x"
+    if !address.starts_with("0x") {
+        return Err(HelperError::InvalidAddress(address.to_string()));
+    }
+
+    address
+        .parse()
+        .map_err(|_| HelperError::InvalidAddress(address.to_string()))
 }
 
 /// Returns epoch calculated from given slot.

@@ -103,32 +103,18 @@ pub(crate) fn get_deposit_domain(fork_version: Version) -> Domain {
 
 /// Converts an Ethereum address to withdrawal credentials.
 pub(crate) fn withdrawal_creds_from_addr(
-    addr: &str,
+    addr: impl AsRef<str>,
     compounding: bool,
 ) -> Result<WithdrawalCredentials> {
-    crate::helpers::checksum_address(addr)?;
-
-    // Decode address bytes (we already validated format, so this should succeed)
-    let addr_bytes = hex::decode(addr.strip_prefix("0x").unwrap_or(addr))?;
-
+    let addr = crate::helpers::verify_address(addr.as_ref())?;
     let mut creds = [0u8; 32];
-
     // Set withdrawal prefix based on compounding flag
     if compounding {
         creds[0] = EIP7251_ADDRESS_WITHDRAWAL_PREFIX;
     } else {
         creds[0] = ETH1_ADDRESS_WITHDRAWAL_PREFIX;
     }
-
-    // Copy address bytes to positions 12-31 (last 20 bytes)
-    if addr_bytes.len() != 20 {
-        return Err(DepositError::InvalidAddress(format!(
-            "Address must be 20 bytes, got {}",
-            addr_bytes.len()
-        )));
-    }
-    creds[12..32].copy_from_slice(&addr_bytes);
-
+    creds[12..32].copy_from_slice(addr.as_slice());
     Ok(creds)
 }
 

@@ -1748,6 +1748,7 @@ dependencies = [
 name = "charon-eth2"
 version = "1.7.1"
 dependencies = [
+ "alloy",
  "assert-json-diff",
  "base64 0.22.1",
  "charon-crypto",
