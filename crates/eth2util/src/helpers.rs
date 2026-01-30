@@ -154,7 +154,7 @@ mod tests {
             assert_eq!(addr, checksummed);
 
             // Test with lowercase address
-            let checksummed = checksum_address(&addr.to_lowercase()).unwrap();
+            let checksummed = checksum_address(addr.to_lowercase()).unwrap();
             assert_eq!(addr, checksummed);
 
             // Test with uppercase address (0x + uppercase hex)

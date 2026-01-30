@@ -1,6 +1,6 @@
-//! # Charon ETH2
+//! # Pluto ETH2
 //!
-//! Ethereum 2.0 integration and utilities for the Charon distributed validator
+//! Ethereum 2.0 integration and utilities for the Pluto distributed validator
 //! node. This crate provides interfaces, types, and utilities for interacting
 //! with Ethereum 2.0 networks and validator operations.
 

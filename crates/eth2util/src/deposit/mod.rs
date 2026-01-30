@@ -366,9 +366,9 @@ mod tests {
     use tempfile::tempdir;
 
     /// Get the private and public keys from a hex-encoded private key.
-    fn get_keys(priv_key_hex: &str) -> (charon_crypto::types::PrivateKey, PublicKey) {
+    fn get_keys(priv_key_hex: &str) -> (pluto_crypto::types::PrivateKey, PublicKey) {
         let priv_key_bytes = hex::decode(priv_key_hex).unwrap();
-        let priv_key: charon_crypto::types::PrivateKey =
+        let priv_key: pluto_crypto::types::PrivateKey =
             priv_key_bytes.as_slice().try_into().unwrap();
 
         let tbls = BlstImpl;
