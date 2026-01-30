@@ -688,7 +688,7 @@
   "schemaVersion": 42,
   "tags": [
     "cluster-labels",
-    "charon"
+    "pluto"
   ],
   "templating": {
     "list": [
