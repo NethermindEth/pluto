@@ -75,8 +75,8 @@ pub fn parse_http_headers(headers: &[String]) -> Result<HashMap<String, String>>
 }
 
 /// Returns an EIP55-compliant checksummed address.
-pub fn checksum_address(address: &str) -> Result<String> {
-    let addr = verify_address(address)?;
+pub fn checksum_address(address: impl AsRef<str>) -> Result<String> {
+    let addr = verify_address(address.as_ref())?;
     Ok(addr.to_checksum(None))
 }
 

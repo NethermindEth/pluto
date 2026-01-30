@@ -31,7 +31,11 @@ pub fn max_deposit_amount(compounding: bool) -> Gwei {
 }
 
 /// Serializes a list of deposit data into a single file.
-pub fn marshal_deposit_data(deposit_datas: &[DepositData], network: &str) -> Result<Vec<u8>> {
+pub fn marshal_deposit_data(
+    deposit_datas: &[DepositData],
+    network: impl AsRef<str>,
+) -> Result<Vec<u8>> {
+    let network = network.as_ref();
     let fork_version = crate::network::network_to_fork_version(network)?;
 
     let mut dd_list = Vec::new();
@@ -183,10 +187,12 @@ pub fn default_deposit_amounts(compounding: bool) -> Vec<Gwei> {
 /// Writes deposit-data-*eth.json files for each distinct amount.
 pub async fn write_cluster_deposit_data_files<D: AsRef<[DepositData]>>(
     deposit_datas: &[D],
-    network: &str,
-    cluster_dir: &Path,
+    network: impl AsRef<str>,
+    cluster_dir: impl AsRef<Path>,
     num_nodes: usize,
 ) -> Result<()> {
+    let network = network.as_ref();
+    let cluster_dir = cluster_dir.as_ref();
     for deposit_data_set in deposit_datas {
         for n in 0..num_nodes {
             let node_dir = cluster_dir.join(format!("node{}", n));
@@ -202,8 +208,8 @@ pub async fn write_cluster_deposit_data_files<D: AsRef<[DepositData]>>(
 // All `deposit_datas` amounts shall have equal values.
 pub async fn write_deposit_data_file(
     deposit_datas: &[DepositData],
-    network: &str,
-    data_dir: &Path,
+    network: impl AsRef<str>,
+    data_dir: impl AsRef<Path>,
 ) -> Result<()> {
     if deposit_datas.is_empty() {
         return Err(DepositError::EmptyDepositData);
@@ -223,6 +229,8 @@ pub async fn write_deposit_data_file(
 
     tokio::fs::write(&file_path, bytes).await?;
 
+    // TODO: The write and set permissions may not atomic, which the file has write
+    // permission between write and set perm actions.
     let mut perms = tokio::fs::metadata(&file_path).await?.permissions();
     perms.set_readonly(true);
     tokio::fs::set_permissions(&file_path, perms).await?;
@@ -231,7 +239,7 @@ pub async fn write_deposit_data_file(
 }
 
 /// Constructs the file path for a deposit data file based on amount.d
-pub fn get_deposit_file_path(data_dir: &Path, amount: Gwei) -> PathBuf {
+pub fn get_deposit_file_path(data_dir: impl AsRef<Path>, amount: Gwei) -> PathBuf {
     let filename = if amount == DEFAULT_DEPOSIT_AMOUNT {
         // For backward compatibility, use the old filename for 32 ETH
         "deposit-data.json".to_string()
@@ -242,11 +250,14 @@ pub fn get_deposit_file_path(data_dir: &Path, amount: Gwei) -> PathBuf {
         format!("deposit-data-{}eth.json", eth)
     };
 
-    data_dir.join(filename)
+    data_dir.as_ref().join(filename)
 }
 
 /// Reads all deposit data files from a cluster directory.
-pub async fn read_deposit_data_files(cluster_dir: &Path) -> Result<Vec<Vec<DepositData>>> {
+pub async fn read_deposit_data_files(
+    cluster_dir: impl AsRef<Path>,
+) -> Result<Vec<Vec<DepositData>>> {
+    let cluster_dir = cluster_dir.as_ref();
     let mut files = Vec::new();
     let mut entries = tokio::fs::read_dir(cluster_dir).await?;
     while let Some(entry) = entries.next_entry().await? {
@@ -265,6 +276,7 @@ pub async fn read_deposit_data_files(cluster_dir: &Path) -> Result<Vec<Vec<Depos
 
     let mut deposit_datas_list = Vec::new();
 
+    // TODO: could run multiple files concurrently.
     for file in files {
         let bytes = tokio::fs::read(&file).await?;
 
