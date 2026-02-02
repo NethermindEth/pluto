@@ -1,4 +1,4 @@
-# `pluto` CLI (Rust)
+# `pluto` CLI
 
 This crate builds the `pluto` binary (`pluto-cli`).
 
@@ -32,35 +32,35 @@ Output version info
 - **Flags**
   - `--verbose`: Includes detailed module version info and supported protocols.
 
-## Rust vs Go command parity
+## Pluto vs Charon command parity
 
-Go source of truth: `charon/cmd/cmd.go` (root command wiring).
+Charon source of truth: `charon/cmd/cmd.go` (root command wiring).
 
-| Command | Go `charon` | Rust `pluto` | Notes |
+| Command | `charon` | `pluto` | Notes |
 | --- | ---: | ---: | --- |
 | `version` | ✅ | ✅ | |
 | `enr` | ✅ | ✅ | |
-| `run` | ✅ | ❌ | Not implemented in Rust CLI yet. |
-| `relay` | ✅ | ❌ | Not implemented in Rust CLI yet. |
-| `dkg` | ✅ | ❌ | Not implemented in Rust CLI yet. |
-| `create` | ✅ | ✅ (partial) | Rust has `create enr` only. |
-| `create dkg` | ✅ | ❌ | Not implemented in Rust CLI yet. |
-| `create cluster` | ✅ | ❌ | Not implemented in Rust CLI yet. |
-| `combine` | ✅ | ❌ | Not implemented in Rust CLI yet. |
-| `alpha` | ✅ | ❌ | Not implemented in Rust CLI yet. |
-| `alpha add-validators` | ✅ | ❌ | Not implemented in Rust CLI yet. |
-| `alpha test` | ✅ | ❌ | Not implemented in Rust CLI yet. |
-| `alpha test all` | ✅ | ❌ | Not implemented in Rust CLI yet. |
-| `alpha test peers` | ✅ | ❌ | Not implemented in Rust CLI yet. |
-| `alpha test beacon` | ✅ | ❌ | Not implemented in Rust CLI yet. |
-| `alpha test validator` | ✅ | ❌ | Not implemented in Rust CLI yet. |
-| `alpha test mev` | ✅ | ❌ | Not implemented in Rust CLI yet. |
-| `alpha test infra` | ✅ | ❌ | Not implemented in Rust CLI yet. |
-| `exit` | ✅ | ❌ | Not implemented in Rust CLI yet. |
-| `exit active-validator-list` | ✅ | ❌ | Not implemented in Rust CLI yet. |
-| `exit sign` | ✅ | ❌ | Not implemented in Rust CLI yet. |
-| `exit broadcast` | ✅ | ❌ | Not implemented in Rust CLI yet. |
-| `exit fetch` | ✅ | ❌ | Not implemented in Rust CLI yet. |
-| `exit delete` | ✅ | ❌ | Not implemented in Rust CLI yet. |
-| `unsafe` | ✅ | ❌ | Not implemented in Rust CLI yet. |
-| `unsafe run` | ✅ | ❌ | Not implemented in Rust CLI yet. |
+| `run` | ✅ | ❌ | Not implemented (`charon/cmd/run.go`) |
+| `relay` | ✅ | ❌ | Not implemented (`charon/cmd/relay.go`) |
+| `dkg` | ✅ | ❌ | Not implemented (`charon/cmd/dkg.go`) |
+| `create` | ✅ | ✅ (partial) | Support `create enr` only. |
+| `create dkg` | ✅ | ❌ | Not implemented (`charon/cmd/createdkg.go`) |
+| `create cluster` | ✅ | ❌ | Not implemented (`charon/cmd/createcluster.go`) |
+| `combine` | ✅ | ❌ | Not implemented (`charon/cmd/combine.go`) |
+| `alpha` | ✅ | ❌ | Not implemented (`charon/cmd/alpha.go`) |
+| `alpha add-validators` | ✅ | ❌ | Not implemented (`charon/cmd/addvalidators.go`) |
+| `alpha test` | ✅ | ❌ | Not implemented (`charon/cmd/test.go`) |
+| `alpha test all` | ✅ | ❌ | Not implemented (`charon/cmd/testall.go`) |
+| `alpha test peers` | ✅ | ❌ | Not implemented (`charon/cmd/testpeers.go`) |
+| `alpha test beacon` | ✅ | ❌ | Not implemented (`charon/cmd/testbeacon.go`) |
+| `alpha test validator` | ✅ | ❌ | Not implemented (`charon/cmd/testvalidator.go`) |
+| `alpha test mev` | ✅ | ❌ | Not implemented (`charon/cmd/testmev.go`) |
+| `alpha test infra` | ✅ | ❌ | Not implemented (`charon/cmd/testinfra.go`) |
+| `exit` | ✅ | ❌ | Not implemented (`charon/cmd/exit.go`) |
+| `exit active-validator-list` | ✅ | ❌ | Not implemented (`charon/cmd/exit_list.go`) |
+| `exit sign` | ✅ | ❌ | Not implemented (`charon/cmd/exit_sign.go`) |
+| `exit broadcast` | ✅ | ❌ | Not implemented (`charon/cmd/exit_broadcast.go`) |
+| `exit fetch` | ✅ | ❌ | Not implemented (`charon/cmd/exit_fetch.go`) |
+| `exit delete` | ✅ | ❌ | Not implemented (`charon/cmd/exit_delete.go`) |
+| `unsafe` | ✅ | ❌ | Not implemented (`charon/cmd/unsafe.go`) |
+| `unsafe run` | ✅ | ❌ | Not implemented (`charon/cmd/run.go`) |
