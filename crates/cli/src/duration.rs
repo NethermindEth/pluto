@@ -3,6 +3,11 @@
 use serde::{Deserialize, Serialize};
 use std::{fmt, time::Duration as StdDuration};
 
+const NANOSECOND: u64 = 1;
+    const MICROSECOND: u64 = 1000 * NANOSECOND;
+    const MILLISECOND: u64 = 1000 * MICROSECOND;
+    const SECOND: u64 = 1000 * MILLISECOND;
+
 /// Custom Duration wrapper with JSON serialization.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Duration {
@@ -65,69 +70,134 @@ impl std::str::FromStr for Duration {
 
 impl fmt::Display for Duration {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Match Go's time.Duration.String() format exactly
-        let duration = self.inner;
+        // Matches Go's `time.Duration.String()` (see Go's `time.Duration.format`).
+        write!(f, "{}", format_go_duration(self.inner))
+    }
+}
 
-        if duration.is_zero() {
-            return write!(f, "0s");
-        }
+/// Formats a duration like Go's `time.Duration.String()`.
+fn format_go_duration(duration: StdDuration) -> String {
+    let nanos_u128 = duration.as_nanos();
+    let mut u: u64 = match u64::try_from(nanos_u128) {
+        Ok(v) => v,
+        Err(_) => u64::MAX,
+    };
 
-        let nanos = duration.as_nanos();
+    let mut buf = [0_u8; 32];
+    let mut w = buf.len();
 
-        // For durations < 1 second, use the most appropriate unit
-        if nanos < 1_000_000_000 {
-            if nanos < 1_000 {
-                return write!(f, "{}ns", nanos);
-            } else if nanos < 1_000_000 {
-                return write!(f, "{}µs", nanos / 1_000);
-            } else {
-                return write!(f, "{}ms", nanos / 1_000_000);
+    if u < SECOND {
+        // Special case: if duration is smaller than a second, use smaller units, like
+        // 1.2ms.
+        let prec: usize;
+
+        w -= 1;
+        buf[w] = b's';
+
+        match u {
+            0 => {
+                w -= 1;
+                buf[w] = b'0';
+                return String::from_utf8_lossy(&buf[w..]).into_owned();
+            }
+            0..MICROSECOND => {
+                // nanoseconds: "ns"
+                prec = 0;
+                w -= 1;
+                buf[w] = b'n';
+            }
+            MICROSECOND..MILLISECOND => {
+                // microseconds: "µs" (U+00B5 'µ' as UTF-8 0xC2 0xB5)
+                prec = 3;
+                w -= 2;
+                buf[w] = 0xC2;
+                buf[w + 1] = 0xB5;
+            }
+            _ => {
+                // milliseconds: "ms"
+                prec = 6;
+                w -= 1;
+                buf[w] = b'm';
             }
         }
 
-        let mut remaining = nanos;
-        let mut parts = Vec::new();
+        let (nw, nv) = fmt_frac(&mut buf[..w], u, prec);
+        w = nw;
+        u = nv;
+        w = fmt_int(&mut buf[..w], u);
 
-        // Hours
-        let hours = remaining / 3_600_000_000_000;
-        if hours > 0 {
-            parts.push(format!("{}h", hours));
-            remaining %= 3_600_000_000_000;
-        }
-
-        // Minutes
-        let minutes = remaining / 60_000_000_000;
-        if minutes > 0 || hours > 0 {
-            parts.push(format!("{}m", minutes));
-            remaining %= 60_000_000_000;
-        }
-
-        // Seconds and sub-seconds
-        let seconds = remaining / 1_000_000_000;
-        remaining %= 1_000_000_000;
-
-        if hours == 0 && minutes == 0 {
-            #[allow(clippy::cast_precision_loss)]
-            // For >= 1 second durations without h/m, always use 3 decimal places
-            // (e.g. "1.500s", "3.000s"). 
-            let total_seconds = (nanos as f64) / 1_000_000_000.0;
-            parts.push(format!("{:.3}s", total_seconds));
-        } else if remaining == 0 {
-            parts.push(format!("{}s", seconds));
-        } else if hours > 0 || minutes > 0 {
-            // For h/m/s format, include fractional seconds without padding
-            let mut subsec_str = format!("{:09}", remaining);
-            subsec_str = subsec_str.trim_end_matches('0').to_string();
-            parts.push(format!("{}.{}s", seconds, subsec_str));
-        } else {
-            #[allow(clippy::cast_precision_loss)]
-            // For >= 1 second durations without h/m, use 3 decimal places
-            let total_seconds = (nanos as f64) / 1_000_000_000.0;
-            parts.push(format!("{:.3}s", total_seconds));
-        }
-
-        write!(f, "{}", parts.join(""))
+        return String::from_utf8_lossy(&buf[w..]).into_owned();
     }
+
+    // >= 1 second
+    w -= 1;
+    buf[w] = b's';
+
+    let (nw, nv) = fmt_frac(&mut buf[..w], u, 9);
+    w = nw;
+    u = nv; // integer seconds
+
+    w = fmt_int(&mut buf[..w], u % 60);
+    u /= 60;
+
+    if u > 0 {
+        w -= 1;
+        buf[w] = b'm';
+        w = fmt_int(&mut buf[..w], u % 60);
+        u /= 60;
+
+        if u > 0 {
+            w -= 1;
+            buf[w] = b'h';
+            w = fmt_int(&mut buf[..w], u);
+        }
+    }
+
+    String::from_utf8_lossy(&buf[w..]).into_owned()
+}
+
+/// Formats the fraction of `v / 10**prec` into the tail of `buf`, omitting
+/// trailing zeros. Returns the new start index and `v / 10**prec`.
+fn fmt_frac(buf: &mut [u8], mut v: u64, prec: usize) -> (usize, u64) {
+    // Omit trailing zeros up to and including decimal point.
+    let mut w = buf.len();
+    let mut print = false;
+
+    for _ in 0..prec {
+        let digit = (v % 10) as u8;
+        print = print || digit != 0;
+        if print {
+            w -= 1;
+            buf[w] = digit + b'0';
+        }
+        v /= 10;
+    }
+
+    if print {
+        w -= 1;
+        buf[w] = b'.';
+    }
+
+    (w, v)
+}
+
+/// Formats `v` into the tail of `buf`. Returns the index where the output
+/// begins.
+fn fmt_int(buf: &mut [u8], mut v: u64) -> usize {
+    let mut w = buf.len();
+    if v == 0 {
+        w -= 1;
+        buf[w] = b'0';
+        return w;
+    } else {
+        while v > 0 {
+            w -= 1;
+            buf[w] = (v % 10) as u8 + b'0';
+            v /= 10;
+        }
+    }
+
+    w
 }
 
 impl Serialize for Duration {
@@ -135,6 +205,8 @@ impl Serialize for Duration {
     where
         S: serde::Serializer,
     {
+        // Match Go's `cmd.Duration.MarshalJSON` which marshals
+        // `time.Duration.String()`.
         serializer.serialize_str(&self.to_string())
     }
 }
@@ -332,10 +404,18 @@ mod tests {
     fn test_display() {
         let tests = vec![
             ("millisecond", StdDuration::from_millis(1), "1ms"),
-            ("one second", StdDuration::from_secs(1), "1.000s"),
-            ("three seconds", StdDuration::from_secs(3), "3.000s"),
-            ("two point five seconds", StdDuration::from_millis(2500), "2.500s"),
-            ("three point one two three seconds", StdDuration::from_millis(3123), "3.123s"),
+            ("one second", StdDuration::from_secs(1), "1s"),
+            ("three seconds", StdDuration::from_secs(3), "3s"),
+            (
+                "two point five seconds",
+                StdDuration::from_millis(2500),
+                "2.5s",
+            ),
+            (
+                "three point one two three seconds",
+                StdDuration::from_millis(3123),
+                "3.123s",
+            ),
             ("day", StdDuration::from_secs(24 * 3600), "24h0m0s"),
             ("1000 nanoseconds", StdDuration::from_nanos(1000), "1µs"),
             ("60 seconds", StdDuration::from_secs(60), "1m0s"),

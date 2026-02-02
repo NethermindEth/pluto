@@ -30,11 +30,11 @@ use crate::{
     error::{CliError, Result as CliResult},
 };
 
+use k256::SecretKey;
 use pluto_app::obolapi::{Client, ClientOptions};
 use pluto_cluster::ssz_hasher::{HashWalker, Hasher};
 use pluto_eth2util::enr::Record;
 use pluto_k1util::{load, sign};
-use k256::SecretKey;
 use serde_with::{base64::Base64, serde_as};
 use std::os::unix::fs::PermissionsExt as _;
 use tokio::io::AsyncReadExt;
@@ -222,15 +222,15 @@ impl fmt::Display for CategoryScore {
 pub(crate) struct TestResultError(String);
 
 impl TestResultError {
-    pub(crate)fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self(String::new())
     }
 
-    pub(crate)fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
-    pub(crate)fn message(&self) -> Option<&str> {
+    pub(crate) fn message(&self) -> Option<&str> {
         if self.0.is_empty() {
             None
         } else {
@@ -342,7 +342,7 @@ pub(crate) struct TestCategoryResult {
     #[serde(rename = "targets", skip_serializing_if = "HashMap::is_empty", default)]
     pub targets: HashMap<String, Vec<TestResult>>,
 
-    // TODO: Using Duration as `execution_time` is not a good idea, since duration formating 
+    // TODO: Using Duration as `execution_time` is not a good idea, since duration formating
     // between languages are not the same
     #[serde(rename = "execution_time", skip_serializing_if = "Option::is_none")]
     pub execution_time: Option<Duration>,
@@ -431,7 +431,10 @@ pub(crate) async fn publish_result_to_obol_api(
 }
 
 /// Writes test results to a JSON file.
-pub(crate) async fn write_result_to_file(result: &TestCategoryResult, path: &Path) -> CliResult<()> {
+pub(crate) async fn write_result_to_file(
+    result: &TestCategoryResult,
+    path: &Path,
+) -> CliResult<()> {
     let mut existing_file: tokio::fs::File = tokio::fs::OpenOptions::new()
         .create(true)
         .read(true)
@@ -511,7 +514,8 @@ pub(crate) async fn write_result_to_file(result: &TestCategoryResult, path: &Pat
     .await
     .map_err(|e| CliError::Other(format!("spawn_blocking: {}", e)))?;
 
-    // Keep existing_file open until after temp file is persisted to prevent race conditions
+    // Keep existing_file open until after temp file is persisted to prevent race
+    // conditions
     drop(existing_file);
 
     result
@@ -794,8 +798,8 @@ mod tests {
 
     // Ground truth from Go fastssz (with Duration as string format matching Rust)
     const GO_HASH_EMPTY: &str = "7b7d000000000000000000000000000000000000000000000000000000000000";
-    const GO_HASH_ALL_CATEGORIES: &str = "fba6ca00171ae6ee89a627f20e57d036bcd1267c1caae391a6fdea4cfb68a203";
-
+    const GO_HASH_ALL_CATEGORIES: &str =
+        "64469d918903e272849172b3b36e812f602411b664a89b59c04393332b69f63b";
 
     fn assert_hash(data: &AllCategoriesResult, expected_go_hash: &str) {
         let json_bytes = serde_json::to_vec(data).expect("Failed to serialize to JSON");
@@ -824,9 +828,7 @@ mod tests {
                         is_acceptable: false,
                     }],
                 )]),
-                execution_time: Some(Duration::new(std::time::Duration::from_nanos(
-                    1500000000,
-                ))),
+                execution_time: Some(Duration::new(std::time::Duration::from_nanos(1500000000))),
                 score: Some(CategoryScore::A),
             }),
             beacon: Some(TestCategoryResult {
@@ -842,9 +844,7 @@ mod tests {
                         is_acceptable: false,
                     }],
                 )]),
-                execution_time: Some(Duration::new(std::time::Duration::from_nanos(
-                    2500000000,
-                ))),
+                execution_time: Some(Duration::new(std::time::Duration::from_nanos(2500000000))),
                 score: Some(CategoryScore::A),
             }),
             validator: Some(TestCategoryResult {
@@ -876,9 +876,7 @@ mod tests {
                         is_acceptable: false,
                     }],
                 )]),
-                execution_time: Some(Duration::new(std::time::Duration::from_nanos(
-                    3000000000,
-                ))),
+                execution_time: Some(Duration::new(std::time::Duration::from_nanos(3000000000))),
                 score: Some(CategoryScore::C),
             }),
             infra: Some(TestCategoryResult {
@@ -894,9 +892,7 @@ mod tests {
                         is_acceptable: false,
                     }],
                 )]),
-                execution_time: Some(Duration::new(std::time::Duration::from_nanos(
-                    1000000000,
-                ))),
+                execution_time: Some(Duration::new(std::time::Duration::from_nanos(1000000000))),
                 score: Some(CategoryScore::A),
             }),
         };

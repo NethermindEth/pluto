@@ -35,22 +35,24 @@ async fn main() -> ExitResult {
             AlphaCommands::Test(args) => {
                 let mut stdout = std::io::stdout();
                 match args.command {
-                    TestCommands::Peers(args) => {
-                        commands::test::peers::run(args, &mut stdout).await.map(|_| ())
-                    }
-                    TestCommands::Beacon(args) => {
-                        commands::test::beacon::run(args, &mut stdout).await.map(|_| ())
-                    }
+                    TestCommands::Peers(args) => commands::test::peers::run(args, &mut stdout)
+                        .await
+                        .map(|_| ()),
+                    TestCommands::Beacon(args) => commands::test::beacon::run(args, &mut stdout)
+                        .await
+                        .map(|_| ()),
                     TestCommands::Validator(args) => {
-                        commands::test::validator::run(args, &mut stdout).await.map(|_| ())
+                        commands::test::validator::run(args, &mut stdout)
+                            .await
+                            .map(|_| ())
                     }
-                    TestCommands::Mev(args) => {
-                        commands::test::mev::run(args, &mut stdout).await.map(|_| ())
-                    }
-                    TestCommands::Infra(args) => {
-                        commands::test::infra::run(args, &mut stdout).await.map(|_| ())
-                    }
-                    TestCommands::All(args) => commands::test::all::run(*args, &mut stdout).await
+                    TestCommands::Mev(args) => commands::test::mev::run(args, &mut stdout)
+                        .await
+                        .map(|_| ()),
+                    TestCommands::Infra(args) => commands::test::infra::run(args, &mut stdout)
+                        .await
+                        .map(|_| ()),
+                    TestCommands::All(args) => commands::test::all::run(*args, &mut stdout).await,
                 }
             }
         },
