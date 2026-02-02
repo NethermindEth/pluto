@@ -60,14 +60,15 @@ pub struct Behaviour {
 
 impl Behaviour {
     /// Creates a new [`Behaviour`] with the given configuration.
-    pub fn new(config: Config) -> Self {
-        let name = &config.local_info().nickname;
+    pub fn new(local_peer_id: PeerId, config: Config) -> Self {
+        let name = pluto_p2p::name::peer_name(&local_peer_id);
 
-        PEERINFO_METRICS.version[&PeerVersionLabels::new(name, &config.local_info().pluto_version)]
+        PEERINFO_METRICS.version
+            [&PeerVersionLabels::new(&name, &config.local_info().pluto_version)]
             .set(1);
-        PEERINFO_METRICS.git_commit[&PeerGitHashLabels::new(name, &config.local_info().git_hash)]
+        PEERINFO_METRICS.git_commit[&PeerGitHashLabels::new(&name, &config.local_info().git_hash)]
             .set(1);
-        PEERINFO_METRICS.nickname[&PeerNicknameLabels::new(name, &config.local_info().nickname)]
+        PEERINFO_METRICS.nickname[&PeerNicknameLabels::new(&name, &config.local_info().nickname)]
             .set(1);
 
         let started_at = if let Some(started_at) = config.local_info().started_at {
@@ -76,12 +77,12 @@ impl Behaviour {
             chrono::Utc::now().timestamp()
         };
 
-        PEERINFO_METRICS.start_time_secs[name].set(started_at);
+        PEERINFO_METRICS.start_time_secs[&name].set(started_at);
 
         if config.local_info().builder_api_enabled {
-            PEERINFO_METRICS.builder_api_enabled[name].set(1);
+            PEERINFO_METRICS.builder_api_enabled[&name].set(1);
         } else {
-            PEERINFO_METRICS.builder_api_enabled[name].set(0);
+            PEERINFO_METRICS.builder_api_enabled[&name].set(0);
         }
 
         for (idx, peer) in config.peers().iter().enumerate() {

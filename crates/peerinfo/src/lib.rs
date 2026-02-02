@@ -29,7 +29,7 @@
 //!     .with_interval(Duration::from_secs(60))
 //!     .with_timeout(Duration::from_secs(20));
 //!
-//! let behaviour = Behaviour::new(config);
+//! let behaviour = Behaviour::new(key.public().to_peer_id(), config);
 //! ```
 
 use libp2p::swarm::StreamProtocol;
