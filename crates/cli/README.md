@@ -32,6 +32,24 @@ Output version info
 - **Flags**
   - `--verbose`: Includes detailed module version info and supported protocols.
 
+## Example
+
+### Create and read ENR
+
+Create an ENR key, then print the ENR.
+
+```bash
+# 1) Generate and store the ENR private key.
+#    This writes: <DATA_DIR>/charon-enr-private-key
+pluto create enr --data-dir ./pluto-data
+
+# 2) Print the ENR from the stored key.
+pluto enr --data-dir ./pluto-data
+
+# 3) Print the ENR + decoded fields (pubkey/signature).
+pluto enr --data-dir ./pluto-data --verbose
+```
+
 ## Pluto vs Charon command parity
 
 Charon source of truth: `charon/cmd/cmd.go` (root command wiring).
