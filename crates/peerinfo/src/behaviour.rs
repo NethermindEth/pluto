@@ -59,7 +59,8 @@ pub struct Behaviour {
 }
 
 impl Behaviour {
-    /// Creates a new [`Behaviour`] with the given configuration.
+    /// Creates a new [`Behaviour`] with the given `local_peer_id` and
+    /// configuration.
     pub fn new(local_peer_id: PeerId, config: Config) -> Self {
         let name = pluto_p2p::name::peer_name(&local_peer_id);
 

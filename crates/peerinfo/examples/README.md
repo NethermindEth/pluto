@@ -86,7 +86,7 @@ Run `node2` in another terminal:
 cargo run -p pluto-peerinfo --example peerinfo -- \
     --port 4002 \
     --nickname node2 \
-    --data-dir $CHARON_PATH/node2 \
+    --data-dir $CHARON_PATH/test-cluster/node2 \
     --metrics-port 9466 \
     --loki-url http://localhost:3100 \
     --loki-label cluster=peerinfo-example \
