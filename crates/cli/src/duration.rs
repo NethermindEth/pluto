@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::{fmt, time::Duration as StdDuration};
 
 const NANOSECOND: u64 = 1;
-    const MICROSECOND: u64 = 1000 * NANOSECOND;
-    const MILLISECOND: u64 = 1000 * MICROSECOND;
-    const SECOND: u64 = 1000 * MILLISECOND;
+const MICROSECOND: u64 = 1000 * NANOSECOND;
+const MILLISECOND: u64 = 1000 * MICROSECOND;
+const SECOND: u64 = 1000 * MILLISECOND;
 
 /// Custom Duration wrapper with JSON serialization.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -76,12 +76,10 @@ impl fmt::Display for Duration {
 }
 
 /// Formats a duration like Go's `time.Duration.String()`.
+#[allow(clippy::arithmetic_side_effects)]
 fn format_go_duration(duration: StdDuration) -> String {
     let nanos_u128 = duration.as_nanos();
-    let mut u: u64 = match u64::try_from(nanos_u128) {
-        Ok(v) => v,
-        Err(_) => u64::MAX,
-    };
+    let mut u: u64 = u64::try_from(nanos_u128).unwrap_or(u64::MAX);
 
     let mut buf = [0_u8; 32];
     let mut w = buf.len();
@@ -93,30 +91,28 @@ fn format_go_duration(duration: StdDuration) -> String {
 
         w -= 1;
         buf[w] = b's';
+        w -= 1;
 
         match u {
             0 => {
-                w -= 1;
                 buf[w] = b'0';
                 return String::from_utf8_lossy(&buf[w..]).into_owned();
             }
-            0..MICROSECOND => {
+            1..MICROSECOND => {
                 // nanoseconds: "ns"
                 prec = 0;
-                w -= 1;
                 buf[w] = b'n';
             }
             MICROSECOND..MILLISECOND => {
                 // microseconds: "µs" (U+00B5 'µ' as UTF-8 0xC2 0xB5)
                 prec = 3;
-                w -= 2;
+                w -= 1;
                 buf[w] = 0xC2;
                 buf[w + 1] = 0xB5;
             }
             _ => {
                 // milliseconds: "ms"
                 prec = 6;
-                w -= 1;
                 buf[w] = b'm';
             }
         }
@@ -146,6 +142,8 @@ fn format_go_duration(duration: StdDuration) -> String {
         w = fmt_int(&mut buf[..w], u % 60);
         u /= 60;
 
+        // u is now integer hours
+        // Stop at hours because days can be different lengths
         if u > 0 {
             w -= 1;
             buf[w] = b'h';
@@ -158,6 +156,7 @@ fn format_go_duration(duration: StdDuration) -> String {
 
 /// Formats the fraction of `v / 10**prec` into the tail of `buf`, omitting
 /// trailing zeros. Returns the new start index and `v / 10**prec`.
+#[allow(clippy::arithmetic_side_effects)]
 fn fmt_frac(buf: &mut [u8], mut v: u64, prec: usize) -> (usize, u64) {
     // Omit trailing zeros up to and including decimal point.
     let mut w = buf.len();
@@ -183,6 +182,7 @@ fn fmt_frac(buf: &mut [u8], mut v: u64, prec: usize) -> (usize, u64) {
 
 /// Formats `v` into the tail of `buf`. Returns the index where the output
 /// begins.
+#[allow(clippy::arithmetic_side_effects)]
 fn fmt_int(buf: &mut [u8], mut v: u64) -> usize {
     let mut w = buf.len();
     if v == 0 {
