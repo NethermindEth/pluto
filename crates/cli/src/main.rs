@@ -4,8 +4,6 @@
 //! This crate provides the CLI tools and commands for managing and operating
 //! Pluto validator nodes.
 
-use std::process::{ExitCode, Termination};
-
 use clap::Parser;
 
 mod cli;
@@ -13,7 +11,7 @@ mod commands;
 mod error;
 
 use cli::{Cli, Commands, CreateCommands};
-use error::Result;
+use error::ExitResult;
 
 fn main() -> ExitResult {
     let cli = Cli::parse();
@@ -27,18 +25,4 @@ fn main() -> ExitResult {
     };
 
     ExitResult(result)
-}
-
-struct ExitResult(Result<()>);
-
-impl Termination for ExitResult {
-    fn report(self) -> ExitCode {
-        match self.0 {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(err) => {
-                eprintln!("Error: {}", err);
-                ExitCode::FAILURE
-            }
-        }
-    }
 }

@@ -1,10 +1,28 @@
 //! Error types for the Pluto CLI.
 
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    process::{ExitCode, Termination},
+};
+
 use thiserror::Error;
 
 /// Result type for CLI operations.
 pub type Result<T> = std::result::Result<T, CliError>;
+
+pub struct ExitResult(pub Result<()>);
+
+impl Termination for ExitResult {
+    fn report(self) -> ExitCode {
+        match self.0 {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("Error: {}", err);
+                ExitCode::FAILURE
+            }
+        }
+    }
+}
 
 /// Errors that can occur in the Pluto CLI.
 #[derive(Error, Debug)]
