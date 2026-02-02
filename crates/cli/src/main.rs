@@ -11,16 +11,18 @@ mod commands;
 mod error;
 
 use cli::{Cli, Commands, CreateCommands};
-use error::Result;
+use error::ExitResult;
 
-fn main() -> Result<()> {
+fn main() -> ExitResult {
     let cli = Cli::parse();
 
-    match cli.command {
+    let result = match cli.command {
         Commands::Create(args) => match args.command {
             CreateCommands::Enr(args) => commands::create_enr::run(args),
         },
         Commands::Enr(args) => commands::enr::run(args),
         Commands::Version(args) => commands::version::run(args),
-    }
+    };
+
+    ExitResult(result)
 }
