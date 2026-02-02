@@ -106,7 +106,13 @@ impl fmt::Display for Duration {
         let seconds = remaining / 1_000_000_000;
         remaining %= 1_000_000_000;
 
-        if remaining == 0 {
+        if hours == 0 && minutes == 0 {
+            #[allow(clippy::cast_precision_loss)]
+            // For >= 1 second durations without h/m, always use 3 decimal places
+            // (e.g. "1.500s", "3.000s"). 
+            let total_seconds = (nanos as f64) / 1_000_000_000.0;
+            parts.push(format!("{:.3}s", total_seconds));
+        } else if remaining == 0 {
             parts.push(format!("{}s", seconds));
         } else if hours > 0 || minutes > 0 {
             // For h/m/s format, include fractional seconds without padding
@@ -326,6 +332,10 @@ mod tests {
     fn test_display() {
         let tests = vec![
             ("millisecond", StdDuration::from_millis(1), "1ms"),
+            ("one second", StdDuration::from_secs(1), "1.000s"),
+            ("three seconds", StdDuration::from_secs(3), "3.000s"),
+            ("two point five seconds", StdDuration::from_millis(2500), "2.500s"),
+            ("three point one two three seconds", StdDuration::from_millis(3123), "3.123s"),
             ("day", StdDuration::from_secs(24 * 3600), "24h0m0s"),
             ("1000 nanoseconds", StdDuration::from_nanos(1000), "1µs"),
             ("60 seconds", StdDuration::from_secs(60), "1m0s"),

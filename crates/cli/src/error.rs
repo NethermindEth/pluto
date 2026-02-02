@@ -73,6 +73,10 @@ pub(crate) enum CliError {
     #[error("Obol API error: {0}")]
     ObolApi(#[from] pluto_app::obolapi::ObolApiError),
 
+    /// SSZ hasher error.
+    #[error("Hasher error: {0}")]
+    HasherError(#[from] pluto_cluster::ssz_hasher::HasherError),
+
     /// Test timeout or interrupted.
     #[error("timeout/interrupted")]
     _TimeoutInterrupted,

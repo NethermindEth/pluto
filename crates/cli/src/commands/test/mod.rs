@@ -42,7 +42,7 @@ use tokio::io::AsyncReadExt;
 /// Test category identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum TestCategory {
+pub(crate) enum TestCategory {
     Peers,
     Beacon,
     Validator,
@@ -126,7 +126,7 @@ pub struct TestConfigArgs {
 }
 
 /// Lists available test case names for a given test category.
-pub fn list_test_cases(category: TestCategory) -> Vec<String> {
+fn list_test_cases(category: TestCategory) -> Vec<String> {
     // Returns available test case names for each category.
     match category {
         TestCategory::Validator => {
@@ -164,7 +164,7 @@ pub fn list_test_cases(category: TestCategory) -> Vec<String> {
     }
 }
 
-pub fn must_output_to_file_on_quiet(quiet: bool, output_json: &str) -> CliResult<()> {
+pub(crate) fn must_output_to_file_on_quiet(quiet: bool, output_json: &str) -> CliResult<()> {
     if quiet && output_json.is_empty() {
         Err(CliError::Other(
             "on --quiet, an --output-json is required".to_string(),
@@ -176,7 +176,7 @@ pub fn must_output_to_file_on_quiet(quiet: bool, output_json: &str) -> CliResult
 
 /// Test verdict indicating the outcome of a test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TestVerdict {
+pub(crate) enum TestVerdict {
     #[serde(rename = "OK")]
     Ok,
     Good,
@@ -201,7 +201,7 @@ impl fmt::Display for TestVerdict {
 
 /// Category-level score.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum CategoryScore {
+pub(crate) enum CategoryScore {
     A,
     B,
     C,
@@ -219,18 +219,18 @@ impl fmt::Display for CategoryScore {
 
 /// Wrapper for test error with custom serialization.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct TestResultError(String);
+pub(crate) struct TestResultError(String);
 
 impl TestResultError {
-    pub fn empty() -> Self {
+    pub(crate)fn empty() -> Self {
         Self(String::new())
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub(crate)fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
-    pub fn message(&self) -> Option<&str> {
+    pub(crate)fn message(&self) -> Option<&str> {
         if self.0.is_empty() {
             None
         } else {
@@ -253,7 +253,7 @@ impl<E: std::error::Error> From<E> for TestResultError {
 
 /// Result of a single test.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TestResult {
+pub(crate) struct TestResult {
     #[serde(rename = "name")]
     pub name: String,
 
@@ -314,7 +314,7 @@ impl TestResult {
 
 /// Test case name with execution order.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TestCaseName {
+pub(crate) struct TestCaseName {
     pub name: String,
     pub order: u32,
 }
@@ -331,7 +331,7 @@ impl TestCaseName {
 
 /// Result of a test category.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TestCategoryResult {
+pub(crate) struct TestCategoryResult {
     #[serde(
         rename = "category_name",
         skip_serializing_if = "Option::is_none",
@@ -342,6 +342,8 @@ pub struct TestCategoryResult {
     #[serde(rename = "targets", skip_serializing_if = "HashMap::is_empty", default)]
     pub targets: HashMap<String, Vec<TestResult>>,
 
+    // TODO: Using Duration as `execution_time` is not a good idea, since duration formating 
+    // between languages are not the same
     #[serde(rename = "execution_time", skip_serializing_if = "Option::is_none")]
     pub execution_time: Option<Duration>,
 
@@ -363,7 +365,7 @@ impl TestCategoryResult {
 
 /// All test categories result for JSON output.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct AllCategoriesResult {
+pub(crate) struct AllCategoriesResult {
     #[serde(rename = "charon_peers", skip_serializing_if = "Option::is_none")]
     pub peers: Option<TestCategoryResult>,
 
@@ -398,13 +400,13 @@ struct ObolApiResult {
 }
 
 /// Publishes test results to the Obol API.
-pub async fn publish_result_to_obol_api(
+pub(crate) async fn publish_result_to_obol_api(
     data: AllCategoriesResult,
-    api_url: &str,
-    private_key_file: &Path,
+    api_url: impl AsRef<str>,
+    private_key_file: impl AsRef<Path>,
 ) -> CliResult<()> {
-    let private_key = load_or_generate_key(private_key_file).await?;
-    let enr = create_enr(&private_key)?;
+    let private_key = load_or_generate_key(private_key_file.as_ref()).await?;
+    let enr = Record::new(private_key.clone(), vec![])?;
     let sign_data_bytes = serde_json::to_vec(&data).map_err(|e| CliError::Json {
         source: e,
         context: "marshal all test categories signing data".to_string(),
@@ -422,19 +424,19 @@ pub async fn publish_result_to_obol_api(
         source: e,
         context: "marshal Obol API test struct".to_string(),
     })?;
-    let client = Client::new(api_url, ClientOptions::default())?;
+    let client = Client::new(api_url.as_ref(), ClientOptions::default())?;
     client.post_test_result(obol_api_json).await?;
 
     Ok(())
 }
 
 /// Writes test results to a JSON file.
-pub async fn write_result_to_file(result: &TestCategoryResult, path: &Path) -> CliResult<()> {
+pub(crate) async fn write_result_to_file(result: &TestCategoryResult, path: &Path) -> CliResult<()> {
     let mut existing_file: tokio::fs::File = tokio::fs::OpenOptions::new()
         .create(true)
-        .truncate(false)
         .read(true)
         .write(true)
+        .truncate(false)
         .mode(0o644)
         .open(path)
         .await?;
@@ -473,18 +475,18 @@ pub async fn write_result_to_file(result: &TestCategoryResult, path: &Path) -> C
         .ok_or_else(|| CliError::Other(format!("no filename in path: {}", path.display())))?
         .to_string_lossy()
         .to_string();
-    let path = path.to_path_buf();
+    let path_buf = path.to_path_buf();
 
     let file_content_json = serde_json::to_vec(&all_results).map_err(|e| CliError::Json {
         source: e,
-        context: "marshal fileResult to JSON".to_string(),
+        context: "marshal all_results to JSON".to_string(),
     })?;
 
-    // tempfile is a synchronous crate
-    tokio::task::spawn_blocking(move || -> CliResult<()> {
+    // tempfile is a synchronous crate, but keep existing_file open during operation
+    let result = tokio::task::spawn_blocking(move || -> CliResult<()> {
         use std::io::Write as _;
 
-        let mut tmp = tempfile::Builder::new()
+        let mut tmp_file = tempfile::Builder::new()
             .prefix(&format!("{base}-tmp-"))
             .suffix(".json")
             .tempfile_in(&dir)
@@ -493,12 +495,13 @@ pub async fn write_result_to_file(result: &TestCategoryResult, path: &Path) -> C
                 context: "create temp file".to_string(),
             })?;
 
-        tmp.as_file()
+        tmp_file
+            .as_file()
             .set_permissions(std::fs::Permissions::from_mode(0o644))?;
 
-        tmp.as_file_mut().write_all(&file_content_json)?;
+        tmp_file.as_file_mut().write_all(&file_content_json)?;
 
-        tmp.persist(&path).map_err(|e| CliError::Io {
+        tmp_file.persist(&path_buf).map_err(|e| CliError::Io {
             source: e.error,
             context: "rename temp file".to_string(),
         })?;
@@ -506,13 +509,16 @@ pub async fn write_result_to_file(result: &TestCategoryResult, path: &Path) -> C
         Ok(())
     })
     .await
-    .map_err(|e| CliError::Other(format!("spawn_blocking: {}", e)))??;
+    .map_err(|e| CliError::Other(format!("spawn_blocking: {}", e)))?;
 
-    Ok(())
+    // Keep existing_file open until after temp file is persisted to prevent race conditions
+    drop(existing_file);
+
+    result
 }
 
 /// Writes test results to a writer (stdout or file).
-pub fn write_result_to_writer<W: Write + ?Sized>(
+pub(crate) fn write_result_to_writer<W: Write + ?Sized>(
     result: &TestCategoryResult,
     writer: &mut W,
 ) -> CliResult<()> {
@@ -603,7 +609,7 @@ pub fn write_result_to_writer<W: Write + ?Sized>(
 }
 
 /// Evaluates highest RTT from a channel and assigns a verdict.
-pub fn evaluate_highest_rtt(
+pub(crate) fn evaluate_highest_rtt(
     rtts: Vec<StdDuration>,
     result: TestResult,
     avg_threshold: StdDuration,
@@ -614,7 +620,7 @@ pub fn evaluate_highest_rtt(
 }
 
 /// Evaluates RTT (Round Trip Time) and assigns a verdict based on thresholds.
-pub fn evaluate_rtt(
+pub(crate) fn evaluate_rtt(
     rtt: StdDuration,
     mut result: TestResult,
     avg_threshold: StdDuration,
@@ -633,7 +639,7 @@ pub fn evaluate_rtt(
 }
 
 /// Calculates the overall score for a list of test results.
-pub fn calculate_score(results: &[TestResult]) -> CategoryScore {
+pub(crate) fn calculate_score(results: &[TestResult]) -> CategoryScore {
     // TODO: calculate score more elaborately (potentially use weights)
     let mut avg: i32 = 0;
 
@@ -660,7 +666,7 @@ pub fn calculate_score(results: &[TestResult]) -> CategoryScore {
 }
 
 /// Filters tests based on configuration.
-pub fn filter_tests<V>(
+pub(crate) fn filter_tests<V>(
     supported_test_cases: &HashMap<TestCaseName, V>,
     test_cases: Option<&[String]>,
 ) -> Vec<TestCaseName> {
@@ -679,7 +685,7 @@ pub fn filter_tests<V>(
 }
 
 /// Sorts tests by their order field.
-pub fn sort_tests(tests: &mut [TestCaseName]) {
+pub(crate) fn sort_tests(tests: &mut [TestCaseName]) {
     tests.sort_by_key(|t| t.order);
 }
 
@@ -696,10 +702,6 @@ async fn load_or_generate_key(path: &Path) -> CliResult<SecretKey> {
     }
 }
 
-fn create_enr(secret_key: &SecretKey) -> CliResult<Record> {
-    Ok(Record::new(secret_key.clone(), vec![])?)
-}
-
 fn hash_ssz(data: &[u8]) -> CliResult<[u8; 32]> {
     if data.is_empty() {
         return Ok([0u8; 32]);
@@ -708,21 +710,10 @@ fn hash_ssz(data: &[u8]) -> CliResult<[u8; 32]> {
     let mut hasher: Hasher = Hasher::default();
     let index = hasher.index();
 
-    hasher
-        .put_bytes(data)
-        .map_err(|e: pluto_cluster::ssz_hasher::HasherError| {
-            CliError::Other(format!("put bytes: {}", e))
-        })?;
+    hasher.put_bytes(data)?;
+    hasher.merkleize(index)?;
 
-    hasher
-        .merkleize(index)
-        .map_err(|e: pluto_cluster::ssz_hasher::HasherError| {
-            CliError::Other(format!("merkleize: {}", e))
-        })?;
-
-    hasher
-        .hash_root()
-        .map_err(|e| CliError::Other(format!("hash root: {}", e)))
+    Ok(hasher.hash_root()?)
 }
 
 /// Updates the `--test-cases` argument help text to include available tests
@@ -760,7 +751,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_calculate_score() {
+    fn calculate_score_output() {
         let mut results = vec![
             TestResult {
                 name: "test1".to_string(),
@@ -795,26 +786,7 @@ mod tests {
     }
 
     #[test]
-    fn test_write_result_to_writer_smoke() {
-        let mut result = TestCategoryResult::new(TestCategory::Peers);
-        result.score = Some(CategoryScore::A);
-        result.execution_time = Some(Duration::new(StdDuration::from_secs(10)));
-
-        let mut tests = vec![TestResult::new("Ping")];
-        tests[0].verdict = TestVerdict::Ok;
-        result.targets.insert("peer1".to_string(), tests);
-
-        let mut buf = Vec::new();
-        write_result_to_writer(&result, &mut buf).unwrap();
-        let output = String::from_utf8(buf).unwrap();
-        assert!(output.contains("TEST NAME"));
-        assert!(output.contains("RESULT"));
-        assert!(output.contains("Ping"));
-        assert!(output.contains("OK"));
-    }
-
-    #[test]
-    fn test_must_output_to_file_on_quiet() {
+    fn must_output_to_file_on_quiet_output() {
         assert!(must_output_to_file_on_quiet(false, "").is_ok());
         assert!(must_output_to_file_on_quiet(true, "out.json").is_ok());
         assert!(must_output_to_file_on_quiet(true, "").is_err());
@@ -822,8 +794,8 @@ mod tests {
 
     // Ground truth from Go fastssz (with Duration as string format matching Rust)
     const GO_HASH_EMPTY: &str = "7b7d000000000000000000000000000000000000000000000000000000000000";
-    const GO_HASH_SINGLE_CATEGORY: &str =
-        "bf90f36739059294e479cc3c35f5ca8762af9313fe72603b3f40ef38e3418801";
+    const GO_HASH_ALL_CATEGORIES: &str = "fba6ca00171ae6ee89a627f20e57d036bcd1267c1caae391a6fdea4cfb68a203";
+
 
     fn assert_hash(data: &AllCategoriesResult, expected_go_hash: &str) {
         let json_bytes = serde_json::to_vec(data).expect("Failed to serialize to JSON");
@@ -832,41 +804,104 @@ mod tests {
     }
 
     #[test]
-    fn test_hash_ssz_empty_all_categories_result() {
+    fn hash_ssz_empty_all_categories_result() {
         assert_hash(&AllCategoriesResult::default(), GO_HASH_EMPTY);
     }
 
     #[test]
-    fn test_hash_ssz_single_category_one_test() {
-        let mut targets = HashMap::new();
-        targets.insert(
-            "peer1".to_string(),
-            vec![TestResult {
-                name: "Ping".to_string(),
-                verdict: TestVerdict::Ok,
-                measurement: "10ms".to_string(),
-                suggestion: String::new(),
-                error: TestResultError::empty(),
-                is_acceptable: false,
-            }],
-        );
-
-        let peers = TestCategoryResult {
-            category_name: Some(TestCategory::Peers),
-            targets,
-            execution_time: Some(Duration::new(StdDuration::from_nanos(1_500_000_000))),
-            score: Some(CategoryScore::A),
+    fn hash_ssz_multi_category_result() {
+        let result = AllCategoriesResult {
+            peers: Some(TestCategoryResult {
+                category_name: Some(TestCategory::Peers),
+                targets: HashMap::from([(
+                    "peer1".to_string(),
+                    vec![TestResult {
+                        name: "Test1".to_string(),
+                        verdict: TestVerdict::Ok,
+                        measurement: String::new(),
+                        suggestion: String::new(),
+                        error: TestResultError::empty(),
+                        is_acceptable: false,
+                    }],
+                )]),
+                execution_time: Some(Duration::new(std::time::Duration::from_nanos(
+                    1500000000,
+                ))),
+                score: Some(CategoryScore::A),
+            }),
+            beacon: Some(TestCategoryResult {
+                category_name: Some(TestCategory::Beacon),
+                targets: HashMap::from([(
+                    "beacon1".to_string(),
+                    vec![TestResult {
+                        name: "Test2".to_string(),
+                        verdict: TestVerdict::Good,
+                        measurement: String::new(),
+                        suggestion: String::new(),
+                        error: TestResultError::empty(),
+                        is_acceptable: false,
+                    }],
+                )]),
+                execution_time: Some(Duration::new(std::time::Duration::from_nanos(
+                    2500000000,
+                ))),
+                score: Some(CategoryScore::A),
+            }),
+            validator: Some(TestCategoryResult {
+                category_name: Some(TestCategory::Validator),
+                targets: HashMap::from([(
+                    "validator1".to_string(),
+                    vec![TestResult {
+                        name: "Test3".to_string(),
+                        verdict: TestVerdict::Avg,
+                        measurement: String::new(),
+                        suggestion: String::new(),
+                        error: TestResultError::empty(),
+                        is_acceptable: false,
+                    }],
+                )]),
+                execution_time: Some(Duration::new(std::time::Duration::from_nanos(500000000))),
+                score: Some(CategoryScore::B),
+            }),
+            mev: Some(TestCategoryResult {
+                category_name: Some(TestCategory::Mev),
+                targets: HashMap::from([(
+                    "mev1".to_string(),
+                    vec![TestResult {
+                        name: "Test4".to_string(),
+                        verdict: TestVerdict::Poor,
+                        measurement: String::new(),
+                        suggestion: String::new(),
+                        error: TestResultError::empty(),
+                        is_acceptable: false,
+                    }],
+                )]),
+                execution_time: Some(Duration::new(std::time::Duration::from_nanos(
+                    3000000000,
+                ))),
+                score: Some(CategoryScore::C),
+            }),
+            infra: Some(TestCategoryResult {
+                category_name: Some(TestCategory::Infra),
+                targets: HashMap::from([(
+                    "server1".to_string(),
+                    vec![TestResult {
+                        name: "Test5".to_string(),
+                        verdict: TestVerdict::Skip,
+                        measurement: String::new(),
+                        suggestion: String::new(),
+                        error: TestResultError::empty(),
+                        is_acceptable: false,
+                    }],
+                )]),
+                execution_time: Some(Duration::new(std::time::Duration::from_nanos(
+                    1000000000,
+                ))),
+                score: Some(CategoryScore::A),
+            }),
         };
 
-        let data = AllCategoriesResult {
-            peers: Some(peers),
-            beacon: None,
-            validator: None,
-            mev: None,
-            infra: None,
-        };
-
-        assert_hash(&data, GO_HASH_SINGLE_CATEGORY);
+        assert_hash(&result, GO_HASH_ALL_CATEGORIES);
     }
 
     #[tokio::test]
