@@ -5,7 +5,7 @@ use std::sync::LazyLock;
 
 use libp2p::{identify, identity::Keypair, ping, relay, swarm::NetworkBehaviour};
 
-use charon_p2p::gater::ConnGater;
+use pluto_p2p::gater::ConnGater;
 
 /// Relay server network behaviour.
 #[derive(NetworkBehaviour)]
@@ -42,7 +42,7 @@ pub struct RelayServerBehaviourBuilder {
 
 /// The default identify protocol for the Pluto network.
 pub static DEFAULT_IDENTIFY_PROTOCOL: LazyLock<String> =
-    LazyLock::new(|| format!("/pluto/relay/{}", *charon_core::version::VERSION));
+    LazyLock::new(|| format!("/pluto/relay/{}", *pluto_core::version::VERSION));
 
 impl Default for RelayServerBehaviourBuilder {
     fn default() -> Self {
@@ -95,11 +95,11 @@ impl RelayServerBehaviourBuilder {
             identify: identify::Behaviour::new(
                 identify::Config::new(self.identify_protocol, key.public()).with_agent_version(
                     self.user_agent.unwrap_or_else(|| {
-                        charon_p2p::behaviours::pluto::DEFAULT_USER_AGENT.clone()
+                        pluto_p2p::behaviours::pluto::DEFAULT_USER_AGENT.clone()
                     }),
                 ),
             ),
-            ping: ping::Behaviour::new(charon_p2p::config::default_ping_config()),
+            ping: ping::Behaviour::new(pluto_p2p::config::default_ping_config()),
             gater: self
                 .gater
                 .unwrap_or_else(|| ConnGater::new_conn_gater(vec![], vec![])),

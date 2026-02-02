@@ -1,31 +1,34 @@
 //! Peerinfo example
 //!
-//! This example demonstrates the peerinfo protocol by creating two nodes
-//! that exchange peer information with each other using mDNS auto-discovery.
-//!
-//! Run with:
-//! ```sh
-//! cargo run --example peerinfo -p charon-peerinfo
-//! ```
-//!
-//! Run two instances on different ports - they will auto-discover each other:
-//!
-//! Terminal 1: `cargo run --example peerinfo -p charon-peerinfo -- --port 4001`
-//! Terminal 2: `cargo run --example peerinfo -p charon-peerinfo -- --port 4002`
+//! See the [README](./README.md) for usage instructions.
 #![allow(missing_docs)]
-use std::{net::SocketAddr, time::Duration};
+use std::{
+    collections::HashMap,
+    fs,
+    net::{Ipv4Addr, SocketAddr},
+    path::PathBuf,
+    time::Duration,
+};
 
-use charon_peerinfo::{Behaviour, Config, Event, LocalPeerInfo};
 use clap::Parser;
 use libp2p::{
-    Multiaddr, Swarm, SwarmBuilder,
+    Multiaddr, Swarm,
     futures::StreamExt,
-    identify, mdns, noise, ping,
+    identify, mdns, ping, relay,
     swarm::{NetworkBehaviour, SwarmEvent},
-    tcp, yamux,
 };
+use pluto_cluster::lock::Lock;
+use pluto_core::version::{VERSION, git_commit};
+use pluto_p2p::{
+    config::P2PConfig,
+    k1,
+    name::peer_name,
+    p2p::{Node, NodeType},
+};
+use pluto_peerinfo::{Behaviour, Config, Event, LocalPeerInfo};
+use pluto_tracing::{LokiConfig, TracingConfig};
 use tokio::signal;
-use tracing_subscriber::EnvFilter;
+use vise::MetricsCollection;
 use vise_exporter::MetricsExporter;
 
 /// Command line arguments
@@ -37,9 +40,10 @@ pub struct Args {
     #[arg(short, long, default_value = "4001")]
     pub port: u16,
 
-    /// Optional address to dial
+    /// Addresses to dial (multiaddr format, e.g., /ip4/127.0.0.1/tcp/3610). Can
+    /// be specified multiple times.
     #[arg(short, long)]
-    pub dial: Option<Multiaddr>,
+    pub dial: Vec<Multiaddr>,
 
     /// Nickname for this node
     #[arg(short, long, default_value = "example-node")]
@@ -48,6 +52,35 @@ pub struct Args {
     /// Peer info exchange interval in seconds
     #[arg(short, long, default_value = "5")]
     pub interval: u64,
+
+    /// Data directory for storing the private key and cluster lock
+    #[arg(long)]
+    pub data_dir: PathBuf,
+
+    /// Metrics port to bind to
+    #[arg(long, default_value = "9465")]
+    pub metrics_port: u16,
+
+    /// Log level (trace, debug, info, warn, error)
+    #[arg(long, default_value = "info")]
+    pub log_level: String,
+
+    /// Loki URL for log aggregation (e.g., http://localhost:3100)
+    #[arg(long)]
+    pub loki_url: Option<String>,
+
+    /// Additional Loki labels in key=value format (can be specified multiple
+    /// times)
+    #[arg(long = "loki-label", value_parser = parse_key_value)]
+    pub loki_labels: Vec<(String, String)>,
+}
+
+fn parse_key_value(s: &str) -> Result<(String, String), String> {
+    let parts: Vec<&str> = s.splitn(2, '=').collect();
+    if parts.len() != 2 {
+        return Err(format!("Invalid key=value format: {}", s));
+    }
+    Ok((parts[0].to_string(), parts[1].to_string()))
 }
 
 /// Combined behaviour with peerinfo, identify, ping, and mdns
@@ -56,45 +89,11 @@ pub struct CombinedBehaviour {
     pub peer_info: Behaviour,
     pub identify: identify::Behaviour,
     pub ping: ping::Behaviour,
+    pub relay: relay::client::Behaviour,
     pub mdns: mdns::tokio::Behaviour,
 }
 
 pub type CombinedEvent = CombinedBehaviourEvent;
-
-fn build_swarm(
-    peerinfo_config: LocalPeerInfo,
-    interval: Duration,
-) -> anyhow::Result<Swarm<CombinedBehaviour>> {
-    let swarm = SwarmBuilder::with_new_identity()
-        .with_tokio()
-        .with_tcp(
-            tcp::Config::default(),
-            noise::Config::new,
-            yamux::Config::default,
-        )?
-        .with_behaviour(|key| {
-            Ok(CombinedBehaviour {
-                peer_info: Behaviour::new(Config::new(peerinfo_config).with_interval(interval)),
-                identify: identify::Behaviour::new(identify::Config::new(
-                    "/peerinfo-example/1.0.0".to_string(),
-                    key.public(),
-                )),
-                ping: ping::Behaviour::new(
-                    ping::Config::new()
-                        .with_interval(Duration::from_secs(15))
-                        .with_timeout(Duration::from_secs(10)),
-                ),
-                mdns: mdns::tokio::Behaviour::new(
-                    mdns::Config::default(),
-                    key.public().to_peer_id(),
-                )?,
-            })
-        })?
-        .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(300)))
-        .build();
-
-    Ok(swarm)
-}
 
 fn handle_event(event: SwarmEvent<CombinedEvent>, swarm: &mut Swarm<CombinedBehaviour>) {
     match event {
@@ -114,13 +113,13 @@ fn handle_event(event: SwarmEvent<CombinedEvent>, swarm: &mut Swarm<CombinedBeha
         }
         SwarmEvent::Behaviour(CombinedEvent::PeerInfo(Event::Received { peer, info, .. })) => {
             tracing::info!(
-                "📥 Received PeerInfo from {peer}:\n\
+                "Received PeerInfo from {peer}:\n\
                  │  Version: {}\n\
                  │  Git Hash: {}\n\
                  │  Nickname: {}\n\
                  │  Builder API: {}\n\
                  │  Lock Hash: {:?}",
-                info.charon_version,
+                info.pluto_version,
                 info.git_hash,
                 info.nickname,
                 info.builder_api_enabled,
@@ -167,20 +166,171 @@ fn handle_event(event: SwarmEvent<CombinedEvent>, swarm: &mut Swarm<CombinedBeha
     }
 }
 
+fn build_tracing_config(args: &Args) -> TracingConfig {
+    let mut builder = TracingConfig::builder()
+        .with_default_console()
+        .override_env_filter(&args.log_level);
+
+    if let Some(loki_url) = &args.loki_url {
+        let mut labels: HashMap<String, String> = HashMap::new();
+        labels.insert("app".to_string(), "peerinfo-example".to_string());
+        labels.insert("nickname".to_string(), args.nickname.clone());
+
+        // Add user-provided labels
+        for (key, value) in &args.loki_labels {
+            labels.insert(key.clone(), value.clone());
+        }
+
+        builder = builder.loki(LokiConfig {
+            loki_url: loki_url.clone(),
+            labels,
+            extra_fields: HashMap::new(),
+        });
+    }
+
+    builder.build()
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("debug".parse()?))
-        .init();
+    let args = Args::parse();
+
+    // Initialize tracing with optional Loki support
+    let tracing_config = build_tracing_config(&args);
+    let loki_task = pluto_tracing::init(&tracing_config)?;
+
+    // Spawn Loki background task if configured
+    if let Some(task) = loki_task {
+        tokio::spawn(task);
+        tracing::info!("Loki logging enabled");
+    }
+
+    // Load existing key or create a new one
+    let key = match k1::load_priv_key(&args.data_dir) {
+        Ok(key) => {
+            tracing::info!(
+                "Loaded existing private key from {}",
+                args.data_dir.display()
+            );
+            key
+        }
+        Err(err) => {
+            tracing::error!(
+                "Failed to load private key from {}",
+                args.data_dir.display()
+            );
+            anyhow::bail!("Failed to load private key: {err}")
+        }
+    };
+
+    let enr = pluto_eth2util::enr::Record::new(
+        key.clone(),
+        vec![
+            pluto_eth2util::enr::with_ip_impl(Ipv4Addr::from([0, 0, 0, 0])),
+            pluto_eth2util::enr::with_tcp_impl(args.port),
+            pluto_eth2util::enr::with_udp_impl(args.port),
+        ],
+    )?;
+
+    tracing::info!("ENR: {}", enr);
 
     // Run the metrics exporter
-    let bind_address = SocketAddr::from(([0, 0, 0, 0], 9466));
+    let bind_address = SocketAddr::from(([0, 0, 0, 0], args.metrics_port));
 
-    let exporter = MetricsExporter::default()
+    // Load cluster lock from data_dir/cluster-lock.json
+    let lock_path = args.data_dir.join("cluster-lock.json");
+    let lock: Option<Lock> = if lock_path.exists() {
+        let lock_json = fs::read_to_string(&lock_path)?;
+        let lock: Lock = serde_json::from_str(&lock_json)?;
+        tracing::info!(
+            "Loaded cluster lock from {}: {} peers, lock_hash: {}",
+            lock_path.display(),
+            lock.operators.len(),
+            hex::encode(&lock.lock_hash)
+        );
+        Some(lock)
+    } else {
+        tracing::warn!(
+            "No lock file found at {}, using default values",
+            lock_path.display()
+        );
+        None
+    };
+
+    let lock_hash = lock
+        .as_ref()
+        .map(|l| l.lock_hash.clone())
+        .unwrap_or(vec![0x00, 0x00, 0x00, 0x00]);
+    let peers = lock
+        .as_ref()
+        .map(|l| l.peer_ids())
+        .transpose()?
+        .unwrap_or_default();
+
+    // Create local peer info
+    let (git_hash, _) = git_commit();
+    let local_info = LocalPeerInfo::new(
+        VERSION.to_string(),
+        lock_hash.clone(),
+        &git_hash,
+        false,
+        &args.nickname,
+    );
+
+    let Node { mut swarm, .. } = Node::new(
+        P2PConfig::default(),
+        key,
+        false,
+        NodeType::TCP,
+        |key, relay_client| CombinedBehaviour {
+            peer_info: Behaviour::new(
+                Config::new(local_info.clone())
+                    .with_peers(peers.clone())
+                    .with_interval(Duration::from_secs(args.interval)),
+            ),
+            identify: identify::Behaviour::new(identify::Config::new(
+                "/peerinfo-example/1.0.0".to_string(),
+                key.public(),
+            )),
+            ping: ping::Behaviour::new(
+                ping::Config::new()
+                    .with_interval(Duration::from_secs(15))
+                    .with_timeout(Duration::from_secs(10)),
+            ),
+            mdns: mdns::tokio::Behaviour::new(mdns::Config::default(), key.public().to_peer_id())
+                .expect("Failed to create mDNS behaviour"),
+            relay: relay_client,
+        },
+    )?;
+
+    let local_peer_id = *swarm.local_peer_id();
+    tracing::info!("Local peer id: {local_peer_id}");
+    tracing::info!("mDNS auto-discovery enabled");
+
+    let cluster_peer = peer_name(&local_peer_id);
+
+    let cluster_name = lock.as_ref().map(|l| l.name.clone()).unwrap_or_default();
+
+    // Setup metrics exporter with real data
+    // cluster_hash uses first 7 hex chars (or less if shorter)
+    let cluster_hash_hex7 = {
+        let h = hex::encode(&lock_hash);
+        if h.len() <= 7 { h } else { h[..7].to_string() }
+    };
+    let metrics_collection = MetricsCollection::default().with_labels([
+        ("pluto_version", VERSION.to_string()),
+        ("cluster_hash", cluster_hash_hex7),
+        ("cluster_name", cluster_name),
+        ("cluster_network", "mainnet".to_string()),
+        ("cluster_peer", cluster_peer),
+        ("nickname", args.nickname.clone()),
+    ]);
+
+    let exporter = MetricsExporter::new(metrics_collection.collect().into())
         .bind(bind_address)
         .await
         .expect("Failed to bind metrics exporter");
+
     tokio::spawn(async move {
         exporter
             .start()
@@ -188,29 +338,12 @@ async fn main() -> anyhow::Result<()> {
             .expect("Failed to start metrics exporter");
     });
 
-    let args = Args::parse();
-
-    // Create local peer info
-    let local_info = LocalPeerInfo::new(
-        "v1.0.0",                     // charon_version
-        vec![0xDE, 0xAD, 0xBE, 0xEF], // lock_hash (example)
-        "abc1234",                    // git_hash
-        false,                        // builder_api_enabled
-        &args.nickname,               // nickname
-    );
-
-    let mut swarm = build_swarm(local_info, Duration::from_secs(args.interval))?;
-
-    let local_peer_id = *swarm.local_peer_id();
-    tracing::info!("Local peer id: {local_peer_id}");
-    tracing::info!("mDNS auto-discovery enabled");
-
     // Listen on the specified port
     let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{}", args.port).parse()?;
     swarm.listen_on(listen_addr)?;
 
-    // Dial the specified address if provided
-    if let Some(dial_addr) = &args.dial {
+    // Dial the specified addresses
+    for dial_addr in &args.dial {
         tracing::info!("Dialing {dial_addr}");
         swarm.dial(dial_addr.clone())?;
     }

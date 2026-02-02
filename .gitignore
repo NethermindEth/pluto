@@ -1,6 +1,7 @@
 # IDEs
 .vscode
 .idea
+.claude
 
 # Direnv
 .direnv
@@ -20,3 +21,4 @@ lcov.info
 coverage.json
 
 .charon*
+.peerinfo*

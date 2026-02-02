@@ -30,7 +30,7 @@ pub struct Config {
 #[derive(Debug, Clone, Default)]
 pub struct LocalPeerInfo {
     /// Charon version string (e.g., "v1.0.0").
-    pub charon_version: String,
+    pub pluto_version: String,
     /// Lock hash identifying the cluster.
     pub lock_hash: Vec<u8>,
     /// Git commit hash (7 characters).
@@ -46,14 +46,14 @@ pub struct LocalPeerInfo {
 impl LocalPeerInfo {
     /// Creates a new `LocalPeerInfo` with the given parameters.
     pub fn new(
-        charon_version: impl Into<String>,
+        pluto_version: impl Into<String>,
         lock_hash: impl Into<Vec<u8>>,
         git_hash: impl Into<String>,
         builder_api_enabled: bool,
         nickname: impl Into<String>,
     ) -> Self {
         Self {
-            charon_version: charon_version.into(),
+            pluto_version: pluto_version.into(),
             lock_hash: lock_hash.into(),
             git_hash: git_hash.into(),
             builder_api_enabled,
@@ -69,7 +69,7 @@ impl LocalPeerInfo {
     pub(crate) fn to_proto(&self) -> PeerInfo {
         let now = chrono::Utc::now();
         PeerInfo {
-            charon_version: self.charon_version.clone(),
+            pluto_version: self.pluto_version.clone(),
             lock_hash: self.lock_hash.clone().into(),
             git_hash: self.git_hash.clone(),
             sent_at: Some(Timestamp {

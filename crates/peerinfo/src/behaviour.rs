@@ -63,8 +63,7 @@ impl Behaviour {
     pub fn new(config: Config) -> Self {
         let name = &config.local_info().nickname;
 
-        PEERINFO_METRICS.version
-            [&PeerVersionLabels::new(name, &config.local_info().charon_version)]
+        PEERINFO_METRICS.version[&PeerVersionLabels::new(name, &config.local_info().pluto_version)]
             .set(1);
         PEERINFO_METRICS.git_commit[&PeerGitHashLabels::new(name, &config.local_info().git_hash)]
             .set(1);
@@ -86,7 +85,7 @@ impl Behaviour {
         }
 
         for (idx, peer) in config.peers().iter().enumerate() {
-            let peer_name = charon_p2p::name::peer_name(peer);
+            let peer_name = pluto_p2p::name::peer_name(peer);
             PEERINFO_METRICS.index[&peer_name].set(idx);
         }
 

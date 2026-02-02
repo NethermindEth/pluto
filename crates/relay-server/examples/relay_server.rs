@@ -1,18 +1,18 @@
 #![allow(missing_docs)]
 use std::str::FromStr;
 
-use charon_p2p::config::P2PConfig;
-use charon_relay_server::{config::Config, p2p::run_relay_p2p_node};
-use charon_tracing::TracingConfig;
 use k256::SecretKey;
 use libp2p::multiaddr;
+use pluto_p2p::config::P2PConfig;
+use pluto_relay_server::{config::Config, p2p::run_relay_p2p_node};
+use pluto_tracing::TracingConfig;
 use rand::rngs::OsRng;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 #[tokio::main]
 async fn main() {
-    charon_tracing::init(&TracingConfig::default()).expect("Failed to initialize tracing");
+    pluto_tracing::init(&TracingConfig::default()).expect("Failed to initialize tracing");
 
     let config = Config::builder()
         .p2p_config(

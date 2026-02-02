@@ -7,7 +7,7 @@
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PeerInfo {
     #[prost(string, tag = "1")]
-    pub charon_version: ::prost::alloc::string::String,
+    pub pluto_version: ::prost::alloc::string::String,
     #[prost(bytes = "bytes", tag = "2")]
     pub lock_hash: ::prost::bytes::Bytes,
     #[prost(message, optional, tag = "3")]
