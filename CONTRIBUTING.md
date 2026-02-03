@@ -58,7 +58,7 @@ To carry out this optimization cycle, we recommend the following profiling tools
 
 Once [installed](https://github.com/sharkdp/hyperfine?tab=readme-ov-file#installation), we can simply run:
 ```sh
-hyperfine 'TODO(template) update with your binary e.g. ./target/release/...'
+hyperfine <binary>
 ```
 ### Samply
 
@@ -83,7 +83,7 @@ Otherwise, reading the output will be impossible.
 
 Then, we can run:
 ```sh
-samply record 'TODO(template) update with your binary e.g. ./target/release/...'
+samply record <binary>
 ```
 This command will open a browser page that contains a graphic representation of where the time is being spent in our application.
 

@@ -22,7 +22,7 @@ resolver = "3"
 version = "1.7.1"
 edition = "2024"
 repository = "https://github.com/NethermindEth/charon-rs"
-license = "Apache-2.0"                                    # TODO(template) update license
+license = "Apache-2.0"
 publish = false
 
 [workspace.dependencies]
