@@ -7,14 +7,15 @@ use crate::{
     manifestpb::v1::{Cluster, SignedMutationList},
 };
 
-use super::{ManifestError, Result};
+use super::Result;
 
 /// Loads the current cluster state from disk.
 ///
 /// Reads either from cluster manifest or legacy lock file.
 /// If both files are provided, both files are read and:
 /// - If cluster hashes don't match, an error is returned
-/// - If cluster hashes match, the cluster loaded from the manifest file is returned
+/// - If cluster hashes match, the cluster loaded from the manifest file is
+///   returned
 ///
 /// Returns an error if the cluster can't be loaded from either file.
 pub fn load_cluster<P1, P2, F>(
@@ -52,11 +53,13 @@ where
 }
 
 /// Loads the raw DAG from cluster manifest file on disk.
+#[allow(dead_code)]
 pub(crate) fn load_dag_from_manifest<P: AsRef<Path>>(_filename: P) -> Result<SignedMutationList> {
     unimplemented!("load_dag_from_manifest")
 }
 
 /// Loads the raw DAG from legacy lock file on disk.
+#[allow(dead_code)]
 pub(crate) fn load_dag_from_legacy_lock<P: AsRef<Path>, F: FnOnce(Lock) -> Result<()>>(
     _filename: P,
     _lock_callback: Option<F>,
@@ -65,6 +68,7 @@ pub(crate) fn load_dag_from_legacy_lock<P: AsRef<Path>, F: FnOnce(Lock) -> Resul
 }
 
 /// Verifies that cluster hashes match between manifest and legacy DAG.
+#[allow(dead_code)]
 pub(crate) fn cluster_hashes_match(
     _dag_manifest: &SignedMutationList,
     _dag_legacy: &SignedMutationList,
