@@ -25,7 +25,7 @@ WORKDIR /build
 COPY . .
 RUN cargo build --locked --release --package pluto-cli
 
-FROM debian:bookworm-slim AS app
+FROM ubuntu:24.04 AS app
 
 # Install runtime dependencies for TLS/HTTPS
 RUN apt-get update && \
