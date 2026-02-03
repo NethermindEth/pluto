@@ -77,6 +77,10 @@ pub(crate) enum CliError {
     #[error("Hasher error: {0}")]
     HasherError(#[from] pluto_cluster::ssz_hasher::HasherError),
 
+    /// HTTP request error.
+    #[error("HTTP request error: {0}")]
+    Reqwest(#[from] reqwest::Error),
+
     /// Test timeout or interrupted.
     #[error("timeout/interrupted")]
     _TimeoutInterrupted,

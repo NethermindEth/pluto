@@ -35,6 +35,7 @@ use pluto_app::obolapi::{Client, ClientOptions};
 use pluto_cluster::ssz_hasher::{HashWalker, Hasher};
 use pluto_eth2util::enr::Record;
 use pluto_k1util::{load, sign};
+use reqwest::{Method, header::CONTENT_TYPE};
 use serde_with::{base64::Base64, serde_as};
 use std::os::unix::fs::PermissionsExt as _;
 use tokio::io::AsyncReadExt;
@@ -718,6 +719,50 @@ fn hash_ssz(data: &[u8]) -> CliResult<[u8; 32]> {
     hasher.merkleize(index)?;
 
     Ok(hasher.hash_root()?)
+}
+
+/// Measures the round-trip time (RTT) for an HTTP request and logs a warning if
+/// the response status code doesn't match the expected status.
+pub(crate) async fn request_rtt(
+    url: impl AsRef<str>,
+    method: Method,
+    body: Option<Vec<u8>>,
+    expected_status: u16,
+) -> CliResult<StdDuration> {
+    let client = reqwest::Client::new();
+
+    let mut request_builder = client.request(method, url.as_ref());
+
+    if let Some(body_bytes) = body {
+        request_builder = request_builder
+            .header(CONTENT_TYPE, "application/json")
+            .body(body_bytes);
+    }
+
+    let start = std::time::Instant::now();
+    let response = request_builder.send().await?;
+    let rtt = start.elapsed();
+
+    let status = response.status().as_u16();
+    if status != expected_status {
+        match response.text().await {
+            Ok(body) if !body.is_empty() => tracing::warn!(
+                status_code = status,
+                expected_status_code = expected_status,
+                endpoint = url.as_ref(),
+                body = body,
+                "Unexpected status code"
+            ),
+            _ => tracing::warn!(
+                status_code = status,
+                expected_status_code = expected_status,
+                endpoint = url.as_ref(),
+                "Unexpected status code"
+            ),
+        }
+    }
+
+    Ok(rtt)
 }
 
 /// Updates the `--test-cases` argument help text to include available tests
