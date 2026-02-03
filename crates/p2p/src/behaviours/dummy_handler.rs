@@ -19,16 +19,7 @@ use libp2p::swarm::{
 /// This handler doesn't negotiate any protocols or handle any events.
 /// It exists only to satisfy the `NetworkBehaviour` trait requirements.
 #[derive(Debug, Clone, Default)]
-pub struct Handler {
-    _private: (),
-}
-
-impl Handler {
-    /// Creates a new handler.
-    pub fn new() -> Self {
-        Self { _private: () }
-    }
-}
+pub struct Handler;
 
 impl ConnectionHandler for Handler {
     type FromBehaviour = Infallible;

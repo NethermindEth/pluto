@@ -13,7 +13,9 @@ use std::{
     time::Duration,
 };
 
-use libp2p::{Multiaddr, identity::Keypair, multiaddr, tcp};
+use libp2p::{Multiaddr, identity::Keypair, multiaddr, multiaddr::Protocol as MaProtocol, tcp};
+
+use crate::metrics::{ConnectionType, Protocol};
 
 use crate::{
     config::{self, P2PConfig},
@@ -120,4 +122,33 @@ pub(crate) fn keypair_from_secret_key(key: k256::SecretKey) -> crate::p2p::Resul
     let mut der = key.to_sec1_der()?;
     let keypair = Keypair::secp256k1_from_der(&mut der)?;
     Ok(keypair)
+}
+
+/// Returns the connection type (direct or relay) based on the multiaddr.
+pub(crate) fn addr_type(addr: &Multiaddr) -> ConnectionType {
+    if is_relay_addr(addr) {
+        ConnectionType::Relay
+    } else {
+        ConnectionType::Direct
+    }
+}
+
+/// Returns the transport protocol (TCP or QUIC) from the multiaddr.
+pub(crate) fn addr_protocol(addr: &Multiaddr) -> Protocol {
+    if is_quic_addr(addr) {
+        Protocol::Quic
+    } else {
+        Protocol::Tcp
+    }
+}
+
+/// Returns true if the multiaddr contains a p2p-circuit (relay) component.
+pub(crate) fn is_relay_addr(addr: &Multiaddr) -> bool {
+    addr.iter().any(|p| matches!(p, MaProtocol::P2pCircuit))
+}
+
+/// Returns true if the multiaddr contains a QUIC or QUIC-v1 component.
+pub(crate) fn is_quic_addr(addr: &Multiaddr) -> bool {
+    addr.iter()
+        .any(|p| matches!(p, MaProtocol::Quic | MaProtocol::QuicV1))
 }
