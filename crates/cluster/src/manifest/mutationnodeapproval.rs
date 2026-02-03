@@ -2,7 +2,7 @@
 
 use crate::manifestpb::v1::{Cluster, SignedMutation};
 
-use super::{ManifestError, Result};
+use super::Result;
 
 /// Signs a node approval mutation.
 pub fn sign_node_approval(
@@ -23,6 +23,9 @@ pub(crate) fn verify_node_approval(_signed: &SignedMutation) -> Result<()> {
 }
 
 /// Transforms a cluster with a node approvals composite mutation.
-pub(crate) fn transform_node_approvals(_cluster: &Cluster, _signed: &SignedMutation) -> Result<Cluster> {
+pub(crate) fn transform_node_approvals(
+    _cluster: &Cluster,
+    _signed: &SignedMutation,
+) -> Result<Cluster> {
     unimplemented!("transform_node_approvals")
 }

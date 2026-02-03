@@ -5,7 +5,7 @@ use crate::{
     manifestpb::v1::{Cluster, SignedMutation, SignedMutationList},
 };
 
-use super::{ManifestError, Result};
+use super::Result;
 
 /// Creates a new raw legacy lock mutation from JSON bytes.
 pub fn new_raw_legacy_lock(_json_bytes: &[u8]) -> Result<SignedMutation> {
@@ -28,16 +28,21 @@ pub fn new_cluster_from_lock_for_tests(_lock: &Lock) -> Result<Cluster> {
 }
 
 /// Verifies a legacy lock mutation.
+#[allow(dead_code)]
 pub(crate) fn verify_legacy_lock(_signed: &SignedMutation) -> Result<()> {
     unimplemented!("verify_legacy_lock")
 }
 
 /// Transforms a cluster with a legacy lock mutation.
-pub(crate) fn transform_legacy_lock(_cluster: &Cluster, _signed: &SignedMutation) -> Result<Cluster> {
+pub(crate) fn transform_legacy_lock(
+    _cluster: &Cluster,
+    _signed: &SignedMutation,
+) -> Result<Cluster> {
     unimplemented!("transform_legacy_lock")
 }
 
 /// Checks if a protobuf message is zero/empty.
+#[allow(dead_code)]
 pub(crate) fn is_zero_proto<T>(_msg: &T) -> bool
 where
     T: prost::Message + Default,

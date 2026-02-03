@@ -1,7 +1,8 @@
 //! Cluster manifest management and coordination.
 //!
-//! This module handles cluster manifest DAG (Directed Acyclic Graph) operations,
-//! including loading, materializing, and transforming cluster state through mutations.
+//! This module handles cluster manifest DAG (Directed Acyclic Graph)
+//! operations, including loading, materializing, and transforming cluster state
+//! through mutations.
 
 use thiserror::Error;
 
@@ -41,7 +42,9 @@ pub enum ManifestError {
     },
 
     /// Manifest and legacy cluster hashes don't match.
-    #[error("manifest and legacy cluster hashes don't match (manifest_hash: {manifest_hash}, legacy_hash: {legacy_hash})")]
+    #[error(
+        "manifest and legacy cluster hashes don't match (manifest_hash: {manifest_hash}, legacy_hash: {legacy_hash})"
+    )]
     ClusterHashMismatch {
         /// Manifest hash hex string.
         manifest_hash: String,
@@ -128,6 +131,18 @@ pub enum ManifestError {
     /// BLS conversion error.
     #[error("bls conversion error: {0}")]
     BlsConversion(String),
+
+    /// Builder registration error.
+    #[error("builder registration error: {0}")]
+    BuilderRegistration(String),
+
+    /// Invalid lock hash.
+    #[error("invalid lock hash")]
+    InvalidLockHash,
+
+    /// Invalid mutation type.
+    #[error("invalid mutation type: {0}")]
+    InvalidMutationType(String),
 }
 
 /// Result type alias for manifest operations.
