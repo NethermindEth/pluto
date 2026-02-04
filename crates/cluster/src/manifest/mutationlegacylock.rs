@@ -1,15 +1,46 @@
-//! Legacy lock mutation implementation.
-
 use crate::{
     lock::Lock,
-    manifestpb::v1::{Cluster, SignedMutation, SignedMutationList},
+    manifestpb::v1::{Cluster, LegacyLock, Mutation, SignedMutation, SignedMutationList},
 };
 
-use super::Result;
+use super::{ManifestError, Result, types::MutationType};
+
+impl ::prost::Name for LegacyLock {
+    const NAME: &'static str = "LegacyLock";
+    const PACKAGE: &'static str = "cluster.manifestpb.v1";
+
+    fn type_url() -> ::prost::alloc::string::String {
+        format!(
+            "type.googleapis.com/{}",
+            <Self as ::prost::Name>::full_name()
+        )
+    }
+}
 
 /// Creates a new raw legacy lock mutation from JSON bytes.
-pub fn new_raw_legacy_lock(_json_bytes: &[u8]) -> Result<SignedMutation> {
-    unimplemented!("new_raw_legacy_lock")
+pub fn new_raw_legacy_lock(json_bytes: &[u8]) -> Result<SignedMutation> {
+    // Verify that the bytes are a valid lock by deserializing
+    let _: Lock = serde_json::from_slice(json_bytes)
+        .map_err(|e| ManifestError::InvalidMutation(format!("unmarshal lock: {}", e)))?;
+
+    let legacy_lock = LegacyLock {
+        json: json_bytes.to_vec().into(),
+    };
+
+    let lock_any = prost_types::Any::from_msg(&legacy_lock)
+        .map_err(|e| ManifestError::InvalidMutation(format!("lock to any: {e}")))?;
+
+    let zero_parent = vec![0u8; 32];
+
+    Ok(SignedMutation {
+        mutation: Some(Mutation {
+            parent: zero_parent.into(),
+            r#type: MutationType::LegacyLock.as_str().to_string(),
+            data: Some(lock_any),
+        }),
+        signer: Default::default(),
+        signature: Default::default(),
+    })
 }
 
 /// Creates a new legacy lock mutation for testing.
