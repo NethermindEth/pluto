@@ -76,6 +76,7 @@ impl MutationType {
 }
 
 /// Calculates the hash of a signed mutation.
+/// NOTE: @iamquang95 this could be a method of `SignedMutation`
 pub fn hash(signed: &SignedMutation) -> Result<Vec<u8>> {
     let mutation = signed
         .mutation
@@ -92,8 +93,7 @@ pub fn hash(signed: &SignedMutation) -> Result<Vec<u8>> {
         let legacy_lock =
             LegacyLock::decode(&*data.value).map_err(ManifestError::ProtobufDecode)?;
 
-        let lock: Lock =
-            serde_json::from_slice(&legacy_lock.json).map_err(ManifestError::Json)?;
+        let lock: Lock = serde_json::from_slice(&legacy_lock.json).map_err(ManifestError::Json)?;
 
         if lock.lock_hash.len() != HASH_LEN {
             return Err(ManifestError::InvalidLockHash);
@@ -107,6 +107,7 @@ pub fn hash(signed: &SignedMutation) -> Result<Vec<u8>> {
 }
 
 /// Transforms a cluster with a signed mutation.
+/// NOTE: @iamquang95 this could be a method of `SignedMutation`
 pub fn transform(cluster: &Cluster, signed: &SignedMutation) -> Result<Cluster> {
     let mutation = signed
         .mutation
