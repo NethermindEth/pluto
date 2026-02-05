@@ -1,6 +1,6 @@
 use crate::manifestpb::v1::{Cluster, SignedMutationList};
 
-use super::{ManifestError, Result};
+use super::error::{ManifestError, Result};
 
 /// Transforms a raw DAG and returns the resulting cluster manifest.
 pub fn materialise(raw_dag: &SignedMutationList) -> Result<Cluster> {
@@ -15,7 +15,6 @@ pub fn materialise(raw_dag: &SignedMutationList) -> Result<Cluster> {
     }
 
     // initial_mutation_hash is the hash of the first mutation
-    // SAFETY: We already checked that mutations is not empty above
     cluster.initial_mutation_hash = raw_dag
         .mutations
         .first()
@@ -23,8 +22,7 @@ pub fn materialise(raw_dag: &SignedMutationList) -> Result<Cluster> {
         .hash()?
         .into();
 
-    // LatestMutationHash is the hash of the last mutation
-    // SAFETY: We already checked that mutations is not empty above
+    // latest_mutation_hash is the hash of the last mutation
     cluster.latest_mutation_hash = raw_dag
         .mutations
         .last()

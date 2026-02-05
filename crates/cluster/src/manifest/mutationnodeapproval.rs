@@ -5,10 +5,9 @@ use prost_types::Timestamp;
 use crate::manifestpb::v1::{Cluster, Mutation, SignedMutation, SignedMutationList};
 
 use super::{
-    ManifestError, Result,
     cluster::cluster_peers,
-    extract_mutation,
-    helpers::{HASH_LEN, now, sign_k1, verify_k1_signed_mutation},
+    error::{ManifestError, Result},
+    helpers::{HASH_LEN, extract_mutation, now, sign_k1, verify_k1_signed_mutation},
     types::MutationType,
 };
 

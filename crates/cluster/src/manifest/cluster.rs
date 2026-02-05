@@ -11,7 +11,7 @@ use crate::{
     manifestpb::v1::{Cluster, Validator},
 };
 
-use super::{ManifestError, Result};
+use super::error::{ManifestError, Result};
 
 /// Returns the cluster operators as a slice of p2p peers.
 pub fn cluster_peers(cluster: &Cluster) -> Result<Vec<Peer>> {

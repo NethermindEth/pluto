@@ -10,7 +10,10 @@ use crate::{
     manifestpb::v1::{Mutation, SignedMutation, Validator},
 };
 
-use super::{ManifestError, Result};
+use super::{
+    error::{ManifestError, Result},
+    types,
+};
 
 /// Hash length in bytes.
 pub(crate) const HASH_LEN: usize = 32;
@@ -145,4 +148,23 @@ pub fn validator_to_proto(val: &DistValidator, addrs: &ValidatorAddresses) -> Re
         withdrawal_address: addrs.withdrawal_address.clone(),
         builder_registration_json: reg_json.into(),
     })
+}
+
+/// Extracts and validates a mutation from a signed mutation.
+pub(crate) fn extract_mutation(
+    signed: &SignedMutation,
+    expected_type: types::MutationType,
+) -> Result<&Mutation> {
+    let mutation = signed
+        .mutation
+        .as_ref()
+        .ok_or(ManifestError::InvalidSignedMutation)?;
+
+    if mutation.r#type != expected_type.as_str() {
+        return Err(ManifestError::InvalidMutation(
+            "invalid mutation type".to_string(),
+        ));
+    }
+
+    Ok(mutation)
 }

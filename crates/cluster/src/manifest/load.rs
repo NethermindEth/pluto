@@ -8,7 +8,9 @@ use crate::{
 };
 
 use super::{
-    ManifestError, Result, materialise::materialise, mutationlegacylock::new_raw_legacy_lock,
+    error::{ManifestError, Result},
+    materialise::materialise,
+    mutationlegacylock::new_raw_legacy_lock,
 };
 
 /// Returns the current cluster state from disk by reading either from cluster
@@ -21,7 +23,7 @@ use super::{
 ///   returned.
 ///
 /// Returns an error if the cluster can't be loaded from either file.
-pub fn load_cluster<F>(
+pub async fn load_cluster<F>(
     manifest_file: impl AsRef<Path>,
     legacy_lock_file: impl AsRef<Path>,
     lock_callback: Option<F>,
@@ -29,7 +31,7 @@ pub fn load_cluster<F>(
 where
     F: FnOnce(Lock) -> Result<()>,
 {
-    let dag = load_dag(manifest_file, legacy_lock_file, lock_callback)?;
+    let dag = load_dag(manifest_file, legacy_lock_file, lock_callback).await?;
     materialise(&dag)
 }
 
@@ -42,7 +44,7 @@ where
 /// - If cluster hashes match, the DAG loaded from the manifest file is returned
 ///
 /// Returns an error if the DAG can't be loaded from either file.
-pub fn load_dag<F>(
+pub async fn load_dag<F>(
     manifest_file: impl AsRef<Path>,
     legacy_lock_file: impl AsRef<Path>,
     lock_callback: Option<F>,
@@ -50,8 +52,8 @@ pub fn load_dag<F>(
 where
     F: FnOnce(Lock) -> Result<()>,
 {
-    let manifest_result = load_dag_from_manifest(&manifest_file);
-    let legacy_result = load_dag_from_legacy_lock(&legacy_lock_file, lock_callback);
+    let manifest_result = load_dag_from_manifest(&manifest_file).await;
+    let legacy_result = load_dag_from_legacy_lock(&legacy_lock_file, lock_callback).await;
 
     match (manifest_result, legacy_result) {
         // Both files loaded successfully, check if cluster hashes match
@@ -94,18 +96,20 @@ where
 }
 
 /// Loads the raw DAG from cluster manifest file on disk.
-pub(crate) fn load_dag_from_manifest(filename: impl AsRef<Path>) -> Result<SignedMutationList> {
-    let bytes = std::fs::read(filename.as_ref())?;
+pub(crate) async fn load_dag_from_manifest(
+    filename: impl AsRef<Path>,
+) -> Result<SignedMutationList> {
+    let bytes = tokio::fs::read(filename.as_ref()).await?;
     let raw_dag = SignedMutationList::decode(&*bytes)?;
     Ok(raw_dag)
 }
 
 /// Loads the raw DAG from legacy lock file on disk.
-pub(crate) fn load_dag_from_legacy_lock<F: FnOnce(Lock) -> Result<()>>(
+pub(crate) async fn load_dag_from_legacy_lock<F: FnOnce(Lock) -> Result<()>>(
     filename: impl AsRef<Path>,
     lock_callback: Option<F>,
 ) -> Result<SignedMutationList> {
-    let bytes = std::fs::read(filename)?;
+    let bytes = tokio::fs::read(filename).await?;
 
     let lock: Lock = serde_json::from_slice(&bytes)?;
 
@@ -154,8 +158,9 @@ mod tests {
         lock::Lock,
         manifest::{materialise::materialise, mutationlegacylock::new_raw_legacy_lock},
     };
-    use std::{fs, path::PathBuf};
+    use std::path::PathBuf;
     use test_case::test_case;
+    use tokio::fs;
 
     fn testdata_path(filename: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -177,14 +182,15 @@ mod tests {
     #[test_case("", "lock.json", None ; "only_legacy_lock")]
     #[test_case("manifest", "lock.json", None ; "both_files")]
     #[test_case("manifest", "lock2.json", Some(ManifestError::ClusterHashMismatch { manifest_hash: String::new(), legacy_hash: String::new() }) ; "mismatching_cluster_hashes")]
-    fn load_manifest(
+    #[tokio::test]
+    async fn load_manifest(
         manifest_file: &str,
         legacy_lock_file: &str,
         expected_error: Option<ManifestError>,
     ) {
         // Setup: Load legacy lock and create manifest file (shared across all tests)
         let lock_path = manifest_testdata_path("lock.json");
-        let lock_bytes = fs::read(&lock_path).unwrap();
+        let lock_bytes = fs::read(&lock_path).await.unwrap();
         let lock: Lock = serde_json::from_slice(&lock_bytes).unwrap();
 
         let json_bytes = serde_json::to_vec(&lock).unwrap();
@@ -198,7 +204,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let manifest_path = temp_dir.path().join("cluster-manifest.pb");
         let manifest_bytes = dag.encode_to_vec();
-        fs::write(&manifest_path, manifest_bytes).unwrap();
+        fs::write(&manifest_path, manifest_bytes).await.unwrap();
 
         // Map test parameters to actual paths
         let lock_file_path = if !legacy_lock_file.is_empty() {
@@ -222,7 +228,8 @@ mod tests {
             manifest_arg,
             lock_arg,
             Option::<fn(Lock) -> Result<()>>::None,
-        );
+        )
+        .await;
 
         if let Some(expected_err) = expected_error {
             assert!(result.is_err());
@@ -248,20 +255,22 @@ mod tests {
                 lock_arg,
                 Option::<fn(Lock) -> Result<()>>::None,
             )
+            .await
             .unwrap();
             assert_eq!(expected_cluster, loaded_cluster);
             assert_eq!(expected_cluster, cluster_from_dag);
         }
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore] // TODO: lock3.json has null values that aren't compatible with Lock struct deserialization
-    fn load_modified_legacy_lock() {
+    async fn load_modified_legacy_lock() {
         // This test ensures the hard-coded hash is used for legacy locks,
         // even if the lock file was modified and run with --no-verify
         let lock3_path = manifest_testdata_path("lock3.json");
-        let cluster =
-            load_cluster("", &lock3_path, Option::<fn(Lock) -> Result<()>>::None).unwrap();
+        let cluster = load_cluster("", &lock3_path, Option::<fn(Lock) -> Result<()>>::None)
+            .await
+            .unwrap();
 
         let hash_hex = hex::encode(&cluster.initial_mutation_hash);
         // Verify the hash starts with expected prefix
@@ -280,22 +289,24 @@ mod tests {
     #[test_case("v1.8.0")]
     #[test_case("v1.9.0")]
     #[test_case("v1.10.0")]
-    fn load_legacy_version(version: &str) {
+    #[tokio::test]
+    async fn load_legacy_version(version: &str) {
         // Load the lock file for this version
         let filename = format!("cluster_lock_{}.json", version.replace('.', "_"));
         let lock_path = testdata_path(&filename);
 
-        let lock_bytes = fs::read(&lock_path).unwrap();
+        let lock_bytes = fs::read(&lock_path).await.unwrap();
         let lock: Lock = serde_json::from_slice(&lock_bytes).unwrap();
 
         // Create temp file for the lock
         let temp_dir = tempfile::tempdir().unwrap();
         let temp_lock_path = temp_dir.path().join("lock.json");
-        fs::write(&temp_lock_path, &lock_bytes).unwrap();
+        fs::write(&temp_lock_path, &lock_bytes).await.unwrap();
 
         // Load cluster from the lock file
-        let cluster =
-            load_cluster("", &temp_lock_path, Option::<fn(Lock) -> Result<()>>::None).unwrap();
+        let cluster = load_cluster("", &temp_lock_path, Option::<fn(Lock) -> Result<()>>::None)
+            .await
+            .unwrap();
 
         // Verify loaded cluster properties match the lock
         assert_eq!(

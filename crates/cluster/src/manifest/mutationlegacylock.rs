@@ -6,8 +6,8 @@ use crate::{
 };
 
 use super::{
-    ManifestError, Result, extract_mutation,
-    helpers::{validator_to_proto, verify_empty_sig},
+    error::{ManifestError, Result},
+    helpers::{extract_mutation, validator_to_proto, verify_empty_sig},
     types::MutationType,
 };
 
