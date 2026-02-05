@@ -1,5 +1,3 @@
-//! Cluster manifest mutation types.
-
 use prost::Message as _;
 
 use crate::{
@@ -53,13 +51,7 @@ impl MutationType {
             _ => None,
         }
     }
-
-    /// Returns true if the mutation type is valid.
-    /// TODO: @iamquang95 remove this if no need
-    pub fn valid(&self) -> bool {
-        true
-    }
-
+    
     /// Transforms the cluster with the given signed mutation.
     pub fn transform(&self, cluster: &Cluster, signed: &SignedMutation) -> Result<Cluster> {
         match self {
@@ -75,47 +67,48 @@ impl MutationType {
     }
 }
 
-/// Calculates the hash of a signed mutation.
-/// NOTE: @iamquang95 this could be a method of `SignedMutation`
-pub fn hash(signed: &SignedMutation) -> Result<Vec<u8>> {
-    let mutation = signed
-        .mutation
-        .as_ref()
-        .ok_or(ManifestError::InvalidSignedMutation)?;
-
-    // Special case for legacy lock: return the lock hash
-    if mutation.r#type == MutationType::LegacyLock.as_str() {
-        let data = mutation
-            .data
+impl SignedMutation {
+    /// Calculates the hash of this signed mutation.
+    pub fn hash(&self) -> Result<Vec<u8>> {
+        let mutation = self
+            .mutation
             .as_ref()
-            .ok_or_else(|| ManifestError::InvalidMutation("data is nil".to_string()))?;
+            .ok_or(ManifestError::InvalidSignedMutation)?;
 
-        let legacy_lock =
-            LegacyLock::decode(&*data.value).map_err(ManifestError::ProtobufDecode)?;
+        // Special case for legacy lock: return the lock hash
+        if mutation.r#type == MutationType::LegacyLock.as_str() {
+            let data = mutation
+                .data
+                .as_ref()
+                .ok_or_else(|| ManifestError::InvalidMutation("data is nil".to_string()))?;
 
-        let lock: Lock = serde_json::from_slice(&legacy_lock.json).map_err(ManifestError::Json)?;
+            let legacy_lock =
+                LegacyLock::decode(&*data.value).map_err(ManifestError::ProtobufDecode)?;
 
-        if lock.lock_hash.len() != HASH_LEN {
-            return Err(ManifestError::InvalidLockHash);
+            let lock: Lock =
+                serde_json::from_slice(&legacy_lock.json).map_err(ManifestError::Json)?;
+
+            if lock.lock_hash.len() != HASH_LEN {
+                return Err(ManifestError::InvalidLockHash);
+            }
+
+            return Ok(lock.lock_hash);
         }
 
-        return Ok(lock.lock_hash);
+        // Otherwise, return the hash of the signed mutation
+        hash_signed_mutation(self)
     }
 
-    // Otherwise, return the hash of the signed mutation
-    hash_signed_mutation(signed)
-}
+    /// Transforms a cluster with this signed mutation.
+    pub fn transform(&self, cluster: &Cluster) -> Result<Cluster> {
+        let mutation = self
+            .mutation
+            .as_ref()
+            .ok_or(ManifestError::InvalidSignedMutation)?;
 
-/// Transforms a cluster with a signed mutation.
-/// NOTE: @iamquang95 this could be a method of `SignedMutation`
-pub fn transform(cluster: &Cluster, signed: &SignedMutation) -> Result<Cluster> {
-    let mutation = signed
-        .mutation
-        .as_ref()
-        .ok_or(ManifestError::InvalidSignedMutation)?;
+        let typ = MutationType::parse(&mutation.r#type)
+            .ok_or_else(|| ManifestError::InvalidMutationType(mutation.r#type.clone()))?;
 
-    let typ = MutationType::parse(&mutation.r#type)
-        .ok_or_else(|| ManifestError::InvalidMutationType(mutation.r#type.clone()))?;
-
-    typ.transform(cluster, signed)
+        typ.transform(cluster, self)
+    }
 }

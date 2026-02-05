@@ -1,5 +1,3 @@
-//! Add validators mutation implementation.
-
 use prost::Message as _;
 
 use crate::{
@@ -12,7 +10,7 @@ use crate::{
 use super::{
     ManifestError, Result, extract_mutation,
     helpers::{HASH_LEN, verify_empty_sig},
-    types::{self, MutationType},
+    types::MutationType,
 };
 
 /// Ethereum address length in bytes.
@@ -76,7 +74,6 @@ fn verify_gen_validators_list(vals: &[Validator]) -> Result<()> {
 }
 
 /// Transforms a cluster with a gen validators mutation.
-/// NOTE: @iamquang95, should we mutate the cluster?
 pub(crate) fn transform_gen_validators(
     cluster: &Cluster,
     signed: &SignedMutation,
@@ -162,16 +159,16 @@ pub(crate) fn transform_add_validators(
 
     let approvals_mutation = extract_mutation(node_approvals, MutationType::NodeApprovals)?;
 
-    let gen_hash = types::hash(gen_validators)?;
+    let gen_hash = gen_validators.hash()?;
     if gen_hash != approvals_mutation.parent.to_vec() {
         return Err(ManifestError::InvalidMutation(
             "invalid node approvals parent".to_string(),
         ));
     }
 
-    let result = types::transform(cluster, gen_validators)?;
+    let result = gen_validators.transform(cluster)?;
 
-    let result = types::transform(&result, node_approvals)?;
+    let result = node_approvals.transform(&result)?;
 
     Ok(result)
 }

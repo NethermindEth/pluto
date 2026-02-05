@@ -1,5 +1,3 @@
-//! Node approval mutation implementation.
-
 use k256::SecretKey;
 use prost::Message as _;
 use prost_types::Timestamp;
@@ -11,7 +9,7 @@ use super::{
     cluster::cluster_peers,
     extract_mutation,
     helpers::{HASH_LEN, now, sign_k1, verify_k1_signed_mutation},
-    types::{self, MutationType},
+    types::MutationType,
 };
 
 /// Type URL for google.protobuf.Timestamp.
@@ -187,7 +185,7 @@ pub(crate) fn transform_node_approvals(
             ));
         }
 
-        result = types::transform(&result, approval)?;
+        result = approval.transform(&result)?;
     }
 
     Ok(result)
