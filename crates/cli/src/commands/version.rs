@@ -41,7 +41,7 @@ fn run_with_writer<W: Write>(args: VersionArgs, writer: &mut W) -> Result<()> {
 
     writeln!(writer, "Consensus protocols:")?;
     for protocol in pluto_core::consensus::protocols::protocols() {
-        writeln!(writer, "\t{}", protocol)?;
+        writeln!(writer, "\t{protocol}")?;
     }
 
     Ok(())
@@ -137,8 +137,7 @@ mod tests {
         let first_protocol = protocols[0].to_string();
         assert!(
             output.contains(&first_protocol),
-            "Verbose output should contain the first protocol: {}",
-            first_protocol
+            "Verbose output should contain the first protocol: {first_protocol}"
         );
     }
 }

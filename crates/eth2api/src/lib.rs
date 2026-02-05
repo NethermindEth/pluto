@@ -1,4 +1,4 @@
-//! # Eth2Api
+//! # `Eth2Api`
 //!
 //! Abstraction to multiple Ethereum 2 beacon nodes. Its external API follows
 //! the official [Ethereum beacon APIs specification](https://ethereum.github.io/beacon-APIs/).

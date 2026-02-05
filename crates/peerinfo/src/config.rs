@@ -94,6 +94,7 @@ impl Config {
     /// * A peer info request is sent every 60 seconds on a healthy connection.
     /// * Every request must yield a response within 20 seconds to be
     ///   successful.
+    #[must_use]
     pub fn new(local_info: LocalPeerInfo) -> Self {
         Self {
             timeout: DEFAULT_TIMEOUT,
@@ -104,45 +105,53 @@ impl Config {
     }
 
     /// Sets the peer info request timeout.
+    #[must_use]
     pub fn with_timeout(mut self, d: Duration) -> Self {
         self.timeout = d;
         self
     }
 
     /// Sets the peer info exchange interval.
+    #[must_use]
     pub fn with_interval(mut self, d: Duration) -> Self {
         self.interval = d;
         self
     }
 
     /// Sets the local peer info.
+    #[must_use]
     pub fn with_local_info(mut self, info: LocalPeerInfo) -> Self {
         self.local_info = info;
         self
     }
 
     /// Sets the known peers.
+    #[must_use]
     pub fn with_peers(mut self, peers: Vec<PeerId>) -> Self {
         self.peers = peers;
         self
     }
 
     /// Returns the local peer info.
+    #[must_use]
     pub fn local_info(&self) -> &LocalPeerInfo {
         &self.local_info
     }
 
     /// Returns the timeout.
+    #[must_use]
     pub fn timeout(&self) -> Duration {
         self.timeout
     }
 
     /// Returns the interval.
+    #[must_use]
     pub fn interval(&self) -> Duration {
         self.interval
     }
 
     /// Returns the known peers.
+    #[must_use]
     pub fn peers(&self) -> &[PeerId] {
         &self.peers
     }

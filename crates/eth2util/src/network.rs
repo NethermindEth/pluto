@@ -42,23 +42,25 @@ type Result<T> = std::result::Result<T, NetworkError>;
 /// Network contains information about an Ethereum network.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Network {
-    /// chain_id represents chain id of the network.
+    /// `chain_id` represents chain id of the network.
     pub chain_id: u64,
     /// name represents name of the network.
     pub name: &'static str,
-    /// genesis_fork_version_hex represents fork version of the network in hex.
+    /// `genesis_fork_version_hex` represents fork version of the network in
+    /// hex.
     pub genesis_fork_version_hex: &'static str,
-    /// genesis_timestamp represents genesis timestamp of the network in unix
+    /// `genesis_timestamp` represents genesis timestamp of the network in unix
     /// format.
     pub genesis_timestamp: u64,
-    /// capella_hard_fork represents capella fork version, used for computing
+    /// `capella_hard_fork` represents capella fork version, used for computing
     /// domains for signatures.
     pub capella_hard_fork: &'static str,
 }
 
 impl Network {
-    /// is_non_zero checks if each field in this struct is not equal to its zero
-    /// value.
+    /// `is_non_zero` checks if each field in this struct is not equal to its
+    /// zero value.
+    #[must_use]
     pub fn is_non_zero(&self) -> bool {
         self != &Network::default()
     }
@@ -113,7 +115,7 @@ mod predefined {
         capella_hard_fork: "0x90000072",
     };
 
-    /// Holesky network. Metadata taken from https://github.com/eth-clients/holesky#metadata.
+    /// Holesky network. Metadata taken from <https://github.com/eth-clients/holesky#metadata>.
     pub const HOLESKY: Network = Network {
         chain_id: 17000,
         name: "holesky",
@@ -122,7 +124,7 @@ mod predefined {
         capella_hard_fork: "0x04017000",
     };
 
-    /// Hoodi network. Metadata taken from https://github.com/eth-clients/hoodi/#metadata.
+    /// Hoodi network. Metadata taken from <https://github.com/eth-clients/hoodi/#metadata>.
     pub const HOODI: Network = Network {
         chain_id: 560048,
         name: "hoodi",
@@ -220,6 +222,7 @@ pub fn network_to_fork_version_bytes(network: &str) -> Result<Vec<u8>> {
 }
 
 /// Valid network.
+#[must_use]
 pub fn valid_network(name: &str) -> bool {
     network_from_name(name).is_ok()
 }
@@ -340,18 +343,13 @@ mod tests {
         let unsupported_networks = vec!["ropsten"];
 
         for network in supported_networks {
-            assert!(
-                valid_network(network),
-                "Network {} should be valid",
-                network
-            );
+            assert!(valid_network(network), "Network {network} should be valid");
         }
 
         for network in unsupported_networks {
             assert!(
                 !valid_network(network),
-                "Network {} should be invalid",
-                network
+                "Network {network} should be invalid"
             );
         }
     }

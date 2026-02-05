@@ -39,7 +39,7 @@ pub struct OperatorV1X1 {
     pub enr_signature: Vec<u8>,
 }
 
-/// OperatorV1X2OrLater is the json formatter of Operator for versions v1.2.0
+/// `OperatorV1X2OrLater` is the json formatter of Operator for versions v1.2.0
 /// and later.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

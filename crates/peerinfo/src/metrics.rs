@@ -1,6 +1,6 @@
 //! Metrics for the peerinfo protocol.
 
-use vise::*;
+use vise::{EncodeLabelSet, Family, Gauge, Global, LabeledFamily, Metrics};
 
 /// Metrics for the peerinfo protocol.
 #[derive(Debug, Metrics)]
@@ -13,7 +13,7 @@ pub struct PeerInfoMetrics {
     /// Constant gauge with version label set to peer's charon version.
     pub version: Family<PeerVersionLabels, Gauge>,
 
-    /// Constant gauge with git_hash label set to peer's git commit hash.
+    /// Constant gauge with `git_hash` label set to peer's git commit hash.
     pub git_commit: Family<PeerGitHashLabels, Gauge>,
 
     /// Constant gauge set to the peer start time of the binary in unix seconds.

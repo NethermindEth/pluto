@@ -60,6 +60,7 @@ pub struct Behaviour {
 
 impl Behaviour {
     /// Creates a new [`Behaviour`] with the given configuration.
+    #[must_use]
     pub fn new(config: Config) -> Self {
         let name = &config.local_info().nickname;
 
@@ -96,6 +97,7 @@ impl Behaviour {
     }
 
     /// Returns the current configuration.
+    #[must_use]
     pub fn config(&self) -> &Config {
         &self.config
     }

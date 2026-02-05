@@ -1,4 +1,4 @@
-use vise::*;
+use vise::{Counter, EncodeLabelSet, Family, Gauge, Global, Histogram, Metrics};
 
 use pluto_p2p::metrics::BUCKETS;
 

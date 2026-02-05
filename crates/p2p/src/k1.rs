@@ -185,7 +185,9 @@ mod tests {
         assert!(backup_dir.exists());
         assert!(backup_dir.is_dir());
 
-        let entries: Vec<_> = fs::read_dir(&backup_dir)?.filter_map(|e| e.ok()).collect();
+        let entries: Vec<_> = fs::read_dir(&backup_dir)?
+            .filter_map(std::result::Result::ok)
+            .collect();
         assert_eq!(entries.len(), 1);
 
         Ok(())
@@ -208,7 +210,9 @@ mod tests {
         let backup_dir = data_dir.join(KEY_BACKUP_DIR);
         assert!(backup_dir.exists());
 
-        let entries: Vec<_> = fs::read_dir(&backup_dir)?.filter_map(|e| e.ok()).collect();
+        let entries: Vec<_> = fs::read_dir(&backup_dir)?
+            .filter_map(std::result::Result::ok)
+            .collect();
         assert_eq!(entries.len(), 1);
 
         Ok(())
@@ -228,8 +232,10 @@ mod tests {
         }
 
         let backup_dir = data_dir.join(KEY_BACKUP_DIR);
-        let entries: Vec<_> = fs::read_dir(&backup_dir)?.filter_map(|e| e.ok()).collect();
-        let backup_names: HashSet<_> = entries.iter().map(|e| e.file_name()).collect();
+        let entries: Vec<_> = fs::read_dir(&backup_dir)?
+            .filter_map(std::result::Result::ok)
+            .collect();
+        let backup_names: HashSet<_> = entries.iter().map(std::fs::DirEntry::file_name).collect();
 
         assert_eq!(
             backup_names.len(),

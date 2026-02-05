@@ -11,7 +11,7 @@ use crate::{
     helpers::EthHex,
     ssz::{SSZError, hash_lock},
     ssz_hasher::Hasher,
-    version::versions::*,
+    version::versions::{V1_0, V1_1, V1_2, V1_3, V1_4, V1_5, V1_6, V1_7, V1_8, V1_9, V1_10},
 };
 use pluto_eth2util::enr::{Record, RecordError};
 use pluto_k1util::K1UtilError;
@@ -20,7 +20,7 @@ use serde_with::{
     serde_as,
 };
 
-/// LockError is the error type for Lock errors.
+/// `LockError` is the error type for Lock errors.
 #[derive(Debug, thiserror::Error)]
 pub enum LockError {
     /// Unexpected validator registration
@@ -179,7 +179,7 @@ impl<'de> Deserialize<'de> for Lock {
                 let lock: LockV1x8orLater = serde_json::from_value(value).map_err(Error::custom)?;
                 Ok(lock.into())
             }
-            _ => Err(Error::custom(format!("Unsupported version: {}", version))),
+            _ => Err(Error::custom(format!("Unsupported version: {version}"))),
         }
     }
 }
@@ -338,7 +338,7 @@ pub struct LockV1x2to5 {
     #[serde(rename = "distributed_validators")]
     pub distributed_validators: Vec<DistValidatorV1x2to5>,
 
-    /// LockHash uniquely identifies a cluster lock.
+    /// `LockHash` uniquely identifies a cluster lock.
     #[serde_as(as = "EthHex")]
     pub lock_hash: Vec<u8>,
 

@@ -6,20 +6,23 @@ const PROTOCOL_ID_PREFIX: &str = "/charon/consensus/";
 pub const QBFT_V2_PROTOCOL_ID: &str = "/charon/consensus/qbft/2.0.0";
 
 /// Protocols supported by the Charon core.
+#[must_use]
 pub fn protocols() -> Vec<StreamProtocol> {
     vec![StreamProtocol::new(QBFT_V2_PROTOCOL_ID)]
 }
 
 /// Returns the most preferred consensus protocol from the list of protocols.
+#[must_use]
 pub fn most_preferred_consensus_protocol<'a>(protocols: &[&'a str]) -> &'a str {
     protocols
         .iter()
-        .find(|p| p.to_string().starts_with(PROTOCOL_ID_PREFIX))
-        .cloned()
+        .find(|p| (**p).to_string().starts_with(PROTOCOL_ID_PREFIX))
+        .copied()
         .unwrap_or(QBFT_V2_PROTOCOL_ID)
 }
 
 /// Returns true if the protocol name is supported by the Charon core.
+#[must_use]
 pub fn is_supported_protocol_name(name: &str) -> bool {
     let normalized_name = name.to_lowercase();
 
@@ -33,11 +36,12 @@ pub fn is_supported_protocol_name(name: &str) -> bool {
 }
 
 /// Prioritizes protocols matching the given name by moving them to the front.
+#[must_use]
 pub fn prioritize_protocols_by_name(
     protocol_name: &str,
     all_protocols: &[StreamProtocol],
 ) -> Vec<StreamProtocol> {
-    let target_prefix = format!("{}{}/", PROTOCOL_ID_PREFIX, protocol_name);
+    let target_prefix = format!("{PROTOCOL_ID_PREFIX}{protocol_name}/");
 
     let (matching, others): (Vec<_>, Vec<_>) = all_protocols
         .iter()

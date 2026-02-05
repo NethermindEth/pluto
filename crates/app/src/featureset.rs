@@ -64,7 +64,7 @@ pub enum Feature {
     /// gnosis|chiado, unless the user disabled this feature explicitly.
     GnosisBlockHotfix,
     /// Enables Linear round timer for consensus rounds.
-    /// When active has precedence over EagerDoubleLinear round timer.
+    /// When active has precedence over `EagerDoubleLinear` round timer.
     Linear,
     /// Enables Scheduler to refresh duties when reorg occurs.
     SseReorgDuties,
@@ -90,6 +90,7 @@ pub enum Feature {
 
 impl Feature {
     /// Returns the string representation of the feature.
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Feature::MockAlpha => "mock_alpha",
@@ -109,6 +110,7 @@ impl Feature {
     }
 
     /// Returns all known features.
+    #[must_use]
     pub fn all() -> &'static [Feature] {
         &[
             Feature::MockAlpha,
@@ -142,7 +144,7 @@ impl std::convert::TryFrom<&str> for Feature {
             .iter()
             .find(|feature| value.eq_ignore_ascii_case(feature.as_str()))
             .copied()
-            .ok_or_else(|| format!("unknown feature: {}", value))
+            .ok_or_else(|| format!("unknown feature: {value}"))
     }
 }
 
@@ -175,8 +177,9 @@ impl Default for FeatureSet {
 
 impl FeatureSet {
     /// Creates a new feature set with default configuration.
+    #[must_use]
     pub fn new() -> Self {
-        Self::from_config(Default::default()).expect("default config should always be valid")
+        Self::from_config(Config::default()).expect("default config should always be valid")
     }
 
     /// Creates a feature set from the given configuration.
@@ -224,11 +227,11 @@ impl FeatureSet {
         })
     }
 
-    /// Enables GnosisBlockHotfix if it was not disabled by the user.
+    /// Enables `GnosisBlockHotfix` if it was not disabled by the user.
     ///
     /// This is still a temporary workaround for the gnosis chain.
     /// When go-eth2-client is fully supporting custom specs, this function has
-    /// to be removed with GnosisBlockHotfix feature.
+    /// to be removed with `GnosisBlockHotfix` feature.
     pub fn enable_gnosis_block_hotfix_if_not_disabled(&mut self, config: &Config) {
         let disabled = config.disabled.contains(&Feature::GnosisBlockHotfix);
 
@@ -243,6 +246,7 @@ impl FeatureSet {
     }
 
     /// Returns true if the feature is enabled.
+    #[must_use]
     pub fn enabled(&self, feature: Feature) -> bool {
         // Get feature status, default to Disable (0) if not found
         let feature_status = self.state.get(&feature).copied().unwrap_or(Status::Disable);
@@ -251,6 +255,7 @@ impl FeatureSet {
     }
 
     /// Returns all custom enabled features.
+    #[must_use]
     pub fn custom_enabled_all(&self) -> Vec<Feature> {
         let mut custom_enabled_features: Vec<Feature> = Vec::new();
 
@@ -302,11 +307,10 @@ mod tests {
 
         for feature in features {
             let status = featureset.state.get(feature);
-            assert!(status.is_some(), "feature {} should have status", feature);
+            assert!(status.is_some(), "feature {feature} should have status");
             assert!(
                 *status.unwrap() != Status::Disable,
-                "feature {} should have positive status",
-                feature
+                "feature {feature} should have positive status"
             );
         }
     }

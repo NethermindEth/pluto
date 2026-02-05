@@ -94,7 +94,7 @@ fn test_qbft(test: Test) {
             })
         },
         log_unjust: Box::new(|_, _, msg| {
-            println!("Unjust: {:?}", msg);
+            println!("Unjust: {msg:?}");
         }),
         log_upon_rule: {
             let clock = clock.clone();
@@ -235,7 +235,7 @@ fn test_qbft(test: Test) {
             mpmc::select! {
                 recv(broadcast_rx) -> msg => {
                     let msg = msg.expect(READ_CHAN_ERR);
-                    for (target, (out_tx, _)) in receives.iter() {
+                    for (target, (out_tx, _)) in &receives {
                         if *target == msg.source() {
                             continue; // Do not broadcast to self, we sent to self already.
                         }
@@ -259,7 +259,7 @@ fn test_qbft(test: Test) {
                     let q_commit = res.expect(READ_CHAN_ERR);
 
                     for commit in q_commit.clone() {
-                        for (_, previous) in results.iter() {
+                        for (_, previous) in &results {
                             assert_eq!(previous.value(), commit.value(), "commit values");
                         }
 
@@ -295,9 +295,7 @@ fn test_qbft(test: Test) {
                     let err = res.expect(READ_CHAN_ERR);
 
                     if err.is_err() {
-                        if !decided {
-                            panic!("unexpected run error");
-                        }
+                        assert!(decided, "unexpected run error");
                     }
 
                     done += 1;
@@ -758,7 +756,7 @@ fn duplicate_pre_prepare_rules() {
             return;
         }
 
-        panic!("unexpected round {}", round);
+        panic!("unexpected round {round}");
     });
     def.compare = Box::new(|_, _, _, _, return_err, _| {
         _ = return_err.send(Ok(()));

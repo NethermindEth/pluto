@@ -21,7 +21,7 @@ use crate::{
 
 /// Connection key for tracking connection counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct ConnKey {
+pub(crate) struct ConnKey {
     peer_id: PeerId,
     connection_type: ConnectionType,
     protocol: Protocol,
@@ -29,7 +29,7 @@ struct ConnKey {
 
 /// Existing connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct ExistingConnection {
+pub(crate) struct ExistingConnection {
     peer_id: PeerId,
     connection_type: ConnectionType,
 }
@@ -99,6 +99,7 @@ pub struct TestConnectionLoggerMetrics {
 impl TestConnectionLoggerMetrics {
     /// Returns the inner metrics for testing.
     #[cfg(test)]
+    #[must_use]
     pub fn inner(&self) -> &P2PMetrics {
         &self.metrics
     }

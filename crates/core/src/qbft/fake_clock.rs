@@ -69,13 +69,13 @@ impl FakeClock {
             inner.now += duration;
             let now = inner.now;
 
-            for (&id, (ch, deadline)) in inner.clients.iter() {
+            for (&id, (ch, deadline)) in &inner.clients {
                 if *deadline <= now {
                     expired.push((id, ch.clone()));
                 }
             }
 
-            for (id, _) in expired.iter() {
+            for (id, _) in &expired {
                 inner.clients.remove(id);
             }
 

@@ -310,7 +310,7 @@ mod tests {
     #[test]
     fn test_ipv4_private() {
         // Localhost
-        assert!(Ipv4Addr::new(127, 0, 0, 1).is_private_ip());
+        assert!(Ipv4Addr::LOCALHOST.is_private_ip());
         assert!(Ipv4Addr::new(127, 255, 255, 255).is_private_ip());
 
         // 10.0.0.0/8
@@ -342,20 +342,20 @@ mod tests {
         assert!(Ipv4Addr::new(142, 250, 185, 14).is_public_ip());
 
         // Private addresses are not public
-        assert!(!Ipv4Addr::new(127, 0, 0, 1).is_public_ip());
+        assert!(!Ipv4Addr::LOCALHOST.is_public_ip());
         assert!(!Ipv4Addr::new(10, 0, 0, 1).is_public_ip());
         assert!(!Ipv4Addr::new(192, 168, 1, 1).is_public_ip());
 
         // Unroutable addresses are not public
-        assert!(!Ipv4Addr::new(0, 0, 0, 0).is_public_ip());
-        assert!(!Ipv4Addr::new(255, 255, 255, 255).is_public_ip());
+        assert!(!Ipv4Addr::UNSPECIFIED.is_public_ip());
+        assert!(!Ipv4Addr::BROADCAST.is_public_ip());
         assert!(!Ipv4Addr::new(224, 0, 0, 1).is_public_ip()); // Multicast
     }
 
     #[test]
     fn test_ipv6_private() {
         // Localhost
-        assert!(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1).is_private_ip());
+        assert!(Ipv6Addr::LOCALHOST.is_private_ip());
 
         // ULA
         assert!(Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 1).is_private_ip());
@@ -377,7 +377,7 @@ mod tests {
         assert!(Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111).is_public_ip());
 
         // Private addresses are not public
-        assert!(!Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1).is_public_ip());
+        assert!(!Ipv6Addr::LOCALHOST.is_public_ip());
         assert!(!Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 1).is_public_ip());
         assert!(!Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1).is_public_ip());
 
@@ -501,7 +501,7 @@ mod tests {
     }
 
     /// Test cases from the original Go implementation.
-    /// See: https://github.com/multiformats/go-multiaddr/blob/master/net/private_test.go
+    /// See: <https://github.com/multiformats/go-multiaddr/blob/master/net/private_test.go>
     #[test]
     fn test_is_public_addr_go_compat() {
         struct TestCase {

@@ -42,7 +42,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Creates a new AppState.
+    /// Creates a new `AppState`.
     pub fn new(
         p2p_config: P2PConfig,
         secret_key: SecretKey,
@@ -211,7 +211,7 @@ pub async fn enr_handler(
             if tcp_ip != udp_ip {
                 return Err(HandlerError {
                     status: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: format!("conflicting IP addresses: tcp={}, udp={}", tcp_ip, udp_ip),
+                    message: format!("conflicting IP addresses: tcp={tcp_ip}, udp={udp_ip}"),
                 });
             }
             (tcp_ip, tcp_p, udp_p)
@@ -237,13 +237,13 @@ pub async fn enr_handler(
     )
     .map_err(|e| HandlerError {
         status: StatusCode::INTERNAL_SERVER_ERROR,
-        message: format!("failed to create ENR: {}", e),
+        message: format!("failed to create ENR: {e}"),
     })?;
 
     Ok(record.to_string())
 }
 
-/// Applies IP override from config (external_ip or resolved external_host).
+/// Applies IP override from config (`external_ip` or resolved `external_host`).
 async fn apply_ip_override(state: &AppState, original_ip: Ipv4Addr) -> Ipv4Addr {
     // First check external_ip config
     if let Some(external_ip) = &state.p2p_config.external_ip
@@ -293,7 +293,7 @@ async fn resolve_external_host_periodically(
     loop {
         tokio::select! {
             biased;
-            _ = ct.cancelled() => {
+            () = ct.cancelled() => {
                 info!("External host resolver shutdown complete");
                 break;
             }

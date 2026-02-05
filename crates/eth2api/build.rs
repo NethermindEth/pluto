@@ -1,4 +1,4 @@
-//! # Eth2Api
+//! # `Eth2Api`
 //!
 //! Abstraction to multiple Ethereum 2 beacon nodes. Its external API follows
 //! the official [Ethereum beacon APIs specification](https://ethereum.github.io/beacon-APIs/).
@@ -11,9 +11,9 @@ use std::{
 
 const BEACON_NODE_OAPI_PATH: &str = "build/beacon-node-oapi.json";
 
-/// Generate the required code from the OpenAPI specification.
+/// Generate the required code from the `OpenAPI` specification.
 pub fn main() -> Result<()> {
-    println!("cargo:rerun-if-changed={}", BEACON_NODE_OAPI_PATH);
+    println!("cargo:rerun-if-changed={BEACON_NODE_OAPI_PATH}");
 
     let generator = std::process::Command::new("oas3-gen")
         .args([
@@ -75,7 +75,7 @@ fn ensure_serde_derives(path: &str) -> Result<()> {
         if has_deserialize && !has_serialize {
             // Find the position of Deserialize and add Serialize before it
             let new_inner = DESERIALIZE_RE.replace(inner, "Serialize, Deserialize");
-            format!("#[derive({})]", new_inner)
+            format!("#[derive({new_inner})]")
         } else {
             // Don't change the derive attribute
             full_match.to_string()

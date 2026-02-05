@@ -121,7 +121,7 @@ pub enum Error {
 
 /// BLST-specific error wrapper.
 ///
-/// Wraps BLST_ERROR enum to provide idiomatic Rust error handling.
+/// Wraps `BLST_ERROR` enum to provide idiomatic Rust error handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum BlsError {
     /// Generic BLS error during key generation.

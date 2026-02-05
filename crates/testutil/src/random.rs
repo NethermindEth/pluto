@@ -39,6 +39,7 @@ impl CryptoRng for ConstReader {}
 
 /// Generates a deterministic insecure secp256k1 private key using the provided
 /// seed.
+#[must_use]
 pub fn generate_insecure_k1_key(seed: u8) -> SecretKey {
     // Add 1 to seed to avoid passing 0, which could cause issues
     let mut rng = ConstReader(seed.wrapping_add(1));

@@ -76,6 +76,7 @@ pub fn decode_bytes(input: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Encodes a single byte slice into RLP format.
+#[must_use]
 pub fn encode_bytes(item: &[u8]) -> Vec<u8> {
     if item.len() == 1 && item[0] < 0x80 {
         return item.to_vec();
@@ -178,7 +179,12 @@ mod tests {
         let input = vec![b"cat".to_vec(), b"dog".to_vec()];
         let expected = vec![0xc8, 0x83, b'c', b'a', b't', 0x83, b'd', b'o', b'g'];
 
-        let encoded = encode_bytes_list(&input.iter().map(|v| v.as_slice()).collect::<Vec<_>>());
+        let encoded = encode_bytes_list(
+            &input
+                .iter()
+                .map(std::vec::Vec::as_slice)
+                .collect::<Vec<_>>(),
+        );
         assert_eq!(encoded, expected);
 
         let decoded = decode_bytes_list(&encoded).unwrap();
@@ -190,7 +196,12 @@ mod tests {
         let input: Vec<Vec<u8>> = vec![];
         let expected = vec![0xc0];
 
-        let encoded = encode_bytes_list(&input.iter().map(|v| v.as_slice()).collect::<Vec<_>>());
+        let encoded = encode_bytes_list(
+            &input
+                .iter()
+                .map(std::vec::Vec::as_slice)
+                .collect::<Vec<_>>(),
+        );
         assert_eq!(encoded, expected);
 
         let decoded = decode_bytes_list(&encoded).unwrap();
@@ -215,7 +226,12 @@ mod tests {
             expected.extend_from_slice(LOREM_OUT);
         }
 
-        let encoded = encode_bytes_list(&input.iter().map(|v| v.as_slice()).collect::<Vec<_>>());
+        let encoded = encode_bytes_list(
+            &input
+                .iter()
+                .map(std::vec::Vec::as_slice)
+                .collect::<Vec<_>>(),
+        );
         assert_eq!(encoded, expected);
 
         let decoded = decode_bytes_list(&encoded).unwrap();
@@ -289,7 +305,7 @@ mod tests {
             let encoded = encode_bytes(&buf);
             let decoded = decode_bytes(&encoded).unwrap();
 
-            assert_eq!(decoded, buf, "Failed for length {}", length);
+            assert_eq!(decoded, buf, "Failed for length {length}");
         }
     }
 
@@ -304,7 +320,12 @@ mod tests {
     #[test]
     fn test_roundtrip_bytes_list() {
         let items = vec![b"foo".to_vec(), b"bar".to_vec(), b"baz".to_vec()];
-        let encoded = encode_bytes_list(&items.iter().map(|v| v.as_slice()).collect::<Vec<_>>());
+        let encoded = encode_bytes_list(
+            &items
+                .iter()
+                .map(std::vec::Vec::as_slice)
+                .collect::<Vec<_>>(),
+        );
         let decoded = decode_bytes_list(&encoded).unwrap();
         assert_eq!(decoded, items);
     }

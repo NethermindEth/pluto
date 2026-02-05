@@ -4,7 +4,7 @@ use serde_with::serde_as;
 
 use crate::helpers::{EthHex, TimestampSeconds};
 
-/// BuilderRegistration defines pre-generated signed validator builder
+/// `BuilderRegistration` defines pre-generated signed validator builder
 /// registration to be sent to builder network.
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

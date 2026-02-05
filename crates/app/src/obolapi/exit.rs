@@ -169,7 +169,7 @@ pub struct PartialExitRequest {
     pub signature: Vec<u8>,
 }
 
-/// DTO for JSON serialization of PartialExitRequest.
+/// DTO for JSON serialization of `PartialExitRequest`.
 #[derive(Debug, Serialize, Deserialize)]
 struct PartialExitRequestDto {
     #[serde(flatten)]
@@ -409,20 +409,17 @@ impl Client {
 
 /// Returns the partial exit Obol API URL for a given lock hash.
 fn submit_partial_exit_url(lock_hash: &str) -> String {
-    format!("/exp/partial_exits/{}", lock_hash)
+    format!("/exp/partial_exits/{lock_hash}")
 }
 
 /// Returns the delete partial exit Obol API URL.
 fn delete_partial_exit_url(val_pubkey: &str, lock_hash: &str, share_index: u64) -> String {
-    format!(
-        "/exp/partial_exits/{}/{}/{}",
-        lock_hash, share_index, val_pubkey
-    )
+    format!("/exp/partial_exits/{lock_hash}/{share_index}/{val_pubkey}")
 }
 
 /// Returns the full exit Obol API URL.
 fn fetch_full_exit_url(val_pubkey: &str, lock_hash: &str, share_index: u64) -> String {
-    format!("/exp/exit/{}/{}/{}", lock_hash, share_index, val_pubkey)
+    format!("/exp/exit/{lock_hash}/{share_index}/{val_pubkey}")
 }
 
 #[cfg(test)]
@@ -460,7 +457,7 @@ mod tests {
             let len = bytes.len();
             let arr: [u8; 32] = bytes
                 .try_into()
-                .map_err(|_| format!("expected 32 bytes, got {}", len))?;
+                .map_err(|_| format!("expected 32 bytes, got {len}"))?;
             Ok(arr)
         }
 

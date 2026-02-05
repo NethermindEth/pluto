@@ -139,6 +139,7 @@ fn supported_peer_version(version: &str, supported: &[SemVer]) -> Result<(), Pro
 
 impl ProtocolState {
     /// Creates a new protocol state.
+    #[must_use]
     pub fn new(peer_id: PeerId, local_info: LocalPeerInfo) -> Self {
         let name = pluto_p2p::name::peer_name(&peer_id);
         let mut nicknames = HashMap::new();
@@ -395,7 +396,7 @@ mod tests {
         assert!(GIT_HASH_RE.is_match("abc1234"));
     }
 
-    /// Helper to create a PeerInfo with minimal fields
+    /// Helper to create a `PeerInfo` with minimal fields
     fn make_minimal_peerinfo() -> PeerInfo {
         PeerInfo {
             pluto_version: "v1.0.0".to_string(),
@@ -408,7 +409,7 @@ mod tests {
         }
     }
 
-    /// Helper to create a PeerInfo with git hash
+    /// Helper to create a `PeerInfo` with git hash
     fn make_with_git_hash_peerinfo() -> PeerInfo {
         PeerInfo {
             pluto_version: "v1.7.1".to_string(),
@@ -421,7 +422,7 @@ mod tests {
         }
     }
 
-    /// Helper to create a full PeerInfo with all fields
+    /// Helper to create a full `PeerInfo` with all fields
     fn make_full_peerinfo() -> PeerInfo {
         PeerInfo {
             pluto_version: "v1.7.1".to_string(),
@@ -440,7 +441,7 @@ mod tests {
         }
     }
 
-    /// Helper to create a PeerInfo with builder disabled
+    /// Helper to create a `PeerInfo` with builder disabled
     fn make_builder_disabled_peerinfo() -> PeerInfo {
         PeerInfo {
             pluto_version: "v1.5.0".to_string(),
@@ -459,7 +460,7 @@ mod tests {
         }
     }
 
-    /// Helper to create a PeerInfo with empty optional fields
+    /// Helper to create a `PeerInfo` with empty optional fields
     fn make_empty_optional_peerinfo() -> PeerInfo {
         PeerInfo {
             pluto_version: "v1.6.0".to_string(),

@@ -1,4 +1,4 @@
-/// BCast protobuf definitions.
+/// `BCast` protobuf definitions.
 pub mod bcast;
 /// Frost protobuf definitions.
 pub mod frost;

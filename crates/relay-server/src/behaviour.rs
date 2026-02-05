@@ -21,12 +21,14 @@ pub struct RelayServerBehaviour {
 }
 
 impl RelayServerBehaviour {
-    /// Creates a new RelayServerBehaviour with default configuration.
+    /// Creates a new `RelayServerBehaviour` with default configuration.
+    #[must_use]
     pub fn new(key: &Keypair) -> Self {
         RelayServerBehaviourBuilder::default().build(key)
     }
 
-    /// Returns a new builder for configuring a RelayServerBehaviour.
+    /// Returns a new builder for configuring a `RelayServerBehaviour`.
+    #[must_use]
     pub fn builder() -> RelayServerBehaviourBuilder {
         RelayServerBehaviourBuilder::default()
     }
@@ -57,11 +59,13 @@ impl Default for RelayServerBehaviourBuilder {
 
 impl RelayServerBehaviourBuilder {
     /// Creates a new builder with default configuration.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Sets the connection gater.
+    #[must_use]
     pub fn with_gater(mut self, gater: ConnGater) -> Self {
         self.gater = Some(gater);
         self
@@ -74,6 +78,7 @@ impl RelayServerBehaviourBuilder {
     }
 
     /// Sets the relay server configuration.
+    #[must_use]
     pub fn with_relay_config(mut self, config: relay::Config) -> Self {
         self.relay_config = Some(config);
         self
@@ -86,6 +91,7 @@ impl RelayServerBehaviourBuilder {
     }
 
     /// Builds the [`RelayServerBehaviour`] with the provided keypair.
+    #[must_use]
     pub fn build(self, key: &Keypair) -> RelayServerBehaviour {
         RelayServerBehaviour {
             relay: relay::Behaviour::new(

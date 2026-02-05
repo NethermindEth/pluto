@@ -47,22 +47,23 @@ impl Display for DutyType {
         // safe to unwrap because we know the duty type is valid
         let v = serde_json::to_value(self).expect("failed to serialize duty type");
         if let Some(s) = v.as_str() {
-            write!(f, "{}", s)
+            write!(f, "{s}")
         } else {
             // fallback for non-string variants (structs, numbers, etc.)
-            write!(f, "{}", v)
+            write!(f, "{v}")
         }
     }
 }
 
 impl DutyType {
     /// Returns true if the duty type is valid.
+    #[must_use]
     pub fn is_valid(&self) -> bool {
         !matches!(self, DutyType::Unknown | DutyType::DutySentinel(_))
     }
 }
 
-/// SlotNumber struct
+/// `SlotNumber` struct
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SlotNumber(u64);
 
@@ -86,16 +87,19 @@ impl From<SlotNumber> for u64 {
 
 impl SlotNumber {
     /// Create a new slot number.
+    #[must_use]
     pub fn new(slot: u64) -> Self {
         SlotNumber(slot)
     }
 
     /// Inner slot number.
+    #[must_use]
     pub fn inner(&self) -> u64 {
         self.0
     }
 
     /// Next slot number.
+    #[must_use]
     pub fn next(&self) -> Self {
         Self::new(self.inner().saturating_add(1))
     }
@@ -118,71 +122,85 @@ impl Display for Duty {
 
 impl Duty {
     /// Create a new duty.
+    #[must_use]
     pub fn new(slot: SlotNumber, duty_type: DutyType) -> Self {
         Self { slot, duty_type }
     }
 
     /// Create a new attester duty.
+    #[must_use]
     pub fn new_attester_duty(slot: SlotNumber) -> Self {
         Self::new(slot, DutyType::Attester)
     }
 
     /// Create a new randao duty.
+    #[must_use]
     pub fn new_randao_duty(slot: SlotNumber) -> Self {
         Self::new(slot, DutyType::Randao)
     }
 
     /// Create a new voluntary exit duty.
+    #[must_use]
     pub fn new_voluntary_exit_duty(slot: SlotNumber) -> Self {
         Self::new(slot, DutyType::Exit)
     }
 
     /// Create a new proposer duty.
+    #[must_use]
     pub fn new_proposer_duty(slot: SlotNumber) -> Self {
         Self::new(slot, DutyType::Proposer)
     }
 
     /// Create a new builder proposer duty.
+    #[must_use]
     pub fn new_builder_proposer_duty(slot: SlotNumber) -> Self {
         Self::new(slot, DutyType::BuilderProposer)
     }
 
     /// Create a new builder registration duty.
+    #[must_use]
     pub fn new_builder_registration_duty(slot: SlotNumber) -> Self {
         Self::new(slot, DutyType::BuilderRegistration)
     }
 
     /// Create a new sync contribution duty.
+    #[must_use]
     pub fn new_sync_contribution_duty(slot: SlotNumber) -> Self {
         Self::new(slot, DutyType::SyncContribution)
     }
 
     /// Create a new signature duty.
+    #[must_use]
     pub fn new_signature_duty(slot: SlotNumber) -> Self {
         Self::new(slot, DutyType::Signature)
     }
 
     /// Create a new prepare aggregator duty.
+    #[must_use]
     pub fn new_prepare_aggregator_duty(slot: SlotNumber) -> Self {
         Self::new(slot, DutyType::PrepareAggregator)
     }
 
     /// Create a new aggregator duty.
+    #[must_use]
     pub fn new_aggregator_duty(slot: SlotNumber) -> Self {
         Self::new(slot, DutyType::Aggregator)
     }
 
     /// Create a new sync message duty.
+    #[must_use]
     pub fn new_sync_message_duty(slot: SlotNumber) -> Self {
         Self::new(slot, DutyType::SyncMessage)
     }
 
     /// Create a new prepare sync contribution duty.
+    #[must_use]
     pub fn new_prepare_sync_contribution_duty(slot: SlotNumber) -> Self {
         Self::new(slot, DutyType::PrepareSyncContribution)
     }
 
     /// Create a new info sync duty.
+    #[must_use]
     pub fn new_info_sync_duty(slot: SlotNumber) -> Self {
         Self::new(slot, DutyType::InfoSync)
     }
@@ -271,11 +289,13 @@ pub enum PubKeyError {
 
 impl PubKey {
     /// Create a new public key.
+    #[must_use]
     pub fn new(pk: [u8; PK_LEN]) -> Self {
         PubKey(pk)
     }
 
-    /// Returns logging-friendly abbreviated form: "b82_97f"
+    /// Returns logging-friendly abbreviated form: "`b82_97f`"
+    #[must_use]
     pub fn abbreviated(&self) -> String {
         let hex = hex::encode(self.0);
         format!("{}_{}", &hex[0..3], &hex[93..96])
@@ -301,7 +321,7 @@ impl Display for PubKey {
     }
 }
 
-/// Implement AsRef<[u8]> for PubKey to allow for easy conversion to bytes.
+/// Implement `AsRef`<[u8]> for `PubKey` to allow for easy conversion to bytes.
 impl AsRef<[u8]> for PubKey {
     fn as_ref(&self) -> &[u8] {
         &self.0
@@ -336,11 +356,13 @@ where
     T: Clone + Serialize + StdDebug,
 {
     /// Create a new duty definition set.
+    #[must_use]
     pub fn new() -> Self {
         Self(HashMap::default())
     }
 
     /// Get a duty definition by duty type.
+    #[must_use]
     pub fn get(&self, duty_type: &DutyType) -> Option<&DutyDefinition<T>> {
         self.0.get(duty_type)
     }
@@ -356,6 +378,7 @@ where
     }
 
     /// Inner duty definition set.
+    #[must_use]
     pub fn inner(&self) -> &HashMap<DutyType, DutyDefinition<T>> {
         &self.0
     }
@@ -399,11 +422,13 @@ where
     T: Clone + Serialize + StdDebug,
 {
     /// Create a new unsigned data set.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Get an unsigned data by duty type.
+    #[must_use]
     pub fn get(&self, duty_type: &DutyType) -> Option<&UnsignedData<T>> {
         self.0.get(duty_type)
     }
@@ -419,6 +444,7 @@ where
     }
 
     /// Inner unsigned data set.
+    #[must_use]
     pub fn inner(&self) -> &HashMap<DutyType, UnsignedData<T>> {
         &self.0
     }
@@ -436,6 +462,7 @@ pub struct Signature(pub(crate) [u8; SIG_LEN]);
 
 impl Signature {
     /// Create a new signature.
+    #[must_use]
     pub fn new(signature: [u8; SIG_LEN]) -> Self {
         Signature(signature)
     }
@@ -449,18 +476,18 @@ pub trait SignedData: Clone + Serialize + StdDebug {
     /// signature returns the signed duty data's signature.
     fn signature(&self) -> Signature;
 
-    /// set_signature returns a copy of signed duty data with the signature
+    /// `set_signature` returns a copy of signed duty data with the signature
     /// replaced.
     fn set_signature(&mut self, signature: Signature) -> Result<(), Self::Error>;
 
-    /// message_root returns the message root for the unsigned data.
+    /// `message_root` returns the message root for the unsigned data.
     fn message_root(&self) -> [u8; 32];
 }
 
 // todo: add Eth2SignedData type
 // https://github.com/ObolNetwork/charon/blob/b3008103c5429b031b63518195f4c49db4e9a68d/core/types.go#L396
 
-/// ParSignedData is a partially signed duty data only signed by a single
+/// `ParSignedData` is a partially signed duty data only signed by a single
 /// threshold BLS share.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParSignedData<T: SignedData> {
@@ -484,7 +511,7 @@ where
     }
 }
 
-/// ParSignedDataSet is a set of partially signed duty data only signed by a
+/// `ParSignedDataSet` is a set of partially signed duty data only signed by a
 /// single threshold BLS share.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParSignedDataSet<T: SignedData>(HashMap<PubKey, ParSignedData<T>>);
@@ -503,11 +530,13 @@ where
     T: SignedData,
 {
     /// Create a new partially signed data set.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Get a partially signed data by public key.
+    #[must_use]
     pub fn get(&self, pub_key: &PubKey) -> Option<&ParSignedData<T>> {
         self.inner().get(pub_key)
     }
@@ -523,6 +552,7 @@ where
     }
 
     /// Inner partially signed data set.
+    #[must_use]
     pub fn inner(&self) -> &HashMap<PubKey, ParSignedData<T>> {
         &self.0
     }
@@ -533,7 +563,7 @@ where
     }
 }
 
-/// SignedDataSet is a set of signed duty data.
+/// `SignedDataSet` is a set of signed duty data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedDataSet<T: SignedData>(HashMap<PubKey, T>);
 
@@ -551,11 +581,13 @@ where
     T: SignedData,
 {
     /// Create a new signed data set.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Get a signed data by public key.
+    #[must_use]
     pub fn get(&self, pub_key: &PubKey) -> Option<&T> {
         self.0.get(pub_key)
     }
@@ -571,6 +603,7 @@ where
     }
 
     /// Inner signed data set.
+    #[must_use]
     pub fn inner(&self) -> &HashMap<PubKey, T> {
         &self.0
     }
@@ -599,6 +632,7 @@ pub struct Slot {
 
 impl Slot {
     /// Get the epoch of the slot
+    #[must_use]
     pub fn epoch(&self) -> u64 {
         #[allow(clippy::arithmetic_side_effects)]
         self.slot.inner().saturating_div(self.slots_per_epoch)
@@ -606,6 +640,7 @@ impl Slot {
 
     /// Returns true if this is the last slot in the epoch.
     #[allow(clippy::arithmetic_side_effects)]
+    #[must_use]
     pub fn last_in_epoch(&self) -> bool {
         self.slot.inner().wrapping_rem(self.slots_per_epoch)
             == self.slots_per_epoch.saturating_sub(1)
@@ -613,12 +648,14 @@ impl Slot {
 
     /// Returns true if this is the first slot in the epoch.
     #[allow(clippy::arithmetic_side_effects)]
+    #[must_use]
     pub fn first_in_epoch(&self) -> bool {
         self.slot.inner().wrapping_rem(self.slots_per_epoch) == 0
     }
 
     /// Returns the next slot
     #[allow(clippy::arithmetic_side_effects)]
+    #[must_use]
     pub fn next_slot(&self) -> Slot {
         Slot {
             slot: self.slot.next(),

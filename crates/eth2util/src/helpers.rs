@@ -81,6 +81,7 @@ pub fn checksum_address(address: impl AsRef<str>) -> Result<String> {
 }
 
 /// Returns the EIP55-compliant 0xhex ethereum address of the public key.
+#[must_use]
 pub fn public_key_to_address(pubkey: &PublicKey) -> String {
     // Alloy expects the 64-byte uncompressed public key without the 0x04 prefix
     let uncompressed = pubkey.to_encoded_point(false);
@@ -175,7 +176,7 @@ mod tests {
 
         for addr in addrs {
             let result = checksum_address(addr);
-            assert!(result.is_err(), "Expected error for address: {}", addr);
+            assert!(result.is_err(), "Expected error for address: {addr}");
         }
     }
 
@@ -223,7 +224,7 @@ mod tests {
             },
             TestCase {
                 name: "empty",
-                headers: vec!["".to_string()],
+                headers: vec![String::new()],
                 valid: false,
             },
             TestCase {
@@ -336,20 +337,21 @@ mod tests {
 
         for tt in tests {
             let parsed = parse_http_headers(&tt.headers);
-            if parsed.is_err() {
-                panic!(
-                    "Test '{}': Header ({:?}) failed to parse",
-                    tt.name, tt.headers
-                );
-            }
+            assert!(
+                !parsed.is_err(),
+                "Test '{}': Header ({:?}) failed to parse",
+                tt.name,
+                tt.headers
+            );
 
             let parsed = parsed.unwrap();
-            if parsed != tt.want {
-                panic!(
-                    "Test '{}': Headers badly parsed, have {:?}, want {:?}",
-                    tt.name, parsed, tt.want
-                );
-            }
+            assert!(
+                !(parsed != tt.want),
+                "Test '{}': Headers badly parsed, have {:?}, want {:?}",
+                tt.name,
+                parsed,
+                tt.want
+            )
         }
     }
 }

@@ -15,7 +15,7 @@ pub(crate) fn is_quic_addr(addr: &Multiaddr) -> bool {
 
 /// Returns true if the multiaddr is a public address.
 pub(crate) fn is_public_addr(addr: &Multiaddr) -> bool {
-    for protocol in addr.iter() {
+    for protocol in addr {
         match protocol {
             Protocol::Ip4(ip) => {
                 return !ip.is_private()
@@ -37,7 +37,7 @@ pub(crate) fn extract_ip_and_tcp_port(addr: &Multiaddr) -> Option<(Ipv4Addr, u16
     let mut ip: Option<Ipv4Addr> = None;
     let mut port: Option<u16> = None;
 
-    for protocol in addr.iter() {
+    for protocol in addr {
         match protocol {
             Protocol::Ip4(i) => ip = Some(i),
             Protocol::Tcp(p) => port = Some(p),
@@ -56,7 +56,7 @@ pub(crate) fn extract_ip_and_udp_port(addr: &Multiaddr) -> Option<(Ipv4Addr, u16
     let mut ip: Option<Ipv4Addr> = None;
     let mut port: Option<u16> = None;
 
-    for protocol in addr.iter() {
+    for protocol in addr {
         match protocol {
             Protocol::Ip4(i) => ip = Some(i),
             Protocol::Udp(p) => port = Some(p),

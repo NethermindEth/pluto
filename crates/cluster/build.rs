@@ -16,7 +16,7 @@ fn main() -> Result<()> {
         .out_dir(&out_dir)
         .compile_protos(&[proto_file], &["src/"])?;
 
-    println!("cargo:rerun-if-changed={}", proto_file);
+    println!("cargo:rerun-if-changed={proto_file}");
     println!("cargo:rerun-if-changed=build.rs");
 
     Ok(())

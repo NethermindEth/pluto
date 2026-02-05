@@ -65,6 +65,7 @@ pub use handler::Success;
 pub const PROTOCOL_NAME: StreamProtocol = StreamProtocol::new("/charon/peerinfo/2.0.0");
 
 /// Returns the supported protocols of this package in order of precedence.
+#[must_use]
 pub fn protocols() -> Vec<StreamProtocol> {
     vec![PROTOCOL_NAME]
 }

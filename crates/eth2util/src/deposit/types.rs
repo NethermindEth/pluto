@@ -18,8 +18,8 @@ pub type Root = [u8; 32];
 /// Withdrawal credentials type (32 bytes).
 pub type WithdrawalCredentials = [u8; 32];
 
-/// DepositMessage represents the deposit message to be signed.
-/// See: https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#depositmessage
+/// `DepositMessage` represents the deposit message to be signed.
+/// See: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#depositmessage>
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash)]
 pub struct DepositMessage {
     /// Validator's BLS public key (48 bytes)
@@ -30,8 +30,8 @@ pub struct DepositMessage {
     pub amount: Gwei,
 }
 
-/// DepositData defines the deposit data to activate a validator.
-/// See: https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#depositdata
+/// `DepositData` defines the deposit data to activate a validator.
+/// See: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#depositdata>
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash)]
 pub struct DepositData {
     /// Validator's BLS public key (48 bytes)
@@ -44,8 +44,8 @@ pub struct DepositData {
     pub signature: Signature,
 }
 
-/// ForkData is used for computing the deposit domain.
-/// See: https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#forkdata
+/// `ForkData` is used for computing the deposit domain.
+/// See: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#forkdata>
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash)]
 pub(crate) struct ForkData {
     /// Current fork version
@@ -54,8 +54,8 @@ pub(crate) struct ForkData {
     pub genesis_validators_root: Root,
 }
 
-/// SigningData is used for computing the signing root.
-/// See: https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#signingdata
+/// `SigningData` is used for computing the signing root.
+/// See: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#signingdata>
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash)]
 pub(crate) struct SigningData {
     /// Object root being signed
@@ -64,7 +64,7 @@ pub(crate) struct SigningData {
     pub domain: Domain,
 }
 
-/// DepositDataJson is the json representation of Deposit Data.
+/// `DepositDataJson` is the json representation of Deposit Data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DepositDataJson {
     /// Validator public key as hex string (without 0x prefix)

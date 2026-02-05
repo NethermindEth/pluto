@@ -5,8 +5,8 @@ use std::borrow::Cow;
 
 use crate::{definition::ADDRESS_LEN, ssz::SSZError, ssz_hasher::HashWalker};
 
-/// EthHex represents byte slices that are json formatted as 0x prefixed hex.
-/// Can be used both as a standalone type and with serde_as.
+/// `EthHex` represents byte slices that are json formatted as 0x prefixed hex.
+/// Can be used both as a standalone type and with `serde_as`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EthHex(Vec<u8>);
 
@@ -63,12 +63,14 @@ where
 
 // Helper methods and conversions
 impl EthHex {
-    /// Create a new EthHex from a byte slice.
+    /// Create a new `EthHex` from a byte slice.
+    #[must_use]
     pub fn new(bytes: Vec<u8>) -> Self {
         Self(bytes)
     }
 
     /// Inner bytes.
+    #[must_use]
     pub fn inner(&self) -> &Vec<u8> {
         &self.0
     }
@@ -99,7 +101,7 @@ impl TryFrom<&str> for EthHex {
     }
 }
 
-/// TimestampSeconds represents a timestamp in seconds since the Unix epoch.
+/// `TimestampSeconds` represents a timestamp in seconds since the Unix epoch.
 pub struct TimestampSeconds;
 
 impl SerializeAs<DateTime<Utc>> for TimestampSeconds {
@@ -173,7 +175,7 @@ pub fn put_bytes_n<H: HashWalker>(hh: &mut H, bytes: &[u8], n: usize) -> Result<
     if bytes.len() > n {
         return Err(SSZError::<H>::IncorrectListSize {
             namespace: "put_bytes_n",
-            field: "".to_string(),
+            field: String::new(),
             actual: bytes.len(),
             expected: n,
         });
@@ -196,6 +198,7 @@ pub fn put_hex_bytes_20<H: HashWalker>(hh: &mut H, address: &str) -> Result<(), 
 
 /// `left_pad` returns the byte slice left padded with zero to ensure a length
 /// of at least len.
+#[must_use]
 pub fn left_pad(bytes: &[u8], len: usize) -> Vec<u8> {
     if bytes.len() >= len {
         return bytes.to_vec();
@@ -207,6 +210,7 @@ pub fn left_pad(bytes: &[u8], len: usize) -> Vec<u8> {
     padded
 }
 /// `to_0x_hex` converts a byte slice to a 0x prefixed hex string.
+#[must_use]
 pub fn to_0x_hex(bytes: &[u8]) -> String {
     if bytes.is_empty() {
         return String::new();

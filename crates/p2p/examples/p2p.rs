@@ -37,8 +37,8 @@ pub struct Args {
 async fn main() -> Result<()> {
     let key = k256::SecretKey::random(&mut OsRng);
     let mut p2p: Node<_> = Node::new(
-        P2PConfig::default(),
-        key.clone(),
+        &P2PConfig::default(),
+        &key,
         false,
         NodeType::QUIC,
         PlutoMdnsBehaviour::new,

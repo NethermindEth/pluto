@@ -42,7 +42,7 @@ pub fn run(args: CreateEnrArgs) -> Result<()> {
 
     let mut writer = io::stdout();
     writeln!(writer, "Created ENR private key: {}", key_path.display())?;
-    writeln!(writer, "{}", record)?;
+    writeln!(writer, "{record}")?;
     write_enr_warning(&mut writer, &key_path)?;
 
     Ok(())

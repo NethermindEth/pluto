@@ -252,22 +252,22 @@ fn aggregate_public_keys(pks: &[BlstPublicKey]) -> Result<BlstPublicKey, Error> 
     unsafe {
         // Convert first key to projective form
         let first_affine: &blst::blst_p1_affine = (&pks[0]).into();
-        blst::blst_p1_from_affine(&mut agg, first_affine);
+        blst::blst_p1_from_affine(&raw mut agg, first_affine);
 
         for pk in pks.iter().skip(1) {
             let pk_affine: &blst::blst_p1_affine = pk.into();
-            blst::blst_p1_add_or_double_affine(&mut agg, &agg, pk_affine);
+            blst::blst_p1_add_or_double_affine(&raw mut agg, &raw const agg, pk_affine);
         }
 
         // Convert back to affine
         let mut agg_affine = blst::blst_p1_affine::default();
-        blst::blst_p1_to_affine(&mut agg_affine, &agg);
+        blst::blst_p1_to_affine(&raw mut agg_affine, &raw const agg);
         Ok(BlstPublicKey::from(agg_affine))
     }
 }
 
 /// Evaluate polynomial at point x
-/// poly(x) = a_0 + a_1*x + a_2*x^2 + ... + a_n*x^n
+/// poly(x) = `a_0` + `a_1`*x + `a_2`*x^2 + ... + `a_n`*x^n
 fn evaluate_polynomial(poly: &[BlstSecretKey], x: Index) -> Result<BlstSecretKey, Error> {
     if poly.is_empty() {
         return Err(Error::PolynomialIsEmpty);
@@ -295,7 +295,7 @@ fn evaluate_polynomial(poly: &[BlstSecretKey], x: Index) -> Result<BlstSecretKey
 }
 
 /// Lagrange interpolation of secret keys at x=0
-/// Recovers f(0) from points (x_i, y_i) where y_i are secret keys
+/// Recovers f(0) from points (`x_i`, `y_i`) where `y_i` are secret keys
 fn lagrange_interpolate_secret(
     indices: &[Index],
     shares: &[BlstSecretKey],
@@ -318,7 +318,7 @@ fn lagrange_interpolate_secret(
 }
 
 /// Lagrange interpolation of signatures at x=0
-/// Recovers f(0) from points (x_i, σ_i) where σ_i are signatures
+/// Recovers f(0) from points (`x_i`, `σ_i`) where `σ_i` are signatures
 fn lagrange_interpolate_signature(
     indices: &[Index],
     signatures: &[BlstSignature],
@@ -337,23 +337,28 @@ fn lagrange_interpolate_signature(
     unsafe {
         // Convert first scaled signature to projective
         let first_affine: &blst::blst_p2_affine = (&first_sig_scaled).into();
-        blst::blst_p2_from_affine(&mut result_p2, first_affine);
+        blst::blst_p2_from_affine(&raw mut result_p2, first_affine);
 
         for i in 1..signatures.len() {
             let sig_scaled = signature_mult(&signatures[i], &coeffs[i])?;
             let sig_affine: &blst::blst_p2_affine = (&sig_scaled).into();
-            blst::blst_p2_add_or_double_affine(&mut result_p2, &result_p2, sig_affine);
+            blst::blst_p2_add_or_double_affine(
+                &raw mut result_p2,
+                &raw const result_p2,
+                sig_affine,
+            );
         }
 
         // Convert back to affine
         let mut result_affine = blst::blst_p2_affine::default();
-        blst::blst_p2_to_affine(&mut result_affine, &result_p2);
+        blst::blst_p2_to_affine(&raw mut result_affine, &raw const result_p2);
         Ok(BlstSignature::from(result_affine))
     }
 }
 
 /// Compute Lagrange coefficients for interpolation at x=0
-/// λ_i = ∏_{j≠i} (0 - x_j) / (x_i - x_j) = ∏_{j≠i} x_j / (x_j - x_i)
+/// `λ_i` = ∏_{j≠i} (0 - `x_j`) / (`x_i` - `x_j`) = ∏_{j≠i} `x_j` / (`x_j` -
+/// `x_i`)
 fn compute_lagrange_coefficients(indices: &[Index]) -> Result<Vec<blst::blst_scalar>, Error> {
     // Check if indices are unique
     if indices.len() != indices.iter().collect::<HashSet<_>>().len() {
@@ -401,7 +406,7 @@ fn compute_lagrange_coefficients(indices: &[Index]) -> Result<Vec<blst::blst_sca
 fn scalar_from_u64(val: u64) -> blst::blst_scalar {
     let mut scalar = blst::blst_scalar::default();
     unsafe {
-        blst::blst_scalar_from_uint64(&mut scalar, &val);
+        blst::blst_scalar_from_uint64(&raw mut scalar, &raw const val);
     }
     scalar
 }
@@ -437,11 +442,16 @@ fn signature_mult(sig: &BlstSignature, scalar: &blst::blst_scalar) -> Result<Bls
     unsafe {
         // Convert affine to projective
         let sig_affine: &blst::blst_p2_affine = sig.into();
-        blst::blst_p2_from_affine(&mut sig_proj, sig_affine);
+        blst::blst_p2_from_affine(&raw mut sig_proj, sig_affine);
         // Multiply
-        blst::blst_p2_mult(&mut result_p2, &sig_proj, scalar.b.as_ptr(), 255);
+        blst::blst_p2_mult(
+            &raw mut result_p2,
+            &raw const sig_proj,
+            scalar.b.as_ptr(),
+            255,
+        );
         // Convert back to affine
-        blst::blst_p2_to_affine(&mut result_affine, &result_p2);
+        blst::blst_p2_to_affine(&raw mut result_affine, &raw const result_p2);
     }
 
     Ok(BlstSignature::from(result_affine))
@@ -451,7 +461,7 @@ fn signature_mult(sig: &BlstSignature, scalar: &blst::blst_scalar) -> Result<Bls
 fn scalar_add(a: &blst::blst_scalar, b: &blst::blst_scalar) -> Result<blst::blst_scalar, Error> {
     let mut result = blst::blst_scalar::default();
     unsafe {
-        if blst::blst_sk_add_n_check(&mut result, a, b) {
+        if blst::blst_sk_add_n_check(&raw mut result, a, b) {
             Ok(result)
         } else {
             Err(Error::FailedToAddScalars)
@@ -466,7 +476,7 @@ fn scalar_mult_scalars(
 ) -> Result<blst::blst_scalar, Error> {
     let mut result = blst::blst_scalar::default();
     unsafe {
-        if blst::blst_sk_mul_n_check(&mut result, a, b) {
+        if blst::blst_sk_mul_n_check(&raw mut result, a, b) {
             Ok(result)
         } else {
             Err(Error::FailedToMultiplyScalars)
@@ -487,13 +497,13 @@ fn scalar_negate(a: &blst::blst_scalar) -> Result<blst::blst_scalar, Error> {
         let mut a_fr = blst::blst_fr::default();
         let mut zero_fr = blst::blst_fr::default();
 
-        blst::blst_fr_from_scalar(&mut a_fr, a);
-        blst::blst_fr_from_scalar(&mut zero_fr, &zero);
+        blst::blst_fr_from_scalar(&raw mut a_fr, a);
+        blst::blst_fr_from_scalar(&raw mut zero_fr, &raw const zero);
 
         let mut result_fr = blst::blst_fr::default();
-        blst::blst_fr_sub(&mut result_fr, &zero_fr, &a_fr);
+        blst::blst_fr_sub(&raw mut result_fr, &raw const zero_fr, &raw const a_fr);
 
-        blst::blst_scalar_from_fr(&mut result_scalar, &result_fr);
+        blst::blst_scalar_from_fr(&raw mut result_scalar, &raw const result_fr);
     }
 
     Ok(result_scalar)
@@ -512,7 +522,7 @@ fn scalar_div(
     let mut inv_scalar = blst::blst_scalar::default();
 
     unsafe {
-        blst::blst_sk_inverse(&mut inv_scalar, denominator);
+        blst::blst_sk_inverse(&raw mut inv_scalar, denominator);
     }
 
     scalar_mult_scalars(numerator, &inv_scalar)
@@ -554,7 +564,7 @@ mod tests {
 
         // Create signatures for each share
         let mut signatures = HashMap::new();
-        for (idx, key) in shares.iter() {
+        for (idx, key) in &shares {
             let signature = blst.sign(key, data).unwrap();
             signatures.insert(*idx, signature);
         }
@@ -659,7 +669,7 @@ mod tests {
         // Split into shares and sign with each
         let shares = blst.threshold_split(&secret, 5, 3).unwrap();
         let mut signatures = HashMap::new();
-        for (idx, key) in shares.iter() {
+        for (idx, key) in &shares {
             let signature = blst.sign(key, data).unwrap();
             signatures.insert(*idx, signature);
         }

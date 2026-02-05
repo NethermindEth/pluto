@@ -17,7 +17,7 @@ impl Termination for ExitResult {
         match self.0 {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
-                eprintln!("Error: {}", err);
+                eprintln!("Error: {err}");
                 ExitCode::FAILURE
             }
         }

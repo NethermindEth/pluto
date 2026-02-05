@@ -5,16 +5,16 @@ use sha3::{Digest, Keccak256};
 /// Primitive is a type alias for a string.
 pub type Primitive = String;
 
-/// PRIMITIVE_STRING is the string primitive type.
+/// `PRIMITIVE_STRING` is the string primitive type.
 pub const PRIMITIVE_STRING: &str = "string";
 
-/// PRIMITIVE_UINT64 is the uint64 primitive type.
+/// `PRIMITIVE_UINT64` is the uint64 primitive type.
 pub const PRIMITIVE_UINT256: &str = "uint256";
 
-/// TERMS_AND_CONDITION_TYPE_NAME is the terms and conditions type name.
+/// `TERMS_AND_CONDITION_TYPE_NAME` is the terms and conditions type name.
 pub const TERMS_AND_CONDITION_TYPE_NAME: &str = "TermsAndConditions";
 
-/// TypedData represents a dynamically typed EIP-712 message.
+/// `TypedData` represents a dynamically typed EIP-712 message.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedData {
     /// Domain of the EIP-712 message.
@@ -109,7 +109,7 @@ fn domain_to_type(domain: &Domain) -> Type {
 
 type Result<T> = std::result::Result<T, Eip712Error>;
 
-/// Eip712Error is the error type for EIP-712 errors.
+/// `Eip712Error` is the error type for EIP-712 errors.
 #[derive(Debug, thiserror::Error)]
 pub enum Eip712Error {
     /// Unsupported field type.

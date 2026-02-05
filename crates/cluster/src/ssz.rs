@@ -6,7 +6,10 @@ use crate::{
     lock::Lock,
     registration::{BuilderRegistration, Registration},
     ssz_hasher::{HashWalker, Hasher, HasherError},
-    version::{ZERO_NONCE, versions::*},
+    version::{
+        ZERO_NONCE,
+        versions::{V1_0, V1_1, V1_2, V1_3, V1_4, V1_5, V1_6, V1_7, V1_8, V1_9, V1_10},
+    },
 };
 
 /// Maximum length of the ENR.
@@ -40,16 +43,16 @@ pub(crate) const SSZ_LEN_WITHDRAW_CREDS: usize = 32;
 /// Length of a public key.
 pub const SSZ_LEN_PUB_KEY: usize = 48;
 
-/// HashFunc is a function that hashes a definition
+/// `HashFunc` is a function that hashes a definition
 pub type HashFuncWithBool<T, H> = fn(&T, &mut H, bool) -> Result<(), SSZError<H>>;
 
-/// HashFuncWithVersion is a function that hashes a definition with a version.
+/// `HashFuncWithVersion` is a function that hashes a definition with a version.
 pub type HashFuncWithVersion<T, H> = fn(&T, &mut H, &str) -> Result<(), SSZError<H>>;
 
-/// HashFunc is a function that hashes a definition.
+/// `HashFunc` is a function that hashes a definition.
 pub type HashFunc<T, H> = fn(&T, &mut H) -> Result<(), SSZError<H>>;
 
-/// SSZError is an error type for SSZ errors.
+/// `SSZError` is an error type for SSZ errors.
 #[derive(Debug, thiserror::Error)]
 pub enum SSZError<H: HashWalker> {
     /// Invalid length
@@ -698,10 +701,10 @@ pub(crate) fn hash_validator_v1x5to7<H: HashWalker>(
     let deposit_hash_func = get_deposit_data_hash_func(version)?;
 
     // Field (2) 'DepositData' Composite
-    let deposit_data = if !validator.partial_deposit_data.is_empty() {
-        &validator.partial_deposit_data[0]
-    } else {
+    let deposit_data = if validator.partial_deposit_data.is_empty() {
         &DepositData::default()
+    } else {
+        &validator.partial_deposit_data[0]
     };
 
     deposit_hash_func(deposit_data, hh)?;

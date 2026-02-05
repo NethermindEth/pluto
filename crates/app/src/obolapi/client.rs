@@ -29,7 +29,7 @@ pub struct Client {
 }
 
 /// Options for configuring the Obol API client.
-#[derive(Debug, Default, Clone, Builder)]
+#[derive(Debug, Default, Clone, Copy, Builder)]
 pub struct ClientOptions {
     /// Optional HTTP request timeout override (defaults to 10 seconds).
     pub timeout: Option<Duration>,
@@ -37,7 +37,7 @@ pub struct ClientOptions {
 
 impl Client {
     /// Creates a new Obol API client.
-    pub fn new(url_str: &str, options: ClientOptions) -> Result<Self> {
+    pub fn new(url_str: &str, options: &ClientOptions) -> Result<Self> {
         let req_timeout = options.timeout.unwrap_or(DEFAULT_TIMEOUT);
 
         let http_client = reqwest::Client::builder().timeout(req_timeout).build()?;
@@ -46,7 +46,7 @@ impl Client {
         let normalized_url = if url_str.ends_with('/') {
             url_str.to_string()
         } else {
-            format!("{}/", url_str)
+            format!("{url_str}/")
         };
         let base_url = Url::parse(&normalized_url)?;
 
@@ -187,7 +187,7 @@ fn launchpad_url_path(lock: &Lock) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pluto_cluster::definition::Definition;
+    use pluto_cluster::definition::{Creator, Definition};
 
     fn test_lock_with_hash(hash: Vec<u8>) -> Lock {
         Lock {
@@ -198,13 +198,13 @@ mod tests {
                 timestamp: "2024-01-01T00:00:00Z".to_string(),
                 num_validators: 0,
                 threshold: 0,
-                dkg_algorithm: "".to_string(),
+                dkg_algorithm: String::new(),
                 fork_version: vec![],
                 operators: vec![],
-                creator: Default::default(),
+                creator: Creator::default(),
                 validator_addresses: vec![],
                 deposit_amounts: vec![],
-                consensus_protocol: "".to_string(),
+                consensus_protocol: String::new(),
                 target_gas_limit: 0,
                 compounding: false,
                 config_hash: vec![],
@@ -222,7 +222,7 @@ mod tests {
         assert!(
             Client::new(
                 "https://api.obol.tech",
-                ClientOptions::builder()
+                &ClientOptions::builder()
                     .timeout(Duration::from_secs(10))
                     .build()
             )
@@ -232,27 +232,27 @@ mod tests {
 
     #[test]
     fn test_new_client_invalid_url() {
-        assert!(Client::new("not-a-url", ClientOptions::default()).is_err());
+        assert!(Client::new("not-a-url", &ClientOptions::default()).is_err());
     }
 
     #[test]
     fn test_base_url_normalization() {
-        let c1 = Client::new("https://api.obol.tech", ClientOptions::default()).unwrap();
+        let c1 = Client::new("https://api.obol.tech", &ClientOptions::default()).unwrap();
         assert_eq!(c1.base_url.as_str(), "https://api.obol.tech/");
 
-        let c2 = Client::new("https://api.obol.tech/", ClientOptions::default()).unwrap();
+        let c2 = Client::new("https://api.obol.tech/", &ClientOptions::default()).unwrap();
         assert_eq!(c2.base_url.as_str(), "https://api.obol.tech/");
 
-        let c3 = Client::new("https://api.obol.tech/v1", ClientOptions::default()).unwrap();
+        let c3 = Client::new("https://api.obol.tech/v1", &ClientOptions::default()).unwrap();
         assert_eq!(c3.base_url.as_str(), "https://api.obol.tech/v1/");
 
-        let c4 = Client::new("https://api.obol.tech/v1/", ClientOptions::default()).unwrap();
+        let c4 = Client::new("https://api.obol.tech/v1/", &ClientOptions::default()).unwrap();
         assert_eq!(c4.base_url.as_str(), "https://api.obol.tech/v1/");
     }
 
     #[test]
     fn test_build_url_root_base() {
-        let client = Client::new("https://api.obol.tech", ClientOptions::default()).unwrap();
+        let client = Client::new("https://api.obol.tech", &ClientOptions::default()).unwrap();
         assert_eq!(
             client.build_url("definition").unwrap().as_str(),
             "https://api.obol.tech/definition"
@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn test_build_url_versioned_base() {
-        let client = Client::new("https://api.obol.tech/v1", ClientOptions::default()).unwrap();
+        let client = Client::new("https://api.obol.tech/v1", &ClientOptions::default()).unwrap();
         assert_eq!(
             client.build_url("definition").unwrap().as_str(),
             "https://api.obol.tech/v1/definition"
@@ -300,13 +300,13 @@ mod tests {
     fn test_launchpad_url_for_lock() {
         let lock = test_lock_with_hash(vec![0x12, 0x34, 0xab, 0xcd]);
 
-        let c1 = Client::new("https://api.obol.tech", ClientOptions::default()).unwrap();
+        let c1 = Client::new("https://api.obol.tech", &ClientOptions::default()).unwrap();
         assert_eq!(
             c1.launchpad_url_for_lock(&lock).unwrap(),
             "https://api.obol.tech/lock/0x1234ABCD/launchpad"
         );
 
-        let c2 = Client::new("https://api.obol.tech/v1", ClientOptions::default()).unwrap();
+        let c2 = Client::new("https://api.obol.tech/v1", &ClientOptions::default()).unwrap();
         assert_eq!(
             c2.launchpad_url_for_lock(&lock).unwrap(),
             "https://api.obol.tech/v1/lock/0x1234ABCD/launchpad"

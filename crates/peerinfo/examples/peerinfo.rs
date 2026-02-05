@@ -65,7 +65,7 @@ pub struct Args {
     #[arg(long, default_value = "info")]
     pub log_level: String,
 
-    /// Loki URL for log aggregation (e.g., http://localhost:3100)
+    /// Loki URL for log aggregation (e.g., <http://localhost:3100>)
     #[arg(long)]
     pub loki_url: Option<String>,
 
@@ -78,7 +78,7 @@ pub struct Args {
 fn parse_key_value(s: &str) -> Result<(String, String), String> {
     let parts: Vec<&str> = s.splitn(2, '=').collect();
     if parts.len() != 2 {
-        return Err(format!("Invalid key=value format: {}", s));
+        return Err(format!("Invalid key=value format: {s}"));
     }
     Ok((parts[0].to_string(), parts[1].to_string()))
 }

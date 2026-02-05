@@ -76,6 +76,7 @@ enum State {
 
 impl Handler {
     /// Builds a new [`Handler`] with the given configuration.
+    #[must_use]
     pub fn new(config: Config, peer: PeerId) -> Self {
         let interval = config.interval();
         let local_info = config.local_info().clone();
@@ -262,7 +263,7 @@ impl ConnectionHandler for Handler {
                 ));
             }
             ConnectionEvent::DialUpgradeError(dial_upgrade_error) => {
-                self.on_dial_upgrade_error(dial_upgrade_error)
+                self.on_dial_upgrade_error(dial_upgrade_error);
             }
             _ => {}
         }

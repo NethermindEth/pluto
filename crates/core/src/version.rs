@@ -16,7 +16,7 @@ pub enum SemVerError {
 pub static VERSION: LazyLock<SemVer> = LazyLock::new(|| {
     let str = env!("CARGO_PKG_VERSION");
 
-    SemVer::parse(format!("v{}", str)).expect("invalid semantic version")
+    SemVer::parse(format!("v{str}")).expect("invalid semantic version")
 });
 
 /// Supported minor versions in order of precedence.
@@ -48,20 +48,23 @@ mod built_info {
 }
 
 /// Git commit hash and timestamp from build info.
+#[must_use]
 pub fn git_commit() -> (String, String) {
     let hash = option_env!("GIT_COMMIT_HASH_SHORT")
         .or(built_info::GIT_COMMIT_HASH_SHORT)
         .unwrap_or("unknown")
         .into();
 
-    let timestamp = chrono::DateTime::parse_from_rfc2822(built_info::BUILT_TIME_UTC)
-        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
-        .unwrap_or_else(|_| "unknown".into());
+    let timestamp = chrono::DateTime::parse_from_rfc2822(built_info::BUILT_TIME_UTC).map_or_else(
+        |_| "unknown".into(),
+        |dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    );
 
     (hash, timestamp)
 }
 
 /// Dependency list from build info in `name v{version}` format.
+#[must_use]
 pub fn dependencies() -> Vec<String> {
     let mut deps: Vec<String> = built_info::DEPENDENCIES
         .iter()
@@ -100,6 +103,7 @@ static SEMVER_REGEX: LazyLock<regex::Regex> = LazyLock::new(|| {
 
 impl SemVer {
     /// Returns true if the [`SemVer`] represents a tag for a pre-release.
+    #[must_use]
     pub fn is_pre_release(&self) -> bool {
         self.sem_ver_type == SemVerType::PreRelease
     }
@@ -107,6 +111,7 @@ impl SemVer {
     /// Produces the minor version of the semantic version.
     /// It strips the `patch` version and `pre_release` label if
     /// present.
+    #[must_use]
     pub const fn to_minor(&self) -> SemVer {
         Self {
             sem_ver_type: SemVerType::Minor,

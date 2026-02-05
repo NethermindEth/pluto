@@ -40,7 +40,7 @@ pub trait Tbls {
         rng: impl RngCore + CryptoRng,
     ) -> Result<HashMap<Index, PrivateKey>, Error>;
 
-    /// ThresholdSplit splits a compressed secret into total units of secret
+    /// `ThresholdSplit` splits a compressed secret into total units of secret
     /// keys, with the given threshold. It returns a map that associates
     /// each private, compressed private key to its ID.
     ///

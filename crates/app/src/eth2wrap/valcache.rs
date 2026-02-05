@@ -77,6 +77,7 @@ struct ValidatorCacheInner {
 
 impl ValidatorCache {
     /// Creates a new, empty validator cache.
+    #[must_use]
     pub fn new(eth2_cl: EthBeaconNodeApiClient, pubkeys: Vec<PubKey>) -> Self {
         Self(Arc::new(RwLock::new(ValidatorCacheInner {
             eth2_cl,
@@ -101,14 +102,20 @@ impl ValidatorCache {
 
         if let (Some(active), Some(complete)) = (&inner.active, &inner.complete) {
             return Ok((active.clone(), complete.clone()));
-        };
+        }
 
         let request = PostStateValidatorsRequest {
             path: PostStateValidatorsRequestPath {
                 state_id: "head".into(),
             },
             body: ValidatorRequestBody {
-                ids: Some(inner.pubkeys.iter().map(|pk| pk.to_string()).collect()),
+                ids: Some(
+                    inner
+                        .pubkeys
+                        .iter()
+                        .map(std::string::ToString::to_string)
+                        .collect(),
+                ),
                 ..Default::default()
             },
         };
@@ -148,31 +155,37 @@ impl ValidatorCache {
                 state_id: slot.to_string(),
             },
             body: ValidatorRequestBody {
-                ids: Some(inner.pubkeys.iter().map(|pk| pk.to_string()).collect()),
+                ids: Some(
+                    inner
+                        .pubkeys
+                        .iter()
+                        .map(std::string::ToString::to_string)
+                        .collect(),
+                ),
                 ..Default::default()
             },
         };
 
-        let (response, refreshed_by_slot) =
-            match inner.eth2_cl.post_state_validators(request.clone()).await {
-                Ok(PostStateValidatorsResponse::Ok(response)) => (response, true),
-                _ => {
-                    // Failed to fetch by slot, fall back to head state
-                    request.path.state_id = "head".into();
+        let (response, refreshed_by_slot) = if let Ok(PostStateValidatorsResponse::Ok(response)) =
+            inner.eth2_cl.post_state_validators(request.clone()).await
+        {
+            (response, true)
+        } else {
+            // Failed to fetch by slot, fall back to head state
+            request.path.state_id = "head".into();
 
-                    let response = inner
-                        .eth2_cl
-                        .post_state_validators(request)
-                        .await
-                        .map_err(EthBeaconNodeApiClientError::RequestError)
-                        .and_then(|response| match response {
-                            PostStateValidatorsResponse::Ok(response) => Ok(response),
-                            _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
-                        })?;
+            let response = inner
+                .eth2_cl
+                .post_state_validators(request)
+                .await
+                .map_err(EthBeaconNodeApiClientError::RequestError)
+                .and_then(|response| match response {
+                    PostStateValidatorsResponse::Ok(response) => Ok(response),
+                    _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
+                })?;
 
-                    (response, false)
-                }
-            };
+            (response, false)
+        };
 
         let (active_validators, complete_validators) = validators_from_response(response)?;
 

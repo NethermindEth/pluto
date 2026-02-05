@@ -5,7 +5,10 @@ use crate::{
     operator::{Operator, OperatorV1X1, OperatorV1X2OrLater},
     ssz::{SSZError, hash_definition},
     ssz_hasher::Hasher,
-    version::{CURRENT_VERSION, DKG_ALGO, versions::*},
+    version::{
+        CURRENT_VERSION, DKG_ALGO,
+        versions::{V1_0, V1_1, V1_2, V1_3, V1_4, V1_5, V1_6, V1_7, V1_8, V1_9, V1_10},
+    },
 };
 use chrono::{DateTime, Utc};
 use libp2p::PeerId;
@@ -25,8 +28,8 @@ pub const FORK_VERSION_LEN: usize = 4;
 /// Length of the address in bytes.
 pub const ADDRESS_LEN: usize = 20;
 
-/// NodeIdx represents the index of a node/peer/share in the cluster as operator
-/// order in cluster definition.
+/// `NodeIdx` represents the index of a node/peer/share in the cluster as
+/// operator order in cluster definition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeIdx {
     /// Index of a peer in the peer list (it's 0-indexed).
@@ -94,13 +97,13 @@ impl Serialize for Definition {
     {
         match self.version.as_str() {
             V1_0 | V1_1 => DefinitionV1x0or1::try_from(self.clone())
-                .map_err(|e| serde::ser::Error::custom(format!("Conversion error: {:?}", e)))?
+                .map_err(|e| serde::ser::Error::custom(format!("Conversion error: {e:?}")))?
                 .serialize(serializer),
             V1_2 | V1_3 => DefinitionV1x2or3::try_from(self.clone())
-                .map_err(|e| serde::ser::Error::custom(format!("Conversion error: {:?}", e)))?
+                .map_err(|e| serde::ser::Error::custom(format!("Conversion error: {e:?}")))?
                 .serialize(serializer),
             V1_4 => DefinitionV1x4::try_from(self.clone())
-                .map_err(|e| serde::ser::Error::custom(format!("Conversion error: {:?}", e)))?
+                .map_err(|e| serde::ser::Error::custom(format!("Conversion error: {e:?}")))?
                 .serialize(serializer),
             V1_5 | V1_6 | V1_7 => DefinitionV1x5to7::from(self.clone()).serialize(serializer),
             V1_8 => DefinitionV1x8::from(self.clone()).serialize(serializer),
@@ -134,21 +137,21 @@ impl<'de> Deserialize<'de> for Definition {
                     serde_json::from_value(value).map_err(Error::custom)?;
                 definition
                     .try_into()
-                    .map_err(|e| Error::custom(format!("Conversion error: {:?}", e)))
+                    .map_err(|e| Error::custom(format!("Conversion error: {e:?}")))
             }
             V1_2 | V1_3 => {
                 let definition: DefinitionV1x2or3 =
                     serde_json::from_value(value).map_err(Error::custom)?;
                 definition
                     .try_into()
-                    .map_err(|e| Error::custom(format!("Conversion error: {:?}", e)))
+                    .map_err(|e| Error::custom(format!("Conversion error: {e:?}")))
             }
             V1_4 => {
                 let definition: DefinitionV1x4 =
                     serde_json::from_value(value).map_err(Error::custom)?;
                 definition
                     .try_into()
-                    .map_err(|e| Error::custom(format!("Conversion error: {:?}", e)))
+                    .map_err(|e| Error::custom(format!("Conversion error: {e:?}")))
             }
             V1_5 | V1_6 | V1_7 => {
                 let definition: DefinitionV1x5to7 =
@@ -170,12 +173,12 @@ impl<'de> Deserialize<'de> for Definition {
                     serde_json::from_value(value).map_err(Error::custom)?;
                 Ok(definition.into())
             }
-            _ => Err(Error::custom(format!("Unsupported version: {}", version))),
+            _ => Err(Error::custom(format!("Unsupported version: {version}"))),
         }
     }
 }
 
-/// DefinitionError is an error type for definition errors.
+/// `DefinitionError` is an error type for definition errors.
 #[derive(Debug, thiserror::Error)]
 pub enum DefinitionError {
     /// Multiple withdrawal or fee recipient addresses found
@@ -257,7 +260,7 @@ pub enum DefinitionError {
     FailedToConvertTimestamp(#[from] serde_json::Error),
 }
 
-/// InvalidGasLimitError is an error type for invalid gas limit errors.
+/// `InvalidGasLimitError` is an error type for invalid gas limit errors.
 #[derive(Debug, thiserror::Error)]
 pub enum InvalidGasLimitError {
     /// The version does not support custom target gas limit
@@ -385,7 +388,7 @@ impl Definition {
         Err(DefinitionError::PeerNotFound { peer_id: *pid })
     }
 
-    /// VerifySignatures returns nil if all config signatures are fully
+    /// `VerifySignatures` returns nil if all config signatures are fully
     /// populated and valid. A verified definition is ready for use in DKG.
     pub fn verify_signatures(&self) -> Result<(), DefinitionError> {
         todo!("implement this after eth1wrap.EthClientRunner is implemented");
@@ -439,6 +442,7 @@ impl Definition {
 
     /// `withdrawal_addresses` is a convenience function to return all
     /// withdrawal address from the validator addresses slice.
+    #[must_use]
     pub fn withdrawal_addresses(&self) -> Vec<String> {
         self.validator_addresses
             .iter()
@@ -448,6 +452,7 @@ impl Definition {
 
     /// `fee_recipient_addresses` is a convenience function to return all fee
     /// recipient address from the validator addresses slice.
+    #[must_use]
     pub fn fee_recipient_addresses(&self) -> Vec<String> {
         self.validator_addresses
             .iter()
@@ -551,7 +556,7 @@ pub struct ValidatorAddresses {
     pub withdrawal_address: String,
 }
 
-/// DefinitionV1x0or1 is a cluster definition for version 1.0.0 or 1.1.0
+/// `DefinitionV1x0or1` is a cluster definition for version 1.0.0 or 1.1.0
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x0or1 {
@@ -662,7 +667,7 @@ impl TryFrom<DefinitionV1x0or1> for Definition {
     }
 }
 
-/// DefinitionV1x2or3 is a cluster definition for version 1.2.0 or 1.3.0
+/// `DefinitionV1x2or3` is a cluster definition for version 1.2.0 or 1.3.0
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x2or3 {
@@ -691,7 +696,7 @@ pub struct DefinitionV1x2or3 {
     /// Withdrawal address for the
     /// validator.
     pub withdrawal_address: String,
-    /// DKGAlgorithm to use for key generation. Max 32 chars.
+    /// `DKGAlgorithm` to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
     /// Cluster's 4 byte beacon chain fork version
     /// (network/chain identifier).
@@ -773,7 +778,7 @@ impl TryFrom<DefinitionV1x2or3> for Definition {
     }
 }
 
-/// DefinitionV1x4 is a cluster definition for version 1.4.0
+/// `DefinitionV1x4` is a cluster definition for version 1.4.0
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x4 {
@@ -888,7 +893,7 @@ impl TryFrom<DefinitionV1x4> for Definition {
     }
 }
 
-/// DefinitionV1x5 is a cluster definition for version 1.5.0-1.7.0
+/// `DefinitionV1x5` is a cluster definition for version 1.5.0-1.7.0
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x5to7 {
@@ -985,7 +990,7 @@ impl From<DefinitionV1x5to7> for Definition {
     }
 }
 
-/// DefinitionV1x8 is a cluster definition for version 1.8.0
+/// `DefinitionV1x8` is a cluster definition for version 1.8.0
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x8 {
@@ -1005,30 +1010,30 @@ pub struct DefinitionV1x8 {
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
     pub timestamp: String,
-    /// NumValidators is the number of DVs to be created in the cluster lock
+    /// `NumValidators` is the number of DVs to be created in the cluster lock
     /// file.
     pub num_validators: u64,
     /// Threshold required for signature reconstruction. Defaults to safe value
     /// for number of nodes/peers.
     pub threshold: u64,
-    /// ValidatorAddresses define addresses of each validator.
+    /// `ValidatorAddresses` define addresses of each validator.
     #[serde(rename = "validators")]
     pub validator_addresses: Vec<ValidatorAddresses>,
-    /// DKGAlgorithm to use for key generation. Max 32 chars.
+    /// `DKGAlgorithm` to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
-    /// ForkVersion defines the cluster's 4 byte beacon chain fork version
+    /// `ForkVersion` defines the cluster's 4 byte beacon chain fork version
     /// (network/chain identifier).
     #[serde_as(as = "EthHex")]
     pub fork_version: Vec<u8>,
-    /// DepositAmounts specifies partial deposit amounts that sum up to at least
-    /// 32ETH.
+    /// `DepositAmounts` specifies partial deposit amounts that sum up to at
+    /// least 32ETH.
     #[serde_as(as = "DefaultOnNull<Vec<PickFirst<(DisplayFromStr, _)>>>")]
     pub deposit_amounts: Vec<u64>,
-    /// ConfigHash uniquely identifies a cluster definition excluding operator
+    /// `ConfigHash` uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.
     #[serde_as(as = "EthHex")]
     pub config_hash: Vec<u8>,
-    /// DefinitionHash uniquely identifies a cluster definition including
+    /// `DefinitionHash` uniquely identifies a cluster definition including
     /// operator ENRs and signatures.
     #[serde_as(as = "EthHex")]
     pub definition_hash: Vec<u8>,
@@ -1087,7 +1092,7 @@ impl From<DefinitionV1x8> for Definition {
     }
 }
 
-/// DefinitionV1x9 is a cluster definition for version 1.9.0
+/// `DefinitionV1x9` is a cluster definition for version 1.9.0
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x9 {
@@ -1107,33 +1112,33 @@ pub struct DefinitionV1x9 {
     /// chars. Note that this was added in v1.1.0, so may be empty for older
     /// versions.
     pub timestamp: String,
-    /// NumValidators is the number of DVs to be created in the cluster lock
+    /// `NumValidators` is the number of DVs to be created in the cluster lock
     /// file.
     pub num_validators: u64,
     /// Threshold required for signature reconstruction. Defaults to safe value
     /// for number of nodes/peers.
     pub threshold: u64,
-    /// ValidatorAddresses define addresses of each validator.
+    /// `ValidatorAddresses` define addresses of each validator.
     #[serde(rename = "validators")]
     pub validator_addresses: Vec<ValidatorAddresses>,
-    /// DKGAlgorithm to use for key generation. Max 32 chars.
+    /// `DKGAlgorithm` to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
-    /// ForkVersion defines the cluster's 4 byte beacon chain fork version
+    /// `ForkVersion` defines the cluster's 4 byte beacon chain fork version
     /// (network/chain identifier).
     #[serde_as(as = "EthHex")]
     pub fork_version: Vec<u8>,
-    /// DepositAmounts specifies partial deposit amounts that sum up to at least
-    /// 32ETH.
+    /// `DepositAmounts` specifies partial deposit amounts that sum up to at
+    /// least 32ETH.
     #[serde_as(as = "DefaultOnNull<Vec<PickFirst<(DisplayFromStr, _)>>>")]
     pub deposit_amounts: Vec<u64>,
-    /// ConsensusProtocol is the consensus protocol name preferred by the
+    /// `ConsensusProtocol` is the consensus protocol name preferred by the
     /// cluster, e.g. "abft".
     pub consensus_protocol: String,
-    /// ConfigHash uniquely identifies a cluster definition excluding operator
+    /// `ConfigHash` uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.
     #[serde_as(as = "EthHex")]
     pub config_hash: Vec<u8>,
-    /// DefinitionHash uniquely identifies a cluster definition including
+    /// `DefinitionHash` uniquely identifies a cluster definition including
     /// operator ENRs and signatures.
     #[serde_as(as = "EthHex")]
     pub definition_hash: Vec<u8>,
@@ -1193,7 +1198,7 @@ impl From<DefinitionV1x9> for Definition {
     }
 }
 
-/// DefinitionV1x10 is a cluster definition for version 1.10.0
+/// `DefinitionV1x10` is a cluster definition for version 1.10.0
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionV1x10 {

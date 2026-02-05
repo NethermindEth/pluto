@@ -83,7 +83,7 @@ pub enum K1UtilError {
 
 type Result<T> = std::result::Result<T, K1UtilError>;
 
-/// Converts a libp2p PublicKey to a secp256k1 PublicKey.
+/// Converts a libp2p `PublicKey` to a secp256k1 `PublicKey`.
 pub fn public_key_from_libp2p(pk: &Libp2pPublicKey) -> Result<PublicKey> {
     let secp_key = pk.clone().try_into_secp256k1()?;
     PublicKey::from_sec1_bytes(&secp_key.to_bytes())
@@ -125,7 +125,7 @@ pub fn verify_65(pubkey: &PublicKey, hash: &[u8], sig: &[u8]) -> Result<bool> {
     Ok(recovered == *pubkey)
 }
 
-/// verify_64 returns whether the 64 byte signature is valid for the provided
+/// `verify_64` returns whether the 64 byte signature is valid for the provided
 /// hash and secp256k1 public key.
 ///
 /// Note the signature MUST be 64 bytes in the [R || S] format without recovery
@@ -316,7 +316,7 @@ mod tests {
 
         for hex_str in hex_strs {
             let mut temp_file = tempfile::NamedTempFile::new().unwrap();
-            write!(temp_file, "{}", hex_str).unwrap();
+            write!(temp_file, "{hex_str}").unwrap();
 
             let result = load(Path::new(&temp_file.path()));
             assert!(

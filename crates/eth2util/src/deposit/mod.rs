@@ -22,6 +22,7 @@ use pluto_crypto::{
 use tree_hash::TreeHash;
 
 /// Returns the maximum deposit amount based on compounding flag.
+#[must_use]
 pub fn max_deposit_amount(compounding: bool) -> Gwei {
     if compounding {
         MAX_COMPOUNDING_DEPOSIT_AMOUNT
@@ -155,6 +156,7 @@ pub fn verify_deposit_amounts(amounts: &[Gwei], compounding: bool) -> Result<()>
 }
 
 /// Converts amounts from ETH (as integers) to Gwei.
+#[must_use]
 pub fn eths_to_gweis(eth_amounts: &[u64]) -> Vec<Gwei> {
     eth_amounts
         .iter()
@@ -163,6 +165,7 @@ pub fn eths_to_gweis(eth_amounts: &[u64]) -> Vec<Gwei> {
 }
 
 /// Deduplicates and sorts amounts in ascending order.
+#[must_use]
 pub fn dedup_amounts(amounts: &[Gwei]) -> Vec<Gwei> {
     let mut result: Vec<Gwei> = amounts.to_vec();
     result.sort_unstable();
@@ -171,6 +174,7 @@ pub fn dedup_amounts(amounts: &[Gwei]) -> Vec<Gwei> {
 }
 
 /// Returns the default deposit amounts based on compounding flag.
+#[must_use]
 pub fn default_deposit_amounts(compounding: bool) -> Vec<Gwei> {
     if compounding {
         vec![
@@ -195,7 +199,7 @@ pub async fn write_cluster_deposit_data_files<D: AsRef<[DepositData]>>(
     let cluster_dir = cluster_dir.as_ref();
     for deposit_data_set in deposit_datas {
         for n in 0..num_nodes {
-            let node_dir = cluster_dir.join(format!("node{}", n));
+            let node_dir = cluster_dir.join(format!("node{n}"));
             write_deposit_data_file(deposit_data_set.as_ref(), network, &node_dir).await?;
         }
     }
@@ -247,7 +251,7 @@ pub fn get_deposit_file_path(data_dir: impl AsRef<Path>, amount: Gwei) -> PathBu
         // Convert Gwei to ETH and format
         #[allow(clippy::cast_precision_loss)]
         let eth = amount as f64 / ONE_ETH_IN_GWEI as f64;
-        format!("deposit-data-{}eth.json", eth)
+        format!("deposit-data-{eth}eth.json")
     };
 
     data_dir.as_ref().join(filename)
@@ -329,6 +333,7 @@ pub async fn read_deposit_data_files(
 }
 
 /// Merges two sets of deposit data files.
+#[must_use]
 pub fn merge_deposit_data_sets(
     a: Vec<Vec<DepositData>>,
     b: Vec<Vec<DepositData>>,

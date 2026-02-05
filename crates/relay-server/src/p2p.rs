@@ -36,13 +36,13 @@ pub async fn run_relay_p2p_node(
 
     // todo: monitor connections
 
-    for tcp_addr in config.p2p_config.tcp_addrs.iter() {
+    for tcp_addr in &config.p2p_config.tcp_addrs {
         debug!("Listening on TCP address {}", tcp_addr);
         node.swarm
             .listen_on(tcp_addr.parse()?)
             .map_err(RelayP2PError::FailedToListenOnAddress)?;
     }
-    for udp_addr in config.p2p_config.udp_addrs.iter() {
+    for udp_addr in &config.p2p_config.udp_addrs {
         debug!("Listening on UDP address {}", udp_addr);
         node.swarm
             .listen_on(udp_addr.parse()?)
@@ -71,7 +71,7 @@ pub async fn run_relay_p2p_node(
     loop {
         tokio::select! {
             biased;
-            _ = ct.cancelled() => {
+            () = ct.cancelled() => {
                 info!("Relay server shutdown signal received, shutting down gracefully");
                 break;
             },

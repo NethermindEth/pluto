@@ -7,7 +7,7 @@ use serde_with::{
     serde_as,
 };
 
-/// DistValidator is a distributed validator managed by the cluster.
+/// `DistValidator` is a distributed validator managed by the cluster.
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DistValidator {
@@ -31,7 +31,7 @@ pub struct DistValidator {
     pub builder_registration: BuilderRegistration,
 }
 
-/// DistValidatorError is an error type for DistValidator operations.
+/// `DistValidatorError` is an error type for `DistValidator` operations.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DistValidatorError {
     /// Invalid public key length.
@@ -83,6 +83,7 @@ impl DistValidator {
 
     /// True if the validator has zero valued registration.
     /// registration.
+    #[must_use]
     pub fn zero_registration(&self) -> bool {
         self.builder_registration.signature.is_empty()
             && self.builder_registration.message.fee_recipient.is_empty()
@@ -99,7 +100,7 @@ impl DistValidator {
     }
 }
 
-/// DistValidatorV1x1 is a distributed validator managed by the cluster for
+/// `DistValidatorV1x1` is a distributed validator managed by the cluster for
 /// version v1.0.0 or v1.1.0.
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,7 +143,7 @@ impl From<DistValidatorV1x0or1> for DistValidator {
         }
     }
 }
-/// DistValidatorV1x2to5 is a distributed validator managed by the cluster for
+/// `DistValidatorV1x2to5` is a distributed validator managed by the cluster for
 /// version v1.2.0 to v1.5.0.
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,7 +186,7 @@ impl From<DistValidatorV1x2to5> for DistValidator {
         }
     }
 }
-/// DistValidatorV1x6 is a distributed validator managed by the cluster for
+/// `DistValidatorV1x6` is a distributed validator managed by the cluster for
 /// version v1.6.0.
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,7 +232,7 @@ impl From<DistValidatorV1x6> for DistValidator {
     }
 }
 
-/// DistValidatorV1x7 is a distributed validator managed by the cluster for
+/// `DistValidatorV1x7` is a distributed validator managed by the cluster for
 /// version v1.7.0.
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -281,7 +282,7 @@ impl From<DistValidatorV1x7> for DistValidator {
         }
     }
 }
-/// DistValidatorV1x8orLater is a distributed validator managed by the cluster
+/// `DistValidatorV1x8orLater` is a distributed validator managed by the cluster
 /// for version v1.8.0 or later.
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

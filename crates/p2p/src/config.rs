@@ -309,11 +309,11 @@ mod tests {
 
         let tcp_addrs_str = tcp_multiaddrs
             .iter()
-            .map(|addr| addr.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<String>>();
         let udp_addrs_str = udp_multiaddrs
             .iter()
-            .map(|addr| addr.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<String>>();
 
         let merged_addrs_str = tcp_addrs_str

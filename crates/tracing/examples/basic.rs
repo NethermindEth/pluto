@@ -10,7 +10,7 @@
 //! cargo run --example basic
 //! ```
 //!
-//! You can see the logs in Grafana at http://localhost:3000.
+//! You can see the logs in Grafana at <http://localhost:3000>.
 use std::{collections::HashMap, net::SocketAddr};
 
 use pluto_tracing::{ConsoleConfig, LokiConfig, config::TracingConfig, init::init};

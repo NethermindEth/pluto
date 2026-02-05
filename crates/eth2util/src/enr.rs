@@ -72,7 +72,7 @@ pub enum RecordError {
     FailedToConvertSignature(std::array::TryFromSliceError),
 }
 
-/// InvalidFormatError is an error type for invalid format errors.
+/// `InvalidFormatError` is an error type for invalid format errors.
 #[derive(Debug, thiserror::Error)]
 pub enum InvalidFormatError {
     /// Record does not start with 'enr:'.
@@ -105,24 +105,27 @@ pub struct Record {
     kvs: HashMap<String, Vec<u8>>,
 }
 
-/// OptionFn is a function that sets an option in the record.
+/// `OptionFn` is a function that sets an option in the record.
 pub type OptionFn = Box<dyn Fn(&mut HashMap<String, Vec<u8>>)>;
 
-/// with_ip_impl is a function that sets the IP address in the record.
+/// `with_ip_impl` is a function that sets the IP address in the record.
+#[must_use]
 pub fn with_ip_impl(ip: Ipv4Addr) -> OptionFn {
     Box::new(move |kvs: &mut HashMap<String, Vec<u8>>| {
         kvs.insert(KEY_IP.to_string(), ip.octets().to_vec());
     })
 }
 
-/// with_tcp_impl is a function that sets the TCP port in the record.
+/// `with_tcp_impl` is a function that sets the TCP port in the record.
+#[must_use]
 pub fn with_tcp_impl(tcp: u16) -> OptionFn {
     Box::new(move |kvs: &mut HashMap<String, Vec<u8>>| {
         kvs.insert(KEY_TCP.to_string(), tcp.to_be_bytes().to_vec());
     })
 }
 
-/// with_udp_impl is a function that sets the UDP port in the record.
+/// `with_udp_impl` is a function that sets the UDP port in the record.
+#[must_use]
 pub fn with_udp_impl(udp: u16) -> OptionFn {
     Box::new(move |kvs: &mut HashMap<String, Vec<u8>>| {
         kvs.insert(KEY_UDP.to_string(), udp.to_be_bytes().to_vec());
@@ -156,6 +159,7 @@ impl Record {
     /// Returns the IP address of the record.
     ///
     /// Returns None if the IP address is not set.
+    #[must_use]
     pub fn ip(&self) -> Option<Ipv4Addr> {
         let value = self.kvs.get(KEY_IP)?;
         let bytes: [u8; 4] = value.as_slice().try_into().ok()?;
@@ -165,6 +169,7 @@ impl Record {
     /// Returns the TCP port of the record.
     ///
     /// Returns None if the TCP port is not set.
+    #[must_use]
     pub fn tcp(&self) -> Option<u16> {
         let value = self.kvs.get(KEY_TCP)?;
         let bytes = value.as_slice().try_into().ok()?;
@@ -174,6 +179,7 @@ impl Record {
     /// Returns the UDP port of the record.
     ///
     /// Returns None if the UDP port is not set.
+    #[must_use]
     pub fn udp(&self) -> Option<u16> {
         let value = self.kvs.get(KEY_UDP)?;
         let bytes = value.as_slice().try_into().ok()?;
@@ -354,7 +360,7 @@ mod tests {
         );
 
         let ip = r.ip().expect("IP address should be set");
-        assert_eq!(ip, Ipv4Addr::new(127, 0, 0, 1));
+        assert_eq!(ip, Ipv4Addr::LOCALHOST);
 
         let tcp = r.tcp().expect("TCP port should be set");
         assert_eq!(tcp, 3610);

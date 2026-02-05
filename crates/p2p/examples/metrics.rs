@@ -10,7 +10,7 @@
 //! cargo run --example metrics -p pluto-p2p
 //! ```
 //!
-//! Metrics will be available in Grafana at http://localhost:3000.
+//! Metrics will be available in Grafana at <http://localhost:3000>.
 
 use std::net::SocketAddr;
 

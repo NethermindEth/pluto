@@ -42,7 +42,7 @@ async fn lighthouse_beacon_headers_head() {
     let host = container.get_host().await.expect("Failed to get host");
 
     // Build an EthBeaconNodeApiClient
-    let base_url = format!("http://{}:{}", host, host_port);
+    let base_url = format!("http://{host}:{host_port}");
     let client = EthBeaconNodeApiClient::with_base_url(base_url).expect("Failed to create client");
 
     // Invoke the `get_block_header` API with "head" block ID
@@ -56,7 +56,7 @@ async fn lighthouse_beacon_headers_head() {
         .expect("Failed to get block header");
 
     let GetBlockHeaderResponse::Ok(headers) = response else {
-        panic!("Expected Ok response, got: {:?}", response)
+        panic!("Expected Ok response, got: {response:?}")
     };
 
     // Validate the response

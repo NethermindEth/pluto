@@ -12,7 +12,7 @@ type ValueFunc = Box<dyn Fn(&Definition, &Operator) -> Value>;
 
 type Result<T> = std::result::Result<T, EIP712Error>;
 
-/// EIP712Error is the error type for EIP-712 errors.
+/// `EIP712Error` is the error type for EIP-712 errors.
 #[derive(Debug, thiserror::Error)]
 pub enum EIP712Error {
     /// Failed to convert fork version to chain ID.
@@ -171,8 +171,8 @@ fn sign_eip712(
     Ok(signature.to_vec())
 }
 
-/// sign_terms_and_conditions returns the EIP712 signature for Obol's Terms and
-/// Conditions
+/// `sign_terms_and_conditions` returns the EIP712 signature for Obol's Terms
+/// and Conditions
 pub fn sign_terms_and_conditions(
     secret_key: &SecretKey,
     definition: &Definition,
@@ -185,7 +185,7 @@ pub fn sign_terms_and_conditions(
     )
 }
 
-/// sign_cluster_definition_hash returns the EIP712 signature for the cluster
+/// `sign_cluster_definition_hash` returns the EIP712 signature for the cluster
 /// definition hash
 pub fn sign_cluster_definition_hash(
     secret_key: &SecretKey,

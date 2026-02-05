@@ -24,7 +24,7 @@ fn bench_sign(c: &mut Criterion) {
     let digest = vec![0u8; K1_HASH_LEN];
 
     c.bench_function("sign", |b| {
-        b.iter(|| sign(black_box(&key), black_box(&digest)).expect("sign should succeed"))
+        b.iter(|| sign(black_box(&key), black_box(&digest)).expect("sign should succeed"));
     });
 }
 
@@ -37,7 +37,7 @@ fn bench_recover(c: &mut Criterion) {
             let recovered =
                 recover(black_box(&digest), black_box(&sig)).expect("recover should succeed");
             assert_eq!(recovered, pubkey);
-        })
+        });
     });
 }
 
@@ -54,7 +54,7 @@ fn bench_verify(c: &mut Criterion) {
             )
             .expect("verify should succeed");
             assert!(ok);
-        })
+        });
     });
 }
 

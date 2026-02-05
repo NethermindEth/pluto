@@ -167,12 +167,14 @@ where
 {
     /// Quorum count for the system.
     /// See IBFT 2.0 paper for correct formula: <https://arxiv.org/pdf/1909.10194.pdf>
+    #[must_use]
     pub fn quorum(&self) -> i64 {
         (self.nodes as u64 * 2).div_ceil(3) as i64
     }
 
     /// Maximum number of faulty/byzantine nodes supported in the system.
     /// See IBFT 2.0 paper for correct formula: <https://arxiv.org/pdf/1909.10194.pdf>
+    #[must_use]
     pub fn faulty(&self) -> i64 {
         (self.nodes - 1) / 3
     }
@@ -194,6 +196,7 @@ pub const MSG_DECIDED: MessageType = MessageType(5);
 const MSG_SENTINEL: MessageType = MessageType(6); // intentionally not public
 
 impl MessageType {
+    #[must_use]
     pub fn valid(&self) -> bool {
         self.0 > MSG_UNKNOWN.0 && self.0 < MSG_SENTINEL.0
     }
@@ -210,7 +213,7 @@ impl Display for MessageType {
             5 => "decided",
             _ => panic!("bug: invalid message type"),
         };
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 
@@ -273,7 +276,7 @@ impl Display for UponRule {
             8 => "round_timeout",
             _ => panic!("bug: invalid upon rule"),
         };
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 
@@ -353,9 +356,10 @@ where
     // and our own input value if present, otherwise it caches the justification
     // to be used when the input value becomes available.
     let broadcast_own_pre_prepare = |justification: Vec<Msg<I, V, C>>| {
-        if ppj_cache.borrow().is_some() {
-            panic!("bug: justification cache must be none")
-        }
+        assert!(
+            !ppj_cache.borrow().is_some(),
+            "bug: justification cache must be none"
+        );
 
         if *input_value.borrow() == Default::default() {
             // Can't broadcast a pre-prepare yet, need to wait for an input value.
@@ -556,7 +560,7 @@ where
                         // Only applicable to current round (round > 1)
                         match get_single_justified_pr_pv(d, &justification) {
                             Some((pr, pv)) if compare_failure_round != pr => {
-                                broadcast_msg(MSG_PRE_PREPARE, &pv, Some(&justification))?
+                                broadcast_msg(MSG_PRE_PREPARE, &pv, Some(&justification))?;
                             }
                             _ => broadcast_own_pre_prepare(justification)?,
                         }
@@ -636,7 +640,7 @@ where
                     let err = msg?;
 
                     return match err {
-                        Ok(_) => Ok(result),
+                        Ok(()) => Ok(result),
                         Err(_) => Err(QbftError::CompareError),
                     };
                 },
@@ -776,9 +780,7 @@ where
     V: PartialEq,
 {
     // Get all RoundChange messages with round (rj) higher than current round (ri)
-    if (frc.len() as i64) < d.faulty() + 1 {
-        panic!("bug: Frc too short");
-    }
+    assert!(((frc.len() as i64) >= d.faulty() + 1), "bug: Frc too short");
 
     // Get the smallest round in the set.
     let mut rmin = i64::MAX;
@@ -818,15 +820,16 @@ where
     }
 }
 
-/// Returns true if the ROUND_CHANGE message's prepared round and value is
+/// Returns true if the `ROUND_CHANGE` message's prepared round and value is
 /// justified.
 fn is_justified_round_change<I, V, C>(d: &Definition<I, V, C>, msg: &Msg<I, V, C>) -> bool
 where
     V: PartialEq + Default,
 {
-    if msg.type_() != MSG_ROUND_CHANGE {
-        panic!("bug: not a round change message");
-    }
+    assert!(
+        !(msg.type_() != MSG_ROUND_CHANGE),
+        "bug: not a round change message"
+    );
 
     // ROUND-CHANGE justification contains quorum PREPARE messages that justifies Pr
     // and Pv.
@@ -873,9 +876,7 @@ fn is_justified_decided<I, V, C>(d: &Definition<I, V, C>, msg: &Msg<I, V, C>) ->
 where
     V: PartialEq,
 {
-    if msg.type_() != MSG_DECIDED {
-        panic!("bug: not a decided message");
-    }
+    assert!(!(msg.type_() != MSG_DECIDED), "bug: not a decided message");
 
     let v = msg.value();
     let commits = filter_msgs(
@@ -900,9 +901,10 @@ fn is_justified_pre_prepare<I, V, C>(
 where
     V: Eq + Hash + Default,
 {
-    if msg.type_() != MSG_PRE_PREPARE {
-        panic!("bug: not a preprepare message");
-    }
+    assert!(
+        !(msg.type_() != MSG_PRE_PREPARE),
+        "bug: not a preprepare message"
+    );
 
     if !(d.is_leader)(instance, msg.round(), msg.source()) {
         return false;
@@ -926,7 +928,7 @@ where
 }
 
 /// Implements algorithm 4:1 and returns true and pv if the messages contains a
-/// justified quorum ROUND_CHANGEs (Qrc).
+/// justified quorum `ROUND_CHANGEs` (Qrc).
 fn contains_justified_qrc<I, V, C>(
     d: &Definition<I, V, C>,
     justification: &Vec<Msg<I, V, C>>,
@@ -945,7 +947,7 @@ where
     // J1: If qrc contains quorum ROUND-CHANGEs with null pv and null pr.
     let mut all_null = true;
 
-    for rc in qrc.iter() {
+    for rc in &qrc {
         if rc.prepared_round() != 0 || rc.prepared_value() != Default::default() {
             all_null = false;
             break;
@@ -1018,7 +1020,8 @@ where
     }
 }
 
-/// Implements algorithm 4:1 and returns a justified quorum ROUND_CHANGEs (Qrc)
+/// Implements algorithm 4:1 and returns a justified quorum `ROUND_CHANGEs`
+/// (Qrc)
 fn get_justified_qrc<I, V, C>(
     d: &Definition<I, V, C>,
     all: &Vec<Msg<I, V, C>>,
@@ -1043,7 +1046,7 @@ where
         let pv = prepares[0].value();
         let mut uniq = uniq_source::<I, V, C>(vec![]);
 
-        for rc in round_changes.iter() {
+        for rc in &round_changes {
             if rc.prepared_round() > pr {
                 continue;
             }
@@ -1271,9 +1274,7 @@ where
             resp.push(msg.clone());
             for j in msg.justification() {
                 resp.push(j.clone());
-                if !j.justification().is_empty() {
-                    panic!("bug: nested justifications");
-                }
+                assert!(j.justification().is_empty(), "bug: nested justifications");
             }
         }
     }

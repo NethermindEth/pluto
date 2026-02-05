@@ -14,12 +14,14 @@ pub struct AsyncOptions<T> {
 
 impl<T> AsyncOptions<T> {
     /// Set the backoff strategy.
+    #[must_use]
     pub fn with_backoff(mut self, backoff_builder: backon::ExponentialBuilder) -> Self {
         self.backoff_builder = backoff_builder;
         self
     }
 
     /// Set the deadline function.
+    #[must_use]
     pub fn with_deadline(
         mut self,
         deadline_fn: impl Fn(T) -> Option<chrono::DateTime<chrono::Utc>> + Send + Sync + 'static,
@@ -31,6 +33,7 @@ impl<T> AsyncOptions<T> {
     /// Set the time provider function. This function should return the "current
     /// time", which will be compared with the deadline computed by the
     /// `deadline_fn`.
+    #[must_use]
     pub fn with_time(
         mut self,
         time_fn: impl Fn() -> chrono::DateTime<chrono::Utc> + Send + Sync + 'static,
@@ -40,6 +43,7 @@ impl<T> AsyncOptions<T> {
     }
 
     /// Set the [`CancellationToken`] if any. By default, no token is used.
+    #[must_use]
     pub fn with_cancellation_token(mut self, cancellation_token: CancellationToken) -> Self {
         self.cancellation_token = Some(cancellation_token);
         self
@@ -84,12 +88,11 @@ impl<I: Iterator> Iterator for ExhaustedIterator<I> {
     type Item = I::Item;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.inner.next() {
-            Some(item) => Some(item),
-            None => {
-                self.is_exhausted = true;
-                None
-            }
+        if let Some(item) = self.inner.next() {
+            Some(item)
+        } else {
+            self.is_exhausted = true;
+            None
         }
     }
 }
@@ -149,7 +152,7 @@ pub async fn do_async<
             options
                 .cancellation_token
                 .as_ref()
-                .is_some_and(|t| t.is_cancelled())
+                .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
         };
 
         let mut attempt = 0u64;
@@ -291,7 +294,7 @@ mod tests {
             options: retry::AsyncOptions::default()
                 .with_backoff(test_backoff())
                 .with_time(move || now)
-                .with_deadline(move |_| Some(now)),
+                .with_deadline(move |()| Some(now)),
             func: Arc::new(|_| Err(DoAsyncError::RetryableError)),
             expected_attempts: 1,
         })

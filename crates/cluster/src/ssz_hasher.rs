@@ -192,9 +192,8 @@ impl Hasher {
         if limit == 1 {
             if count == 1 {
                 return Ok(input[..32].to_vec());
-            } else {
-                return Ok(ZERO_BYTES.to_vec());
             }
+            return Ok(ZERO_BYTES.to_vec());
         }
 
         let depth = Self::get_depth(limit);
@@ -347,9 +346,9 @@ impl HashWalker for Hasher {
     /// Append a boolean value.
     fn put_bool(&mut self, b: bool) -> Result<(), Self::Error> {
         if b {
-            self.buf.extend_from_slice(&TRUE_BYTES)
+            self.buf.extend_from_slice(&TRUE_BYTES);
         } else {
-            self.buf.extend_from_slice(&FALSE_BYTES)
+            self.buf.extend_from_slice(&FALSE_BYTES);
         }
 
         Ok(())
@@ -424,6 +423,7 @@ impl HashWalker for Hasher {
 }
 
 /// Calculate the limit for the merkleization with a mixin value.
+#[must_use]
 pub fn calculate_limit(max_capacity: usize, num_items: usize, size: usize) -> usize {
     let limit = (max_capacity.saturating_mul(size)).div_ceil(32);
     if limit != 0 {

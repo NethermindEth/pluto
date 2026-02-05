@@ -49,7 +49,7 @@ pub fn run(args: EnrArgs) -> Result<()> {
 
     let record = Record::new(key.clone(), vec![])?;
 
-    writeln!(writer, "{}", record)?;
+    writeln!(writer, "{record}")?;
 
     if args.verbose {
         write_expanded_enr(&mut writer, &record, &key)?;
