@@ -1,0 +1,25 @@
+name: Docker Build and Push
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  id-token: write
+  attestations: write
+  contents: read
+
+jobs:
+  push-to-dockerhub:
+    uses: NethermindEth/github-workflows/.github/workflows/docker-build-push-dockerhub.yaml@main
+    with:
+      image_name: "pluto"
+      additional_tags: ${{ github.ref_name }}
+      push: true
+      docker_build_args: |
+        GIT_COMMIT_HASH_SHORT=${{ github.sha }}
+        SOURCE_DATE_EPOCH=${{ github.event.head_commit.timestamp }}
+    secrets:
+      dockerhub_username: ${{ secrets.DOCKER_HUB_USERNAME }}
+      dockerhub_password: ${{ secrets.DOCKER_HUB_PASSWORD }}
