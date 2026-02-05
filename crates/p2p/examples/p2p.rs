@@ -62,10 +62,7 @@ async fn main() -> Result<()> {
                 .await
                 .ok_or(anyhow::anyhow!("Swarm event is None"))?
             {
-                SwarmEvent::NewListenAddr { .. } => {}
-                SwarmEvent::Dialing { .. } => {}
-                SwarmEvent::ConnectionEstablished { .. } => {}
-                SwarmEvent::Behaviour(PlutoMdnsBehaviourEvent::Pluto(
+                SwarmEvent::NewListenAddr { .. } | SwarmEvent::Dialing { .. } | SwarmEvent::ConnectionEstablished { .. } || SwarmEvent::Behaviour(PlutoMdnsBehaviourEvent::Pluto(
                     PlutoBehaviourEvent::Ping(_),
                 )) => {}
                 SwarmEvent::Behaviour(PlutoMdnsBehaviourEvent::Pluto(
@@ -80,7 +77,7 @@ async fn main() -> Result<()> {
                         ..
                     }),
                 )) => {
-                    println!("Relay told us our observed address: {}", observed_addr);
+                    println!("Relay told us our observed address: {observed_addr}");
                     learned_observed_addr = true;
                 }
                 event => panic!("{event:?}"),
@@ -91,7 +88,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    println!("ENR: {}", enr);
+    println!("ENR: {enr}");
 
     swarm.listen_on(format!("/ip4/0.0.0.0/udp/{}/quic-v1", args.port).parse()?)?;
     swarm.listen_on(format!("/ip4/0.0.0.0/tcp/{}", args.port).parse()?)?;
@@ -104,14 +101,14 @@ async fn main() -> Result<()> {
             event = swarm.select_next_some() => match event {
                 SwarmEvent::Behaviour(PlutoMdnsBehaviourEvent::Pluto(PlutoBehaviourEvent::Identify(identify::Event::Received { info: identify::Info { observed_addr, .. }, .. }))) => {
                     swarm.add_external_address(observed_addr.clone());
-                    println!("Address observed {}", observed_addr);
+                    println!("Address observed {observed_addr}");
                 }
                 SwarmEvent::Behaviour(PlutoMdnsBehaviourEvent::Pluto(PlutoBehaviourEvent::Relay(event))) => {
-                    println!("Got relay event: {:?}", event);
+                    println!("Got relay event: {event:?}");
                 },
                 SwarmEvent::Behaviour(PlutoMdnsBehaviourEvent::Mdns(libp2p::mdns::Event::Discovered(nodes))) => {
                     for node in nodes {
-                        println!("Discovered node: {:?}", node);
+                        println!("Discovered node: {node:?}");
                         swarm.dial(node.1)?;
                     }
                 }
@@ -119,16 +116,16 @@ async fn main() -> Result<()> {
                     println!("Local node is listening on {address}");
                 }
                 SwarmEvent::Behaviour(PlutoMdnsBehaviourEvent::Pluto(PlutoBehaviourEvent::Ping(ping_event))) => {
-                    println!("Got ping event: {:?}", ping_event);
+                    println!("Got ping event: {ping_event:?}");
                 }
                 SwarmEvent::IncomingConnection { connection_id, local_addr, send_back_addr } => {
-                    println!("Incoming connection (id={connection_id}) from {:?} (send on {:?})", local_addr, send_back_addr);
+                    println!("Incoming connection (id={connection_id}) from {local_addr:?} (send on {send_back_addr:?})");
                 }
                 SwarmEvent::IncomingConnectionError {peer_id,connection_id,error, local_addr, send_back_addr } => {
-                    println!("Incoming connection (id={connection_id}) error from {:?} (send on {:?} to {:?}): {:?}", peer_id, local_addr, send_back_addr, error);
+                    println!("Incoming connection (id={connection_id}) error from {peer_id:?} (send on {local_addr:?} to {send_back_addr:?}): {error:?}");
                 }
                 event => {
-                    println!("{:?}", event);
+                    println!("{event:?}");
                 }
             },
             _ = signal::ctrl_c() => {

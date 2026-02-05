@@ -26,7 +26,7 @@ pub(crate) fn is_public_addr(addr: &Multiaddr) -> bool {
             Protocol::Ip6(ip) => {
                 return !ip.is_loopback() && !ip.is_unspecified();
             }
-            _ => continue,
+            _ => {},
         }
     }
     false

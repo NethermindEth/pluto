@@ -54,9 +54,7 @@ impl fmt::Display for Failure {
 impl Error for Failure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Failure::Timeout => None,
-            Failure::Unsupported => None,
-            Failure::InvalidResponse { .. } => None,
+            Failure::Timeout | Failure::Unsupported | Failure::InvalidResponse { .. } => None,
             Failure::Other { error } => Some(&**error),
         }
     }

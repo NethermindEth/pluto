@@ -598,7 +598,7 @@ mod tests {
                 .builder_registration
                 .message
                 .gas_limit,
-            30000000
+            30_000_000
         );
         assert_eq!(
             lock.distributed_validators[0]
@@ -606,7 +606,7 @@ mod tests {
                 .message
                 .timestamp
                 .timestamp(),
-            1655733600
+            1_655_733_600
         );
         assert_eq!(lock.distributed_validators[0].builder_registration.message.pub_key, hex::decode("1814be823350eab13935f31d84484517e924aef78ae151c00755925836b7075885650c30ec29a3703934bf50a28da102").unwrap());
         assert_eq!(lock.distributed_validators[0].builder_registration.signature, hex::decode("d313c8a3b4c1c0e05447f4ba370eb36dbcfdec90b302dcdc3b9ef522e2a6f1ed0afec1f8e20faabedf6b162e717d3a748a58677a0c56348f8921a266b11d0f334c62fe52ba53af19779cb2948b6570ffa0b773963c130ad797ddeafe4e3ad29b").unwrap());
@@ -631,7 +631,7 @@ mod tests {
         );
         assert_eq!(
             lock.distributed_validators[0].partial_deposit_data[1].amount,
-            8817733914007551237
+            8_817_733_914_007_551_237
         );
         assert_eq!(lock.distributed_validators[0].partial_deposit_data[1].signature, hex::decode("332088a8b07590bafcccbec6177536401d9a2b7f512b54bfc9d00532adf5aaa7c3a96bc59b489f77d9042c5bce26b163defde5ee6a0fbb3e9346cef81f0ae9515ef30fa47a364e75aea9e111d596e685a591121966e031650d510354aa845580").unwrap());
 
@@ -654,7 +654,7 @@ mod tests {
                 .builder_registration
                 .message
                 .gas_limit,
-            30000000
+            30_000_000
         );
         assert_eq!(
             lock.distributed_validators[1]
@@ -662,7 +662,7 @@ mod tests {
                 .message
                 .timestamp
                 .timestamp(),
-            1655733600
+            1_655_733_600
         );
         assert_eq!(lock.distributed_validators[1].builder_registration.message.pub_key, hex::decode("5125210f0ef1c314090f07c79a6f571c246f3e9ac0b7413ef110bd58b00ce73bff706f7ff4b6f44090a32711f3208e4e").unwrap());
         assert_eq!(lock.distributed_validators[1].builder_registration.signature, hex::decode("e65a31bd5d41e2d2ce9c2b17892f0fea1931a290220777a93143dfdcbfa68406e877073ff08834e197a4034aa48afa3f85b8a62708caebbac880b5b89b93da53810164402104e648b6226a1b78021851f5d9ac0f313a89ddfc454c5f8f72ac89").unwrap());
@@ -677,7 +677,7 @@ mod tests {
         );
         assert_eq!(
             lock.distributed_validators[1].partial_deposit_data[0].amount,
-            534275443587623213
+            534_275_443_587_623_213
         );
         assert_eq!(lock.distributed_validators[1].partial_deposit_data[0].signature, hex::decode("329cfffd4a75e498320982c85aad70384859c05a4b13a1d5b2f5bfef5a6ed92da482caa9568e5b6fe9d8a9ddd9eb09277b92cef9046efa18500944cbe800a0b1527ea64729a861d2f6497a3235c37f4192779ec1d96b3b1c5424fce0b727b030").unwrap());
 
@@ -689,7 +689,7 @@ mod tests {
         );
         assert_eq!(
             lock.distributed_validators[1].partial_deposit_data[1].amount,
-            2408919902728845389
+            2_408_919_902_728_845_389
         );
         assert_eq!(lock.distributed_validators[1].partial_deposit_data[1].signature, hex::decode("ce24eb65491622558fdf297b9fa007864bafd7cd4ca1b2fb5766ab431a032b72b9a7e937ed648d0801f29055d3090d2463718254f9442483c7b98b938045da519843854b0ed3f7ba951a493f321f0966603022c1dfc579b99ed9d20d573ad531").unwrap());
 

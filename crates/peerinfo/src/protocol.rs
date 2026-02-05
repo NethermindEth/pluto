@@ -428,12 +428,12 @@ mod tests {
             pluto_version: "v1.7.1".to_string(),
             lock_hash: (1u8..=32).collect::<Vec<_>>().into(),
             sent_at: Some(prost_types::Timestamp {
-                seconds: 1736944245, // 2025-01-15T13:00:45Z
+                seconds: 1_736_944_245, // 2025-01-15T13:00:45Z
                 nanos: 0,
             }),
             git_hash: "a1b2c3d".to_string(),
             started_at: Some(prost_types::Timestamp {
-                seconds: 1736935200, // 2025-01-15T10:30:00Z
+                seconds: 1_736_935_200, // 2025-01-15T10:30:00Z
                 nanos: 0,
             }),
             builder_api_enabled: true,
@@ -447,12 +447,12 @@ mod tests {
             pluto_version: "v1.5.0".to_string(),
             lock_hash: vec![0xff, 0xff, 0xff, 0xff].into(),
             sent_at: Some(prost_types::Timestamp {
-                seconds: 1733011200, // 2024-12-01T00:00:00Z
+                seconds: 1_733_011_200, // 2024-12-01T00:00:00Z
                 nanos: 0,
             }),
             git_hash: "1234567".to_string(),
             started_at: Some(prost_types::Timestamp {
-                seconds: 1733007600, // 2024-11-30T23:00:00Z
+                seconds: 1_733_007_600, // 2024-11-30T23:00:00Z
                 nanos: 0,
             }),
             builder_api_enabled: false,

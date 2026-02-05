@@ -72,6 +72,7 @@ impl RelayServerBehaviourBuilder {
     }
 
     /// Sets the identify protocol string.
+    #[must_use]
     pub fn with_identify_protocol(mut self, protocol: impl Into<String>) -> Self {
         self.identify_protocol = protocol.into();
         self
@@ -85,6 +86,7 @@ impl RelayServerBehaviourBuilder {
     }
 
     /// Sets the user agent string.
+    #[must_use]
     pub fn with_user_agent(mut self, user_agent: impl Into<String>) -> Self {
         self.user_agent = Some(user_agent.into());
         self

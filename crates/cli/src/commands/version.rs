@@ -18,7 +18,7 @@ pub fn run(args: VersionArgs) -> Result<()> {
 }
 
 /// Runs the version command with a custom writer (used for testing).
-fn run_with_writer<W: Write>(args: VersionArgs, writer: &mut W) -> Result<()> {
+fn run_with_writer<W: Write>(args: &VersionArgs, writer: &mut W) -> Result<()> {
     let (hash, timestamp) = pluto_core::version::git_commit();
     writeln!(
         writer,

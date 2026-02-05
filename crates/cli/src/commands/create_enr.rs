@@ -29,7 +29,7 @@ pub struct CreateEnrArgs {
 ///
 /// Stores a new charon-enr-private-key to disk and prints the ENR for the
 /// provided config. It returns an error if the key already exists.
-pub fn run(args: CreateEnrArgs) -> Result<()> {
+pub fn run(args: &CreateEnrArgs) -> Result<()> {
     if k1::load_priv_key(&args.data_dir).is_ok() {
         let enr_path = k1::key_path(&args.data_dir);
         return Err(CliError::PrivateKeyAlreadyExists { enr_path });

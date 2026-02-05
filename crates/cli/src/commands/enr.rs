@@ -30,7 +30,7 @@ pub struct EnrArgs {
 }
 
 /// Loads the p2pkey from disk and prints the ENR for the provided config.
-pub fn run(args: EnrArgs) -> Result<()> {
+pub fn run(args: &EnrArgs) -> Result<()> {
     let mut writer = io::stdout();
 
     let key = match k1::load_priv_key(&args.data_dir) {

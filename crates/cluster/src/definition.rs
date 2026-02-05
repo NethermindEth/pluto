@@ -279,9 +279,9 @@ impl Definition {
         name: String,
         num_validators: u64,
         threshold: u64,
-        fee_recipient_addresses: Vec<String>,
-        withdrawal_addresses: Vec<String>,
-        fork_version_hex: String,
+        fee_recipient_addresses: &[String],
+        withdrawal_addresses: &[String],
+        fork_version_hex: impl AsRef<str>,
         creator: Creator,
         operators: Vec<Operator>,
         deposit_amounts: Vec<u64>,
@@ -314,7 +314,7 @@ impl Definition {
             num_validators,
             threshold,
             dkg_algorithm: DKG_ALGO.to_string(),
-            fork_version: Default::default(),
+            fork_version: Vec::new(),
             operators,
             creator,
             validator_addresses: Vec::new(),
@@ -322,8 +322,8 @@ impl Definition {
             consensus_protocol,
             target_gas_limit,
             compounding,
-            config_hash: Default::default(),
-            definition_hash: Default::default(),
+            config_hash: Vec::new(),
+            definition_hash: Vec::new(),
         };
 
         def.validator_addresses = fee_recipient_addresses
@@ -335,7 +335,7 @@ impl Definition {
             })
             .collect();
 
-        def.fork_version = from_0x_hex_str(&fork_version_hex, FORK_VERSION_LEN)?;
+        def.fork_version = from_0x_hex_str(fork_version_hex.as_ref(), FORK_VERSION_LEN)?;
 
         for opt in opts {
             opt(&mut def);
@@ -1312,7 +1312,7 @@ impl From<DefinitionV1x10> for Definition {
     }
 }
 
-fn repeat_v_addresses(addr: ValidatorAddresses, num_validators: u64) -> Vec<ValidatorAddresses> {
+fn repeat_v_addresses(addr: &ValidatorAddresses, num_validators: u64) -> Vec<ValidatorAddresses> {
     let mut validator_addresses = Vec::new();
     for _ in 0..num_validators {
         validator_addresses.push(addr.clone());
@@ -1408,12 +1408,12 @@ mod tests {
 
         // Verify deposit amounts
         assert_eq!(definition.deposit_amounts.len(), 2);
-        assert_eq!(definition.deposit_amounts[0], 16000000000);
-        assert_eq!(definition.deposit_amounts[1], 16000000000);
+        assert_eq!(definition.deposit_amounts[0], 16_000_000_000);
+        assert_eq!(definition.deposit_amounts[1], 16_000_000_000);
 
         // Verify v1.10.0 specific fields
         assert_eq!(definition.consensus_protocol, "abft");
-        assert_eq!(definition.target_gas_limit, 30000000);
+        assert_eq!(definition.target_gas_limit, 30_000_000);
         assert!(!definition.compounding);
 
         // Verify hashes are present

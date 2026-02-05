@@ -128,7 +128,7 @@ impl From<DistValidator> for DistValidatorV1x0or1 {
         Self {
             pub_key: dist_validator.pub_key,
             pub_shares: dist_validator.pub_shares,
-            fee_recipient_address: Default::default(),
+            fee_recipient_address: Vec::new(),
         }
     }
 }
@@ -171,7 +171,7 @@ impl From<DistValidator> for DistValidatorV1x2to5 {
         Self {
             pub_key: dist_validator.pub_key,
             pub_shares: dist_validator.pub_shares,
-            fee_recipient_address: Default::default(),
+            fee_recipient_address: Vec::new(),
         }
     }
 }

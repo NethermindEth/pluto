@@ -338,7 +338,7 @@ mod tests {
         for tt in tests {
             let parsed = parse_http_headers(&tt.headers);
             assert!(
-                !parsed.is_err(),
+                parsed.is_ok(),
                 "Test '{}': Header ({:?}) failed to parse",
                 tt.name,
                 tt.headers
@@ -351,7 +351,7 @@ mod tests {
                 tt.name,
                 parsed,
                 tt.want
-            )
+            );
         }
     }
 }

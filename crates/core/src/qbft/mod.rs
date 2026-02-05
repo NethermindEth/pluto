@@ -780,7 +780,7 @@ where
     V: PartialEq,
 {
     // Get all RoundChange messages with round (rj) higher than current round (ri)
-    assert!(((frc.len() as i64) >= d.faulty() + 1), "bug: Frc too short");
+    assert!(((frc.len() as i64) > d.faulty()), "bug: Frc too short");
 
     // Get the smallest round in the set.
     let mut rmin = i64::MAX;

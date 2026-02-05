@@ -259,7 +259,7 @@ fn test_qbft(test: Test) {
                     let q_commit = res.expect(READ_CHAN_ERR);
 
                     for commit in q_commit.clone() {
-                        for (_, previous) in &results {
+                        for previous in results.values() {
                             assert_eq!(previous.value(), commit.value(), "commit values");
                         }
 
