@@ -228,7 +228,7 @@ pub async fn enr_handler(
 
     // Create ENR record
     let record = pluto_eth2util::enr::Record::new(
-        state.secret_key.clone(),
+        &state.secret_key,
         vec![
             pluto_eth2util::enr::with_ip_impl(ip),
             pluto_eth2util::enr::with_tcp_impl(tcp_port),

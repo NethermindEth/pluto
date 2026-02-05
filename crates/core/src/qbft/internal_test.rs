@@ -220,7 +220,7 @@ fn test_qbft(test: Test) {
                         &test.instance,
                         i,
                         v_chan_rx,
-                        vs_chan_rx,
+                        &vs_chan_rx,
                     ))
                     .expect(WRITE_CHAN_ERR);
             });
@@ -781,7 +781,7 @@ fn duplicate_pre_prepare_rules() {
         &0,
         NO_LEADER,
         input_value_ch,
-        input_value_source_ch,
+        &input_value_source_ch,
     );
 
     assert!(res.is_ok());

@@ -47,7 +47,7 @@ pub fn run(args: &EnrArgs) -> Result<()> {
         }
     };
 
-    let record = Record::new(key.clone(), vec![])?;
+    let record = Record::new(&key, vec![])?;
 
     writeln!(writer, "{record}")?;
 

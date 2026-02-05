@@ -1,5 +1,5 @@
-//! Package `qbft` is an implementation of ["The Istanbul BFT Consensus Algorithm"](https://arxiv.org/pdf/2002.03613.pdf) by Henrique Moniz
-//! as referenced by the [QBFT spec](https://github.com/ConsenSys/qbft-formal-spec-and-verification).
+//! Package `qbft` is an implementation of [`The Istanbul BFT Consensus Algorithm`](https://arxiv.org/pdf/2002.03613.pdf) by Henrique Moniz
+//! as referenced by the [`QBFT spec`](https://github.com/ConsenSys/qbft-formal-spec-and-verification).
 //!
 //! ## Features
 //!
@@ -299,7 +299,7 @@ pub fn run<I, V, C>(
     instance: &I,
     process: i64,
     mut input_value_ch: mpmc::Receiver<V>,
-    input_value_source_ch: mpmc::Receiver<C>,
+    input_value_source_ch: &mpmc::Receiver<C>,
 ) -> Result<()>
 where
     V: PartialEq + Eq + Hash + Default,
@@ -1198,7 +1198,7 @@ fn filter_by_round_and_value<I, V, C>(
 where
     V: PartialEq,
 {
-    filter_msgs(msgs, message_type, round, Some(&value), None, None)
+    filter_msgs(msgs, message_type, round, Some(value), None, None)
 }
 
 /// Returns all round change messages for the provided round.
@@ -1283,7 +1283,7 @@ where
 
 /// Construct a function that returns true if the message is from a unique
 /// source.
-fn uniq_source<I, V, C>(vec: Vec<Msg<I, V, C>>) -> Box<impl FnMut(&Msg<I, V, C>) -> bool>
+fn uniq_source<I, V, C>(vec: Vec<Msg<I, V, C>>) -> impl for<'a> FnMut(&'a std::sync::Arc<(dyn SomeMsg<I, V, C> + 'static)>) -> bool
 where
     V: PartialEq,
 {

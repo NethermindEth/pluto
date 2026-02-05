@@ -117,7 +117,7 @@ mod predefined {
 
     /// Holesky network. Metadata taken from <https://github.com/eth-clients/holesky#metadata>.
     pub const HOLESKY: Network = Network {
-        chain_id: 17000,
+        chain_id: 17_000,
         name: "holesky",
         genesis_fork_version_hex: "0x01017000",
         genesis_timestamp: 1_696_000_704,
@@ -126,7 +126,7 @@ mod predefined {
 
     /// Hoodi network. Metadata taken from <https://github.com/eth-clients/hoodi/#metadata>.
     pub const HOODI: Network = Network {
-        chain_id: 560048,
+        chain_id: 560_048,
         name: "hoodi",
         genesis_fork_version_hex: "0x10000910",
         genesis_timestamp: 1_742_213_400,

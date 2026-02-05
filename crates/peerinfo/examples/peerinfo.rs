@@ -227,7 +227,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let enr = pluto_eth2util::enr::Record::new(
-        key.clone(),
+        &key,
         vec![
             pluto_eth2util::enr::with_ip_impl(Ipv4Addr::from([0, 0, 0, 0])),
             pluto_eth2util::enr::with_tcp_impl(args.port),

@@ -48,7 +48,7 @@ async fn main() -> Result<()> {
 
     let swarm = &mut p2p.swarm;
 
-    let enr = Record::new(key.clone(), vec![])?;
+    let enr = Record::new(&key, vec![])?;
 
     if let Some(relay_url) = &args.relay_url {
         swarm.dial(relay_url.clone())?;
