@@ -27,5 +27,8 @@ k256.workspace = true
 [build-dependencies]
 prost-build.workspace = true
 
+[dev-dependencies]
+pluto-testutil.workspace = true
+
 [lints]
 workspace = true

@@ -52,9 +52,9 @@ pub enum ManifestError {
         legacy_hash: String,
     },
 
-    /// Invalid signed mutation.
-    #[error("invalid signed mutation: {0}")]
-    InvalidSignedMutation(String),
+    /// Mutation is nil.
+    #[error("mutation is nil")]
+    InvalidSignedMutation,
 
     /// Invalid mutation.
     #[error("invalid mutation: {0}")]
@@ -69,8 +69,8 @@ pub enum ManifestError {
     InvalidSignature,
 
     /// Invalid cluster.
-    #[error("invalid cluster: {0}")]
-    InvalidCluster(String),
+    #[error("invalid cluster")]
+    InvalidCluster,
 
     /// Cluster contains duplicate peer ENRs.
     #[error("cluster contains duplicate peer enrs: {enr}")]
@@ -147,3 +147,22 @@ pub enum ManifestError {
 
 /// Result type alias for manifest operations.
 pub type Result<T> = std::result::Result<T, ManifestError>;
+
+/// Extracts and validates a mutation from a signed mutation.
+pub(crate) fn extract_mutation(
+    signed: &crate::manifestpb::v1::SignedMutation,
+    expected_type: types::MutationType,
+) -> Result<&crate::manifestpb::v1::Mutation> {
+    let mutation = signed
+        .mutation
+        .as_ref()
+        .ok_or(ManifestError::InvalidSignedMutation)?;
+
+    if mutation.r#type != expected_type.as_str() {
+        return Err(ManifestError::InvalidMutation(
+            "invalid mutation type".to_string(),
+        ));
+    }
+
+    Ok(mutation)
+}
