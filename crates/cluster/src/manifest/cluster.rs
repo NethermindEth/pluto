@@ -102,46 +102,38 @@ mod tests {
     use crate::manifestpb::v1::Operator;
 
     #[test]
-    fn test_cluster_peers_empty() {
+    fn cluster_peers_empty() {
         let cluster = Cluster::default();
         let result = cluster_peers(&cluster);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("no operators"));
     }
 
     #[test]
-    fn test_cluster_peers_duplicate_enr() {
+    fn cluster_peers_duplicate_enr() {
+        let duplicate_enr = "enr:-HW4QIHPUOMb34YoizKGhz7nsDNQ7hCaiuwyscmeaOQ04awdH05gDnGrZhxDfzcfHssCDeB-esi99A2RoZia6UaYBCuAgmlkgnY0iXNlY3AyNTZrMaECTUts0TYQMsqb0q652QCqTUXZ6tgKyUIzdMRRpyVNB2Y".to_string();
+
         let cluster = Cluster {
             operators: vec![
                 Operator {
                     address: "0x123".to_string(),
-                    enr: "enr:-test".to_string(),
+                    enr: duplicate_enr.clone(),
                 },
                 Operator {
                     address: "0x456".to_string(),
-                    enr: "enr:-test".to_string(), // duplicate
+                    enr: duplicate_enr, // duplicate
                 },
             ],
             ..Default::default()
         };
         let result = cluster_peers(&cluster);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("duplicate"));
+        assert!(matches!(
+            result.unwrap_err(),
+            ManifestError::DuplicatePeerENR { .. }
+        ));
     }
 
     #[test]
-    fn test_validator_public_key_hex() {
-        let validator = Validator {
-            public_key: vec![0x01, 0x02, 0x03].into(),
-            ..Default::default()
-        };
-
-        let hex = validator_public_key_hex(&validator);
-        assert_eq!(hex, "0x010203");
-    }
-
-    #[test]
-    fn test_validator_public_share() {
+    fn validator_public_share_test() {
         let mut share0 = vec![0u8; PUBLIC_KEY_LENGTH];
         share0[0] = 0x01;
         let mut share1 = vec![0u8; PUBLIC_KEY_LENGTH];

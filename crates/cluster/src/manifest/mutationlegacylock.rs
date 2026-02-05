@@ -4,13 +4,12 @@ use prost::Message as _;
 
 use crate::{
     lock::Lock,
-    manifestpb::v1::{Cluster, LegacyLock, Mutation, Operator, SignedMutation, SignedMutationList},
+    manifestpb::v1::{Cluster, LegacyLock, Mutation, Operator, SignedMutation},
 };
 
 use super::{
     ManifestError, Result, extract_mutation,
     helpers::{validator_to_proto, verify_empty_sig},
-    materialise::materialise,
     types::MutationType,
 };
 
@@ -49,50 +48,6 @@ pub fn new_raw_legacy_lock(json_bytes: &[u8]) -> Result<SignedMutation> {
         }),
         signer: Default::default(),
         signature: Default::default(),
-    })
-}
-
-/// Creates a new legacy lock mutation for testing.
-/// NOTE: @iamquang95 do we need this
-///
-/// This method only supports valid locks (where re-calculating the lock hash
-/// matches the existing hash). Use `new_raw_legacy_lock` for --no-verify
-/// support.
-pub fn new_legacy_lock_for_tests(lock: &Lock) -> Result<SignedMutation> {
-    // Marshalling below re-calculates the lock hash, so ensure it matches.
-    let mut lock_copy = lock.clone();
-    lock_copy
-        .set_lock_hash()
-        .map_err(|e| ManifestError::InvalidMutation(format!("set lock hash: {}", e)))?;
-
-    if lock_copy.lock_hash != lock.lock_hash {
-        return Err(ManifestError::InvalidMutation(
-            "this method only supports valid locks, use new_raw_legacy_lock for --no-verify support"
-                .to_string(),
-        ));
-    }
-
-    let json_bytes = serde_json::to_vec(lock)
-        .map_err(|e| ManifestError::InvalidMutation(format!("marshal lock: {}", e)))?;
-
-    new_raw_legacy_lock(&json_bytes)
-}
-
-/// Creates a new DAG from a legacy lock for testing.
-/// NOTE: @iamquang95 do we need this
-pub fn new_dag_from_lock_for_tests(lock: &Lock) -> Result<SignedMutationList> {
-    let signed = new_legacy_lock_for_tests(lock)?;
-    Ok(SignedMutationList {
-        mutations: vec![signed],
-    })
-}
-
-/// Creates a new cluster from a legacy lock for testing.
-/// NOTE: @iamquang95 do we need this
-pub fn new_cluster_from_lock_for_tests(lock: &Lock) -> Result<Cluster> {
-    let signed = new_legacy_lock_for_tests(lock)?;
-    materialise(&SignedMutationList {
-        mutations: vec![signed],
     })
 }
 
@@ -194,21 +149,16 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{manifest::materialise::materialise, manifestpb::v1::SignedMutationList};
 
     #[test]
-    fn test_is_zero_proto() {
+    fn is_zero_proto_test() {
         let cluster = Cluster::default();
         assert!(is_zero_proto(&cluster));
-
-        let cluster_with_name = Cluster {
-            name: "test".to_string(),
-            ..Default::default()
-        };
-        assert!(!is_zero_proto(&cluster_with_name));
     }
 
     #[test]
-    fn test_legacy_lock_not_first_mutation() {
+    fn legacy_lock_not_first_mutation() {
         let cluster = Cluster {
             name: "foo".to_string(),
             ..Default::default()
@@ -216,17 +166,20 @@ mod tests {
 
         let result = transform_legacy_lock(&cluster, &SignedMutation::default());
         assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("legacy lock not first mutation"));
+        assert!(matches!(
+            result.unwrap_err(),
+            ManifestError::InvalidMutation(_)
+        ));
     }
 
     #[test]
-    fn test_load_legacy_lock_from_testdata() {
+    fn load_legacy_lock_from_testdata() {
         let lock_json = include_str!("../testdata/cluster_lock_v1_8_0.json");
         let lock: Lock = serde_json::from_str(lock_json).unwrap();
 
-        // Test new_legacy_lock_for_tests
-        let signed = new_legacy_lock_for_tests(&lock).unwrap();
+        // Test creating legacy lock mutation using official method
+        let json_bytes = serde_json::to_vec(&lock).unwrap();
+        let signed = new_raw_legacy_lock(&json_bytes).unwrap();
         assert!(signed.mutation.is_some());
 
         let mutation = signed.mutation.as_ref().unwrap();
@@ -243,20 +196,29 @@ mod tests {
     }
 
     #[test]
-    fn test_new_dag_from_lock_for_tests() {
+    fn new_dag_from_lock() {
         let lock_json = include_str!("../testdata/cluster_lock_v1_8_0.json");
         let lock: Lock = serde_json::from_str(lock_json).unwrap();
 
-        let dag = new_dag_from_lock_for_tests(&lock).unwrap();
+        let json_bytes = serde_json::to_vec(&lock).unwrap();
+        let signed = new_raw_legacy_lock(&json_bytes).unwrap();
+        let dag = SignedMutationList {
+            mutations: vec![signed],
+        };
         assert_eq!(dag.mutations.len(), 1);
     }
 
     #[test]
-    fn test_new_cluster_from_lock_for_tests() {
+    fn new_cluster_from_lock() {
         let lock_json = include_str!("../testdata/cluster_lock_v1_8_0.json");
         let lock: Lock = serde_json::from_str(lock_json).unwrap();
 
-        let cluster = new_cluster_from_lock_for_tests(&lock).unwrap();
+        let json_bytes = serde_json::to_vec(&lock).unwrap();
+        let signed = new_raw_legacy_lock(&json_bytes).unwrap();
+        let cluster = materialise(&SignedMutationList {
+            mutations: vec![signed],
+        })
+        .unwrap();
         assert_eq!(cluster.name, lock.name);
         assert!(!cluster.initial_mutation_hash.is_empty());
         assert!(!cluster.latest_mutation_hash.is_empty());

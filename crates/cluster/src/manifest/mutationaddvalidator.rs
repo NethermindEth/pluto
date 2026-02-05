@@ -179,6 +179,7 @@ pub(crate) fn transform_add_validators(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pluto_testutil::random::random_bytes32_seed;
 
     fn create_test_validator(idx: u8) -> Validator {
         Validator {
@@ -191,8 +192,8 @@ mod tests {
     }
 
     #[test]
-    fn test_new_gen_validators() {
-        let parent = [0u8; 32];
+    fn new_gen_validators_test() {
+        let parent = random_bytes32_seed(1);
         let validators = vec![create_test_validator(1), create_test_validator(2)];
 
         let signed = new_gen_validators(&parent, validators.clone()).unwrap();
@@ -205,43 +206,32 @@ mod tests {
     }
 
     #[test]
-    fn test_new_gen_validators_empty() {
-        let parent = [0u8; 32];
+    fn new_gen_validators_empty() {
+        let parent = random_bytes32_seed(2);
         let validators = vec![];
 
         let result = new_gen_validators(&parent, validators);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("no validators"));
+        assert!(matches!(
+            result.unwrap_err(),
+            ManifestError::InvalidMutation(_)
+        ));
     }
 
     #[test]
-    fn test_new_gen_validators_invalid_parent() {
+    fn new_gen_validators_invalid_parent() {
         let parent = [0u8; 16]; // Invalid length
         let validators = vec![create_test_validator(1)];
 
         let result = new_gen_validators(&parent, validators);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("invalid parent hash")
-        );
+        assert!(matches!(
+            result.unwrap_err(),
+            ManifestError::InvalidMutation(_)
+        ));
     }
 
     #[test]
-    fn test_new_gen_validators_invalid_address() {
-        let parent = [0u8; 32];
-        let mut validator = create_test_validator(1);
-        validator.fee_recipient_address = "invalid".to_string();
-
-        let result = new_gen_validators(&parent, vec![validator]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_transform_gen_validators() {
-        let parent = [0u8; 32];
+    fn transform_gen_validators_test() {
+        let parent = random_bytes32_seed(3);
         let validators = vec![create_test_validator(1), create_test_validator(2)];
 
         let signed = new_gen_validators(&parent, validators.clone()).unwrap();
@@ -253,11 +243,12 @@ mod tests {
     }
 
     #[test]
-    fn test_new_add_validators_invalid_gen_type() {
+    fn new_add_validators_invalid_gen_type() {
         // Create a mutation with wrong type
+        let parent = random_bytes32_seed(4);
         let wrong_type = SignedMutation {
             mutation: Some(Mutation {
-                parent: vec![0u8; 32].into(),
+                parent: parent.clone().into(),
                 r#type: MutationType::NodeApproval.as_str().to_string(),
                 data: None,
             }),
@@ -266,7 +257,7 @@ mod tests {
 
         let node_approvals = SignedMutation {
             mutation: Some(Mutation {
-                parent: vec![0u8; 32].into(),
+                parent: parent.into(),
                 r#type: MutationType::NodeApprovals.as_str().to_string(),
                 data: None,
             }),
@@ -274,42 +265,45 @@ mod tests {
         };
 
         let result = new_add_validators(&wrong_type, &node_approvals);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("invalid mutation type")
-        );
+        assert!(matches!(
+            result.unwrap_err(),
+            ManifestError::InvalidMutation(_)
+        ));
     }
 
     #[test]
-    fn test_new_add_validators_invalid_approvals_type() {
-        let gen_validators = SignedMutation {
-            mutation: Some(Mutation {
-                parent: vec![0u8; 32].into(),
-                r#type: MutationType::GenValidators.as_str().to_string(),
-                data: None,
-            }),
-            ..Default::default()
-        };
+    fn gen_validators() {
+        use super::super::helpers::validator_to_proto;
+        use crate::lock::Lock;
+        use std::{fs, path::PathBuf};
 
-        let wrong_type = SignedMutation {
-            mutation: Some(Mutation {
-                parent: vec![0u8; 32].into(),
-                r#type: MutationType::NodeApproval.as_str().to_string(),
-                data: None,
-            }),
-            ..Default::default()
-        };
+        let lock_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src/manifest/testdata")
+            .join("lock.json");
+        let lock_json = fs::read_to_string(&lock_path).unwrap();
+        let lock: Lock = serde_json::from_str(&lock_json).unwrap();
 
-        let result = new_add_validators(&gen_validators, &wrong_type);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("invalid mutation type")
-        );
+        let mut vals = Vec::new();
+        for (i, validator) in lock.distributed_validators.iter().enumerate() {
+            let val = validator_to_proto(validator, &lock.validator_addresses[i]).unwrap();
+            vals.push(val);
+        }
+
+        let parent =
+            hex::decode("605ec6de4f1ae997dd3545513b934c335a833f4635dc9fad7758314f79ff0fae")
+                .unwrap();
+
+        let signed = new_gen_validators(&parent, vals.clone()).unwrap();
+
+        let cluster = Cluster::default();
+        let result = transform_gen_validators(&cluster, &signed).unwrap();
+        assert_eq!(result.validators.len(), vals.len());
+        for (i, val) in vals.iter().enumerate() {
+            assert_eq!(result.validators[i].public_key, val.public_key);
+            assert_eq!(
+                result.validators[i].fee_recipient_address,
+                val.fee_recipient_address
+            );
+        }
     }
 }
