@@ -2,10 +2,10 @@
 /// Cluster represents the manifest of a cluster after applying a sequence of mutations.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Cluster {
-    /// `InitialMutationHash` is the hash of first signed mutation, uniquely identifying cluster, aka "cluster hash". It must be 32 bytes.
+    /// InitialMutationHash is the hash of first signed mutation, uniquely identifying cluster, aka "cluster hash". It must be 32 bytes.
     #[prost(bytes = "bytes", tag = "1")]
     pub initial_mutation_hash: ::prost::bytes::Bytes,
-    /// `LatestMutationHash` is the hash of last signed mutation, identifying this specific cluster iteration. It must be 32 bytes.
+    /// LatestMutationHash is the hash of last signed mutation, identifying this specific cluster iteration. It must be 32 bytes.
     #[prost(bytes = "bytes", tag = "2")]
     pub latest_mutation_hash: ::prost::bytes::Bytes,
     /// Name is the name of the cluster.
@@ -14,10 +14,10 @@ pub struct Cluster {
     /// Threshold is the threshold of the cluster.
     #[prost(int32, tag = "4")]
     pub threshold: i32,
-    /// `DKGAlgorithm` is the DKG algorithm used to create the validator keys of the cluster.
+    /// DKGAlgorithm is the DKG algorithm used to create the validator keys of the cluster.
     #[prost(string, tag = "5")]
     pub dkg_algorithm: ::prost::alloc::string::String,
-    /// `ForkVersion` is the fork version (network/chain) of the cluster. It must be 4 bytes.
+    /// ForkVersion is the fork version (network/chain) of the cluster. It must be 4 bytes.
     #[prost(bytes = "bytes", tag = "6")]
     pub fork_version: ::prost::bytes::Bytes,
     /// Operators is the list of operators of the cluster.
@@ -26,10 +26,10 @@ pub struct Cluster {
     /// Validators is the list of validators of the cluster.
     #[prost(message, repeated, tag = "8")]
     pub validators: ::prost::alloc::vec::Vec<Validator>,
-    /// `ConsensusProtocol` is the consensus protocol name preferred by the cluster, e.g. "abft".
+    /// ConsensusProtocol is the consensus protocol name preferred by the cluster, e.g. "abft".
     #[prost(string, tag = "9")]
     pub consensus_protocol: ::prost::alloc::string::String,
-    /// `TargetGasLimit` is the custom target gas limit for transactions.
+    /// TargetGasLimit is the custom target gas limit for transactions.
     #[prost(uint32, tag = "10")]
     pub target_gas_limit: u32,
     /// Compounding is the flag to enable compounding rewards.
@@ -49,7 +49,7 @@ pub struct Mutation {
     #[prost(message, optional, tag = "3")]
     pub data: ::core::option::Option<::prost_types::Any>,
 }
-/// `SignedMutation` is a mutation signed by a signer.
+/// SignedMutation is a mutation signed by a signer.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SignedMutation {
     /// Mutation is the mutation.
@@ -62,7 +62,7 @@ pub struct SignedMutation {
     #[prost(bytes = "bytes", tag = "3")]
     pub signature: ::prost::bytes::Bytes,
 }
-/// `SignedMutationList` is a list of signed mutations.
+/// SignedMutationList is a list of signed mutations.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SignedMutationList {
     /// Mutations is the list of mutations.
@@ -82,30 +82,30 @@ pub struct Operator {
 /// Validator represents a distributed validator managed by the DV cluster.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Validator {
-    /// `PublicKey` is the group public key of the validator.
+    /// PublicKey is the group public key of the validator.
     #[prost(bytes = "bytes", tag = "1")]
     pub public_key: ::prost::bytes::Bytes,
-    /// `PubShares` is the ordered list of public shares of the validator.
+    /// PubShares is the ordered list of public shares of the validator.
     #[prost(bytes = "bytes", repeated, tag = "2")]
     pub pub_shares: ::prost::alloc::vec::Vec<::prost::bytes::Bytes>,
-    /// `FeeRecipientAddress` is the fee recipient Ethereum address of the validator.
+    /// FeeRecipientAddress is the fee recipient Ethereum address of the validator.
     #[prost(string, tag = "3")]
     pub fee_recipient_address: ::prost::alloc::string::String,
-    /// `WithdrawalAddress` is the withdrawal Ethereum address of the validator.
+    /// WithdrawalAddress is the withdrawal Ethereum address of the validator.
     #[prost(string, tag = "4")]
     pub withdrawal_address: ::prost::alloc::string::String,
-    /// `BuilderRegistration` is the pre-generated json-formatted builder-API validator registration of the validator.
+    /// BuilderRegistration is the pre-generated json-formatted builder-API validator registration of the validator.
     #[prost(bytes = "bytes", tag = "5")]
     pub builder_registration_json: ::prost::bytes::Bytes,
 }
-/// `ValidatorList` is a list of validators.
+/// ValidatorList is a list of validators.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ValidatorList {
     /// Validators is the list of validators.
     #[prost(message, repeated, tag = "1")]
     pub validators: ::prost::alloc::vec::Vec<Validator>,
 }
-/// `LegacyLock` represents a json formatted legacy cluster lock file.
+/// LegacyLock represents a json formatted legacy cluster lock file.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LegacyLock {
     #[prost(bytes = "bytes", tag = "1")]

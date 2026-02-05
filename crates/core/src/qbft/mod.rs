@@ -480,7 +480,7 @@ where
                             ct,
                             d,
                             &msg,
-                            &input_value_source_ch,
+                            input_value_source_ch,
                             input_value_source.clone(),
                             &timer_chan,
                         );

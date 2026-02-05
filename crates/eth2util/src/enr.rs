@@ -147,7 +147,7 @@ impl Record {
             opt(&mut kvs);
         }
 
-        let signature = sign(&secret_key, &encode_elements(&[], &kvs))?;
+        let signature = sign(secret_key, &encode_elements(&[], &kvs))?;
 
         Ok(Record {
             public_key: Some(secret_key.public_key()),
