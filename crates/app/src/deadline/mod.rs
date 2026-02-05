@@ -1,12 +1,6 @@
-// TODO: Requires `eth2client`
-#![allow(unreachable_code)]
-#![allow(unused_variables)]
-#![allow(clippy::diverging_sub_expression)]
-
 use crate::eth2wrap::eth2api::{EthBeaconNodeApiClientError, EthBeaconNodeApiClientExt};
 use pluto_core::types::{Duty, DutyType};
 use pluto_eth2api::EthBeaconNodeApiClient;
-use std::time;
 
 /// Defines the fraction of the slot duration to use as a margin.
 /// This is to consider network delays and other factors that may affect the
