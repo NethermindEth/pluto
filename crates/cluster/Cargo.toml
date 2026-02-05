@@ -29,6 +29,8 @@ prost-build.workspace = true
 
 [dev-dependencies]
 pluto-testutil.workspace = true
+test-case.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

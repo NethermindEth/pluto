@@ -193,39 +193,15 @@ pub(crate) fn transform_node_approvals(
     Ok(result)
 }
 
-/// Signs a node approval with a custom timestamp (for testing).
-#[cfg(test)]
-pub fn sign_node_approval_with_timestamp(
-    parent: &[u8],
-    secret: &SecretKey,
-    timestamp: Timestamp,
-) -> Result<SignedMutation> {
-    let timestamp_any = timestamp_to_any(&timestamp)?;
-
-    if parent.len() != HASH_LEN {
-        return Err(ManifestError::InvalidMutation(
-            "invalid parent hash".to_string(),
-        ));
-    }
-
-    let mutation = Mutation {
-        parent: parent.to_vec().into(),
-        r#type: MutationType::NodeApproval.as_str().to_string(),
-        data: Some(timestamp_any),
-    };
-
-    sign_k1(&mutation, secret)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pluto_testutil::random::generate_insecure_k1_key;
+    use pluto_testutil::random::{generate_insecure_k1_key, random_bytes32_seed};
 
     #[test]
-    fn test_sign_node_approval() {
+    fn sign_node_approval_test() {
         let secret = generate_insecure_k1_key(1);
-        let parent = [0u8; 32];
+        let parent = random_bytes32_seed(1);
 
         let signed = sign_node_approval(&parent, &secret).unwrap();
 
@@ -235,22 +211,21 @@ mod tests {
         assert!(!signed.signer.is_empty());
         assert!(!signed.signature.is_empty());
 
-        // Verify the signature
         verify_node_approval(&signed).unwrap();
     }
 
     #[test]
-    fn test_sign_node_approval_invalid_parent() {
+    fn sign_node_approval_invalid_parent() {
         let secret = generate_insecure_k1_key(1);
-        let parent = [0u8; 16]; // Invalid length
+        let parent = [0u8; HASH_LEN / 2]; // Invalid length
 
         let result = sign_node_approval(&parent, &secret);
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_new_node_approvals_composite() {
-        let parent = [0u8; 32];
+    fn new_node_approvals_composite_test() {
+        let parent = random_bytes32_seed(1);
         let mut approvals = Vec::new();
 
         for i in 0..3 {
@@ -269,26 +244,24 @@ mod tests {
     }
 
     #[test]
-    fn test_new_node_approvals_composite_empty() {
+    fn new_node_approvals_composite_empty() {
         let result = new_node_approvals_composite(vec![]);
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_new_node_approvals_composite_mismatching_parent() {
+    fn new_node_approvals_composite_mismatching_parent() {
         let secret1 = generate_insecure_k1_key(1);
         let secret2 = generate_insecure_k1_key(2);
 
-        let approval1 = sign_node_approval(&[0u8; 32], &secret1).unwrap();
-        let approval2 = sign_node_approval(&[1u8; 32], &secret2).unwrap();
+        let approval1 = sign_node_approval(&random_bytes32_seed(1), &secret1).unwrap();
+        let approval2 = sign_node_approval(&random_bytes32_seed(2), &secret2).unwrap();
 
         let result = new_node_approvals_composite(vec![approval1, approval2]);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("mismatching node approvals parent")
-        );
+        assert!(matches!(
+            result.unwrap_err(),
+            ManifestError::InvalidMutation(_)
+        ));
     }
 }
