@@ -6,7 +6,7 @@ use crate::{
 };
 
 use super::{
-    ManifestError, Result,
+    error::{ManifestError, Result},
     helpers::{HASH_LEN, hash_signed_mutation},
     mutationaddvalidator::{transform_add_validators, transform_gen_validators},
     mutationlegacylock::transform_legacy_lock,
@@ -51,7 +51,7 @@ impl MutationType {
             _ => None,
         }
     }
-    
+
     /// Transforms the cluster with the given signed mutation.
     pub fn transform(&self, cluster: &Cluster, signed: &SignedMutation) -> Result<Cluster> {
         match self {

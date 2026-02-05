@@ -8,8 +8,8 @@ use crate::{
 };
 
 use super::{
-    ManifestError, Result, extract_mutation,
-    helpers::{HASH_LEN, verify_empty_sig},
+    error::{ManifestError, Result},
+    helpers::{HASH_LEN, extract_mutation, verify_empty_sig},
     types::MutationType,
 };
 
