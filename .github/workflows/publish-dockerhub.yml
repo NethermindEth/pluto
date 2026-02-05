@@ -1,4 +1,4 @@
-name: Docker Build and Push
+name: Publish Dockerhub
 
 on:
   workflow_dispatch:
@@ -10,16 +10,38 @@ permissions:
   attestations: write
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   push-to-dockerhub:
-    uses: NethermindEth/github-workflows/.github/workflows/docker-build-push-dockerhub.yaml@main
-    with:
-      image_name: "pluto"
-      additional_tags: ${{ github.ref_name }}
-      push: true
-      docker_build_args: |
-        GIT_COMMIT_HASH_SHORT=${{ github.sha }}
-        SOURCE_DATE_EPOCH=${{ github.event.head_commit.timestamp }}
-    secrets:
-      dockerhub_username: ${{ secrets.DOCKER_HUB_USERNAME }}
-      dockerhub_password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+
+      - name: Calculate short SHA and set as an environment variable
+        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            nethermindeth/pluto:latest
+            nethermindeth/pluto:${{ github.ref_name }}
+          build-args: |
+            GIT_COMMIT_HASH_SHORT=${{ env.SHORT_SHA || 'unknown' }}
+            SOURCE_DATE_EPOCH=${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}
