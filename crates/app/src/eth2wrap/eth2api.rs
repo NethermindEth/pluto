@@ -1,8 +1,10 @@
 // TODO (refactor): move to `pluto_eth2api` crate
 
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, GetGenesisRequest, GetGenesisResponse, ValidatorStatus,
+    EthBeaconNodeApiClient, GetGenesisRequest, GetGenesisResponse, GetSpecRequest, GetSpecResponse,
+    ValidatorStatus,
 };
+use std::time;
 
 /// Error that can occur when using the
 /// [`EthBeaconNodeApiClient`].
@@ -54,6 +56,11 @@ pub trait EthBeaconNodeApiClientExt {
     ) -> impl std::future::Future<
         Output = Result<chrono::DateTime<chrono::Utc>, EthBeaconNodeApiClientError>,
     > + Send;
+
+    /// Fetches the slot duration and slots per epoch.
+    fn fetch_slots_config(
+        &self,
+    ) -> impl Future<Output = Result<(time::Duration, u64), EthBeaconNodeApiClientError>> + Send;
 }
 
 impl EthBeaconNodeApiClientExt for EthBeaconNodeApiClient {
@@ -77,5 +84,38 @@ impl EthBeaconNodeApiClientExt for EthBeaconNodeApiClient {
                 chrono::DateTime::from_timestamp(timestamp, 0)
                     .ok_or(EthBeaconNodeApiClientError::UnexpectedType)
             })
+    }
+
+    async fn fetch_slots_config(
+        &self,
+    ) -> Result<(time::Duration, u64), EthBeaconNodeApiClientError> {
+        let spec = self
+            .get_spec(GetSpecRequest {})
+            .await
+            .and_then(|res| match res {
+                GetSpecResponse::Ok(spec) => Ok(spec),
+                _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse.into()),
+            })?;
+
+        let slot_duration = spec
+            .data
+            .as_object()
+            .and_then(|o| o.get("SECONDS_PER_SLOT"))
+            .and_then(|secs| secs.as_i64())
+            .ok_or(EthBeaconNodeApiClientError::UnexpectedType)
+            .map(|nanos| time::Duration::from_nanos(nanos.try_into().unwrap_or(0)))?;
+
+        let slots_per_epoch = spec
+            .data
+            .as_object()
+            .and_then(|o| o.get("SLOTS_PER_EPOCH"))
+            .and_then(|spe| spe.as_u64())
+            .ok_or(EthBeaconNodeApiClientError::UnexpectedType)?;
+
+        if slot_duration == time::Duration::ZERO || slots_per_epoch == 0 {
+            return Err(EthBeaconNodeApiClientError::ZeroSlotDurationOrSlotsPerEpoch);
+        }
+
+        Ok((slot_duration, slots_per_epoch))
     }
 }

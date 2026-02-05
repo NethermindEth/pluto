@@ -30,8 +30,7 @@ type Result<T> = std::result::Result<T, DeadlineError>;
 /// deadlines.
 pub async fn new_duty_deadline_func(eth2_cl: &EthBeaconNodeApiClient) -> Result<DeadlineFunc> {
     let genesis_time = eth2_cl.fetch_genesis_time().await?;
-
-    let slot_duration: time::Duration = todo!("Fetch slot duration from eth2 client");
+    let (slot_duration, _) = eth2_cl.fetch_slots_config().await?;
 
     #[allow(
         clippy::arithmetic_side_effects,
