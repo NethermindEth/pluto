@@ -1,5 +1,3 @@
-//! Cluster manifest helper functions for hashing, signing, and conversions.
-
 use k256::{
     PublicKey, SecretKey,
     sha2::{Digest, Sha256},
@@ -76,7 +74,6 @@ pub(crate) fn hash_mutation(m: &Mutation) -> Result<Vec<u8>> {
 }
 
 /// Verifies that the signed mutation has empty signature and signer fields.
-#[allow(dead_code)]
 pub(crate) fn verify_empty_sig(signed: &SignedMutation) -> Result<()> {
     if !signed.signature.is_empty() {
         return Err(ManifestError::NonEmptyField(
@@ -109,7 +106,6 @@ pub fn sign_k1(m: &Mutation, secret: &SecretKey) -> Result<SignedMutation> {
 }
 
 /// Verifies a k1-signed mutation.
-#[allow(dead_code)]
 pub(crate) fn verify_k1_signed_mutation(signed: &SignedMutation) -> Result<()> {
     let pubkey = PublicKey::from_sec1_bytes(&signed.signer)
         .map_err(|e| ManifestError::K1Key(format!("parse signer pubkey: {}", e)))?;

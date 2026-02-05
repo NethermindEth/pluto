@@ -1,5 +1,3 @@
-//! Legacy lock mutation implementation.
-
 use prost::Message as _;
 
 use crate::{

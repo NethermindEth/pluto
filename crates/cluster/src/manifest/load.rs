@@ -1,5 +1,3 @@
-//! Cluster manifest loading from disk.
-
 use std::path::Path;
 
 use prost::Message as _;
@@ -10,7 +8,7 @@ use crate::{
 };
 
 use super::{
-    ManifestError, Result, materialise::materialise, mutationlegacylock::new_raw_legacy_lock, types,
+    ManifestError, Result, materialise::materialise, mutationlegacylock::new_raw_legacy_lock,
 };
 
 /// Returns the current cluster state from disk by reading either from cluster
@@ -127,19 +125,17 @@ pub(crate) fn cluster_hashes_match(
     dag_manifest: &SignedMutationList,
     dag_legacy: &SignedMutationList,
 ) -> Result<()> {
-    let hash_manifest = types::hash(
-        dag_manifest
-            .mutations
-            .first()
-            .ok_or(ManifestError::EmptyDAG)?,
-    )?;
+    let hash_manifest = dag_manifest
+        .mutations
+        .first()
+        .ok_or(ManifestError::EmptyDAG)?
+        .hash()?;
 
-    let hash_legacy = types::hash(
-        dag_legacy
-            .mutations
-            .first()
-            .ok_or(ManifestError::EmptyDAG)?,
-    )?;
+    let hash_legacy = dag_legacy
+        .mutations
+        .first()
+        .ok_or(ManifestError::EmptyDAG)?
+        .hash()?;
 
     if hash_manifest != hash_legacy {
         return Err(ManifestError::ClusterHashMismatch {

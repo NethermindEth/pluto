@@ -1,9 +1,3 @@
-//! Cluster manifest management and coordination.
-//!
-//! This module handles cluster manifest DAG (Directed Acyclic Graph)
-//! operations, including loading, materializing, and transforming cluster state
-//! through mutations.
-
 use thiserror::Error;
 
 /// Cluster manifest management and coordination.
@@ -14,8 +8,6 @@ pub mod helpers;
 pub mod load;
 /// Cluster manifest materialise management and coordination.
 pub mod materialise;
-/// Cluster manifest mutation management and coordination.
-pub mod mutation;
 /// Cluster manifest mutation add validator management and coordination.
 pub mod mutationaddvalidator;
 /// Cluster manifest mutation legacy lock management and coordination.
@@ -82,10 +74,6 @@ pub enum ManifestError {
     /// Peer not in definition.
     #[error("peer not in definition")]
     PeerNotInDefinition,
-
-    /// Invalid hex encoding.
-    #[error("invalid hex encoding: {0}")]
-    InvalidHex(String),
 
     /// Invalid hex length.
     #[error("invalid hex length (expect: {expect}, actual: {actual})")]
