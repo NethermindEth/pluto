@@ -36,7 +36,7 @@ pub(crate) fn hash_signed_mutation(signed: &SignedMutation) -> Result<Vec<u8>> {
     let mutation = signed
         .mutation
         .as_ref()
-        .ok_or_else(|| ManifestError::InvalidSignedMutation("mutation is nil".to_string()))?;
+        .ok_or(ManifestError::InvalidSignedMutation)?;
 
     let mut hasher = Sha256::new();
 
@@ -117,7 +117,7 @@ pub(crate) fn verify_k1_signed_mutation(signed: &SignedMutation) -> Result<()> {
     let mutation = signed
         .mutation
         .as_ref()
-        .ok_or_else(|| ManifestError::InvalidSignedMutation("mutation is nil".to_string()))?;
+        .ok_or(ManifestError::InvalidSignedMutation)?;
 
     let hash = hash_mutation(mutation)?;
 

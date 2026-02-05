@@ -5417,6 +5417,7 @@ dependencies = [
  "pluto-eth2util",
  "pluto-k1util",
  "pluto-p2p",
+ "pluto-testutil",
  "prost 0.14.3",
  "prost-build",
  "prost-types 0.14.3",

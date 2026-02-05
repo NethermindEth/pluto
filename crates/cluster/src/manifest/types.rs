@@ -81,7 +81,7 @@ pub fn hash(signed: &SignedMutation) -> Result<Vec<u8>> {
     let mutation = signed
         .mutation
         .as_ref()
-        .ok_or_else(|| ManifestError::InvalidSignedMutation("mutation is nil".to_string()))?;
+        .ok_or(ManifestError::InvalidSignedMutation)?;
 
     // Special case for legacy lock: return the lock hash
     if mutation.r#type == MutationType::LegacyLock.as_str() {
@@ -112,7 +112,7 @@ pub fn transform(cluster: &Cluster, signed: &SignedMutation) -> Result<Cluster> 
     let mutation = signed
         .mutation
         .as_ref()
-        .ok_or_else(|| ManifestError::InvalidSignedMutation("mutation is nil".to_string()))?;
+        .ok_or(ManifestError::InvalidSignedMutation)?;
 
     let typ = MutationType::parse(&mutation.r#type)
         .ok_or_else(|| ManifestError::InvalidMutationType(mutation.r#type.clone()))?;
