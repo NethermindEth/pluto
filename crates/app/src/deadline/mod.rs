@@ -1,6 +1,5 @@
-use crate::eth2wrap::eth2api::{EthBeaconNodeApiClientError, EthBeaconNodeApiClientExt};
 use pluto_core::types::{Duty, DutyType};
-use pluto_eth2api::EthBeaconNodeApiClient;
+use pluto_eth2api::{EthBeaconNodeApiClient, EthBeaconNodeApiClientError};
 
 /// Defines the fraction of the slot duration to use as a margin.
 /// This is to consider network delays and other factors that may affect the

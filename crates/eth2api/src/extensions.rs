@@ -1,8 +1,8 @@
-// TODO (refactor): move to `pluto_eth2api` crate
-use pluto_eth2api::{
-    EthBeaconNodeApiClient, GetGenesisRequest, GetGenesisResponse, GetSpecRequest, GetSpecResponse,
-    ValidatorStatus,
+use crate::{
+    ConsensusVersion, EthBeaconNodeApiClient, GetGenesisRequest, GetGenesisResponse,
+    GetSpecRequest, GetSpecResponse, ValidatorStatus,
 };
+use chrono::{DateTime, Utc};
 use std::{collections::HashMap, time};
 
 /// Error that can occur when using the
@@ -30,13 +30,13 @@ pub enum EthBeaconNodeApiClientError {
 /// Type alias for validator index.
 pub type ValidatorIndex = u64;
 
-const FORKS: [pluto_eth2api::ConsensusVersion; 6] = [
-    pluto_eth2api::ConsensusVersion::Altair,
-    pluto_eth2api::ConsensusVersion::Bellatrix,
-    pluto_eth2api::ConsensusVersion::Capella,
-    pluto_eth2api::ConsensusVersion::Deneb,
-    pluto_eth2api::ConsensusVersion::Electra,
-    pluto_eth2api::ConsensusVersion::Fulu,
+const FORKS: [ConsensusVersion; 6] = [
+    ConsensusVersion::Altair,
+    ConsensusVersion::Bellatrix,
+    ConsensusVersion::Capella,
+    ConsensusVersion::Deneb,
+    ConsensusVersion::Electra,
+    ConsensusVersion::Fulu,
 ];
 
 /// The schedule of given fork, containing the fork version and the epoch at
@@ -48,14 +48,9 @@ pub struct ForkSchedule {
     pub epoch: u64,
 }
 
-/// Extension methods on [`ValidatorStatus`].
-pub trait ValidatorStatusExt {
+impl ValidatorStatus {
     /// Returns true if the validator is in one of the active states.
-    fn is_active(&self) -> bool;
-}
-
-impl ValidatorStatusExt for ValidatorStatus {
-    fn is_active(&self) -> bool {
+    pub fn is_active(&self) -> bool {
         matches!(
             self,
             ValidatorStatus::ActiveOngoing
@@ -65,35 +60,9 @@ impl ValidatorStatusExt for ValidatorStatus {
     }
 }
 
-/// Extension methods on [`EthBeaconNodeApiClient`].
-pub trait EthBeaconNodeApiClientExt {
+impl EthBeaconNodeApiClient {
     /// Fetches the genesis time.
-    fn fetch_genesis_time(
-        &self,
-    ) -> impl std::future::Future<
-        Output = Result<chrono::DateTime<chrono::Utc>, EthBeaconNodeApiClientError>,
-    > + Send;
-
-    /// Fetches the slot duration and slots per epoch.
-    fn fetch_slots_config(
-        &self,
-    ) -> impl Future<Output = Result<(time::Duration, u64), EthBeaconNodeApiClientError>> + Send;
-
-    /// Fetches the fork schedule for all known forks.
-    fn fetch_fork_config(
-        &self,
-    ) -> impl Future<
-        Output = Result<
-            HashMap<pluto_eth2api::ConsensusVersion, ForkSchedule>,
-            EthBeaconNodeApiClientError,
-        >,
-    >;
-}
-
-impl EthBeaconNodeApiClientExt for EthBeaconNodeApiClient {
-    async fn fetch_genesis_time(
-        &self,
-    ) -> Result<chrono::DateTime<chrono::Utc>, EthBeaconNodeApiClientError> {
+    pub async fn fetch_genesis_time(&self) -> Result<DateTime<Utc>, EthBeaconNodeApiClientError> {
         let genesis = self
             .get_genesis(GetGenesisRequest {})
             .await
@@ -108,12 +77,13 @@ impl EthBeaconNodeApiClientExt for EthBeaconNodeApiClient {
             .parse()
             .map_err(|_| EthBeaconNodeApiClientError::UnexpectedType)
             .and_then(|timestamp| {
-                chrono::DateTime::from_timestamp(timestamp, 0)
+                DateTime::from_timestamp(timestamp, 0)
                     .ok_or(EthBeaconNodeApiClientError::UnexpectedType)
             })
     }
 
-    async fn fetch_slots_config(
+    /// Fetches the slot duration and slots per epoch.
+    pub async fn fetch_slots_config(
         &self,
     ) -> Result<(time::Duration, u64), EthBeaconNodeApiClientError> {
         let spec = self
@@ -146,12 +116,12 @@ impl EthBeaconNodeApiClientExt for EthBeaconNodeApiClient {
         Ok((slot_duration, slots_per_epoch))
     }
 
-    async fn fetch_fork_config(
+    /// Fetches the fork schedule for all known forks.
+    pub async fn fetch_fork_config(
         &self,
-    ) -> Result<HashMap<pluto_eth2api::ConsensusVersion, ForkSchedule>, EthBeaconNodeApiClientError>
-    {
+    ) -> Result<HashMap<ConsensusVersion, ForkSchedule>, EthBeaconNodeApiClientError> {
         fn fetch_fork(
-            fork: &pluto_eth2api::ConsensusVersion,
+            fork: &ConsensusVersion,
             spec_data: &serde_json::Value,
         ) -> Result<ForkSchedule, EthBeaconNodeApiClientError> {
             let version_field = format!("{}_FORK_VERSION", fork.to_string().to_uppercase());

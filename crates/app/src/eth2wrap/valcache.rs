@@ -1,9 +1,9 @@
-use crate::eth2wrap::eth2api::{EthBeaconNodeApiClientError, ValidatorIndex, ValidatorStatusExt};
 use pluto_core::types::PubKey;
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, GetStateValidatorsResponseResponse,
+    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, GetStateValidatorsResponseResponse,
     GetStateValidatorsResponseResponseDatum, PostStateValidatorsRequest,
-    PostStateValidatorsRequestPath, PostStateValidatorsResponse, ValidatorRequestBody,
+    PostStateValidatorsRequestPath, PostStateValidatorsResponse, ValidatorIndex,
+    ValidatorRequestBody,
 };
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
