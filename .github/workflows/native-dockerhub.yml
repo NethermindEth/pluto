@@ -2,7 +2,10 @@ name: Native Dockerhub
 
 on:
   push:
-    tags: ["v*"]
+    branches:
+      - "master"
+    tags:
+      - "v*"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
