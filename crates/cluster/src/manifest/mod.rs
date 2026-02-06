@@ -11,6 +11,8 @@ pub mod helpers;
 pub mod load;
 /// Cluster manifest materialise management and coordination.
 pub mod materialise;
+/// Cluster manifest mutation management and coordination.
+pub mod mutation;
 /// Cluster manifest mutation add validator management and coordination.
 pub mod mutationaddvalidator;
 /// Cluster manifest mutation legacy lock management and coordination.

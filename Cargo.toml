@@ -70,7 +70,6 @@ reqwest = "0.13"
 http = "1.4"
 tempfile = "3.24"
 assert-json-diff = "0.2"
-test-case = "3.3"
 validator = { version = "0.20", features = ["derive"] }
 oas3-gen-support = "0.24"
 bon = "3.8"
