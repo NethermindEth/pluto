@@ -9,7 +9,7 @@ use testcontainers::{
 };
 
 #[tokio::test]
-async fn get_head_headers_has_signature() {
+async fn get_block_header_head_has_signature() {
     with_lighthouse(async |base_url| {
         let client =
             EthBeaconNodeApiClient::with_base_url(base_url).expect("Failed to create client");
