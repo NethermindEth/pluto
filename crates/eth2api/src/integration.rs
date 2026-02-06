@@ -9,7 +9,39 @@ use testcontainers::{
 };
 
 #[tokio::test]
-async fn lighthouse_beacon_headers_head() {
+async fn get_head_headers_has_signature() {
+    with_lighthouse(async |base_url| {
+        let client =
+            EthBeaconNodeApiClient::with_base_url(base_url).expect("Failed to create client");
+
+        // Invoke the `get_block_header` API with "head" block ID
+        let response = client
+            .get_block_header(GetBlockHeaderRequest {
+                path: GetBlockHeaderRequestPath {
+                    block_id: "head".into(),
+                },
+            })
+            .await
+            .expect("Failed to get block header");
+
+        let GetBlockHeaderResponse::Ok(headers) = response else {
+            panic!("Expected Ok response, got: {:?}", response)
+        };
+
+        // Validate the response
+        assert!(
+            !headers.data.header.signature.is_empty(),
+            "Signature should not be empty"
+        );
+    })
+    .await;
+}
+
+async fn with_lighthouse<F, Fut>(body: F)
+where
+    F: FnOnce(String) -> Fut,
+    Fut: Future<Output = ()>,
+{
     // Create the Lighthouse container with required configuration
     let container = GenericImage::new("sigp/lighthouse", "v8.0.1")
         .with_exposed_port(5052.tcp())
@@ -43,25 +75,6 @@ async fn lighthouse_beacon_headers_head() {
 
     // Build an EthBeaconNodeApiClient
     let base_url = format!("http://{}:{}", host, host_port);
-    let client = EthBeaconNodeApiClient::with_base_url(base_url).expect("Failed to create client");
 
-    // Invoke the `get_block_header` API with "head" block ID
-    let response = client
-        .get_block_header(GetBlockHeaderRequest {
-            path: GetBlockHeaderRequestPath {
-                block_id: "head".into(),
-            },
-        })
-        .await
-        .expect("Failed to get block header");
-
-    let GetBlockHeaderResponse::Ok(headers) = response else {
-        panic!("Expected Ok response, got: {:?}", response)
-    };
-
-    // Validate the response
-    assert!(
-        !headers.data.header.signature.is_empty(),
-        "Signature should not be empty"
-    );
+    body(base_url).await;
 }
