@@ -88,17 +88,29 @@ pub(crate) fn external_udp_multiaddrs(cfg: &P2PConfig) -> crate::p2p::Result<Vec
     Ok(resp)
 }
 
+pub(crate) struct ExternalAddresses(pub Vec<Multiaddr>);
+
+pub(crate) struct InternalAddresses(pub Vec<Multiaddr>);
+
 /// Filters the advertised addresses to exclude private addresses if the
-/// `exclude_interval_private` flag is set.
+/// `exclude_internal_private` flag is set.
+/// Since the type of external and internal addresses is the same, we use type
+/// wrappers to avoid confusion.
 pub(crate) fn filter_advertised_addresses(
-    mut external_addrs: Vec<Multiaddr>,
-    mut internal_addrs: Vec<Multiaddr>,
-    exclude_interval_private: bool,
+    external_addrs: ExternalAddresses,
+    internal_addrs: InternalAddresses,
+    exclude_internal_private: bool,
 ) -> crate::p2p::Result<Vec<Multiaddr>> {
+    let mut external_addrs = external_addrs.0;
+    let mut internal_addrs = internal_addrs.0;
+
+    external_addrs.sort();
+    internal_addrs.sort();
+
     external_addrs.dedup();
     internal_addrs.dedup();
 
-    if exclude_interval_private {
+    if exclude_internal_private {
         internal_addrs.retain(|addr| !addr.is_private());
     }
 

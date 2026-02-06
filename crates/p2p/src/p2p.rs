@@ -150,8 +150,11 @@ impl<B: NetworkBehaviour> Node<B> {
             );
         }
 
-        let filtered_addrs =
-            utils::filter_advertised_addresses(addrs, external_addrs, filter_private_addrs)?;
+        let filtered_addrs = utils::filter_advertised_addresses(
+            utils::ExternalAddresses(external_addrs),
+            utils::InternalAddresses(addrs),
+            filter_private_addrs,
+        )?;
 
         for addr in filtered_addrs {
             self.swarm.listen_on(addr)?;
