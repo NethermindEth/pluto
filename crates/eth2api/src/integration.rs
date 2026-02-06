@@ -14,7 +14,6 @@ async fn get_block_header_head_has_signature() {
         let client =
             EthBeaconNodeApiClient::with_base_url(base_url).expect("Failed to create client");
 
-        // Invoke the `get_block_header` API with "head" block ID
         let response = client
             .get_block_header(GetBlockHeaderRequest {
                 path: GetBlockHeaderRequestPath {
@@ -28,11 +27,26 @@ async fn get_block_header_head_has_signature() {
             panic!("Expected Ok response, got: {:?}", response)
         };
 
-        // Validate the response
         assert!(
             !headers.data.header.signature.is_empty(),
             "Signature should not be empty"
         );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn fetch_genesis_time() {
+    with_lighthouse(async |base_url| {
+        let client =
+            EthBeaconNodeApiClient::with_base_url(base_url).expect("Failed to create client");
+
+        let genesis_time = client
+            .fetch_genesis_time()
+            .await
+            .expect("Failed to fetch genesis time");
+
+        assert_eq!(genesis_time.timestamp(), 1606824023);
     })
     .await;
 }
@@ -70,10 +84,11 @@ where
         .get_host_port_ipv4(5052)
         .await
         .expect("Failed to get mapped port");
+
     // Get the host of the container
     let host = container.get_host().await.expect("Failed to get host");
 
-    // Build an EthBeaconNodeApiClient
+    // Build the base URL for the API
     let base_url = format!("http://{}:{}", host, host_port);
 
     body(base_url).await;
