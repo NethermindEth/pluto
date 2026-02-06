@@ -1,6 +1,6 @@
 use crate::{
-    EthBeaconNodeApiClient, GetBlockHeaderRequest, GetBlockHeaderRequestPath,
-    GetBlockHeaderResponse,
+    ConsensusVersion, EthBeaconNodeApiClient, ForkSchedule, GetBlockHeaderRequest,
+    GetBlockHeaderRequestPath, GetBlockHeaderResponse,
 };
 use testcontainers::{
     GenericImage, ImageExt,
@@ -64,6 +64,69 @@ async fn fetch_slots_config() {
 
         assert_eq!(slot_duration.as_secs(), 12);
         assert_eq!(slots_per_epoch, 32);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn fetch_fork_config() {
+    with_lighthouse(async |base_url| {
+        let client =
+            EthBeaconNodeApiClient::with_base_url(base_url).expect("Failed to create client");
+
+        let fork_schedule = client
+            .fetch_fork_config()
+            .await
+            .expect("Failed to fetch fork schedule");
+
+        let expected = vec![
+            (
+                ConsensusVersion::Altair,
+                ForkSchedule {
+                    epoch: 74240,
+                    version: [1, 0, 0, 0],
+                },
+            ),
+            (
+                ConsensusVersion::Bellatrix,
+                ForkSchedule {
+                    epoch: 144896,
+                    version: [2, 0, 0, 0],
+                },
+            ),
+            (
+                ConsensusVersion::Capella,
+                ForkSchedule {
+                    epoch: 194048,
+                    version: [3, 0, 0, 0],
+                },
+            ),
+            (
+                ConsensusVersion::Deneb,
+                ForkSchedule {
+                    epoch: 269568,
+                    version: [4, 0, 0, 0],
+                },
+            ),
+            (
+                ConsensusVersion::Electra,
+                ForkSchedule {
+                    epoch: 364032,
+                    version: [5, 0, 0, 0],
+                },
+            ),
+            (
+                ConsensusVersion::Fulu,
+                ForkSchedule {
+                    epoch: 411392,
+                    version: [6, 0, 0, 0],
+                },
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(fork_schedule, expected);
     })
     .await;
 }

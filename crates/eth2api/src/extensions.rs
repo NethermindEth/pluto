@@ -41,6 +41,7 @@ const FORKS: [ConsensusVersion; 6] = [
 
 /// The schedule of given fork, containing the fork version and the epoch at
 /// which it activates.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForkSchedule {
     /// The fork version, as a 4-byte array.
     pub version: [u8; 4],
@@ -142,7 +143,8 @@ impl EthBeaconNodeApiClient {
             let epoch = spec_data
                 .as_object()
                 .and_then(|o| o.get(&epoch_field))
-                .and_then(|f| f.as_u64())
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<u64>().ok())
                 .ok_or(EthBeaconNodeApiClientError::UnexpectedType)?;
 
             Ok(ForkSchedule { version, epoch })
