@@ -67,7 +67,7 @@ jobs:
           first_line=$(echo "$output" | head -n1)
           expected="Pluto - Proof of Stake Ethereum Distributed Validator Client"
           if [[ "$first_line" != "$expected" ]]; then
-            echo "::error::Unexpected help message, got: '$first_line'"
+            echo "::error::Unexpected message, got: '$first_line'"
             exit 1
           fi
 
