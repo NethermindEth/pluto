@@ -15,7 +15,7 @@ type Result<T> = std::result::Result<T, ValidatorCacheError>;
 pub enum ValidatorCacheError {
     /// Beacon client API error.
     #[error("Beacon client error: {0}")]
-    BeaconClientError(#[from] EthBeaconNodeApiClientError),
+    EthBeaconNodeApiClientError(#[from] EthBeaconNodeApiClientError),
 }
 
 /// Active validators as [`PubKey`] indexed by their validator index.
