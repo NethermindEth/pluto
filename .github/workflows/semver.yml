@@ -3,7 +3,12 @@ name: Semver checks
 on:
   pull_request:
     branches: ["main"]
-    paths: ["**/Cargo.toml"] # Only run when Cargo.toml changes
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "rust-toolchain.toml"
+      - "flake.nix"
+      - ".github/workflows/semver.yml"
   push:
     tags: ["v*"] # Run on version tags
 

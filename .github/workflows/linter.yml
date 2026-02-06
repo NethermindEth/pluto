@@ -3,8 +3,26 @@ name: Linter check
 on:
   push:
     branches: ["main"] # Runs on pushes to main branch
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "flake.nix"
+      - "rustfmt.toml"
+      - "clippy.toml"
+      - ".github/workflows/linter.yml"
   pull_request:
     types: [synchronize, opened, reopened, ready_for_review]
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "flake.nix"
+      - "rustfmt.toml"
+      - "clippy.toml"
+      - ".github/workflows/linter.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

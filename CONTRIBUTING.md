@@ -2,15 +2,27 @@
 
 ## Prerequisites
 
+### Using Nix (Recommended)
+
+The easiest way to set up the development environment is using [Nix](https://nixos.org/download/):
+
+```sh
+nix develop
+```
+
+This automatically provides all required dependencies (Rust toolchain, Protobuf, oas3-gen, cargo-deny) and configures git hooks.
+
+### Manual Setup
+
+If you prefer not to use Nix, install the following manually:
+
 * [Rust](https://www.rust-lang.org/tools/install)
 * [Protobuf](https://protobuf.dev/installation/)
 * [Docker](https://www.docker.com/)
-* [cargo deny](https://github.com/EmbarkStudios/cargo-deny)
-* [oas3-gen](https://github.com/eklipse2k8/oas3-gen)
+* [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) - `cargo install --locked cargo-deny`
+* [oas3-gen](https://github.com/eklipse2k8/oas3-gen) - `cargo install oas3-gen`
 
-## Code quality assurance
-
-Install a pre-push git hook:
+Then install the pre-push git hook:
 
 ```sh
 git config core.hooksPath .githooks
