@@ -23,7 +23,6 @@ pluto-p2p.workspace = true
 pluto-eth2util.workspace = true
 pluto-k1util.workspace = true
 k256.workspace = true
-tokio.workspace = true
 
 [build-dependencies]
 prost-build.workspace = true
