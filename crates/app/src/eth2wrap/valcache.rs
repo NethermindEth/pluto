@@ -13,8 +13,8 @@ type Result<T> = std::result::Result<T, ValidatorCacheError>;
 /// Errors that can occur when interacting with the validator cache.
 #[derive(Debug, thiserror::Error)]
 pub enum ValidatorCacheError {
-    /// Beacon client API error.
-    #[error("Beacon client error: {0}")]
+    /// Beacon Node API client error.
+    #[error("Beacon Node API client error: {0}")]
     EthBeaconNodeApiClientError(#[from] EthBeaconNodeApiClientError),
 }
 
