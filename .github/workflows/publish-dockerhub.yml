@@ -47,12 +47,10 @@ jobs:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_PASSWORD }}
 
-      - name: Build and push
-        id: build
+      - name: Build image
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
           load: true
           build-args: |
             GIT_COMMIT_HASH_SHORT=${{ steps.meta.outputs.git_commit_hash_short }}
@@ -74,9 +72,26 @@ jobs:
             exit 1
           fi
 
+      # According to docs this operation should rely on caching from previous step so no duplicate build should happen.
+      # See: https://docs.docker.com/build/ci/github-actions/test-before-push/
+      - name: Publish image
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: |
+            GIT_COMMIT_HASH_SHORT=${{ steps.meta.outputs.git_commit_hash_short }}
+            SOURCE_DATE_EPOCH=${{ steps.meta.outputs.source_date_epoch }}
+          tags: ${{ steps.docker_meta.outputs.tags }}
+          labels: ${{ steps.docker_meta.outputs.labels }}
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
       - name: Generate attestations
         uses: actions/attest-build-provenance@v2
         with:
           subject-name: docker.io/nethermindeth/pluto
-          subject-digest: ${{ steps.build.outputs.digest }}
+          subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
