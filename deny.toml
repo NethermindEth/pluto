@@ -80,7 +80,10 @@ unused = 'deny'
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-allow-git = ["https://github.com/matter-labs/vise"]
+allow-git = [
+    "https://github.com/matter-labs/vise",
+    "https://github.com/sigp/lighthouse",
+]
 
 [sources.allow-org]
 github = ["NethermindEth"]

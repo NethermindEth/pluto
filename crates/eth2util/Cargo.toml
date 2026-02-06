@@ -11,6 +11,7 @@ alloy.workspace = true
 k256.workspace = true
 thiserror.workspace = true
 base64.workspace = true
+sha2.workspace = true
 sha3.workspace = true
 hex.workspace = true
 pluto-testutil.workspace = true
@@ -24,6 +25,11 @@ tree_hash_derive.workspace = true
 pluto-crypto.workspace = true
 tokio.workspace = true
 pluto-eth2api.workspace = true
+glob.workspace = true
+walkdir.workspace = true
+uuid.workspace = true
+rand.workspace = true
+eth2_keystore.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
