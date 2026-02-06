@@ -98,15 +98,17 @@ impl EthBeaconNodeApiClient {
             .data
             .as_object()
             .and_then(|o| o.get("SECONDS_PER_SLOT"))
-            .and_then(|secs| secs.as_i64())
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<u64>().ok())
             .ok_or(EthBeaconNodeApiClientError::UnexpectedType)
-            .map(|nanos| time::Duration::from_nanos(nanos.try_into().unwrap_or(0)))?;
+            .map(|secs| time::Duration::from_secs(secs))?;
 
         let slots_per_epoch = spec
             .data
             .as_object()
             .and_then(|o| o.get("SLOTS_PER_EPOCH"))
-            .and_then(|spe| spe.as_u64())
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<u64>().ok())
             .ok_or(EthBeaconNodeApiClientError::UnexpectedType)?;
 
         if slot_duration == time::Duration::ZERO || slots_per_epoch == 0 {

@@ -51,6 +51,23 @@ async fn fetch_genesis_time() {
     .await;
 }
 
+#[tokio::test]
+async fn fetch_slots_config() {
+    with_lighthouse(async |base_url| {
+        let client =
+            EthBeaconNodeApiClient::with_base_url(base_url).expect("Failed to create client");
+
+        let (slot_duration, slots_per_epoch) = client
+            .fetch_slots_config()
+            .await
+            .expect("Failed to fetch slots config");
+
+        assert_eq!(slot_duration.as_secs(), 12);
+        assert_eq!(slots_per_epoch, 32);
+    })
+    .await;
+}
+
 async fn with_lighthouse<F, Fut>(body: F)
 where
     F: FnOnce(String) -> Fut,
