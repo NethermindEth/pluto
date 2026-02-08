@@ -5,6 +5,9 @@ use super::error::{KeystoreError, Result};
 /// Default PBKDF2 cost (2^18).
 const DEFAULT_COST: u32 = 262_144;
 
+/// EIP-2335 keystore version.
+pub const EIP2335_KEYSTORE_VERSION: u32 = 4;
+
 /// The crypto section of an EIP-2335 keystore.
 pub type CryptoSection = eth2_keystore::json_keystore::Crypto;
 
