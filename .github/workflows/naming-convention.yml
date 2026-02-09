@@ -20,7 +20,7 @@ jobs:
             echo "Expected format: <type>[(scope)]: <description>"
             echo "Where:"
             echo "  <type> is one of fix, feat, build, chore, docs, test, refactor, ci, localize, bump or revert"
-            echo "  <scope> is a an optional lowercase string with hyphens or numbers"
+            echo "  <scope> is an optional lowercase string with hyphens or numbers"
             echo "  <description> is a brief summary of the change"
             exit 1
           fi
