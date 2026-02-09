@@ -246,7 +246,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn store_load() {
+    async fn store_load_insecure() {
         let dir = TempDir::new().unwrap();
         let dir_path = dir.path().to_string_lossy().to_string();
 
@@ -258,6 +258,25 @@ mod tests {
         store_keys_insecure(&secrets, &dir_path, &CONFIRM_INSECURE_KEYS)
             .await
             .unwrap();
+
+        let key_files = load_files_unordered(&dir_path).await.unwrap();
+
+        let actual = key_files.sequenced_keys().unwrap();
+
+        assert_eq!(secrets, actual);
+    }
+
+    #[tokio::test]
+    async fn store_load_secure() {
+        let dir = TempDir::new().unwrap();
+        let dir_path = dir.path().to_string_lossy().to_string();
+
+        let mut secrets = Vec::new();
+        for _ in 0..3 {
+            secrets.push(generate_secret_key());
+        }
+
+        store_keys(&secrets, &dir_path).await.unwrap();
 
         let key_files = load_files_unordered(&dir_path).await.unwrap();
 

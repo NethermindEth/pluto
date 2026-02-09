@@ -114,3 +114,19 @@ cast_sign_loss = "deny"
 needless_return = "deny"
 panicking_overflow_checks = "deny"
 unwrap_used = "deny"
+
+# Optimize crypto dependencies in test builds for faster tests
+[profile.test.package.scrypt]
+opt-level = 3
+
+[profile.test.package.pbkdf2]
+opt-level = 3
+
+[profile.test.package.sha2]
+opt-level = 3
+
+[profile.test.package.aes]
+opt-level = 3
+
+[profile.test.package.eth2_keystore]
+opt-level = 3
