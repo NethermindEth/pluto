@@ -1,8 +1,15 @@
 //! Core keystore functionality for EIP-2335 compatible keystore files.
-// Package keystore provides functions to store and load private keys
-// to/from EIP 2335 (https://eips.ethereum.org/EIPS/eip-2335) compatible Keystore files. Passwords are
-// expected/created in files with same identical names as the keystores, except
-// with txt extension.
+//!
+//! Package keystore provides functions to store and load private keys
+//! to/from EIP 2335 (<https://eips.ethereum.org/EIPS/eip-2335>) compatible Keystore files.
+//! Passwords are expected/created in files with same identical names as the
+//! keystores, except with txt extension.
+//!
+//! Note: The following cluster-related keystore functions are implemented in
+//! `pluto_cluster::manifest::cluster` to avoid cyclic dependencies:
+//! - `keyshares_to_validator_pubkey` - Maps keyshares to validator pubkeys
+//! - `share_idx_for_cluster` - Returns share index for cluster's ENR identity
+//!   key
 
 use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PrivateKey};
 use rand::RngCore;

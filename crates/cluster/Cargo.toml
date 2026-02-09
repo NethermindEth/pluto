@@ -28,5 +28,9 @@ tokio.workspace = true
 [build-dependencies]
 prost-build.workspace = true
 
+[dev-dependencies]
+pluto-testutil.workspace = true
+rand.workspace = true
+
 [lints]
 workspace = true
