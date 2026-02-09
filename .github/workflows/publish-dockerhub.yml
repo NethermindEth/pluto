@@ -24,7 +24,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set build metadata
         id: meta
@@ -65,7 +65,7 @@ jobs:
         run: |
           image_name="nethermindeth/pluto:${{ steps.docker_meta.outputs.version }}"
           output=$(docker run --rm "$image_name" -h 2>&1)
-          first_line=$(echo "$output" | head -n1)
+          first_line=$(echo "$output" | head -n 1)
           expected="Pluto - Proof of Stake Ethereum Distributed Validator Client"
           if [[ "$first_line" != "$expected" ]]; then
             echo "::error::Unexpected message, got: '$first_line'"
@@ -90,7 +90,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Generate attestations
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v3
         with:
           subject-name: docker.io/nethermindeth/pluto
           subject-digest: ${{ steps.push.outputs.digest }}
