@@ -34,6 +34,7 @@ eth2_keystore.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 assert-json-diff.workspace = true
+test-case.workspace = true
 
 [lints]
 workspace = true

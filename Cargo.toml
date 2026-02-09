@@ -81,6 +81,7 @@ testcontainers = "0.26"
 tree_hash = "0.12"
 tree_hash_derive = "0.12"
 wiremock = "0.6"
+test-case = "3.3"
 
 # Crates in the workspace
 pluto-app = { path = "crates/app" }

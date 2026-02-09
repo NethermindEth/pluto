@@ -15,7 +15,7 @@ pub struct KeyFiles(Vec<KeyFile>);
 impl KeyFiles {
     /// Returns the private keys of the files.
     pub fn keys(&self) -> Vec<PrivateKey> {
-        self.0.iter().map(|kf| kf.private_key).collect()
+        self.iter().map(|kf| kf.private_key).collect()
     }
 
     /// Returns the private keys in strict sequential file index order from 0 to
@@ -28,7 +28,7 @@ impl KeyFiles {
         let mut resp = vec![PrivateKey::default(); len];
         let zero = PrivateKey::default();
 
-        for kf in &self.0 {
+        for kf in self.iter() {
             if !kf.has_index() {
                 return Err(KeystoreError::UnknownIndex {
                     filename: kf.filename.clone(),
@@ -55,10 +55,13 @@ impl KeyFiles {
 
         Ok(resp)
     }
+}
 
-    /// Returns the number of key files.
-    pub fn len(&self) -> usize {
-        self.0.len()
+impl std::ops::Deref for KeyFiles {
+    type Target = [KeyFile];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -104,19 +107,7 @@ pub async fn load_files_unordered(dir: &str) -> Result<KeyFiles> {
             let b = tokio::fs::read_to_string(&filename).await?;
             let store: Keystore = serde_json::from_str(&b)?;
 
-            let password_file = filename.replacen(".json", ".txt", 1);
-            let password = tokio::fs::read_to_string(&password_file)
-                .await
-                .map_err(|e| {
-                    if e.kind() == std::io::ErrorKind::NotFound {
-                        KeystoreError::PasswordNotFound {
-                            path: password_file.clone(),
-                        }
-                    } else {
-                        KeystoreError::Io(e)
-                    }
-                })?;
-
+            let password = super::store::load_password(&filename).await?;
             let private_key = super::store::decrypt(&store, &password)?;
             let file_index = extract_file_index(&filename)?;
 
@@ -249,10 +240,14 @@ pub async fn load_files_recursively(dir: &str) -> Result<KeyFiles> {
     let key_files = results
         .into_iter()
         .enumerate()
-        .map(|(i, (filename, private_key))| KeyFile {
-            private_key,
-            filename,
-            file_index: i64::try_from(i).unwrap_or(-1) + 1,
+        .map(|(i, (filename, private_key))| {
+            let file_index = i64::try_from(i.saturating_add(1)).unwrap_or(-1);
+
+            KeyFile {
+                private_key,
+                filename,
+                file_index,
+            }
         })
         .collect();
 
@@ -290,35 +285,297 @@ pub fn extract_file_index(filename: &str) -> Result<i64> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PrivateKey};
+    use tempfile::TempDir;
+    use test_case::test_case;
+
     use super::*;
+    use crate::keystore::store::{CONFIRM_INSECURE_KEYS, store_keys_insecure};
 
-    // TODO: @iamquang95 use test-cases
-    #[test]
-    fn extract_index_standard() {
-        assert_eq!(extract_file_index("keystore-0.json").unwrap(), 0);
-        assert_eq!(extract_file_index("keystore-1.json").unwrap(), 1);
-        assert_eq!(extract_file_index("keystore-42.json").unwrap(), 42);
+    /// Generates a random BLS secret key for testing.
+    fn generate_secret_key() -> PrivateKey {
+        let tbls = BlstImpl;
+        tbls.generate_secret_key(rand::thread_rng()).unwrap()
     }
 
-    #[test]
-    fn extract_index_insecure() {
-        assert_eq!(extract_file_index("keystore-insecure-0.json").unwrap(), 0);
-        assert_eq!(extract_file_index("keystore-insecure-5.json").unwrap(), 5);
+    /// Helper: generates a new key, stores it insecurely, then renames the
+    /// files to the target filename. Returns the generated key.
+    async fn store_new_key_for_test(target: &str) -> PrivateKey {
+        let secret = generate_secret_key();
+        let dir = TempDir::new().unwrap();
+        let dir_path = dir.path().to_string_lossy().to_string();
+
+        store_keys_insecure(&[secret], &dir_path, &CONFIRM_INSECURE_KEYS)
+            .await
+            .unwrap();
+
+        let src_json = format!("{}/keystore-insecure-0.json", dir_path);
+        let src_txt = format!("{}/keystore-insecure-0.txt", dir_path);
+        let target_txt = target.replacen(".json", ".txt", 1);
+
+        std::fs::rename(&src_json, target).unwrap();
+        std::fs::rename(&src_txt, &target_txt).unwrap();
+
+        secret
     }
 
-    #[test]
-    fn extract_index_no_match() {
-        assert_eq!(extract_file_index("keystore-foo.json").unwrap(), -1);
-        assert_eq!(extract_file_index("keystore-bar-1.json").unwrap(), -1);
-        assert_eq!(extract_file_index("other.json").unwrap(), -1);
+    #[test_case("keystore-0.json", 0 ; "standard_0")]
+    #[test_case("keystore-1.json", 1 ; "standard_1")]
+    #[test_case("keystore-42.json", 42 ; "standard_42")]
+    fn extract_index_standard(filename: &str, expected: i64) {
+        assert_eq!(extract_file_index(filename).unwrap(), expected);
     }
 
-    #[test]
-    fn extract_index_with_path() {
-        assert_eq!(extract_file_index("/tmp/dir/keystore-3.json").unwrap(), 3);
+    #[test_case("keystore-insecure-0.json", 0 ; "insecure_0")]
+    #[test_case("keystore-insecure-5.json", 5 ; "insecure_5")]
+    fn extract_index_insecure(filename: &str, expected: i64) {
+        assert_eq!(extract_file_index(filename).unwrap(), expected);
+    }
+
+    #[test_case("keystore-foo.json" ; "foo")]
+    #[test_case("keystore-bar-1.json" ; "bar_1")]
+    #[test_case("other.json" ; "other")]
+    fn extract_index_no_match(filename: &str) {
+        assert_eq!(extract_file_index(filename).unwrap(), -1);
+    }
+
+    #[test_case("/tmp/dir/keystore-3.json", 3 ; "with_path_3")]
+    #[test_case("/tmp/dir/keystore-insecure-7.json", 7 ; "with_path_insecure_7")]
+    fn extract_index_with_path(filename: &str, expected: i64) {
+        assert_eq!(extract_file_index(filename).unwrap(), expected);
+    }
+
+    #[tokio::test]
+    async fn load_empty() {
+        let result = load_files_unordered(".").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn load_scrypt() {
+        let testdata_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src/keystore/testdata")
+            .to_string_lossy()
+            .to_string();
+
+        let keyfiles = load_files_unordered(&testdata_dir).await.unwrap();
+
+        assert_eq!(keyfiles.len(), 1);
+
+        let hex_key = hex::encode(keyfiles[0].private_key);
         assert_eq!(
-            extract_file_index("/tmp/dir/keystore-insecure-7.json").unwrap(),
-            7
+            hex_key,
+            "10b16fc552aa607fa1399027f7b86ab789077e470b5653b338693dc2dde02468"
         );
+    }
+
+    #[tokio::test]
+    async fn load_non_charon_names() {
+        let dir = TempDir::new().unwrap();
+        let dir_path = dir.path().to_string_lossy().to_string();
+
+        let mut filenames = [
+            "keystore-bar-1".to_string(),
+            "keystore-bar-2".to_string(),
+            "keystore-bar-10".to_string(),
+            "keystore-foo".to_string(),
+        ];
+        filenames.sort();
+
+        let mut secrets = Vec::new();
+        let mut expect = std::collections::HashSet::new();
+
+        for _ in 0..filenames.len() {
+            let secret = generate_secret_key();
+            secrets.push(secret);
+            expect.insert(secret);
+        }
+
+        store_keys_insecure(&secrets, &dir_path, &CONFIRM_INSECURE_KEYS)
+            .await
+            .unwrap();
+
+        // Rename according to filenames slice
+        for (idx, name) in filenames.iter().enumerate() {
+            let old_json = format!("{}/keystore-insecure-{}.json", dir_path, idx);
+            let new_json = format!("{}/{}.json", dir_path, name);
+            std::fs::rename(&old_json, &new_json).unwrap();
+
+            let old_txt = format!("{}/keystore-insecure-{}.txt", dir_path, idx);
+            let new_txt = format!("{}/{}.txt", dir_path, name);
+            std::fs::rename(&old_txt, &new_txt).unwrap();
+        }
+
+        let key_files = load_files_unordered(&dir_path).await.unwrap();
+
+        assert_eq!(key_files.len(), expect.len());
+
+        for key_file in key_files.iter() {
+            assert!(expect.contains(&key_file.private_key));
+        }
+    }
+
+    #[tokio::test]
+    async fn load_non_sequential_idx() {
+        let dir = TempDir::new().unwrap();
+        let dir_path = dir.path().to_string_lossy().to_string();
+
+        let mut secrets = Vec::new();
+        for _ in 0..2 {
+            secrets.push(generate_secret_key());
+        }
+
+        store_keys_insecure(&secrets, &dir_path, &CONFIRM_INSECURE_KEYS)
+            .await
+            .unwrap();
+
+        let old_path = format!("{}/keystore-insecure-1.json", dir_path);
+        let new_path = format!("{}/keystore-insecure-42.json", dir_path);
+        std::fs::rename(&old_path, &new_path).unwrap();
+
+        let old_path = format!("{}/keystore-insecure-1.txt", dir_path);
+        let new_path = format!("{}/keystore-insecure-42.txt", dir_path);
+        std::fs::rename(&old_path, &new_path).unwrap();
+
+        let key_files = load_files_unordered(&dir_path).await.unwrap();
+
+        let result = key_files.sequenced_keys();
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("out of sequence keystore index"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn load_sequential_non_charon_names() {
+        let dir = TempDir::new().unwrap();
+        let dir_path = dir.path().to_string_lossy().to_string();
+
+        let mut filenames = [
+            "keystore-bar-1".to_string(),
+            "keystore-bar-2".to_string(),
+            "keystore-bar-10".to_string(),
+            "keystore-foo".to_string(),
+        ];
+        filenames.sort();
+
+        let mut secrets = Vec::new();
+        for _ in 0..filenames.len() {
+            secrets.push(generate_secret_key());
+        }
+
+        store_keys_insecure(&secrets, &dir_path, &CONFIRM_INSECURE_KEYS)
+            .await
+            .unwrap();
+
+        // Rename according to filenames slice
+        for (idx, name) in filenames.iter().enumerate() {
+            let old_json = format!("{}/keystore-insecure-{}.json", dir_path, idx);
+            let new_json = format!("{}/{}.json", dir_path, name);
+            std::fs::rename(&old_json, &new_json).unwrap();
+
+            let old_txt = format!("{}/keystore-insecure-{}.txt", dir_path, idx);
+            let new_txt = format!("{}/{}.txt", dir_path, name);
+            std::fs::rename(&old_txt, &new_txt).unwrap();
+        }
+
+        let key_files = load_files_unordered(&dir_path).await.unwrap();
+
+        let result = key_files.sequenced_keys();
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unknown keystore index, filename not 'keystore-%d.json'"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    /// Table-driven test for sequenced keys.
+    #[test_case(&["0"], true ; "happy_1")]
+    #[test_case(&["0", "1"], true ; "happy_2")]
+    #[test_case(&["0", "1", "2", "3"], true ; "happy_4")]
+    #[test_case(&["1", "2", "3"], false ; "missing_0")]
+    #[test_case(&["0", "1", "3"], false ; "missing_2")]
+    #[test_case(&["0", "17"], false ; "missing_range")]
+    #[test_case(&["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19"], true ; "happy_20")]
+    #[test_case(&["0", "1", "foo"], false ; "single_non_numeric")]
+    #[test_case(&["foo", "bar02", "qux-01"], false ; "all_non_numeric")]
+    #[tokio::test]
+    async fn sequenced_keys(suffixes: &[&str], should_succeed: bool) {
+        let dir = TempDir::new().unwrap();
+        let dir_path = dir.path().to_string_lossy().to_string();
+
+        let mut expected = Vec::new();
+
+        for suffix in suffixes {
+            let target = format!("{}/keystore-{}.json", dir_path, suffix);
+            let secret = store_new_key_for_test(&target).await;
+            expected.push(secret);
+        }
+
+        let key_files = load_files_unordered(&dir_path).await.unwrap();
+
+        let result = key_files.sequenced_keys();
+        if !should_succeed {
+            assert!(result.is_err(), "test should have failed");
+            return;
+        }
+
+        let actual = result.expect("test should have succeeded");
+        assert_eq!(expected, actual, "keys mismatch");
+    }
+
+    #[tokio::test]
+    async fn load_files_recursively_test() {
+        let dir = TempDir::new().unwrap();
+        let dir_path = dir.path().to_string_lossy().to_string();
+
+        // Create a nested directory structure with keystore files
+        let nested_dir = format!("{}/nested", dir_path);
+        std::fs::create_dir(&nested_dir).unwrap();
+
+        // Store keys in root & nested directories
+        let pk1 = store_new_key_for_test(&format!("{}/keystore-alpha.json", dir_path)).await;
+        let pk2 = store_new_key_for_test(&format!("{}/keystore-bravo.json", nested_dir)).await;
+
+        let key_files = load_files_recursively(&dir_path).await.unwrap();
+
+        assert_eq!(key_files.len(), 2);
+
+        // Check if both keys are loaded correctly
+        for kf in key_files.iter() {
+            let is_pk1 = kf.private_key == pk1;
+            let is_pk2 = kf.private_key == pk2;
+            assert!(is_pk1 || is_pk2, "Loaded key does not match expected keys");
+        }
+
+        assert_ne!(key_files[0].private_key, key_files[1].private_key);
+        assert_ne!(key_files[0].file_index, key_files[1].file_index);
+
+        // Sub-test: shuffle password files
+        let alpha_password =
+            std::fs::read_to_string(format!("{}/keystore-alpha.txt", dir_path)).unwrap();
+        let bravo_password =
+            std::fs::read_to_string(format!("{}/keystore-bravo.txt", nested_dir)).unwrap();
+
+        std::fs::remove_file(format!("{}/keystore-alpha.txt", dir_path)).unwrap();
+        std::fs::remove_file(format!("{}/keystore-bravo.txt", nested_dir)).unwrap();
+
+        // Write swapped passwords
+        std::fs::write(format!("{}/keystore-alpha.txt", dir_path), &bravo_password).unwrap();
+        std::fs::write(
+            format!("{}/keystore-bravo.txt", nested_dir),
+            &alpha_password,
+        )
+        .unwrap();
+
+        let key_files = load_files_recursively(&dir_path).await.unwrap();
+
+        assert_eq!(key_files.len(), 2);
     }
 }

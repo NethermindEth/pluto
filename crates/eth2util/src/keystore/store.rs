@@ -152,17 +152,17 @@ fn generate_uuid() -> String {
 }
 
 /// Loads a keystore password from the keystore's associated password file.
-pub async fn load_password(key_file: &str) -> Result<String> {
+pub(crate) async fn load_password(key_file: impl AsRef<str>) -> Result<String> {
     if matches!(
-        tokio::fs::metadata(key_file).await,
+        tokio::fs::metadata(key_file.as_ref()).await,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound
     ) {
         return Err(KeystoreError::PasswordNotFound {
-            path: key_file.to_string(),
+            path: key_file.as_ref().to_string(),
         });
     }
 
-    let password_file = key_file.replacen(".json", ".txt", 1);
+    let password_file = key_file.as_ref().replacen(".json", ".txt", 1);
     let b = tokio::fs::read_to_string(&password_file).await?;
 
     Ok(b)
@@ -227,4 +227,56 @@ async fn write_file(path: &str, data: &[u8], mode: u32) -> Result<()> {
     file.write_all(data).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PrivateKey};
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::keystore::load::load_files_unordered;
+
+    /// Generates a random BLS secret key for testing.
+    fn generate_secret_key() -> PrivateKey {
+        let tbls = BlstImpl;
+        tbls.generate_secret_key(rand::thread_rng()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn store_load() {
+        let dir = TempDir::new().unwrap();
+        let dir_path = dir.path().to_string_lossy().to_string();
+
+        let mut secrets = Vec::new();
+        for _ in 0..2 {
+            secrets.push(generate_secret_key());
+        }
+
+        store_keys_insecure(&secrets, &dir_path, &CONFIRM_INSECURE_KEYS)
+            .await
+            .unwrap();
+
+        let key_files = load_files_unordered(&dir_path).await.unwrap();
+
+        let actual = key_files.sequenced_keys().unwrap();
+
+        assert_eq!(secrets, actual);
+    }
+
+    #[tokio::test]
+    async fn check_dir_test() {
+        let err = store_keys(&[], "foo").await.unwrap_err();
+        assert!(matches!(err, KeystoreError::DirNotExist { .. }));
+
+        let testdata_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src/keystore/testdata/keystore-scrypt.json")
+            .to_string_lossy()
+            .to_string();
+
+        let err = store_keys(&[], &testdata_path).await.unwrap_err();
+        assert!(matches!(err, KeystoreError::NotADirectory { .. }));
+    }
 }

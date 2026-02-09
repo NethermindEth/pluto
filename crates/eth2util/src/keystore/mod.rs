@@ -18,6 +18,3 @@ pub use store::{
     CONFIRM_INSECURE_KEYS, ConfirmInsecure, Keystore, check_dir, decrypt, encrypt, store_keys,
     store_keys_insecure,
 };
-
-#[cfg(test)]
-mod tests;

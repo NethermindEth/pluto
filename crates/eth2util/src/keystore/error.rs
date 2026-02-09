@@ -1,8 +1,3 @@
-// Copyright © 2022-2025 Obol Labs Inc. Licensed under the terms of a Business
-// Source License 1.1
-
-//! Error types for keystore operations.
-
 /// Error type for keystore operations.
 #[derive(Debug, thiserror::Error)]
 pub enum KeystoreError {
