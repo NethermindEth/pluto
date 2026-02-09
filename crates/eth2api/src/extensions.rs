@@ -102,7 +102,7 @@ impl EthBeaconNodeApiClient {
             .and_then(|v| v.as_str())
             .and_then(|s| s.parse::<u64>().ok())
             .ok_or(EthBeaconNodeApiClientError::UnexpectedType)
-            .map(|secs| time::Duration::from_secs(secs))?;
+            .map(time::Duration::from_secs)?;
 
         let slots_per_epoch = spec
             .data
