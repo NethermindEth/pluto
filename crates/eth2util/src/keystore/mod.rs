@@ -5,8 +5,8 @@
 //! Passwords are expected/created in files with identical names as the
 //! keystores, except with `.txt` extension.
 
-mod eip2335;
 mod error;
+mod keystorev4;
 mod load;
 mod store;
 
@@ -15,6 +15,5 @@ pub use load::{
     KeyFile, KeyFiles, extract_file_index, load_files_recursively, load_files_unordered,
 };
 pub use store::{
-    CONFIRM_INSECURE_KEYS, ConfirmInsecure, Keystore, check_dir, decrypt, encrypt, store_keys,
-    store_keys_insecure,
+    CONFIRM_INSECURE_KEYS, ConfirmInsecure, Keystore, encrypt, store_keys, store_keys_insecure,
 };

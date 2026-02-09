@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
-    eip2335::{CryptoSection, EIP2335_KEYSTORE_VERSION, encrypt_eip2335},
     error::{KeystoreError, Result},
+    keystorev4::{self, CryptoSection, EIP2335_KEYSTORE_VERSION},
 };
 
 /// Insecure PBKDF2 iteration count (2^4 = 16) for fast test encryption.
@@ -121,7 +121,7 @@ pub fn encrypt(secret: &PrivateKey, password: &str, pbkdf2_c: Option<u32>) -> Re
         .secret_to_public_key(secret)
         .map_err(|e| KeystoreError::Encrypt(format!("marshal pubkey: {e}")))?;
 
-    let crypto = encrypt_eip2335(secret.as_slice(), password, pbkdf2_c)?;
+    let crypto = keystorev4::encrypt(secret.as_slice(), password, pbkdf2_c)?;
 
     Ok(Keystore {
         crypto,
@@ -134,8 +134,8 @@ pub fn encrypt(secret: &PrivateKey, password: &str, pbkdf2_c: Option<u32>) -> Re
 }
 
 /// Decrypts a keystore and returns the private key.
-pub fn decrypt(store: &Keystore, password: &str) -> Result<PrivateKey> {
-    let secret_bytes = super::eip2335::decrypt_eip2335(&store.crypto, password)?;
+pub(crate) fn decrypt(store: &Keystore, password: &str) -> Result<PrivateKey> {
+    let secret_bytes = super::keystorev4::decrypt(&store.crypto, password)?;
 
     let len = secret_bytes.len();
     let secret: PrivateKey =
@@ -176,21 +176,21 @@ pub(crate) async fn load_password(key_file: impl AsRef<str>) -> Result<String> {
 }
 
 /// Stores a password to the keystore's associated password file.
-pub async fn store_password(key_file: &str, password: &str) -> Result<()> {
+async fn store_password(key_file: &str, password: &str) -> Result<()> {
     let password_file = key_file.replacen(".json", ".txt", 1);
     // Write password file with 0o400 permissions (read-only for owner).
     write_file(&password_file, password.as_bytes(), 0o400).await
 }
 
 /// Returns a random 32-character hex string using crypto-secure RNG.
-pub fn random_hex32() -> Result<String> {
+fn random_hex32() -> Result<String> {
     let mut b = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut b);
     Ok(hex::encode(b))
 }
 
 /// Checks if `dir` exists and is a directory.
-pub async fn check_dir(dir: &str) -> Result<()> {
+async fn check_dir(dir: &str) -> Result<()> {
     let metadata = tokio::fs::metadata(dir).await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             KeystoreError::DirNotExist {
