@@ -64,13 +64,10 @@ impl ValidatorStatus {
 impl EthBeaconNodeApiClient {
     /// Fetches the genesis time.
     pub async fn fetch_genesis_time(&self) -> Result<DateTime<Utc>, EthBeaconNodeApiClientError> {
-        let genesis = self
-            .get_genesis(GetGenesisRequest {})
-            .await
-            .and_then(|res| match res {
-                GetGenesisResponse::Ok(genesis) => Ok(genesis),
-                _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse.into()),
-            })?;
+        let genesis = match self.get_genesis(GetGenesisRequest {}).await? {
+            GetGenesisResponse::Ok(genesis) => genesis,
+            _ => return Err(EthBeaconNodeApiClientError::UnexpectedResponse),
+        };
 
         genesis
             .data
@@ -87,13 +84,10 @@ impl EthBeaconNodeApiClient {
     pub async fn fetch_slots_config(
         &self,
     ) -> Result<(time::Duration, u64), EthBeaconNodeApiClientError> {
-        let spec = self
-            .get_spec(GetSpecRequest {})
-            .await
-            .and_then(|res| match res {
-                GetSpecResponse::Ok(spec) => Ok(spec),
-                _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse.into()),
-            })?;
+        let spec = match self.get_spec(GetSpecRequest {}).await? {
+            GetSpecResponse::Ok(spec) => spec,
+            _ => return Err(EthBeaconNodeApiClientError::UnexpectedResponse),
+        };
 
         let slot_duration = spec
             .data
@@ -150,13 +144,10 @@ impl EthBeaconNodeApiClient {
             Ok(ForkSchedule { version, epoch })
         }
 
-        let spec = self
-            .get_spec(GetSpecRequest {})
-            .await
-            .and_then(|res| match res {
-                GetSpecResponse::Ok(spec) => Ok(spec),
-                _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse.into()),
-            })?;
+        let spec = match self.get_spec(GetSpecRequest {}).await? {
+            GetSpecResponse::Ok(spec) => spec,
+            _ => return Err(EthBeaconNodeApiClientError::UnexpectedResponse),
+        };
 
         let mut result = HashMap::new();
         for fork in FORKS.into_iter() {
