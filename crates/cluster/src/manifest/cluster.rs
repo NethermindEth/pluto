@@ -306,7 +306,6 @@ mod tests {
                 *private_share = share_priv;
             }
 
-            // Shuffle the pub_shares like the Go test does
             validator.pub_shares.shuffle(&mut rng);
 
             cluster.validators.push(validator);
@@ -373,7 +372,6 @@ mod tests {
     fn share_idx_for_cluster_test() {
         let operator_amt: u8 = 4;
 
-        // Generate k1 keys for operators (like Go's cluster.NewForT)
         let mut k1_keys = Vec::new();
         let mut operators = Vec::new();
 
@@ -396,7 +394,7 @@ mod tests {
         // Test first operator's public key returns share index 1
         let pubkey = k1_keys[0].public_key();
         let res = share_idx_for_cluster(&cluster, &pubkey).unwrap();
-        assert_eq!(res, 1); // 1-indexed, matches Go test expectation
+        assert_eq!(res, 1); // 1-indexed
 
         // Test all operators
         for (i, k1_key) in k1_keys.iter().enumerate() {

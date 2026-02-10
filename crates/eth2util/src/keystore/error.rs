@@ -92,10 +92,6 @@ pub enum KeystoreError {
     #[error("crypto error: {0}")]
     Crypto(#[from] pluto_crypto::types::Error),
 
-    /// Glob pattern error.
-    #[error("glob pattern error: {0}")]
-    GlobPattern(#[from] glob::PatternError),
-
     /// Scrypt params error.
     #[error("scrypt params error: {0}")]
     ScryptParams(String),

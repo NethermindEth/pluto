@@ -57,9 +57,7 @@ uuid = { version = "1.19", features = ["serde", "v4"] }
 unsigned-varint = { version = "0.8", features = ["futures"] }
 serde_with = { version = "3.16", features = ["hex", "base64"] }
 base64 = "0.22"
-sha2 = "0.10"
 sha3 = "0.10"
-glob = "0.3"
 walkdir = "2"
 eth2_keystore = { git = "https://github.com/sigp/lighthouse", tag = "v8.1.0" }
 k256 = { version = "0.13.4", features = ["ecdsa", "sha256"] }
