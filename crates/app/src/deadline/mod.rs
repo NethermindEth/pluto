@@ -1,10 +1,5 @@
-// TODO: Requires `eth2client`
-#![allow(unreachable_code)]
-#![allow(unused_variables)]
-#![allow(clippy::diverging_sub_expression)]
-
 use pluto_core::types::{Duty, DutyType};
-use std::time;
+use pluto_eth2api::{EthBeaconNodeApiClient, EthBeaconNodeApiClientError};
 
 /// Defines the fraction of the slot duration to use as a margin.
 /// This is to consider network delays and other factors that may affect the
@@ -16,16 +11,19 @@ pub type DeadlineFunc = Box<dyn Fn(Duty) -> Option<chrono::DateTime<chrono::Utc>
 
 /// Error type for deadline-related operations.
 #[derive(Debug, thiserror::Error)]
-pub enum DeadlineError {}
+pub enum DeadlineError {
+    /// Beacon client API error.
+    #[error("Beacon client error: {0}")]
+    BeaconClientError(#[from] EthBeaconNodeApiClientError),
+}
 
 type Result<T> = std::result::Result<T, DeadlineError>;
 
 /// Create a function that provides duty deadline or [`None`] if the duty never
 /// deadlines.
-pub fn new_duty_deadline_func() -> Result<DeadlineFunc> {
-    let genesis_time: chrono::DateTime<chrono::Utc> = todo!("Fetch genesis time from eth2 client");
-
-    let slot_duration: time::Duration = todo!("Fetch slot duration from eth2 client");
+pub async fn new_duty_deadline_func(eth2_cl: &EthBeaconNodeApiClient) -> Result<DeadlineFunc> {
+    let genesis_time = eth2_cl.fetch_genesis_time().await?;
+    let (slot_duration, _) = eth2_cl.fetch_slots_config().await?;
 
     #[allow(
         clippy::arithmetic_side_effects,

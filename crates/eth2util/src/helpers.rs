@@ -106,28 +106,10 @@ pub async fn epoch_from_slot(
     client: &pluto_eth2api::client::EthBeaconNodeApiClient,
     slot: u64,
 ) -> Result<u64> {
-    let resp = match client
-        .get_spec(pluto_eth2api::GetSpecRequest {})
+    let (_, slots_per_epoch) = client
+        .fetch_slots_config()
         .await
-        .map_err(|e| HelperError::GettingSpec(e.to_string()))?
-    {
-        pluto_eth2api::GetSpecResponse::Ok(resp) => resp,
-        pluto_eth2api::GetSpecResponse::InternalServerError(err) => {
-            return Err(HelperError::GettingSpec(err.message));
-        }
-        pluto_eth2api::GetSpecResponse::Unknown => {
-            return Err(HelperError::GettingSpec("unknown response".into()));
-        }
-    };
-
-    let slots_per_epoch: u64 = resp
-        .data
-        .as_object()
-        .and_then(|obj| obj.get("SLOTS_PER_EPOCH"))
-        .and_then(|v| v.as_str())
-        .ok_or(HelperError::FetchSlotsPerEpoch)?
-        .parse()
-        .map_err(|_| HelperError::FetchSlotsPerEpoch)?;
+        .map_err(|e| HelperError::GettingSpec(e.to_string()))?;
 
     slot.checked_div(slots_per_epoch)
         .ok_or(HelperError::FetchSlotsPerEpoch)
