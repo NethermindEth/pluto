@@ -2,7 +2,7 @@ use crate::{
     ConsensusVersion, EthBeaconNodeApiClient, ForkSchedule, GetBlockHeaderRequest,
     GetBlockHeaderRequestPath, GetBlockHeaderResponse,
 };
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::{Arc, LazyLock, Weak};
 use testcontainers::{
     ContainerAsync, GenericImage, ImageExt,
     core::{IntoContainerPort, WaitFor},
@@ -178,8 +178,9 @@ impl BeaconNodeContainer {
     ///
     /// The container gets stopped when there are no more references to it.
     async fn shared() -> Arc<BeaconNodeContainer> {
-        static SHARED: OnceLock<Mutex<Weak<BeaconNodeContainer>>> = OnceLock::new();
-        let mut guard = SHARED.get_or_init(|| Mutex::new(Weak::new())).lock().await;
+        static SHARED: LazyLock<Mutex<Weak<BeaconNodeContainer>>> =
+            LazyLock::new(|| Mutex::new(Weak::new()));
+        let mut guard = SHARED.lock().await;
 
         if let Some(container) = guard.upgrade() {
             container
