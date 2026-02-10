@@ -63,6 +63,14 @@ exceptions = [{ crate = "attohttpc", allow = ["MPL-2.0"] }]
 confidence-threshold = 0.8
 unused-allowed-license = "allow"
 
+# Clarify licenses for Lighthouse crates (Apache-2.0 but not in metadata)
+clarify = [
+    { crate = "bls@0.2.0", expression = "Apache-2.0", license-files = [] },
+    { crate = "eth2_key_derivation@0.1.0", expression = "Apache-2.0", license-files = [] },
+    { crate = "eth2_keystore@0.1.0", expression = "Apache-2.0", license-files = [] },
+    { crate = "fixed_bytes@0.1.0", expression = "Apache-2.0", license-files = [] },
+]
+
 [licenses.private]
 ignore = false
 registries = []
