@@ -13,10 +13,11 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Validate PR
+        env:
+          PR_TITLE: "${{ github.event.pull_request.title }}"
         run: |
-          pr_name="${{ github.event.pull_request.title }}"
-          if [[ ! "$pr_name" =~ ^(fix|feat|build|chore|docs|test|refactor|ci|localize|bump|revert)(\([a-z0-9\-]+\))?:\ .+$ ]]; then
-            echo "Error: PR title does not follow the convention: '$pr_name'"
+          if [[ ! "$PR_TITLE" =~ ^(fix|feat|build|chore|docs|test|refactor|ci|localize|bump|revert)(\([a-z0-9\-]+\))?:\ .+$ ]]; then
+            echo "Error: PR title does not follow the convention: '$PR_TITLE'"
             echo "Expected format: <type>[(scope)]: <description>"
             echo "Where:"
             echo "  <type> is one of fix, feat, build, chore, docs, test, refactor, ci, localize, bump or revert"
