@@ -67,8 +67,8 @@ async fn fetch_slots_config() {
 #[tokio::test]
 async fn fetch_fork_config() {
     let bn = BeaconNodeContainer::shared().await;
-    let base_url = &bn.base_url;
-    let client = EthBeaconNodeApiClient::with_base_url(base_url).expect("Failed to create client");
+    let client =
+        EthBeaconNodeApiClient::with_base_url(&bn.base_url).expect("Failed to create client");
 
     let fork_schedule = client
         .fetch_fork_config()
