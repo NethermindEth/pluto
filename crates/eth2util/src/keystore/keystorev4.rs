@@ -27,37 +27,40 @@ pub(crate) const EIP2335_KEYSTORE_VERSION: u32 = 4;
 
 /// The default byte length of the salt used to seed the KDF.
 ///
-/// NOTE: there is no clear guidance in EIP-2335 regarding the size of this salt. Neither
-/// [pbkdf2](https://www.ietf.org/rfc/rfc2898.txt) or [scrypt](https://tools.ietf.org/html/rfc7914)
-/// make a clear statement about what size it should be, however 32-bytes certainly seems
-/// reasonable and larger than the EITF examples.
+/// NOTE: there is no clear guidance in EIP-2335 regarding the size of this
+/// salt. Neither [pbkdf2](https://www.ietf.org/rfc/rfc2898.txt) or [scrypt](https://tools.ietf.org/html/rfc7914)
+/// make a clear statement about what size it should be, however 32-bytes
+/// certainly seems reasonable and larger than the EITF examples.
 const SALT_SIZE: usize = 32;
 
-/// Size of the IV (initialization vector) used for aes-128-ctr encryption of private key material.
+/// Size of the IV (initialization vector) used for aes-128-ctr encryption of
+/// private key material.
 ///
-/// NOTE: the EIP-2335 test vectors use a 16-byte IV whilst RFC3868 uses an 8-byte IV. Reference:
+/// NOTE: the EIP-2335 test vectors use a 16-byte IV whilst RFC3868 uses an
+/// 8-byte IV. Reference:
 ///
 /// - https://tools.ietf.org/html/rfc3686
 /// - https://github.com/ethereum/EIPs/issues/2339#issuecomment-623865023
 ///
 /// Comment from Carl B, author of EIP-2335:
 ///
-/// AES CTR IV's should be the same length as the internal blocks in my understanding. (The IV is
-/// the first block input.)
+/// AES CTR IV's should be the same length as the internal blocks in my
+/// understanding. (The IV is the first block input.)
 ///
-/// As far as I know, AES-128-CTR is not defined by the IETF, but by NIST in SP800-38A.
-/// (https://csrc.nist.gov/publications/detail/sp/800-38a/final) The test vectors in this standard
+/// As far as I know, AES-128-CTR is not defined by the IETF, but by NIST in
+/// SP800-38A. (https://csrc.nist.gov/publications/detail/sp/800-38a/final) The test vectors in this standard
 /// are 16 bytes.
 const IV_SIZE: usize = 16;
 
 /// The length of the derived key.
 const DKLEN: usize = 32;
+const DKLEN_U32: u32 = 32;
 
 /// The maximum PBKDF2 iteration count.
 ///
-/// NIST Recommends suggests potential use cases where `c` of 10,000,000 is desireable.
-/// As it is 10 years old this has been increased to 80,000,000. Larger values will
-/// take over 1 minute to execute on an average machine.
+/// NIST Recommends suggests potential use cases where `c` of 10,000,000 is
+/// desireable. As it is 10 years old this has been increased to 80,000,000.
+/// Larger values will take over 1 minute to execute on an average machine.
 ///
 /// Reference:
 ///
@@ -301,19 +304,21 @@ fn validate_aes_iv(iv: &[u8]) -> Result<()> {
     Ok(())
 }
 
-// Validates the kdf parameters to ensure they are sufficiently secure, in addition to
-// preventing DoS attacks from excessively large parameters.
+// Validates the kdf parameters to ensure they are sufficiently secure, in
+// addition to preventing DoS attacks from excessively large parameters.
 fn validate_parameters(kdf: &Kdf) -> Result<()> {
     match kdf {
         Kdf::Pbkdf2(params) => {
-            // We always compute a derived key of 32 bytes so reject anything that says otherwise.
+            // We always compute a derived key of 32 bytes so reject anything that says
+            // otherwise.
             if params.dklen as usize != DKLEN {
                 return Err(KeystoreError::InvalidPbkdf2Param);
             }
 
-            // NIST Recommends suggests potential use cases where `c` of 10,000,000 is desireable.
-            // As it is 10 years old this has been increased to 80,000,000. Larger values will
-            // take over 1 minute to execute on an average machine.
+            // NIST Recommends suggests potential use cases where `c` of 10,000,000 is
+            // desireable. As it is 10 years old this has been increased to
+            // 80,000,000. Larger values will take over 1 minute to execute on
+            // an average machine.
             //
             // Reference:
             //
@@ -354,13 +359,16 @@ fn validate_parameters(kdf: &Kdf) -> Result<()> {
                 return Err(KeystoreError::InvalidScryptParam);
             }
 
-            // We always compute a derived key of 32 bytes so reject anything that says otherwise.
+            // We always compute a derived key of 32 bytes so reject anything that says
+            // otherwise.
             if params.dklen as usize != DKLEN {
                 return Err(KeystoreError::InvalidScryptParam);
             }
 
             // Ensure that `n` is power of 2.
-            let n = 1u32.checked_shl(log2_int(params.n)).ok_or(KeystoreError::InvalidScryptParam)?;
+            let n = 1u32
+                .checked_shl(log2_int(params.n))
+                .ok_or(KeystoreError::InvalidScryptParam)?;
             if params.n != n {
                 return Err(KeystoreError::InvalidScryptParam);
             }
@@ -381,7 +389,12 @@ fn validate_parameters(kdf: &Kdf) -> Result<()> {
             if npr < DEFAULT_SCRYPT_NPR {
                 eprintln!(
                     "WARN: Scrypt parameters are too weak (n: {}, p: {}, r: {}), we recommend (n: {}, p: {}, r: {})",
-                    params.n, params.p, params.r, DEFAULT_SCRYPT_N, DEFAULT_SCRYPT_P, DEFAULT_SCRYPT_R
+                    params.n,
+                    params.p,
+                    params.r,
+                    DEFAULT_SCRYPT_N,
+                    DEFAULT_SCRYPT_P,
+                    DEFAULT_SCRYPT_R
                 );
             }
 
@@ -395,10 +408,7 @@ fn validate_parameters(kdf: &Kdf) -> Result<()> {
 
 // Compute floor of log2 of a u32.
 fn log2_int(x: u32) -> u32 {
-    if x == 0 {
-        return 0;
-    }
-    31 - x.leading_zeros()
+    x.checked_ilog2().unwrap_or(0)
 }
 
 // Validates that the salt is non-zero in length.
@@ -422,7 +432,8 @@ fn validate_salt(salt: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Normalize a password per EIP-2335: NFKD normalize then strip control codes, then UTF-8 encode.
+/// Normalize a password per EIP-2335: NFKD normalize then strip control codes,
+/// then UTF-8 encode.
 ///
 /// Returns a [`Zeroizing`] wrapper so the normalized bytes are wiped on drop.
 fn normalize_password(password: &str) -> Zeroizing<Vec<u8>> {
@@ -443,7 +454,9 @@ fn derive_key(kdf: &Kdf, password: &[u8]) -> Result<Zeroizing<[u8; DKLEN]>> {
             pbkdf2::pbkdf2_hmac::<Sha256>(password, params.salt.as_bytes(), params.c, dk.as_mut());
         }
         Kdf::Scrypt(params) => {
-            let scrypt_params = scrypt::Params::new(log2_int(params.n) as u8, params.r, params.p, DKLEN)
+            let log_n =
+                u8::try_from(log2_int(params.n)).map_err(|_| KeystoreError::InvalidScryptParam)?;
+            let scrypt_params = scrypt::Params::new(log_n, params.r, params.p, DKLEN)
                 .map_err(|e| KeystoreError::ScryptParams(format!("{e}")))?;
             scrypt::scrypt(
                 password,
@@ -470,8 +483,8 @@ fn generate_checksum(dk: &[u8; DKLEN], cipher_message: &[u8]) -> [u8; 32] {
 
 /// Encrypt a secret using PBKDF2-based EIP-2335 keystore encryption.
 ///
-/// Note: this implementation intentionally only *creates* PBKDF2 keystores. Decryption supports
-/// both PBKDF2 and scrypt.
+/// Note: this implementation intentionally only *creates* PBKDF2 keystores.
+/// Decryption supports both PBKDF2 and scrypt.
 ///
 /// ## Errors
 ///
@@ -494,7 +507,7 @@ pub(crate) fn encrypt(
 
     let kdf = Kdf::Pbkdf2(Pbkdf2Params {
         c,
-        dklen: DKLEN as u32,
+        dklen: DKLEN_U32,
         prf: Prf::HmacSha256,
         salt: salt.into(),
     });
@@ -559,7 +572,7 @@ pub(crate) fn decrypt(crypto: &Crypto, password: &str) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use test_case::test_case;
-    
+
     #[test_case(
         "𝔱𝔢𝔰𝔱𝔭𝔞𝔰𝔰𝔴𝔬𝔯𝔡🔑",
         "7465737470617373776f7264f09f9491"
@@ -615,15 +628,21 @@ mod tests {
         let store: crate::keystore::store::Keystore = serde_json::from_str(keystore).unwrap();
         let password = "𝔱𝔢𝔰𝔱𝔭𝔞𝔰𝔰𝔴𝔬𝔯𝔡🔑";
 
-        // Verify checksum construction matches spec: SHA256(DK[16:32] || cipher.message).
+        // Verify checksum construction matches spec: SHA256(DK[16:32] ||
+        // cipher.message).
         let normalized = normalize_password(password);
         let dk = derive_key(&store.crypto.kdf.params, &normalized).unwrap();
         let computed = generate_checksum(&dk, store.crypto.cipher.message.as_bytes());
-        assert_eq!(computed.as_slice(), store.crypto.checksum.message.as_bytes());
+        assert_eq!(
+            computed.as_slice(),
+            store.crypto.checksum.message.as_bytes()
+        );
 
         // Verify AES-128-CTR decryption matches spec.
         let plaintext = decrypt(&store.crypto, password).unwrap();
-        let expected = hex::decode("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f").unwrap();
+        let expected =
+            hex::decode("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f")
+                .unwrap();
         assert_eq!(plaintext, expected);
     }
 
@@ -666,15 +685,21 @@ mod tests {
         let store: crate::keystore::store::Keystore = serde_json::from_str(keystore).unwrap();
         let password = "𝔱𝔢𝔰𝔱𝔭𝔞𝔰𝔰𝔴𝔬𝔯𝔡🔑";
 
-        // Verify checksum construction matches spec: SHA256(DK[16:32] || cipher.message).
+        // Verify checksum construction matches spec: SHA256(DK[16:32] ||
+        // cipher.message).
         let normalized = normalize_password(password);
         let dk = derive_key(&store.crypto.kdf.params, &normalized).unwrap();
         let computed = generate_checksum(&dk, store.crypto.cipher.message.as_bytes());
-        assert_eq!(computed.as_slice(), store.crypto.checksum.message.as_bytes());
+        assert_eq!(
+            computed.as_slice(),
+            store.crypto.checksum.message.as_bytes()
+        );
 
         // Verify AES-128-CTR decryption matches spec.
         let plaintext = decrypt(&store.crypto, password).unwrap();
-        let expected = hex::decode("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f").unwrap();
+        let expected =
+            hex::decode("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f")
+                .unwrap();
         assert_eq!(plaintext, expected);
     }
 
@@ -776,7 +801,8 @@ mod tests {
         assert!(matches!(result, Err(KeystoreError::InvalidChecksum)));
     }
 
-    // ========== Strictness tests (Lighthouse-style: reject at deserialize) ==========
+    // ========== Strictness tests (Lighthouse-style: reject at deserialize)
+    // ==========
 
     #[test]
     fn deserialize_rejects_unknown_fields_in_crypto() {

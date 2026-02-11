@@ -121,7 +121,7 @@ pub fn encrypt(secret: &PrivateKey, password: &str, pbkdf2_c: Option<u32>) -> Re
         .secret_to_public_key(secret)
         .map_err(|e| KeystoreError::Encrypt(format!("marshal pubkey: {e}")))?;
 
-    let crypto = keystorev4::encrypt(&secret, password, pbkdf2_c)?;
+    let crypto = keystorev4::encrypt(secret, password, pbkdf2_c)?;
 
     Ok(Keystore {
         crypto,
