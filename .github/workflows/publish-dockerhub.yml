@@ -125,6 +125,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     needs: build
+    if: ${{ needs.build.result == 'success' }}
 
     steps:
       - name: Download digests
