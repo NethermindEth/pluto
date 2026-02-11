@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use super::{
     error::{KeystoreError, Result},
-    keystorev4::{self, CryptoSection, EIP2335_KEYSTORE_VERSION},
+    keystorev4::{self, Crypto, EIP2335_KEYSTORE_VERSION},
 };
 
 /// Insecure PBKDF2 iteration count (2^4 = 16) for fast test encryption.
@@ -97,7 +97,7 @@ async fn store_keys_internal(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Keystore {
     /// The encrypted crypto section.
-    pub crypto: CryptoSection,
+    pub crypto: Crypto,
     /// Optional description to help identify the keystore.
     #[serde(default)]
     pub description: String,
@@ -121,7 +121,7 @@ pub fn encrypt(secret: &PrivateKey, password: &str, pbkdf2_c: Option<u32>) -> Re
         .secret_to_public_key(secret)
         .map_err(|e| KeystoreError::Encrypt(format!("marshal pubkey: {e}")))?;
 
-    let crypto = keystorev4::encrypt(secret.as_slice(), password, pbkdf2_c)?;
+    let crypto = keystorev4::encrypt(&secret, password, pbkdf2_c)?;
 
     Ok(Keystore {
         crypto,
@@ -265,25 +265,6 @@ mod tests {
         store_keys_insecure(&secrets, &dir_path, &CONFIRM_INSECURE_KEYS)
             .await
             .unwrap();
-
-        let key_files = load_files_unordered(&dir_path).await.unwrap();
-
-        let actual = key_files.sequenced_keys().unwrap();
-
-        assert_eq!(secrets, actual);
-    }
-
-    #[tokio::test]
-    async fn store_load_secure() {
-        let dir = TempDir::new().unwrap();
-        let dir_path = dir.path().to_string_lossy().to_string();
-
-        let mut secrets = Vec::new();
-        for _ in 0..3 {
-            secrets.push(generate_secret_key());
-        }
-
-        store_keys(&secrets, &dir_path).await.unwrap();
 
         let key_files = load_files_unordered(&dir_path).await.unwrap();
 

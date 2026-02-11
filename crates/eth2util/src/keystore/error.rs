@@ -59,6 +59,18 @@ pub enum KeystoreError {
     #[error("decryption error: {0}")]
     Decrypt(String),
 
+    /// Invalid PBKDF2 parameters.
+    #[error("invalid pbkdf2 param")]
+    InvalidPbkdf2Param,
+
+    /// Invalid scrypt parameters.
+    #[error("invalid scrypt param")]
+    InvalidScryptParam,
+
+    /// Invalid salt length.
+    #[error("invalid salt length")]
+    InvalidSaltLength,
+
     /// IO error.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
