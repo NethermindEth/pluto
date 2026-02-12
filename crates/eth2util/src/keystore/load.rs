@@ -14,6 +14,7 @@ pub struct KeyFiles(Vec<KeyFile>);
 
 impl KeyFiles {
     /// Returns the private keys of the files.
+    #[must_use]
     pub fn keys(&self) -> Vec<PrivateKey> {
         self.iter().map(|kf| kf.private_key).collect()
     }

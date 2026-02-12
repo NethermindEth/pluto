@@ -76,7 +76,7 @@ async fn store_keys_internal(
 
         set.spawn(async move {
             let filename = format!("{dir}/{prefix}{i}.json");
-            let password = random_hex32()?;
+            let password = random_hex32();
             let store = encrypt(&secret, &password, pbkdf2_c)?;
             let b = serialize_keystore(&store)?;
 
@@ -131,7 +131,7 @@ pub fn encrypt(secret: &PrivateKey, password: impl AsRef<str>, pbkdf2_c: Option<
         description: String::new(),
         pubkey: hex::encode(pub_key),
         path: EIP2334_PATH.to_string(),
-        id: generate_uuid(),
+        id: Uuid::new_v4().to_string().to_uppercase(),
         version: EIP2335_KEYSTORE_VERSION,
     })
 }
@@ -149,15 +149,6 @@ pub(crate) fn decrypt(store: &Keystore, password: impl AsRef<str>) -> Result<Pri
             })?;
 
     Ok(secret)
-}
-
-/// Generates a random UUID in uppercase hex format.
-///
-/// Format: `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX`
-fn generate_uuid() -> String {
-    let mut bytes = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    Uuid::from_bytes(bytes).to_string().to_uppercase()
 }
 
 /// Loads a keystore password from the keystore's associated password file.
@@ -185,10 +176,10 @@ async fn store_password(key_file: impl AsRef<str>, password: impl AsRef<str>) ->
 }
 
 /// Returns a random 32-character hex string using crypto-secure RNG.
-fn random_hex32() -> Result<String> {
+fn random_hex32() -> String {
     let mut b = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut b);
-    Ok(hex::encode(b))
+    hex::encode(b)
 }
 
 /// Checks if `dir` exists and is a directory.
