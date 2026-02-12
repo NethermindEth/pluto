@@ -297,8 +297,8 @@ mod tests {
             .await
             .unwrap();
 
-        let src_json = format!("{}/keystore-insecure-0.json", dir_path);
-        let src_txt = format!("{}/keystore-insecure-0.txt", dir_path);
+        let src_json = format!("{dir_path}/keystore-insecure-0.json");
+        let src_txt = format!("{dir_path}/keystore-insecure-0.txt");
         let target_txt = target.replacen(".json", ".txt", 1);
 
         std::fs::rename(&src_json, target).unwrap();
@@ -385,12 +385,12 @@ mod tests {
 
         // Rename according to filenames slice
         for (idx, name) in filenames.iter().enumerate() {
-            let old_json = format!("{}/keystore-insecure-{}.json", dir_path, idx);
-            let new_json = format!("{}/{}.json", dir_path, name);
+            let old_json = format!("{dir_path}/keystore-insecure-{idx}.json");
+            let new_json = format!("{dir_path}/{name}.json");
             std::fs::rename(&old_json, &new_json).unwrap();
 
-            let old_txt = format!("{}/keystore-insecure-{}.txt", dir_path, idx);
-            let new_txt = format!("{}/{}.txt", dir_path, name);
+            let old_txt = format!("{dir_path}/keystore-insecure-{idx}.txt");
+            let new_txt = format!("{dir_path}/{name}.txt");
             std::fs::rename(&old_txt, &new_txt).unwrap();
         }
 
@@ -417,12 +417,12 @@ mod tests {
             .await
             .unwrap();
 
-        let old_path = format!("{}/keystore-insecure-1.json", dir_path);
-        let new_path = format!("{}/keystore-insecure-42.json", dir_path);
+        let old_path = format!("{dir_path}/keystore-insecure-1.json");
+        let new_path = format!("{dir_path}/keystore-insecure-42.json");
         std::fs::rename(&old_path, &new_path).unwrap();
 
-        let old_path = format!("{}/keystore-insecure-1.txt", dir_path);
-        let new_path = format!("{}/keystore-insecure-42.txt", dir_path);
+        let old_path = format!("{dir_path}/keystore-insecure-1.txt");
+        let new_path = format!("{dir_path}/keystore-insecure-42.txt");
         std::fs::rename(&old_path, &new_path).unwrap();
 
         let key_files = load_files_unordered(&dir_path).await.unwrap();
@@ -460,12 +460,12 @@ mod tests {
 
         // Rename according to filenames slice
         for (idx, name) in filenames.iter().enumerate() {
-            let old_json = format!("{}/keystore-insecure-{}.json", dir_path, idx);
-            let new_json = format!("{}/{}.json", dir_path, name);
+            let old_json = format!("{dir_path}/keystore-insecure-{idx}.json");
+            let new_json = format!("{dir_path}/{name}.json");
             std::fs::rename(&old_json, &new_json).unwrap();
 
-            let old_txt = format!("{}/keystore-insecure-{}.txt", dir_path, idx);
-            let new_txt = format!("{}/{}.txt", dir_path, name);
+            let old_txt = format!("{dir_path}/keystore-insecure-{idx}.txt");
+            let new_txt = format!("{dir_path}/{name}.txt");
             std::fs::rename(&old_txt, &new_txt).unwrap();
         }
 
@@ -499,7 +499,7 @@ mod tests {
         let mut expected = Vec::new();
 
         for suffix in suffixes {
-            let target = format!("{}/keystore-{}.json", dir_path, suffix);
+            let target = format!("{dir_path}/keystore-{suffix}.json");
             let secret = store_new_key_for_test(&target).await;
             expected.push(secret);
         }
@@ -522,12 +522,12 @@ mod tests {
         let dir_path = dir.path().to_string_lossy().to_string();
 
         // Create a nested directory structure with keystore files
-        let nested_dir = format!("{}/nested", dir_path);
+        let nested_dir = format!("{dir_path}/nested");
         std::fs::create_dir(&nested_dir).unwrap();
 
         // Store keys in root & nested directories
-        let pk1 = store_new_key_for_test(&format!("{}/keystore-alpha.json", dir_path)).await;
-        let pk2 = store_new_key_for_test(&format!("{}/keystore-bravo.json", nested_dir)).await;
+        let pk1 = store_new_key_for_test(&format!("{dir_path}/keystore-alpha.json")).await;
+        let pk2 = store_new_key_for_test(&format!("{nested_dir}/keystore-bravo.json")).await;
 
         let key_files = load_files_recursively(&dir_path).await.unwrap();
 
@@ -545,17 +545,17 @@ mod tests {
 
         // Sub-test: shuffle password files
         let alpha_password =
-            std::fs::read_to_string(format!("{}/keystore-alpha.txt", dir_path)).unwrap();
+            std::fs::read_to_string(format!("{dir_path}/keystore-alpha.txt")).unwrap();
         let bravo_password =
-            std::fs::read_to_string(format!("{}/keystore-bravo.txt", nested_dir)).unwrap();
+            std::fs::read_to_string(format!("{nested_dir}/keystore-bravo.txt")).unwrap();
 
-        std::fs::remove_file(format!("{}/keystore-alpha.txt", dir_path)).unwrap();
-        std::fs::remove_file(format!("{}/keystore-bravo.txt", nested_dir)).unwrap();
+        std::fs::remove_file(format!("{dir_path}/keystore-alpha.txt")).unwrap();
+        std::fs::remove_file(format!("{nested_dir}/keystore-bravo.txt")).unwrap();
 
         // Write swapped passwords
-        std::fs::write(format!("{}/keystore-alpha.txt", dir_path), &bravo_password).unwrap();
+        std::fs::write(format!("{dir_path}/keystore-alpha.txt"), &bravo_password).unwrap();
         std::fs::write(
-            format!("{}/keystore-bravo.txt", nested_dir),
+            format!("{nested_dir}/keystore-bravo.txt"),
             &alpha_password,
         )
         .unwrap();

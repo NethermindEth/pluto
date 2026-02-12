@@ -75,7 +75,7 @@ async fn store_keys_internal(
         let prefix = prefix.clone();
 
         set.spawn(async move {
-            let filename = format!("{}/{}{}.json", dir, prefix, i);
+            let filename = format!("{dir}/{prefix}{i}.json");
             let password = random_hex32()?;
             let store = encrypt(&secret, &password, pbkdf2_c)?;
             let b = serialize_keystore(&store)?;
