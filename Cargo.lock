@@ -5424,6 +5424,7 @@ dependencies = [
  "hex",
  "k256",
  "libp2p",
+ "pluto-core",
  "pluto-crypto",
  "pluto-eth2util",
  "pluto-k1util",

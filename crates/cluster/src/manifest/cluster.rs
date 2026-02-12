@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use k256::PublicKey as K256PublicKey;
 use libp2p::PeerId;
+use pluto_core::types::PubKey;
 use pluto_crypto::{
     blst_impl::BlstImpl,
     tbls::Tbls,
@@ -27,9 +28,8 @@ pub struct IndexedKeyShare {
     pub index: usize,
 }
 
-/// Maps each validator pubkey (as 0x-prefixed hex string) to the associated key
-/// share.
-pub type ValidatorShares = HashMap<String, IndexedKeyShare>;
+/// Maps each validator pubkey to the associated key share.
+pub type ValidatorShares = HashMap<PubKey, IndexedKeyShare>;
 
 /// Returns the cluster operators as a slice of p2p peers.
 pub fn cluster_peers(cluster: &Cluster) -> Result<Vec<Peer>> {
@@ -134,7 +134,7 @@ pub fn keyshares_to_validator_pubkey(
 
     // O(n^2) search
     for validator in &cluster.validators {
-        let val_hex = to_0x_hex(&validator.public_key);
+        let val_pubkey: PubKey = validator_public_key(validator)?.into();
 
         // Build a set of this validator's public shares
         let val_pub_shares: HashSet<PublicKey> = validator
@@ -153,7 +153,7 @@ pub fn keyshares_to_validator_pubkey(
             }
 
             res.insert(
-                val_hex.clone(),
+                val_pubkey,
                 IndexedKeyShare {
                     share: shares[share_idx],
                     index: share_idx.saturating_add(1), // 1-indexed
@@ -318,8 +318,12 @@ mod tests {
         // Verify each validator pubkey is found and each share private key is found
         for (val_pub_key, share_priv_key) in &ret {
             let val_found = cluster.validators.iter().any(|val| {
-                let val_hex = to_0x_hex(&val.public_key);
-                val_pub_key == &val_hex
+                if let Ok(pk) = validator_public_key(val) {
+                    let val_pubkey: PubKey = pk.into();
+                    val_pub_key == &val_pubkey
+                } else {
+                    false
+                }
             });
             assert!(val_found, "validator pubkey not found");
 
