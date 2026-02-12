@@ -31,189 +31,198 @@ pub struct IndexedKeyShare {
 /// Maps each validator pubkey to the associated key share.
 pub type ValidatorShares = HashMap<PubKey, IndexedKeyShare>;
 
-/// Returns the cluster operators as a slice of p2p peers.
-pub fn cluster_peers(cluster: &Cluster) -> Result<Vec<Peer>> {
-    if cluster.operators.is_empty() {
-        return Err(ManifestError::InvalidCluster);
-    }
+/// Extension trait for Validator providing utility methods.
+pub trait ValidatorExt {
+    /// Returns the validator BLS group public key.
+    fn public_key(&self) -> Result<PublicKey>;
 
-    let mut resp = Vec::new();
-    let mut dedup = HashSet::new();
+    /// Returns the validator hex group public key.
+    fn public_key_hex(&self) -> String;
 
-    for (i, operator) in cluster.operators.iter().enumerate() {
-        if dedup.contains(&operator.enr) {
-            return Err(ManifestError::DuplicatePeerENR {
-                enr: operator.enr.clone(),
-            });
-        }
-        dedup.insert(operator.enr.clone());
-
-        let record = Record::try_from(operator.enr.as_str())
-            .map_err(|e| ManifestError::EnrParse(format!("decode enr: {}", e)))?;
-
-        let peer = Peer::from_enr(&record, i)
-            .map_err(|e| ManifestError::P2p(format!("create peer from enr: {}", e)))?;
-
-        resp.push(peer);
-    }
-
-    Ok(resp)
+    /// Returns the validator's peerIdx'th BLS public share.
+    fn public_share(&self, peer_idx: usize) -> Result<PublicKey>;
 }
 
-/// Returns the operators p2p peer IDs.
-pub fn cluster_peer_ids(cluster: &Cluster) -> Result<Vec<PeerId>> {
-    let peers = cluster_peers(cluster)?;
-    Ok(peers.iter().map(|p| p.id).collect())
-}
-
-/// Returns the node index for the peer in the cluster.
-pub fn cluster_node_idx(cluster: &Cluster, peer_id: &PeerId) -> Result<NodeIdx> {
-    let peers = cluster_peers(cluster)?;
-
-    for (i, p) in peers.iter().enumerate() {
-        if p.id == *peer_id {
-            return Ok(NodeIdx {
-                peer_idx: i,                    // 0-indexed
-                share_idx: i.saturating_add(1), // 1-indexed
-            });
-        }
-    }
-
-    Err(ManifestError::PeerNotInDefinition)
-}
-
-/// Returns the validator BLS group public key.
-pub fn validator_public_key(validator: &Validator) -> Result<PublicKey> {
-    let pk_vec = validator.public_key.to_vec();
-    pk_vec
-        .try_into()
-        .map_err(|_| ManifestError::InvalidHexLength {
+impl ValidatorExt for Validator {
+    fn public_key(&self) -> Result<PublicKey> {
+        let pk_vec = self.public_key.to_vec();
+        pk_vec.try_into().map_err(|_| ManifestError::InvalidHexLength {
             expect: PUBLIC_KEY_LENGTH,
-            actual: validator.public_key.len(),
+            actual: self.public_key.len(),
         })
-}
+    }
 
-/// Returns the validator hex group public key.
-pub fn validator_public_key_hex(validator: &Validator) -> String {
-    to_0x_hex(&validator.public_key)
-}
+    fn public_key_hex(&self) -> String {
+        to_0x_hex(&self.public_key)
+    }
 
-/// Returns the validator's peerIdx'th BLS public share.
-pub fn validator_public_share(validator: &Validator, peer_idx: usize) -> Result<PublicKey> {
-    let share = validator
-        .pub_shares
-        .get(peer_idx)
-        .ok_or(ManifestError::InvalidCluster)?;
+    fn public_share(&self, peer_idx: usize) -> Result<PublicKey> {
+        let share = self
+            .pub_shares
+            .get(peer_idx)
+            .ok_or(ManifestError::InvalidCluster)?;
 
-    let share_vec = share.to_vec();
-    share_vec
-        .try_into()
-        .map_err(|_| ManifestError::InvalidHexLength {
+        let share_vec = share.to_vec();
+        share_vec.try_into().map_err(|_| ManifestError::InvalidHexLength {
             expect: PUBLIC_KEY_LENGTH,
             actual: share.len(),
         })
+    }
 }
 
-/// Maps each share in cluster to the associated validator private key.
-///
-/// Returns an error if a keyshare does not appear in cluster, or if there's a
-/// validator public key associated to no keyshare.
-pub fn keyshares_to_validator_pubkey(
-    cluster: &Cluster,
-    shares: &[PrivateKey],
-) -> Result<ValidatorShares> {
-    let mut res: ValidatorShares = HashMap::new();
+/// Extension trait for Cluster providing utility methods.
+pub trait ClusterExt {
+    /// Returns the cluster operators as a slice of p2p peers.
+    fn peers(&self) -> Result<Vec<Peer>>;
 
-    let mut pub_shares = Vec::with_capacity(shares.len());
-    for share in shares {
-        let ps = BlstImpl
-            .secret_to_public_key(share)
-            .map_err(|e| ManifestError::Crypto(format!("private share to public share: {}", e)))?;
-        pub_shares.push(ps);
+    /// Returns the operators p2p peer IDs.
+    fn peer_ids(&self) -> Result<Vec<PeerId>>;
+
+    /// Returns the node index for the peer in the cluster.
+    fn node_idx(&self, peer_id: &PeerId) -> Result<NodeIdx>;
+
+    /// Maps each share in cluster to the associated validator private key.
+    ///
+    /// Returns an error if a keyshare does not appear in cluster, or if there's a
+    /// validator public key associated to no keyshare.
+    fn keyshares_to_validator_pubkey(&self, shares: &[PrivateKey]) -> Result<ValidatorShares>;
+
+    /// Returns the share index for the Charon cluster's ENR identity key.
+    fn share_idx(&self, identity_key: &K256PublicKey) -> Result<u64>;
+}
+
+impl ClusterExt for Cluster {
+    fn peers(&self) -> Result<Vec<Peer>> {
+        if self.operators.is_empty() {
+            return Err(ManifestError::InvalidCluster);
+        }
+
+        let mut resp = Vec::new();
+        let mut dedup = HashSet::new();
+
+        for (i, operator) in self.operators.iter().enumerate() {
+            if dedup.contains(&operator.enr) {
+                return Err(ManifestError::DuplicatePeerENR {
+                    enr: operator.enr.clone(),
+                });
+            }
+            dedup.insert(operator.enr.clone());
+
+            let record = Record::try_from(operator.enr.as_str())
+                .map_err(|e| ManifestError::EnrParse(format!("decode enr: {e}")))?;
+
+            let peer = Peer::from_enr(&record, i)
+                .map_err(|e| ManifestError::P2p(format!("create peer from enr: {e}")))?;
+
+            resp.push(peer);
+        }
+
+        Ok(resp)
     }
 
-    // O(n^2) search
-    for validator in &cluster.validators {
-        let val_pubkey: PubKey = validator_public_key(validator)?.into();
+    fn peer_ids(&self) -> Result<Vec<PeerId>> {
+        let peers = self.peers()?;
+        Ok(peers.iter().map(|p| p.id).collect())
+    }
 
-        // Build a set of this validator's public shares
-        let val_pub_shares: HashSet<PublicKey> = validator
-            .pub_shares
-            .iter()
-            .filter_map(|s| {
-                let arr: PublicKey = s.as_ref().try_into().ok()?;
-                Some(arr)
-            })
-            .collect();
+    fn node_idx(&self, peer_id: &PeerId) -> Result<NodeIdx> {
+        let peers = self.peers()?;
 
-        let mut found = false;
-        for (share_idx, pub_share) in pub_shares.iter().enumerate() {
-            if !val_pub_shares.contains(pub_share) {
+        for (i, p) in peers.iter().enumerate() {
+            if p.id == *peer_id {
+                return Ok(NodeIdx {
+                    peer_idx: i,                    // 0-indexed
+                    share_idx: i.saturating_add(1), // 1-indexed
+                });
+            }
+        }
+
+        Err(ManifestError::PeerNotInDefinition)
+    }
+
+    fn keyshares_to_validator_pubkey(&self, shares: &[PrivateKey]) -> Result<ValidatorShares> {
+        let mut res: ValidatorShares = HashMap::new();
+
+        let mut pub_shares = Vec::with_capacity(shares.len());
+        for share in shares {
+            let ps = BlstImpl.secret_to_public_key(share).map_err(|e| {
+                ManifestError::Crypto(format!("private share to public share: {e}"))
+            })?;
+            pub_shares.push(ps);
+        }
+
+        // O(n^2) search
+        for validator in &self.validators {
+            let val_pubkey: PubKey = validator.public_key()?.into();
+
+            // Build a set of this validator's public shares
+            let val_pub_shares: HashSet<PublicKey> = validator
+                .pub_shares
+                .iter()
+                .filter_map(|s| {
+                    let arr: PublicKey = s.as_ref().try_into().ok()?;
+                    Some(arr)
+                })
+                .collect();
+
+            let mut found = false;
+            for (share_idx, pub_share) in pub_shares.iter().enumerate() {
+                if !val_pub_shares.contains(pub_share) {
+                    continue;
+                }
+
+                res.insert(
+                    val_pubkey,
+                    IndexedKeyShare {
+                        share: shares[share_idx],
+                        index: share_idx.saturating_add(1), // 1-indexed
+                    },
+                );
+                found = true;
+                break;
+            }
+
+            if !found {
+                return Err(ManifestError::PubShareNotFound);
+            }
+        }
+
+        if res.len() != self.validators.len() {
+            return Err(ManifestError::KeyShareCountMismatch);
+        }
+
+        Ok(res)
+    }
+
+    fn share_idx(&self, identity_key: &K256PublicKey) -> Result<u64> {
+        let pids = self.peer_ids()?;
+
+        let identity_peer_id =
+            peer_id_from_key(*identity_key).map_err(|e| ManifestError::P2p(e.to_string()))?;
+
+        for pid in &pids {
+            if *pid != identity_peer_id {
                 continue;
             }
 
-            res.insert(
-                val_pubkey,
-                IndexedKeyShare {
-                    share: shares[share_idx],
-                    index: share_idx.saturating_add(1), // 1-indexed
-                },
-            );
-            found = true;
-            break;
+            let n_idx = self.node_idx(pid)?;
+            return Ok(n_idx.share_idx as u64);
         }
 
-        if !found {
-            return Err(ManifestError::PubShareNotFound);
-        }
+        Err(ManifestError::NodeIdxNotFound)
     }
-
-    if res.len() != cluster.validators.len() {
-        return Err(ManifestError::KeyShareCountMismatch);
-    }
-
-    Ok(res)
 }
-
-/// Returns the share index for the Charon cluster's ENR identity key.
-pub fn share_idx_for_cluster(cluster: &Cluster, identity_key: &K256PublicKey) -> Result<u64> {
-    let pids = cluster_peer_ids(cluster)?;
-
-    let identity_peer_id =
-        peer_id_from_key(*identity_key).map_err(|e| ManifestError::P2p(e.to_string()))?;
-
-    for pid in &pids {
-        if *pid != identity_peer_id {
-            continue;
-        }
-
-        let n_idx = cluster_node_idx(cluster, pid)?;
-        return Ok(n_idx.share_idx as u64);
-    }
-
-    Err(ManifestError::NodeIdxNotFound)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::manifestpb::v1::Operator;
-    use pluto_testutil::random::generate_insecure_k1_key;
+    use pluto_testutil::random::{generate_insecure_k1_key, generate_test_bls_key};
     use rand::{Rng, SeedableRng, seq::SliceRandom};
-
-    /// Generates a deterministic BLS private key for testing.
-    fn generate_test_bls_key(seed: u64) -> PrivateKey {
-        let tbls = BlstImpl;
-        let mut seed_bytes = [0u8; 32];
-        seed_bytes[..8].copy_from_slice(&seed.to_le_bytes());
-        let rng = rand::rngs::StdRng::from_seed(seed_bytes);
-        tbls.generate_secret_key(rng).unwrap()
-    }
 
     #[test]
     fn cluster_peers_empty() {
         let cluster = Cluster::default();
-        let result = cluster_peers(&cluster);
+        let result = cluster.peers();
         assert!(result.is_err());
     }
 
@@ -234,7 +243,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let result = cluster_peers(&cluster);
+        let result = cluster.peers();
         assert!(matches!(
             result.unwrap_err(),
             ManifestError::DuplicatePeerENR { .. }
@@ -253,15 +262,15 @@ mod tests {
             ..Default::default()
         };
 
-        let result0 = validator_public_share(&validator, 0).unwrap();
+        let result0 = validator.public_share(0).unwrap();
         assert_eq!(result0[0], 0x01);
         assert_eq!(result0.len(), PUBLIC_KEY_LENGTH);
 
-        let result1 = validator_public_share(&validator, 1).unwrap();
+        let result1 = validator.public_share(1).unwrap();
         assert_eq!(result1[0], 0x02);
         assert_eq!(result1.len(), PUBLIC_KEY_LENGTH);
 
-        assert!(validator_public_share(&validator, 5).is_err());
+        assert!(validator.public_share(5).is_err());
     }
 
     #[test]
@@ -311,14 +320,14 @@ mod tests {
             cluster.validators.push(validator);
         }
 
-        let ret = keyshares_to_validator_pubkey(&cluster, &private_shares).unwrap();
+        let ret = cluster.keyshares_to_validator_pubkey(&private_shares).unwrap();
 
         assert_eq!(ret.len(), val_amt);
 
         // Verify each validator pubkey is found and each share private key is found
         for (val_pub_key, share_priv_key) in &ret {
             let val_found = cluster.validators.iter().any(|val| {
-                if let Ok(pk) = validator_public_key(val) {
+                if let Ok(pk) = val.public_key() {
                     let val_pubkey: PubKey = pk.into();
                     val_pub_key == &val_pubkey
                 } else {
@@ -361,7 +370,7 @@ mod tests {
         };
 
         let shares = vec![share0];
-        let result = keyshares_to_validator_pubkey(&cluster, &shares);
+        let result = cluster.keyshares_to_validator_pubkey(&shares);
 
         assert!(matches!(
             result.unwrap_err(),
@@ -397,12 +406,12 @@ mod tests {
 
         // Test first operator's public key returns share index 1
         let pubkey = k1_keys[0].public_key();
-        let res = share_idx_for_cluster(&cluster, &pubkey).unwrap();
+        let res = cluster.share_idx(&pubkey).unwrap();
         assert_eq!(res, 1); // 1-indexed
 
         // Test all operators
         for (i, k1_key) in k1_keys.iter().enumerate() {
-            let res = share_idx_for_cluster(&cluster, &k1_key.public_key()).unwrap();
+            let res = cluster.share_idx(&k1_key.public_key()).unwrap();
             assert_eq!(res, (i + 1) as u64); // 1-indexed
         }
     }
@@ -422,7 +431,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = share_idx_for_cluster(&cluster, &k1_key_unknown.public_key());
+        let result = cluster.share_idx(&k1_key_unknown.public_key());
         assert!(matches!(
             result.unwrap_err(),
             ManifestError::NodeIdxNotFound
