@@ -57,7 +57,7 @@ pub struct PlutoBehaviourBuilder {
     gater: Option<ConnGater>,
     identify_protocol: String,
     user_agent: String,
-    autonat_config: Option<autonat::Config>,
+    autonat_config: autonat::Config,
 }
 
 impl Default for PlutoBehaviourBuilder {
@@ -66,7 +66,7 @@ impl Default for PlutoBehaviourBuilder {
             gater: None,
             identify_protocol: DEFAULT_IDENTIFY_PROTOCOL.clone(),
             user_agent: DEFAULT_USER_AGENT.clone(),
-            autonat_config: None,
+            autonat_config: autonat::Config::default(),
         }
     }
 }
@@ -97,15 +97,13 @@ impl PlutoBehaviourBuilder {
 
     /// Sets the AutoNAT configuration.
     pub fn with_autonat_config(mut self, config: autonat::Config) -> Self {
-        self.autonat_config = Some(config);
+        self.autonat_config = config;
         self
     }
 
     /// Builds the [`PlutoBehaviour`] with the provided keypair and relay
     /// client.
     pub fn build(self, key: &Keypair, relay_client: relay::client::Behaviour) -> PlutoBehaviour {
-        let autonat_config = self.autonat_config.unwrap_or_default();
-
         PlutoBehaviour {
             gater: self.gater.unwrap_or_else(ConnGater::new_open_gater),
             relay: relay_client,
@@ -114,7 +112,7 @@ impl PlutoBehaviourBuilder {
                     .with_agent_version(self.user_agent),
             ),
             ping: ping::Behaviour::new(default_ping_config()),
-            autonat: autonat::Behaviour::new(key.public().to_peer_id(), autonat_config),
+            autonat: autonat::Behaviour::new(key.public().to_peer_id(), self.autonat_config),
         }
     }
 }
