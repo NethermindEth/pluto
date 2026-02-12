@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-use libp2p::{Multiaddr, identity::Keypair, multiaddr, tcp};
+use libp2p::{Multiaddr, identity::Keypair, multiaddr};
 
 use crate::{
     config::{self, P2PConfig},
@@ -120,11 +120,6 @@ pub(crate) fn filter_advertised_addresses(
 /// Returns the default swarm configuration.
 pub(crate) fn default_swarm_config(cfg: libp2p::swarm::Config) -> libp2p::swarm::Config {
     cfg.with_idle_connection_timeout(Duration::from_secs(300))
-}
-
-/// Returns the default TCP configuration.
-pub(crate) fn default_tcp_config() -> tcp::Config {
-    tcp::Config::default()
 }
 
 /// Converts a secret key to a libp2p keypair.

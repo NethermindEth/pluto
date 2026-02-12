@@ -31,7 +31,7 @@
 //! functionality, use [`Node::new_relay_server`].
 
 use libp2p::{
-    Swarm, SwarmBuilder, identity::Keypair, noise, relay, swarm::NetworkBehaviour, yamux,
+    Swarm, SwarmBuilder, identity::Keypair, noise, relay, swarm::NetworkBehaviour, tcp, yamux,
 };
 use tracing::warn;
 
@@ -171,7 +171,7 @@ impl<B: NetworkBehaviour> Node<B> {
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
             .with_tcp(
-                utils::default_tcp_config(),
+                tcp::Config::default(),
                 noise::Config::new,
                 yamux::Config::default,
             )
@@ -201,7 +201,7 @@ impl<B: NetworkBehaviour> Node<B> {
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
             .with_tcp(
-                utils::default_tcp_config(),
+                tcp::Config::default(),
                 noise::Config::new,
                 yamux::Config::default,
             )
@@ -236,7 +236,7 @@ impl<B: NetworkBehaviour> Node<B> {
         let swarm = SwarmBuilder::with_existing_identity(keypair.clone())
             .with_tokio()
             .with_tcp(
-                utils::default_tcp_config(),
+                tcp::Config::default(),
                 noise::Config::new,
                 yamux::Config::default,
             )
