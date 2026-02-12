@@ -19,7 +19,6 @@ aes.workspace = true
 ctr.workspace = true
 pbkdf2.workspace = true
 scrypt.workspace = true
-subtle.workspace = true
 unicode-normalization.workspace = true
 zeroize.workspace = true
 pluto-testutil.workspace = true
