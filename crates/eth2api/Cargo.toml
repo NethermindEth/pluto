@@ -16,6 +16,9 @@ reqwest.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
 serde.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+hex.workspace = true
 validator.workspace = true
 
 [dev-dependencies]

@@ -16,6 +16,12 @@ pub mod types;
 pub use client::*;
 pub use types::*;
 
+/// Additional data types and functions to reduce the boilerplate when
+/// interacting with `eth2api`.
+pub mod extensions;
+
+pub use extensions::*;
+
 #[cfg(test)]
 #[cfg(feature = "integration")]
 mod integration;
