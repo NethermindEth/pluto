@@ -77,8 +77,8 @@ pub struct KeyFile {
 /// EIP-2335 keystore files using passwords stored in `dir/keystore-*.txt`.
 ///
 /// The resulting keystore files are in random order.
-pub async fn load_files_unordered(dir: &str) -> Result<KeyFiles> {
-    let mut read_dir = tokio::fs::read_dir(dir).await?;
+pub async fn load_files_unordered(dir: impl AsRef<str>) -> Result<KeyFiles> {
+    let mut read_dir = tokio::fs::read_dir(dir.as_ref()).await?;
     let mut set = tokio::task::JoinSet::new();
 
     while let Some(entry) = read_dir.next_entry().await? {
@@ -126,9 +126,9 @@ pub async fn load_files_unordered(dir: &str) -> Result<KeyFiles> {
 /// Works like [`load_files_unordered`] but recursively searches for keystore
 /// files in the given directory. It tries matching the found password files to
 /// decrypted keystore files.
-pub async fn load_files_recursively(dir: &str) -> Result<KeyFiles> {
+pub async fn load_files_recursively(dir: impl AsRef<str>) -> Result<KeyFiles> {
     // Step 1: Walk the directory recursively to find all .json and .txt files.
-    let dir = dir.to_string();
+    let dir = dir.as_ref().to_string();
     let (json_files, txt_files) = tokio::task::spawn_blocking(move || {
         let mut json_files = Vec::new();
         let mut txt_files = Vec::new();
@@ -248,13 +248,13 @@ static KEYSTORE_FILE_INDEX_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock:
 
 /// Extracts the index from a keystore filename, or returns None if no index is
 /// present.
-pub fn extract_file_index(filename: &str) -> Result<Option<usize>> {
-    if !KEYSTORE_FILE_INDEX_RE.is_match(filename) {
+pub fn extract_file_index(filename: impl AsRef<str>) -> Result<Option<usize>> {
+    if !KEYSTORE_FILE_INDEX_RE.is_match(filename.as_ref()) {
         return Ok(None);
     }
 
     let captures = KEYSTORE_FILE_INDEX_RE
-        .captures(filename)
+        .captures(filename.as_ref())
         .ok_or(KeystoreError::UnexpectedRegex)?;
 
     let idx_str = captures

@@ -1,3 +1,5 @@
+use pluto_crypto::types::PRIVATE_KEY_LENGTH;
+
 /// Error type for keystore operations.
 #[derive(Debug, thiserror::Error)]
 pub enum KeystoreError {
@@ -92,10 +94,8 @@ pub enum KeystoreError {
     InvalidChecksum,
 
     /// Invalid decrypted key length.
-    #[error("invalid key length: expected {expected}, got {actual}")]
+    #[error("invalid key length: expected {PRIVATE_KEY_LENGTH}, got {actual}")]
     InvalidKeyLength {
-        /// Expected byte length.
-        expected: usize,
         /// Actual byte length.
         actual: usize,
     },
