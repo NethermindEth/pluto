@@ -555,11 +555,7 @@ mod tests {
 
         // Write swapped passwords
         std::fs::write(format!("{dir_path}/keystore-alpha.txt"), &bravo_password).unwrap();
-        std::fs::write(
-            format!("{nested_dir}/keystore-bravo.txt"),
-            &alpha_password,
-        )
-        .unwrap();
+        std::fs::write(format!("{nested_dir}/keystore-bravo.txt"), &alpha_password).unwrap();
 
         let key_files = load_files_recursively(&dir_path).await.unwrap();
 

@@ -493,17 +493,17 @@ pub(crate) fn encrypt(
     secret: &PrivateKey,
     password: &str,
     pbkdf2_c: Option<u32>,
+    rng: &mut impl rand::RngCore,
 ) -> Result<Crypto> {
     let c = pbkdf2_c.unwrap_or(DEFAULT_PBKDF2_C);
     if c == 0 {
         return Err(KeystoreError::InvalidPbkdf2Param);
     }
 
-    let mut rng = rand::thread_rng();
     let mut salt = vec![0u8; SALT_SIZE];
-    rand::RngCore::fill_bytes(&mut rng, &mut salt);
+    rng.fill_bytes(&mut salt);
     let mut iv = vec![0u8; IV_SIZE];
-    rand::RngCore::fill_bytes(&mut rng, &mut iv);
+    rng.fill_bytes(&mut iv);
 
     let kdf = Kdf::Pbkdf2(Pbkdf2Params {
         c,
@@ -706,7 +706,7 @@ mod tests {
     #[test]
     fn encrypt_rejects_zero_cost() {
         let secret = [0u8; 32];
-        let result = encrypt(&secret, "test", Some(0));
+        let result = encrypt(&secret, "test", Some(0), &mut rand::thread_rng());
         assert!(matches!(result, Err(KeystoreError::InvalidPbkdf2Param)));
     }
 
@@ -719,7 +719,7 @@ mod tests {
         ];
         let password = "wallet passphrase";
 
-        let crypto = encrypt(&secret, password, Some(1024)).unwrap();
+        let crypto = encrypt(&secret, password, Some(1024), &mut rand::thread_rng()).unwrap();
         let decrypted = decrypt(&crypto, password).unwrap();
 
         assert_eq!(secret.as_slice(), decrypted.as_slice());
@@ -728,7 +728,7 @@ mod tests {
     #[test_case([0u8; 32], "" ; "empty password")]
     #[test_case([0x42u8; 32], "test" ; "normal input")]
     fn encrypt_valid(secret: [u8; 32], password: &str) {
-        let result = encrypt(&secret, password, Some(1024));
+        let result = encrypt(&secret, password, Some(1024), &mut rand::thread_rng());
         assert!(result.is_ok());
     }
 
@@ -784,7 +784,7 @@ mod tests {
         let password = "testpassword";
 
         // Use low cost for fast testing
-        let crypto = encrypt(secret, password, Some(16)).unwrap();
+        let crypto = encrypt(secret, password, Some(16), &mut rand::thread_rng()).unwrap();
         let decrypted = decrypt(&crypto, password).unwrap();
 
         assert_eq!(secret.as_slice(), decrypted.as_slice());
@@ -795,7 +795,7 @@ mod tests {
         let secret = b"0123456789abcdef0123456789abcdef";
         let password = "correctpassword";
 
-        let crypto = encrypt(secret, password, Some(16)).unwrap();
+        let crypto = encrypt(secret, password, Some(16), &mut rand::thread_rng()).unwrap();
         let result = decrypt(&crypto, "wrongpassword");
 
         assert!(matches!(result, Err(KeystoreError::InvalidChecksum)));

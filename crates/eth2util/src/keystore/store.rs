@@ -46,7 +46,13 @@ pub async fn store_keys_insecure(
     dir: impl AsRef<str>,
     _confirm: &ConfirmInsecure,
 ) -> Result<()> {
-    store_keys_internal(secrets, dir.as_ref(), "keystore-insecure-", Some(INSECURE_PBKDF2_C)).await
+    store_keys_internal(
+        secrets,
+        dir.as_ref(),
+        "keystore-insecure-",
+        Some(INSECURE_PBKDF2_C),
+    )
+    .await
 }
 
 /// Stores the secrets in `dir/keystore-%d.json` EIP-2335 keystore files
@@ -77,7 +83,7 @@ async fn store_keys_internal(
         set.spawn(async move {
             let filename = format!("{dir}/{prefix}{i}.json");
             let password = random_hex32();
-            let store = encrypt(&secret, &password, pbkdf2_c)?;
+            let store = encrypt(&secret, &password, pbkdf2_c, &mut rand::thread_rng())?;
             let b = serialize_keystore(&store)?;
 
             // Write keystore file with 0o444 permissions (read-only for all).
@@ -118,13 +124,18 @@ pub struct Keystore {
 }
 
 /// Encrypts a secret as an EIP-2335 keystore using PBKDF2 cipher.
-pub fn encrypt(secret: &PrivateKey, password: impl AsRef<str>, pbkdf2_c: Option<u32>) -> Result<Keystore> {
+pub fn encrypt(
+    secret: &PrivateKey,
+    password: impl AsRef<str>,
+    pbkdf2_c: Option<u32>,
+    rng: &mut impl rand::RngCore,
+) -> Result<Keystore> {
     let tbls = BlstImpl;
     let pub_key = tbls
         .secret_to_public_key(secret)
         .map_err(|e| KeystoreError::Encrypt(format!("marshal pubkey: {e}")))?;
 
-    let crypto = keystorev4::encrypt(secret, password.as_ref(), pbkdf2_c)?;
+    let crypto = keystorev4::encrypt(secret, password.as_ref(), pbkdf2_c, rng)?;
 
     Ok(Keystore {
         crypto,
@@ -141,12 +152,9 @@ pub(crate) fn decrypt(store: &Keystore, password: impl AsRef<str>) -> Result<Pri
     let secret_bytes = super::keystorev4::decrypt(&store.crypto, password.as_ref())?;
 
     let len = secret_bytes.len();
-    let secret: PrivateKey =
-        secret_bytes
-            .try_into()
-            .map_err(|_| KeystoreError::InvalidKeyLength {
-                actual: len,
-            })?;
+    let secret: PrivateKey = secret_bytes
+        .try_into()
+        .map_err(|_| KeystoreError::InvalidKeyLength { actual: len })?;
 
     Ok(secret)
 }
