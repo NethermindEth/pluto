@@ -29,23 +29,20 @@ impl KeyFiles {
         let zero = PrivateKey::default();
 
         for kf in self.iter() {
-            if !kf.has_index() {
-                return Err(KeystoreError::UnknownIndex {
+            let idx = kf.file_index.ok_or_else(|| KeystoreError::UnknownIndex {
+                filename: kf.filename.clone(),
+            })?;
+
+            if idx >= len {
+                return Err(KeystoreError::OutOfSequence {
+                    index: idx,
                     filename: kf.filename.clone(),
                 });
             }
 
-            let idx = usize::try_from(kf.file_index)
-                .ok()
-                .filter(|&i| i < len)
-                .ok_or_else(|| KeystoreError::OutOfSequence {
-                    index: kf.file_index,
-                    filename: kf.filename.clone(),
-                })?;
-
             if resp[idx] != zero {
                 return Err(KeystoreError::DuplicateIndex {
-                    index: kf.file_index,
+                    index: idx,
                     filename: kf.filename.clone(),
                 });
             }
@@ -72,15 +69,8 @@ pub struct KeyFile {
     pub private_key: PrivateKey,
     /// The filename of the keystore file.
     pub filename: String,
-    /// The index extracted from the filename, or -1 if not present.
-    pub file_index: i64,
-}
-
-impl KeyFile {
-    /// Returns true if the keystore file has a valid index.
-    pub fn has_index(&self) -> bool {
-        self.file_index != -1
-    }
+    /// The index extracted from the filename, or None if not present.
+    pub file_index: Option<usize>,
 }
 
 /// Returns all decrypted keystore files stored in `dir/keystore-*.json`
@@ -240,14 +230,10 @@ pub async fn load_files_recursively(dir: &str) -> Result<KeyFiles> {
     let key_files = results
         .into_iter()
         .enumerate()
-        .map(|(i, (filename, private_key))| {
-            let file_index = i64::try_from(i.saturating_add(1)).unwrap_or(-1);
-
-            KeyFile {
-                private_key,
-                filename,
-                file_index,
-            }
+        .map(|(i, (filename, private_key))| KeyFile {
+            private_key,
+            filename,
+            file_index: Some(i.saturating_add(1)),
         })
         .collect();
 
@@ -260,11 +246,11 @@ static KEYSTORE_FILE_INDEX_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock:
     Regex::new(r"keystore-(?:insecure-)?([0-9]+)\.json").expect("invalid regex")
 });
 
-/// Extracts the index from a keystore filename, or returns -1 if no index is
+/// Extracts the index from a keystore filename, or returns None if no index is
 /// present.
-pub fn extract_file_index(filename: &str) -> Result<i64> {
+pub fn extract_file_index(filename: &str) -> Result<Option<usize>> {
     if !KEYSTORE_FILE_INDEX_RE.is_match(filename) {
-        return Ok(-1);
+        return Ok(None);
     }
 
     let captures = KEYSTORE_FILE_INDEX_RE
@@ -276,11 +262,11 @@ pub fn extract_file_index(filename: &str) -> Result<i64> {
         .ok_or(KeystoreError::UnexpectedRegex)?
         .as_str();
 
-    let idx: i64 = idx_str
+    let idx: usize = idx_str
         .parse()
         .map_err(|_| KeystoreError::UnexpectedRegex)?;
 
-    Ok(idx)
+    Ok(Some(idx))
 }
 
 #[cfg(test)]
@@ -324,27 +310,27 @@ mod tests {
     #[test_case("keystore-0.json", 0 ; "standard_0")]
     #[test_case("keystore-1.json", 1 ; "standard_1")]
     #[test_case("keystore-42.json", 42 ; "standard_42")]
-    fn extract_index_standard(filename: &str, expected: i64) {
-        assert_eq!(extract_file_index(filename).unwrap(), expected);
+    fn extract_index_standard(filename: &str, expected: usize) {
+        assert_eq!(extract_file_index(filename).unwrap(), Some(expected));
     }
 
     #[test_case("keystore-insecure-0.json", 0 ; "insecure_0")]
     #[test_case("keystore-insecure-5.json", 5 ; "insecure_5")]
-    fn extract_index_insecure(filename: &str, expected: i64) {
-        assert_eq!(extract_file_index(filename).unwrap(), expected);
+    fn extract_index_insecure(filename: &str, expected: usize) {
+        assert_eq!(extract_file_index(filename).unwrap(), Some(expected));
     }
 
     #[test_case("keystore-foo.json" ; "foo")]
     #[test_case("keystore-bar-1.json" ; "bar_1")]
     #[test_case("other.json" ; "other")]
     fn extract_index_no_match(filename: &str) {
-        assert_eq!(extract_file_index(filename).unwrap(), -1);
+        assert_eq!(extract_file_index(filename).unwrap(), None);
     }
 
     #[test_case("/tmp/dir/keystore-3.json", 3 ; "with_path_3")]
     #[test_case("/tmp/dir/keystore-insecure-7.json", 7 ; "with_path_insecure_7")]
-    fn extract_index_with_path(filename: &str, expected: i64) {
-        assert_eq!(extract_file_index(filename).unwrap(), expected);
+    fn extract_index_with_path(filename: &str, expected: usize) {
+        assert_eq!(extract_file_index(filename).unwrap(), Some(expected));
     }
 
     #[tokio::test]

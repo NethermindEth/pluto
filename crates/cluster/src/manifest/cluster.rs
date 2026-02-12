@@ -46,10 +46,12 @@ pub trait ValidatorExt {
 impl ValidatorExt for Validator {
     fn public_key(&self) -> Result<PublicKey> {
         let pk_vec = self.public_key.to_vec();
-        pk_vec.try_into().map_err(|_| ManifestError::InvalidHexLength {
-            expect: PUBLIC_KEY_LENGTH,
-            actual: self.public_key.len(),
-        })
+        pk_vec
+            .try_into()
+            .map_err(|_| ManifestError::InvalidHexLength {
+                expect: PUBLIC_KEY_LENGTH,
+                actual: self.public_key.len(),
+            })
     }
 
     fn public_key_hex(&self) -> String {
@@ -63,10 +65,12 @@ impl ValidatorExt for Validator {
             .ok_or(ManifestError::InvalidCluster)?;
 
         let share_vec = share.to_vec();
-        share_vec.try_into().map_err(|_| ManifestError::InvalidHexLength {
-            expect: PUBLIC_KEY_LENGTH,
-            actual: share.len(),
-        })
+        share_vec
+            .try_into()
+            .map_err(|_| ManifestError::InvalidHexLength {
+                expect: PUBLIC_KEY_LENGTH,
+                actual: share.len(),
+            })
     }
 }
 
@@ -83,8 +87,8 @@ pub trait ClusterExt {
 
     /// Maps each share in cluster to the associated validator private key.
     ///
-    /// Returns an error if a keyshare does not appear in cluster, or if there's a
-    /// validator public key associated to no keyshare.
+    /// Returns an error if a keyshare does not appear in cluster, or if there's
+    /// a validator public key associated to no keyshare.
     fn keyshares_to_validator_pubkey(&self, shares: &[PrivateKey]) -> Result<ValidatorShares>;
 
     /// Returns the share index for the Charon cluster's ENR identity key.
@@ -320,7 +324,9 @@ mod tests {
             cluster.validators.push(validator);
         }
 
-        let ret = cluster.keyshares_to_validator_pubkey(&private_shares).unwrap();
+        let ret = cluster
+            .keyshares_to_validator_pubkey(&private_shares)
+            .unwrap();
 
         assert_eq!(ret.len(), val_amt);
 

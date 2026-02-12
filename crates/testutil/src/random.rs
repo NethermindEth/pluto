@@ -63,7 +63,8 @@ pub fn generate_test_bls_key(seed: u64) -> PrivateKey {
     let mut seed_bytes = [0u8; 32];
     seed_bytes[..8].copy_from_slice(&seed.to_le_bytes());
     let rng = StdRng::from_seed(seed_bytes);
-    tbls.generate_secret_key(rng).unwrap()
+    tbls.generate_secret_key(rng)
+        .expect("deterministic key generation should not fail")
 }
 
 #[cfg(test)]

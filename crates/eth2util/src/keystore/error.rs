@@ -30,7 +30,7 @@ pub enum KeystoreError {
     #[error("out of sequence keystore index {index} in file {filename}")]
     OutOfSequence {
         /// The index found.
-        index: i64,
+        index: usize,
         /// The filename.
         filename: String,
     },
@@ -39,7 +39,7 @@ pub enum KeystoreError {
     #[error("duplicate keystore index {index} in file {filename}")]
     DuplicateIndex {
         /// The duplicated index.
-        index: i64,
+        index: usize,
         /// The filename.
         filename: String,
     },
