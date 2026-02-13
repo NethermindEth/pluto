@@ -1,4 +1,5 @@
 use crate::error::CliError;
+use libp2p::multiaddr::{self, Protocol};
 use pluto_p2p::k1;
 use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
@@ -31,20 +32,29 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
 
     fn try_into(self) -> std::result::Result<pluto_relay_server::config::Config, Self::Error> {
         let p2p_config = {
-            let relays = self
-                .p2p
-                .relays
-                .iter()
-                .map(|addr| addr.parse())
-                .collect::<Result<Vec<_>, _>>()?;
-            pluto_p2p::config::P2PConfig::builder()
-                .with_relays(relays)
-                .with_external_ip(self.p2p.external_ip)
-                .with_external_host(self.p2p.external_host)
-                .with_tcp_addrs(self.p2p.tcp_addrs)
-                .with_udp_addrs(self.p2p.udp_addrs)
-                .with_disable_reuse_port(self.p2p.disable_reuseport)
-                .build()
+            let mut relays = Vec::new();
+
+            for relay in &self.p2p.relays {
+                let multiaddr = multiaddr::from_url(relay)?;
+
+                if multiaddr.iter().any(|protocol| protocol == Protocol::Http) {
+                    tracing::warn!(
+                      address = %relay,
+                      "Insecure relay address provided, not HTTPS"
+                    );
+                }
+
+                relays.push(multiaddr);
+            }
+
+            pluto_p2p::config::P2PConfig {
+                relays,
+                external_ip: self.p2p.external_ip,
+                external_host: self.p2p.external_host,
+                tcp_addrs: self.p2p.tcp_addrs,
+                udp_addrs: self.p2p.udp_addrs,
+                disable_reuse_port: self.p2p.disable_reuseport,
+            }
         };
 
         let log_config = {
@@ -171,17 +181,15 @@ pub struct RelayP2PArgs {
 
     #[arg(
         long = "p2p-external-ip",
-        default_value = "",
         help = "The IP address advertised by libp2p. This may be used to advertise an external IP."
     )]
-    pub external_ip: String,
+    pub external_ip: Option<String>,
 
     #[arg(
         long = "p2p-external-hostname",
-        default_value = "",
         help = "The DNS hostname advertised by libp2p. This may be used to advertise an external DNS."
     )]
-    pub external_host: String,
+    pub external_host: Option<String>,
 
     #[arg(
         long = "p2p-tcp-address",
@@ -272,7 +280,7 @@ pub async fn run(args: RelayArgs, ct: CancellationToken) -> Result<(), CliError>
         "copy of this license at https://github.com/ObolNetwork/charon/blob/main/LICENSE"
     ));
 
-    info!(config = ?config, "parsed config");
+    info!(config = ?config);
 
     let key = match pluto_p2p::k1::load_priv_key(&config.data_dir) {
         Ok(key) => Ok(key),
