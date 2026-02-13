@@ -1,5 +1,8 @@
 use crate::error::CliError;
+use pluto_p2p::k1;
 use std::path::PathBuf;
+use tokio_util::sync::CancellationToken;
+use tracing::info;
 
 /// Arguments for the relay command.
 #[derive(clap::Args)]
@@ -62,7 +65,7 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
             builder.build()
         };
 
-        pluto_relay_server::config::Config::builder()
+        let builder = pluto_relay_server::config::Config::builder()
             .data_dir(self.data_dir.data_dir)
             .http_addr(self.relay.http_address)
             .auto_p2p_key(self.relay.auto_p2p_key)
@@ -77,12 +80,13 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
             .debug_addr(self.debug_monitoring.debug_addr)
             .p2p_config(p2p_config)
             .log_config(log_config);
-        todo!()
+
+        Ok(builder.build())
     }
 }
 
 #[derive(clap::Args)]
-struct RelayDataDirArgs {
+pub struct RelayDataDirArgs {
     #[arg(
         long = "data-dir",
         env = "CHARON_DATA_DIR",
@@ -93,7 +97,7 @@ struct RelayDataDirArgs {
 }
 
 #[derive(clap::Args)]
-struct RelayRelayArgs {
+pub struct RelayRelayArgs {
     #[arg(
         long = "http-address",
         default_value = "127.0.0.1:3640",
@@ -139,7 +143,7 @@ struct RelayRelayArgs {
 }
 
 #[derive(clap::Args)]
-struct RelayDebugMonitoringArgs {
+pub struct RelayDebugMonitoringArgs {
     #[arg(
         long = "monitoring-address",
         default_value = "",
@@ -156,7 +160,7 @@ struct RelayDebugMonitoringArgs {
 }
 
 #[derive(clap::Args)]
-struct RelayP2PArgs {
+pub struct RelayP2PArgs {
     #[arg(
         long = "p2p-relays",
         value_delimiter = ',',
@@ -202,7 +206,7 @@ struct RelayP2PArgs {
 }
 
 #[derive(clap::Args)]
-struct RelayLogFlags {
+pub struct RelayLogFlags {
     #[arg(
         long = "log-format",
         default_value = "console",
@@ -229,7 +233,7 @@ struct RelayLogFlags {
 }
 
 #[derive(clap::ValueEnum, Clone, Default)]
-enum ConsoleColor {
+pub enum ConsoleColor {
     #[default]
     Auto,
     Force,
@@ -237,7 +241,7 @@ enum ConsoleColor {
 }
 
 #[derive(clap::Args)]
-struct RelayLokiArgs {
+pub struct RelayLokiArgs {
     #[arg(
         long = "loki-addresses",
         value_delimiter = ',',
@@ -251,4 +255,54 @@ struct RelayLokiArgs {
         help = "Service label sent with logs to Loki."
     )]
     pub loki_service: String,
+}
+
+pub async fn run(args: RelayArgs) -> Result<(), CliError> {
+    let config: pluto_relay_server::config::Config = args.try_into()?;
+
+    let log_config = config
+        .log_config
+        .as_ref()
+        .expect("Log config is always configured");
+    pluto_tracing::init(log_config).expect("Failed to initialize tracing");
+
+    info!(concat!(
+        "This software is licensed under the Maria DB Business Source License 1.1; ",
+        "you may not use this software except in compliance with this license. You may obtain a ",
+        "copy of this license at https://github.com/ObolNetwork/charon/blob/main/LICENSE"
+    ));
+
+    info!(config = ?config, "parsed config");
+
+    let key = match pluto_p2p::k1::load_priv_key(&config.data_dir) {
+        Ok(key) => Ok(key),
+        Err(pluto_p2p::k1::K1Error::IoError(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+            if !config.auto_p2p_key {
+                return Err(CliError::RelayPrivateKeyNotFound);
+            }
+
+            let path = k1::key_path(&config.data_dir);
+            info!(path = ?path, "Automatically creating charon-enr-private-key");
+
+            k1::new_saved_priv_key(&config.data_dir)
+        }
+        e => e,
+    }?;
+
+    // TODO: We might want to move this logic into `main` itself and pass a
+    // `CancellationToken` to each command `run` method
+
+    let ct = CancellationToken::new();
+
+    tokio::select! {
+      result = pluto_relay_server::p2p::run_relay_p2p_node(&config, key, ct.child_token()) => {
+        result.map(|_| ()).map_err(Into::into)
+      }
+      _ = tokio::signal::ctrl_c() => {
+        info!("Shutting down");
+        ct.cancel();
+
+        Ok(())
+      }
+    }
 }

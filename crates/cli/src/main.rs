@@ -13,7 +13,8 @@ mod error;
 use cli::{Cli, Commands, CreateCommands};
 use error::ExitResult;
 
-fn main() -> ExitResult {
+#[tokio::main]
+async fn main() -> ExitResult {
     let cli = Cli::parse();
 
     let result = match cli.command {
@@ -22,6 +23,7 @@ fn main() -> ExitResult {
         },
         Commands::Enr(args) => commands::enr::run(args),
         Commands::Version(args) => commands::version::run(args),
+        Commands::Relay(args) => commands::relay::run(args).await,
     };
 
     ExitResult(result)
