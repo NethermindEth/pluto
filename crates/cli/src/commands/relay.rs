@@ -257,7 +257,7 @@ pub struct RelayLokiArgs {
     pub loki_service: String,
 }
 
-pub async fn run(args: RelayArgs) -> Result<(), CliError> {
+pub async fn run(args: RelayArgs, ct: CancellationToken) -> Result<(), CliError> {
     let config: pluto_relay_server::config::Config = args.try_into()?;
 
     let log_config = config
@@ -289,20 +289,8 @@ pub async fn run(args: RelayArgs) -> Result<(), CliError> {
         e => e,
     }?;
 
-    // TODO: We might want to move this logic into `main` itself and pass a
-    // `CancellationToken` to each command `run` method
-
-    let ct = CancellationToken::new();
-
-    tokio::select! {
-      result = pluto_relay_server::p2p::run_relay_p2p_node(&config, key, ct.child_token()) => {
-        result.map(|_| ()).map_err(Into::into)
-      }
-      _ = tokio::signal::ctrl_c() => {
-        info!("Shutting down");
-        ct.cancel();
-
-        Ok(())
-      }
-    }
+    pluto_relay_server::p2p::run_relay_p2p_node(&config, key, ct)
+        .await
+        .map(|_| ())
+        .map_err(Into::into)
 }
