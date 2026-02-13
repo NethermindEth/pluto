@@ -42,7 +42,7 @@ pub enum Commands {
         about = "Start a libp2p relay server",
         long_about = "Starts a libp2p circuit relay that charon clients can use to discover and connect to their peers."
     )]
-    Relay(RelayArgs),
+    Relay(Box<RelayArgs>),
     // Future commands will be added here:
     // Run(RunArgs),
 }

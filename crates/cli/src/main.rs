@@ -34,7 +34,7 @@ async fn main() -> ExitResult {
         },
         Commands::Enr(args) => commands::enr::run(args),
         Commands::Version(args) => commands::version::run(args),
-        Commands::Relay(args) => commands::relay::run(args, ct.child_token()).await,
+        Commands::Relay(args) => commands::relay::run(*args, ct.child_token()).await,
     };
 
     ExitResult(result)
