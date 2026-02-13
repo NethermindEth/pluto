@@ -150,14 +150,20 @@ impl<B: NetworkBehaviour> Node<B> {
             );
         }
 
-        let filtered_addrs = utils::filter_advertised_addresses(
+        // Listen on internal addresses only
+        for addr in &addrs {
+            self.swarm.listen_on(addr.clone())?;
+        }
+
+        // Advertise filtered addresses (external + optionally filtered internal)
+        let advertised_addrs = utils::filter_advertised_addresses(
             utils::ExternalAddresses(external_addrs),
             utils::InternalAddresses(addrs),
             filter_private_addrs,
         )?;
 
-        for addr in filtered_addrs {
-            self.swarm.listen_on(addr)?;
+        for addr in advertised_addrs {
+            self.swarm.add_external_address(addr);
         }
 
         Ok(())
