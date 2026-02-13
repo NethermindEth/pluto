@@ -34,6 +34,8 @@ pub async fn run_relay_p2p_node(
     // todo: change to version::log_info
     info!("Charon relay starting");
 
+    // todo: configure libp2p log level
+
     // todo: monitor connections
 
     for tcp_addr in config.p2p_config.tcp_addrs.iter() {
