@@ -1,9 +1,9 @@
-use crate::eth2wrap::eth2api::{EthBeaconNodeApiClientError, ValidatorIndex, ValidatorStatusExt};
 use pluto_core::types::PubKey;
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, GetStateValidatorsResponseResponse,
+    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, GetStateValidatorsResponseResponse,
     GetStateValidatorsResponseResponseDatum, PostStateValidatorsRequest,
-    PostStateValidatorsRequestPath, PostStateValidatorsResponse, ValidatorRequestBody,
+    PostStateValidatorsRequestPath, PostStateValidatorsResponse, ValidatorIndex,
+    ValidatorRequestBody,
 };
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
@@ -13,9 +13,9 @@ type Result<T> = std::result::Result<T, ValidatorCacheError>;
 /// Errors that can occur when interacting with the validator cache.
 #[derive(Debug, thiserror::Error)]
 pub enum ValidatorCacheError {
-    /// Beacon client API error.
-    #[error("Beacon client error: {0}")]
-    BeaconClientError(#[from] EthBeaconNodeApiClientError),
+    /// Beacon Node API client error.
+    #[error("Beacon Node API client error: {0}")]
+    EthBeaconNodeApiClientError(#[from] EthBeaconNodeApiClientError),
 }
 
 /// Active validators as [`PubKey`] indexed by their validator index.
