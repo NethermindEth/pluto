@@ -2,7 +2,9 @@
 
 use clap::{Parser, Subcommand};
 
-use crate::commands::{create_enr::CreateEnrArgs, enr::EnrArgs, version::VersionArgs};
+use crate::commands::{
+    create_enr::CreateEnrArgs, enr::EnrArgs, relay::RelayArgs, version::VersionArgs,
+};
 
 /// Pluto - Proof of Stake Ethereum Distributed Validator Client
 #[derive(Parser)]
@@ -35,6 +37,12 @@ pub enum Commands {
 
     #[command(about = "Print version and exit", long_about = "Output version info")]
     Version(VersionArgs),
+
+    #[command(
+        about = "Start a libp2p relay server",
+        long_about = "Starts a libp2p circuit relay that charon clients can use to discover and connect to their peers."
+    )]
+    Relay(RelayArgs),
     // Future commands will be added here:
     // Run(RunArgs),
 }
