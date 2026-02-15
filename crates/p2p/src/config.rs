@@ -203,7 +203,7 @@ fn resolve_listen_udp_addr(addr: impl AsRef<str>) -> Result<SocketAddr> {
     Ok(socket_addr)
 }
 
-fn multi_addr_from_ip_udp_port(socket_addr: SocketAddr) -> Result<Multiaddr> {
+pub(crate) fn multi_addr_from_ip_udp_port(socket_addr: SocketAddr) -> Result<Multiaddr> {
     let typ = match socket_addr.ip() {
         IpAddr::V4(_) => "ip4",
         IpAddr::V6(_) => "ip6",
@@ -218,7 +218,7 @@ fn multi_addr_from_ip_udp_port(socket_addr: SocketAddr) -> Result<Multiaddr> {
     .map_err(P2PConfigError::FailedToParseMultiaddr)
 }
 
-fn multi_addr_from_ip_tcp_port(socket_addr: SocketAddr) -> Result<Multiaddr> {
+pub(crate) fn multi_addr_from_ip_tcp_port(socket_addr: SocketAddr) -> Result<Multiaddr> {
     let typ = match socket_addr.ip() {
         IpAddr::V4(_) => "ip4",
         IpAddr::V6(_) => "ip6",
