@@ -29,11 +29,11 @@ pub enum ManifestError {
 
     /// ENR parsing error.
     #[error("enr parsing error: {0}")]
-    EnrParse(String),
+    EnrParse(#[from] pluto_eth2util::enr::RecordError),
 
     /// P2P error.
     #[error("p2p error: {0}")]
-    P2p(String),
+    P2p(#[from] pluto_p2p::peer::PeerError),
 }
 
 /// Result type alias for manifest operations.

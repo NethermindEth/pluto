@@ -28,13 +28,11 @@ pub fn cluster_peers(cluster: &Cluster) -> Result<Vec<Peer>> {
                 enr: operator.enr.clone(),
             });
         }
-        dedup.insert(operator.enr.clone());
+        dedup.insert(&operator.enr);
 
-        let record = Record::try_from(operator.enr.as_str())
-            .map_err(|e| ManifestError::EnrParse(format!("decode enr: {}", e)))?;
+        let record = Record::try_from(operator.enr.as_str())?;
 
-        let peer = Peer::from_enr(&record, i)
-            .map_err(|e| ManifestError::P2p(format!("create peer from enr: {}", e)))?;
+        let peer = Peer::from_enr(&record, i)?;
 
         resp.push(peer);
     }
