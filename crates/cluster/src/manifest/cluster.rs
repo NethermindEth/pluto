@@ -156,4 +156,65 @@ mod tests {
 
         assert!(validator.public_share(5).is_err());
     }
+
+    #[test]
+    fn cluster_node_idx_test() {
+        let enr0 = "enr:-HW4QMOF6QNn4DRhSznyqhoRitA0R1P_p-Cf8I_phn-qR5EQEqFVV0_OtVuSWPj_HjGPd8lcXmcTen8j-9VT9hadVFyAgmlkgnY0iXNlY3AyNTZrMaECOx8LaV0436lNYE4XiqbGbVmXrEhUTg73e3M7HdRUWao".to_string();
+        let enr1 = "enr:-HW4QKFO6PyCQdVXUdNEn80MJL7O048nRgZvheMhdT4LL9DGPjXlhrP1beyj8OEfZrapZVWNPEjfkUJubybvOPqkEhmAgmlkgnY0iXNlY3AyNTZrMaECGzgOLCm1ShATtBj1sh0VvshUOPkGW20ruTPPo5N_HZM".to_string();
+        let enr2 = "enr:-HW4QJV3uqiuCqreW6nn794r-SxTC1fTXCnZQ4smu3l5F4DofbW566Zo8G0A9WL_wfGzkGRPPdGu6vYT7JfskEmbjIKAgmlkgnY0iXNlY3AyNTZrMaECh69y5mTVFNZQSh8Kc_57VwcK39WfY68y2F2WkeLa7EY".to_string();
+
+        let cluster = Cluster {
+            operators: vec![
+                Operator {
+                    address: "0x123".to_string(),
+                    enr: enr0,
+                },
+                Operator {
+                    address: "0x456".to_string(),
+                    enr: enr1,
+                },
+                Operator {
+                    address: "0x789".to_string(),
+                    enr: enr2,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let peers = cluster.peers().unwrap();
+        let peer_id = peers[1].id;
+
+        let node_idx = cluster.node_idx(&peer_id).unwrap();
+        assert_eq!(node_idx.peer_idx, 1);
+        assert_eq!(node_idx.share_idx, 2);
+    }
+
+    #[test]
+    fn validator_public_key_test() {
+        let public_key = vec![0x42u8; PUBLIC_KEY_LENGTH];
+        let validator = Validator {
+            public_key: public_key.clone().into(),
+            ..Default::default()
+        };
+
+        let result = validator.public_key().unwrap();
+        assert_eq!(result[0], 0x42);
+        assert_eq!(result.len(), PUBLIC_KEY_LENGTH);
+    }
+
+    #[test]
+    fn validator_public_key_hex_test() {
+        let mut public_key = vec![0u8; PUBLIC_KEY_LENGTH];
+        public_key[0] = 0xab;
+        public_key[1] = 0xcd;
+
+        let validator = Validator {
+            public_key: public_key.into(),
+            ..Default::default()
+        };
+
+        let hex = validator.public_key_hex();
+        let expected = "0xabcd".to_string() + &"00".repeat(PUBLIC_KEY_LENGTH - 2);
+        assert_eq!(hex, expected);
+    }
 }
