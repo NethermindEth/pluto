@@ -284,6 +284,7 @@ async fn main() -> anyhow::Result<()> {
         NodeType::TCP,
         |key, relay_client| CombinedBehaviour {
             peer_info: Behaviour::new(
+                key.public().to_peer_id(),
                 Config::new(local_info.clone())
                     .with_peers(peers.clone())
                     .with_interval(Duration::from_secs(args.interval)),
@@ -318,7 +319,7 @@ async fn main() -> anyhow::Result<()> {
         if h.len() <= 7 { h } else { h[..7].to_string() }
     };
     let metrics_collection = MetricsCollection::default().with_labels([
-        ("pluto_version", VERSION.to_string()),
+        ("charon_version", VERSION.to_string()),
         ("cluster_hash", cluster_hash_hex7),
         ("cluster_name", cluster_name),
         ("cluster_network", "mainnet".to_string()),

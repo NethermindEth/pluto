@@ -3,6 +3,13 @@ name: Build and test code
 on:
   push:
     branches: ["main"] # Runs on pushes to main branch
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "flake.nix"
+      - ".github/workflows/test.yml"
   pull_request:
     # Runs on pull_request events with these activity types:
     # - opened: triggered when a new pull request is created.
@@ -13,6 +20,13 @@ on:
     # In short: the workflow executes for new PRs, PRs reopened, PRs that receive updated commits,
     # and when a draft PR becomes ready for review.
     types: [synchronize, opened, reopened, ready_for_review]
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "flake.nix"
+      - ".github/workflows/test.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

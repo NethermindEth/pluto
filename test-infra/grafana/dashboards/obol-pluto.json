@@ -25,7 +25,7 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 2,
-  "id": null,
+  "id": 1,
   "links": [
     {
       "asDropdown": false,
@@ -498,8 +498,8 @@
         ]
       },
       "gridPos": {
-        "h": 6,
-        "w": 8,
+        "h": 7,
+        "w": 9,
         "x": 0,
         "y": 1
       },
@@ -511,7 +511,7 @@
         "sortBy": [
           {
             "desc": false,
-            "displayName": "You"
+            "displayName": "Index"
           }
         ]
       },
@@ -524,7 +524,7 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "sum(app_peerinfo_version{cluster_name=\"$cluster_name\",cluster_hash=\"$cluster_hash\",nickname=\"$cluster_peer\"}) by (peer,version) ",
+          "expr": "sum(app_peerinfo_version{cluster_name=\"$cluster_name\",cluster_hash=\"$cluster_hash\",cluster_peer=\"$cluster_peer\"}) by (peer,version) ",
           "format": "table",
           "hide": false,
           "instant": true,
@@ -539,7 +539,7 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "time() - max(app_peerinfo_start_time_secs{cluster_name=\"$cluster_name\",cluster_hash=\"$cluster_hash\",nickname=\"$cluster_peer\"} > 0) by (peer)",
+          "expr": "time() - max(app_peerinfo_start_time_secs{cluster_name=\"$cluster_name\",cluster_hash=\"$cluster_hash\",cluster_peer=\"$cluster_peer\"} > 0) by (peer)",
           "format": "table",
           "hide": false,
           "instant": true,
@@ -553,7 +553,7 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "max(app_peerinfo_index{cluster_name=\"$cluster_name\",cluster_hash=\"$cluster_hash\",nickname=\"$cluster_peer\"}) by (peer)",
+          "expr": "max(app_peerinfo_index{cluster_name=\"$cluster_name\",cluster_hash=\"$cluster_hash\",cluster_peer=\"$cluster_peer\"}) by (peer)",
           "format": "table",
           "hide": false,
           "instant": true,
@@ -567,7 +567,7 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "max(app_peerinfo_version_support{cluster_name=\"$cluster_name\",cluster_hash=\"$cluster_hash\",nickname=\"$cluster_peer\"}) by (peer) ",
+          "expr": "max(app_peerinfo_version_support{cluster_name=\"$cluster_name\",cluster_hash=\"$cluster_hash\",cluster_peer=\"$cluster_peer\"}) by (peer) ",
           "format": "table",
           "hide": false,
           "instant": true,
@@ -583,7 +583,7 @@
           "disableTextWrap": false,
           "editorMode": "code",
           "exemplar": false,
-          "expr": "max(app_peerinfo_builder_api_enabled{cluster_name=\"$cluster_name\",cluster_hash=\"$cluster_hash\",nickname=\"$cluster_peer\"}) by (peer)",
+          "expr": "max(app_peerinfo_builder_api_enabled{cluster_name=\"$cluster_name\",cluster_hash=\"$cluster_hash\",cluster_peer=\"$cluster_peer\"}) by (peer)",
           "format": "table",
           "fullMetaSearch": false,
           "hide": false,
@@ -1016,5 +1016,5 @@
   "timezone": "",
   "title": "Obol Pluto",
   "uid": "d6qujIJVk",
-  "version": 9
+  "version": 1
 }
