@@ -523,7 +523,7 @@ pub(crate) fn write_result_to_writer<W: Write + ?Sized>(
             .map(|c| c.as_str())
             .unwrap_or(""),
     );
-    lines.extend(category_ascii.iter().map(|line| line.to_string()));
+    lines.extend(category_ascii.lines().map(|line| line.to_string()));
 
     if let Some(score) = result.score {
         let score_ascii = get_score_ascii(score);
