@@ -16,12 +16,12 @@ jobs:
         env:
           PR_TITLE: "${{ github.event.pull_request.title }}"
         run: |
-          if [[ ! "$PR_TITLE" =~ ^(fix|feat|build|chore|docs|test|refactor|ci|localize|bump|revert)(\([a-z0-9\-]+\))?:\ .+$ ]]; then
+          if [[ ! "$PR_TITLE" =~ ^(fix|feat|build|chore|docs|test|refactor|ci|localize|bump|revert)(\([a-z0-9\-]+(/[a-z0-9\-]+)*\))?:\ .+$ ]]; then
             echo "Error: PR title does not follow the convention: '$PR_TITLE'"
             echo "Expected format: <type>[(scope)]: <description>"
             echo "Where:"
             echo "  <type> is one of fix, feat, build, chore, docs, test, refactor, ci, localize, bump or revert"
-            echo "  <scope> is an optional lowercase string with hyphens or numbers"
+            echo "  <scope> is an optional lowercase string with hyphens, slashes, or numbers"
             echo "  <description> is a brief summary of the change"
             exit 1
           fi
