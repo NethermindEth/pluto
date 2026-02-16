@@ -12,7 +12,7 @@ use pluto_eth2util::enr::Record;
 use pluto_p2p::{
     behaviours::{
         pluto::PlutoBehaviourEvent,
-        pluto_mdns::{PlutoMdnsBehaviour, PlutoMdnsBehaviourEvent},
+        pluto_mdns::{PlutoMdnsBehaviour, PlutoMdnsBehaviourBuilder},
     },
     config::P2PConfig,
     p2p::{Node, NodeType},
@@ -36,12 +36,12 @@ pub struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     let key = k256::SecretKey::random(&mut OsRng);
-    let mut p2p: Node<_> = Node::new(
+    let mut p2p: Node<PlutoMdnsBehaviour> = Node::new(
         P2PConfig::default(),
         key.clone(),
         false,
         NodeType::QUIC,
-        PlutoMdnsBehaviour::new,
+        |keypair, relay| PlutoMdnsBehaviourBuilder::new().build(keypair, relay),
     )?;
 
     let args = Args::parse();
@@ -65,20 +65,18 @@ async fn main() -> Result<()> {
                 SwarmEvent::NewListenAddr { .. } => {}
                 SwarmEvent::Dialing { .. } => {}
                 SwarmEvent::ConnectionEstablished { .. } => {}
-                SwarmEvent::Behaviour(PlutoMdnsBehaviourEvent::Pluto(
-                    PlutoBehaviourEvent::Ping(_),
-                )) => {}
-                SwarmEvent::Behaviour(PlutoMdnsBehaviourEvent::Pluto(
-                    PlutoBehaviourEvent::Identify(identify::Event::Sent { .. }),
-                )) => {
+                SwarmEvent::Behaviour(PlutoBehaviourEvent::Ping(_)) => {}
+                SwarmEvent::Behaviour(PlutoBehaviourEvent::Identify(identify::Event::Sent {
+                    ..
+                })) => {
                     println!("Told relay its public address");
                     told_relay_observed_addr = true;
                 }
-                SwarmEvent::Behaviour(PlutoMdnsBehaviourEvent::Pluto(
-                    PlutoBehaviourEvent::Identify(identify::Event::Received {
+                SwarmEvent::Behaviour(PlutoBehaviourEvent::Identify(
+                    identify::Event::Received {
                         info: identify::Info { observed_addr, .. },
                         ..
-                    }),
+                    },
                 )) => {
                     println!("Relay told us our observed address: {}", observed_addr);
                     learned_observed_addr = true;
@@ -102,14 +100,14 @@ async fn main() -> Result<()> {
     loop {
         tokio::select! {
             event = swarm.select_next_some() => match event {
-                SwarmEvent::Behaviour(PlutoMdnsBehaviourEvent::Pluto(PlutoBehaviourEvent::Identify(identify::Event::Received { info: identify::Info { observed_addr, .. }, .. }))) => {
+                SwarmEvent::Behaviour(PlutoBehaviourEvent::Identify(identify::Event::Received { info: identify::Info { observed_addr, .. }, .. })) => {
                     swarm.add_external_address(observed_addr.clone());
                     println!("Address observed {}", observed_addr);
                 }
-                SwarmEvent::Behaviour(PlutoMdnsBehaviourEvent::Pluto(PlutoBehaviourEvent::Relay(event))) => {
+                SwarmEvent::Behaviour(PlutoBehaviourEvent::Relay(event)) => {
                     println!("Got relay event: {:?}", event);
                 },
-                SwarmEvent::Behaviour(PlutoMdnsBehaviourEvent::Mdns(libp2p::mdns::Event::Discovered(nodes))) => {
+                SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(libp2p::mdns::Event::Discovered(nodes))) => {
                     for node in nodes {
                         println!("Discovered node: {:?}", node);
                         swarm.dial(node.1)?;
@@ -118,7 +116,7 @@ async fn main() -> Result<()> {
                 SwarmEvent::NewListenAddr { address, .. } => {
                     println!("Local node is listening on {address}");
                 }
-                SwarmEvent::Behaviour(PlutoMdnsBehaviourEvent::Pluto(PlutoBehaviourEvent::Ping(ping_event))) => {
+                SwarmEvent::Behaviour(PlutoBehaviourEvent::Ping(ping_event)) => {
                     println!("Got ping event: {:?}", ping_event);
                 }
                 SwarmEvent::IncomingConnection { connection_id, local_addr, send_back_addr } => {

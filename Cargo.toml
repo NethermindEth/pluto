@@ -35,6 +35,7 @@ cancellation = "0.1.0"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5.53", features = ["derive", "env", "cargo"] }
 crossbeam = "0.8.4"
+either = "1.13"
 futures = "0.3"
 futures-timer = "3.0"
 backon = "1.6.0"

@@ -22,5 +22,8 @@ pub mod pluto_mdns;
 /// Dummy connection handler.
 pub mod dummy_handler;
 
+/// Optional behaviour wrapper.
+pub mod optional;
+
 // Re-export autonat types for convenience
 pub use libp2p::autonat;

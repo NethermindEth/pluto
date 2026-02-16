@@ -1,34 +1,15 @@
 //! Pluto Mdns behaviour.
 
-use libp2p::{identity::Keypair, mdns, relay, swarm::NetworkBehaviour};
+use libp2p::{identity::Keypair, mdns, relay};
 
 use crate::behaviours::pluto::{PlutoBehaviour, PlutoBehaviourBuilder};
 
-/// Pluto network behaviour with mDNS discovery.
-#[derive(NetworkBehaviour)]
-pub struct PlutoMdnsBehaviour {
-    /// Pluto behaviour.
-    pub pluto: PlutoBehaviour,
-    /// Mdns behaviour.
-    pub mdns: mdns::tokio::Behaviour,
-}
-
-impl PlutoMdnsBehaviour {
-    /// Creates a new Pluto Mdns behaviour with default configuration.
-    pub fn new(key: &Keypair, relay_client: relay::client::Behaviour) -> Self {
-        PlutoMdnsBehaviourBuilder::default().build(key, relay_client)
-    }
-
-    /// Returns a new builder for configuring a PlutoMdnsBehaviour.
-    pub fn builder() -> PlutoMdnsBehaviourBuilder {
-        PlutoMdnsBehaviourBuilder::default()
-    }
-}
+pub type PlutoMdnsBehaviour = PlutoBehaviour<mdns::tokio::Behaviour>;
 
 /// Builder for [`PlutoMdnsBehaviour`].
-#[derive(Default, Debug, Clone)]
+#[derive(Default)]
 pub struct PlutoMdnsBehaviourBuilder {
-    pluto: PlutoBehaviourBuilder,
+    pluto: PlutoBehaviourBuilder<mdns::tokio::Behaviour>,
     mdns_config: mdns::Config,
 }
 
@@ -39,7 +20,7 @@ impl PlutoMdnsBehaviourBuilder {
     }
 
     /// Replaces the inner [`PlutoBehaviourBuilder`] entirely.
-    pub fn with_pluto(mut self, pluto: PlutoBehaviourBuilder) -> Self {
+    pub fn with_pluto(mut self, pluto: PlutoBehaviourBuilder<mdns::tokio::Behaviour>) -> Self {
         self.pluto = pluto;
         self
     }
@@ -54,7 +35,9 @@ impl PlutoMdnsBehaviourBuilder {
     /// ```
     pub fn configure_pluto(
         mut self,
-        f: impl FnOnce(PlutoBehaviourBuilder) -> PlutoBehaviourBuilder,
+        f: impl FnOnce(
+            PlutoBehaviourBuilder<mdns::tokio::Behaviour>,
+        ) -> PlutoBehaviourBuilder<mdns::tokio::Behaviour>,
     ) -> Self {
         self.pluto = f(self.pluto);
         self
@@ -73,10 +56,11 @@ impl PlutoMdnsBehaviourBuilder {
         key: &Keypair,
         relay_client: relay::client::Behaviour,
     ) -> PlutoMdnsBehaviour {
-        PlutoMdnsBehaviour {
-            pluto: self.pluto.build(key, relay_client),
-            mdns: mdns::tokio::Behaviour::new(self.mdns_config, key.public().to_peer_id())
-                .expect("Failed to create mDNS behaviour"),
-        }
+        self.pluto
+            .with_inner(
+                mdns::tokio::Behaviour::new(self.mdns_config, key.public().to_peer_id())
+                    .expect("Failed to create mDNS behaviour"),
+            )
+            .build(key, relay_client)
     }
 }

@@ -9,6 +9,8 @@ use libp2p::{autonat, identify, identity::Keypair, ping, relay, swarm::NetworkBe
 
 use crate::{config::default_ping_config, gater::ConnGater};
 
+pub use super::optional::OptionalBehaviour;
+
 /// Pluto network behaviour.
 ///
 /// Combines multiple libp2p protocols:
@@ -18,7 +20,7 @@ use crate::{config::default_ping_config, gater::ConnGater};
 /// - **Ping**: Measures latency and keeps connections alive
 /// - **AutoNAT**: Detects NAT status and public reachability
 #[derive(NetworkBehaviour)]
-pub struct PlutoBehaviour {
+pub struct PlutoBehaviour<B: NetworkBehaviour> {
     /// Connection gater behaviour.
     pub gater: ConnGater,
     /// Relay client behaviour.
@@ -29,16 +31,13 @@ pub struct PlutoBehaviour {
     pub ping: ping::Behaviour,
     /// AutoNAT behaviour for NAT detection.
     pub autonat: autonat::Behaviour,
+    /// Inner behaviour.
+    pub inner: OptionalBehaviour<B>,
 }
 
-impl PlutoBehaviour {
-    /// Creates a new Pluto behaviour with default configuration.
-    pub fn new(key: &Keypair, relay_client: relay::client::Behaviour) -> Self {
-        PlutoBehaviourBuilder::default().build(key, relay_client)
-    }
-
+impl<B: NetworkBehaviour> PlutoBehaviour<B> {
     /// Returns a new builder for configuring a PlutoBehaviour.
-    pub fn builder() -> PlutoBehaviourBuilder {
+    pub fn builder() -> PlutoBehaviourBuilder<B> {
         PlutoBehaviourBuilder::default()
     }
 }
@@ -53,25 +52,27 @@ pub static DEFAULT_IDENTIFY_PROTOCOL: LazyLock<String> =
 
 /// Builder for [`PlutoBehaviour`].
 #[derive(Debug, Clone)]
-pub struct PlutoBehaviourBuilder {
+pub struct PlutoBehaviourBuilder<B> {
     gater: Option<ConnGater>,
     identify_protocol: String,
     user_agent: String,
     autonat_config: autonat::Config,
+    inner: Option<B>,
 }
 
-impl Default for PlutoBehaviourBuilder {
+impl<B> Default for PlutoBehaviourBuilder<B> {
     fn default() -> Self {
         Self {
             gater: None,
             identify_protocol: DEFAULT_IDENTIFY_PROTOCOL.clone(),
             user_agent: DEFAULT_USER_AGENT.clone(),
             autonat_config: autonat::Config::default(),
+            inner: None,
         }
     }
 }
 
-impl PlutoBehaviourBuilder {
+impl<B: NetworkBehaviour> PlutoBehaviourBuilder<B> {
     /// Creates a new builder with default configuration.
     pub fn new() -> Self {
         Self::default()
@@ -101,9 +102,15 @@ impl PlutoBehaviourBuilder {
         self
     }
 
+    /// Sets the inner behaviour.
+    pub fn with_inner(mut self, inner: B) -> Self {
+        self.inner = Some(inner);
+        self
+    }
+
     /// Builds the [`PlutoBehaviour`] with the provided keypair and relay
     /// client.
-    pub fn build(self, key: &Keypair, relay_client: relay::client::Behaviour) -> PlutoBehaviour {
+    pub fn build(self, key: &Keypair, relay_client: relay::client::Behaviour) -> PlutoBehaviour<B> {
         PlutoBehaviour {
             gater: self.gater.unwrap_or_else(ConnGater::new_open_gater),
             relay: relay_client,
@@ -113,6 +120,7 @@ impl PlutoBehaviourBuilder {
             ),
             ping: ping::Behaviour::new(default_ping_config()),
             autonat: autonat::Behaviour::new(key.public().to_peer_id(), self.autonat_config),
+            inner: self.inner.into(),
         }
     }
 }
