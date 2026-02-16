@@ -1,0 +1,162 @@
+name: Publish Dockerhub
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "main"
+    tags:
+      - "v*"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    # Multiplatform builds: https://docs.docker.com/build/ci/github-actions/multi-platform/#distribute-build-across-multiple-runners
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set build metadata
+        id: meta
+        run: |
+          platform=${{ matrix.platform }}
+          echo "platform_pair=${platform//\//-}" >> $GITHUB_OUTPUT
+          echo "git_commit_hash_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "source_date_epoch=$(git log -1 --format=%ct)" >> $GITHUB_OUTPUT
+
+      - name: Docker metadata
+        id: docker_meta
+        uses: docker/metadata-action@v5
+        with:
+          images: nethermindeth/pluto
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          build-args: |
+            GIT_COMMIT_HASH_SHORT=${{ steps.meta.outputs.git_commit_hash_short }}
+            SOURCE_DATE_EPOCH=${{ steps.meta.outputs.source_date_epoch }}
+          tags: ${{ steps.docker_meta.outputs.tags }}
+          labels: ${{ steps.docker_meta.outputs.labels }}
+          platforms: ${{ matrix.platform }}
+          cache-from: type=gha,scope=${{ steps.meta.outputs.platform_pair }}
+          cache-to: type=gha,mode=max,scope=${{ steps.meta.outputs.platform_pair }}
+
+      - name: Validate image
+        run: |
+          image_name="nethermindeth/pluto:${{ steps.docker_meta.outputs.version }}"
+          output=$(docker run --rm "$image_name" -h 2>&1)
+          first_line=$(echo "$output" | head -n 1)
+          expected="Pluto - Proof of Stake Ethereum Distributed Validator Client"
+          if [[ "$first_line" != "$expected" ]]; then
+            echo "::error::Unexpected message, got: '$first_line'"
+            exit 1
+          fi
+
+      # According to docs this operation should rely on caching from previous step so no duplicate build should happen.
+      # See: https://docs.docker.com/build/ci/github-actions/test-before-push/
+      - name: Push image by digest
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: |
+            GIT_COMMIT_HASH_SHORT=${{ steps.meta.outputs.git_commit_hash_short }}
+            SOURCE_DATE_EPOCH=${{ steps.meta.outputs.source_date_epoch }}
+          labels: ${{ steps.docker_meta.outputs.labels }}
+          platforms: ${{ matrix.platform }}
+          cache-from: type=gha,scope=${{ steps.meta.outputs.platform_pair }}
+          cache-to: type=gha,mode=max,scope=${{ steps.meta.outputs.platform_pair }}
+          outputs: type=image,name=nethermindeth/pluto,push-by-digest=true,name-canonical=true
+
+      - name: Export digest
+        run: |
+          mkdir -p ${{ runner.temp }}/digests
+          digest="${{ steps.push.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ steps.meta.outputs.platform_pair }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Generate attestations
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-name: docker.io/nethermindeth/pluto
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  merge:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: build
+    if: ${{ needs.build.result == 'success' }}
+
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Docker metadata
+        id: docker_meta
+        uses: docker/metadata-action@v5
+        with:
+          images: nethermindeth/pluto
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf 'nethermindeth/pluto@sha256:%s ' *)
+
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect nethermindeth/pluto:${{ steps.docker_meta.outputs.version }}

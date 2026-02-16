@@ -284,6 +284,7 @@ async fn main() -> anyhow::Result<()> {
         NodeType::TCP,
         |key, relay_client| CombinedBehaviour {
             peer_info: Behaviour::new(
+                key.public().to_peer_id(),
                 Config::new(local_info.clone())
                     .with_peers(peers.clone())
                     .with_interval(Duration::from_secs(args.interval)),

@@ -4,6 +4,13 @@ on:
   workflow_dispatch: # Run manually from Actions tab
   push:
     branches: ["main"] # Runs on pushes to main branch
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "flake.nix"
+      - ".github/workflows/docs.yml"
 
 permissions:
   contents: read
