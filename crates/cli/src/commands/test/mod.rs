@@ -35,7 +35,7 @@ use pluto_app::obolapi::{Client, ClientOptions};
 use pluto_cluster::ssz_hasher::{HashWalker, Hasher};
 use pluto_eth2util::enr::Record;
 use pluto_k1util::{load, sign};
-use reqwest::{Method, header::CONTENT_TYPE};
+use reqwest::{Method, StatusCode, header::CONTENT_TYPE};
 use serde_with::{base64::Base64, serde_as};
 use std::os::unix::fs::PermissionsExt as _;
 use tokio::io::AsyncReadExt;
@@ -52,23 +52,16 @@ pub(crate) enum TestCategory {
     All,
 }
 
-impl TestCategory {
-    /// Returns the string representation of the test category.
-    pub fn as_str(&self) -> &'static str {
-        match self {
+impl fmt::Display for TestCategory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
             TestCategory::Peers => "peers",
             TestCategory::Beacon => "beacon",
             TestCategory::Validator => "validator",
             TestCategory::Mev => "mev",
             TestCategory::Infra => "infra",
             TestCategory::All => "all",
-        }
-    }
-}
-
-impl fmt::Display for TestCategory {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
+        })
     }
 }
 
@@ -127,6 +120,7 @@ pub struct TestConfigArgs {
 }
 
 /// Lists available test case names for a given test category.
+/// TODO: Fill with enums TestCases of each category
 fn list_test_cases(category: TestCategory) -> Vec<String> {
     // Returns available test case names for each category.
     match category {
@@ -343,8 +337,9 @@ pub(crate) struct TestCategoryResult {
     #[serde(rename = "targets", skip_serializing_if = "HashMap::is_empty", default)]
     pub targets: HashMap<String, Vec<TestResult>>,
 
-    // TODO: Using Duration as `execution_time` is not a good idea, since duration formating
-    // between languages are not the same
+    // NOTE: Duration wraps Go's time.Duration and mimics the same formatting for compatibility.
+    // This works correctly but isn't ideal design - duration formatting typically varies between
+    // languages.
     #[serde(rename = "execution_time", skip_serializing_if = "Option::is_none")]
     pub execution_time: Option<Duration>,
 
@@ -478,7 +473,7 @@ pub(crate) async fn write_result_to_file(
     let file_content_json = serde_json::to_vec(&all_results)?;
 
     // tempfile is a synchronous crate, but keep existing_file open during operation
-    let result = tokio::task::spawn_blocking(move || -> CliResult<()> {
+    tokio::task::spawn_blocking(move || -> CliResult<()> {
         use std::io::Write as _;
 
         let mut tmp_file = tempfile::Builder::new()
@@ -499,13 +494,7 @@ pub(crate) async fn write_result_to_file(
         Ok(())
     })
     .await
-    .map_err(|e| CliError::Other(format!("spawn_blocking: {}", e)))?;
-
-    // Keep existing_file open until after temp file is persisted to prevent race
-    // conditions
-    drop(existing_file);
-
-    result
+    .map_err(|e| CliError::Other(format!("spawn_blocking: {}", e)))?
 }
 
 /// Writes test results to a writer (stdout or file).
@@ -516,14 +505,7 @@ pub(crate) fn write_result_to_writer<W: Write + ?Sized>(
     let mut lines = Vec::new();
 
     // Add category ASCII art
-    let category_ascii = get_category_ascii(
-        result
-            .category_name
-            .as_ref()
-            .map(|c| c.as_str())
-            .unwrap_or(""),
-    );
-    lines.extend(category_ascii.lines().map(|line| line.to_string()));
+    lines.extend(get_category_ascii(&result.category_name));
 
     if let Some(score) = result.score {
         let score_ascii = get_score_ascii(score);
@@ -661,18 +643,11 @@ pub(crate) fn filter_tests<V>(
     supported_test_cases: &HashMap<TestCaseName, V>,
     test_cases: Option<&[String]>,
 ) -> Vec<TestCaseName> {
-    let Some(cases) = test_cases else {
-        return supported_test_cases.keys().cloned().collect();
-    };
-    cases
-        .iter()
-        .flat_map(|case| {
-            supported_test_cases
-                .keys()
-                .filter(move |supported_case| supported_case.name.as_str() == case.as_str())
-                .cloned()
-        })
-        .collect()
+    let mut filtered: Vec<TestCaseName> = supported_test_cases.keys().cloned().collect();
+    if let Some(cases) = test_cases {
+        filtered.retain(|supported_case| cases.contains(&supported_case.name));
+    }
+    filtered
 }
 
 /// Sorts tests by their order field.
@@ -713,7 +688,7 @@ pub(crate) async fn request_rtt(
     url: impl AsRef<str>,
     method: Method,
     body: Option<Vec<u8>>,
-    expected_status: u16,
+    expected_status: StatusCode,
 ) -> CliResult<StdDuration> {
     let client = reqwest::Client::new();
 
@@ -729,19 +704,19 @@ pub(crate) async fn request_rtt(
     let response = request_builder.send().await?;
     let rtt = start.elapsed();
 
-    let status = response.status().as_u16();
+    let status = response.status();
     if status != expected_status {
         match response.text().await {
             Ok(body) if !body.is_empty() => tracing::warn!(
-                status_code = status,
-                expected_status_code = expected_status,
+                status_code = status.as_u16(),
+                expected_status_code = expected_status.as_u16(),
                 endpoint = url.as_ref(),
                 body = body,
                 "Unexpected status code"
             ),
             _ => tracing::warn!(
-                status_code = status,
-                expected_status_code = expected_status,
+                status_code = status.as_u16(),
+                expected_status_code = expected_status.as_u16(),
                 endpoint = url.as_ref(),
                 "Unexpected status code"
             ),
@@ -765,7 +740,7 @@ pub fn update_test_cases_help(mut cmd: clap::Command) -> clap::Command {
             TestCategory::Infra,
             TestCategory::All,
         ] {
-            if let Some(category_cmd) = test_cmd.find_subcommand_mut(category.as_str()) {
+            if let Some(category_cmd) = test_cmd.find_subcommand_mut(category.to_string()) {
                 let available_tests = list_test_cases(*category);
                 let help_text = format!(
                     "Comma-separated list of test names to execute. Available tests are: {}",

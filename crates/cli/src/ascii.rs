@@ -2,7 +2,7 @@
 //!
 //! Generator used: https://patorjk.com/software/taag/#p=display&f=Big
 
-use crate::commands::test::CategoryScore;
+use crate::commands::test::{CategoryScore, TestCategory};
 
 /// ASCII art for peers category.
 pub const PEERS_ASCII: &str = r#"  ____                                                          
@@ -85,16 +85,19 @@ pub const SCORE_C_ASCII: &str = r#"   ____
  \_____|  
 "#;
 
-/// Returns the ASCII art for a given category name.
-pub fn get_category_ascii(category: &str) -> &'static str {
-    match category {
-        "peers" => PEERS_ASCII,
-        "beacon" => BEACON_ASCII,
-        "validator" => VALIDATOR_ASCII,
-        "mev" => MEV_ASCII,
-        "infra" => INFRA_ASCII,
+/// Returns the ASCII art lines for a given category, ready to extend into a
+/// Vec<String>.
+pub fn get_category_ascii(category: &Option<TestCategory>) -> Vec<String> {
+    let ascii = match category {
+        Some(TestCategory::Peers) => PEERS_ASCII,
+        Some(TestCategory::Beacon) => BEACON_ASCII,
+        Some(TestCategory::Validator) => VALIDATOR_ASCII,
+        Some(TestCategory::Mev) => MEV_ASCII,
+        Some(TestCategory::Infra) => INFRA_ASCII,
         _ => CATEGORY_DEFAULT_ASCII,
-    }
+    };
+
+    ascii.lines().map(|line| line.to_string()).collect()
 }
 
 #[inline]
