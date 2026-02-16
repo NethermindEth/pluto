@@ -53,5 +53,37 @@ pub(crate) enum CliError {
 
     /// IO error occurred.
     #[error("IO error: {0}")]
-    IoError(#[from] std::io::Error),
+    Io(#[from] std::io::Error),
+
+    /// JSON serialization/deserialization error.
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    /// K1 utility error.
+    #[error("K1 utility error: {0}")]
+    K1Util(#[from] pluto_k1util::K1UtilError),
+
+    /// Obol API error.
+    #[error("Obol API error: {0}")]
+    ObolApi(#[from] pluto_app::obolapi::ObolApiError),
+
+    /// SSZ hasher error.
+    #[error("Hasher error: {0}")]
+    HasherError(#[from] pluto_cluster::ssz_hasher::HasherError),
+
+    /// HTTP request error.
+    #[error("HTTP request error: {0}")]
+    Reqwest(#[from] reqwest::Error),
+
+    /// Test timeout or interrupted.
+    #[error("timeout/interrupted")]
+    _TimeoutInterrupted,
+
+    /// Test case not supported.
+    #[error("test case not supported")]
+    _TestCaseNotSupported,
+
+    /// Generic error with message.
+    #[error("{0}")]
+    Other(String),
 }

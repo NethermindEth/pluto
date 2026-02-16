@@ -19,7 +19,7 @@ use crate::{
 
 use super::error::{ManifestError, Result};
 
-/// A share in the context of a Charon cluster, alongside its index.
+/// A share in the context of a Pluto cluster, alongside its index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexedKeyShare {
     /// The private key share.
@@ -31,72 +31,9 @@ pub struct IndexedKeyShare {
 /// Maps each validator pubkey to the associated key share.
 pub type ValidatorShares = HashMap<PubKey, IndexedKeyShare>;
 
-/// Extension trait for Validator providing utility methods.
-pub trait ValidatorExt {
-    /// Returns the validator BLS group public key.
-    fn public_key(&self) -> Result<PublicKey>;
-
-    /// Returns the validator hex group public key.
-    fn public_key_hex(&self) -> String;
-
-    /// Returns the validator's peerIdx'th BLS public share.
-    fn public_share(&self, peer_idx: usize) -> Result<PublicKey>;
-}
-
-impl ValidatorExt for Validator {
-    fn public_key(&self) -> Result<PublicKey> {
-        let pk_vec = self.public_key.to_vec();
-        pk_vec
-            .try_into()
-            .map_err(|_| ManifestError::InvalidHexLength {
-                expect: PUBLIC_KEY_LENGTH,
-                actual: self.public_key.len(),
-            })
-    }
-
-    fn public_key_hex(&self) -> String {
-        to_0x_hex(&self.public_key)
-    }
-
-    fn public_share(&self, peer_idx: usize) -> Result<PublicKey> {
-        let share = self
-            .pub_shares
-            .get(peer_idx)
-            .ok_or(ManifestError::InvalidCluster)?;
-
-        let share_vec = share.to_vec();
-        share_vec
-            .try_into()
-            .map_err(|_| ManifestError::InvalidHexLength {
-                expect: PUBLIC_KEY_LENGTH,
-                actual: share.len(),
-            })
-    }
-}
-
-/// Extension trait for Cluster providing utility methods.
-pub trait ClusterExt {
+impl Cluster {
     /// Returns the cluster operators as a slice of p2p peers.
-    fn peers(&self) -> Result<Vec<Peer>>;
-
-    /// Returns the operators p2p peer IDs.
-    fn peer_ids(&self) -> Result<Vec<PeerId>>;
-
-    /// Returns the node index for the peer in the cluster.
-    fn node_idx(&self, peer_id: &PeerId) -> Result<NodeIdx>;
-
-    /// Maps each share in cluster to the associated validator private key.
-    ///
-    /// Returns an error if a keyshare does not appear in cluster, or if there's
-    /// a validator public key associated to no keyshare.
-    fn keyshares_to_validator_pubkey(&self, shares: &[PrivateKey]) -> Result<ValidatorShares>;
-
-    /// Returns the share index for the Charon cluster's ENR identity key.
-    fn share_idx(&self, identity_key: &K256PublicKey) -> Result<u64>;
-}
-
-impl ClusterExt for Cluster {
-    fn peers(&self) -> Result<Vec<Peer>> {
+    pub fn peers(&self) -> Result<Vec<Peer>> {
         if self.operators.is_empty() {
             return Err(ManifestError::InvalidCluster);
         }
@@ -110,13 +47,11 @@ impl ClusterExt for Cluster {
                     enr: operator.enr.clone(),
                 });
             }
-            dedup.insert(operator.enr.clone());
+            dedup.insert(&operator.enr);
 
-            let record = Record::try_from(operator.enr.as_str())
-                .map_err(|e| ManifestError::EnrParse(format!("decode enr: {e}")))?;
+            let record = Record::try_from(operator.enr.as_str())?;
 
-            let peer = Peer::from_enr(&record, i)
-                .map_err(|e| ManifestError::P2p(format!("create peer from enr: {e}")))?;
+            let peer = Peer::from_enr(&record, i)?;
 
             resp.push(peer);
         }
@@ -124,12 +59,14 @@ impl ClusterExt for Cluster {
         Ok(resp)
     }
 
-    fn peer_ids(&self) -> Result<Vec<PeerId>> {
+    /// Returns the operators p2p peer IDs.
+    pub fn peer_ids(&self) -> Result<Vec<PeerId>> {
         let peers = self.peers()?;
         Ok(peers.iter().map(|p| p.id).collect())
     }
 
-    fn node_idx(&self, peer_id: &PeerId) -> Result<NodeIdx> {
+    /// Returns the node index for the peer in the cluster.
+    pub fn node_idx(&self, peer_id: &PeerId) -> Result<NodeIdx> {
         let peers = self.peers()?;
 
         for (i, p) in peers.iter().enumerate() {
@@ -144,7 +81,11 @@ impl ClusterExt for Cluster {
         Err(ManifestError::PeerNotInDefinition)
     }
 
-    fn keyshares_to_validator_pubkey(&self, shares: &[PrivateKey]) -> Result<ValidatorShares> {
+    /// Maps each share in cluster to the associated validator private key.
+    ///
+    /// Returns an error if a keyshare does not appear in cluster, or if there's
+    /// a validator public key associated to no keyshare.
+    pub fn keyshares_to_validator_pubkey(&self, shares: &[PrivateKey]) -> Result<ValidatorShares> {
         let mut res: ValidatorShares = HashMap::new();
 
         let mut pub_shares = Vec::with_capacity(shares.len());
@@ -198,11 +139,11 @@ impl ClusterExt for Cluster {
         Ok(res)
     }
 
-    fn share_idx(&self, identity_key: &K256PublicKey) -> Result<u64> {
+    /// Returns the share index for the Charon cluster's ENR identity key.
+    pub fn share_idx(&self, identity_key: &K256PublicKey) -> Result<u64> {
         let pids = self.peer_ids()?;
 
-        let identity_peer_id =
-            peer_id_from_key(*identity_key).map_err(|e| ManifestError::P2p(e.to_string()))?;
+        let identity_peer_id = peer_id_from_key(*identity_key)?;
 
         for pid in &pids {
             if *pid != identity_peer_id {
@@ -216,6 +157,41 @@ impl ClusterExt for Cluster {
         Err(ManifestError::NodeIdxNotFound)
     }
 }
+
+impl Validator {
+    /// Returns the validator BLS group public key.
+    pub fn public_key(&self) -> Result<PublicKey> {
+        let pk_vec = self.public_key.to_vec();
+        pk_vec
+            .try_into()
+            .map_err(|_| ManifestError::InvalidHexLength {
+                expect: PUBLIC_KEY_LENGTH,
+                actual: self.public_key.len(),
+            })
+    }
+
+    /// Returns the validator hex group public key.
+    pub fn public_key_hex(&self) -> String {
+        to_0x_hex(&self.public_key)
+    }
+
+    /// Returns the validator's peerIdx'th BLS public share.
+    pub fn public_share(&self, peer_idx: usize) -> Result<PublicKey> {
+        let share = self
+            .pub_shares
+            .get(peer_idx)
+            .ok_or(ManifestError::InvalidCluster)?;
+
+        let share_vec = share.to_vec();
+        share_vec
+            .try_into()
+            .map_err(|_| ManifestError::InvalidHexLength {
+                expect: PUBLIC_KEY_LENGTH,
+                actual: share.len(),
+            })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,6 +228,67 @@ mod tests {
             result.unwrap_err(),
             ManifestError::DuplicatePeerENR { .. }
         ));
+    }
+
+    #[test]
+    fn cluster_node_idx_test() {
+        let enr0 = "enr:-HW4QMOF6QNn4DRhSznyqhoRitA0R1P_p-Cf8I_phn-qR5EQEqFVV0_OtVuSWPj_HjGPd8lcXmcTen8j-9VT9hadVFyAgmlkgnY0iXNlY3AyNTZrMaECOx8LaV0436lNYE4XiqbGbVmXrEhUTg73e3M7HdRUWao".to_string();
+        let enr1 = "enr:-HW4QKFO6PyCQdVXUdNEn80MJL7O048nRgZvheMhdT4LL9DGPjXlhrP1beyj8OEfZrapZVWNPEjfkUJubybvOPqkEhmAgmlkgnY0iXNlY3AyNTZrMaECGzgOLCm1ShATtBj1sh0VvshUOPkGW20ruTPPo5N_HZM".to_string();
+        let enr2 = "enr:-HW4QJV3uqiuCqreW6nn794r-SxTC1fTXCnZQ4smu3l5F4DofbW566Zo8G0A9WL_wfGzkGRPPdGu6vYT7JfskEmbjIKAgmlkgnY0iXNlY3AyNTZrMaECh69y5mTVFNZQSh8Kc_57VwcK39WfY68y2F2WkeLa7EY".to_string();
+
+        let cluster = Cluster {
+            operators: vec![
+                Operator {
+                    address: "0x123".to_string(),
+                    enr: enr0,
+                },
+                Operator {
+                    address: "0x456".to_string(),
+                    enr: enr1,
+                },
+                Operator {
+                    address: "0x789".to_string(),
+                    enr: enr2,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let peers = cluster.peers().unwrap();
+        let peer_id = peers[1].id;
+
+        let node_idx = cluster.node_idx(&peer_id).unwrap();
+        assert_eq!(node_idx.peer_idx, 1);
+        assert_eq!(node_idx.share_idx, 2);
+    }
+
+    #[test]
+    fn validator_public_key_test() {
+        let public_key = vec![0x42u8; PUBLIC_KEY_LENGTH];
+        let validator = Validator {
+            public_key: public_key.clone().into(),
+            ..Default::default()
+        };
+
+        let result = validator.public_key().unwrap();
+        assert_eq!(result[0], 0x42);
+        assert_eq!(result.len(), PUBLIC_KEY_LENGTH);
+    }
+
+    #[test]
+    fn validator_public_key_hex_test() {
+        let mut public_key = vec![0u8; PUBLIC_KEY_LENGTH];
+        public_key[0] = 0xab;
+        public_key[1] = 0xcd;
+
+        let validator = Validator {
+            public_key: public_key.into(),
+            ..Default::default()
+        };
+
+        let hex = validator.public_key_hex();
+        let expected = "0xabcd".to_string() + &"00".repeat(PUBLIC_KEY_LENGTH - 2);
+        assert_eq!(hex, expected);
     }
 
     #[test]

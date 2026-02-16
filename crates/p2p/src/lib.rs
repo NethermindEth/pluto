@@ -28,3 +28,9 @@ pub mod behaviours;
 
 /// K1 utilities.
 pub mod k1;
+
+/// Multiaddr network utilities (manet).
+pub mod manet;
+
+/// Utilities.
+pub mod utils;

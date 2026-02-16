@@ -40,6 +40,7 @@ futures-timer = "3.0"
 backon = "1.6.0"
 hex = { version = "0.4.3" }
 hex-literal = "0.4"
+humantime = "2.1"
 prost = "0.14"
 prost-build = "0.14"
 prost-types = "0.14"
@@ -83,10 +84,10 @@ validator = { version = "0.20", features = ["derive"] }
 oas3-gen-support = "0.24"
 bon = "3.8"
 testcontainers = "0.26"
+test-case = "3.3"
 tree_hash = "0.12"
 tree_hash_derive = "0.12"
 wiremock = "0.6"
-test-case = "3.3"
 
 # Crates in the workspace
 pluto-app = { path = "crates/app" }
