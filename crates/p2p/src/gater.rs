@@ -14,14 +14,13 @@ use std::{
 };
 
 use libp2p::{
-    Multiaddr, PeerId,
-    swarm::{
+    Multiaddr, PeerId, swarm::{
         ConnectionDenied, ConnectionId, FromSwarm, NetworkBehaviour, THandler, THandlerInEvent,
-        THandlerOutEvent, ToSwarm,
-    },
+        THandlerOutEvent, ToSwarm, dummy,
+    }
 };
 
-use crate::{behaviours::dummy_handler, peer::MutablePeer};
+use crate::peer::MutablePeer;
 
 /// Configuration for the connection gater.
 #[derive(Debug, Clone, Default)]
@@ -135,7 +134,7 @@ pub enum Event {
 }
 
 impl NetworkBehaviour for ConnGater {
-    type ConnectionHandler = dummy_handler::Handler;
+    type ConnectionHandler = dummy::ConnectionHandler;
     type ToSwarm = Event;
 
     fn handle_established_inbound_connection(
@@ -146,7 +145,7 @@ impl NetworkBehaviour for ConnGater {
         _remote_addr: &Multiaddr,
     ) -> Result<THandler<Self>, ConnectionDenied> {
         if self.is_peer_allowed(&peer) {
-            Ok(dummy_handler::Handler)
+            Ok(dummy::ConnectionHandler)
         } else {
             self.events.push_back(Event::PeerBlocked(peer));
             Err(ConnectionDenied::new(PeerNotAllowed(peer)))
@@ -162,7 +161,7 @@ impl NetworkBehaviour for ConnGater {
         _port_use: libp2p::core::transport::PortUse,
     ) -> Result<THandler<Self>, ConnectionDenied> {
         // Allow all outbound connections
-        Ok(dummy_handler::Handler)
+        Ok(dummy::ConnectionHandler)
     }
 
     fn on_swarm_event(&mut self, _event: FromSwarm) {

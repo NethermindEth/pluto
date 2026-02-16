@@ -5,12 +5,11 @@ use std::{
 
 use libp2p::{
     Multiaddr, PeerId,
-    swarm::{ConnectionDenied, ConnectionId, NetworkBehaviour, THandler},
+    swarm::{ConnectionDenied, ConnectionId, NetworkBehaviour, THandler, dummy},
 };
 use tracing::{debug, instrument};
 
 use crate::{
-    behaviours::dummy_handler,
     metrics::{
         ConnectionType, P2P_METRICS, P2PMetrics, PeerConnectionLabels, Protocol,
         RelayConnectionLabels,
@@ -214,7 +213,7 @@ impl<M: ConnectionLoggerMetrics> ConnectionLoggerBehaviour<M> {
 }
 
 impl<M: ConnectionLoggerMetrics + 'static> NetworkBehaviour for ConnectionLoggerBehaviour<M> {
-    type ConnectionHandler = dummy_handler::Handler;
+    type ConnectionHandler = dummy::ConnectionHandler;
     type ToSwarm = ();
 
     #[instrument(skip(self, _local_addr, remote_addr), fields(peer = %peer_name(&peer), addr = %remote_addr))]
@@ -233,7 +232,7 @@ impl<M: ConnectionLoggerMetrics + 'static> NetworkBehaviour for ConnectionLogger
             "inbound connection established"
         );
         self.increment_connection(peer, remote_addr);
-        Ok(dummy_handler::Handler)
+        Ok(dummy::ConnectionHandler)
     }
 
     #[instrument(skip(self, _role_override, _port_use), fields(peer = %peer_name(&peer), addr = %addr))]
@@ -253,7 +252,7 @@ impl<M: ConnectionLoggerMetrics + 'static> NetworkBehaviour for ConnectionLogger
             "outbound connection established"
         );
         self.increment_connection(peer, addr);
-        Ok(dummy_handler::Handler)
+        Ok(dummy::ConnectionHandler)
     }
 
     fn on_swarm_event(&mut self, event: libp2p::swarm::FromSwarm) {

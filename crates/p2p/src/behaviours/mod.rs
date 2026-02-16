@@ -19,9 +19,6 @@ pub mod pluto;
 /// Pluto Mdns behaviour.
 pub mod pluto_mdns;
 
-/// Dummy connection handler.
-pub mod dummy_handler;
-
 /// Optional behaviour wrapper.
 pub mod optional;
 

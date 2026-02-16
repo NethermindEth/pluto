@@ -9,11 +9,9 @@ use libp2p::{
     Multiaddr, PeerId,
     swarm::{
         ConnectionDenied, ConnectionId, FromSwarm, NetworkBehaviour, THandler, THandlerInEvent,
-        THandlerOutEvent, ToSwarm,
+        THandlerOutEvent, ToSwarm, dummy,
     },
 };
-
-use crate::behaviours::dummy_handler;
 
 /// A wrapper for an optional network behaviour.
 ///
@@ -66,7 +64,7 @@ impl<B> From<B> for OptionalBehaviour<B> {
 }
 
 impl<B: NetworkBehaviour> NetworkBehaviour for OptionalBehaviour<B> {
-    type ConnectionHandler = Either<THandler<B>, dummy_handler::Handler>;
+    type ConnectionHandler = Either<THandler<B>, dummy::ConnectionHandler>;
     type ToSwarm = <B as NetworkBehaviour>::ToSwarm;
 
     fn handle_pending_inbound_connection(
@@ -114,7 +112,7 @@ impl<B: NetworkBehaviour> NetworkBehaviour for OptionalBehaviour<B> {
                 .map(Either::Left)?;
             Ok(res)
         } else {
-            Ok(Either::Right(dummy_handler::Handler))
+            Ok(Either::Right(dummy::ConnectionHandler))
         }
     }
 
@@ -138,7 +136,7 @@ impl<B: NetworkBehaviour> NetworkBehaviour for OptionalBehaviour<B> {
                 .map(Either::Left)?;
             Ok(res)
         } else {
-            Ok(Either::Right(dummy_handler::Handler))
+            Ok(Either::Right(dummy::ConnectionHandler))
         }
     }
 
