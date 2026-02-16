@@ -9,8 +9,13 @@ const MILLISECOND: u64 = 1000 * MICROSECOND;
 const SECOND: u64 = 1000 * MILLISECOND;
 
 /// Custom Duration wrapper with JSON serialization.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Duration {
+    #[serde(
+        serialize_with = "serialize_duration",
+        deserialize_with = "deserialize_duration"
+    )]
     inner: StdDuration,
 }
 
@@ -200,50 +205,50 @@ fn fmt_int(buf: &mut [u8], mut v: u64) -> usize {
     w
 }
 
-impl Serialize for Duration {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        // Match Go's `cmd.Duration.MarshalJSON` which marshals
-        // `time.Duration.String()`.
-        serializer.serialize_str(&self.to_string())
-    }
+/// Serializes a StdDuration as a string matching Go's time.Duration format.
+fn serialize_duration<S>(duration: &StdDuration, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    // Match Go's `cmd.Duration.MarshalJSON` which marshals
+    // `time.Duration.String()`.
+    serializer.serialize_str(&Duration::new(*duration).to_string())
 }
 
-impl<'de> Deserialize<'de> for Duration {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use serde::de::{self, Visitor};
+/// Deserializes a StdDuration from either a string or integer nanoseconds.
+fn deserialize_duration<'de, D>(deserializer: D) -> Result<StdDuration, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
 
-        struct DurationVisitor;
+    struct DurationVisitor;
 
-        impl<'de> Visitor<'de> for DurationVisitor {
-            type Value = Duration;
+    impl<'de> Visitor<'de> for DurationVisitor {
+        type Value = StdDuration;
 
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("a duration string or integer nanoseconds")
-            }
-
-            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                v.parse::<Duration>().map_err(de::Error::custom)
-            }
-
-            fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                Ok(Duration::new(StdDuration::from_nanos(v)))
-            }
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a duration string or integer nanoseconds")
         }
 
-        deserializer.deserialize_any(DurationVisitor)
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            v.parse::<Duration>()
+                .map(|d| d.inner)
+                .map_err(de::Error::custom)
+        }
+
+        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(StdDuration::from_nanos(v))
+        }
     }
+
+    deserializer.deserialize_any(DurationVisitor)
 }
 
 #[cfg(test)]
