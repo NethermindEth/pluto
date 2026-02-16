@@ -52,18 +52,12 @@ pub(crate) enum CliError {
     EnrError(#[from] pluto_eth2util::enr::RecordError),
 
     /// IO error occurred.
-    #[error("IO error: {source}")]
-    Io {
-        source: std::io::Error,
-        context: String,
-    },
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
 
     /// JSON serialization/deserialization error.
-    #[error("JSON error: {source}")]
-    Json {
-        source: serde_json::Error,
-        context: String,
-    },
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
 
     /// K1 utility error.
     #[error("K1 utility error: {0}")]
@@ -92,24 +86,4 @@ pub(crate) enum CliError {
     /// Generic error with message.
     #[error("{0}")]
     Other(String),
-}
-
-// Implement From<std::io::Error> for backwards compatibility
-impl From<std::io::Error> for CliError {
-    fn from(err: std::io::Error) -> Self {
-        CliError::Io {
-            source: err,
-            context: String::new(),
-        }
-    }
-}
-
-// Implement From<serde_json::Error> for convenience
-impl From<serde_json::Error> for CliError {
-    fn from(err: serde_json::Error) -> Self {
-        CliError::Json {
-            source: err,
-            context: String::new(),
-        }
-    }
 }

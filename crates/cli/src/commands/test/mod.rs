@@ -408,10 +408,7 @@ pub(crate) async fn publish_result_to_obol_api(
 ) -> CliResult<()> {
     let private_key = load_or_generate_key(private_key_file.as_ref()).await?;
     let enr = Record::new(private_key.clone(), vec![])?;
-    let sign_data_bytes = serde_json::to_vec(&data).map_err(|e| CliError::Json {
-        source: e,
-        context: "marshal all test categories signing data".to_string(),
-    })?;
+    let sign_data_bytes = serde_json::to_vec(&data)?;
     let hash = hash_ssz(&sign_data_bytes)?;
     let sig = sign(&private_key, &hash)?;
 
@@ -421,10 +418,7 @@ pub(crate) async fn publish_result_to_obol_api(
         data,
     };
 
-    let obol_api_json = serde_json::to_vec(&result).map_err(|e| CliError::Json {
-        source: e,
-        context: "marshal Obol API test struct".to_string(),
-    })?;
+    let obol_api_json = serde_json::to_vec(&result)?;
     let client = Client::new(api_url.as_ref(), ClientOptions::default())?;
     client.post_test_result(obol_api_json).await?;
 
@@ -481,10 +475,7 @@ pub(crate) async fn write_result_to_file(
         .to_string();
     let path_buf = path.to_path_buf();
 
-    let file_content_json = serde_json::to_vec(&all_results).map_err(|e| CliError::Json {
-        source: e,
-        context: "marshal all_results to JSON".to_string(),
-    })?;
+    let file_content_json = serde_json::to_vec(&all_results)?;
 
     // tempfile is a synchronous crate, but keep existing_file open during operation
     let result = tokio::task::spawn_blocking(move || -> CliResult<()> {
@@ -493,11 +484,7 @@ pub(crate) async fn write_result_to_file(
         let mut tmp_file = tempfile::Builder::new()
             .prefix(&format!("{base}-tmp-"))
             .suffix(".json")
-            .tempfile_in(&dir)
-            .map_err(|e| CliError::Io {
-                source: e,
-                context: "create temp file".to_string(),
-            })?;
+            .tempfile_in(&dir)?;
 
         tmp_file
             .as_file()
@@ -505,10 +492,9 @@ pub(crate) async fn write_result_to_file(
 
         tmp_file.as_file_mut().write_all(&file_content_json)?;
 
-        tmp_file.persist(&path_buf).map_err(|e| CliError::Io {
-            source: e.error,
-            context: "rename temp file".to_string(),
-        })?;
+        tmp_file
+            .persist(&path_buf)
+            .map_err(|e| CliError::Io(e.error))?;
 
         Ok(())
     })
