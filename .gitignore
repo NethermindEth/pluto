@@ -6,6 +6,9 @@
 # Direnv
 .direnv
 
+# Custom bashrc
+.bashrc
+
 # Rust/Cargo
 debug/
 target/

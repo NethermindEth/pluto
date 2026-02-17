@@ -1,0 +1,33 @@
+{
+	"build": {
+		"dockerfile": "Dockerfile",
+		"args": {
+			"USERNAME": "${localEnv:USERNAME}",
+			"USER_UID": "${localEnv:USER_ID:1000}",
+			"USER_GID": "${localEnv:GROUP_ID:1000}"
+		}
+	},
+	"customizations": {
+		"vscode": {
+			"settings": {
+				"chat.tools.terminal.enableAutoApprove": true,
+				"chat.tools.terminal.ignoreDefaultAutoApproveRules": true,
+				"chat.tools.terminal.autoApprove": {
+					"/.*/": true
+				},
+				"chat.tools.urls.autoApprove": {
+					"/.*/": true
+				},
+				"chat.tools.edits.autoApprove": {
+					"**/*": true,
+					"**/.vscode/*.json": false,
+					"**/.git/**": false
+				}
+			}
+		}
+	},
+	"postCreateCommand": {
+		"own-workspaces": "sudo chown ${localEnv:USERNAME}:${localEnv:USERNAME} /workspaces/",
+		"bashrc-customization": "(cat /${containerWorkspaceFolder}/.bashrc || echo '') >> /home/${localEnv:USERNAME}/.bashrc"
+	}
+}
