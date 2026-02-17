@@ -296,9 +296,8 @@ fn validate_aes_iv(iv: &[u8]) -> Result<()> {
         )));
     } else if iv.len() != IV_SIZE {
         eprintln!(
-            "WARN: AES IV length incorrect is {}, should be {}",
-            iv.len(),
-            IV_SIZE
+            "WARN: AES IV length incorrect is {}, should be {IV_SIZE}",
+            iv.len()
         );
     }
     Ok(())
@@ -388,13 +387,8 @@ fn validate_parameters(kdf: &Kdf) -> Result<()> {
             // Minimum Parameters
             if npr < DEFAULT_SCRYPT_NPR {
                 eprintln!(
-                    "WARN: Scrypt parameters are too weak (n: {}, p: {}, r: {}), we recommend (n: {}, p: {}, r: {})",
-                    params.n,
-                    params.p,
-                    params.r,
-                    DEFAULT_SCRYPT_N,
-                    DEFAULT_SCRYPT_P,
-                    DEFAULT_SCRYPT_R
+                    "WARN: Scrypt parameters are too weak (n: {}, p: {}, r: {}), we recommend (n: {DEFAULT_SCRYPT_N}, p: {DEFAULT_SCRYPT_P}, r: {DEFAULT_SCRYPT_R})",
+                    params.n, params.p, params.r
                 );
             }
 
