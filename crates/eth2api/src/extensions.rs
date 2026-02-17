@@ -1,6 +1,6 @@
 use crate::{
     ConsensusVersion, EthBeaconNodeApiClient, GetGenesisRequest, GetGenesisResponse,
-    GetSpecRequest, GetSpecResponse, ValidatorStatus,
+    GetSpecRequest, GetSpecResponse, ValidatorStatus, spec::phase0,
 };
 use chrono::{DateTime, Utc};
 use std::{collections::HashMap, time};
@@ -27,9 +27,6 @@ pub enum EthBeaconNodeApiClientError {
     ZeroSlotDurationOrSlotsPerEpoch,
 }
 
-/// Type alias for validator index.
-pub type ValidatorIndex = u64;
-
 const FORKS: [ConsensusVersion; 6] = [
     ConsensusVersion::Altair,
     ConsensusVersion::Bellatrix,
@@ -44,9 +41,9 @@ const FORKS: [ConsensusVersion; 6] = [
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForkSchedule {
     /// The fork version, as a 4-byte array.
-    pub version: [u8; 4],
+    pub version: phase0::Version,
     /// The epoch at which the fork activates.
-    pub epoch: u64,
+    pub epoch: phase0::Epoch,
 }
 
 impl ValidatorStatus {

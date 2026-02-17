@@ -16,6 +16,7 @@ serde_json.workspace = true
 hex.workspace = true
 serde_with.workspace = true
 pluto-crypto.workspace = true
+pluto-eth2api.workspace = true
 thiserror.workspace = true
 rand_core.workspace = true
 libp2p.workspace = true
