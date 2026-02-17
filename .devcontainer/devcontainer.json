@@ -28,6 +28,6 @@
 	},
 	"postCreateCommand": {
 		"own-workspaces": "sudo chown ${localEnv:USERNAME}:${localEnv:USERNAME} /workspaces/",
-		"bashrc-customization": "(cat /${containerWorkspaceFolder}/.bashrc || echo '') >> /home/${localEnv:USERNAME}/.bashrc"
+		"bashrc-customization": "(cat .bashrc || echo '') >> ~/.bashrc"
 	}
 }
