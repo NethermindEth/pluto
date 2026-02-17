@@ -225,7 +225,7 @@ impl Lock {
             self.version.as_str(),
             V1_0 | V1_1 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6
         ) {
-            if self.node_signatures.is_empty() {
+            if !self.node_signatures.is_empty() {
                 return Err(LockError::UnexpectedNodeSignatures);
             }
 
@@ -819,5 +819,31 @@ mod tests {
         let _ = serde_json::from_str::<LockV1x0or1>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(json_str).unwrap();
         assert!(lock.verify_hashes().is_ok());
+    }
+
+    #[test_case::test_case(include_str!("testdata/cluster_lock_v1_0_0.json"), true ; "v1.0 empty signatures")]
+    #[test_case::test_case(include_str!("testdata/cluster_lock_v1_6_0.json"), true ; "v1.6 empty signatures")]
+    #[test_case::test_case(include_str!("testdata/cluster_lock_v1_0_0.json"), false ; "v1.0 with signatures")]
+    #[test_case::test_case(include_str!("testdata/cluster_lock_v1_6_0.json"), false ; "v1.6 with signatures")]
+    fn test_verify_node_signatures_v1_0_to_v1_6(json: &str, empty: bool) {
+        let mut lock = serde_json::from_str::<Lock>(json).unwrap();
+
+        if !empty {
+            lock.node_signatures = vec![vec![1, 2, 3]];
+        }
+
+        let result = lock.verify_node_signatures();
+
+        if empty {
+            assert!(
+                result.is_ok(),
+                "Empty node_signatures should be OK for v1.0-v1.6"
+            );
+        } else {
+            assert!(
+                matches!(result.unwrap_err(), LockError::UnexpectedNodeSignatures),
+                "Non-empty node_signatures should return UnexpectedNodeSignatures for v1.0-v1.6"
+            );
+        }
     }
 }
