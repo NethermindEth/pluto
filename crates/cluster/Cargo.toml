@@ -25,13 +25,11 @@ pluto-eth2util.workspace = true
 pluto-k1util.workspace = true
 k256.workspace = true
 
-[dev-dependencies]
-test-case.workspace = true
-
 [build-dependencies]
 prost-build.workspace = true
 
 [dev-dependencies]
+test-case.workspace = true
 pluto-testutil.workspace = true
 rand.workspace = true
 
