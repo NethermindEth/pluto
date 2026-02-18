@@ -134,6 +134,9 @@ pub async fn load_files_recursively(dir: impl AsRef<str>) -> Result<KeyFiles> {
         let mut json_files = Vec::new();
         let mut txt_files = Vec::new();
 
+        // Use `walkdir` for recursive directory traversal. `tokio::fs::read_dir` only
+        // reads a single directory level and does not support recursion, so we
+        // rely on this crate instead.
         for entry in walkdir::WalkDir::new(&dir) {
             let entry = entry
                 .map_err(|e| KeystoreError::WalkDir(format!("failed to walk directory: {e}")))?;
@@ -196,7 +199,9 @@ pub async fn load_files_recursively(dir: impl AsRef<str>) -> Result<KeyFiles> {
         let password_file = filepath.replacen(".json", ".txt", 1);
         let passwords = std::sync::Arc::clone(&passwords_map);
 
-        set.spawn(async move {
+        // `decrypt` is CPU-intensive (key derivation), so use `spawn_blocking` to avoid
+        // blocking the async runtime. The closure has no `.await` calls.
+        set.spawn_blocking(move || {
             // First try the password file that matches the keystore file.
             let mut err = None;
 

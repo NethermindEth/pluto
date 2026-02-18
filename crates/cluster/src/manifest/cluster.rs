@@ -369,14 +369,11 @@ mod tests {
 
         // Verify each validator pubkey is found and each share private key is found
         for (val_pub_key, share_priv_key) in &ret {
-            let val_found = cluster.validators.iter().any(|val| {
-                if let Ok(pk) = val.public_key() {
-                    let val_pubkey: PubKey = pk.into();
-                    val_pub_key == &val_pubkey
-                } else {
-                    false
-                }
-            });
+            let val_found = cluster
+                .validators
+                .iter()
+                .map(|v| v.public_key().ok())
+                .any(|val| Some(*val_pub_key) == val.map(Into::into));
             assert!(val_found, "validator pubkey not found");
 
             let share_priv_key_found = private_shares
@@ -392,7 +389,6 @@ mod tests {
 
         // Generate a private key share that won't match
         let share0 = generate_test_bls_key(1);
-        let pub_share0 = tbls.secret_to_public_key(&share0).unwrap();
 
         // Create a validator with different pub_shares
         let other_share = generate_test_bls_key(200);
@@ -419,9 +415,6 @@ mod tests {
             result.unwrap_err(),
             ManifestError::PubShareNotFound
         ));
-
-        // Suppress unused warning
-        let _ = pub_share0;
     }
 
     #[test]

@@ -11,8 +11,6 @@
 //! - `share_idx_for_cluster` - Returns share index for cluster's ENR identity
 //!   key
 
-use std::sync::Arc;
-
 use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PrivateKey};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -73,21 +71,18 @@ async fn store_keys_internal(
     check_dir(&dir).await?;
 
     let mut set = tokio::task::JoinSet::new();
-    let dir: Arc<str> = Arc::from(dir.as_ref());
-    let prefix: Arc<str> = Arc::from(filename_prefix.as_ref());
+    let dir = dir.as_ref();
+    let prefix = filename_prefix.as_ref();
     for (i, secret) in secrets.iter().enumerate() {
         let secret = *secret;
-        let dir = dir.clone();
-        let prefix = prefix.clone();
-
+        let filename = format!("{dir}/{prefix}{i}.json");
         set.spawn(async move {
-            let filename = format!("{dir}/{prefix}{i}.json");
             let password = random_hex32();
             let store = encrypt(&secret, &password, pbkdf2_c, &mut rand::thread_rng())?;
             let b = serialize_keystore(&store)?;
 
             // Write keystore file with 0o444 permissions (read-only for all).
-            write_file(&filename, b.as_bytes(), 0o444).await?;
+            write_file(&filename, &b, 0o444).await?;
 
             store_password(&filename, &password).await?;
 
@@ -149,7 +144,7 @@ pub fn encrypt(
 
 /// Decrypts a keystore and returns the private key.
 pub(crate) fn decrypt(store: &Keystore, password: impl AsRef<str>) -> Result<PrivateKey> {
-    let secret_bytes = super::keystorev4::decrypt(&store.crypto, password.as_ref())?;
+    let secret_bytes = keystorev4::decrypt(&store.crypto, password.as_ref())?;
 
     let len = secret_bytes.len();
     let secret: PrivateKey = secret_bytes
@@ -213,13 +208,12 @@ async fn check_dir(dir: impl AsRef<str>) -> Result<()> {
 }
 
 /// Serializes a keystore to JSON with 1-space indentation
-fn serialize_keystore(store: &Keystore) -> Result<String> {
+fn serialize_keystore(store: &Keystore) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     let formatter = serde_json::ser::PrettyFormatter::with_indent(b" ");
     let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
     store.serialize(&mut ser)?;
-
-    String::from_utf8(buf).map_err(|e| KeystoreError::Encrypt(format!("utf8 error: {e}")))
+    Ok(buf)
 }
 
 /// Writes `data` to `path` with the given unix mode bits.
