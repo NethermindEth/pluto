@@ -103,6 +103,7 @@ use tracing::warn;
 use crate::{
     behaviours::pluto::{PlutoBehaviour, PlutoBehaviourBuilder, PlutoBehaviourEvent},
     config::{P2PConfig, P2PConfigError},
+    global_context::{GlobalContext, Peer},
     utils,
 };
 
@@ -161,6 +162,9 @@ pub struct Node<B: NetworkBehaviour> {
     /// Swarm.
     swarm: Swarm<PlutoBehaviour<B>>,
 
+    /// Global context.
+    global_context: GlobalContext,
+
     /// Node type.
     node_type: NodeType,
 
@@ -210,7 +214,7 @@ impl<B: NetworkBehaviour> Node<B> {
         inner_fn: F,
     ) -> Result<Self>
     where
-        F: FnOnce(&Keypair, relay::client::Behaviour) -> B,
+        F: FnOnce(GlobalContext, &Keypair, relay::client::Behaviour) -> B,
     {
         let keypair = utils::keypair_from_secret_key(key)?;
 
@@ -237,7 +241,7 @@ impl<B: NetworkBehaviour> Node<B> {
         inner_fn: F,
     ) -> Result<Self>
     where
-        F: FnOnce(&Keypair) -> B,
+        F: FnOnce(GlobalContext, &Keypair) -> B,
     {
         let keypair = utils::keypair_from_secret_key(key)?;
 
@@ -300,8 +304,9 @@ impl<B: NetworkBehaviour> Node<B> {
         inner_fn: F,
     ) -> Result<Self>
     where
-        F: FnOnce(&Keypair, relay::client::Behaviour) -> B,
+        F: FnOnce(GlobalContext, &Keypair, relay::client::Behaviour) -> B,
     {
+        let global_context = GlobalContext::default();
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
             .with_tcp(
@@ -316,8 +321,11 @@ impl<B: NetworkBehaviour> Node<B> {
             .with_relay_client(noise::Config::new, yamux::Config::default)
             .map_err(P2PError::failed_to_build_swarm)?
             .with_behaviour(|key, relay_client| {
-                let inner = inner_fn(key, relay_client);
-                behaviour_builder.with_inner(inner).build(key)
+                let inner = inner_fn(global_context.clone(), key, relay_client);
+                behaviour_builder
+                    .with_global_context(global_context.clone())
+                    .with_inner(inner)
+                    .build(key)
             })
             .map_err(P2PError::failed_to_build_swarm)?
             .with_swarm_config(utils::default_swarm_config)
@@ -327,6 +335,7 @@ impl<B: NetworkBehaviour> Node<B> {
             swarm,
             node_type: NodeType::QUIC,
             is_relay_server: false,
+            global_context,
         })
     }
 
@@ -336,8 +345,9 @@ impl<B: NetworkBehaviour> Node<B> {
         inner_fn: F,
     ) -> Result<Self>
     where
-        F: FnOnce(&Keypair, relay::client::Behaviour) -> B,
+        F: FnOnce(GlobalContext, &Keypair, relay::client::Behaviour) -> B,
     {
+        let global_context = GlobalContext::default();
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
             .with_tcp(
@@ -351,8 +361,11 @@ impl<B: NetworkBehaviour> Node<B> {
             .with_relay_client(noise::Config::new, yamux::Config::default)
             .map_err(P2PError::failed_to_build_swarm)?
             .with_behaviour(|key, relay_client| {
-                let inner = inner_fn(key, relay_client);
-                behaviour_builder.with_inner(inner).build(key)
+                let inner = inner_fn(global_context.clone(), key, relay_client);
+                behaviour_builder
+                    .with_global_context(global_context.clone())
+                    .with_inner(inner)
+                    .build(key)
             })
             .map_err(P2PError::failed_to_build_swarm)?
             .with_swarm_config(utils::default_swarm_config)
@@ -362,6 +375,7 @@ impl<B: NetworkBehaviour> Node<B> {
             swarm,
             node_type: NodeType::TCP,
             is_relay_server: false,
+            global_context,
         })
     }
 
@@ -371,8 +385,9 @@ impl<B: NetworkBehaviour> Node<B> {
         inner_fn: F,
     ) -> Result<Self>
     where
-        F: FnOnce(&Keypair) -> B,
+        F: FnOnce(GlobalContext, &Keypair) -> B,
     {
+        let global_context = GlobalContext::default();
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
             .with_tcp(
@@ -385,8 +400,11 @@ impl<B: NetworkBehaviour> Node<B> {
             .with_dns()
             .map_err(P2PError::failed_to_build_swarm)?
             .with_behaviour(|key| {
-                let inner = inner_fn(key);
-                behaviour_builder.with_inner(inner).build(key)
+                let inner = inner_fn(global_context.clone(), key);
+                behaviour_builder
+                    .with_global_context(global_context.clone())
+                    .with_inner(inner)
+                    .build(key)
             })
             .map_err(P2PError::failed_to_build_swarm)?
             .with_swarm_config(utils::default_swarm_config)
@@ -396,6 +414,7 @@ impl<B: NetworkBehaviour> Node<B> {
             swarm,
             node_type: NodeType::QUIC,
             is_relay_server: true,
+            global_context,
         })
     }
 
@@ -405,8 +424,9 @@ impl<B: NetworkBehaviour> Node<B> {
         inner_fn: F,
     ) -> Result<Self>
     where
-        F: FnOnce(&Keypair) -> B,
+        F: FnOnce(GlobalContext, &Keypair) -> B,
     {
+        let global_context = GlobalContext::default();
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
             .with_tcp(
@@ -418,8 +438,11 @@ impl<B: NetworkBehaviour> Node<B> {
             .with_dns()
             .map_err(P2PError::failed_to_build_swarm)?
             .with_behaviour(|key| {
-                let inner = inner_fn(key);
-                behaviour_builder.with_inner(inner).build(key)
+                let inner = inner_fn(global_context.clone(), key);
+                behaviour_builder
+                    .with_global_context(global_context.clone())
+                    .with_inner(inner)
+                    .build(key)
             })
             .map_err(P2PError::failed_to_build_swarm)?
             .with_swarm_config(utils::default_swarm_config)
@@ -429,6 +452,7 @@ impl<B: NetworkBehaviour> Node<B> {
             swarm,
             node_type: NodeType::TCP,
             is_relay_server: true,
+            global_context,
         })
     }
 
@@ -454,9 +478,48 @@ impl<B: NetworkBehaviour> Node<B> {
         Ok(())
     }
 
+    /// Adds an external address to the peer store.
+    pub fn add_external_address(&mut self, addr: Multiaddr) {
+        self.swarm.add_external_address(addr);
+    }
+
+    /// Returns the global context.
+    pub fn global_context(&self) -> &GlobalContext {
+        &self.global_context
+    }
+
     /// Returns the local peer ID.
     pub fn local_peer_id(&self) -> &PeerId {
         self.swarm.local_peer_id()
+    }
+
+    /// Handles a swarm event.
+    fn handle_event(&mut self, event: &SwarmEvent<PlutoBehaviourEvent<B>>) {
+        match event {
+            SwarmEvent::ConnectionEstablished {
+                peer_id,
+                connection_id,
+                ..
+            } => {
+                self.global_context.peer_store_write_lock().add_peer(Peer {
+                    id: *peer_id,
+                    connection_id: *connection_id,
+                });
+            }
+            SwarmEvent::ConnectionClosed {
+                peer_id,
+                connection_id,
+                ..
+            } => {
+                self.global_context
+                    .peer_store_write_lock()
+                    .remove_peer(Peer {
+                        id: *peer_id,
+                        connection_id: *connection_id,
+                    });
+            }
+            _ => {}
+        }
     }
 }
 
@@ -465,7 +528,10 @@ impl<B: NetworkBehaviour> Stream for Node<B> {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.swarm.poll_next_unpin(cx) {
-            Poll::Ready(Some(event)) => Poll::Ready(Some(event)),
+            Poll::Ready(Some(event)) => {
+                self.handle_event(&event);
+                Poll::Ready(Some(event))
+            }
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
         }

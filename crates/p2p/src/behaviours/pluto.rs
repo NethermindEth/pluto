@@ -10,6 +10,7 @@ use libp2p::{autonat, identify, identity::Keypair, ping, swarm::NetworkBehaviour
 use crate::{
     config::{DEFAULT_PING_INTERVAL, DEFAULT_PING_TIMEOUT},
     gater::ConnGater,
+    global_context::GlobalContext,
 };
 
 pub use super::optional::OptionalBehaviour;
@@ -76,6 +77,8 @@ pub struct PlutoBehaviourBuilder<B> {
     // AutoNAT config
     autonat_config: autonat::Config,
 
+    global_context: GlobalContext,
+
     // Inner behaviour
     inner: Option<B>,
 }
@@ -87,6 +90,7 @@ impl<B> Default for PlutoBehaviourBuilder<B> {
             identify_protocol: DEFAULT_IDENTIFY_PROTOCOL.clone(),
             user_agent: DEFAULT_USER_AGENT.clone(),
             autonat_config: autonat::Config::default(),
+            global_context: GlobalContext::default(),
             inner: None,
         }
     }
@@ -141,6 +145,14 @@ impl<B: NetworkBehaviour> PlutoBehaviourBuilder<B> {
     /// - A custom composed behaviour with multiple protocols
     pub fn with_inner(mut self, inner: B) -> Self {
         self.inner = Some(inner);
+        self
+    }
+
+    /// Sets the global context.
+    ///
+    /// The global context is used to store the peer store.
+    pub fn with_global_context(mut self, global_context: GlobalContext) -> Self {
+        self.global_context = global_context;
         self
     }
 

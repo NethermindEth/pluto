@@ -4,8 +4,6 @@
 //! Also, it discovers other Pluto nodes using mDNS (requires the `mdns`
 //! feature).
 
-use std::time::Duration;
-
 use anyhow::Result;
 use clap::Parser;
 use k256::elliptic_curve::rand_core::OsRng;
@@ -80,7 +78,7 @@ async fn main() -> Result<()> {
         NodeType::QUIC,
         false,
         PlutoBehaviour::builder().with_user_agent("pluto-p2p-example/1.0.0"),
-        |keypair, relay_client| CombinedBehaviour {
+        |_global_context, keypair, relay_client| CombinedBehaviour {
             relay: relay_client,
             mdns: mdns::tokio::Behaviour::new(
                 mdns::Config::default(),
