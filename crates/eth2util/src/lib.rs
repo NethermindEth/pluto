@@ -22,5 +22,8 @@ pub mod deposit;
 /// Ethereum address helpers.
 pub mod helpers;
 
+/// Validator registration for builder API.
+pub mod registration;
+
 /// Utilities.
 pub(crate) mod utils;
