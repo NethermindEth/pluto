@@ -20,6 +20,7 @@ use libp2p::{
 use pluto_cluster::lock::Lock;
 use pluto_core::version::{VERSION, git_commit};
 use pluto_p2p::{
+    behaviours::pluto::{PlutoBehaviour, PlutoBehaviourEvent},
     config::P2PConfig,
     k1,
     name::peer_name,
@@ -83,19 +84,50 @@ fn parse_key_value(s: &str) -> Result<(String, String), String> {
     Ok((parts[0].to_string(), parts[1].to_string()))
 }
 
-/// Combined behaviour with peerinfo, identify, ping, and mdns
+/// Combined behaviour with peerinfo, relay client, and mdns.
+///
+/// Note: identify and ping are handled by PlutoBehaviour which wraps this.
 #[derive(NetworkBehaviour)]
+#[behaviour(to_swarm = "CombinedBehaviourEvent")]
 pub struct CombinedBehaviour {
     pub peer_info: Behaviour,
-    pub identify: identify::Behaviour,
-    pub ping: ping::Behaviour,
     pub relay: relay::client::Behaviour,
     pub mdns: mdns::tokio::Behaviour,
 }
 
-pub type CombinedEvent = CombinedBehaviourEvent;
+/// Events from the combined behaviour.
+#[allow(missing_docs)]
+#[derive(Debug)]
+pub enum CombinedBehaviourEvent {
+    PeerInfo(Event),
+    Relay(relay::client::Event),
+    Mdns(mdns::Event),
+}
 
-fn handle_event(event: SwarmEvent<CombinedEvent>, swarm: &mut Swarm<CombinedBehaviour>) {
+impl From<Event> for CombinedBehaviourEvent {
+    fn from(event: Event) -> Self {
+        CombinedBehaviourEvent::PeerInfo(event)
+    }
+}
+
+impl From<relay::client::Event> for CombinedBehaviourEvent {
+    fn from(event: relay::client::Event) -> Self {
+        CombinedBehaviourEvent::Relay(event)
+    }
+}
+
+impl From<mdns::Event> for CombinedBehaviourEvent {
+    fn from(event: mdns::Event) -> Self {
+        CombinedBehaviourEvent::Mdns(event)
+    }
+}
+
+pub type FullEvent = PlutoBehaviourEvent<CombinedBehaviour>;
+
+fn handle_event(
+    event: SwarmEvent<FullEvent>,
+    swarm: &mut Swarm<PlutoBehaviour<CombinedBehaviour>>,
+) {
     match event {
         SwarmEvent::NewListenAddr { address, .. } => {
             tracing::info!("Listening on {address}");
@@ -111,7 +143,9 @@ fn handle_event(event: SwarmEvent<CombinedEvent>, swarm: &mut Swarm<CombinedBeha
         SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
             tracing::info!("Connection closed with {peer_id}: {cause:?}");
         }
-        SwarmEvent::Behaviour(CombinedEvent::PeerInfo(Event::Received { peer, info, .. })) => {
+        SwarmEvent::Behaviour(FullEvent::Inner(CombinedBehaviourEvent::PeerInfo(
+            Event::Received { peer, info, .. },
+        ))) => {
             tracing::info!(
                 "Received PeerInfo from {peer}:\n\
                  │  Version: {}\n\
@@ -126,10 +160,12 @@ fn handle_event(event: SwarmEvent<CombinedEvent>, swarm: &mut Swarm<CombinedBeha
                 hex::encode(&info.lock_hash),
             );
         }
-        SwarmEvent::Behaviour(CombinedEvent::PeerInfo(Event::Error { peer, error, .. })) => {
+        SwarmEvent::Behaviour(FullEvent::Inner(CombinedBehaviourEvent::PeerInfo(
+            Event::Error { peer, error, .. },
+        ))) => {
             tracing::warn!("PeerInfo error with {peer}: {error}");
         }
-        SwarmEvent::Behaviour(CombinedEvent::Identify(identify::Event::Received {
+        SwarmEvent::Behaviour(FullEvent::Identify(identify::Event::Received {
             peer_id,
             info,
             ..
@@ -140,21 +176,23 @@ fn handle_event(event: SwarmEvent<CombinedEvent>, swarm: &mut Swarm<CombinedBeha
                 info.agent_version
             );
         }
-        SwarmEvent::Behaviour(CombinedEvent::Ping(ping::Event { peer, result, .. })) => {
-            match result {
-                Ok(rtt) => tracing::debug!("Ping to {peer}: {rtt:?}"),
-                Err(e) => tracing::debug!("Ping to {peer} failed: {e}"),
-            }
-        }
-        SwarmEvent::Behaviour(CombinedEvent::Mdns(mdns::Event::Discovered(peers))) => {
+        SwarmEvent::Behaviour(FullEvent::Ping(ping::Event { peer, result, .. })) => match result {
+            Ok(rtt) => tracing::debug!("Ping to {peer}: {rtt:?}"),
+            Err(e) => tracing::debug!("Ping to {peer} failed: {e}"),
+        },
+        SwarmEvent::Behaviour(FullEvent::Inner(CombinedBehaviourEvent::Mdns(
+            mdns::Event::Discovered(peers),
+        ))) => {
             for (peer_id, addr) in peers {
-                tracing::info!("🔍 mDNS discovered peer {peer_id} at {addr}");
+                tracing::info!("mDNS discovered peer {peer_id} at {addr}");
                 if let Err(e) = swarm.dial(addr) {
                     tracing::warn!("Failed to dial discovered peer: {e}");
                 }
             }
         }
-        SwarmEvent::Behaviour(CombinedEvent::Mdns(mdns::Event::Expired(peers))) => {
+        SwarmEvent::Behaviour(FullEvent::Inner(CombinedBehaviourEvent::Mdns(
+            mdns::Event::Expired(peers),
+        ))) => {
             for (peer_id, addr) in peers {
                 tracing::debug!("mDNS peer expired: {peer_id} at {addr}");
             }
@@ -277,32 +315,32 @@ async fn main() -> anyhow::Result<()> {
         &args.nickname,
     );
 
-    let Node { mut swarm, .. } = Node::new(
+    let interval = Duration::from_secs(args.interval);
+
+    // Build the node
+    let node = Node::new(
         P2PConfig::default(),
         key,
-        false,
         NodeType::TCP,
-        |key, relay_client| CombinedBehaviour {
-            peer_info: Behaviour::new(
-                key.public().to_peer_id(),
-                Config::new(local_info.clone())
-                    .with_peers(peers.clone())
-                    .with_interval(Duration::from_secs(args.interval)),
-            ),
-            identify: identify::Behaviour::new(identify::Config::new(
-                "/peerinfo-example/1.0.0".to_string(),
-                key.public(),
-            )),
-            ping: ping::Behaviour::new(
-                ping::Config::new()
-                    .with_interval(Duration::from_secs(15))
-                    .with_timeout(Duration::from_secs(10)),
-            ),
-            mdns: mdns::tokio::Behaviour::new(mdns::Config::default(), key.public().to_peer_id())
-                .expect("Failed to create mDNS behaviour"),
-            relay: relay_client,
+        false,
+        PlutoBehaviour::builder(),
+        |keypair, relay_client| {
+            let peer_id = keypair.public().to_peer_id();
+            CombinedBehaviour {
+                peer_info: Behaviour::new(
+                    peer_id,
+                    Config::new(local_info.clone())
+                        .with_peers(peers.clone())
+                        .with_interval(interval),
+                ),
+                mdns: mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)
+                    .expect("Failed to create mDNS behaviour"),
+                relay: relay_client,
+            }
         },
     )?;
+
+    let mut swarm = node.swarm;
 
     let local_peer_id = *swarm.local_peer_id();
     tracing::info!("Local peer id: {local_peer_id}");

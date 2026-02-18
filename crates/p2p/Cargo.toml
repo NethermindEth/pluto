@@ -36,9 +36,6 @@ clap.workspace = true
 [lints]
 workspace = true
 
-[features]
-mdns = ["libp2p/mdns"]
-
 [[example]]
 name = "p2p"
 required-features = ["mdns"]

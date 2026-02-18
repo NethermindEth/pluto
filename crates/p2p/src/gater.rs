@@ -14,10 +14,11 @@ use std::{
 };
 
 use libp2p::{
-    Multiaddr, PeerId, swarm::{
+    Multiaddr, PeerId,
+    swarm::{
         ConnectionDenied, ConnectionId, FromSwarm, NetworkBehaviour, THandler, THandlerInEvent,
         THandlerOutEvent, ToSwarm, dummy,
-    }
+    },
 };
 
 use crate::peer::MutablePeer;

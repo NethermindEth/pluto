@@ -3,19 +3,21 @@
 use std::{sync::Arc, time::Duration};
 
 use k256::SecretKey;
-use libp2p::{futures::StreamExt, swarm::SwarmEvent};
+use libp2p::{futures::StreamExt, relay, swarm::SwarmEvent};
 use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
 
 use crate::{
     Result,
-    behaviour::RelayServerBehaviour,
     config::{Config, create_relay_config},
     error::RelayP2PError,
     web::enr_server,
 };
-use pluto_p2p::{gater::ConnGater, p2p::Node};
+use pluto_p2p::{
+    behaviours::pluto::PlutoBehaviour,
+    p2p::{Node, NodeType},
+};
 
 /// Runs a relay P2P node.
 #[instrument(skip(config, key, ct))]
@@ -23,13 +25,16 @@ pub async fn run_relay_p2p_node(
     config: &Config,
     key: SecretKey,
     ct: CancellationToken,
-) -> Result<Node<RelayServerBehaviour>> {
-    let mut node = Node::new_relay_server(&config.p2p_config, key.clone(), |key| {
-        RelayServerBehaviour::builder()
-            .with_gater(ConnGater::new_open_gater())
-            .with_relay_config(create_relay_config(config))
-            .build(key)
-    })?;
+) -> Result<Node<relay::Behaviour>> {
+    let relay_config = create_relay_config(config);
+    let mut node = Node::new_server(
+        config.p2p_config.clone(),
+        key.clone(),
+        NodeType::TCP,
+        false,
+        PlutoBehaviour::builder(),
+        |keypair| relay::Behaviour::new(keypair.public().to_peer_id(), relay_config),
+    )?;
 
     // todo: change to version::log_info
     info!("Charon relay starting");

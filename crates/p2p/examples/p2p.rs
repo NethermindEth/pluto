@@ -4,20 +4,56 @@
 //! Also, it discovers other Pluto nodes using mDNS (requires the `mdns`
 //! feature).
 
+use std::time::Duration;
+
 use anyhow::Result;
 use clap::Parser;
 use k256::elliptic_curve::rand_core::OsRng;
-use libp2p::{Multiaddr, futures::StreamExt, identify, multiaddr::Protocol, swarm::SwarmEvent};
+use libp2p::{
+    Multiaddr,
+    futures::StreamExt,
+    identify, mdns,
+    multiaddr::Protocol,
+    relay,
+    swarm::{NetworkBehaviour, SwarmEvent},
+};
 use pluto_eth2util::enr::Record;
 use pluto_p2p::{
-    behaviours::{
-        pluto::PlutoBehaviourEvent,
-        pluto_mdns::{PlutoMdnsBehaviour, PlutoMdnsBehaviourBuilder},
-    },
+    behaviours::pluto::{PlutoBehaviour, PlutoBehaviourEvent},
     config::P2PConfig,
     p2p::{Node, NodeType},
 };
 use tokio::signal;
+
+/// Combined behaviour with relay client and mDNS discovery.
+#[derive(NetworkBehaviour)]
+#[behaviour(to_swarm = "CombinedBehaviourEvent")]
+pub struct CombinedBehaviour {
+    /// Relay client for NAT traversal.
+    pub relay: relay::client::Behaviour,
+    /// mDNS for local peer discovery.
+    pub mdns: mdns::tokio::Behaviour,
+}
+
+/// Events emitted by the combined behaviour.
+#[allow(missing_docs)]
+#[derive(Debug)]
+pub enum CombinedBehaviourEvent {
+    Relay(relay::client::Event),
+    Mdns(mdns::Event),
+}
+
+impl From<relay::client::Event> for CombinedBehaviourEvent {
+    fn from(event: relay::client::Event) -> Self {
+        CombinedBehaviourEvent::Relay(event)
+    }
+}
+
+impl From<mdns::Event> for CombinedBehaviourEvent {
+    fn from(event: mdns::Event) -> Self {
+        CombinedBehaviourEvent::Mdns(event)
+    }
+}
 
 /// Command line arguments
 #[derive(Debug, Parser)]
@@ -36,12 +72,22 @@ pub struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     let key = k256::SecretKey::random(&mut OsRng);
-    let mut p2p: Node<PlutoMdnsBehaviour> = Node::new(
+
+    // Create node with composed behaviour
+    let mut p2p = Node::new(
         P2PConfig::default(),
         key.clone(),
-        false,
         NodeType::QUIC,
-        |keypair, relay| PlutoMdnsBehaviourBuilder::new().build(keypair, relay),
+        false,
+        PlutoBehaviour::builder().with_user_agent("pluto-p2p-example/1.0.0"),
+        |keypair, relay_client| CombinedBehaviour {
+            relay: relay_client,
+            mdns: mdns::tokio::Behaviour::new(
+                mdns::Config::default(),
+                keypair.public().to_peer_id(),
+            )
+            .expect("Failed to create mDNS behaviour"),
+        },
     )?;
 
     let args = Args::parse();
@@ -104,10 +150,10 @@ async fn main() -> Result<()> {
                     swarm.add_external_address(observed_addr.clone());
                     println!("Address observed {}", observed_addr);
                 }
-                SwarmEvent::Behaviour(PlutoBehaviourEvent::Relay(event)) => {
+                SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(CombinedBehaviourEvent::Relay(event))) => {
                     println!("Got relay event: {:?}", event);
                 },
-                SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(libp2p::mdns::Event::Discovered(nodes))) => {
+                SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(CombinedBehaviourEvent::Mdns(mdns::Event::Discovered(nodes)))) => {
                     for node in nodes {
                         println!("Discovered node: {:?}", node);
                         swarm.dial(node.1)?;
@@ -131,11 +177,7 @@ async fn main() -> Result<()> {
             },
             _ = signal::ctrl_c() => {
                 println!("\nReceived Ctrl+C, shutting down gracefully...");
-
-                // Perform cleanup
-                let _ = swarm;
                 drop(p2p);
-
                 println!("Shutdown complete");
                 break;
             }
