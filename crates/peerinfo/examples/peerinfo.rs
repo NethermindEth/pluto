@@ -12,7 +12,7 @@ use std::{
 
 use clap::Parser;
 use libp2p::{
-    Multiaddr, Swarm,
+    Multiaddr,
     futures::StreamExt,
     identify, mdns, ping, relay,
     swarm::{NetworkBehaviour, SwarmEvent},
@@ -124,10 +124,7 @@ impl From<mdns::Event> for CombinedBehaviourEvent {
 
 pub type FullEvent = PlutoBehaviourEvent<CombinedBehaviour>;
 
-fn handle_event(
-    event: SwarmEvent<FullEvent>,
-    swarm: &mut Swarm<PlutoBehaviour<CombinedBehaviour>>,
-) {
+fn handle_event(event: SwarmEvent<FullEvent>, node: &mut Node<CombinedBehaviour>) {
     match event {
         SwarmEvent::NewListenAddr { address, .. } => {
             tracing::info!("Listening on {address}");
@@ -185,7 +182,7 @@ fn handle_event(
         ))) => {
             for (peer_id, addr) in peers {
                 tracing::info!("mDNS discovered peer {peer_id} at {addr}");
-                if let Err(e) = swarm.dial(addr) {
+                if let Err(e) = node.dial(addr) {
                     tracing::warn!("Failed to dial discovered peer: {e}");
                 }
             }
@@ -318,7 +315,7 @@ async fn main() -> anyhow::Result<()> {
     let interval = Duration::from_secs(args.interval);
 
     // Build the node
-    let node = Node::new(
+    let mut node = Node::new(
         P2PConfig::default(),
         key,
         NodeType::TCP,
@@ -340,9 +337,7 @@ async fn main() -> anyhow::Result<()> {
         },
     )?;
 
-    let mut swarm = node.swarm;
-
-    let local_peer_id = *swarm.local_peer_id();
+    let local_peer_id = *node.local_peer_id();
     tracing::info!("Local peer id: {local_peer_id}");
     tracing::info!("mDNS auto-discovery enabled");
 
@@ -379,12 +374,12 @@ async fn main() -> anyhow::Result<()> {
 
     // Listen on the specified port
     let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{}", args.port).parse()?;
-    swarm.listen_on(listen_addr)?;
+    node.listen_on(listen_addr)?;
 
     // Dial the specified addresses
     for dial_addr in &args.dial {
         tracing::info!("Dialing {dial_addr}");
-        swarm.dial(dial_addr.clone())?;
+        node.dial(dial_addr.clone())?;
     }
 
     tracing::info!(
@@ -397,7 +392,7 @@ async fn main() -> anyhow::Result<()> {
     // Main event loop
     loop {
         tokio::select! {
-            event = swarm.select_next_some() => handle_event(event, &mut swarm),
+            event = node.select_next_some() => handle_event(event, &mut node),
             _ = signal::ctrl_c() => {
                 tracing::info!("Received Ctrl+C, shutting down...");
                 break;

@@ -5638,6 +5638,7 @@ version = "1.7.1"
 dependencies = [
  "axum",
  "bon",
+ "futures",
  "k256",
  "libp2p",
  "pluto-core",

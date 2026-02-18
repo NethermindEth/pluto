@@ -21,10 +21,6 @@ pub enum RelayP2PError {
     #[error("Failed to serve HTTP: {0}")]
     FailedToServeHTTP(std::io::Error),
 
-    /// Failed to listen on address.
-    #[error("Failed to listen on address: {0}")]
-    FailedToListenOnAddress(libp2p::TransportError<std::io::Error>),
-
     /// Failed to parse multiaddress.
     #[error("Failed to parse multiaddress: {0}")]
     FailedToParseMultiaddr(#[from] multiaddr::Error),

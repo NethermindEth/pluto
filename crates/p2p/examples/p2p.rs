@@ -92,18 +92,16 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    let swarm = &mut p2p.swarm;
-
     let enr = Record::new(key.clone(), vec![])?;
 
     if let Some(relay_url) = &args.relay_url {
-        swarm.dial(relay_url.clone())?;
+        p2p.dial(relay_url.clone())?;
         println!("Dialed relay");
         let mut learned_observed_addr = false;
         let mut told_relay_observed_addr = false;
 
         loop {
-            match swarm
+            match p2p
                 .next()
                 .await
                 .ok_or(anyhow::anyhow!("Swarm event is None"))?
@@ -137,17 +135,17 @@ async fn main() -> Result<()> {
 
     println!("ENR: {}", enr);
 
-    swarm.listen_on(format!("/ip4/0.0.0.0/udp/{}/quic-v1", args.port).parse()?)?;
-    swarm.listen_on(format!("/ip4/0.0.0.0/tcp/{}", args.port).parse()?)?;
+    p2p.listen_on(format!("/ip4/0.0.0.0/udp/{}/quic-v1", args.port).parse()?)?;
+    p2p.listen_on(format!("/ip4/0.0.0.0/tcp/{}", args.port).parse()?)?;
     if let Some(relay_url) = args.relay_url {
-        swarm.listen_on(relay_url.with(Protocol::P2pCircuit))?;
+        p2p.listen_on(relay_url.with(Protocol::P2pCircuit))?;
     }
 
     loop {
         tokio::select! {
-            event = swarm.select_next_some() => match event {
+            event = p2p.select_next_some() => match event {
                 SwarmEvent::Behaviour(PlutoBehaviourEvent::Identify(identify::Event::Received { info: identify::Info { observed_addr, .. }, .. })) => {
-                    swarm.add_external_address(observed_addr.clone());
+                    p2p.add_external_address(observed_addr.clone());
                     println!("Address observed {}", observed_addr);
                 }
                 SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(CombinedBehaviourEvent::Relay(event))) => {
@@ -156,7 +154,7 @@ async fn main() -> Result<()> {
                 SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(CombinedBehaviourEvent::Mdns(mdns::Event::Discovered(nodes)))) => {
                     for node in nodes {
                         println!("Discovered node: {:?}", node);
-                        swarm.dial(node.1)?;
+                        p2p.dial(node.1)?;
                     }
                 }
                 SwarmEvent::NewListenAddr { address, .. } => {

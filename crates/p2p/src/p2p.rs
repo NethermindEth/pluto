@@ -1,12 +1,12 @@
-//! Core P2P networking primitives for Charon nodes.
+//! Core P2P networking primitives for Pluto nodes.
 //!
 //! This module provides the fundamental building blocks for peer-to-peer
-//! networking in Charon, built on top of [libp2p](https://docs.rs/libp2p). It handles node creation,
+//! networking in Pluto, built on top of [libp2p](https://docs.rs/libp2p). It handles node creation,
 //! transport configuration (TCP and QUIC), and connection management.
 //!
 //! # Node Types
 //!
-//! Charon supports two transport types:
+//! Pluto supports two transport types:
 //! - **TCP**: Traditional TCP transport with Noise encryption and Yamux
 //!   multiplexing
 //! - **QUIC**: Modern QUIC transport with built-in encryption and multiplexing
@@ -23,8 +23,9 @@
 //!     P2PConfig::default(),
 //!     secret_key,
 //!     NodeType::QUIC,
+//!     false, // filter_private_addrs
 //!     PlutoBehaviour::builder()
-//!         .with_ping_interval(Duration::from_secs(15)),
+//!         .with_user_agent("my-app/1.0.0"),
 //!     |_keypair, relay_client| relay_client,
 //! )?;
 //! ```
@@ -32,17 +33,23 @@
 //! ## Client Node with Custom Behaviours
 //!
 //! ```ignore
+//! use pluto_p2p::p2p::{Node, NodeType};
+//! use pluto_p2p::behaviours::pluto::PlutoBehaviour;
+//!
 //! let node = Node::new(
 //!     P2PConfig::default(),
 //!     secret_key,
 //!     NodeType::QUIC,
+//!     false, // filter_private_addrs
 //!     PlutoBehaviour::builder()
-//!         .with_ping_interval(Duration::from_secs(15))
 //!         .with_user_agent("my-app/1.0.0"),
 //!     |keypair, relay_client| {
 //!         MyBehaviour {
-//!             relay_client,
-//!             peerinfo: Peerinfo::new(config, keypair),
+//!             relay: relay_client,
+//!             mdns: mdns::tokio::Behaviour::new(
+//!                 mdns::Config::default(),
+//!                 keypair.public().to_peer_id(),
+//!             ).unwrap(),
 //!         }
 //!     },
 //! )?;
@@ -51,14 +58,24 @@
 //! ## Relay Server Node
 //!
 //! ```ignore
+//! use pluto_p2p::p2p::{Node, NodeType};
+//! use pluto_p2p::behaviours::pluto::PlutoBehaviour;
+//!
 //! let node = Node::new_server(
 //!     P2PConfig::default(),
 //!     secret_key,
 //!     NodeType::TCP,
+//!     false, // filter_private_addrs
 //!     PlutoBehaviour::builder(),
 //!     |keypair| relay::Behaviour::new(keypair.public().to_peer_id(), relay_config),
 //! )?;
 //! ```
+//!
+//! # Address Filtering
+//!
+//! The `filter_private_addrs` parameter controls whether private/local
+//! addresses (e.g., `127.0.0.1`, `192.168.x.x`) are advertised to peers. Set to
+//! `true` for production deployments to only advertise external addresses.
 //!
 //! # Relay Support
 //!
@@ -66,15 +83,25 @@
 //! `relay_client` parameter passed to the build closure.
 //! For relay server functionality, use [`Node::new_server`].
 
-use libp2p::{
-    Swarm, SwarmBuilder, identity::Keypair, noise, relay, swarm::NetworkBehaviour, yamux,
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
 };
 
-use libp2p::tcp;
+use futures::{Stream, StreamExt, stream::FusedStream};
+use libp2p::{
+    Swarm, SwarmBuilder,
+    identity::Keypair,
+    noise, relay,
+    swarm::{NetworkBehaviour, SwarmEvent},
+    yamux,
+};
+
+use libp2p::{Multiaddr, PeerId, tcp};
 use tracing::warn;
 
 use crate::{
-    behaviours::pluto::{PlutoBehaviour, PlutoBehaviourBuilder},
+    behaviours::pluto::{PlutoBehaviour, PlutoBehaviourBuilder, PlutoBehaviourEvent},
     config::{P2PConfig, P2PConfigError},
     utils,
 };
@@ -132,13 +159,13 @@ pub enum NodeType {
 /// Node.
 pub struct Node<B: NetworkBehaviour> {
     /// Swarm.
-    pub swarm: Swarm<PlutoBehaviour<B>>,
+    swarm: Swarm<PlutoBehaviour<B>>,
 
     /// Node type.
-    pub node_type: NodeType,
+    node_type: NodeType,
 
     /// Is relay server.
-    pub is_relay_server: bool,
+    is_relay_server: bool,
 }
 
 impl<B: NetworkBehaviour> Node<B> {
@@ -403,5 +430,50 @@ impl<B: NetworkBehaviour> Node<B> {
             node_type: NodeType::TCP,
             is_relay_server: true,
         })
+    }
+
+    /// Returns the node type.
+    pub fn node_type(&self) -> NodeType {
+        self.node_type
+    }
+
+    /// Returns whether the node is a relay server.
+    pub fn is_relay_server(&self) -> bool {
+        self.is_relay_server
+    }
+
+    /// Dials a peer.
+    pub fn dial(&mut self, addr: Multiaddr) -> Result<()> {
+        self.swarm.dial(addr)?;
+        Ok(())
+    }
+
+    /// Listens on an address.
+    pub fn listen_on(&mut self, addr: Multiaddr) -> Result<()> {
+        self.swarm.listen_on(addr)?;
+        Ok(())
+    }
+
+    /// Returns the local peer ID.
+    pub fn local_peer_id(&self) -> &PeerId {
+        self.swarm.local_peer_id()
+    }
+}
+
+impl<B: NetworkBehaviour> Stream for Node<B> {
+    type Item = SwarmEvent<PlutoBehaviourEvent<B>>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.swarm.poll_next_unpin(cx) {
+            Poll::Ready(Some(event)) => Poll::Ready(Some(event)),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<B: NetworkBehaviour> FusedStream for Node<B> {
+    fn is_terminated(&self) -> bool {
+        false
     }
 }

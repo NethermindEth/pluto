@@ -2,8 +2,9 @@
 
 use std::{sync::Arc, time::Duration};
 
+use futures::StreamExt;
 use k256::SecretKey;
-use libp2p::{futures::StreamExt, relay, swarm::SwarmEvent};
+use libp2p::{relay, swarm::SwarmEvent};
 use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
@@ -11,7 +12,6 @@ use tracing::{debug, info, instrument, warn};
 use crate::{
     Result,
     config::{Config, create_relay_config},
-    error::RelayP2PError,
     web::enr_server,
 };
 use pluto_p2p::{
@@ -43,15 +43,11 @@ pub async fn run_relay_p2p_node(
 
     for tcp_addr in config.p2p_config.tcp_addrs.iter() {
         debug!("Listening on TCP address {}", tcp_addr);
-        node.swarm
-            .listen_on(tcp_addr.parse()?)
-            .map_err(RelayP2PError::FailedToListenOnAddress)?;
+        node.listen_on(tcp_addr.parse()?)?;
     }
     for udp_addr in config.p2p_config.udp_addrs.iter() {
         debug!("Listening on UDP address {}", udp_addr);
-        node.swarm
-            .listen_on(udp_addr.parse()?)
-            .map_err(RelayP2PError::FailedToListenOnAddress)?;
+        node.listen_on(udp_addr.parse()?)?;
     }
 
     let (server_errors, mut server_errors_receiver) = mpsc::channel(3);
@@ -62,7 +58,7 @@ pub async fn run_relay_p2p_node(
         server_errors.clone(),
         config.clone(),
         key.clone(),
-        *node.swarm.local_peer_id(),
+        *node.local_peer_id(),
         listeners.clone(),
         ct.child_token(),
     ));
@@ -86,7 +82,7 @@ pub async fn run_relay_p2p_node(
                     return Err(error);
                 }
             },
-            event = node.swarm.select_next_some() => {
+            event = node.select_next_some() => {
                 // todo: handle swarm events
                 debug!(?event, "Swarm event");
 
