@@ -38,16 +38,17 @@ pub async fn run_relay_p2p_node(
 
     // todo: monitor connections
 
-    for tcp_addr in config.p2p_config.tcp_addrs.iter() {
+    for tcp_addr in config.p2p_config.tcp_multiaddrs()? {
         debug!("Listening on TCP address {}", tcp_addr);
         node.swarm
-            .listen_on(tcp_addr.parse()?)
+            .listen_on(tcp_addr)
             .map_err(RelayP2PError::FailedToListenOnAddress)?;
     }
-    for udp_addr in config.p2p_config.udp_addrs.iter() {
+
+    for udp_addr in config.p2p_config.udp_multiaddrs()? {
         debug!("Listening on UDP address {}", udp_addr);
         node.swarm
-            .listen_on(udp_addr.parse()?)
+            .listen_on(udp_addr)
             .map_err(RelayP2PError::FailedToListenOnAddress)?;
     }
 

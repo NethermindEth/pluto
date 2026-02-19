@@ -302,3 +302,78 @@ pub async fn run(args: RelayArgs, ct: CancellationToken) -> Result<(), CliError>
         .map(|_| ())
         .map_err(Into::into)
 }
+
+#[cfg(test)]
+mod tests {
+    use tokio::net;
+    use tokio_util::sync::CancellationToken;
+
+    #[tokio::test]
+    async fn run_bootnode() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let tcp_addr = net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .to_string();
+
+        let udp_addr = net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .to_string();
+
+        let http_addr = net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .to_string();
+
+        let args = super::RelayArgs {
+            data_dir: super::RelayDataDirArgs {
+                data_dir: dir.path().to_path_buf(),
+            },
+            relay: super::RelayRelayArgs {
+                http_address: http_addr,
+                auto_p2p_key: true,
+                p2p_relay_log_level: "info".to_string(),
+                max_res_per_peer: 0,
+                max_conns: 0,
+                advertise_priv: false,
+            },
+            debug_monitoring: super::RelayDebugMonitoringArgs {
+                monitor_addr: "".to_string(),
+                debug_addr: "".to_string(),
+            },
+            p2p: super::RelayP2PArgs {
+                relays: vec![],
+                external_ip: None,
+                external_host: None,
+                tcp_addrs: vec![tcp_addr],
+                udp_addrs: vec![udp_addr],
+                disable_reuseport: false,
+            },
+            log: super::RelayLogFlags {
+                format: "console".to_string(),
+                level: "error".to_string(),
+                color: super::ConsoleColor::Disable,
+                log_output_path: "".to_string(),
+            },
+            loki: super::RelayLokiArgs {
+                loki_addresses: vec![],
+                loki_service: "".to_string(),
+            },
+        };
+
+        pluto_p2p::k1::new_saved_priv_key(dir.path()).unwrap();
+
+        let ct = CancellationToken::new();
+        let relay = super::run(args, ct.child_token());
+        ct.cancel();
+        relay.await.unwrap();
+    }
+}

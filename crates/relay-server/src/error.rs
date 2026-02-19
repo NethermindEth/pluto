@@ -13,6 +13,10 @@ pub enum RelayP2PError {
     #[error("P2P error: {0}")]
     P2PError(#[from] P2PError),
 
+    /// P2P Config error.
+    #[error("P2P Config error: {0}")]
+    P2PConfigError(#[from] pluto_p2p::config::P2PConfigError),
+
     /// Failed to bind HTTP listener.
     #[error("Failed to bind HTTP listener: {0}")]
     FailedToBindHttpListener(String),

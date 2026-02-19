@@ -239,7 +239,7 @@ impl<B: NetworkBehaviour> Node<B> {
     {
         let keypair = utils::keypair_from_secret_key(key)?;
 
-        let swarm = SwarmBuilder::with_existing_identity(keypair.clone())
+        let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
             .with_tcp(
                 tcp::Config::default(),
@@ -247,6 +247,7 @@ impl<B: NetworkBehaviour> Node<B> {
                 yamux::Config::default,
             )
             .map_err(P2PError::failed_to_build_swarm)?
+            .with_quic()
             .with_dns()
             .map_err(P2PError::failed_to_build_swarm)?
             .with_behaviour(behaviour_fn)
@@ -256,7 +257,7 @@ impl<B: NetworkBehaviour> Node<B> {
 
         Ok(Node {
             swarm,
-            node_type: NodeType::TCP,
+            node_type: NodeType::QUIC,
             is_relay_server: true,
         })
     }
