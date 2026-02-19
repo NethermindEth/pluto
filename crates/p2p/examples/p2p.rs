@@ -72,11 +72,14 @@ async fn main() -> Result<()> {
     let key = k256::SecretKey::random(&mut OsRng);
 
     // Create node with composed behaviour
+    // No known cluster peers in this example
+    let known_peers: Vec<libp2p::PeerId> = vec![];
     let mut p2p = Node::new(
         P2PConfig::default(),
         key.clone(),
         NodeType::QUIC,
         false,
+        known_peers,
         PlutoBehaviour::builder().with_user_agent("pluto-p2p-example/1.0.0"),
         |_global_context, keypair, relay_client| CombinedBehaviour {
             relay: relay_client,

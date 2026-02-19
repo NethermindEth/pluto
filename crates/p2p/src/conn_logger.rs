@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    task::Poll,
-};
+use std::{collections::HashMap, task::Poll};
 
 use libp2p::{
     Multiaddr, PeerId,
@@ -10,6 +7,7 @@ use libp2p::{
 use tracing::{debug, instrument};
 
 use crate::{
+    global_context::GlobalContext,
     metrics::{
         ConnectionType, P2P_METRICS, P2PMetrics, PeerConnectionLabels, Protocol,
         RelayConnectionLabels,
@@ -26,24 +24,21 @@ pub(crate) struct ConnKey {
     protocol: Protocol,
 }
 
-/// Existing connection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct ExistingConnection {
-    peer_id: PeerId,
-    connection_type: ConnectionType,
-}
-
 /// Connection logger behaviour.
 ///
 /// Tracks and logs libp2p connection events. This is implemented as a
 /// `NetworkBehaviour` to receive connection lifecycle events from the swarm.
+///
+/// Uses [`GlobalContext`] to determine whether a peer is a known cluster peer
+/// (tracked with peer metrics) or an external peer like a relay (tracked with
+/// relay metrics).
 #[derive(Debug)]
 pub struct ConnectionLoggerBehaviour<M: ConnectionLoggerMetrics> {
     metrics: M,
     /// Connection counts by peer, type, and protocol.
     counts: HashMap<ConnKey, u64>,
-    peers: HashSet<PeerId>,
-    existing_connections: HashSet<ExistingConnection>,
+    /// Global context for accessing the peer store and known peers.
+    global_context: GlobalContext,
 }
 
 /// Metrics for the connection logger behaviour.
@@ -135,75 +130,87 @@ impl ConnectionLoggerMetrics for TestConnectionLoggerMetrics {
 
 impl<M: ConnectionLoggerMetrics> ConnectionLoggerBehaviour<M> {
     /// Creates a new connection logger behaviour.
-    pub fn new(peers: impl IntoIterator<Item = PeerId>) -> Self {
+    ///
+    /// # Arguments
+    ///
+    /// * `global_context` - Shared global context containing known peers and
+    ///   peer store. Known peers are used to determine whether to track
+    ///   connections with peer metrics (for cluster peers) or relay metrics
+    ///   (for external peers like relays).
+    pub fn new(global_context: GlobalContext) -> Self {
         Self {
             metrics: M::new(),
             counts: HashMap::new(),
-            peers: peers.into_iter().collect(),
-            existing_connections: HashSet::new(),
+            global_context,
         }
+    }
+
+    /// Returns true if the peer is a known cluster peer.
+    fn is_known_peer(&self, peer: &PeerId) -> bool {
+        self.global_context.is_known_peer(peer)
     }
 
     /// Increments the connection count for the given peer and address.
     fn increment_connection(&mut self, peer: PeerId, addr: &Multiaddr) {
+        // Check if known peer before mutable borrow of counts
+        let is_known = self.is_known_peer(&peer);
+
         let conn_key = ConnKey {
             peer_id: peer,
             connection_type: utils::addr_type(addr),
             protocol: utils::addr_protocol(addr),
         };
 
-        let count = self
-            .counts
-            .entry(conn_key)
-            .and_modify(|count| *count = count.saturating_add(1))
-            .or_insert(1);
+        let count = self.counts.entry(conn_key).or_insert(0);
+        *count = count.saturating_add(1);
+        let count = *count;
 
-        if self.peers.contains(&peer) {
-            // Do not instrument relays.
+        if is_known {
+            // Track known cluster peers with peer metrics.
             self.metrics.inc_peer_connection_total(&peer);
-            self.metrics.set_peer_connection_type(&peer, addr, *count);
+            self.metrics.set_peer_connection_type(&peer, addr, count);
         } else {
-            self.metrics.set_relay_connection_type(&peer, addr, *count);
-        }
-
-        if *count == 1 {
-            self.existing_connections.insert(ExistingConnection {
-                peer_id: peer,
-                connection_type: utils::addr_type(addr),
-            });
+            // Track unknown peers (relays, etc.) with relay metrics.
+            self.metrics.set_relay_connection_type(&peer, addr, count);
         }
     }
 
     /// Decrements the connection count for the given peer and address.
     fn decrement_connection(&mut self, peer: PeerId, addr: &Multiaddr) {
+        // Check if known peer before mutable borrow of counts
+        let is_known = self.is_known_peer(&peer);
+
         let conn_key = ConnKey {
             peer_id: peer,
             connection_type: utils::addr_type(addr),
             protocol: utils::addr_protocol(addr),
         };
+
         if let Some(count) = self.counts.get_mut(&conn_key) {
             *count = count.saturating_sub(1);
-            if *count == 0 {
+            let count = *count;
+
+            if is_known {
+                self.metrics.set_peer_connection_type(&peer, addr, count);
+            } else {
+                self.metrics.set_relay_connection_type(&peer, addr, count);
+            }
+
+            if count == 0 {
                 self.counts.remove(&conn_key);
-                self.existing_connections.remove(&ExistingConnection {
-                    peer_id: peer,
-                    connection_type: utils::addr_type(addr),
-                });
-                self.metrics.set_peer_connection_type(&peer, addr, 0);
             }
         }
+    }
+
+    /// Returns the global context.
+    pub fn global_context(&self) -> &GlobalContext {
+        &self.global_context
     }
 
     /// Returns the counts.
     #[cfg(test)]
     pub(crate) fn counts(&self) -> &HashMap<ConnKey, u64> {
         &self.counts
-    }
-
-    /// Returns the existing connections.
-    #[cfg(test)]
-    pub(crate) fn existing_connections(&self) -> &HashSet<ExistingConnection> {
-        &self.existing_connections
     }
 
     #[cfg(test)]
@@ -334,6 +341,13 @@ mod tests {
         PeerId::random()
     }
 
+    fn make_behaviour(
+        known_peers: impl IntoIterator<Item = PeerId>,
+    ) -> ConnectionLoggerBehaviour<TestConnectionLoggerMetrics> {
+        let ctx = GlobalContext::new(known_peers);
+        ConnectionLoggerBehaviour::new(ctx)
+    }
+
     #[test]
     fn test_is_relay_addr() {
         assert!(!utils::is_relay_addr(&tcp_direct_addr()));
@@ -374,20 +388,34 @@ mod tests {
         let peer1 = random_peer_id();
         let peer2 = random_peer_id();
 
-        let behaviour: ConnectionLoggerBehaviour<TestConnectionLoggerMetrics> =
-            ConnectionLoggerBehaviour::new([peer1, peer2]);
+        let behaviour = make_behaviour([peer1, peer2]);
 
         assert!(behaviour.counts().is_empty());
-        assert!(behaviour.existing_connections().is_empty());
-        assert!(behaviour.peers.contains(&peer1));
-        assert!(behaviour.peers.contains(&peer2));
+        // Known peers are now in GlobalContext
+        assert!(behaviour.global_context().is_known_peer(&peer1));
+        assert!(behaviour.global_context().is_known_peer(&peer2));
+    }
+
+    #[test]
+    fn test_new_behaviour_with_global_context() {
+        let peer = random_peer_id();
+        let ctx = GlobalContext::new([peer]);
+
+        let behaviour: ConnectionLoggerBehaviour<TestConnectionLoggerMetrics> =
+            ConnectionLoggerBehaviour::new(ctx);
+
+        // Verify the global context is accessible and has the known peer
+        assert!(behaviour.global_context().is_known_peer(&peer));
+        assert_eq!(
+            behaviour.global_context().peer_store_lock().active_count(),
+            0
+        );
     }
 
     #[test]
     fn test_increment_connection_for_known_peer() {
         let peer = random_peer_id();
-        let mut behaviour: ConnectionLoggerBehaviour<TestConnectionLoggerMetrics> =
-            ConnectionLoggerBehaviour::new([peer]);
+        let mut behaviour = make_behaviour([peer]);
 
         let addr = tcp_direct_addr();
         behaviour.increment_connection(peer, &addr);
@@ -399,21 +427,12 @@ mod tests {
             protocol: Protocol::Tcp,
         };
         assert_eq!(behaviour.counts().get(&key), Some(&1));
-        assert!(
-            behaviour
-                .existing_connections()
-                .contains(&ExistingConnection {
-                    peer_id: peer,
-                    connection_type: ConnectionType::Direct,
-                })
-        );
     }
 
     #[test]
     fn test_increment_connection_multiple_times() {
         let peer = random_peer_id();
-        let mut behaviour: ConnectionLoggerBehaviour<TestConnectionLoggerMetrics> =
-            ConnectionLoggerBehaviour::new([peer]);
+        let mut behaviour = make_behaviour([peer]);
 
         let addr = tcp_direct_addr();
         behaviour.increment_connection(peer, &addr);
@@ -426,15 +445,12 @@ mod tests {
             protocol: Protocol::Tcp,
         };
         assert_eq!(behaviour.counts().get(&key), Some(&3));
-        // existing_connections should still only have one entry
-        assert_eq!(behaviour.existing_connections().len(), 1);
     }
 
     #[test]
     fn test_increment_connection_different_types() {
         let peer = random_peer_id();
-        let mut behaviour: ConnectionLoggerBehaviour<TestConnectionLoggerMetrics> =
-            ConnectionLoggerBehaviour::new([peer]);
+        let mut behaviour = make_behaviour([peer]);
 
         behaviour.increment_connection(peer, &tcp_direct_addr());
         behaviour.increment_connection(peer, &quic_direct_addr());
@@ -443,16 +459,12 @@ mod tests {
 
         // counts tracks (peer, type, protocol) - 4 unique combinations
         assert_eq!(behaviour.counts().len(), 4);
-        // existing_connections tracks (peer, type) - only 2 unique combinations
-        // (Direct, Relay)
-        assert_eq!(behaviour.existing_connections().len(), 2);
     }
 
     #[test]
     fn test_decrement_connection() {
         let peer = random_peer_id();
-        let mut behaviour: ConnectionLoggerBehaviour<TestConnectionLoggerMetrics> =
-            ConnectionLoggerBehaviour::new([peer]);
+        let mut behaviour = make_behaviour([peer]);
 
         let addr = tcp_direct_addr();
         behaviour.increment_connection(peer, &addr);
@@ -465,21 +477,12 @@ mod tests {
             protocol: Protocol::Tcp,
         };
         assert_eq!(behaviour.counts().get(&key), Some(&1));
-        assert!(
-            behaviour
-                .existing_connections()
-                .contains(&ExistingConnection {
-                    peer_id: peer,
-                    connection_type: ConnectionType::Direct,
-                })
-        );
     }
 
     #[test]
     fn test_decrement_connection_to_zero() {
         let peer = random_peer_id();
-        let mut behaviour: ConnectionLoggerBehaviour<TestConnectionLoggerMetrics> =
-            ConnectionLoggerBehaviour::new([peer]);
+        let mut behaviour = make_behaviour([peer]);
 
         let addr = tcp_direct_addr();
         behaviour.increment_connection(peer, &addr);
@@ -491,27 +494,23 @@ mod tests {
             protocol: Protocol::Tcp,
         };
         assert!(behaviour.counts().get(&key).is_none());
-        assert!(behaviour.existing_connections().is_empty());
     }
 
     #[test]
     fn test_decrement_nonexistent_connection() {
         let peer = random_peer_id();
-        let mut behaviour: ConnectionLoggerBehaviour<TestConnectionLoggerMetrics> =
-            ConnectionLoggerBehaviour::new([peer]);
+        let mut behaviour = make_behaviour([peer]);
 
         // Decrementing a connection that doesn't exist should be a no-op
         behaviour.decrement_connection(peer, &tcp_direct_addr());
 
         assert!(behaviour.counts().is_empty());
-        assert!(behaviour.existing_connections().is_empty());
     }
 
     #[test]
     fn test_metrics_for_known_peer() {
         let peer = random_peer_id();
-        let mut behaviour: ConnectionLoggerBehaviour<TestConnectionLoggerMetrics> =
-            ConnectionLoggerBehaviour::new([peer]);
+        let mut behaviour = make_behaviour([peer]);
 
         let addr = tcp_direct_addr();
         behaviour.increment_connection(peer, &addr);
@@ -531,8 +530,7 @@ mod tests {
     fn test_metrics_for_unknown_peer_uses_relay_metrics() {
         let known_peer = random_peer_id();
         let unknown_peer = random_peer_id();
-        let mut behaviour: ConnectionLoggerBehaviour<TestConnectionLoggerMetrics> =
-            ConnectionLoggerBehaviour::new([known_peer]);
+        let mut behaviour = make_behaviour([known_peer]);
 
         let addr = tcp_direct_addr();
         behaviour.increment_connection(unknown_peer, &addr);
@@ -555,8 +553,7 @@ mod tests {
     #[test]
     fn test_metrics_decrement_to_zero_sets_gauge() {
         let peer = random_peer_id();
-        let mut behaviour: ConnectionLoggerBehaviour<TestConnectionLoggerMetrics> =
-            ConnectionLoggerBehaviour::new([peer]);
+        let mut behaviour = make_behaviour([peer]);
 
         let addr = tcp_direct_addr();
         behaviour.increment_connection(peer, &addr);
@@ -566,6 +563,26 @@ mod tests {
         let labels =
             PeerConnectionLabels::new(&peer.to_string(), ConnectionType::Direct, Protocol::Tcp);
         let count = behaviour.metrics().inner().peer_connection_types[&labels].get();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_relay_metrics_decrement() {
+        let known_peer = random_peer_id();
+        let relay_peer = random_peer_id();
+        let mut behaviour = make_behaviour([known_peer]);
+
+        let addr = tcp_direct_addr();
+        behaviour.increment_connection(relay_peer, &addr);
+        behaviour.decrement_connection(relay_peer, &addr);
+
+        // After decrementing, relay_connection_types should be 0
+        let labels = RelayConnectionLabels::new(
+            &relay_peer.to_string(),
+            ConnectionType::Direct,
+            Protocol::Tcp,
+        );
+        let count = behaviour.metrics().inner().relay_connection_types[&labels].get();
         assert_eq!(count, 0);
     }
 
@@ -592,26 +609,6 @@ mod tests {
         assert_ne!(key1, key3);
     }
 
-    #[test]
-    fn test_existing_connection_equality() {
-        let peer = random_peer_id();
-        let conn1 = ExistingConnection {
-            peer_id: peer,
-            connection_type: ConnectionType::Direct,
-        };
-        let conn2 = ExistingConnection {
-            peer_id: peer,
-            connection_type: ConnectionType::Direct,
-        };
-        let conn3 = ExistingConnection {
-            peer_id: peer,
-            connection_type: ConnectionType::Relay,
-        };
-
-        assert_eq!(conn1, conn2);
-        assert_ne!(conn1, conn3);
-    }
-
     // =========================================================================
     // E2E NetworkBehaviour tests
     // =========================================================================
@@ -623,8 +620,7 @@ mod tests {
     #[test]
     fn test_handle_established_inbound_connection() {
         let peer = random_peer_id();
-        let mut behaviour: ConnectionLoggerBehaviour<TestConnectionLoggerMetrics> =
-            ConnectionLoggerBehaviour::new([peer]);
+        let mut behaviour = make_behaviour([peer]);
 
         let connection_id = ConnectionId::new_unchecked(1);
         let local_addr = local_addr();
@@ -655,8 +651,7 @@ mod tests {
     #[test]
     fn test_handle_established_outbound_connection() {
         let peer = random_peer_id();
-        let mut behaviour: ConnectionLoggerBehaviour<TestConnectionLoggerMetrics> =
-            ConnectionLoggerBehaviour::new([peer]);
+        let mut behaviour = make_behaviour([peer]);
 
         let connection_id = ConnectionId::new_unchecked(1);
         let addr = quic_direct_addr();
@@ -687,8 +682,7 @@ mod tests {
     #[test]
     fn test_handle_established_inbound_connection_relay() {
         let peer = random_peer_id();
-        let mut behaviour: ConnectionLoggerBehaviour<TestConnectionLoggerMetrics> =
-            ConnectionLoggerBehaviour::new([peer]);
+        let mut behaviour = make_behaviour([peer]);
 
         let connection_id = ConnectionId::new_unchecked(1);
         let local_addr = local_addr();
@@ -714,8 +708,7 @@ mod tests {
     #[test]
     fn test_on_swarm_event_connection_closed_dialer() {
         let peer = random_peer_id();
-        let mut behaviour: ConnectionLoggerBehaviour<TestConnectionLoggerMetrics> =
-            ConnectionLoggerBehaviour::new([peer]);
+        let mut behaviour = make_behaviour([peer]);
 
         let addr = tcp_direct_addr();
 
@@ -742,14 +735,12 @@ mod tests {
 
         // Connection should be removed
         assert!(behaviour.counts().is_empty());
-        assert!(behaviour.existing_connections().is_empty());
     }
 
     #[test]
     fn test_on_swarm_event_connection_closed_listener() {
         let peer = random_peer_id();
-        let mut behaviour: ConnectionLoggerBehaviour<TestConnectionLoggerMetrics> =
-            ConnectionLoggerBehaviour::new([peer]);
+        let mut behaviour = make_behaviour([peer]);
 
         let remote_addr = tcp_direct_addr();
         let local_addr = local_addr();
@@ -776,14 +767,12 @@ mod tests {
 
         // Connection should be removed
         assert!(behaviour.counts().is_empty());
-        assert!(behaviour.existing_connections().is_empty());
     }
 
     #[test]
     fn test_full_connection_lifecycle() {
         let peer = random_peer_id();
-        let mut behaviour: ConnectionLoggerBehaviour<TestConnectionLoggerMetrics> =
-            ConnectionLoggerBehaviour::new([peer]);
+        let mut behaviour = make_behaviour([peer]);
 
         let addr = quic_direct_addr();
         let connection_id = ConnectionId::new_unchecked(1);
@@ -804,7 +793,6 @@ mod tests {
             protocol: Protocol::Quic,
         };
         assert_eq!(behaviour.counts().get(&key), Some(&1));
-        assert_eq!(behaviour.existing_connections().len(), 1);
 
         // Step 2: Establish another connection (same type)
         let connection_id2 = ConnectionId::new_unchecked(2);
@@ -816,7 +804,6 @@ mod tests {
             PortUse::New,
         );
         assert_eq!(behaviour.counts().get(&key), Some(&2));
-        assert_eq!(behaviour.existing_connections().len(), 1); // Still 1, same type
 
         // Step 3: Close one connection
         let endpoint = ConnectedPoint::Dialer {
@@ -834,7 +821,6 @@ mod tests {
         behaviour.on_swarm_event(close_event);
 
         assert_eq!(behaviour.counts().get(&key), Some(&1));
-        assert_eq!(behaviour.existing_connections().len(), 1);
 
         // Step 4: Close the last connection
         let close_event2 = FromSwarm::ConnectionClosed(ConnectionClosed {
@@ -847,15 +833,13 @@ mod tests {
         behaviour.on_swarm_event(close_event2);
 
         assert!(behaviour.counts().is_empty());
-        assert!(behaviour.existing_connections().is_empty());
     }
 
     #[test]
     fn test_multiple_peers_connection_lifecycle() {
         let peer1 = random_peer_id();
         let peer2 = random_peer_id();
-        let mut behaviour: ConnectionLoggerBehaviour<TestConnectionLoggerMetrics> =
-            ConnectionLoggerBehaviour::new([peer1, peer2]);
+        let mut behaviour = make_behaviour([peer1, peer2]);
 
         let tcp_addr = tcp_direct_addr();
         let quic_addr = quic_direct_addr();
@@ -876,7 +860,6 @@ mod tests {
         );
 
         assert_eq!(behaviour.counts().len(), 2);
-        assert_eq!(behaviour.existing_connections().len(), 2);
 
         // Close peer1's connection
         let endpoint1 = ConnectedPoint::Listener {
@@ -905,8 +888,7 @@ mod tests {
     fn test_relay_vs_known_peer_metrics() {
         let known_peer = random_peer_id();
         let relay_peer = random_peer_id(); // Not in the known peers list
-        let mut behaviour: ConnectionLoggerBehaviour<TestConnectionLoggerMetrics> =
-            ConnectionLoggerBehaviour::new([known_peer]);
+        let mut behaviour = make_behaviour([known_peer]);
 
         let addr = tcp_direct_addr();
 

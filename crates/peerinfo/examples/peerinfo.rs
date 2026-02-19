@@ -315,11 +315,14 @@ async fn main() -> anyhow::Result<()> {
     let interval = Duration::from_secs(args.interval);
 
     // Build the node
+    // No known cluster peers in this example
+    let known_peers: Vec<libp2p::PeerId> = vec![];
     let mut node = Node::new(
         P2PConfig::default(),
         key,
         NodeType::TCP,
         false,
+        known_peers,
         PlutoBehaviour::builder(),
         |_global_context, keypair, relay_client| {
             let peer_id = keypair.public().to_peer_id();

@@ -185,6 +185,7 @@ impl<B: NetworkBehaviour> Node<B> {
     /// * `key` - Secret key for node identity
     /// * `node_type` - Transport type (TCP or QUIC)
     /// * `filter_private_addrs` - Whether to filter private addresses
+    /// * `known_peers` - List of known cluster peer IDs for metrics tracking
     /// * `behaviour_builder` - Builder for configuring PlutoBehaviour (ping,
     ///   identify, etc.)
     /// * `inner_fn` - Closure that creates the inner behaviour from keypair and
@@ -197,10 +198,12 @@ impl<B: NetworkBehaviour> Node<B> {
     ///     P2PConfig::default(),
     ///     secret_key,
     ///     NodeType::QUIC,
+    ///     false,
+    ///     vec![peer1, peer2], // known cluster peers
     ///     PlutoBehaviour::builder()
     ///         .with_ping_interval(Duration::from_secs(15))
     ///         .with_user_agent("my-app/1.0.0"),
-    ///     |keypair, relay_client| {
+    ///     |global_ctx, keypair, relay_client| {
     ///         MyBehaviour { relay_client, peerinfo: ... }
     ///     },
     /// )?;
@@ -210,6 +213,7 @@ impl<B: NetworkBehaviour> Node<B> {
         key: k256::SecretKey,
         node_type: NodeType,
         filter_private_addrs: bool,
+        known_peers: impl IntoIterator<Item = PeerId>,
         behaviour_builder: PlutoBehaviourBuilder<B>,
         inner_fn: F,
     ) -> Result<Self>
@@ -217,10 +221,15 @@ impl<B: NetworkBehaviour> Node<B> {
         F: FnOnce(GlobalContext, &Keypair, relay::client::Behaviour) -> B,
     {
         let keypair = utils::keypair_from_secret_key(key)?;
+        let global_context = GlobalContext::new(known_peers);
 
         let mut node = match node_type {
-            NodeType::TCP => Self::build_tcp_client(keypair, behaviour_builder, inner_fn),
-            NodeType::QUIC => Self::build_quic_client(keypair, behaviour_builder, inner_fn),
+            NodeType::TCP => {
+                Self::build_tcp_client(keypair, global_context, behaviour_builder, inner_fn)
+            }
+            NodeType::QUIC => {
+                Self::build_quic_client(keypair, global_context, behaviour_builder, inner_fn)
+            }
         }?;
 
         node.apply_config(&cfg, filter_private_addrs)?;
@@ -237,6 +246,7 @@ impl<B: NetworkBehaviour> Node<B> {
         key: k256::SecretKey,
         node_type: NodeType,
         filter_private_addrs: bool,
+        known_peers: impl IntoIterator<Item = PeerId>,
         behaviour_builder: PlutoBehaviourBuilder<B>,
         inner_fn: F,
     ) -> Result<Self>
@@ -244,10 +254,15 @@ impl<B: NetworkBehaviour> Node<B> {
         F: FnOnce(GlobalContext, &Keypair) -> B,
     {
         let keypair = utils::keypair_from_secret_key(key)?;
+        let global_context = GlobalContext::new(known_peers);
 
         let mut node = match node_type {
-            NodeType::TCP => Self::build_tcp_server(keypair, behaviour_builder, inner_fn),
-            NodeType::QUIC => Self::build_quic_server(keypair, behaviour_builder, inner_fn),
+            NodeType::TCP => {
+                Self::build_tcp_server(keypair, global_context, behaviour_builder, inner_fn)
+            }
+            NodeType::QUIC => {
+                Self::build_quic_server(keypair, global_context, behaviour_builder, inner_fn)
+            }
         }?;
 
         node.apply_config(&cfg, filter_private_addrs)?;
@@ -300,13 +315,13 @@ impl<B: NetworkBehaviour> Node<B> {
 
     fn build_quic_client<F>(
         keypair: Keypair,
+        global_context: GlobalContext,
         behaviour_builder: PlutoBehaviourBuilder<B>,
         inner_fn: F,
     ) -> Result<Self>
     where
         F: FnOnce(GlobalContext, &Keypair, relay::client::Behaviour) -> B,
     {
-        let global_context = GlobalContext::default();
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
             .with_tcp(
@@ -341,13 +356,13 @@ impl<B: NetworkBehaviour> Node<B> {
 
     fn build_tcp_client<F>(
         keypair: Keypair,
+        global_context: GlobalContext,
         behaviour_builder: PlutoBehaviourBuilder<B>,
         inner_fn: F,
     ) -> Result<Self>
     where
         F: FnOnce(GlobalContext, &Keypair, relay::client::Behaviour) -> B,
     {
-        let global_context = GlobalContext::default();
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
             .with_tcp(
@@ -381,13 +396,13 @@ impl<B: NetworkBehaviour> Node<B> {
 
     fn build_quic_server<F>(
         keypair: Keypair,
+        global_context: GlobalContext,
         behaviour_builder: PlutoBehaviourBuilder<B>,
         inner_fn: F,
     ) -> Result<Self>
     where
         F: FnOnce(GlobalContext, &Keypair) -> B,
     {
-        let global_context = GlobalContext::default();
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
             .with_tcp(
@@ -420,13 +435,13 @@ impl<B: NetworkBehaviour> Node<B> {
 
     fn build_tcp_server<F>(
         keypair: Keypair,
+        global_context: GlobalContext,
         behaviour_builder: PlutoBehaviourBuilder<B>,
         inner_fn: F,
     ) -> Result<Self>
     where
         F: FnOnce(GlobalContext, &Keypair) -> B,
     {
-        let global_context = GlobalContext::default();
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
             .with_tcp(

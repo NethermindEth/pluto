@@ -27,11 +27,14 @@ pub async fn run_relay_p2p_node(
     ct: CancellationToken,
 ) -> Result<Node<relay::Behaviour>> {
     let relay_config = create_relay_config(config);
+    // Relay servers don't track cluster peers - they serve all connections
+    let known_peers: Vec<libp2p::PeerId> = vec![];
     let mut node = Node::new_server(
         config.p2p_config.clone(),
         key.clone(),
         NodeType::TCP,
         false,
+        known_peers,
         PlutoBehaviour::builder(),
         |_global_context, keypair| {
             relay::Behaviour::new(keypair.public().to_peer_id(), relay_config)
