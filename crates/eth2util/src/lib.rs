@@ -25,5 +25,8 @@ pub mod helpers;
 /// EIP-2335 keystore management.
 pub mod keystore;
 
+/// ETH2 Keymanager API client.
+pub mod keymanager;
+
 /// Utilities.
 pub(crate) mod utils;

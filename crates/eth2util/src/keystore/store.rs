@@ -143,7 +143,7 @@ pub fn encrypt(
 }
 
 /// Decrypts a keystore and returns the private key.
-pub(crate) fn decrypt(store: &Keystore, password: impl AsRef<str>) -> Result<PrivateKey> {
+pub fn decrypt(store: &Keystore, password: impl AsRef<str>) -> Result<PrivateKey> {
     let secret_bytes = keystorev4::decrypt(&store.crypto, password.as_ref())?;
 
     let len = secret_bytes.len();
