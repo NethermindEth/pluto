@@ -274,6 +274,13 @@ pub async fn run(args: RelayArgs, ct: CancellationToken) -> Result<(), CliError>
         .expect("Log config is always configured");
     pluto_tracing::init(log_config).expect("Failed to initialize tracing");
 
+    run_with_config(config, ct).await
+}
+
+async fn run_with_config(
+    config: pluto_relay_server::config::Config,
+    ct: CancellationToken,
+) -> Result<(), CliError> {
     info!(concat!(
         "This software is licensed under the Maria DB Business Source License 1.1; ",
         "you may not use this software except in compliance with this license. You may obtain a ",
@@ -284,9 +291,9 @@ pub async fn run(args: RelayArgs, ct: CancellationToken) -> Result<(), CliError>
 
     let key = match pluto_p2p::k1::load_priv_key(&config.data_dir) {
         Ok(key) => Ok(key),
-        Err(pluto_p2p::k1::K1Error::IoError(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+        Err(e @ pluto_p2p::k1::K1Error::K1UtilError(_)) => {
             if !config.auto_p2p_key {
-                return Err(CliError::RelayPrivateKeyNotFound);
+                return Err(pluto_relay_server::RelayP2PError::FailedToLoadPrivateKey(e).into());
             }
 
             let path = k1::key_path(&config.data_dir);
@@ -341,13 +348,70 @@ mod tests {
             args.relay.http_address = http_addr;
             args
         };
+        let cfg = args.try_into().unwrap();
 
         pluto_p2p::k1::new_saved_priv_key(dir.path()).unwrap();
 
         let ct = CancellationToken::new();
-        let relay = super::run(args, ct.child_token());
+        let relay = super::run_with_config(cfg, ct.child_token());
         ct.cancel();
         relay.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_bootnode_auto_p2p() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let tcp_addr = net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .to_string();
+
+        let udp_addr = net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .to_string();
+
+        let http_addr = net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .to_string();
+
+        let mut args = test_relay_args();
+        args.data_dir.data_dir = dir.path().to_path_buf();
+        args.p2p.tcp_addrs = vec![tcp_addr];
+        args.p2p.udp_addrs = vec![udp_addr];
+        args.relay.http_address = http_addr;
+
+        let first_run = {
+            let ct = CancellationToken::new();
+            let cfg = args.clone().try_into().unwrap();
+            let relay = super::run_with_config(cfg, ct.child_token());
+            ct.cancel();
+            relay.await
+        };
+        assert!(matches!(
+            first_run,
+            Err(super::CliError::RelayP2PError(
+                pluto_relay_server::RelayP2PError::FailedToLoadPrivateKey(..)
+            ))
+        ));
+
+        args.relay.auto_p2p_key = true;
+        let second_run = {
+            let ct = CancellationToken::new();
+            let cfg = args.clone().try_into().unwrap();
+            let relay = super::run_with_config(cfg, ct.child_token());
+            ct.cancel();
+            relay.await
+        };
+        assert!(matches!(second_run, Ok(())));
     }
 
     // Default [`RelayArgs`] used for testing.

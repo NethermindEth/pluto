@@ -36,11 +36,6 @@ pub enum CliError {
         enr_path: PathBuf,
     },
 
-    #[error(
-        "charon-enr-private-key not found in data dir (run with --auto-p2pkey to auto generate)."
-    )]
-    RelayPrivateKeyNotFound,
-
     /// Private key already exists.
     #[error("charon-enr-private-key already exists")]
     PrivateKeyAlreadyExists {
