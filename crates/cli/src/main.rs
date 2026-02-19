@@ -9,7 +9,7 @@ use clap::{CommandFactory, FromArgMatches};
 mod ascii;
 mod cli;
 mod commands;
-pub mod duration;
+mod duration;
 mod error;
 
 use cli::{AlphaCommands, Cli, Commands, CreateCommands, TestCommands};
