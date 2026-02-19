@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 /// Arguments for the relay command.
-#[derive(clap::Args)]
+#[derive(clap::Args, Clone)]
 pub struct RelayArgs {
     #[clap(flatten)]
     pub data_dir: RelayDataDirArgs,
@@ -95,7 +95,7 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
     }
 }
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Clone)]
 pub struct RelayDataDirArgs {
     #[arg(
         long = "data-dir",
@@ -106,7 +106,7 @@ pub struct RelayDataDirArgs {
     pub data_dir: PathBuf,
 }
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Clone)]
 pub struct RelayRelayArgs {
     #[arg(
         long = "http-address",
@@ -152,7 +152,7 @@ pub struct RelayRelayArgs {
     pub advertise_priv: bool,
 }
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Clone)]
 pub struct RelayDebugMonitoringArgs {
     #[arg(
         long = "monitoring-address",
@@ -169,7 +169,7 @@ pub struct RelayDebugMonitoringArgs {
     pub debug_addr: String,
 }
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Clone)]
 pub struct RelayP2PArgs {
     #[arg(
         long = "p2p-relays",
@@ -213,7 +213,7 @@ pub struct RelayP2PArgs {
     pub disable_reuseport: bool,
 }
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Clone)]
 pub struct RelayLogFlags {
     #[arg(
         long = "log-format",
@@ -248,7 +248,7 @@ pub enum ConsoleColor {
     Disable,
 }
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Clone)]
 pub struct RelayLokiArgs {
     #[arg(
         long = "loki-addresses",
