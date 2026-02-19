@@ -324,6 +324,11 @@ mod tests {
     async fn run_bootnode() {
         let dir = tempfile::tempdir().unwrap();
 
+        // NOTE: Do not refactor this code into a helper function that returns the
+        // String address. This is because we need to ensure that the sockets
+        // remain bound and are not dropped before the relay is run, which would cause
+        // the ports to be freed and potentially reused by other processes, leading to
+        // test flakiness.
         let tcp_addr = net::TcpListener::bind("127.0.0.1:0")
             .await
             .unwrap()
