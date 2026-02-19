@@ -3,7 +3,7 @@ use libp2p::multiaddr::{self, Protocol};
 use pluto_p2p::k1;
 use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{error, info};
 
 /// Arguments for the relay command.
 #[derive(clap::Args, Clone)]
@@ -291,8 +291,13 @@ async fn run_with_config(
 
     let key = match pluto_p2p::k1::load_priv_key(&config.data_dir) {
         Ok(key) => Ok(key),
-        Err(e @ pluto_p2p::k1::K1Error::K1UtilError(_)) => {
+        Err(
+            e @ pluto_p2p::k1::K1Error::K1UtilError(pluto_k1util::K1UtilError::FailedToReadFile(_)),
+        ) => {
             if !config.auto_p2p_key {
+                error!(
+                    "charon-enr-private-key not found in data dir (run with --auto-p2pkey to auto generate)."
+                );
                 return Err(pluto_relay_server::RelayP2PError::FailedToLoadPrivateKey(e).into());
             }
 
