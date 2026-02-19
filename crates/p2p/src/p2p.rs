@@ -90,20 +90,20 @@ use std::{
 
 use futures::{Stream, StreamExt, stream::FusedStream};
 use libp2p::{
-    Swarm, SwarmBuilder,
+    Multiaddr, PeerId, Swarm, SwarmBuilder, autonat,
     identity::Keypair,
-    noise, relay,
+    noise, ping, relay,
     swarm::{NetworkBehaviour, SwarmEvent},
-    yamux,
+    tcp, yamux,
 };
-
-use libp2p::{Multiaddr, PeerId, tcp};
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::{
     behaviours::pluto::{PlutoBehaviour, PlutoBehaviourBuilder, PlutoBehaviourEvent},
     config::{P2PConfig, P2PConfigError},
-    global_context::{GlobalContext, Peer},
+    global_context::GlobalContext,
+    metrics::P2P_METRICS,
+    name::peer_name,
     utils,
 };
 
@@ -508,31 +508,67 @@ impl<B: NetworkBehaviour> Node<B> {
         self.swarm.local_peer_id()
     }
 
-    /// Handles a swarm event.
+    /// Handles a swarm event to update metrics and logging.
     fn handle_event(&mut self, event: &SwarmEvent<PlutoBehaviourEvent<B>>) {
         match event {
-            SwarmEvent::ConnectionEstablished {
-                peer_id,
-                connection_id,
-                ..
-            } => {
-                self.global_context.peer_store_write_lock().add_peer(Peer {
-                    id: *peer_id,
-                    connection_id: *connection_id,
-                });
+            // Ping metrics
+            SwarmEvent::Behaviour(PlutoBehaviourEvent::Ping(ping::Event {
+                peer, result, ..
+            })) => {
+                let peer_label = peer_name(peer);
+                match result {
+                    Ok(duration) => {
+                        P2P_METRICS.ping_latency_secs[&peer_label].observe(duration.as_secs_f64());
+                        P2P_METRICS.ping_success[&peer_label].set(1);
+                    }
+                    Err(_) => {
+                        P2P_METRICS.ping_error_total[&peer_label].inc();
+                        P2P_METRICS.ping_success[&peer_label].set(0);
+                    }
+                }
             }
-            SwarmEvent::ConnectionClosed {
-                peer_id,
-                connection_id,
-                ..
-            } => {
-                self.global_context
-                    .peer_store_write_lock()
-                    .remove_peer(Peer {
-                        id: *peer_id,
-                        connection_id: *connection_id,
-                    });
+
+            // AutoNAT reachability status
+            SwarmEvent::Behaviour(PlutoBehaviourEvent::Autonat(
+                autonat::Event::StatusChanged { new, .. },
+            )) => {
+                let status = match new {
+                    autonat::NatStatus::Unknown => 0,
+                    autonat::NatStatus::Public(_) => 1,
+                    autonat::NatStatus::Private => 2,
+                };
+                P2P_METRICS.reachability_status.set(status);
+                info!(status = ?new, "NAT status changed");
             }
+
+            // Connection errors
+            SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                if let Some(peer) = peer_id {
+                    warn!(peer = %peer_name(peer), %error, "outgoing connection failed");
+                } else {
+                    warn!(%error, "outgoing connection failed");
+                }
+            }
+            SwarmEvent::IncomingConnectionError { error, .. } => {
+                warn!(%error, "incoming connection failed");
+            }
+
+            // Listen address changes
+            SwarmEvent::NewListenAddr { address, .. } => {
+                info!(%address, "listening on new address");
+            }
+            SwarmEvent::ExpiredListenAddr { address, .. } => {
+                info!(%address, "listen address expired");
+            }
+
+            // External address discovery
+            SwarmEvent::ExternalAddrConfirmed { address } => {
+                info!(%address, "external address confirmed");
+            }
+            SwarmEvent::ExternalAddrExpired { address } => {
+                info!(%address, "external address expired");
+            }
+
             _ => {}
         }
     }

@@ -7,7 +7,7 @@ use libp2p::{
 use tracing::{debug, instrument};
 
 use crate::{
-    global_context::GlobalContext,
+    global_context::{GlobalContext, Peer},
     metrics::{
         ConnectionType, P2P_METRICS, P2PMetrics, PeerConnectionLabels, Protocol,
         RelayConnectionLabels,
@@ -271,6 +271,12 @@ impl<M: ConnectionLoggerMetrics + 'static> NetworkBehaviour for ConnectionLogger
                     other_established = event.other_established,
                     "connection established"
                 );
+                // Update peer store - this is done here so all other behaviours
+                // see the updated peer store immediately
+                self.global_context.peer_store_write_lock().add_peer(Peer {
+                    id: event.peer_id,
+                    connection_id: event.connection_id,
+                });
             }
             libp2p::swarm::FromSwarm::ConnectionClosed(event) => {
                 debug!(
@@ -279,6 +285,13 @@ impl<M: ConnectionLoggerMetrics + 'static> NetworkBehaviour for ConnectionLogger
                     num_established = event.remaining_established,
                     "connection closed"
                 );
+                // Update peer store
+                self.global_context
+                    .peer_store_write_lock()
+                    .remove_peer(Peer {
+                        id: event.peer_id,
+                        connection_id: event.connection_id,
+                    });
                 // Decrement the connection count based on the endpoint address
                 let addr = match &event.endpoint {
                     libp2p::core::ConnectedPoint::Dialer { address, .. } => address,

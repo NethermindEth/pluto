@@ -9,6 +9,7 @@ use libp2p::{autonat, identify, identity::Keypair, ping, swarm::NetworkBehaviour
 
 use crate::{
     config::{DEFAULT_PING_INTERVAL, DEFAULT_PING_TIMEOUT},
+    conn_logger::{ConnectionLoggerBehaviour, DefaultConnectionLoggerMetrics},
     gater::ConnGater,
     global_context::GlobalContext,
 };
@@ -32,13 +33,17 @@ pub const DEFAULT_IDENTIFY_CACHE_SIZE: usize = 100;
 /// Pluto network behaviour.
 ///
 /// Combines multiple libp2p protocols:
+/// - **Connection logging**: Tracks connections and updates peer store (first
+///   to ensure other behaviours see updated peer state)
 /// - **Connection gating**: Controls which connections are allowed
-/// - **Relay client**: Enables NAT traversal via relay servers
 /// - **Identify**: Exchanges peer information and supported protocols
 /// - **Ping**: Measures latency and keeps connections alive
 /// - **AutoNAT**: Detects NAT status and public reachability
 #[derive(NetworkBehaviour)]
 pub struct PlutoBehaviour<B: NetworkBehaviour> {
+    /// Connection logger behaviour - MUST be first so peer store is updated
+    /// before other behaviours process connection events.
+    pub conn_logger: ConnectionLoggerBehaviour<DefaultConnectionLoggerMetrics>,
     /// Connection gater behaviour.
     pub gater: ConnGater,
     /// Identify behaviour.
@@ -168,6 +173,7 @@ impl<B: NetworkBehaviour> PlutoBehaviourBuilder<B> {
             .with_cache_size(DEFAULT_IDENTIFY_CACHE_SIZE);
 
         PlutoBehaviour {
+            conn_logger: ConnectionLoggerBehaviour::new(self.global_context),
             gater: self.gater.unwrap_or_else(ConnGater::new_open_gater),
             identify: identify::Behaviour::new(identify_config),
             ping: ping::Behaviour::new(
