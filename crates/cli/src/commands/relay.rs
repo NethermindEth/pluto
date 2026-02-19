@@ -359,7 +359,7 @@ mod tests {
             },
             relay: super::RelayRelayArgs {
                 http_address: "".into(),
-                auto_p2p_key: true,
+                auto_p2p_key: false,
                 p2p_relay_log_level: "info".into(),
                 max_res_per_peer: 0,
                 max_conns: 0,
