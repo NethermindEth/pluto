@@ -8,6 +8,8 @@ publish.workspace = true
 
 [dependencies]
 k256.workspace = true
+pluto-crypto.workspace = true
+rand.workspace = true
 rand_core.workspace = true
 thiserror.workspace = true
 hex.workspace = true

@@ -3,7 +3,14 @@
 use clap::{Parser, Subcommand};
 
 use crate::commands::{
-    create_enr::CreateEnrArgs, enr::EnrArgs, relay::RelayArgs, version::VersionArgs,
+    create_enr::CreateEnrArgs,
+    enr::EnrArgs,
+    relay::RelayArgs,
+    test::{
+        all::TestAllArgs, beacon::TestBeaconArgs, infra::TestInfraArgs, mev::TestMevArgs,
+        peers::TestPeersArgs, validator::TestValidatorArgs,
+    },
+    version::VersionArgs,
 };
 
 /// Pluto - Proof of Stake Ethereum Distributed Validator Client
@@ -43,8 +50,76 @@ pub enum Commands {
         long_about = "Starts a libp2p circuit relay that charon clients can use to discover and connect to their peers."
     )]
     Relay(Box<RelayArgs>),
-    // Future commands will be added here:
-    // Run(RunArgs),
+
+    #[command(
+        about = "Alpha subcommands provide early access to in-development features",
+        long_about = "Alpha subcommands represent features that are currently under development. They're not yet released for general use, but offer a glimpse into future functionalities planned for the distributed cluster system."
+    )]
+    Alpha(AlphaArgs),
+}
+
+/// Arguments for the alpha command
+#[derive(clap::Args)]
+pub struct AlphaArgs {
+    #[command(subcommand)]
+    pub command: AlphaCommands,
+}
+
+/// Alpha subcommands
+#[derive(clap::Subcommand)]
+pub enum AlphaCommands {
+    #[command(
+        about = "Test subcommands provide test suite to evaluate current cluster setup",
+        long_about = "Test subcommands provide test suite to evaluate current cluster setup. The full validator stack can be tested - charon peers, consensus layer, validator client, MEV. Current machine's infra can be examined as well."
+    )]
+    Test(Box<TestArgs>),
+}
+
+/// Arguments for the test command
+#[derive(clap::Args)]
+pub struct TestArgs {
+    #[command(subcommand)]
+    pub command: TestCommands,
+}
+
+/// Test subcommands
+#[derive(clap::Subcommand)]
+pub enum TestCommands {
+    #[command(
+        about = "Run multiple tests towards peer nodes",
+        long_about = "Run multiple tests towards peer nodes. Verify that Charon can efficiently interact with Validator Client."
+    )]
+    Peers(TestPeersArgs),
+
+    #[command(
+        about = "Run multiple tests towards beacon nodes",
+        long_about = "Run multiple tests towards beacon nodes. Verify that Charon can efficiently interact with Beacon Node(s)."
+    )]
+    Beacon(TestBeaconArgs),
+
+    #[command(
+        about = "Run multiple tests towards validator client",
+        long_about = "Run multiple tests towards validator client. Verify that Charon can efficiently interact with its validator client."
+    )]
+    Validator(TestValidatorArgs),
+
+    #[command(
+        about = "Run multiple tests towards MEV relays",
+        long_about = "Run multiple tests towards MEV relays. Verify that Charon can efficiently interact with MEV relay(s)."
+    )]
+    Mev(TestMevArgs),
+
+    #[command(
+        about = "Run multiple hardware and internet connectivity tests",
+        long_about = "Run multiple hardware and internet connectivity tests. Verify that Charon is running on host with sufficient capabilities."
+    )]
+    Infra(TestInfraArgs),
+
+    #[command(
+        about = "Run tests towards peer nodes, beacon nodes, validator client, MEV relays, own hardware and internet connectivity.",
+        long_about = "Run tests towards peer nodes, beacon nodes, validator client, MEV relays, own hardware and internet connectivity. Verify that Pluto can efficiently do its duties on the tested setup."
+    )]
+    All(Box<TestAllArgs>),
 }
 
 /// Arguments for the create command

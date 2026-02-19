@@ -22,5 +22,8 @@ pub mod deposit;
 /// Ethereum address helpers.
 pub mod helpers;
 
+/// EIP-2335 keystore management.
+pub mod keystore;
+
 /// Utilities.
 pub(crate) mod utils;

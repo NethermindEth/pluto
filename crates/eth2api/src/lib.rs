@@ -22,6 +22,9 @@ pub mod extensions;
 
 pub use extensions::*;
 
+/// Ethereum 2.0 consensus layer specification types.
+pub mod spec;
+
 #[cfg(test)]
 #[cfg(feature = "integration")]
 mod integration;

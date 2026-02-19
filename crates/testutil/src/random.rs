@@ -6,6 +6,8 @@ use k256::{
     SecretKey,
     elliptic_curve::rand_core::{CryptoRng, Error, RngCore},
 };
+use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PrivateKey};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 
 /// A deterministic RNG that always returns the same byte value.
 /// This counter-acts the library's attempt at making ECDSA signatures
@@ -45,6 +47,26 @@ pub fn generate_insecure_k1_key(seed: u8) -> SecretKey {
     SecretKey::random(&mut rng)
 }
 
+/// Generates a deterministic 32-byte hash for testing using a seed.
+pub fn random_bytes32_seed(seed: u8) -> Vec<u8> {
+    let seed_bytes = [seed; 32];
+    let mut rng = StdRng::from_seed(seed_bytes);
+
+    let mut bytes = vec![0u8; 32];
+    rng.fill(&mut bytes[..]);
+    bytes
+}
+
+/// Generates a deterministic BLS private key for testing.
+pub fn generate_test_bls_key(seed: u64) -> PrivateKey {
+    let tbls = BlstImpl;
+    let mut seed_bytes = [0u8; 32];
+    seed_bytes[..8].copy_from_slice(&seed.to_le_bytes());
+    let rng = StdRng::from_seed(seed_bytes);
+    tbls.generate_secret_key(rng)
+        .expect("deterministic key generation should not fail")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,5 +103,44 @@ mod tests {
 
         // Verify it's a valid key by deriving public key
         let _pubkey: PublicKey = key.public_key();
+    }
+
+    #[test]
+    fn random_bytes32_deterministic() {
+        let bytes1 = random_bytes32_seed(42);
+        let bytes2 = random_bytes32_seed(42);
+
+        assert_eq!(bytes1, bytes2, "Same seed should produce identical bytes");
+        assert_eq!(bytes1.len(), 32);
+    }
+
+    #[test]
+    fn random_bytes32_different_seeds() {
+        let bytes1 = random_bytes32_seed(1);
+        let bytes2 = random_bytes32_seed(2);
+
+        assert_ne!(
+            bytes1, bytes2,
+            "Different seeds should produce different bytes"
+        );
+    }
+
+    #[test]
+    fn test_bls_key_deterministic() {
+        let key1 = generate_test_bls_key(42);
+        let key2 = generate_test_bls_key(42);
+
+        assert_eq!(key1, key2, "Same seed should produce identical BLS keys");
+    }
+
+    #[test]
+    fn test_bls_key_different_seeds() {
+        let key1 = generate_test_bls_key(1);
+        let key2 = generate_test_bls_key(2);
+
+        assert_ne!(
+            key1, key2,
+            "Different seeds should produce different BLS keys"
+        );
     }
 }

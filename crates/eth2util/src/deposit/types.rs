@@ -1,68 +1,9 @@
-use pluto_crypto::types::{PublicKey, Signature};
 use serde::{Deserialize, Serialize};
-use tree_hash::TreeHash;
-use tree_hash_derive::TreeHash;
 
-/// Gwei represents an amount in Gwei (1 ETH = 1,000,000,000 Gwei)
-pub type Gwei = u64;
-
-/// Fork version type (4 bytes).
-pub type Version = [u8; 4];
-
-/// Domain type (32 bytes).
-pub type Domain = [u8; 32];
-
-/// Root type (32 bytes).
-pub type Root = [u8; 32];
-
-/// Withdrawal credentials type (32 bytes).
-pub type WithdrawalCredentials = [u8; 32];
-
-/// DepositMessage represents the deposit message to be signed.
-/// See: https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#depositmessage
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash)]
-pub struct DepositMessage {
-    /// Validator's BLS public key (48 bytes)
-    pub pub_key: PublicKey,
-    /// Withdrawal credentials (32 bytes)
-    pub withdrawal_credentials: WithdrawalCredentials,
-    /// Amount in Gwei to be deposited
-    pub amount: Gwei,
-}
-
-/// DepositData defines the deposit data to activate a validator.
-/// See: https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#depositdata
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash)]
-pub struct DepositData {
-    /// Validator's BLS public key (48 bytes)
-    pub pub_key: PublicKey,
-    /// Withdrawal credentials (32 bytes)
-    pub withdrawal_credentials: WithdrawalCredentials,
-    /// Amount in Gwei to be deposited
-    pub amount: Gwei,
-    /// BLS signature of the deposit message (96 bytes)
-    pub signature: Signature,
-}
-
-/// ForkData is used for computing the deposit domain.
-/// See: https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#forkdata
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash)]
-pub(crate) struct ForkData {
-    /// Current fork version
-    pub current_version: Version,
-    /// Genesis validators root (zero for deposit domain)
-    pub genesis_validators_root: Root,
-}
-
-/// SigningData is used for computing the signing root.
-/// See: https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#signingdata
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash)]
-pub(crate) struct SigningData {
-    /// Object root being signed
-    pub object_root: Root,
-    /// Domain for the signature
-    pub domain: Domain,
-}
+pub use pluto_eth2api::spec::phase0::{
+    DepositData, DepositMessage, Domain, ForkData, Gwei, Root, SigningData, Version,
+    WithdrawalCredentials,
+};
 
 /// DepositDataJson is the json representation of Deposit Data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,67 +28,59 @@ pub struct DepositDataJson {
     pub deposit_cli_version: String,
 }
 
-impl DepositMessage {
-    /// Creates a new deposit message with the given parameters.
-    pub fn new(
-        pubkey: PublicKey,
-        withdrawal_addr: &str,
-        amount: Gwei,
-        compounding: bool,
-    ) -> super::Result<Self> {
-        let withdrawal_credentials =
-            super::withdrawal_creds_from_addr(withdrawal_addr, compounding)?;
+/// Creates a new deposit message with the given parameters.
+pub fn new_message(
+    pubkey: pluto_eth2api::spec::phase0::BLSPubKey,
+    withdrawal_addr: &str,
+    amount: Gwei,
+    compounding: bool,
+) -> super::Result<DepositMessage> {
+    let withdrawal_credentials = super::withdrawal_creds_from_addr(withdrawal_addr, compounding)?;
 
-        if amount < super::MIN_DEPOSIT_AMOUNT {
-            return Err(super::DepositError::MinimumAmountNotMet(amount));
-        }
+    if amount < super::MIN_DEPOSIT_AMOUNT {
+        return Err(super::DepositError::MinimumAmountNotMet(amount));
+    }
 
-        let max_amount = super::max_deposit_amount(compounding);
-        if amount > max_amount {
-            return Err(super::DepositError::MaximumAmountExceeded {
-                amount,
-                max: max_amount,
-            });
-        }
-
-        Ok(Self {
-            pub_key: pubkey,
-            withdrawal_credentials,
+    let max_amount = super::max_deposit_amount(compounding);
+    if amount > max_amount {
+        return Err(super::DepositError::MaximumAmountExceeded {
             amount,
-        })
+            max: max_amount,
+        });
     }
 
-    /// Returns the signing root for this deposit message on the given network.
-    pub fn get_message_signing_root(&self, network: &str) -> super::Result<Root> {
-        let msg_root = self.tree_hash_root();
-
-        let fork_version_bytes = super::network::network_to_fork_version_bytes(network)?;
-
-        let fork_version: Version = fork_version_bytes.as_slice().try_into().map_err(|_| {
-            super::DepositError::NetworkError(super::network::NetworkError::InvalidForkVersion {
-                fork_version: hex::encode(&fork_version_bytes),
-            })
-        })?;
-
-        let domain = super::get_deposit_domain(fork_version);
-
-        let signing_data = SigningData {
-            object_root: msg_root.0,
-            domain,
-        };
-
-        Ok(signing_data.tree_hash_root().0)
-    }
+    Ok(DepositMessage {
+        pubkey,
+        withdrawal_credentials,
+        amount,
+    })
 }
 
-impl From<&DepositData> for DepositMessage {
-    fn from(data: &DepositData) -> Self {
-        DepositMessage {
-            pub_key: data.pub_key,
-            withdrawal_credentials: data.withdrawal_credentials,
-            amount: data.amount,
-        }
-    }
+/// Returns the signing root for a deposit message on the given network.
+pub fn get_message_signing_root(
+    deposit_message: &DepositMessage,
+    network: &str,
+) -> super::Result<Root> {
+    use tree_hash::TreeHash;
+
+    let msg_root = deposit_message.tree_hash_root();
+
+    let fork_version_bytes = super::network::network_to_fork_version_bytes(network)?;
+
+    let fork_version: Version = fork_version_bytes.as_slice().try_into().map_err(|_| {
+        super::DepositError::NetworkError(super::network::NetworkError::InvalidForkVersion {
+            fork_version: hex::encode(&fork_version_bytes),
+        })
+    })?;
+
+    let domain = super::get_deposit_domain(fork_version);
+
+    let signing_data = SigningData {
+        object_root: msg_root.0,
+        domain,
+    };
+
+    Ok(signing_data.tree_hash_root().0)
 }
 
 #[cfg(test)]
@@ -171,7 +104,7 @@ mod tests {
                 .unwrap();
 
         let deposit_data = DepositData {
-            pub_key: pub_key.as_slice().try_into().unwrap(),
+            pubkey: pub_key.as_slice().try_into().unwrap(),
             withdrawal_credentials: withdrawal_credentials.as_slice().try_into().unwrap(),
             amount: 32_000_000_000,
             signature: signature.as_slice().try_into().unwrap(),
@@ -199,7 +132,7 @@ mod tests {
                 .unwrap();
 
         let deposit_message = DepositMessage {
-            pub_key: pub_key.as_slice().try_into().unwrap(),
+            pubkey: pub_key.as_slice().try_into().unwrap(),
             withdrawal_credentials: withdrawal_credentials.as_slice().try_into().unwrap(),
             amount: 32_000_000_000,
         };

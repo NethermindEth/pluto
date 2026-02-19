@@ -24,7 +24,7 @@ pub async fn run_relay_p2p_node(
     key: SecretKey,
     ct: CancellationToken,
 ) -> Result<Node<RelayServerBehaviour>> {
-    let mut node = Node::new_relay_server(config.p2p_config.clone(), key.clone(), false, |key| {
+    let mut node = Node::new_relay_server(&config.p2p_config, key.clone(), |key| {
         RelayServerBehaviour::builder()
             .with_gater(ConnGater::new_open_gater())
             .with_relay_config(create_relay_config(config))

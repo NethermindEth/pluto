@@ -2,8 +2,8 @@ use pluto_core::types::PubKey;
 use pluto_eth2api::{
     EthBeaconNodeApiClient, EthBeaconNodeApiClientError, GetStateValidatorsResponseResponse,
     GetStateValidatorsResponseResponseDatum, PostStateValidatorsRequest,
-    PostStateValidatorsRequestPath, PostStateValidatorsResponse, ValidatorIndex,
-    ValidatorRequestBody,
+    PostStateValidatorsRequestPath, PostStateValidatorsResponse, ValidatorRequestBody,
+    spec::phase0::ValidatorIndex,
 };
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
