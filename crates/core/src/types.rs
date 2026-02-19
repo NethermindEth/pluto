@@ -441,6 +441,12 @@ impl Signature {
     }
 }
 
+impl AsRef<[u8; SIG_LEN]> for Signature {
+    fn as_ref(&self) -> &[u8; SIG_LEN] {
+        &self.0
+    }
+}
+
 /// Signed data type
 pub trait SignedData: Clone + Serialize + StdDebug {
     /// The error type

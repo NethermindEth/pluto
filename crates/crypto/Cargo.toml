@@ -9,6 +9,8 @@ publish.workspace = true
 [dependencies]
 blst.workspace = true
 hex.workspace = true
+pluto-core.workspace = true
+pluto-eth2api.workspace = true
 rand.workspace = true
 rand_core.workspace = true
 serde.workspace = true
