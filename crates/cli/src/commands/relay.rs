@@ -333,40 +333,13 @@ mod tests {
             .unwrap()
             .to_string();
 
-        let args = super::RelayArgs {
-            data_dir: super::RelayDataDirArgs {
-                data_dir: dir.path().to_path_buf(),
-            },
-            relay: super::RelayRelayArgs {
-                http_address: http_addr,
-                auto_p2p_key: true,
-                p2p_relay_log_level: "info".to_string(),
-                max_res_per_peer: 0,
-                max_conns: 0,
-                advertise_priv: false,
-            },
-            debug_monitoring: super::RelayDebugMonitoringArgs {
-                monitor_addr: "".to_string(),
-                debug_addr: "".to_string(),
-            },
-            p2p: super::RelayP2PArgs {
-                relays: vec![],
-                external_ip: None,
-                external_host: None,
-                tcp_addrs: vec![tcp_addr],
-                udp_addrs: vec![udp_addr],
-                disable_reuseport: false,
-            },
-            log: super::RelayLogFlags {
-                format: "console".to_string(),
-                level: "error".to_string(),
-                color: super::ConsoleColor::Disable,
-                log_output_path: "".to_string(),
-            },
-            loki: super::RelayLokiArgs {
-                loki_addresses: vec![],
-                loki_service: "".to_string(),
-            },
+        let args = {
+            let mut args = test_relay_args();
+            args.data_dir.data_dir = dir.path().to_path_buf();
+            args.p2p.tcp_addrs = vec![tcp_addr];
+            args.p2p.udp_addrs = vec![udp_addr];
+            args.relay.http_address = http_addr;
+            args
         };
 
         pluto_p2p::k1::new_saved_priv_key(dir.path()).unwrap();
@@ -375,5 +348,45 @@ mod tests {
         let relay = super::run(args, ct.child_token());
         ct.cancel();
         relay.await.unwrap();
+    }
+
+    // Default [`RelayArgs`] used for testing.
+    // Values are overridden in tests as needed.
+    fn test_relay_args() -> super::RelayArgs {
+        super::RelayArgs {
+            data_dir: super::RelayDataDirArgs {
+                data_dir: "".into(),
+            },
+            relay: super::RelayRelayArgs {
+                http_address: "".into(),
+                auto_p2p_key: true,
+                p2p_relay_log_level: "info".into(),
+                max_res_per_peer: 0,
+                max_conns: 0,
+                advertise_priv: false,
+            },
+            debug_monitoring: super::RelayDebugMonitoringArgs {
+                monitor_addr: "".into(),
+                debug_addr: "".into(),
+            },
+            p2p: super::RelayP2PArgs {
+                relays: vec![],
+                external_ip: None,
+                external_host: None,
+                tcp_addrs: vec![],
+                udp_addrs: vec![],
+                disable_reuseport: false,
+            },
+            log: super::RelayLogFlags {
+                format: "console".into(),
+                level: "error".into(),
+                color: super::ConsoleColor::Disable,
+                log_output_path: "".into(),
+            },
+            loki: super::RelayLokiArgs {
+                loki_addresses: vec![],
+                loki_service: "".into(),
+            },
+        }
     }
 }
