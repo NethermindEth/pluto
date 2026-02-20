@@ -10,7 +10,7 @@ use tree_hash::TreeHash;
 /// Default gas limit used in validator registration pre-generation.
 pub const DEFAULT_GAS_LIMIT: u64 = 30_000_000;
 
-/// DOMAIN_APPLICATION_BUILDER.
+/// `DOMAIN_APPLICATION_BUILDER`.
 /// See <https://github.com/ethereum/builder-specs/blob/7b269305e1e54f22ddb84b3da2f222e20adf6e4f/specs/bellatrix/builder.md#domain-types>.
 const REGISTRATION_DOMAIN_TYPE: DomainType = [0x00, 0x00, 0x00, 0x01];
 
@@ -50,10 +50,10 @@ fn execution_address_from_str(addr: &str) -> Result<ExecutionAddress> {
 }
 
 /// Returns the validator registration signature domain.
-// DOMAIN_APPLICATION_BUILDER uses GENESIS_FORK_VERSION to compute domain.
-// Refer:
-// - https://github.com/ethereum/builder-specs/blob/100d4faf32e5dc672c963741769390ff09ab194a/specs/bellatrix/builder.md#signing
-// - https://github.com/ethereum/consensus-specs/blob/dev/specs/phase0/beacon-chain.md#compute_domain
+/// `DOMAIN_APPLICATION_BUILDER` uses `GENESIS_FORK_VERSION` to compute domain.
+/// Refer:
+/// - https://github.com/ethereum/builder-specs/blob/100d4faf32e5dc672c963741769390ff09ab194a/specs/bellatrix/builder.md#signing
+/// - https://github.com/ethereum/consensus-specs/blob/dev/specs/phase0/beacon-chain.md#compute_domain
 fn get_registration_domain(genesis_fork_version: Version) -> Domain {
     let fork_data = ForkData {
         current_version: genesis_fork_version,
@@ -166,8 +166,7 @@ mod tests {
                 .unwrap();
         let secret: pluto_crypto::types::PrivateKey = sk_bytes.as_slice().try_into().unwrap();
 
-        let tbls = BlstImpl;
-        let pubkey = tbls.secret_to_public_key(&secret).unwrap();
+        let pubkey = BlstImpl.secret_to_public_key(&secret).unwrap();
 
         let registration_json = r#"
 			{
