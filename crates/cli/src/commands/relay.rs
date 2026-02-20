@@ -129,7 +129,7 @@ pub struct RelayRelayArgs {
     )]
     pub p2p_relay_log_level: String,
 
-    // TODO: Check if https://github.com/libp2p/go-libp2p/issues/1713 is releveant for the Rust libp2p implementation
+    // TODO: Check if https://github.com/libp2p/go-libp2p/issues/1713 is relevant for the Rust libp2p implementation
     // If so, decrease defaults after this has been addressed
     #[arg(
         long = "p2p-max-reservations",
@@ -296,7 +296,7 @@ async fn run_with_config(
         ) => {
             if !config.auto_p2p_key {
                 error!(
-                    "charon-enr-private-key not found in data dir (run with --auto-p2pkey to auto generate)."
+                    "charon-enr-private-key not found in data dir (run with --auto-p2p-key to auto generate)."
                 );
                 return Err(pluto_relay_server::RelayP2PError::FailedToLoadPrivateKey(e).into());
             }
