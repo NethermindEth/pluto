@@ -471,6 +471,23 @@ mod tests {
         .await;
     }
 
+    #[tokio::test]
+    #[ignore = "/metrics endpoint not implemented"]
+    async fn relay_metrics_exported() {
+        with_relay_server(
+            |_| {},
+            async |cfg| {
+                let response = relay_server_get(cfg, "/metrics").await.unwrap();
+                let body = response.text().await.unwrap();
+
+                dbg!(&body);
+
+                assert!(body.contains("libp2p_relaysvc_"));
+            },
+        )
+        .await;
+    }
+
     /// Run a function in the context of a running relay server.
     ///
     /// The server can be configured before initialization through
@@ -530,7 +547,11 @@ mod tests {
         path: &str,
     ) -> Result<reqwest::Response, reqwest::Error> {
         let http_address = cfg.http_addr.unwrap();
-        let request = || reqwest::get(format!("http://{}{}", http_address, path));
+        let request = async || {
+            reqwest::get(format!("http://{}{}", http_address, path))
+                .await
+                .and_then(|r| r.error_for_status())
+        };
 
         let mut backoff = backon::ExponentialBuilder::default()
             .with_min_delay(time::Duration::from_millis(200))
