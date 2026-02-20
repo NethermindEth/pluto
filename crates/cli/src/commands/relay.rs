@@ -324,90 +324,26 @@ mod tests {
 
     #[tokio::test]
     async fn run_bootnode() {
-        let dir = tempfile::tempdir().unwrap();
-
-        // NOTE: Do not refactor this code into a helper function that returns the
-        // String address. This is because we need to ensure that the sockets
-        // remain bound and are not dropped before the relay is run, which would cause
-        // the ports to be freed and potentially reused by other processes, leading to
-        // test flakiness.
-        let tcp_addr = net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .to_string();
-
-        let udp_addr = net::UdpSocket::bind("127.0.0.1:0")
-            .await
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .to_string();
-
-        let http_addr = net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .to_string();
-
-        let args = {
-            let mut args = test_relay_args();
-            args.data_dir.data_dir = dir.path().to_path_buf();
-            args.p2p.tcp_addrs = vec![tcp_addr];
-            args.p2p.udp_addrs = vec![udp_addr];
-            args.relay.http_address = http_addr;
-            args
-        };
-        let cfg = args.try_into().unwrap();
-
-        pluto_p2p::k1::new_saved_priv_key(dir.path()).unwrap();
-
-        let ct = CancellationToken::new();
-        let relay = super::run_with_config(cfg, ct.child_token());
-        ct.cancel();
-        relay.await.unwrap();
+        with_relay_server(
+            |args| {
+                args.relay.auto_p2p_key = false;
+                pluto_p2p::k1::new_saved_priv_key(&args.data_dir.data_dir).unwrap();
+            },
+            async |_| { /* Relay server starts with existing p2p key */ },
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
     async fn run_bootnode_auto_p2p() {
-        let dir = tempfile::tempdir().unwrap();
-
-        let tcp_addr = net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .to_string();
-
-        let udp_addr = net::UdpSocket::bind("127.0.0.1:0")
-            .await
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .to_string();
-
-        let http_addr = net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .to_string();
-
-        let mut args = test_relay_args();
-        args.data_dir.data_dir = dir.path().to_path_buf();
-        args.p2p.tcp_addrs = vec![tcp_addr];
-        args.p2p.udp_addrs = vec![udp_addr];
-        args.relay.http_address = http_addr;
-
-        let first_run = {
-            let ct = CancellationToken::new();
-            let cfg = args.clone().try_into().unwrap();
-            let relay = super::run_with_config(cfg, ct.child_token());
-            ct.cancel();
-            relay.await
-        };
+        let first_run = with_relay_server(
+            |args| {
+                args.relay.auto_p2p_key = false;
+            },
+            async |_| { /* Relay server does not start due to missing p2p key */ },
+        )
+        .await;
         assert!(matches!(
             first_run,
             Err(super::CliError::RelayP2PError(
@@ -415,14 +351,11 @@ mod tests {
             ))
         ));
 
-        args.relay.auto_p2p_key = true;
-        let second_run = {
-            let ct = CancellationToken::new();
-            let cfg = args.clone().try_into().unwrap();
-            let relay = super::run_with_config(cfg, ct.child_token());
-            ct.cancel();
-            relay.await
-        };
+        let second_run = with_relay_server(
+            |_| {},
+            async |_| { /* Relay server starts with auto-generated p2p key */ },
+        )
+        .await;
         assert!(matches!(second_run, Ok(())));
     }
 
@@ -447,7 +380,8 @@ mod tests {
                 }
             },
         )
-        .await;
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -462,7 +396,8 @@ mod tests {
                 assert_eq!(enr.ip(), Some(std::net::Ipv4Addr::new(127, 0, 0, 1)));
             },
         )
-        .await;
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -477,7 +412,8 @@ mod tests {
                 assert_eq!(enr.ip(), Some(std::net::Ipv4Addr::new(222, 222, 222, 222)));
             },
         )
-        .await;
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -492,7 +428,8 @@ mod tests {
                 assert!(enr.ip().unwrap().is_loopback());
             },
         )
-        .await;
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -509,7 +446,8 @@ mod tests {
                 assert!(body.contains("libp2p_relaysvc_"));
             },
         )
-        .await;
+        .await
+        .unwrap();
     }
 
     /// Run a function in the context of a running relay server.
@@ -517,7 +455,10 @@ mod tests {
     /// The server can be configured before initialization through
     /// [`super::RelayArgs`], while the test function receives a function to
     /// make HTTP requests to the running relay server.
-    async fn with_relay_server<FArgs, FTest, Fut>(config_fn: FArgs, test_fn: FTest)
+    async fn with_relay_server<FArgs, FTest, Fut>(
+        config_fn: FArgs,
+        test_fn: FTest,
+    ) -> Result<(), crate::error::CliError>
     where
         FArgs: FnOnce(&mut super::RelayArgs),
         FTest: FnOnce(pluto_relay_server::config::Config) -> Fut,
@@ -546,12 +487,41 @@ mod tests {
             .unwrap()
             .to_string();
 
-        let mut args = test_relay_args();
-        args.data_dir.data_dir = dir.path().to_path_buf();
-        args.p2p.tcp_addrs = vec![tcp_addr];
-        args.p2p.udp_addrs = vec![udp_addr];
-        args.relay.http_address = http_addr;
-        args.relay.auto_p2p_key = true;
+        let mut args = super::RelayArgs {
+            data_dir: super::RelayDataDirArgs {
+                data_dir: dir.path().to_path_buf(),
+            },
+            relay: super::RelayRelayArgs {
+                http_address: http_addr,
+                auto_p2p_key: true,
+                p2p_relay_log_level: "info".into(),
+                max_res_per_peer: 0,
+                max_conns: 0,
+                advertise_priv: false,
+            },
+            debug_monitoring: super::RelayDebugMonitoringArgs {
+                monitor_addr: "".into(),
+                debug_addr: "".into(),
+            },
+            p2p: super::RelayP2PArgs {
+                relays: vec![],
+                external_ip: None,
+                external_host: None,
+                tcp_addrs: vec![tcp_addr],
+                udp_addrs: vec![udp_addr],
+                disable_reuseport: false,
+            },
+            log: super::RelayLogFlags {
+                format: "console".into(),
+                level: "error".into(),
+                color: super::ConsoleColor::Disable,
+                log_output_path: "".into(),
+            },
+            loki: super::RelayLokiArgs {
+                loki_addresses: vec![],
+                loki_service: "".into(),
+            },
+        };
         config_fn(&mut args);
 
         let cfg: pluto_relay_server::config::Config = args.clone().try_into().unwrap();
@@ -562,7 +532,7 @@ mod tests {
         test_fn(cfg.clone()).await;
 
         ct.cancel();
-        relay.await.unwrap().unwrap();
+        relay.await.unwrap()
     }
 
     /// Make an HTTP GET request to the relay server with retries and backoff.
@@ -584,45 +554,5 @@ mod tests {
             .with_max_times(8)
             .build();
         request.retry(&mut backoff).await
-    }
-
-    // Default [`RelayArgs`] used for testing.
-    // Values are overridden in tests as needed.
-    fn test_relay_args() -> super::RelayArgs {
-        super::RelayArgs {
-            data_dir: super::RelayDataDirArgs {
-                data_dir: "".into(),
-            },
-            relay: super::RelayRelayArgs {
-                http_address: "".into(),
-                auto_p2p_key: false,
-                p2p_relay_log_level: "info".into(),
-                max_res_per_peer: 0,
-                max_conns: 0,
-                advertise_priv: false,
-            },
-            debug_monitoring: super::RelayDebugMonitoringArgs {
-                monitor_addr: "".into(),
-                debug_addr: "".into(),
-            },
-            p2p: super::RelayP2PArgs {
-                relays: vec![],
-                external_ip: None,
-                external_host: None,
-                tcp_addrs: vec![],
-                udp_addrs: vec![],
-                disable_reuseport: false,
-            },
-            log: super::RelayLogFlags {
-                format: "console".into(),
-                level: "error".into(),
-                color: super::ConsoleColor::Disable,
-                log_output_path: "".into(),
-            },
-            loki: super::RelayLokiArgs {
-                loki_addresses: vec![],
-                loki_service: "".into(),
-            },
-        }
     }
 }
