@@ -318,7 +318,7 @@ async fn run_with_config(
 #[cfg(test)]
 mod tests {
     use backon::{BackoffBuilder, Retryable};
-    use std::time;
+    use std::{str::FromStr, time};
     use tokio::net;
     use tokio_util::sync::CancellationToken;
 
@@ -427,6 +427,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn serve_addr_multiaddrs() {
+        with_relay_server(
+            |_| {},
+            async |cfg| {
+                let response = relay_server_get(cfg, "/").await.unwrap();
+                let body = response.text().await.unwrap();
+                let addresses: Vec<String> = serde_json::from_str(&body).unwrap();
+
+                assert!(
+                    addresses.len() > 0,
+                    "Expected at least one multiaddr in response"
+                );
+
+                for addr in addresses {
+                    libp2p::Multiaddr::from_str(&addr).unwrap_or_else(|err| {
+                        panic!("Failed to parse multiaddr '{}': {}", addr, err);
+                    });
+                }
+            },
+        )
+        .await;
+    }
+
+    #[tokio::test]
     async fn serve_addr_enr() {
         with_relay_server(
             |_| {},
@@ -473,7 +497,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "/metrics endpoint not implemented"]
-    async fn relay_metrics_exported() {
+    async fn serve_addr_metrics() {
         with_relay_server(
             |_| {},
             async |cfg| {
