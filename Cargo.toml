@@ -133,6 +133,3 @@ opt-level = 3
 
 [profile.test.package.aes]
 opt-level = 3
-
-[profile.test.package.eth2_keystore]
-opt-level = 3
