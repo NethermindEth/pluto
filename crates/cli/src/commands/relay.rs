@@ -441,6 +441,21 @@ mod tests {
         .await;
     }
 
+    #[tokio::test]
+    async fn serve_addr_enr_ext_ip() {
+        with_relay_server(
+            |args| args.p2p.external_ip = Some("222.222.222.222".into()),
+            async |cfg| {
+                let response = relay_server_get(cfg, "/enr").await.unwrap();
+                let body = response.text().await.unwrap();
+                let enr = pluto_eth2util::enr::Record::try_from(body.as_str()).unwrap();
+
+                assert_eq!(enr.ip(), Some(std::net::Ipv4Addr::new(222, 222, 222, 222)));
+            },
+        )
+        .await;
+    }
+
     /// Run a function in the context of a running relay server.
     ///
     /// The server can be configured before initialization through
@@ -494,6 +509,7 @@ mod tests {
         relay.await.unwrap().unwrap();
     }
 
+    /// Make an HTTP GET request to the relay server with retries and backoff.
     async fn relay_server_get(
         cfg: pluto_relay_server::config::Config,
         path: &str,
