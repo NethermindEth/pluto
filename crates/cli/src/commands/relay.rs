@@ -317,6 +317,8 @@ async fn run_with_config(
 
 #[cfg(test)]
 mod tests {
+    use backon::{BackoffBuilder, Retryable};
+    use std::time;
     use tokio::net;
     use tokio_util::sync::CancellationToken;
 
@@ -422,6 +424,90 @@ mod tests {
             relay.await
         };
         assert!(matches!(second_run, Ok(())));
+    }
+
+    #[tokio::test]
+    async fn serve_addr_enr() {
+        with_relay_server(
+            |_| {},
+            async |cfg| {
+                let response = relay_server_get(cfg, "/enr").await.unwrap();
+                let body = response.text().await.unwrap();
+                let enr = pluto_eth2util::enr::Record::try_from(body.as_str()).unwrap();
+
+                assert_eq!(enr.ip(), Some(std::net::Ipv4Addr::new(127, 0, 0, 1)));
+            },
+        )
+        .await;
+    }
+
+    /// Run a function in the context of a running relay server.
+    ///
+    /// The server can be configured before initialization through
+    /// [`super::RelayArgs`], while the test function receives a function to
+    /// make HTTP requests to the running relay server.
+    async fn with_relay_server<FArgs, FTest, Fut>(config_fn: FArgs, test_fn: FTest)
+    where
+        FArgs: FnOnce(&mut super::RelayArgs),
+        FTest: FnOnce(pluto_relay_server::config::Config) -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        let dir = tempfile::tempdir().unwrap();
+
+        let tcp_addr = net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .to_string();
+
+        let udp_addr = net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .to_string();
+
+        let http_addr = net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .to_string();
+
+        let mut args = test_relay_args();
+        args.data_dir.data_dir = dir.path().to_path_buf();
+        args.p2p.tcp_addrs = vec![tcp_addr];
+        args.p2p.udp_addrs = vec![udp_addr];
+        args.relay.http_address = http_addr;
+        args.relay.auto_p2p_key = true;
+        config_fn(&mut args);
+
+        let cfg: pluto_relay_server::config::Config = args.clone().try_into().unwrap();
+        let ct = CancellationToken::new();
+
+        let relay = tokio::spawn(super::run_with_config(cfg.clone(), ct.child_token()));
+
+        test_fn(cfg.clone()).await;
+
+        ct.cancel();
+        relay.await.unwrap().unwrap();
+    }
+
+    async fn relay_server_get(
+        cfg: pluto_relay_server::config::Config,
+        path: &str,
+    ) -> Result<reqwest::Response, reqwest::Error> {
+        let http_address = cfg.http_addr.unwrap();
+        let request = || reqwest::get(format!("http://{}{}", http_address, path));
+
+        let mut backoff = backon::ExponentialBuilder::default()
+            .with_min_delay(time::Duration::from_millis(200))
+            .with_max_delay(time::Duration::from_secs(2))
+            .with_factor(1.0)
+            .with_max_times(8)
+            .build();
+        request.retry(&mut backoff).await
     }
 
     // Default [`RelayArgs`] used for testing.
