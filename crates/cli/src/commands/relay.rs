@@ -456,6 +456,21 @@ mod tests {
         .await;
     }
 
+    #[tokio::test]
+    async fn serve_addr_enr_ext_host() {
+        with_relay_server(
+            |args| args.p2p.external_host = Some("www.google.com".into()),
+            async |cfg| {
+                let response = relay_server_get(cfg, "/enr").await.unwrap();
+                let body = response.text().await.unwrap();
+                let enr = pluto_eth2util::enr::Record::try_from(body.as_str()).unwrap();
+
+                assert!(enr.ip().unwrap().is_loopback());
+            },
+        )
+        .await;
+    }
+
     /// Run a function in the context of a running relay server.
     ///
     /// The server can be configured before initialization through
