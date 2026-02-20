@@ -54,11 +54,20 @@ tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7.11"
 libp2p = { version = "0.56", features = ["full", "secp256k1"] }
 url = "2.5"
+aes = "0.8.4"
+ctr = "0.9.2"
+cipher = "0.4.4"
+pbkdf2 = "0.12.2"
+sha2 = "0.10.9"
+scrypt = "0.11.0"
+unicode-normalization = "0.1.25"
+zeroize = "1.8.2"
 uuid = { version = "1.19", features = ["serde", "v4"] }
 unsigned-varint = { version = "0.8", features = ["futures"] }
 serde_with = { version = "3.16", features = ["hex", "base64"] }
 base64 = "0.22"
 sha3 = "0.10"
+walkdir = "2"
 k256 = { version = "0.13.4", features = ["ecdsa", "sha256"] }
 tracing = "0.1.32"
 tracing-subscriber = { version = "0.3.9", features = ["env-filter"] }
@@ -70,7 +79,7 @@ criterion = "0.8.0"
 reqwest = "0.13"
 http = "1.4"
 tempfile = "3.24"
-assert-json-diff = "0.2"
+assert-json-diff = "2.0"
 validator = { version = "0.20", features = ["derive"] }
 oas3-gen-support = "0.24"
 bon = "3.8"
@@ -111,3 +120,19 @@ cast_sign_loss = "deny"
 needless_return = "deny"
 panicking_overflow_checks = "deny"
 unwrap_used = "deny"
+
+# Optimize crypto dependencies in test builds for faster tests
+[profile.test.package.scrypt]
+opt-level = 3
+
+[profile.test.package.pbkdf2]
+opt-level = 3
+
+[profile.test.package.sha2]
+opt-level = 3
+
+[profile.test.package.aes]
+opt-level = 3
+
+[profile.test.package.eth2_keystore]
+opt-level = 3

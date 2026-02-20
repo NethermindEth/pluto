@@ -34,6 +34,23 @@ pub enum ManifestError {
     /// P2P error.
     #[error("p2p error: {0}")]
     P2p(#[from] pluto_p2p::peer::PeerError),
+
+    /// Crypto error.
+    #[error("crypto error: {0}")]
+    Crypto(String),
+
+    /// Public key share from provided private key share not found in provided
+    /// lock.
+    #[error("public key share from provided private key share not found in provided lock")]
+    PubShareNotFound,
+
+    /// Amount of key shares don't match amount of validator public keys.
+    #[error("amount of key shares don't match amount of validator public keys")]
+    KeyShareCountMismatch,
+
+    /// Node index for loaded ENR not found in cluster lock.
+    #[error("node index for loaded enr not found in cluster lock")]
+    NodeIdxNotFound,
 }
 
 /// Result type alias for manifest operations.

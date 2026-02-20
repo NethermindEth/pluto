@@ -6,6 +6,7 @@ use k256::{
     SecretKey,
     elliptic_curve::rand_core::{CryptoRng, Error, RngCore},
 };
+use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PrivateKey};
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
 /// A deterministic RNG that always returns the same byte value.
@@ -54,6 +55,16 @@ pub fn random_bytes32_seed(seed: u8) -> Vec<u8> {
     let mut bytes = vec![0u8; 32];
     rng.fill(&mut bytes[..]);
     bytes
+}
+
+/// Generates a deterministic BLS private key for testing.
+pub fn generate_test_bls_key(seed: u64) -> PrivateKey {
+    let tbls = BlstImpl;
+    let mut seed_bytes = [0u8; 32];
+    seed_bytes[..8].copy_from_slice(&seed.to_le_bytes());
+    let rng = StdRng::from_seed(seed_bytes);
+    tbls.generate_secret_key(rng)
+        .expect("deterministic key generation should not fail")
 }
 
 #[cfg(test)]
@@ -111,6 +122,25 @@ mod tests {
         assert_ne!(
             bytes1, bytes2,
             "Different seeds should produce different bytes"
+        );
+    }
+
+    #[test]
+    fn test_bls_key_deterministic() {
+        let key1 = generate_test_bls_key(42);
+        let key2 = generate_test_bls_key(42);
+
+        assert_eq!(key1, key2, "Same seed should produce identical BLS keys");
+    }
+
+    #[test]
+    fn test_bls_key_different_seeds() {
+        let key1 = generate_test_bls_key(1);
+        let key2 = generate_test_bls_key(2);
+
+        assert_ne!(
+            key1, key2,
+            "Different seeds should produce different BLS keys"
         );
     }
 }

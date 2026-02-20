@@ -24,6 +24,8 @@ pub mod helpers;
 
 /// Validator registration for builder API.
 pub mod registration;
+/// EIP-2335 keystore management.
+pub mod keystore;
 
 /// Utilities.
 pub(crate) mod utils;
