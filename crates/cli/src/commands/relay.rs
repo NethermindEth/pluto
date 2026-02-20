@@ -436,7 +436,7 @@ mod tests {
                 let addresses: Vec<String> = serde_json::from_str(&body).unwrap();
 
                 assert!(
-                    addresses.len() > 0,
+                    !addresses.is_empty(),
                     "Expected at least one multiaddr in response"
                 );
 
