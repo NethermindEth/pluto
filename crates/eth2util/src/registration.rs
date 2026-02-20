@@ -236,7 +236,8 @@ mod tests {
         .try_into()
         .unwrap();
 
-        tbls.verify(&pubkey, &signing_root, &signature)
+        BlstImpl
+            .verify(&pubkey, &signing_root, &signature)
             .expect("BLS signature verification failed");
     }
 }

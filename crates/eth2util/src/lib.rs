@@ -22,10 +22,10 @@ pub mod deposit;
 /// Ethereum address helpers.
 pub mod helpers;
 
-/// Validator registration for builder API.
-pub mod registration;
 /// EIP-2335 keystore management.
 pub mod keystore;
+/// Validator registration for builder API.
+pub mod registration;
 
 /// Utilities.
 pub(crate) mod utils;
