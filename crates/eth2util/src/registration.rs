@@ -122,14 +122,12 @@ mod tests {
         let timestamp = 946_684_800u64;
 
         let result = new_message(pubkey, fee_recipient, gas_limit, timestamp);
-        assert!(result.is_err());
-        assert!(
-            result
-                .as_ref()
-                .err()
-                .map(std::string::ToString::to_string)
-                .is_some_and(|err| err.contains("invalid fee recipient address"))
-        );
+        assert!(matches!(
+            result,
+            Err(RegistrationError::InvalidAddress(
+                crate::helpers::HelperError::InvalidAddress(_)
+            ))
+        ));
     }
 
     #[test]
