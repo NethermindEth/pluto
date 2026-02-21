@@ -10,6 +10,9 @@
 debug/
 target/
 
+# Go reference checkout
+/charon/
+
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
 
