@@ -31,3 +31,6 @@ cast_sign_loss = "deny"
 needless_return = "deny"
 panicking_overflow_checks = "deny"
 unwrap_used = "deny"
+
+[dev-dependencies]
+test-case.workspace = true
