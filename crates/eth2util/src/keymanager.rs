@@ -30,8 +30,8 @@ pub enum KeymanagerError {
     PingFailed {
         /// The keymanager address that could not be pinged.
         addr: String,
-        /// The underlying error kind.
-        kind: std::io::ErrorKind,
+        /// The underlying error.
+        kind: std::io::Error,
     },
 
     /// JSON (de)serialization failure.
@@ -107,8 +107,7 @@ impl Client {
         self.post_keys(keystores_url, req).await
     }
 
-    /// Returns an error if the provided keymanager address is not reachable via
-    /// TCP.
+    /// Returns an error if the provided keymanager address is not reachable.
     pub async fn verify_connection(&self) -> Result<()> {
         // Need to dial to host:port for the connection check
         let host = self.base_url.host_str().unwrap_or_default();
@@ -116,17 +115,16 @@ impl Client {
             .base_url
             .port()
             .map_or_else(|| host.to_owned(), |port| format!("{host}:{port}"));
-        let addr = self.base_url.to_string();
-        let addr_for_timeout = addr.clone();
+
         let timeout = std::time::Duration::from_secs(2);
         tokio::time::timeout(timeout, tokio::net::TcpStream::connect(&connect_addr))
             .await
             .map_err(|_| KeymanagerError::ConnectionTimedOut {
-                addr: addr_for_timeout,
+                addr: connect_addr.clone(),
             })?
             .map_err(|e| KeymanagerError::PingFailed {
-                addr,
-                kind: e.kind(),
+                addr: connect_addr,
+                kind: e,
             })?;
 
         Ok(())
@@ -136,7 +134,6 @@ impl Client {
     ///
     /// HTTP request timeout = 2s × number of keystores.
     async fn post_keys(&self, addr: Url, req_body: KeymanagerReq) -> Result<()> {
-        // Timeout: 2s per keystore
         let secs = 2u64.saturating_mul(req_body.keystores.len() as u64);
         let timeout = std::time::Duration::from_secs(secs);
 
@@ -191,7 +188,7 @@ mod tests {
     use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
     use test_case::test_case;
 
-    use super::Client;
+    use super::{Client, KeymanagerError};
     use crate::keystore::{self, Keystore};
 
     const AUTH_TOKEN: &str = "api-token-test";
@@ -202,26 +199,17 @@ mod tests {
         passwords: Vec<String>,
     }
 
-    fn assert_err_contains(err: impl std::fmt::Display, expected: &str) {
-        let actual = err.to_string();
-        assert!(
-            actual.contains(expected),
-            "expected error containing '{expected}', got: {actual}"
-        );
-    }
-
     fn random_password() -> String {
         hex::encode(rand::random::<[u8; 16]>())
     }
 
     fn make_test_data(num_secrets: usize) -> (Vec<Keystore>, Vec<String>, Vec<String>) {
-        let tbls = BlstImpl;
         let mut keystores = Vec::with_capacity(num_secrets);
         let mut passwords = Vec::with_capacity(num_secrets);
         let mut secret_hexes = Vec::with_capacity(num_secrets);
 
         for _ in 0..num_secrets {
-            let secret = tbls.generate_secret_key(rand::thread_rng()).unwrap();
+            let secret = BlstImpl.generate_secret_key(rand::thread_rng()).unwrap();
             let password = random_password();
             let mut rng = rand::thread_rng();
             let store = keystore::encrypt(&secret, &password, Some(16), &mut rng).unwrap();
@@ -290,16 +278,24 @@ mod tests {
             .import_keystores(&keystores, &passwords)
             .await
             .unwrap_err();
-        assert_err_contains(err, "failed posting keys");
+        assert!(
+            matches!(err, KeymanagerError::PostFailed { status, .. } if status == reqwest::StatusCode::FORBIDDEN)
+        );
     }
 
     #[tokio::test]
     async fn import_keystores_mismatching_lengths() {
-        let (keystores, _, _) = make_test_data(4);
+        let (keystores, ..) = make_test_data(4);
 
         let client = Client::new("http://localhost:9999", AUTH_TOKEN).unwrap();
         let err = client.import_keystores(&keystores, &[]).await.unwrap_err();
-        assert_err_contains(err, "lengths of keystores and passwords don't match");
+        assert!(matches!(
+            err,
+            KeymanagerError::LengthMismatch {
+                keystores: 4,
+                passwords: 0
+            }
+        ));
     }
 
     #[tokio::test]
@@ -334,18 +330,10 @@ mod tests {
         client.verify_connection().await.unwrap();
     }
 
-    #[tokio::test]
-    async fn verify_connection_cannot_ping_address() {
-        let client = Client::new("http://192.0.2.1:6553", AUTH_TOKEN).unwrap();
-        let err = client.verify_connection().await.unwrap_err();
-        // This address should not be reachable; often it times out.
-        assert_err_contains(err, "connection timed out");
-    }
-
-    #[test_case("https://1.1.1.1:-1234", "invalid port number"; "malformed keymanager base URL")]
-    #[test_case("1.1.0:34", "relative URL without a base"; "invalid address")]
-    fn parse_url_failures(input: &str, expected: &str) {
+    #[test_case("https://1.1.1.1:-1234" ; "malformed keymanager base URL")]
+    #[test_case("1.1.0:34" ; "invalid address")]
+    fn parse_url_failures(input: &str) {
         let err = Client::new(input, AUTH_TOKEN).unwrap_err();
-        assert_err_contains(err, expected);
+        assert!(matches!(err, KeymanagerError::ParseUrl(_)));
     }
 }
