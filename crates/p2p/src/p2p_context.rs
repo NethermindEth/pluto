@@ -11,7 +11,7 @@ use libp2p::{PeerId, swarm::ConnectionId};
 /// - Known cluster peer IDs (immutable after construction)
 /// - Runtime peer connection state (mutable via `PeerStore`)
 #[derive(Debug, Clone, Default)]
-pub struct GlobalContext {
+pub struct P2PContext {
     /// Known cluster peer IDs. These are the peers that are part of the
     /// cluster and should be tracked with peer metrics (as opposed to
     /// relay metrics for unknown peers).
@@ -20,7 +20,7 @@ pub struct GlobalContext {
     peer_store: Arc<RwLock<PeerStore>>,
 }
 
-impl GlobalContext {
+impl P2PContext {
     /// Creates a new global context with the given known peers.
     pub fn new(known_peers: impl IntoIterator<Item = PeerId>) -> Self {
         Self {

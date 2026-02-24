@@ -11,7 +11,7 @@ use crate::{
     config::{DEFAULT_PING_INTERVAL, DEFAULT_PING_TIMEOUT},
     conn_logger::{ConnectionLoggerBehaviour, DefaultConnectionLoggerMetrics},
     gater::ConnGater,
-    global_context::GlobalContext,
+    p2p_context::P2PContext,
 };
 
 pub use super::optional::OptionalBehaviour;
@@ -82,7 +82,7 @@ pub struct PlutoBehaviourBuilder<B> {
     // AutoNAT config
     autonat_config: autonat::Config,
 
-    global_context: GlobalContext,
+    p2p_context: P2PContext,
 
     // Inner behaviour
     inner: Option<B>,
@@ -95,7 +95,7 @@ impl<B> Default for PlutoBehaviourBuilder<B> {
             identify_protocol: DEFAULT_IDENTIFY_PROTOCOL.clone(),
             user_agent: DEFAULT_USER_AGENT.clone(),
             autonat_config: autonat::Config::default(),
-            global_context: GlobalContext::default(),
+            p2p_context: P2PContext::default(),
             inner: None,
         }
     }
@@ -156,8 +156,8 @@ impl<B: NetworkBehaviour> PlutoBehaviourBuilder<B> {
     /// Sets the global context.
     ///
     /// The global context is used to store the peer store.
-    pub fn with_global_context(mut self, global_context: GlobalContext) -> Self {
-        self.global_context = global_context;
+    pub fn with_p2p_context(mut self, p2p_context: P2PContext) -> Self {
+        self.p2p_context = p2p_context;
         self
     }
 
@@ -173,7 +173,7 @@ impl<B: NetworkBehaviour> PlutoBehaviourBuilder<B> {
             .with_cache_size(DEFAULT_IDENTIFY_CACHE_SIZE);
 
         PlutoBehaviour {
-            conn_logger: ConnectionLoggerBehaviour::new(self.global_context),
+            conn_logger: ConnectionLoggerBehaviour::new(self.p2p_context),
             gater: self.gater.unwrap_or_else(ConnGater::new_open_gater),
             identify: identify::Behaviour::new(identify_config),
             ping: ping::Behaviour::new(

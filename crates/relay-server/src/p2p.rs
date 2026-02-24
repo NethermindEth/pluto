@@ -36,9 +36,7 @@ pub async fn run_relay_p2p_node(
         false,
         known_peers,
         PlutoBehaviour::builder(),
-        |_global_context, keypair| {
-            relay::Behaviour::new(keypair.public().to_peer_id(), relay_config)
-        },
+        |_p2p_context, keypair| relay::Behaviour::new(keypair.public().to_peer_id(), relay_config),
     )?;
 
     // todo: change to version::log_info

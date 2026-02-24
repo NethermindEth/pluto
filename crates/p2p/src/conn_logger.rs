@@ -7,9 +7,9 @@ use libp2p::{
 use tracing::{debug, instrument};
 
 use crate::{
-    global_context::{GlobalContext, Peer},
     metrics::{ConnectionType, P2P_METRICS, PeerConnectionLabels, Protocol, RelayConnectionLabels},
     name::peer_name,
+    p2p_context::{P2PContext, Peer},
     utils,
 };
 
@@ -35,7 +35,7 @@ pub struct ConnectionLoggerBehaviour<M: ConnectionLoggerMetrics> {
     /// Connection counts by peer, type, and protocol.
     counts: HashMap<ConnKey, u64>,
     /// Global context for accessing the peer store and known peers.
-    global_context: GlobalContext,
+    p2p_context: P2PContext,
 }
 
 /// Metrics for the connection logger behaviour.
@@ -86,21 +86,21 @@ impl<M: ConnectionLoggerMetrics> ConnectionLoggerBehaviour<M> {
     ///
     /// # Arguments
     ///
-    /// * `global_context` - Shared global context containing known peers and
-    ///   peer store. Known peers are used to determine whether to track
-    ///   connections with peer metrics (for cluster peers) or relay metrics
-    ///   (for external peers like relays).
-    pub fn new(global_context: GlobalContext) -> Self {
+    /// * `p2p_context` - Shared global context containing known peers and peer
+    ///   store. Known peers are used to determine whether to track connections
+    ///   with peer metrics (for cluster peers) or relay metrics (for external
+    ///   peers like relays).
+    pub fn new(p2p_context: P2PContext) -> Self {
         Self {
             metrics: M::new(),
             counts: HashMap::new(),
-            global_context,
+            p2p_context,
         }
     }
 
     /// Returns true if the peer is a known cluster peer.
     fn is_known_peer(&self, peer: &PeerId) -> bool {
-        self.global_context.is_known_peer(peer)
+        self.p2p_context.is_known_peer(peer)
     }
 
     /// Increments the connection count for the given peer and address.
@@ -153,11 +153,6 @@ impl<M: ConnectionLoggerMetrics> ConnectionLoggerBehaviour<M> {
                 self.counts.remove(&conn_key);
             }
         }
-    }
-
-    /// Returns the global context.
-    pub fn global_context(&self) -> &GlobalContext {
-        &self.global_context
     }
 
     /// Returns the counts.
@@ -226,7 +221,7 @@ impl<M: ConnectionLoggerMetrics + 'static> NetworkBehaviour for ConnectionLogger
                 );
                 // Update peer store - this is done here so all other behaviours
                 // see the updated peer store immediately
-                self.global_context.peer_store_write_lock().add_peer(Peer {
+                self.p2p_context.peer_store_write_lock().add_peer(Peer {
                     id: event.peer_id,
                     connection_id: event.connection_id,
                 });
@@ -239,12 +234,10 @@ impl<M: ConnectionLoggerMetrics + 'static> NetworkBehaviour for ConnectionLogger
                     "connection closed"
                 );
                 // Update peer store
-                self.global_context
-                    .peer_store_write_lock()
-                    .remove_peer(Peer {
-                        id: event.peer_id,
-                        connection_id: event.connection_id,
-                    });
+                self.p2p_context.peer_store_write_lock().remove_peer(Peer {
+                    id: event.peer_id,
+                    connection_id: event.connection_id,
+                });
                 // Decrement the connection count based on the endpoint address
                 let addr = match &event.endpoint {
                     libp2p::core::ConnectedPoint::Dialer { address, .. } => address,
@@ -356,7 +349,7 @@ mod tests {
     fn make_behaviour(
         known_peers: impl IntoIterator<Item = PeerId>,
     ) -> ConnectionLoggerBehaviour<TestConnectionLoggerMetrics> {
-        let ctx = GlobalContext::new(known_peers);
+        let ctx = P2PContext::new(known_peers);
         ConnectionLoggerBehaviour::new(ctx)
     }
 
@@ -393,35 +386,6 @@ mod tests {
         assert_eq!(utils::addr_protocol(&quic_direct_addr()), Protocol::Quic);
         assert_eq!(utils::addr_protocol(&tcp_relay_addr()), Protocol::Tcp);
         assert_eq!(utils::addr_protocol(&quic_relay_addr()), Protocol::Quic);
-    }
-
-    #[test]
-    fn test_new_behaviour() {
-        let peer1 = random_peer_id();
-        let peer2 = random_peer_id();
-
-        let behaviour = make_behaviour([peer1, peer2]);
-
-        assert!(behaviour.counts().is_empty());
-        // Known peers are now in GlobalContext
-        assert!(behaviour.global_context().is_known_peer(&peer1));
-        assert!(behaviour.global_context().is_known_peer(&peer2));
-    }
-
-    #[test]
-    fn test_new_behaviour_with_global_context() {
-        let peer = random_peer_id();
-        let ctx = GlobalContext::new([peer]);
-
-        let behaviour: ConnectionLoggerBehaviour<TestConnectionLoggerMetrics> =
-            ConnectionLoggerBehaviour::new(ctx);
-
-        // Verify the global context is accessible and has the known peer
-        assert!(behaviour.global_context().is_known_peer(&peer));
-        assert_eq!(
-            behaviour.global_context().peer_store_lock().active_count(),
-            0
-        );
     }
 
     #[test]

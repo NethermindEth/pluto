@@ -81,7 +81,7 @@ async fn main() -> Result<()> {
         false,
         known_peers,
         PlutoBehaviour::builder().with_user_agent("pluto-p2p-example/1.0.0"),
-        |_global_context, keypair, relay_client| CombinedBehaviour {
+        |_p2p_context, keypair, relay_client| CombinedBehaviour {
             relay: relay_client,
             mdns: mdns::tokio::Behaviour::new(
                 mdns::Config::default(),

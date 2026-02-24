@@ -99,9 +99,9 @@ use tracing::{info, warn};
 use crate::{
     behaviours::pluto::{PlutoBehaviour, PlutoBehaviourBuilder, PlutoBehaviourEvent},
     config::{P2PConfig, P2PConfigError},
-    global_context::GlobalContext,
     metrics::P2P_METRICS,
     name::peer_name,
+    p2p_context::P2PContext,
     utils,
 };
 
@@ -161,7 +161,7 @@ pub struct Node<B: NetworkBehaviour> {
     swarm: Swarm<PlutoBehaviour<B>>,
 
     /// Global context.
-    global_context: GlobalContext,
+    p2p_context: P2PContext,
 
     /// Node type.
     node_type: NodeType,
@@ -213,17 +213,17 @@ impl<B: NetworkBehaviour> Node<B> {
         inner_fn: F,
     ) -> Result<Self>
     where
-        F: FnOnce(GlobalContext, &Keypair, relay::client::Behaviour) -> B,
+        F: FnOnce(P2PContext, &Keypair, relay::client::Behaviour) -> B,
     {
         let keypair = utils::keypair_from_secret_key(key)?;
-        let global_context = GlobalContext::new(known_peers);
+        let p2p_context = P2PContext::new(known_peers);
 
         let mut node = match node_type {
             NodeType::TCP => {
-                Self::build_tcp_client(keypair, global_context, behaviour_builder, inner_fn)
+                Self::build_tcp_client(keypair, p2p_context, behaviour_builder, inner_fn)
             }
             NodeType::QUIC => {
-                Self::build_quic_client(keypair, global_context, behaviour_builder, inner_fn)
+                Self::build_quic_client(keypair, p2p_context, behaviour_builder, inner_fn)
             }
         }?;
 
@@ -246,17 +246,17 @@ impl<B: NetworkBehaviour> Node<B> {
         inner_fn: F,
     ) -> Result<Self>
     where
-        F: FnOnce(GlobalContext, &Keypair) -> B,
+        F: FnOnce(P2PContext, &Keypair) -> B,
     {
         let keypair = utils::keypair_from_secret_key(key)?;
-        let global_context = GlobalContext::new(known_peers);
+        let p2p_context = P2PContext::new(known_peers);
 
         let mut node = match node_type {
             NodeType::TCP => {
-                Self::build_tcp_server(keypair, global_context, behaviour_builder, inner_fn)
+                Self::build_tcp_server(keypair, p2p_context, behaviour_builder, inner_fn)
             }
             NodeType::QUIC => {
-                Self::build_quic_server(keypair, global_context, behaviour_builder, inner_fn)
+                Self::build_quic_server(keypair, p2p_context, behaviour_builder, inner_fn)
             }
         }?;
 
@@ -310,12 +310,12 @@ impl<B: NetworkBehaviour> Node<B> {
 
     fn build_quic_client<F>(
         keypair: Keypair,
-        global_context: GlobalContext,
+        p2p_context: P2PContext,
         behaviour_builder: PlutoBehaviourBuilder<B>,
         inner_fn: F,
     ) -> Result<Self>
     where
-        F: FnOnce(GlobalContext, &Keypair, relay::client::Behaviour) -> B,
+        F: FnOnce(P2PContext, &Keypair, relay::client::Behaviour) -> B,
     {
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
@@ -331,9 +331,9 @@ impl<B: NetworkBehaviour> Node<B> {
             .with_relay_client(noise::Config::new, yamux::Config::default)
             .map_err(P2PError::failed_to_build_swarm)?
             .with_behaviour(|key, relay_client| {
-                let inner = inner_fn(global_context.clone(), key, relay_client);
+                let inner = inner_fn(p2p_context.clone(), key, relay_client);
                 behaviour_builder
-                    .with_global_context(global_context.clone())
+                    .with_p2p_context(p2p_context.clone())
                     .with_inner(inner)
                     .build(key)
             })
@@ -344,18 +344,18 @@ impl<B: NetworkBehaviour> Node<B> {
         Ok(Node {
             swarm,
             node_type: NodeType::QUIC,
-            global_context,
+            p2p_context,
         })
     }
 
     fn build_tcp_client<F>(
         keypair: Keypair,
-        global_context: GlobalContext,
+        p2p_context: P2PContext,
         behaviour_builder: PlutoBehaviourBuilder<B>,
         inner_fn: F,
     ) -> Result<Self>
     where
-        F: FnOnce(GlobalContext, &Keypair, relay::client::Behaviour) -> B,
+        F: FnOnce(P2PContext, &Keypair, relay::client::Behaviour) -> B,
     {
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
@@ -370,9 +370,9 @@ impl<B: NetworkBehaviour> Node<B> {
             .with_relay_client(noise::Config::new, yamux::Config::default)
             .map_err(P2PError::failed_to_build_swarm)?
             .with_behaviour(|key, relay_client| {
-                let inner = inner_fn(global_context.clone(), key, relay_client);
+                let inner = inner_fn(p2p_context.clone(), key, relay_client);
                 behaviour_builder
-                    .with_global_context(global_context.clone())
+                    .with_p2p_context(p2p_context.clone())
                     .with_inner(inner)
                     .build(key)
             })
@@ -383,18 +383,18 @@ impl<B: NetworkBehaviour> Node<B> {
         Ok(Node {
             swarm,
             node_type: NodeType::TCP,
-            global_context,
+            p2p_context,
         })
     }
 
     fn build_quic_server<F>(
         keypair: Keypair,
-        global_context: GlobalContext,
+        p2p_context: P2PContext,
         behaviour_builder: PlutoBehaviourBuilder<B>,
         inner_fn: F,
     ) -> Result<Self>
     where
-        F: FnOnce(GlobalContext, &Keypair) -> B,
+        F: FnOnce(P2PContext, &Keypair) -> B,
     {
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
@@ -408,9 +408,9 @@ impl<B: NetworkBehaviour> Node<B> {
             .with_dns()
             .map_err(P2PError::failed_to_build_swarm)?
             .with_behaviour(|key| {
-                let inner = inner_fn(global_context.clone(), key);
+                let inner = inner_fn(p2p_context.clone(), key);
                 behaviour_builder
-                    .with_global_context(global_context.clone())
+                    .with_p2p_context(p2p_context.clone())
                     .with_inner(inner)
                     .build(key)
             })
@@ -421,18 +421,18 @@ impl<B: NetworkBehaviour> Node<B> {
         Ok(Node {
             swarm,
             node_type: NodeType::QUIC,
-            global_context,
+            p2p_context,
         })
     }
 
     fn build_tcp_server<F>(
         keypair: Keypair,
-        global_context: GlobalContext,
+        p2p_context: P2PContext,
         behaviour_builder: PlutoBehaviourBuilder<B>,
         inner_fn: F,
     ) -> Result<Self>
     where
-        F: FnOnce(GlobalContext, &Keypair) -> B,
+        F: FnOnce(P2PContext, &Keypair) -> B,
     {
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
@@ -445,9 +445,9 @@ impl<B: NetworkBehaviour> Node<B> {
             .with_dns()
             .map_err(P2PError::failed_to_build_swarm)?
             .with_behaviour(|key| {
-                let inner = inner_fn(global_context.clone(), key);
+                let inner = inner_fn(p2p_context.clone(), key);
                 behaviour_builder
-                    .with_global_context(global_context.clone())
+                    .with_p2p_context(p2p_context.clone())
                     .with_inner(inner)
                     .build(key)
             })
@@ -458,7 +458,7 @@ impl<B: NetworkBehaviour> Node<B> {
         Ok(Node {
             swarm,
             node_type: NodeType::TCP,
-            global_context,
+            p2p_context,
         })
     }
 
@@ -485,8 +485,8 @@ impl<B: NetworkBehaviour> Node<B> {
     }
 
     /// Returns the global context.
-    pub fn global_context(&self) -> &GlobalContext {
-        &self.global_context
+    pub fn p2p_context(&self) -> &P2PContext {
+        &self.p2p_context
     }
 
     /// Returns the local peer ID.

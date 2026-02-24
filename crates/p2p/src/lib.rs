@@ -39,4 +39,4 @@ pub mod utils;
 pub mod conn_logger;
 
 /// Global context.
-pub mod global_context;
+pub mod p2p_context;

@@ -324,7 +324,7 @@ async fn main() -> anyhow::Result<()> {
         false,
         known_peers,
         PlutoBehaviour::builder(),
-        |_global_context, keypair, relay_client| {
+        |_p2p_context, keypair, relay_client| {
             let peer_id = keypair.public().to_peer_id();
             CombinedBehaviour {
                 peer_info: Behaviour::new(
