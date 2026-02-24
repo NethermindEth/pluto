@@ -96,6 +96,7 @@ pub struct Service {
     path: PathBuf,
     update_period: Duration,
     quit: CancellationToken,
+    done: CancellationToken,
 }
 
 impl Service {
@@ -144,12 +145,15 @@ impl Service {
             path,
             update_period: UPDATE_PERIOD,
             quit: CancellationToken::new(),
+            done: CancellationToken::new(),
         })
     }
 
     /// Runs the service, updating the lock file periodically and deleting it on
     /// cancellation.
     pub async fn run(&self) -> Result<()> {
+        let _done_guard = self.done.clone().drop_guard();
+
         let mut interval = tokio::time::interval(self.update_period);
         // Consume the first immediate tick.
         interval.tick().await;
@@ -157,9 +161,11 @@ impl Service {
         loop {
             tokio::select! {
                 () = self.quit.cancelled() => {
-                    tokio::fs::remove_file(&self.path)
-                        .await
-                        .map_err(PrivKeyLockError::DeleteFile)?;
+                    match tokio::fs::remove_file(&self.path).await {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(source) => return Err(PrivKeyLockError::DeleteFile(source)),
+                    }
 
                     return Ok(());
                 }
@@ -170,12 +176,12 @@ impl Service {
         }
     }
 
-    /// Signals the service to stop.
+    /// Closes the service, waiting for [`run`](Self::run) to finish.
     ///
-    /// The caller should await the [`run`](Self::run) future/task to observe
-    /// completion.
-    pub fn close(&self) {
+    /// Note: this will wait forever if `run` was never called.
+    pub async fn close(&self) {
         self.quit.cancel();
+        self.done.cancelled().await;
     }
 }
 
@@ -226,6 +232,7 @@ mod tests {
 
         let run_handle = tokio::spawn({
             let svc_quit = svc.quit.clone();
+            let svc_done = svc.done.clone();
             let svc_path = svc.path.clone();
             let svc_command = svc.command.clone();
             let svc_update_period = svc.update_period;
@@ -235,13 +242,14 @@ mod tests {
                     path: svc_path,
                     update_period: svc_update_period,
                     quit: svc_quit,
+                    done: svc_done,
                 };
                 svc.run().await
             }
         });
 
         assert_file_exists(&path).await;
-        svc.close();
+        svc.close().await;
 
         run_handle
             .await
