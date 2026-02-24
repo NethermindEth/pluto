@@ -25,6 +25,9 @@ pub use extensions::*;
 /// Ethereum 2.0 consensus layer specification types.
 pub mod spec;
 
+/// API v1 types from the Ethereum beacon chain and builder API specifications.
+pub mod v1;
+
 #[cfg(test)]
 #[cfg(feature = "integration")]
 mod integration;

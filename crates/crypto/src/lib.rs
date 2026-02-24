@@ -14,5 +14,8 @@ pub mod blst_impl;
 /// TBLS trait definition
 pub mod tbls;
 
+/// Conversions between crypto (tbls), core, and eth2 BLS types.
+pub mod tblsconv;
+
 /// Error types and constants
 pub mod types;

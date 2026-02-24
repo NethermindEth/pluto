@@ -5515,9 +5515,12 @@ version = "1.7.1"
 dependencies = [
  "blst",
  "hex",
+ "pluto-core",
+ "pluto-eth2api",
  "rand 0.8.5",
  "rand_core 0.6.4",
  "serde",
+ "test-case",
  "thiserror 2.0.18",
 ]
 
@@ -5573,6 +5576,7 @@ dependencies = [
  "pluto-testutil",
  "rand 0.8.5",
  "regex",
+ "reqwest 0.13.2",
  "scrypt",
  "serde",
  "serde_json",
@@ -5585,8 +5589,10 @@ dependencies = [
  "tree_hash",
  "tree_hash_derive",
  "unicode-normalization",
+ "url",
  "uuid",
  "walkdir",
+ "wiremock",
  "zeroize",
 ]
 
