@@ -70,7 +70,7 @@ pub fn signature_from_bytes(data: &[u8]) -> Result<types::Signature, ConvError> 
 }
 
 /// Conversion error.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Debug, thiserror::Error)]
 pub enum ConvError {
     /// Data is not of the expected length.
     #[error("data is not of the correct length: expected {expected}, got {got}")]
@@ -92,10 +92,10 @@ mod tests {
     #[test_case(&[42u8; PRIVATE_KEY_LENGTH + 1], PRIVATE_KEY_LENGTH, PRIVATE_KEY_LENGTH + 1 ; "more data than expected")]
     #[test_case(&[42u8; PRIVATE_KEY_LENGTH - 1], PRIVATE_KEY_LENGTH, PRIVATE_KEY_LENGTH - 1 ; "less data than expected")]
     fn privkey_from_bytes_invalid(data: &[u8], expected: usize, got: usize) {
-        assert_eq!(
+        assert!(matches!(
             privkey_from_bytes(data),
-            Err(ConvError::InvalidLength { expected, got })
-        );
+            Err(ConvError::InvalidLength { expected: e, got: g }) if e == expected && g == got
+        ));
     }
 
     #[test]
@@ -109,10 +109,10 @@ mod tests {
     #[test_case(&[42u8; PUBLIC_KEY_LENGTH + 1], PUBLIC_KEY_LENGTH, PUBLIC_KEY_LENGTH + 1 ; "more data than expected")]
     #[test_case(&[42u8; PUBLIC_KEY_LENGTH - 1], PUBLIC_KEY_LENGTH, PUBLIC_KEY_LENGTH - 1 ; "less data than expected")]
     fn pubkey_from_bytes_invalid(data: &[u8], expected: usize, got: usize) {
-        assert_eq!(
+        assert!(matches!(
             pubkey_from_bytes(data),
-            Err(ConvError::InvalidLength { expected, got })
-        );
+            Err(ConvError::InvalidLength { expected: e, got: g }) if e == expected && g == got
+        ));
     }
 
     #[test]
@@ -142,10 +142,10 @@ mod tests {
     #[test_case(&[42u8; SIGNATURE_LENGTH + 1], SIGNATURE_LENGTH, SIGNATURE_LENGTH + 1 ; "more data than expected")]
     #[test_case(&[42u8; SIGNATURE_LENGTH - 1], SIGNATURE_LENGTH, SIGNATURE_LENGTH - 1 ; "less data than expected")]
     fn signature_from_bytes_invalid(data: &[u8], expected: usize, got: usize) {
-        assert_eq!(
+        assert!(matches!(
             signature_from_bytes(data),
-            Err(ConvError::InvalidLength { expected, got })
-        );
+            Err(ConvError::InvalidLength { expected: e, got: g }) if e == expected && g == got
+        ));
     }
 
     #[test]
