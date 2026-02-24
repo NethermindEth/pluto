@@ -8,10 +8,7 @@ use tracing::{debug, instrument};
 
 use crate::{
     global_context::{GlobalContext, Peer},
-    metrics::{
-        ConnectionType, P2P_METRICS, P2PMetrics, PeerConnectionLabels, Protocol,
-        RelayConnectionLabels,
-    },
+    metrics::{ConnectionType, P2P_METRICS, PeerConnectionLabels, Protocol, RelayConnectionLabels},
     name::peer_name,
     utils,
 };
@@ -62,12 +59,12 @@ impl ConnectionLoggerMetrics for DefaultConnectionLoggerMetrics {
     }
 
     fn inc_peer_connection_total(&self, peer: &PeerId) {
-        P2P_METRICS.peer_connection_total[&peer.to_string()].inc();
+        P2P_METRICS.peer_connection_total[&peer_name(peer)].inc();
     }
 
     fn set_peer_connection_type(&self, peer: &PeerId, addr: &Multiaddr, count: u64) {
         P2P_METRICS.peer_connection_types[&PeerConnectionLabels::new(
-            &peer.to_string(),
+            &peer_name(peer),
             utils::addr_type(addr),
             utils::addr_protocol(addr),
         )]
@@ -76,51 +73,7 @@ impl ConnectionLoggerMetrics for DefaultConnectionLoggerMetrics {
 
     fn set_relay_connection_type(&self, peer: &PeerId, addr: &Multiaddr, count: u64) {
         P2P_METRICS.relay_connection_types[&RelayConnectionLabels::new(
-            &peer.to_string(),
-            utils::addr_type(addr),
-            utils::addr_protocol(addr),
-        )]
-            .set(count);
-    }
-}
-
-/// Test implementation of the connection logger metrics.
-#[derive(Debug)]
-pub struct TestConnectionLoggerMetrics {
-    metrics: P2PMetrics,
-}
-
-impl TestConnectionLoggerMetrics {
-    /// Returns the inner metrics for testing.
-    #[cfg(test)]
-    pub fn inner(&self) -> &P2PMetrics {
-        &self.metrics
-    }
-}
-
-impl ConnectionLoggerMetrics for TestConnectionLoggerMetrics {
-    fn new() -> Self {
-        Self {
-            metrics: P2PMetrics::default(),
-        }
-    }
-
-    fn inc_peer_connection_total(&self, peer: &PeerId) {
-        self.metrics.peer_connection_total[&peer.to_string()].inc();
-    }
-
-    fn set_peer_connection_type(&self, peer: &PeerId, addr: &Multiaddr, count: u64) {
-        self.metrics.peer_connection_types[&PeerConnectionLabels::new(
-            &peer.to_string(),
-            utils::addr_type(addr),
-            utils::addr_protocol(addr),
-        )]
-            .set(count);
-    }
-
-    fn set_relay_connection_type(&self, peer: &PeerId, addr: &Multiaddr, count: u64) {
-        self.metrics.relay_connection_types[&RelayConnectionLabels::new(
-            &peer.to_string(),
+            &peer_name(peer),
             utils::addr_type(addr),
             utils::addr_protocol(addr),
         )]
@@ -323,12 +276,58 @@ impl<M: ConnectionLoggerMetrics + 'static> NetworkBehaviour for ConnectionLogger
 
 #[cfg(test)]
 mod tests {
+    use crate::metrics::P2PMetrics;
+
     use super::*;
     use libp2p::{
         PeerId,
         core::{ConnectedPoint, Endpoint, transport::PortUse},
         swarm::{ConnectionId, FromSwarm, NetworkBehaviour, behaviour::ConnectionClosed},
     };
+
+    /// Test implementation of the connection logger metrics.
+    #[derive(Debug)]
+    pub struct TestConnectionLoggerMetrics {
+        metrics: P2PMetrics,
+    }
+
+    impl TestConnectionLoggerMetrics {
+        /// Returns the inner metrics for testing.
+        #[cfg(test)]
+        pub fn inner(&self) -> &P2PMetrics {
+            &self.metrics
+        }
+    }
+
+    impl ConnectionLoggerMetrics for TestConnectionLoggerMetrics {
+        fn new() -> Self {
+            Self {
+                metrics: P2PMetrics::default(),
+            }
+        }
+
+        fn inc_peer_connection_total(&self, peer: &PeerId) {
+            self.metrics.peer_connection_total[&peer_name(peer)].inc();
+        }
+
+        fn set_peer_connection_type(&self, peer: &PeerId, addr: &Multiaddr, count: u64) {
+            self.metrics.peer_connection_types[&PeerConnectionLabels::new(
+                &peer_name(peer),
+                utils::addr_type(addr),
+                utils::addr_protocol(addr),
+            )]
+                .set(count);
+        }
+
+        fn set_relay_connection_type(&self, peer: &PeerId, addr: &Multiaddr, count: u64) {
+            self.metrics.relay_connection_types[&RelayConnectionLabels::new(
+                &peer_name(peer),
+                utils::addr_type(addr),
+                utils::addr_protocol(addr),
+            )]
+                .set(count);
+        }
+    }
 
     fn tcp_direct_addr() -> Multiaddr {
         "/ip4/127.0.0.1/tcp/9000".parse().unwrap()
@@ -529,12 +528,12 @@ mod tests {
         behaviour.increment_connection(peer, &addr);
 
         // Check peer_connection_total was incremented
-        let total = behaviour.metrics().inner().peer_connection_total[&peer.to_string()].get();
+        let total = behaviour.metrics().inner().peer_connection_total[&peer_name(&peer)].get();
         assert_eq!(total, 1);
 
         // Check peer_connection_types was set
         let labels =
-            PeerConnectionLabels::new(&peer.to_string(), ConnectionType::Direct, Protocol::Tcp);
+            PeerConnectionLabels::new(&peer_name(&peer), ConnectionType::Direct, Protocol::Tcp);
         let count = behaviour.metrics().inner().peer_connection_types[&labels].get();
         assert_eq!(count, 1);
     }
@@ -550,7 +549,7 @@ mod tests {
 
         // Check relay_connection_types was set (not peer_connection_types)
         let labels = RelayConnectionLabels::new(
-            &unknown_peer.to_string(),
+            &peer_name(&unknown_peer),
             ConnectionType::Direct,
             Protocol::Tcp,
         );
@@ -559,7 +558,7 @@ mod tests {
 
         // peer_connection_total should not have been incremented for unknown peer
         let total =
-            behaviour.metrics().inner().peer_connection_total[&unknown_peer.to_string()].get();
+            behaviour.metrics().inner().peer_connection_total[&peer_name(&unknown_peer)].get();
         assert_eq!(total, 0);
     }
 
@@ -574,7 +573,7 @@ mod tests {
 
         // After decrementing to zero, the gauge should be set to 0
         let labels =
-            PeerConnectionLabels::new(&peer.to_string(), ConnectionType::Direct, Protocol::Tcp);
+            PeerConnectionLabels::new(&peer_name(&peer), ConnectionType::Direct, Protocol::Tcp);
         let count = behaviour.metrics().inner().peer_connection_types[&labels].get();
         assert_eq!(count, 0);
     }
@@ -591,7 +590,7 @@ mod tests {
 
         // After decrementing, relay_connection_types should be 0
         let labels = RelayConnectionLabels::new(
-            &relay_peer.to_string(),
+            &peer_name(&relay_peer),
             ConnectionType::Direct,
             Protocol::Tcp,
         );
@@ -657,7 +656,7 @@ mod tests {
         assert_eq!(behaviour.counts().get(&key), Some(&1));
 
         // Verify metrics were updated
-        let total = behaviour.metrics().inner().peer_connection_total[&peer.to_string()].get();
+        let total = behaviour.metrics().inner().peer_connection_total[&peer_name(&peer)].get();
         assert_eq!(total, 1);
     }
 
@@ -688,7 +687,7 @@ mod tests {
         assert_eq!(behaviour.counts().get(&key), Some(&1));
 
         // Verify metrics were updated
-        let total = behaviour.metrics().inner().peer_connection_total[&peer.to_string()].get();
+        let total = behaviour.metrics().inner().peer_connection_total[&peer_name(&peer)].get();
         assert_eq!(total, 1);
     }
 
@@ -926,17 +925,17 @@ mod tests {
 
         // Known peer should have peer_connection_total incremented
         let known_total =
-            behaviour.metrics().inner().peer_connection_total[&known_peer.to_string()].get();
+            behaviour.metrics().inner().peer_connection_total[&peer_name(&known_peer)].get();
         assert_eq!(known_total, 1);
 
         // Relay peer should NOT have peer_connection_total incremented
         let relay_total =
-            behaviour.metrics().inner().peer_connection_total[&relay_peer.to_string()].get();
+            behaviour.metrics().inner().peer_connection_total[&peer_name(&relay_peer)].get();
         assert_eq!(relay_total, 0);
 
         // But relay_connection_types should be set
         let relay_labels = RelayConnectionLabels::new(
-            &relay_peer.to_string(),
+            &peer_name(&relay_peer),
             ConnectionType::Direct,
             Protocol::Tcp,
         );

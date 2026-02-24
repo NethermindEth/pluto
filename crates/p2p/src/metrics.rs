@@ -87,6 +87,8 @@ pub enum Protocol {
     Quic,
     /// No protocol.
     None,
+    /// An unknown protocol.
+    Unknown,
 }
 
 /// Labels for peer connections.

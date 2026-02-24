@@ -79,9 +79,7 @@
 //!
 //! # Relay Support
 //!
-//! Client nodes include relay client support for NAT traversal via the
-//! `relay_client` parameter passed to the build closure.
-//! For relay server functionality, use [`Node::new_server`].
+//! Client nodes may include relay client to support connecting via relays.
 
 use std::{
     pin::Pin,
@@ -167,9 +165,6 @@ pub struct Node<B: NetworkBehaviour> {
 
     /// Node type.
     node_type: NodeType,
-
-    /// Is relay server.
-    is_relay_server: bool,
 }
 
 impl<B: NetworkBehaviour> Node<B> {
@@ -349,7 +344,6 @@ impl<B: NetworkBehaviour> Node<B> {
         Ok(Node {
             swarm,
             node_type: NodeType::QUIC,
-            is_relay_server: false,
             global_context,
         })
     }
@@ -389,7 +383,6 @@ impl<B: NetworkBehaviour> Node<B> {
         Ok(Node {
             swarm,
             node_type: NodeType::TCP,
-            is_relay_server: false,
             global_context,
         })
     }
@@ -428,7 +421,6 @@ impl<B: NetworkBehaviour> Node<B> {
         Ok(Node {
             swarm,
             node_type: NodeType::QUIC,
-            is_relay_server: true,
             global_context,
         })
     }
@@ -466,7 +458,6 @@ impl<B: NetworkBehaviour> Node<B> {
         Ok(Node {
             swarm,
             node_type: NodeType::TCP,
-            is_relay_server: true,
             global_context,
         })
     }
@@ -474,11 +465,6 @@ impl<B: NetworkBehaviour> Node<B> {
     /// Returns the node type.
     pub fn node_type(&self) -> NodeType {
         self.node_type
-    }
-
-    /// Returns whether the node is a relay server.
-    pub fn is_relay_server(&self) -> bool {
-        self.is_relay_server
     }
 
     /// Dials a peer.

@@ -144,18 +144,25 @@ pub(crate) fn addr_type(addr: &Multiaddr) -> ConnectionType {
 pub(crate) fn addr_protocol(addr: &Multiaddr) -> Protocol {
     if is_quic_addr(addr) {
         Protocol::Quic
-    } else {
+    } else if is_tcp_addr(addr) {
         Protocol::Tcp
+    } else {
+        Protocol::Unknown
     }
 }
 
 /// Returns true if the multiaddr contains a p2p-circuit (relay) component.
-pub(crate) fn is_relay_addr(addr: &Multiaddr) -> bool {
+pub fn is_relay_addr(addr: &Multiaddr) -> bool {
     addr.iter().any(|p| matches!(p, MaProtocol::P2pCircuit))
 }
 
 /// Returns true if the multiaddr contains a QUIC or QUIC-v1 component.
-pub(crate) fn is_quic_addr(addr: &Multiaddr) -> bool {
+pub fn is_quic_addr(addr: &Multiaddr) -> bool {
     addr.iter()
         .any(|p| matches!(p, MaProtocol::Quic | MaProtocol::QuicV1))
+}
+
+/// Returns true if the multiaddr is TCP.
+pub fn is_tcp_addr(addr: &Multiaddr) -> bool {
+    addr.iter().any(|p| matches!(p, MaProtocol::Tcp(_)))
 }

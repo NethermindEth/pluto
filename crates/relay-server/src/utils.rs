@@ -2,16 +2,8 @@ use std::net::Ipv4Addr;
 
 use libp2p::{Multiaddr, multiaddr::Protocol};
 
-/// Returns true if the multiaddr is TCP.
-pub(crate) fn is_tcp_addr(addr: &Multiaddr) -> bool {
-    addr.iter().any(|p| matches!(p, Protocol::Tcp(_)))
-}
-
-/// Returns true if the multiaddr is QUIC or QUIC-v1.
-pub(crate) fn is_quic_addr(addr: &Multiaddr) -> bool {
-    addr.iter()
-        .any(|p| matches!(p, Protocol::Quic | Protocol::QuicV1))
-}
+/// Re-export utilities from the p2p crate.
+pub(crate) use pluto_p2p::utils::{is_quic_addr, is_tcp_addr};
 
 /// Returns true if the multiaddr is a public address.
 pub(crate) fn is_public_addr(addr: &Multiaddr) -> bool {
