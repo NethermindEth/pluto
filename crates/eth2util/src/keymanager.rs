@@ -102,7 +102,7 @@ impl Client {
 
         let keystores_url = self.base_url.join("eth/v1/keystores")?;
 
-        let req = new_req(keystores, passwords)?;
+        let req = KeymanagerReq::new(keystores, passwords)?;
 
         self.post_keys(keystores_url, req).await
     }
@@ -169,18 +169,20 @@ struct KeymanagerReq {
     passwords: Vec<String>,
 }
 
-/// Builds the keymanager request body by serializing each keystore to a JSON
-/// string.
-fn new_req(keystores: &[Keystore], passwords: &[String]) -> Result<KeymanagerReq> {
-    let keystores = keystores
-        .iter()
-        .map(serde_json::to_string)
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+impl KeymanagerReq {
+    /// Builds the keymanager request body by serializing each keystore to a
+    /// JSON string.
+    fn new(keystores: &[Keystore], passwords: &[String]) -> Result<Self> {
+        let keystores = keystores
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
 
-    Ok(KeymanagerReq {
-        passwords: passwords.to_vec(),
-        keystores,
-    })
+        Ok(Self {
+            passwords: passwords.to_vec(),
+            keystores,
+        })
+    }
 }
 
 #[cfg(test)]
