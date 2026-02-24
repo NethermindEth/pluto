@@ -14,10 +14,7 @@ use crate::{
     config::{Config, create_relay_config},
     web::enr_server,
 };
-use pluto_p2p::{
-    behaviours::pluto::PlutoBehaviour,
-    p2p::{Node, NodeType},
-};
+use pluto_p2p::p2p::{Node, NodeType};
 
 /// Runs a relay P2P node.
 #[instrument(skip(config, key, ct))]
@@ -35,8 +32,12 @@ pub async fn run_relay_p2p_node(
         NodeType::TCP,
         false,
         known_peers,
-        PlutoBehaviour::builder(),
-        |_p2p_context, keypair| relay::Behaviour::new(keypair.public().to_peer_id(), relay_config),
+        |builder, keypair| {
+            builder.with_inner(relay::Behaviour::new(
+                keypair.public().to_peer_id(),
+                relay_config,
+            ))
+        },
     )?;
 
     // todo: change to version::log_info

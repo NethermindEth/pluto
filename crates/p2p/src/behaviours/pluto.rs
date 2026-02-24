@@ -107,6 +107,11 @@ impl<B: NetworkBehaviour> PlutoBehaviourBuilder<B> {
         Self::default()
     }
 
+    /// Returns the cloned P2P context.
+    pub fn p2p_context(&self) -> P2PContext {
+        self.p2p_context.clone()
+    }
+
     /// Sets the connection gater.
     ///
     /// The gater controls which peers are allowed to connect. By default,

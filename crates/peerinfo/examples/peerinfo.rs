@@ -20,7 +20,7 @@ use libp2p::{
 use pluto_cluster::lock::Lock;
 use pluto_core::version::{VERSION, git_commit};
 use pluto_p2p::{
-    behaviours::pluto::{PlutoBehaviour, PlutoBehaviourEvent},
+    behaviours::pluto::PlutoBehaviourEvent,
     config::P2PConfig,
     k1,
     name::peer_name,
@@ -323,10 +323,9 @@ async fn main() -> anyhow::Result<()> {
         NodeType::TCP,
         false,
         known_peers,
-        PlutoBehaviour::builder(),
-        |_p2p_context, keypair, relay_client| {
+        |builder, keypair, relay_client| {
             let peer_id = keypair.public().to_peer_id();
-            CombinedBehaviour {
+            builder.with_inner(CombinedBehaviour {
                 peer_info: Behaviour::new(
                     peer_id,
                     Config::new(local_info.clone())
@@ -336,7 +335,7 @@ async fn main() -> anyhow::Result<()> {
                 mdns: mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)
                     .expect("Failed to create mDNS behaviour"),
                 relay: relay_client,
-            }
+            })
         },
     )?;
 

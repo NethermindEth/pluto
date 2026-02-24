@@ -17,7 +17,7 @@ use libp2p::{
 };
 use pluto_eth2util::enr::Record;
 use pluto_p2p::{
-    behaviours::pluto::{PlutoBehaviour, PlutoBehaviourEvent},
+    behaviours::pluto::PlutoBehaviourEvent,
     config::P2PConfig,
     p2p::{Node, NodeType},
 };
@@ -80,14 +80,17 @@ async fn main() -> Result<()> {
         NodeType::QUIC,
         false,
         known_peers,
-        PlutoBehaviour::builder().with_user_agent("pluto-p2p-example/1.0.0"),
-        |_p2p_context, keypair, relay_client| CombinedBehaviour {
-            relay: relay_client,
-            mdns: mdns::tokio::Behaviour::new(
-                mdns::Config::default(),
-                keypair.public().to_peer_id(),
-            )
-            .expect("Failed to create mDNS behaviour"),
+        |builder, keypair, relay_client| {
+            builder
+                .with_user_agent("pluto-p2p-example/1.0.0")
+                .with_inner(CombinedBehaviour {
+                    relay: relay_client,
+                    mdns: mdns::tokio::Behaviour::new(
+                        mdns::Config::default(),
+                        keypair.public().to_peer_id(),
+                    )
+                    .expect("Failed to create mDNS behaviour"),
+                })
         },
     )?;
 
