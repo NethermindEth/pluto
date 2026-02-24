@@ -101,7 +101,7 @@ mod tests {
     #[test]
     fn privkey_from_bytes_valid() {
         let data = vec![42u8; PRIVATE_KEY_LENGTH];
-        let key = privkey_from_bytes(&data).expect("should succeed");
+        let key = privkey_from_bytes(&data).unwrap();
         assert_eq!(key, [42u8; PRIVATE_KEY_LENGTH]);
     }
 
