@@ -5572,6 +5572,7 @@ dependencies = [
  "pluto-testutil",
  "rand 0.8.5",
  "regex",
+ "reqwest 0.13.2",
  "scrypt",
  "serde",
  "serde_json",
@@ -5584,8 +5585,10 @@ dependencies = [
  "tree_hash",
  "tree_hash_derive",
  "unicode-normalization",
+ "url",
  "uuid",
  "walkdir",
+ "wiremock",
  "zeroize",
 ]
 

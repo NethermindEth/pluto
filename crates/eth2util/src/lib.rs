@@ -27,5 +27,8 @@ pub mod keystore;
 /// Validator registration for builder API.
 pub mod registration;
 
+/// ETH2 Keymanager API client.
+pub mod keymanager;
+
 /// Utilities.
 pub(crate) mod utils;
