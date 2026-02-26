@@ -35,11 +35,14 @@ pluto-eth2api.workspace = true
 walkdir.workspace = true
 uuid.workspace = true
 rand.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+url.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 assert-json-diff.workspace = true
 test-case.workspace = true
+wiremock.workspace = true
 
 [lints]
 workspace = true

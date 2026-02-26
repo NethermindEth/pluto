@@ -7,17 +7,51 @@
 use anyhow::Result;
 use clap::Parser;
 use k256::elliptic_curve::rand_core::OsRng;
-use libp2p::{Multiaddr, futures::StreamExt, identify, multiaddr::Protocol, swarm::SwarmEvent};
+use libp2p::{
+    Multiaddr,
+    futures::StreamExt,
+    identify, mdns,
+    multiaddr::Protocol,
+    relay,
+    swarm::{NetworkBehaviour, SwarmEvent},
+};
 use pluto_eth2util::enr::Record;
 use pluto_p2p::{
-    behaviours::{
-        pluto::PlutoBehaviourEvent,
-        pluto_mdns::{PlutoMdnsBehaviour, PlutoMdnsBehaviourEvent},
-    },
+    behaviours::pluto::PlutoBehaviourEvent,
     config::P2PConfig,
     p2p::{Node, NodeType},
 };
 use tokio::signal;
+
+/// Combined behaviour with relay client and mDNS discovery.
+#[derive(NetworkBehaviour)]
+#[behaviour(to_swarm = "CombinedBehaviourEvent")]
+pub struct CombinedBehaviour {
+    /// Relay client for NAT traversal.
+    pub relay: relay::client::Behaviour,
+    /// mDNS for local peer discovery.
+    pub mdns: mdns::tokio::Behaviour,
+}
+
+/// Events emitted by the combined behaviour.
+#[allow(missing_docs)]
+#[derive(Debug)]
+pub enum CombinedBehaviourEvent {
+    Relay(relay::client::Event),
+    Mdns(mdns::Event),
+}
+
+impl From<relay::client::Event> for CombinedBehaviourEvent {
+    fn from(event: relay::client::Event) -> Self {
+        CombinedBehaviourEvent::Relay(event)
+    }
+}
+
+impl From<mdns::Event> for CombinedBehaviourEvent {
+    fn from(event: mdns::Event) -> Self {
+        CombinedBehaviourEvent::Mdns(event)
+    }
+}
 
 /// Command line arguments
 #[derive(Debug, Parser)]
@@ -36,28 +70,42 @@ pub struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     let key = k256::SecretKey::random(&mut OsRng);
-    let mut p2p: Node<_> = Node::new(
+
+    // Create node with composed behaviour
+    // No known cluster peers in this example
+    let known_peers: Vec<libp2p::PeerId> = vec![];
+    let mut p2p = Node::new(
         P2PConfig::default(),
         key.clone(),
-        false,
         NodeType::QUIC,
-        PlutoMdnsBehaviour::new,
+        false,
+        known_peers,
+        |builder, keypair, relay_client| {
+            builder
+                .with_user_agent("pluto-p2p-example/1.0.0")
+                .with_inner(CombinedBehaviour {
+                    relay: relay_client,
+                    mdns: mdns::tokio::Behaviour::new(
+                        mdns::Config::default(),
+                        keypair.public().to_peer_id(),
+                    )
+                    .expect("Failed to create mDNS behaviour"),
+                })
+        },
     )?;
 
     let args = Args::parse();
 
-    let swarm = &mut p2p.swarm;
-
     let enr = Record::new(key.clone(), vec![])?;
 
     if let Some(relay_url) = &args.relay_url {
-        swarm.dial(relay_url.clone())?;
+        p2p.dial(relay_url.clone())?;
         println!("Dialed relay");
         let mut learned_observed_addr = false;
         let mut told_relay_observed_addr = false;
 
         loop {
-            match swarm
+            match p2p
                 .next()
                 .await
                 .ok_or(anyhow::anyhow!("Swarm event is None"))?
@@ -65,20 +113,18 @@ async fn main() -> Result<()> {
                 SwarmEvent::NewListenAddr { .. } => {}
                 SwarmEvent::Dialing { .. } => {}
                 SwarmEvent::ConnectionEstablished { .. } => {}
-                SwarmEvent::Behaviour(PlutoMdnsBehaviourEvent::Pluto(
-                    PlutoBehaviourEvent::Ping(_),
-                )) => {}
-                SwarmEvent::Behaviour(PlutoMdnsBehaviourEvent::Pluto(
-                    PlutoBehaviourEvent::Identify(identify::Event::Sent { .. }),
-                )) => {
+                SwarmEvent::Behaviour(PlutoBehaviourEvent::Ping(_)) => {}
+                SwarmEvent::Behaviour(PlutoBehaviourEvent::Identify(identify::Event::Sent {
+                    ..
+                })) => {
                     println!("Told relay its public address");
                     told_relay_observed_addr = true;
                 }
-                SwarmEvent::Behaviour(PlutoMdnsBehaviourEvent::Pluto(
-                    PlutoBehaviourEvent::Identify(identify::Event::Received {
+                SwarmEvent::Behaviour(PlutoBehaviourEvent::Identify(
+                    identify::Event::Received {
                         info: identify::Info { observed_addr, .. },
                         ..
-                    }),
+                    },
                 )) => {
                     println!("Relay told us our observed address: {}", observed_addr);
                     learned_observed_addr = true;
@@ -93,32 +139,32 @@ async fn main() -> Result<()> {
 
     println!("ENR: {}", enr);
 
-    swarm.listen_on(format!("/ip4/0.0.0.0/udp/{}/quic-v1", args.port).parse()?)?;
-    swarm.listen_on(format!("/ip4/0.0.0.0/tcp/{}", args.port).parse()?)?;
+    p2p.listen_on(format!("/ip4/0.0.0.0/udp/{}/quic-v1", args.port).parse()?)?;
+    p2p.listen_on(format!("/ip4/0.0.0.0/tcp/{}", args.port).parse()?)?;
     if let Some(relay_url) = args.relay_url {
-        swarm.listen_on(relay_url.with(Protocol::P2pCircuit))?;
+        p2p.listen_on(relay_url.with(Protocol::P2pCircuit))?;
     }
 
     loop {
         tokio::select! {
-            event = swarm.select_next_some() => match event {
-                SwarmEvent::Behaviour(PlutoMdnsBehaviourEvent::Pluto(PlutoBehaviourEvent::Identify(identify::Event::Received { info: identify::Info { observed_addr, .. }, .. }))) => {
-                    swarm.add_external_address(observed_addr.clone());
+            event = p2p.select_next_some() => match event {
+                SwarmEvent::Behaviour(PlutoBehaviourEvent::Identify(identify::Event::Received { info: identify::Info { observed_addr, .. }, .. })) => {
+                    p2p.add_external_address(observed_addr.clone());
                     println!("Address observed {}", observed_addr);
                 }
-                SwarmEvent::Behaviour(PlutoMdnsBehaviourEvent::Pluto(PlutoBehaviourEvent::Relay(event))) => {
+                SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(CombinedBehaviourEvent::Relay(event))) => {
                     println!("Got relay event: {:?}", event);
                 },
-                SwarmEvent::Behaviour(PlutoMdnsBehaviourEvent::Mdns(libp2p::mdns::Event::Discovered(nodes))) => {
+                SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(CombinedBehaviourEvent::Mdns(mdns::Event::Discovered(nodes)))) => {
                     for node in nodes {
                         println!("Discovered node: {:?}", node);
-                        swarm.dial(node.1)?;
+                        p2p.dial(node.1)?;
                     }
                 }
                 SwarmEvent::NewListenAddr { address, .. } => {
                     println!("Local node is listening on {address}");
                 }
-                SwarmEvent::Behaviour(PlutoMdnsBehaviourEvent::Pluto(PlutoBehaviourEvent::Ping(ping_event))) => {
+                SwarmEvent::Behaviour(PlutoBehaviourEvent::Ping(ping_event)) => {
                     println!("Got ping event: {:?}", ping_event);
                 }
                 SwarmEvent::IncomingConnection { connection_id, local_addr, send_back_addr } => {
@@ -133,11 +179,7 @@ async fn main() -> Result<()> {
             },
             _ = signal::ctrl_c() => {
                 println!("\nReceived Ctrl+C, shutting down gracefully...");
-
-                // Perform cleanup
-                let _ = swarm;
                 drop(p2p);
-
                 println!("Shutdown complete");
                 break;
             }

@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 axum.workspace = true
 bon.workspace = true
+futures.workspace = true
 libp2p.workspace = true
 thiserror.workspace = true
 k256.workspace = true
