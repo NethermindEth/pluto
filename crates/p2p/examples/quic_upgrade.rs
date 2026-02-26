@@ -113,7 +113,8 @@ async fn main() -> Result<()> {
     let key = k256::SecretKey::random(&mut OsRng);
 
     // Create a config with the specified port
-    // Note: P2PConfig requires a specific IP (not 0.0.0.0), so we use 127.0.0.1 for local testing
+    // Note: P2PConfig requires a specific IP (not 0.0.0.0), so we use 127.0.0.1 for
+    // local testing
     let config = P2PConfig {
         tcp_addrs: vec![format!("127.0.0.1:{}", args.port)],
         udp_addrs: vec![format!("127.0.0.1:{}", args.port)],

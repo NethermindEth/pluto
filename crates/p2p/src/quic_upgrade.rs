@@ -93,7 +93,8 @@ enum UpgradeState {
 /// Periodically (every 1 minute) attempts to upgrade direct TCP connections
 /// to QUIC connections with exponential backoff on failures.
 ///
-/// The behaviour assumes that the peer store is updated correctly and will work only with the given set of known peers.
+/// The behaviour assumes that the peer store is updated correctly and will work
+/// only with the given set of known peers.
 ///
 /// # Upgrade Logic
 ///
@@ -205,7 +206,10 @@ impl QuicUpgradeBehaviour {
         let peer_ids: Vec<PeerId> = self.p2p_context.known_peers().iter().copied().collect();
 
         for peer_id in peer_ids {
-            if peer_id == self.local_peer_id || self.should_skip(&peer_id) || self.pending_upgrades.contains_key(&peer_id) {
+            if peer_id == self.local_peer_id
+                || self.should_skip(&peer_id)
+                || self.pending_upgrades.contains_key(&peer_id)
+            {
                 continue;
             }
 
@@ -720,7 +724,9 @@ mod tests {
         assert_eq!(behaviour.pending_events.len(), 1);
         assert!(matches!(
             behaviour.pending_events.pop_front(),
-            Some(ToSwarm::GenerateEvent(QuicUpgradeEvent::UpgradeFailed { .. }))
+            Some(ToSwarm::GenerateEvent(
+                QuicUpgradeEvent::UpgradeFailed { .. }
+            ))
         ));
 
         assert!(behaviour.backoffs.contains_key(&peer_id));
@@ -746,7 +752,9 @@ mod tests {
         assert_eq!(behaviour.pending_events.len(), 1);
         assert!(matches!(
             behaviour.pending_events.pop_front(),
-            Some(ToSwarm::GenerateEvent(QuicUpgradeEvent::UpgradeFailed { .. }))
+            Some(ToSwarm::GenerateEvent(
+                QuicUpgradeEvent::UpgradeFailed { .. }
+            ))
         ));
 
         assert!(!behaviour.pending_upgrades.contains_key(&peer_id));
@@ -770,13 +778,22 @@ mod tests {
         );
 
         assert!(behaviour.should_skip(&peer_id));
-        assert_eq!(behaviour.backoffs.get(&peer_id).unwrap().tickers_remaining, 2);
+        assert_eq!(
+            behaviour.backoffs.get(&peer_id).unwrap().tickers_remaining,
+            2
+        );
 
         assert!(behaviour.should_skip(&peer_id));
-        assert_eq!(behaviour.backoffs.get(&peer_id).unwrap().tickers_remaining, 1);
+        assert_eq!(
+            behaviour.backoffs.get(&peer_id).unwrap().tickers_remaining,
+            1
+        );
 
         assert!(behaviour.should_skip(&peer_id));
-        assert_eq!(behaviour.backoffs.get(&peer_id).unwrap().tickers_remaining, 0);
+        assert_eq!(
+            behaviour.backoffs.get(&peer_id).unwrap().tickers_remaining,
+            0
+        );
 
         assert!(!behaviour.should_skip(&peer_id));
     }
@@ -789,7 +806,9 @@ mod tests {
 
         let mut behaviour = QuicUpgradeBehaviour::new(p2p_context, local_peer_id, true);
 
-        behaviour.backoffs.insert(peer_id, QuicUpgradeBackoff::new());
+        behaviour
+            .backoffs
+            .insert(peer_id, QuicUpgradeBackoff::new());
         assert!(behaviour.backoffs.contains_key(&peer_id));
 
         behaviour.clear_backoff(&peer_id);

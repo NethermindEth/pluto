@@ -172,14 +172,16 @@ pub fn is_quic_enabled<'a>(listen_addrs: impl Iterator<Item = &'a Multiaddr>) ->
     listen_addrs.into_iter().any(is_quic_addr)
 }
 
-/// Returns true if there is a direct (non-relay) QUIC connection among the peers.
+/// Returns true if there is a direct (non-relay) QUIC connection among the
+/// peers.
 pub fn has_direct_quic_conn(peers: &[&crate::p2p_context::Peer]) -> bool {
     peers
         .iter()
         .any(|p| is_quic_addr(&p.remote_addr) && !is_relay_addr(&p.remote_addr))
 }
 
-/// Returns true if there is a direct (non-relay) TCP connection among the peers.
+/// Returns true if there is a direct (non-relay) TCP connection among the
+/// peers.
 pub fn has_direct_tcp_conn(peers: &[&crate::p2p_context::Peer]) -> bool {
     peers
         .iter()
