@@ -1,9 +1,10 @@
 //! Private key locking service.
 
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::{
+    path::{Path, PathBuf},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
@@ -16,23 +17,13 @@ const UPDATE_PERIOD: Duration = Duration::from_secs(1);
 /// Error type for private key lock operations.
 #[derive(Debug, thiserror::Error)]
 pub enum PrivKeyLockError {
-    /// Cannot read the private key lock file.
-    #[error("cannot read private key lock file: path={path}")]
-    ReadFile {
-        /// The underlying I/O error.
-        source: std::io::Error,
-        /// Path to the lock file.
-        path: PathBuf,
-    },
+    /// I/O error on the private key lock file.
+    #[error("private key lock file I/O error {0}")]
+    Io(#[from] std::io::Error),
 
-    /// Cannot decode the private key lock file content.
-    #[error("cannot decode private key lock file content: path={path}")]
-    DecodeFile {
-        /// The underlying JSON error.
-        source: serde_json::Error,
-        /// Path to the lock file.
-        path: PathBuf,
-    },
+    /// JSON error on the private key lock file.
+    #[error("private key lock file JSON error {0}")]
+    Json(#[from] serde_json::Error),
 
     /// Another charon instance may be running.
     #[error(
@@ -44,36 +35,27 @@ pub enum PrivKeyLockError {
         /// Command stored in the lock file.
         command: String,
     },
-
-    /// Cannot marshal the private key lock file.
-    #[error("cannot marshal private key lock file")]
-    MarshalFile(#[from] serde_json::Error),
-
-    /// Cannot write the private key lock file.
-    #[error("cannot write private key lock file: path={path}")]
-    WriteFile {
-        /// The underlying I/O error.
-        source: std::io::Error,
-        /// Path to the lock file.
-        path: PathBuf,
-    },
-
-    /// Cannot delete the private key lock file.
-    #[error("deleting private key lock file failed")]
-    DeleteFile(#[source] std::io::Error),
 }
 
 type Result<T> = std::result::Result<T, PrivKeyLockError>;
+
+/// Returns the current unix timestamp in seconds.
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
 
 /// Metadata stored in the lock file.
 #[derive(Debug, Serialize, Deserialize)]
 struct Metadata {
     command: String,
-    timestamp: DateTime<Utc>,
+    timestamp: u64,
 }
 
 /// Creates or updates the lock file with the latest metadata.
-async fn write_file(path: &Path, command: &str, now: DateTime<Utc>) -> Result<()> {
+async fn write_file(path: &Path, command: &str, now: u64) -> Result<()> {
     let meta = Metadata {
         command: command.to_owned(),
         timestamp: now,
@@ -81,12 +63,7 @@ async fn write_file(path: &Path, command: &str, now: DateTime<Utc>) -> Result<()
 
     let bytes = serde_json::to_vec(&meta)?;
 
-    tokio::fs::write(path, bytes)
-        .await
-        .map_err(|source| PrivKeyLockError::WriteFile {
-            source,
-            path: path.to_path_buf(),
-        })
+    tokio::fs::write(path, bytes).await.map_err(Into::into)
 }
 
 /// Private key locking service.
@@ -112,24 +89,14 @@ impl Service {
                 // No file, we will create it in run.
             }
             Err(e) => {
-                return Err(PrivKeyLockError::ReadFile {
-                    source: e,
-                    path: path.clone(),
-                });
+                return Err(e.into());
             }
             Ok(content) => {
-                let meta: Metadata = serde_json::from_slice(&content).map_err(|source| {
-                    PrivKeyLockError::DecodeFile {
-                        source,
-                        path: path.clone(),
-                    }
-                })?;
+                let meta: Metadata = serde_json::from_slice(&content)?;
 
-                let elapsed = Utc::now().signed_duration_since(meta.timestamp);
-                let stale = chrono::Duration::from_std(STALE_DURATION)
-                    .expect("STALE_DURATION fits in chrono::Duration");
+                let elapsed = now_secs().saturating_sub(meta.timestamp);
 
-                if elapsed <= stale {
+                if elapsed <= STALE_DURATION.as_secs() {
                     return Err(PrivKeyLockError::ActiveLock {
                         path: path.clone(),
                         command: meta.command,
@@ -138,7 +105,7 @@ impl Service {
             }
         }
 
-        write_file(&path, &command, Utc::now()).await?;
+        write_file(&path, &command, now_secs()).await?;
 
         Ok(Self {
             command,
@@ -155,8 +122,6 @@ impl Service {
         let _done_guard = self.done.clone().drop_guard();
 
         let mut interval = tokio::time::interval(self.update_period);
-        // Consume the first immediate tick.
-        interval.tick().await;
 
         loop {
             tokio::select! {
@@ -164,13 +129,13 @@ impl Service {
                     match tokio::fs::remove_file(&self.path).await {
                         Ok(()) => {}
                         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(source) => return Err(PrivKeyLockError::DeleteFile(source)),
+                        Err(e) => return Err(e.into()),
                     }
 
                     return Ok(());
                 }
                 _ = interval.tick() => {
-                    write_file(&self.path, &self.command, Utc::now()).await?;
+                    write_file(&self.path, &self.command, now_secs()).await?;
                 }
             }
         }
@@ -196,9 +161,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         let path: PathBuf = dir.path().join("privkeylocktest");
 
-        // Create a stale file that is ignored.
-        let stale_time =
-            Utc::now() - chrono::Duration::from_std(STALE_DURATION).expect("duration fits");
+        // Create a stale file that is ignored (one extra second past the threshold).
+        let stale_time = now_secs()
+            .saturating_sub(STALE_DURATION.as_secs())
+            .saturating_sub(1);
         write_file(&path, "test", stale_time)
             .await
             .expect("write stale file");
