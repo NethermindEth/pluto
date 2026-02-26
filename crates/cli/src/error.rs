@@ -53,7 +53,7 @@ pub enum CliError {
 
     /// Invalid Multiaddr
     #[error("Invalid multiaddr: {0}")]
-    InvalidMultiaddr(#[from] libp2p::multiaddr::FromUrlErr),
+    InvalidMultiaddr(#[from] libp2p::multiaddr::Error),
 
     /// IO error occurred.
     #[error("IO error: {0}")]

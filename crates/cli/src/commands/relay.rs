@@ -1,7 +1,10 @@
 use crate::error::CliError;
-use libp2p::multiaddr::{self, Protocol};
+use libp2p::{
+    Multiaddr,
+    multiaddr::{self, Protocol},
+};
 use pluto_p2p::k1;
-use std::path::PathBuf;
+use std::{path::PathBuf, str::FromStr};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
@@ -41,7 +44,8 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
             let mut relays = Vec::new();
 
             for relay in &self.p2p.relays {
-                let multiaddr = multiaddr::from_url(relay)?;
+                let multiaddr =
+                    multiaddr::from_url(relay).or_else(|_| Multiaddr::from_str(relay))?;
 
                 if multiaddr.iter().any(|protocol| protocol == Protocol::Http) {
                     tracing::warn!(
