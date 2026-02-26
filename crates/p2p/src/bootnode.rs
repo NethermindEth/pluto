@@ -96,8 +96,8 @@ pub type Result<T> = std::result::Result<T, BootnodeError>;
 
 /// Returns the libp2p relays from the provided addresses.
 ///
-/// For HTTP(S) URLs, spawns a background task to continuously resolve relay addresses.
-/// For multiaddrs, parses directly and creates a MutablePeer.
+/// For HTTP(S) URLs, spawns a background task to continuously resolve relay
+/// addresses. For multiaddrs, parses directly and creates a MutablePeer.
 /// Waits up to 1 minute for at least one ENR to resolve.
 pub async fn new_relays(
     cancel: CancellationToken,
@@ -160,12 +160,15 @@ pub async fn new_relays(
 
             tokio::time::sleep(BOOTNODE_CHECK_INTERVAL).await;
         }
-    }).await.map_err(|_| BootnodeError::TimeoutResolvingBootnodeEnr)??;
+    })
+    .await
+    .map_err(|_| BootnodeError::TimeoutResolvingBootnodeEnr)??;
 
     Ok(resp)
 }
 
-/// Continuously resolves relay multiaddrs from an HTTP URL and updates the MutablePeer.
+/// Continuously resolves relay multiaddrs from an HTTP URL and updates the
+/// MutablePeer.
 ///
 /// Polls the URL every 2 minutes and calls the callback when peer info changes.
 async fn resolve_relay(
@@ -325,7 +328,8 @@ async fn query_relay_addrs(
 
 /// Returns multiaddrs from an ENR string.
 ///
-/// Creates QUIC-v1 multiaddr if UDP port is present, and TCP multiaddr if TCP port is present.
+/// Creates QUIC-v1 multiaddr if UDP port is present, and TCP multiaddr if TCP
+/// port is present.
 pub fn multi_addr_from_enr_str(enr_str: &str) -> Result<Vec<Multiaddr>> {
     let record = Record::try_from(enr_str)?;
 
