@@ -128,7 +128,8 @@ pub(crate) fn get_operator_eip712_type(version: &str) -> EIP712Type {
     eip712_operator_config_hash()
 }
 
-/// Returns the digest for the EIP712 structured type for the provided definition and operator.
+/// Returns the digest for the EIP712 structured type for the provided
+/// definition and operator.
 pub(crate) fn digest_eip712(
     typ: &EIP712Type,
     definition: &Definition,

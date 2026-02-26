@@ -475,8 +475,10 @@ impl Definition {
     /// Returns `Ok(())` if all config signatures are fully
     /// populated and valid. A verified definition is ready for use in DKG.
     pub async fn verify_signatures(&self, eth1: Option<&EthClient>) -> Result<(), DefinitionError> {
-        // Skip signature verification for definition versions earlier than v1.3 since there are no EIP712 signatures before v1.3.0.
-        // For definition versions earlier than v1.3.0, error if either config signature or enr signature for any operator is present.
+        // Skip signature verification for definition versions earlier than v1.3 since
+        // there are no EIP712 signatures before v1.3.0. For definition versions
+        // earlier than v1.3.0, error if either config signature or enr signature for
+        // any operator is present.
         if !Self::support_eip712_sigs(self.version.as_str()) {
             return if Self::eip712_sigs_present(&self.operators) {
                 Err(DefinitionError::OlderVersionSignaturesNotSupported)
@@ -494,7 +496,8 @@ impl Definition {
         let mut no_op_sigs = 0usize;
 
         for operator in &self.operators {
-            // Completely unsigned operators are also fine, assuming a single cluster-wide operator.
+            // Completely unsigned operators are also fine, assuming a single cluster-wide
+            // operator.
             if operator.address.is_empty()
                 && operator.enr_signature.is_empty()
                 && operator.config_signature.is_empty()
