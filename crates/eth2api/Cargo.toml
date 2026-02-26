@@ -20,6 +20,8 @@ thiserror.workspace = true
 chrono.workspace = true
 hex.workspace = true
 validator.workspace = true
+tree_hash.workspace = true
+tree_hash_derive.workspace = true
 
 [dev-dependencies]
 testcontainers.workspace = true

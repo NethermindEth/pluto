@@ -18,9 +18,6 @@ pub mod error;
 /// Utils.
 pub mod utils;
 
-/// Behaviour.
-pub mod behaviour;
-
 pub use error::RelayP2PError;
 
 pub(crate) use error::Result;

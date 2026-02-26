@@ -9,6 +9,8 @@ publish.workspace = true
 [dependencies]
 axum.workspace = true
 chrono.workspace = true
+either.workspace = true
+futures.workspace = true
 libp2p.workspace = true
 thiserror.workspace = true
 k256.workspace = true
@@ -33,10 +35,3 @@ clap.workspace = true
 
 [lints]
 workspace = true
-
-[features]
-mdns = ["libp2p/mdns"]
-
-[[example]]
-name = "p2p"
-required-features = ["mdns"]

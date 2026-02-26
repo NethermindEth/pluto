@@ -83,7 +83,7 @@ fn eip712_enr() -> EIP712Type {
     EIP712Type {
         primary_type: "ENR",
         fields: vec![EIP712TypeField {
-            field: "ENR",
+            field: "enr",
             field_type: PRIMITIVE_STRING.to_string(),
             value_func: Box::new(|_, operator| Value::String(operator.enr.clone())),
         }],
@@ -233,5 +233,29 @@ mod tests {
         let signature = sign_cluster_definition_hash(&secret_key, &definition).unwrap();
         let expected_signature = hex::decode("4d06378b88544748d27e656871fefdb258329ecbbecf2316cb03b3da1d499a2137fc8f1caddcaf47a8fd17a22d8f68c9333b21a031fd281c1e6e99623c1bd7f301").unwrap();
         assert_eq!(signature, expected_signature);
+    }
+
+    #[test]
+    fn test_enr_digest() {
+        let definition = serde_json::from_str::<Definition>(include_str!(
+            "examples/cluster-definition-000.json"
+        ))
+        .unwrap();
+        let operator = Operator {
+            address: "0x0000000000000000000000000000000000000000".to_string(),
+            enr: "enr:-HW4QHs55nmxJqiyphaaBNPII5TZGp3e5tIl8MwPJ87wj2NhqE0KEz4rFuReJBVZ2Z8swz9qb5ef1ZytLtYzmOaMMfqGAYUvKC24gmlkgnY0iXNlY3AyNTZrMaECzR5RvaCMXL19XRHoqEHkpPeKdvdZmkLGm1gXgMzfKLQ".to_string(),
+            config_signature: vec![],
+            enr_signature: vec![],
+        };
+
+        let digest = digest_eip712(&eip712_enr(), &definition, &operator).unwrap();
+
+        let expected_digest =
+            hex::decode("0908e8f9d77b25586b1d63ae0be32f2e2d4fd0276c8aa1b38dd48eeac386b2b8")
+                .unwrap();
+        assert_eq!(
+            digest, expected_digest,
+            "ENR digest must match expected value (ensures field name is lowercase 'enr')"
+        );
     }
 }

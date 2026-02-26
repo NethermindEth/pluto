@@ -51,10 +51,10 @@ pub fn marshal_deposit_data(
         let msg_root = msg.tree_hash_root();
 
         // Verify signature
-        let sig_data = msg.get_message_signing_root(network)?;
+        let sig_data = get_message_signing_root(&msg, network)?;
 
         BlstImpl
-            .verify(&deposit_data.pub_key, &sig_data, &deposit_data.signature)
+            .verify(&deposit_data.pubkey, &sig_data, &deposit_data.signature)
             .map_err(|e| DepositError::InvalidSignature(e.to_string()))?;
 
         // Compute deposit data root
@@ -62,7 +62,7 @@ pub fn marshal_deposit_data(
 
         // Create JSON entry
         dd_list.push(DepositDataJson {
-            pubkey: hex::encode(deposit_data.pub_key),
+            pubkey: hex::encode(deposit_data.pubkey),
             withdrawal_credentials: hex::encode(deposit_data.withdrawal_credentials),
             amount: deposit_data.amount,
             signature: hex::encode(deposit_data.signature),
@@ -285,7 +285,7 @@ pub async fn read_deposit_data_files(
         let mut deposit_datas = Vec::new();
         for d in dd_list {
             let pubkey_bytes = hex::decode(&d.pubkey)?;
-            let pub_key: PublicKey = pubkey_bytes.as_slice().try_into().map_err(|_| {
+            let pubkey: PublicKey = pubkey_bytes.as_slice().try_into().map_err(|_| {
                 DepositError::InvalidDataLength {
                     field: "pubkey".into(),
                     expected: PUBLIC_KEY_LENGTH,
@@ -315,7 +315,7 @@ pub async fn read_deposit_data_files(
                     })?;
 
             deposit_datas.push(DepositData {
-                pub_key,
+                pubkey,
                 withdrawal_credentials,
                 amount: d.amount,
                 signature,
@@ -399,14 +399,14 @@ mod tests {
         for i in 0..priv_keys.len() {
             let (priv_key, pub_key) = get_keys(priv_keys[i]);
 
-            let msg = DepositMessage::new(pub_key, withdrawal_addrs[i], amount, true).unwrap();
+            let msg = super::new_message(pub_key, withdrawal_addrs[i], amount, true).unwrap();
 
-            let sig_root = msg.get_message_signing_root(NETWORK).unwrap();
+            let sig_root = super::get_message_signing_root(&msg, NETWORK).unwrap();
 
             let signature = tbls.sign(&priv_key, &sig_root).unwrap();
 
             datas.push(DepositData {
-                pub_key: msg.pub_key,
+                pubkey: msg.pubkey,
                 withdrawal_credentials: msg.withdrawal_credentials,
                 amount: msg.amount,
                 signature,
@@ -417,16 +417,16 @@ mod tests {
     }
 
     #[test]
-    fn new_message() {
+    fn new_message_valid() {
         const PRIV_KEY: &str = "01477d4bfbbcebe1fef8d4d6f624ecbb6e3178558bb1b0d6286c816c66842a6d";
         const ADDR: &str = "0x321dcb529f3945bc94fecea9d3bc5caf35253b94";
 
         let amount = DEFAULT_DEPOSIT_AMOUNT;
         let (_priv_key, pub_key) = get_keys(PRIV_KEY);
 
-        let msg = DepositMessage::new(pub_key, ADDR, amount, false).unwrap();
+        let msg = super::new_message(pub_key, ADDR, amount, false).unwrap();
 
-        assert_eq!(msg.pub_key, pub_key);
+        assert_eq!(msg.pubkey, pub_key);
         assert_eq!(msg.amount, amount);
         assert_eq!(
             msg.withdrawal_credentials[0],
@@ -442,7 +442,7 @@ mod tests {
         let (_priv_key, pub_key) = get_keys(PRIV_KEY);
         let amount = MIN_DEPOSIT_AMOUNT - 1;
 
-        let err = DepositMessage::new(pub_key, ADDR, amount, false).unwrap_err();
+        let err = super::new_message(pub_key, ADDR, amount, false).unwrap_err();
         assert!(matches!(err, DepositError::MinimumAmountNotMet(_)));
     }
 
@@ -455,11 +455,11 @@ mod tests {
 
         // Non-compounding: max is 32 ETH
         let amount = MAX_STANDARD_DEPOSIT_AMOUNT + 1;
-        let err = DepositMessage::new(pub_key, ADDR, amount, false).unwrap_err();
+        let err = super::new_message(pub_key, ADDR, amount, false).unwrap_err();
         assert!(matches!(err, DepositError::MaximumAmountExceeded { .. }));
 
         // Should work with compounding
-        DepositMessage::new(pub_key, ADDR, amount, true).unwrap();
+        super::new_message(pub_key, ADDR, amount, true).unwrap();
     }
 
     #[test]
@@ -628,7 +628,7 @@ mod tests {
     fn merge_deposit_data_sets_empty() {
         let a: Vec<Vec<DepositData>> = vec![];
         let b = vec![vec![DepositData {
-            pub_key: [1u8; 48],
+            pubkey: [1u8; 48],
             withdrawal_credentials: [0u8; 32],
             amount: DEFAULT_DEPOSIT_AMOUNT,
             signature: [0u8; 96],

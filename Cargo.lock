@@ -1014,16 +1014,6 @@ checksum = "155a5a185e42c6b77ac7b88a15143d930a9e9727a5b7b77eed417404ab15c247"
 
 [[package]]
 name = "assert-json-diff"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4bb138a39b134b69051e53152a66489ecf44769b89f8d4c54d5854cd2d66faa"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "assert-json-diff"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47e4f2b81832e72834d7518d8487a0396a28cc408186a2e8854c0f98011faf12"
@@ -5254,10 +5244,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "password-hash"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "346f04948ba92c43e8469c1ee6736c7563d71012b17d40745260fe106aac2166"
+dependencies = [
+ "base64ct",
+ "rand_core 0.6.4",
+ "subtle",
+]
+
+[[package]]
 name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
+name = "pbkdf2"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8ed6a7761f76e3b9f92dfb0a60a6a6477c61024b775147ff0973a02653abaf2"
+dependencies = [
+ "digest 0.10.7",
+ "hmac",
+]
 
 [[package]]
 name = "pem"
@@ -5456,13 +5467,17 @@ dependencies = [
  "hex",
  "k256",
  "libp2p",
+ "pluto-core",
  "pluto-crypto",
+ "pluto-eth2api",
  "pluto-eth2util",
  "pluto-k1util",
  "pluto-p2p",
+ "pluto-testutil",
  "prost 0.14.3",
  "prost-build",
  "prost-types 0.14.3",
+ "rand 0.8.5",
  "rand_core 0.6.4",
  "serde",
  "serde_json",
@@ -5499,9 +5514,12 @@ version = "1.7.1"
 dependencies = [
  "blst",
  "hex",
+ "pluto-core",
+ "pluto-eth2api",
  "rand 0.8.5",
  "rand_core 0.6.4",
  "serde",
+ "test-case",
  "thiserror 2.0.18",
 ]
 
@@ -5532,6 +5550,8 @@ dependencies = [
  "testcontainers",
  "thiserror 2.0.18",
  "tokio",
+ "tree_hash",
+ "tree_hash_derive",
  "validator",
 ]
 
@@ -5539,25 +5559,40 @@ dependencies = [
 name = "pluto-eth2util"
 version = "1.7.1"
 dependencies = [
+ "aes",
  "alloy",
- "assert-json-diff 0.2.1",
+ "assert-json-diff",
  "base64 0.22.1",
  "chrono",
+ "cipher",
+ "ctr",
  "hex",
  "k256",
+ "pbkdf2",
  "pluto-crypto",
  "pluto-eth2api",
  "pluto-k1util",
  "pluto-testutil",
+ "rand 0.8.5",
  "regex",
+ "reqwest 0.13.2",
+ "scrypt",
  "serde",
  "serde_json",
+ "sha2",
  "sha3",
  "tempfile",
+ "test-case",
  "thiserror 2.0.18",
  "tokio",
  "tree_hash",
  "tree_hash_derive",
+ "unicode-normalization",
+ "url",
+ "uuid",
+ "walkdir",
+ "wiremock",
+ "zeroize",
 ]
 
 [[package]]
@@ -5580,6 +5615,8 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
+ "either",
+ "futures",
  "k256",
  "libp2p",
  "pluto-core",
@@ -5637,6 +5674,7 @@ version = "1.7.1"
 dependencies = [
  "axum",
  "bon",
+ "futures",
  "k256",
  "libp2p",
  "pluto-core",
@@ -5658,6 +5696,7 @@ version = "1.7.1"
 dependencies = [
  "hex",
  "k256",
+ "pluto-crypto",
  "rand 0.8.5",
  "rand_core 0.6.4",
  "thiserror 2.0.18",
@@ -6682,6 +6721,18 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "scrypt"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0516a385866c09368f0b5bcd1caff3366aace790fcd46e2bb032697bb172fd1f"
+dependencies = [
+ "password-hash",
+ "pbkdf2",
+ "salsa20",
+ "sha2",
+]
 
 [[package]]
 name = "sec1"
@@ -7891,6 +7942,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "537dd038a89878be9b64dd4bd1b260315c1bb94f4d784956b81e27a088d9a09e"
 
 [[package]]
+name = "unicode-normalization"
+version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
+dependencies = [
+ "tinyvec",
+]
+
+[[package]]
 name = "unicode-segmentation"
 version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8813,7 +8873,7 @@ version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08db1edfb05d9b3c1542e521aea074442088292f00b5f28e435c714a98f85031"
 dependencies = [
- "assert-json-diff 2.0.2",
+ "assert-json-diff",
  "base64 0.22.1",
  "deadpool",
  "futures",

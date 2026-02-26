@@ -28,6 +28,7 @@ async fn main() {
         .max_res_per_peer(10)
         .http_addr("0.0.0.0:8888".to_string())
         .build();
+
     let key = SecretKey::random(&mut OsRng);
 
     let ct = CancellationToken::new();

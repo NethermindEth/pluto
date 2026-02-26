@@ -33,12 +33,12 @@ pub struct P2PMetrics {
     /// Current number of libp2p connections by peer, type (`direct` or
     /// `relay`), and protocol (`tcp`, `quic`). Note that peers may have
     /// multiple connections.
-    pub peer_connection_types: Family<PeerConnectionLabels, Gauge>,
+    pub peer_connection_types: Family<PeerConnectionLabels, Gauge<u64>>,
 
     /// Current number of libp2p connections by relay, type (`direct` or
     /// `relay`), and protocol (`tcp`, `quic`). Note that peers may have
     /// multiple connections.
-    pub relay_connection_types: Family<RelayConnectionLabels, Gauge>,
+    pub relay_connection_types: Family<RelayConnectionLabels, Gauge<u64>>,
 
     /// Current number of libp2p streams by peer, direction ('inbound' or
     /// 'outbound' or 'unknown') and protocol.
@@ -56,7 +56,7 @@ pub struct P2PMetrics {
 }
 
 /// The type of connection.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelValue)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
 #[metrics(rename_all = "snake_case")]
 pub enum ConnectionType {
     /// A direct connection to a peer.
@@ -78,13 +78,17 @@ pub enum Direction {
 }
 
 /// The protocol of a connection.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, EncodeLabelValue)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
 #[metrics(rename_all = "snake_case")]
 pub enum Protocol {
     /// A TCP connection.
     Tcp,
     /// A QUIC connection.
     Quic,
+    /// No protocol.
+    None,
+    /// An unknown protocol.
+    Unknown,
 }
 
 /// Labels for peer connections.
