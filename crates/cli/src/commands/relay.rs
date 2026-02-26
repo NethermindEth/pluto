@@ -5,6 +5,12 @@ use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
+pub const LICENSE: &str = concat!(
+    "This software is licensed under the Maria DB Business Source License 1.1; ",
+    "you may not use this software except in compliance with this license. You may obtain a ",
+    "copy of this license at https://github.com/ObolNetwork/charon/blob/main/LICENSE"
+);
+
 /// Arguments for the relay command.
 #[derive(clap::Args, Clone)]
 pub struct RelayArgs {
@@ -286,12 +292,7 @@ async fn run_with_config(
     config: pluto_relay_server::config::Config,
     ct: CancellationToken,
 ) -> Result<(), CliError> {
-    info!(concat!(
-        "This software is licensed under the Maria DB Business Source License 1.1; ",
-        "you may not use this software except in compliance with this license. You may obtain a ",
-        "copy of this license at https://github.com/ObolNetwork/charon/blob/main/LICENSE"
-    ));
-
+    info!(LICENSE);
     info!(config = ?config);
 
     let key = match pluto_p2p::k1::load_priv_key(&config.data_dir) {
