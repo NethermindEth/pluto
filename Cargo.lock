@@ -5396,7 +5396,6 @@ dependencies = [
 name = "pluto-app"
 version = "1.7.1"
 dependencies = [
- "alloy",
  "anyhow",
  "backon",
  "bon",
@@ -5464,11 +5463,13 @@ name = "pluto-cluster"
 version = "1.7.1"
 dependencies = [
  "chrono",
+ "futures",
  "hex",
  "k256",
  "libp2p",
  "pluto-core",
  "pluto-crypto",
+ "pluto-eth1wrap",
  "pluto-eth2api",
  "pluto-eth2util",
  "pluto-k1util",
@@ -5530,6 +5531,15 @@ dependencies = [
  "pluto-build-proto",
  "prost 0.14.3",
  "prost-types 0.14.3",
+]
+
+[[package]]
+name = "pluto-eth1wrap"
+version = "1.7.1"
+dependencies = [
+ "alloy",
+ "thiserror 2.0.18",
+ "url",
 ]
 
 [[package]]
