@@ -297,14 +297,17 @@ async fn run_with_config(
 
     let key = match pluto_p2p::k1::load_priv_key(&config.data_dir) {
         Ok(key) => Ok(key),
-        Err(
-            e @ pluto_p2p::k1::K1Error::K1UtilError(pluto_k1util::K1UtilError::FailedToReadFile(_)),
-        ) => {
+        Err(pluto_p2p::k1::K1Error::K1UtilError(pluto_k1util::K1UtilError::FailedToReadFile(
+            io_err,
+        ))) if io_err.kind() == std::io::ErrorKind::NotFound => {
             if !config.auto_p2p_key {
                 error!(
                     "charon-enr-private-key not found in data dir (run with --auto-p2pkey to auto generate)."
                 );
-                return Err(pluto_relay_server::RelayP2PError::FailedToLoadPrivateKey(e).into());
+                let err = pluto_p2p::k1::K1Error::K1UtilError(
+                    pluto_k1util::K1UtilError::FailedToReadFile(io_err),
+                );
+                return Err(pluto_relay_server::RelayP2PError::FailedToLoadPrivateKey(err).into());
             }
 
             let path = k1::key_path(&config.data_dir);
