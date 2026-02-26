@@ -86,8 +86,8 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
             // -- Do not ADVERTISE private addresses by default in the binary.
             // -- Do not FILTER private addresses in unit tests.
             .filter_private_addrs(!self.relay.advertise_priv)
-            .monitoring_addr(self.debug_monitoring.monitor_addr)
-            .debug_addr(self.debug_monitoring.debug_addr)
+            .maybe_monitoring_addr(self.debug_monitoring.monitor_addr)
+            .maybe_debug_addr(self.debug_monitoring.debug_addr)
             .p2p_config(p2p_config)
             .log_config(log_config);
 
@@ -116,7 +116,7 @@ pub struct RelayRelayArgs {
     pub http_address: String,
 
     #[arg(
-        long = "auto-p2p-key",
+        long = "auto-p2pkey",
         default_value_t = true,
         help = "Automatically generate and persist a p2p key if one does not exist."
     )]
@@ -156,17 +156,16 @@ pub struct RelayRelayArgs {
 pub struct RelayDebugMonitoringArgs {
     #[arg(
         long = "monitoring-address",
-        default_value = "",
         help = "Listening address (ip and port) for the monitoring API (prometheus)."
     )]
-    pub monitor_addr: String,
+    pub monitor_addr: Option<String>,
 
     #[arg(
         long = "debug-address",
         default_value = "",
         help = "Listening address (ip and port) for the pprof and QBFT debug API. It is not enabled by default."
     )]
-    pub debug_addr: String,
+    pub debug_addr: Option<String>,
 }
 
 #[derive(clap::Args, Clone)]
@@ -259,7 +258,7 @@ pub struct RelayLokiArgs {
 
     #[arg(
         long = "loki-service",
-        default_value = "charon",
+        default_value = "pluto",
         help = "Service label sent with logs to Loki."
     )]
     pub loki_service: String,
@@ -296,7 +295,7 @@ async fn run_with_config(
         ) => {
             if !config.auto_p2p_key {
                 error!(
-                    "charon-enr-private-key not found in data dir (run with --auto-p2p-key to auto generate)."
+                    "charon-enr-private-key not found in data dir (run with --auto-p2pkey to auto generate)."
                 );
                 return Err(pluto_relay_server::RelayP2PError::FailedToLoadPrivateKey(e).into());
             }
@@ -500,8 +499,8 @@ mod tests {
                 advertise_priv: false,
             },
             debug_monitoring: super::RelayDebugMonitoringArgs {
-                monitor_addr: "".into(),
-                debug_addr: "".into(),
+                monitor_addr: None,
+                debug_addr: None,
             },
             p2p: super::RelayP2PArgs {
                 relays: vec![],
