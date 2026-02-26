@@ -168,12 +168,18 @@ pub struct RelayDebugMonitoringArgs {
     pub debug_addr: Option<String>,
 }
 
+const DEFAULT_RELAYS: [&str; 3] = [
+    "https://0.relay.obol.tech",
+    "https://2.relay.obol.dev",
+    "https://1.relay.obol.tech",
+];
+
 #[derive(clap::Args, Clone)]
 pub struct RelayP2PArgs {
     #[arg(
         long = "p2p-relays",
         value_delimiter = ',',
-        default_values_t = ["https://0.relay.obol.tech".to_string(), "https://2.relay.obol.dev".to_string(), "https://1.relay.obol.tech".to_string()],
+        default_values_t = DEFAULT_RELAYS.map(String::from),
         help = "Comma-separated list of libp2p relay URLs or multiaddrs."
     )]
     pub relays: Vec<String>,
