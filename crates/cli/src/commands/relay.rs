@@ -120,6 +120,7 @@ pub struct RelayDataDirArgs {
 pub struct RelayRelayArgs {
     #[arg(
         long = "http-address",
+        env = "PLUTO_HTTP_ADDRESS",
         default_value = "127.0.0.1:3640",
         help = "Listening address (ip and port) for the relay http server serving runtime ENR."
     )]
@@ -127,6 +128,7 @@ pub struct RelayRelayArgs {
 
     #[arg(
         long = "auto-p2pkey",
+        env = "PLUTO_AUTO_P2PKEY",
         default_value_t = true,
         help = "Automatically generate and persist a p2p key if one does not exist."
     )]
@@ -134,6 +136,7 @@ pub struct RelayRelayArgs {
 
     #[arg(
         long = "p2p-relay-loglevel",
+        env = "PLUTO_P2P_RELAY_LOGLEVEL",
         default_value = "",
         help = "Libp2p circuit relay log level. E.g., debug, info, warn, error."
     )]
@@ -143,6 +146,7 @@ pub struct RelayRelayArgs {
     // If so, decrease defaults after this has been addressed
     #[arg(
         long = "p2p-max-reservations",
+        env = "PLUTO_P2P_MAX_RESERVATIONS",
         default_value_t = 512,
         help = "Updates max circuit reservations per peer (each valid for 30min)"
     )]
@@ -150,6 +154,7 @@ pub struct RelayRelayArgs {
 
     #[arg(
         long = "p2p-max-connections",
+        env = "PLUTO_P2P_MAX_CONNECTIONS",
         default_value_t = 16384,
         help = "Libp2p maximum number of peers that can connect to this relay."
     )]
@@ -157,6 +162,7 @@ pub struct RelayRelayArgs {
 
     #[arg(
         long = "p2p-advertise-private-addresses",
+        env = "PLUTO_P2P_ADVERTISE_PRIVATE_ADDRESSES",
         help = "Enable advertising of libp2p auto-detected private addresses. This doesn't affect manually provided p2p-external-ip/hostname."
     )]
     pub advertise_priv: bool,
@@ -166,12 +172,14 @@ pub struct RelayRelayArgs {
 pub struct RelayDebugMonitoringArgs {
     #[arg(
         long = "monitoring-address",
+        env = "PLUTO_MONITORING_ADDRESS",
         help = "Listening address (ip and port) for the monitoring API (prometheus)."
     )]
     pub monitor_addr: Option<String>,
 
     #[arg(
         long = "debug-address",
+        env = "PLUTO_DEBUG_ADDRESS",
         default_value = "",
         help = "Listening address (ip and port) for the pprof and QBFT debug API. It is not enabled by default."
     )]
@@ -188,6 +196,7 @@ const DEFAULT_RELAYS: [&str; 3] = [
 pub struct RelayP2PArgs {
     #[arg(
         long = "p2p-relays",
+        env = "PLUTO_P2P_RELAYS",
         value_delimiter = ',',
         default_values_t = DEFAULT_RELAYS.map(String::from),
         help = "Comma-separated list of libp2p relay URLs or multiaddrs."
@@ -196,18 +205,21 @@ pub struct RelayP2PArgs {
 
     #[arg(
         long = "p2p-external-ip",
+        env = "PLUTO_P2P_EXTERNAL_IP",
         help = "The IP address advertised by libp2p. This may be used to advertise an external IP."
     )]
     pub external_ip: Option<String>,
 
     #[arg(
         long = "p2p-external-hostname",
+        env = "PLUTO_P2P_EXTERNAL_HOSTNAME",
         help = "The DNS hostname advertised by libp2p. This may be used to advertise an external DNS."
     )]
     pub external_host: Option<String>,
 
     #[arg(
         long = "p2p-tcp-address",
+        env = "PLUTO_P2P_TCP_ADDRESS",
         value_delimiter = ',',
         help = "Comma-separated list of listening TCP addresses (ip and port) for libP2P traffic. Empty default doesn't bind to local port therefore only supports outgoing connections."
     )]
@@ -215,6 +227,7 @@ pub struct RelayP2PArgs {
 
     #[arg(
         long = "p2p-udp-address",
+        env = "PLUTO_P2P_UDP_ADDRESS",
         value_delimiter = ',',
         help = "Comma-separated list of listening UDP addresses (ip and port) for libP2P traffic. Empty default doesn't bind to local port therefore only supports outgoing connections."
     )]
@@ -222,6 +235,7 @@ pub struct RelayP2PArgs {
 
     #[arg(
         long = "p2p-disable-reuseport",
+        env = "PLUTO_P2P_DISABLE_REUSEPORT",
         default_value_t = false,
         help = "Disables TCP port reuse for outgoing libp2p connections."
     )]
@@ -232,6 +246,7 @@ pub struct RelayP2PArgs {
 pub struct RelayLogFlags {
     #[arg(
         long = "log-format",
+        env = "PLUTO_LOG_FORMAT",
         default_value = "console",
         help = "Log format; console, logfmt or json"
     )]
@@ -239,6 +254,7 @@ pub struct RelayLogFlags {
 
     #[arg(
         long = "log-level",
+        env = "PLUTO_LOG_LEVEL",
         default_value = "info",
         help = "Log level; debug, info, warn or error"
     )]
@@ -249,6 +265,7 @@ pub struct RelayLogFlags {
 
     #[arg(
         long = "log-output-path",
+        env = "PLUTO_LOG_OUTPUT_PATH",
         default_value = "",
         help = "Path in which to write on-disk logs."
     )]
@@ -267,6 +284,7 @@ pub enum ConsoleColor {
 pub struct RelayLokiArgs {
     #[arg(
         long = "loki-addresses",
+        env = "PLUTO_LOKI_ADDRESSES",
         value_delimiter = ',',
         help = "Enables sending of logfmt structured logs to these Loki log aggregation server addresses. This is in addition to normal stderr logs."
     )]
@@ -274,6 +292,7 @@ pub struct RelayLokiArgs {
 
     #[arg(
         long = "loki-service",
+        env = "PLUTO_LOKI_SERVICE",
         default_value = "pluto",
         help = "Service label sent with logs to Loki."
     )]
