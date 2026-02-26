@@ -32,7 +32,7 @@ pub async fn run_relay_p2p_node(
     })?;
 
     // todo: change to version::log_info
-    info!("Charon relay starting");
+    info!("Pluto relay starting");
 
     // todo: configure libp2p log level
 
