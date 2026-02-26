@@ -177,9 +177,7 @@ impl ForceDirectBehaviour {
             libp2p::core::ConnectedPoint::Listener { send_back_addr, .. } => send_back_addr,
         };
 
-        if self.pending_forcings.contains(&event.peer_id)
-            && utils::is_direct_addr(addr)
-        {
+        if self.pending_forcings.contains(&event.peer_id) && utils::is_direct_addr(addr) {
             self.pending_forcings.remove(&event.peer_id);
             self.pending_events.push_back(ToSwarm::GenerateEvent(
                 ForceDirectEvent::ForceDirectSuccess {
