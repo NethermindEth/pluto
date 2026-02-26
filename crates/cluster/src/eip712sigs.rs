@@ -34,12 +34,14 @@ struct EIP712TypeField {
     pub value_func: ValueFunc,
 }
 
-struct EIP712Type {
-    pub primary_type: &'static str,
-    pub fields: Vec<EIP712TypeField>,
+/// EIP-712 primary type and fields descriptor.
+pub(crate) struct EIP712Type {
+    primary_type: &'static str,
+    fields: Vec<EIP712TypeField>,
 }
 
-fn eip712_creator_config_hash() -> EIP712Type {
+/// EIP-712 type for creator config hash signatures.
+pub(crate) fn eip712_creator_config_hash() -> EIP712Type {
     EIP712Type {
         primary_type: "CreatorConfigHash",
         fields: vec![EIP712TypeField {
@@ -78,8 +80,8 @@ fn eip712_v1x3_config_hash() -> EIP712Type {
     }
 }
 
-#[allow(dead_code)] // todo: remove this once it's used
-fn eip712_enr() -> EIP712Type {
+/// EIP-712 type for operator ENR signatures.
+pub(crate) fn eip712_enr() -> EIP712Type {
     EIP712Type {
         primary_type: "ENR",
         fields: vec![EIP712TypeField {
@@ -113,8 +115,8 @@ fn eip712_terms_and_conditions() -> EIP712Type {
     }
 }
 
-#[allow(dead_code)] // todo: remove this once it's used
-fn get_operator_eip712_type(version: &str) -> EIP712Type {
+/// Returns the latest or legacy operator eip712 type.
+pub(crate) fn get_operator_eip712_type(version: &str) -> EIP712Type {
     if !Definition::support_eip712_sigs(version) {
         unreachable!("invalid eip712 signature version"); // This should never happen
     }
@@ -126,7 +128,8 @@ fn get_operator_eip712_type(version: &str) -> EIP712Type {
     eip712_operator_config_hash()
 }
 
-fn digest_eip712(
+/// Returns the digest for the EIP712 structured type for the provided definition and operator.
+pub(crate) fn digest_eip712(
     typ: &EIP712Type,
     definition: &Definition,
     operator: &Operator,
