@@ -24,3 +24,6 @@ pub mod obolapi;
 
 /// Ethereum CL RPC client management.
 pub mod eth2wrap;
+
+/// Utility helpers for archiving, extracting, and comparing files/directories.
+pub mod utils;
