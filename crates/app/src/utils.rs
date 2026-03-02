@@ -95,7 +95,7 @@ pub fn extract_archive(
 pub fn compare_directories(
     dir1: impl AsRef<path::Path>,
     dir2: impl AsRef<path::Path>,
-) -> io::Result<()> {
+) -> Result<()> {
     let mut entries1 = fs::read_dir(dir1)?.collect::<std::result::Result<Vec<_>, _>>()?;
     let mut entries2 = fs::read_dir(dir2)?.collect::<std::result::Result<Vec<_>, _>>()?;
 
@@ -103,13 +103,9 @@ pub fn compare_directories(
     entries2.sort_by_key(|e| e.file_name());
 
     if entries1.len() != entries2.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "Directory entry count mismatch: {} vs {}",
-                entries1.len(),
-                entries2.len()
-            ),
+        return Err(UtilsError::DirectoryEntryCountMismatch(
+            entries1.len(),
+            entries2.len(),
         ));
     }
 
@@ -123,32 +119,24 @@ pub fn compare_directories(
             let name1 = entry1.file_name();
             let name2 = entry2.file_name();
             if name1 != name2 {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!(
-                        "File name mismatch: expected {}, found {}",
-                        name1.to_string_lossy(),
-                        name2.to_string_lossy()
-                    ),
+                return Err(UtilsError::FileNameMismatch(
+                    name1.to_string_lossy().to_string(),
+                    name2.to_string_lossy().to_string(),
                 ));
             }
 
             let content1 = fs::read(&path1)?;
             let content2 = fs::read(&path2)?;
             if content1 != content2 {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("Files {} and {} differ", path1.display(), path2.display()),
+                return Err(UtilsError::FileContentMismatch(
+                    path1.display().to_string(),
+                    path2.display().to_string(),
                 ));
             }
         } else {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!(
-                    "One is a file and the other is a directory: {} and {}",
-                    path1.display(),
-                    path2.display()
-                ),
+            return Err(UtilsError::TypeMismatch(
+                path1.display().to_string(),
+                path2.display().to_string(),
             ));
         }
     }
@@ -243,7 +231,7 @@ mod tests {
         super::extract_archive(archive_path, extract_dir.path()).unwrap();
 
         // Compare the extracted content with the original backup
-        super::compare_directories(backup_dir, extract_dir)
+        super::compare_directories(backup_dir.path(), extract_dir.path())
             .expect("Extracted directory should match original structure");
     }
 
@@ -269,9 +257,26 @@ mod tests {
         let dir2 = tempfile::tempdir().unwrap();
         copy_dir_all(dir1.path(), dir2.path()).unwrap();
 
-        let result = super::compare_directories(dir1, dir2);
+        let result = super::compare_directories(dir1.path(), dir2.path());
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn compare_directories_missing_file() {
+        let dir1 = tempfile::tempdir().unwrap();
+        let some_file_path = dir1.path().join("file.txt");
+        fs::create_dir_all(some_file_path.parent().unwrap()).unwrap();
+        fs::write(some_file_path, b"content").unwrap();
+
+        let dir2 = tempfile::tempdir().unwrap();
+
+        let result = super::compare_directories(dir1.path(), dir2.path());
+
+        assert!(matches!(
+            result,
+            Err(super::UtilsError::DirectoryEntryCountMismatch(1, 0))
+        ));
     }
 
     /// Recursively copies all files and directories from `from` to `to`.
