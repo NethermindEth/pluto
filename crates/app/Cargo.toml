@@ -40,6 +40,7 @@ pluto-build-proto.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true
+test-case.workspace = true
 
 [lints]
 workspace = true

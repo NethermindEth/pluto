@@ -31,6 +31,12 @@ pub enum UtilsError {
 
 type Result<T> = std::result::Result<T, UtilsError>;
 
+/// Returns the first 7 (or less) hex chars of the provided bytes.
+pub fn hex_7(input: &[u8]) -> String {
+    let as_string = hex::encode(input);
+    as_string.chars().take(7).collect()
+}
+
 /// Archives `target_path` into a gzipped tarball named `filename` in
 /// `target_path`. After successfully creating the archive, it deletes the
 /// original files from disk.
@@ -153,6 +159,15 @@ pub fn compare_directories(
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap, fs, io, path};
+    use test_case::test_case;
+
+    #[test_case(&hex::decode("433287d255abf237992d2279af5b1a1bb2c3d7124c97906edd848ebbb541a1c7").unwrap(), "433287d")]
+    #[test_case("aaa".as_bytes(), "616161")]
+    #[test_case("".as_bytes(), "")]
+    fn hex_7(bytes: &[u8], expected: &str) {
+        let actual = super::hex_7(bytes);
+        assert_eq!(actual, expected);
+    }
 
     #[test]
     fn bundle_output() {
