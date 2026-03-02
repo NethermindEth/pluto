@@ -39,8 +39,8 @@ jobs:
       - name: Install `protobuf`
         uses: awalsh128/cache-apt-pkgs-action@v1.6.0
         with:
-          packages: protobuf-compiler
-          version: 3.21.12-8.2ubuntu0.2
+          packages: protobuf-compiler=3.21.12*
+          version: 3.21.12
 
       - name: Install `oas3-gen`
         run: cargo install oas3-gen@0.24.0
