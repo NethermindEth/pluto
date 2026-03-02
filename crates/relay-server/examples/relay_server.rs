@@ -15,9 +15,7 @@ async fn main() {
     let config = Config::builder()
         .p2p_config(
             P2PConfig::builder()
-                .with_tcp_addrs(vec![
-                    "127.0.0.1:9999".to_string(),
-                ])
+                .with_tcp_addrs(vec!["127.0.0.1:9999".to_string()])
                 .build(),
         )
         .max_conns(100)

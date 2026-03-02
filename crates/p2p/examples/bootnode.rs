@@ -1,13 +1,15 @@
 #![allow(missing_docs)]
 //! Bootnode example
 
-use std::{path::PathBuf, str::FromStr, time::Duration};
+use std::{path::PathBuf, str::FromStr};
 
 use anyhow::Result;
 use clap::Parser;
 use futures::StreamExt;
 use libp2p::{
-    Multiaddr, PeerId, relay::{self}, swarm::NetworkBehaviour
+    PeerId,
+    relay::{self},
+    swarm::NetworkBehaviour,
 };
 use pluto_cluster::lock::Lock;
 use pluto_p2p::{
@@ -15,7 +17,7 @@ use pluto_p2p::{
     config::P2PConfig,
     gater, k1,
     p2p::{Node, NodeType},
-    relay::MutableRelayReservation,
+    relay::{MutableRelayReservation, RelayRouter},
 };
 use pluto_tracing::TracingConfig;
 use tokio::{fs, signal};
@@ -26,6 +28,7 @@ use tracing::info;
 pub struct ExampleBehaviour {
     pub relay: relay::client::Behaviour,
     pub relay_reservation: MutableRelayReservation,
+    pub relay_router: RelayRouter,
 }
 
 #[derive(Debug, Parser)]
@@ -91,7 +94,11 @@ pub async fn main() -> Result<()> {
     let lock_peer_ids = lock.peer_ids().expect("Failed to get lock peer IDs");
     known_peers.extend(lock_peer_ids);
 
-    let conn_gater = gater::ConnGater::new(gater::Config::closed().with_relays(relays.clone()));
+    let conn_gater = gater::ConnGater::new(
+        gater::Config::closed()
+            .with_relays(relays.clone())
+            .with_peer_ids(known_peers.clone()),
+    );
 
     let p2p_config = P2PConfig {
         relays: vec![],
@@ -110,25 +117,18 @@ pub async fn main() -> Result<()> {
         NodeType::QUIC,
         false,
         known_peers.clone(),
-        |builder, _keypair, relay_client| {
-            builder
-                .with_gater(conn_gater)
-                .with_inner(ExampleBehaviour {
-                    relay: relay_client,
-                    relay_reservation: MutableRelayReservation::new(relays),
-                })
+        |builder, keypair, relay_client| {
+            let p2p_context = builder.p2p_context();
+            builder.with_gater(conn_gater).with_inner(ExampleBehaviour {
+                relay: relay_client,
+                relay_reservation: MutableRelayReservation::new(relays.clone()),
+                relay_router: RelayRouter::new(relays, p2p_context, keypair.public().to_peer_id()),
+            })
         },
     )?;
 
-    let mut interval = tokio::time::interval(Duration::from_secs(10));
-
     loop {
         tokio::select! {
-            _ = interval.tick() => {
-                for peer in &known_peers {
-                    node.dial(Multiaddr::from_str(&format!("/p2p/{}", peer)).unwrap()).unwrap();
-                }
-            }
             event = node.select_next_some() => {
                 println!("Event: {:?}", event);
             }

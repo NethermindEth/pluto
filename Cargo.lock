@@ -5631,6 +5631,7 @@ dependencies = [
  "clap",
  "either",
  "futures",
+ "futures-timer",
  "hex",
  "k256",
  "libp2p",

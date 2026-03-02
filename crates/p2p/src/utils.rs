@@ -13,7 +13,11 @@ use std::{
     time::Duration,
 };
 
-use libp2p::{Multiaddr, identity::Keypair, multiaddr, multiaddr::Protocol as MaProtocol};
+use libp2p::{
+    Multiaddr, PeerId,
+    identity::Keypair,
+    multiaddr::{self, Protocol as MaProtocol},
+};
 
 use crate::metrics::{ConnectionType, Protocol};
 
@@ -88,6 +92,22 @@ pub(crate) fn external_udp_multiaddrs(cfg: &P2PConfig) -> crate::p2p::Result<Vec
     }
 
     Ok(resp)
+}
+
+pub(crate) fn multi_addrs_via_relay(
+    relay_peer: &crate::peer::Peer,
+    peer_id: &PeerId,
+) -> crate::p2p::Result<Vec<Multiaddr>> {
+    let mut addrs = vec![];
+
+    for mut addr in relay_peer.addresses.clone() {
+        addr = addr.with(MaProtocol::P2p(relay_peer.id.clone()));
+        addr = addr.with(MaProtocol::P2pCircuit);
+        addr = addr.with(MaProtocol::P2p(peer_id.clone()));
+        addrs.push(addr);
+    }
+
+    Ok(addrs)
 }
 
 pub(crate) struct ExternalAddresses(pub Vec<Multiaddr>);
