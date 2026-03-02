@@ -247,6 +247,33 @@ mod tests {
             .expect("Extracted directory should match original structure");
     }
 
+    #[test]
+    fn compare_directories_identical() {
+        let dir1 = tempfile::tempdir().unwrap();
+        let test_files = HashMap::from([
+            ("file1.txt", "content1".as_bytes()),
+            ("nested/file2.json", r#"{"key": "value"}"#.as_bytes()),
+            ("nested/deep/file3.md", "# Header\nContent".as_bytes()),
+            ("binary.bin", b"\x00\x01\x02\x03"),
+            (
+                "special_chars_äöü.txt",
+                "Special characters: äöüß".as_bytes(),
+            ),
+        ]);
+        for (rel_path, content) in test_files {
+            let full_path = dir1.path().join(rel_path);
+            fs::create_dir_all(full_path.parent().unwrap()).unwrap();
+            fs::write(full_path, content).unwrap();
+        }
+
+        let dir2 = tempfile::tempdir().unwrap();
+        copy_dir_all(dir1.path(), dir2.path()).unwrap();
+
+        let result = super::compare_directories(dir1, dir2);
+
+        assert!(result.is_ok());
+    }
+
     /// Recursively copies all files and directories from `from` to `to`.
     fn copy_dir_all(from: impl AsRef<path::Path>, to: impl AsRef<path::Path>) -> io::Result<()> {
         fs::create_dir_all(&to)?; // Create the destination directory and all its parents
