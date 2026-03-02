@@ -41,7 +41,9 @@ pub async fn run_relay_p2p_node(
     )?;
 
     // todo: change to version::log_info
-    info!("Charon relay starting");
+    info!("Pluto relay starting");
+
+    // todo: configure libp2p log level
 
     // todo: monitor connections
     let (server_errors, mut server_errors_receiver) = mpsc::channel(3);

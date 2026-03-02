@@ -441,6 +441,7 @@ impl<B: NetworkBehaviour> Node<B> {
                 yamux::Config::default,
             )
             .map_err(P2PError::failed_to_build_swarm)?
+            .with_quic()
             .with_dns()
             .map_err(P2PError::failed_to_build_swarm)?
             .with_behaviour(|key| {
