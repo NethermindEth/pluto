@@ -1,5 +1,9 @@
 use std::ops::Deref;
 
+use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, tblsconv};
+use pluto_eth1wrap::EthClient;
+use pluto_eth2api::spec::phase0::{VERSION_LEN, Version};
+use pluto_eth2util::registration;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
@@ -41,6 +45,10 @@ pub enum LockError {
     #[error("Definition hashes verification failed: {0}")]
     DefinitionHashesVerificationFailed(#[from] DefinitionError),
 
+    /// Definition signatures verification failed
+    #[error("Definition signatures verification failed: {0}")]
+    DefinitionSignaturesVerificationFailed(DefinitionError),
+
     /// SSZ error
     #[error("Lock hash verification failed: {0}")]
     SSZError(#[from] SSZError<Hasher>),
@@ -53,6 +61,47 @@ pub enum LockError {
         /// Actual lock hash
         actual: Vec<u8>,
     },
+
+    /// Empty lock aggregate signature
+    #[error("Empty lock aggregate signature")]
+    EmptyLockAggregateSignature,
+
+    /// Failed to convert BLS bytes
+    #[error("Failed to convert BLS bytes: {0}")]
+    FailedToConvertBLSBytes(#[from] pluto_crypto::tblsconv::ConvError),
+
+    /// Failed to verify BLS signature
+    #[error("Failed to verify BLS signature: {0}")]
+    FailedToVerifyBLSSignature(#[from] pluto_crypto::types::Error),
+
+    /// Missing fee recipient address
+    #[error("Missing fee recipient address for validator index: {validator_idx}")]
+    MissingFeeRecipientAddress {
+        /// Validator index
+        validator_idx: usize,
+    },
+
+    /// Invalid registration timestamp
+    #[error("Invalid registration timestamp for validator index {validator_idx}: {timestamp}")]
+    InvalidRegistrationTimestamp {
+        /// Validator index
+        validator_idx: usize,
+        /// Timestamp value
+        timestamp: i64,
+    },
+
+    /// Invalid fork version length
+    #[error("Invalid fork version length: expected {expected}, actual {actual}")]
+    InvalidForkVersionLength {
+        /// Expected fork version length
+        expected: usize,
+        /// Actual fork version length
+        actual: usize,
+    },
+
+    /// Failed to build registration message
+    #[error("Failed to build registration message: {0}")]
+    FailedToBuildRegistrationMessage(#[from] registration::RegistrationError),
 
     /// Unexpected node signatures
     #[error("Unexpected node signatures")]
@@ -211,15 +260,41 @@ impl Lock {
         Ok(())
     }
 
-    /// `verify_signatures` returns true if all config signatures are fully
-    /// populated and valid. A verified lock is ready for use in charon run.
-    pub fn verify_signatures(&self) -> Result<()> {
-        todo!("Implement this after eth1wrap.EthClientRunner is implemented");
+    /// `verify_signatures` returns `Ok(())` if all config signatures are fully
+    /// populated and valid. A verified lock is ready for use in pluto run.
+    pub async fn verify_signatures(&self, eth1: Option<&EthClient>) -> Result<()> {
+        self.definition
+            .verify_signatures(eth1)
+            .await
+            .map_err(LockError::DefinitionSignaturesVerificationFailed)?;
+
+        if self.signature_aggregate.is_empty() {
+            if matches!(self.version.as_str(), V1_0 | V1_1) {
+                return Ok(());
+            }
+
+            return Err(LockError::EmptyLockAggregateSignature);
+        }
+
+        let signature = tblsconv::signature_from_bytes(self.signature_aggregate.as_slice())?;
+
+        let pubkeys = self
+            .distributed_validators
+            .iter()
+            .flat_map(|v| v.pub_shares.iter())
+            .map(|share| tblsconv::pubkey_from_bytes(share.as_slice()))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        let hash = hash_lock(self)?;
+
+        BlstImpl.verify_aggregate(pubkeys.as_slice(), signature, hash.as_slice())?;
+
+        self.verify_builder_registrations()?;
+        self.verify_node_signatures()
     }
 
-    /// `verify_node_signatures` returns true an error if the node signatures
+    /// `verify_node_signatures` returns an error if the node signatures
     /// field is not correctly populated or otherwise invalid.
-    #[allow(dead_code)] // todo: remove this once we use this function
     fn verify_node_signatures(&self) -> Result<()> {
         if matches!(
             self.version.as_str(),
@@ -265,8 +340,85 @@ impl Lock {
 
     /// `verify_builder_registrations` returns an error if the populated builder
     /// registrations are invalid.
-    pub fn verify_builder_registrations(&self) -> Result<()> {
-        todo!("Implement this after eth2util.registration is implemented");
+    fn verify_builder_registrations(&self) -> Result<()> {
+        let fork_version: Version = self.fork_version.as_slice().try_into().map_err(|_| {
+            LockError::InvalidForkVersionLength {
+                expected: VERSION_LEN,
+                actual: self.fork_version.len(),
+            }
+        })?;
+
+        let fee_recipient_addresses = self.fee_recipient_addresses();
+
+        for (validator_idx, validator) in self.distributed_validators.iter().enumerate() {
+            let no_registration = validator
+                .builder_registration
+                .signature
+                .iter()
+                .all(|byte| *byte == 0)
+                || validator
+                    .builder_registration
+                    .message
+                    .fee_recipient
+                    .iter()
+                    .all(|byte| *byte == 0)
+                || validator
+                    .builder_registration
+                    .message
+                    .pub_key
+                    .iter()
+                    .all(|byte| *byte == 0);
+
+            if matches!(
+                self.version.as_str(),
+                V1_0 | V1_1 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6
+            ) {
+                if !no_registration {
+                    return Err(LockError::UnexpectedValidatorRegistration {
+                        operator_idx: validator_idx,
+                    });
+                }
+
+                continue;
+            }
+
+            if no_registration {
+                return Err(LockError::MissingValidatorRegistration {
+                    operator_idx: validator_idx,
+                });
+            }
+
+            let fee_recipient_addr = fee_recipient_addresses
+                .get(validator_idx)
+                .ok_or(LockError::MissingFeeRecipientAddress { validator_idx })?;
+
+            let timestamp =
+                u64::try_from(validator.builder_registration.message.timestamp.timestamp())
+                    .map_err(|_| LockError::InvalidRegistrationTimestamp {
+                        validator_idx,
+                        timestamp: validator.builder_registration.message.timestamp.timestamp(),
+                    })?;
+
+            let pubkey = tblsconv::pubkey_from_bytes(validator.pub_key.as_slice())?;
+
+            let registration_message = registration::new_message(
+                pubkey,
+                fee_recipient_addr,
+                validator.builder_registration.message.gas_limit,
+                timestamp,
+            )?;
+
+            let signing_root =
+                registration::get_message_signing_root(&registration_message, fork_version);
+
+            BlstImpl.verify(
+                &pubkey,
+                signing_root.as_ref(),
+                &validator.builder_registration.signature,
+            )?;
+        }
+
+        Ok(())
     }
 }
 
@@ -562,6 +714,41 @@ impl From<LockV1x8orLater> for Lock {
 mod tests {
     use super::*;
 
+    fn parse_example_lock(json: &str) -> Lock {
+        let mut value: serde_json::Value = serde_json::from_str(json).unwrap();
+
+        if let Some(validators) = value
+            .get_mut("distributed_validators")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for validator in validators {
+                let Some(deposit_data) = validator
+                    .get_mut("deposit_data")
+                    .and_then(serde_json::Value::as_object_mut)
+                else {
+                    continue;
+                };
+
+                for (field, len_bytes) in [
+                    ("pubkey", 48usize),
+                    ("withdrawal_credentials", 32usize),
+                    ("signature", 96usize),
+                ] {
+                    if deposit_data
+                        .get(field)
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(str::is_empty)
+                    {
+                        let zeros = "00".repeat(len_bytes);
+                        deposit_data[field] = serde_json::Value::String(format!("0x{zeros}"));
+                    }
+                }
+            }
+        }
+
+        serde_json::from_value(value).unwrap()
+    }
+
     #[test]
     fn test_lock_v1_10_0() {
         let lock = serde_json::from_str::<Lock>(include_str!("testdata/cluster_lock_v1_10_0.json"))
@@ -837,6 +1024,90 @@ mod tests {
         let _ = serde_json::from_str::<LockV1x0or1>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(json_str).unwrap();
         assert!(lock.verify_hashes().is_ok());
+    }
+
+    #[tokio::test]
+    async fn verify_signatures_v1_0_allows_empty_aggregate() {
+        let mut lock =
+            serde_json::from_str::<Lock>(include_str!("testdata/cluster_lock_v1_0_0.json"))
+                .unwrap();
+        lock.signature_aggregate = Vec::new();
+
+        assert!(lock.verify_signatures(None).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn verify_signatures_v1_2_rejects_empty_aggregate() {
+        let mut lock =
+            serde_json::from_str::<Lock>(include_str!("testdata/cluster_lock_v1_2_0.json"))
+                .unwrap();
+        lock.signature_aggregate = Vec::new();
+
+        let result = lock.verify_signatures(None).await;
+        assert!(matches!(
+            result,
+            Err(LockError::EmptyLockAggregateSignature)
+        ));
+    }
+
+    #[tokio::test]
+    async fn verify_signatures_v1_7_happy_path() {
+        let lock = parse_example_lock(include_str!("examples/cluster-lock-003.json"));
+
+        assert!(lock.verify_signatures(None).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn verify_signatures_v1_7_rejects_invalid_node_signature() {
+        let mut lock = parse_example_lock(include_str!("examples/cluster-lock-003.json"));
+        lock.node_signatures[0] = lock.node_signatures[1].clone();
+
+        let result = lock.verify_signatures(None).await;
+        assert!(matches!(
+            result,
+            Err(LockError::NodeSignatureVerificationFailed {
+                operator_idx: 0,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn verify_builder_registrations_v1_7_missing_registration() {
+        let mut lock =
+            serde_json::from_str::<Lock>(include_str!("testdata/cluster_lock_v1_7_0.json"))
+                .unwrap();
+        lock.distributed_validators[0].builder_registration = Default::default();
+
+        let result = lock.verify_builder_registrations();
+        assert!(matches!(
+            result,
+            Err(LockError::MissingValidatorRegistration { operator_idx: 0 })
+        ));
+    }
+
+    #[test]
+    fn verify_builder_registrations_v1_6_unexpected_registration() {
+        let mut lock =
+            serde_json::from_str::<Lock>(include_str!("testdata/cluster_lock_v1_6_0.json"))
+                .unwrap();
+        lock.distributed_validators[0]
+            .builder_registration
+            .signature = [1u8; 96];
+        lock.distributed_validators[0]
+            .builder_registration
+            .message
+            .fee_recipient = [1u8; 20];
+        lock.distributed_validators[0]
+            .builder_registration
+            .message
+            .pub_key = [1u8; 48];
+
+        let result = lock.verify_builder_registrations();
+        assert!(matches!(
+            result,
+            Err(LockError::UnexpectedValidatorRegistration { operator_idx: 0 })
+        ));
     }
 
     #[test_case::test_case(include_str!("testdata/cluster_lock_v1_0_0.json"), true ; "v1.0 empty signatures")]
