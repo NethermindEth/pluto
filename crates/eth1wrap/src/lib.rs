@@ -1,5 +1,4 @@
-//! Provides an `EthClient`, an interface to interact with an Ethereum JSON-RPC
-//! node.
+//! Ethereum EL RPC client wrapper.
 
 use alloy::{
     providers::{DynProvider, Provider, ProviderBuilder},
@@ -11,7 +10,7 @@ use alloy::{
 sol!(
     #[sol(rpc)]
     IERC1271,
-    "src/eth1wrap/build/IERC1271.abi"
+    "src/build/IERC1271.abi"
 );
 
 type Result<T> = std::result::Result<T, EthClientError>;
@@ -36,7 +35,7 @@ pub enum EthClientError {
     InvalidAddress(#[from] alloy::primitives::AddressError),
 }
 
-/// Defines the interface for the Ethereum EL RPC client
+/// Defines the interface for the Ethereum EL RPC client.
 pub struct EthClient(DynProvider);
 
 impl std::ops::Deref for EthClient {
@@ -47,19 +46,17 @@ impl std::ops::Deref for EthClient {
     }
 }
 
-#[allow(dead_code)] // TODO: Remove when used
 impl EthClient {
     /// Create a new `EthClient` connected to the given address using defaults
     /// for retry.
     pub async fn new(address: impl AsRef<str>) -> Result<EthClient> {
-        // The maximum number of retries for rate limit errors
+        // The maximum number of retries for rate limit errors.
         const MAX_RETRY: u32 = 10;
-        // The initial backoff in milliseconds
+        // The initial backoff in milliseconds.
         const BACKOFF: u64 = 1000;
-        // The number of compute units per second for this provider
+        // The number of compute units per second for this provider.
         const CUPS: u64 = 100;
 
-        // TODO: We might want to use `tower`'s [ExponentialBackoff](https://docs.rs/tower/latest/tower/retry/backoff/struct.ExponentialBackoffMaker.html)
         let retry_layer = RetryBackoffLayer::new(MAX_RETRY, BACKOFF, CUPS);
 
         let client = ClientBuilder::default()
@@ -79,7 +76,7 @@ impl EthClient {
         hash: [u8; 32],
         sig: &[u8],
     ) -> Result<bool> {
-        // Magic value defined in [ERC-1271](https://eips.ethereum.org/EIPS/eip-1271)
+        // Magic value defined in [ERC-1271](https://eips.ethereum.org/EIPS/eip-1271).
         const MAGIC_VALUE: [u8; 4] = [0x16, 0x26, 0xba, 0x7e];
 
         let address = alloy::primitives::Address::parse_checksummed(contract_address, None)?;

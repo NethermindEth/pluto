@@ -1,9 +1,33 @@
 use chrono::{DateTime, Utc};
+use pluto_eth2util::helpers::{checksum_address, public_key_to_address};
+use pluto_k1util::K1UtilError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{DeserializeAs, SerializeAs};
 use std::borrow::Cow;
 
 use crate::{definition::ADDRESS_LEN, ssz::SSZError, ssz_hasher::HashWalker};
+
+type VerifySigResult<T> = std::result::Result<T, VerifySigError>;
+
+/// Error type returned by `verify_sig`.
+#[derive(Debug, thiserror::Error)]
+pub enum VerifySigError {
+    /// Invalid expected Ethereum address.
+    #[error("invalid expected Ethereum address: {0}")]
+    InvalidExpectedAddress(#[from] pluto_eth2util::helpers::HelperError),
+
+    /// Failed to recover public key from signature and digest.
+    #[error("failed to recover public key from signature: {0}")]
+    FailedToRecoverPubKey(#[from] K1UtilError),
+}
+
+/// Returns true if the signature matches the digest and expected address.
+pub fn verify_sig(expected_addr: &str, digest: &[u8], sig: &[u8]) -> VerifySigResult<bool> {
+    let expected_addr = checksum_address(expected_addr)?;
+    let recovered = pluto_k1util::recover(digest, sig)?;
+    let actual_addr = public_key_to_address(&recovered);
+    Ok(expected_addr == actual_addr)
+}
 
 /// EthHex represents byte slices that are json formatted as 0x prefixed hex.
 /// Can be used both as a standalone type and with serde_as.
