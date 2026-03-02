@@ -144,9 +144,12 @@ fn list_test_cases(category: TestCategory) -> Vec<String> {
             ]
         }
         TestCategory::Peers => {
-            // TODO: Extract from peers::supported_peer_test_cases() +
-            // supported_self_test_cases()
-            vec![]
+            let mut names: Vec<String> = peers::supported_peer_test_cases()
+                .into_keys()
+                .map(|k| k.name)
+                .collect();
+            names.sort();
+            names
         }
         TestCategory::Infra => {
             // TODO: Extract from infra::supported_infra_test_cases()
