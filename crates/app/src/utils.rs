@@ -16,16 +16,16 @@ pub enum UtilsError {
     DirectoryEntryCountMismatch(usize, usize),
 
     /// Unexpected file contents.
-    #[error("File content mismatch: {0} vs {1}")]
-    FileContentMismatch(path::PathBuf, path::PathBuf),
+    #[error("Content mismatch: {0} vs {1}")]
+    ContentMismatch(path::PathBuf, path::PathBuf),
 
-    /// Unexpected path.
-    #[error("File name mismatch: expected {0}, found {1}")]
-    FileNameMismatch(String, String),
+    /// Name mismatch.
+    #[error("Name mismatch: expected {0}, found {1}")]
+    NameMismatch(String, String),
 
     /// One entry is a file and the other is a directory for a given path.
     #[error("Type mismatch: {0} vs {1}")]
-    PathTypeMismatch(path::PathBuf, path::PathBuf),
+    TypeMismatch(path::PathBuf, path::PathBuf),
 }
 
 type Result<T> = std::result::Result<T, UtilsError>;
@@ -110,25 +110,25 @@ pub fn compare_directories(
         let path1 = entry1.path();
         let path2 = entry2.path();
 
+        let name1 = entry1.file_name();
+        let name2 = entry2.file_name();
+        if name1 != name2 {
+            return Err(UtilsError::NameMismatch(
+                name1.display().to_string(),
+                name2.display().to_string(),
+            ));
+        }
+
         if path1.is_dir() && path2.is_dir() {
             compare_directories(&path1, &path2)?;
         } else if path1.is_file() && path2.is_file() {
-            let name1 = entry1.file_name();
-            let name2 = entry2.file_name();
-            if name1 != name2 {
-                return Err(UtilsError::FileNameMismatch(
-                    name1.display().to_string(),
-                    name2.display().to_string(),
-                ));
-            }
-
             let content1 = fs::read(&path1)?;
             let content2 = fs::read(&path2)?;
             if content1 != content2 {
-                return Err(UtilsError::FileContentMismatch(path1, path2));
+                return Err(UtilsError::ContentMismatch(path1, path2));
             }
         } else {
-            return Err(UtilsError::PathTypeMismatch(path1, path2));
+            return Err(UtilsError::TypeMismatch(path1, path2));
         }
     }
 
@@ -290,7 +290,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(super::UtilsError::FileContentMismatch(_, _))
+            Err(super::UtilsError::ContentMismatch(_, _))
         ));
     }
 
@@ -314,7 +314,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(super::UtilsError::FileContentMismatch(_, _))
+            Err(super::UtilsError::ContentMismatch(_, _))
         ));
     }
 
@@ -354,10 +354,7 @@ mod tests {
 
         let result = super::compare_directories(dir1.path(), dir2.path());
 
-        assert!(matches!(
-            result,
-            Err(super::UtilsError::PathTypeMismatch(_, _))
-        ));
+        assert!(matches!(result, Err(super::UtilsError::TypeMismatch(_, _))));
     }
 
     #[test]
@@ -377,10 +374,7 @@ mod tests {
 
         let result = super::compare_directories(dir1.path(), dir2.path());
 
-        assert!(matches!(
-            result,
-            Err(super::UtilsError::PathTypeMismatch(_, _))
-        ));
+        assert!(matches!(result, Err(super::UtilsError::TypeMismatch(_, _))));
     }
 
     #[test]
@@ -438,10 +432,26 @@ mod tests {
 
         let result = super::compare_directories(dir1.path(), dir2.path());
 
-        assert!(matches!(
-            result,
-            Err(super::UtilsError::FileNameMismatch(_, _))
-        ));
+        assert!(matches!(result, Err(super::UtilsError::NameMismatch(_, _))));
+    }
+
+    #[test]
+    fn compare_directories_different_directory_names() {
+        let dir1 = tempfile::tempdir().unwrap();
+        {
+            let some_dir_path = dir1.path().join("dir1");
+            fs::create_dir_all(some_dir_path).unwrap();
+        }
+
+        let dir2 = tempfile::tempdir().unwrap();
+        {
+            let some_dir_path = dir2.path().join("dir2");
+            fs::create_dir_all(some_dir_path).unwrap();
+        }
+
+        let result = super::compare_directories(dir1.path(), dir2.path());
+
+        assert!(matches!(result, Err(super::UtilsError::NameMismatch(_, _))));
     }
 
     #[test]
