@@ -74,15 +74,24 @@ pub fn extract_archive(
     let decompressor = flate2::read::GzDecoder::new(tar_gz);
     let mut archive = tar::Archive::new(decompressor);
 
-    // Extract each file, verifying that it does not exceed a reasonable size limit
-    // to prevent DoS attacks.
-    const MAX_FILE: u64 = 100 * 1024 * 1024; // 100MB limit per file
     for entry in archive.entries()? {
         let mut entry = entry?;
-        if entry.size() > MAX_FILE {
-            return Err(UtilsError::FileTooLarge(entry.path()?.to_path_buf()));
+        let entry_type = entry.header().entry_type();
+
+        if entry_type.is_dir() {
+            entry.unpack_in(&target_path)?;
+        } else if entry_type.is_file() {
+            // Check file size to prevent decompression bombs
+            const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024; // 100MB limit per file
+            if entry.size() > MAX_FILE_SIZE {
+                return Err(UtilsError::FileTooLarge(entry.path()?.to_path_buf()));
+            }
+
+            entry.unpack_in(&target_path)?;
+        } else {
+            // Skip other types (symlinks, etc.)
+            continue;
         }
-        entry.unpack_in(&target_path)?;
     }
 
     Ok(())
