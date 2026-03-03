@@ -1,10 +1,13 @@
-//! Relay reservation functionality.
+//! Relay reservation functionality and relay router.
 //!
 //! This behaviour is responsible for resolving relays that are being passed by
 //! a mutable peer.
 //!
 //! Mutable peer is used for updating the relay addresses in the background by
 //! fetching the enr servers.
+//!
+//! Relay router is responsible for routing *all* known peers through the
+//! relays, even if they are not directly connected to the node.
 
 use std::{
     collections::VecDeque,
@@ -44,7 +47,10 @@ impl MutableRelayReservation {
             // Listen on the relay to create a reservation
             {
                 if let Ok(Some(peer)) = mutable_peer.peer() {
-                    let mut events = events.lock().unwrap();
+                    let mut events = events.lock().unwrap_or_else(|poisoned| {
+                        tracing::warn!("Failed to lock events: {}", poisoned);
+                        poisoned.into_inner()
+                    });
                     // Create relay circuit addresses: /ip4/.../tcp/.../p2p/{relay-id}/p2p-circuit
                     for addr in &peer.addresses {
                         let mut relay_addr = addr.clone();
@@ -56,20 +62,23 @@ impl MutableRelayReservation {
                     }
                 }
             }
-            mutable_peer
-                .subscribe(Box::new(move |peer| {
-                    let mut events = events_clone.lock().unwrap();
-                    // Create relay circuit addresses: /ip4/.../tcp/.../p2p/{relay-id}/p2p-circuit
-                    for addr in &peer.addresses {
-                        let mut relay_addr = addr.clone();
-                        relay_addr.push(MaProtocol::P2p(peer.id));
-                        relay_addr.push(MaProtocol::P2pCircuit);
-                        events.push_back(ToSwarm::ListenOn {
-                            opts: libp2p::swarm::ListenOpts::new(relay_addr),
-                        });
-                    }
-                }))
-                .unwrap();
+            if let Err(e) = mutable_peer.subscribe(Box::new(move |peer| {
+                let mut events = events_clone.lock().unwrap_or_else(|poisoned| {
+                    tracing::warn!("Failed to lock events: {}", poisoned);
+                    poisoned.into_inner()
+                });
+                // Create relay circuit addresses: /ip4/.../tcp/.../p2p/{relay-id}/p2p-circuit
+                for addr in &peer.addresses {
+                    let mut relay_addr = addr.clone();
+                    relay_addr.push(MaProtocol::P2p(peer.id));
+                    relay_addr.push(MaProtocol::P2pCircuit);
+                    events.push_back(ToSwarm::ListenOn {
+                        opts: libp2p::swarm::ListenOpts::new(relay_addr),
+                    });
+                }
+            })) {
+                tracing::warn!("Failed to subscribe to mutable peer: {}", e);
+            }
         }
         Self { events }
     }
@@ -117,7 +126,10 @@ impl NetworkBehaviour for MutableRelayReservation {
         &mut self,
         _cx: &mut Context<'_>,
     ) -> std::task::Poll<ToSwarm<Self::ToSwarm, THandlerInEvent<Self>>> {
-        let mut events = self.events.lock().unwrap();
+        let mut events = self.events.lock().unwrap_or_else(|poisoned| {
+            tracing::warn!("Failed to lock events: {}", poisoned);
+            poisoned.into_inner()
+        });
         if let Some(event) = events.pop_front() {
             return Poll::Ready(event);
         }
@@ -161,8 +173,7 @@ impl RelayRouter {
                     continue;
                 };
 
-                let relay_addrs =
-                    utils::multi_addrs_via_relay(&relay_peer, target_peer_id).unwrap();
+                let relay_addrs = utils::multi_addrs_via_relay(&relay_peer, target_peer_id);
 
                 self.events.push_back(ToSwarm::Dial {
                     opts: DialOpts::peer_id(*target_peer_id)
