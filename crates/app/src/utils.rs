@@ -451,7 +451,7 @@ mod tests {
 
         let result = super::compare_directories(dir1.path(), dir2.path());
 
-        assert!(result.is_ok(),);
+        assert!(result.is_ok());
     }
 
     /// Recursively copies all files and directories from `from` to `to`.
