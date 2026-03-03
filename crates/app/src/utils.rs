@@ -384,6 +384,43 @@ mod tests {
     }
 
     #[test]
+    fn compare_directories_complex_structure() {
+        let dir1 = tempfile::tempdir().unwrap();
+        let dir2 = tempfile::tempdir().unwrap();
+
+        let test_files = HashMap::from([
+            ("root.txt", "root content".as_bytes()),
+            (
+                "validator_keys/keystore-1.json",
+                r#"{"crypto": {"cipher": "test"}}"#.as_bytes(),
+            ),
+            (
+                "validator_keys/keystore-2.json",
+                r#"{"crypto": {"cipher": "test"}}"#.as_bytes(),
+            ),
+            (
+                "nested/level1/level2/deep.yaml",
+                "key: value\narray:\n  - item1\n  - item2".as_bytes(),
+            ),
+            ("cluster-lock.json", r#"{"lock_hash": "0xabc"}"#.as_bytes()),
+            ("deposit_data.json", r#"[{"pubkey": "0x123"}]"#.as_bytes()),
+            ("empty_dir/placeholder.txt", b""),
+            ("binary_data.bin", b"\x00\x01\x02\x03\xFF\xFE\xFD"),
+        ]);
+        for (rel_path, content) in test_files {
+            for dir in [&dir1, &dir2] {
+                let full_path = dir.path().join(rel_path);
+                fs::create_dir_all(full_path.parent().unwrap()).unwrap();
+                fs::write(full_path, content).unwrap();
+            }
+        }
+
+        let result = super::compare_directories(dir1.path(), dir2.path());
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn compare_directories_different_file_names() {
         let dir1 = tempfile::tempdir().unwrap();
         {
