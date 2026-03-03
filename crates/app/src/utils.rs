@@ -384,6 +384,30 @@ mod tests {
     }
 
     #[test]
+    fn compare_directories_different_file_names() {
+        let dir1 = tempfile::tempdir().unwrap();
+        {
+            let some_file_path = dir1.path().join("file1.txt");
+            fs::create_dir_all(some_file_path.parent().unwrap()).unwrap();
+            fs::write(some_file_path, b"content").unwrap();
+        }
+
+        let dir2 = tempfile::tempdir().unwrap();
+        {
+            let some_file_path = dir2.path().join("file2.txt");
+            fs::create_dir_all(some_file_path.parent().unwrap()).unwrap();
+            fs::write(some_file_path, b"content").unwrap();
+        }
+
+        let result = super::compare_directories(dir1.path(), dir2.path());
+
+        assert!(matches!(
+            result,
+            Err(super::UtilsError::FileNameMismatch(_, _))
+        ));
+    }
+
+    #[test]
     fn compare_directories_empty() {
         let dir1 = tempfile::tempdir().unwrap();
         let dir2 = tempfile::tempdir().unwrap();
