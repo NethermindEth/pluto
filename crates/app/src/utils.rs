@@ -318,6 +318,25 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn compare_directories_missing_directory() {
+        let dir1 = tempfile::tempdir().unwrap();
+        {
+            let some_file_path = dir1.path().join("nested").join("deep").join("file.txt");
+            fs::create_dir_all(some_file_path.parent().unwrap()).unwrap();
+            fs::write(some_file_path, b"content").unwrap();
+        }
+
+        let dir2 = tempfile::tempdir().unwrap();
+
+        let result = super::compare_directories(dir1.path(), dir2.path());
+
+        assert!(matches!(
+            result,
+            Err(super::UtilsError::DirectoryEntryCountMismatch(_, _))
+        ));
+    }
+
     /// Recursively copies all files and directories from `from` to `to`.
     fn copy_dir_all(from: impl AsRef<path::Path>, to: impl AsRef<path::Path>) -> io::Result<()> {
         fs::create_dir_all(&to)?; // Create the destination directory and all its parents
