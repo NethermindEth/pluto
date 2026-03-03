@@ -140,9 +140,9 @@ mod tests {
     use std::{collections::HashMap, fs, io, path};
     use test_case::test_case;
 
-    #[test_case(&hex::decode("433287d255abf237992d2279af5b1a1bb2c3d7124c97906edd848ebbb541a1c7").unwrap(), "433287d")]
-    #[test_case("aaa".as_bytes(), "616161")]
-    #[test_case("".as_bytes(), "")]
+    #[test_case(&hex::decode("433287d255abf237992d2279af5b1a1bb2c3d7124c97906edd848ebbb541a1c7").unwrap(), "433287d"; "full 32 bytes")]
+    #[test_case("aaa".as_bytes(), "616161"; "3 bytes")]
+    #[test_case("".as_bytes(), ""; "empty")]
     fn hex_7(bytes: &[u8], expected: &str) {
         let actual = super::hex_7(bytes);
         assert_eq!(actual, expected);
