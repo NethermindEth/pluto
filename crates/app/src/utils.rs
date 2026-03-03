@@ -9,24 +9,23 @@ pub enum UtilsError {
 
     /// File exceeds the maximum allowed size during extraction.
     #[error("File too large: {0}")]
-    FileTooLarge(String),
+    FileTooLarge(path::PathBuf),
 
     /// Directories have different number of entries.
-    #[error("Directory entry count mismatch: {0} vs {1}")]
+    #[error("Directory entry count mismatch: expected {0}, found {1}")]
     DirectoryEntryCountMismatch(usize, usize),
 
-    /// Unexpected file name.
+    /// Unexpected file contents.
+    #[error("File content mismatch: {0} vs {1}")]
+    FileContentMismatch(path::PathBuf, path::PathBuf),
+
+    /// Unexpected path.
     #[error("File name mismatch: expected {0}, found {1}")]
     FileNameMismatch(String, String),
 
-    /// Unexpected file contents.
-    #[error("File content mismatch: expected {0}, found {1}")]
-    FileContentMismatch(String, String),
-
-    /// One entry is a file and the other is a directory.
-
-    #[error("Type mismatch: expected {0}, found {1}")]
-    TypeMismatch(String, String),
+    /// One entry is a file and the other is a directory for a given path.
+    #[error("Type mismatch: {0} vs {1}")]
+    PathTypeMismatch(path::PathBuf, path::PathBuf),
 }
 
 type Result<T> = std::result::Result<T, UtilsError>;
@@ -81,9 +80,7 @@ pub fn extract_archive(
     for entry in archive.entries()? {
         let mut entry = entry?;
         if entry.size() > MAX_FILE {
-            return Err(UtilsError::FileTooLarge(
-                entry.path()?.display().to_string(),
-            ));
+            return Err(UtilsError::FileTooLarge(entry.path()?.to_path_buf()));
         }
         entry.unpack_in(&target_path)?;
     }
@@ -120,24 +117,18 @@ pub fn compare_directories(
             let name2 = entry2.file_name();
             if name1 != name2 {
                 return Err(UtilsError::FileNameMismatch(
-                    name1.to_string_lossy().to_string(),
-                    name2.to_string_lossy().to_string(),
+                    name1.display().to_string(),
+                    name2.display().to_string(),
                 ));
             }
 
             let content1 = fs::read(&path1)?;
             let content2 = fs::read(&path2)?;
             if content1 != content2 {
-                return Err(UtilsError::FileContentMismatch(
-                    path1.display().to_string(),
-                    path2.display().to_string(),
-                ));
+                return Err(UtilsError::FileContentMismatch(path1, path2));
             }
         } else {
-            return Err(UtilsError::TypeMismatch(
-                path1.display().to_string(),
-                path2.display().to_string(),
-            ));
+            return Err(UtilsError::PathTypeMismatch(path1, path2));
         }
     }
 
@@ -276,6 +267,30 @@ mod tests {
         assert!(matches!(
             result,
             Err(super::UtilsError::DirectoryEntryCountMismatch(1, 0))
+        ));
+    }
+
+    #[test]
+    fn compare_directories_different_content() {
+        let dir1 = tempfile::tempdir().unwrap();
+        {
+            let some_file_path = dir1.path().join("file.txt");
+            fs::create_dir_all(some_file_path.parent().unwrap()).unwrap();
+            fs::write(some_file_path, b"content1").unwrap();
+        }
+
+        let dir2 = tempfile::tempdir().unwrap();
+        {
+            let some_file_path = dir2.path().join("file.txt");
+            fs::create_dir_all(some_file_path.parent().unwrap()).unwrap();
+            fs::write(some_file_path, b"content2").unwrap();
+        }
+
+        let result = super::compare_directories(dir1.path(), dir2.path());
+
+        assert!(matches!(
+            result,
+            Err(super::UtilsError::FileContentMismatch(_, _))
         ));
     }
 
