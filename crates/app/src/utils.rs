@@ -383,6 +383,16 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn compare_directories_empty() {
+        let dir1 = tempfile::tempdir().unwrap();
+        let dir2 = tempfile::tempdir().unwrap();
+
+        let result = super::compare_directories(dir1.path(), dir2.path());
+
+        assert!(result.is_ok(),);
+    }
+
     /// Recursively copies all files and directories from `from` to `to`.
     fn copy_dir_all(from: impl AsRef<path::Path>, to: impl AsRef<path::Path>) -> io::Result<()> {
         fs::create_dir_all(&to)?; // Create the destination directory and all its parents
