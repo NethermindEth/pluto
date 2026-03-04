@@ -1,5 +1,3 @@
-use std::u8;
-
 use crate::{definition, distvalidator, helpers, lock, operator, registration, version};
 use chrono::{TimeZone, Utc};
 use pluto_crypto::tbls::Tbls;
