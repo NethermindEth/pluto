@@ -7,7 +7,7 @@ use serde_with::{DeserializeAs, SerializeAs};
 use std::borrow::Cow;
 
 use crate::{
-    definition::{self, ADDRESS_LEN},
+    definition::{self, ADDRESS_LEN, Definition},
     eip712sigs, operator,
     ssz::SSZError,
     ssz_hasher::HashWalker,
@@ -35,6 +35,31 @@ pub fn verify_sig(
     let recovered = pluto_k1util::recover(digest, sig)?;
     let actual_addr = public_key_to_address(&recovered);
     Ok(expected_addr == actual_addr)
+}
+
+/// Error type returned by `fetch_definition`.
+#[derive(Debug, thiserror::Error)]
+pub enum FetchError {
+    /// Timeout while fetching the definition.
+    #[error("timeout {0}")]
+    Timeout(#[from] tokio::time::error::Elapsed),
+
+    /// HTTP error while fetching the definition.
+    #[error("HTTP error {0}")]
+    Http(#[from] reqwest::Error),
+}
+
+/// Fetch cluster definition file from a remote URI.
+pub async fn fetch_definition(
+    url: impl reqwest::IntoUrl,
+) -> std::result::Result<Definition, FetchError> {
+    let response = tokio::time::timeout(std::time::Duration::from_secs(10), reqwest::get(url))
+        .await??
+        .error_for_status()?;
+
+    let definition = response.json::<Definition>().await?;
+
+    Ok(definition)
 }
 
 /// EthHex represents byte slices that are json formatted as 0x prefixed hex.
@@ -308,6 +333,8 @@ pub fn agg_sign(
 
 #[cfg(test)]
 mod tests {
+    use crate::test_cluster;
+
     use super::*;
     use serde_with::serde_as;
 
@@ -396,5 +423,55 @@ mod tests {
         let json = serde_json::to_string(&mixed).unwrap();
         assert!(json.contains("\"0x010203\""));
         assert!(json.contains("[4,5,6]"));
+    }
+
+    #[tokio::test]
+    async fn fetch_definition_valid() {
+        let mut random = rand::rngs::mock::StepRng::new(0, 1);
+        let (lock, ..) = test_cluster::new_for_test(1, 2, 3, 0, &mut random);
+        let expected_definition = lock.definition.clone();
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/validDef"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(lock.definition))
+            .mount(&server)
+            .await;
+
+        let actual_definition = super::fetch_definition(format!("{}/validDef", &server.uri()))
+            .await
+            .unwrap();
+
+        assert_eq!(actual_definition, expected_definition);
+    }
+
+    #[tokio::test]
+    async fn fetch_definition_invalid() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/invalidDef"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_raw("r#{}#", "application/json"),
+            )
+            .mount(&server)
+            .await;
+
+        let response = super::fetch_definition(format!("{}/invalidDef", &server.uri())).await;
+
+        assert!(matches!(response, Err(super::FetchError::Http(e)) if e.is_decode()));
+    }
+
+    #[tokio::test]
+    async fn fetch_definition_non_200() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/non_ok"))
+            .respond_with(wiremock::ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let response = super::fetch_definition(format!("{}/non_ok", &server.uri())).await;
+
+        assert!(matches!(response, Err(super::FetchError::Http(e)) if e.is_status()));
     }
 }

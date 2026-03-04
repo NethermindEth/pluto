@@ -26,6 +26,8 @@ pluto-eth2util.workspace = true
 pluto-eth1wrap.workspace = true
 pluto-k1util.workspace = true
 k256.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
 
 [build-dependencies]
 prost-build.workspace = true
@@ -34,7 +36,7 @@ prost-build.workspace = true
 test-case.workspace = true
 pluto-testutil.workspace = true
 rand.workspace = true
-tokio.workspace = true
+wiremock.workspace = true
 
 [lints]
 workspace = true
