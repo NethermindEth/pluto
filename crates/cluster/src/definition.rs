@@ -11,7 +11,7 @@ use crate::{
     ssz_hasher::Hasher,
     version::{CURRENT_VERSION, DKG_ALGO, versions::*},
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Timelike, Utc};
 use libp2p::PeerId;
 use pluto_eth1wrap::{EthClient, EthClientError};
 use pluto_eth2util::enr::{Record, RecordError};
@@ -394,7 +394,11 @@ impl Definition {
             uuid: uuid.to_string(),
             name,
             version: CURRENT_VERSION.to_string(),
-            timestamp: Utc::now().to_string(),
+            // TODO: This is very error prone and should be replaced with a controlled timestamp in UTC.
+            timestamp: chrono::Local::now()
+                .with_nanosecond(0)
+                .expect("nanoseconds = 0")
+                .to_rfc3339(),
             num_validators,
             threshold,
             dkg_algorithm: DKG_ALGO.to_string(),
