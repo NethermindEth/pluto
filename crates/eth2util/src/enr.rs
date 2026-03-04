@@ -131,7 +131,7 @@ pub fn with_udp_impl(udp: u16) -> OptionFn {
 
 impl Record {
     /// Creates a new record.
-    pub fn new(secret_key: SecretKey, opts: Vec<OptionFn>) -> Result<Self, RecordError> {
+    pub fn new(secret_key: &SecretKey, opts: Vec<OptionFn>) -> Result<Self, RecordError> {
         let mut kvs: HashMap<String, Vec<u8>> = HashMap::new();
 
         kvs.insert(KEY_ID.to_string(), VAL_ID.as_bytes().to_vec());
@@ -144,7 +144,7 @@ impl Record {
             opt(&mut kvs);
         }
 
-        let signature = sign(&secret_key, &encode_elements(&[], &kvs))?;
+        let signature = sign(secret_key, &encode_elements(&[], &kvs))?;
 
         Ok(Record {
             public_key: Some(secret_key.public_key()),
@@ -367,7 +367,7 @@ mod tests {
     fn test_encode_decode() {
         let secret_key: SecretKey<Secp256k1> = SecretKey::random(&mut OsRng);
 
-        let r1 = Record::new(secret_key, vec![]).expect("Failed to create record");
+        let r1 = Record::new(&secret_key, vec![]).expect("Failed to create record");
 
         let r2 = Record::try_from(r1.to_string().as_str()).expect("Failed to parse record");
 
@@ -386,7 +386,7 @@ mod tests {
         let expect_udp = 9000;
 
         let r1 = Record::new(
-            secret_key,
+            &secret_key,
             vec![
                 with_ip_impl(expect_ip),
                 with_tcp_impl(expect_tcp),
@@ -422,7 +422,7 @@ mod tests {
     fn test_new() {
         let secret_key: SecretKey<Secp256k1> = generate_insecure_k1_key(0);
 
-        let r = Record::new(secret_key, vec![]).expect("Failed to create record");
+        let r = Record::new(&secret_key, vec![]).expect("Failed to create record");
 
         assert_eq!(
             r.to_string(),
