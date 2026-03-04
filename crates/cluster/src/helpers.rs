@@ -1,13 +1,17 @@
 use chrono::{DateTime, Utc};
+use pluto_crypto::tbls::Tbls;
 use pluto_eth2util::helpers::{checksum_address, public_key_to_address};
 use pluto_k1util::K1UtilError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{DeserializeAs, SerializeAs};
 use std::borrow::Cow;
 
-use crate::{definition::ADDRESS_LEN, ssz::SSZError, ssz_hasher::HashWalker};
-
-type VerifySigResult<T> = std::result::Result<T, VerifySigError>;
+use crate::{
+    definition::{self, ADDRESS_LEN},
+    eip712sigs, operator,
+    ssz::SSZError,
+    ssz_hasher::HashWalker,
+};
 
 /// Error type returned by `verify_sig`.
 #[derive(Debug, thiserror::Error)]
@@ -22,7 +26,11 @@ pub enum VerifySigError {
 }
 
 /// Returns true if the signature matches the digest and expected address.
-pub fn verify_sig(expected_addr: &str, digest: &[u8], sig: &[u8]) -> VerifySigResult<bool> {
+pub fn verify_sig(
+    expected_addr: &str,
+    digest: &[u8],
+    sig: &[u8],
+) -> std::result::Result<bool, VerifySigError> {
     let expected_addr = checksum_address(expected_addr)?;
     let recovered = pluto_k1util::recover(digest, sig)?;
     let actual_addr = public_key_to_address(&recovered);
@@ -237,6 +245,65 @@ pub fn to_0x_hex(bytes: &[u8]) -> String {
     }
 
     format!("0x{}", hex::encode(bytes))
+}
+
+/// Signs the creator's config hash.
+pub fn sign_creator(
+    secret: &k256::SecretKey,
+    definition: &mut definition::Definition,
+) -> Result<(), eip712sigs::EIP712Error> {
+    let config_signature = eip712sigs::sign_eip712(
+        secret,
+        &eip712sigs::eip712_creator_config_hash(),
+        definition,
+        &operator::Operator::default(),
+    )?;
+
+    definition.creator.config_signature = config_signature;
+
+    Ok(())
+}
+
+/// Signs the operator's config hash and enr.
+pub fn sign_operator(
+    secret: &k256::SecretKey,
+    definition: &definition::Definition,
+    operator: &mut operator::Operator,
+) -> Result<(), crate::eip712sigs::EIP712Error> {
+    let config_signature = crate::eip712sigs::sign_eip712(
+        secret,
+        &crate::eip712sigs::get_operator_eip712_type(&definition.version),
+        definition,
+        &operator,
+    )?;
+
+    let enr_signature = crate::eip712sigs::sign_eip712(
+        secret,
+        &crate::eip712sigs::eip712_enr(),
+        definition,
+        &operator,
+    )?;
+
+    operator.config_signature = config_signature;
+    operator.enr_signature = enr_signature;
+
+    Ok(())
+}
+
+/// Returns a BLS aggregate signatures of the message signed by all the shares.
+pub fn agg_sign(
+    secrets: &Vec<Vec<pluto_crypto::types::PrivateKey>>,
+    message: &[u8],
+) -> Result<pluto_crypto::types::Signature, pluto_crypto::types::Error> {
+    let blst = pluto_crypto::blst_impl::BlstImpl;
+
+    let sigs = secrets
+        .iter()
+        .flat_map(|shares| shares.iter())
+        .map(|share| blst.sign(share, message))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    blst.aggregate(&sigs)
 }
 
 #[cfg(test)]
