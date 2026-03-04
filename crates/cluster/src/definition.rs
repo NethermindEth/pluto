@@ -394,7 +394,8 @@ impl Definition {
             uuid: uuid.to_string(),
             name,
             version: CURRENT_VERSION.to_string(),
-            // TODO: This is very error prone and should be replaced with a controlled timestamp in UTC.
+            // TODO: This is very error prone and should be replaced with a controlled timestamp in
+            // UTC.
             timestamp: chrono::Local::now()
                 .with_nanosecond(0)
                 .expect("nanoseconds = 0")
