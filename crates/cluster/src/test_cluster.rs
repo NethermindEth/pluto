@@ -1,3 +1,5 @@
+use std::u8;
+
 use crate::{definition, distvalidator, helpers, lock, operator, registration, version};
 use chrono::{TimeZone, Utc};
 use pluto_crypto::tbls::Tbls;
@@ -80,7 +82,8 @@ pub fn new_for_test(
 
     for i in 0..n {
         // Generate ENR
-        let p2p_key = pluto_testutil::random::generate_insecure_k1_key(seed as u8 + i); // TODO: Wrapping arithmetic
+        let p2p_key =
+            pluto_testutil::random::generate_insecure_k1_key(u8::try_from(seed).unwrap() + i);
         let addr = pluto_eth2util::helpers::public_key_to_address(&p2p_key.public_key());
         let record = pluto_eth2util::enr::Record::new(&p2p_key, Vec::new()).unwrap();
         let op = operator::Operator {
@@ -187,7 +190,9 @@ fn get_signed_registration(
         message: registration::Registration {
             fee_recipient: msg.fee_recipient,
             gas_limit: msg.gas_limit,
-            timestamp: Utc.timestamp_opt(msg.timestamp as i64, 0).unwrap(),
+            timestamp: Utc
+                .timestamp_opt(msg.timestamp.try_into().unwrap(), 0)
+                .unwrap(),
             pub_key: msg.pubkey,
         },
         signature,
