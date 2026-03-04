@@ -479,7 +479,7 @@ impl Definition {
         // there are no EIP712 signatures before v1.3.0. For definition versions
         // earlier than v1.3.0, error if either config signature or enr signature for
         // any operator is present.
-        if !Self::support_eip712_sigs(self.version.as_str()) {
+        if !Self::support_eip712_sigs(&self.version) {
             return if Self::eip712_sigs_present(&self.operators) {
                 Err(DefinitionError::OlderVersionSignaturesNotSupported)
             } else {
@@ -707,8 +707,8 @@ impl Definition {
     /// Returns true if the provided definition version supports EIP712
     /// signatures. Note that Definition versions prior to v1.3.0 don't
     /// support EIP712 signatures.
-    pub(crate) fn support_eip712_sigs(version: &str) -> bool {
-        !matches!(version, V1_0 | V1_1 | V1_2)
+    pub fn support_eip712_sigs(version: impl AsRef<str>) -> bool {
+        !matches!(version.as_ref(), V1_0 | V1_1 | V1_2)
     }
 
     fn eip712_sigs_present(operators: &[Operator]) -> bool {
