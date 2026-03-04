@@ -12,20 +12,40 @@ pub enum UtilsError {
     FileTooLarge(path::PathBuf),
 
     /// Directories have different number of entries.
-    #[error("Directory entry count mismatch: expected {0}, found {1}")]
-    DirectoryEntryCountMismatch(usize, usize),
+    #[error("Directory entry count mismatch: expected {expected}, found {found}")]
+    DirectoryEntryCountMismatch {
+        /// Expected number of entries.
+        expected: usize,
+        /// Actual number of entries
+        found: usize,
+    },
 
     /// Unexpected file contents.
-    #[error("Content mismatch: {0} vs {1}")]
-    ContentMismatch(path::PathBuf, path::PathBuf),
+    #[error("Content mismatch: {expected} vs {found}")]
+    ContentMismatch {
+        /// Expected file path.
+        expected: path::PathBuf,
+        /// Actual file path.
+        found: path::PathBuf,
+    },
 
     /// Name mismatch.
-    #[error("Name mismatch: expected {0}, found {1}")]
-    NameMismatch(String, String),
+    #[error("Name mismatch: expected {expected}, found {found}")]
+    NameMismatch {
+        /// Expected name.
+        expected: String,
+        /// Actual name.
+        found: String,
+    },
 
     /// One entry is a file and the other is a directory for a given path.
-    #[error("Type mismatch: {0} vs {1}")]
-    TypeMismatch(path::PathBuf, path::PathBuf),
+    #[error("Type mismatch: {path1} vs {path2}")]
+    TypeMismatch {
+        /// First path.
+        path1: path::PathBuf,
+        /// Second path.
+        path2: path::PathBuf,
+    },
 }
 
 type Result<T> = std::result::Result<T, UtilsError>;
@@ -109,10 +129,10 @@ pub fn compare_directories(
     entries2.sort_by_key(|e| e.file_name());
 
     if entries1.len() != entries2.len() {
-        return Err(UtilsError::DirectoryEntryCountMismatch(
-            entries1.len(),
-            entries2.len(),
-        ));
+        return Err(UtilsError::DirectoryEntryCountMismatch {
+            expected: entries1.len(),
+            found: entries2.len(),
+        });
     }
 
     for (entry1, entry2) in entries1.iter().zip(entries2.iter()) {
@@ -122,10 +142,10 @@ pub fn compare_directories(
         let name1 = entry1.file_name();
         let name2 = entry2.file_name();
         if name1 != name2 {
-            return Err(UtilsError::NameMismatch(
-                name1.display().to_string(),
-                name2.display().to_string(),
-            ));
+            return Err(UtilsError::NameMismatch {
+                expected: name1.display().to_string(),
+                found: name2.display().to_string(),
+            });
         }
 
         if path1.is_dir() && path2.is_dir() {
@@ -134,10 +154,13 @@ pub fn compare_directories(
             let content1 = fs::read(&path1)?;
             let content2 = fs::read(&path2)?;
             if content1 != content2 {
-                return Err(UtilsError::ContentMismatch(path1, path2));
+                return Err(UtilsError::ContentMismatch {
+                    expected: path1,
+                    found: path2,
+                });
             }
         } else {
-            return Err(UtilsError::TypeMismatch(path1, path2));
+            return Err(UtilsError::TypeMismatch { path1, path2 });
         }
     }
 
@@ -275,7 +298,10 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(super::UtilsError::DirectoryEntryCountMismatch(1, 0))
+            Err(super::UtilsError::DirectoryEntryCountMismatch {
+                expected: 1,
+                found: 0
+            })
         ));
     }
 
@@ -299,7 +325,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(super::UtilsError::ContentMismatch(_, _))
+            Err(super::UtilsError::ContentMismatch { .. })
         ));
     }
 
@@ -323,7 +349,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(super::UtilsError::ContentMismatch(_, _))
+            Err(super::UtilsError::ContentMismatch { .. })
         ));
     }
 
@@ -342,7 +368,10 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(super::UtilsError::DirectoryEntryCountMismatch(_, _))
+            Err(super::UtilsError::DirectoryEntryCountMismatch {
+                expected: 1,
+                found: 0
+            })
         ));
     }
 
@@ -363,7 +392,10 @@ mod tests {
 
         let result = super::compare_directories(dir1.path(), dir2.path());
 
-        assert!(matches!(result, Err(super::UtilsError::TypeMismatch(_, _))));
+        assert!(matches!(
+            result,
+            Err(super::UtilsError::TypeMismatch { .. })
+        ));
     }
 
     #[test]
@@ -383,7 +415,10 @@ mod tests {
 
         let result = super::compare_directories(dir1.path(), dir2.path());
 
-        assert!(matches!(result, Err(super::UtilsError::TypeMismatch(_, _))));
+        assert!(matches!(
+            result,
+            Err(super::UtilsError::TypeMismatch { .. })
+        ));
     }
 
     #[test]
@@ -441,7 +476,10 @@ mod tests {
 
         let result = super::compare_directories(dir1.path(), dir2.path());
 
-        assert!(matches!(result, Err(super::UtilsError::NameMismatch(_, _))));
+        assert!(matches!(
+            result,
+            Err(super::UtilsError::NameMismatch { .. })
+        ));
     }
 
     #[test]
@@ -460,7 +498,10 @@ mod tests {
 
         let result = super::compare_directories(dir1.path(), dir2.path());
 
-        assert!(matches!(result, Err(super::UtilsError::NameMismatch(_, _))));
+        assert!(matches!(
+            result,
+            Err(super::UtilsError::NameMismatch { .. })
+        ));
     }
 
     #[test]
