@@ -441,7 +441,9 @@ impl Definition {
             return Err(InvalidGasLimitError::GasLimitNotSet.into());
         }
 
-        def.set_definition_hashes()
+        def.set_definition_hashes()?;
+
+        Ok(def)
     }
 
     /// Returns the timestamp of the definition.
@@ -664,18 +666,17 @@ impl Definition {
     }
 
     /// Sets the definition hashes.
-    pub fn set_definition_hashes(mut self) -> Result<Self, DefinitionError> {
+    pub fn set_definition_hashes(&mut self) -> Result<(), DefinitionError> {
         let config_hash =
             hash_definition(&self, true).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
-
-        self.config_hash = config_hash.to_vec();
 
         let definition_hash =
             hash_definition(&self, false).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
 
+        self.config_hash = config_hash.to_vec();
         self.definition_hash = definition_hash.to_vec();
 
-        Ok(self)
+        Ok(())
     }
 
     /// `verify_hashes` returns an error if hashes populated from json object
