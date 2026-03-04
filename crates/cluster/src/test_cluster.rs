@@ -49,7 +49,7 @@ pub fn new_for_test(
         let mut priv_shares: Vec<pluto_crypto::types::PrivateKey> = Vec::new();
 
         for i in 0..n {
-            let share_priv_key = *shares.get(&(i + 1)).unwrap(); // Share indexes are 1-indexed.
+            let share_priv_key = *shares.get(&i).unwrap(); // NOTE: Pluto implementation does not use 1-based indexing for shares
             let share_pub = blst.secret_to_public_key(&share_priv_key).unwrap();
 
             pub_shares.push(share_pub);
