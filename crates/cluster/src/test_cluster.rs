@@ -80,6 +80,10 @@ pub fn new_for_test(
 
     for i in 0..n {
         // Generate ENR
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "matches the original implementation, test code only"
+        )]
         let p2p_key =
             pluto_testutil::random::generate_insecure_k1_key(u8::try_from(seed).unwrap() + i);
         let addr = pluto_eth2util::helpers::public_key_to_address(&p2p_key.public_key());
