@@ -668,10 +668,10 @@ impl Definition {
     /// Sets the definition hashes.
     pub fn set_definition_hashes(&mut self) -> Result<(), DefinitionError> {
         let config_hash =
-            hash_definition(&self, true).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
+            hash_definition(self, true).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
 
         let definition_hash =
-            hash_definition(&self, false).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
+            hash_definition(self, false).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
 
         self.config_hash = config_hash.to_vec();
         self.definition_hash = definition_hash.to_vec();

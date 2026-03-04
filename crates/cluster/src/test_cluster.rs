@@ -103,7 +103,7 @@ pub fn new_for_test(
     let mut definition = definition::Definition::new(
         "test_cluster".into(),
         dv,
-        k as u64,
+        k.into(),
         fee_recipient_addresses,
         withdrawal_addresses,
         pluto_eth2util::network::GOERLI

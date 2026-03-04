@@ -274,14 +274,14 @@ pub fn sign_operator(
         secret,
         &crate::eip712sigs::get_operator_eip712_type(&definition.version),
         definition,
-        &operator,
+        operator,
     )?;
 
     let enr_signature = crate::eip712sigs::sign_eip712(
         secret,
         &crate::eip712sigs::eip712_enr(),
         definition,
-        &operator,
+        operator,
     )?;
 
     operator.config_signature = config_signature;
