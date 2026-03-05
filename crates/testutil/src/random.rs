@@ -67,8 +67,8 @@ pub fn generate_test_bls_key(seed: u64) -> PrivateKey {
         .expect("deterministic key generation should not fail")
 }
 
-/// Generate a deterministic Ethereum address for testing using a seed.
-pub fn random_eth_address_seed(rand: &mut impl rand::Rng) -> [u8; 20] {
+/// Generate random Ethereum address for testing.
+pub fn random_eth_address(rand: &mut impl rand::Rng) -> [u8; 20] {
     let mut bytes = [0u8; 20];
     rand.fill(&mut bytes[..]);
     bytes
