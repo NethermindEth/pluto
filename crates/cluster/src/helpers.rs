@@ -337,7 +337,7 @@ pub fn sign_operator(
 
 /// Returns a BLS aggregate signatures of the message signed by all the shares.
 pub fn agg_sign(
-    secrets: &Vec<Vec<pluto_crypto::types::PrivateKey>>,
+    secrets: &[Vec<pluto_crypto::types::PrivateKey>],
     message: &[u8],
 ) -> Result<pluto_crypto::types::Signature, pluto_crypto::types::Error> {
     let blst = pluto_crypto::blst_impl::BlstImpl;
