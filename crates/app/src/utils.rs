@@ -5,7 +5,7 @@ use std::{fs, io, path};
 pub enum UtilsError {
     /// Underlying IO error occurred.
     #[error("IO error: {0}")]
-    IOError(#[from] io::Error),
+    IoError(#[from] io::Error),
 
     /// File exceeds the maximum allowed size during extraction.
     #[error("File too large: {0}")]
