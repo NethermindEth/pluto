@@ -75,7 +75,10 @@ pub async fn create_validator_keys_dir(parent_dir: &std::path::Path) -> std::io:
 
         let mut entries = tokio::fs::read_dir(&vk_dir).await?;
         if entries.next_entry().await?.is_some() {
-            return Err(std::io::ErrorKind::AlreadyExists.into());
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "validator_keys directory exists and is not empty",
+            ));
         }
     }
 
