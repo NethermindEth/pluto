@@ -151,16 +151,59 @@ pub fn compare_directories(
         if path1.is_dir() && path2.is_dir() {
             compare_directories(&path1, &path2)?;
         } else if path1.is_file() && path2.is_file() {
-            let content1 = fs::read(&path1)?;
-            let content2 = fs::read(&path2)?;
-            if content1 != content2 {
-                return Err(UtilsError::ContentMismatch {
-                    expected: path1,
-                    found: path2,
-                });
-            }
+            compare_file_contents(&path1, &path2)?;
         } else {
             return Err(UtilsError::TypeMismatch { path1, path2 });
+        }
+    }
+
+    Ok(())
+}
+
+/// Compare two files for equality.
+fn compare_file_contents(path1: &path::PathBuf, path2: &path::PathBuf) -> Result<()> {
+    let error = Err(UtilsError::ContentMismatch {
+        expected: path1.clone(),
+        found: path2.clone(),
+    });
+
+    // Fast path: compare metadata first
+    let metadata1 = fs::metadata(&path1)?;
+    let metadata2 = fs::metadata(&path2)?;
+
+    if metadata1.len() != metadata2.len() {
+        return error;
+    }
+
+    // For small files, read into memory
+    const SMALL_FILE_THRESHOLD: u64 = 5 * 1024 * 1024; // 5MB
+    if metadata1.len() < SMALL_FILE_THRESHOLD {
+        let content1 = fs::read(&path1)?;
+        let content2 = fs::read(&path2)?;
+        if content1 != content2 {
+            return error;
+        }
+    } else {
+        // Stream comparison for large files
+        use std::io::Read;
+        let mut file1 = fs::File::open(&path1)?;
+        let mut file2 = fs::File::open(&path2)?;
+
+        const BUFFER_SIZE: usize = 8192;
+        let mut buf1 = [0u8; BUFFER_SIZE];
+        let mut buf2 = [0u8; BUFFER_SIZE];
+
+        loop {
+            let n1 = file1.read(&mut buf1)?;
+            let n2 = file2.read(&mut buf2)?;
+
+            if n1 != n2 || buf1[..n1] != buf2[..n2] {
+                return error;
+            }
+
+            if n1 == 0 {
+                break; // EOF
+            }
         }
     }
 
