@@ -4,7 +4,7 @@ use pluto_eth2util::helpers::{checksum_address, public_key_to_address};
 use pluto_k1util::K1UtilError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{DeserializeAs, SerializeAs};
-use std::borrow::Cow;
+use std::{borrow::Cow, path::PathBuf};
 
 use crate::{
     definition::{self, ADDRESS_LEN, Definition},
@@ -60,6 +60,26 @@ pub async fn fetch_definition(
     let definition = response.json::<Definition>().await?;
 
     Ok(definition)
+}
+
+/// Creates a new directory for validator keys.
+/// If the directory "validator_keys" exists, it checks if the directory is
+/// empty.
+pub async fn create_validator_keys_dir(parent_dir: &std::path::Path) -> std::io::Result<PathBuf> {
+    let vk_dir = parent_dir.join("validator_keys");
+
+    if let Err(e) = tokio::fs::create_dir(&vk_dir).await {
+        if e.kind() != std::io::ErrorKind::AlreadyExists {
+            return Err(e);
+        }
+
+        let mut entries = tokio::fs::read_dir(&vk_dir).await?;
+        if entries.next_entry().await?.is_some() {
+            return Err(std::io::ErrorKind::AlreadyExists.into());
+        }
+    }
+
+    Ok(vk_dir)
 }
 
 /// EthHex represents byte slices that are json formatted as 0x prefixed hex.
@@ -473,5 +493,33 @@ mod tests {
         let response = super::fetch_definition(format!("{}/non_ok", &server.uri())).await;
 
         assert!(matches!(response, Err(super::FetchError::Http(e)) if e.is_status()));
+    }
+
+    #[tokio::test]
+    async fn create_validator_keys_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parent_dir = tmp.path();
+
+        // First attempt must succeed.
+        let dir = super::create_validator_keys_dir(parent_dir).await.unwrap();
+        assert!(dir.starts_with(parent_dir));
+        assert!(dir.ends_with("validator_keys"));
+
+        // Second attempt shall succeed as long as the dir is empty.
+        let dir2 = super::create_validator_keys_dir(parent_dir).await.unwrap();
+        assert_eq!(dir, dir2);
+
+        // Create a file in the directory to make it non-empty.
+        tokio::fs::write(dir.join("file"), b"data").await.unwrap();
+        let err = super::create_validator_keys_dir(parent_dir)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, e if e.kind() == std::io::ErrorKind::AlreadyExists));
+
+        // Parent directory does not exist
+        let err = super::create_validator_keys_dir(&parent_dir.join("nonexistent"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, e if e.kind() == std::io::ErrorKind::NotFound));
     }
 }
