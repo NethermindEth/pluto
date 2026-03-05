@@ -11,6 +11,10 @@ pub enum UtilsError {
     #[error("File too large: {0}")]
     FileTooLarge(path::PathBuf),
 
+    /// Illegal filename (attempts directory traversal)
+    #[error("Output file must be directly within the target directory")]
+    IllegalFilename,
+
     /// Directories have different number of entries.
     #[error("Directory entry count mismatch: expected {expected}, found {found}")]
     DirectoryEntryCountMismatch {
@@ -63,6 +67,12 @@ pub fn bundle_output(
     target_path: impl AsRef<path::Path>,
     filename: impl AsRef<path::Path>,
 ) -> Result<()> {
+    // Compute and validate the output path
+    let output_path = path::Path::new(target_path.as_ref()).join(filename.as_ref());
+    if output_path.parent() != Some(target_path.as_ref()) {
+        return Err(UtilsError::IllegalFilename);
+    }
+
     // Create output file
     let tar_file = tempfile::NamedTempFile::new()?;
     let tar_file_path = tar_file.path().to_owned();
@@ -78,7 +88,6 @@ pub fn bundle_output(
     fs::create_dir_all(&target_path)?;
 
     // Move the created tarball to the target location
-    let output_path = path::Path::new(target_path.as_ref()).join(filename.as_ref());
     fs::rename(tar_file_path, output_path)?;
 
     Ok(())
