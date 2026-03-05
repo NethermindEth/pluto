@@ -84,8 +84,11 @@ pub fn new_for_test(
             clippy::arithmetic_side_effects,
             reason = "matches the original implementation, test code only"
         )]
-        let p2p_key =
-            pluto_testutil::random::generate_insecure_k1_key(u8::try_from(seed).unwrap() + i);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "intentional truncation for testing purposes"
+        )]
+        let p2p_key = pluto_testutil::random::generate_insecure_k1_key(seed as u8 + i);
         let addr = pluto_eth2util::helpers::public_key_to_address(&p2p_key.public_key());
         let record = pluto_eth2util::enr::Record::new(&p2p_key, Vec::new()).unwrap();
         let op = operator::Operator {
