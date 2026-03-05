@@ -53,11 +53,11 @@ pub enum FetchError {
 pub async fn fetch_definition(
     url: impl reqwest::IntoUrl,
 ) -> std::result::Result<Definition, FetchError> {
-    let response = tokio::time::timeout(std::time::Duration::from_secs(10), reqwest::get(url))
-        .await??
-        .error_for_status()?;
-
-    let definition = response.json::<Definition>().await?;
+    let definition = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let response = reqwest::get(url).await?.error_for_status()?;
+        response.json::<Definition>().await
+    })
+    .await??;
 
     Ok(definition)
 }
