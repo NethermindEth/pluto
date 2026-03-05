@@ -46,3 +46,6 @@ pub mod p2p_context;
 
 /// Relay reservation.
 pub mod relay;
+
+/// QUIC connection upgrade behaviour.
+pub mod quic_upgrade;
