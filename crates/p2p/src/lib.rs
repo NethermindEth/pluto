@@ -49,3 +49,6 @@ pub mod relay;
 
 /// QUIC connection upgrade behaviour.
 pub mod quic_upgrade;
+
+/// Force direct connection behaviour.
+pub mod force_direct;
