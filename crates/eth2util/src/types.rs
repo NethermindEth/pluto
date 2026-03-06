@@ -1,7 +1,10 @@
 use core::fmt;
 
-use pluto_eth2api::spec::{BuilderVersion as Eth2BuilderVersion, DataVersion as Eth2DataVersion};
+use pluto_eth2api::spec::{
+    BuilderVersion as Eth2BuilderVersion, DataVersion as Eth2DataVersion, phase0,
+};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as DeError};
+use tree_hash_derive::TreeHash;
 
 /// Error returned when converting unknown data or builder versions.
 #[derive(Debug, thiserror::Error, Clone, Copy, PartialEq, Eq)]
@@ -216,10 +219,73 @@ impl<'de> Deserialize<'de> for BuilderVersion {
     }
 }
 
+/// Signature of a corresponding epoch.
+#[derive(Debug, Clone, PartialEq, Eq, TreeHash)]
+pub struct SignedEpoch {
+    /// Epoch value.
+    pub epoch: phase0::Epoch,
+    /// BLS signature for the epoch.
+    #[tree_hash(skip_hashing)]
+    pub signature: phase0::BLSSignature,
+}
+
+impl Serialize for SignedEpoch {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        #[derive(Serialize)]
+        struct SignedEpochJson<'a> {
+            epoch: String,
+            signature: &'a str,
+        }
+
+        let signature = hex::encode(self.signature);
+        let signature = format!("0x{signature}");
+
+        SignedEpochJson {
+            epoch: self.epoch.to_string(),
+            signature: signature.as_str(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SignedEpoch {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct SignedEpochJson {
+            epoch: String,
+            signature: String,
+        }
+
+        let json = SignedEpochJson::deserialize(deserializer)?;
+        let epoch = json
+            .epoch
+            .parse::<phase0::Epoch>()
+            .map_err(|err| D::Error::custom(format!("invalid epoch '{}': {err}", json.epoch)))?;
+        let trimmed = json
+            .signature
+            .strip_prefix("0x")
+            .or_else(|| json.signature.strip_prefix("0X"))
+            .ok_or_else(|| D::Error::custom("signature must have 0x prefix"))?;
+        let decoded = hex::decode(trimmed).map_err(D::Error::custom)?;
+        let signature = decoded
+            .try_into()
+            .map_err(|_: Vec<u8>| D::Error::custom("signature must be 96 bytes"))?;
+
+        Ok(Self { epoch, signature })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use test_case::test_case;
+    use tree_hash::TreeHash;
 
     #[test_case(DataVersion::Unknown, Eth2DataVersion::Unknown; "unknown")]
     #[test_case(DataVersion::Phase0, Eth2DataVersion::Phase0; "phase0")]
@@ -254,8 +320,51 @@ mod tests {
                 assert!(err.to_string().contains(expected_err));
             }
             None => {
-                assert_eq!(actual.expect("expected version"), expected.expect("expected value"));
+                assert_eq!(
+                    actual.expect("expected version"),
+                    expected.expect("expected value")
+                );
             }
         }
+    }
+
+    #[test]
+    fn signed_epoch_hash_root() {
+        let epoch = SignedEpoch {
+            epoch: 42,
+            signature: [0x11; phase0::BLS_SIGNATURE_LEN],
+        };
+
+        assert_eq!(
+            hex::encode(epoch.tree_hash_root()),
+            "2a00000000000000000000000000000000000000000000000000000000000000"
+        );
+    }
+
+    #[test]
+    fn signed_epoch_json_roundtrip() {
+        let epoch = SignedEpoch {
+            epoch: 42,
+            signature: [0x11; phase0::BLS_SIGNATURE_LEN],
+        };
+
+        let json = serde_json::to_string(&epoch).expect("marshal signed epoch");
+        assert_eq!(
+            json,
+            format!(
+                "{{\"epoch\":\"42\",\"signature\":\"0x{}\"}}",
+                hex::encode(epoch.signature)
+            )
+        );
+
+        let roundtrip: SignedEpoch = serde_json::from_str(&json).expect("unmarshal signed epoch");
+        assert_eq!(roundtrip, epoch);
+    }
+
+    #[test]
+    fn signed_epoch_requires_prefixed_signature() {
+        let err = serde_json::from_str::<SignedEpoch>("{\"epoch\":\"42\",\"signature\":\"0011\"}")
+            .expect_err("expected invalid signature");
+        assert!(err.to_string().contains("0x prefix"));
     }
 }
