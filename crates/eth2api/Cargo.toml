@@ -22,10 +22,15 @@ hex.workspace = true
 validator.workspace = true
 tree_hash.workspace = true
 tree_hash_derive.workspace = true
+ssz.workspace = true
+ssz_derive.workspace = true
+typenum.workspace = true
+alloy.workspace = true
 
 [dev-dependencies]
 testcontainers.workspace = true
 tokio.workspace = true
+test-case.workspace = true
 
 [build-dependencies]
 regex.workspace = true
