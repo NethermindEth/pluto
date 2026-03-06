@@ -1,4 +1,5 @@
 //! Ethereum 2.0 consensus layer specification types.
+//! These types are maintained in parity with `go-eth2-client` spec structures.
 
 /// Shared serde helpers for spec-compatible JSON.
 pub(crate) mod serde_utils;

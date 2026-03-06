@@ -159,7 +159,7 @@ pub(crate) fn assert_json_eq(actual: Value, expected_json: &str) {
     assert_eq!(actual, parse_json_value(expected_json));
 }
 
-fn go_attestation_data_fixture() -> phase0::AttestationData {
+fn attestation_data_fixture() -> phase0::AttestationData {
     phase0::AttestationData {
         slot: 11,
         index: 7,
@@ -219,12 +219,12 @@ pub(crate) fn phase0_beacon_block_body_fixture() -> phase0::BeaconBlockBody {
 
     let indexed_attestation_1 = phase0::IndexedAttestation {
         attesting_indices: phase0::SszList(vec![11, 12]),
-        data: go_attestation_data_fixture(),
+        data: attestation_data_fixture(),
         signature: seq::<96>(0xC0),
     };
     let indexed_attestation_2 = phase0::IndexedAttestation {
         attesting_indices: phase0::SszList(vec![13, 14]),
-        data: go_attestation_data_fixture(),
+        data: attestation_data_fixture(),
         signature: seq::<96>(0xC1),
     };
     let attester_slashing = phase0::AttesterSlashing {
@@ -236,7 +236,7 @@ pub(crate) fn phase0_beacon_block_body_fixture() -> phase0::BeaconBlockBody {
     aggregation_bits.set(0, true).expect("set bit");
     let attestation = phase0::Attestation {
         aggregation_bits,
-        data: go_attestation_data_fixture(),
+        data: attestation_data_fixture(),
         signature: seq::<96>(0xC2),
     };
 
@@ -558,7 +558,7 @@ fn electra_attestation_fixture() -> electra::Attestation {
     committee_bits.set(1, true).expect("set bit");
     electra::Attestation {
         aggregation_bits,
-        data: go_attestation_data_fixture(),
+        data: attestation_data_fixture(),
         signature: seq::<96>(0x98),
         committee_bits,
     }
@@ -567,12 +567,12 @@ fn electra_attestation_fixture() -> electra::Attestation {
 fn electra_attester_slashing_fixture() -> electra::AttesterSlashing {
     let indexed_1 = electra::IndexedAttestation {
         attesting_indices: phase0::SszList(vec![21, 22]),
-        data: go_attestation_data_fixture(),
+        data: attestation_data_fixture(),
         signature: seq::<96>(0x99),
     };
     let indexed_2 = electra::IndexedAttestation {
         attesting_indices: phase0::SszList(vec![23, 24]),
-        data: go_attestation_data_fixture(),
+        data: attestation_data_fixture(),
         signature: seq::<96>(0x9A),
     };
     electra::AttesterSlashing {

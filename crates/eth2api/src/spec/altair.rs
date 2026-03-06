@@ -246,7 +246,7 @@ mod tests {
         test_fixtures::VECTORS.altair_beacon_block_root;
         "beacon_block_root"
     )]
-    fn tree_hash_matches_go_vector(actual: String, expected: &'static str) {
+    fn tree_hash_matches_vector(actual: String, expected: &'static str) {
         assert_eq!(actual, expected);
     }
 }

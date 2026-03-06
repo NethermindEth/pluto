@@ -131,7 +131,7 @@ mod tests {
         test_fixtures::VECTORS.v1_sync_committee_selection_json;
         "sync_committee_selection_json"
     )]
-    fn json_matches_go_vector(actual: serde_json::Value, expected_json: &'static str) {
+    fn json_matches_vector(actual: serde_json::Value, expected_json: &'static str) {
         test_fixtures::assert_json_eq(actual, expected_json);
     }
 }

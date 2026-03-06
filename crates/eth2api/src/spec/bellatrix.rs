@@ -339,7 +339,7 @@ mod tests {
         test_fixtures::VECTORS.bellatrix_execution_payload_header_root;
         "execution_payload_header_root"
     )]
-    fn tree_hash_matches_go_vector(actual: String, expected: &'static str) {
+    fn tree_hash_matches_vector(actual: String, expected: &'static str) {
         assert_eq!(actual, expected);
     }
 
@@ -353,7 +353,7 @@ mod tests {
         test_fixtures::VECTORS.bellatrix_execution_payload_header_json;
         "execution_payload_header_json"
     )]
-    fn json_matches_go_vector(actual: serde_json::Value, expected_json: &'static str) {
+    fn json_matches_vector(actual: serde_json::Value, expected_json: &'static str) {
         test_fixtures::assert_json_eq(actual, expected_json);
     }
 }

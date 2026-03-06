@@ -345,12 +345,12 @@ mod tests {
         test_fixtures::VECTORS.electra_beacon_block_root;
         "beacon_block_root"
     )]
-    fn tree_hash_matches_go_vector(actual: String, expected: &'static str) {
+    fn tree_hash_matches_vector(actual: String, expected: &'static str) {
         assert_eq!(actual, expected);
     }
 
     #[test]
-    fn oversized_attestation_from_go_vector_deserializes() {
+    fn oversized_attestation_from_vector_deserializes() {
         let attestation: super::Attestation =
             serde_json::from_str(test_fixtures::VECTORS.electra_oversized_attestation_json)
                 .expect("electra attestation");
