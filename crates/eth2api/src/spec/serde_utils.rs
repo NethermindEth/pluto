@@ -16,9 +16,11 @@ pub(crate) fn trim_0x_prefix(value: &str) -> &str {
     strip_0x_prefix(value).unwrap_or(value)
 }
 
-/// Serde adapter for byte-like values encoded as `0x`-prefixed lowercase hex strings.
+/// Serde adapter for byte-like values encoded as `0x`-prefixed lowercase hex
+/// strings.
 ///
-/// Deserialization accepts both prefixed (`0x...`) and unprefixed (`...`) values.
+/// Deserialization accepts both prefixed (`0x...`) and unprefixed (`...`)
+/// values.
 pub struct Hex0x;
 
 impl<T> SerializeAs<T> for Hex0x
@@ -114,7 +116,8 @@ pub(crate) mod ssz_list_u64_string_serde {
     }
 }
 
-/// JSON helpers for decimal-encoded `U256` values with optional `0x` input support.
+/// JSON helpers for decimal-encoded `U256` values with optional `0x` input
+/// support.
 pub(crate) mod u256_dec_serde {
     use alloy::primitives::U256;
     use serde::{Deserialize, Deserializer, Serializer, de::Error as DeError};

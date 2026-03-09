@@ -20,8 +20,9 @@ pub enum VersionError {
 /// The spec version of the data in a response.
 /// The number values match those of go-eth2-client v0.17 and earlier releases.
 ///
-/// We should maybe migrate to serialising as strings to aligned with eth2 spec at which
-/// point this type can be removed in favour of the go-eth2-client type.
+/// We should maybe migrate to serialising as strings to aligned with eth2 spec
+/// at which point this type can be removed in favour of the go-eth2-client
+/// type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum DataVersion {
     /// Unknown data version.

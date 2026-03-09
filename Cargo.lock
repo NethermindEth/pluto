@@ -2567,6 +2567,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ethereum_ssz_derive"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd596f91cff004fc8d02be44c21c0f9b93140a04b66027ae052f5f8e05b48eba"
+dependencies = [
+ "darling 0.23.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.116",
+]
+
+[[package]]
 name = "event-listener"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5488,21 +5500,30 @@ dependencies = [
 name = "pluto-core"
 version = "1.7.1"
 dependencies = [
+ "alloy",
+ "base64 0.22.1",
  "built",
  "cancellation",
  "chrono",
  "crossbeam",
+ "ethereum_ssz",
  "hex",
  "libp2p",
  "pluto-build-proto",
+ "pluto-eth2api",
+ "pluto-eth2util",
  "prost 0.14.3",
  "prost-types 0.14.3",
  "rand 0.8.5",
  "regex",
  "serde",
  "serde_json",
+ "serde_with",
+ "test-case",
  "thiserror 2.0.18",
  "tokio",
+ "tree_hash",
+ "typenum",
 ]
 
 [[package]]
@@ -5511,7 +5532,6 @@ version = "1.7.1"
 dependencies = [
  "blst",
  "hex",
- "pluto-core",
  "pluto-eth2api",
  "rand 0.8.5",
  "rand_core 0.6.4",
@@ -5542,9 +5562,12 @@ dependencies = [
 name = "pluto-eth2api"
 version = "1.7.1"
 dependencies = [
+ "alloy",
  "anyhow",
  "bon",
  "chrono",
+ "ethereum_ssz",
+ "ethereum_ssz_derive",
  "hex",
  "http",
  "oas3-gen-support",
@@ -5553,11 +5576,13 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "test-case",
  "testcontainers",
  "thiserror 2.0.18",
  "tokio",
  "tree_hash",
  "tree_hash_derive",
+ "typenum",
  "validator",
 ]
 

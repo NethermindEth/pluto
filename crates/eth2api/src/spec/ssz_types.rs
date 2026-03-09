@@ -1,8 +1,9 @@
 //! SSZ container helpers used by spec types.
 //!
-//! The `tree_hash` crate supports SSZ TreeHash for many primitives, but does not
-//! provide `TreeHash` for `Vec<T>` directly. These wrappers encode SSZ list/vector
-//! semantics and include optional length enforcement during serde deserialization.
+//! The `tree_hash` crate supports SSZ TreeHash for many primitives, but does
+//! not provide `TreeHash` for `Vec<T>` directly. These wrappers encode SSZ
+//! list/vector semantics and include optional length enforcement during serde
+//! deserialization.
 
 use serde::{Deserialize, Serialize, de::Error as DeError};
 use tree_hash::{Hash256, PackedEncoding, TreeHash, TreeHashType, merkle_root, mix_in_length};
@@ -23,7 +24,8 @@ fn tree_hash_bytes<T: TreeHash>(values: &[T]) -> Vec<u8> {
     bytes
 }
 
-/// SSZ variable-length list wrapper with optional max length and TreeHash support.
+/// SSZ variable-length list wrapper with optional max length and TreeHash
+/// support.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SszList<T, const MAX: usize = 0>(
     /// Elements in the SSZ list.
@@ -183,8 +185,9 @@ mod tests {
 
     #[test]
     fn ssz_list_tree_hash_depends_on_max_len() {
-        // For SSZ List[T, MAX], the tree hash uses `minimum_leaf_count` derived from MAX.
-        // If MAX is wrong/ignored, roots can silently diverge from spec implementations.
+        // For SSZ List[T, MAX], the tree hash uses `minimum_leaf_count` derived from
+        // MAX. If MAX is wrong/ignored, roots can silently diverge from spec
+        // implementations.
         let list_max_4: SszList<u64, 4> = vec![42].into();
         let list_max_8: SszList<u64, 8> = vec![42].into();
         assert_ne!(list_max_4.tree_hash_root(), list_max_8.tree_hash_root());
@@ -192,8 +195,9 @@ mod tests {
 
     #[test]
     fn ssz_vector_tree_hash_depends_on_size() {
-        // For basic types, packing can make different sizes hash to the same single chunk
-        // (e.g. size 1 vs 2 `u64`s). Use sizes that force a different leaf count.
+        // For basic types, packing can make different sizes hash to the same single
+        // chunk (e.g. size 1 vs 2 `u64`s). Use sizes that force a different
+        // leaf count.
         let vec_size_4: SszVector<u64, 4> = vec![42, 0, 0, 0].into();
         let vec_size_5: SszVector<u64, 5> = vec![42, 0, 0, 0, 0].into();
         assert_ne!(vec_size_4.tree_hash_root(), vec_size_5.tree_hash_root());

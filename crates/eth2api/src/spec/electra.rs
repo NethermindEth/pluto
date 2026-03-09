@@ -93,7 +93,7 @@ pub struct DepositRequest {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct WithdrawalRequest {
     /// Source execution address.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde(with = "bellatrix::execution_address_serde")]
     pub source_address: bellatrix::ExecutionAddress,
     /// Validator public key.
     #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
@@ -110,7 +110,7 @@ pub struct WithdrawalRequest {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct ConsolidationRequest {
     /// Source execution address.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde(with = "bellatrix::execution_address_serde")]
     pub source_address: bellatrix::ExecutionAddress,
     /// Source validator public key.
     #[serde_as(as = "crate::spec::serde_utils::Hex0x")]

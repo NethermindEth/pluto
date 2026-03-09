@@ -44,7 +44,7 @@ pub struct BLSToExecutionChange {
     #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
     pub from_bls_pubkey: phase0::BLSPubKey,
     /// Execution address to change to.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde(with = "bellatrix::execution_address_serde")]
     pub to_execution_address: bellatrix::ExecutionAddress,
 }
 
