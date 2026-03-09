@@ -12,6 +12,7 @@ use crate::{
     conn_logger::{ConnectionLoggerBehaviour, DefaultConnectionLoggerMetrics},
     gater::ConnGater,
     p2p_context::P2PContext,
+    quic_upgrade::QuicUpgradeBehaviour,
 };
 
 pub use super::optional::OptionalBehaviour;
@@ -39,6 +40,7 @@ pub const DEFAULT_IDENTIFY_CACHE_SIZE: usize = 100;
 /// - **Identify**: Exchanges peer information and supported protocols
 /// - **Ping**: Measures latency and keeps connections alive
 /// - **AutoNAT**: Detects NAT status and public reachability
+/// - **QUIC upgrade**: Periodically upgrades TCP connections to QUIC
 #[derive(NetworkBehaviour)]
 pub struct PlutoBehaviour<B: NetworkBehaviour> {
     /// Connection logger behaviour - MUST be first so peer store is updated
@@ -52,6 +54,8 @@ pub struct PlutoBehaviour<B: NetworkBehaviour> {
     pub ping: ping::Behaviour,
     /// AutoNAT behaviour for NAT detection.
     pub autonat: autonat::Behaviour,
+    /// QUIC upgrade behaviour for upgrading TCP to QUIC connections.
+    pub quic_upgrade: QuicUpgradeBehaviour,
     /// Inner behaviour.
     pub inner: OptionalBehaviour<B>,
 }
@@ -70,6 +74,7 @@ impl<B: NetworkBehaviour> PlutoBehaviour<B> {
 /// - **Identify**: Protocol and agent identification
 /// - **Ping**: Latency measurement and keepalive
 /// - **AutoNAT**: NAT traversal detection
+/// - **QUIC upgrade**: Periodic TCP to QUIC connection upgrades
 #[derive(Debug, Clone)]
 pub struct PlutoBehaviourBuilder<B> {
     // Gater config
@@ -84,6 +89,9 @@ pub struct PlutoBehaviourBuilder<B> {
 
     p2p_context: P2PContext,
 
+    // QUIC upgrade config
+    quic_enabled: bool,
+
     // Inner behaviour
     inner: Option<B>,
 }
@@ -96,6 +104,7 @@ impl<B> Default for PlutoBehaviourBuilder<B> {
             user_agent: DEFAULT_USER_AGENT.clone(),
             autonat_config: autonat::Config::default(),
             p2p_context: P2PContext::default(),
+            quic_enabled: false,
             inner: None,
         }
     }
@@ -166,19 +175,30 @@ impl<B: NetworkBehaviour> PlutoBehaviourBuilder<B> {
         self
     }
 
+    /// Sets whether QUIC is enabled.
+    ///
+    /// When enabled, the behaviour will periodically attempt to upgrade
+    /// TCP connections to QUIC connections.
+    pub fn with_quic_enabled(mut self, enabled: bool) -> Self {
+        self.quic_enabled = enabled;
+        self
+    }
+
     /// Builds the [`PlutoBehaviour`] with the provided keypair.
     ///
     /// # Arguments
     ///
     /// * `key` - The keypair for this node, used for identify and autonat
     pub fn build(self, key: &Keypair) -> PlutoBehaviour<B> {
+        let local_peer_id = key.public().to_peer_id();
+
         let identify_config = identify::Config::new(self.identify_protocol, key.public())
             .with_agent_version(self.user_agent)
             .with_interval(DEFAULT_IDENTIFY_INTERVAL)
             .with_cache_size(DEFAULT_IDENTIFY_CACHE_SIZE);
 
         PlutoBehaviour {
-            conn_logger: ConnectionLoggerBehaviour::new(self.p2p_context),
+            conn_logger: ConnectionLoggerBehaviour::new(self.p2p_context.clone()),
             gater: self.gater.unwrap_or_else(ConnGater::new_open_gater),
             identify: identify::Behaviour::new(identify_config),
             ping: ping::Behaviour::new(
@@ -186,7 +206,12 @@ impl<B: NetworkBehaviour> PlutoBehaviourBuilder<B> {
                     .with_interval(DEFAULT_PING_INTERVAL)
                     .with_timeout(DEFAULT_PING_TIMEOUT),
             ),
-            autonat: autonat::Behaviour::new(key.public().to_peer_id(), self.autonat_config),
+            autonat: autonat::Behaviour::new(local_peer_id, self.autonat_config),
+            quic_upgrade: QuicUpgradeBehaviour::new(
+                self.p2p_context,
+                local_peer_id,
+                self.quic_enabled,
+            ),
             inner: self.inner.into(),
         }
     }
