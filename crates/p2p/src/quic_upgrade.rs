@@ -16,7 +16,7 @@ use libp2p::{
         dummy,
     },
 };
-use tokio::time::Instant;
+use tokio::time::Interval;
 use tracing::{debug, info};
 
 use crate::{
@@ -41,8 +41,9 @@ struct QuicUpgradeBackoff {
 }
 
 impl QuicUpgradeBackoff {
-    /// Initial backoff duration (2 minutes).
-    const INITIAL: u32 = 2;
+    /// Initial backoff duration (1 minute, becomes 2 minutes after first
+    /// failure).
+    const INITIAL: u32 = 1;
     /// Maximum backoff duration (512 minutes / ~8 hours).
     const MAX: u32 = 512;
 
@@ -116,10 +117,8 @@ pub struct QuicUpgradeBehaviour {
     pending_events: VecDeque<ToSwarm<QuicUpgradeEvent, Infallible>>,
     /// In-progress upgrade attempts.
     pending_upgrades: HashMap<PeerId, UpgradeState>,
-    /// Next time to run upgrade logic.
-    next_tick: Instant,
-    /// Interval between upgrade attempts.
-    interval: Duration,
+    /// Interval timer for running upgrade logic periodically.
+    ticker: Interval,
     /// Whether QUIC is enabled on this node.
     quic_enabled: bool,
 }
@@ -131,8 +130,7 @@ impl std::fmt::Debug for QuicUpgradeBehaviour {
             .field("backoffs", &self.backoffs)
             .field("pending_events", &self.pending_events.len())
             .field("pending_upgrades", &self.pending_upgrades.len())
-            .field("next_tick", &self.next_tick)
-            .field("interval", &self.interval)
+            .field("ticker", &"<Interval>")
             .field("quic_enabled", &self.quic_enabled)
             .finish()
     }
@@ -147,15 +145,16 @@ impl QuicUpgradeBehaviour {
     /// * `local_peer_id` - Local peer ID to skip self
     /// * `quic_enabled` - Whether QUIC is enabled on this node
     pub fn new(p2p_context: P2PContext, local_peer_id: PeerId, quic_enabled: bool) -> Self {
-        let now = Instant::now();
+        let mut ticker = tokio::time::interval(UPGRADE_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         Self {
             p2p_context,
             local_peer_id,
             backoffs: HashMap::new(),
             pending_events: VecDeque::new(),
             pending_upgrades: HashMap::new(),
-            next_tick: now.checked_add(UPGRADE_INTERVAL).unwrap_or(now),
-            interval: UPGRADE_INTERVAL,
+            ticker,
             quic_enabled,
         }
     }
@@ -337,9 +336,12 @@ impl QuicUpgradeBehaviour {
                 debug!(
                     peer = %peer_name(&peer_id),
                     addr = %addr,
-                    "connected via TCP after upgrade to QUIC connection"
+                    "connected via non-direct address instead of direct QUIC"
                 );
-                self.record_failure(peer_id, "connected via TCP instead of QUIC");
+                self.record_failure(
+                    peer_id,
+                    "connected via non-direct address instead of direct QUIC",
+                );
             }
         }
     }
@@ -416,9 +418,7 @@ impl NetworkBehaviour for QuicUpgradeBehaviour {
             return Poll::Ready(event);
         }
 
-        let now = Instant::now();
-        if now >= self.next_tick {
-            self.next_tick = now.checked_add(self.interval).unwrap_or(now);
+        if self.ticker.poll_tick(cx).is_ready() {
             self.run_upgrade_logic();
 
             if let Some(event) = self.pending_events.pop_front() {
@@ -426,8 +426,6 @@ impl NetworkBehaviour for QuicUpgradeBehaviour {
             }
         }
 
-        // Wake to check timer
-        cx.waker().wake_by_ref();
         Poll::Pending
     }
 }
