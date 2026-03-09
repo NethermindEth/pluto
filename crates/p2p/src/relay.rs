@@ -10,9 +10,8 @@
 //! relays, even if they are not directly connected to the node.
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, HashSet, VecDeque},
     convert::Infallible,
-    sync::{Arc, Mutex},
     task::{Context, Poll},
     time::Duration,
 };
@@ -31,56 +30,68 @@ use libp2p::{
 };
 
 /// Mutable relay reservation behaviour.
+///
+/// This behaviour manages relay reservations by:
+/// 1. Dialing relay servers
+/// 2. Waiting for connections to establish
+/// 3. Creating relay circuit listeners once connected
 pub struct MutableRelayReservation {
-    events: Arc<Mutex<VecDeque<ToSwarm<Infallible, Infallible>>>>,
+    /// Events to emit to the swarm
+    events: VecDeque<ToSwarm<Infallible, Infallible>>,
+    /// Relay peers we're waiting to connect to
+    pending_relays: HashSet<PeerId>,
+    /// Circuit addresses to listen on once relay connections are established
+    pending_circuit_addrs: HashMap<PeerId, Vec<Multiaddr>>,
 }
 
 impl MutableRelayReservation {
     /// Creates a new mutable relay reservation.
     ///
-    /// This behaviour listens on relay addresses to create reservations,
-    /// allowing other peers to reach this node through the relays.
+    /// This behaviour dials relays and waits for connections to establish
+    /// before creating circuit listeners, allowing other peers to reach
+    /// this node through the relays.
     pub fn new(mutable_peer: Vec<MutablePeer>) -> Self {
-        let events = Arc::new(Mutex::new(VecDeque::new()));
+        let mut events = VecDeque::new();
+        let mut pending_relays = HashSet::new();
+        let mut pending_circuit_addrs = HashMap::new();
+
+        // Queue initial dial events for each relay
         for mutable_peer in &mutable_peer {
-            let events_clone = events.clone();
-            // Listen on the relay to create a reservation
-            {
-                if let Ok(Some(peer)) = mutable_peer.peer() {
-                    let mut events = events.lock().unwrap_or_else(|poisoned| {
-                        tracing::warn!("Failed to lock events: {}", poisoned);
-                        poisoned.into_inner()
-                    });
-                    // Create relay circuit addresses: /ip4/.../tcp/.../p2p/{relay-id}/p2p-circuit
-                    for addr in &peer.addresses {
-                        let mut relay_addr = addr.clone();
-                        relay_addr.push(MaProtocol::P2p(peer.id));
-                        relay_addr.push(MaProtocol::P2pCircuit);
-                        events.push_back(ToSwarm::ListenOn {
-                            opts: libp2p::swarm::ListenOpts::new(relay_addr),
-                        });
-                    }
-                }
-            }
-            if let Err(e) = mutable_peer.subscribe(Box::new(move |peer| {
-                let mut events = events_clone.lock().unwrap_or_else(|poisoned| {
-                    tracing::warn!("Failed to lock events: {}", poisoned);
-                    poisoned.into_inner()
-                });
-                // Create relay circuit addresses: /ip4/.../tcp/.../p2p/{relay-id}/p2p-circuit
+            if let Ok(Some(peer)) = mutable_peer.peer() {
+                pending_relays.insert(peer.id);
+
+                // Build circuit addresses for this relay
+                let mut circuit_addrs = Vec::new();
                 for addr in &peer.addresses {
                     let mut relay_addr = addr.clone();
                     relay_addr.push(MaProtocol::P2p(peer.id));
                     relay_addr.push(MaProtocol::P2pCircuit);
-                    events.push_back(ToSwarm::ListenOn {
-                        opts: libp2p::swarm::ListenOpts::new(relay_addr),
+                    circuit_addrs.push(relay_addr);
+                }
+                pending_circuit_addrs.insert(peer.id, circuit_addrs);
+
+                // Dial the relay server (required before listening on circuit)
+                for addr in &peer.addresses {
+                    let mut relay_addr = addr.clone();
+                    relay_addr.push(MaProtocol::P2p(peer.id));
+                    // Do NOT add P2pCircuit here - we're dialing the relay server directly
+                    events.push_back(ToSwarm::Dial {
+                        opts: DialOpts::unknown_peer_id().address(relay_addr).build(),
                     });
                 }
-            })) {
-                tracing::warn!("Failed to subscribe to mutable peer: {}", e);
+
+                tracing::debug!(
+                    relay_peer_id = %peer.id,
+                    "Queued relay dial, will listen on circuit after connection establishes"
+                );
             }
         }
-        Self { events }
+
+        Self {
+            events,
+            pending_relays,
+            pending_circuit_addrs,
+        }
     }
 }
 
@@ -109,8 +120,26 @@ impl NetworkBehaviour for MutableRelayReservation {
         Ok(dummy::ConnectionHandler)
     }
 
-    fn on_swarm_event(&mut self, _event: FromSwarm) {
-        // No special handling needed for swarm events
+    fn on_swarm_event(&mut self, event: FromSwarm) {
+        // Listen for relay connection establishment
+        if let FromSwarm::ConnectionEstablished(conn) = event {
+            // Check if this is a relay we're waiting for
+            if self.pending_relays.remove(&conn.peer_id) {
+                tracing::info!(
+                    relay_peer_id = %conn.peer_id,
+                    "Relay connection established, listening on circuit addresses"
+                );
+
+                // Queue ListenOn events for this relay's circuit addresses
+                if let Some(circuit_addrs) = self.pending_circuit_addrs.remove(&conn.peer_id) {
+                    for circuit_addr in circuit_addrs {
+                        self.events.push_back(ToSwarm::ListenOn {
+                            opts: libp2p::swarm::ListenOpts::new(circuit_addr),
+                        });
+                    }
+                }
+            }
+        }
     }
 
     fn on_connection_handler_event(
@@ -126,11 +155,7 @@ impl NetworkBehaviour for MutableRelayReservation {
         &mut self,
         _cx: &mut Context<'_>,
     ) -> std::task::Poll<ToSwarm<Self::ToSwarm, THandlerInEvent<Self>>> {
-        let mut events = self.events.lock().unwrap_or_else(|poisoned| {
-            tracing::warn!("Failed to lock events: {}", poisoned);
-            poisoned.into_inner()
-        });
-        if let Some(event) = events.pop_front() {
+        if let Some(event) = self.events.pop_front() {
             return Poll::Ready(event);
         }
         Poll::Pending
