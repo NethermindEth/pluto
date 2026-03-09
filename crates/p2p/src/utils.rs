@@ -166,3 +166,31 @@ pub fn is_quic_addr(addr: &Multiaddr) -> bool {
 pub fn is_tcp_addr(addr: &Multiaddr) -> bool {
     addr.iter().any(|p| matches!(p, MaProtocol::Tcp(_)))
 }
+
+/// Returns true if the node has QUIC enabled (listening on QUIC addresses).
+pub fn is_quic_enabled<'a>(listen_addrs: impl Iterator<Item = &'a Multiaddr>) -> bool {
+    listen_addrs.into_iter().any(is_quic_addr)
+}
+
+/// Returns true if there is a direct (non-relay) QUIC connection among the
+/// peers.
+pub fn has_direct_quic_conn(peers: &[&crate::p2p_context::Peer]) -> bool {
+    peers
+        .iter()
+        .any(|p| is_quic_addr(&p.remote_addr) && !is_relay_addr(&p.remote_addr))
+}
+
+/// Returns true if there is a direct (non-relay) TCP connection among the
+/// peers.
+pub fn has_direct_tcp_conn(peers: &[&crate::p2p_context::Peer]) -> bool {
+    peers
+        .iter()
+        .any(|p| is_tcp_addr(&p.remote_addr) && !is_relay_addr(&p.remote_addr))
+}
+
+/// Filters addresses to only direct (non-relay) QUIC addresses.
+pub fn filter_direct_quic_addrs(addrs: impl Iterator<Item = Multiaddr>) -> Vec<Multiaddr> {
+    addrs
+        .filter(|a| is_quic_addr(a) && !is_relay_addr(a))
+        .collect()
+}
