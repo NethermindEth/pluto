@@ -194,3 +194,8 @@ pub fn filter_direct_quic_addrs(addrs: impl Iterator<Item = Multiaddr>) -> Vec<M
         .filter(|a| is_quic_addr(a) && !is_relay_addr(a))
         .collect()
 }
+
+/// Returns true if the multiaddr is a direct (non-relay) address.
+pub fn is_direct_addr(addr: &Multiaddr) -> bool {
+    !is_relay_addr(addr)
+}

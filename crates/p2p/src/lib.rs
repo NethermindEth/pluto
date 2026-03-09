@@ -43,3 +43,6 @@ pub mod p2p_context;
 
 /// QUIC connection upgrade behaviour.
 pub mod quic_upgrade;
+
+/// Force direct connection behaviour.
+pub mod force_direct;
