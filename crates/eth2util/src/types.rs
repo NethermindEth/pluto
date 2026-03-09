@@ -73,7 +73,7 @@ impl DataVersion {
         }
     }
 
-    /// Converts an eth2 spec data version to go-parity `DataVersion`.
+    /// Converts an eth2 spec data version to eth2util `DataVersion`.
     pub const fn from_eth2(version: Eth2DataVersion) -> Result<Self, VersionError> {
         match version {
             Eth2DataVersion::Phase0 => Ok(Self::Phase0),
@@ -101,7 +101,7 @@ impl DataVersion {
         }
     }
 
-    /// Converts a legacy pre-v0.18 numeric value to go-parity `DataVersion`.
+    /// Converts a legacy pre-v0.18 numeric value to eth2util `DataVersion`.
     pub const fn from_legacy_u64(value: u64) -> Result<Self, VersionError> {
         match value {
             0 => Ok(Self::Phase0),
@@ -142,7 +142,7 @@ impl<'de> Deserialize<'de> for DataVersion {
     }
 }
 
-/// Go-parity builder version used by signeddata wrappers.
+/// Builder version used by signeddata wrappers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum BuilderVersion {
     /// Unknown builder version.
@@ -169,7 +169,7 @@ impl BuilderVersion {
         }
     }
 
-    /// Converts an eth2 spec builder version to go-parity `BuilderVersion`.
+    /// Converts an eth2 spec builder version to eth2util `BuilderVersion`.
     pub const fn from_eth2(version: Eth2BuilderVersion) -> Result<Self, VersionError> {
         match version {
             Eth2BuilderVersion::V1 => Ok(Self::V1),
@@ -185,7 +185,7 @@ impl BuilderVersion {
         }
     }
 
-    /// Converts a legacy pre-v0.18 numeric value to go-parity `BuilderVersion`.
+    /// Converts a legacy pre-v0.18 numeric value to eth2util `BuilderVersion`.
     pub const fn from_legacy_u64(value: u64) -> Result<Self, VersionError> {
         match value {
             0 => Ok(Self::V1),
