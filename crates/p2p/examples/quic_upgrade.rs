@@ -39,6 +39,7 @@
 //! ```text
 //! [CONNECTED] 16Uiu2HAm... via TCP at /ip4/127.0.0.1/tcp/9000
 //! [IDENTIFY] Received from 16Uiu2HAm...
+//!   Agent: quic-upgrade-example/1.0.0
 //!   Addresses:
 //!     - [TCP] /ip4/127.0.0.1/tcp/9000
 //!     - [QUIC] /ip4/127.0.0.1/udp/9000/quic-v1
@@ -53,12 +54,7 @@ use std::str::FromStr;
 use anyhow::Result;
 use clap::Parser;
 use k256::elliptic_curve::rand_core::OsRng;
-use libp2p::{
-    Multiaddr, PeerId,
-    futures::StreamExt,
-    relay,
-    swarm::{NetworkBehaviour, SwarmEvent},
-};
+use libp2p::{Multiaddr, PeerId, futures::StreamExt, relay, swarm::SwarmEvent};
 use pluto_p2p::{
     behaviours::pluto::PlutoBehaviourEvent,
     config::P2PConfig,
@@ -66,27 +62,6 @@ use pluto_p2p::{
     quic_upgrade::QuicUpgradeEvent,
 };
 use tokio::signal;
-
-/// Simple behaviour with just relay client.
-#[derive(NetworkBehaviour)]
-#[behaviour(to_swarm = "SimpleBehaviourEvent")]
-pub struct SimpleBehaviour {
-    /// Relay client (required by Node::new).
-    pub relay: relay::client::Behaviour,
-}
-
-/// Events from the simple behaviour.
-#[derive(Debug)]
-pub enum SimpleBehaviourEvent {
-    /// Relay event.
-    Relay(relay::client::Event),
-}
-
-impl From<relay::client::Event> for SimpleBehaviourEvent {
-    fn from(event: relay::client::Event) -> Self {
-        SimpleBehaviourEvent::Relay(event)
-    }
-}
 
 /// Command line arguments.
 #[derive(Debug, Parser)]
@@ -142,9 +117,7 @@ async fn main() -> Result<()> {
             builder
                 .with_user_agent("quic-upgrade-example/1.0.0")
                 .with_quic_enabled(true) // Enable QUIC upgrade behaviour
-                .with_inner(SimpleBehaviour {
-                    relay: relay_client,
-                })
+                .with_inner(relay_client)
         },
     )?;
 
@@ -181,7 +154,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn handle_event(event: SwarmEvent<PlutoBehaviourEvent<SimpleBehaviour>>) {
+fn handle_event(event: SwarmEvent<PlutoBehaviourEvent<relay::client::Behaviour>>) {
     match event {
         // New listen address
         SwarmEvent::NewListenAddr { address, .. } => {
