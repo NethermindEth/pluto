@@ -41,17 +41,20 @@ pub async fn run_relay_p2p_node(
     )?;
 
     // todo: change to version::log_info
-    info!("Charon relay starting");
+    info!("Pluto relay starting");
+
+    // todo: configure libp2p log level
 
     // todo: monitor connections
 
-    for tcp_addr in config.p2p_config.tcp_addrs.iter() {
+    for tcp_addr in config.p2p_config.tcp_multiaddrs()? {
         debug!("Listening on TCP address {}", tcp_addr);
-        node.listen_on(tcp_addr.parse()?)?;
+        node.listen_on(tcp_addr)?;
     }
-    for udp_addr in config.p2p_config.udp_addrs.iter() {
+
+    for udp_addr in config.p2p_config.udp_multiaddrs()? {
         debug!("Listening on UDP address {}", udp_addr);
-        node.listen_on(udp_addr.parse()?)?;
+        node.listen_on(udp_addr)?;
     }
 
     let (server_errors, mut server_errors_receiver) = mpsc::channel(3);

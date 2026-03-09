@@ -1,0 +1,15 @@
+[package]
+name = "pluto-eth1wrap"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+alloy.workspace = true
+url.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

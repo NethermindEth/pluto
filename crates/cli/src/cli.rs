@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use crate::commands::{
     create_enr::CreateEnrArgs,
     enr::EnrArgs,
+    relay::RelayArgs,
     test::{
         all::TestAllArgs, beacon::TestBeaconArgs, infra::TestInfraArgs, mev::TestMevArgs,
         peers::TestPeersArgs, validator::TestValidatorArgs,
@@ -43,6 +44,12 @@ pub enum Commands {
 
     #[command(about = "Print version and exit", long_about = "Output version info")]
     Version(VersionArgs),
+
+    #[command(
+        about = "Start a libp2p relay server",
+        long_about = "Starts a libp2p circuit relay that charon clients can use to discover and connect to their peers."
+    )]
+    Relay(Box<RelayArgs>),
 
     #[command(
         about = "Alpha subcommands provide early access to in-development features",

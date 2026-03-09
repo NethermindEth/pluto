@@ -9,12 +9,13 @@ use clap::{CommandFactory, FromArgMatches};
 mod ascii;
 mod cli;
 mod commands;
-pub mod duration;
+mod duration;
 mod error;
 
 use cli::{AlphaCommands, Cli, Commands, CreateCommands, TestCommands};
 
 use crate::error::ExitResult;
+use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
 async fn main() -> ExitResult {
@@ -25,12 +26,23 @@ async fn main() -> ExitResult {
         Err(e) => return ExitResult(Err(error::CliError::Other(e.to_string()))),
     };
 
+    // Top level cancellation token for graceful shutdown on Ctrl+C
+    let ct = CancellationToken::new();
+    tokio::spawn({
+        let ct = ct.clone();
+        async move {
+            let _ = tokio::signal::ctrl_c().await;
+            ct.cancel();
+        }
+    });
+
     let result = match cli.command {
         Commands::Create(args) => match args.command {
             CreateCommands::Enr(args) => commands::create_enr::run(args),
         },
         Commands::Enr(args) => commands::enr::run(args),
         Commands::Version(args) => commands::version::run(args),
+        Commands::Relay(args) => commands::relay::run(*args, ct.child_token()).await,
         Commands::Alpha(args) => match args.command {
             AlphaCommands::Test(args) => {
                 let mut stdout = std::io::stdout();

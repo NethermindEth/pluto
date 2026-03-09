@@ -1,6 +1,3 @@
-// Copyright © 2022-2025 Obol Labs Inc. Licensed under the terms of a Business
-// Source License 1.1
-
 /// List of supported cluster definition versions.
 pub mod versions {
     /// Version v1.10.0 (Default)
@@ -42,3 +39,57 @@ pub const MIN_VERSION_FOR_PARTIAL_DEPOSITS: &str = V1_8;
 pub const SUPPORTED_VERSIONS: [&str; 11] = [
     V1_10, V1_9, V1_8, V1_7, V1_6, V1_5, V1_4, V1_3, V1_2, V1_1, V1_0,
 ];
+
+/// Returns true if the provided cluster definition version supports
+/// pre-generated builder registrations.
+#[must_use]
+pub fn support_pregen_registrations(version: &str) -> bool {
+    !matches!(version, V1_0 | V1_1 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6)
+}
+
+/// Returns true if the provided cluster lock version supports node signatures.
+#[must_use]
+pub fn support_node_signatures(version: &str) -> bool {
+    !matches!(version, V1_0 | V1_1 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        V1_0, V1_1, V1_2, V1_3, V1_4, V1_5, V1_6, V1_7, V1_8, V1_9, V1_10, support_node_signatures,
+        support_pregen_registrations,
+    };
+    use test_case::test_case;
+
+    #[test_case(V1_0, false; "v1.0.0")]
+    #[test_case(V1_1, false; "v1.1.0")]
+    #[test_case(V1_2, false; "v1.2.0")]
+    #[test_case(V1_3, false; "v1.3.0")]
+    #[test_case(V1_4, false; "v1.4.0")]
+    #[test_case(V1_5, false; "v1.5.0")]
+    #[test_case(V1_6, false; "v1.6.0")]
+    #[test_case(V1_7, true; "v1.7.0")]
+    #[test_case(V1_8, true; "v1.8.0")]
+    #[test_case(V1_9, true; "v1.9.0")]
+    #[test_case(V1_10, true; "v1.10.0")]
+    #[test_case("invalid", true; "unknown version")]
+    fn support_pregen_registrations_by_version(version: &str, expected: bool) {
+        assert_eq!(support_pregen_registrations(version), expected);
+    }
+
+    #[test_case(V1_0, false; "v1.0.0")]
+    #[test_case(V1_1, false; "v1.1.0")]
+    #[test_case(V1_2, false; "v1.2.0")]
+    #[test_case(V1_3, false; "v1.3.0")]
+    #[test_case(V1_4, false; "v1.4.0")]
+    #[test_case(V1_5, false; "v1.5.0")]
+    #[test_case(V1_6, false; "v1.6.0")]
+    #[test_case(V1_7, true; "v1.7.0")]
+    #[test_case(V1_8, true; "v1.8.0")]
+    #[test_case(V1_9, true; "v1.9.0")]
+    #[test_case(V1_10, true; "v1.10.0")]
+    #[test_case("invalid", true; "unknown version")]
+    fn support_node_signatures_by_version(version: &str, expected: bool) {
+        assert_eq!(support_node_signatures(version), expected);
+    }
+}

@@ -26,7 +26,7 @@ impl Termination for ExitResult {
 
 /// Errors that can occur in the Pluto CLI.
 #[derive(Error, Debug)]
-pub(crate) enum CliError {
+pub enum CliError {
     /// Private key file not found.
     #[error(
         "Private key not found. If this is your first time running this client, create one with `pluto create enr`."
@@ -50,6 +50,10 @@ pub(crate) enum CliError {
     /// ENR generation failed.
     #[error("ENR generation failed: {0}")]
     EnrError(#[from] pluto_eth2util::enr::RecordError),
+
+    /// Invalid Multiaddr
+    #[error("Invalid multiaddr: {0}")]
+    InvalidMultiaddr(#[from] libp2p::multiaddr::Error),
 
     /// IO error occurred.
     #[error("IO error: {0}")]
@@ -86,4 +90,8 @@ pub(crate) enum CliError {
     /// Generic error with message.
     #[error("{0}")]
     Other(String),
+
+    /// Relay P2P error.
+    #[error("Relay P2P error: {0}")]
+    RelayP2PError(#[from] pluto_relay_server::error::RelayP2PError),
 }
