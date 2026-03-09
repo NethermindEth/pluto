@@ -147,9 +147,6 @@ impl VersionedSignedProposal {
         if proposal.version == versioned::DataVersion::Unknown {
             return Err(SignedDataError::UnknownVersion);
         }
-        if proposal.block.is_none() {
-            return Err(proposal_payload_error(proposal.version, proposal.blinded));
-        }
         Ok(Self(proposal))
     }
 
@@ -169,9 +166,7 @@ impl VersionedSignedProposal {
         Self::new(versioned::VersionedSignedProposal {
             version: proposal.version,
             blinded: true,
-            block: proposal
-                .block
-                .map(versioned::SignedBlindedProposalBlock::into_signed),
+            block: proposal.block.into_signed(),
         })
     }
 
@@ -188,9 +183,13 @@ impl VersionedSignedProposal {
             return Err(SignedDataError::ProposalNotBlinded);
         }
 
+        let blinded_block = block
+            .into_blinded()
+            .ok_or_else(|| proposal_payload_error(version, true))?;
+
         Ok(versioned::VersionedSignedBlindedProposal {
             version,
-            block: block.and_then(versioned::SignedProposalBlock::into_blinded),
+            block: blinded_block,
         })
     }
 
@@ -214,13 +213,7 @@ impl SignedData for VersionedSignedProposal {
         if proposal.version == versioned::DataVersion::Unknown {
             return Err(SignedDataError::UnknownVersion);
         }
-        let version = proposal.version;
-        let blinded = proposal.blinded;
-        let block = proposal
-            .block
-            .as_ref()
-            .ok_or_else(|| proposal_payload_error(version, blinded))?;
-        Ok(sig_from_eth2(block.signature()))
+        Ok(sig_from_eth2(proposal.block.signature()))
     }
 
     fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
@@ -229,14 +222,8 @@ impl SignedData for VersionedSignedProposal {
         if proposal.version == versioned::DataVersion::Unknown {
             return Err(SignedDataError::UnknownVersion);
         }
-        let version = proposal.version;
-        let blinded = proposal.blinded;
         let eth2_sig = sig_to_eth2(&signature);
-        let block = proposal
-            .block
-            .as_mut()
-            .ok_or_else(|| proposal_payload_error(version, blinded))?;
-        block.set_signature(eth2_sig);
+        proposal.block.set_signature(eth2_sig);
 
         Ok(out)
     }
@@ -246,14 +233,8 @@ impl SignedData for VersionedSignedProposal {
         if proposal.version == versioned::DataVersion::Unknown {
             return Err(SignedDataError::UnknownVersion);
         }
-        let version = proposal.version;
-        let blinded = proposal.blinded;
-        let block = proposal
-            .block
-            .as_ref()
-            .ok_or_else(|| proposal_payload_error(version, blinded))?;
 
-        Ok(match block {
+        Ok(match &proposal.block {
             versioned::SignedProposalBlock::Phase0(block) => hash_root(&block.message),
             versioned::SignedProposalBlock::Altair(block) => hash_root(&block.message),
             versioned::SignedProposalBlock::Bellatrix(block) => hash_root(&block.message),
@@ -291,15 +272,12 @@ impl Serialize for VersionedSignedProposal {
         }
         let version_eth2 = proposal.version;
         let blinded = proposal.blinded;
-        let block = proposal.block.as_ref().ok_or_else(|| {
-            serde::ser::Error::custom(proposal_payload_error(version_eth2, blinded))
-        })?;
         let version = pluto_eth2util::types::DataVersion::from_eth2(version_eth2)
             .map_err(serde::ser::Error::custom)?;
 
         VersionedRawBlockJson {
             version,
-            block,
+            block: &proposal.block,
             blinded,
         }
         .serialize(serializer)
@@ -370,7 +348,7 @@ impl<'de> Deserialize<'de> for VersionedSignedProposal {
         Self::new(versioned::VersionedSignedProposal {
             version: version.to_eth2(),
             blinded,
-            block: Some(block),
+            block,
         })
         .map_err(serde::de::Error::custom)
     }
@@ -964,10 +942,7 @@ impl VersionedSignedAggregateAndProof {
             return None;
         }
 
-        self.0
-            .aggregate_and_proof
-            .as_ref()
-            .map(versioned::SignedAggregateAndProofPayload::data)
+        Some(self.0.aggregate_and_proof.data())
     }
 
     /// Returns aggregation bits for the wrapped payload.
@@ -976,10 +951,7 @@ impl VersionedSignedAggregateAndProof {
             return None;
         }
 
-        self.0
-            .aggregate_and_proof
-            .as_ref()
-            .map(versioned::SignedAggregateAndProofPayload::aggregation_bits)
+        Some(self.0.aggregate_and_proof.aggregation_bits())
     }
 
     /// Creates a versioned signed aggregate-and-proof wrapper.
@@ -1005,12 +977,7 @@ impl SignedData for VersionedSignedAggregateAndProof {
             return Err(SignedDataError::UnknownVersion);
         }
 
-        self.0
-            .aggregate_and_proof
-            .as_ref()
-            .map(versioned::SignedAggregateAndProofPayload::signature)
-            .map(sig_from_eth2)
-            .ok_or(SignedDataError::MissingAggregateAndProof(version))
+        Ok(sig_from_eth2(self.0.aggregate_and_proof.signature()))
     }
 
     fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
@@ -1021,8 +988,6 @@ impl SignedData for VersionedSignedAggregateAndProof {
         }
         out.0
             .aggregate_and_proof
-            .as_mut()
-            .ok_or(SignedDataError::MissingAggregateAndProof(version))?
             .set_signature(sig_to_eth2(&signature));
 
         Ok(out)
@@ -1034,13 +999,7 @@ impl SignedData for VersionedSignedAggregateAndProof {
             return Err(SignedDataError::UnknownVersion);
         }
 
-        let payload = self
-            .0
-            .aggregate_and_proof
-            .as_ref()
-            .ok_or(SignedDataError::MissingAggregateAndProof(version))?;
-
-        Ok(match payload {
+        Ok(match &self.0.aggregate_and_proof {
             versioned::SignedAggregateAndProofPayload::Phase0(payload)
             | versioned::SignedAggregateAndProofPayload::Altair(payload)
             | versioned::SignedAggregateAndProofPayload::Bellatrix(payload)
@@ -1073,13 +1032,10 @@ impl Serialize for VersionedSignedAggregateAndProof {
         }
         let version = pluto_eth2util::types::DataVersion::from_eth2(version_eth2)
             .map_err(serde::ser::Error::custom)?;
-        let aggregate_and_proof = self.0.aggregate_and_proof.as_ref().ok_or_else(|| {
-            serde::ser::Error::custom(SignedDataError::MissingAggregateAndProof(version_eth2))
-        })?;
 
         VersionedRawAggregateAndProofJson {
             version,
-            aggregate_and_proof,
+            aggregate_and_proof: &self.0.aggregate_and_proof,
         }
         .serialize(serializer)
     }
@@ -1125,7 +1081,7 @@ impl<'de> Deserialize<'de> for VersionedSignedAggregateAndProof {
 
         Ok(Self(versioned::VersionedSignedAggregateAndProof {
             version: version.to_eth2(),
-            aggregate_and_proof: Some(aggregate_and_proof),
+            aggregate_and_proof,
         }))
     }
 }
@@ -1908,88 +1864,72 @@ mod tests {
             (versioned::DataVersion::Phase0, _) => versioned::VersionedSignedProposal {
                 version,
                 blinded,
-                block: Some(versioned::SignedProposalBlock::Phase0(sample_phase0_block(
-                    0x10,
-                ))),
+                block: versioned::SignedProposalBlock::Phase0(sample_phase0_block(0x10)),
             },
             (versioned::DataVersion::Altair, _) => versioned::VersionedSignedProposal {
                 version,
                 blinded,
-                block: Some(versioned::SignedProposalBlock::Altair(sample_altair_block(
-                    0x11,
-                ))),
+                block: versioned::SignedProposalBlock::Altair(sample_altair_block(0x11)),
             },
             (versioned::DataVersion::Bellatrix, false) => versioned::VersionedSignedProposal {
                 version,
-                block: Some(versioned::SignedProposalBlock::Bellatrix(
-                    sample_bellatrix_block(0x12),
-                )),
-                ..Default::default()
+                blinded: false,
+                block: versioned::SignedProposalBlock::Bellatrix(sample_bellatrix_block(0x12)),
             },
             (versioned::DataVersion::Bellatrix, true) => versioned::VersionedSignedProposal {
                 version,
                 blinded,
-                block: Some(versioned::SignedProposalBlock::BellatrixBlinded(
+                block: versioned::SignedProposalBlock::BellatrixBlinded(
                     sample_bellatrix_blinded_block(0x13),
-                )),
+                ),
             },
             (versioned::DataVersion::Capella, false) => versioned::VersionedSignedProposal {
                 version,
-                block: Some(versioned::SignedProposalBlock::Capella(
-                    sample_capella_block(0x14),
-                )),
-                ..Default::default()
+                blinded: false,
+                block: versioned::SignedProposalBlock::Capella(sample_capella_block(0x14)),
             },
             (versioned::DataVersion::Capella, true) => versioned::VersionedSignedProposal {
                 version,
                 blinded,
-                block: Some(versioned::SignedProposalBlock::CapellaBlinded(
+                block: versioned::SignedProposalBlock::CapellaBlinded(
                     sample_capella_blinded_block(0x15),
-                )),
+                ),
             },
             (versioned::DataVersion::Deneb, false) => versioned::VersionedSignedProposal {
                 version,
-                block: Some(versioned::SignedProposalBlock::Deneb(sample_deneb_block(
-                    0x16,
-                ))),
-                ..Default::default()
+                blinded: false,
+                block: versioned::SignedProposalBlock::Deneb(sample_deneb_block(0x16)),
             },
             (versioned::DataVersion::Deneb, true) => versioned::VersionedSignedProposal {
                 version,
                 blinded,
-                block: Some(versioned::SignedProposalBlock::DenebBlinded(
-                    sample_deneb_blinded_block(0x17),
+                block: versioned::SignedProposalBlock::DenebBlinded(sample_deneb_blinded_block(
+                    0x17,
                 )),
             },
             (versioned::DataVersion::Electra, false) => versioned::VersionedSignedProposal {
                 version,
-                block: Some(versioned::SignedProposalBlock::Electra(
-                    sample_electra_block(0x18),
-                )),
-                ..Default::default()
+                blinded: false,
+                block: versioned::SignedProposalBlock::Electra(sample_electra_block(0x18)),
             },
             (versioned::DataVersion::Electra, true) => versioned::VersionedSignedProposal {
                 version,
                 blinded,
-                block: Some(versioned::SignedProposalBlock::ElectraBlinded(
+                block: versioned::SignedProposalBlock::ElectraBlinded(
                     sample_electra_blinded_block(0x19),
-                )),
+                ),
             },
             (versioned::DataVersion::Fulu, false) => versioned::VersionedSignedProposal {
                 version,
-                block: Some(versioned::SignedProposalBlock::Fulu(sample_fulu_block(
-                    0x1A,
-                ))),
-                ..Default::default()
+                blinded: false,
+                block: versioned::SignedProposalBlock::Fulu(sample_fulu_block(0x1A)),
             },
             (versioned::DataVersion::Fulu, true) => versioned::VersionedSignedProposal {
                 version,
                 blinded,
-                block: Some(versioned::SignedProposalBlock::FuluBlinded(
-                    sample_fulu_blinded_block(0x1B),
-                )),
+                block: versioned::SignedProposalBlock::FuluBlinded(sample_fulu_blinded_block(0x1B)),
             },
-            _ => versioned::VersionedSignedProposal::default(),
+            _ => panic!("unsupported proposal version"),
         }
     }
 
@@ -2056,49 +1996,47 @@ mod tests {
         match version {
             versioned::DataVersion::Phase0 => versioned::VersionedSignedAggregateAndProof {
                 version,
-                aggregate_and_proof: Some(versioned::SignedAggregateAndProofPayload::Phase0(
+                aggregate_and_proof: versioned::SignedAggregateAndProofPayload::Phase0(
                     sample_phase0_signed_aggregate_and_proof(),
-                )),
+                ),
             },
             versioned::DataVersion::Altair => versioned::VersionedSignedAggregateAndProof {
                 version,
-                aggregate_and_proof: Some(versioned::SignedAggregateAndProofPayload::Altair(
+                aggregate_and_proof: versioned::SignedAggregateAndProofPayload::Altair(
                     sample_phase0_signed_aggregate_and_proof(),
-                )),
+                ),
             },
             versioned::DataVersion::Bellatrix => versioned::VersionedSignedAggregateAndProof {
                 version,
-                aggregate_and_proof: Some(versioned::SignedAggregateAndProofPayload::Bellatrix(
+                aggregate_and_proof: versioned::SignedAggregateAndProofPayload::Bellatrix(
                     sample_phase0_signed_aggregate_and_proof(),
-                )),
+                ),
             },
             versioned::DataVersion::Capella => versioned::VersionedSignedAggregateAndProof {
                 version,
-                aggregate_and_proof: Some(versioned::SignedAggregateAndProofPayload::Capella(
+                aggregate_and_proof: versioned::SignedAggregateAndProofPayload::Capella(
                     sample_phase0_signed_aggregate_and_proof(),
-                )),
+                ),
             },
             versioned::DataVersion::Deneb => versioned::VersionedSignedAggregateAndProof {
                 version,
-                aggregate_and_proof: Some(versioned::SignedAggregateAndProofPayload::Deneb(
+                aggregate_and_proof: versioned::SignedAggregateAndProofPayload::Deneb(
                     sample_phase0_signed_aggregate_and_proof(),
-                )),
+                ),
             },
             versioned::DataVersion::Electra => versioned::VersionedSignedAggregateAndProof {
                 version,
-                aggregate_and_proof: Some(versioned::SignedAggregateAndProofPayload::Electra(
+                aggregate_and_proof: versioned::SignedAggregateAndProofPayload::Electra(
                     sample_electra_signed_aggregate_and_proof(),
-                )),
+                ),
             },
             versioned::DataVersion::Fulu => versioned::VersionedSignedAggregateAndProof {
                 version,
-                aggregate_and_proof: Some(versioned::SignedAggregateAndProofPayload::Fulu(
+                aggregate_and_proof: versioned::SignedAggregateAndProofPayload::Fulu(
                     sample_electra_signed_aggregate_and_proof(),
-                )),
+                ),
             },
-            versioned::DataVersion::Unknown => {
-                versioned::VersionedSignedAggregateAndProof::default()
-            }
+            versioned::DataVersion::Unknown => panic!("unsupported aggregate-and-proof version"),
         }
     }
 
@@ -2108,15 +2046,13 @@ mod tests {
         match version {
             versioned::DataVersion::Electra => versioned::VersionedSignedBlindedProposal {
                 version,
-                block: Some(versioned::SignedBlindedProposalBlock::Electra(
+                block: versioned::SignedBlindedProposalBlock::Electra(
                     sample_electra_blinded_block(0x11),
-                )),
+                ),
             },
             versioned::DataVersion::Fulu => versioned::VersionedSignedBlindedProposal {
                 version,
-                block: Some(versioned::SignedBlindedProposalBlock::Fulu(
-                    sample_fulu_blinded_block(0x11),
-                )),
+                block: versioned::SignedBlindedProposalBlock::Fulu(sample_fulu_blinded_block(0x11)),
             },
             _ => panic!("unsupported blinded proposal version"),
         }
@@ -2422,44 +2358,16 @@ mod tests {
         );
     }
 
-    #[test_case(versioned::DataVersion::Unknown, false ; "unknown")]
-    #[test_case(versioned::DataVersion::Phase0, false ; "phase0_missing")]
-    #[test_case(versioned::DataVersion::Altair, false ; "altair_missing")]
-    #[test_case(versioned::DataVersion::Bellatrix, false ; "bellatrix_missing")]
-    #[test_case(versioned::DataVersion::Capella, false ; "capella_missing")]
-    #[test_case(versioned::DataVersion::Deneb, false ; "deneb_missing")]
-    #[test_case(versioned::DataVersion::Electra, false ; "electra_missing")]
-    #[test_case(versioned::DataVersion::Fulu, false ; "fulu_missing")]
-    #[test_case(versioned::DataVersion::Bellatrix, true ; "bellatrix_blinded_missing")]
-    #[test_case(versioned::DataVersion::Capella, true ; "capella_blinded_missing")]
-    #[test_case(versioned::DataVersion::Deneb, true ; "deneb_blinded_missing")]
-    #[test_case(versioned::DataVersion::Electra, true ; "electra_blinded_missing")]
-    #[test_case(versioned::DataVersion::Fulu, true ; "fulu_blinded_missing")]
-    fn test_new_versioned_signed_proposal_errors(version: versioned::DataVersion, blinded: bool) {
+    #[test_case(false ; "unblinded")]
+    #[test_case(true ; "blinded")]
+    fn test_new_versioned_signed_proposal_unknown_version_error(blinded: bool) {
         let result = VersionedSignedProposal::new(versioned::VersionedSignedProposal {
-            version,
+            version: versioned::DataVersion::Unknown,
             blinded,
-            ..Default::default()
+            block: versioned::SignedProposalBlock::Phase0(sample_phase0_block(0x21)),
         });
 
-        if version == versioned::DataVersion::Unknown {
-            assert!(matches!(result, Err(SignedDataError::UnknownVersion)));
-        } else if blinded
-            && !matches!(
-                version,
-                versioned::DataVersion::Phase0 | versioned::DataVersion::Altair
-            )
-        {
-            assert!(matches!(
-                result,
-                Err(SignedDataError::MissingBlindedProposal(v)) if v == version
-            ));
-        } else {
-            assert!(matches!(
-                result,
-                Err(SignedDataError::MissingProposal(v)) if v == version
-            ));
-        }
+        assert!(matches!(result, Err(SignedDataError::UnknownVersion)));
     }
 
     #[test]
@@ -2475,13 +2383,13 @@ mod tests {
         let proposal = sample_versioned_signed_blinded_proposal(version);
         let wrapped = VersionedSignedProposal::from_blinded_proposal(proposal).unwrap();
         assert!(matches!(
-            (version, wrapped.0.block.as_ref()),
+            (version, &wrapped.0.block),
             (
                 versioned::DataVersion::Electra,
-                Some(versioned::SignedProposalBlock::ElectraBlinded(_))
+                versioned::SignedProposalBlock::ElectraBlinded(_)
             ) | (
                 versioned::DataVersion::Fulu,
-                Some(versioned::SignedProposalBlock::FuluBlinded(_))
+                versioned::SignedProposalBlock::FuluBlinded(_)
             )
         ));
     }
@@ -2500,10 +2408,7 @@ mod tests {
         let proposal = sample_versioned_signed_proposal(versioned::DataVersion::Electra, true);
         let expected = versioned::VersionedSignedBlindedProposal {
             version: proposal.version,
-            block: proposal
-                .block
-                .clone()
-                .and_then(versioned::SignedProposalBlock::into_blinded),
+            block: proposal.block.clone().into_blinded().unwrap(),
         };
 
         let wrapped = VersionedSignedProposal::new(proposal).unwrap();
@@ -2525,28 +2430,13 @@ mod tests {
     fn versioned_signed_proposal_signature_unknown_version_error() {
         let proposal = VersionedSignedProposal(versioned::VersionedSignedProposal {
             version: versioned::DataVersion::Unknown,
-            ..Default::default()
+            blinded: false,
+            block: versioned::SignedProposalBlock::Phase0(sample_phase0_block(0x22)),
         });
 
         assert!(matches!(
             proposal.signature(),
             Err(SignedDataError::UnknownVersion)
-        ));
-    }
-
-    #[test]
-    fn versioned_signed_proposal_signature_missing_payload_error() {
-        let proposal = VersionedSignedProposal(versioned::VersionedSignedProposal {
-            version: versioned::DataVersion::Bellatrix,
-            blinded: true,
-            ..Default::default()
-        });
-
-        assert!(matches!(
-            proposal.signature(),
-            Err(SignedDataError::MissingBlindedProposal(
-                versioned::DataVersion::Bellatrix
-            ))
         ));
     }
 

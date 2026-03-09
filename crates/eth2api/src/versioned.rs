@@ -9,14 +9,14 @@ use crate::{
 };
 
 /// Signed proposal wrapper across all supported forks.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionedSignedProposal {
     /// Fork version of the payload.
     pub version: DataVersion,
     /// True if this proposal is blinded.
     pub blinded: bool,
     /// Proposal payload selected by version and blinded mode.
-    pub block: Option<SignedProposalBlock>,
+    pub block: SignedProposalBlock,
 }
 
 /// Signed proposal payload across all supported forks.
@@ -106,12 +106,12 @@ impl SignedProposalBlock {
 }
 
 /// Signed blinded proposal wrapper across all supported forks.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionedSignedBlindedProposal {
     /// Fork version of the payload.
     pub version: DataVersion,
     /// Blinded proposal payload selected by version.
-    pub block: Option<SignedBlindedProposalBlock>,
+    pub block: SignedBlindedProposalBlock,
 }
 
 /// Signed blinded proposal payload across all supported forks.
@@ -231,12 +231,12 @@ impl AttestationPayload {
 }
 
 /// Versioned signed aggregate-and-proof wrapper.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionedSignedAggregateAndProof {
     /// Fork version of the payload.
     pub version: DataVersion,
     /// Signed aggregate-and-proof payload selected by version.
-    pub aggregate_and_proof: Option<SignedAggregateAndProofPayload>,
+    pub aggregate_and_proof: SignedAggregateAndProofPayload,
 }
 
 /// Signed aggregate-and-proof payload across all supported forks.
