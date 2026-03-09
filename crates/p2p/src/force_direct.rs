@@ -3,7 +3,7 @@
 use std::{
     collections::{HashSet, VecDeque},
     convert::Infallible,
-    task::Poll,
+    task::{Context, Poll},
 };
 
 use libp2p::{
@@ -16,7 +16,7 @@ use libp2p::{
     },
 };
 use std::time::Duration;
-use tokio::time::Instant;
+use tokio::time::Interval;
 use tracing::{debug, warn};
 
 use crate::{name::peer_name, p2p_context::P2PContext, utils};
@@ -37,8 +37,8 @@ pub struct ForceDirectBehaviour {
     /// Pending forcings to emit.
     pending_forcings: HashSet<PeerId>,
 
-    /// Next time to run logic.
-    next_tick: Instant,
+    /// Interval timer for running force direct logic periodically.
+    ticker: Interval,
 }
 
 impl std::fmt::Debug for ForceDirectBehaviour {
@@ -47,7 +47,7 @@ impl std::fmt::Debug for ForceDirectBehaviour {
             .field("p2p_context", &self.p2p_context)
             .field("local_peer_id", &self.local_peer_id)
             .field("pending_events", &self.pending_events.len())
-            .field("next_tick", &self.next_tick)
+            .field("ticker", &"<Interval>")
             .finish()
     }
 }
@@ -72,21 +72,35 @@ pub enum ForceDirectEvent {
 impl ForceDirectBehaviour {
     /// Creates a new force direct behaviour.
     pub fn new(p2p_context: P2PContext, local_peer_id: PeerId) -> Self {
-        let now = Instant::now();
+        let mut ticker = tokio::time::interval(FORCE_DIRECT_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         Self {
             p2p_context,
             local_peer_id,
             pending_events: VecDeque::new(),
-            next_tick: now.checked_add(FORCE_DIRECT_INTERVAL).unwrap_or(now),
+            ticker,
             pending_forcings: HashSet::new(),
         }
     }
 
+    /// Runs force direct connection logic for all known peers.
+    ///
+    /// For each known peer:
+    /// 1. Skip if it's the local peer
+    /// 2. Skip if already attempting to force direct connection
+    /// 3. Skip if no connections exist
+    /// 4. Skip if any connection is not through relay
+    /// 5. Attempt to dial direct addresses
     fn force_direct_connections(&mut self) {
         let peers = self.p2p_context.known_peers();
 
         for peer in peers {
             if *peer == self.local_peer_id {
+                continue;
+            }
+
+            if self.pending_forcings.contains(peer) {
                 continue;
             }
 
@@ -115,13 +129,9 @@ impl ForceDirectBehaviour {
                 continue;
             }
 
-            if self.pending_forcings.contains(peer) {
-                continue;
-            }
-
-            if !connections
+            if connections
                 .iter()
-                .all(|c| utils::is_relay_addr(&c.remote_addr))
+                .any(|c| !utils::is_relay_addr(&c.remote_addr))
             {
                 debug!(
                     peer = %peer_name(peer),
@@ -251,15 +261,13 @@ impl NetworkBehaviour for ForceDirectBehaviour {
 
     fn poll(
         &mut self,
-        _cx: &mut std::task::Context<'_>,
+        cx: &mut Context<'_>,
     ) -> std::task::Poll<ToSwarm<Self::ToSwarm, libp2p::swarm::THandlerInEvent<Self>>> {
         if let Some(event) = self.pending_events.pop_front() {
             return Poll::Ready(event);
         }
 
-        let now = Instant::now();
-        if now >= self.next_tick {
-            self.next_tick = now.checked_add(FORCE_DIRECT_INTERVAL).unwrap_or(now);
+        if self.ticker.poll_tick(cx).is_ready() {
             self.force_direct_connections();
 
             if let Some(event) = self.pending_events.pop_front() {
