@@ -11,7 +11,7 @@ ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 RUN apt-get update && \
   apt-get install -y curl build-essential pkg-config \
   openssl libssl-dev \
-  protobuf-compiler=3.21.12-8.2ubuntu0.2
+  protobuf-compiler=3.21.12*
 
 # Install Rust using rustup, the official installer
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.89.0

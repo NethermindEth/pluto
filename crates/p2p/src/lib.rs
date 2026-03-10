@@ -34,3 +34,15 @@ pub mod manet;
 
 /// Utilities.
 pub mod utils;
+
+/// Connection logger.
+pub mod conn_logger;
+
+/// Global context.
+pub mod p2p_context;
+
+/// QUIC connection upgrade behaviour.
+pub mod quic_upgrade;
+
+/// Force direct connection behaviour.
+pub mod force_direct;

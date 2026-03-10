@@ -22,10 +22,6 @@ pub enum P2PConfigError {
     /// Failed to parse the multiaddress.
     #[error("Failed to parse the multiaddress")]
     FailedToParseMultiaddr(#[from] multiaddr::Error),
-
-    /// Unspecified IP address.
-    #[error("Unspecified IP address: {0}")]
-    UnspecifiedIP(String),
 }
 
 // Note: this is only for testing purposes!
@@ -45,7 +41,6 @@ impl PartialEq for P2PConfigError {
                 P2PConfigError::FailedToParseMultiaddr(x),
                 P2PConfigError::FailedToParseMultiaddr(y),
             ) if x.to_string() == y.to_string() => true,
-            (P2PConfigError::UnspecifiedIP(x), P2PConfigError::UnspecifiedIP(y)) if x == y => true,
             _ => false,
         }
     }
@@ -174,31 +169,22 @@ pub fn default_ping_config() -> ping::Config {
         .with_timeout(DEFAULT_PING_TIMEOUT)
 }
 
-/// Resolves a TCP address string to a SocketAddr, ensuring the IP is specified.
+/// Resolves a TCP address string to a [`SocketAddr`].
 fn resolve_listen_tcp_addr(addr: impl AsRef<str>) -> Result<SocketAddr> {
     let socket_addr: SocketAddr = addr
         .as_ref()
         .parse()
         .map_err(P2PConfigError::FailedToParseTcpAddresses)?;
 
-    // Go version checks if IP is nil (unspecified)
-    if socket_addr.ip().is_unspecified() {
-        return Err(P2PConfigError::UnspecifiedIP("TCP".to_string()));
-    }
-
     Ok(socket_addr)
 }
 
-/// Resolves a UDP address string to a SocketAddr, ensuring the IP is specified.
+/// Resolves a UDP address string to a [`SocketAddr`].
 fn resolve_listen_udp_addr(addr: impl AsRef<str>) -> Result<SocketAddr> {
     let socket_addr: SocketAddr = addr
         .as_ref()
         .parse()
         .map_err(P2PConfigError::FailedToParseUdpAddresses)?;
-
-    if socket_addr.ip().is_unspecified() {
-        return Err(P2PConfigError::UnspecifiedIP("UDP".to_string()));
-    }
 
     Ok(socket_addr)
 }
@@ -240,7 +226,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_resolve_listen_addr_ip_not_specified() {
+    fn test_resolve_listen_addr_p2p_bind_tcp_ip_not_specified() {
         let err = resolve_listen_tcp_addr(":1234").unwrap_err();
         assert!(matches!(err, P2PConfigError::FailedToParseTcpAddresses(_)));
     }
@@ -251,6 +237,21 @@ mod tests {
         assert_eq!(
             addr,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 4, 3, 3)), 1234)
+        );
+    }
+
+    #[test]
+    fn test_resolve_listen_addr_all_interfaces() {
+        let tcp_addr = resolve_listen_tcp_addr("0.0.0.0:0").unwrap();
+        assert_eq!(
+            tcp_addr,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0)
+        );
+
+        let udp_addr = resolve_listen_udp_addr("0.0.0.0:0").unwrap();
+        assert_eq!(
+            udp_addr,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0)
         );
     }
 

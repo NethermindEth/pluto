@@ -13,7 +13,9 @@ use std::{
     time::Duration,
 };
 
-use libp2p::{Multiaddr, identity::Keypair, multiaddr};
+use libp2p::{Multiaddr, identity::Keypair, multiaddr, multiaddr::Protocol as MaProtocol};
+
+use crate::metrics::{ConnectionType, Protocol};
 
 use crate::{
     config::{self, P2PConfig},
@@ -127,4 +129,73 @@ pub(crate) fn keypair_from_secret_key(key: k256::SecretKey) -> crate::p2p::Resul
     let mut der = key.to_sec1_der()?;
     let keypair = Keypair::secp256k1_from_der(&mut der)?;
     Ok(keypair)
+}
+
+/// Returns the connection type (direct or relay) based on the multiaddr.
+pub(crate) fn addr_type(addr: &Multiaddr) -> ConnectionType {
+    if is_relay_addr(addr) {
+        ConnectionType::Relay
+    } else {
+        ConnectionType::Direct
+    }
+}
+
+/// Returns the transport protocol (TCP or QUIC) from the multiaddr.
+pub(crate) fn addr_protocol(addr: &Multiaddr) -> Protocol {
+    if is_quic_addr(addr) {
+        Protocol::Quic
+    } else if is_tcp_addr(addr) {
+        Protocol::Tcp
+    } else {
+        Protocol::Unknown
+    }
+}
+
+/// Returns true if the multiaddr contains a p2p-circuit (relay) component.
+pub fn is_relay_addr(addr: &Multiaddr) -> bool {
+    addr.iter().any(|p| matches!(p, MaProtocol::P2pCircuit))
+}
+
+/// Returns true if the multiaddr contains a QUIC or QUIC-v1 component.
+pub fn is_quic_addr(addr: &Multiaddr) -> bool {
+    addr.iter()
+        .any(|p| matches!(p, MaProtocol::Quic | MaProtocol::QuicV1))
+}
+
+/// Returns true if the multiaddr is TCP.
+pub fn is_tcp_addr(addr: &Multiaddr) -> bool {
+    addr.iter().any(|p| matches!(p, MaProtocol::Tcp(_)))
+}
+
+/// Returns true if the node has QUIC enabled (listening on QUIC addresses).
+pub fn is_quic_enabled<'a>(listen_addrs: impl Iterator<Item = &'a Multiaddr>) -> bool {
+    listen_addrs.into_iter().any(is_quic_addr)
+}
+
+/// Returns true if there is a direct (non-relay) QUIC connection among the
+/// peers.
+pub fn has_direct_quic_conn(peers: &[&crate::p2p_context::Peer]) -> bool {
+    peers
+        .iter()
+        .any(|p| is_quic_addr(&p.remote_addr) && !is_relay_addr(&p.remote_addr))
+}
+
+/// Returns true if there is a direct (non-relay) TCP connection among the
+/// peers.
+pub fn has_direct_tcp_conn(peers: &[&crate::p2p_context::Peer]) -> bool {
+    peers
+        .iter()
+        .any(|p| is_tcp_addr(&p.remote_addr) && !is_relay_addr(&p.remote_addr))
+}
+
+/// Filters addresses to only direct (non-relay) QUIC addresses.
+pub fn filter_direct_quic_addrs(addrs: impl Iterator<Item = Multiaddr>) -> Vec<Multiaddr> {
+    addrs
+        .filter(|a| is_quic_addr(a) && !is_relay_addr(a))
+        .collect()
+}
+
+/// Returns true if the multiaddr is a direct (non-relay) address.
+pub fn is_direct_addr(addr: &Multiaddr) -> bool {
+    !is_relay_addr(addr)
 }

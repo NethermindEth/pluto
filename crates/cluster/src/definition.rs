@@ -1,6 +1,10 @@
 use std::collections::HashSet;
 
 use crate::{
+    eip712sigs::{
+        EIP712Error, digest_eip712, eip712_creator_config_hash, eip712_enr,
+        get_operator_eip712_type,
+    },
     helpers::{EthHex, from_0x_hex_str},
     operator::{Operator, OperatorV1X1, OperatorV1X2OrLater},
     ssz::{SSZError, hash_definition},
@@ -9,6 +13,7 @@ use crate::{
 };
 use chrono::{DateTime, Utc};
 use libp2p::PeerId;
+use pluto_eth1wrap::{EthClient, EthClientError};
 use pluto_eth2util::enr::{Record, RecordError};
 use pluto_p2p::peer::{Peer, PeerError};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -18,6 +23,8 @@ use serde_with::{
     serde_as,
 };
 use uuid::Uuid;
+
+use crate::helpers::{VerifySigError, verify_sig};
 
 /// Length of the fork version in bytes.
 pub const FORK_VERSION_LEN: usize = 4;
@@ -252,8 +259,88 @@ pub enum DefinitionError {
         actual: Vec<u8>,
     },
 
+    /// Older version signatures are not supported
+    #[error("older version signatures not supported")]
+    OlderVersionSignaturesNotSupported,
+
+    /// Empty operator ENR signature
+    #[error("empty operator enr signature: {operator_address}")]
+    EmptyOperatorENRSignature {
+        /// Operator address
+        operator_address: String,
+    },
+
+    /// Empty operator config signature
+    #[error("empty operator config signature: {operator_address}")]
+    EmptyOperatorConfigSignature {
+        /// Operator address
+        operator_address: String,
+    },
+
+    /// Invalid operator config signature
+    #[error("invalid operator config signature: {operator_address}")]
+    InvalidOperatorConfigSignature {
+        /// Operator address
+        operator_address: String,
+    },
+
+    /// Invalid operator ENR signature
+    #[error("invalid operator enr signature: {operator_address}")]
+    InvalidOperatorENRSignature {
+        /// Operator address
+        operator_address: String,
+    },
+
+    /// Some operators signed while others didn't
+    #[error("some operators signed while others didn't")]
+    SomeOperatorsSignedWhileOthersDidNot,
+
+    /// Unexpected creator config signature in old version
+    #[error("unexpected creator config signature in old version")]
+    UnexpectedCreatorConfigSignatureInOldVersion,
+
+    /// Operators signed while creator didn't
+    #[error("operators signed while creator didn't")]
+    OperatorsSignedWhileCreatorDidNot,
+
+    /// Empty creator config signature
+    #[error("empty creator config signature")]
+    EmptyCreatorConfigSignature,
+
+    /// Invalid creator config signature
+    #[error("invalid creator config signature")]
+    InvalidCreatorConfigSignature,
+
+    /// Missing ETH1 client for contract signature verification.
+    #[error("missing eth1 client for contract signature verification: {contract_address}")]
+    MissingEth1ClientForContractSignature {
+        /// Contract address used for signature verification.
+        contract_address: String,
+    },
+
+    /// Invalid EIP-712 digest length
+    #[error("invalid eip712 digest length: expected {expected}, actual {actual}")]
+    InvalidEIP712DigestLength {
+        /// Expected digest length.
+        expected: usize,
+        /// Actual digest length.
+        actual: usize,
+    },
+
+    /// Failed to verify smart-contract based signature.
+    #[error("failed to verify smart-contract based signature: {0}")]
+    FailedToVerifyContractSignature(#[from] EthClientError),
+
+    /// Failed to compute EIP-712 digest.
+    #[error("eip712 error: {0}")]
+    EIP712Error(#[from] EIP712Error),
+
+    /// Failed to verify secp256k1 signature.
+    #[error("verify signature error: {0}")]
+    VerifySigError(#[from] VerifySigError),
+
     /// Failed to convert timestamp
-    #[error("Failed to convert timestamp")]
+    #[error("Failed to convert timestamp {0}")]
     FailedToConvertTimestamp(#[from] serde_json::Error),
 }
 
@@ -385,10 +472,131 @@ impl Definition {
         Err(DefinitionError::PeerNotFound { peer_id: *pid })
     }
 
-    /// VerifySignatures returns nil if all config signatures are fully
+    /// Returns `Ok(())` if all config signatures are fully
     /// populated and valid. A verified definition is ready for use in DKG.
-    pub fn verify_signatures(&self) -> Result<(), DefinitionError> {
-        todo!("implement this after eth1wrap.EthClientRunner is implemented");
+    pub async fn verify_signatures(&self, eth1: Option<&EthClient>) -> Result<(), DefinitionError> {
+        // Skip signature verification for definition versions earlier than v1.3 since
+        // there are no EIP712 signatures before v1.3.0. For definition versions
+        // earlier than v1.3.0, error if either config signature or enr signature for
+        // any operator is present.
+        if !Self::support_eip712_sigs(self.version.as_str()) {
+            return if Self::eip712_sigs_present(&self.operators) {
+                Err(DefinitionError::OlderVersionSignaturesNotSupported)
+            } else {
+                Ok(())
+            };
+        }
+
+        let operator_config_hash_digest = digest_eip712(
+            &get_operator_eip712_type(self.version.as_str()),
+            self,
+            &Operator::default(),
+        )?;
+
+        let mut no_op_sigs = 0usize;
+
+        for operator in &self.operators {
+            // Completely unsigned operators are also fine, assuming a single cluster-wide
+            // operator.
+            if operator.address.is_empty()
+                && operator.enr_signature.is_empty()
+                && operator.config_signature.is_empty()
+            {
+                no_op_sigs = no_op_sigs.saturating_add(1);
+                continue;
+            }
+
+            if operator.enr_signature.is_empty() {
+                return Err(DefinitionError::EmptyOperatorENRSignature {
+                    operator_address: operator.address.clone(),
+                });
+            }
+
+            if operator.config_signature.is_empty() {
+                return Err(DefinitionError::EmptyOperatorConfigSignature {
+                    operator_address: operator.address.clone(),
+                });
+            }
+
+            // Check that we have a valid config signature for each operator.
+            let is_valid_operator_config_sig = verify_sig(
+                operator.address.as_str(),
+                operator_config_hash_digest.as_slice(),
+                operator.config_signature.as_slice(),
+            )?;
+
+            if !is_valid_operator_config_sig
+                && !Self::verify_contract_signature(
+                    eth1,
+                    operator.address.as_str(),
+                    operator_config_hash_digest.as_slice(),
+                    operator.config_signature.as_slice(),
+                )
+                .await?
+            {
+                return Err(DefinitionError::InvalidOperatorConfigSignature {
+                    operator_address: operator.address.clone(),
+                });
+            }
+
+            // Check that we have a valid enr signature for each operator.
+            let enr_digest = digest_eip712(&eip712_enr(), self, operator)?;
+
+            let is_valid_operator_enr_sig = verify_sig(
+                operator.address.as_str(),
+                enr_digest.as_slice(),
+                operator.enr_signature.as_slice(),
+            )?;
+
+            if !is_valid_operator_enr_sig
+                && !Self::verify_contract_signature(
+                    eth1,
+                    operator.address.as_str(),
+                    enr_digest.as_slice(),
+                    operator.enr_signature.as_slice(),
+                )
+                .await?
+            {
+                return Err(DefinitionError::InvalidOperatorENRSignature {
+                    operator_address: operator.address.clone(),
+                });
+            }
+        }
+
+        if no_op_sigs > 0 && no_op_sigs != self.operators.len() {
+            return Err(DefinitionError::SomeOperatorsSignedWhileOthersDidNot);
+        }
+
+        // Verify creator signature
+        if self.version == V1_3 {
+            if !self.creator.config_signature.is_empty() {
+                return Err(DefinitionError::UnexpectedCreatorConfigSignatureInOldVersion);
+            }
+        } else if self.creator.address.is_empty() && self.creator.config_signature.is_empty() {
+            // Empty creator is fine if also not operator signatures either.
+            if no_op_sigs == 0 {
+                return Err(DefinitionError::OperatorsSignedWhileCreatorDidNot);
+            }
+        } else {
+            if self.creator.config_signature.is_empty() {
+                return Err(DefinitionError::EmptyCreatorConfigSignature);
+            }
+
+            let creator_config_hash_digest =
+                digest_eip712(&eip712_creator_config_hash(), self, &Operator::default())?;
+
+            let is_valid_creator_sig = verify_sig(
+                self.creator.address.as_str(),
+                creator_config_hash_digest.as_slice(),
+                self.creator.config_signature.as_slice(),
+            )?;
+
+            if !is_valid_creator_sig {
+                return Err(DefinitionError::InvalidCreatorConfigSignature);
+            }
+        }
+
+        Ok(())
     }
 
     /// Returns the peers in the cluster.
@@ -501,6 +709,38 @@ impl Definition {
     /// support EIP712 signatures.
     pub(crate) fn support_eip712_sigs(version: &str) -> bool {
         !matches!(version, V1_0 | V1_1 | V1_2)
+    }
+
+    fn eip712_sigs_present(operators: &[Operator]) -> bool {
+        operators.iter().any(|operator| {
+            !operator.enr_signature.is_empty() || !operator.config_signature.is_empty()
+        })
+    }
+
+    async fn verify_contract_signature(
+        eth1: Option<&EthClient>,
+        contract_address: &str,
+        digest: &[u8],
+        sig: &[u8],
+    ) -> Result<bool, DefinitionError> {
+        let Some(eth1_client) = eth1 else {
+            return Err(DefinitionError::MissingEth1ClientForContractSignature {
+                contract_address: contract_address.to_string(),
+            });
+        };
+
+        let digest_hash: [u8; 32] =
+            digest
+                .try_into()
+                .map_err(|_| DefinitionError::InvalidEIP712DigestLength {
+                    expected: 32,
+                    actual: digest.len(),
+                })?;
+
+        eth1_client
+            .verify_smart_contract_based_signature(contract_address, digest_hash, sig)
+            .await
+            .map_err(DefinitionError::FailedToVerifyContractSignature)
     }
 
     /// Returns true if the provided definition version supports partial
@@ -1319,8 +1559,36 @@ fn repeat_v_addresses(addr: ValidatorAddresses, num_validators: u64) -> Vec<Vali
 mod tests {
     use super::*;
 
+    fn parse_example_definition(json: &str) -> Definition {
+        let mut value: serde_json::Value = serde_json::from_str(json).unwrap();
+        let version = value
+            .get("version")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+
+        if version == V1_4 {
+            if value.get("fee_recipient_address").is_none() {
+                value["fee_recipient_address"] = serde_json::Value::String(
+                    "0x0000000000000000000000000000000000000000".to_string(),
+                );
+            }
+            if value.get("withdrawal_address").is_none() {
+                value["withdrawal_address"] = serde_json::Value::String(
+                    "0x0000000000000000000000000000000000000000".to_string(),
+                );
+            }
+        }
+
+        if version == V1_10 && value.get("compounding").is_none() {
+            value["compounding"] = serde_json::Value::Bool(false);
+        }
+
+        serde_json::from_value(value).unwrap()
+    }
+
     #[test]
-    fn test_cluster_definition_v1_10_0_fields() {
+    fn cluster_definition_v1_10_0_fields() {
         let definition = serde_json::from_str::<Definition>(include_str!(
             "testdata/cluster_definition_v1_10_0.json"
         ))
@@ -1427,7 +1695,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_definition_v1_0_0() {
+    fn cluster_definition_v1_0_0() {
         let json_str = include_str!("testdata/cluster_definition_v1_0_0.json");
 
         let _ = serde_json::from_str::<DefinitionV1x0or1>(json_str).unwrap();
@@ -1438,7 +1706,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_definition_v1_1_0() {
+    fn cluster_definition_v1_1_0() {
         let json_str = include_str!("testdata/cluster_definition_v1_1_0.json");
 
         let _ = serde_json::from_str::<DefinitionV1x0or1>(json_str).unwrap();
@@ -1449,7 +1717,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_definition_v1_2_0() {
+    fn cluster_definition_v1_2_0() {
         let json_str = include_str!("testdata/cluster_definition_v1_2_0.json");
 
         let _ = serde_json::from_str::<DefinitionV1x2or3>(json_str).unwrap();
@@ -1460,7 +1728,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_definition_v1_3_0() {
+    fn cluster_definition_v1_3_0() {
         let json_str = include_str!("testdata/cluster_definition_v1_3_0.json");
 
         let _ = serde_json::from_str::<DefinitionV1x2or3>(json_str).unwrap();
@@ -1471,7 +1739,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_definition_v1_4_0() {
+    fn cluster_definition_v1_4_0() {
         let json_str = include_str!("testdata/cluster_definition_v1_4_0.json");
 
         let _ = serde_json::from_str::<DefinitionV1x4>(json_str).unwrap();
@@ -1482,7 +1750,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_definition_v1_5_0() {
+    fn cluster_definition_v1_5_0() {
         let json_str = include_str!("testdata/cluster_definition_v1_5_0.json");
 
         let _ = serde_json::from_str::<DefinitionV1x5to7>(json_str).unwrap();
@@ -1493,7 +1761,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_definition_v1_6_0() {
+    fn cluster_definition_v1_6_0() {
         let json_str = include_str!("testdata/cluster_definition_v1_6_0.json");
 
         let _ = serde_json::from_str::<DefinitionV1x5to7>(json_str).unwrap();
@@ -1504,7 +1772,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_definition_v1_7_0() {
+    fn cluster_definition_v1_7_0() {
         let json_str = include_str!("testdata/cluster_definition_v1_7_0.json");
 
         let _ = serde_json::from_str::<DefinitionV1x5to7>(json_str).unwrap();
@@ -1515,7 +1783,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_definition_v1_8_0() {
+    fn cluster_definition_v1_8_0() {
         let json_str = include_str!("testdata/cluster_definition_v1_8_0.json");
 
         let _ = serde_json::from_str::<DefinitionV1x8>(json_str).unwrap();
@@ -1526,7 +1794,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_definition_v1_9_0() {
+    fn cluster_definition_v1_9_0() {
         let json_str = include_str!("testdata/cluster_definition_v1_9_0.json");
 
         let _ = serde_json::from_str::<DefinitionV1x9>(json_str).unwrap();
@@ -1537,7 +1805,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_definition_v1_10_0() {
+    fn cluster_definition_v1_10_0() {
         let json_str = include_str!("testdata/cluster_definition_v1_10_0.json");
 
         let _ = serde_json::from_str::<DefinitionV1x10>(json_str).unwrap();
@@ -1547,12 +1815,136 @@ mod tests {
         assert!(definition.verify_hashes().is_ok());
     }
 
-    // test incorrect version
     #[test]
-    fn test_cluster_definition_incorrect_version() {
+    fn cluster_definition_incorrect_version() {
         let json_str = include_str!("testdata/cluster_definition_incorrect_version.json");
 
         let result = serde_json::from_str::<Definition>(json_str);
         assert!(result.is_err());
+    }
+
+    #[test_case::test_case(include_str!("examples/cluster-definition-000.json") ; "v1.3")]
+    #[test_case::test_case(include_str!("examples/cluster-definition-001.json") ; "v1.4")]
+    #[test_case::test_case(include_str!("examples/cluster-definition-002.json") ; "v1.4-2")]
+    #[test_case::test_case(include_str!("examples/cluster-definition-003.json") ; "v1.5")]
+    #[test_case::test_case(include_str!("examples/cluster-definition-004.json") ; "v1.7")]
+    #[test_case::test_case(include_str!("examples/cluster-definition-005.json") ; "v1.8")]
+    #[test_case::test_case(include_str!("examples/cluster-definition-006.json") ; "v1.10")]
+    #[tokio::test]
+    async fn verify_signatures_examples(definition_json: &str) {
+        let definition = parse_example_definition(definition_json);
+        assert!(definition.verify_signatures(None).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn verify_signatures_v1_2_without_eip712_signatures() {
+        let definition = serde_json::from_str::<Definition>(include_str!(
+            "testdata/cluster_definition_v1_2_0.json"
+        ))
+        .unwrap();
+        assert!(definition.verify_signatures(None).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn verify_signatures_v1_2_rejects_eip712_signatures() {
+        let mut definition = serde_json::from_str::<Definition>(include_str!(
+            "testdata/cluster_definition_v1_2_0.json"
+        ))
+        .unwrap();
+        definition.operators[0].config_signature = vec![1];
+
+        let result = definition.verify_signatures(None).await;
+        assert!(matches!(
+            result,
+            Err(DefinitionError::OlderVersionSignaturesNotSupported)
+        ));
+    }
+
+    #[tokio::test]
+    async fn verify_signatures_empty_operator_enr_signature() {
+        let mut definition =
+            parse_example_definition(include_str!("examples/cluster-definition-001.json"));
+        definition.operators[0].enr_signature = Vec::new();
+
+        let result = definition.verify_signatures(None).await;
+        assert!(matches!(
+            result,
+            Err(DefinitionError::EmptyOperatorENRSignature { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn verify_signatures_empty_operator_config_signature() {
+        let mut definition =
+            parse_example_definition(include_str!("examples/cluster-definition-001.json"));
+        definition.operators[0].config_signature = Vec::new();
+
+        let result = definition.verify_signatures(None).await;
+        assert!(matches!(
+            result,
+            Err(DefinitionError::EmptyOperatorConfigSignature { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn verify_signatures_mixed_signed_and_unsigned_operators() {
+        let mut definition =
+            parse_example_definition(include_str!("examples/cluster-definition-001.json"));
+        definition.operators[0] = Operator::default();
+
+        let result = definition.verify_signatures(None).await;
+        assert!(matches!(
+            result,
+            Err(DefinitionError::SomeOperatorsSignedWhileOthersDidNot)
+        ));
+    }
+
+    #[tokio::test]
+    async fn verify_signatures_creator_missing_signature_while_operators_signed() {
+        let mut definition =
+            parse_example_definition(include_str!("examples/cluster-definition-001.json"));
+        definition.creator.config_signature = Vec::new();
+
+        let result = definition.verify_signatures(None).await;
+        assert!(matches!(
+            result,
+            Err(DefinitionError::EmptyCreatorConfigSignature)
+        ));
+    }
+
+    #[tokio::test]
+    async fn verify_signatures_unsigned_creator_and_operators() {
+        let mut definition =
+            parse_example_definition(include_str!("examples/cluster-definition-001.json"));
+        definition.creator = Creator::default();
+        definition.operators = vec![Operator::default(), Operator::default()];
+
+        assert!(definition.verify_signatures(None).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn verify_signatures_v1_3_rejects_creator_signature() {
+        let mut definition =
+            parse_example_definition(include_str!("examples/cluster-definition-000.json"));
+        definition.creator.config_signature = vec![1];
+
+        let result = definition.verify_signatures(None).await;
+        assert!(matches!(
+            result,
+            Err(DefinitionError::UnexpectedCreatorConfigSignatureInOldVersion)
+        ));
+    }
+
+    #[tokio::test]
+    async fn verify_signatures_missing_eth1_client_for_contract_fallback() {
+        let mut definition =
+            parse_example_definition(include_str!("examples/cluster-definition-001.json"));
+        definition.operators[0].config_signature = definition.operators[1].config_signature.clone();
+
+        let result = definition.verify_signatures(None).await;
+        assert!(matches!(
+            result,
+            Err(DefinitionError::MissingEth1ClientForContractSignature { .. })
+        ));
     }
 }

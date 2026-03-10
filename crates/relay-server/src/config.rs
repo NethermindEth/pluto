@@ -18,7 +18,8 @@ pub const EXTERNAL_HOST_RESOLVE_INTERVAL: Duration = Duration::from_secs(5 * 60)
 #[derive(Default, Debug, Clone, Builder)]
 pub struct Config {
     /// The directory to store the relay data.
-    pub data_dir: Option<PathBuf>,
+    #[builder(default = ".charon".into())]
+    pub data_dir: PathBuf,
     /// The HTTP address to listen on.
     pub http_addr: Option<String>,
     /// The monitoring address to listen on.
