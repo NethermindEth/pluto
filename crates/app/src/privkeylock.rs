@@ -41,9 +41,10 @@ type Result<T> = std::result::Result<T, PrivKeyLockError>;
 
 /// Returns the current unix timestamp in seconds.
 fn now_secs() -> u64 {
+    #[allow(clippy::unwrap_used, reason = "system clock must be after unix epoch")]
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
+        .expect("system time must be after unix epoch")
         .as_secs()
 }
 
@@ -122,6 +123,7 @@ impl Service {
         let _done_guard = self.done.clone().drop_guard();
 
         let mut interval = tokio::time::interval(self.update_period);
+        interval.tick().await;
 
         loop {
             tokio::select! {
