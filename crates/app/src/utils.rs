@@ -68,10 +68,14 @@ pub fn bundle_output(
     filename: impl AsRef<path::Path>,
 ) -> Result<()> {
     // Compute and validate the output path
-    let output_path = path::Path::new(target_path.as_ref()).join(filename.as_ref());
-    if output_path.parent() != Some(target_path.as_ref()) {
+    if filename
+        .as_ref()
+        .components()
+        .any(|c| !matches!(c, path::Component::Normal(_)))
+    {
         return Err(UtilsError::IllegalFilename);
     }
+    let output_path = path::Path::new(target_path.as_ref()).join(filename.as_ref());
 
     // Create output file
     let tar_file = tempfile::NamedTempFile::new()?;
@@ -564,6 +568,16 @@ mod tests {
         let result = super::compare_directories(dir1.path(), dir2.path());
 
         assert!(result.is_ok());
+    }
+
+    #[test_case("../file.tar.gz"; "relative path")]
+    #[test_case("/absolute/path/file.tar.gz"; "absolute path")]
+    #[test_case(".."; "invalid name")]
+    fn bundle_output_invalid_filenames(filename: &str) {
+        let target_dir = tempfile::tempdir().unwrap();
+        let result = super::bundle_output(target_dir.path(), filename);
+
+        assert!(matches!(result, Err(super::UtilsError::IllegalFilename)));
     }
 
     /// Recursively copies all files and directories from `from` to `to`.
