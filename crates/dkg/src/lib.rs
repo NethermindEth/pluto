@@ -7,3 +7,9 @@
 
 /// Protobuf definitions.
 pub mod dkgpb;
+
+/// General DKG IO operations.
+pub mod disk;
+
+/// TODO
+pub mod dkg;

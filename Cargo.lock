@@ -5525,8 +5525,16 @@ name = "pluto-dkg"
 version = "1.7.1"
 dependencies = [
  "pluto-build-proto",
+ "pluto-cluster",
+ "pluto-eth1wrap",
+ "pluto-eth2util",
  "prost 0.14.3",
  "prost-types 0.14.3",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]
