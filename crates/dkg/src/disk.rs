@@ -240,7 +240,7 @@ pub(crate) async fn check_clear_data_dir(data_dir: impl AsRef<path::Path>) -> Re
     }
 
     let disallowed = HashSet::from(["validator_keys", "cluster-lock.json"]);
-    let mut necessary = HashMap::from([("cluster-lock.json", false)]);
+    let mut necessary = HashMap::from([("charon-enr-private-key", false)]);
 
     let mut read_dir = tokio::fs::read_dir(&path).await?;
     while let Some(entry) = read_dir.next_entry().await? {
@@ -409,5 +409,17 @@ mod tests {
             result,
             Err(super::DiskError::MissingRequiredFiles { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn clear_data_dir_contains_private_key() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let data_dir = temp_dir.path();
+        tokio::fs::write(data_dir.join("charon-enr-private-key"), [0x0, 0x1, 0x2])
+            .await
+            .unwrap();
+
+        let result = super::check_clear_data_dir(data_dir).await;
+        assert!(result.is_ok());
     }
 }
