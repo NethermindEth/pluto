@@ -1,3 +1,8 @@
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+};
+
 use crate::{dkg, share};
 use rand::RngCore;
 use tracing::{info, warn};
@@ -36,6 +41,28 @@ pub(crate) enum DiskError {
 
     #[error("Keymanager error: {0}")]
     KeymanagerClientError(#[from] pluto_eth2util::keymanager::KeymanagerError),
+
+    /// Data directory does not exist.
+    #[error("data directory doesn't exist, cannot continue")]
+    DataDirNotFound(PathBuf),
+
+    /// Data directory path points to a file, not a directory.
+    #[error("data directory already exists and is a file, cannot continue")]
+    DataDirIsFile(PathBuf),
+
+    /// Data directory contains disallowed entries.
+    #[error("data directory not clean, cannot continue")]
+    DataDirNotClean {
+        disallowed_entity: String,
+        data_dir: PathBuf,
+    },
+
+    /// Data directory is missing required files.
+    #[error("missing required files, cannot continue")]
+    MissingRequiredFiles {
+        file_name: String,
+        data_dir: PathBuf,
+    },
 }
 
 type Result<T> = std::result::Result<T, DiskError>;
@@ -190,6 +217,58 @@ pub(crate) async fn write_lock(
     let mut file = tokio::fs::File::open(path).await?;
     file.write_all(&b).await?;
     file.metadata().await?.permissions().set_readonly(true); // File needs to be read-only for everybody
+
+    Ok(())
+}
+
+/// Ensures `data_dir` exists, is a directory, and does not contain any
+/// disallowed entries, while checking for the presence of necessary files.
+pub(crate) async fn check_clear_data_dir(data_dir: impl AsRef<str>) -> Result<()> {
+    let path = std::path::PathBuf::from(data_dir.as_ref());
+
+    match tokio::fs::metadata(&path).await {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(DiskError::DataDirNotFound(path));
+        }
+        Err(e) => {
+            return Err(DiskError::IoError(e));
+        }
+        Ok(meta) if !meta.is_dir() => {
+            return Err(DiskError::DataDirIsFile(path));
+        }
+        Ok(_) => {}
+    }
+
+    let disallowed = HashSet::from(["validator_keys", "cluster-lock.json"]);
+    let mut necessary = HashMap::from([("cluster-lock.json", false)]);
+
+    let mut read_dir = tokio::fs::read_dir(&path).await?;
+    while let Some(entry) = read_dir.next_entry().await? {
+        let os_string = entry.file_name();
+        let name = os_string.to_string_lossy();
+
+        let is_deposit_data = name.starts_with("deposit-data");
+
+        if disallowed.contains(name.as_ref()) || is_deposit_data {
+            return Err(DiskError::DataDirNotClean {
+                disallowed_entity: name.into(),
+                data_dir: path,
+            });
+        }
+
+        if let Some(found) = necessary.get_mut(name.as_ref()) {
+            *found = true;
+        }
+    }
+
+    for (file_name, found) in &necessary {
+        if !found {
+            return Err(DiskError::MissingRequiredFiles {
+                file_name: file_name.to_string(),
+                data_dir: path,
+            });
+        }
+    }
 
     Ok(())
 }
