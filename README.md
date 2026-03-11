@@ -37,9 +37,11 @@ The `charon dkg` subcommand **is more restrictive** than this general compatibil
 
 Examples are located in crate-specific example folders:
 
-- [P2P](crates/charon-p2p/examples/metrics.rs)
-- [Peerinfo](crates/peerinfo/examples/peerinfo.rs)
 - [Relay Server](crates/relay-server/examples/relay_server.rs)
+- [Peerinfo](crates/peerinfo/examples/peerinfo.rs)
+- [P2P](crates/p2p/examples/p2p.rs)
+- [Quic Upgrade](crates/p2p/examples/quic_upgrade.rs)
+- [Metrics](crates/p2p/examples/metrics.rs)
 - [Tracing](crates/tracing/examples/basic.rs)
 
 ## License
