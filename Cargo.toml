@@ -27,6 +27,7 @@ license = "Apache-2.0"
 publish = false
 
 [workspace.dependencies]
+async-trait = "0.1.89"
 alloy = { version = "1.3", features = ["essentials"] }
 built = { version = "0.8.0", features = ["git2", "chrono", "cargo-lock"] }
 blst = "0.3"

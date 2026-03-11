@@ -5474,6 +5474,7 @@ dependencies = [
 name = "pluto-core"
 version = "1.7.1"
 dependencies = [
+ "async-trait",
  "built",
  "cancellation",
  "chrono",
