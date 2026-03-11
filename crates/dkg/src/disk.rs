@@ -273,6 +273,42 @@ pub(crate) async fn check_clear_data_dir(data_dir: impl AsRef<str>) -> Result<()
     Ok(())
 }
 
+/// Writes sample files to check disk writes and removes sample files after
+/// verification.
+pub(crate) async fn check_writes(data_dir: impl AsRef<str>) -> Result<()> {
+    const CHECK_BODY: &str = "delete me: dummy file used to check write permissions";
+
+    let base = std::path::Path::new(data_dir.as_ref());
+
+    for file in [
+        "cluster-lock.json",
+        "deposit-data.json",
+        "validator_keys/keystore-0.json",
+    ] {
+        let file_path = std::path::Path::new(file);
+        let subdir = file_path.parent().filter(|p| !p.as_os_str().is_empty());
+
+        if let Some(subdir) = subdir {
+            tokio::fs::create_dir_all(base.join(subdir)).await?;
+        }
+
+        let full_path = base.join(file_path);
+        tokio::fs::write(&full_path, CHECK_BODY).await?;
+
+        let mut perms = tokio::fs::metadata(&full_path).await?.permissions();
+        perms.set_readonly(true);
+        tokio::fs::set_permissions(&full_path, perms).await?;
+
+        tokio::fs::remove_file(&full_path).await?;
+
+        if let Some(subdir) = subdir {
+            tokio::fs::remove_dir_all(base.join(subdir)).await?;
+        }
+    }
+
+    Ok(())
+}
+
 pub(crate) fn random_hex64() -> String {
     let mut rng = rand::rngs::OsRng;
 
