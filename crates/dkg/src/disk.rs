@@ -319,7 +319,6 @@ pub(crate) fn random_hex64() -> String {
 
 #[cfg(test)]
 mod tests {
-
     #[tokio::test]
     async fn clear_data_dir_does_not_exist() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -327,5 +326,16 @@ mod tests {
 
         let result = super::check_clear_data_dir(&data_dir).await;
         assert!(matches!(result, Err(super::DiskError::DataDirNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn clear_data_dir_is_file() {
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        tokio::fs::write(temp_file.path(), [0x0, 0x1, 0x2])
+            .await
+            .unwrap();
+
+        let result = super::check_clear_data_dir(temp_file.path()).await;
+        assert!(matches!(result, Err(super::DiskError::DataDirIsFile(_))));
     }
 }
