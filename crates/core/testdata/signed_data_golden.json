@@ -1075,39 +1075,39 @@
                 ],
                 "withdrawals": [
                   {
-                    "source_address": "0x4db1A8744f39c0E334EE62E027e849535eEcF65e",
+                    "source_address": "0x4db1a8744f39c0e334ee62e027e849535eecf65e",
                     "validator_pubkey": "0xd19fb45157271f9d07bf2f80cb720d4320977c57c4cf5816a88b642684b0a1c9d25f71cf14f159427b2a04299542b1d0",
                     "amount": "12273819354484122597"
                   },
                   {
-                    "source_address": "0xFE10B589678C0BEdcb4722FDb50c46cdDa042238",
+                    "source_address": "0xfe10b589678c0bedcb4722fdb50c46cdda042238",
                     "validator_pubkey": "0x5b472985388e0ef658d8843ffbac447b867cf8debaef8d13c05afa3fc9c6058798089479f5a9691096e544ec18af824c",
                     "amount": "17041179472703674337"
                   },
                   {
-                    "source_address": "0xBeec2F5Ac54aA00c6426Af3e411ccd83f0a39155",
+                    "source_address": "0xbeec2f5ac54aa00c6426af3e411ccd83f0a39155",
                     "validator_pubkey": "0x426040a838485b677382b46eb2f20518d480afaafdb7aa85a50ec2b16dcdfa8e590714123933f19f8b019b6390532fa8",
                     "amount": "8060929683751487046"
                   },
                   {
-                    "source_address": "0xd51fAD351d8058551F3260740B1365c7896fcbE0",
+                    "source_address": "0xd51fad351d8058551f3260740b1365c7896fcbe0",
                     "validator_pubkey": "0xf3ec14c53941476d99d404a89849f782d36edbc15c96ea1a47c4a4b01efda0acd1b912169e5be4297bfea862ebc5ab6b",
                     "amount": "14291403373102319308"
                   },
                   {
-                    "source_address": "0x9730956E07ae7330722C2d9b92492BE8641873F9",
+                    "source_address": "0x9730956e07ae7330722c2d9b92492be8641873f9",
                     "validator_pubkey": "0x109d1318938cd829ef65cb6f7dca1a1b58822ee8d15d612985ee9423a8e9cc1af426f5aeb7082527ec231a1863942e73",
                     "amount": "13828554520713587771"
                   }
                 ],
                 "consolidations": [
                   {
-                    "source_address": "0x3F8Ef10691a82474C9248b36054622E679Fb717A",
+                    "source_address": "0x3f8ef10691a82474c9248b36054622e679fb717a",
                     "source_pubkey": "0xbb07cb98e03d1cc2146542a577dd4131c91f4092a60432a766c8022b3f0c1515c6ff28d61cffb024da878eb24975776b",
                     "target_pubkey": "0xd17478b80a34c11487f295f9fafeb8e5b6b26b7d8e0f96577e43ce5d48f55b1aa57d35bd5c5084f4b375915ce0c04b62"
                   },
                   {
-                    "source_address": "0x152D30d4e426063e87011441d24FB0359D94a309",
+                    "source_address": "0x152d30d4e426063e87011441d24fb0359d94a309",
                     "source_pubkey": "0xa2735fa2b2ced1399d6f3837c2717b96d40a471f6b90b08130cea9c2acfbf3cdb612f2e08d598d896713637ff214ae1f",
                     "target_pubkey": "0x575c3498fcdac498fa1b5c5afd8d0bd10e553b824d1f66e657a302a7c3ed8613beb70204b66aec4c3bd3884d92eb51d0"
                   }
