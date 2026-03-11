@@ -450,8 +450,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_definition_valid() {
-        let mut random = rand::rngs::mock::StepRng::new(0, 1);
-        let (lock, ..) = test_cluster::new_for_test(1, 2, 3, 0, &mut random);
+        let (lock, ..) = test_cluster::new_for_test(1, 2, 3, 0);
         let expected_definition = lock.definition.clone();
 
         let server = wiremock::MockServer::start().await;

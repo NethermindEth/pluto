@@ -14,7 +14,6 @@ pub fn new_for_test(
     k: pluto_crypto::types::Index,
     n: pluto_crypto::types::Index,
     seed: u64,
-    random: &mut impl rand::Rng,
 ) -> (
     lock::Lock,
     Vec<k256::SecretKey>,
@@ -56,7 +55,7 @@ pub fn new_for_test(
             priv_shares.push(share_priv_key);
         }
 
-        let fee_recipient_address = pluto_testutil::random::random_eth_address(random);
+        let fee_recipient_address = pluto_testutil::random::random_eth_address(&mut rng);
 
         let network_name = pluto_eth2util::network::GOERLI.name;
         let reg = get_signed_registration(&root_secret, fee_recipient_address, network_name);
@@ -74,7 +73,7 @@ pub fn new_for_test(
         fee_recipient_addresses.push(format!("0x{}", hex::encode(fee_recipient_address)));
         withdrawal_addresses.push(format!(
             "0x{}",
-            hex::encode(pluto_testutil::random::random_eth_address(random))
+            hex::encode(pluto_testutil::random::random_eth_address(&mut rng))
         ));
     }
 
