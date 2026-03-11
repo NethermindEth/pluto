@@ -3,10 +3,12 @@
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use ssz::{BitList, BitVector};
+use tree_hash::{Hash256, PackedEncoding, TreeHash, TreeHashType, merkle_root, mix_in_length};
 use tree_hash_derive::TreeHash;
 use typenum::{U64, U131072};
 
-use crate::spec::{altair, bellatrix, capella, deneb, phase0};
+use crate::spec::{altair, capella, deneb, phase0};
+use alloy_eips::{eip6110, eip7002, eip7251};
 
 /// Maximum number of attester slashings per block (Electra).
 pub const MAX_ATTESTER_SLASHINGS_ELECTRA: usize = 1;
@@ -66,72 +68,112 @@ pub struct Attestation {
 /// Execution-layer deposit request.
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/electra/beacon-chain.md#depositrequest>
-#[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
-pub struct DepositRequest {
-    /// Validator public key.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
-    pub pubkey: phase0::BLSPubKey,
-    /// Withdrawal credentials.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
-    pub withdrawal_credentials: phase0::WithdrawalCredentials,
-    /// Amount in gwei.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    pub amount: phase0::Gwei,
-    /// Signature.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
-    pub signature: phase0::BLSSignature,
-    /// Request index.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    pub index: u64,
-}
+pub type DepositRequest = eip6110::DepositRequest;
 
 /// Execution-layer withdrawal request.
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/electra/beacon-chain.md#withdrawalrequest>
-#[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
-pub struct WithdrawalRequest {
-    /// Source execution address.
-    #[serde(with = "bellatrix::execution_address_serde")]
-    pub source_address: bellatrix::ExecutionAddress,
-    /// Validator public key.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
-    pub validator_pubkey: phase0::BLSPubKey,
-    /// Amount in gwei.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    pub amount: phase0::Gwei,
-}
+pub type WithdrawalRequest = eip7002::WithdrawalRequest;
 
 /// Execution-layer consolidation request.
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/electra/beacon-chain.md#consolidationrequest>
-#[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
-pub struct ConsolidationRequest {
-    /// Source execution address.
-    #[serde(with = "bellatrix::execution_address_serde")]
-    pub source_address: bellatrix::ExecutionAddress,
-    /// Source validator public key.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
-    pub source_pubkey: phase0::BLSPubKey,
-    /// Target validator public key.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
-    pub target_pubkey: phase0::BLSPubKey,
-}
+pub type ConsolidationRequest = eip7251::ConsolidationRequest;
 
 /// Electra execution requests container.
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/electra/beacon-chain.md#executionrequests>
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionRequests {
     /// Deposit requests.
-    pub deposits: phase0::SszList<DepositRequest, MAX_DEPOSIT_REQUESTS_PER_PAYLOAD>,
+    pub deposits: Vec<DepositRequest>,
     /// Withdrawal requests.
-    pub withdrawals: phase0::SszList<WithdrawalRequest, MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD>,
+    pub withdrawals: Vec<WithdrawalRequest>,
     /// Consolidation requests.
-    pub consolidations:
-        phase0::SszList<ConsolidationRequest, MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD>,
+    pub consolidations: Vec<ConsolidationRequest>,
+}
+
+fn container_root(field_roots: &[Hash256]) -> Hash256 {
+    let mut bytes = Vec::with_capacity(field_roots.len().saturating_mul(32));
+    for root in field_roots {
+        bytes.extend_from_slice(root.as_slice());
+    }
+
+    merkle_root(bytes.as_slice(), field_roots.len())
+}
+
+fn list_root<const MAX: usize>(element_roots: &[Hash256]) -> Hash256 {
+    let mut bytes = Vec::with_capacity(element_roots.len().saturating_mul(32));
+    for root in element_roots {
+        bytes.extend_from_slice(root.as_slice());
+    }
+
+    let root = merkle_root(bytes.as_slice(), MAX);
+    mix_in_length(&root, element_roots.len())
+}
+
+fn deposit_request_tree_hash_root(request: &DepositRequest) -> Hash256 {
+    container_root(&[
+        request.pubkey.tree_hash_root(),
+        request.withdrawal_credentials.tree_hash_root(),
+        request.amount.tree_hash_root(),
+        request.signature.tree_hash_root(),
+        request.index.tree_hash_root(),
+    ])
+}
+
+fn withdrawal_request_tree_hash_root(request: &WithdrawalRequest) -> Hash256 {
+    container_root(&[
+        request.source_address.tree_hash_root(),
+        request.validator_pubkey.tree_hash_root(),
+        request.amount.tree_hash_root(),
+    ])
+}
+
+fn consolidation_request_tree_hash_root(request: &ConsolidationRequest) -> Hash256 {
+    container_root(&[
+        request.source_address.tree_hash_root(),
+        request.source_pubkey.tree_hash_root(),
+        request.target_pubkey.tree_hash_root(),
+    ])
+}
+
+impl TreeHash for ExecutionRequests {
+    fn tree_hash_type() -> TreeHashType {
+        TreeHashType::Container
+    }
+
+    fn tree_hash_packed_encoding(&self) -> PackedEncoding {
+        unreachable!("ExecutionRequests is not a basic tree hash type");
+    }
+
+    fn tree_hash_packing_factor() -> usize {
+        unreachable!("ExecutionRequests is not a basic tree hash type");
+    }
+
+    fn tree_hash_root(&self) -> Hash256 {
+        let deposit_roots = self
+            .deposits
+            .iter()
+            .map(deposit_request_tree_hash_root)
+            .collect::<Vec<_>>();
+        let withdrawal_roots = self
+            .withdrawals
+            .iter()
+            .map(withdrawal_request_tree_hash_root)
+            .collect::<Vec<_>>();
+        let consolidation_roots = self
+            .consolidations
+            .iter()
+            .map(consolidation_request_tree_hash_root)
+            .collect::<Vec<_>>();
+
+        container_root(&[
+            list_root::<MAX_DEPOSIT_REQUESTS_PER_PAYLOAD>(&deposit_roots),
+            list_root::<MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD>(&withdrawal_roots),
+            list_root::<MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD>(&consolidation_roots),
+        ])
+    }
 }
 
 /// Electra beacon block body.

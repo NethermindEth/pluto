@@ -1429,25 +1429,22 @@ mod tests {
     fn sample_execution_requests(byte: u8) -> electra::ExecutionRequests {
         electra::ExecutionRequests {
             deposits: vec![electra::DepositRequest {
-                pubkey: [byte; 48],
-                withdrawal_credentials: [byte; 32],
+                pubkey: [byte; 48].into(),
+                withdrawal_credentials: [byte; 32].into(),
                 amount: u64::from(byte),
-                signature: [byte; 96],
+                signature: [byte; 96].into(),
                 index: u64::from(byte),
-            }]
-            .into(),
+            }],
             withdrawals: vec![electra::WithdrawalRequest {
-                source_address: [byte; 20],
-                validator_pubkey: [byte; 48],
+                source_address: [byte; 20].into(),
+                validator_pubkey: [byte; 48].into(),
                 amount: u64::from(byte),
-            }]
-            .into(),
+            }],
             consolidations: vec![electra::ConsolidationRequest {
-                source_address: [byte; 20],
-                source_pubkey: [byte; 48],
-                target_pubkey: [byte; 48],
-            }]
-            .into(),
+                source_address: [byte; 20].into(),
+                source_pubkey: [byte; 48].into(),
+                target_pubkey: [byte; 48].into(),
+            }],
         }
     }
 
