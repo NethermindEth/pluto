@@ -13,3 +13,6 @@ pub mod disk;
 
 /// TODO
 pub mod dkg;
+
+/// TODO
+pub mod share;

@@ -5524,12 +5524,15 @@ dependencies = [
 name = "pluto-dkg"
 version = "1.7.1"
 dependencies = [
+ "hex",
  "pluto-build-proto",
  "pluto-cluster",
+ "pluto-crypto",
  "pluto-eth1wrap",
  "pluto-eth2util",
  "prost 0.14.3",
  "prost-types 0.14.3",
+ "rand 0.8.5",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",

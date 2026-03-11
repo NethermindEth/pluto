@@ -1,4 +1,5 @@
-use crate::dkg;
+use crate::{dkg, share};
+use rand::RngCore;
 use tracing::{info, warn};
 
 /// Error type for DKG disk operations.
@@ -29,6 +30,12 @@ pub(crate) enum DiskError {
     /// Deposit amounts verification error.
     #[error("Deposit amounts verification failed: {0}")]
     DepositAmountsVerificationError(#[from] pluto_eth2util::deposit::DepositError),
+
+    #[error("Keystore error: {0}")]
+    KeystoreError(#[from] pluto_eth2util::keystore::KeystoreError),
+
+    #[error("Keymanager error: {0}")]
+    KeymanagerClientError(#[from] pluto_eth2util::keymanager::KeymanagerError),
 }
 
 type Result<T> = std::result::Result<T, DiskError>;
@@ -107,4 +114,41 @@ pub(crate) async fn load_definition(
     pluto_eth2util::deposit::verify_deposit_amounts(&def.deposit_amounts, def.compounding)?;
 
     Ok(def)
+}
+
+/// Writes validator private keyshares for the node to the provided keymanager
+/// address.
+pub(crate) async fn write_to_keymanager(
+    keymanager_url: impl AsRef<str>,
+    auth_token: impl AsRef<str>,
+    shares: &[share::Share],
+) -> Result<()> {
+    let mut keystores = Vec::new();
+    let mut passwords = Vec::new();
+
+    for share in shares {
+        let password = random_hex64();
+        let store = pluto_eth2util::keystore::encrypt(
+            &share.secret_share,
+            &password,
+            None, // TODO: What to use here as argument?
+            &mut rand::rngs::OsRng,
+        )?;
+
+        passwords.push(password);
+        keystores.push(store);
+    }
+
+    let cl = pluto_eth2util::keymanager::Client::new(keymanager_url, auth_token)?;
+    cl.import_keystores(&keystores, &passwords).await?;
+
+    Ok(())
+}
+
+pub(crate) fn random_hex64() -> String {
+    let mut rng = rand::rngs::OsRng;
+
+    let mut bytes = [0u8; 32];
+    rng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
 }
