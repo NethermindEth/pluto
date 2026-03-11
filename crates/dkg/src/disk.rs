@@ -78,9 +78,11 @@ pub(crate) async fn load_definition(
 
     // Fetch definition from URI or disk
 
-    let parsed_url = url::Url::parse(&conf.def_file)?;
-    let mut def = if parsed_url.has_host() {
-        if parsed_url.scheme() != "https" {
+    let parsed_url = url::Url::parse(&conf.def_file);
+    let mut def = if let Ok(url) = parsed_url
+        && url.has_host()
+    {
+        if url.scheme() != "https" {
             warn!(
                 addr = conf.def_file,
                 "Definition file URL does not use https protocol"
@@ -327,9 +329,26 @@ mod tests {
             no_verify: false,
             ..Default::default()
         };
+
         let result = super::load_definition(&cfg, None).await;
-        dbg!(&result);
-        assert!(matches!(result, Err(super::DiskError::InvalidUrl(_))));
+
+        assert!(matches!(result, Err(super::DiskError::IoError(_))));
+    }
+
+    #[tokio::test]
+    async fn load_definition_invalid_file() {
+        let tempfile = tempfile::NamedTempFile::new().unwrap();
+        tokio::fs::write(tempfile.path(), r#"{}"#).await.unwrap();
+
+        let cfg = dkg::Config {
+            def_file: tempfile.path().to_string_lossy().into(),
+            no_verify: false,
+            ..Default::default()
+        };
+
+        let result = super::load_definition(&cfg, None).await;
+
+        assert!(matches!(result, Err(super::DiskError::JsonError(_))));
     }
 
     #[tokio::test]
