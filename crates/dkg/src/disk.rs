@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    path::{self, PathBuf},
 };
 
 use crate::{dkg, share};
@@ -212,7 +212,7 @@ pub(crate) async fn write_lock(
         buf
     };
 
-    let path = std::path::Path::new(data_dir.as_ref()).join("cluster-lock.json");
+    let path = path::Path::new(data_dir.as_ref()).join("cluster-lock.json");
 
     let mut file = tokio::fs::File::open(path).await?;
     file.write_all(&b).await?;
@@ -223,8 +223,8 @@ pub(crate) async fn write_lock(
 
 /// Ensures `data_dir` exists, is a directory, and does not contain any
 /// disallowed entries, while checking for the presence of necessary files.
-pub(crate) async fn check_clear_data_dir(data_dir: impl AsRef<str>) -> Result<()> {
-    let path = std::path::PathBuf::from(data_dir.as_ref());
+pub(crate) async fn check_clear_data_dir(data_dir: impl AsRef<path::Path>) -> Result<()> {
+    let path = path::PathBuf::from(data_dir.as_ref());
 
     match tokio::fs::metadata(&path).await {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -278,14 +278,14 @@ pub(crate) async fn check_clear_data_dir(data_dir: impl AsRef<str>) -> Result<()
 pub(crate) async fn check_writes(data_dir: impl AsRef<str>) -> Result<()> {
     const CHECK_BODY: &str = "delete me: dummy file used to check write permissions";
 
-    let base = std::path::Path::new(data_dir.as_ref());
+    let base = path::Path::new(data_dir.as_ref());
 
     for file in [
         "cluster-lock.json",
         "deposit-data.json",
         "validator_keys/keystore-0.json",
     ] {
-        let file_path = std::path::Path::new(file);
+        let file_path = path::Path::new(file);
         let subdir = file_path.parent().filter(|p| !p.as_os_str().is_empty());
 
         if let Some(subdir) = subdir {
@@ -315,4 +315,17 @@ pub(crate) fn random_hex64() -> String {
     let mut bytes = [0u8; 32];
     rng.fill_bytes(&mut bytes);
     hex::encode(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[tokio::test]
+    async fn clear_data_dir_does_not_exist() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let data_dir = temp_dir.path().join("nonexistent");
+
+        let result = super::check_clear_data_dir(&data_dir).await;
+        assert!(matches!(result, Err(super::DiskError::DataDirNotFound(_))));
+    }
 }

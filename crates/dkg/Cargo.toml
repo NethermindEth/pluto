@@ -25,5 +25,8 @@ url.workspace = true
 [build-dependencies]
 pluto-build-proto.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true
