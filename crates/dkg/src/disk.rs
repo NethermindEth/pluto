@@ -398,4 +398,16 @@ mod tests {
             Err(super::DiskError::DataDirNotClean { .. })
         ));
     }
+
+    #[tokio::test]
+    async fn clear_data_dir_missing_private_key() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let data_dir = temp_dir.path();
+
+        let result = super::check_clear_data_dir(data_dir).await;
+        assert!(matches!(
+            result,
+            Err(super::DiskError::MissingRequiredFiles { .. })
+        ));
+    }
 }
