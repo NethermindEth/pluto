@@ -82,10 +82,6 @@ pub enum BootnodeError {
     #[error("enr does not have TCP nor UDP port")]
     EnrNoPort,
 
-    /// Failed resolving a single relay ID from addresses.
-    #[error("failed resolving a single relay ID from addresses: got {0}")]
-    NotSingleRelayId(usize),
-
     /// Mutable peer error.
     #[error("mutable peer error: {0}")]
     MutablePeerError(#[from] MutablePeerError),

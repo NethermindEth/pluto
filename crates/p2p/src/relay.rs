@@ -12,13 +12,16 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     convert::Infallible,
+    sync::{Arc, Mutex},
     task::{Context, Poll},
     time::Duration,
 };
 
-use crate::{p2p_context::P2PContext, peer::MutablePeer, utils};
-use futures::FutureExt;
-use futures_timer::Delay;
+use crate::{
+    p2p_context::P2PContext,
+    peer::{MutablePeer, Peer},
+    utils,
+};
 use libp2p::{
     Multiaddr, PeerId,
     core::{Endpoint, transport::PortUse},
@@ -28,6 +31,9 @@ use libp2p::{
         ToSwarm, dial_opts::DialOpts, dummy,
     },
 };
+use tokio::time::Interval;
+
+const RELAY_ROUTER_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Mutable relay reservation behaviour.
 ///
@@ -35,6 +41,7 @@ use libp2p::{
 /// 1. Dialing relay servers
 /// 2. Waiting for connections to establish
 /// 3. Creating relay circuit listeners once connected
+/// 4. Subscribing to relay peer updates to handle dynamic address resolution
 pub struct MutableRelayReservation {
     /// Events to emit to the swarm
     events: VecDeque<ToSwarm<Infallible, Infallible>>,
@@ -42,6 +49,8 @@ pub struct MutableRelayReservation {
     pending_relays: HashSet<PeerId>,
     /// Circuit addresses to listen on once relay connections are established
     pending_circuit_addrs: HashMap<PeerId, Vec<Multiaddr>>,
+    /// Shared queue for events from subscription callbacks
+    subscription_events: Arc<Mutex<VecDeque<Peer>>>,
 }
 
 impl MutableRelayReservation {
@@ -50,39 +59,35 @@ impl MutableRelayReservation {
     /// This behaviour dials relays and waits for connections to establish
     /// before creating circuit listeners, allowing other peers to reach
     /// this node through the relays.
-    pub fn new(mutable_peer: Vec<MutablePeer>) -> Self {
+    ///
+    /// Subscribes to each relay peer for dynamic address resolution.
+    pub fn new(mutable_peers: Vec<MutablePeer>) -> Self {
         let mut events = VecDeque::new();
         let mut pending_relays = HashSet::new();
         let mut pending_circuit_addrs = HashMap::new();
+        let subscription_events = Arc::new(Mutex::new(VecDeque::new()));
 
-        // Queue initial dial events for each relay
-        for mutable_peer in &mutable_peer {
+        // Subscribe to relay peer updates and process initial peers
+        for mutable_peer in &mutable_peers {
+            // Set up subscription for this relay peer
+            let sub_events = Arc::clone(&subscription_events);
+            let subscription = Box::new(move |peer: &Peer| {
+                if let Ok(mut queue) = sub_events.lock() {
+                    queue.push_back(peer.clone());
+                }
+            });
+
+            if let Err(e) = mutable_peer.subscribe(subscription) {
+                tracing::warn!(err = %e, "Failed to subscribe to relay peer updates");
+            }
+
+            // Process peer if already available
             if let Ok(Some(peer)) = mutable_peer.peer() {
-                pending_relays.insert(peer.id);
-
-                // Build circuit addresses for this relay
-                let mut circuit_addrs = Vec::new();
-                for addr in &peer.addresses {
-                    let mut relay_addr = addr.clone();
-                    relay_addr.push(MaProtocol::P2p(peer.id));
-                    relay_addr.push(MaProtocol::P2pCircuit);
-                    circuit_addrs.push(relay_addr);
-                }
-                pending_circuit_addrs.insert(peer.id, circuit_addrs);
-
-                // Dial the relay server (required before listening on circuit)
-                for addr in &peer.addresses {
-                    let mut relay_addr = addr.clone();
-                    relay_addr.push(MaProtocol::P2p(peer.id));
-                    // Do NOT add P2pCircuit here - we're dialing the relay server directly
-                    events.push_back(ToSwarm::Dial {
-                        opts: DialOpts::unknown_peer_id().address(relay_addr).build(),
-                    });
-                }
-
-                tracing::debug!(
-                    relay_peer_id = %peer.id,
-                    "Queued relay dial, will listen on circuit after connection establishes"
+                Self::queue_relay_dial(
+                    &mut events,
+                    &mut pending_relays,
+                    &mut pending_circuit_addrs,
+                    &peer,
                 );
             }
         }
@@ -91,6 +96,67 @@ impl MutableRelayReservation {
             events,
             pending_relays,
             pending_circuit_addrs,
+            subscription_events,
+        }
+    }
+
+    /// Queues dial events for a relay peer.
+    fn queue_relay_dial(
+        events: &mut VecDeque<ToSwarm<Infallible, Infallible>>,
+        pending_relays: &mut HashSet<PeerId>,
+        pending_circuit_addrs: &mut HashMap<PeerId, Vec<Multiaddr>>,
+        peer: &Peer,
+    ) {
+        pending_relays.insert(peer.id);
+
+        // Build circuit addresses for this relay
+        let mut circuit_addrs = Vec::new();
+        for addr in &peer.addresses {
+            let mut relay_addr = addr.clone();
+            relay_addr.push(MaProtocol::P2p(peer.id));
+            relay_addr.push(MaProtocol::P2pCircuit);
+            circuit_addrs.push(relay_addr);
+        }
+        pending_circuit_addrs.insert(peer.id, circuit_addrs);
+
+        // Dial the relay server (required before listening on circuit)
+        for addr in &peer.addresses {
+            let mut relay_addr = addr.clone();
+            relay_addr.push(MaProtocol::P2p(peer.id));
+            // Do NOT add P2pCircuit here - we're dialing the relay server directly
+            events.push_back(ToSwarm::Dial {
+                opts: DialOpts::unknown_peer_id().address(relay_addr).build(),
+            });
+        }
+
+        tracing::debug!(
+            relay_peer_id = %peer.id,
+            "Queued relay dial, will listen on circuit after connection establishes"
+        );
+    }
+
+    /// Processes pending subscription events.
+    fn process_subscription_events(&mut self) {
+        tracing::debug!("Processing subscription events");
+        let peers = {
+            let Ok(mut queue) = self.subscription_events.lock() else {
+                tracing::warn!("Failed to lock subscription events queue");
+                return;
+            };
+            queue.drain(..).collect::<Vec<_>>()
+        };
+
+        for peer in peers {
+            tracing::info!(
+                relay_peer_id = %peer.id,
+                "Relay peer updated via subscription, queuing dial"
+            );
+            Self::queue_relay_dial(
+                &mut self.events,
+                &mut self.pending_relays,
+                &mut self.pending_circuit_addrs,
+                &peer,
+            );
         }
     }
 }
@@ -155,6 +221,9 @@ impl NetworkBehaviour for MutableRelayReservation {
         &mut self,
         _cx: &mut Context<'_>,
     ) -> std::task::Poll<ToSwarm<Self::ToSwarm, THandlerInEvent<Self>>> {
+        // Process any pending subscription updates first
+        self.process_subscription_events();
+
         if let Some(event) = self.events.pop_front() {
             return Poll::Ready(event);
         }
@@ -162,31 +231,35 @@ impl NetworkBehaviour for MutableRelayReservation {
     }
 }
 
-const RELAY_ROUTER_INTERVAL: Duration = Duration::from_secs(10);
-
 /// Relay router behaviour.
+///
+/// Continuously advertises relay circuit addresses for known peers.
+/// Polls relay peers periodically to detect address updates.
 pub struct RelayRouter {
     relays: Vec<MutablePeer>,
     p2p_context: P2PContext,
     events: VecDeque<ToSwarm<Infallible, Infallible>>,
-    interval: Delay,
+    interval: Interval,
     local_peer_id: PeerId,
 }
 
 impl RelayRouter {
     /// Creates a new relay router.
     pub fn new(relays: Vec<MutablePeer>, p2p_context: P2PContext, local_peer_id: PeerId) -> Self {
+        let mut interval = tokio::time::interval(RELAY_ROUTER_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
         Self {
             relays,
             p2p_context,
             events: VecDeque::new(),
-            // We reset the interval to 0 to run the relay router immediately.
-            interval: Delay::new(Duration::new(0, 0)),
+            interval,
             local_peer_id,
         }
     }
 
     fn run_relay_router(&mut self) {
+        tracing::debug!("Running relay router");
         let peers = self.p2p_context.known_peers();
         for target_peer_id in peers {
             if *target_peer_id == self.local_peer_id {
@@ -255,8 +328,7 @@ impl NetworkBehaviour for RelayRouter {
         if let Some(event) = self.events.pop_front() {
             return Poll::Ready(event);
         }
-        if self.interval.poll_unpin(cx).is_ready() {
-            self.interval.reset(RELAY_ROUTER_INTERVAL);
+        if self.interval.poll_tick(cx).is_ready() {
             self.run_relay_router();
         }
         Poll::Pending

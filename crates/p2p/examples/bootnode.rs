@@ -1,5 +1,29 @@
 #![allow(missing_docs)]
-//! Bootnode example
+//! Bootnode example demonstrating relay-based P2P connectivity.
+//!
+//! This example shows how to:
+//! - Resolve relay addresses from HTTP(S) URLs using `bootnode::new_relays`
+//! - Set up relay reservations to allow other peers to connect through relays
+//! - Route known peers through relay circuits
+//! - Handle relay and peer connection events
+//!
+//! ## Usage
+//!
+//! ```bash
+//! cargo run --example bootnode -- \
+//!   --relays "https://relay1.example.com,https://relay2.example.com" \
+//!   --data-dir /path/to/data \
+//!   --known-peers "12D3KooW..." \
+//!   --tcp-addrs "0.0.0.0:3610" \
+//!   --udp-addrs "0.0.0.0:3630"
+//! ```
+//!
+//! The example will:   
+//! 1. Load cluster lock and private key from the data directory
+//! 2. Resolve relay addresses and establish connections
+//! 3. Create relay reservations (allowing peers to reach us via relay)
+//! 4. Set up relay routing for known cluster peers
+//! 5. Log all connection events, relay circuits, and ping results
 
 use std::{path::PathBuf, str::FromStr};
 
