@@ -93,7 +93,7 @@ use std::{
 
 use futures::{Stream, StreamExt, stream::FusedStream};
 use libp2p::{
-    Multiaddr, PeerId, Swarm, SwarmBuilder, autonat,
+    Multiaddr, PeerId, Swarm, SwarmBuilder, autonat, identify,
     identity::Keypair,
     noise, ping, relay,
     swarm::{NetworkBehaviour, SwarmEvent},
@@ -495,6 +495,18 @@ impl<B: NetworkBehaviour> Node<B> {
     /// Handles a swarm event to update metrics and logging.
     fn handle_event(&mut self, event: &SwarmEvent<PlutoBehaviourEvent<B>>) {
         match event {
+            // Identify - update peer addresses in the peer store
+            SwarmEvent::Behaviour(PlutoBehaviourEvent::Identify(identify::Event::Received {
+                peer_id,
+                info,
+                ..
+            })) => {
+                // The peer addresses will be available in the next poll of the node.
+                self.p2p_context
+                    .peer_store_write_lock()
+                    .set_peer_addresses(*peer_id, info.listen_addrs.clone());
+            }
+
             // Ping metrics
             SwarmEvent::Behaviour(PlutoBehaviourEvent::Ping(ping::Event {
                 peer, result, ..

@@ -219,11 +219,19 @@ impl<M: ConnectionLoggerMetrics + 'static> NetworkBehaviour for ConnectionLogger
                     other_established = event.other_established,
                     "connection established"
                 );
+                // Extract remote address from the endpoint
+                let remote_addr = match &event.endpoint {
+                    libp2p::core::ConnectedPoint::Dialer { address, .. } => address.clone(),
+                    libp2p::core::ConnectedPoint::Listener { send_back_addr, .. } => {
+                        send_back_addr.clone()
+                    }
+                };
                 // Update peer store - this is done here so all other behaviours
                 // see the updated peer store immediately
                 self.p2p_context.peer_store_write_lock().add_peer(Peer {
                     id: event.peer_id,
                     connection_id: event.connection_id,
+                    remote_addr,
                 });
             }
             libp2p::swarm::FromSwarm::ConnectionClosed(event) => {
@@ -233,17 +241,21 @@ impl<M: ConnectionLoggerMetrics + 'static> NetworkBehaviour for ConnectionLogger
                     num_established = event.remaining_established,
                     "connection closed"
                 );
+                // Extract remote address from the endpoint
+                let addr = match &event.endpoint {
+                    libp2p::core::ConnectedPoint::Dialer { address, .. } => address.clone(),
+                    libp2p::core::ConnectedPoint::Listener { send_back_addr, .. } => {
+                        send_back_addr.clone()
+                    }
+                };
                 // Update peer store
                 self.p2p_context.peer_store_write_lock().remove_peer(Peer {
                     id: event.peer_id,
                     connection_id: event.connection_id,
+                    remote_addr: addr.clone(),
                 });
                 // Decrement the connection count based on the endpoint address
-                let addr = match &event.endpoint {
-                    libp2p::core::ConnectedPoint::Dialer { address, .. } => address,
-                    libp2p::core::ConnectedPoint::Listener { send_back_addr, .. } => send_back_addr,
-                };
-                self.decrement_connection(event.peer_id, addr);
+                self.decrement_connection(event.peer_id, &addr);
             }
             _ => {}
         }

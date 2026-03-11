@@ -1,9 +1,9 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
-use libp2p::{PeerId, swarm::ConnectionId};
+use libp2p::{Multiaddr, PeerId, swarm::ConnectionId};
 
 /// Global context shared across P2P components.
 ///
@@ -50,7 +50,7 @@ impl P2PContext {
     }
 }
 
-/// Peer.
+/// Peer connection information.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Peer {
     /// Peer ID.
@@ -58,6 +58,9 @@ pub struct Peer {
 
     /// Connection ID.
     pub connection_id: ConnectionId,
+
+    /// Remote address of the connection.
+    pub remote_addr: Multiaddr,
 }
 
 /// Peer store.
@@ -68,6 +71,9 @@ pub struct PeerStore {
 
     /// Inactive peers.
     inactive_peers: HashSet<Peer>,
+
+    /// Known addresses for each peer (populated from identify protocol).
+    peer_addresses: HashMap<PeerId, Vec<Multiaddr>>,
 }
 
 impl PeerStore {
@@ -110,5 +116,23 @@ impl PeerStore {
     /// Returns the number of inactive peers.
     pub fn inactive_count(&self) -> usize {
         self.inactive_peers.len()
+    }
+
+    /// Returns all active connections to a specific peer.
+    pub fn connections_to_peer(&self, peer_id: &PeerId) -> Vec<&Peer> {
+        self.active_peers
+            .iter()
+            .filter(|p| &p.id == peer_id)
+            .collect()
+    }
+
+    /// Sets the known addresses for a peer (from identify protocol).
+    pub fn set_peer_addresses(&mut self, peer_id: PeerId, addrs: Vec<Multiaddr>) {
+        self.peer_addresses.insert(peer_id, addrs);
+    }
+
+    /// Returns the known addresses for a peer.
+    pub fn peer_addresses(&self, peer_id: &PeerId) -> Option<&Vec<Multiaddr>> {
+        self.peer_addresses.get(peer_id)
     }
 }
