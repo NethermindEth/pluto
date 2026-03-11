@@ -61,7 +61,8 @@ pub(crate) async fn load_definition(
             );
         }
 
-        let def: pluto_cluster::definition::Definition = todo!();
+        let def: pluto_cluster::definition::Definition =
+            todo!("requires `cluster.FetchDefinition`");
         let definition_hash = pluto_cluster::helpers::to_0x_hex(&def.definition_hash);
 
         info!(
@@ -141,6 +142,29 @@ pub(crate) async fn write_to_keymanager(
 
     let cl = pluto_eth2util::keymanager::Client::new(keymanager_url, auth_token)?;
     cl.import_keystores(&keystores, &passwords).await?;
+
+    Ok(())
+}
+
+pub(crate) async fn write_keys_to_disk(
+    conf: &dkg::Config,
+    shares: &[share::Share],
+    insecure: bool,
+) -> Result<()> {
+    let secret_shares = shares.iter().map(|s| s.secret_share).collect::<Vec<_>>();
+
+    let keys_dir: String = todo!("requires `cluster.CreateValidatorKeysDir`");
+
+    if insecure {
+        pluto_eth2util::keystore::store_keys_insecure(
+            &secret_shares,
+            keys_dir,
+            &pluto_eth2util::keystore::CONFIRM_INSECURE_KEYS,
+        )
+        .await?;
+    } else {
+        pluto_eth2util::keystore::store_keys(&secret_shares, keys_dir).await?;
+    }
 
     Ok(())
 }
