@@ -27,7 +27,7 @@ pluto-eth1wrap.workspace = true
 pluto-k1util.workspace = true
 k256.workspace = true
 tokio.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["json"] }
 
 [build-dependencies]
 prost-build.workspace = true
