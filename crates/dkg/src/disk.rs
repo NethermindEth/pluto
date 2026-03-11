@@ -169,6 +169,31 @@ pub(crate) async fn write_keys_to_disk(
     Ok(())
 }
 
+pub(crate) async fn write_lock(
+    data_dir: impl AsRef<str>,
+    lock: &pluto_cluster::lock::Lock,
+) -> Result<()> {
+    use serde::Serialize;
+    use tokio::io::AsyncWriteExt;
+
+    let b = {
+        let mut buf = Vec::new();
+        let formatter = serde_json::ser::PrettyFormatter::with_indent(b" ");
+        let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
+
+        lock.serialize(&mut ser)?;
+        buf
+    };
+
+    let path = std::path::Path::new(data_dir.as_ref()).join("cluster-lock.json");
+
+    let mut file = tokio::fs::File::open(path).await?;
+    file.write_all(&b).await?;
+    file.metadata().await?.permissions().set_readonly(true); // File needs to be read-only for everybody
+
+    Ok(())
+}
+
 pub(crate) fn random_hex64() -> String {
     let mut rng = rand::rngs::OsRng;
 
