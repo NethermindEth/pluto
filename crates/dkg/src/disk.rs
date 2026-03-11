@@ -353,5 +353,19 @@ mod tests {
             Err(super::DiskError::DataDirNotClean { .. })
         ));
     }
+
+    #[tokio::test]
     async fn clear_data_dir_contains_validator_keys_dir() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let data_dir = temp_dir.path();
+        tokio::fs::create_dir_all(data_dir.join("validator_keys"))
+            .await
+            .unwrap();
+
+        let result = super::check_clear_data_dir(data_dir).await;
+        assert!(matches!(
+            result,
+            Err(super::DiskError::DataDirNotClean { .. })
+        ));
+    }
 }
