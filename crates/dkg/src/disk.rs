@@ -1,10 +1,9 @@
+use crate::{dkg, share};
+use rand::RngCore;
 use std::{
     collections::{HashMap, HashSet},
     path::{self, PathBuf},
 };
-
-use crate::{dkg, share};
-use rand::RngCore;
 use tracing::{info, warn};
 
 /// Error type for DKG disk operations.
