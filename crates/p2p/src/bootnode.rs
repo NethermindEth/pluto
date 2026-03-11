@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use backon::{ExponentialBuilder, Retryable};
-use libp2p::{Multiaddr, multiaddr::Protocol};
+use libp2p::Multiaddr;
 use pluto_eth2util::enr::Record;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -174,13 +174,15 @@ async fn resolve_relay(
     mutable: MutablePeer,
 ) {
     let mut prev_addrs = String::new();
+    let client = reqwest::Client::new();
 
     loop {
         if cancel.is_cancelled() {
             return;
         }
 
-        let addrs = match query_relay_addrs(cancel.clone(), &raw_url, &lock_hash_hex).await {
+        let addrs = match query_relay_addrs(cancel.clone(), &client, &raw_url, &lock_hash_hex).await
+        {
             Ok(addrs) => addrs,
             Err(e) => {
                 tracing::error!(err = %e, url = %raw_url, "Failed resolving relay addresses from URL");
@@ -236,6 +238,7 @@ async fn resolve_relay(
 /// It retries until success or cancellation.
 async fn query_relay_addrs(
     cancel: CancellationToken,
+    client: &reqwest::Client,
     relay_url: &str,
     lock_hash_hex: &str,
 ) -> Result<Vec<Multiaddr>> {
@@ -245,8 +248,6 @@ async fn query_relay_addrs(
         return Err(BootnodeError::InvalidRelayUrl);
     }
 
-    let client = reqwest::Client::new();
-
     // Retry with exponential backoff
     let backoff = ExponentialBuilder::default()
         .with_min_delay(FAST_BASE_DELAY)
@@ -254,7 +255,6 @@ async fn query_relay_addrs(
         .with_factor(FAST_MULTIPLIER)
         .with_jitter();
 
-    let relay_url_owned = relay_url.to_string();
     let lock_hash_hex_owned = lock_hash_hex.to_string();
 
     let fetch = || async {
@@ -263,7 +263,7 @@ async fn query_relay_addrs(
         }
 
         let resp = client
-            .get(&relay_url_owned)
+            .get(relay_url)
             .header("Charon-Cluster", &lock_hash_hex_owned)
             .send()
             .await
@@ -363,24 +363,11 @@ pub fn multi_addr_from_enr_str(enr_str: &str) -> Result<Vec<Multiaddr>> {
 }
 
 /// Extracts AddrInfo from a single P2P multiaddr.
+///
+/// This is a convenience wrapper around `addr_infos_from_p2p_addrs` for a
+/// single address.
 fn addr_info_from_p2p_addr(addr: &Multiaddr) -> std::result::Result<AddrInfo, PeerError> {
-    // Extract PeerId from the /p2p/<peer_id> component
-    let peer_id = addr
-        .iter()
-        .find_map(|p| match p {
-            Protocol::P2p(peer_id) => Some(peer_id),
-            _ => None,
-        })
-        .ok_or(PeerError::MissingPeerIdInMultiaddr)?;
+    let mut infos = addr_infos_from_p2p_addrs(std::slice::from_ref(addr))?;
 
-    // Strip the /p2p component to get transport address
-    let transport_addr: Multiaddr = addr
-        .iter()
-        .filter(|p| !matches!(p, Protocol::P2p(_)))
-        .collect();
-
-    Ok(AddrInfo {
-        id: peer_id,
-        addrs: vec![transport_addr],
-    })
+    infos.pop().ok_or(PeerError::MissingPeerIdInMultiaddr)
 }

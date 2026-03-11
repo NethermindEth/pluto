@@ -326,4 +326,63 @@ mod tests {
     fn test_peer_id_key() {
         todo!("add this test after implementing peer_id_key function");
     }
+
+    #[test]
+    fn test_addr_infos_from_p2p_addrs_multiple_peers() {
+        // Test with multiple peers
+        let addrs: Vec<Multiaddr> = vec![
+            "/ip4/127.0.0.1/tcp/9000/p2p/16Uiu2HAkzdQ5Y9SYT91K1ue5SxXwgmajXntfScGnLYeip5hHyWmT"
+                .parse()
+                .unwrap(),
+            "/ip4/127.0.0.1/tcp/9001/p2p/16Uiu2HAmJwLqruthMGC9Qw1wZRTUv3cpq3hCkpGBi7Hp2Zuskbba"
+                .parse()
+                .unwrap(),
+            "/ip4/192.168.1.1/tcp/9002/p2p/16Uiu2HAkzdQ5Y9SYT91K1ue5SxXwgmajXntfScGnLYeip5hHyWmT"
+                .parse()
+                .unwrap(),
+        ];
+
+        let result = addr_infos_from_p2p_addrs(&addrs).unwrap();
+
+        // Should have 2 distinct peers
+        assert_eq!(result.len(), 2);
+
+        // Find each peer and verify their addresses
+        let peer1 = result
+            .iter()
+            .find(|info| {
+                info.id.to_string() == "16Uiu2HAkzdQ5Y9SYT91K1ue5SxXwgmajXntfScGnLYeip5hHyWmT"
+            })
+            .unwrap();
+        assert_eq!(peer1.addrs.len(), 2);
+
+        let peer2 = result
+            .iter()
+            .find(|info| {
+                info.id.to_string() == "16Uiu2HAmJwLqruthMGC9Qw1wZRTUv3cpq3hCkpGBi7Hp2Zuskbba"
+            })
+            .unwrap();
+        assert_eq!(peer2.addrs.len(), 1);
+    }
+
+    #[test]
+    fn test_addr_infos_from_p2p_addrs_missing_peer_id() {
+        // Test error case: address without /p2p/ component
+        let addr: Multiaddr = "/ip4/127.0.0.1/tcp/9000".parse().unwrap();
+
+        let result = addr_infos_from_p2p_addrs(&[addr]);
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            PeerError::MissingPeerIdInMultiaddr
+        ));
+    }
+
+    #[test]
+    fn test_addr_infos_from_p2p_addrs_empty_input() {
+        // Test edge case: empty input
+        let result = addr_infos_from_p2p_addrs(&[]).unwrap();
+        assert_eq!(result.len(), 0);
+    }
 }
