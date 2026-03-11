@@ -353,4 +353,5 @@ mod tests {
             Err(super::DiskError::DataDirNotClean { .. })
         ));
     }
+    async fn clear_data_dir_contains_validator_keys_dir() {
 }
