@@ -767,7 +767,6 @@ mod tests {
     #[test_case(DutyType::BuilderRegistration ; "builder_registration")]
     #[tokio::test]
     async fn test_never_expire_duties(duty_type: DutyType) {
-        // Create a simple mock client that returns fixed values
         let mock_client = create_mock_client();
 
         let deadline_func = new_duty_deadline_func(&mock_client)
@@ -829,7 +828,6 @@ mod tests {
             .await
             .expect("should create deadline func");
 
-        // Calculate expected duration based on duty type (matches Go test cases)
         let expected_duration = match duty_type {
             DutyType::Proposer | DutyType::Randao => {
                 // slotDuration/3 + margin
@@ -864,14 +862,11 @@ mod tests {
 
         let duty = Duty::new(SlotNumber::new(current_slot), duty_type.clone());
 
-        // Matches Go: now := now.Add(tt.expectedDuration - time.Millisecond)
-        // This sets "now" to 1ms before the expected deadline
         let now_before_deadline = slot_start
             .checked_add_signed(to_chrono_duration(expected_duration).unwrap())
             .and_then(|t| t.checked_sub_signed(chrono::Duration::try_milliseconds(1).unwrap()))
             .expect("time calculation should not fail");
 
-        // Call deadline function (matches Go: end, ok := deadlineFunc(tt.duty))
         let deadline_opt = deadline_func(duty.clone()).expect("should compute deadline");
 
         assert!(
@@ -882,7 +877,6 @@ mod tests {
 
         let deadline = deadline_opt.unwrap();
 
-        // Matches Go: require.True(t, now.Before(end), "wrong duty deadline")
         assert!(
             now_before_deadline < deadline,
             "duty {:?}: now ({}) should be before deadline ({})",
@@ -891,7 +885,6 @@ mod tests {
             deadline
         );
 
-        // Matches Go: require.Equal(t, time.Millisecond, end.Sub(now))
         let time_until_deadline = deadline.signed_duration_since(now_before_deadline);
         assert_eq!(
             time_until_deadline,
