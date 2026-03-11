@@ -318,6 +318,20 @@ pub(crate) fn random_hex64() -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::dkg;
+
+    #[tokio::test]
+    async fn load_definition_file_does_not_exist() {
+        let cfg = dkg::Config {
+            def_file: "".into(),
+            no_verify: false,
+            ..Default::default()
+        };
+        let result = super::load_definition(&cfg, None).await;
+        dbg!(&result);
+        assert!(matches!(result, Err(super::DiskError::InvalidUrl(_))));
+    }
+
     #[tokio::test]
     async fn clear_data_dir_does_not_exist() {
         let temp_dir = tempfile::tempdir().unwrap();
