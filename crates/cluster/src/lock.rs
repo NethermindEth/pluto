@@ -24,6 +24,10 @@ use serde_with::{
     serde_as,
 };
 
+const EMPTY_FEE_RECIPIENT: [u8; 20] = [0; 20];
+const EMPTY_VALIDATOR_PUBKEY: pluto_eth2api::spec::phase0::BLSPubKey = [0; 48];
+const EMPTY_SIGNATURE: pluto_eth2api::spec::phase0::BLSSignature = [0; 96];
+
 /// LockError is the error type for Lock errors.
 #[derive(Debug, thiserror::Error)]
 pub enum LockError {
@@ -262,7 +266,7 @@ impl Lock {
 
     /// `verify_signatures` returns `Ok(())` if all config signatures are fully
     /// populated and valid. A verified lock is ready for use in pluto run.
-    pub async fn verify_signatures(&self, eth1: Option<&EthClient>) -> Result<()> {
+    pub async fn verify_signatures(&self, eth1: &EthClient) -> Result<()> {
         self.definition
             .verify_signatures(eth1)
             .await
@@ -270,24 +274,26 @@ impl Lock {
 
         if self.signature_aggregate.is_empty() {
             if matches!(self.version.as_str(), V1_0 | V1_1) {
+                // Earlier versions of `charon create cluster` didn't populate
+                // SignatureAggregate.
                 return Ok(());
             }
 
             return Err(LockError::EmptyLockAggregateSignature);
         }
 
-        let signature = tblsconv::signature_from_bytes(self.signature_aggregate.as_slice())?;
+        let signature = tblsconv::signature_from_bytes(&self.signature_aggregate)?;
 
         let pubkeys = self
             .distributed_validators
             .iter()
             .flat_map(|v| v.pub_shares.iter())
-            .map(|share| tblsconv::pubkey_from_bytes(share.as_slice()))
+            .map(|share| tblsconv::pubkey_from_bytes(share))
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         let hash = hash_lock(self)?;
 
-        BlstImpl.verify_aggregate(pubkeys.as_slice(), signature, hash.as_slice())?;
+        BlstImpl.verify_aggregate(&pubkeys, signature, &hash)?;
 
         self.verify_builder_registrations()?;
         self.verify_node_signatures()
@@ -341,33 +347,20 @@ impl Lock {
     /// `verify_builder_registrations` returns an error if the populated builder
     /// registrations are invalid.
     fn verify_builder_registrations(&self) -> Result<()> {
-        let fork_version: Version = self.fork_version.as_slice().try_into().map_err(|_| {
-            LockError::InvalidForkVersionLength {
-                expected: VERSION_LEN,
-                actual: self.fork_version.len(),
-            }
-        })?;
+        let fork_version: Version =
+            self.fork_version[..]
+                .try_into()
+                .map_err(|_| LockError::InvalidForkVersionLength {
+                    expected: VERSION_LEN,
+                    actual: self.fork_version.len(),
+                })?;
 
         let fee_recipient_addresses = self.fee_recipient_addresses();
 
         for (validator_idx, validator) in self.distributed_validators.iter().enumerate() {
-            let no_registration = validator
-                .builder_registration
-                .signature
-                .iter()
-                .all(|byte| *byte == 0)
-                || validator
-                    .builder_registration
-                    .message
-                    .fee_recipient
-                    .iter()
-                    .all(|byte| *byte == 0)
-                || validator
-                    .builder_registration
-                    .message
-                    .pub_key
-                    .iter()
-                    .all(|byte| *byte == 0);
+            let no_registration = validator.builder_registration.signature == EMPTY_SIGNATURE
+                || validator.builder_registration.message.fee_recipient == EMPTY_FEE_RECIPIENT
+                || validator.builder_registration.message.pub_key == EMPTY_VALIDATOR_PUBKEY;
 
             if matches!(
                 self.version.as_str(),
@@ -399,7 +392,7 @@ impl Lock {
                         timestamp: validator.builder_registration.message.timestamp.timestamp(),
                     })?;
 
-            let pubkey = tblsconv::pubkey_from_bytes(validator.pub_key.as_slice())?;
+            let pubkey = tblsconv::pubkey_from_bytes(&validator.pub_key)?;
 
             let registration_message = registration::new_message(
                 pubkey,
@@ -749,6 +742,10 @@ mod tests {
         serde_json::from_value(value).unwrap()
     }
 
+    async fn test_eth1_client() -> EthClient {
+        EthClient::new("http://127.0.0.1:8545").await.unwrap()
+    }
+
     #[test]
     fn test_lock_v1_10_0() {
         let lock = serde_json::from_str::<Lock>(include_str!("testdata/cluster_lock_v1_10_0.json"))
@@ -779,9 +776,7 @@ mod tests {
                 .message
                 .fee_recipient
                 .as_ref(),
-            hex::decode("89b79bf504cfb57c7601232d589baccea9d6e263")
-                .unwrap()
-                .as_slice()
+            hex::decode("89b79bf504cfb57c7601232d589baccea9d6e263").unwrap()
         );
         assert_eq!(
             lock.distributed_validators[0]
@@ -798,38 +793,36 @@ mod tests {
                 .timestamp(),
             1655733600
         );
-        assert_eq!(lock.distributed_validators[0].builder_registration.message.pub_key.as_ref(), hex::decode("1814be823350eab13935f31d84484517e924aef78ae151c00755925836b7075885650c30ec29a3703934bf50a28da102").unwrap().as_slice());
-        assert_eq!(lock.distributed_validators[0].builder_registration.signature.as_ref(), hex::decode("d313c8a3b4c1c0e05447f4ba370eb36dbcfdec90b302dcdc3b9ef522e2a6f1ed0afec1f8e20faabedf6b162e717d3a748a58677a0c56348f8921a266b11d0f334c62fe52ba53af19779cb2948b6570ffa0b773963c130ad797ddeafe4e3ad29b").unwrap().as_slice());
+        assert_eq!(lock.distributed_validators[0].builder_registration.message.pub_key.as_ref(), hex::decode("1814be823350eab13935f31d84484517e924aef78ae151c00755925836b7075885650c30ec29a3703934bf50a28da102").unwrap());
+        assert_eq!(lock.distributed_validators[0].builder_registration.signature.as_ref(), hex::decode("d313c8a3b4c1c0e05447f4ba370eb36dbcfdec90b302dcdc3b9ef522e2a6f1ed0afec1f8e20faabedf6b162e717d3a748a58677a0c56348f8921a266b11d0f334c62fe52ba53af19779cb2948b6570ffa0b773963c130ad797ddeafe4e3ad29b").unwrap());
 
         // Test first validator partial_deposit_data
         assert_eq!(lock.distributed_validators[0].partial_deposit_data.len(), 2);
-        assert_eq!(lock.distributed_validators[0].partial_deposit_data[0].pub_key.as_ref(), hex::decode("1814be823350eab13935f31d84484517e924aef78ae151c00755925836b7075885650c30ec29a3703934bf50a28da102").unwrap().as_slice());
+        assert_eq!(lock.distributed_validators[0].partial_deposit_data[0].pub_key.as_ref(), hex::decode("1814be823350eab13935f31d84484517e924aef78ae151c00755925836b7075885650c30ec29a3703934bf50a28da102").unwrap());
         assert_eq!(
             lock.distributed_validators[0].partial_deposit_data[0]
                 .withdrawal_credentials
                 .as_ref(),
             hex::decode("76b0620556304a3e3eae14c28d0cea39d2901a52720da85ca1e4b38eaf3f44c6")
                 .unwrap()
-                .as_slice()
         );
         assert_eq!(
             lock.distributed_validators[0].partial_deposit_data[0].amount,
             5919415281453547599
         );
-        assert_eq!(lock.distributed_validators[0].partial_deposit_data[1].pub_key.as_ref(), hex::decode("1814be823350eab13935f31d84484517e924aef78ae151c00755925836b7075885650c30ec29a3703934bf50a28da102").unwrap().as_slice());
+        assert_eq!(lock.distributed_validators[0].partial_deposit_data[1].pub_key.as_ref(), hex::decode("1814be823350eab13935f31d84484517e924aef78ae151c00755925836b7075885650c30ec29a3703934bf50a28da102").unwrap());
         assert_eq!(
             lock.distributed_validators[0].partial_deposit_data[1]
                 .withdrawal_credentials
                 .as_ref(),
             hex::decode("c7ae77ba1d259b188a4b21c86fbc23d728b45347eada650af24c56d0800a8691")
                 .unwrap()
-                .as_slice()
         );
         assert_eq!(
             lock.distributed_validators[0].partial_deposit_data[1].amount,
             8817733914007551237
         );
-        assert_eq!(lock.distributed_validators[0].partial_deposit_data[1].signature.as_ref(), hex::decode("332088a8b07590bafcccbec6177536401d9a2b7f512b54bfc9d00532adf5aaa7c3a96bc59b489f77d9042c5bce26b163defde5ee6a0fbb3e9346cef81f0ae9515ef30fa47a364e75aea9e111d596e685a591121966e031650d510354aa845580").unwrap().as_slice());
+        assert_eq!(lock.distributed_validators[0].partial_deposit_data[1].signature.as_ref(), hex::decode("332088a8b07590bafcccbec6177536401d9a2b7f512b54bfc9d00532adf5aaa7c3a96bc59b489f77d9042c5bce26b163defde5ee6a0fbb3e9346cef81f0ae9515ef30fa47a364e75aea9e111d596e685a591121966e031650d510354aa845580").unwrap());
 
         // Test second validator (index 1)
         assert_eq!(lock.distributed_validators[1].pub_key, hex::decode("5125210f0ef1c314090f07c79a6f571c246f3e9ac0b7413ef110bd58b00ce73bff706f7ff4b6f44090a32711f3208e4e").unwrap());
@@ -844,9 +837,7 @@ mod tests {
                 .message
                 .fee_recipient
                 .as_ref(),
-            hex::decode("72e6415a761f03abaa40abc9448fddeb2191d945")
-                .unwrap()
-                .as_slice()
+            hex::decode("72e6415a761f03abaa40abc9448fddeb2191d945").unwrap()
         );
         assert_eq!(
             lock.distributed_validators[1]
@@ -863,40 +854,38 @@ mod tests {
                 .timestamp(),
             1655733600
         );
-        assert_eq!(lock.distributed_validators[1].builder_registration.message.pub_key.as_ref(), hex::decode("5125210f0ef1c314090f07c79a6f571c246f3e9ac0b7413ef110bd58b00ce73bff706f7ff4b6f44090a32711f3208e4e").unwrap().as_slice());
-        assert_eq!(lock.distributed_validators[1].builder_registration.signature.as_ref(), hex::decode("e65a31bd5d41e2d2ce9c2b17892f0fea1931a290220777a93143dfdcbfa68406e877073ff08834e197a4034aa48afa3f85b8a62708caebbac880b5b89b93da53810164402104e648b6226a1b78021851f5d9ac0f313a89ddfc454c5f8f72ac89").unwrap().as_slice());
+        assert_eq!(lock.distributed_validators[1].builder_registration.message.pub_key.as_ref(), hex::decode("5125210f0ef1c314090f07c79a6f571c246f3e9ac0b7413ef110bd58b00ce73bff706f7ff4b6f44090a32711f3208e4e").unwrap());
+        assert_eq!(lock.distributed_validators[1].builder_registration.signature.as_ref(), hex::decode("e65a31bd5d41e2d2ce9c2b17892f0fea1931a290220777a93143dfdcbfa68406e877073ff08834e197a4034aa48afa3f85b8a62708caebbac880b5b89b93da53810164402104e648b6226a1b78021851f5d9ac0f313a89ddfc454c5f8f72ac89").unwrap());
 
         // Test second validator partial_deposit_data
         assert_eq!(lock.distributed_validators[1].partial_deposit_data.len(), 2);
-        assert_eq!(lock.distributed_validators[1].partial_deposit_data[0].pub_key.as_ref(), hex::decode("5125210f0ef1c314090f07c79a6f571c246f3e9ac0b7413ef110bd58b00ce73bff706f7ff4b6f44090a32711f3208e4e").unwrap().as_slice());
+        assert_eq!(lock.distributed_validators[1].partial_deposit_data[0].pub_key.as_ref(), hex::decode("5125210f0ef1c314090f07c79a6f571c246f3e9ac0b7413ef110bd58b00ce73bff706f7ff4b6f44090a32711f3208e4e").unwrap());
         assert_eq!(
             lock.distributed_validators[1].partial_deposit_data[0]
                 .withdrawal_credentials
                 .as_ref(),
             hex::decode("0152e5d49435807f9d4b97be6fb77970466a5626fe33408cf9e88e2c797408a3")
                 .unwrap()
-                .as_slice()
         );
         assert_eq!(
             lock.distributed_validators[1].partial_deposit_data[0].amount,
             534275443587623213
         );
-        assert_eq!(lock.distributed_validators[1].partial_deposit_data[0].signature.as_ref(), hex::decode("329cfffd4a75e498320982c85aad70384859c05a4b13a1d5b2f5bfef5a6ed92da482caa9568e5b6fe9d8a9ddd9eb09277b92cef9046efa18500944cbe800a0b1527ea64729a861d2f6497a3235c37f4192779ec1d96b3b1c5424fce0b727b030").unwrap().as_slice());
+        assert_eq!(lock.distributed_validators[1].partial_deposit_data[0].signature.as_ref(), hex::decode("329cfffd4a75e498320982c85aad70384859c05a4b13a1d5b2f5bfef5a6ed92da482caa9568e5b6fe9d8a9ddd9eb09277b92cef9046efa18500944cbe800a0b1527ea64729a861d2f6497a3235c37f4192779ec1d96b3b1c5424fce0b727b030").unwrap());
 
-        assert_eq!(lock.distributed_validators[1].partial_deposit_data[1].pub_key.as_ref(), hex::decode("5125210f0ef1c314090f07c79a6f571c246f3e9ac0b7413ef110bd58b00ce73bff706f7ff4b6f44090a32711f3208e4e").unwrap().as_slice());
+        assert_eq!(lock.distributed_validators[1].partial_deposit_data[1].pub_key.as_ref(), hex::decode("5125210f0ef1c314090f07c79a6f571c246f3e9ac0b7413ef110bd58b00ce73bff706f7ff4b6f44090a32711f3208e4e").unwrap());
         assert_eq!(
             lock.distributed_validators[1].partial_deposit_data[1]
                 .withdrawal_credentials
                 .as_ref(),
             hex::decode("078143ee26a586ad23139d5041723470bf24a865837c9123461c41f5ff99aa99")
                 .unwrap()
-                .as_slice()
         );
         assert_eq!(
             lock.distributed_validators[1].partial_deposit_data[1].amount,
             2408919902728845389
         );
-        assert_eq!(lock.distributed_validators[1].partial_deposit_data[1].signature.as_ref(), hex::decode("ce24eb65491622558fdf297b9fa007864bafd7cd4ca1b2fb5766ab431a032b72b9a7e937ed648d0801f29055d3090d2463718254f9442483c7b98b938045da519843854b0ed3f7ba951a493f321f0966603022c1dfc579b99ed9d20d573ad531").unwrap().as_slice());
+        assert_eq!(lock.distributed_validators[1].partial_deposit_data[1].signature.as_ref(), hex::decode("ce24eb65491622558fdf297b9fa007864bafd7cd4ca1b2fb5766ab431a032b72b9a7e937ed648d0801f29055d3090d2463718254f9442483c7b98b938045da519843854b0ed3f7ba951a493f321f0966603022c1dfc579b99ed9d20d573ad531").unwrap());
 
         // Test signature_aggregate
         assert_eq!(
@@ -1032,8 +1021,9 @@ mod tests {
             serde_json::from_str::<Lock>(include_str!("testdata/cluster_lock_v1_0_0.json"))
                 .unwrap();
         lock.signature_aggregate = Vec::new();
+        let eth1 = test_eth1_client().await;
 
-        assert!(lock.verify_signatures(None).await.is_ok());
+        assert!(lock.verify_signatures(&eth1).await.is_ok());
     }
 
     #[tokio::test]
@@ -1042,8 +1032,9 @@ mod tests {
             serde_json::from_str::<Lock>(include_str!("testdata/cluster_lock_v1_2_0.json"))
                 .unwrap();
         lock.signature_aggregate = Vec::new();
+        let eth1 = test_eth1_client().await;
 
-        let result = lock.verify_signatures(None).await;
+        let result = lock.verify_signatures(&eth1).await;
         assert!(matches!(
             result,
             Err(LockError::EmptyLockAggregateSignature)
@@ -1053,16 +1044,18 @@ mod tests {
     #[tokio::test]
     async fn verify_signatures_v1_7_happy_path() {
         let lock = parse_example_lock(include_str!("examples/cluster-lock-003.json"));
+        let eth1 = test_eth1_client().await;
 
-        assert!(lock.verify_signatures(None).await.is_ok());
+        assert!(lock.verify_signatures(&eth1).await.is_ok());
     }
 
     #[tokio::test]
     async fn verify_signatures_v1_7_rejects_invalid_node_signature() {
         let mut lock = parse_example_lock(include_str!("examples/cluster-lock-003.json"));
         lock.node_signatures[0] = lock.node_signatures[1].clone();
+        let eth1 = test_eth1_client().await;
 
-        let result = lock.verify_signatures(None).await;
+        let result = lock.verify_signatures(&eth1).await;
         assert!(matches!(
             result,
             Err(LockError::NodeSignatureVerificationFailed {
