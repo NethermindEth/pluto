@@ -108,7 +108,7 @@ pub fn new_for_test(
     };
 
     let mut definition = definition::Definition::new(
-        "test_cluster".into(),
+        "test cluster".into(),
         dv,
         k.into(),
         fee_recipient_addresses,
