@@ -19,3 +19,10 @@ pub mod version;
 
 /// Duty deadline tracking and notification.
 pub mod deadline;
+
+/// parasigdb
+pub mod parasigdb;
+
+/// Test utilities.
+#[cfg(test)]
+pub mod testutils;

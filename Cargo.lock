@@ -5480,6 +5480,8 @@ dependencies = [
  "libp2p",
  "pluto-build-proto",
  "pluto-eth2api",
+ "pluto-eth2util",
+ "pluto-testutil",
  "prost 0.14.3",
  "prost-types 0.14.3",
  "rand 0.8.5",
@@ -5491,6 +5493,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "vise",
 ]
 
 [[package]]
@@ -5691,6 +5694,7 @@ dependencies = [
  "hex",
  "k256",
  "pluto-crypto",
+ "pluto-eth2api",
  "rand 0.8.5",
  "rand_core 0.6.4",
  "thiserror 2.0.18",
