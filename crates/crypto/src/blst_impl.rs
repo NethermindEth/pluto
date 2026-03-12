@@ -110,7 +110,8 @@ impl Tbls for BlstImpl {
             return Err(Error::SharesAreEmpty);
         }
 
-        // Share indices are already 1-indexed (matching their polynomial evaluation points)
+        // Share indices are already 1-indexed (matching their polynomial evaluation
+        // points)
         let share_points: Vec<Index> = shares.keys().copied().collect();
 
         let share_secrets: Vec<BlstSecretKey> = shares
