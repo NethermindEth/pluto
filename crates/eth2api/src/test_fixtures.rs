@@ -583,23 +583,23 @@ fn electra_attester_slashing_fixture() -> electra::AttesterSlashing {
 
 fn electra_execution_requests_fixture() -> electra::ExecutionRequests {
     electra::ExecutionRequests {
-        deposits: vec![electra::DepositRequest {
-            pubkey: seq::<48>(0x9B).into(),
-            withdrawal_credentials: seq::<32>(0x9C).into(),
+        deposits: phase0::SszList(vec![electra::DepositRequest {
+            pubkey: seq::<48>(0x9B),
+            withdrawal_credentials: seq::<32>(0x9C),
             amount: 1234,
-            signature: seq::<96>(0x9D).into(),
+            signature: seq::<96>(0x9D),
             index: 5,
-        }],
-        withdrawals: vec![electra::WithdrawalRequest {
-            source_address: seq::<20>(0x9E).into(),
-            validator_pubkey: seq::<48>(0x9F).into(),
+        }]),
+        withdrawals: phase0::SszList(vec![electra::WithdrawalRequest {
+            source_address: seq::<20>(0x9E),
+            validator_pubkey: seq::<48>(0x9F),
             amount: 4321,
-        }],
-        consolidations: vec![electra::ConsolidationRequest {
-            source_address: seq::<20>(0xA4).into(),
-            source_pubkey: seq::<48>(0xA5).into(),
-            target_pubkey: seq::<48>(0xA6).into(),
-        }],
+        }]),
+        consolidations: phase0::SszList(vec![electra::ConsolidationRequest {
+            source_address: seq::<20>(0xA4),
+            source_pubkey: seq::<48>(0xA5),
+            target_pubkey: seq::<48>(0xA6),
+        }]),
     }
 }
 

@@ -26,7 +26,6 @@ ssz.workspace = true
 ssz_derive.workspace = true
 typenum.workspace = true
 alloy.workspace = true
-alloy-eips = { version = "1.7.3", features = ["serde"] }
 
 [dev-dependencies]
 testcontainers.workspace = true
