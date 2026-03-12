@@ -2567,18 +2567,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ethereum_ssz_derive"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd596f91cff004fc8d02be44c21c0f9b93140a04b66027ae052f5f8e05b48eba"
-dependencies = [
- "darling 0.23.0",
- "proc-macro2",
- "quote",
- "syn 2.0.116",
-]
-
-[[package]]
 name = "event-listener"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5567,7 +5555,6 @@ dependencies = [
  "bon",
  "chrono",
  "ethereum_ssz",
- "ethereum_ssz_derive",
  "hex",
  "http",
  "oas3-gen-support",
