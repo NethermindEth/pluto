@@ -1213,11 +1213,10 @@ mod tests {
     use super::*;
     use alloy::primitives::U256;
     use pluto_eth2api::spec::{altair, bellatrix, capella, deneb, electra, fulu};
+    use pluto_eth2api::spec::ssz_types::{BitList, BitVector};
     use serde::de::DeserializeOwned;
-    use ssz::{BitList, BitVector};
     use std::collections::HashMap;
     use test_case::test_case;
-    use typenum::{U64, U128, U512, U2048, U131072};
 
     #[derive(Debug, Deserialize)]
     struct SignedDataGoldenEntry {
@@ -1271,12 +1270,21 @@ mod tests {
         }
     }
 
-    fn sample_sync_aggregate(byte: u8) -> altair::SyncAggregate {
-        let mut sync_committee_bits = BitVector::<U512>::new();
-        sync_committee_bits.set(0, true).unwrap();
+    fn sample_bitvector_one<const SIZE: usize>() -> BitVector<SIZE> {
+        let encoded = format!(
+            "\"0x01{}\"",
+            "00".repeat(SIZE.div_ceil(8).saturating_sub(1))
+        );
+        serde_json::from_str(&encoded).unwrap()
+    }
 
+    fn sample_bitlist_one_sized<const MAX: usize>() -> BitList<MAX> {
+        serde_json::from_str("\"0x0101\"").unwrap()
+    }
+
+    fn sample_sync_aggregate(byte: u8) -> altair::SyncAggregate {
         altair::SyncAggregate {
-            sync_committee_bits,
+            sync_committee_bits: sample_bitvector_one::<512>(),
             sync_committee_signature: [byte; 96],
         }
     }
@@ -1802,16 +1810,12 @@ mod tests {
         }
     }
 
-    fn sample_bitlist_one() -> BitList<U2048> {
-        let mut bits = BitList::<U2048>::with_capacity(8).unwrap();
-        bits.set(0, true).unwrap();
-        bits
+    fn sample_bitlist_one() -> BitList<2048> {
+        sample_bitlist_one_sized::<2048>()
     }
 
-    fn sample_electra_bitlist_one() -> BitList<U131072> {
-        let mut bits = BitList::<U131072>::with_capacity(8).unwrap();
-        bits.set(0, true).unwrap();
-        bits
+    fn sample_electra_bitlist_one() -> BitList<131_072> {
+        sample_bitlist_one_sized::<131_072>()
     }
 
     fn sample_phase0_attestation() -> phase0::Attestation {
@@ -1823,14 +1827,11 @@ mod tests {
     }
 
     fn sample_electra_attestation() -> electra::Attestation {
-        let mut committee_bits = BitVector::<U64>::new();
-        committee_bits.set(0, true).unwrap();
-
         electra::Attestation {
             aggregation_bits: sample_electra_bitlist_one(),
             data: sample_attestation_data(),
             signature: [0x35; 96],
-            committee_bits,
+            committee_bits: sample_bitvector_one::<64>(),
         }
     }
 
@@ -2232,8 +2233,7 @@ mod tests {
             signature: [0x33; 96],
         }));
 
-        let mut bits = BitVector::<U128>::new();
-        bits.set(0, true).unwrap();
+        let bits = sample_bitvector_one::<128>();
         assert_set_signature(SignedSyncContributionAndProof::new(
             altair::SignedContributionAndProof {
                 message: altair::ContributionAndProof {

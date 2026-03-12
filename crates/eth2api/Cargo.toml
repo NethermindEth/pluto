@@ -22,8 +22,6 @@ hex.workspace = true
 validator.workspace = true
 tree_hash.workspace = true
 tree_hash_derive.workspace = true
-ssz.workspace = true
-typenum.workspace = true
 alloy.workspace = true
 
 [dev-dependencies]

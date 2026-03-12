@@ -3,11 +3,9 @@
 //! See: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md>
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use ssz::BitList;
 use tree_hash_derive::TreeHash;
-use typenum::U2048;
 
-pub use crate::spec::ssz_types::{SszList, SszVector};
+pub use crate::spec::ssz_types::{BitList, SszList, SszVector};
 
 /// Fork version length in bytes.
 pub const VERSION_LEN: usize = 4;
@@ -355,7 +353,7 @@ pub struct AttestationData {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct Attestation {
     /// Aggregation bits.
-    pub aggregation_bits: BitList<U2048>,
+    pub aggregation_bits: BitList<2048>,
     /// Attestation data.
     pub data: AttestationData,
     /// Aggregate signature.
@@ -423,10 +421,8 @@ pub struct SignedVoluntaryExit {
 mod tests {
     use super::*;
     use crate::test_fixtures;
-    use ssz::BitList;
     use test_case::test_case;
     use tree_hash::TreeHash;
-    use typenum::U2048;
 
     fn hex_to_bytes<const N: usize>(hex: &str) -> [u8; N] {
         let bytes = hex::decode(hex).expect("invalid hex");
@@ -581,8 +577,7 @@ mod tests {
             },
         };
 
-        let mut aggregation_bits = BitList::<U2048>::with_capacity(8).expect("bitlist");
-        aggregation_bits.set(0, true).expect("set bit");
+        let aggregation_bits = BitList::<2048>::with_bits(8, &[0]);
 
         let attestation = Attestation {
             aggregation_bits,
@@ -612,8 +607,7 @@ mod tests {
             },
         };
 
-        let mut aggregation_bits = BitList::<U2048>::with_capacity(8).expect("bitlist");
-        aggregation_bits.set(0, true).expect("set bit");
+        let aggregation_bits = BitList::<2048>::with_bits(8, &[0]);
 
         let aggregate_and_proof = AggregateAndProof {
             aggregator_index: 7,

@@ -5554,7 +5554,6 @@ dependencies = [
  "anyhow",
  "bon",
  "chrono",
- "ethereum_ssz",
  "hex",
  "http",
  "oas3-gen-support",
@@ -5569,7 +5568,6 @@ dependencies = [
  "tokio",
  "tree_hash",
  "tree_hash_derive",
- "typenum",
  "validator",
 ]
 

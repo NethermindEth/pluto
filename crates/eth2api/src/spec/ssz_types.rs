@@ -164,6 +164,227 @@ impl<T: TreeHash, const SIZE: usize> TreeHash for SszVector<T, SIZE> {
     }
 }
 
+/// Lookup table for single-bit masks, avoiding shift operators.
+const BIT_MASK: [u8; 8] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80];
+
+/// SSZ variable-length bitfield with maximum capacity.
+///
+/// Stores packed bit data (no sentinel) internally. The SSZ sentinel bit is
+/// added during serialization and stripped during deserialization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BitList<const MAX: usize> {
+    /// Packed data bits, little-endian bit order (no sentinel).
+    bytes: Vec<u8>,
+    /// Number of data bits.
+    len: usize,
+}
+
+impl<const MAX: usize> Default for BitList<MAX> {
+    fn default() -> Self {
+        Self {
+            bytes: vec![],
+            len: 0,
+        }
+    }
+}
+
+impl<const MAX: usize> BitList<MAX> {
+    /// Returns the number of data bits.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Returns `true` if the bitfield contains no data bits.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Creates a `BitList` from SSZ-encoded bytes (with sentinel bit).
+    fn from_ssz_bytes(ssz: Vec<u8>) -> Self {
+        if ssz.is_empty() {
+            return Self::default();
+        }
+        let last_byte = ssz[ssz.len().saturating_sub(1)];
+        if last_byte == 0 {
+            return Self::default();
+        }
+        // Sentinel is the highest set bit in the last byte.
+        let sentinel_pos = 7_u32.saturating_sub(last_byte.leading_zeros()) as usize;
+        let len = ssz
+            .len()
+            .saturating_sub(1)
+            .saturating_mul(8)
+            .saturating_add(sentinel_pos);
+        let data_byte_len = len.div_ceil(8);
+        let mut bytes = ssz;
+        bytes.truncate(data_byte_len);
+        // Clear sentinel bit if it shares a byte with data.
+        let rem = len % 8;
+        if rem != 0
+            && let Some(last) = bytes.last_mut()
+        {
+            *last &= !BIT_MASK[rem];
+        }
+        Self { bytes, len }
+    }
+
+    /// Encodes as SSZ bytes (with sentinel bit appended).
+    fn to_ssz_bytes(&self) -> Vec<u8> {
+        let sentinel_byte = self.len / 8;
+        let sentinel_bit = self.len % 8;
+        let mut ssz = self.bytes.clone();
+        if sentinel_byte >= ssz.len() {
+            ssz.resize(sentinel_byte.saturating_add(1), 0);
+        }
+        ssz[sentinel_byte] |= BIT_MASK[sentinel_bit];
+        ssz
+    }
+
+    /// Consumes the `BitList` and returns the SSZ-encoded bytes (with
+    /// sentinel).
+    pub fn into_bytes(mut self) -> Vec<u8> {
+        let sentinel_byte = self.len / 8;
+        let sentinel_bit = self.len % 8;
+        if sentinel_byte >= self.bytes.len() {
+            self.bytes.resize(sentinel_byte.saturating_add(1), 0);
+        }
+        self.bytes[sentinel_byte] |= BIT_MASK[sentinel_bit];
+        self.bytes
+    }
+}
+
+impl<const MAX: usize> Serialize for BitList<MAX> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let ssz = self.to_ssz_bytes();
+        let hex_str = format!("0x{}", hex::encode(ssz));
+        serializer.serialize_str(hex_str.as_str())
+    }
+}
+
+impl<'de, const MAX: usize> Deserialize<'de> for BitList<MAX> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        let trimmed = crate::spec::serde_utils::trim_0x_prefix(s.as_str());
+        let ssz = hex::decode(trimmed).map_err(D::Error::custom)?;
+        Ok(Self::from_ssz_bytes(ssz))
+    }
+}
+
+impl<const MAX: usize> TreeHash for BitList<MAX> {
+    fn tree_hash_type() -> TreeHashType {
+        TreeHashType::List
+    }
+
+    fn tree_hash_packed_encoding(&self) -> PackedEncoding {
+        unreachable!("BitList should never be packed.")
+    }
+
+    fn tree_hash_packing_factor() -> usize {
+        unreachable!("BitList should never be packed.")
+    }
+
+    fn tree_hash_root(&self) -> Hash256 {
+        // 256 bits per 32-byte chunk.
+        let minimum_leaf_count = MAX.div_ceil(256);
+        let root = merkle_root(self.bytes.as_slice(), minimum_leaf_count);
+        mix_in_length(&root, self.len)
+    }
+}
+
+/// SSZ fixed-length bitfield.
+///
+/// Stores `SIZE` bits packed in little-endian byte order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BitVector<const SIZE: usize> {
+    /// Packed bits, little-endian bit order.
+    bytes: Vec<u8>,
+}
+
+impl<const SIZE: usize> Default for BitVector<SIZE> {
+    fn default() -> Self {
+        Self {
+            bytes: vec![0u8; SIZE.div_ceil(8)],
+        }
+    }
+}
+
+impl<const SIZE: usize> BitVector<SIZE> {
+    /// Creates an all-zero bit vector.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl<const SIZE: usize> Serialize for BitVector<SIZE> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let hex_str = format!("0x{}", hex::encode(self.bytes.as_slice()));
+        serializer.serialize_str(hex_str.as_str())
+    }
+}
+
+impl<'de, const SIZE: usize> Deserialize<'de> for BitVector<SIZE> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        let trimmed = crate::spec::serde_utils::trim_0x_prefix(s.as_str());
+        let bytes = hex::decode(trimmed).map_err(D::Error::custom)?;
+        let expected = SIZE.div_ceil(8);
+        if bytes.len() != expected {
+            return Err(D::Error::custom(format!(
+                "bitvector byte length {} does not match required {expected}",
+                bytes.len(),
+            )));
+        }
+        Ok(Self { bytes })
+    }
+}
+
+impl<const SIZE: usize> TreeHash for BitVector<SIZE> {
+    fn tree_hash_type() -> TreeHashType {
+        TreeHashType::Vector
+    }
+
+    fn tree_hash_packed_encoding(&self) -> PackedEncoding {
+        unreachable!("BitVector should never be packed.")
+    }
+
+    fn tree_hash_packing_factor() -> usize {
+        unreachable!("BitVector should never be packed.")
+    }
+
+    fn tree_hash_root(&self) -> Hash256 {
+        let minimum_leaf_count = SIZE.div_ceil(256);
+        merkle_root(self.bytes.as_slice(), minimum_leaf_count)
+    }
+}
+
+#[cfg(test)]
+impl<const MAX: usize> BitList<MAX> {
+    /// Creates a `BitList` with the given capacity and specified bits set.
+    pub(crate) fn with_bits(capacity: usize, set_bits: &[usize]) -> Self {
+        let byte_len = capacity.div_ceil(8);
+        let mut bytes = vec![0u8; byte_len];
+        for &bit in set_bits {
+            bytes[bit / 8] |= BIT_MASK[bit % 8];
+        }
+        Self {
+            bytes,
+            len: capacity,
+        }
+    }
+}
+
+#[cfg(test)]
+impl<const SIZE: usize> BitVector<SIZE> {
+    /// Creates a `BitVector` with specified bits set.
+    pub(crate) fn with_bits(set_bits: &[usize]) -> Self {
+        let mut v = Self::new();
+        for &bit in set_bits {
+            v.bytes[bit / 8] |= BIT_MASK[bit % 8];
+        }
+        v
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

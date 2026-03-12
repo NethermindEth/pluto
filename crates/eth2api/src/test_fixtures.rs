@@ -1,10 +1,11 @@
 #![allow(missing_docs)]
 
-use crate::spec::{altair, bellatrix, capella, deneb, electra, phase0};
+use crate::spec::{
+    altair, bellatrix, capella, deneb, electra, phase0,
+    ssz_types::{BitList, BitVector},
+};
 use serde_json::Value;
-use ssz::{BitList, BitVector};
 use tree_hash::TreeHash;
-use typenum::{U64, U512, U2048, U131072};
 
 const PHASE0_DEPOSIT_ROOT: &str =
     "ba363a243ab8a0e098fdd1b051d07fb3f99ee0884bbf8d560bb18fbdbe7657e2";
@@ -232,8 +233,7 @@ pub(crate) fn phase0_beacon_block_body_fixture() -> phase0::BeaconBlockBody {
         attestation_2: indexed_attestation_2,
     };
 
-    let mut aggregation_bits = BitList::<U2048>::with_capacity(8).expect("bitlist");
-    aggregation_bits.set(0, true).expect("set bit");
+    let aggregation_bits = BitList::<2048>::with_bits(8, &[0]);
     let attestation = phase0::Attestation {
         aggregation_bits,
         data: attestation_data_fixture(),
@@ -271,10 +271,8 @@ pub(crate) fn phase0_beacon_block_fixture() -> phase0::BeaconBlock {
 }
 
 fn altair_sync_aggregate_fixture() -> altair::SyncAggregate {
-    let mut bits = BitVector::<U512>::new();
-    bits.set(0, true).expect("set bit");
     altair::SyncAggregate {
-        sync_committee_bits: bits,
+        sync_committee_bits: BitVector::<512>::with_bits(&[0]),
         sync_committee_signature: seq::<96>(0x94),
     }
 }
@@ -552,15 +550,11 @@ pub(crate) fn deneb_beacon_block_fixture() -> deneb::BeaconBlock {
 }
 
 fn electra_attestation_fixture() -> electra::Attestation {
-    let mut aggregation_bits = BitList::<U131072>::with_capacity(8).expect("bitlist");
-    aggregation_bits.set(0, true).expect("set bit");
-    let mut committee_bits = BitVector::<U64>::new();
-    committee_bits.set(1, true).expect("set bit");
     electra::Attestation {
-        aggregation_bits,
+        aggregation_bits: BitList::<131_072>::with_bits(8, &[0]),
         data: attestation_data_fixture(),
         signature: seq::<96>(0x98),
-        committee_bits,
+        committee_bits: BitVector::<64>::with_bits(&[1]),
     }
 }
 

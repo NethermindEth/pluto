@@ -92,8 +92,6 @@ tree_hash_derive = "0.12"
 ssz = { package = "ethereum_ssz", version = "0.10.1" }
 typenum = "1"
 wiremock = "0.6"
-num-bigint = "0.4"
-num-traits = "0.2"
 
 # Crates in the workspace
 pluto-app = { path = "crates/app" }

@@ -2,9 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use ssz::BitVector;
 use tree_hash_derive::TreeHash;
-use typenum::{U128, U512};
+
+use crate::spec::ssz_types::BitVector;
 
 use crate::spec::phase0;
 
@@ -15,7 +15,7 @@ use crate::spec::phase0;
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct SyncAggregate {
     /// Sync committee participation bits.
-    pub sync_committee_bits: BitVector<U512>,
+    pub sync_committee_bits: BitVector<512>,
     /// Aggregate sync committee signature.
     #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
     pub sync_committee_signature: phase0::BLSSignature,
@@ -123,7 +123,7 @@ pub struct SyncCommitteeContribution {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub subcommittee_index: u64,
     /// Aggregation bits for the contribution.
-    pub aggregation_bits: BitVector<U128>,
+    pub aggregation_bits: BitVector<128>,
     /// Contribution signature.
     #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
     pub signature: phase0::BLSSignature,
@@ -215,8 +215,7 @@ mod tests {
 
     #[test]
     fn contribution_and_proof_tree_hash_vector() {
-        let mut aggregation_bits = BitVector::<U128>::new();
-        aggregation_bits.set(0, true).expect("set bit");
+        let aggregation_bits = BitVector::<128>::with_bits(&[0]);
 
         let message = ContributionAndProof {
             aggregator_index: 5,

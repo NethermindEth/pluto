@@ -2,9 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use ssz::{BitList, BitVector};
 use tree_hash_derive::TreeHash;
-use typenum::{U64, U131072};
+
+use crate::spec::ssz_types::{BitList, BitVector};
 
 use crate::spec::{altair, bellatrix, capella, deneb, phase0};
 
@@ -53,14 +53,14 @@ pub struct AttesterSlashing {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct Attestation {
     /// Aggregation bits.
-    pub aggregation_bits: BitList<U131072>,
+    pub aggregation_bits: BitList<131_072>,
     /// Attestation data.
     pub data: phase0::AttestationData,
     /// Aggregate signature.
     #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
     pub signature: phase0::BLSSignature,
     /// Committee bits.
-    pub committee_bits: BitVector<U64>,
+    pub committee_bits: BitVector<64>,
 }
 
 /// Execution-layer deposit request.
