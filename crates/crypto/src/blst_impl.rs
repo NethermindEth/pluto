@@ -89,7 +89,7 @@ impl Tbls for BlstImpl {
         let mut shares = HashMap::new();
         for i in 1..=total {
             let share = evaluate_polynomial(&poly, i)?;
-            shares.insert(i.saturating_sub(1), share.to_bytes());
+            shares.insert(i, share.to_bytes());
         }
 
         Ok(shares)
@@ -110,12 +110,8 @@ impl Tbls for BlstImpl {
             return Err(Error::SharesAreEmpty);
         }
 
-        // Convert share indices to 1-indexed (shares are stored 0-indexed, but
-        // evaluated at 1-indexed points)
-        let share_points: Vec<Index> = shares
-            .keys()
-            .map(|&k| k.checked_add(1).ok_or(MathError::IntegerOverflow))
-            .collect::<Result<Vec<_>, _>>()?;
+        // Share indices are already 1-indexed (matching their polynomial evaluation points)
+        let share_points: Vec<Index> = shares.keys().copied().collect();
 
         let share_secrets: Vec<BlstSecretKey> = shares
             .values()
@@ -162,12 +158,8 @@ impl Tbls for BlstImpl {
             return Err(Error::EmptySignatureArray);
         }
 
-        // Convert indices to 1-indexed points (shares are 0-indexed, evaluated at
-        // 1-indexed points)
-        let indices: Vec<Index> = partial_signatures_by_idx
-            .keys()
-            .map(|&k| k.checked_add(1).ok_or(MathError::IntegerOverflow))
-            .collect::<Result<Vec<_>, _>>()?;
+        // Signature indices are already 1-indexed (matching share evaluation points)
+        let indices: Vec<Index> = partial_signatures_by_idx.keys().copied().collect();
 
         let signatures: Vec<BlstSignature> = partial_signatures_by_idx
             .values()
@@ -950,5 +942,27 @@ mod tests {
             pk1, pk2,
             "Different secrets should produce different public keys"
         );
+    }
+
+    #[test]
+    fn test_threshold_split_returns_1_indexed_keys() {
+        use rand::rngs::OsRng;
+
+        let blst = setup();
+        let sk = blst.generate_secret_key(OsRng).unwrap();
+
+        // Split into 5 shares
+        let shares = blst.threshold_split(&sk, 5, 3).unwrap();
+        assert_eq!(shares.len(), 5);
+
+        // Verify keys are 1-indexed (1, 2, 3, 4, 5)
+        assert!(shares.contains_key(&1), "Should contain key 1");
+        assert!(shares.contains_key(&2), "Should contain key 2");
+        assert!(shares.contains_key(&3), "Should contain key 3");
+        assert!(shares.contains_key(&4), "Should contain key 4");
+        assert!(shares.contains_key(&5), "Should contain key 5");
+
+        // Verify no 0-indexed key exists
+        assert!(!shares.contains_key(&0), "Should not contain key 0");
     }
 }
