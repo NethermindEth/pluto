@@ -6,7 +6,7 @@
 ![Coverage](https://github.com/NethermindEth/pluto/wiki/coverage.svg)
 
 ![Rust](https://img.shields.io/badge/rust-1.89-orange.svg)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![License](https://img.shields.io/badge/License-BUSL_1.1-blue.svg)](https://spdx.org/licenses/BUSL-1.1.html)
 
 Pluto is an alternative implementation of [Charon](https://github.com/ObolNetwork/charon/), a distributed validator middleware client for Ethereum Staking. It enables a group of independent operators to safely run a single validator by coordinating duties across multiple nodes.
 
@@ -46,7 +46,7 @@ Examples are located in crate-specific example folders:
 
 ## License
 
-Apache 2.0
+Business Source License 1.1 — see [LICENSE](./LICENSE) for details.
 
 ## Would like to contribute?
 
