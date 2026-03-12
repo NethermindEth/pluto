@@ -1212,8 +1212,10 @@ impl SignedSyncContributionAndProof {
 mod tests {
     use super::*;
     use alloy::primitives::U256;
-    use pluto_eth2api::spec::{altair, bellatrix, capella, deneb, electra, fulu};
-    use pluto_eth2api::spec::ssz_types::{BitList, BitVector};
+    use pluto_eth2api::spec::{
+        altair, bellatrix, capella, deneb, electra, fulu,
+        ssz_types::{BitList, BitVector},
+    };
     use serde::de::DeserializeOwned;
     use std::collections::HashMap;
     use test_case::test_case;
