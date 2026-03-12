@@ -28,13 +28,11 @@ pub fn new_for_test(
         rand::rngs::StdRng::seed_from_u64(inner)
     };
 
-    let mut vals = Vec::new();
-    let mut p2p_keys = Vec::new();
-    let mut ops = Vec::new();
-    let mut dv_shares = Vec::new();
+    let mut vals = Vec::with_capacity(dv as usize);
+    let mut dv_shares = Vec::with_capacity(dv as usize);
 
-    let mut fee_recipient_addresses = Vec::new();
-    let mut withdrawal_addresses = Vec::new();
+    let mut fee_recipient_addresses = Vec::with_capacity(dv as usize);
+    let mut withdrawal_addresses = Vec::with_capacity(dv as usize);
 
     for _ in 0..dv {
         let blst = pluto_crypto::blst_impl::BlstImpl;
@@ -44,8 +42,8 @@ pub fn new_for_test(
             .threshold_split_insecure(&root_secret, n, k, &mut rng)
             .unwrap();
 
-        let mut pub_shares: Vec<pluto_crypto::types::PublicKey> = Vec::new();
-        let mut priv_shares: Vec<pluto_crypto::types::PrivateKey> = Vec::new();
+        let mut pub_shares: Vec<pluto_crypto::types::PublicKey> = Vec::with_capacity(n as usize);
+        let mut priv_shares: Vec<pluto_crypto::types::PrivateKey> = Vec::with_capacity(n as usize);
 
         for i in 0..n {
             let share_priv_key = *shares.get(&i).unwrap(); // NOTE: Pluto implementation does not use 1-based indexing for shares
@@ -75,6 +73,9 @@ pub fn new_for_test(
             &pluto_testutil::random::random_eth_address(&mut rng),
         ));
     }
+
+    let mut ops = Vec::with_capacity(n as usize);
+    let mut p2p_keys = Vec::with_capacity(n as usize);
 
     for i in 0..n {
         // Generate ENR
