@@ -1,8 +1,51 @@
 #![allow(missing_docs)]
-use std::str::FromStr;
+//! Relay server example demonstrating a standalone libp2p relay node.
+//!
+//! This example shows how to run a relay server that allows peers to:
+//! - Make relay reservations to be reachable when behind NAT/firewalls
+//! - Create relay circuits to connect to other peers through the relay
+//! - Query relay multiaddrs via HTTP endpoint
+//!
+//! ## What is a Relay Server?
+//!
+//! A relay server acts as an intermediary for P2P connections when direct
+//! connections are not possible due to NAT, firewalls, or network topology.
+//! Peers can:
+//! 1. Reserve a slot on the relay (relay reservation)
+//! 2. Be reached by other peers through the relay (relay circuit)
+//!
+//! ## Usage
+//!
+//! Run the relay server with default settings:
+//! ```bash
+//! cargo run --example relay_server
+//! ```
+//!
+//! The server will:
+//! - Generate a random keypair for the relay's peer identity
+//! - Listen on a random available TCP port (0.0.0.0:0)
+//! - Serve relay multiaddrs via HTTP on port 8888
+//! - Accept up to 100 relay connections
+//! - Allow up to 10 reservations per peer
+//!
+//! ## Configuration
+//!
+//! The example uses:
+//! - `max_conns`: Maximum concurrent relay connections (100)
+//! - `max_res_per_peer`: Maximum reservations per peer (10)
+//! - `http_addr`: HTTP server address for ENR queries (0.0.0.0:8888)
+//! - Random TCP port (0) to let the OS choose an available port
+//!
+//! ## Querying Relay Addresses
+//!
+//! Once running, query the relay's multiaddrs:
+//! ```bash
+//! curl http://localhost:8888
+//! ```
+//!
+//! This returns the relay's ENR or multiaddrs that clients can use to connect.
 
 use k256::SecretKey;
-use libp2p::multiaddr;
 use pluto_p2p::config::P2PConfig;
 use pluto_relay_server::{config::Config, p2p::run_relay_p2p_node};
 use pluto_tracing::TracingConfig;
@@ -17,11 +60,7 @@ async fn main() {
     let config = Config::builder()
         .p2p_config(
             P2PConfig::builder()
-                .with_tcp_addrs(vec![
-                    multiaddr::Multiaddr::from_str("/ip4/0.0.0.0/tcp/0")
-                        .expect("Failed to parse multiaddress")
-                        .to_string(),
-                ])
+                .with_tcp_addrs(vec!["0.0.0.0:0".to_string()])
                 .build(),
         )
         .max_conns(100)
