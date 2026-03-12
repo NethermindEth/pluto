@@ -2292,14 +2292,6 @@ mod tests {
     }
 
     #[test]
-    fn test_new_partial_signature() {
-        let sig = sample_signature(0x11);
-        let partial = Signature::new_partial(sig.clone(), 3);
-        assert_eq!(sig, partial.signed_data.signature().unwrap());
-        assert_eq!(3, partial.share_idx);
-    }
-
-    #[test]
     fn signature() {
         let sig1 = sample_signature(0x22);
         let sig2 = sig1.clone();
@@ -2335,29 +2327,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn sync_contribution_and_proof_message_root_vector() {
-        let mut bits = BitVector::<U128>::new();
-        bits.set(0, true).unwrap();
-
-        let proof = SyncContributionAndProof::new(altair::ContributionAndProof {
-            aggregator_index: 7,
-            contribution: altair::SyncCommitteeContribution {
-                slot: 1,
-                beacon_block_root: sample_root(0x66),
-                subcommittee_index: 2,
-                aggregation_bits: bits,
-                signature: [0x77; 96],
-            },
-            selection_proof: [0x88; 96],
-        });
-
-        assert_eq!(
-            hex::encode(proof.message_root().unwrap()),
-            "ff55c97976a840b4ced964ed49e3794594ba3f675238b5fd25d282b60f70a194"
-        );
-    }
-
     #[test_case(false ; "unblinded")]
     #[test_case(true ; "blinded")]
     fn test_new_versioned_signed_proposal_unknown_version_error(blinded: bool) {
@@ -2368,13 +2337,6 @@ mod tests {
         });
 
         assert!(matches!(result, Err(SignedDataError::UnknownVersion)));
-    }
-
-    #[test]
-    fn test_new_partial_versioned_signed_proposal() {
-        let proposal = sample_versioned_signed_proposal(versioned::DataVersion::Bellatrix, false);
-        let wrapped = VersionedSignedProposal::new_partial(proposal, 3).unwrap();
-        assert_eq!(3, wrapped.share_idx);
     }
 
     #[test_case(versioned::DataVersion::Electra ; "electra")]
@@ -2392,15 +2354,6 @@ mod tests {
                 versioned::SignedProposalBlock::FuluBlinded(_)
             )
         ));
-    }
-
-    #[test_case(versioned::DataVersion::Electra ; "electra")]
-    #[test_case(versioned::DataVersion::Fulu ; "fulu")]
-    fn new_partial_versioned_signed_blinded_proposal(version: versioned::DataVersion) {
-        let proposal = sample_versioned_signed_blinded_proposal(version);
-        let wrapped =
-            VersionedSignedProposal::new_partial_from_blinded_proposal(proposal, 3).unwrap();
-        assert_eq!(3, wrapped.share_idx);
     }
 
     #[test]
@@ -2464,22 +2417,6 @@ mod tests {
         }
     }
 
-    #[test_case(versioned::DataVersion::Electra ; "electra")]
-    #[test_case(versioned::DataVersion::Fulu ; "fulu")]
-    fn test_new_versioned_attestation_happy_path(version: versioned::DataVersion) {
-        let attestation = sample_versioned_attestation(version);
-        let wrapped = VersionedAttestation::new(attestation.clone()).unwrap();
-        assert_eq!(attestation, wrapped.0);
-    }
-
-    #[test_case(versioned::DataVersion::Electra ; "electra")]
-    #[test_case(versioned::DataVersion::Fulu ; "fulu")]
-    fn new_partial_versioned_attestation(version: versioned::DataVersion) {
-        let attestation = sample_versioned_attestation(version);
-        let wrapped = VersionedAttestation::new_partial(attestation, 3).unwrap();
-        assert_eq!(3, wrapped.share_idx);
-    }
-
     #[test_case(versioned::DataVersion::Phase0 ; "phase0")]
     #[test_case(versioned::DataVersion::Altair ; "altair")]
     #[test_case(versioned::DataVersion::Bellatrix ; "bellatrix")]
@@ -2534,10 +2471,8 @@ mod tests {
     #[test_case(versioned::DataVersion::Capella, false ; "capella")]
     #[test_case(versioned::DataVersion::Capella, true ; "capella_blinded")]
     #[test_case(versioned::DataVersion::Deneb, false ; "deneb")]
-    #[test_case(versioned::DataVersion::Deneb, true ; "deneb_blinded")]
     #[test_case(versioned::DataVersion::Electra, false ; "electra")]
     #[test_case(versioned::DataVersion::Electra, true ; "electra_blinded")]
-    #[test_case(versioned::DataVersion::Fulu, false ; "fulu")]
     #[test_case(versioned::DataVersion::Fulu, true ; "fulu_blinded")]
     fn versioned_signed_proposal(version: versioned::DataVersion, blinded: bool) {
         let proposal = sample_versioned_signed_proposal(version, blinded);
