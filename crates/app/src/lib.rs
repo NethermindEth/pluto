@@ -24,3 +24,6 @@ pub mod obolapi;
 
 /// Ethereum CL RPC client management.
 pub mod eth2wrap;
+
+/// Private key locking service.
+pub mod privkeylock;
