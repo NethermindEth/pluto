@@ -7,12 +7,18 @@ License text copyright (c) 2017 MariaDB Corporation Ab, All Rights Reserved.
 
 Parameters
 
-Licensor:             Nethermind Ltd.
-Licensed Work:        Pluto
-                      The Licensed Work is (c) 2026 Nethermind Ltd.
-Additional Use Grant: None
-Change Date:          2030-03-12
-Change License:       Apache-2.0
+Licensor:             Obol GmbH.
+
+Licensed Work:        Pluto, the Distributed Validator Client.
+                      The Licensed Work is
+                      © 2022-2026 Obol Labs, Inc.
+
+Additional Use Grant: Any uses listed and defined at
+                      charon-additional-use-grants.obol.eth.
+
+Change Date:          The earlier of February 7, 2030
+
+Change Licence:       Apache License Version 2.0
 
 -----------------------------------------------------------------------------
 
