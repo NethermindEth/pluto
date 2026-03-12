@@ -70,10 +70,9 @@ pub fn new_for_test(
         vals.push(dist_validator);
         dv_shares.push(priv_shares);
 
-        fee_recipient_addresses.push(format!("0x{}", hex::encode(fee_recipient_address)));
-        withdrawal_addresses.push(format!(
-            "0x{}",
-            hex::encode(pluto_testutil::random::random_eth_address(&mut rng))
+        fee_recipient_addresses.push(helpers::to_0x_hex(&fee_recipient_address));
+        withdrawal_addresses.push(helpers::to_0x_hex(
+            &pluto_testutil::random::random_eth_address(&mut rng),
         ));
     }
 
