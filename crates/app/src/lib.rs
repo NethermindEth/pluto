@@ -13,9 +13,6 @@ pub mod log;
 /// until the deadline has elapsed.
 pub mod retry;
 
-/// Deadline
-pub mod deadline;
-
 /// Featureset defines a set of global features and their rollout status.
 pub mod featureset;
 
