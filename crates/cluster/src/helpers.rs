@@ -338,7 +338,7 @@ pub fn sign_operator(
     Ok(())
 }
 
-/// Returns a BLS aggregate signatures of the message signed by all the shares.
+/// Returns a BLS aggregate signature of the message signed by all the shares.
 pub fn agg_sign(
     secrets: &[Vec<pluto_crypto::types::PrivateKey>],
     message: &[u8],
