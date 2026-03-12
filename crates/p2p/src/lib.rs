@@ -44,10 +44,10 @@ pub mod conn_logger;
 /// Global context.
 pub mod p2p_context;
 
-/// Relay reservation.
-pub mod relay;
 /// QUIC connection upgrade behaviour.
 pub mod quic_upgrade;
+/// Relay reservation.
+pub mod relay;
 
 /// Force direct connection behaviour.
 pub mod force_direct;
