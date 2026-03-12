@@ -448,19 +448,22 @@ impl AsRef<[u8; SIG_LEN]> for Signature {
 }
 
 /// Signed data type
-pub trait SignedData: Clone + Serialize + StdDebug {
-    /// The error type
-    type Error: std::error::Error;
-
+pub trait SignedData: StdDebug + Send + Sync {
     /// signature returns the signed duty data's signature.
     fn signature(&self) -> Signature;
 
     /// set_signature returns a copy of signed duty data with the signature
     /// replaced.
-    fn set_signature(&mut self, signature: Signature) -> Result<(), Self::Error>;
+    fn set_signature(&mut self, signature: Signature) -> Result<(), Box<dyn std::error::Error>>;
 
     /// message_root returns the message root for the unsigned data.
     fn message_root(&self) -> [u8; 32];
+
+    /// clone_box returns a boxed clone of the signed data.
+    fn clone_box(&self) -> Box<dyn SignedData>;
+
+    /// equals checks if two signed data are equal.
+    fn equals(&self, other: &dyn SignedData) -> bool;
 }
 
 // todo: add Eth2SignedData type
@@ -468,21 +471,35 @@ pub trait SignedData: Clone + Serialize + StdDebug {
 
 /// ParSignedData is a partially signed duty data only signed by a single
 /// threshold BLS share.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParSignedData<T: SignedData> {
+#[derive(Debug)]
+pub struct ParSignedData {
     /// Partially signed duty data.
-    pub signed_data: T,
+    pub signed_data: Box<dyn SignedData>,
 
     /// Threshold BLS share index.
     pub share_idx: u64,
 }
 
-impl<T> ParSignedData<T>
-where
-    T: SignedData,
-{
+impl Clone for ParSignedData {
+    fn clone(&self) -> Self {
+        Self {
+            signed_data: self.signed_data.clone_box(),
+            share_idx: self.share_idx,
+        }
+    }
+}
+
+impl PartialEq for ParSignedData {
+    fn eq(&self, other: &Self) -> bool {
+        self.share_idx == other.share_idx && self.signed_data.equals(other.signed_data.as_ref())
+    }
+}
+
+impl Eq for ParSignedData {}
+
+impl ParSignedData {
     /// Create a new partially signed data.
-    pub fn new(partially_signed_data: T, share_idx: u64) -> Self {
+    pub fn new(partially_signed_data: Box<dyn SignedData>, share_idx: u64) -> Self {
         Self {
             signed_data: partially_signed_data,
             share_idx,
@@ -492,49 +509,51 @@ where
 
 /// ParSignedDataSet is a set of partially signed duty data only signed by a
 /// single threshold BLS share.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParSignedDataSet<T: SignedData>(HashMap<PubKey, ParSignedData<T>>);
+#[derive(Debug, Clone)]
+pub struct ParSignedDataSet(HashMap<PubKey, ParSignedData>);
 
-impl<T> Default for ParSignedDataSet<T>
-where
-    T: SignedData,
-{
+impl PartialEq for ParSignedDataSet {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for ParSignedDataSet {}
+
+impl Default for ParSignedDataSet {
     fn default() -> Self {
         Self(HashMap::default())
     }
 }
 
-impl<T> ParSignedDataSet<T>
-where
-    T: SignedData,
-{
+impl ParSignedDataSet {
     /// Create a new partially signed data set.
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Get a partially signed data by public key.
-    pub fn get(&self, pub_key: &PubKey) -> Option<&ParSignedData<T>> {
+    pub fn get(&self, pub_key: &PubKey) -> Option<&ParSignedData> {
         self.inner().get(pub_key)
     }
 
     /// Insert a partially signed data.
-    pub fn insert(&mut self, pub_key: PubKey, partially_signed_data: ParSignedData<T>) {
+    pub fn insert(&mut self, pub_key: PubKey, partially_signed_data: ParSignedData) {
         self.inner_mut().insert(pub_key, partially_signed_data);
     }
 
     /// Remove a partially signed data by public key.
-    pub fn remove(&mut self, pub_key: &PubKey) -> Option<ParSignedData<T>> {
+    pub fn remove(&mut self, pub_key: &PubKey) -> Option<ParSignedData> {
         self.inner_mut().remove(pub_key)
     }
 
     /// Inner partially signed data set.
-    pub fn inner(&self) -> &HashMap<PubKey, ParSignedData<T>> {
+    pub fn inner(&self) -> &HashMap<PubKey, ParSignedData> {
         &self.0
     }
 
     /// Inner partially signed data set.
-    pub fn inner_mut(&mut self) -> &mut HashMap<PubKey, ParSignedData<T>> {
+    pub fn inner_mut(&mut self) -> &mut HashMap<PubKey, ParSignedData> {
         &mut self.0
     }
 }
@@ -855,31 +874,43 @@ mod tests {
     struct MockSignedData;
 
     impl SignedData for MockSignedData {
-        type Error = std::io::Error;
-
         fn signature(&self) -> Signature {
             Signature::new([42u8; SIG_LEN])
         }
 
-        fn set_signature(&mut self, _signature: Signature) -> Result<(), std::io::Error> {
+        fn set_signature(
+            &mut self,
+            _signature: Signature,
+        ) -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
 
         fn message_root(&self) -> [u8; 32] {
             [42u8; 32]
         }
+
+        fn clone_box(&self) -> Box<dyn SignedData> {
+            Box::new(self.clone())
+        }
+
+        fn equals(&self, _other: &dyn SignedData) -> bool {
+            // For testing purposes, we consider all MockSignedData instances equal
+            true
+        }
     }
 
     #[test]
     fn test_partially_signed_data_set() {
         let mut partially_signed_data_set = ParSignedDataSet::new();
-        partially_signed_data_set.insert(
-            PubKey::new([42u8; PK_LEN]),
-            ParSignedData::new(MockSignedData, 0),
-        );
+        let par_signed = ParSignedData::new(Box::new(MockSignedData), 0);
+        partially_signed_data_set.insert(PubKey::new([42u8; PK_LEN]), par_signed.clone());
+        let retrieved = partially_signed_data_set.get(&PubKey::new([42u8; PK_LEN]));
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.share_idx, 0);
         assert_eq!(
-            partially_signed_data_set.get(&PubKey::new([42u8; PK_LEN])),
-            Some(&ParSignedData::new(MockSignedData, 0))
+            retrieved.signed_data.signature(),
+            Signature::new([42u8; SIG_LEN])
         );
     }
 
