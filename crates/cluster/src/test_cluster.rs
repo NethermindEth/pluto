@@ -10,7 +10,7 @@ use rand::{RngCore, SeedableRng};
 /// If the seed is zero, a random cluster on available loopback ports
 /// is generated, else a deterministic cluster is generated.
 pub fn new_for_test(
-    dv: u64,
+    dv: usize,
     k: pluto_crypto::types::Index,
     n: pluto_crypto::types::Index,
     seed: u64,
@@ -28,11 +28,11 @@ pub fn new_for_test(
         rand::rngs::StdRng::seed_from_u64(inner)
     };
 
-    let mut vals = Vec::with_capacity(dv as usize);
-    let mut dv_shares = Vec::with_capacity(dv as usize);
+    let mut vals = Vec::with_capacity(dv);
+    let mut dv_shares = Vec::with_capacity(dv);
 
-    let mut fee_recipient_addresses = Vec::with_capacity(dv as usize);
-    let mut withdrawal_addresses = Vec::with_capacity(dv as usize);
+    let mut fee_recipient_addresses = Vec::with_capacity(dv);
+    let mut withdrawal_addresses = Vec::with_capacity(dv);
 
     for _ in 0..dv {
         let blst = pluto_crypto::blst_impl::BlstImpl;
@@ -109,7 +109,7 @@ pub fn new_for_test(
 
     let mut definition = definition::Definition::new(
         "test cluster".into(),
-        dv,
+        dv.try_into().unwrap(),
         k.into(),
         fee_recipient_addresses,
         withdrawal_addresses,
