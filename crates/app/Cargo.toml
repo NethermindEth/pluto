@@ -39,6 +39,7 @@ pluto-crypto.workspace = true
 pluto-build-proto.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 wiremock.workspace = true
 test-case.workspace = true
 

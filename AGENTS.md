@@ -2,7 +2,7 @@
 
 ## Scope
 
-This document applies to work in `charon-rs/` (the Rust workspace, aka Pluto).
+This document applies to work in `pluto/` (the Rust workspace, aka Pluto).
 The Go codebase is used only as a behavioral reference.
 
 ## Project Structure
@@ -10,7 +10,7 @@ The Go codebase is used only as a behavioral reference.
 Workspace layout (high level):
 
 ```text
-charon-rs/
+pluto/
   Cargo.toml               # Workspace members, shared deps, lints
   crates/                  # Workspace crates (Rust source lives here)
     app/                   # Application crate
@@ -178,10 +178,10 @@ mod tests {
 
 Environment:
 
-- Recommended dev setup: `nix develop` (see `charon-rs/CONTRIBUTING.md`).
-- Rust toolchain is pinned in `charon-rs/rust-toolchain.toml`.
+- Recommended dev setup: `nix develop` (see `pluto/CONTRIBUTING.md`).
+- Rust toolchain is pinned in `pluto/rust-toolchain.toml`.
 
-Commands (run from `charon-rs/`):
+Commands (run from `pluto/`):
 
 ```bash
 cargo fmt --all --check
@@ -219,7 +219,7 @@ Findings format (use `path:line` references, 1-based):
 ```text
 - [Severity] Title
   Impact: ...
-  Evidence: charon-rs/crates/foo/src/lib.rs:123
+  Evidence: pluto/crates/foo/src/lib.rs:123
   Go reference: charon/cmd/foo.go:456
   Recommendation: ...
 ```
