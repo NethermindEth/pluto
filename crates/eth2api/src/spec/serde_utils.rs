@@ -6,13 +6,17 @@ use serde::{
 };
 use serde_with::{DeserializeAs, SerializeAs};
 
-pub(crate) fn strip_0x_prefix(value: &str) -> Option<&str> {
+/// Strips the `0x` or `0X` prefix from a hex string, returning `None` if
+/// absent.
+pub fn strip_0x_prefix(value: &str) -> Option<&str> {
     value
         .strip_prefix("0x")
         .or_else(|| value.strip_prefix("0X"))
 }
 
-pub(crate) fn trim_0x_prefix(value: &str) -> &str {
+/// Strips the `0x` or `0X` prefix from a hex string, returning the input
+/// unchanged if absent.
+pub fn trim_0x_prefix(value: &str) -> &str {
     strip_0x_prefix(value).unwrap_or(value)
 }
 
