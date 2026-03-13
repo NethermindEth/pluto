@@ -202,6 +202,7 @@ pub async fn write_keys_to_disk(
 
     Ok(())
 }
+
 /// Writes a [`pluto_cluster::lock::Lock`] to disk.
 pub async fn write_lock(
     data_dir: impl AsRef<path::Path>,
@@ -435,7 +436,7 @@ mod tests {
 
         let cfg = dkg::Config {
             def_file: definition_path.to_string_lossy().into(),
-            no_verify: false, // Verify the defintion
+            no_verify: false, // Verify the definition
             ..Default::default()
         };
 
