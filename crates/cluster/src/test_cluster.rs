@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, reason = "test code")]
+
 use crate::{definition, distvalidator, helpers, lock, operator, registration, version};
 use chrono::{TimeZone, Utc};
 use pluto_crypto::tbls::Tbls;
