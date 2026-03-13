@@ -8,7 +8,7 @@ use tracing::{info, warn};
 
 /// Error type for DKG disk operations.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum DiskError {
+pub enum DiskError {
     /// Invalid URL.
     #[error("Invalid URL: {0}")]
     InvalidUrl(#[from] url::ParseError),
@@ -39,9 +39,11 @@ pub(crate) enum DiskError {
     #[error("Deposit amounts verification failed: {0}")]
     DepositAmountsVerificationError(#[from] pluto_eth2util::deposit::DepositError),
 
+    /// Keystore operation error.
     #[error("Keystore error: {0}")]
     KeystoreError(#[from] pluto_eth2util::keystore::KeystoreError),
 
+    /// Keymanager client error.
     #[error("Keymanager error: {0}")]
     KeymanagerClientError(#[from] pluto_eth2util::keymanager::KeymanagerError),
 
@@ -56,14 +58,18 @@ pub(crate) enum DiskError {
     /// Data directory contains disallowed entries.
     #[error("data directory not clean, cannot continue")]
     DataDirNotClean {
+        /// Name of the disallowed file or directory.
         disallowed_entity: String,
+        /// Path where the disallowed entity was found.
         data_dir: PathBuf,
     },
 
     /// Data directory is missing required files.
     #[error("missing required files, cannot continue")]
     MissingRequiredFiles {
+        /// Name of the missing required file.
         file_name: String,
+        /// Path where required file was expected.
         data_dir: PathBuf,
     },
 }
@@ -72,7 +78,7 @@ type Result<T> = std::result::Result<T, DiskError>;
 
 /// Returns the [`pluto_cluster::definition::Definition`] from disk or an HTTP
 /// URL. It returns the test definition if configured.
-pub(crate) async fn load_definition(
+pub async fn load_definition(
     conf: &dkg::Config,
     eth1cl: &pluto_eth1wrap::EthClient,
 ) -> Result<pluto_cluster::definition::Definition> {
@@ -150,7 +156,7 @@ pub(crate) async fn load_definition(
 
 /// Writes validator private keyshares for the node to the provided keymanager
 /// address.
-pub(crate) async fn write_to_keymanager(
+pub async fn write_to_keymanager(
     keymanager_url: impl AsRef<str>,
     auth_token: impl AsRef<str>,
     shares: &[share::Share],
@@ -177,7 +183,8 @@ pub(crate) async fn write_to_keymanager(
     Ok(())
 }
 
-pub(crate) async fn write_keys_to_disk(
+/// Writes validator private keyshares for the node to disk.
+pub async fn write_keys_to_disk(
     conf: &dkg::Config,
     shares: &[share::Share],
     insecure: bool,
@@ -201,11 +208,8 @@ pub(crate) async fn write_keys_to_disk(
 
     Ok(())
 }
-
-pub(crate) async fn write_lock(
-    data_dir: impl AsRef<str>,
-    lock: &pluto_cluster::lock::Lock,
-) -> Result<()> {
+/// Writes a [`pluto_cluster::lock::Lock`] to disk.
+pub async fn write_lock(data_dir: impl AsRef<str>, lock: &pluto_cluster::lock::Lock) -> Result<()> {
     use serde::Serialize;
     use tokio::io::AsyncWriteExt;
 
@@ -229,7 +233,7 @@ pub(crate) async fn write_lock(
 
 /// Ensures `data_dir` exists, is a directory, and does not contain any
 /// disallowed entries, while checking for the presence of necessary files.
-pub(crate) async fn check_clear_data_dir(data_dir: impl AsRef<path::Path>) -> Result<()> {
+pub async fn check_clear_data_dir(data_dir: impl AsRef<path::Path>) -> Result<()> {
     let path = path::PathBuf::from(data_dir.as_ref());
 
     match tokio::fs::metadata(&path).await {
@@ -281,7 +285,7 @@ pub(crate) async fn check_clear_data_dir(data_dir: impl AsRef<path::Path>) -> Re
 
 /// Writes sample files to check disk writes and removes sample files after
 /// verification.
-pub(crate) async fn check_writes(data_dir: impl AsRef<str>) -> Result<()> {
+pub async fn check_writes(data_dir: impl AsRef<str>) -> Result<()> {
     const CHECK_BODY: &str = "delete me: dummy file used to check write permissions";
 
     let base = path::Path::new(data_dir.as_ref());
@@ -315,7 +319,8 @@ pub(crate) async fn check_writes(data_dir: impl AsRef<str>) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn random_hex64() -> String {
+/// Generate a random 32-byte value and return it as a hex string.
+pub fn random_hex64() -> String {
     let mut rng = rand::rngs::OsRng;
 
     let mut bytes = [0u8; 32];
