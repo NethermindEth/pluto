@@ -27,3 +27,6 @@ pub mod eth2wrap;
 
 /// Private key locking service.
 pub mod privkeylock;
+
+/// Utility helpers for archiving, extracting, and comparing files/directories.
+pub mod utils;
