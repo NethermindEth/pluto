@@ -1,5 +1,5 @@
 use std::{
-    net::{IpAddr, Ipv4Addr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
 };
 
@@ -19,6 +19,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
+use vise_exporter::MetricsExporter;
 
 use crate::{
     config::{Config, EXTERNAL_HOST_RESOLVE_INTERVAL},
@@ -139,6 +140,37 @@ pub async fn enr_server(
 
     if let Some(resolver_handle) = resolver_handle {
         let _ = resolver_handle.await;
+    }
+}
+
+/// Starts the Prometheus monitoring server on the given address.
+#[instrument(skip(ct))]
+pub async fn monitoring_server(monitoring_addr: String, ct: CancellationToken) {
+    let Ok(bind_addr) = monitoring_addr.parse::<SocketAddr>() else {
+        warn!("Failed to parse monitoring address: {monitoring_addr}");
+        return;
+    };
+
+    info!("Starting monitoring server on {monitoring_addr}");
+
+    let exporter = match MetricsExporter::default().bind(bind_addr).await {
+        Ok(exporter) => exporter,
+        Err(e) => {
+            warn!("Failed to bind monitoring server on {monitoring_addr}: {e}");
+            return;
+        }
+    };
+
+    tokio::select! {
+        biased;
+        _ = ct.cancelled() => {
+            info!("Monitoring server shutdown complete");
+        }
+        result = exporter.start() => {
+            if let Err(e) = result {
+                warn!("Monitoring server error: {e}");
+            }
+        }
     }
 }
 

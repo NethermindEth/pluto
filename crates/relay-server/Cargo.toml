@@ -22,9 +22,9 @@ pluto-tracing.workspace = true
 tracing.workspace = true
 pluto-p2p.workspace = true
 pluto-core.workspace = true
+vise-exporter.workspace = true
 
 [dev-dependencies]
-vise-exporter.workspace = true
 
 [lints]
 workspace = true

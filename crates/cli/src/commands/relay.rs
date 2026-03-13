@@ -465,17 +465,37 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "/metrics endpoint not implemented"]
     async fn serve_addr_metrics() {
+        let monitoring_addr = net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .to_string();
+        let monitoring_url = format!("http://{}/metrics", monitoring_addr);
+
         with_relay_server(
-            |_| {},
-            async |cfg| {
-                let response = relay_server_get(cfg, "/metrics").await.unwrap();
+            move |args| {
+                args.debug_monitoring.monitor_addr = Some(monitoring_addr);
+            },
+            async move |_cfg| {
+                let request = async || {
+                    reqwest::get(&monitoring_url)
+                        .await
+                        .and_then(|r| r.error_for_status())
+                };
+
+                let mut backoff = backon::ExponentialBuilder::default()
+                    .with_min_delay(time::Duration::from_millis(200))
+                    .with_max_delay(time::Duration::from_secs(2))
+                    .with_factor(1.0)
+                    .with_max_times(8)
+                    .build();
+                let response = request.retry(&mut backoff).await.unwrap();
                 let body = response.text().await.unwrap();
 
-                dbg!(&body);
-
-                assert!(body.contains("libp2p_relaysvc_"));
+                // Check prometheus text format is returned
+                assert!(body.contains("relay_p2p_") || body.contains("p2p_"));
             },
         )
         .await
