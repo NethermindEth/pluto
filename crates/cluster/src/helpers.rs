@@ -65,8 +65,10 @@ pub async fn fetch_definition(
 /// Creates a new directory for validator keys.
 /// If the directory "validator_keys" exists, it checks if the directory is
 /// empty.
-pub async fn create_validator_keys_dir(parent_dir: &std::path::Path) -> std::io::Result<PathBuf> {
-    let vk_dir = parent_dir.join("validator_keys");
+pub async fn create_validator_keys_dir(
+    parent_dir: impl AsRef<std::path::Path>,
+) -> std::io::Result<PathBuf> {
+    let vk_dir = parent_dir.as_ref().join("validator_keys");
 
     if let Err(e) = tokio::fs::create_dir(&vk_dir).await {
         if e.kind() != std::io::ErrorKind::AlreadyExists {

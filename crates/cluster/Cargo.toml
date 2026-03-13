@@ -19,7 +19,7 @@ pluto-core.workspace = true
 pluto-crypto.workspace = true
 pluto-eth2api.workspace = true
 thiserror.workspace = true
-rand_core.workspace = true
+rand.workspace = true
 libp2p.workspace = true
 pluto-p2p.workspace = true
 pluto-eth2util.workspace = true
@@ -35,7 +35,6 @@ prost-build.workspace = true
 [dev-dependencies]
 test-case.workspace = true
 pluto-testutil.workspace = true
-rand.workspace = true
 tempfile.workspace = true
 wiremock.workspace = true
 

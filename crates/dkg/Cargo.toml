@@ -9,9 +9,24 @@ publish.workspace = true
 [dependencies]
 prost.workspace = true
 prost-types.workspace = true
+pluto-cluster.workspace = true
+pluto-crypto.workspace = true
+pluto-eth1wrap.workspace = true
+pluto-eth2util.workspace = true
+hex.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
 
 [build-dependencies]
 pluto-build-proto.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

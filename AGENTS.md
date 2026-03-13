@@ -145,6 +145,43 @@ Rules:
   - Prefer copying doc comments from Go and adapting to Rust conventions (avoid “Type is a …”).
   - Avoid leaving TODOs in merged code. If a short-lived internal note is necessary, use `// TODO:` and remove before PR merge.
 
+## Generalized Parameter Types
+
+Prefer generic parameters over concrete types when a function only needs the behavior of a trait. This mirrors the standard library's own conventions and makes functions callable with a wider range of inputs without extra allocations.
+
+| Instead of | Prefer | Accepts |
+| --- | --- | --- |
+| `&str` | `impl AsRef<str>` | `&str`, `String`, `&String`, … |
+| `&Path` | `impl AsRef<Path>` | `&str`, `String`, `PathBuf`, `&Path`, … |
+| `&[u8]` | `impl AsRef<[u8]>` | `&[u8]`, `Vec<u8>`, arrays, … |
+| `&Vec<T>` | `impl AsRef<[T]>` | `Vec<T>`, slices, arrays, … |
+| `String` (owned, read-only) | `impl Into<String>` | `&str`, `String`, … |
+
+Examples:
+
+```rust
+// accepts &str, String, PathBuf, &Path, …
+fn read_file(path: impl AsRef<std::path::Path>) -> std::io::Result<String> {
+    std::fs::read_to_string(path.as_ref())
+}
+
+// accepts &str, String, &String, …
+fn print_message(msg: impl AsRef<str>) {
+    println!(“{}”, msg.as_ref());
+}
+
+// accepts &[u8], Vec<u8>, arrays, …
+fn hash_bytes(data: impl AsRef<[u8]>) -> [u8; 32] {
+    sha256(data.as_ref())
+}
+```
+
+Rules:
+
+- Call `.as_ref()` once at the top of the function and bind it to a local variable when the value is used in multiple places.
+- Do not use `impl AsRef<T>` if the function immediately converts to an owned type anyway — use `impl Into<T>` (or just accept the owned type) in that case.
+- Applies to public and private functions alike; the gain is ergonomics, not just API surface.
+
 ## Testing
 
 - Translate Go tests to Rust where applicable; keep similar test names for cross-reference.
