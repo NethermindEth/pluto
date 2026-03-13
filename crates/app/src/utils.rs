@@ -174,10 +174,10 @@ pub fn compare_directories(
 }
 
 /// Compare two files for equality.
-fn compare_file_contents(path1: &path::PathBuf, path2: &path::PathBuf) -> Result<()> {
+fn compare_file_contents(path1: &path::Path, path2: &path::Path) -> Result<()> {
     let error = Err(UtilsError::ContentMismatch {
-        expected: path1.clone(),
-        found: path2.clone(),
+        expected: path1.to_path_buf(),
+        found: path2.to_path_buf(),
     });
 
     // Fast path: compare metadata first
