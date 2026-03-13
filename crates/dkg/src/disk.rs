@@ -224,7 +224,7 @@ pub async fn write_lock(data_dir: impl AsRef<str>, lock: &pluto_cluster::lock::L
 
     let path = path::Path::new(data_dir.as_ref()).join("cluster-lock.json");
 
-    let mut file = tokio::fs::File::open(path).await?;
+    let mut file = tokio::fs::File::create(path).await?;
     file.write_all(&b).await?;
     file.metadata().await?.permissions().set_readonly(true); // File needs to be read-only for everybody
 
