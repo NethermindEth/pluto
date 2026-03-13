@@ -207,15 +207,14 @@ fn compare_file_contents(path1: &path::Path, path2: &path::Path) -> Result<()> {
         let mut buf2 = [0u8; BUFFER_SIZE];
 
         loop {
-            let n1 = file1.read(&mut buf1)?;
-            let n2 = file2.read(&mut buf2)?;
-
-            if n1 != n2 || buf1[..n1] != buf2[..n2] {
-                return error;
+            let n = file1.read(&mut buf1)?;
+            if n == 0 {
+                break;
             }
-
-            if n1 == 0 {
-                break; // EOF
+            // `read_exact` is safe here because sizes are equal and we haven't reached EOF
+            file2.read_exact(&mut buf2[..n])?;
+            if buf1[..n] != buf2[..n] {
+                return error;
             }
         }
     }
