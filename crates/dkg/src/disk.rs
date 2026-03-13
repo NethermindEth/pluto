@@ -25,12 +25,6 @@ pub enum DiskError {
     #[error("JSON parsing error: {0}")]
     JsonError(#[from] serde_json::Error),
 
-    /// Cluster definition verification error.
-    #[error(
-        "Cluster definition verification failed. Run with `--no-verify` to bypass verification at own risk: {0}"
-    )]
-    ClusterDefinitionVerificationError(pluto_cluster::definition::DefinitionError),
-
     /// Cluster definition error.
     #[error("Cluster definition error: {0}")]
     ClusterDefinitionError(#[from] pluto_cluster::definition::DefinitionError),
@@ -130,7 +124,7 @@ pub async fn load_definition(
                 "Ignoring failed cluster definition hashes verification due to --no-verify flag"
             );
         } else {
-            return Err(DiskError::ClusterDefinitionVerificationError(error));
+            return Err(DiskError::ClusterDefinitionError(error));
         }
     }
     if let Err(error) = def.verify_signatures(eth1cl).await {
@@ -140,7 +134,7 @@ pub async fn load_definition(
                 "Ignoring failed cluster definition signatures verification due to --no-verify flag"
             );
         } else {
-            return Err(DiskError::ClusterDefinitionVerificationError(error));
+            return Err(DiskError::ClusterDefinitionError(error));
         }
     }
 
@@ -450,7 +444,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(super::DiskError::ClusterDefinitionVerificationError { .. })
+            Err(super::DiskError::ClusterDefinitionError { .. })
         ));
     }
 
