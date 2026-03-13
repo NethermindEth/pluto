@@ -96,7 +96,7 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    let enr = Record::new(key.clone(), vec![])?;
+    let enr = Record::new(&key, vec![])?;
 
     if let Some(relay_url) = &args.relay_url {
         p2p.dial(relay_url.clone())?;

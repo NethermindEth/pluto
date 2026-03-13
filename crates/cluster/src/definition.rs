@@ -11,7 +11,7 @@ use crate::{
     ssz_hasher::Hasher,
     version::{CURRENT_VERSION, DKG_ALGO, versions::*},
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Timelike, Utc};
 use libp2p::PeerId;
 use pluto_eth1wrap::{EthClient, EthClientError};
 use pluto_eth2util::enr::{Record, RecordError};
@@ -387,7 +387,12 @@ impl Definition {
             uuid: uuid.to_string(),
             name,
             version: CURRENT_VERSION.to_string(),
-            timestamp: Utc::now().to_string(),
+            // TODO: This is very error prone and should be replaced with a controlled timestamp in
+            // UTC.
+            timestamp: chrono::Local::now()
+                .with_nanosecond(0)
+                .expect("nanoseconds = 0")
+                .to_rfc3339(),
             num_validators,
             threshold,
             dkg_algorithm: DKG_ALGO.to_string(),
@@ -434,7 +439,9 @@ impl Definition {
             return Err(InvalidGasLimitError::GasLimitNotSet.into());
         }
 
-        def.set_definition_hashes()
+        def.set_definition_hashes()?;
+
+        Ok(def)
     }
 
     /// Returns the timestamp of the definition.
@@ -472,7 +479,7 @@ impl Definition {
         // there are no EIP712 signatures before v1.3.0. For definition versions
         // earlier than v1.3.0, error if either config signature or enr signature for
         // any operator is present.
-        if !Self::support_eip712_sigs(self.version.as_str()) {
+        if !Self::support_eip712_sigs(&self.version) {
             return if Self::eip712_sigs_present(&self.operators) {
                 Err(DefinitionError::OlderVersionSignaturesNotSupported)
             } else {
@@ -657,18 +664,18 @@ impl Definition {
     }
 
     /// Sets the definition hashes.
-    pub fn set_definition_hashes(mut self) -> Result<Self, DefinitionError> {
+    pub fn set_definition_hashes(&mut self) -> Result<(), DefinitionError> {
         let config_hash =
-            hash_definition(&self, true).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
+            hash_definition(self, true).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
 
         self.config_hash = config_hash.to_vec();
 
         let definition_hash =
-            hash_definition(&self, false).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
+            hash_definition(self, false).map_err(|e| DefinitionError::SSZError(Box::new(e)))?;
 
         self.definition_hash = definition_hash.to_vec();
 
-        Ok(self)
+        Ok(())
     }
 
     /// `verify_hashes` returns an error if hashes populated from json object
@@ -700,8 +707,8 @@ impl Definition {
     /// Returns true if the provided definition version supports EIP712
     /// signatures. Note that Definition versions prior to v1.3.0 don't
     /// support EIP712 signatures.
-    pub(crate) fn support_eip712_sigs(version: &str) -> bool {
-        !matches!(version, V1_0 | V1_1 | V1_2)
+    pub fn support_eip712_sigs(version: impl AsRef<str>) -> bool {
+        !matches!(version.as_ref(), V1_0 | V1_1 | V1_2)
     }
 
     fn eip712_sigs_present(operators: &[Operator]) -> bool {
