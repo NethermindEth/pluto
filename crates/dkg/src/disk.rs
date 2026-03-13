@@ -193,7 +193,7 @@ pub async fn write_keys_to_disk(
 
     let keys_dir = pluto_cluster::helpers::create_validator_keys_dir(&conf.data_dir).await?;
     // TODO: All paths should be handled using `std::path::*` instead of strings.
-    let keys_dir = keys_dir.to_string_lossy().to_owned();
+    let keys_dir = keys_dir.to_string_lossy().into_owned();
 
     if insecure {
         pluto_eth2util::keystore::store_keys_insecure(
@@ -391,7 +391,7 @@ mod tests {
         let defintion_path = tempdir.path().join("definition.json");
 
         let (lock, ..) = pluto_cluster::test_cluster::new_for_test(1, 2, 3, 0);
-        let definition = &lock.definition;
+        let definition = lock.definition;
 
         let json = {
             let mut json = serde_json::to_value(&definition).unwrap();
@@ -413,7 +413,7 @@ mod tests {
         let client = noop_eth1_client().await;
         let actual = super::load_definition(&cfg, &client).await.unwrap();
 
-        assert_eq!(actual, *definition);
+        assert_eq!(actual, definition);
     }
 
     #[tokio::test]
@@ -422,7 +422,7 @@ mod tests {
         let defintion_path = tempdir.path().join("definition.json");
 
         let (lock, ..) = pluto_cluster::test_cluster::new_for_test(1, 2, 3, 0);
-        let definition = &lock.definition;
+        let definition = lock.definition;
 
         let json = {
             let mut json = serde_json::to_value(&definition).unwrap();
