@@ -211,7 +211,6 @@ pub async fn write_keys_to_disk(
 /// Writes a [`pluto_cluster::lock::Lock`] to disk.
 pub async fn write_lock(data_dir: impl AsRef<str>, lock: &pluto_cluster::lock::Lock) -> Result<()> {
     use serde::Serialize;
-    use tokio::io::AsyncWriteExt;
 
     let b = {
         let mut buf = Vec::new();
@@ -224,9 +223,11 @@ pub async fn write_lock(data_dir: impl AsRef<str>, lock: &pluto_cluster::lock::L
 
     let path = path::Path::new(data_dir.as_ref()).join("cluster-lock.json");
 
-    let mut file = tokio::fs::File::create(path).await?;
-    file.write_all(&b).await?;
-    file.metadata().await?.permissions().set_readonly(true); // File needs to be read-only for everybody
+    tokio::fs::write(&path, &b).await?;
+
+    let mut permissions = tokio::fs::metadata(&path).await?.permissions();
+    permissions.set_readonly(true);
+    tokio::fs::set_permissions(&path, permissions).await?;
 
     Ok(())
 }
