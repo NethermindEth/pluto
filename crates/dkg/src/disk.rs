@@ -324,7 +324,7 @@ pub async fn check_writes(data_dir: impl AsRef<path::Path>) -> Result<()> {
 }
 
 /// Generate a random 32-byte value and return it as a hex string.
-pub fn random_hex64() -> String {
+fn random_hex64() -> String {
     let mut rng = rand::rngs::OsRng;
 
     let mut bytes = [0u8; 32];
