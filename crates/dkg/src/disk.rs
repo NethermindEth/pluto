@@ -13,6 +13,10 @@ pub(crate) enum DiskError {
     #[error("Invalid URL: {0}")]
     InvalidUrl(#[from] url::ParseError),
 
+    /// Cluster definition fetch error.
+    #[error("Cluster definition fetch error: {0}")]
+    FetchError(#[from] pluto_cluster::helpers::FetchError),
+
     /// I/O error.
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
@@ -89,8 +93,7 @@ pub(crate) async fn load_definition(
             );
         }
 
-        let def: pluto_cluster::definition::Definition =
-            todo!("requires `cluster.FetchDefinition`");
+        let def = pluto_cluster::helpers::fetch_definition(url).await?;
         let definition_hash = pluto_cluster::helpers::to_0x_hex(&def.definition_hash);
 
         info!(
@@ -181,7 +184,9 @@ pub(crate) async fn write_keys_to_disk(
 ) -> Result<()> {
     let secret_shares = shares.iter().map(|s| s.secret_share).collect::<Vec<_>>();
 
-    let keys_dir: String = todo!("requires `cluster.CreateValidatorKeysDir`");
+    let keys_dir = pluto_cluster::helpers::create_validator_keys_dir(&conf.data_dir).await?;
+    // TODO: All paths should be handled using `std::path::*` instead of strings.
+    let keys_dir = keys_dir.to_string_lossy().to_owned();
 
     if insecure {
         pluto_eth2util::keystore::store_keys_insecure(

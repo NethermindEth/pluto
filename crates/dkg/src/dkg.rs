@@ -5,6 +5,10 @@ pub struct Config {
     pub def_file: String,
     /// Skip cluster definition verification.
     pub no_verify: bool,
+
+    /// Data directory to store generated keys and other DKG artifacts.
+    pub data_dir: String,
+
     /// Test configuration, used for testing purposes.
     pub test_config: TestConfig,
 }
