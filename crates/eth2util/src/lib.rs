@@ -30,5 +30,8 @@ pub mod registration;
 /// ETH2 Keymanager API client.
 pub mod keymanager;
 
+/// Go-parity type/version conversion helpers.
+pub mod types;
+
 /// Utilities.
 pub(crate) mod utils;
