@@ -70,7 +70,7 @@ type Result<T> = std::result::Result<T, DiskError>;
 /// URL. It returns the test definition if configured.
 pub(crate) async fn load_definition(
     conf: &dkg::Config,
-    eth1cl: Option<&pluto_eth1wrap::EthClient>,
+    eth1cl: &pluto_eth1wrap::EthClient,
 ) -> Result<pluto_cluster::definition::Definition> {
     if let Some(definition) = &conf.test_config.def {
         return Ok(definition.clone());
@@ -330,7 +330,8 @@ mod tests {
             ..Default::default()
         };
 
-        let result = super::load_definition(&cfg, None).await;
+        let client = noop_eth1_client().await;
+        let result = super::load_definition(&cfg, &client).await;
 
         assert!(matches!(result, Err(super::DiskError::IoError(_))));
     }
@@ -346,7 +347,8 @@ mod tests {
             ..Default::default()
         };
 
-        let result = super::load_definition(&cfg, None).await;
+        let client = noop_eth1_client().await;
+        let result = super::load_definition(&cfg, &client).await;
 
         assert!(matches!(result, Err(super::DiskError::JsonError(_))));
     }
@@ -453,5 +455,11 @@ mod tests {
 
         let result = super::check_clear_data_dir(data_dir).await;
         assert!(result.is_ok());
+    }
+
+    async fn noop_eth1_client() -> pluto_eth1wrap::EthClient {
+        pluto_eth1wrap::EthClient::new("http://0.0.0.0:0")
+            .await
+            .unwrap()
     }
 }

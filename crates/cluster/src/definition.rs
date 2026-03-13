@@ -11,7 +11,7 @@ use crate::{
     ssz_hasher::Hasher,
     version::{CURRENT_VERSION, DKG_ALGO, versions::*},
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Timelike, Utc};
 use libp2p::PeerId;
 use pluto_eth1wrap::{EthClient, EthClientError};
 use pluto_eth2util::enr::{Record, RecordError};
@@ -311,13 +311,6 @@ pub enum DefinitionError {
     #[error("invalid creator config signature")]
     InvalidCreatorConfigSignature,
 
-    /// Missing ETH1 client for contract signature verification.
-    #[error("missing eth1 client for contract signature verification: {contract_address}")]
-    MissingEth1ClientForContractSignature {
-        /// Contract address used for signature verification.
-        contract_address: String,
-    },
-
     /// Invalid EIP-712 digest length
     #[error("invalid eip712 digest length: expected {expected}, actual {actual}")]
     InvalidEIP712DigestLength {
@@ -394,7 +387,12 @@ impl Definition {
             uuid: uuid.to_string(),
             name,
             version: CURRENT_VERSION.to_string(),
-            timestamp: Utc::now().to_string(),
+            // TODO: This is very error prone and should be replaced with a controlled timestamp in
+            // UTC.
+            timestamp: chrono::Local::now()
+                .with_nanosecond(0)
+                .expect("nanoseconds = 0")
+                .to_rfc3339(),
             num_validators,
             threshold,
             dkg_algorithm: DKG_ALGO.to_string(),
@@ -476,12 +474,12 @@ impl Definition {
 
     /// Returns `Ok(())` if all config signatures are fully
     /// populated and valid. A verified definition is ready for use in DKG.
-    pub async fn verify_signatures(&self, eth1: Option<&EthClient>) -> Result<(), DefinitionError> {
+    pub async fn verify_signatures(&self, eth1: &EthClient) -> Result<(), DefinitionError> {
         // Skip signature verification for definition versions earlier than v1.3 since
         // there are no EIP712 signatures before v1.3.0. For definition versions
         // earlier than v1.3.0, error if either config signature or enr signature for
         // any operator is present.
-        if !Self::support_eip712_sigs(self.version.as_str()) {
+        if !Self::support_eip712_sigs(&self.version) {
             return if Self::eip712_sigs_present(&self.operators) {
                 Err(DefinitionError::OlderVersionSignaturesNotSupported)
             } else {
@@ -709,8 +707,8 @@ impl Definition {
     /// Returns true if the provided definition version supports EIP712
     /// signatures. Note that Definition versions prior to v1.3.0 don't
     /// support EIP712 signatures.
-    pub(crate) fn support_eip712_sigs(version: &str) -> bool {
-        !matches!(version, V1_0 | V1_1 | V1_2)
+    pub fn support_eip712_sigs(version: impl AsRef<str>) -> bool {
+        !matches!(version.as_ref(), V1_0 | V1_1 | V1_2)
     }
 
     fn eip712_sigs_present(operators: &[Operator]) -> bool {
@@ -720,17 +718,11 @@ impl Definition {
     }
 
     async fn verify_contract_signature(
-        eth1: Option<&EthClient>,
+        eth1: &EthClient,
         contract_address: &str,
         digest: &[u8],
         sig: &[u8],
     ) -> Result<bool, DefinitionError> {
-        let Some(eth1_client) = eth1 else {
-            return Err(DefinitionError::MissingEth1ClientForContractSignature {
-                contract_address: contract_address.to_string(),
-            });
-        };
-
         let digest_hash: [u8; 32] =
             digest
                 .try_into()
@@ -739,8 +731,7 @@ impl Definition {
                     actual: digest.len(),
                 })?;
 
-        eth1_client
-            .verify_smart_contract_based_signature(contract_address, digest_hash, sig)
+        eth1.verify_smart_contract_based_signature(contract_address, digest_hash, sig)
             .await
             .map_err(DefinitionError::FailedToVerifyContractSignature)
     }
@@ -1589,6 +1580,10 @@ mod tests {
         serde_json::from_value(value).unwrap()
     }
 
+    async fn test_eth1_client() -> EthClient {
+        EthClient::new("http://127.0.0.1:8545").await.unwrap()
+    }
+
     #[test]
     fn cluster_definition_v1_10_0_fields() {
         let definition = serde_json::from_str::<Definition>(include_str!(
@@ -1835,7 +1830,9 @@ mod tests {
     #[tokio::test]
     async fn verify_signatures_examples(definition_json: &str) {
         let definition = parse_example_definition(definition_json);
-        assert!(definition.verify_signatures(None).await.is_ok());
+        let eth1 = test_eth1_client().await;
+
+        assert!(definition.verify_signatures(&eth1).await.is_ok());
     }
 
     #[tokio::test]
@@ -1844,7 +1841,9 @@ mod tests {
             "testdata/cluster_definition_v1_2_0.json"
         ))
         .unwrap();
-        assert!(definition.verify_signatures(None).await.is_ok());
+        let eth1 = test_eth1_client().await;
+
+        assert!(definition.verify_signatures(&eth1).await.is_ok());
     }
 
     #[tokio::test]
@@ -1854,8 +1853,9 @@ mod tests {
         ))
         .unwrap();
         definition.operators[0].config_signature = vec![1];
+        let eth1 = test_eth1_client().await;
 
-        let result = definition.verify_signatures(None).await;
+        let result = definition.verify_signatures(&eth1).await;
         assert!(matches!(
             result,
             Err(DefinitionError::OlderVersionSignaturesNotSupported)
@@ -1867,8 +1867,9 @@ mod tests {
         let mut definition =
             parse_example_definition(include_str!("examples/cluster-definition-001.json"));
         definition.operators[0].enr_signature = Vec::new();
+        let eth1 = test_eth1_client().await;
 
-        let result = definition.verify_signatures(None).await;
+        let result = definition.verify_signatures(&eth1).await;
         assert!(matches!(
             result,
             Err(DefinitionError::EmptyOperatorENRSignature { .. })
@@ -1880,8 +1881,9 @@ mod tests {
         let mut definition =
             parse_example_definition(include_str!("examples/cluster-definition-001.json"));
         definition.operators[0].config_signature = Vec::new();
+        let eth1 = test_eth1_client().await;
 
-        let result = definition.verify_signatures(None).await;
+        let result = definition.verify_signatures(&eth1).await;
         assert!(matches!(
             result,
             Err(DefinitionError::EmptyOperatorConfigSignature { .. })
@@ -1893,8 +1895,9 @@ mod tests {
         let mut definition =
             parse_example_definition(include_str!("examples/cluster-definition-001.json"));
         definition.operators[0] = Operator::default();
+        let eth1 = test_eth1_client().await;
 
-        let result = definition.verify_signatures(None).await;
+        let result = definition.verify_signatures(&eth1).await;
         assert!(matches!(
             result,
             Err(DefinitionError::SomeOperatorsSignedWhileOthersDidNot)
@@ -1906,8 +1909,9 @@ mod tests {
         let mut definition =
             parse_example_definition(include_str!("examples/cluster-definition-001.json"));
         definition.creator.config_signature = Vec::new();
+        let eth1 = test_eth1_client().await;
 
-        let result = definition.verify_signatures(None).await;
+        let result = definition.verify_signatures(&eth1).await;
         assert!(matches!(
             result,
             Err(DefinitionError::EmptyCreatorConfigSignature)
@@ -1920,8 +1924,9 @@ mod tests {
             parse_example_definition(include_str!("examples/cluster-definition-001.json"));
         definition.creator = Creator::default();
         definition.operators = vec![Operator::default(), Operator::default()];
+        let eth1 = test_eth1_client().await;
 
-        assert!(definition.verify_signatures(None).await.is_ok());
+        assert!(definition.verify_signatures(&eth1).await.is_ok());
     }
 
     #[tokio::test]
@@ -1929,24 +1934,12 @@ mod tests {
         let mut definition =
             parse_example_definition(include_str!("examples/cluster-definition-000.json"));
         definition.creator.config_signature = vec![1];
+        let eth1 = test_eth1_client().await;
 
-        let result = definition.verify_signatures(None).await;
+        let result = definition.verify_signatures(&eth1).await;
         assert!(matches!(
             result,
             Err(DefinitionError::UnexpectedCreatorConfigSignatureInOldVersion)
-        ));
-    }
-
-    #[tokio::test]
-    async fn verify_signatures_missing_eth1_client_for_contract_fallback() {
-        let mut definition =
-            parse_example_definition(include_str!("examples/cluster-definition-001.json"));
-        definition.operators[0].config_signature = definition.operators[1].config_signature.clone();
-
-        let result = definition.verify_signatures(None).await;
-        assert!(matches!(
-            result,
-            Err(DefinitionError::MissingEth1ClientForContractSignature { .. })
         ));
     }
 }

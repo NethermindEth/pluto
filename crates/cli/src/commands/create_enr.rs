@@ -37,7 +37,7 @@ pub fn run(args: CreateEnrArgs) -> Result<()> {
 
     let key = k1::new_saved_priv_key(&args.data_dir)?;
 
-    let record = Record::new(key, Vec::new())?;
+    let record = Record::new(&key, Vec::new())?;
     let key_path = k1::key_path(&args.data_dir);
 
     let mut writer = io::stdout();
