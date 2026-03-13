@@ -11,8 +11,8 @@ pub mod dkgpb;
 /// General DKG IO operations.
 pub mod disk;
 
-/// TODO
+/// Main DKG protocol implementation.
 pub mod dkg;
 
-/// TODO
+/// Shares distributed to each node in the cluster.
 pub mod share;
