@@ -1,3 +1,5 @@
+use std::path;
+
 /// DKG configuration
 #[derive(Debug, Clone, Default)]
 pub struct Config {
@@ -7,7 +9,7 @@ pub struct Config {
     pub no_verify: bool,
 
     /// Data directory to store generated keys and other DKG artifacts.
-    pub data_dir: String,
+    pub data_dir: path::PathBuf,
 
     /// Test configuration, used for testing purposes.
     pub test_config: TestConfig,
