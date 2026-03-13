@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 /// The co-validator public key, tbls public shares, and private key share.
 /// Each node in the cluster will receive one for each distributed validator.
+#[derive(Debug, Clone)]
 pub struct Share {
     /// Public key
     pub pub_key: pluto_crypto::types::PublicKey,
@@ -12,6 +13,7 @@ pub struct Share {
 }
 
 /// The [`Share`] message wire format sent by the dealer.
+#[derive(Debug, Clone)]
 pub struct ShareMsg {
     /// Public key
     pub pub_key: Vec<u8>,
