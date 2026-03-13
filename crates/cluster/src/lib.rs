@@ -28,8 +28,7 @@ pub mod registration;
 pub mod ssz;
 /// Cluster SSZ hashing management and coordination.
 pub mod ssz_hasher;
-/// Cluster test cluster management and coordination.
-#[cfg(test)]
+/// Constructing clusters for tests.
 pub mod test_cluster;
 /// Cluster version management and coordination.
 pub mod version;
