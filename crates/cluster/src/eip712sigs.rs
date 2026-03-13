@@ -164,7 +164,8 @@ pub(crate) fn digest_eip712(
     Ok(digest)
 }
 
-fn sign_eip712(
+/// Returns the EIP712 signature for the primary type.
+pub(crate) fn sign_eip712(
     secret_key: &SecretKey,
     typ: &EIP712Type,
     definition: &Definition,

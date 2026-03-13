@@ -72,7 +72,7 @@ pub trait Tbls {
     fn recover_secret(&self, shares: &HashMap<Index, PrivateKey>) -> Result<PrivateKey, Error>;
 
     /// Aggregates a set of signatures into a single signature
-    fn aggregate(&self, signatures: Vec<Signature>) -> Result<Signature, Error>;
+    fn aggregate(&self, signatures: &[Signature]) -> Result<Signature, Error>;
 
     /// Aggregates a set of partial signatures into a single
     /// signature

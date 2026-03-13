@@ -402,7 +402,7 @@ pub(crate) async fn publish_result_to_obol_api(
     private_key_file: impl AsRef<Path>,
 ) -> CliResult<()> {
     let private_key = load_or_generate_key(private_key_file.as_ref()).await?;
-    let enr = Record::new(private_key.clone(), vec![])?;
+    let enr = Record::new(&private_key, vec![])?;
     let sign_data_bytes = serde_json::to_vec(&data)?;
     let hash = hash_ssz(&sign_data_bytes)?;
     let sig = sign(&private_key, &hash)?;

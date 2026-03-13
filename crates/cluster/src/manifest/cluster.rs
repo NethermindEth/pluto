@@ -426,7 +426,7 @@ mod tests {
 
         for i in 0..operator_amt {
             let k1_key = generate_insecure_k1_key(i);
-            let enr = Record::new(k1_key.clone(), vec![]).unwrap();
+            let enr = Record::new(&k1_key, vec![]).unwrap();
 
             operators.push(Operator {
                 address: format!("0x{:040x}", i),
@@ -457,7 +457,7 @@ mod tests {
         let k1_key0 = generate_insecure_k1_key(1);
         let k1_key_unknown = generate_insecure_k1_key(200);
 
-        let enr0 = Record::new(k1_key0, vec![]).unwrap();
+        let enr0 = Record::new(&k1_key0, vec![]).unwrap();
 
         let cluster = Cluster {
             operators: vec![Operator {

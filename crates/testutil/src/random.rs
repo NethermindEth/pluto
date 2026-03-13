@@ -67,6 +67,13 @@ pub fn generate_test_bls_key(seed: u64) -> PrivateKey {
         .expect("deterministic key generation should not fail")
 }
 
+/// Generate random Ethereum address for testing.
+pub fn random_eth_address(rand: &mut impl Rng) -> [u8; 20] {
+    let mut bytes = [0u8; 20];
+    rand.fill(&mut bytes[..]);
+    bytes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
