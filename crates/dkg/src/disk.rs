@@ -412,6 +412,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn load_definition_invalid_definition_verify() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let defintion_path = tempdir.path().join("definition.json");
+
+        let (lock, ..) = pluto_cluster::test_cluster::new_for_test(1, 2, 3, 0);
+        let definition = &lock.definition;
+
+        let json = {
+            let mut json = serde_json::to_value(&definition).unwrap();
+            let as_object = json.as_object_mut().unwrap();
+            // Intentionally remove the hashes to make the definition invalid
+            as_object.remove("config_hash");
+            as_object.remove("definition_hash");
+
+            serde_json::to_string(&json).unwrap()
+        };
+        tokio::fs::write(&defintion_path, json).await.unwrap();
+
+        let cfg = dkg::Config {
+            def_file: defintion_path.to_string_lossy().into(),
+            no_verify: false, // Verify the defintion
+            ..Default::default()
+        };
+
+        let client = noop_eth1_client().await;
+        let result = super::load_definition(&cfg, &client).await;
+
+        assert!(matches!(
+            result,
+            Err(super::DiskError::ClusterDefinitionVerificationError { .. })
+        ));
+    }
+
+    #[tokio::test]
     async fn clear_data_dir_does_not_exist() {
         let temp_dir = tempfile::tempdir().unwrap();
         let data_dir = temp_dir.path().join("nonexistent");
