@@ -209,7 +209,10 @@ pub async fn write_keys_to_disk(
     Ok(())
 }
 /// Writes a [`pluto_cluster::lock::Lock`] to disk.
-pub async fn write_lock(data_dir: impl AsRef<str>, lock: &pluto_cluster::lock::Lock) -> Result<()> {
+pub async fn write_lock(
+    data_dir: impl AsRef<path::Path>,
+    lock: &pluto_cluster::lock::Lock,
+) -> Result<()> {
     use serde::Serialize;
 
     let b = {
@@ -221,7 +224,7 @@ pub async fn write_lock(data_dir: impl AsRef<str>, lock: &pluto_cluster::lock::L
         buf
     };
 
-    let path = path::Path::new(data_dir.as_ref()).join("cluster-lock.json");
+    let path = data_dir.as_ref().join("cluster-lock.json");
 
     tokio::fs::write(&path, &b).await?;
 
@@ -286,10 +289,10 @@ pub async fn check_clear_data_dir(data_dir: impl AsRef<path::Path>) -> Result<()
 
 /// Writes sample files to check disk writes and removes sample files after
 /// verification.
-pub async fn check_writes(data_dir: impl AsRef<str>) -> Result<()> {
+pub async fn check_writes(data_dir: impl AsRef<path::Path>) -> Result<()> {
     const CHECK_BODY: &str = "delete me: dummy file used to check write permissions";
 
-    let base = path::Path::new(data_dir.as_ref());
+    let base = data_dir.as_ref();
 
     for file in [
         "cluster-lock.json",
