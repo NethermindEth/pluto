@@ -23,7 +23,7 @@ resolver = "3"
 version = "1.7.1"
 edition = "2024"
 repository = "https://github.com/NethermindEth/pluto"
-license = "Apache-2.0"
+license = "BUSL-1.1"
 publish = false
 
 [workspace.dependencies]
@@ -89,8 +89,8 @@ testcontainers = "0.26"
 test-case = "3.3"
 tree_hash = "0.12"
 tree_hash_derive = "0.12"
-ssz = { package = "ethereum_ssz", version = "0.10.1" }
-typenum = "1"
+tar = "0.4"
+flate2 = "1.1"
 wiremock = "0.6"
 
 # Crates in the workspace

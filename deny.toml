@@ -64,7 +64,7 @@ confidence-threshold = 0.8
 unused-allowed-license = "allow"
 
 [licenses.private]
-ignore = false
+ignore = true
 registries = []
 
 [bans]
