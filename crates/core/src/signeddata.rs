@@ -57,6 +57,34 @@ fn hash_root<T: TreeHash>(value: &T) -> [u8; 32] {
     value.tree_hash_root().0
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct VersionedRawBlockJson<T> {
+    version: pluto_eth2util::types::DataVersion,
+    block: T,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    blinded: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct VersionedRawAttestationJson<T> {
+    version: pluto_eth2util::types::DataVersion,
+    #[serde(default)]
+    validator_index: Option<serde_json::Value>,
+    attestation: T,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct VersionedRawValidatorRegistrationJson<T> {
+    version: pluto_eth2util::types::BuilderVersion,
+    registration: T,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct VersionedRawAggregateAndProofJson<T> {
+    version: pluto_eth2util::types::DataVersion,
+    aggregate_and_proof: T,
+}
+
 /// Converts an ETH2 signature to a core signature.
 pub fn sig_from_eth2(sig: phase0::BLSSignature) -> Signature {
     Signature::new(sig)
@@ -258,14 +286,6 @@ impl Serialize for VersionedSignedProposal {
     where
         S: Serializer,
     {
-        #[derive(Serialize)]
-        struct VersionedRawBlockJson<'a> {
-            version: pluto_eth2util::types::DataVersion,
-            block: &'a versioned::SignedProposalBlock,
-            #[serde(skip_serializing_if = "std::ops::Not::not")]
-            blinded: bool,
-        }
-
         let proposal = &self.0;
         if proposal.version == versioned::DataVersion::Unknown {
             return Err(serde::ser::Error::custom(SignedDataError::UnknownVersion));
@@ -289,15 +309,7 @@ impl<'de> Deserialize<'de> for VersionedSignedProposal {
     where
         D: Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        struct VersionedRawBlockJson {
-            version: pluto_eth2util::types::DataVersion,
-            block: serde_json::Value,
-            #[serde(default)]
-            blinded: bool,
-        }
-
-        let raw = VersionedRawBlockJson::deserialize(deserializer)?;
+        let raw = VersionedRawBlockJson::<serde_json::Value>::deserialize(deserializer)?;
         let version = raw.version;
         let blinded = raw.blinded;
         use pluto_eth2util::types::DataVersion;
@@ -486,13 +498,6 @@ impl Serialize for VersionedAttestation {
     where
         S: Serializer,
     {
-        #[derive(Serialize)]
-        struct VersionedRawAttestationJson<'a> {
-            version: pluto_eth2util::types::DataVersion,
-            validator_index: Option<String>,
-            attestation: &'a versioned::AttestationPayload,
-        }
-
         let version_eth2 = self.0.version;
         if version_eth2 == versioned::DataVersion::Unknown {
             return Err(serde::ser::Error::custom(
@@ -501,7 +506,10 @@ impl Serialize for VersionedAttestation {
         }
         let version = pluto_eth2util::types::DataVersion::from_eth2(version_eth2)
             .map_err(serde::ser::Error::custom)?;
-        let validator_index = self.0.validator_index.map(|value| value.to_string());
+        let validator_index = self
+            .0
+            .validator_index
+            .map(|value| serde_json::Value::String(value.to_string()));
         let attestation = self.0.attestation.as_ref().ok_or_else(|| {
             serde::ser::Error::custom(SignedDataError::MissingAttestation(version_eth2))
         })?;
@@ -520,15 +528,7 @@ impl<'de> Deserialize<'de> for VersionedAttestation {
     where
         D: Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        struct VersionedRawAttestationJson {
-            version: pluto_eth2util::types::DataVersion,
-            #[serde(default)]
-            validator_index: Option<serde_json::Value>,
-            attestation: serde_json::Value,
-        }
-
-        let raw = VersionedRawAttestationJson::deserialize(deserializer)?;
+        let raw = VersionedRawAttestationJson::<serde_json::Value>::deserialize(deserializer)?;
         let validator_index = match raw.validator_index {
             Some(serde_json::Value::String(encoded)) => Some(
                 encoded
@@ -705,12 +705,6 @@ impl Serialize for VersionedSignedValidatorRegistration {
     where
         S: Serializer,
     {
-        #[derive(Serialize)]
-        struct VersionedRawValidatorRegistrationJson<'a> {
-            version: pluto_eth2util::types::BuilderVersion,
-            registration: &'a v1::SignedValidatorRegistration,
-        }
-
         match self.0.version {
             versioned::BuilderVersion::V1 => VersionedRawValidatorRegistrationJson {
                 version: pluto_eth2util::types::BuilderVersion::V1,
@@ -734,13 +728,10 @@ impl<'de> Deserialize<'de> for VersionedSignedValidatorRegistration {
     where
         D: Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        struct VersionedRawValidatorRegistrationJson {
-            version: pluto_eth2util::types::BuilderVersion,
-            registration: v1::SignedValidatorRegistration,
-        }
-
-        let raw = VersionedRawValidatorRegistrationJson::deserialize(deserializer)?;
+        let raw =
+            VersionedRawValidatorRegistrationJson::<v1::SignedValidatorRegistration>::deserialize(
+                deserializer,
+            )?;
         match raw.version {
             pluto_eth2util::types::BuilderVersion::V1 => {
                 Ok(Self(versioned::VersionedSignedValidatorRegistration {
@@ -1020,12 +1011,6 @@ impl Serialize for VersionedSignedAggregateAndProof {
     where
         S: Serializer,
     {
-        #[derive(Serialize)]
-        struct VersionedRawAggregateAndProofJson<'a> {
-            version: pluto_eth2util::types::DataVersion,
-            aggregate_and_proof: &'a versioned::SignedAggregateAndProofPayload,
-        }
-
         let version_eth2 = self.0.version;
         if version_eth2 == versioned::DataVersion::Unknown {
             return Err(serde::ser::Error::custom(SignedDataError::UnknownVersion));
@@ -1046,13 +1031,8 @@ impl<'de> Deserialize<'de> for VersionedSignedAggregateAndProof {
     where
         D: Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        struct VersionedRawAggregateAndProofJson {
-            version: pluto_eth2util::types::DataVersion,
-            aggregate_and_proof: serde_json::Value,
-        }
-
-        let raw = VersionedRawAggregateAndProofJson::deserialize(deserializer)?;
+        let raw =
+            VersionedRawAggregateAndProofJson::<serde_json::Value>::deserialize(deserializer)?;
         let version = raw.version;
 
         use pluto_eth2util::types::DataVersion;
@@ -1216,40 +1196,56 @@ mod tests {
         altair, bellatrix, capella, deneb, electra, fulu,
         ssz_types::{BitList, BitVector},
     };
-    use serde::de::DeserializeOwned;
-    use std::collections::HashMap;
+    use serde::{Serialize, de::DeserializeOwned};
+    use std::{fs, path::PathBuf};
     use test_case::test_case;
 
-    #[derive(Debug, Deserialize)]
-    struct SignedDataGoldenEntry {
-        json: serde_json::Value,
-        message_root: String,
+    fn signeddata_fixture_path(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata")
+            .join("signeddata")
+            .join(name)
     }
 
-    fn load_signed_data_golden() -> HashMap<String, SignedDataGoldenEntry> {
-        serde_json::from_str(include_str!("../testdata/signed_data_golden.json")).unwrap()
+    fn load_signeddata_fixture(name: &str) -> serde_json::Value {
+        let data = fs::read_to_string(signeddata_fixture_path(name)).unwrap();
+        serde_json::from_str(&data).unwrap()
     }
 
-    fn assert_golden_entry<T>(golden: &HashMap<String, SignedDataGoldenEntry>, key: &str)
-    where
-        T: SignedData<Error = SignedDataError> + DeserializeOwned + PartialEq + std::fmt::Debug,
+    /// Golden test helper — checks typed JSON roundtrip and a caller-provided
+    /// hash root.
+    fn assert_golden_fixture<J>(
+        fixture_name: &str,
+        expected_root: &str,
+        hash_value: fn(&J) -> Result<[u8; 32], SignedDataError>,
+    ) where
+        J: DeserializeOwned + PartialEq + std::fmt::Debug + Serialize,
     {
-        let entry = golden.get(key).unwrap();
+        let entry = load_signeddata_fixture(fixture_name);
 
-        let value: T = serde_json::from_value(entry.json.clone()).unwrap();
-        assert_eq!(serde_json::to_value(&value).unwrap(), entry.json);
+        let value: J = serde_json::from_value(entry.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&value).unwrap(), entry);
 
         let serialized = serde_json::to_vec(&value).unwrap();
         let serialized_json: serde_json::Value = serde_json::from_slice(&serialized).unwrap();
-        assert_eq!(serialized_json, entry.json);
+        assert_eq!(serialized_json, entry);
 
-        let roundtrip: T = serde_json::from_slice(&serialized).unwrap();
+        let roundtrip: J = serde_json::from_slice(&serialized).unwrap();
         assert_eq!(roundtrip, value);
+        assert_eq!(hex::encode(hash_value(&value).unwrap()), expected_root);
+    }
 
-        assert_eq!(
-            hex::encode(value.message_root().unwrap()),
-            entry.message_root
-        );
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    struct AttestationDataJson {
+        attestation_data: phase0::AttestationData,
+        attestation_duty: serde_json::Value,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    struct FuluBlockContentsJson {
+        block: electra::BeaconBlock,
+        kzg_proofs: serde_json::Value,
+        blobs: serde_json::Value,
     }
 
     fn sample_signature(byte: u8) -> Signature {
@@ -2261,35 +2257,194 @@ mod tests {
         }));
     }
 
-    #[test]
-    fn golden_json_and_message_root() {
-        let golden = load_signed_data_golden();
+    // ── golden fixture tests ──────────────────────────────────────────
 
-        assert_golden_entry::<SignedRandao>(&golden, "signed_randao");
-        assert_golden_entry::<SignedVoluntaryExit>(&golden, "signed_voluntary_exit");
-        assert_golden_entry::<Attestation>(&golden, "attestation");
-        assert_golden_entry::<VersionedAttestation>(&golden, "versioned_attestation_fulu");
-        assert_golden_entry::<BeaconCommitteeSelection>(&golden, "beacon_committee_selection");
-        assert_golden_entry::<SyncCommitteeSelection>(&golden, "sync_committee_selection");
-        assert_golden_entry::<SignedAggregateAndProof>(&golden, "signed_aggregate_and_proof");
-        assert_golden_entry::<VersionedSignedAggregateAndProof>(
-            &golden,
-            "versioned_signed_aggregate_and_proof_fulu",
+    #[test]
+    fn golden_attestation_data() {
+        assert_golden_fixture::<AttestationDataJson>(
+            "TestJSONSerialisation_AttestationData.json.golden",
+            "48a36feed7959ae71dc32f007eea50f81a17747e73f1d297dd134b7a70eef138",
+            |d| Ok(hash_root(&d.attestation_data)),
         );
-        assert_golden_entry::<SignedSyncMessage>(&golden, "signed_sync_message");
-        assert_golden_entry::<SyncContributionAndProof>(&golden, "sync_contribution_and_proof");
-        assert_golden_entry::<SignedSyncContributionAndProof>(
-            &golden,
-            "signed_sync_contribution_and_proof",
+    }
+
+    #[test]
+    fn golden_beacon_committee_selection() {
+        assert_golden_fixture::<BeaconCommitteeSelection>(
+            "TestJSONSerialisation_BeaconCommitteeSelection.json.golden",
+            "76090e708e9b20aa000000000000000000000000000000000000000000000000",
+            SignedData::message_root,
         );
-        assert_golden_entry::<VersionedSignedValidatorRegistration>(
-            &golden,
-            "versioned_signed_validator_registration_v1",
+    }
+
+    #[test]
+    fn golden_signed_randao() {
+        assert_golden_fixture::<SignedRandao>(
+            "TestJSONSerialisation_SignedRandao.json.golden",
+            "1e34c5f04204cb9a000000000000000000000000000000000000000000000000",
+            SignedData::message_root,
         );
-        assert_golden_entry::<VersionedSignedProposal>(&golden, "versioned_signed_proposal_fulu");
-        assert_golden_entry::<VersionedSignedProposal>(
-            &golden,
-            "versioned_signed_proposal_deneb_blinded",
+    }
+
+    #[test]
+    fn golden_signed_sync_contribution_and_proof() {
+        assert_golden_fixture::<SignedSyncContributionAndProof>(
+            "TestJSONSerialisation_SignedSyncContributionAndProof.json.golden",
+            "a9114ab23ddeca5729536b5f7132b0845653b235f11e10195659cd8b88ca48e4",
+            SignedData::message_root,
+        );
+    }
+
+    #[test]
+    fn golden_signed_sync_message() {
+        assert_golden_fixture::<SignedSyncMessage>(
+            "TestJSONSerialisation_SignedSyncMessage.json.golden",
+            "0272908d45b0164a1ed1fe5f6c6bb64a52fa1a95e2bdff2aea5190ce067ad5d2",
+            SignedData::message_root,
+        );
+    }
+
+    #[test]
+    fn golden_signed_voluntary_exit() {
+        assert_golden_fixture::<SignedVoluntaryExit>(
+            "TestJSONSerialisation_SignedVoluntaryExit.json.golden",
+            "d5fe7392cad0d8cd8cf3a3b29e14f6e687bc2e64141973099c60d3097d26629b",
+            SignedData::message_root,
+        );
+    }
+
+    #[test]
+    fn golden_sync_committee_selection() {
+        assert_golden_fixture::<SyncCommitteeSelection>(
+            "TestJSONSerialisation_SyncCommitteeSelection.json.golden",
+            "af587f1aea1ba20c11450b28da5905c861bdce697ea67d3ba23f62f8ffcffd25",
+            SignedData::message_root,
+        );
+    }
+
+    #[test]
+    fn golden_sync_contribution() {
+        assert_golden_fixture::<altair::SyncCommitteeContribution>(
+            "TestJSONSerialisation_SyncContribution.json.golden",
+            "cd2d3d4f8fbdfead4dd3e8df37851ca17d213e20926e22a2af95de60c4cd77c9",
+            |d| Ok(hash_root(d)),
+        );
+    }
+
+    #[test]
+    fn golden_sync_contribution_and_proof() {
+        assert_golden_fixture::<SyncContributionAndProof>(
+            "TestJSONSerialisation_SyncContributionAndProof.json.golden",
+            "7d175134bb90ae74308d78c559b8ae6e5280fee44de77209361305f8cc56e5df",
+            SignedData::message_root,
+        );
+    }
+
+    #[test]
+    fn golden_versioned_aggregated_attestation() {
+        assert_golden_fixture::<VersionedRawAttestationJson<electra::Attestation>>(
+            "TestJSONSerialisation_VersionedAggregatedAttestation.json.golden",
+            "d3a1b03a2d2be3f7c36323c6bd5b16b71a243c7d483245b816d670899f3fdc4f",
+            |d| Ok(hash_root(&d.attestation)),
+        );
+    }
+
+    #[test]
+    fn golden_versioned_attestation() {
+        assert_golden_fixture::<VersionedAttestation>(
+            "TestJSONSerialisation_VersionedAttestation.json.golden",
+            "a36b13159845b8afc947ea7f9ffd74ceb1178e9882533ee767b6a6578501771c",
+            SignedData::message_root,
+        );
+    }
+
+    #[test]
+    fn golden_versioned_beacon_block() {
+        assert_golden_fixture::<VersionedRawBlockJson<altair::BeaconBlock>>(
+            "TestJSONSerialisation_VersionedBeaconBlock.json.golden",
+            "8017bbdd58e803f567bc572224feaad3e74d0e828dc1442456d296a47435242c",
+            |d| Ok(hash_root(&d.block)),
+        );
+    }
+
+    #[test]
+    fn golden_versioned_blinded_beacon_block() {
+        assert_golden_fixture::<VersionedRawBlockJson<deneb::BlindedBeaconBlock>>(
+            "TestJSONSerialisation_VersionedBlindedBeaconBlock.json.golden",
+            "a55342eb3956bc429801615178a31395322a0e1608b7b1c9ff63c586e9260044",
+            |d| Ok(hash_root(&d.block)),
+        );
+    }
+
+    #[test]
+    fn golden_versioned_blinded_proposal() {
+        assert_golden_fixture::<VersionedRawBlockJson<deneb::BlindedBeaconBlock>>(
+            "TestJSONSerialisation_VersionedBlindedProposal.json.golden",
+            "a55342eb3956bc429801615178a31395322a0e1608b7b1c9ff63c586e9260044",
+            |d| Ok(hash_root(&d.block)),
+        );
+    }
+
+    #[test]
+    fn golden_versioned_proposal() {
+        assert_golden_fixture::<VersionedRawBlockJson<FuluBlockContentsJson>>(
+            "TestJSONSerialisation_VersionedProposal.json.golden",
+            "f7251cae23410c7454437e8e52dc16d1b4fbec965288923a0daad08659c2be86",
+            |d| Ok(hash_root(&d.block.block)),
+        );
+    }
+
+    #[test]
+    fn golden_versioned_signed_aggregate_and_proof() {
+        assert_golden_fixture::<VersionedSignedAggregateAndProof>(
+            "TestJSONSerialisation_VersionedSignedAggregateAndProof.json.golden",
+            "b583185cb9587e89300afca09c2052bd6e75b885fbdccdcea9d7bcdaa80646f0",
+            SignedData::message_root,
+        );
+    }
+
+    #[test]
+    fn golden_versioned_signed_blinded_beacon_block() {
+        assert_golden_fixture::<VersionedRawBlockJson<deneb::SignedBlindedBeaconBlock>>(
+            "TestJSONSerialisation_VersionedSignedBlindedBeaconBlock.json.golden",
+            "886e0f9eac32f3cb18ccc93bfb98677e7c3584f20b950e70a578f68a5118ba52",
+            |d| Ok(hash_root(&d.block.message)),
+        );
+    }
+
+    #[test]
+    fn golden_versioned_signed_blinded_proposal() {
+        assert_golden_fixture::<VersionedRawBlockJson<deneb::SignedBlindedBeaconBlock>>(
+            "TestJSONSerialisation_VersionedSignedBlindedProposal.json.golden",
+            "886e0f9eac32f3cb18ccc93bfb98677e7c3584f20b950e70a578f68a5118ba52",
+            |d| Ok(hash_root(&d.block.message)),
+        );
+    }
+
+    #[test]
+    fn golden_versioned_signed_proposal_blinded() {
+        assert_golden_fixture::<VersionedSignedProposal>(
+            "TestJSONSerialisation_VersionedSignedProposal.json#01.golden",
+            "4bf04729550ce290f32088070ae5dead2940c4350620a4bb85e04b0b1f3c2177",
+            SignedData::message_root,
+        );
+    }
+
+    #[test]
+    fn golden_versioned_signed_proposal() {
+        assert_golden_fixture::<VersionedSignedProposal>(
+            "TestJSONSerialisation_VersionedSignedProposal.json.golden",
+            "cd3d0d0abc5d9ba7a85b8c3388a6d4ebe2ee6367e20bf3c77a8d4977c657c0e1",
+            SignedData::message_root,
+        );
+    }
+
+    #[test]
+    fn golden_versioned_signed_validator_registration() {
+        assert_golden_fixture::<VersionedSignedValidatorRegistration>(
+            "VersionedSignedValidatorRegistration.v1.json",
+            "e342f29f5f6bb692ec8fae5ab27854afbb2a40296497001b31987a8587e70b8e",
+            SignedData::message_root,
         );
     }
 
