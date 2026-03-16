@@ -1,20 +1,22 @@
+use std::path::PathBuf;
+
 use pluto_crypto::types::PRIVATE_KEY_LENGTH;
 
 /// Error type for keystore operations.
 #[derive(Debug, thiserror::Error)]
 pub enum KeystoreError {
     /// Keystore directory does not exist.
-    #[error("keystore dir does not exist: {path}")]
+    #[error("keystore dir does not exist: {}", path.display())]
     DirNotExist {
         /// Path that was checked.
-        path: String,
+        path: PathBuf,
     },
 
     /// Path is not a directory.
-    #[error("keystore dir is not a directory: {path}")]
+    #[error("keystore dir is not a directory: {}", path.display())]
     NotADirectory {
         /// Path that was checked.
-        path: String,
+        path: PathBuf,
     },
 
     /// No keystore files found in directory.
@@ -22,10 +24,10 @@ pub enum KeystoreError {
     NoKeysFound,
 
     /// Keystore password file not found.
-    #[error("keystore password file not found {path}")]
+    #[error("keystore password file not found {}", path.display())]
     PasswordNotFound {
         /// Password file path.
-        path: String,
+        path: PathBuf,
     },
 
     /// Out of sequence keystore index.
@@ -117,10 +119,10 @@ pub enum KeystoreError {
     WalkDir(String),
 
     /// Keystore not found during recursive load.
-    #[error("keystore not found: {path}")]
+    #[error("keystore not found: {}", path.display())]
     KeystoreNotFound {
         /// The path that was looked up.
-        path: String,
+        path: PathBuf,
     },
 
     /// Unexpected regex error when extracting keystore file index.
