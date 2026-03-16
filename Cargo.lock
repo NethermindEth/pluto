@@ -5518,7 +5518,6 @@ dependencies = [
  "cancellation",
  "chrono",
  "crossbeam",
- "ethereum_ssz",
  "hex",
  "libp2p",
  "pluto-build-proto",
@@ -5535,7 +5534,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tree_hash",
- "typenum",
 ]
 
 [[package]]
