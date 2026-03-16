@@ -1,5 +1,7 @@
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use pluto_crypto::types::PrivateKey;
 use regex::Regex;
@@ -344,8 +346,7 @@ mod tests {
 
     #[tokio::test]
     async fn load_scrypt() {
-        let testdata_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("src/keystore/testdata");
+        let testdata_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/keystore/testdata");
 
         let keyfiles = load_files_unordered(&testdata_dir).await.unwrap();
 
@@ -531,10 +532,8 @@ mod tests {
         std::fs::create_dir(&nested_dir).unwrap();
 
         // Store keys in root & nested directories
-        let pk1 =
-            store_new_key_for_test(&dir_path.join("keystore-alpha.json")).await;
-        let pk2 =
-            store_new_key_for_test(&nested_dir.join("keystore-bravo.json")).await;
+        let pk1 = store_new_key_for_test(&dir_path.join("keystore-alpha.json")).await;
+        let pk2 = store_new_key_for_test(&nested_dir.join("keystore-bravo.json")).await;
 
         let key_files = load_files_recursively(dir_path).await.unwrap();
 
@@ -551,8 +550,7 @@ mod tests {
         assert_ne!(key_files[0].file_index, key_files[1].file_index);
 
         // Sub-test: shuffle password files
-        let alpha_password =
-            std::fs::read_to_string(dir_path.join("keystore-alpha.txt")).unwrap();
+        let alpha_password = std::fs::read_to_string(dir_path.join("keystore-alpha.txt")).unwrap();
         let bravo_password =
             std::fs::read_to_string(nested_dir.join("keystore-bravo.txt")).unwrap();
 
