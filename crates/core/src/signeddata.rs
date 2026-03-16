@@ -27,9 +27,6 @@ pub enum SignedDataError {
     /// Unknown data or builder version.
     #[error("unknown version")]
     UnknownVersion,
-    /// Unknown attestation wrapper version.
-    #[error("unknown attestation version")]
-    UnknownAttestationVersion,
     /// Unknown signed-data variant.
     #[error("unknown type")]
     UnknownType,
@@ -468,7 +465,7 @@ impl SignedData for VersionedAttestation {
         let mut out = self.clone();
         let version = out.0.version;
         if version == versioned::DataVersion::Unknown {
-            return Err(SignedDataError::UnknownAttestationVersion);
+            return Err(SignedDataError::UnknownVersion);
         }
         out.0
             .attestation
@@ -500,9 +497,7 @@ impl Serialize for VersionedAttestation {
     {
         let version_eth2 = self.0.version;
         if version_eth2 == versioned::DataVersion::Unknown {
-            return Err(serde::ser::Error::custom(
-                SignedDataError::UnknownAttestationVersion,
-            ));
+            return Err(serde::ser::Error::custom(SignedDataError::UnknownVersion));
         }
         let version = pluto_eth2util::types::DataVersion::from_eth2(version_eth2)
             .map_err(serde::ser::Error::custom)?;
@@ -566,9 +561,7 @@ impl<'de> Deserialize<'de> for VersionedAttestation {
                 serde_json::from_value(raw.attestation).map(AttestationPayload::Fulu)
             }
             DataVersion::Unknown => {
-                return Err(serde::de::Error::custom(
-                    SignedDataError::UnknownAttestationVersion,
-                ));
+                return Err(serde::de::Error::custom(SignedDataError::UnknownVersion));
             }
         }
         .map_err(serde::de::Error::custom)?;

@@ -215,7 +215,7 @@ impl AttestationPayload {
 
     /// Returns aggregation bits for this payload.
     pub fn aggregation_bits(&self) -> Vec<u8> {
-        let bytes = match self {
+        match self {
             Self::Phase0(attestation)
             | Self::Altair(attestation)
             | Self::Bellatrix(attestation)
@@ -224,9 +224,7 @@ impl AttestationPayload {
             Self::Electra(attestation) | Self::Fulu(attestation) => {
                 attestation.aggregation_bits.clone().into_bytes()
             }
-        };
-
-        bytes.to_vec()
+        }
     }
 }
 
@@ -298,7 +296,7 @@ impl SignedAggregateAndProofPayload {
 
     /// Returns aggregation bits for this payload.
     pub fn aggregation_bits(&self) -> Vec<u8> {
-        let bytes = match self {
+        match self {
             Self::Phase0(payload)
             | Self::Altair(payload)
             | Self::Bellatrix(payload)
@@ -315,9 +313,7 @@ impl SignedAggregateAndProofPayload {
                 .aggregation_bits
                 .clone()
                 .into_bytes(),
-        };
-
-        bytes.to_vec()
+        }
     }
 }
 
