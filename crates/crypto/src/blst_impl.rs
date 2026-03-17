@@ -15,7 +15,7 @@ use rand_core::{CryptoRng, RngCore};
 
 use crate::{
     tbls::Tbls,
-    types::{BlsError, Error, Index, MathError, PrivateKey, PublicKey, Signature},
+    types::{BlsError, Error, Index, PrivateKey, PublicKey, Signature},
 };
 
 /// Domain Separation Tag for Ethereum 2.0 BLS signatures
@@ -499,7 +499,7 @@ fn scalar_div(
 ) -> Result<blst::blst_scalar, Error> {
     let zero = blst::blst_scalar::default();
     if *denominator == zero {
-        return Err(Error::MathError(MathError::DivisionByZero));
+        return Err(Error::DivisionByZero);
     }
 
     let mut inv_scalar = blst::blst_scalar::default();
