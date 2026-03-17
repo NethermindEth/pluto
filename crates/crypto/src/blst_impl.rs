@@ -129,7 +129,7 @@ impl Tbls for BlstImpl {
         Ok(recovered.to_bytes())
     }
 
-    fn aggregate(&self, signatures: Vec<Signature>) -> Result<Signature, Error> {
+    fn aggregate(&self, signatures: &[Signature]) -> Result<Signature, Error> {
         if signatures.is_empty() {
             return Err(Error::EmptySignatureArray);
         }
@@ -755,7 +755,7 @@ mod tests {
         }
 
         // Aggregate signatures
-        let aggregated_sig = blst.aggregate(signatures).unwrap();
+        let aggregated_sig = blst.aggregate(&signatures).unwrap();
 
         // Verify aggregate
         let result = blst.verify_aggregate(&public_keys, aggregated_sig, data);
@@ -788,7 +788,7 @@ mod tests {
         }
 
         // Aggregate signatures
-        let aggregated_sig = blst.aggregate(signatures).unwrap();
+        let aggregated_sig = blst.aggregate(&signatures).unwrap();
 
         // Verify with data2 (wrong data)
         let result = blst.verify_aggregate(&public_keys, aggregated_sig, data2);
@@ -808,7 +808,7 @@ mod tests {
         let sk = blst.generate_secret_key(OsRng).unwrap();
         let sig = blst.sign(&sk, data).unwrap();
 
-        let aggregated = blst.aggregate(vec![sig]).unwrap();
+        let aggregated = blst.aggregate(&[sig]).unwrap();
         assert_eq!(
             sig, aggregated,
             "Aggregating single signature should return the same signature"
@@ -830,7 +830,7 @@ mod tests {
             signatures.push(sig);
         }
 
-        let aggregated = blst.aggregate(signatures).unwrap();
+        let aggregated = blst.aggregate(&signatures).unwrap();
         assert_eq!(
             aggregated.len(),
             96,
@@ -914,7 +914,7 @@ mod tests {
     fn test_empty_aggregate_fails() {
         let blst = setup();
 
-        let result = blst.aggregate(vec![]);
+        let result = blst.aggregate(&[]);
         assert!(
             result.is_err(),
             "Aggregating empty signature list should fail"

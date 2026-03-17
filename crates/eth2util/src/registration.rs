@@ -44,9 +44,7 @@ pub fn new_message(
 /// Parses and validates a `0x`-prefixed hex Ethereum address into `[u8; 20]`.
 fn execution_address_from_str(addr: &str) -> Result<ExecutionAddress> {
     let address = crate::helpers::verify_address(addr)?;
-    let mut result = ExecutionAddress::default();
-    result.copy_from_slice(address.as_slice());
-    Ok(result)
+    Ok(address.0.0)
 }
 
 /// Returns the validator registration signature domain.

@@ -299,7 +299,7 @@ mod tests {
     fn test_new_peer() {
         let p2p_key = generate_insecure_k1_key(1);
 
-        let record = Record::new(p2p_key, vec![]).unwrap();
+        let record = Record::new(&p2p_key, vec![]).unwrap();
 
         let peer = Peer::from_enr(&record, 0).unwrap();
 
