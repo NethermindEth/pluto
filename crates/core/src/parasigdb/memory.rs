@@ -1,5 +1,4 @@
-#![allow(missing_docs)]
-use std::{collections::HashMap, pin::Pin, sync::Arc};
+use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -29,14 +28,22 @@ impl MemDBMetadata {
     }
 }
 
-pub type InternalSub = Box<
+/// Subscriber callback for internally generated partial signed data.
+///
+/// Called when the node generates partial signed data that needs to be
+/// exchanged with peers.
+pub type InternalSub = Arc<
     dyn Fn(&Duty, &ParSignedDataSet) -> Pin<Box<dyn Future<Output = Result<()>> + Send + Sync>>
         + Send
         + Sync
         + 'static,
 >;
 
-pub type ThreshSub = Box<
+/// Subscriber callback for threshold-reached partial signed data.
+///
+/// Called when enough matching partial signatures have been collected
+/// to meet the threshold requirement.
+pub type ThreshSub = Arc<
     dyn Fn(
             &Duty,
             &HashMap<PubKey, Vec<ParSignedData>>,
@@ -46,20 +53,95 @@ pub type ThreshSub = Box<
         + 'static,
 >;
 
+/// Helper to create an internal subscriber from a closure.
+///
+/// The closure receives owned copies of the duty and data set. Since the closure
+/// is `Fn` (can be called multiple times), you need to clone any captured Arc values
+/// before the `async move` block.
+///
+/// # Example
+/// ```ignore
+/// let counter = Arc::new(Mutex::new(0));
+/// let sub = internal_subscriber({
+///     let counter = counter.clone();
+///     move |_duty, _set| {
+///         let counter = counter.clone();
+///         async move {
+///             *counter.lock().await += 1;
+///             Ok(())
+///         }
+///     }
+/// });
+/// db.subscribe_internal(sub).await?;
+/// ```
+pub fn internal_subscriber<F, Fut>(f: F) -> InternalSub
+where
+    F: Fn(Duty, ParSignedDataSet) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<()>> + Send + Sync + 'static,
+{
+    Arc::new(move |duty, set| {
+        let fut = f(duty.clone(), set.clone());
+        Box::pin(fut)
+    })
+}
+
+/// Helper to create a threshold subscriber from a closure.
+///
+/// The closure receives owned copies of the duty and data. Since the closure
+/// is `Fn` (can be called multiple times), you need to clone any captured Arc values
+/// before the `async move` block.
+///
+/// # Example
+/// ```ignore
+/// let counter = Arc::new(Mutex::new(0));
+/// let sub = threshold_subscriber({
+///     let counter = counter.clone();
+///     move |_duty, _data| {
+///         let counter = counter.clone();
+///         async move {
+///             *counter.lock().await += 1;
+///             Ok(())
+///         }
+///     }
+/// });
+/// db.subscribe_threshold(sub).await?;
+/// ```
+pub fn threshold_subscriber<F, Fut>(f: F) -> ThreshSub
+where
+    F: Fn(Duty, HashMap<PubKey, Vec<ParSignedData>>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<()>> + Send + Sync + 'static,
+{
+    Arc::new(move |duty, data| {
+        let fut = f(duty.clone(), data.clone());
+        Box::pin(fut)
+    })
+}
+
+/// Error type for the memory ParSigDB.
 #[derive(Debug, thiserror::Error)]
 pub enum MemDBError {
+    /// Mismatching partial signed data.
     #[error("mismatching partial signed data: pubkey {pubkey}, share_idx {share_idx}")]
-    ParsigDataMismatch { pubkey: PubKey, share_idx: u64 },
+    ParsigDataMismatch {
+        /// Public key of the validator
+        pubkey: PubKey,
+        /// Share index of the mismatched signature
+        share_idx: u64,
+    },
 }
 
 type Result<T> = std::result::Result<T, MemDBError>;
 
+/// Key for indexing partial signed data in the database.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Key {
+    /// The duty this partial signature is for
     pub duty: Duty,
+    /// The public key of the validator
     pub pub_key: PubKey,
 }
 
+/// Internal state of the in-memory partial signature database.
 pub struct MemDBInner {
     internal_subs: Vec<InternalSub>,
     thresh_subs: Vec<ThreshSub>,
@@ -68,6 +150,10 @@ pub struct MemDBInner {
     keys_by_duty: HashMap<Duty, Vec<Key>>,
 }
 
+/// In-memory partial signature database.
+///
+/// Stores partial signed data from cluster nodes and triggers callbacks
+/// when threshold is reached or when internal data is generated.
 pub struct MemDB {
     ct: CancellationToken,
     inner: Arc<Mutex<MemDBInner>>,
@@ -76,6 +162,12 @@ pub struct MemDB {
 }
 
 impl MemDB {
+    /// Creates a new in-memory partial signature database.
+    ///
+    /// # Arguments
+    /// * `ct` - Cancellation token for graceful shutdown
+    /// * `threshold` - Number of matching partial signatures required
+    /// * `deadliner` - Deadliner for managing duty expiration
     pub fn new(ct: CancellationToken, threshold: u64, deadliner: Arc<dyn Deadliner>) -> Self {
         Self {
             ct,
@@ -92,30 +184,53 @@ impl MemDB {
 }
 
 impl MemDB {
+    /// Registers a subscriber for internally generated partial signed data.
+    ///
+    /// The subscriber will be called when the node generates partial signed data
+    /// that needs to be exchanged with peers.
     pub async fn subscribe_internal(&self, sub: InternalSub) -> Result<()> {
         let mut inner = self.inner.lock().await;
         inner.internal_subs.push(sub);
         Ok(())
     }
 
+    /// Registers a subscriber for threshold-reached partial signed data.
+    ///
+    /// The subscriber will be called when enough matching partial signatures
+    /// have been collected to meet the threshold requirement.
     pub async fn subscribe_threshold(&self, sub: ThreshSub) -> Result<()> {
         let mut inner = self.inner.lock().await;
         inner.thresh_subs.push(sub);
         Ok(())
     }
 
+    /// Stores internally generated partial signed data and notifies subscribers.
+    ///
+    /// This is called when the node generates partial signed data that needs to be
+    /// stored and exchanged with peers. It first stores the data (via `store_external`),
+    /// then calls all internal subscribers to trigger peer exchange.
     pub async fn store_internal(&self, duty: &Duty, signed_set: &ParSignedDataSet) -> Result<()> {
-        let _ = self.store_external(duty, signed_set).await?;
+        self.store_external(duty, signed_set).await?;
 
-        let inner = self.inner.lock().await;
-        for sub in &inner.internal_subs {
-            sub(&duty, &signed_set).await?;
+        // Collect subscribers first, then release lock before calling them
+        let subs = {
+            let inner = self.inner.lock().await;
+            inner.internal_subs.clone()
+        };
+
+        // Call subscribers without holding lock
+        for sub in &subs {
+            sub(duty, signed_set).await?;
         }
-        drop(inner);
 
         Ok(())
     }
 
+    /// Stores externally received partial signed data and checks for threshold.
+    ///
+    /// This is called when the node receives partial signed data from peers. It stores
+    /// the data, checks if enough matching signatures have been collected to meet the
+    /// threshold, and calls threshold subscribers when the threshold is reached.
     pub async fn store_external(&self, duty: &Duty, signed_data: &ParSignedDataSet) -> Result<()> {
         let _ = self.deadliner.add(duty.clone()).await;
 
@@ -126,7 +241,7 @@ impl MemDB {
                 .store(
                     Key {
                         duty: duty.clone(),
-                        pub_key: pub_key.clone(),
+                        pub_key: *pub_key,
                     },
                     par_signed.clone(),
                 )
@@ -144,30 +259,37 @@ impl MemDB {
                 continue;
             };
 
-            output.insert(pub_key.clone(), psigs);
+            output.insert(*pub_key, psigs);
         }
 
         if output.is_empty() {
             return Ok(());
         }
 
-        let inner = self.inner.lock().await;
-        for sub in inner.thresh_subs.iter() {
-            sub(&duty, &output).await?;
+        // Collect subscribers first, then release lock before calling them
+        let subs = {
+            let inner = self.inner.lock().await;
+            inner.thresh_subs.clone()
+        };
+
+        // Call subscribers without holding lock
+        for sub in &subs {
+            sub(duty, &output).await?;
         }
-        drop(inner);
 
         Ok(())
     }
 
+    /// Trims expired duties from the database.
+    ///
+    /// This method runs in a loop, listening for expired duties from the deadliner
+    /// and removing their associated data from the database. It should be spawned
+    /// as a background task and will run until the cancellation token is triggered.
     pub async fn trim(&self) {
-        let deadliner_rx = self.deadliner.c();
-        if deadliner_rx.is_none() {
+        let Some(mut deadliner_rx) = self.deadliner.c() else {
             warn!("Deadliner channel is not available");
             return;
-        }
-
-        let mut deadliner_rx = deadliner_rx.unwrap();
+        };
 
         loop {
             tokio::select! {

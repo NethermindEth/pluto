@@ -9,7 +9,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::get_threshold_matching;
 use crate::{
-    parasigdb::memory::{MemDB, MemDBMetadata}, testutils, types::{Duty, DutyType, ParSignedData, Signature, SignedData, SlotNumber}
+    parasigdb::memory::MemDB,
+    testutils,
+    types::{Duty, DutyType, ParSignedData, Signature, SignedData, SlotNumber},
 };
 
 /// Test wrapper for SyncCommitteeMessage (mimics altair.SyncCommitteeMessage).
@@ -197,7 +199,6 @@ use pluto_testutil::random as tu_random;
 #[tokio::test]
 async fn test_mem_db_threshold() {
     const THRESHOLD: u64 = 7;
-    const N: u64 = 10;
 
     let deadliner = TestDeadliner::new();
     let ct = CancellationToken::new();
@@ -211,22 +212,59 @@ async fn test_mem_db_threshold() {
 
     let times_called = Arc::new(Mutex::new(0));
 
-    db.subscribe_threshold(Box::new({
+    // Using the helper function
+    // Note: We need to clone inside because the outer closure is Fn (not FnOnce),
+    // so it can be called multiple times
+    db.subscribe_threshold(super::threshold_subscriber({
         let times_called = times_called.clone();
-        move |_duty, _output| {
+        move |_duty, _data| {
             let times_called = times_called.clone();
-            Box::pin(async move {
+            async move {
                 *times_called.lock().await += 1;
                 Ok(())
-            })
+            }
         }
     }))
     .await
     .unwrap();
 
-    let pubkey = testutils::random_core_pub_key();
-    let att = tu_random::random_deneb_versioned_attestation();
+    let _pubkey = testutils::random_core_pub_key();
+    let _att = tu_random::random_deneb_versioned_attestation();
+}
 
+/// Test using the helper function for internal subscriber.
+#[tokio::test]
+async fn test_mem_db_with_internal_helper() {
+    const THRESHOLD: u64 = 7;
+
+    let deadliner = TestDeadliner::new();
+    let ct = CancellationToken::new();
+
+    let db = Arc::new(MemDB::new(ct.child_token(), THRESHOLD, deadliner.clone()));
+
+    let db_clone = db.clone();
+    tokio::spawn(async move {
+        db_clone.trim().await;
+    });
+
+    let counter = Arc::new(Mutex::new(0u64));
+
+    // Using the helper function
+    // Note: We need to clone inside because the outer closure is Fn (not FnOnce)
+    db.subscribe_internal(super::internal_subscriber({
+        let counter = counter.clone();
+        move |_duty, _set| {
+            let counter = counter.clone();
+            async move {
+                *counter.lock().await += 1;
+                Ok(())
+            }
+        }
+    }))
+    .await
+    .unwrap();
+
+    assert_eq!(*counter.lock().await, 0);
 }
 
 /// Test deadliner for unit tests.
