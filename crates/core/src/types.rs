@@ -3,6 +3,8 @@
 use std::{collections::HashMap, fmt::Display, iter};
 
 use chrono::{DateTime, Duration, Utc};
+use dyn_clone::DynClone;
+use dyn_eq::DynEq;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug as StdDebug;
 
@@ -448,7 +450,7 @@ impl AsRef<[u8; SIG_LEN]> for Signature {
 }
 
 /// Signed data type
-pub trait SignedData: Clone + Serialize + StdDebug {
+pub trait SignedData: DynClone + DynEq + StdDebug {
     /// The error type
     type Error: std::error::Error;
 
@@ -463,6 +465,9 @@ pub trait SignedData: Clone + Serialize + StdDebug {
     /// message_root returns the message root for the unsigned data.
     fn message_root(&self) -> Result<[u8; 32], Self::Error>;
 }
+
+dyn_eq::eq_trait_object!(SignedData<Error = crate::signeddata::SignedDataError>);
+dyn_clone::clone_trait_object!(SignedData<Error = crate::signeddata::SignedDataError>);
 
 // todo: add Eth2SignedData type
 // https://github.com/ObolNetwork/charon/blob/b3008103c5429b031b63518195f4c49db4e9a68d/core/types.go#L396

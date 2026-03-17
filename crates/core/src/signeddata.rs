@@ -48,6 +48,9 @@ pub enum SignedDataError {
     /// Invalid attestation wrapper JSON.
     #[error("unmarshal attestation")]
     AttestationJson,
+    /// Custom error.
+    #[error("{0}")]
+    Custom(Box<dyn std::error::Error>),
 }
 
 fn hash_root<T: TreeHash>(value: &T) -> [u8; 32] {
