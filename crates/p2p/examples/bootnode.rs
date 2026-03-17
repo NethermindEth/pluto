@@ -18,7 +18,7 @@
 //!   --udp-addrs "0.0.0.0:3630"
 //! ```
 //!
-//! The example will:   
+//! The example will:
 //! 1. Load cluster lock and private key from the data directory
 //! 2. Resolve relay addresses and establish connections
 //! 3. Create relay reservations (allowing peers to reach us via relay)
@@ -400,7 +400,7 @@ pub async fn main() -> Result<()> {
                 }
             }
             _ = signal::ctrl_c() => {
-                println!("Ctrl+C received, shutting down...");
+                tracing::info!("Ctrl+C received, shutting down...");
                 break;
             }
         }

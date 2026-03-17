@@ -255,8 +255,6 @@ async fn query_relay_addrs(
         .with_factor(FAST_MULTIPLIER)
         .with_jitter();
 
-    let lock_hash_hex_owned = lock_hash_hex.to_string();
-
     let fetch = || async {
         if cancel.is_cancelled() {
             return Err(BootnodeError::TimeoutQueryingRelayAddresses);
@@ -264,7 +262,7 @@ async fn query_relay_addrs(
 
         let resp = client
             .get(relay_url)
-            .header("Charon-Cluster", &lock_hash_hex_owned)
+            .header("Charon-Cluster", lock_hash_hex)
             .send()
             .await
             .map_err(|e| {
