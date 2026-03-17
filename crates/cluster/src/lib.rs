@@ -36,6 +36,7 @@ pub mod ssz;
 pub mod ssz_hasher;
 /// Factory for constructing deterministic or random cluster locks for use in
 /// tests.
+#[cfg(any(test, feature = "test-cluster"))]
 pub mod test_cluster;
 /// Supported cluster definition version constants and feature-flag helpers.
 pub mod version;
