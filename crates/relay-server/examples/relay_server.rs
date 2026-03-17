@@ -43,7 +43,7 @@
 //! curl http://localhost:8888
 //! ```
 //!
-//! This returns the relay's ENR or multiaddrs that clients can use to connect.
+//! This returns the relay's multiaddrs that clients can use to connect.
 
 use k256::SecretKey;
 use pluto_p2p::config::P2PConfig;
