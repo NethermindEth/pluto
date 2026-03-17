@@ -72,7 +72,7 @@ pub struct KeyFile {
     /// The decrypted private key.
     pub private_key: PrivateKey,
     /// The filename of the keystore file.
-    pub filename: String,
+    pub filename: PathBuf,
     /// The index extracted from the filename, or None if not present.
     pub file_index: Option<usize>,
 }
@@ -95,19 +95,17 @@ pub async fn load_files_unordered(dir: impl AsRef<Path>) -> Result<KeyFiles> {
             continue;
         }
 
-        let filename = path.to_string_lossy().to_string();
-
         set.spawn(async move {
-            let b = tokio::fs::read_to_string(&filename).await?;
+            let b = tokio::fs::read_to_string(&path).await?;
             let store: Keystore = serde_json::from_str(&b)?;
 
-            let password = super::store::load_password(&filename).await?;
+            let password = super::store::load_password(&path).await?;
             let private_key = super::store::decrypt(&store, &password)?;
-            let file_index = extract_file_index(&filename)?;
+            let file_index = extract_file_index(&path.to_string_lossy())?;
 
             Ok::<KeyFile, KeystoreError>(KeyFile {
                 private_key,
-                filename,
+                filename: path,
                 file_index,
             })
         });
@@ -238,7 +236,7 @@ pub async fn load_files_recursively(dir: impl AsRef<Path>) -> Result<KeyFiles> {
         .enumerate()
         .map(|(i, (filepath, private_key))| KeyFile {
             private_key,
-            filename: filepath.to_string_lossy().to_string(),
+            filename: filepath,
             file_index: Some(i.saturating_add(1)),
         })
         .collect();

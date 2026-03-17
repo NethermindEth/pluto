@@ -31,28 +31,28 @@ pub enum KeystoreError {
     },
 
     /// Out of sequence keystore index.
-    #[error("out of sequence keystore index {index} in file {filename}")]
+    #[error("out of sequence keystore index {index} in file {}", filename.display())]
     OutOfSequence {
         /// The index found.
         index: usize,
         /// The filename.
-        filename: String,
+        filename: PathBuf,
     },
 
     /// Duplicate keystore index.
-    #[error("duplicate keystore index {index} in file {filename}")]
+    #[error("duplicate keystore index {index} in file {}", filename.display())]
     DuplicateIndex {
         /// The duplicated index.
         index: usize,
         /// The filename.
-        filename: String,
+        filename: PathBuf,
     },
 
     /// Unknown keystore index.
-    #[error("unknown keystore index, filename not 'keystore-%d.json': {filename}")]
+    #[error("unknown keystore index, filename not 'keystore-%d.json': {}", filename.display())]
     UnknownIndex {
         /// The filename.
-        filename: String,
+        filename: PathBuf,
     },
 
     /// Encryption error.
