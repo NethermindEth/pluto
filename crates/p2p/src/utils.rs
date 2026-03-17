@@ -13,7 +13,11 @@ use std::{
     time::Duration,
 };
 
-use libp2p::{Multiaddr, identity::Keypair, multiaddr, multiaddr::Protocol as MaProtocol};
+use libp2p::{
+    Multiaddr, PeerId,
+    identity::Keypair,
+    multiaddr::{self, Protocol as MaProtocol},
+};
 
 use crate::metrics::{ConnectionType, Protocol};
 
@@ -198,4 +202,29 @@ pub fn filter_direct_quic_addrs(addrs: impl Iterator<Item = Multiaddr>) -> Vec<M
 /// Returns true if the multiaddr is a direct (non-relay) address.
 pub fn is_direct_addr(addr: &Multiaddr) -> bool {
     !is_relay_addr(addr)
+}
+
+/// Constructs relay circuit multiaddrs for reaching a target peer through a
+/// relay.
+///
+/// Given a relay peer and a target peer ID, this function creates multiaddrs of
+/// the form: `/ip4/<relay-ip>/tcp/<relay-port>/p2p/<relay-id>/p2p-circuit/p2p/
+/// <target-peer-id>`
+///
+/// These addresses allow connecting to the target peer via the relay's circuit
+/// protocol.
+pub(crate) fn multi_addrs_via_relay(
+    relay_peer: &crate::peer::Peer,
+    peer_id: &PeerId,
+) -> Vec<Multiaddr> {
+    let mut addrs = vec![];
+
+    for mut addr in relay_peer.addresses.clone() {
+        addr = addr.with(MaProtocol::P2p(relay_peer.id));
+        addr = addr.with(MaProtocol::P2pCircuit);
+        addr = addr.with(MaProtocol::P2p(*peer_id));
+        addrs.push(addr);
+    }
+
+    addrs
 }

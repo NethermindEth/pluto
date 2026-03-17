@@ -5,6 +5,9 @@
 //! and communication mechanisms for validator nodes to coordinate and exchange
 //! information.
 
+/// Bootnode and relay resolution.
+pub mod bootnode;
+
 /// Peer-related types and utilities.
 pub mod peer;
 
@@ -43,6 +46,8 @@ pub mod p2p_context;
 
 /// QUIC connection upgrade behaviour.
 pub mod quic_upgrade;
+/// Relay reservation.
+pub mod relay;
 
 /// Force direct connection behaviour.
 pub mod force_direct;
