@@ -5512,6 +5512,8 @@ dependencies = [
 name = "pluto-core"
 version = "1.7.1"
 dependencies = [
+ "alloy",
+ "base64 0.22.1",
  "built",
  "cancellation",
  "chrono",
@@ -5519,14 +5521,19 @@ dependencies = [
  "hex",
  "libp2p",
  "pluto-build-proto",
+ "pluto-eth2api",
+ "pluto-eth2util",
  "prost 0.14.3",
  "prost-types 0.14.3",
  "rand 0.8.5",
  "regex",
  "serde",
  "serde_json",
+ "serde_with",
+ "test-case",
  "thiserror 2.0.18",
  "tokio",
+ "tree_hash",
 ]
 
 [[package]]
@@ -5535,7 +5542,6 @@ version = "1.7.1"
 dependencies = [
  "blst",
  "hex",
- "pluto-core",
  "pluto-eth2api",
  "rand 0.8.5",
  "rand_core 0.6.4",
@@ -5566,6 +5572,7 @@ dependencies = [
 name = "pluto-eth2api"
 version = "1.7.1"
 dependencies = [
+ "alloy",
  "anyhow",
  "bon",
  "chrono",
@@ -5577,6 +5584,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "test-case",
  "testcontainers",
  "thiserror 2.0.18",
  "tokio",
@@ -5609,6 +5617,7 @@ dependencies = [
  "scrypt",
  "serde",
  "serde_json",
+ "serde_with",
  "sha2",
  "sha3",
  "tempfile",
