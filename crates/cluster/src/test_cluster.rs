@@ -55,7 +55,7 @@ pub fn new_for_test(
             priv_shares.push(share_priv_key);
         }
 
-        let fee_recipient_address = random_eth_address(&mut rng);
+        let fee_recipient_address = pluto_testutil::random::random_eth_address(&mut rng);
 
         let network_name = pluto_eth2util::network::GOERLI.name;
         let reg = get_signed_registration(&root_secret, fee_recipient_address, network_name);
@@ -71,7 +71,9 @@ pub fn new_for_test(
         dv_shares.push(priv_shares);
 
         fee_recipient_addresses.push(helpers::to_0x_hex(&fee_recipient_address));
-        withdrawal_addresses.push(helpers::to_0x_hex(&random_eth_address(&mut rng)));
+        withdrawal_addresses.push(helpers::to_0x_hex(
+            &pluto_testutil::random::random_eth_address(&mut rng),
+        ));
     }
 
     let mut ops = Vec::with_capacity(n as usize);
@@ -87,7 +89,7 @@ pub fn new_for_test(
             clippy::cast_possible_truncation,
             reason = "intentional truncation for testing purposes"
         )]
-        let p2p_key = generate_insecure_k1_key(seed as u8 + i);
+        let p2p_key = pluto_testutil::random::generate_insecure_k1_key(seed as u8 + i);
         let addr = pluto_eth2util::helpers::public_key_to_address(&p2p_key.public_key());
         let record = pluto_eth2util::enr::Record::new(&p2p_key, Vec::new()).unwrap();
         let op = operator::Operator {
@@ -201,15 +203,4 @@ fn get_signed_registration(
         },
         signature,
     }
-}
-
-fn generate_insecure_k1_key(seed: impl Into<u64>) -> k256::SecretKey {
-    let mut rng = rand::rngs::StdRng::seed_from_u64(seed.into());
-    k256::SecretKey::random(&mut rng)
-}
-
-fn random_eth_address(rand: &mut impl rand::Rng) -> [u8; 20] {
-    let mut bytes = [0u8; 20];
-    rand.fill(&mut bytes[..]);
-    bytes
 }

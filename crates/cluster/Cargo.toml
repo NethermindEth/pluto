@@ -28,6 +28,9 @@ pluto-k1util.workspace = true
 k256.workspace = true
 tokio.workspace = true
 reqwest = { workspace = true, features = ["json"] }
+# Workaround to use test code from different crate.
+# See: https://github.com/NethermindEth/pluto/pull/285
+pluto-testutil = { workspace = true, optional = true }
 
 [build-dependencies]
 prost-build.workspace = true
