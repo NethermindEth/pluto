@@ -101,7 +101,7 @@ pub async fn load_files_unordered(dir: impl AsRef<Path>) -> Result<KeyFiles> {
 
             let password = super::store::load_password(&path).await?;
             let private_key = super::store::decrypt(&store, &password)?;
-            let file_index = extract_file_index(&path.to_string_lossy())?;
+            let file_index = extract_file_index(path.to_string_lossy())?;
 
             Ok::<KeyFile, KeystoreError>(KeyFile {
                 private_key,
