@@ -5,8 +5,7 @@ use std::{sync::Arc, time::Duration};
 use futures::StreamExt;
 use k256::SecretKey;
 use libp2p::{PeerId, relay, swarm::SwarmEvent};
-use pluto_p2p::behaviours::pluto::PlutoBehaviourEvent;
-use pluto_p2p::name::peer_name;
+use pluto_p2p::{behaviours::pluto::PlutoBehaviourEvent, name::peer_name};
 use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
@@ -14,7 +13,7 @@ use tracing::{debug, info, instrument, warn};
 use crate::{
     Result,
     config::{Config, create_relay_config},
-    metrics::{RELAY_METRICS, PeerWithPeerClusterLabels},
+    metrics::{PeerWithPeerClusterLabels, RELAY_METRICS},
     web::{enr_server, monitoring_server},
 };
 use pluto_p2p::p2p::{Node, NodeType};
@@ -45,7 +44,7 @@ pub async fn run_relay_p2p_node(
 
     let (git_hash, build_time) = pluto_core::version::git_commit();
     info!(
-        version = %pluto_core::version::VERSION,
+        version = %*pluto_core::version::VERSION,
         git_hash = %git_hash,
         build_time = %build_time,
         "Pluto relay starting"
@@ -181,9 +180,7 @@ fn handle_swarm_event(event: &SwarmEvent<PlutoBehaviourEvent<relay::Behaviour>>)
             debug!(%address, "listening on new address");
             AddrUpdate::Add(address.clone())
         }
-        SwarmEvent::ListenerClosed { addresses, .. } => {
-            AddrUpdate::RemoveAll(addresses.clone())
-        }
+        SwarmEvent::ListenerClosed { addresses, .. } => AddrUpdate::RemoveAll(addresses.clone()),
         SwarmEvent::ExpiredListenAddr { address, .. } => {
             debug!(%address, "listen address expired");
             AddrUpdate::Remove(address.clone())
@@ -194,27 +191,30 @@ fn handle_swarm_event(event: &SwarmEvent<PlutoBehaviourEvent<relay::Behaviour>>)
             debug!(peer = %peer_name(peer_id), "connection established");
             let labels = relay_labels(peer_id);
             RELAY_METRICS.connection_total[&labels].inc();
-            RELAY_METRICS.active_connections[&labels].inc();
+            RELAY_METRICS.active_connections[&labels].inc_by(1);
             AddrUpdate::None
         }
         SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
             debug!(peer = %peer_name(peer_id), cause = ?cause, "connection closed");
             let labels = relay_labels(peer_id);
-            RELAY_METRICS.active_connections[&labels].dec();
+            RELAY_METRICS.active_connections[&labels].dec_by(1);
             AddrUpdate::None
         }
 
         // Relay-specific events
-        SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(relay::Event::ReservationReqAccepted {
-            src_peer_id,
-            renewed,
-        })) => {
+        SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(
+            relay::Event::ReservationReqAccepted {
+                src_peer_id,
+                renewed,
+            },
+        )) => {
             info!(peer = %peer_name(src_peer_id), renewed, "relay reservation accepted");
             AddrUpdate::None
         }
-        SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(
-            relay::Event::ReservationReqDenied { src_peer_id },
-        )) => {
+        SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(relay::Event::ReservationReqDenied {
+            src_peer_id,
+            ..
+        })) => {
             warn!(peer = %peer_name(src_peer_id), "relay reservation denied");
             AddrUpdate::None
         }
@@ -238,6 +238,7 @@ fn handle_swarm_event(event: &SwarmEvent<PlutoBehaviourEvent<relay::Behaviour>>)
         SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(relay::Event::CircuitReqDenied {
             src_peer_id,
             dst_peer_id,
+            ..
         })) => {
             warn!(
                 src = %peer_name(src_peer_id),
