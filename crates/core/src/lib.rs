@@ -8,6 +8,9 @@ pub mod qbft;
 /// Types for the Charon core.
 pub mod types;
 
+/// Signed data wrappers and helpers.
+pub mod signeddata;
+
 /// Consensus-related functionality.
 pub mod consensus;
 

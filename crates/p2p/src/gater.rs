@@ -9,7 +9,6 @@
 
 use std::{
     collections::{HashSet, VecDeque},
-    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -27,7 +26,7 @@ use crate::peer::MutablePeer;
 #[derive(Debug, Clone, Default)]
 pub struct Config {
     peer_ids: HashSet<PeerId>,
-    relays: Vec<Arc<MutablePeer>>,
+    relays: Vec<MutablePeer>,
     open: bool,
 }
 
@@ -59,7 +58,7 @@ impl Config {
     }
 
     /// Sets the relay peers.
-    pub fn with_relays(mut self, relays: Vec<Arc<MutablePeer>>) -> Self {
+    pub fn with_relays(mut self, relays: Vec<MutablePeer>) -> Self {
         self.relays = relays;
         self
     }
@@ -83,7 +82,7 @@ impl ConnGater {
 
     /// Creates a new connection gater that limits access to the cluster peers
     /// and relays.
-    pub fn new_conn_gater(peers: Vec<PeerId>, relays: Vec<Arc<MutablePeer>>) -> Self {
+    pub fn new_conn_gater(peers: Vec<PeerId>, relays: Vec<MutablePeer>) -> Self {
         Self {
             config: Config::closed().with_peer_ids(peers).with_relays(relays),
             events: VecDeque::new(),

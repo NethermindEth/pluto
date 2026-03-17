@@ -28,6 +28,12 @@ pub mod spec;
 /// API v1 types from the Ethereum beacon chain and builder API specifications.
 pub mod v1;
 
+/// Versioned wrappers for signeddata-related payloads.
+pub mod versioned;
+
+#[cfg(test)]
+pub(crate) mod test_fixtures;
+
 #[cfg(test)]
 #[cfg(feature = "integration")]
 mod integration;
