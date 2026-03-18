@@ -7,10 +7,13 @@ use k256::{
     elliptic_curve::rand_core::{CryptoRng, Error, RngCore},
 };
 use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PrivateKey};
-use pluto_eth2api::types::{
-    AltairBeaconStateCurrentJustifiedCheckpoint, ConsensusVersion, Data,
-    GetAggregatedAttestationV2ResponseResponse, GetAggregatedAttestationV2ResponseResponseData,
-    GetBlockAttestationsV2ResponseResponseDataArray2,
+use pluto_eth2api::{
+    spec::phase0,
+    types::{
+        AltairBeaconStateCurrentJustifiedCheckpoint, Data,
+        GetBlockAttestationsV2ResponseResponseDataArray2,
+    },
+    versioned::{self, AttestationPayload},
 };
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
@@ -85,6 +88,13 @@ pub fn random_eth2_signature() -> String {
     format!("0x{}", hex::encode(bytes))
 }
 
+/// Generates a random Ethereum consensus signature for testing.
+pub fn random_eth2_signature_bytes() -> phase0::BLSSignature {
+    let mut signature = [0u8; 96];
+    rand::thread_rng().fill(&mut signature[..]);
+    signature
+}
+
 /// Generate random Ethereum address for testing.
 pub fn random_eth_address(rand: &mut impl Rng) -> [u8; 20] {
     let mut bytes = [0u8; 20];
@@ -103,6 +113,23 @@ pub fn random_root() -> String {
         *byte = rng.r#gen();
     }
     format!("0x{}", hex::encode(bytes))
+}
+
+/// Generates a random Ethereum consensus root for testing.
+pub fn random_root_bytes() -> phase0::Root {
+    let mut root = [0u8; 32];
+    rand::thread_rng().fill(&mut root);
+    root
+}
+
+/// Generates a random slot for testing.
+pub fn random_slot() -> phase0::Slot {
+    rand::thread_rng().r#gen()
+}
+
+/// Generates a random validator index for testing.
+pub fn random_v_idx() -> phase0::ValidatorIndex {
+    rand::thread_rng().r#gen()
 }
 
 /// Generates a random bitlist as a hex string for testing.
@@ -175,10 +202,31 @@ pub fn random_phase0_attestation() -> GetBlockAttestationsV2ResponseResponseData
 ///     }
 /// }
 /// ```
-pub fn random_deneb_versioned_attestation() -> GetAggregatedAttestationV2ResponseResponse {
-    GetAggregatedAttestationV2ResponseResponse {
-        version: ConsensusVersion::Deneb,
-        data: GetAggregatedAttestationV2ResponseResponseData::Object2(random_phase0_attestation()),
+pub fn random_deneb_versioned_attestation() -> versioned::VersionedAttestation {
+    let mut rng = rand::thread_rng();
+
+    let attestation = phase0::Attestation {
+        aggregation_bits: phase0::BitList::default(),
+        data: phase0::AttestationData {
+            slot: rng.r#gen(),
+            index: rng.r#gen(),
+            beacon_block_root: random_root_bytes(),
+            source: phase0::Checkpoint {
+                epoch: rng.r#gen(),
+                root: random_root_bytes(),
+            },
+            target: phase0::Checkpoint {
+                epoch: rng.r#gen(),
+                root: random_root_bytes(),
+            },
+        },
+        signature: random_eth2_signature_bytes(),
+    };
+
+    versioned::VersionedAttestation {
+        version: versioned::DataVersion::Deneb,
+        validator_index: Some(rng.r#gen()),
+        attestation: Some(AttestationPayload::Deneb(attestation)),
     }
 }
 
@@ -314,15 +362,17 @@ mod tests {
         let versioned_att = random_deneb_versioned_attestation();
 
         // Check version is Deneb
-        assert!(matches!(versioned_att.version, ConsensusVersion::Deneb));
+        assert!(matches!(
+            versioned_att.version,
+            versioned::DataVersion::Deneb
+        ));
 
         // Check that data is populated
-        match versioned_att.data {
-            GetAggregatedAttestationV2ResponseResponseData::Object2(att) => {
-                assert!(att.aggregation_bits.starts_with("0x"));
-                assert!(att.signature.starts_with("0x"));
+        match versioned_att.attestation {
+            Some(AttestationPayload::Deneb(att)) => {
+                assert_eq!(att.signature.len(), 96);
             }
-            _ => panic!("Expected Object2 variant"),
+            _ => panic!("Expected Deneb attestation"),
         }
     }
 
@@ -333,13 +383,13 @@ mod tests {
 
         // Different calls should produce different attestations
         // Check signatures are different
-        let sig1 = match &att1.data {
-            GetAggregatedAttestationV2ResponseResponseData::Object2(a) => &a.signature,
-            _ => panic!("Expected Object2"),
+        let sig1 = match &att1.attestation {
+            Some(AttestationPayload::Deneb(a)) => &a.signature,
+            _ => panic!("Expected Deneb attestation"),
         };
-        let sig2 = match &att2.data {
-            GetAggregatedAttestationV2ResponseResponseData::Object2(a) => &a.signature,
-            _ => panic!("Expected Object2"),
+        let sig2 = match &att2.attestation {
+            Some(AttestationPayload::Deneb(a)) => &a.signature,
+            _ => panic!("Expected Deneb attestation"),
         };
 
         assert_ne!(sig1, sig2);

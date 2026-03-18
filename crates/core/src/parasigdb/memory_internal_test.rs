@@ -1,203 +1,122 @@
-//! Internal tests for memory ParSigDB.
-//! Mirrors the structure of charon/core/parsigdb/memory_internal_test.go
-
-use std::sync::Arc;
-
-use test_case::test_case;
-use tokio::sync::Mutex;
-use tokio_util::sync::CancellationToken;
-
-use super::get_threshold_matching;
-use crate::{
-    parasigdb::memory::MemDB,
-    signeddata, testutils,
-    types::{self, Duty, DutyType, ParSignedData, Signature, SignedData, SlotNumber},
+use std::{
+    sync::{Arc, Mutex as StdMutex},
+    time::Duration,
 };
 
-/// Test wrapper for SyncCommitteeMessage (mimics altair.SyncCommitteeMessage).
-/// The message root is the BeaconBlockRoot field.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
-struct TestSyncCommitteeMessage {
-    slot: SlotNumber,
-    beacon_block_root: [u8; 32],
-    validator_index: u64,
-    signature: Signature,
+use futures::future::{BoxFuture, FutureExt};
+use pluto_eth2api::{spec::altair, v1};
+use pluto_testutil as testutil;
+use test_case::test_case;
+use tokio::sync::{Mutex, mpsc};
+use tokio_util::sync::CancellationToken;
+
+use super::{MemDB, get_threshold_matching, threshold_subscriber};
+use crate::{
+    deadline::Deadliner,
+    signeddata::{BeaconCommitteeSelection, SignedSyncMessage, VersionedAttestation},
+    testutils::random_core_pub_key,
+    types::{Duty, DutyType, ParSignedData, ParSignedDataSet, SlotNumber},
+};
+
+fn threshold(nodes: usize) -> u64 {
+    (2_u64
+        .checked_mul(u64::try_from(nodes).expect("nodes overflow"))
+        .expect("nodes overflow"))
+    .div_ceil(3)
 }
 
-impl SignedData for TestSyncCommitteeMessage {
-    fn signature(&self) -> Result<types::Signature, signeddata::SignedDataError> {
-        Ok(self.signature.clone())
-    }
-
-    fn set_signature(&self, signature: Signature) -> Result<Self, signeddata::SignedDataError> {
-        let mut out = self.clone();
-        out.signature = signature;
-        Ok(out)
-    }
-
-    fn message_root(&self) -> Result<[u8; 32], signeddata::SignedDataError> {
-        // For SyncCommitteeMessage, the message root is the BeaconBlockRoot
-        Ok(self.beacon_block_root)
-    }
-}
-
-/// Test wrapper for BeaconCommitteeSelection (mimics
-/// eth2v1.BeaconCommitteeSelection). The message root is computed from the Slot
-/// field.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
-struct TestBeaconCommitteeSelection {
-    validator_index: u64,
-    slot: SlotNumber,
-    selection_proof: Signature,
-}
-
-impl SignedData for TestBeaconCommitteeSelection {
-    fn signature(&self) -> Result<Signature, signeddata::SignedDataError> {
-        Ok(self.selection_proof.clone())
-    }
-
-    fn set_signature(&self, signature: Signature) -> Result<Self, signeddata::SignedDataError> {
-        let mut out = self.clone();
-        out.selection_proof = signature;
-        Ok(out)
-    }
-
-    fn message_root(&self) -> Result<[u8; 32], signeddata::SignedDataError> {
-        // For BeaconCommitteeSelection, the message root is derived from the slot.
-        // We'll use a simple hash: slot number in the first 8 bytes.
-        let mut root = [0u8; 32];
-        root[0..8].copy_from_slice(&self.slot.inner().to_le_bytes());
-        Ok(root)
-    }
-}
-
-/// Helper to create random roots for testing
-fn random_root(seed: u8) -> [u8; 32] {
-    let mut root = [0u8; 32];
-    root[0] = seed;
-    root
-}
-
-/// Helper to create random signature for testing
-fn random_signature(seed: u8) -> Signature {
-    let mut sig = [0u8; 96];
-    sig[0] = seed;
-    Signature::new(sig)
-}
-
-/// Copying function here, not using the pluto_cluster::helpers::threshold (not
-/// implemented yet) because it would be huge unnecessary dependency for core.
-#[allow(clippy::arithmetic_side_effects, clippy::manual_div_ceil)]
-fn threshold(n: u64) -> u64 {
-    (2 * n + 2) / 3
-}
-
-// Test cases for get_threshold_matching
-// Matches Go test structure from
-// memory_internal_test.go:TestGetThresholdMatching
-#[test_case(vec![], None ; "empty")]
-#[test_case(vec![0, 0, 0], Some(vec![0, 1, 2]) ; "all identical exact threshold")]
-#[test_case(vec![0, 0, 0, 0], None ; "all identical above threshold")]
-#[test_case(vec![0, 0, 1, 0], Some(vec![0, 1, 3]) ; "one odd")]
-#[test_case(vec![0, 0, 1, 1], None ; "two odd")]
+#[test_case(Vec::new(), Vec::new() ; "empty")]
+#[test_case(vec![0, 0, 0], vec![0, 1, 2] ; "all identical exact threshold")]
+#[test_case(vec![0, 0, 0, 0], Vec::new() ; "all identical above threshold")]
+#[test_case(vec![0, 0, 1, 0], vec![0, 1, 3] ; "one odd")]
+#[test_case(vec![0, 0, 1, 1], Vec::new() ; "two odd")]
 #[tokio::test]
-async fn test_get_threshold_matching(input: Vec<usize>, output: Option<Vec<usize>>) {
-    const N: u64 = 4;
+async fn test_get_threshold_matching(input: Vec<usize>, output: Vec<usize>) {
+    const N: usize = 4;
 
-    let slot = SlotNumber::new(123456);
-    let val_idx = 42u64;
+    let slot = testutil::random_slot();
+    let validator_index = testutil::random_v_idx();
+    let roots = [testutil::random_root_bytes(), testutil::random_root_bytes()];
+    let threshold = threshold(N);
 
-    // Two different roots to vary message roots
-    let roots = [random_root(1), random_root(2)];
+    type Providers<'a> = [(&'a str, Box<dyn Fn(usize) -> ParSignedData + 'a>); 2];
 
-    // Test different message types using providers (matches Go approach)
-    #[allow(clippy::type_complexity)]
-    let providers: Vec<(&str, Box<dyn Fn(usize) -> Box<dyn SignedData>>)> = vec![
+    let providers: Providers<'_> = [
         (
-            "SyncCommitteeMessage",
-            Box::new(|i: usize| {
-                Box::new(TestSyncCommitteeMessage {
+            "sync_committee_message",
+            Box::new(|i| {
+                let message = altair::SyncCommitteeMessage {
                     slot,
-                    beacon_block_root: roots[input[i]], // Vary root based on input
-                    validator_index: val_idx,
-                    signature: random_signature(u8::try_from(i).unwrap()),
-                })
+                    beacon_block_root: roots[input[i]],
+                    validator_index,
+                    signature: testutil::random_eth2_signature_bytes(),
+                };
+
+                SignedSyncMessage::new_partial(message, u64::try_from(i.wrapping_add(1)).unwrap())
             }),
         ),
         (
-            "Selection",
-            Box::new(|i: usize| {
-                Box::new(TestBeaconCommitteeSelection {
-                    validator_index: val_idx,
-                    slot: SlotNumber::new(u64::try_from(input[i]).unwrap()), /* Vary slot based
-                                                                              * on input */
-                    selection_proof: random_signature(u8::try_from(i).unwrap()),
-                })
+            "selection",
+            Box::new(|i| {
+                let selection = v1::BeaconCommitteeSelection {
+                    validator_index,
+                    slot: u64::try_from(input[i]).unwrap(),
+                    selection_proof: testutil::random_eth2_signature_bytes(),
+                };
+
+                BeaconCommitteeSelection::new_partial(
+                    selection,
+                    u64::try_from(i.wrapping_add(1)).unwrap(),
+                )
             }),
         ),
     ];
 
-    for (_, provider) in providers {
-        let mut par_sigs: Vec<ParSignedData> = Vec::new();
+    for (name, provider) in providers {
+        let mut data = Vec::new();
         for i in 0..input.len() {
-            let signed_data = provider(i);
-            let par_signed = ParSignedData::new_boxed(signed_data, i as u64);
-            par_sigs.push(par_signed);
+            data.push(provider(i));
         }
 
-        let th = threshold(N);
-
-        let result = get_threshold_matching(&DutyType::Attester, &par_sigs, th)
+        let out = get_threshold_matching(&DutyType::SyncMessage, &data, threshold)
             .await
-            .expect("get_threshold_matching should not error");
+            .expect("threshold matching should succeed");
+        let expect: Vec<_> = output.iter().map(|idx| data[*idx].clone()).collect();
+        let expected_out = if expect.is_empty() {
+            None
+        } else {
+            Some(expect.clone())
+        };
 
-        // Check that if we got a result, it has the correct length (matches Go's ok
-        // check)
-        if let Some(ref vec) = result {
-            assert_eq!(
-                vec.len(),
-                usize::try_from(th).unwrap(),
-                "result length should match threshold"
-            );
-        }
-
-        let out = result.unwrap_or_default();
-
-        let mut expect = Vec::new();
-        if let Some(output) = &output {
-            for &idx in output {
-                expect.push(par_sigs[idx].clone());
-            }
-        }
-
-        assert_eq!(out, expect, "result should match expected");
+        assert_eq!(expected_out, out, "{name}/output mismatch");
+        assert_eq!(
+            out.as_ref()
+                .map(|matches| u64::try_from(matches.len()).unwrap() == threshold)
+                .unwrap_or(false),
+            expect.len() as u64 == threshold,
+            "{name}/ok mismatch"
+        );
     }
 }
 
-use pluto_testutil::random as tu_random;
-
 #[tokio::test]
-async fn test_mem_db_threshold() {
+async fn test_memdb_threshold() {
     const THRESHOLD: u64 = 7;
+    const N: usize = 10;
 
-    let deadliner = TestDeadliner::new();
-    let ct = CancellationToken::new();
+    let deadliner = Arc::new(TestDeadliner::new());
+    let cancel = CancellationToken::new();
+    let db = Arc::new(MemDB::new(cancel.clone(), THRESHOLD, deadliner.clone()));
 
-    let db = Arc::new(MemDB::new(ct.child_token(), THRESHOLD, deadliner.clone()));
-
-    let db_clone = db.clone();
-    tokio::spawn(async move {
-        db_clone.trim().await;
+    let trim_handle = tokio::spawn({
+        let db = db.clone();
+        async move {
+            db.trim().await;
+        }
     });
 
-    let times_called = Arc::new(Mutex::new(0));
-
-    // Using the helper function
-    // Note: We need to clone inside because the outer closure is Fn (not FnOnce),
-    // so it can be called multiple times
-    db.subscribe_threshold(super::threshold_subscriber({
+    let times_called = Arc::new(Mutex::new(0usize));
+    db.subscribe_threshold(threshold_subscriber({
         let times_called = times_called.clone();
         move |_duty, _data| {
             let times_called = times_called.clone();
@@ -208,95 +127,89 @@ async fn test_mem_db_threshold() {
         }
     }))
     .await
-    .unwrap();
+    .expect("subscription should succeed");
 
-    let _pubkey = testutils::random_core_pub_key();
-    let _att = tu_random::random_deneb_versioned_attestation();
-}
+    let pubkey = random_core_pub_key();
+    let attestation = testutil::random_deneb_versioned_attestation();
+    let duty = Duty::new_attester_duty(SlotNumber::new(123));
 
-/// Test using the helper function for internal subscriber.
-#[tokio::test]
-async fn test_mem_db_with_internal_helper() {
-    const THRESHOLD: u64 = 7;
+    let enqueue_n = || async {
+        for i in 0..N {
+            let partial = VersionedAttestation::new_partial(
+                attestation.clone(),
+                u64::try_from(i + 1).unwrap(),
+            )
+            .expect("versioned attestation should be valid");
 
-    let deadliner = TestDeadliner::new();
-    let ct = CancellationToken::new();
+            let mut set = ParSignedDataSet::new();
+            set.insert(pubkey, partial);
 
-    let db = Arc::new(MemDB::new(ct.child_token(), THRESHOLD, deadliner.clone()));
-
-    let db_clone = db.clone();
-    tokio::spawn(async move {
-        db_clone.trim().await;
-    });
-
-    let counter = Arc::new(Mutex::new(0u64));
-
-    // Using the helper function
-    // Note: We need to clone inside because the outer closure is Fn (not FnOnce)
-    db.subscribe_internal(super::internal_subscriber({
-        let counter = counter.clone();
-        move |_duty, _set| {
-            let counter = counter.clone();
-            async move {
-                *counter.lock().await += 1;
-                Ok(())
-            }
+            db.store_external(&duty, &set)
+                .await
+                .expect("store_external should succeed");
         }
-    }))
-    .await
-    .unwrap();
+    };
 
-    assert_eq!(*counter.lock().await, 0);
+    enqueue_n().await;
+    assert_eq!(1, *times_called.lock().await);
+
+    deadliner.expire().await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    enqueue_n().await;
+    assert_eq!(2, *times_called.lock().await);
+
+    cancel.cancel();
+    trim_handle
+        .await
+        .expect("trim task should shut down cleanly");
 }
 
-/// Test deadliner for unit tests.
-pub struct TestDeadliner {
-    added: Arc<tokio::sync::Mutex<Vec<Duty>>>,
-    ch_tx: tokio::sync::mpsc::Sender<Duty>,
-    ch_rx: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<Duty>>>>,
+struct TestDeadliner {
+    added: StdMutex<Vec<Duty>>,
+    tx: mpsc::Sender<Duty>,
+    rx: StdMutex<Option<mpsc::Receiver<Duty>>>,
 }
 
 impl TestDeadliner {
-    /// Creates a new test deadliner.
-    #[allow(dead_code)]
-    pub fn new() -> Arc<Self> {
-        const CHANNEL_BUFFER: usize = 100;
-        let (tx, rx) = tokio::sync::mpsc::channel(CHANNEL_BUFFER);
-        Arc::new(Self {
-            added: Arc::new(tokio::sync::Mutex::new(Vec::new())),
-            ch_tx: tx,
-            ch_rx: Arc::new(tokio::sync::Mutex::new(Some(rx))),
-        })
+    fn new() -> Self {
+        let (tx, rx) = mpsc::channel(32);
+        Self {
+            added: StdMutex::new(Vec::new()),
+            tx,
+            rx: StdMutex::new(Some(rx)),
+        }
     }
 
-    /// Expires all added duties.
-    #[allow(dead_code)]
-    pub async fn expire(&self) -> bool {
-        let mut added = self.added.lock().await;
-        for duty in added.drain(..) {
-            if self.ch_tx.send(duty).await.is_err() {
+    async fn expire(&self) -> bool {
+        let duties = {
+            let mut added = self.added.lock().expect("test deadliner lock poisoned");
+            std::mem::take(&mut *added)
+        };
+
+        for duty in duties {
+            if self.tx.send(duty).await.is_err() {
                 return false;
             }
         }
-        // Send dummy duty to ensure all piped duties above were processed
-        self.ch_tx
-            .send(Duty::new(SlotNumber::new(0), DutyType::Unknown))
-            .await
-            .is_ok()
+
+        true
     }
 }
 
-impl crate::deadline::Deadliner for TestDeadliner {
-    fn add(&self, duty: Duty) -> futures::future::BoxFuture<'_, bool> {
-        Box::pin(async move {
-            let mut added = self.added.lock().await;
-            added.push(duty);
+impl Deadliner for TestDeadliner {
+    fn add(&self, duty: Duty) -> BoxFuture<'_, bool> {
+        async move {
+            self.added
+                .lock()
+                .expect("test deadliner lock poisoned")
+                .push(duty);
             true
-        })
+        }
+        .boxed()
     }
 
-    fn c(&self) -> Option<tokio::sync::mpsc::Receiver<Duty>> {
-        let mut guard = self.ch_rx.blocking_lock();
-        guard.take()
+    fn c(&self) -> Option<mpsc::Receiver<Duty>> {
+        self.rx.lock().expect("test deadliner lock poisoned").take()
     }
 }
