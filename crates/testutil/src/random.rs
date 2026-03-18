@@ -85,9 +85,17 @@ pub fn random_eth2_signature() -> String {
     format!("0x{}", hex::encode(bytes))
 }
 
+/// Generate random Ethereum address for testing.
+pub fn random_eth_address(rand: &mut impl Rng) -> [u8; 20] {
+    let mut bytes = [0u8; 20];
+    rand.fill(&mut bytes[..]);
+    bytes
+}
+
 /// Generates a random 32-byte root as a hex string for testing.
 ///
-/// Returns a 32-byte (64 hex characters) root encoded as a hex string with "0x" prefix.
+/// Returns a 32-byte (64 hex characters) root encoded as a hex string with "0x"
+/// prefix.
 pub fn random_root() -> String {
     let mut bytes = [0u8; 32];
     let mut rng = rand::thread_rng();
@@ -144,7 +152,8 @@ fn random_attestation_data_phase0() -> Data {
 
 /// Generates a random Phase 0 attestation.
 ///
-/// Returns an attestation with random aggregation bits, attestation data, and signature.
+/// Returns an attestation with random aggregation bits, attestation data, and
+/// signature.
 pub fn random_phase0_attestation() -> GetBlockAttestationsV2ResponseResponseDataArray2 {
     GetBlockAttestationsV2ResponseResponseDataArray2 {
         aggregation_bits: random_bit_list(1),
@@ -155,8 +164,8 @@ pub fn random_phase0_attestation() -> GetBlockAttestationsV2ResponseResponseData
 
 /// Generates a random Deneb versioned attestation.
 ///
-/// Returns a versioned attestation containing a Phase 0 attestation with the Deneb version tag.
-/// This matches the Go implementation:
+/// Returns a versioned attestation containing a Phase 0 attestation with the
+/// Deneb version tag. This matches the Go implementation:
 ///
 /// ```go
 /// func RandomDenebVersionedAttestation() *eth2spec.VersionedAttestation {

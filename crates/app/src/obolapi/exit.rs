@@ -346,9 +346,12 @@ impl Client {
             let mut sig = [0u8; 96];
             sig.copy_from_slice(&sig_bytes);
 
-            // `BlstImpl::threshold_aggregate` shifts the index to 1-based internally
+            // Convert 0-indexed array position to 1-indexed share ID (API stores signatures
+            // at array position share_id-1, e.g., share 1 at position 0)
             let share_idx = u8::try_from(sig_idx)
-                .map_err(|_| Error::InvalidSignatureSize(sig_idx.saturating_add(1)))?;
+                .map_err(Error::FailedToConvertShareIndexToU8)?
+                .checked_add(1)
+                .ok_or(Error::MathOverflow)?;
             raw_signatures.insert(share_idx, sig);
         }
 

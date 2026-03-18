@@ -3,8 +3,12 @@
 use std::{collections::HashMap, fmt::Display, iter};
 
 use chrono::{DateTime, Duration, Utc};
+use dyn_clone::DynClone;
+use dyn_eq::DynEq;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug as StdDebug;
+
+use crate::signeddata::SignedDataError;
 
 /// The type of duty.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -448,23 +452,21 @@ impl AsRef<[u8; SIG_LEN]> for Signature {
 }
 
 /// Signed data type
-pub trait SignedData: StdDebug + Send + Sync {
+pub trait SignedData: DynClone + DynEq + StdDebug + Send + Sync {
     /// signature returns the signed duty data's signature.
-    fn signature(&self) -> Signature;
+    fn signature(&self) -> Result<Signature, SignedDataError>;
 
-    /// set_signature returns a copy of signed duty data with the signature
-    /// replaced.
-    fn set_signature(&mut self, signature: Signature) -> Result<(), Box<dyn std::error::Error>>;
+    /// Returns a copy of signed duty data with the signature replaced.
+    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError>
+    where
+        Self: Sized;
 
     /// message_root returns the message root for the unsigned data.
-    fn message_root(&self) -> [u8; 32];
-
-    /// clone_box returns a boxed clone of the signed data.
-    fn clone_box(&self) -> Box<dyn SignedData>;
-
-    /// equals checks if two signed data are equal.
-    fn equals(&self, other: &dyn SignedData) -> bool;
+    fn message_root(&self) -> Result<[u8; 32], SignedDataError>;
 }
+
+dyn_eq::eq_trait_object!(SignedData);
+dyn_clone::clone_trait_object!(SignedData);
 
 // todo: add Eth2SignedData type
 // https://github.com/ObolNetwork/charon/blob/b3008103c5429b031b63518195f4c49db4e9a68d/core/types.go#L396
@@ -483,7 +485,7 @@ pub struct ParSignedData {
 impl Clone for ParSignedData {
     fn clone(&self) -> Self {
         Self {
-            signed_data: self.signed_data.clone_box(),
+            signed_data: self.signed_data.clone(),
             share_idx: self.share_idx,
         }
     }
@@ -491,7 +493,7 @@ impl Clone for ParSignedData {
 
 impl PartialEq for ParSignedData {
     fn eq(&self, other: &Self) -> bool {
-        self.share_idx == other.share_idx && self.signed_data.equals(other.signed_data.as_ref())
+        self.share_idx == other.share_idx && self.signed_data == other.signed_data
     }
 }
 
@@ -499,7 +501,15 @@ impl Eq for ParSignedData {}
 
 impl ParSignedData {
     /// Create a new partially signed data.
-    pub fn new(partially_signed_data: Box<dyn SignedData>, share_idx: u64) -> Self {
+    pub fn new<T: SignedData>(partially_signed_data: T, share_idx: u64) -> Self {
+        Self {
+            signed_data: Box::new(partially_signed_data),
+            share_idx,
+        }
+    }
+
+    /// Create a new partially signed data from a boxed signed data.
+    pub fn new_boxed(partially_signed_data: Box<dyn SignedData>, share_idx: u64) -> Self {
         Self {
             signed_data: partially_signed_data,
             share_idx,
@@ -509,22 +519,8 @@ impl ParSignedData {
 
 /// ParSignedDataSet is a set of partially signed duty data only signed by a
 /// single threshold BLS share.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ParSignedDataSet(HashMap<PubKey, ParSignedData>);
-
-impl PartialEq for ParSignedDataSet {
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
-    }
-}
-
-impl Eq for ParSignedDataSet {}
-
-impl Default for ParSignedDataSet {
-    fn default() -> Self {
-        Self(HashMap::default())
-    }
-}
 
 impl ParSignedDataSet {
     /// Create a new partially signed data set.
@@ -874,42 +870,30 @@ mod tests {
     struct MockSignedData;
 
     impl SignedData for MockSignedData {
-        fn signature(&self) -> Signature {
-            Signature::new([42u8; SIG_LEN])
+        fn signature(&self) -> Result<Signature, SignedDataError> {
+            Ok(Signature::new([42u8; SIG_LEN]))
         }
 
-        fn set_signature(
-            &mut self,
-            _signature: Signature,
-        ) -> Result<(), Box<dyn std::error::Error>> {
-            Ok(())
+        fn set_signature(&self, _signature: Signature) -> Result<Self, SignedDataError> {
+            Ok(self.clone())
         }
 
-        fn message_root(&self) -> [u8; 32] {
-            [42u8; 32]
-        }
-
-        fn clone_box(&self) -> Box<dyn SignedData> {
-            Box::new(self.clone())
-        }
-
-        fn equals(&self, _other: &dyn SignedData) -> bool {
-            // For testing purposes, we consider all MockSignedData instances equal
-            true
+        fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
+            Ok([42u8; 32])
         }
     }
 
     #[test]
     fn test_partially_signed_data_set() {
         let mut partially_signed_data_set = ParSignedDataSet::new();
-        let par_signed = ParSignedData::new(Box::new(MockSignedData), 0);
+        let par_signed = ParSignedData::new(MockSignedData, 0);
         partially_signed_data_set.insert(PubKey::new([42u8; PK_LEN]), par_signed.clone());
         let retrieved = partially_signed_data_set.get(&PubKey::new([42u8; PK_LEN]));
         assert!(retrieved.is_some());
         let retrieved = retrieved.unwrap();
         assert_eq!(retrieved.share_idx, 0);
         assert_eq!(
-            retrieved.signed_data.signature(),
+            retrieved.signed_data.signature().unwrap(),
             Signature::new([42u8; SIG_LEN])
         );
     }

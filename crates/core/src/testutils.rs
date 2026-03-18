@@ -10,7 +10,8 @@ const PK_LEN: usize = 48;
 /// Creates a new seeded random number generator.
 ///
 /// Returns a new random number generator seeded with a random value.
-/// This matches the Go implementation: `rand.New(rand.NewSource(rand.Int63()))`.
+/// This matches the Go implementation:
+/// `rand.New(rand.NewSource(rand.Int63()))`.
 pub fn new_seed_rand() -> impl Rng {
     let seed = rand::random::<u64>();
     rand::rngs::StdRng::seed_from_u64(seed)
@@ -58,7 +59,8 @@ pub fn random_core_pub_key_seed<R: Rng>(mut rng: R) -> PubKey {
 ///
 /// A 48-byte array containing random data suitable for use as a public key.
 fn deterministic_pub_key_seed<R: Rng>(rng: &mut R) -> [u8; PK_LEN] {
-    // Create a new RNG seeded from the input RNG (matching Go's rand.New(rand.NewSource(r.Int63())))
+    // Create a new RNG seeded from the input RNG (matching Go's
+    // rand.New(rand.NewSource(r.Int63())))
     let seed: u64 = rng.r#gen();
     let mut seeded_rng = rand::rngs::StdRng::seed_from_u64(seed);
 

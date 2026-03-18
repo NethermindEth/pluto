@@ -28,6 +28,9 @@ pub trait Tbls {
     /// secret keys, with the given threshold. It returns a map that
     /// associates each private, compressed private key to its ID.
     ///
+    /// **Important:** Share IDs are 1-indexed (1, 2, 3, ..., n), matching
+    /// the Go implementation and TBLS polynomial evaluation points.
+    ///
     /// # Limitations
     ///
     /// Maximum of 255 shares (total <= 255) due to underlying BLS library
@@ -44,6 +47,9 @@ pub trait Tbls {
     /// keys, with the given threshold. It returns a map that associates
     /// each private, compressed private key to its ID.
     ///
+    /// **Important:** Share IDs are 1-indexed (1, 2, 3, ..., n), matching
+    /// the Go implementation and TBLS polynomial evaluation points.
+    ///
     /// # Limitations
     ///
     /// Maximum of 255 shares (total <= 255) due to underlying BLS library
@@ -57,16 +63,22 @@ pub trait Tbls {
 
     /// Recovers a secret from a set of shares
     ///
+    /// **Important:** Share IDs in the input HashMap must be 1-indexed
+    /// (1, 2, 3, ..., n), matching the IDs returned by threshold_split.
+    ///
     /// # Limitations
     ///
     /// Share IDs must be < 255 due to underlying BLS library constraints.
     fn recover_secret(&self, shares: &HashMap<Index, PrivateKey>) -> Result<PrivateKey, Error>;
 
     /// Aggregates a set of signatures into a single signature
-    fn aggregate(&self, signatures: Vec<Signature>) -> Result<Signature, Error>;
+    fn aggregate(&self, signatures: &[Signature]) -> Result<Signature, Error>;
 
     /// Aggregates a set of partial signatures into a single
     /// signature
+    ///
+    /// **Important:** Share IDs in the input HashMap must be 1-indexed
+    /// (1, 2, 3, ..., n), matching the share IDs used for key splitting.
     ///
     /// # Limitations
     ///

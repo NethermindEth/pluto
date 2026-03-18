@@ -10,13 +10,13 @@ use tokio_util::sync::CancellationToken;
 use super::get_threshold_matching;
 use crate::{
     parasigdb::memory::MemDB,
-    testutils,
-    types::{Duty, DutyType, ParSignedData, Signature, SignedData, SlotNumber},
+    signeddata, testutils,
+    types::{self, Duty, DutyType, ParSignedData, Signature, SignedData, SlotNumber},
 };
 
 /// Test wrapper for SyncCommitteeMessage (mimics altair.SyncCommitteeMessage).
 /// The message root is the BeaconBlockRoot field.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 struct TestSyncCommitteeMessage {
     slot: SlotNumber,
@@ -26,36 +26,26 @@ struct TestSyncCommitteeMessage {
 }
 
 impl SignedData for TestSyncCommitteeMessage {
-    fn signature(&self) -> Signature {
-        self.signature.clone()
+    fn signature(&self) -> Result<types::Signature, signeddata::SignedDataError> {
+        Ok(self.signature.clone())
     }
 
-    fn set_signature(
-        &mut self,
-        signature: Signature,
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-        self.signature = signature;
-        Ok(())
+    fn set_signature(&self, signature: Signature) -> Result<Self, signeddata::SignedDataError> {
+        let mut out = self.clone();
+        out.signature = signature;
+        Ok(out)
     }
 
-    fn message_root(&self) -> [u8; 32] {
+    fn message_root(&self) -> Result<[u8; 32], signeddata::SignedDataError> {
         // For SyncCommitteeMessage, the message root is the BeaconBlockRoot
-        self.beacon_block_root
-    }
-
-    fn clone_box(&self) -> Box<dyn SignedData> {
-        Box::new(self.clone())
-    }
-
-    fn equals(&self, other: &dyn SignedData) -> bool {
-        self.message_root() == other.message_root() && self.signature() == other.signature()
+        Ok(self.beacon_block_root)
     }
 }
 
 /// Test wrapper for BeaconCommitteeSelection (mimics
 /// eth2v1.BeaconCommitteeSelection). The message root is computed from the Slot
 /// field.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 struct TestBeaconCommitteeSelection {
     validator_index: u64,
@@ -64,32 +54,22 @@ struct TestBeaconCommitteeSelection {
 }
 
 impl SignedData for TestBeaconCommitteeSelection {
-    fn signature(&self) -> Signature {
-        self.selection_proof.clone()
+    fn signature(&self) -> Result<Signature, signeddata::SignedDataError> {
+        Ok(self.selection_proof.clone())
     }
 
-    fn set_signature(
-        &mut self,
-        signature: Signature,
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-        self.selection_proof = signature;
-        Ok(())
+    fn set_signature(&self, signature: Signature) -> Result<Self, signeddata::SignedDataError> {
+        let mut out = self.clone();
+        out.selection_proof = signature;
+        Ok(out)
     }
 
-    fn message_root(&self) -> [u8; 32] {
+    fn message_root(&self) -> Result<[u8; 32], signeddata::SignedDataError> {
         // For BeaconCommitteeSelection, the message root is derived from the slot.
         // We'll use a simple hash: slot number in the first 8 bytes.
         let mut root = [0u8; 32];
         root[0..8].copy_from_slice(&self.slot.inner().to_le_bytes());
-        root
-    }
-
-    fn clone_box(&self) -> Box<dyn SignedData> {
-        Box::new(self.clone())
-    }
-
-    fn equals(&self, other: &dyn SignedData) -> bool {
-        self.message_root() == other.message_root() && self.signature() == other.signature()
+        Ok(root)
     }
 }
 
@@ -109,7 +89,7 @@ fn random_signature(seed: u8) -> Signature {
 
 /// Copying function here, not using the pluto_cluster::helpers::threshold (not
 /// implemented yet) because it would be huge unnecessary dependency for core.
-#[allow(clippy::arithmetic_side_effects)]
+#[allow(clippy::arithmetic_side_effects, clippy::manual_div_ceil)]
 fn threshold(n: u64) -> u64 {
     (2 * n + 2) / 3
 }
@@ -133,6 +113,7 @@ async fn test_get_threshold_matching(input: Vec<usize>, output: Option<Vec<usize
     let roots = [random_root(1), random_root(2)];
 
     // Test different message types using providers (matches Go approach)
+    #[allow(clippy::type_complexity)]
     let providers: Vec<(&str, Box<dyn Fn(usize) -> Box<dyn SignedData>>)> = vec![
         (
             "SyncCommitteeMessage",
@@ -141,7 +122,7 @@ async fn test_get_threshold_matching(input: Vec<usize>, output: Option<Vec<usize
                     slot,
                     beacon_block_root: roots[input[i]], // Vary root based on input
                     validator_index: val_idx,
-                    signature: random_signature(i as u8),
+                    signature: random_signature(u8::try_from(i).unwrap()),
                 })
             }),
         ),
@@ -150,8 +131,9 @@ async fn test_get_threshold_matching(input: Vec<usize>, output: Option<Vec<usize
             Box::new(|i: usize| {
                 Box::new(TestBeaconCommitteeSelection {
                     validator_index: val_idx,
-                    slot: SlotNumber::new(input[i] as u64), // Vary slot based on input
-                    selection_proof: random_signature(i as u8),
+                    slot: SlotNumber::new(u64::try_from(input[i]).unwrap()), /* Vary slot based
+                                                                              * on input */
+                    selection_proof: random_signature(u8::try_from(i).unwrap()),
                 })
             }),
         ),
@@ -161,7 +143,7 @@ async fn test_get_threshold_matching(input: Vec<usize>, output: Option<Vec<usize
         let mut par_sigs: Vec<ParSignedData> = Vec::new();
         for i in 0..input.len() {
             let signed_data = provider(i);
-            let par_signed = ParSignedData::new(signed_data, i as u64);
+            let par_signed = ParSignedData::new_boxed(signed_data, i as u64);
             par_sigs.push(par_signed);
         }
 
@@ -176,7 +158,7 @@ async fn test_get_threshold_matching(input: Vec<usize>, output: Option<Vec<usize
         if let Some(ref vec) = result {
             assert_eq!(
                 vec.len(),
-                th as usize,
+                usize::try_from(th).unwrap(),
                 "result length should match threshold"
             );
         }

@@ -157,14 +157,14 @@ pub fn supported_networks() -> Result<Vec<Network>> {
         .clone())
 }
 
-fn network_from_name(name: &str) -> Result<Network> {
+fn network_from_name(name: impl AsRef<str>) -> Result<Network> {
     let networks = supported_networks()?;
 
     networks
         .iter()
-        .find(|network| network.name == name)
+        .find(|network| network.name == name.as_ref())
         .ok_or(NetworkError::InvalidName {
-            name: name.to_string(),
+            name: name.as_ref().to_string(),
         })
         .cloned()
 }
@@ -200,13 +200,13 @@ pub fn fork_version_to_network(fork_version: &[u8]) -> Result<String> {
 }
 
 /// Network to fork version.
-pub fn network_to_fork_version(network: &str) -> Result<String> {
+pub fn network_to_fork_version(network: impl AsRef<str>) -> Result<String> {
     let network = network_from_name(network)?;
     Ok(network.genesis_fork_version_hex.to_string())
 }
 
 /// Network to fork version bytes.
-pub fn network_to_fork_version_bytes(network: &str) -> Result<Vec<u8>> {
+pub fn network_to_fork_version_bytes(network: impl AsRef<str>) -> Result<Vec<u8>> {
     let fork_version = network_to_fork_version(network)?;
 
     let b =

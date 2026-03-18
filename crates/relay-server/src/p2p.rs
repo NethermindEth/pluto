@@ -46,17 +46,6 @@ pub async fn run_relay_p2p_node(
     // todo: configure libp2p log level
 
     // todo: monitor connections
-
-    for tcp_addr in config.p2p_config.tcp_multiaddrs()? {
-        debug!("Listening on TCP address {}", tcp_addr);
-        node.listen_on(tcp_addr)?;
-    }
-
-    for udp_addr in config.p2p_config.udp_multiaddrs()? {
-        debug!("Listening on UDP address {}", udp_addr);
-        node.listen_on(udp_addr)?;
-    }
-
     let (server_errors, mut server_errors_receiver) = mpsc::channel(3);
 
     let listeners = Arc::new(RwLock::new(Vec::new()));

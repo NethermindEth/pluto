@@ -1,12 +1,12 @@
 # Pluto
-[![Docs](https://github.com/NethermindEth/charon-rs/actions/workflows/docs.yml/badge.svg)](https://github.com/NethermindEth/charon-rs/actions/workflows/docs.yml)
-[![Lint](https://github.com/NethermindEth/charon-rs/actions/workflows/linter.yml/badge.svg)](https://github.com/NethermindEth/charon-rs/actions/workflows/linter.yml)
-[![Build](https://github.com/NethermindEth/charon-rs/actions/workflows/test.yml/badge.svg)](https://github.com/NethermindEth/charon-rs/actions/workflows/test.yml)
-[![Dependencies](https://github.com/NethermindEth/charon-rs/actions/workflows/dependency-audit.yml/badge.svg)](https://github.com/NethermindEth/charon-rs/actions/workflows/dependency-audit.yml)
-![Coverage](https://github.com/NethermindEth/charon-rs/wiki/coverage.svg)
+[![Docs](https://github.com/NethermindEth/pluto/actions/workflows/docs.yml/badge.svg)](https://github.com/NethermindEth/pluto/actions/workflows/docs.yml)
+[![Lint](https://github.com/NethermindEth/pluto/actions/workflows/linter.yml/badge.svg)](https://github.com/NethermindEth/pluto/actions/workflows/linter.yml)
+[![Build](https://github.com/NethermindEth/pluto/actions/workflows/test.yml/badge.svg)](https://github.com/NethermindEth/pluto/actions/workflows/test.yml)
+[![Dependencies](https://github.com/NethermindEth/pluto/actions/workflows/dependency-audit.yml/badge.svg)](https://github.com/NethermindEth/pluto/actions/workflows/dependency-audit.yml)
+![Coverage](https://github.com/NethermindEth/pluto/wiki/coverage.svg)
 
 ![Rust](https://img.shields.io/badge/rust-1.89-orange.svg)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![License](https://img.shields.io/badge/License-BUSL_1.1-blue.svg)](https://spdx.org/licenses/BUSL-1.1.html)
 
 Pluto is an alternative implementation of [Charon](https://github.com/ObolNetwork/charon/), a distributed validator middleware client for Ethereum Staking. It enables a group of independent operators to safely run a single validator by coordinating duties across multiple nodes.
 
@@ -37,14 +37,16 @@ The `charon dkg` subcommand **is more restrictive** than this general compatibil
 
 Examples are located in crate-specific example folders:
 
-- [P2P](crates/charon-p2p/examples/metrics.rs)
-- [Peerinfo](crates/peerinfo/examples/peerinfo.rs)
 - [Relay Server](crates/relay-server/examples/relay_server.rs)
+- [Peerinfo](crates/peerinfo/examples/peerinfo.rs)
+- [P2P](crates/p2p/examples/p2p.rs)
+- [Quic Upgrade](crates/p2p/examples/quic_upgrade.rs)
+- [Metrics](crates/p2p/examples/metrics.rs)
 - [Tracing](crates/tracing/examples/basic.rs)
 
 ## License
 
-Apache 2.0
+Business Source License 1.1 — see [LICENSE](./LICENSE) for details.
 
 ## Would like to contribute?
 

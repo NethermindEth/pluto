@@ -2,10 +2,13 @@
 //!
 //! Peer-related types and utilities.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use k256::{PublicKey as K256PublicKey, SecretKey};
-use libp2p::{Multiaddr, PeerId, identity::PublicKey as Libp2pPublicKey};
+use libp2p::{Multiaddr, PeerId, identity::PublicKey as Libp2pPublicKey, multiaddr::Protocol};
 use pluto_eth2util::enr::Record;
 
 use crate::name::peer_name;
@@ -42,6 +45,10 @@ pub enum PeerError {
         "Unknown private key provided, it doesn't match any public key encoded inside the operator ENRs"
     )]
     UnknownPublicKey,
+
+    /// Missing peer ID in multiaddr.
+    #[error("Missing peer ID in multiaddr")]
+    MissingPeerIdInMultiaddr,
 }
 
 type Result<T> = std::result::Result<T, PeerError>;
@@ -155,6 +162,17 @@ impl std::fmt::Debug for MutablePeerInner {
 
 type MutablePeerResult<T> = std::result::Result<T, MutablePeerError>;
 
+impl Default for MutablePeer {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(MutablePeerInner {
+                peer: None,
+                subs: Vec::new(),
+            })),
+        }
+    }
+}
+
 impl MutablePeer {
     /// Creates a new mutable peer with an initial value.
     pub fn new(peer: Peer) -> Self {
@@ -240,6 +258,38 @@ pub fn verify_p2p_key(peers: &[Peer], key: &SecretKey) -> Result<()> {
     Err(PeerError::UnknownPublicKey)
 }
 
+/// Extracts AddrInfo from a list of P2P multiaddrs.
+///
+/// Groups addresses by peer ID (extracted from the /p2p/ component).
+/// Returns an error if any address is missing a /p2p/<peer_id> component.
+pub fn addr_infos_from_p2p_addrs(addrs: &[Multiaddr]) -> Result<Vec<AddrInfo>> {
+    let mut peer_map: HashMap<PeerId, Vec<Multiaddr>> = HashMap::new();
+
+    for addr in addrs {
+        // Extract PeerId from the /p2p/<peer_id> component
+        let peer_id = addr
+            .iter()
+            .find_map(|p| match p {
+                Protocol::P2p(peer_id) => Some(peer_id),
+                _ => None,
+            })
+            .ok_or(PeerError::MissingPeerIdInMultiaddr)?;
+
+        // Strip the /p2p component to get transport address
+        let transport_addr: Multiaddr = addr
+            .iter()
+            .filter(|p| !matches!(p, Protocol::P2p(_)))
+            .collect();
+
+        peer_map.entry(peer_id).or_default().push(transport_addr);
+    }
+
+    Ok(peer_map
+        .into_iter()
+        .map(|(id, addrs)| AddrInfo { id, addrs })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,7 +299,7 @@ mod tests {
     fn test_new_peer() {
         let p2p_key = generate_insecure_k1_key(1);
 
-        let record = Record::new(p2p_key, vec![]).unwrap();
+        let record = Record::new(&p2p_key, vec![]).unwrap();
 
         let peer = Peer::from_enr(&record, 0).unwrap();
 
@@ -275,5 +325,64 @@ mod tests {
     #[ignore]
     fn test_peer_id_key() {
         todo!("add this test after implementing peer_id_key function");
+    }
+
+    #[test]
+    fn test_addr_infos_from_p2p_addrs_multiple_peers() {
+        // Test with multiple peers
+        let addrs: Vec<Multiaddr> = vec![
+            "/ip4/127.0.0.1/tcp/9000/p2p/16Uiu2HAkzdQ5Y9SYT91K1ue5SxXwgmajXntfScGnLYeip5hHyWmT"
+                .parse()
+                .unwrap(),
+            "/ip4/127.0.0.1/tcp/9001/p2p/16Uiu2HAmJwLqruthMGC9Qw1wZRTUv3cpq3hCkpGBi7Hp2Zuskbba"
+                .parse()
+                .unwrap(),
+            "/ip4/192.168.1.1/tcp/9002/p2p/16Uiu2HAkzdQ5Y9SYT91K1ue5SxXwgmajXntfScGnLYeip5hHyWmT"
+                .parse()
+                .unwrap(),
+        ];
+
+        let result = addr_infos_from_p2p_addrs(&addrs).unwrap();
+
+        // Should have 2 distinct peers
+        assert_eq!(result.len(), 2);
+
+        // Find each peer and verify their addresses
+        let peer1 = result
+            .iter()
+            .find(|info| {
+                info.id.to_string() == "16Uiu2HAkzdQ5Y9SYT91K1ue5SxXwgmajXntfScGnLYeip5hHyWmT"
+            })
+            .unwrap();
+        assert_eq!(peer1.addrs.len(), 2);
+
+        let peer2 = result
+            .iter()
+            .find(|info| {
+                info.id.to_string() == "16Uiu2HAmJwLqruthMGC9Qw1wZRTUv3cpq3hCkpGBi7Hp2Zuskbba"
+            })
+            .unwrap();
+        assert_eq!(peer2.addrs.len(), 1);
+    }
+
+    #[test]
+    fn test_addr_infos_from_p2p_addrs_missing_peer_id() {
+        // Test error case: address without /p2p/ component
+        let addr: Multiaddr = "/ip4/127.0.0.1/tcp/9000".parse().unwrap();
+
+        let result = addr_infos_from_p2p_addrs(&[addr]);
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            PeerError::MissingPeerIdInMultiaddr
+        ));
+    }
+
+    #[test]
+    fn test_addr_infos_from_p2p_addrs_empty_input() {
+        // Test edge case: empty input
+        let result = addr_infos_from_p2p_addrs(&[]).unwrap();
+        assert_eq!(result.len(), 0);
     }
 }

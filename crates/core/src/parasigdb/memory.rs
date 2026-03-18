@@ -6,6 +6,7 @@ use tracing::{debug, warn};
 use crate::{
     deadline::Deadliner,
     parasigdb::metrics::PARASIG_DB_METRICS,
+    signeddata::SignedDataError,
     types::{Duty, DutyType, ParSignedData, ParSignedDataSet, PubKey},
 };
 use chrono::{DateTime, Utc};
@@ -55,9 +56,9 @@ pub type ThreshSub = Arc<
 
 /// Helper to create an internal subscriber from a closure.
 ///
-/// The closure receives owned copies of the duty and data set. Since the closure
-/// is `Fn` (can be called multiple times), you need to clone any captured Arc values
-/// before the `async move` block.
+/// The closure receives owned copies of the duty and data set. Since the
+/// closure is `Fn` (can be called multiple times), you need to clone any
+/// captured Arc values before the `async move` block.
 ///
 /// # Example
 /// ```ignore
@@ -88,8 +89,8 @@ where
 /// Helper to create a threshold subscriber from a closure.
 ///
 /// The closure receives owned copies of the duty and data. Since the closure
-/// is `Fn` (can be called multiple times), you need to clone any captured Arc values
-/// before the `async move` block.
+/// is `Fn` (can be called multiple times), you need to clone any captured Arc
+/// values before the `async move` block.
 ///
 /// # Example
 /// ```ignore
@@ -128,6 +129,10 @@ pub enum MemDBError {
         /// Share index of the mismatched signature
         share_idx: u64,
     },
+
+    /// Signed data error.
+    #[error("signed data error: {0}")]
+    SignedDataError(#[from] SignedDataError),
 }
 
 type Result<T> = std::result::Result<T, MemDBError>;
@@ -186,8 +191,8 @@ impl MemDB {
 impl MemDB {
     /// Registers a subscriber for internally generated partial signed data.
     ///
-    /// The subscriber will be called when the node generates partial signed data
-    /// that needs to be exchanged with peers.
+    /// The subscriber will be called when the node generates partial signed
+    /// data that needs to be exchanged with peers.
     pub async fn subscribe_internal(&self, sub: InternalSub) -> Result<()> {
         let mut inner = self.inner.lock().await;
         inner.internal_subs.push(sub);
@@ -204,21 +209,21 @@ impl MemDB {
         Ok(())
     }
 
-    /// Stores internally generated partial signed data and notifies subscribers.
+    /// Stores internally generated partial signed data and notifies
+    /// subscribers.
     ///
-    /// This is called when the node generates partial signed data that needs to be
-    /// stored and exchanged with peers. It first stores the data (via `store_external`),
-    /// then calls all internal subscribers to trigger peer exchange.
+    /// This is called when the node generates partial signed data that needs to
+    /// be stored and exchanged with peers. It first stores the data (via
+    /// `store_external`), then calls all internal subscribers to trigger
+    /// peer exchange.
     pub async fn store_internal(&self, duty: &Duty, signed_set: &ParSignedDataSet) -> Result<()> {
         self.store_external(duty, signed_set).await?;
 
-        // Collect subscribers first, then release lock before calling them
         let subs = {
             let inner = self.inner.lock().await;
             inner.internal_subs.clone()
         };
 
-        // Call subscribers without holding lock
         for sub in &subs {
             sub(duty, signed_set).await?;
         }
@@ -228,9 +233,10 @@ impl MemDB {
 
     /// Stores externally received partial signed data and checks for threshold.
     ///
-    /// This is called when the node receives partial signed data from peers. It stores
-    /// the data, checks if enough matching signatures have been collected to meet the
-    /// threshold, and calls threshold subscribers when the threshold is reached.
+    /// This is called when the node receives partial signed data from peers. It
+    /// stores the data, checks if enough matching signatures have been
+    /// collected to meet the threshold, and calls threshold subscribers
+    /// when the threshold is reached.
     pub async fn store_external(&self, duty: &Duty, signed_data: &ParSignedDataSet) -> Result<()> {
         let _ = self.deadliner.add(duty.clone()).await;
 
@@ -266,13 +272,11 @@ impl MemDB {
             return Ok(());
         }
 
-        // Collect subscribers first, then release lock before calling them
         let subs = {
             let inner = self.inner.lock().await;
             inner.thresh_subs.clone()
         };
 
-        // Call subscribers without holding lock
         for sub in &subs {
             sub(duty, &output).await?;
         }
@@ -282,9 +286,10 @@ impl MemDB {
 
     /// Trims expired duties from the database.
     ///
-    /// This method runs in a loop, listening for expired duties from the deadliner
-    /// and removing their associated data from the database. It should be spawned
-    /// as a background task and will run until the cancellation token is triggered.
+    /// This method runs in a loop, listening for expired duties from the
+    /// deadliner and removing their associated data from the database. It
+    /// should be spawned as a background task and will run until the
+    /// cancellation token is triggered.
     pub async fn trim(&self) {
         let Some(mut deadliner_rx) = self.deadliner.c() else {
             warn!("Deadliner channel is not available");
@@ -349,11 +354,7 @@ impl MemDB {
             PARASIG_DB_METRICS.exit_total[&k.pub_key.to_string()].inc();
         }
 
-        let result = inner
-            .entries
-            .get(&k)
-            .map(|entries| entries.clone())
-            .unwrap_or_default();
+        let result = inner.entries.get(&k).cloned().unwrap_or_default();
 
         Ok(Some(result))
     }
@@ -382,11 +383,11 @@ async fn get_threshold_matching(
     let mut sigs_by_msg_root: HashMap<[u8; 32], Vec<ParSignedData>> = HashMap::new();
 
     for sig in sigs {
-        let root = sig.signed_data.message_root();
-        sigs_by_msg_root
-            .entry(root)
-            .or_insert_with(Vec::new)
-            .push(sig.clone());
+        let root = sig
+            .signed_data
+            .message_root()
+            .map_err(MemDBError::SignedDataError)?;
+        sigs_by_msg_root.entry(root).or_default().push(sig.clone());
     }
 
     // Return the first set that has exactly threshold number of signatures
