@@ -20,10 +20,6 @@ pub enum DeadlineError {
     #[error("Failed to fetch genesis time: {0}")]
     FetchGenesisTime(#[from] EthBeaconNodeApiClientError),
 
-    /// Deadliner has been shut down.
-    #[error("Deadliner has been shut down")]
-    Shutdown,
-
     /// Arithmetic overflow in deadline calculation.
     #[error("Arithmetic overflow in deadline calculation")]
     ArithmeticOverflow,
