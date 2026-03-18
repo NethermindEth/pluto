@@ -5513,7 +5513,6 @@ name = "pluto-core"
 version = "1.7.1"
 dependencies = [
  "alloy",
- "async-trait",
  "base64 0.22.1",
  "built",
  "cancellation",
