@@ -208,104 +208,48 @@ pub mod serde_legacy_builder_version {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde::de::DeserializeOwned;
     use test_case::test_case;
-
-    fn assert_conversion_result<T, E>(
-        actual: Result<T, E>,
-        expected: Option<T>,
-        expected_err: Option<E>,
-    ) where
-        T: PartialEq + core::fmt::Debug,
-        E: PartialEq + core::fmt::Debug,
-    {
-        match (actual, expected, expected_err) {
-            (Ok(actual), Some(expected), None) => assert_eq!(actual, expected),
-            (Err(err), None, Some(expected_err)) => {
-                assert!(matches!(err, actual if actual == expected_err))
-            }
-            _ => panic!("unexpected conversion result"),
-        }
-    }
-
-    fn assert_spec_string_serde<T>(value: T, expected_json: &str)
-    where
-        T: Serialize + DeserializeOwned + PartialEq + core::fmt::Debug,
-    {
-        assert_eq!(
-            serde_json::to_string(&value).expect("serialize version"),
-            expected_json
-        );
-        assert_eq!(
-            serde_json::from_str::<T>(expected_json).expect("deserialize version"),
-            value
-        );
-    }
-
-    fn assert_invalid_spec_string<T>(invalid_json: &str)
-    where
-        T: DeserializeOwned + core::fmt::Debug,
-    {
-        assert!(matches!(
-            serde_json::from_str::<T>(invalid_json),
-            Err(err) if err.classify() == serde_json::error::Category::Data
-        ));
-    }
-
-    fn assert_legacy_wrapper_deserializes<T>(legacy_json: &str, spec_json: &str, expected: T)
-    where
-        T: DeserializeOwned + PartialEq + core::fmt::Debug + Clone,
-    {
-        assert_eq!(
-            serde_json::from_str::<T>(legacy_json).expect("deserialize legacy"),
-            expected.clone()
-        );
-        assert_eq!(
-            serde_json::from_str::<T>(spec_json).expect("deserialize spec"),
-            expected
-        );
-    }
-
-    fn assert_legacy_wrapper_serializes<T>(value: &T, expected_json: &str)
-    where
-        T: Serialize,
-    {
-        let json = serde_json::to_string(value).expect("serialize wrapper");
-        assert_eq!(json, expected_json);
-    }
-
-    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-    struct DataVersionWrapper {
-        #[serde(with = "crate::spec::serde_legacy_data_version")]
-        version: DataVersion,
-    }
-
-    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-    struct BuilderVersionWrapper {
-        #[serde(with = "crate::spec::serde_legacy_builder_version")]
-        version: BuilderVersion,
-    }
 
     #[test_case(DataVersion::Phase0, "\"phase0\"" ; "phase0")]
     #[test_case(DataVersion::Deneb, "\"deneb\"" ; "deneb")]
     #[test_case(DataVersion::Fulu, "\"fulu\"" ; "fulu")]
     fn data_version_serde_uses_spec_strings(version: DataVersion, expected_json: &str) {
-        assert_spec_string_serde(version, expected_json);
+        assert_eq!(
+            serde_json::to_string(&version).expect("serialize version"),
+            expected_json
+        );
+        assert_eq!(
+            serde_json::from_str::<DataVersion>(expected_json).expect("deserialize version"),
+            version
+        );
     }
 
     #[test]
     fn data_version_serde_rejects_unknown_spec_string() {
-        assert_invalid_spec_string::<DataVersion>("\"unknown-fork\"");
+        assert!(matches!(
+            serde_json::from_str::<DataVersion>("\"unknown-fork\""),
+            Err(err) if err.classify() == serde_json::error::Category::Data
+        ));
     }
 
     #[test]
     fn builder_version_serde_uses_spec_strings() {
-        assert_spec_string_serde(BuilderVersion::V1, "\"v1\"");
+        assert_eq!(
+            serde_json::to_string(&BuilderVersion::V1).expect("serialize version"),
+            "\"v1\""
+        );
+        assert_eq!(
+            serde_json::from_str::<BuilderVersion>("\"v1\"").expect("deserialize version"),
+            BuilderVersion::V1
+        );
     }
 
     #[test]
     fn builder_version_serde_rejects_unknown_spec_string() {
-        assert_invalid_spec_string::<BuilderVersion>("\"v2\"");
+        assert!(matches!(
+            serde_json::from_str::<BuilderVersion>("\"v2\""),
+            Err(err) if err.classify() == serde_json::error::Category::Data
+        ));
     }
 
     #[test_case(DataVersion::Unknown, None, Some(VersionError::UnknownDataVersion); "unknown")]
@@ -321,7 +265,11 @@ mod tests {
         expected: Option<u64>,
         expected_err: Option<VersionError>,
     ) {
-        assert_conversion_result(version.to_legacy_u64(), expected, expected_err);
+        match (version.to_legacy_u64(), expected, expected_err) {
+            (Ok(actual), Some(expected), None) => assert_eq!(actual, expected),
+            (Err(err), None, Some(expected_err)) => assert_eq!(err, expected_err),
+            _ => panic!("unexpected conversion result"),
+        }
     }
 
     #[test_case(99, None, Some(VersionError::UnknownDataVersion); "unknown")]
@@ -337,27 +285,41 @@ mod tests {
         expected: Option<DataVersion>,
         expected_err: Option<VersionError>,
     ) {
-        assert_conversion_result(DataVersion::from_legacy_u64(value), expected, expected_err);
+        match (DataVersion::from_legacy_u64(value), expected, expected_err) {
+            (Ok(actual), Some(expected), None) => assert_eq!(actual, expected),
+            (Err(err), None, Some(expected_err)) => assert_eq!(err, expected_err),
+            _ => panic!("unexpected conversion result"),
+        }
     }
 
     #[test]
     fn data_version_legacy_serde_accepts_both_forms() {
-        assert_legacy_wrapper_deserializes(
-            "{\"version\":6}",
-            "{\"version\":\"fulu\"}",
-            DataVersionWrapper {
-                version: DataVersion::Fulu,
-            },
+        let mut legacy_deserializer = serde_json::Deserializer::from_str("6");
+        assert_eq!(
+            crate::spec::serde_legacy_data_version::deserialize(&mut legacy_deserializer)
+                .expect("deserialize legacy"),
+            DataVersion::Fulu,
+        );
+        let mut spec_deserializer = serde_json::Deserializer::from_str("\"fulu\"");
+        assert_eq!(
+            crate::spec::serde_legacy_data_version::deserialize(&mut spec_deserializer)
+                .expect("deserialize spec"),
+            DataVersion::Fulu,
         );
     }
 
     #[test]
     fn data_version_legacy_serde_serializes_numeric() {
-        assert_legacy_wrapper_serializes(
-            &DataVersionWrapper {
-                version: DataVersion::Electra,
-            },
-            "{\"version\":5}",
+        let mut bytes = Vec::new();
+        let mut serializer = serde_json::Serializer::new(&mut bytes);
+        assert_eq!(
+            crate::spec::serde_legacy_data_version::serialize(
+                &DataVersion::Electra,
+                &mut serializer,
+            )
+            .map(|()| String::from_utf8(bytes).expect("utf8"))
+            .expect("serialize wrapper"),
+            "5",
         );
     }
 
@@ -368,7 +330,11 @@ mod tests {
         expected: Option<u64>,
         expected_err: Option<VersionError>,
     ) {
-        assert_conversion_result(version.to_legacy_u64(), expected, expected_err);
+        match (version.to_legacy_u64(), expected, expected_err) {
+            (Ok(actual), Some(expected), None) => assert_eq!(actual, expected),
+            (Err(err), None, Some(expected_err)) => assert_eq!(err, expected_err),
+            _ => panic!("unexpected conversion result"),
+        }
     }
 
     #[test_case(99, None, Some(VersionError::UnknownBuilderVersion); "unknown")]
@@ -378,31 +344,45 @@ mod tests {
         expected: Option<BuilderVersion>,
         expected_err: Option<VersionError>,
     ) {
-        assert_conversion_result(
+        match (
             BuilderVersion::from_legacy_u64(value),
             expected,
             expected_err,
-        );
+        ) {
+            (Ok(actual), Some(expected), None) => assert_eq!(actual, expected),
+            (Err(err), None, Some(expected_err)) => assert_eq!(err, expected_err),
+            _ => panic!("unexpected conversion result"),
+        }
     }
 
     #[test]
     fn builder_version_legacy_serde_accepts_both_forms() {
-        assert_legacy_wrapper_deserializes(
-            "{\"version\":0}",
-            "{\"version\":\"v1\"}",
-            BuilderVersionWrapper {
-                version: BuilderVersion::V1,
-            },
+        let mut legacy_deserializer = serde_json::Deserializer::from_str("0");
+        assert_eq!(
+            crate::spec::serde_legacy_builder_version::deserialize(&mut legacy_deserializer)
+                .expect("deserialize legacy"),
+            BuilderVersion::V1,
+        );
+        let mut spec_deserializer = serde_json::Deserializer::from_str("\"v1\"");
+        assert_eq!(
+            crate::spec::serde_legacy_builder_version::deserialize(&mut spec_deserializer)
+                .expect("deserialize spec"),
+            BuilderVersion::V1,
         );
     }
 
     #[test]
     fn builder_version_legacy_serde_serializes_numeric() {
-        assert_legacy_wrapper_serializes(
-            &BuilderVersionWrapper {
-                version: BuilderVersion::V1,
-            },
-            "{\"version\":0}",
+        let mut bytes = Vec::new();
+        let mut serializer = serde_json::Serializer::new(&mut bytes);
+        assert_eq!(
+            crate::spec::serde_legacy_builder_version::serialize(
+                &BuilderVersion::V1,
+                &mut serializer,
+            )
+            .map(|()| String::from_utf8(bytes).expect("utf8"))
+            .expect("serialize wrapper"),
+            "0",
         );
     }
 }
