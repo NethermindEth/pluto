@@ -149,7 +149,7 @@ pub struct DeadlineReceiver {
 /// The receiver yields `Duty` results in the order they expire.
 pub fn new<FClock>(now: FClock, func: DeadlineFunc) -> (DeadlineSender, DeadlineReceiver)
 where
-    FClock: Fn() -> DateTime<Utc> + Send + Sync + 'static,
+    FClock: Fn() -> DateTime<Utc> + Send + 'static,
 {
     let (duty_tx, mut duty_rx) = mpsc::unbounded_channel::<(Duty, oneshot::Sender<bool>)>();
     let (result_tx, result_rx) = mpsc::unbounded_channel::<Duty>();
