@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn verify_signatures_rejects_invalid_count_length_and_order() {
-        let keys = vec![
+        let keys = [
             generate_insecure_k1_key(1),
             generate_insecure_k1_key(2),
             generate_insecure_k1_key(3),

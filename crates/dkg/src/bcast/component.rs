@@ -20,7 +20,8 @@ pub type CallbackFn<M> = Box<dyn Fn(PeerId, &str, M) -> Result<()> + Send + Sync
 
 pub(crate) type Registry = Arc<RwLock<HashMap<String, Arc<dyn RegisteredMessage>>>>;
 
-/// Broadcast command sent from the user-facing component into the swarm-owned behaviour.
+/// Broadcast command sent from the user-facing component into the swarm-owned
+/// behaviour.
 #[derive(Debug)]
 pub(crate) struct BroadcastCommand {
     /// Registered message ID.

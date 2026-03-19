@@ -174,13 +174,13 @@ impl Clone for PendingOpen {
 
 impl ConnectionHandler for Handler {
     type FromBehaviour = InEvent;
-    type ToBehaviour = OutEvent;
+    type InboundOpenInfo = ();
     type InboundProtocol =
         SelectUpgrade<ReadyUpgrade<StreamProtocol>, ReadyUpgrade<StreamProtocol>>;
+    type OutboundOpenInfo = PendingOpen;
     type OutboundProtocol =
         UpgradeEither<ReadyUpgrade<StreamProtocol>, ReadyUpgrade<StreamProtocol>>;
-    type InboundOpenInfo = ();
-    type OutboundOpenInfo = PendingOpen;
+    type ToBehaviour = OutEvent;
 
     fn listen_protocol(&self) -> SubstreamProtocol<Self::InboundProtocol> {
         SubstreamProtocol::new(

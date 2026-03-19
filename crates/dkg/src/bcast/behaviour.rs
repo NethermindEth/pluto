@@ -288,25 +288,23 @@ impl Behaviour {
         match event {
             OutEvent::SigResponse { op_id, signature } => {
                 let mut should_advance = false;
-                if let Some(state) = self.active_broadcast.as_mut() {
-                    if let Some(sig_op) = state.sig_ops.remove(&op_id) {
-                        state.signatures[sig_op.index] = Some(signature);
-                        should_advance = true;
-                    }
+                if let Some(state) = self.active_broadcast.as_mut()
+                    && let Some(sig_op) = state.sig_ops.remove(&op_id)
+                {
+                    state.signatures[sig_op.index] = Some(signature);
+                    should_advance = true;
                 }
 
-                if should_advance {
-                    if let Err(error) = self.maybe_advance_broadcast() {
-                        self.complete_active_broadcast(Err(error));
-                    }
+                if should_advance && let Err(error) = self.maybe_advance_broadcast() {
+                    self.complete_active_broadcast(Err(error));
                 }
             }
             OutEvent::MessageSent { op_id } => {
                 let mut completed = false;
-                if let Some(state) = self.active_broadcast.as_mut() {
-                    if state.msg_ops.remove(&op_id).is_some() {
-                        completed = state.msg_ops.is_empty();
-                    }
+                if let Some(state) = self.active_broadcast.as_mut()
+                    && state.msg_ops.remove(&op_id).is_some()
+                {
+                    completed = state.msg_ops.is_empty();
                 }
 
                 if completed {
@@ -553,8 +551,11 @@ mod tests {
 
         let dial_targets = (0..nodes.len())
             .map(|index| {
-                ((index + 1)..nodes.len())
-                    .map(|other| nodes[other].addr.clone())
+                nodes
+                    .iter()
+                    .enumerate()
+                    .filter(|(other, _)| *other > index)
+                    .map(|(_, node)| node.addr.clone())
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();

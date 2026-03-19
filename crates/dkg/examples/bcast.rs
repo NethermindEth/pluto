@@ -116,11 +116,11 @@ impl Name for DemoTick {
     }
 }
 
-fn now_unix_seconds() -> i64 {
-    std::time::SystemTime::now()
+fn now_unix_seconds() -> anyhow::Result<i64> {
+    let duration = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64
+        .context("system clock is before unix epoch")?;
+    i64::try_from(duration.as_secs()).context("unix timestamp does not fit in i64")
 }
 
 fn demo_key(seed: u8) -> SecretKey {
@@ -271,7 +271,7 @@ async fn run_broadcast_loop(
 
     let msg = DemoTick {
         node_id: u32::from(local_node),
-        timestamp_seconds: now_unix_seconds(),
+        timestamp_seconds: now_unix_seconds()?,
     };
     let component = component.clone();
     let msg_id = msg_id.to_string();
