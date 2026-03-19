@@ -14,6 +14,16 @@ pub struct Duty {
     #[prost(int32, tag = "2")]
     pub r#type: i32,
 }
+impl ::prost::Name for Duty {
+    const NAME: &'static str = "Duty";
+    const PACKAGE: &'static str = "core";
+    fn full_name() -> ::prost::alloc::string::String {
+        "core.Duty".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/core.Duty".into()
+    }
+}
 /// core.UnsignedDataSet
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UnsignedDataSet {
@@ -24,6 +34,16 @@ pub struct UnsignedDataSet {
         ::prost::bytes::Bytes,
     >,
 }
+impl ::prost::Name for UnsignedDataSet {
+    const NAME: &'static str = "UnsignedDataSet";
+    const PACKAGE: &'static str = "core";
+    fn full_name() -> ::prost::alloc::string::String {
+        "core.UnsignedDataSet".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/core.UnsignedDataSet".into()
+    }
+}
 /// core.ParSignedDataSet
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ParSignedDataSet {
@@ -33,6 +53,16 @@ pub struct ParSignedDataSet {
         ::prost::alloc::string::String,
         ParSignedData,
     >,
+}
+impl ::prost::Name for ParSignedDataSet {
+    const NAME: &'static str = "ParSignedDataSet";
+    const PACKAGE: &'static str = "core";
+    fn full_name() -> ::prost::alloc::string::String {
+        "core.ParSignedDataSet".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/core.ParSignedDataSet".into()
+    }
 }
 /// core.ParSignedData
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -46,4 +76,14 @@ pub struct ParSignedData {
     /// int
     #[prost(int32, tag = "3")]
     pub share_idx: i32,
+}
+impl ::prost::Name for ParSignedData {
+    const NAME: &'static str = "ParSignedData";
+    const PACKAGE: &'static str = "core";
+    fn full_name() -> ::prost::alloc::string::String {
+        "core.ParSignedData".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/core.ParSignedData".into()
+    }
 }
