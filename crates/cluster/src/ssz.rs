@@ -1,11 +1,14 @@
+use pluto_ssz::{
+    Error as PlutoSszError, HashWalker, Hasher, HasherError, from_0x_hex_str, put_byte_list,
+    put_bytes_n, put_hex_bytes_n, to_0x_hex,
+};
+
 use crate::{
     definition::{ADDRESS_LEN, Definition},
     deposit::DepositData,
     distvalidator::DistValidator,
-    helpers::{from_0x_hex_str, put_byte_list, put_bytes_n, put_hex_bytes_20, to_0x_hex},
     lock::Lock,
     registration::{BuilderRegistration, Registration},
-    ssz_hasher::{HashWalker, Hasher, HasherError},
     version::{ZERO_NONCE, versions::*},
 };
 
@@ -91,6 +94,26 @@ pub enum SSZError<H: HashWalker> {
 impl From<HasherError> for SSZError<Hasher> {
     fn from(error: HasherError) -> Self {
         SSZError::HashWalkerError(error)
+    }
+}
+
+impl<H: HashWalker> From<PlutoSszError<<H as HashWalker>::Error>> for SSZError<H> {
+    fn from(error: PlutoSszError<<H as HashWalker>::Error>) -> Self {
+        match error {
+            PlutoSszError::IncorrectListSize {
+                namespace,
+                field,
+                actual,
+                expected,
+            } => Self::IncorrectListSize {
+                namespace,
+                field,
+                actual,
+                expected,
+            },
+            PlutoSszError::HashWalkerError(error) => Self::HashWalkerError(error),
+            PlutoSszError::FailedToConvertHexString(error) => Self::FailedToConvertHexString(error),
+        }
     }
 }
 
@@ -401,7 +424,7 @@ where
             let op_sub_idx = hh.index();
 
             // Field (0) 'Address' Bytes20
-            put_hex_bytes_20(hh, &operator.address)?;
+            put_hex_bytes_n(hh, &operator.address, ADDRESS_LEN)?;
 
             if !config_only {
                 // Field (1) 'ENR' ByteList[1024]
@@ -427,7 +450,7 @@ where
         let creator_idx = hh.index();
 
         // Field (0) 'Address' Bytes20
-        put_hex_bytes_20(hh, &definition.creator.address)?;
+        put_hex_bytes_n(hh, &definition.creator.address, ADDRESS_LEN)?;
 
         if !config_only {
             // Field (1) 'ConfigSignature' Bytes65
@@ -446,10 +469,10 @@ where
             let validator_address_sub_idx = hh.index();
 
             // Field (0) 'FeeRecipientAddress' Bytes20
-            put_hex_bytes_20(hh, &validator_address.fee_recipient_address)?;
+            put_hex_bytes_n(hh, &validator_address.fee_recipient_address, ADDRESS_LEN)?;
 
             // Field (1) 'WithdrawalAddress' Bytes20
-            put_hex_bytes_20(hh, &validator_address.withdrawal_address)?;
+            put_hex_bytes_n(hh, &validator_address.withdrawal_address, ADDRESS_LEN)?;
 
             hh.merkleize(validator_address_sub_idx)
                 .map_err(SSZError::<H>::HashWalkerError)?;
@@ -858,7 +881,9 @@ pub(crate) fn hash_deposit_data_v1x6<H: HashWalker>(
         .map_err(SSZError::<H>::HashWalkerError)?;
 
     // Field (3) 'Signature' Bytes96
-    put_bytes_n(hh, &deposit_data.signature, SSZ_LEN_BLS_SIG)
+    put_bytes_n(hh, &deposit_data.signature, SSZ_LEN_BLS_SIG)?;
+
+    Ok(())
 }
 
 pub(crate) fn hash_deposit_data_v1x7_or_later<H: HashWalker>(

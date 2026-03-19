@@ -34,6 +34,7 @@ tempfile.workspace = true
 pluto-cluster.workspace = true
 pluto-k1util.workspace = true
 pluto-crypto.workspace = true
+pluto-ssz.workspace = true
 
 [build-dependencies]
 pluto-build-proto.workspace = true

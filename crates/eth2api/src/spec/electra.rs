@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tree_hash_derive::TreeHash;
 
-use crate::spec::ssz_types::{BitList, BitVector};
+use pluto_ssz::{BitList, BitVector};
 
 use crate::spec::{altair, bellatrix, capella, deneb, phase0};
 

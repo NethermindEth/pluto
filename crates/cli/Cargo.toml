@@ -25,6 +25,7 @@ pluto-core.workspace = true
 pluto-p2p.workspace = true
 pluto-eth2util.workspace = true
 pluto-k1util.workspace = true
+pluto-ssz.workspace = true
 libp2p.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true

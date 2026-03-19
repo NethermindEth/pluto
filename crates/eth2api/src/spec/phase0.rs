@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tree_hash_derive::TreeHash;
 
-pub use crate::spec::ssz_types::{BitList, SszList, SszVector};
+pub use pluto_ssz::{BitList, SszList, SszVector};
 
 /// Fork version length in bytes.
 pub const VERSION_LEN: usize = 4;
