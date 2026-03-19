@@ -309,8 +309,7 @@ impl HashWalker for Hasher {
         let size = parse_bitlist(&mut self.tmp, bb)?;
 
         let indx = self.index();
-        self.buf.extend_from_slice(&self.tmp);
-        Self::pad_to_32(&mut self.buf);
+        self.append_bytes32(&self.tmp.clone())?;
         self.merkleize_with_mixin(indx, size, max_size.div_ceil(256))?;
         Ok(())
     }
@@ -337,13 +336,19 @@ impl HashWalker for Hasher {
     }
 
     fn merkleize(&mut self, index: usize) -> Result<(), Self::Error> {
+        // merkleizeImpl will expand the `input` by 32 bytes if some hashing depth
+        // hits an odd chunk length. But if we're at the end of `h.buf` already,
+        // appending to `input` will allocate a new buffer, *not* expand `h.buf`,
+        // so the next invocation will realloc, over and over and over. We can pre-
+        // emptively cater for that by ensuring that an extra 32 bytes is always
+        // available.
         if self.buf.len() == self.buf.capacity() {
-            self.buf.reserve(32);
+            self.buf.reserve(32); // Just ensure capacity
         }
 
         let mut input = self.buf[index..].to_vec();
         input = self.merkleize_impl(&input, 0)?;
-        self.buf.truncate(index);
+        self.buf.truncate(index); // Truncate without filling
         self.buf.extend_from_slice(&input);
 
         Ok(())
