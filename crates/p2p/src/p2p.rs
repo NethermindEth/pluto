@@ -336,7 +336,7 @@ impl<B: NetworkBehaviour> Node<B> {
             .map_err(P2PError::failed_to_build_swarm)?
             .with_behaviour(|key, relay_client| {
                 let builder =
-                    PlutoBehaviourBuilder::default().with_p2p_context(p2p_context.clone());
+                    PlutoBehaviourBuilder::default().with_p2p_context(p2p_context.clone()).with_quic_enabled(true);
                 behaviour_fn(builder, key, relay_client).build(key)
             })
             .map_err(P2PError::failed_to_build_swarm)?

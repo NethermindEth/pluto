@@ -26,6 +26,9 @@ pub mod deadline;
 /// parasigdb
 pub mod parasigdb;
 
+/// Partial signature exchange.
+pub mod parsigex;
+
 /// Test utilities.
 #[cfg(test)]
 pub mod testutils;

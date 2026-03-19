@@ -31,9 +31,10 @@ use libp2p::{
         ToSwarm, dial_opts::DialOpts, dummy,
     },
 };
-use tokio::time::Interval;
+use tokio::time::{Instant, Interval};
 
 const RELAY_ROUTER_INTERVAL: Duration = Duration::from_secs(60);
+const RELAY_ROUTER_INITIAL_DELAY: Duration = Duration::from_secs(10);
 
 /// Mutable relay reservation behaviour.
 ///
@@ -246,7 +247,10 @@ pub struct RelayRouter {
 impl RelayRouter {
     /// Creates a new relay router.
     pub fn new(relays: Vec<MutablePeer>, p2p_context: P2PContext, local_peer_id: PeerId) -> Self {
-        let mut interval = tokio::time::interval(RELAY_ROUTER_INTERVAL);
+        let mut interval = tokio::time::interval_at(
+            Instant::now() + RELAY_ROUTER_INITIAL_DELAY,
+            RELAY_ROUTER_INTERVAL,
+        );
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         Self {
