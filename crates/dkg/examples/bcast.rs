@@ -1,9 +1,50 @@
 //! Runnable example for the DKG reliable-broadcast protocol.
 //!
-//! This example is designed to be run as separate processes in separate
-//! terminals. Each process starts a single libp2p node, dials any configured
-//! peers, and optionally emits one broadcast once all cluster peers are
-//! connected.
+//! Run this example in 3 separate terminals. Each process starts one node from
+//! a fixed demo cluster of 3 peers, waits until all peers are connected, and
+//! then rebroadcasts the same signed `DemoTick` message every 10 seconds.
+//!
+//! Example:
+//!
+//! ```text
+//! # Terminal 1
+//! cargo run -p pluto-dkg --example bcast -- \
+//!   --node 1 \
+//!   --listen-port 25100 \
+//!   --dial /ip4/127.0.0.1/tcp/25101 \
+//!   --dial /ip4/127.0.0.1/tcp/25102
+//!
+//! # Terminal 2
+//! cargo run -p pluto-dkg --example bcast -- \
+//!   --node 2 \
+//!   --listen-port 25101 \
+//!   --dial /ip4/127.0.0.1/tcp/25100 \
+//!   --dial /ip4/127.0.0.1/tcp/25102
+//!
+//! # Terminal 3
+//! cargo run -p pluto-dkg --example bcast -- \
+//!   --node 3 \
+//!   --listen-port 25102 \
+//!   --dial /ip4/127.0.0.1/tcp/25100 \
+//!   --dial /ip4/127.0.0.1/tcp/25101
+//! ```
+//!
+//! Expected flow:
+//!
+//! 1. Each node prints the same cluster peer order.
+//! 2. Nodes keep dialing until all 3 peers are connected.
+//! 3. Each node starts broadcasting its own fixed `DemoTick`.
+//! 4. Other nodes first print `validated signature request ...`.
+//! 5. Then they print `accepted broadcast ...`.
+//!
+//! The message ID defaults to `demo.tick`. The payload includes:
+//!
+//! - `node_id`: which demo node created the message
+//! - `timestamp_seconds`: fixed once at startup of that node's broadcast task
+//!
+//! The timestamp is intentionally stable for each sender. `bcast` deduplicates
+//! by `(sender_peer_id, msg_id)` and rejects a different payload for the same
+//! logical message ID.
 #![allow(missing_docs)]
 
 use std::{collections::HashSet, time::Duration};
@@ -28,7 +69,7 @@ const REDIAL_INTERVAL: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Parser)]
 #[command(name = "bcast-example")]
-#[command(about = "Run a single DKG bcast node that can be composed into a 3-terminal demo")]
+#[command(about = "Run one node from a 3-terminal DKG bcast demo cluster")]
 struct Args {
     /// Demo node number. Valid values are 1, 2, or 3.
     #[arg(long)]
@@ -115,14 +156,14 @@ async fn register_message(
         msg_id,
         Box::new(move |peer_id, msg| {
             println!(
-                "node {local_node} validated signature request from {peer_id}: {} node_id={} ts={}",
+                "node {local_node} received signature request from {peer_id}: {} node_id={} ts={}",
                 callback_id, msg.node_id, msg.timestamp_seconds
             );
             Ok(())
         }),
         Box::new(move |peer_id, received_msg_id, msg| {
             println!(
-                "node {local_node} accepted broadcast `{received_msg_id}` from {peer_id}: node_id={} ts={}",
+                "node {local_node} received broadcast `{received_msg_id}` from {peer_id}: node_id={} ts={}",
                 msg.node_id, msg.timestamp_seconds
             );
             Ok(())
