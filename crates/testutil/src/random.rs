@@ -10,10 +10,11 @@ use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PrivateKey};
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
 /// A deterministic RNG that always returns the same byte value.
-/// This counter-acts the library's attempt at making ECDSA signatures
-/// non-deterministic.
+///
+/// This is useful in tests and examples that need reproducible secp256k1 keys
+/// or signatures.
 #[derive(Debug, Clone, Copy)]
-struct ConstReader(u8);
+pub struct ConstReader(pub u8);
 
 impl RngCore for ConstReader {
     fn next_u32(&mut self) -> u32 {
