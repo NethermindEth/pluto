@@ -5,7 +5,7 @@ use tracing::{debug, warn};
 
 use crate::{
     deadline::Deadliner,
-    parasigdb::metrics::PARASIG_DB_METRICS,
+    parsigdb::metrics::PARSIG_DB_METRICS,
     signeddata::SignedDataError,
     types::{Duty, DutyType, ParSignedData, ParSignedDataSet, PubKey},
 };
@@ -351,7 +351,7 @@ impl MemDB {
             .push(k.clone());
 
         if k.duty.duty_type == DutyType::Exit {
-            PARASIG_DB_METRICS.exit_total[&k.pub_key.to_string()].inc();
+            PARSIG_DB_METRICS.exit_total[&k.pub_key.to_string()].inc();
         }
 
         let result = inner.entries.get(&k).cloned().unwrap_or_default();
