@@ -11,3 +11,13 @@ pub struct MsgNodeSig {
     #[prost(uint32, tag = "2")]
     pub peer_index: u32,
 }
+impl ::prost::Name for MsgNodeSig {
+    const NAME: &'static str = "MsgNodeSig";
+    const PACKAGE: &'static str = "nodesigs";
+    fn full_name() -> ::prost::alloc::string::String {
+        "nodesigs.MsgNodeSig".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/nodesigs.MsgNodeSig".into()
+    }
+}

@@ -5551,9 +5551,25 @@ dependencies = [
 name = "pluto-dkg"
 version = "1.7.1"
 dependencies = [
+ "anyhow",
+ "clap",
+ "either",
+ "futures",
+ "hex",
+ "k256",
+ "libp2p",
  "pluto-build-proto",
+ "pluto-core",
+ "pluto-k1util",
+ "pluto-p2p",
+ "pluto-testutil",
  "prost 0.14.3",
  "prost-types 0.14.3",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "unsigned-varint 0.8.0",
 ]
 
 [[package]]
