@@ -511,11 +511,11 @@ async fn beacon_is_synced_test(
         Err(e) => return res.fail(e),
     };
 
-    if body.data.is_syncing {
-        res.verdict = TestVerdict::Fail;
+    res.verdict = if body.data.is_syncing {
+        TestVerdict::Fail
     } else {
-        res.verdict = TestVerdict::Ok;
-    }
+        TestVerdict::Ok
+    };
     res
 }
 
@@ -607,11 +607,10 @@ async fn beacon_ping_load_test(
     cfg: TestBeaconArgs,
     target: String,
 ) -> TestResult {
-    let mut res = TestResult::new("PingLoad");
     if !cfg.load_test {
-        res.verdict = TestVerdict::Skip;
-        return res;
+        return skip_result("PingLoad");
     }
+    let res = TestResult::new("PingLoad");
 
     tracing::info!(
         duration = ?cfg.load_test_duration,
@@ -677,13 +676,10 @@ async fn beacon_simulation_1_test(
     cfg: TestBeaconArgs,
     target: String,
 ) -> TestResult {
-    let res = TestResult::new("Simulate1");
     if !cfg.load_test {
-        return TestResult {
-            verdict: TestVerdict::Skip,
-            ..res
-        };
+        return skip_result("Simulate1");
     }
+    let res = TestResult::new("Simulate1");
     let params = SimParams {
         total_validators_count: 1,
         attestation_validators_count: 0,
@@ -699,13 +695,10 @@ async fn beacon_simulation_10_test(
     cfg: TestBeaconArgs,
     target: String,
 ) -> TestResult {
-    let res = TestResult::new("Simulate10");
     if !cfg.load_test {
-        return TestResult {
-            verdict: TestVerdict::Skip,
-            ..res
-        };
+        return skip_result("Simulate10");
     }
+    let res = TestResult::new("Simulate10");
     let params = SimParams {
         total_validators_count: 10,
         attestation_validators_count: 6,
@@ -721,13 +714,10 @@ async fn beacon_simulation_100_test(
     cfg: TestBeaconArgs,
     target: String,
 ) -> TestResult {
-    let res = TestResult::new("Simulate100");
     if !cfg.load_test {
-        return TestResult {
-            verdict: TestVerdict::Skip,
-            ..res
-        };
+        return skip_result("Simulate100");
     }
+    let res = TestResult::new("Simulate100");
     let params = SimParams {
         total_validators_count: 100,
         attestation_validators_count: 80,
@@ -743,13 +733,10 @@ async fn beacon_simulation_500_test(
     cfg: TestBeaconArgs,
     target: String,
 ) -> TestResult {
-    let res = TestResult::new("Simulate500");
     if !cfg.load_test {
-        return TestResult {
-            verdict: TestVerdict::Skip,
-            ..res
-        };
+        return skip_result("Simulate500");
     }
+    let res = TestResult::new("Simulate500");
     let params = SimParams {
         total_validators_count: 500,
         attestation_validators_count: 450,
@@ -765,13 +752,10 @@ async fn beacon_simulation_1000_test(
     cfg: TestBeaconArgs,
     target: String,
 ) -> TestResult {
-    let res = TestResult::new("Simulate1000");
     if !cfg.load_test {
-        return TestResult {
-            verdict: TestVerdict::Skip,
-            ..res
-        };
+        return skip_result("Simulate1000");
     }
+    let res = TestResult::new("Simulate1000");
     let params = SimParams {
         total_validators_count: 1000,
         attestation_validators_count: 930,
@@ -1741,6 +1725,13 @@ fn average_validators_result(
                 "POST /eth/v1/validator/sync_committee_subscriptions",
             ),
         },
+    }
+}
+
+fn skip_result(name: &str) -> TestResult {
+    TestResult {
+        verdict: TestVerdict::Skip,
+        ..TestResult::new(name)
     }
 }
 
