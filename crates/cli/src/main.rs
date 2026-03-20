@@ -45,6 +45,12 @@ async fn main() -> ExitResult {
         Commands::Relay(args) => commands::relay::run(*args, ct.child_token()).await,
         Commands::Alpha(args) => match args.command {
             AlphaCommands::Test(args) => {
+                tracing_subscriber::fmt()
+                    .with_env_filter(
+                        tracing_subscriber::EnvFilter::try_from_default_env()
+                            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                    )
+                    .init();
                 let mut stdout = std::io::stdout();
                 match args.command {
                     TestCommands::Peers(args) => commands::test::peers::run(args, &mut stdout)

@@ -132,10 +132,7 @@ fn list_test_cases(category: TestCategory) -> Vec<String> {
                 "PingLoad".to_string(),
             ]
         }
-        TestCategory::Beacon => {
-            // TODO: Extract from beacon::supported_beacon_test_cases()
-            vec![]
-        }
+        TestCategory::Beacon => beacon::test_case_names(),
         TestCategory::Mev => {
             vec![
                 "Ping".to_string(),
@@ -219,6 +216,10 @@ pub(crate) struct TestResultError(String);
 impl TestResultError {
     pub(crate) fn empty() -> Self {
         Self(String::new())
+    }
+
+    pub(crate) fn from_string(s: impl Into<String>) -> Self {
+        Self(s.into())
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -639,11 +640,11 @@ pub(crate) fn calculate_score(results: &[TestResult]) -> CategoryScore {
 }
 
 /// Filters tests based on configuration.
-pub(crate) fn filter_tests<V>(
-    supported_test_cases: &HashMap<TestCaseName, V>,
+pub(crate) fn filter_tests(
+    supported_test_cases: &[TestCaseName],
     test_cases: Option<&[String]>,
 ) -> Vec<TestCaseName> {
-    let mut filtered: Vec<TestCaseName> = supported_test_cases.keys().cloned().collect();
+    let mut filtered: Vec<TestCaseName> = supported_test_cases.to_vec();
     if let Some(cases) = test_cases {
         filtered.retain(|supported_case| cases.contains(&supported_case.name));
     }
@@ -682,6 +683,33 @@ fn hash_ssz(data: &[u8]) -> CliResult<[u8; 32]> {
     Ok(hasher.hash_root()?)
 }
 
+pub(crate) fn parse_endpoint_url(endpoint: &str) -> CliResult<(String, Option<(String, String)>)> {
+    let mut parsed = reqwest::Url::parse(endpoint)
+        .map_err(|e| CliError::Other(format!("parse endpoint URL: {e}")))?;
+
+    if parsed.username().is_empty() {
+        return Ok((endpoint.to_string(), None));
+    }
+
+    let username = parsed.username().to_string();
+    let password = parsed.password().unwrap_or_default().to_string();
+    parsed.set_username("").ok();
+    parsed.set_password(None).ok();
+
+    Ok((parsed.to_string(), Some((username, password))))
+}
+
+pub(crate) fn apply_basic_auth(
+    builder: reqwest::RequestBuilder,
+    credentials: &Option<(String, String)>,
+) -> reqwest::RequestBuilder {
+    if let Some((username, password)) = credentials {
+        builder.basic_auth(username, Some(password))
+    } else {
+        builder
+    }
+}
+
 /// Measures the round-trip time (RTT) for an HTTP request and logs a warning if
 /// the response status code doesn't match the expected status.
 pub(crate) async fn request_rtt(
@@ -690,9 +718,11 @@ pub(crate) async fn request_rtt(
     body: Option<Vec<u8>>,
     expected_status: StatusCode,
 ) -> CliResult<StdDuration> {
+    let (clean_url, credentials) = parse_endpoint_url(url.as_ref())?;
     let client = reqwest::Client::new();
 
-    let mut request_builder = client.request(method, url.as_ref());
+    let mut request_builder = client.request(method, &clean_url);
+    request_builder = apply_basic_auth(request_builder, &credentials);
 
     if let Some(body_bytes) = body {
         request_builder = request_builder
@@ -710,14 +740,14 @@ pub(crate) async fn request_rtt(
             Ok(body) if !body.is_empty() => tracing::warn!(
                 status_code = status.as_u16(),
                 expected_status_code = expected_status.as_u16(),
-                endpoint = url.as_ref(),
+                endpoint = clean_url,
                 body = body,
                 "Unexpected status code"
             ),
             _ => tracing::warn!(
                 status_code = status.as_u16(),
                 expected_status_code = expected_status.as_u16(),
-                endpoint = url.as_ref(),
+                endpoint = clean_url,
                 "Unexpected status code"
             ),
         }

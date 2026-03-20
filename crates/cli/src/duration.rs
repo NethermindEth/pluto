@@ -49,11 +49,34 @@ impl Duration {
 
         Self::new(rounded)
     }
+    
+    /// Returns the total number of nanoseconds.
+    pub fn as_nanos(&self) -> u128 {
+        self.inner.as_nanos()
+    }
 }
 
 impl From<StdDuration> for Duration {
     fn from(duration: StdDuration) -> Self {
         Self::new(duration)
+    }
+}
+
+impl From<Duration> for StdDuration {
+    fn from(d: Duration) -> Self {
+        d.inner
+    }
+}
+
+impl PartialOrd for Duration {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Duration {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.inner.cmp(&other.inner)
     }
 }
 
