@@ -5538,6 +5538,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tree_hash",
+ "wiremock",
 ]
 
 [[package]]
