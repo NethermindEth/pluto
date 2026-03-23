@@ -85,7 +85,7 @@ impl Behaviour {
 
     fn next_op_id(&mut self) -> u64 {
         let current = self.next_op_id;
-        self.next_op_id = self.next_op_id.checked_add(1).unwrap_or(0);
+        self.next_op_id = self.next_op_id.wrapping_add(1);
         current
     }
 

@@ -265,18 +265,22 @@ fn local_node_number(cluster_peers: &[PeerId], local_peer_id: PeerId) -> Result<
     u32::try_from(node_number).context("cluster peer index does not fit in u32")
 }
 
-fn merge_known_peers(cluster_peers: &[PeerId], configured_known_peers: &[String]) -> Vec<PeerId> {
+fn merge_known_peers(
+    cluster_peers: &[PeerId],
+    configured_known_peers: &[String],
+) -> Result<Vec<PeerId>> {
     let mut known_peers = cluster_peers.to_vec();
     let mut known_peer_ids = known_peers.iter().copied().collect::<HashSet<_>>();
 
     for peer in configured_known_peers {
-        let peer_id = PeerId::from_str(peer).expect("Failed to parse peer ID");
+        let peer_id = PeerId::from_str(peer)
+            .with_context(|| format!("failed to parse known peer id: {peer}"))?;
         if known_peer_ids.insert(peer_id) {
             known_peers.push(peer_id);
         }
     }
 
-    known_peers
+    Ok(known_peers)
 }
 
 async fn register_message(component: &Component, local_node_number: u32) -> bcast::Result<()> {
@@ -535,7 +539,7 @@ async fn main() -> Result<()> {
         .filter_map(|relay| relay.peer().ok().flatten().map(|peer| peer.id))
         .collect::<HashSet<_>>();
 
-    let known_peers = merge_known_peers(&cluster_peers, &args.known_peers);
+    let known_peers = merge_known_peers(&cluster_peers, &args.known_peers)?;
 
     let conn_gater = gater::ConnGater::new(
         gater::Config::closed()
