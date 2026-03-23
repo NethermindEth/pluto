@@ -6,7 +6,10 @@ pub mod serde_utils;
 
 /// Spec-level version enums.
 pub mod version;
-pub use version::{BuilderVersion, DataVersion};
+pub use version::{
+    BuilderVersion, DataVersion, VersionError, serde_legacy_builder_version,
+    serde_legacy_data_version,
+};
 
 /// SSZ wrapper container types with TreeHash support.
 pub mod ssz_types;
