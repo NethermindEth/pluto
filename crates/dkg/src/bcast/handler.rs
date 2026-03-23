@@ -366,7 +366,10 @@ async fn handle_inbound_sig_request(
 ) -> Result<(), Error> {
     let request = timeout(
         RECEIVE_TIMEOUT,
-        protocol::read_protobuf::<BCastSigRequest, _>(&mut stream),
+        pluto_p2p::protobuf::read_protobuf::<BCastSigRequest, _>(
+            &mut stream,
+            protocol::MAX_MESSAGE_SIZE,
+        ),
     )
     .await
     .map_err(|_| Error::Message("signature request timed out".to_string()))??;
@@ -409,7 +412,7 @@ async fn handle_inbound_sig_request(
 
     timeout(
         RECEIVE_TIMEOUT,
-        protocol::write_protobuf(&mut stream, &response),
+        pluto_p2p::protobuf::write_protobuf(&mut stream, &response),
     )
     .await
     .map_err(|_| Error::Message("signature response timed out".to_string()))??;
@@ -426,7 +429,10 @@ async fn handle_inbound_broadcast(
 ) -> Result<(), Error> {
     let message = timeout(
         RECEIVE_TIMEOUT,
-        protocol::read_protobuf::<BCastMessage, _>(&mut stream),
+        pluto_p2p::protobuf::read_protobuf::<BCastMessage, _>(
+            &mut stream,
+            protocol::MAX_MESSAGE_SIZE,
+        ),
     )
     .await
     .map_err(|_| Error::Message("broadcast receive timed out".to_string()))??;

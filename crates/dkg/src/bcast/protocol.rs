@@ -1,61 +1,16 @@
 //! Wire helpers for the DKG reliable-broadcast protocol.
 
-use std::io;
-
-use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use futures::AsyncWriteExt;
 use libp2p::{PeerId, swarm::Stream};
-use prost::Message;
 use prost_types::Any;
 use sha2::{Digest, Sha256};
-use unsigned_varint::aio::read_usize;
 
 use crate::dkgpb::v1::bcast::{BCastMessage, BCastSigRequest, BCastSigResponse};
 
 use super::error::{Error, Result};
 
 /// Maximum message size supported by the wire codec.
-const MAX_MESSAGE_SIZE: usize = 128 << 20;
-
-/// Writes a length-delimited protobuf message to the provided stream.
-/// TODO: It's duplicated with peerinfo/src/protocol.rs:write_protobuf.
-pub async fn write_protobuf<M: Message, S: AsyncWrite + Unpin>(
-    stream: &mut S,
-    msg: &M,
-) -> io::Result<()> {
-    let mut buf = Vec::with_capacity(msg.encoded_len());
-    msg.encode(&mut buf)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-
-    let mut len_buf = unsigned_varint::encode::usize_buffer();
-    let encoded_len = unsigned_varint::encode::usize(buf.len(), &mut len_buf);
-    stream.write_all(encoded_len).await?;
-    stream.write_all(&buf).await?;
-    stream.flush().await
-}
-
-/// Reads a length-delimited protobuf message from the provided stream.
-pub async fn read_protobuf<M: Message + Default, S: AsyncRead + Unpin>(
-    stream: &mut S,
-) -> io::Result<M> {
-    let msg_len = read_usize(&mut *stream)
-        .await
-        .map_err(|error| match error {
-            unsigned_varint::io::ReadError::Io(io_error) => io_error,
-            other => io::Error::new(io::ErrorKind::InvalidData, other),
-        })?;
-
-    if msg_len > MAX_MESSAGE_SIZE {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("message too large: {msg_len} bytes (max: {MAX_MESSAGE_SIZE})"),
-        ));
-    }
-
-    let mut buf = vec![0u8; msg_len];
-    stream.read_exact(&mut buf).await?;
-
-    M::decode(&buf[..]).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-}
+pub(super) const MAX_MESSAGE_SIZE: usize = 128 << 20;
 
 /// Hashes an `Any` message using the `sha256(type_url || value)` algorithm.
 pub fn hash_any(any: &Any) -> Vec<u8> {
@@ -100,8 +55,9 @@ pub fn verify_signatures(any: &Any, signatures: &[Vec<u8>], peers: &[PeerId]) ->
 
 /// Sends a signature request and awaits the corresponding response.
 pub async fn send_sig_request(mut stream: Stream, request: BCastSigRequest) -> Result<Vec<u8>> {
-    write_protobuf(&mut stream, &request).await?;
-    let response: BCastSigResponse = read_protobuf(&mut stream).await?;
+    pluto_p2p::protobuf::write_protobuf(&mut stream, &request).await?;
+    let response: BCastSigResponse =
+        pluto_p2p::protobuf::read_protobuf(&mut stream, MAX_MESSAGE_SIZE).await?;
     stream.close().await?;
 
     Ok(response.signature.to_vec())
@@ -109,7 +65,7 @@ pub async fn send_sig_request(mut stream: Stream, request: BCastSigRequest) -> R
 
 /// Sends a fully-signed broadcast message and closes the stream.
 pub async fn send_bcast_message(mut stream: Stream, message: BCastMessage) -> Result<()> {
-    write_protobuf(&mut stream, &message).await?;
+    pluto_p2p::protobuf::write_protobuf(&mut stream, &message).await?;
     stream.close().await?;
     Ok(())
 }

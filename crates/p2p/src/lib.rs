@@ -23,6 +23,9 @@ pub mod metrics;
 /// P2P.
 pub mod p2p;
 
+/// Shared protobuf wire helpers.
+pub mod protobuf;
+
 /// Gater
 pub mod gater;
 
