@@ -123,9 +123,7 @@ pub trait Deadliner: Send + Sync {
 /// # Errors
 ///
 /// Returns an error if fetching genesis time or slots config fails.
-pub async fn new_duty_deadline_func(
-    client: &EthBeaconNodeApiClient,
-) -> Result<DeadlineFunc> {
+pub async fn new_duty_deadline_func(client: &EthBeaconNodeApiClient) -> Result<DeadlineFunc> {
     let genesis_time = client
         .fetch_genesis_time()
         .await
@@ -436,8 +434,8 @@ mod tests {
     use super::*;
     use crate::types::SlotNumber;
     use wiremock::{
-        matchers::{method, path},
         Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
     };
 
     /// Creates a mock beacon node API server and returns the client.
