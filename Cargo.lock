@@ -5495,6 +5495,7 @@ dependencies = [
  "prost-build",
  "prost-types 0.14.3",
  "rand 0.8.5",
+ "rand_core 0.6.4",
  "reqwest 0.13.2",
  "serde",
  "serde_json",
@@ -5511,21 +5512,33 @@ dependencies = [
 name = "pluto-core"
 version = "1.7.1"
 dependencies = [
+ "alloy",
+ "async-trait",
+ "base64 0.22.1",
  "built",
  "cancellation",
  "chrono",
  "crossbeam",
+ "futures",
  "hex",
  "libp2p",
  "pluto-build-proto",
+ "pluto-eth2api",
+ "pluto-eth2util",
  "prost 0.14.3",
  "prost-types 0.14.3",
  "rand 0.8.5",
  "regex",
  "serde",
  "serde_json",
+ "serde_with",
+ "test-case",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
+ "tracing",
+ "tree_hash",
+ "wiremock",
 ]
 
 [[package]]
@@ -5534,7 +5547,6 @@ version = "1.7.1"
 dependencies = [
  "blst",
  "hex",
- "pluto-core",
  "pluto-eth2api",
  "rand 0.8.5",
  "rand_core 0.6.4",
@@ -5547,22 +5559,9 @@ dependencies = [
 name = "pluto-dkg"
 version = "1.7.1"
 dependencies = [
- "hex",
  "pluto-build-proto",
- "pluto-cluster",
- "pluto-crypto",
- "pluto-eth1wrap",
- "pluto-eth2util",
  "prost 0.14.3",
  "prost-types 0.14.3",
- "rand 0.8.5",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "url",
 ]
 
 [[package]]
@@ -5578,6 +5577,7 @@ dependencies = [
 name = "pluto-eth2api"
 version = "1.7.1"
 dependencies = [
+ "alloy",
  "anyhow",
  "bon",
  "chrono",
@@ -5589,6 +5589,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "test-case",
  "testcontainers",
  "thiserror 2.0.18",
  "tokio",
@@ -5621,6 +5622,7 @@ dependencies = [
  "scrypt",
  "serde",
  "serde_json",
+ "serde_with",
  "sha2",
  "sha3",
  "tempfile",
@@ -5655,18 +5657,22 @@ version = "1.7.1"
 dependencies = [
  "anyhow",
  "axum",
+ "backon",
  "chrono",
  "clap",
  "either",
  "futures",
+ "hex",
  "k256",
  "libp2p",
+ "pluto-cluster",
  "pluto-core",
  "pluto-eth2util",
  "pluto-k1util",
  "pluto-testutil",
  "pluto-tracing",
  "rand 0.8.5",
+ "reqwest 0.13.2",
  "serde",
  "serde_json",
  "tempfile",
@@ -5674,6 +5680,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "url",
  "vise",
  "vise-exporter",
 ]
