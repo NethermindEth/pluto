@@ -6,11 +6,11 @@
 #![allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)]
 
 use super::{
-    CategoryScore, EPOCH_TIME, SLOT_TIME, SLOTS_IN_EPOCH, TestCaseName, TestCategory,
-    TestCategoryResult, TestConfigArgs, TestResult, TestVerdict, apply_basic_auth, calculate_score,
-    evaluate_highest_rtt, evaluate_rtt, filter_tests, must_output_to_file_on_quiet,
-    parse_endpoint_url, publish_result_to_obol_api, request_rtt, sort_tests, write_result_to_file,
-    write_result_to_writer,
+    COMMITTEE_SIZE_PER_SLOT, CategoryScore, EPOCH_TIME, SLOT_TIME, SLOTS_IN_EPOCH,
+    SUB_COMMITTEE_SIZE, TestCaseName, TestCategory, TestCategoryResult, TestConfigArgs, TestResult,
+    TestVerdict, apply_basic_auth, calculate_score, evaluate_highest_rtt, evaluate_rtt,
+    filter_tests, must_output_to_file_on_quiet, parse_endpoint_url, publish_result_to_obol_api,
+    request_rtt, sort_tests, write_result_to_file, write_result_to_writer,
 };
 use crate::{duration::Duration, error::Result as CliResult};
 use clap::Args;
@@ -28,9 +28,6 @@ const THRESHOLD_BEACON_PEERS_AVG: u64 = 50;
 const THRESHOLD_BEACON_PEERS_POOR: u64 = 20;
 const THRESHOLD_BEACON_SIMULATION_AVG: StdDuration = StdDuration::from_millis(200);
 const THRESHOLD_BEACON_SIMULATION_POOR: StdDuration = StdDuration::from_millis(400);
-
-const COMMITTEE_SIZE_PER_SLOT: u64 = 64;
-const SUB_COMMITTEE_SIZE: u64 = 4;
 
 /// Arguments for the beacon test command.
 #[derive(Args, Clone, Debug)]
