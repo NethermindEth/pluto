@@ -1,6 +1,6 @@
 //! Error types for the DKG reliable-broadcast protocol.
 
-use std::{error::Error as StdError, fmt, sync::Arc};
+use std::{error::Error as StdError, fmt};
 
 use libp2p::PeerId;
 
@@ -71,11 +71,8 @@ pub enum Error {
     LocalPeerMissing,
 
     /// The remote peer is not currently connected.
-    #[error("peer is not connected: {peer}")]
-    PeerNotConnected {
-        /// The disconnected peer ID.
-        peer: PeerId,
-    },
+    #[error("peer is not connected: {0}")]
+    PeerNotConnected(PeerId),
 
     /// The behaviour task is no longer running.
     #[error("bcast behaviour is no longer running")]
@@ -104,29 +101,20 @@ pub enum Error {
     },
 
     /// A signature did not have the expected 65-byte length.
-    #[error("invalid signature length: expected 65 bytes, actual {actual}")]
-    InvalidSignatureLength {
-        /// The actual signature length.
-        actual: usize,
-    },
+    #[error("invalid signature length: expected 65 bytes, actual {0}")]
+    InvalidSignatureLength(usize),
 
     /// A signature could not be verified.
-    #[error("invalid signature for peer {peer}")]
-    InvalidSignature {
-        /// The peer whose signature failed verification.
-        peer: PeerId,
-    },
+    #[error("invalid signature for peer {0}")]
+    InvalidSignature(PeerId),
 
     /// The repeated hash for the same `(peer, msg_id)` differed.
     #[error("duplicate id with mismatching hash")]
     DuplicateMismatchingHash,
 
     /// A required message body field was absent.
-    #[error("missing protobuf field: {field}")]
-    MissingField {
-        /// The missing field name.
-        field: &'static str,
-    },
+    #[error("missing protobuf field: {0}")]
+    MissingField(&'static str),
 
     /// Protobuf encoding failed.
     #[error("protobuf encode failed: {0}")]
@@ -152,22 +140,4 @@ pub enum Error {
     #[error("{0}")]
     Message(String),
 
-    /// A user-supplied check or callback returned a boxed error.
-    #[error(transparent)]
-    Boxed(#[from] BoxError),
-}
-
-/// Shared boxed error type used by typed checks and callbacks.
-pub type BoxError = Arc<dyn StdError + Send + Sync + 'static>;
-
-impl From<String> for Error {
-    fn from(value: String) -> Self {
-        Self::Message(value)
-    }
-}
-
-impl From<&str> for Error {
-    fn from(value: &str) -> Self {
-        Self::Message(value.to_string())
-    }
 }

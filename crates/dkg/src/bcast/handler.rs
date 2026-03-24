@@ -358,7 +358,7 @@ async fn handle_inbound_sig_request(
 
     let any = request
         .message
-        .ok_or(Error::MissingField { field: "message" })?;
+        .ok_or(Error::MissingField("message"))?;
 
     let handler = {
         let registry_guard = registry.read().await;
@@ -421,7 +421,7 @@ async fn handle_inbound_msg(
 
     let any = message
         .message
-        .ok_or(Error::MissingField { field: "message" })?;
+        .ok_or(Error::MissingField("message"))?;
     let signatures = message
         .signatures
         .iter()

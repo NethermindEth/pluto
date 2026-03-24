@@ -108,7 +108,7 @@ impl Behaviour {
         });
 
         if should_fail {
-            self.complete_active_broadcast(Err(Error::PeerNotConnected { peer: *peer_id }));
+            self.complete_active_broadcast(Err(Error::PeerNotConnected(*peer_id)));
         }
     }
 
@@ -173,7 +173,7 @@ impl Behaviour {
             let connection_id = match self.connection_for(peer_id) {
                 Some(connection_id) => connection_id,
                 None => {
-                    return Err((Error::PeerNotConnected { peer: *peer_id }, resp_tx));
+                    return Err((Error::PeerNotConnected(*peer_id), resp_tx));
                 }
             };
             sig_dispatches.push((index, *peer_id, connection_id));
@@ -256,7 +256,7 @@ impl Behaviour {
 
             let connection_id = self
                 .connection_for(&peer_id)
-                .ok_or(Error::PeerNotConnected { peer: peer_id })?;
+                .ok_or(Error::PeerNotConnected(peer_id))?;
             let op_id = self.next_op_id();
             dispatches.push((peer_id, connection_id, op_id));
         }

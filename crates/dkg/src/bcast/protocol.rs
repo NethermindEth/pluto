@@ -39,14 +39,12 @@ pub fn verify_signatures(any: &Any, signatures: &[Vec<u8>], peers: &[PeerId]) ->
 
     for (peer, signature) in peers.iter().zip(signatures) {
         if signature.len() != pluto_k1util::SIGNATURE_LEN {
-            return Err(Error::InvalidSignatureLength {
-                actual: signature.len(),
-            });
+            return Err(Error::InvalidSignatureLength(signature.len()));
         }
 
         let public_key = pluto_p2p::peer::peer_id_to_public_key(peer)?;
         if !pluto_k1util::verify_65(&public_key, &hash, signature)? {
-            return Err(Error::InvalidSignature { peer: *peer });
+            return Err(Error::InvalidSignature(*peer));
         }
     }
 
@@ -118,10 +116,10 @@ mod tests {
         let mut bad_length = signatures.clone();
         bad_length[0].truncate(64);
         let error = verify_signatures(&any, &bad_length, &peers).unwrap_err();
-        assert!(matches!(error, Error::InvalidSignatureLength { .. }));
+        assert!(matches!(error, Error::InvalidSignatureLength(..)));
 
         let reversed_peers = peers.iter().rev().copied().collect::<Vec<_>>();
         let error = verify_signatures(&any, &signatures, &reversed_peers).unwrap_err();
-        assert!(matches!(error, Error::InvalidSignature { .. }));
+        assert!(matches!(error, Error::InvalidSignature(..)));
     }
 }
