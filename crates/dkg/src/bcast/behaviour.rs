@@ -202,8 +202,10 @@ impl Behaviour {
                 handler: NotifyHandler::One(connection_id),
                 event: InEvent::RequestSignature {
                     op_id,
-                    msg_id: state.msg_id.clone(),
-                    any_msg: state.any_msg.clone(),
+                    request: crate::dkgpb::v1::bcast::BCastSigRequest {
+                        id: state.msg_id.clone(),
+                        message: Some(state.any_msg.clone()),
+                    },
                 },
             });
         }

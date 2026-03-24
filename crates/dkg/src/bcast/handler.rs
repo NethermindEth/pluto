@@ -25,7 +25,7 @@ use libp2p::{
 };
 use prost::bytes::Bytes;
 use tokio::{sync::RwLock, time::timeout};
-use tracing::{debug, warn};
+use tracing::warn;
 
 use crate::dkgpb::v1::bcast::{BCastMessage, BCastSigRequest, BCastSigResponse};
 
@@ -54,10 +54,8 @@ pub enum InEvent {
     RequestSignature {
         /// Operation identifier.
         op_id: u64,
-        /// Registered message ID.
-        msg_id: String,
-        /// Wrapped protobuf payload.
-        any_msg: prost_types::Any,
+        /// Signature request to send.
+        request: BCastSigRequest,
     },
     /// Fan out the final fully-signed message.
     BroadcastMessage {
@@ -145,7 +143,7 @@ impl Handler {
     }
 
     fn protocol_for_open(
-        pending: &PendingOpen,
+        pending: PendingOpen,
     ) -> SubstreamProtocol<
         UpgradeEither<ReadyUpgrade<StreamProtocol>, ReadyUpgrade<StreamProtocol>>,
         PendingOpen,
@@ -153,27 +151,12 @@ impl Handler {
         match pending {
             PendingOpen::Sig { .. } => SubstreamProtocol::new(
                 UpgradeEither::Left(ReadyUpgrade::new(SIG_PROTOCOL_NAME)),
-                pending.clone(),
+                pending,
             ),
             PendingOpen::Msg { .. } => SubstreamProtocol::new(
                 UpgradeEither::Right(ReadyUpgrade::new(MSG_PROTOCOL_NAME)),
-                pending.clone(),
+                pending,
             ),
-        }
-    }
-}
-
-impl Clone for PendingOpen {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Sig { op_id, request } => Self::Sig {
-                op_id: *op_id,
-                request: request.clone(),
-            },
-            Self::Msg { op_id, message } => Self::Msg {
-                op_id: *op_id,
-                message: message.clone(),
-            },
         }
     }
 }
@@ -200,17 +183,10 @@ impl ConnectionHandler for Handler {
 
     fn on_behaviour_event(&mut self, event: Self::FromBehaviour) {
         match event {
-            InEvent::RequestSignature {
-                op_id,
-                msg_id,
-                any_msg,
-            } => self.pending_open.push_back(PendingOpen::Sig {
-                op_id,
-                request: BCastSigRequest {
-                    id: msg_id,
-                    message: Some(any_msg),
-                },
-            }),
+            InEvent::RequestSignature { op_id, request } => {
+                self.pending_open
+                    .push_back(PendingOpen::Sig { op_id, request });
+            }
             InEvent::BroadcastMessage { op_id, message } => {
                 self.pending_open
                     .push_back(PendingOpen::Msg { op_id, message });
@@ -226,7 +202,7 @@ impl ConnectionHandler for Handler {
     > {
         if let Some(event) = self.pending_open.pop_front() {
             return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
-                protocol: Self::protocol_for_open(&event),
+                protocol: Self::protocol_for_open(event),
             });
         }
 
@@ -271,12 +247,12 @@ impl ConnectionHandler for Handler {
                             .await
                         }
                         StreamEither::Right(stream) => {
-                            handle_inbound_broadcast(stream, remote_peer_id, registry, peers).await
+                            handle_inbound_msg(stream, remote_peer_id, registry, peers).await
                         }
                     };
 
                     if let Err(error) = result {
-                        debug!(peer = %remote_peer_id, %error, "bcast inbound handling failed");
+                        tracing::error!(peer = %remote_peer_id, %error, "bcast inbound handling failed");
                     }
 
                     None
@@ -427,7 +403,7 @@ async fn handle_inbound_sig_request(
     Ok(())
 }
 
-async fn handle_inbound_broadcast(
+async fn handle_inbound_msg(
     mut stream: Stream,
     peer_id: PeerId,
     registry: Registry,
