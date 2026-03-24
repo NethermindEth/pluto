@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/check-formatting.sh",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}
