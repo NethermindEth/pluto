@@ -7,20 +7,15 @@ description: Guides Go→Rust porting for Pluto. Invoke when asked to port, impl
 
 Before writing any code:
 
-1. Confirm `charon/` exists at repo root and is pinned to `v1.7.1`:
-   ```bash
-   git -C charon rev-parse HEAD
-   ```
-   If missing, clone it:
-   ```bash
-   git clone --branch v1.7.1 --depth 1 https://github.com/ObolNetwork/charon.git charon
-   ```
-2. Record the Go reference (tag + SHA) in the plan.
+1. **Charon location:** See `charon-reference` skill for codebase location, version, and structure. Verify once per session if needed.
+2. Record the Go reference in the plan: `charon/<path>:<line> (v1.7.1)`
 3. **Do not proceed without an approved plan.**
 
 ---
 
 ## Step 1 — Read Go source
+
+**Architecture context:** See `charon-guide` skill for workflow components, design patterns, and package structure.
 
 For each file in scope:
 - What does it do? Inputs, outputs, defaults.

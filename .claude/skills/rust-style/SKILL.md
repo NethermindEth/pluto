@@ -1,6 +1,6 @@
 ---
 name: rust-style
-description: General Rust conventions for Pluto. Applies to all Rust work in the workspace.
+description: General Rust conventions for Pluto. Use it once for understanding the codebase better.
 ---
 
 ## Quality Gate
@@ -92,6 +92,7 @@ Call `.as_ref()` once at the top and bind to a local when used in multiple place
 - Isolate blocking or CPU-heavy work (crypto, large serialization) with `tokio::task::spawn_blocking`
 - Use `tokio::sync::*` primitives when tasks may `.await`
 - Use `tokio::time` for timeouts and sleeps — never `std::thread::sleep`
+- Use `tokio::CancellationToken` instead of cancellation crate
 
 ---
 
@@ -101,12 +102,12 @@ Call `.as_ref()` once at the top and bind to a local when used in multiple place
 - Types/traits: `PascalCase`
 - Constants: `SCREAMING_SNAKE_CASE`
 - Named format args always:
-  ```rust
+```rust
   // Good
   format!("peer {peer_id} connected")
   // Bad
   format!("peer {} connected", peer_id)
-  ```
+```
 
 ---
 
