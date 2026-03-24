@@ -3,12 +3,11 @@
 //! Port of charon/cmd/testbeacon.go — runs connectivity, load, and simulation
 //! tests against one or more beacon node endpoints.
 
-#![allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)]
-
 use super::{
     TestConfigArgs,
     constants::{
-        COMMITTEE_SIZE_PER_SLOT, EPOCH_TIME, SLOT_TIME, SLOTS_IN_EPOCH, SUB_COMMITTEE_SIZE,
+        COMMITTEE_SIZE_PER_SLOT, EPOCH_TIME, SLOT_TIME, SLOT_TIME_SECS, SLOTS_IN_EPOCH,
+        SUB_COMMITTEE_SIZE,
     },
     helpers::{
         CategoryScore, TestCaseName, TestCategory, TestCategoryResult, TestResult, TestVerdict,
@@ -66,7 +65,7 @@ pub struct TestBeaconArgs {
     /// Simulation duration in slots.
     #[arg(
         long = "simulation-duration-in-slots",
-        default_value_t = SLOTS_IN_EPOCH,
+        default_value_t = SLOTS_IN_EPOCH.get(),
         help = "Time to keep running the simulation in slots."
     )]
     pub simulation_duration: u64,
@@ -665,10 +664,10 @@ async fn beacon_ping_load_test(
 fn default_intensity() -> RequestsIntensity {
     RequestsIntensity {
         attestation_duty: SLOT_TIME,
-        aggregator_duty: SLOT_TIME * 2,
-        proposal_duty: SLOT_TIME * 4,
+        aggregator_duty: SLOT_TIME.saturating_mul(2),
+        proposal_duty: SLOT_TIME.saturating_mul(4),
         sync_committee_submit: SLOT_TIME,
-        sync_committee_contribution: SLOT_TIME * 4,
+        sync_committee_contribution: SLOT_TIME.saturating_mul(4),
         sync_committee_subscribe: EPOCH_TIME,
     }
 }
@@ -811,8 +810,11 @@ async fn beacon_simulation_test(
     mut test_res: TestResult,
     params: SimParams,
 ) -> TestResult {
-    let sim_duration = StdDuration::from_secs(cfg.simulation_duration * SLOT_TIME.as_secs())
-        + StdDuration::from_secs(1);
+    let sim_duration = StdDuration::from_secs(
+        cfg.simulation_duration
+            .saturating_mul(SLOT_TIME_SECS.get())
+            .saturating_add(1),
+    );
 
     tracing::info!(
         validators_count = params.total_validators_count,
@@ -970,10 +972,11 @@ async fn single_cluster_simulation(
     let mut slot = get_current_slot(target).await.unwrap_or(1);
 
     let mut slot_interval = tokio::time::interval(SLOT_TIME);
-    let mut interval_12_slots = tokio::time::interval(SLOT_TIME * 12);
+    let mut interval_12_slots = tokio::time::interval(SLOT_TIME.saturating_mul(12));
     let mut interval_10_sec = tokio::time::interval(StdDuration::from_secs(10));
     let mut interval_minute = tokio::time::interval(StdDuration::from_secs(60));
 
+    #[allow(clippy::arithmetic_side_effects)] // Instant + Duration; bounded sim_duration
     let deadline = tokio::time::Instant::now() + sim_duration;
 
     loop {
@@ -981,7 +984,7 @@ async fn single_cluster_simulation(
             _ = cancel.cancelled() => break,
             _ = tokio::time::sleep_until(deadline) => break,
             _ = slot_interval.tick() => {
-                slot += 1;
+                slot = slot.saturating_add(1);
                 let epoch = slot / SLOTS_IN_EPOCH;
 
                 if let Ok(rtt) = req_get_attestations_for_block(target, slot.saturating_sub(6)).await {
@@ -1003,17 +1006,17 @@ async fn single_cluster_simulation(
                 }
 
                 // Last-but-one slot of epoch
-                if slot % SLOTS_IN_EPOCH == SLOTS_IN_EPOCH - 2
+                if slot % SLOTS_IN_EPOCH == SLOTS_IN_EPOCH.get().saturating_sub(2)
                     && let Ok(rtt) = req_get_attester_duties_for_epoch(target, epoch).await
                 {
                     duties_attester.push(rtt);
                 }
 
                 // Last slot of epoch
-                if slot % SLOTS_IN_EPOCH == SLOTS_IN_EPOCH - 1 {
+                if slot % SLOTS_IN_EPOCH == SLOTS_IN_EPOCH.get().saturating_sub(1) {
                     if let Ok(rtt) = req_get_attester_duties_for_epoch(target, epoch).await { duties_attester.push(rtt); }
                     if let Ok(rtt) = req_get_sync_committee_duties_for_epoch(target, epoch).await { duties_sync_committee.push(rtt); }
-                    if let Ok(rtt) = req_get_sync_committee_duties_for_epoch(target, epoch + 256).await { duties_sync_committee.push(rtt); }
+                    if let Ok(rtt) = req_get_sync_committee_duties_for_epoch(target, epoch.saturating_add(256)).await { duties_sync_committee.push(rtt); }
                 }
             }
             _ = interval_12_slots.tick() => {
@@ -1272,7 +1275,7 @@ async fn single_validator_simulation(
         let contribution_cumulative: Vec<_> = produce_sync_committee_contribution_all
             .iter()
             .zip(&submit_sync_committee_contribution_all)
-            .map(|(a, b)| *a + *b)
+            .map(|(a, b)| a.saturating_add(*b))
             .collect();
 
         let mut sc_all = Vec::new();
@@ -1314,6 +1317,7 @@ async fn attestation_duty(
     get_tx: mpsc::Sender<StdDuration>,
     submit_tx: mpsc::Sender<StdDuration>,
 ) {
+    #[allow(clippy::arithmetic_side_effects)] // Instant + Duration; bounded sim_duration
     let deadline = tokio::time::Instant::now() + sim_duration;
     tokio::time::sleep(randomize_start(tick_time)).await;
 
@@ -1337,7 +1341,7 @@ async fn attestation_duty(
             _ = cancel.cancelled() => break,
             _ = tokio::time::sleep_until(deadline) => break,
             _ = interval.tick() => {
-                slot += tick_time.as_secs() / SLOT_TIME.as_secs();
+                slot = slot.saturating_add(tick_time.as_secs() / SLOT_TIME_SECS);
             }
         }
     }
@@ -1351,6 +1355,7 @@ async fn aggregation_duty(
     get_tx: mpsc::Sender<StdDuration>,
     submit_tx: mpsc::Sender<StdDuration>,
 ) {
+    #[allow(clippy::arithmetic_side_effects)] // Instant + Duration; bounded sim_duration
     let deadline = tokio::time::Instant::now() + sim_duration;
     let mut slot = get_current_slot(target).await.unwrap_or(1);
     tokio::time::sleep(randomize_start(tick_time)).await;
@@ -1379,7 +1384,7 @@ async fn aggregation_duty(
             _ = cancel.cancelled() => break,
             _ = tokio::time::sleep_until(deadline) => break,
             _ = interval.tick() => {
-                slot += tick_time.as_secs() / SLOT_TIME.as_secs();
+                slot = slot.saturating_add(tick_time.as_secs() / SLOT_TIME_SECS);
             }
         }
     }
@@ -1393,6 +1398,7 @@ async fn proposal_duty(
     produce_tx: mpsc::Sender<StdDuration>,
     publish_tx: mpsc::Sender<StdDuration>,
 ) {
+    #[allow(clippy::arithmetic_side_effects)] // Instant + Duration; bounded sim_duration
     let deadline = tokio::time::Instant::now() + sim_duration;
     tokio::time::sleep(randomize_start(tick_time)).await;
 
@@ -1416,7 +1422,7 @@ async fn proposal_duty(
             _ = cancel.cancelled() => break,
             _ = tokio::time::sleep_until(deadline) => break,
             _ = interval.tick() => {
-                slot += tick_time.as_secs() / SLOT_TIME.as_secs() + 1;
+                slot = slot.saturating_add(tick_time.as_secs() / SLOT_TIME_SECS).saturating_add(1);
             }
         }
     }
@@ -1456,6 +1462,7 @@ async fn sync_committee_duties(
     });
 
     // Subscribe loop
+    #[allow(clippy::arithmetic_side_effects)] // Instant + Duration; bounded sim_duration
     let deadline = tokio::time::Instant::now() + sim_duration;
     tokio::time::sleep(randomize_start(tick_time_subscribe)).await;
     let mut interval = tokio::time::interval(tick_time_subscribe);
@@ -1485,6 +1492,7 @@ async fn sync_committee_contribution_duty(
     produce_tx: mpsc::Sender<StdDuration>,
     contrib_tx: mpsc::Sender<StdDuration>,
 ) {
+    #[allow(clippy::arithmetic_side_effects)] // Instant + Duration; bounded sim_duration
     let deadline = tokio::time::Instant::now() + sim_duration;
     tokio::time::sleep(randomize_start(tick_time)).await;
     let mut interval = tokio::time::interval(tick_time);
@@ -1511,7 +1519,7 @@ async fn sync_committee_contribution_duty(
             _ = cancel.cancelled() => break,
             _ = tokio::time::sleep_until(deadline) => break,
             _ = interval.tick() => {
-                slot += tick_time.as_secs() / SLOT_TIME.as_secs();
+                slot = slot.saturating_add(tick_time.as_secs() / SLOT_TIME_SECS);
             }
         }
     }
@@ -1524,6 +1532,7 @@ async fn sync_committee_message_duty(
     tick_time: StdDuration,
     msg_tx: mpsc::Sender<StdDuration>,
 ) {
+    #[allow(clippy::arithmetic_side_effects)] // Instant + Duration; bounded sim_duration
     let deadline = tokio::time::Instant::now() + sim_duration;
     tokio::time::sleep(randomize_start(tick_time)).await;
     let mut interval = tokio::time::interval(tick_time);
@@ -1585,7 +1594,11 @@ fn compute_two_phase_results(
 ) -> (SimulationValues, SimulationValues, SimulationValues) {
     let first_vals = generate_simulation_values(first, first_endpoint);
     let second_vals = generate_simulation_values(second, second_endpoint);
-    let cumulative: Vec<_> = first.iter().zip(second).map(|(a, b)| *a + *b).collect();
+    let cumulative: Vec<_> = first
+        .iter()
+        .zip(second)
+        .map(|(a, b)| a.saturating_add(*b))
+        .collect();
     all_requests.extend_from_slice(&cumulative);
     let cumulative_vals = generate_simulation_values(&cumulative, "");
     (cumulative_vals, first_vals, second_vals)
@@ -1603,10 +1616,15 @@ fn generate_simulation_values(durations: &[StdDuration], endpoint: &str) -> Simu
     sorted.sort();
 
     let min = sorted[0];
-    let max = sorted[sorted.len() - 1];
+    let max = sorted[sorted.len().saturating_sub(1)];
     let median = sorted[sorted.len() / 2];
     let sum: StdDuration = durations.iter().sum();
-    let avg = sum / durations.len() as u32;
+    let count = u32::try_from(durations.len()).unwrap_or_else(|_| {
+        tracing::warn!("Failed to convert duration length to u32");
+        u32::MAX
+    });
+    #[allow(clippy::arithmetic_side_effects)] // count is non-zero (early return above)
+    let avg = sum / count;
 
     let all: Vec<Duration> = durations.iter().map(|d| Duration::new(*d)).collect();
 
@@ -1746,9 +1764,12 @@ fn cancel_after(token: &tokio_util::sync::CancellationToken, duration: StdDurati
 }
 
 fn randomize_start(tick_time: StdDuration) -> StdDuration {
-    let slots = (tick_time.as_secs() / SLOT_TIME.as_secs()).max(1);
+    let slots = (tick_time.as_secs() / SLOT_TIME_SECS).max(1);
     let random_slots = rand::thread_rng().gen_range(0..slots);
-    SLOT_TIME * random_slots as u32
+    SLOT_TIME.saturating_mul(u32::try_from(random_slots).unwrap_or_else(|_| {
+        tracing::warn!("Failed to convert random slots to u32");
+        u32::MAX
+    }))
 }
 
 fn strip_verbose(sim: &mut Simulation) {
@@ -2136,7 +2157,7 @@ mod tests {
             endpoints,
             load_test: false,
             load_test_duration: StdDuration::from_secs(5),
-            simulation_duration: SLOTS_IN_EPOCH,
+            simulation_duration: SLOTS_IN_EPOCH.get(),
             simulation_file_dir: std::path::PathBuf::from("./"),
             simulation_verbose: false,
             simulation_custom: 0,
