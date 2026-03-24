@@ -356,9 +356,7 @@ async fn handle_inbound_sig_request(
     .await
     .map_err(|_| Error::Message("signature request timed out".to_string()))??;
 
-    let any = request
-        .message
-        .ok_or(Error::MissingField("message"))?;
+    let any = request.message.ok_or(Error::MissingField("message"))?;
 
     let handler = {
         let registry_guard = registry.read().await;
@@ -419,9 +417,7 @@ async fn handle_inbound_msg(
     .await
     .map_err(|_| Error::Message("broadcast receive timed out".to_string()))??;
 
-    let any = message
-        .message
-        .ok_or(Error::MissingField("message"))?;
+    let any = message.message.ok_or(Error::MissingField("message"))?;
     let signatures = message
         .signatures
         .iter()

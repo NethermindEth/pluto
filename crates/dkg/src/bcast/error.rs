@@ -139,5 +139,4 @@ pub enum Error {
     /// A user-supplied check or callback failed.
     #[error("{0}")]
     Message(String),
-
 }
