@@ -95,20 +95,19 @@ impl Behaviour {
             .and_then(|connections| connections.iter().next().copied())
     }
 
+    fn new_handler(&self, peer: PeerId) -> Handler {
+        Handler::new(
+            peer,
+            self.registry.clone(),
+            self.dedup.clone(),
+            self.secret.clone(),
+            self.peers.clone(),
+        )
+    }
+
     fn complete_active_broadcast(&mut self, result: Result<()>) {
         if let Some(state) = self.active_broadcast.take() {
             let _ = state.resp_tx.send(result);
-        }
-    }
-
-    fn fail_if_peer_pending(&mut self, peer_id: &PeerId) {
-        let should_fail = self.active_broadcast.as_ref().is_some_and(|state| {
-            state.sig_ops.values().any(|op| &op.peer == peer_id)
-                || state.msg_ops.values().any(|peer| peer == peer_id)
-        });
-
-        if should_fail {
-            self.complete_active_broadcast(Err(Error::PeerNotConnected(*peer_id)));
         }
     }
 
@@ -135,31 +134,25 @@ impl Behaviour {
         any_msg: prost_types::Any,
         resp_tx: oneshot::Sender<Result<()>>,
     ) {
-        let result = self.start_broadcast_inner(msg_id, any_msg, resp_tx);
-        if let Err((error, resp_tx)) = result {
-            let _ = resp_tx.send(Err(error));
-        }
-    }
-
-    fn start_broadcast_inner(
-        &mut self,
-        msg_id: String,
-        any_msg: prost_types::Any,
-        resp_tx: oneshot::Sender<Result<()>>,
-    ) -> std::result::Result<(), (Error, oneshot::Sender<Result<()>>)> {
         let local_index = match self
             .peers
             .iter()
             .position(|peer_id| peer_id == &self.local_peer_id)
         {
             Some(index) => index,
-            None => return Err((Error::LocalPeerMissing, resp_tx)),
+            None => {
+                let _ = resp_tx.send(Err(Error::LocalPeerMissing));
+                return;
+            }
         };
 
         let mut signatures = vec![None; self.peers.len()];
         let local_signature = match protocol::sign_any(&self.secret, &any_msg) {
             Ok(signature) => signature,
-            Err(error) => return Err((error, resp_tx)),
+            Err(error) => {
+                let _ = resp_tx.send(Err(error));
+                return;
+            }
         };
         signatures[local_index] = Some(local_signature);
 
@@ -173,7 +166,8 @@ impl Behaviour {
             let connection_id = match self.connection_for(peer_id) {
                 Some(connection_id) => connection_id,
                 None => {
-                    return Err((Error::PeerNotConnected(*peer_id), resp_tx));
+                    let _ = resp_tx.send(Err(Error::PeerNotConnected(*peer_id)));
+                    return;
                 }
             };
             sig_dispatches.push((index, *peer_id, connection_id));
@@ -214,7 +208,6 @@ impl Behaviour {
         if let Err(error) = self.maybe_advance_broadcast() {
             self.complete_active_broadcast(Err(error));
         }
-        Ok(())
     }
 
     fn maybe_advance_broadcast(&mut self) -> Result<()> {
@@ -247,9 +240,9 @@ impl Behaviour {
                 .collect::<Vec<_>>(),
         };
 
-        let peers: Arc<Vec<PeerId>> = self.peers.clone();
+        let peer_ids: Vec<PeerId> = self.peers.iter().copied().collect();
         let mut dispatches: Vec<(PeerId, ConnectionId, u64)> = Vec::new();
-        for peer_id in peers.iter().copied() {
+        for peer_id in peer_ids {
             if peer_id == self.local_peer_id {
                 continue;
             }
@@ -344,13 +337,7 @@ impl NetworkBehaviour for Behaviour {
         _local_addr: &Multiaddr,
         _remote_addr: &Multiaddr,
     ) -> std::result::Result<THandler<Self>, ConnectionDenied> {
-        Ok(Handler::new(
-            peer,
-            self.registry.clone(),
-            self.dedup.clone(),
-            self.secret.clone(),
-            self.peers.clone(),
-        ))
+        Ok(self.new_handler(peer))
     }
 
     fn handle_established_outbound_connection(
@@ -361,13 +348,7 @@ impl NetworkBehaviour for Behaviour {
         _role_override: libp2p::core::Endpoint,
         _port_use: libp2p::core::transport::PortUse,
     ) -> std::result::Result<THandler<Self>, ConnectionDenied> {
-        Ok(Handler::new(
-            peer,
-            self.registry.clone(),
-            self.dedup.clone(),
-            self.secret.clone(),
-            self.peers.clone(),
-        ))
+        Ok(self.new_handler(peer))
     }
 
     fn on_swarm_event(&mut self, event: FromSwarm) {
@@ -383,7 +364,16 @@ impl NetworkBehaviour for Behaviour {
                     connections.remove(&event.connection_id);
                     if connections.is_empty() {
                         self.connections.remove(&event.peer_id);
-                        self.fail_if_peer_pending(&event.peer_id);
+                        let should_fail = self.active_broadcast.as_ref().is_some_and(|state| {
+                            state.sig_ops.values().any(|op| op.peer == event.peer_id)
+                                || state.msg_ops.values().any(|peer| *peer == event.peer_id)
+                        });
+
+                        if should_fail {
+                            self.complete_active_broadcast(Err(Error::PeerNotConnected(
+                                event.peer_id,
+                            )));
+                        }
                     }
                 }
             }
