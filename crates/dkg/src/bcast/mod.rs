@@ -1,12 +1,3 @@
-//! Reliable broadcast for DKG messages.
-//!
-//! This module ports Go `charon/dkg/bcast` to Rust. It keeps the libp2p
-//! protocol implementation local to `pluto-dkg` and exposes a user-facing
-//! [`Component`] handle plus a swarm-owned [`Behaviour`].
-//!
-//! Registered callbacks must remain lightweight and non-blocking. Heavy work
-//! should be handed off through channels or spawned tasks.
-
 use std::time::Duration;
 
 use libp2p::swarm::StreamProtocol;
@@ -14,7 +5,6 @@ use libp2p::swarm::StreamProtocol;
 mod behaviour;
 mod component;
 mod error;
-#[doc(hidden)]
 pub mod handler;
 mod protocol;
 

@@ -95,12 +95,18 @@ pub enum OutEvent {
 /// Internal outbound-open information used by the connection handler.
 #[derive(Debug)]
 pub enum PendingOpen {
+    /// Open a `/sig` substream and send a signature request.
     Sig {
+        /// Operation identifier.
         op_id: u64,
+        /// Signature request to send.
         request: BCastSigRequest,
     },
+    /// Open a `/msg` substream and send a fully-signed broadcast message.
     Msg {
+        /// Operation identifier.
         op_id: u64,
+        /// Broadcast message to send.
         message: BCastMessage,
     },
 }
