@@ -25,6 +25,7 @@ pluto-p2p.workspace = true
 pluto-eth2util.workspace = true
 pluto-eth1wrap.workspace = true
 pluto-k1util.workspace = true
+pluto-ssz.workspace = true
 k256.workspace = true
 tokio.workspace = true
 reqwest = { workspace = true, features = ["json"] }
@@ -45,4 +46,4 @@ wiremock.workspace = true
 workspace = true
 
 [features]
-test-cluster = []
+test-cluster = ["dep:pluto-testutil"]

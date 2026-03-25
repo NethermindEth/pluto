@@ -78,9 +78,9 @@ pub enum Error {
     #[error("Signature array is empty")]
     EmptySignatureArray,
 
-    /// Math error during field operations.
-    #[error("Math error: {0}")]
-    MathError(#[from] MathError),
+    /// Division by zero.
+    #[error("Division by zero")]
+    DivisionByZero,
 
     /// Failed to convert secret key to blst scalar.
     #[error("Failed to convert secret key to blst scalar")]
@@ -188,27 +188,4 @@ impl From<BLST_ERROR> for Error {
     fn from(err: BLST_ERROR) -> Self {
         Error::BlsError(BlsError::from(err))
     }
-}
-
-/// Math error type.
-///
-/// This enum represents all possible math errors that can occur during
-/// arithmetic operations in the charon-crypto library.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum MathError {
-    /// Integer overflow during share ID calculation.
-    #[error("Integer overflow")]
-    IntegerOverflow,
-
-    /// Integer underflow during arithmetic operation.
-    #[error("Integer underflow")]
-    IntegerUnderflow,
-
-    /// Division by zero attempted.
-    #[error("Division by zero")]
-    DivisionByZero,
-
-    /// Modulo by zero attempted.
-    #[error("Modulo by zero")]
-    ModuloByZero,
 }

@@ -27,9 +27,11 @@ chrono.workspace = true
 regex.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+serde_with.workspace = true
 tree_hash.workspace = true
 tree_hash_derive.workspace = true
 pluto-crypto.workspace = true
+pluto-ssz.workspace = true
 tokio.workspace = true
 pluto-eth2api.workspace = true
 walkdir.workspace = true

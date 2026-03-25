@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tree_hash_derive::TreeHash;
 
+pub use pluto_ssz::{BitList, SszList, SszVector};
+
 /// Fork version length in bytes.
 pub const VERSION_LEN: usize = 4;
 /// Signature domain length in bytes.
@@ -19,6 +21,20 @@ pub const WITHDRAWAL_CREDENTIALS_LEN: usize = 32;
 pub const BLS_PUBKEY_LEN: usize = 48;
 /// BLS signature length in bytes.
 pub const BLS_SIGNATURE_LEN: usize = 96;
+/// Number of branch elements in a deposit proof.
+pub const DEPOSIT_PROOF_LEN: usize = 33;
+/// Maximum number of proposer slashings per block.
+pub const MAX_PROPOSER_SLASHINGS: usize = 16;
+/// Maximum number of attester slashings per block.
+pub const MAX_ATTESTER_SLASHINGS: usize = 2;
+/// Maximum number of attestations per block.
+pub const MAX_ATTESTATIONS: usize = 128;
+/// Maximum number of deposits per block.
+pub const MAX_DEPOSITS: usize = 16;
+/// Maximum number of voluntary exits per block.
+pub const MAX_VOLUNTARY_EXITS: usize = 16;
+/// Maximum number of validators in a committee.
+pub const MAX_VALIDATORS_PER_COMMITTEE: usize = 2_048;
 
 /// An amount in Gwei.
 pub type Gwei = u64;
@@ -44,6 +60,9 @@ pub type DomainType = [u8; DOMAIN_TYPE_LEN];
 /// A Merkle root.
 pub type Root = [u8; ROOT_LEN];
 
+/// A 32-byte execution hash.
+pub type Hash32 = [u8; ROOT_LEN];
+
 /// Withdrawal credentials.
 pub type WithdrawalCredentials = [u8; WITHDRAWAL_CREDENTIALS_LEN];
 
@@ -60,12 +79,13 @@ pub type BLSSignature = [u8; BLS_SIGNATURE_LEN];
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct DepositMessage {
     /// BLS public key.
-    #[serde_as(as = "serde_with::hex::Hex")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub pubkey: BLSPubKey,
     /// Withdrawal credentials.
-    #[serde_as(as = "serde_with::hex::Hex")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub withdrawal_credentials: WithdrawalCredentials,
     /// Amount in Gwei.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
     pub amount: Gwei,
 }
 
@@ -86,15 +106,16 @@ impl From<&DepositData> for DepositMessage {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct DepositData {
     /// BLS public key.
-    #[serde_as(as = "serde_with::hex::Hex")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub pubkey: BLSPubKey,
     /// Withdrawal credentials.
-    #[serde_as(as = "serde_with::hex::Hex")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub withdrawal_credentials: WithdrawalCredentials,
     /// Amount in Gwei.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
     pub amount: Gwei,
     /// BLS signature.
-    #[serde_as(as = "serde_with::hex::Hex")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: BLSSignature,
 }
 
@@ -105,10 +126,10 @@ pub struct DepositData {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct ForkData {
     /// Current fork version.
-    #[serde_as(as = "serde_with::hex::Hex")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub current_version: Version,
     /// Genesis validators root.
-    #[serde_as(as = "serde_with::hex::Hex")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub genesis_validators_root: Root,
 }
 
@@ -119,16 +140,288 @@ pub struct ForkData {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct SigningData {
     /// Object root.
-    #[serde_as(as = "serde_with::hex::Hex")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub object_root: Root,
     /// Signature domain.
-    #[serde_as(as = "serde_with::hex::Hex")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub domain: Domain,
+}
+
+/// ETH1 voting data.
+///
+/// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#eth1data>
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+pub struct ETH1Data {
+    /// Deposit tree root.
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
+    pub deposit_root: Root,
+    /// Deposit count at the voted ETH1 block.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub deposit_count: u64,
+    /// ETH1 block hash.
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
+    pub block_hash: Hash32,
+}
+
+/// Beacon block header.
+///
+/// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#beaconblockheader>
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+pub struct BeaconBlockHeader {
+    /// Block slot.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub slot: Slot,
+    /// Proposer validator index.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub proposer_index: ValidatorIndex,
+    /// Parent root.
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
+    pub parent_root: Root,
+    /// State root.
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
+    pub state_root: Root,
+    /// Body root.
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
+    pub body_root: Root,
+}
+
+/// Signed beacon block header.
+///
+/// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#signedbeaconblockheader>
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+pub struct SignedBeaconBlockHeader {
+    /// Unsigned beacon block header.
+    pub message: BeaconBlockHeader,
+    /// Signature over the header.
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
+    pub signature: BLSSignature,
+}
+
+/// Proposer slashing container.
+///
+/// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#proposerslashing>
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+pub struct ProposerSlashing {
+    /// First conflicting signed header.
+    pub signed_header_1: SignedBeaconBlockHeader,
+    /// Second conflicting signed header.
+    pub signed_header_2: SignedBeaconBlockHeader,
+}
+
+/// Indexed attestation.
+///
+/// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#indexedattestation>
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+pub struct IndexedAttestation {
+    /// Indices of attesting validators.
+    #[serde(with = "pluto_ssz::serde_utils::ssz_list_u64_string_serde")]
+    pub attesting_indices: SszList<ValidatorIndex, MAX_VALIDATORS_PER_COMMITTEE>,
+    /// Attestation data.
+    pub data: AttestationData,
+    /// Aggregate signature.
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
+    pub signature: BLSSignature,
+}
+
+/// Attester slashing container.
+///
+/// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#attesterslashing>
+#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+pub struct AttesterSlashing {
+    /// First conflicting indexed attestation.
+    pub attestation_1: IndexedAttestation,
+    /// Second conflicting indexed attestation.
+    pub attestation_2: IndexedAttestation,
+}
+
+/// Deposit operation container.
+///
+/// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#deposit>
+#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+pub struct Deposit {
+    /// Merkle proof branch.
+    pub proof: SszVector<Root, DEPOSIT_PROOF_LEN>,
+    /// Deposit data.
+    pub data: DepositData,
+}
+
+/// Phase0 beacon block body.
+///
+/// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#beaconblockbody>
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+pub struct BeaconBlockBody {
+    /// RANDAO reveal.
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
+    pub randao_reveal: BLSSignature,
+    /// ETH1 data vote.
+    pub eth1_data: ETH1Data,
+    /// Graffiti bytes.
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
+    pub graffiti: Root,
+    /// Proposer slashings included in the block.
+    pub proposer_slashings: SszList<ProposerSlashing, MAX_PROPOSER_SLASHINGS>,
+    /// Attester slashings included in the block.
+    pub attester_slashings: SszList<AttesterSlashing, MAX_ATTESTER_SLASHINGS>,
+    /// Attestations included in the block.
+    pub attestations: SszList<Attestation, MAX_ATTESTATIONS>,
+    /// Deposits included in the block.
+    pub deposits: SszList<Deposit, MAX_DEPOSITS>,
+    /// Voluntary exits included in the block.
+    pub voluntary_exits: SszList<SignedVoluntaryExit, MAX_VOLUNTARY_EXITS>,
+}
+
+/// Phase0 beacon block.
+///
+/// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#beaconblock>
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+pub struct BeaconBlock {
+    /// Block slot.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub slot: Slot,
+    /// Proposer validator index.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub proposer_index: ValidatorIndex,
+    /// Parent root.
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
+    pub parent_root: Root,
+    /// State root.
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
+    pub state_root: Root,
+    /// Block body.
+    pub body: BeaconBlockBody,
+}
+
+/// Signed phase0 beacon block.
+///
+/// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#signedbeaconblock>
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+pub struct SignedBeaconBlock {
+    /// Unsigned block message.
+    pub message: BeaconBlock,
+    /// Signature of the message.
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
+    pub signature: BLSSignature,
+}
+
+/// A checkpoint in the beacon chain.
+///
+/// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#checkpoint>
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+pub struct Checkpoint {
+    /// Epoch associated with the checkpoint.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub epoch: Epoch,
+    /// Root of the checkpoint.
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
+    pub root: Root,
+}
+
+/// Attestation data.
+///
+/// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#attestationdata>
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+pub struct AttestationData {
+    /// Slot for the attestation.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub slot: Slot,
+    /// Committee index.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub index: u64,
+    /// Beacon block root.
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
+    pub beacon_block_root: Root,
+    /// Source checkpoint.
+    pub source: Checkpoint,
+    /// Target checkpoint.
+    pub target: Checkpoint,
+}
+
+/// Attestation object.
+///
+/// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#attestation>
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+pub struct Attestation {
+    /// Aggregation bits.
+    pub aggregation_bits: BitList<2048>,
+    /// Attestation data.
+    pub data: AttestationData,
+    /// Aggregate signature.
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
+    pub signature: BLSSignature,
+}
+
+/// Aggregate-and-proof payload.
+///
+/// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/validator.md#aggregateandproof>
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+pub struct AggregateAndProof {
+    /// Aggregator validator index.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub aggregator_index: ValidatorIndex,
+    /// Aggregate attestation.
+    pub aggregate: Attestation,
+    /// Selection proof.
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
+    pub selection_proof: BLSSignature,
+}
+
+/// Signed aggregate-and-proof payload.
+///
+/// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/validator.md#signedaggregateandproof>
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+pub struct SignedAggregateAndProof {
+    /// Unsigned message.
+    pub message: AggregateAndProof,
+    /// Signature of the message.
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
+    pub signature: BLSSignature,
+}
+
+/// Voluntary exit message.
+///
+/// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#voluntaryexit>
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+pub struct VoluntaryExit {
+    /// Exit epoch.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub epoch: Epoch,
+    /// Validator index requesting exit.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub validator_index: ValidatorIndex,
+}
+
+/// Signed voluntary exit message.
+///
+/// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#signedvoluntaryexit>
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+pub struct SignedVoluntaryExit {
+    /// Unsigned voluntary exit message.
+    pub message: VoluntaryExit,
+    /// Signature of the message.
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
+    pub signature: BLSSignature,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_fixtures;
+    use test_case::test_case;
     use tree_hash::TreeHash;
 
     fn hex_to_bytes<const N: usize>(hex: &str) -> [u8; N] {
@@ -244,5 +537,141 @@ mod tests {
             &signing_data,
             "6ad6de7d10b1bfddd4dccb3835df79f08a3fbe478a9894e817e48f24545ae2ec",
         );
+    }
+
+    #[test]
+    fn attestation_data_tree_hash_vector() {
+        let data = AttestationData {
+            slot: 1,
+            index: 2,
+            beacon_block_root: [0x11; 32],
+            source: Checkpoint {
+                epoch: 3,
+                root: [0x22; 32],
+            },
+            target: Checkpoint {
+                epoch: 4,
+                root: [0x33; 32],
+            },
+        };
+
+        assert_tree_hash(
+            &data,
+            "0e2611469670519087ad67c1374a94cbe148b165117d396b93f344636a702ba6",
+        );
+    }
+
+    #[test]
+    fn attestation_tree_hash_vector() {
+        let data = AttestationData {
+            slot: 1,
+            index: 2,
+            beacon_block_root: [0x11; 32],
+            source: Checkpoint {
+                epoch: 3,
+                root: [0x22; 32],
+            },
+            target: Checkpoint {
+                epoch: 4,
+                root: [0x33; 32],
+            },
+        };
+
+        let aggregation_bits = BitList::<2048>::with_bits(8, &[0]);
+
+        let attestation = Attestation {
+            aggregation_bits,
+            data,
+            signature: [0x44; 96],
+        };
+
+        assert_tree_hash(
+            &attestation,
+            "a8daa382f9475b7dc006f17d8f346fc6478dadaba5c67f3115a825a6886b3595",
+        );
+    }
+
+    #[test]
+    fn aggregate_and_proof_tree_hash_vector() {
+        let data = AttestationData {
+            slot: 1,
+            index: 2,
+            beacon_block_root: [0x11; 32],
+            source: Checkpoint {
+                epoch: 3,
+                root: [0x22; 32],
+            },
+            target: Checkpoint {
+                epoch: 4,
+                root: [0x33; 32],
+            },
+        };
+
+        let aggregation_bits = BitList::<2048>::with_bits(8, &[0]);
+
+        let aggregate_and_proof = AggregateAndProof {
+            aggregator_index: 7,
+            aggregate: Attestation {
+                aggregation_bits,
+                data,
+                signature: [0x44; 96],
+            },
+            selection_proof: [0x55; 96],
+        };
+
+        assert_tree_hash(
+            &aggregate_and_proof,
+            "ed20e5f79897447b03e31d2f89548acb66bb694fe177118539bb85f09d4b5073",
+        );
+    }
+
+    #[test_case(
+        test_fixtures::tree_hash_hex(&test_fixtures::phase0_deposit_fixture()),
+        test_fixtures::VECTORS.phase0_deposit_root;
+        "deposit_root"
+    )]
+    #[test_case(
+        test_fixtures::tree_hash_hex(&test_fixtures::phase0_beacon_block_body_fixture()),
+        test_fixtures::VECTORS.phase0_beacon_block_body_root;
+        "beacon_block_body_root"
+    )]
+    #[test_case(
+        test_fixtures::tree_hash_hex(&test_fixtures::phase0_beacon_block_fixture()),
+        test_fixtures::VECTORS.phase0_beacon_block_root;
+        "beacon_block_root"
+    )]
+    fn tree_hash_matches_vector(actual: String, expected: &'static str) {
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn ssz_vector_bounds_are_enforced_on_deposit_proof_deserialize() {
+        let proof: Vec<Root> = (1_u8..=34).map(test_fixtures::seq::<32>).collect();
+        let deposit = Deposit {
+            proof: SszVector(proof),
+            data: DepositData {
+                pubkey: test_fixtures::seq::<48>(0x10),
+                withdrawal_credentials: test_fixtures::seq::<32>(0x20),
+                amount: 32_000_000_000,
+                signature: test_fixtures::seq::<96>(0x30),
+            },
+        };
+
+        let json = serde_json::to_string(&deposit).expect("serialize");
+        let roundtrip: Result<Deposit, _> = serde_json::from_str(json.as_str());
+        assert!(roundtrip.is_err());
+    }
+
+    #[test]
+    fn indexed_attestation_indices_json_are_strings() {
+        let body = test_fixtures::phase0_beacon_block_body_fixture();
+        let indexed = body.attester_slashings.0[0].attestation_1.clone();
+
+        let json = serde_json::to_value(&indexed).expect("serialize indexed attestation");
+        assert_eq!(json["attesting_indices"], serde_json::json!(["11", "12"]));
+
+        let roundtrip: IndexedAttestation =
+            serde_json::from_value(json).expect("deserialize indexed attestation");
+        assert_eq!(roundtrip.attesting_indices.0, vec![11, 12]);
     }
 }
