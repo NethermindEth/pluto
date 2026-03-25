@@ -5495,7 +5495,6 @@ dependencies = [
  "prost-build",
  "prost-types 0.14.3",
  "rand 0.8.5",
- "rand_core 0.6.4",
  "reqwest 0.13.2",
  "serde",
  "serde_json",
@@ -5555,9 +5554,23 @@ dependencies = [
 name = "pluto-dkg"
 version = "1.7.1"
 dependencies = [
+ "hex",
  "pluto-build-proto",
+ "pluto-cluster",
+ "pluto-crypto",
+ "pluto-eth1wrap",
+ "pluto-eth2util",
  "prost 0.14.3",
  "prost-types 0.14.3",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+ "zeroize",
 ]
 
 [[package]]

@@ -19,7 +19,7 @@ pluto-core.workspace = true
 pluto-crypto.workspace = true
 pluto-eth2api.workspace = true
 thiserror.workspace = true
-rand_core.workspace = true
+rand.workspace = true
 libp2p.workspace = true
 pluto-p2p.workspace = true
 pluto-eth2util.workspace = true
@@ -29,6 +29,9 @@ pluto-ssz.workspace = true
 k256.workspace = true
 tokio.workspace = true
 reqwest = { workspace = true, features = ["json"] }
+# Workaround to use test code from different crate.
+# See: https://github.com/NethermindEth/pluto/pull/285
+pluto-testutil = { workspace = true, optional = true }
 
 [build-dependencies]
 prost-build.workspace = true
@@ -36,9 +39,11 @@ prost-build.workspace = true
 [dev-dependencies]
 test-case.workspace = true
 pluto-testutil.workspace = true
-rand.workspace = true
 tempfile.workspace = true
 wiremock.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+test-cluster = ["dep:pluto-testutil"]
