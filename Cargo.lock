@@ -5415,6 +5415,7 @@ dependencies = [
  "pluto-crypto",
  "pluto-eth2api",
  "pluto-k1util",
+ "pluto-ssz",
  "pluto-tracing",
  "prost 0.14.3",
  "prost-types 0.14.3",
@@ -5458,6 +5459,7 @@ dependencies = [
  "pluto-k1util",
  "pluto-p2p",
  "pluto-relay-server",
+ "pluto-ssz",
  "pluto-tracing",
  "rand 0.8.5",
  "reqwest 0.13.2",
@@ -5487,6 +5489,7 @@ dependencies = [
  "pluto-eth2util",
  "pluto-k1util",
  "pluto-p2p",
+ "pluto-ssz",
  "pluto-testutil",
  "prost 0.14.3",
  "prost-build",
@@ -5520,6 +5523,7 @@ dependencies = [
  "pluto-build-proto",
  "pluto-eth2api",
  "pluto-eth2util",
+ "pluto-ssz",
  "prost 0.14.3",
  "prost-types 0.14.3",
  "rand 0.8.5",
@@ -5576,6 +5580,7 @@ dependencies = [
  "hex",
  "http",
  "oas3-gen-support",
+ "pluto-ssz",
  "regex",
  "reqwest 0.13.2",
  "serde",
@@ -5607,6 +5612,7 @@ dependencies = [
  "pluto-crypto",
  "pluto-eth2api",
  "pluto-k1util",
+ "pluto-ssz",
  "pluto-testutil",
  "rand 0.8.5",
  "regex",
@@ -5729,6 +5735,19 @@ dependencies = [
  "tracing",
  "vise",
  "vise-exporter",
+]
+
+[[package]]
+name = "pluto-ssz"
+version = "1.7.1"
+dependencies = [
+ "hex",
+ "k256",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "thiserror 2.0.18",
+ "tree_hash",
 ]
 
 [[package]]

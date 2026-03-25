@@ -11,7 +11,7 @@ pub struct SignedEpoch {
     pub epoch: phase0::Epoch,
     /// BLS signature for the epoch.
     #[tree_hash(skip_hashing)]
-    #[serde_as(as = "pluto_eth2api::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: phase0::BLSSignature,
 }
 

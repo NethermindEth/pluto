@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tree_hash_derive::TreeHash;
 
-use crate::spec::ssz_types::BitVector;
+use pluto_ssz::BitVector;
 
 use crate::spec::phase0;
 
@@ -17,7 +17,7 @@ pub struct SyncAggregate {
     /// Sync committee participation bits.
     pub sync_committee_bits: BitVector<512>,
     /// Aggregate sync committee signature.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub sync_committee_signature: phase0::BLSSignature,
 }
 
@@ -28,12 +28,12 @@ pub struct SyncAggregate {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct BeaconBlockBody {
     /// RANDAO reveal.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub randao_reveal: phase0::BLSSignature,
     /// ETH1 data vote.
     pub eth1_data: phase0::ETH1Data,
     /// Graffiti bytes.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub graffiti: phase0::Root,
     /// Proposer slashings included in the block.
     pub proposer_slashings:
@@ -65,10 +65,10 @@ pub struct BeaconBlock {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub proposer_index: phase0::ValidatorIndex,
     /// Parent root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub parent_root: phase0::Root,
     /// State root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub state_root: phase0::Root,
     /// Block body.
     pub body: BeaconBlockBody,
@@ -83,7 +83,7 @@ pub struct SignedBeaconBlock {
     /// Unsigned block message.
     pub message: BeaconBlock,
     /// Signature of the message.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: phase0::BLSSignature,
 }
 
@@ -97,13 +97,13 @@ pub struct SyncCommitteeMessage {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub slot: phase0::Slot,
     /// Beacon block root being signed.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub beacon_block_root: phase0::Root,
     /// Validator index emitting the message.
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub validator_index: phase0::ValidatorIndex,
     /// Signature over the message.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: phase0::BLSSignature,
 }
 
@@ -117,7 +117,7 @@ pub struct SyncCommitteeContribution {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub slot: phase0::Slot,
     /// Beacon block root being contributed for.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub beacon_block_root: phase0::Root,
     /// Subcommittee index.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -125,7 +125,7 @@ pub struct SyncCommitteeContribution {
     /// Aggregation bits for the contribution.
     pub aggregation_bits: BitVector<128>,
     /// Contribution signature.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: phase0::BLSSignature,
 }
 
@@ -141,7 +141,7 @@ pub struct ContributionAndProof {
     /// Sync committee contribution.
     pub contribution: SyncCommitteeContribution,
     /// Selection proof.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub selection_proof: phase0::BLSSignature,
 }
 
@@ -154,7 +154,7 @@ pub struct SignedContributionAndProof {
     /// Unsigned contribution-and-proof message.
     pub message: ContributionAndProof,
     /// Signature over the message.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: phase0::BLSSignature,
 }
 
