@@ -155,11 +155,17 @@ pub async fn write_to_keymanager(
     auth_token: impl AsRef<str>,
     shares: &[share::Share],
 ) -> Result<()> {
+    let mut rng = rand::rngs::OsRng;
+
     let mut keystores = Vec::new();
     let mut passwords = Vec::new();
 
     for share in shares {
-        let password = random_hex64();
+        let password = {
+            let mut bytes = [0u8; 32];
+            rng.fill_bytes(&mut bytes);
+            hex::encode(bytes)
+        };
         let store = pluto_eth2util::keystore::encrypt(
             &share.secret_share,
             &password,
@@ -316,15 +322,6 @@ pub async fn check_writes(data_dir: impl AsRef<path::Path>) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Generate a random 32-byte value and return it as a hex string.
-fn random_hex64() -> String {
-    let mut rng = rand::rngs::OsRng;
-
-    let mut bytes = [0u8; 32];
-    rng.fill_bytes(&mut bytes);
-    hex::encode(bytes)
 }
 
 #[cfg(test)]
