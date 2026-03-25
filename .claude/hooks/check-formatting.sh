@@ -6,7 +6,7 @@ input=$(cat)
 
 # Check if we're in the project root
 if [ ! -f "Cargo.toml" ]; then
-  echo '{"continue": true, "systemMessage": "Not in Cargo workspace root, skipping format check"}' >&2
+  echo '{"continue": true, "systemMessage": "Not in Cargo workspace root, skipping format check"}'
   exit 0
 fi
 
@@ -19,6 +19,6 @@ else
   # Auto-fix formatting
   cargo +nightly fmt --all 2>&1
 
-  echo '{"continue": true, "systemMessage": "✓ Formatting applied with cargo +nightly fmt --all."}' >&2
+  echo '{"continue": true, "systemMessage": "✓ Formatting applied with cargo +nightly fmt --all."}'
   exit 0
 fi

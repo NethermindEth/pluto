@@ -92,7 +92,7 @@ Call `.as_ref()` once at the top and bind to a local when used in multiple place
 - Isolate blocking or CPU-heavy work (crypto, large serialization) with `tokio::task::spawn_blocking`
 - Use `tokio::sync::*` primitives when tasks may `.await`
 - Use `tokio::time` for timeouts and sleeps — never `std::thread::sleep`
-- Use `tokio::CancellationToken` instead of cancellation crate
+- Use `tokio_util::sync::CancellationToken` instead of cancellation crate
 
 ---
 

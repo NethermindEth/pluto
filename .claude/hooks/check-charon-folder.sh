@@ -27,7 +27,7 @@ for path in "${CHARON_PATHS[@]}"; do
   fi
 done
 
-# Build system message
+# Build additional context
 if [ -n "$FOUND_PATH" ]; then
   # Charon folder found - add it to context
   MESSAGE="<charon-reference>
@@ -57,13 +57,13 @@ Without Charon source access, the 'charon-reference' and 'charon-guide' skills w
 </charon-reference-warning>"
 fi
 
-# Output JSON with system message for Claude
+# Output JSON with additional context for Claude
 jq -n \
   --arg msg "$MESSAGE" \
   '{
     "continue": true,
     "suppressOutput": false,
-    "systemMessage": $msg
+    "additionalContext": $msg
   }'
 
 exit 0

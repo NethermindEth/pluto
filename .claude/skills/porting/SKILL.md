@@ -7,7 +7,7 @@ description: Guides Go→Rust porting for Pluto. Invoke when asked to port, impl
 
 Before writing any code:
 
-1. **Charon location:** See `charon-reference` skill for codebase location, version, and structure. Verify once per session if needed.
+1. **Charon location:** See `charon-guide` for codebase location, version, and structure. Verify once per session if needed.
 2. Record the Go reference in the plan: `charon/<path>:<line> (v1.7.1)`
 3. **Do not proceed without an approved plan.**
 
