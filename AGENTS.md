@@ -132,6 +132,7 @@ pub type Result<T> = std::result::Result<T, ModuleError>;
 Rules:
 
 - `errors.New("msg")` → enum variant with `#[error("msg")]` (match strings exactly).
+- Every field/payload in an error variant **must** appear in its `#[error("...")]` format string. If a field is not surfaced in the error message, either include it or remove it from the variant. Dead payload (captured but never displayed) is not allowed.
 - `errors.Wrap(err, "...")` → `#[from]` / `#[source]` where appropriate.
 - Always propagate with `?`; avoid silent `filter_map(|x| x.ok())` patterns in production code.
 
