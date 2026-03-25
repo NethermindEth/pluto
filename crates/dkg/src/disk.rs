@@ -42,15 +42,15 @@ pub enum DiskError {
     KeymanagerClientError(#[from] pluto_eth2util::keymanager::KeymanagerError),
 
     /// Data directory does not exist.
-    #[error("data directory doesn't exist, cannot continue")]
+    #[error("data directory doesn't exist, cannot continue: {0}")]
     DataDirNotFound(PathBuf),
 
     /// Data directory path points to a file, not a directory.
-    #[error("data directory already exists and is a file, cannot continue")]
+    #[error("data directory already exists and is a file, cannot continue: {0}")]
     DataDirIsFile(PathBuf),
 
     /// Data directory contains disallowed entries.
-    #[error("data directory not clean, cannot continue")]
+    #[error("data directory not clean, cannot continue: {disallowed_entity} found in {data_dir}")]
     DataDirNotClean {
         /// Name of the disallowed file or directory.
         disallowed_entity: String,
@@ -59,7 +59,7 @@ pub enum DiskError {
     },
 
     /// Data directory is missing required files.
-    #[error("missing required files, cannot continue")]
+    #[error("missing required files, cannot continue: {file_name} not found in {data_dir}")]
     MissingRequiredFiles {
         /// Name of the missing required file.
         file_name: String,
