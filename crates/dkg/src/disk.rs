@@ -163,7 +163,7 @@ pub async fn write_to_keymanager(
         let store = pluto_eth2util::keystore::encrypt(
             &share.secret_share,
             &password,
-            None, // TODO: What to use here as argument?
+            None,
             &mut rand::rngs::OsRng,
         )?;
 
