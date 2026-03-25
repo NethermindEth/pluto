@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use zeroize::Zeroizing;
 
 /// The co-validator public key, tbls public shares, and private key share.
 /// Each node in the cluster will receive one for each distributed validator.
@@ -20,13 +21,13 @@ pub struct ShareMsg {
     /// TBLS public shares, sorted in ascending order by share id.
     pub pub_shares: Vec<Vec<u8>>,
     /// Private key share
-    pub secret_share: Vec<u8>,
+    pub secret_share: Zeroizing<Vec<u8>>,
 }
 
 impl From<&Share> for ShareMsg {
     fn from(share: &Share) -> Self {
         let pub_key = share.pub_key.to_vec();
-        let secret_share = share.secret_share.to_vec();
+        let secret_share = Zeroizing::new(share.secret_share.to_vec());
 
         // Sort pub shares by id.
         let pub_shares = {
