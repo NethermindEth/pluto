@@ -36,6 +36,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 ```
 
 Rules:
+- `errors.New("msg")` → enum variant with `#[error("msg")]` (match strings exactly)
+- `errors.Wrap(err, "...")` → `#[from]` / `#[source]` where appropriate
+- Every field/payload in an error variant **must** appear in its `#[error("...")]` format string. If a field is not surfaced in the error message, either include it or remove it from the variant. Dead payload (captured but never displayed) is not allowed.
 - Always propagate with `?`; never swallow errors with `.ok()` or `filter_map` in production code
 - No `unwrap()`, `expect()`, `panic!()` outside of test code
 - No `anyhow` in library crates; use typed errors everywhere
@@ -70,68 +73,88 @@ let x = u32::try_from(value)?;
 
 ---
 
-## Generalized Parameter Types
-
-Prefer generic parameters over concrete types:
-
-| Instead of | Prefer | Accepts |
-|---|---|---|
-| `&str` | `impl AsRef<str>` | `&str`, `String`, `&String` |
-| `&Path` | `impl AsRef<Path>` | `&str`, `String`, `PathBuf`, `&Path` |
-| `&[u8]` | `impl AsRef<[u8]>` | `&[u8]`, `Vec<u8>`, arrays |
-| `String` (read-only) | `impl Into<String>` | `&str`, `String` |
-
-Call `.as_ref()` once at the top and bind to a local when used in multiple places. Don't use `impl AsRef<T>` if the function immediately converts to owned — use `impl Into<T>` instead.
-
----
-
 ## Async / Tokio
 
-- Use `async`/`await` for all I/O and network-bound code
-- Use `tokio::fs` / `tokio::io` — never blocking `std::fs` in async contexts
-- Isolate blocking or CPU-heavy work (crypto, large serialization) with `tokio::task::spawn_blocking`
-- Use `tokio::sync::*` primitives when tasks may `.await`
-- Use `tokio::time` for timeouts and sleeps — never `std::thread::sleep`
-- Use `tokio_util::sync::CancellationToken` instead of cancellation crate
+- Prefer `async`/`await` for I/O and network-bound code; use Tokio as the runtime.
+- In async contexts, use `tokio::fs` / `tokio::io` instead of blocking `std::fs` / `std::io`.
+- If you must call blocking or CPU-heavy code from async (crypto, large serialization, filesystem walks), isolate it with `tokio::task::spawn_blocking`.
+- Prefer Tokio sync primitives (`tokio::sync::*`) over `std::sync::*` when tasks may `.await`.
+- Use `tokio::time` for timeouts, sleeps, and intervals (avoid `std::thread::sleep`).
 
 ---
 
-## Naming & Formatting
+## Code Style
 
-- Modules/functions: `snake_case`
-- Types/traits: `PascalCase`
-- Constants: `SCREAMING_SNAKE_CASE`
-- Named format args always:
+- Naming: modules/functions `snake_case`, types `PascalCase`, constants `SCREAMING_SNAKE_CASE`.
+- Formatting: prefer named arguments in formatting macros:
+  - ✅ `format!("hello {name}")`
+  - ❌ `format!("hello {}", name)`
+- Documentation:
+  - Prefer copying doc comments from Go and adapting to Rust conventions (avoid “Type is a …”).
+  - Avoid leaving TODOs in merged code. If a short-lived internal note is necessary, use `// TODO:` and remove before PR merge.
+
+## Generalized Parameter Types
+
+Prefer generic parameters over concrete types when a function only needs the behavior of a trait. This mirrors the standard library's own conventions and makes functions callable with a wider range of inputs without extra allocations.
+
+| Instead of | Prefer | Accepts |
+| --- | --- | --- |
+| `&str` | `impl AsRef<str>` | `&str`, `String`, `&String`, … |
+| `&Path` | `impl AsRef<Path>` | `&str`, `String`, `PathBuf`, `&Path`, … |
+| `&[u8]` | `impl AsRef<[u8]>` | `&[u8]`, `Vec<u8>`, arrays, … |
+| `&Vec<T>` | `impl AsRef<[T]>` | `Vec<T>`, slices, arrays, … |
+| `String` (owned, read-only) | `impl Into<String>` | `&str`, `String`, … |
+
+Examples:
+
 ```rust
-  // Good
-  format!("peer {peer_id} connected")
-  // Bad
-  format!("peer {} connected", peer_id)
+// accepts &str, String, PathBuf, &Path, …
+fn read_file(path: impl AsRef<std::path::Path>) -> std::io::Result<String> {
+    std::fs::read_to_string(path.as_ref())
+}
+
+// accepts &str, String, &String, …
+fn print_message(msg: impl AsRef<str>) {
+    println!(“{}”, msg.as_ref());
+}
+
+// accepts &[u8], Vec<u8>, arrays, …
+fn hash_bytes(data: impl AsRef<[u8]>) -> [u8; 32] {
+    sha256(data.as_ref())
+}
 ```
 
----
+Rules:
 
-## Documentation
-
-- Every `pub` item must have a doc comment — `missing_docs = "deny"` is enforced
-- Adapt doc comments from Go where available; avoid "Type is a …" phrasing
-- No `// TODO:` comments in merged code
-
----
+- Call `.as_ref()` once at the top of the function and bind it to a local variable when the value is used in multiple places.
+- Do not use `impl AsRef<T>` if the function immediately converts to an owned type anyway — use `impl Into<T>` (or just accept the owned type) in that case.
+- Applies to public and private functions alike; the gain is ergonomics, not just API surface.
 
 ## Testing
 
-- Use `#[tokio::test]` for async tests
-- Use `test_case` for parameterized tests:
-```rust
-#[test_case(1, 2 ; "small")]
-#[test_case(10, 20 ; "large")]
-fn adds(a: u64, b: u64) { ... }
+- Translate Go tests to Rust where applicable; keep similar test names for cross-reference.
+- Reuse the same fixtures/golden files when possible.
+- Use `#[tokio::test]` for async tests.
+- Use `test-case` for repeated/parameterized tests (including async):
 
-#[test_case("a" ; "case_a")]
-#[tokio::test]
-async fn async_case(input: &str) { ... }
+```rust
+#[cfg(test)]
+mod tests {
+    use test_case::test_case;
+
+    #[test_case(1, 2 ; "small")]
+    #[test_case(10, 20 ; "large")]
+    fn adds(a: u64, b: u64) {
+        let _ = (a, b);
+    }
+
+    #[test_case("a" ; "case_a")]
+    #[test_case("b" ; "case_b")]
+    #[tokio::test]
+    async fn async_cases(input: &str) {
+        let _ = input;
+    }
+}
 ```
 
-- For encoding/hashing parity: hardcode Go-derived test vectors as fixtures
-- Every error path must be exercised
+- For hashing/serialization parity, generate Go-derived test vectors and hardcode them as Rust fixtures.

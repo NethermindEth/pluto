@@ -34,6 +34,7 @@ prost-types.workspace = true
 hex.workspace = true
 chrono.workspace = true
 test-case.workspace = true
+pluto-ssz.workspace = true
 
 [build-dependencies]
 pluto-build-proto.workspace = true

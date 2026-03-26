@@ -11,9 +11,6 @@ pub use version::{
     serde_legacy_data_version,
 };
 
-/// SSZ wrapper container types with TreeHash support.
-pub mod ssz_types;
-
 /// Phase 0 consensus types from the Ethereum beacon chain specification.
 pub mod phase0;
 

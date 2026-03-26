@@ -83,13 +83,17 @@ Do not begin implementing until this plan is approved.
 
 ## Step 5 — Implement
 
-Follow AGENTS.md rules throughout:
-- No `unwrap()`/`expect()`/`panic!()` outside tests
-- Typed errors via `thiserror`
-- Match Go error strings exactly
-- Prefer `impl AsRef<T>` / `impl Into<T>` over concrete types
-- Named format args: `format!("hello {name}")` not `format!("hello {}", name)`
-- Doc comments on all `pub` items
+Follow `rust-style` skill conventions and AGENTS.md golden rules:
+- Match Go error strings exactly (critical for functional equivalence)
+- Match Go behavior exactly (defaults, edge cases, validation)
+- **Implementation approach can differ:** Use idiomatic Rust patterns and data structures when they preserve the same functional behavior. Direct 1:1 translation is not required—functional equivalence is.
+
+Examples where different implementation is acceptable:
+- Go's `defer` → Rust RAII (Drop trait)
+- Go's `sync.WaitGroup` → Rust `tokio::task::JoinSet`
+- Go's `context.Context` → Rust `CancellationToken` + structured concurrency
+- Go's mutex-guarded maps → Rust `DashMap` or channels
+- Go's manual error wrapping → Rust `#[from]` derive
 
 Keep Go file open alongside. After each function, verify behavior matches before moving on.
 
@@ -109,16 +113,14 @@ Minimum bar: every error path exercised, every Go test translated.
 
 ## Step 7 — Parity review
 
-Produce a parity matrix before marking work done:
+Before marking work done, verify functional equivalence with Go implementation:
+- CLI flags and arguments match exactly
+- Error messages match exactly (critical for user-facing output)
+- Wire formats and encodings are identical
+- Exit codes match for all error paths
+- File outputs (lock files, configs, etc.) are compatible
 
-| Component | Go | Rust | Match | Notes |
-|---|---|---|---|---|
-| CLI flag `--foo` | present | present | ✅ | |
-| Error string missing key | `"key not found"` | `"key not found"` | ✅ | |
-| Wire encoding | `pbio` | `pbio` | ✅ | |
-| Exit code on error | `1` | `1` | ✅ | |
-
-Any `❌` must be documented with justification before the plan is considered complete.
+Use `pluto-review` skill for structured parity review format. Any deviations must be documented with justification.
 
 ---
 
