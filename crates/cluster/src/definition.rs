@@ -934,10 +934,12 @@ pub struct DefinitionV1x2or3 {
     /// Config hash uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.
     #[serde_as(as = "Hex0x")]
+    #[serde(default)]
     pub config_hash: Vec<u8>,
     /// Definition hash uniquely identifies a cluster definition including
     /// operator ENRs and signatures.
     #[serde_as(as = "Hex0x")]
+    #[serde(default)]
     pub definition_hash: Vec<u8>,
 }
 
@@ -1048,10 +1050,12 @@ pub struct DefinitionV1x4 {
     /// Config hash uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.
     #[serde_as(as = "Hex0x")]
+    #[serde(default)]
     pub config_hash: Vec<u8>,
     /// Definition hash uniquely identifies a cluster definition including
     /// operator ENRs and signatures.
     #[serde_as(as = "Hex0x")]
+    #[serde(default)]
     pub definition_hash: Vec<u8>,
 }
 
@@ -1160,10 +1164,12 @@ pub struct DefinitionV1x5to7 {
     /// Config hash uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.
     #[serde_as(as = "Hex0x")]
+    #[serde(default)]
     pub config_hash: Vec<u8>,
     /// Definition hash uniquely identifies a cluster definition including
     /// operator ENRs and signatures.
     #[serde_as(as = "Hex0x")]
+    #[serde(default)]
     pub definition_hash: Vec<u8>,
 }
 
@@ -1261,10 +1267,12 @@ pub struct DefinitionV1x8 {
     /// ConfigHash uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.
     #[serde_as(as = "Hex0x")]
+    #[serde(default)]
     pub config_hash: Vec<u8>,
     /// DefinitionHash uniquely identifies a cluster definition including
     /// operator ENRs and signatures.
     #[serde_as(as = "Hex0x")]
+    #[serde(default)]
     pub definition_hash: Vec<u8>,
 }
 
@@ -1366,10 +1374,12 @@ pub struct DefinitionV1x9 {
     /// ConfigHash uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.
     #[serde_as(as = "Hex0x")]
+    #[serde(default)]
     pub config_hash: Vec<u8>,
     /// DefinitionHash uniquely identifies a cluster definition including
     /// operator ENRs and signatures.
     #[serde_as(as = "Hex0x")]
+    #[serde(default)]
     pub definition_hash: Vec<u8>,
 }
 
@@ -1478,10 +1488,12 @@ pub struct DefinitionV1x10 {
     /// Config hash uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.
     #[serde_as(as = "Hex0x")]
+    #[serde(default)]
     pub config_hash: Vec<u8>,
     /// Definition hash uniquely identifies a cluster definition including
     /// operator ENRs and signatures.
     #[serde_as(as = "Hex0x")]
+    #[serde(default)]
     pub definition_hash: Vec<u8>,
 }
 

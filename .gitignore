@@ -1,7 +1,7 @@
 # IDEs
 .vscode
 .idea
-.claude
+.claude/settings.local.json
 
 # Direnv
 .direnv
