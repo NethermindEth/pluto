@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 # SessionStart hook to check for Charon folder existence
@@ -19,10 +19,8 @@ CHARON_PATHS=(
 
 FOUND_PATH=""
 for path in "${CHARON_PATHS[@]}"; do
-  # Expand ~ and resolve relative paths
-  expanded_path=$(eval echo "$path")
-  if [ -d "$expanded_path" ]; then
-    FOUND_PATH="$expanded_path"
+  if [ -d "$path" ]; then
+    FOUND_PATH="$path"
     break
   fi
 done
