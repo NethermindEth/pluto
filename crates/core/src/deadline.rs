@@ -61,9 +61,9 @@ pub type DeadlineFunc = Arc<dyn Fn(Duty) -> Result<Option<DateTime<Utc>>> + Send
 /// Error types for deadline operations.
 #[derive(Debug, thiserror::Error)]
 pub enum DeadlineError {
-    /// Failed to fetch genesis time from beacon node.
-    #[error("Failed to fetch genesis time: {0}")]
-    FetchGenesisTime(#[from] EthBeaconNodeApiClientError),
+    /// Failed to fetch beacon node configuration.
+    #[error("Failed to fetch beacon node configuration: {0}")]
+    BeaconNodeConfigError(#[from] EthBeaconNodeApiClientError),
 
     /// Deadliner has been shut down.
     #[error("Deadliner has been shut down")]
@@ -124,25 +124,19 @@ pub trait Deadliner: Send + Sync {
 ///
 /// Returns an error if fetching genesis time or slots config fails.
 pub async fn new_duty_deadline_func(client: &EthBeaconNodeApiClient) -> Result<DeadlineFunc> {
-    let genesis_time = client
-        .fetch_genesis_time()
-        .await
-        .map_err(DeadlineError::FetchGenesisTime)?;
-    let (slot_duration, _slots_per_epoch) = client
-        .fetch_slots_config()
-        .await
-        .map_err(DeadlineError::FetchGenesisTime)?;
+    let genesis_time = client.fetch_genesis_time().await?;
+    let (slot_duration, _slots_per_epoch) = client.fetch_slots_config().await?;
 
     // Convert std::time::Duration to chrono::Duration for slot_duration
     let slot_duration = to_chrono_duration(slot_duration)?;
 
     Ok(Arc::new(move |duty: Duty| {
         // Exit and BuilderRegistration duties never expire
-        match duty.duty_type {
-            DutyType::Exit | DutyType::BuilderRegistration => {
-                return Ok(None);
-            }
-            _ => {}
+        if matches!(
+            duty.duty_type,
+            DutyType::Exit | DutyType::BuilderRegistration
+        ) {
+            return Ok(None);
         }
 
         // Calculate slot start time
@@ -243,7 +237,7 @@ struct DeadlineInput {
 /// Implementation of the Deadliner trait.
 struct DeadlinerImpl {
     cancel_token: CancellationToken,
-    input_tx: tokio::sync::mpsc::UnboundedSender<DeadlineInput>,
+    input_tx: tokio::sync::mpsc::Sender<DeadlineInput>,
     output_rx: Mutex<Option<tokio::sync::mpsc::Receiver<Duty>>>,
 }
 
@@ -259,7 +253,7 @@ impl Deadliner for DeadlinerImpl {
             let input = DeadlineInput { duty, response_tx };
 
             // Send the duty to the background task
-            if self.input_tx.send(input).is_err() {
+            if self.input_tx.send(input).await.is_err() {
                 return false;
             }
 
@@ -285,7 +279,7 @@ impl DeadlinerImpl {
         cancel_token: CancellationToken,
         label: String,
         deadline_func: DeadlineFunc,
-        mut input_rx: tokio::sync::mpsc::UnboundedReceiver<DeadlineInput>,
+        mut input_rx: tokio::sync::mpsc::Receiver<DeadlineInput>,
         output_tx: tokio::sync::mpsc::Sender<Duty>,
     ) {
         let mut duties: HashSet<Duty> = HashSet::new();
@@ -407,10 +401,11 @@ pub fn new_deadliner(
     label: impl Into<String>,
     deadline_func: DeadlineFunc,
 ) -> Arc<dyn Deadliner> {
-    const OUTPUT_BUFFER: usize = 10;
+    const OUTPUT_BUFFER: usize = 256;
+    const INPUT_BUFFER: usize = 256;
 
     let label = label.into();
-    let (input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (input_tx, input_rx) = tokio::sync::mpsc::channel(INPUT_BUFFER);
     let (output_tx, output_rx) = tokio::sync::mpsc::channel(OUTPUT_BUFFER);
 
     let impl_instance: Arc<dyn Deadliner> = Arc::new(DeadlinerImpl {
