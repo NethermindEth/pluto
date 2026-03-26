@@ -96,11 +96,11 @@ impl DistValidator {
     /// True if the validator has zero valued registration.
     /// registration.
     pub fn zero_registration(&self) -> bool {
-        self.builder_registration.signature.is_empty()
-            && self.builder_registration.message.fee_recipient.is_empty()
+        self.builder_registration.signature == [0u8; BLS_SIGNATURE_LEN]
+            && self.builder_registration.message.fee_recipient == [0u8; ADDRESS_LEN]
             && self.builder_registration.message.gas_limit == 0
             && self.builder_registration.message.timestamp.timestamp() == 0
-            && self.builder_registration.message.pub_key.is_empty()
+            && self.builder_registration.message.pub_key == [0u8; BLS_PUBKEY_LEN]
     }
 
     /// Validator's Eth2 registration.
@@ -109,9 +109,9 @@ impl DistValidator {
     ) -> Result<VersionedSignedValidatorRegistration, DistValidatorError> {
         let reg = &self.builder_registration;
 
-        if reg.signature.len() != BLS_SIGNATURE_LEN
-            || reg.message.pub_key.len() != BLS_PUBKEY_LEN
-            || reg.message.fee_recipient.len() != ADDRESS_LEN
+        if reg.signature == [0u8; BLS_SIGNATURE_LEN]
+            || reg.message.pub_key == [0u8; BLS_PUBKEY_LEN]
+            || reg.message.fee_recipient == [0u8; ADDRESS_LEN]
             || reg.message.gas_limit == 0
             || reg.message.timestamp.timestamp() == 0
         {
