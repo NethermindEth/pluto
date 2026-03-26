@@ -94,7 +94,6 @@ impl DistValidator {
     }
 
     /// True if the validator has zero valued registration.
-    /// registration.
     pub fn zero_registration(&self) -> bool {
         self.builder_registration.signature == [0u8; BLS_SIGNATURE_LEN]
             && self.builder_registration.message.fee_recipient == [0u8; ADDRESS_LEN]
