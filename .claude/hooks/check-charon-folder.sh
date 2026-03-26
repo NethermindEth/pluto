@@ -20,7 +20,7 @@ CHARON_PATHS=(
 FOUND_PATH=""
 for path in "${CHARON_PATHS[@]}"; do
   if [ -d "$path" ]; then
-    FOUND_PATH="$path"
+    FOUND_PATH=$(eval echo "$(pwd)/$path")
     break
   fi
 done
@@ -28,40 +28,20 @@ done
 # Build additional context
 if [ -n "$FOUND_PATH" ]; then
   # Charon folder found - add it to context
-  MESSAGE="<charon-reference>
-Charon Go source code found at: $FOUND_PATH
-
-The 'charon-reference' and 'charon-guide' skills can use this path to read Go source files when porting functionality to Pluto.
-
-Skills can reference files like:
-- $FOUND_PATH/app/app.go
-- $FOUND_PATH/core/validatorapi/validatorapi.go
-- $FOUND_PATH/p2p/p2p.go
-
-Use the Read tool with these paths to examine Go implementation before porting to Rust.
-</charon-reference>"
+  MESSAGE="Charon Go source available at: $FOUND_PATH. Use this path to reference charon codebase when requested. Do not try to recheck this path. This path is static and will not change."
 else
   # Charon folder not found - provide guidance
-  MESSAGE="<charon-reference-warning>
-Charon Go source code not found in common locations:
-$(printf '  - %s\n' "${CHARON_PATHS[@]}")
-
-If you need to reference Charon Go code during porting tasks:
-1. Clone Charon: git clone https://github.com/ObolNetwork/charon.git
-2. Place it in one of the expected locations above
-3. Restart Claude Code session to pick up the new path
-
-Without Charon source access, the 'charon-reference' and 'charon-guide' skills will have limited functionality.
-</charon-reference-warning>"
+  MESSAGE="Charon Go source not found. Clone from https://github.com/ObolNetwork/charon.git to enable reference during porting."
 fi
 
 # Output JSON with additional context for Claude
 jq -n \
   --arg msg "$MESSAGE" \
   '{
-    "continue": true,
-    "suppressOutput": false,
-    "additionalContext": $msg
+    "hookSpecificOutput":{
+      "hookEventName": "SessionStart",
+      "additionalContext": $msg,
+    }
   }'
 
 exit 0
