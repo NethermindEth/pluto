@@ -107,16 +107,11 @@ impl DistValidator {
     pub fn eth2_registration(
         &self,
     ) -> Result<VersionedSignedValidatorRegistration, DistValidatorError> {
-        let reg = &self.builder_registration;
-
-        if reg.signature == [0u8; BLS_SIGNATURE_LEN]
-            || reg.message.pub_key == [0u8; BLS_PUBKEY_LEN]
-            || reg.message.fee_recipient == [0u8; ADDRESS_LEN]
-            || reg.message.gas_limit == 0
-            || reg.message.timestamp.timestamp() == 0
-        {
+        if self.zero_registration() {
             return Err(DistValidatorError::InvalidRegistration);
         }
+
+        let reg = &self.builder_registration;
 
         Ok(VersionedSignedValidatorRegistration {
             version: BuilderVersion::V1,
