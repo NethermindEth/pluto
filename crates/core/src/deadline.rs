@@ -292,11 +292,15 @@ impl DeadlinerImpl {
         let (mut curr_duty, mut curr_deadline) = get_curr_duty(&duties, &deadline_func);
 
         // Create initial timer
-        let now = Utc::now();
-        let initial_duration = curr_deadline
-            .signed_duration_since(now)
-            .to_std()
-            .unwrap_or(std::time::Duration::ZERO);
+        let now: DateTime<Utc> = Utc::now();
+        let initial_duration = if curr_deadline < now {
+            std::time::Duration::ZERO
+        } else {
+            curr_deadline
+                .signed_duration_since(now)
+                .to_std()
+                .unwrap_or(std::time::Duration::MAX)
+        };
         let sleep = tokio::time::sleep(initial_duration);
         tokio::pin!(sleep);
 
@@ -343,7 +347,7 @@ impl DeadlinerImpl {
                         let duration = curr_deadline
                             .signed_duration_since(Utc::now())
                             .to_std()
-                            .unwrap_or(std::time::Duration::ZERO);
+                            .unwrap_or(std::time::Duration::MAX);
                         sleep.set(tokio::time::sleep(duration));
                     }
                 }
@@ -375,7 +379,7 @@ impl DeadlinerImpl {
                     let duration = curr_deadline
                         .signed_duration_since(Utc::now())
                         .to_std()
-                        .unwrap_or(std::time::Duration::ZERO);
+                        .unwrap_or(std::time::Duration::MAX);
                     sleep.set(tokio::time::sleep(duration));
                 }
             }
