@@ -623,19 +623,17 @@ async fn beacon_ping_load_test(
         "Running ping load tests..."
     );
 
-    let (tx, mut rx) = mpsc::channel::<StdDuration>(65536);
-
-    let load_cancel = cancel.child_token();
-    cancel_after(&load_cancel, cfg.load_test_duration);
+    let (tx, mut rx) = mpsc::channel::<StdDuration>(i16::MAX as usize);
+    cancel_after(&cancel, cfg.load_test_duration);
 
     let mut handles = Vec::new();
     let mut interval = tokio::time::interval(StdDuration::from_secs(1));
 
     loop {
         tokio::select! {
-            _ = load_cancel.cancelled() => break,
+            _ = cancel.cancelled() => break,
             _ = interval.tick() => {
-                let c = load_cancel.clone();
+                let c = cancel.clone();
                 let t = target.to_string();
                 let tx = tx.clone();
                 handles.push(tokio::spawn(async move {
@@ -828,11 +826,10 @@ async fn beacon_simulation_test(
         "Running beacon node simulation..."
     );
 
-    let sim_cancel = cancel.child_token();
-    cancel_after(&sim_cancel, sim_duration);
+    cancel_after(&cancel, sim_duration);
 
     // General cluster requests
-    let cluster_cancel = sim_cancel.clone();
+    let cluster_cancel = cancel.clone();
     let cluster_target = target.to_string();
     let cluster_handle = tokio::spawn(async move {
         single_cluster_simulation(cluster_cancel, sim_duration, &cluster_target).await
@@ -852,7 +849,7 @@ async fn beacon_simulation_test(
         "Starting validators performing duties attestation, aggregation, proposal, sync committee..."
     );
     for _ in 0..params.sync_committee_validators_count {
-        let c = sim_cancel.clone();
+        let c = cancel.clone();
         let t = target.to_string();
         let intensity = params.request_intensity;
         validator_handles.push(tokio::spawn(async move {
@@ -871,7 +868,7 @@ async fn beacon_simulation_test(
         "Starting validators performing duties attestation, aggregation, proposal..."
     );
     for _ in 0..params.proposal_validators_count {
-        let c = sim_cancel.clone();
+        let c = cancel.clone();
         let t = target.to_string();
         let intensity = params.request_intensity;
         validator_handles.push(tokio::spawn(async move {
@@ -890,7 +887,7 @@ async fn beacon_simulation_test(
         "Starting validators performing duties attestation, aggregation..."
     );
     for _ in 0..params.attestation_validators_count {
-        let c = sim_cancel.clone();
+        let c = cancel.clone();
         let t = target.to_string();
         let intensity = params.request_intensity;
         validator_handles.push(tokio::spawn(async move {
