@@ -829,6 +829,7 @@ async fn beacon_simulation_test(
     cancel_after(&cancel, sim_duration);
 
     // General cluster requests
+    tracing::info!("Starting general cluster requests...");
     let cluster_cancel = cancel.clone();
     let cluster_target = target.to_string();
     let cluster_handle = tokio::spawn(async move {
