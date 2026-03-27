@@ -23,6 +23,7 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io::Write, path::PathBuf, time::Duration as StdDuration};
 use tokio::{sync::mpsc, task::JoinSet};
+use tokio_util::sync::CancellationToken;
 
 const THRESHOLD_BEACON_MEASURE_AVG: StdDuration = StdDuration::from_millis(40);
 const THRESHOLD_BEACON_MEASURE_POOR: StdDuration = StdDuration::from_millis(100);
@@ -241,7 +242,7 @@ pub fn test_case_names() -> Vec<String> {
 }
 
 async fn run_test_case(
-    cancel: tokio_util::sync::CancellationToken,
+    cancel: CancellationToken,
     cfg: TestBeaconArgs,
     target: &str,
     name: &str,
@@ -272,7 +273,7 @@ async fn run_test_case(
 pub async fn run(
     args: TestBeaconArgs,
     writer: &mut dyn Write,
-    shutdown: tokio_util::sync::CancellationToken,
+    shutdown: CancellationToken,
 ) -> CliResult<TestCategoryResult> {
     must_output_to_file_on_quiet(args.test_config.quiet, &args.test_config.output_json)?;
 
@@ -356,7 +357,7 @@ pub async fn run(
 }
 
 async fn test_single_beacon(
-    cancel: tokio_util::sync::CancellationToken,
+    cancel: CancellationToken,
     queued: &[TestCaseName],
     cfg: TestBeaconArgs,
     target: &str,
@@ -382,7 +383,7 @@ async fn test_single_beacon(
 }
 
 async fn beacon_ping_test(
-    _cancel: tokio_util::sync::CancellationToken,
+    _cancel: CancellationToken,
     _cfg: TestBeaconArgs,
     target: &str,
 ) -> TestResult {
@@ -399,7 +400,7 @@ async fn beacon_ping_test(
 }
 
 async fn beacon_ping_measure_test(
-    _cancel: tokio_util::sync::CancellationToken,
+    _cancel: CancellationToken,
     _cfg: TestBeaconArgs,
     target: &str,
 ) -> TestResult {
@@ -417,7 +418,7 @@ async fn beacon_ping_measure_test(
 }
 
 async fn beacon_version_test(
-    _cancel: tokio_util::sync::CancellationToken,
+    _cancel: CancellationToken,
     _cfg: TestBeaconArgs,
     target: &str,
 ) -> TestResult {
@@ -473,7 +474,7 @@ async fn beacon_version_test(
 }
 
 async fn beacon_is_synced_test(
-    _cancel: tokio_util::sync::CancellationToken,
+    _cancel: CancellationToken,
     _cfg: TestBeaconArgs,
     target: &str,
 ) -> TestResult {
@@ -524,7 +525,7 @@ async fn beacon_is_synced_test(
 }
 
 async fn beacon_peer_count_test(
-    _cancel: tokio_util::sync::CancellationToken,
+    _cancel: CancellationToken,
     _cfg: TestBeaconArgs,
     target: &str,
 ) -> TestResult {
@@ -584,14 +585,13 @@ async fn beacon_ping_once(target: &str) -> CliResult<StdDuration> {
 }
 
 async fn ping_beacon_continuously(
-    cancel: tokio_util::sync::CancellationToken,
+    cancel: CancellationToken,
     target: String,
     tx: mpsc::Sender<StdDuration>,
 ) {
     loop {
-        let rtt = match beacon_ping_once(&target).await {
-            Ok(rtt) => rtt,
-            Err(_) => return,
+        let Ok(rtt) = beacon_ping_once(&target).await else {
+            return;
         };
 
         tokio::select! {
@@ -608,7 +608,7 @@ async fn ping_beacon_continuously(
 }
 
 async fn beacon_ping_load_test(
-    cancel: tokio_util::sync::CancellationToken,
+    cancel: CancellationToken,
     cfg: TestBeaconArgs,
     target: &str,
 ) -> TestResult {
@@ -677,7 +677,7 @@ fn default_intensity() -> RequestsIntensity {
 }
 
 async fn beacon_simulation_1_test(
-    cancel: tokio_util::sync::CancellationToken,
+    cancel: CancellationToken,
     cfg: TestBeaconArgs,
     target: &str,
 ) -> TestResult {
@@ -696,7 +696,7 @@ async fn beacon_simulation_1_test(
 }
 
 async fn beacon_simulation_10_test(
-    cancel: tokio_util::sync::CancellationToken,
+    cancel: CancellationToken,
     cfg: TestBeaconArgs,
     target: &str,
 ) -> TestResult {
@@ -715,7 +715,7 @@ async fn beacon_simulation_10_test(
 }
 
 async fn beacon_simulation_100_test(
-    cancel: tokio_util::sync::CancellationToken,
+    cancel: CancellationToken,
     cfg: TestBeaconArgs,
     target: &str,
 ) -> TestResult {
@@ -734,7 +734,7 @@ async fn beacon_simulation_100_test(
 }
 
 async fn beacon_simulation_500_test(
-    cancel: tokio_util::sync::CancellationToken,
+    cancel: CancellationToken,
     cfg: TestBeaconArgs,
     target: &str,
 ) -> TestResult {
@@ -753,7 +753,7 @@ async fn beacon_simulation_500_test(
 }
 
 async fn beacon_simulation_1000_test(
-    cancel: tokio_util::sync::CancellationToken,
+    cancel: CancellationToken,
     cfg: TestBeaconArgs,
     target: &str,
 ) -> TestResult {
@@ -772,7 +772,7 @@ async fn beacon_simulation_1000_test(
 }
 
 async fn beacon_simulation_custom_test(
-    cancel: tokio_util::sync::CancellationToken,
+    cancel: CancellationToken,
     cfg: TestBeaconArgs,
     target: &str,
 ) -> TestResult {
@@ -808,7 +808,7 @@ async fn beacon_simulation_custom_test(
 }
 
 async fn beacon_simulation_test(
-    cancel: tokio_util::sync::CancellationToken,
+    cancel: CancellationToken,
     cfg: &TestBeaconArgs,
     target: &str,
     mut test_res: TestResult,
@@ -956,7 +956,7 @@ async fn beacon_simulation_test(
 }
 
 async fn single_cluster_simulation(
-    cancel: tokio_util::sync::CancellationToken,
+    cancel: CancellationToken,
     sim_duration: StdDuration,
     target: &str,
 ) -> SimulationCluster {
@@ -1082,7 +1082,7 @@ async fn single_cluster_simulation(
 }
 
 async fn single_validator_simulation(
-    cancel: tokio_util::sync::CancellationToken,
+    cancel: CancellationToken,
     sim_duration: StdDuration,
     target: &str,
     intensity: RequestsIntensity,
@@ -1314,7 +1314,7 @@ async fn single_validator_simulation(
 }
 
 async fn attestation_duty(
-    cancel: tokio_util::sync::CancellationToken,
+    cancel: CancellationToken,
     target: &str,
     sim_duration: StdDuration,
     tick_time: StdDuration,
@@ -1352,7 +1352,7 @@ async fn attestation_duty(
 }
 
 async fn aggregation_duty(
-    cancel: tokio_util::sync::CancellationToken,
+    cancel: CancellationToken,
     target: &str,
     sim_duration: StdDuration,
     tick_time: StdDuration,
@@ -1395,7 +1395,7 @@ async fn aggregation_duty(
 }
 
 async fn proposal_duty(
-    cancel: tokio_util::sync::CancellationToken,
+    cancel: CancellationToken,
     target: &str,
     sim_duration: StdDuration,
     tick_time: StdDuration,
@@ -1434,7 +1434,7 @@ async fn proposal_duty(
 
 #[allow(clippy::too_many_arguments)]
 async fn sync_committee_duties(
-    cancel: tokio_util::sync::CancellationToken,
+    cancel: CancellationToken,
     target: &str,
     sim_duration: StdDuration,
     tick_time_submit: StdDuration,
@@ -1489,7 +1489,7 @@ async fn sync_committee_duties(
 }
 
 async fn sync_committee_contribution_duty(
-    cancel: tokio_util::sync::CancellationToken,
+    cancel: CancellationToken,
     target: &str,
     sim_duration: StdDuration,
     tick_time: StdDuration,
@@ -1530,7 +1530,7 @@ async fn sync_committee_contribution_duty(
 }
 
 async fn sync_committee_message_duty(
-    cancel: tokio_util::sync::CancellationToken,
+    cancel: CancellationToken,
     target: &str,
     sim_duration: StdDuration,
     tick_time: StdDuration,
@@ -1760,7 +1760,7 @@ fn skip_result(name: &str) -> TestResult {
     }
 }
 
-fn cancel_after(token: &tokio_util::sync::CancellationToken, duration: StdDuration) {
+fn cancel_after(token: &CancellationToken, duration: StdDuration) {
     let token = token.clone();
     tokio::spawn(async move {
         tokio::time::sleep(duration).await;
@@ -2246,9 +2246,7 @@ mod tests {
         let args = default_beacon_args(vec![url.clone()]);
 
         let mut buf = Vec::new();
-        let res = run(args, &mut buf, tokio_util::sync::CancellationToken::new())
-            .await
-            .unwrap();
+        let res = run(args, &mut buf, CancellationToken::new()).await.unwrap();
 
         let expected = expected_results_for_healthy_node();
         assert_results(&res.targets, &url, &expected);
@@ -2263,9 +2261,7 @@ mod tests {
         let args = default_beacon_args(vec![endpoint1.clone(), endpoint2.clone()]);
 
         let mut buf = Vec::new();
-        let res = run(args, &mut buf, tokio_util::sync::CancellationToken::new())
-            .await
-            .unwrap();
+        let res = run(args, &mut buf, CancellationToken::new()).await.unwrap();
 
         for endpoint in [&endpoint1, &endpoint2] {
             let target_results = res.targets.get(endpoint).expect("missing target");
@@ -2296,9 +2292,7 @@ mod tests {
         args.test_config.timeout = StdDuration::from_nanos(100);
 
         let mut buf = Vec::new();
-        let res = run(args, &mut buf, tokio_util::sync::CancellationToken::new())
-            .await
-            .unwrap();
+        let res = run(args, &mut buf, CancellationToken::new()).await.unwrap();
 
         for endpoint in [&endpoint1, &endpoint2] {
             let target_results = res.targets.get(endpoint).expect("missing target");
@@ -2320,9 +2314,7 @@ mod tests {
         args.test_config.output_json = json_path.to_str().unwrap().to_string();
 
         let mut buf = Vec::new();
-        let res = run(args, &mut buf, tokio_util::sync::CancellationToken::new())
-            .await
-            .unwrap();
+        let res = run(args, &mut buf, CancellationToken::new()).await.unwrap();
 
         assert!(buf.is_empty(), "expected no output on quiet mode");
         assert!(!res.targets.is_empty());
@@ -2339,7 +2331,7 @@ mod tests {
         };
 
         let mut buf = Vec::new();
-        let err = run(args, &mut buf, tokio_util::sync::CancellationToken::new())
+        let err = run(args, &mut buf, CancellationToken::new())
             .await
             .unwrap_err();
         assert!(
@@ -2356,9 +2348,7 @@ mod tests {
         args.test_config.test_cases = Some(vec!["Ping".to_string()]);
 
         let mut buf = Vec::new();
-        let res = run(args, &mut buf, tokio_util::sync::CancellationToken::new())
-            .await
-            .unwrap();
+        let res = run(args, &mut buf, CancellationToken::new()).await.unwrap();
 
         for endpoint in [&endpoint1, &endpoint2] {
             let target_results = res.targets.get(endpoint).expect("missing target");
@@ -2379,9 +2369,7 @@ mod tests {
         args.test_config.output_json = file_path.to_str().unwrap().to_string();
 
         let mut buf = Vec::new();
-        let res = run(args, &mut buf, tokio_util::sync::CancellationToken::new())
-            .await
-            .unwrap();
+        let res = run(args, &mut buf, CancellationToken::new()).await.unwrap();
 
         assert!(file_path.exists(), "output file should exist");
 
@@ -2410,7 +2398,7 @@ mod tests {
         let addr = server.address();
         let url_with_auth = format!("http://testuser:testpass123@{addr}");
 
-        let cancel = tokio_util::sync::CancellationToken::new();
+        let cancel = CancellationToken::new();
         let cfg = default_beacon_args(vec![]);
         let result = beacon_ping_test(cancel, cfg, &url_with_auth).await;
 
@@ -2429,7 +2417,7 @@ mod tests {
 
         let url_without_auth = server.uri();
 
-        let cancel = tokio_util::sync::CancellationToken::new();
+        let cancel = CancellationToken::new();
         let cfg = default_beacon_args(vec![]);
         let result = beacon_ping_test(cancel, cfg, &url_without_auth).await;
 
