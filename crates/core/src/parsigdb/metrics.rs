@@ -9,4 +9,5 @@ pub struct ParsigDBMetrics {
 }
 
 /// Global metrics for the ParSigDB.
+#[vise::register]
 pub static PARSIG_DB_METRICS: Global<ParsigDBMetrics> = Global::new();
