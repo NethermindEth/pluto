@@ -12,6 +12,7 @@ chrono.workspace = true
 either.workspace = true
 futures.workspace = true
 libp2p.workspace = true
+prost.workspace = true
 thiserror.workspace = true
 k256.workspace = true
 pluto-eth2util.workspace = true
@@ -28,6 +29,7 @@ serde_json.workspace = true
 pluto-core.workspace = true
 backon.workspace = true
 reqwest.workspace = true
+unsigned-varint.workspace = true
 url.workspace = true
 
 [dev-dependencies]
