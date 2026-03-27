@@ -22,7 +22,7 @@ use rand::Rng;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io::Write, path::PathBuf, time::Duration as StdDuration};
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, task::JoinSet};
 
 const THRESHOLD_BEACON_MEASURE_AVG: StdDuration = StdDuration::from_millis(40);
 const THRESHOLD_BEACON_MEASURE_POOR: StdDuration = StdDuration::from_millis(100);
@@ -292,24 +292,23 @@ pub async fn run(
 
     let start = std::time::Instant::now();
 
-    let (tx, mut rx) = mpsc::channel::<(String, Vec<TestResult>)>(args.endpoints.len());
+    let mut set = JoinSet::new();
 
     for endpoint in &args.endpoints {
-        let tx = tx.clone();
         let queued = queued.clone();
         let cfg = args.clone();
         let target = endpoint.clone();
         let cancel = shutdown.clone();
 
-        tokio::spawn(async move {
+        set.spawn(async move {
             let results = test_single_beacon(cancel, &queued, cfg, &target).await;
-            let _ = tx.send((target, results)).await;
+            (target, results)
         });
     }
-    drop(tx);
 
     let mut test_results: HashMap<String, Vec<TestResult>> = HashMap::new();
-    while let Some((target, results)) = rx.recv().await {
+    while let Some(res) = set.join_next().await {
+        let (target, results) = res.map_err(|e| crate::error::CliError::Other(e.to_string()))?;
         test_results.insert(target, results);
     }
 
