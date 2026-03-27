@@ -218,21 +218,26 @@ pub struct SimulationCluster {
     pub node_version_request: SimulationValues,
 }
 
-fn supported_beacon_test_cases() -> Vec<TestCaseName> {
-    vec![
-        TestCaseName::new("Ping", 1),
-        TestCaseName::new("PingMeasure", 2),
-        TestCaseName::new("Version", 3),
-        TestCaseName::new("Synced", 4),
-        TestCaseName::new("PeerCount", 5),
-        TestCaseName::new("PingLoad", 6),
-        TestCaseName::new("Simulate1", 7),
-        TestCaseName::new("Simulate10", 8),
-        TestCaseName::new("Simulate100", 9),
-        TestCaseName::new("Simulate500", 10),
-        TestCaseName::new("Simulate1000", 11),
-        TestCaseName::new("SimulateCustom", 12),
-    ]
+const SUPPORTED_BEACON_TEST_CASES: [TestCaseName; 12] = [
+    TestCaseName::new("Ping", 1),
+    TestCaseName::new("PingMeasure", 2),
+    TestCaseName::new("Version", 3),
+    TestCaseName::new("Synced", 4),
+    TestCaseName::new("PeerCount", 5),
+    TestCaseName::new("PingLoad", 6),
+    TestCaseName::new("Simulate1", 7),
+    TestCaseName::new("Simulate10", 8),
+    TestCaseName::new("Simulate100", 9),
+    TestCaseName::new("Simulate500", 10),
+    TestCaseName::new("Simulate1000", 11),
+    TestCaseName::new("SimulateCustom", 12),
+];
+
+pub fn test_case_names() -> Vec<String> {
+    SUPPORTED_BEACON_TEST_CASES
+        .iter()
+        .map(|n| n.name.to_string())
+        .collect()
 }
 
 async fn run_test_case(
@@ -263,12 +268,6 @@ async fn run_test_case(
     }
 }
 
-pub fn test_case_names() -> Vec<String> {
-    let mut cases = supported_beacon_test_cases();
-    sort_tests(&mut cases);
-    cases.iter().map(|n| n.name.clone()).collect()
-}
-
 /// Runs the beacon node tests.
 pub async fn run(
     args: TestBeaconArgs,
@@ -279,7 +278,7 @@ pub async fn run(
 
     tracing::info!("Starting beacon node test");
 
-    let all_cases = supported_beacon_test_cases();
+    let all_cases = SUPPORTED_BEACON_TEST_CASES;
     let mut queued = filter_tests(&all_cases, args.test_config.test_cases.as_deref());
 
     if queued.is_empty() {
@@ -369,15 +368,15 @@ async fn test_single_beacon(
     for tc in queued {
         if cancel.is_cancelled() {
             results.push(TestResult {
-                name: tc.name.clone(),
+                name: tc.name.to_string(),
                 verdict: TestVerdict::Fail,
                 error: super::TestResultError::from_string("timeout/interrupted"),
-                ..TestResult::new(&tc.name)
+                ..TestResult::new(tc.name)
             });
             break;
         }
 
-        let result = run_test_case(cancel.clone(), cfg.clone(), target, &tc.name).await;
+        let result = run_test_case(cancel.clone(), cfg.clone(), target, tc.name).await;
         results.push(result);
     }
 

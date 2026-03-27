@@ -189,17 +189,13 @@ impl TestResult {
 /// Test case name with execution order.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct TestCaseName {
-    pub name: String,
+    pub name: &'static str,
     pub order: u32,
 }
 
 impl TestCaseName {
-    /// Creates a new test case name.
-    pub fn new(name: &str, order: u32) -> Self {
-        Self {
-            name: name.into(),
-            order,
-        }
+    pub const fn new(name: &'static str, order: u32) -> Self {
+        Self { name, order }
     }
 }
 
@@ -524,7 +520,7 @@ pub(crate) fn filter_tests(
 ) -> Vec<TestCaseName> {
     let mut filtered: Vec<TestCaseName> = supported_test_cases.to_vec();
     if let Some(cases) = test_cases {
-        filtered.retain(|supported_case| cases.contains(&supported_case.name));
+        filtered.retain(|supported_case| cases.iter().any(|c| c == supported_case.name));
     }
     filtered
 }
