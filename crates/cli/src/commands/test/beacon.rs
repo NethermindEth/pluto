@@ -463,7 +463,7 @@ async fn beacon_version_test(
     let version = if parts.len() > 3 {
         parts[..3].join("/")
     } else {
-        body.data.version.clone()
+        body.data.version
     };
 
     res.measurement = version;
