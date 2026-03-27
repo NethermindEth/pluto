@@ -288,8 +288,7 @@ pub async fn run(
     }
     sort_tests(&mut queued);
 
-    let cancel = shutdown.child_token();
-    cancel_after(&cancel, args.test_config.timeout);
+    cancel_after(&shutdown, args.test_config.timeout);
 
     let start = std::time::Instant::now();
 
@@ -300,7 +299,7 @@ pub async fn run(
         let queued = queued.clone();
         let cfg = args.clone();
         let target = endpoint.clone();
-        let cancel = cancel.clone();
+        let cancel = shutdown.clone();
 
         tokio::spawn(async move {
             let results = test_single_beacon(cancel, &queued, cfg, &target).await;
