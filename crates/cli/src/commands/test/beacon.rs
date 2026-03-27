@@ -437,6 +437,7 @@ async fn beacon_version_test(
         Err(e) => return res.fail(e),
     };
 
+    // more strict than Charon check which requires status code to be > 399
     if !resp.status().is_success() {
         return res.fail(super::TestResultError::from_string(format!(
             "http status {}",
@@ -492,6 +493,7 @@ async fn beacon_is_synced_test(
         Err(e) => return res.fail(e),
     };
 
+    // more strict than Charon check which requires status code to be > 399
     if !resp.status().is_success() {
         return res.fail(super::TestResultError::from_string(format!(
             "http status {}",
@@ -542,6 +544,7 @@ async fn beacon_peer_count_test(
         Err(e) => return res.fail(e),
     };
 
+    // more strict than Charon check which requires status code to be > 399
     if !resp.status().is_success() {
         return res.fail(super::TestResultError::from_string(format!(
             "http status {}",
@@ -1563,6 +1566,7 @@ async fn get_current_slot(target: &str) -> CliResult<u64> {
         .send()
         .await?;
 
+    // more strict than Charon check which requires status code to be > 399
     if !resp.status().is_success() {
         return Err(crate::error::CliError::Other(format!(
             "syncing request failed: {}",
