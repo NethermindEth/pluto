@@ -51,6 +51,12 @@ use tokio_util::sync::CancellationToken;
 /// Fraction of slot duration to use as a margin for network delays.
 const MARGIN_FACTOR: i32 = 12;
 
+/// A safe far-future duration (~10 years) for timeout calculations.
+/// Using Duration::MAX can cause panics when computing Instant::now() +
+/// duration, so we use a large but representable value instead.
+const FAR_FUTURE_DURATION: std::time::Duration =
+    std::time::Duration::from_secs(3600 * 24 * 365 * 10);
+
 /// Type alias for the deadline function.
 ///
 /// Takes a duty and returns an optional deadline.
@@ -293,7 +299,7 @@ impl DeadlinerImpl {
             curr_deadline
                 .signed_duration_since(now)
                 .to_std()
-                .unwrap_or(std::time::Duration::MAX)
+                .unwrap_or(FAR_FUTURE_DURATION)
         };
         let sleep = tokio::time::sleep(initial_duration);
         tokio::pin!(sleep);
@@ -341,7 +347,7 @@ impl DeadlinerImpl {
                         let duration = curr_deadline
                             .signed_duration_since(Utc::now())
                             .to_std()
-                            .unwrap_or(std::time::Duration::MAX);
+                            .unwrap_or(FAR_FUTURE_DURATION);
                         sleep.set(tokio::time::sleep(duration));
                     }
                 }
@@ -373,7 +379,7 @@ impl DeadlinerImpl {
                     let duration = curr_deadline
                         .signed_duration_since(Utc::now())
                         .to_std()
-                        .unwrap_or(std::time::Duration::MAX);
+                        .unwrap_or(FAR_FUTURE_DURATION);
                     sleep.set(tokio::time::sleep(duration));
                 }
             }
