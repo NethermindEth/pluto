@@ -1761,8 +1761,10 @@ fn skip_result(name: &str) -> TestResult {
 fn cancel_after(token: &CancellationToken, duration: StdDuration) {
     let token = token.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(duration).await;
-        token.cancel();
+        tokio::select! {
+            _ = tokio::time::sleep(duration) => token.cancel(),
+            _ = token.cancelled() => {}
+        }
     });
 }
 
