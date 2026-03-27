@@ -13,6 +13,7 @@ members = [
     "crates/k1util",
     "crates/relay-server",
     "crates/p2p",
+    "crates/ssz",
     "crates/testutil",
     "crates/tracing",
     "crates/peerinfo",
@@ -107,6 +108,7 @@ pluto-eth2util = { path = "crates/eth2util" }
 pluto-eth1wrap = { path = "crates/eth1wrap" }
 pluto-k1util = { path = "crates/k1util" }
 pluto-relay-server = { path = "crates/relay-server" }
+pluto-ssz = { path = "crates/ssz" }
 pluto-testutil = { path = "crates/testutil" }
 pluto-tracing = { path = "crates/tracing" }
 pluto-p2p = { path = "crates/p2p" }

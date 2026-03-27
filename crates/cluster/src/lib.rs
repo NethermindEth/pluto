@@ -4,32 +4,37 @@
 //! This crate handles the formation, management, and coordination of validator
 //! clusters in the Charon network.
 
-/// Cluster definition management and coordination.
+/// `Definition` type representing the intended cluster configuration
+/// (operators, validators, fork version) with EIP-712 hashing and verification.
 pub mod definition;
-/// Cluster deposit management and coordination.
+/// `DepositData` type for activating validators.
 pub mod deposit;
-/// Cluster distributed validator management and coordination.
+/// `DistValidator` type representing a distributed validator with its group
+/// public key, per-node public shares, and deposit data.
 pub mod distvalidator;
-/// Cluster EIP-712 signatures management and coordination.
+/// EIP-712 typed data construction and signing for cluster definition config
+/// hashes and operator ENR signatures.
 pub mod eip712sigs;
-/// Cluster helpers management and coordination.
+/// General helper utilities.
 pub mod helpers;
-/// Cluster lock management and coordination.
+/// `Lock` type representing the finalized cluster configuration, including
+/// distributed validators and node signatures.
 pub mod lock;
-/// Manifest
+/// Cluster manifest types, loading, mutation, and materialization.
 pub mod manifest;
-/// Manifest protocol buffers.
+/// Generated protobuf types for the cluster manifest (v1).
 pub mod manifestpb;
-/// Cluster operator management and coordination.
+/// `Operator` type representing a charon node operator with Ethereum address,
+/// ENR, and config/ENR signatures.
 pub mod operator;
-/// Cluster registration management and coordination.
+/// `BuilderRegistration` and `Registration` types for pre-generated signed
+/// validator registrations sent to the builder network.
 pub mod registration;
-/// Cluster SSZ management and coordination.
+/// SSZ serialization for various cluster types.
 pub mod ssz;
-/// Cluster SSZ hashing management and coordination.
-pub mod ssz_hasher;
-/// Cluster test cluster management and coordination.
-#[cfg(test)]
+/// Factory for constructing deterministic or random cluster locks for use in
+/// tests.
+#[cfg(any(test, feature = "test-cluster"))]
 pub mod test_cluster;
-/// Cluster version management and coordination.
+/// Supported cluster definition version constants and feature-flag helpers.
 pub mod version;

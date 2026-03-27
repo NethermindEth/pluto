@@ -24,7 +24,7 @@ pub struct Withdrawal {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub validator_index: phase0::ValidatorIndex,
     /// Destination execution address.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub address: bellatrix::ExecutionAddress,
     /// Amount in gwei.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -41,7 +41,7 @@ pub struct BLSToExecutionChange {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub validator_index: phase0::ValidatorIndex,
     /// BLS public key to change from.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub from_bls_pubkey: phase0::BLSPubKey,
     /// Execution address to change to.
     #[serde(with = "bellatrix::execution_address_serde")]
@@ -57,7 +57,7 @@ pub struct SignedBLSToExecutionChange {
     /// Unsigned message.
     pub message: BLSToExecutionChange,
     /// Signature over the message.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: phase0::BLSSignature,
 }
 
@@ -68,22 +68,22 @@ pub struct SignedBLSToExecutionChange {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct ExecutionPayload {
     /// Parent execution block hash.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub parent_hash: phase0::Hash32,
     /// Fee recipient address.
     #[serde(with = "bellatrix::execution_address_serde")]
     pub fee_recipient: bellatrix::ExecutionAddress,
     /// State root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub state_root: phase0::Root,
     /// Receipts root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub receipts_root: phase0::Root,
     /// Logs bloom.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub logs_bloom: [u8; 256],
     /// Prev randao value.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub prev_randao: [u8; 32],
     /// Block number.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -98,13 +98,13 @@ pub struct ExecutionPayload {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub timestamp: u64,
     /// Extra data bytes.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub extra_data: phase0::SszList<u8, { bellatrix::MAX_EXTRA_DATA_BYTES }>,
     /// Base fee per gas.
     #[serde(with = "crate::spec::serde_utils::u256_dec_serde")]
     pub base_fee_per_gas: bellatrix::BaseFeePerGas,
     /// Execution block hash.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub block_hash: phase0::Hash32,
     /// Transactions in the payload.
     pub transactions:
@@ -120,22 +120,22 @@ pub struct ExecutionPayload {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct ExecutionPayloadHeader {
     /// Parent execution block hash.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub parent_hash: phase0::Hash32,
     /// Fee recipient address.
     #[serde(with = "bellatrix::execution_address_serde")]
     pub fee_recipient: bellatrix::ExecutionAddress,
     /// State root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub state_root: phase0::Root,
     /// Receipts root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub receipts_root: phase0::Root,
     /// Logs bloom.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub logs_bloom: [u8; 256],
     /// Prev randao value.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub prev_randao: [u8; 32],
     /// Block number.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -150,19 +150,19 @@ pub struct ExecutionPayloadHeader {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub timestamp: u64,
     /// Extra data bytes.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub extra_data: phase0::SszList<u8, { bellatrix::MAX_EXTRA_DATA_BYTES }>,
     /// Base fee per gas.
     #[serde(with = "crate::spec::serde_utils::u256_dec_serde")]
     pub base_fee_per_gas: bellatrix::BaseFeePerGas,
     /// Execution block hash.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub block_hash: phase0::Hash32,
     /// Transactions root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub transactions_root: phase0::Root,
     /// Withdrawals root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub withdrawals_root: phase0::Root,
 }
 
@@ -173,12 +173,12 @@ pub struct ExecutionPayloadHeader {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct BeaconBlockBody {
     /// RANDAO reveal.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub randao_reveal: phase0::BLSSignature,
     /// ETH1 data vote.
     pub eth1_data: phase0::ETH1Data,
     /// Graffiti bytes.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub graffiti: phase0::Root,
     /// Proposer slashings included in the block.
     pub proposer_slashings:
@@ -215,10 +215,10 @@ pub struct BeaconBlock {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub proposer_index: phase0::ValidatorIndex,
     /// Parent root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub parent_root: phase0::Root,
     /// State root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub state_root: phase0::Root,
     /// Block body.
     pub body: BeaconBlockBody,
@@ -231,12 +231,12 @@ pub struct BeaconBlock {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct BlindedBeaconBlockBody {
     /// RANDAO reveal.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub randao_reveal: phase0::BLSSignature,
     /// ETH1 data vote.
     pub eth1_data: phase0::ETH1Data,
     /// Graffiti bytes.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub graffiti: phase0::Root,
     /// Proposer slashings included in the block.
     pub proposer_slashings:
@@ -273,10 +273,10 @@ pub struct BlindedBeaconBlock {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub proposer_index: phase0::ValidatorIndex,
     /// Parent root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub parent_root: phase0::Root,
     /// State root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub state_root: phase0::Root,
     /// Blinded block body.
     pub body: BlindedBeaconBlockBody,
@@ -291,7 +291,7 @@ pub struct SignedBeaconBlock {
     /// Unsigned block message.
     pub message: BeaconBlock,
     /// Signature of the message.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: phase0::BLSSignature,
 }
 
@@ -304,7 +304,7 @@ pub struct SignedBlindedBeaconBlock {
     /// Unsigned blinded block message.
     pub message: BlindedBeaconBlock,
     /// Signature of the message.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: phase0::BLSSignature,
 }
 
