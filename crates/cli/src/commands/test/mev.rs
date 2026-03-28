@@ -652,6 +652,7 @@ async fn get_block_header(
     Ok((bid, rtt))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn create_mev_block(
     _conf: &TestMevArgs,
     target: &str,
