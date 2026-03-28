@@ -1,9 +1,42 @@
 //! MEV relay tests.
 
-use super::{TestCategoryResult, TestConfigArgs};
-use crate::error::Result;
+use std::{
+    collections::HashMap,
+    io::Write,
+    time::{Duration, Instant},
+};
+
+use reqwest::{Method, StatusCode};
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+use tracing::info;
+
+use super::{
+    AllCategoriesResult, SLOT_TIME, SLOTS_IN_EPOCH, TestCaseName, TestCategory, TestCategoryResult,
+    TestConfigArgs, TestResult, TestResultError, TestVerdict, calculate_score, evaluate_rtt,
+    filter_tests, must_output_to_file_on_quiet, publish_result_to_obol_api, request_rtt,
+    sort_tests, write_result_to_file, write_result_to_writer,
+};
+use crate::{
+    duration::Duration as CliDuration,
+    error::{CliError, Result},
+};
 use clap::Args;
-use std::io::Write;
+
+/// MEV-specific errors.
+#[derive(Debug, thiserror::Error)]
+enum MevError {
+    /// Relay returned non-200 for the header request.
+    #[error("status code not 200 OK")]
+    StatusCodeNot200,
+    #[error(transparent)]
+    Cli(#[from] CliError),
+}
+
+/// Thresholds for MEV ping measure test.
+const THRESHOLD_MEV_MEASURE_AVG: Duration = Duration::from_millis(40);
+/// Threshold for poor MEV ping measure.
+const THRESHOLD_MEV_MEASURE_POOR: Duration = Duration::from_millis(100);
 
 /// Arguments for the MEV test command.
 #[derive(Args, Clone, Debug)]
@@ -38,13 +71,880 @@ pub struct TestMevArgs {
         help = "Increases the accuracy of the load test by asking for multiple payloads. Increases test duration."
     )]
     pub number_of_payloads: u32,
+
+    /// X-Timeout-Ms header flag for each request in milliseconds.
+    #[arg(
+        long = "x-timeout-ms",
+        default_value = "1000",
+        help = "X-Timeout-Ms header flag for each request in milliseconds, used by MEVs to compute maximum delay for reply."
+    )]
+    pub x_timeout_ms: u32,
+}
+
+/// A MEV test case function.
+type TestCaseMev =
+    for<'a> fn(
+        token: CancellationToken,
+        conf: &'a TestMevArgs,
+        target: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = TestResult> + Send + 'a>>;
+
+/// Returns the supported MEV test cases.
+fn supported_mev_test_cases() -> HashMap<TestCaseName, TestCaseMev> {
+    HashMap::from([
+        (TestCaseName::new("Ping", 1), mev_ping_test as TestCaseMev),
+        (
+            TestCaseName::new("PingMeasure", 2),
+            mev_ping_measure_test as TestCaseMev,
+        ),
+        (
+            TestCaseName::new("CreateBlock", 3),
+            mev_create_block_test as TestCaseMev,
+        ),
+    ])
 }
 
 /// Runs the MEV relay tests.
-pub async fn run(_args: TestMevArgs, _writer: &mut dyn Write) -> Result<TestCategoryResult> {
-    // TODO: Implement MEV tests
-    // - Ping
-    // - PingMeasure
-    // - CreateBlock
-    unimplemented!("mev test not yet implemented")
+pub async fn run(args: TestMevArgs, writer: &mut dyn Write) -> Result<TestCategoryResult> {
+    must_output_to_file_on_quiet(args.test_config.quiet, &args.test_config.output_json)?;
+
+    // Validate flag combinations.
+    if args.load_test && args.beacon_node_endpoint.is_none() {
+        return Err(CliError::Other(
+            "beacon-node-endpoint required when load-test enabled".to_string(),
+        ));
+    }
+    if !args.load_test && args.beacon_node_endpoint.is_some() {
+        return Err(CliError::Other(
+            "beacon-node-endpoint only supported when load-test enabled".to_string(),
+        ));
+    }
+
+    info!("Starting MEV relays test");
+
+    let test_cases = supported_mev_test_cases();
+    let queued_tests = filter_tests(&test_cases, args.test_config.test_cases.as_deref());
+    if queued_tests.is_empty() {
+        return Err(CliError::Other("test case not supported".to_string()));
+    }
+    let mut queued_tests = queued_tests;
+    sort_tests(&mut queued_tests);
+
+    let token = CancellationToken::new();
+    let timeout_token = token.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(args.test_config.timeout).await;
+        timeout_token.cancel();
+    });
+
+    let start_time = Instant::now();
+    let test_results = test_all_mevs(&queued_tests, &test_cases, &args, token).await;
+    let exec_time = CliDuration::new(start_time.elapsed());
+
+    let score = test_results
+        .values()
+        .map(|results| calculate_score(results))
+        .min();
+
+    let res = TestCategoryResult {
+        category_name: Some(TestCategory::Mev),
+        targets: test_results,
+        execution_time: Some(exec_time),
+        score,
+    };
+
+    if !args.test_config.quiet {
+        write_result_to_writer(&res, writer)?;
+    }
+
+    if !args.test_config.output_json.is_empty() {
+        write_result_to_file(&res, args.test_config.output_json.as_ref()).await?;
+    }
+
+    if args.test_config.publish {
+        publish_result_to_obol_api(
+            AllCategoriesResult {
+                mev: Some(res.clone()),
+                ..Default::default()
+            },
+            &args.test_config.publish_addr,
+            &args.test_config.publish_private_key_file,
+        )
+        .await?;
+    }
+
+    Ok(res)
+}
+
+async fn test_all_mevs(
+    queued_tests: &[TestCaseName],
+    test_cases: &HashMap<TestCaseName, TestCaseMev>,
+    conf: &TestMevArgs,
+    token: CancellationToken,
+) -> HashMap<String, Vec<TestResult>> {
+    let (tx, mut rx) = mpsc::channel::<(String, Vec<TestResult>)>(conf.endpoints.len());
+
+    for endpoint in &conf.endpoints {
+        let tx = tx.clone();
+        let queued_tests = queued_tests.to_vec();
+
+        let test_cases = test_cases.clone();
+        let endpoint = endpoint.clone();
+        let conf = conf.clone();
+
+        let child_token = token.child_token();
+
+        tokio::spawn(async move {
+            let results =
+                test_single_mev(&queued_tests, &test_cases, &conf, &endpoint, child_token).await;
+            let relay_name = format_mev_relay_name(&endpoint);
+            let _ = tx.send((relay_name, results)).await;
+        });
+    }
+
+    drop(tx);
+
+    let mut all_results = HashMap::new();
+    while let Some((name, results)) = rx.recv().await {
+        all_results.insert(name, results);
+    }
+
+    all_results
+}
+
+async fn test_single_mev(
+    queued_tests: &[TestCaseName],
+    test_cases: &HashMap<TestCaseName, TestCaseMev>,
+    conf: &TestMevArgs,
+    target: &str,
+    token: CancellationToken,
+) -> Vec<TestResult> {
+    let (result_tx, mut result_rx) = mpsc::channel::<TestResult>(queued_tests.len());
+
+    let queued = queued_tests.to_vec();
+    let test_cases = test_cases.clone();
+    let conf_clone = conf.clone();
+    let target_owned = target.to_string();
+
+    let runner_token = token.child_token();
+
+    tokio::spawn(async move {
+        for t in &queued {
+            if runner_token.is_cancelled() {
+                return;
+            }
+            if let Some(test_fn) = test_cases.get(t) {
+                let result = test_fn(runner_token.clone(), &conf_clone, &target_owned).await;
+                if result_tx.send(result).await.is_err() {
+                    return;
+                }
+            }
+        }
+    });
+
+    let mut all_results = Vec::new();
+    let mut test_counter = 0usize;
+
+    loop {
+        tokio::select! {
+
+            _ = token.cancelled() => {
+                if test_counter < queued_tests.len() {
+                    all_results.push(TestResult {
+                        name: queued_tests[test_counter].name.clone(),
+                        verdict: TestVerdict::Fail,
+                        error: TestResultError::from_string("timeout/interrupted"),
+                        ..TestResult::new("")
+                    });
+                }
+                break;
+            }
+            result = result_rx.recv() => {
+                match result {
+                    Some(r) => {
+                        test_counter = test_counter.saturating_add(1);
+                        all_results.push(r);
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+
+    all_results
+}
+
+fn mev_ping_test<'a>(
+    token: CancellationToken,
+    _conf: &'a TestMevArgs,
+    target: &'a str,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = TestResult> + Send + 'a>> {
+    Box::pin(async move {
+        let test_res = TestResult::new("Ping");
+        let url = format!("{target}/eth/v1/builder/status");
+        let client = reqwest::Client::new();
+
+        let (clean_url, creds) = match parse_endpoint_credentials(&url) {
+            Ok(v) => v,
+            Err(e) => return test_res.fail(e),
+        };
+
+        let resp = tokio::select! {
+            _ = token.cancelled() => return test_res.fail(CliError::Other("timeout/interrupted".to_string())),
+            r = apply_basic_auth(client.get(&clean_url), creds).send() => match r {
+                Ok(r) => r,
+                Err(e) => return test_res.fail(e),
+            }
+        };
+
+        if resp.status().as_u16() > 399 {
+            return test_res.fail(CliError::Other(http_status_error(resp.status())));
+        }
+
+        test_res.ok()
+    })
+}
+
+fn mev_ping_measure_test<'a>(
+    token: CancellationToken,
+    _conf: &'a TestMevArgs,
+    target: &'a str,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = TestResult> + Send + 'a>> {
+    Box::pin(async move {
+        let test_res = TestResult::new("PingMeasure");
+        let url = format!("{target}/eth/v1/builder/status");
+
+        let rtt = tokio::select! {
+            _ = token.cancelled() => return test_res.fail(CliError::Other("timeout/interrupted".to_string())),
+            r = request_rtt(&url, Method::GET, None, StatusCode::OK) => match r {
+                Ok(r) => r,
+                Err(e) => return test_res.fail(e),
+            }
+        };
+
+        evaluate_rtt(
+            rtt,
+            test_res,
+            THRESHOLD_MEV_MEASURE_AVG,
+            THRESHOLD_MEV_MEASURE_POOR,
+        )
+    })
+}
+
+fn mev_create_block_test<'a>(
+    token: CancellationToken,
+    conf: &'a TestMevArgs,
+    target: &'a str,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = TestResult> + Send + 'a>> {
+    Box::pin(async move {
+        let test_res = TestResult::new("CreateBlock");
+
+        if !conf.load_test {
+            return TestResult {
+                verdict: TestVerdict::Skip,
+                ..test_res
+            };
+        }
+
+        let beacon_endpoint = match &conf.beacon_node_endpoint {
+            Some(ep) => ep.as_str(),
+            None => {
+                return test_res.fail(CliError::Other("beacon-node-endpoint required".to_string()));
+            }
+        };
+
+        let latest_block = match latest_beacon_block(beacon_endpoint, &token).await {
+            Ok(b) => b,
+            Err(e) => return test_res.fail(e),
+        };
+
+        let latest_block_ts_unix: i64 = match latest_block.body.execution_payload.timestamp.parse()
+        {
+            Ok(v) => v,
+            Err(e) => return test_res.fail(CliError::Other(format!("parse timestamp: {e}"))),
+        };
+
+        let latest_block_ts = std::time::UNIX_EPOCH
+            .checked_add(Duration::from_secs(latest_block_ts_unix.unsigned_abs()))
+            .unwrap_or(std::time::UNIX_EPOCH);
+        let next_block_ts = latest_block_ts
+            .checked_add(SLOT_TIME)
+            .unwrap_or(latest_block_ts);
+
+        if let Ok(remaining) = next_block_ts.duration_since(std::time::SystemTime::now()) {
+            tokio::select! {
+                _ = token.cancelled() => return test_res.fail(CliError::Other("timeout/interrupted".to_string())),
+                _ = tokio::time::sleep(remaining) => {}
+            }
+        }
+
+        let latest_slot: i64 = match latest_block.slot.parse() {
+            Ok(v) => v,
+            Err(e) => return test_res.fail(CliError::Other(format!("parse slot: {e}"))),
+        };
+
+        let mut next_slot = latest_slot.saturating_add(1);
+        let slots_in_epoch_i64 = i64::try_from(SLOTS_IN_EPOCH).unwrap_or(i64::MAX);
+        let epoch = next_slot.checked_div(slots_in_epoch_i64).unwrap_or(0);
+
+        let mut proposer_duties =
+            match fetch_proposers_for_epoch(beacon_endpoint, epoch, &token).await {
+                Ok(d) => d,
+                Err(e) => return test_res.fail(e),
+            };
+
+        let mut all_blocks_rtt: Vec<Duration> = Vec::new();
+        let x_timeout_ms = conf.x_timeout_ms;
+
+        info!(
+            mev_relay = target,
+            blocks = conf.number_of_payloads,
+            x_timeout_ms = x_timeout_ms,
+            "Starting attempts for block creation"
+        );
+
+        let mut latest_block = latest_block;
+
+        loop {
+            if token.is_cancelled() {
+                break;
+            }
+
+            let start_iteration = Instant::now();
+
+            let rtt = match create_mev_block(
+                conf,
+                target,
+                x_timeout_ms,
+                next_slot,
+                &mut latest_block,
+                &mut proposer_duties,
+                beacon_endpoint,
+                &token,
+            )
+            .await
+            {
+                Ok(r) => r,
+                Err(e) => return test_res.fail(e),
+            };
+
+            all_blocks_rtt.push(rtt);
+            if all_blocks_rtt.len()
+                == usize::try_from(conf.number_of_payloads).unwrap_or(usize::MAX)
+            {
+                break;
+            }
+
+            let elapsed = start_iteration.elapsed();
+            let elapsed_nanos = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
+            let slot_nanos = u64::try_from(SLOT_TIME.as_nanos()).unwrap_or(1);
+            let remainder_nanos = elapsed_nanos.checked_rem(slot_nanos).unwrap_or(0);
+            let slot_remainder = SLOT_TIME
+                .checked_sub(Duration::from_nanos(remainder_nanos))
+                .unwrap_or_default();
+            if let Some(sleep_dur) = slot_remainder.checked_sub(Duration::from_secs(1)) {
+                tokio::select! {
+                    _ = token.cancelled() => break,
+                    _ = tokio::time::sleep(sleep_dur) => {}
+                }
+            }
+
+            let start_beacon_fetch = Instant::now();
+            latest_block = match latest_beacon_block(beacon_endpoint, &token).await {
+                Ok(b) => b,
+                Err(e) => return test_res.fail(e),
+            };
+
+            let latest_slot_parsed: i64 = match latest_block.slot.parse() {
+                Ok(v) => v,
+                Err(e) => return test_res.fail(CliError::Other(format!("parse slot: {e}"))),
+            };
+
+            next_slot = latest_slot_parsed.saturating_add(1);
+
+            // Wait 1 second minus how long the fetch took.
+            if let Some(sleep_dur) =
+                Duration::from_secs(1).checked_sub(start_beacon_fetch.elapsed())
+            {
+                tokio::select! {
+                    _ = token.cancelled() => break,
+                    _ = tokio::time::sleep(sleep_dur) => {}
+                }
+            }
+        }
+
+        if all_blocks_rtt.is_empty() {
+            return test_res.fail(CliError::Other("timeout/interrupted".to_string()));
+        }
+
+        let total_rtt: Duration = all_blocks_rtt.iter().sum();
+        let count = u32::try_from(all_blocks_rtt.len().max(1)).unwrap_or(u32::MAX);
+        let average_rtt = total_rtt.checked_div(count).unwrap_or_default();
+
+        let avg_threshold = Duration::from_millis(
+            u64::from(x_timeout_ms)
+                .saturating_mul(9)
+                .checked_div(10)
+                .unwrap_or(0),
+        );
+        let poor_threshold = Duration::from_millis(u64::from(x_timeout_ms));
+
+        evaluate_rtt(average_rtt, test_res, avg_threshold, poor_threshold)
+    })
+}
+
+// Helper types
+#[derive(Debug, Clone, serde::Deserialize)]
+struct BeaconBlock {
+    data: BeaconBlockData,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct BeaconBlockData {
+    message: BeaconBlockMessage,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct BeaconBlockMessage {
+    slot: String,
+    body: BeaconBlockBody,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct BeaconBlockBody {
+    execution_payload: BeaconBlockExecPayload,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct BeaconBlockExecPayload {
+    block_hash: String,
+    timestamp: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct ProposerDuties {
+    data: Vec<ProposerDutiesData>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct ProposerDutiesData {
+    pubkey: String,
+    slot: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct BuilderBidResponse {
+    version: String,
+    data: serde_json::Value,
+}
+
+async fn latest_beacon_block(
+    endpoint: &str,
+    token: &CancellationToken,
+) -> Result<BeaconBlockMessage> {
+    let url = format!("{endpoint}/eth/v2/beacon/blocks/head");
+    let (clean_url, creds) = parse_endpoint_credentials(&url)?;
+    let client = reqwest::Client::new();
+
+    let resp = tokio::select! {
+        _ = token.cancelled() => return Err(CliError::Other("timeout/interrupted".to_string())),
+        r = apply_basic_auth(client.get(&clean_url), creds).send() => {
+            r.map_err(|e| CliError::Other(format!("http request do: {e}")))?
+        }
+    };
+
+    let body = resp
+        .bytes()
+        .await
+        .map_err(|e| CliError::Other(format!("http response body: {e}")))?;
+
+    let block: BeaconBlock = serde_json::from_slice(&body)
+        .map_err(|e| CliError::Other(format!("http response json: {e}")))?;
+
+    Ok(block.data.message)
+}
+
+async fn fetch_proposers_for_epoch(
+    beacon_endpoint: &str,
+    epoch: i64,
+    token: &CancellationToken,
+) -> Result<Vec<ProposerDutiesData>> {
+    let url = format!("{beacon_endpoint}/eth/v1/validator/duties/proposer/{epoch}");
+    let (clean_url, creds) = parse_endpoint_credentials(&url)?;
+    let client = reqwest::Client::new();
+
+    let resp = tokio::select! {
+        _ = token.cancelled() => return Err(CliError::Other("timeout/interrupted".to_string())),
+        r = apply_basic_auth(client.get(&clean_url), creds).send() => {
+            r.map_err(|e| CliError::Other(format!("http request do: {e}")))?
+        }
+    };
+
+    let body = resp
+        .bytes()
+        .await
+        .map_err(|e| CliError::Other(format!("http response body: {e}")))?;
+
+    let duties: ProposerDuties = serde_json::from_slice(&body)
+        .map_err(|e| CliError::Other(format!("http response json: {e}")))?;
+
+    Ok(duties.data)
+}
+
+fn get_validator_pk_for_slot(proposers: &[ProposerDutiesData], slot: i64) -> Option<String> {
+    let slot_str = slot.to_string();
+    proposers
+        .iter()
+        .find(|p| p.slot == slot_str)
+        .map(|p| p.pubkey.clone())
+}
+
+async fn get_block_header(
+    target: &str,
+    x_timeout_ms: u32,
+    next_slot: i64,
+    block_hash: &str,
+    validator_pub_key: &str,
+    token: &CancellationToken,
+) -> std::result::Result<(BuilderBidResponse, Duration), MevError> {
+    let url =
+        format!("{target}/eth/v1/builder/header/{next_slot}/{block_hash}/{validator_pub_key}");
+
+    let (clean_url, creds) = parse_endpoint_credentials(&url)
+        .map_err(|e| MevError::Cli(CliError::Other(format!("parse url: {e}"))))?;
+
+    let client = reqwest::Client::new();
+    let start = Instant::now();
+
+    let resp = tokio::select! {
+        _ = token.cancelled() => {
+            return Err(MevError::Cli(CliError::Other("timeout/interrupted".to_string())));
+        }
+        r = apply_basic_auth(client.get(&clean_url), creds)
+            .header("X-Timeout-Ms", x_timeout_ms.to_string())
+            .header(
+                "Date-Milliseconds",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
+                    .to_string(),
+            )
+            .send() => {
+            r.map_err(|e| MevError::Cli(CliError::Other(format!("http request rtt: {e}"))))?
+        }
+    };
+
+    let rtt = start.elapsed();
+
+    if resp.status() != StatusCode::OK {
+        return Err(MevError::StatusCodeNot200);
+    }
+
+    let body = resp
+        .bytes()
+        .await
+        .map_err(|e| MevError::Cli(CliError::Other(format!("http response body: {e}"))))?;
+
+    let bid: BuilderBidResponse = serde_json::from_slice(&body)
+        .map_err(|e| MevError::Cli(CliError::Other(format!("http response json: {e}"))))?;
+
+    Ok((bid, rtt))
+}
+
+async fn create_mev_block(
+    _conf: &TestMevArgs,
+    target: &str,
+    x_timeout_ms: u32,
+    mut next_slot: i64,
+    latest_block: &mut BeaconBlockMessage,
+    proposer_duties: &mut Vec<ProposerDutiesData>,
+    beacon_endpoint: &str,
+    token: &CancellationToken,
+) -> Result<Duration> {
+    let rtt_get_header;
+    let builder_bid;
+
+    loop {
+        if token.is_cancelled() {
+            return Err(CliError::Other("timeout/interrupted".to_string()));
+        }
+
+        let start_iteration = Instant::now();
+        let slots_in_epoch_i64 = i64::try_from(SLOTS_IN_EPOCH).unwrap_or(i64::MAX);
+        let epoch = next_slot.checked_div(slots_in_epoch_i64).unwrap_or(0);
+
+        let pk = if let Some(pk) = get_validator_pk_for_slot(proposer_duties, next_slot) {
+            pk
+        } else {
+            *proposer_duties = fetch_proposers_for_epoch(beacon_endpoint, epoch, token).await?;
+            get_validator_pk_for_slot(proposer_duties, next_slot)
+                .ok_or_else(|| CliError::Other("slot not found".to_string()))?
+        };
+
+        match get_block_header(
+            target,
+            x_timeout_ms,
+            next_slot,
+            &latest_block.body.execution_payload.block_hash,
+            &pk,
+            token,
+        )
+        .await
+        {
+            Ok((bid, rtt)) => {
+                builder_bid = bid;
+                rtt_get_header = rtt;
+
+                info!(
+                    slot = next_slot,
+                    target = target,
+                    "Created block headers for slot"
+                );
+                break;
+            }
+
+            Err(MevError::StatusCodeNot200) => {
+                let elapsed = start_iteration.elapsed();
+                if let Some(sleep_dur) = SLOT_TIME.checked_sub(elapsed)
+                    && let Some(sleep_dur) = sleep_dur.checked_sub(Duration::from_secs(1))
+                {
+                    tokio::select! {
+                        _ = token.cancelled() => {
+                            return Err(CliError::Other("timeout/interrupted".to_string()));
+                        }
+                        _ = tokio::time::sleep(sleep_dur) => {}
+                    }
+                }
+
+                let start_beacon_fetch = Instant::now();
+                *latest_block = latest_beacon_block(beacon_endpoint, token).await?;
+                next_slot = next_slot.saturating_add(1);
+
+                if let Some(sleep_dur) =
+                    Duration::from_secs(1).checked_sub(start_beacon_fetch.elapsed())
+                {
+                    tokio::select! {
+                        _ = token.cancelled() => {
+                            return Err(CliError::Other("timeout/interrupted".to_string()));
+                        }
+                        _ = tokio::time::sleep(sleep_dur) => {}
+                    }
+                }
+
+                continue;
+            }
+            Err(MevError::Cli(e)) => return Err(e),
+        }
+    }
+
+    let payload = build_blinded_block_payload(&builder_bid)?;
+    let payload_json = serde_json::to_vec(&payload).map_err(|e| {
+        CliError::Other(format!(
+            "signed blinded beacon block json payload marshal: {e}"
+        ))
+    })?;
+
+    let rtt_submit_block = tokio::select! {
+        _ = token.cancelled() => return Err(CliError::Other("timeout/interrupted".to_string())),
+        r = request_rtt(
+            format!("{target}/eth/v1/builder/blinded_blocks"),
+            Method::POST,
+            Some(payload_json),
+            StatusCode::BAD_REQUEST,
+        ) => r?
+    };
+
+    Ok(rtt_get_header
+        .checked_add(rtt_submit_block)
+        .unwrap_or(rtt_get_header))
+}
+
+fn build_blinded_block_payload(bid: &BuilderBidResponse) -> Result<serde_json::Value> {
+    let sig_hex = "0xb9251a82040d4620b8c5665f328ee6c2eaa02d31d71d153f4abba31a7922a981e541e85283f0ced387d26e86aef9386d18c6982b9b5f8759882fe7f25a328180d86e146994ef19d28bc1432baf29751dec12b5f3d65dbbe224d72cf900c6831a";
+
+    let header = extract_execution_payload_header(&bid.data, &bid.version)?;
+
+    let zero_hash = "0x0000000000000000000000000000000000000000000000000000000000000000";
+    let zero_sig = "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
+
+    let mut body = serde_json::json!({
+        "randao_reveal": zero_sig,
+        "eth1_data": {
+            "deposit_root": zero_hash,
+            "deposit_count": "0",
+            "block_hash": zero_hash
+        },
+        "graffiti": zero_hash,
+        "proposer_slashings": [],
+        "attester_slashings": [],
+        "attestations": [],
+        "deposits": [],
+        "voluntary_exits": [],
+        "sync_aggregate": {
+            "sync_committee_bits": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+            "sync_committee_signature": zero_sig
+        },
+        "execution_payload_header": header
+    });
+
+    let version_lower = bid.version.to_lowercase();
+
+    if matches!(
+        version_lower.as_str(),
+        "capella" | "deneb" | "electra" | "fulu"
+    ) {
+        body["bls_to_execution_changes"] = serde_json::json!([]);
+    }
+
+    if matches!(version_lower.as_str(), "deneb" | "electra" | "fulu") {
+        body["blob_kzg_commitments"] = serde_json::json!([]);
+    }
+
+    if matches!(version_lower.as_str(), "electra" | "fulu") {
+        body["execution_requests"] = serde_json::json!({
+            "deposits": [],
+            "withdrawals": [],
+            "consolidations": []
+        });
+    }
+
+    Ok(serde_json::json!({
+        "message": {
+            "slot": "0",
+            "proposer_index": "0",
+            "parent_root": zero_hash,
+            "state_root": zero_hash,
+            "body": body
+        },
+        "signature": sig_hex
+    }))
+}
+
+fn extract_execution_payload_header(
+    data: &serde_json::Value,
+    version: &str,
+) -> Result<serde_json::Value> {
+    data.get("message")
+        .and_then(|m| m.get("header"))
+        .cloned()
+        .ok_or_else(|| {
+            CliError::Other(format!(
+                "not supported version or missing header: {version}"
+            ))
+        })
+}
+
+fn parse_endpoint_credentials(raw_url: &str) -> Result<(String, Option<(String, String)>)> {
+    let parsed =
+        url::Url::parse(raw_url).map_err(|e| CliError::Other(format!("parse url: {e}")))?;
+
+    let creds = if !parsed.username().is_empty() {
+        Some((
+            parsed.username().to_string(),
+            parsed.password().unwrap_or("").to_string(),
+        ))
+    } else {
+        None
+    };
+
+    let mut clean = parsed.clone();
+    clean
+        .set_username("")
+        .map_err(|()| CliError::Other("set username on URL".to_string()))?;
+    clean
+        .set_password(None)
+        .map_err(|()| CliError::Other("set password on URL".to_string()))?;
+
+    Ok((clean.to_string(), creds))
+}
+
+fn apply_basic_auth(
+    builder: reqwest::RequestBuilder,
+    creds: Option<(String, String)>,
+) -> reqwest::RequestBuilder {
+    match creds {
+        Some((user, pass)) => builder.basic_auth(user, Some(pass)),
+        None => builder,
+    }
+}
+
+fn format_mev_relay_name(url_string: &str) -> String {
+    let Some((scheme, rest)) = url_string.split_once("://") else {
+        return url_string.to_string();
+    };
+
+    let Some((hash, host)) = rest.split_once('@') else {
+        return url_string.to_string();
+    };
+
+    if !hash.starts_with("0x") || hash.len() < 18 {
+        return url_string.to_string();
+    }
+
+    let hash_short = format!("{}...{}", &hash[..6], &hash[hash.len().saturating_sub(4)..]);
+    format!("{scheme}://{hash_short}@{host}")
+}
+
+fn http_status_error(status: StatusCode) -> String {
+    format!("status code {}", status.as_u16())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_mev_relay_name() {
+        assert_eq!(
+            format_mev_relay_name(
+                "https://0xac6e77dfe25ecd6110b8e780608cce0dab71fdd5ebea22a16c0205200f2f8e2e3ad3b71d3499c54ad14d6c21b41a37ae@boost-relay.flashbots.net"
+            ),
+            "https://0xac6e...37ae@boost-relay.flashbots.net"
+        );
+
+        assert_eq!(
+            format_mev_relay_name("boost-relay.flashbots.net"),
+            "boost-relay.flashbots.net"
+        );
+
+        assert_eq!(
+            format_mev_relay_name("https://boost-relay.flashbots.net"),
+            "https://boost-relay.flashbots.net"
+        );
+
+        assert_eq!(
+            format_mev_relay_name("https://0xshort@boost-relay.flashbots.net"),
+            "https://0xshort@boost-relay.flashbots.net"
+        );
+
+        assert_eq!(
+            format_mev_relay_name("https://noprefixhashvalue1234567890@boost-relay.flashbots.net"),
+            "https://noprefixhashvalue1234567890@boost-relay.flashbots.net"
+        );
+    }
+
+    #[test]
+    fn test_get_validator_pk_for_slot() {
+        let duties = vec![
+            ProposerDutiesData {
+                pubkey: "0xabc".to_string(),
+                slot: "100".to_string(),
+            },
+            ProposerDutiesData {
+                pubkey: "0xdef".to_string(),
+                slot: "101".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            get_validator_pk_for_slot(&duties, 100),
+            Some("0xabc".to_string())
+        );
+        assert_eq!(
+            get_validator_pk_for_slot(&duties, 101),
+            Some("0xdef".to_string())
+        );
+        assert_eq!(get_validator_pk_for_slot(&duties, 102), None);
+    }
 }

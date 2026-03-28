@@ -221,6 +221,10 @@ impl TestResultError {
         Self(String::new())
     }
 
+    pub(crate) fn from_string(s: impl Into<String>) -> Self {
+        Self(s.into())
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
