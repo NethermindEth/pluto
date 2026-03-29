@@ -68,7 +68,8 @@ impl Behaviour {
     ) -> (Self, Component) {
         let registry: Registry = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
         let (command_tx, command_rx) = mpsc::unbounded_channel();
-        let behaviour = Self::with_parts(local_peer_id, peers, secret, registry.clone(), command_rx);
+        let behaviour =
+            Self::with_parts(local_peer_id, peers, secret, registry.clone(), command_rx);
         let component = Component::new(command_tx, registry);
 
         (behaviour, component)
@@ -442,7 +443,7 @@ mod tests {
     use pluto_testutil::random::generate_insecure_k1_key;
     use tokio::sync::{mpsc, oneshot};
 
-    use crate::bcast::{Behaviour, Component, Error};
+    use crate::bcast::{Component, Error};
 
     use super::Behaviour;
 

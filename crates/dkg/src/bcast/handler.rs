@@ -159,6 +159,111 @@ impl Handler {
             ),
         }
     }
+
+    fn handle_fully_negotiated_inbound(&mut self, protocol: StreamEither<Stream, Stream>) {
+        let registry = self.registry.clone();
+        let dedup = self.dedup.clone();
+        let secret = self.secret.clone();
+        let peers = self.peers.clone();
+        let remote_peer_id = self.remote_peer_id;
+
+        let future = async move {
+            let result = match protocol {
+                StreamEither::Left(stream) => {
+                    handle_inbound_sig_request(stream, remote_peer_id, registry, dedup, secret)
+                        .await
+                }
+                StreamEither::Right(stream) => {
+                    handle_inbound_msg(stream, remote_peer_id, registry, peers).await
+                }
+            };
+
+            if let Err(error) = result {
+                tracing::error!(peer = %remote_peer_id, %error, "bcast inbound handling failed");
+            }
+
+            None
+        };
+
+        self.active_futures.push(future.boxed());
+    }
+
+    fn handle_fully_negotiated_outbound(
+        &mut self,
+        protocol: StreamEither<Stream, Stream>,
+        info: PendingOpen,
+    ) {
+        match (protocol, info) {
+            (StreamEither::Left(stream), PendingOpen::Sig { op_id, request }) => {
+                let future = async move {
+                    Some(
+                        match timeout(SEND_TIMEOUT, protocol::send_sig_request(stream, request))
+                            .await
+                        {
+                            Ok(Ok(signature)) => OutEvent::SigResponse { op_id, signature },
+                            Ok(Err(error)) => OutEvent::OutboundFailure {
+                                op_id,
+                                failure: Failure::other(error),
+                            },
+                            Err(_) => OutEvent::OutboundFailure {
+                                op_id,
+                                failure: Failure::Timeout,
+                            },
+                        },
+                    )
+                };
+
+                self.active_futures.push(future.boxed());
+            }
+            (StreamEither::Right(stream), PendingOpen::Msg { op_id, message }) => {
+                let future = async move {
+                    Some(
+                        match timeout(SEND_TIMEOUT, protocol::send_bcast_message(stream, message))
+                            .await
+                        {
+                            Ok(Ok(())) => OutEvent::MessageSent { op_id },
+                            Ok(Err(error)) => OutEvent::OutboundFailure {
+                                op_id,
+                                failure: Failure::other(error),
+                            },
+                            Err(_) => OutEvent::OutboundFailure {
+                                op_id,
+                                failure: Failure::Timeout,
+                            },
+                        },
+                    )
+                };
+
+                self.active_futures.push(future.boxed());
+            }
+            (protocol, info) => {
+                warn!(
+                    ?protocol,
+                    ?info,
+                    "unexpected outbound protocol/info combination"
+                );
+            }
+        }
+    }
+
+    fn handle_dial_upgrade_error<E>(&mut self, info: PendingOpen, error: StreamUpgradeError<E>)
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        let op_id = match info {
+            PendingOpen::Sig { op_id, .. } | PendingOpen::Msg { op_id, .. } => op_id,
+        };
+
+        let failure = match error {
+            StreamUpgradeError::NegotiationFailed => Failure::Unsupported,
+            StreamUpgradeError::Timeout => Failure::Timeout,
+            StreamUpgradeError::Io(error) => Failure::io(error),
+            StreamUpgradeError::Apply(error) => Failure::other(error),
+        };
+
+        self.active_futures
+            .push(async move { Some(OutEvent::OutboundFailure { op_id, failure }) }.boxed());
+    }
 }
 
 impl ConnectionHandler for Handler {
@@ -227,112 +332,14 @@ impl ConnectionHandler for Handler {
         match event {
             ConnectionEvent::FullyNegotiatedInbound(FullyNegotiatedInbound {
                 protocol, ..
-            }) => {
-                let registry = self.registry.clone();
-                let dedup = self.dedup.clone();
-                let secret = self.secret.clone();
-                let peers = self.peers.clone();
-                let remote_peer_id = self.remote_peer_id;
-
-                let future = async move {
-                    let result = match protocol {
-                        StreamEither::Left(stream) => {
-                            handle_inbound_sig_request(
-                                stream,
-                                remote_peer_id,
-                                registry,
-                                dedup,
-                                secret,
-                            )
-                            .await
-                        }
-                        StreamEither::Right(stream) => {
-                            handle_inbound_msg(stream, remote_peer_id, registry, peers).await
-                        }
-                    };
-
-                    if let Err(error) = result {
-                        tracing::error!(peer = %remote_peer_id, %error, "bcast inbound handling failed");
-                    }
-
-                    None
-                };
-
-                self.active_futures.push(future.boxed());
-            }
+            }) => self.handle_fully_negotiated_inbound(protocol),
             ConnectionEvent::FullyNegotiatedOutbound(FullyNegotiatedOutbound {
                 protocol,
                 info,
                 ..
-            }) => match (protocol, info) {
-                (StreamEither::Left(stream), PendingOpen::Sig { op_id, request }) => {
-                    let future = async move {
-                        Some(
-                            match timeout(SEND_TIMEOUT, protocol::send_sig_request(stream, request))
-                                .await
-                            {
-                                Ok(Ok(signature)) => OutEvent::SigResponse { op_id, signature },
-                                Ok(Err(error)) => OutEvent::OutboundFailure {
-                                    op_id,
-                                    failure: Failure::other(error),
-                                },
-                                Err(_) => OutEvent::OutboundFailure {
-                                    op_id,
-                                    failure: Failure::Timeout,
-                                },
-                            },
-                        )
-                    };
-
-                    self.active_futures.push(future.boxed());
-                }
-                (StreamEither::Right(stream), PendingOpen::Msg { op_id, message }) => {
-                    let future = async move {
-                        Some(
-                            match timeout(
-                                SEND_TIMEOUT,
-                                protocol::send_bcast_message(stream, message),
-                            )
-                            .await
-                            {
-                                Ok(Ok(())) => OutEvent::MessageSent { op_id },
-                                Ok(Err(error)) => OutEvent::OutboundFailure {
-                                    op_id,
-                                    failure: Failure::other(error),
-                                },
-                                Err(_) => OutEvent::OutboundFailure {
-                                    op_id,
-                                    failure: Failure::Timeout,
-                                },
-                            },
-                        )
-                    };
-
-                    self.active_futures.push(future.boxed());
-                }
-                (protocol, info) => {
-                    warn!(
-                        ?protocol,
-                        ?info,
-                        "unexpected outbound protocol/info combination"
-                    );
-                }
-            },
+            }) => self.handle_fully_negotiated_outbound(protocol, info),
             ConnectionEvent::DialUpgradeError(DialUpgradeError { info, error }) => {
-                let op_id = match info {
-                    PendingOpen::Sig { op_id, .. } | PendingOpen::Msg { op_id, .. } => op_id,
-                };
-
-                let failure = match error {
-                    StreamUpgradeError::NegotiationFailed => Failure::Unsupported,
-                    StreamUpgradeError::Timeout => Failure::Timeout,
-                    StreamUpgradeError::Io(error) => Failure::io(error),
-                    StreamUpgradeError::Apply(error) => Failure::other(error),
-                };
-
-                self.active_futures.push(
-                    async move { Some(OutEvent::OutboundFailure { op_id, failure }) }.boxed(),
-                );
+                self.handle_dial_upgrade_error(info, error);
             }
             _ => {}
         }
