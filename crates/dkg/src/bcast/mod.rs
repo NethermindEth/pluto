@@ -12,9 +12,6 @@ pub use behaviour::{Behaviour, Event};
 pub use component::{CallbackFn, CheckFn, Component};
 pub use error::{Error, Failure, Result};
 
-/// The protocol prefix for the DKG reliable-broadcast protocol.
-pub const PROTOCOL_ID_PREFIX: &str = "/charon/dkg/bcast/1.0.0";
-
 /// The request-response protocol used to gather peer signatures.
 pub const SIG_PROTOCOL_NAME: StreamProtocol = StreamProtocol::new("/charon/dkg/bcast/1.0.0/sig");
 
