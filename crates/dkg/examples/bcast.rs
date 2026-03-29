@@ -557,7 +557,7 @@ async fn main() -> Result<()> {
     };
 
     let (bcast_behaviour, component) =
-        bcast::new(local_peer_id, cluster_peers.clone(), key.clone());
+        bcast::Behaviour::new(local_peer_id, cluster_peers.clone(), key.clone());
     register_message(&component, local_node_number)
         .await
         .expect("Failed to register demo bcast message");

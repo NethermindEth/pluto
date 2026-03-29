@@ -9,7 +9,7 @@ pub mod handler;
 mod protocol;
 
 pub use behaviour::{Behaviour, Event};
-pub use component::{CallbackFn, CheckFn, Component, new};
+pub use component::{CallbackFn, CheckFn, Component};
 pub use error::{Error, Failure, Result};
 
 /// The protocol prefix for the DKG reliable-broadcast protocol.

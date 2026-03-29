@@ -7,10 +7,7 @@ use prost::{Message, Name};
 use prost_types::Any;
 use tokio::sync::{RwLock, mpsc, oneshot};
 
-use super::{
-    Behaviour,
-    error::{Error, Result},
-};
+use super::error::{Error, Result};
 
 /// Typed message validator used for signature requests.
 pub type CheckFn<M> = Box<dyn Fn(PeerId, &M) -> Result<()> + Send + Sync + 'static>;
@@ -69,6 +66,16 @@ pub struct Component {
 }
 
 impl Component {
+    pub(crate) fn new(
+        command_tx: mpsc::UnboundedSender<BroadcastCommand>,
+        registry: Registry,
+    ) -> Self {
+        Self {
+            command_tx,
+            registry,
+        }
+    }
+
     /// Registers a typed message ID with its validator and callback.
     pub async fn register_message<M>(
         &self,
@@ -114,24 +121,6 @@ impl Component {
     }
 }
 
-/// Creates a new swarm behaviour and user-facing component handle.
-pub fn new(
-    local_peer_id: PeerId,
-    peers: Vec<PeerId>,
-    secret: k256::SecretKey,
-) -> (Behaviour, Component) {
-    let registry: Registry = Arc::new(RwLock::new(HashMap::new()));
-    let (command_tx, command_rx) = mpsc::unbounded_channel();
-
-    let behaviour = Behaviour::new(local_peer_id, peers, secret, registry.clone(), command_rx);
-    let component = Component {
-        command_tx,
-        registry,
-    };
-
-    (behaviour, component)
-}
-
 #[cfg(test)]
 mod tests {
     use pluto_p2p::peer::peer_id_from_key;
@@ -143,7 +132,7 @@ mod tests {
     async fn duplicate_message_id_registration_fails() {
         let key = generate_insecure_k1_key(1);
         let peer_id = peer_id_from_key(key.public_key()).unwrap();
-        let (_behaviour, component) = new(peer_id, vec![peer_id], key);
+        let (_behaviour, component) = super::super::Behaviour::new(peer_id, vec![peer_id], key);
 
         component
             .register_message::<prost_types::Timestamp>(

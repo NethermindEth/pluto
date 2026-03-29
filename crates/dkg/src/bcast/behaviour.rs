@@ -20,7 +20,7 @@ use tracing::debug;
 use crate::dkgpb::v1::bcast::BCastMessage;
 
 use super::{
-    component::{BroadcastCommand, Registry},
+    component::{BroadcastCommand, Component, Registry},
     error::{Error, Result},
     handler::{DedupStore, Handler, InEvent, OutEvent},
     protocol,
@@ -60,8 +60,21 @@ pub struct Behaviour {
 }
 
 impl Behaviour {
-    /// Creates a new behaviour instance.
-    pub(crate) fn new(
+    /// Creates a new behaviour instance and its user-facing component handle.
+    pub fn new(
+        local_peer_id: PeerId,
+        peers: Vec<PeerId>,
+        secret: k256::SecretKey,
+    ) -> (Self, Component) {
+        let registry: Registry = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
+        let behaviour = Self::with_parts(local_peer_id, peers, secret, registry.clone(), command_rx);
+        let component = Component::new(command_tx, registry);
+
+        (behaviour, component)
+    }
+
+    fn with_parts(
         local_peer_id: PeerId,
         peers: Vec<PeerId>,
         secret: k256::SecretKey,
@@ -429,7 +442,7 @@ mod tests {
     use pluto_testutil::random::generate_insecure_k1_key;
     use tokio::sync::{mpsc, oneshot};
 
-    use crate::bcast::{Component, Error, new};
+    use crate::bcast::{Behaviour, Component, Error};
 
     use super::Behaviour;
 
@@ -613,7 +626,7 @@ mod tests {
         let mut nodes = Vec::with_capacity(keys.len());
         for (index, key) in keys.into_iter().enumerate() {
             let peer_id = peer_ids[index];
-            let (behaviour, component) = new(peer_id, peer_ids.clone(), key.clone());
+            let (behaviour, component) = Behaviour::new(peer_id, peer_ids.clone(), key.clone());
             register_timestamp_message(&component, index, receipt_tx.clone()).await?;
             let node = Node::new_server(
                 P2PConfig::default(),
