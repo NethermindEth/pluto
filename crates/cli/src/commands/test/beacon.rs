@@ -128,9 +128,9 @@ struct DutiesPerformed {
 #[derive(Debug, Clone, Copy)]
 struct SimParams {
     total_validators_count: u64,
-    attestation_validators_count: u64,
-    proposal_validators_count: u64,
-    sync_committee_validators_count: u64,
+    attestation_validators_count: u64, // attestation + aggregation
+    proposal_validators_count: u64, // attestation + aggregation + proposals
+    sync_committee_validators_count: u64, // attestation + aggregation + proposals + sync committee
     request_intensity: RequestsIntensity,
 }
 
