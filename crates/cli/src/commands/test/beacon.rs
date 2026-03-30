@@ -926,7 +926,7 @@ async fn beacon_simulation_test(
         let path = cfg
             .simulation_file_dir
             .join(format!("{}-validators.json", params.total_validators_count));
-        if let Err(e) = std::fs::write(&path, json) {
+        if let Err(e) = tokio::fs::write(&path, json).await {
             tracing::error!(?e, "Failed to write simulation file");
         }
     }
