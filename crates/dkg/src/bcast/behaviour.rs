@@ -234,7 +234,7 @@ impl Behaviour {
             .iter()
             .cloned()
             .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| Error::Message("signature collection incomplete".to_string()))?;
+            .ok_or(Error::SignatureCollectionIncomplete)?;
         let msg_id = state.msg_id.clone();
         let any_msg = state.any_msg.clone();
 
@@ -557,7 +557,7 @@ mod tests {
                             msg_id: msg_id.to_string(),
                             seconds: msg.seconds,
                         })
-                        .map_err(|error| Error::Message(error.to_string()))?;
+                        .map_err(|_| Error::ReceiptChannelClosed)?;
                     Ok(())
                 }),
             )

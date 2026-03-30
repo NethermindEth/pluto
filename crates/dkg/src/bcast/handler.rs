@@ -361,7 +361,7 @@ async fn handle_inbound_sig_request(
         ),
     )
     .await
-    .map_err(|_| Error::Message("signature request timed out".to_string()))??;
+    .map_err(|_| Error::SignatureRequestTimedOut)??;
 
     let any = request.message.ok_or(Error::MissingField("message"))?;
 
@@ -402,7 +402,7 @@ async fn handle_inbound_sig_request(
         pluto_p2p::protobuf::write_protobuf(&mut stream, &response),
     )
     .await
-    .map_err(|_| Error::Message("signature response timed out".to_string()))??;
+    .map_err(|_| Error::SignatureResponseTimedOut)??;
 
     stream.close().await?;
     Ok(())
@@ -422,7 +422,7 @@ async fn handle_inbound_msg(
         ),
     )
     .await
-    .map_err(|_| Error::Message("broadcast receive timed out".to_string()))??;
+    .map_err(|_| Error::BroadcastReceiveTimedOut)??;
 
     let any = message.message.ok_or(Error::MissingField("message"))?;
     let signatures = message

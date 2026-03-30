@@ -112,6 +112,26 @@ pub enum Error {
     #[error("duplicate id with mismatching hash")]
     DuplicateMismatchingHash,
 
+    /// Signature collection was expected to be complete but a slot was empty.
+    #[error("signature collection incomplete")]
+    SignatureCollectionIncomplete,
+
+    /// Receiving a signature request took too long.
+    #[error("signature request timed out")]
+    SignatureRequestTimedOut,
+
+    /// Writing a signature response took too long.
+    #[error("signature response timed out")]
+    SignatureResponseTimedOut,
+
+    /// Receiving a fully signed broadcast message took too long.
+    #[error("broadcast receive timed out")]
+    BroadcastReceiveTimedOut,
+
+    /// A test callback receipt channel was closed unexpectedly.
+    #[error("receipt channel closed")]
+    ReceiptChannelClosed,
+
     /// A required message body field was absent.
     #[error("missing protobuf field: {0}")]
     MissingField(&'static str),
@@ -135,8 +155,4 @@ pub enum Error {
     /// A secp256k1 signing or verification step failed.
     #[error("k1 operation failed: {0}")]
     K1(#[from] pluto_k1util::K1UtilError),
-
-    /// A user-supplied check or callback failed.
-    #[error("{0}")]
-    Message(String),
 }
