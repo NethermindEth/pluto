@@ -1626,7 +1626,7 @@ fn generate_simulation_values(durations: &[StdDuration], endpoint: &str) -> Simu
         tracing::warn!("Failed to convert duration length to u32");
         u32::MAX
     });
-    #[allow(clippy::arithmetic_side_effects)] // count is non-zero (early return above)
+    #[allow(clippy::arithmetic_side_effects, reason = "count is non-zero (early return above)")]
     let avg = sum / count;
 
     let all: Vec<Duration> = durations.iter().map(|d| Duration::new(*d)).collect();
