@@ -3,6 +3,7 @@
 use clap::{Parser, Subcommand};
 
 use crate::commands::{
+    create_cluster::CreateClusterArgs,
     create_enr::CreateEnrArgs,
     enr::EnrArgs,
     relay::RelayArgs,
@@ -135,4 +136,10 @@ pub enum CreateCommands {
     /// Create an Ethereum Node Record (ENR) private key to identify this charon
     /// client
     Enr(CreateEnrArgs),
+
+    #[command(
+        about = "Create private keys and configuration files needed to run a distributed validator cluster locally",
+        long_about = "Creates a local charon cluster configuration including validator keys, charon p2p keys, cluster-lock.json and deposit-data.json file(s). See flags for supported features."
+    )]
+    Cluster(CreateClusterArgs),
 }

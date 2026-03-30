@@ -5,7 +5,10 @@ use std::{
     process::{ExitCode, Termination},
 };
 
+use pluto_eth2util as eth2util;
 use thiserror::Error;
+
+use crate::commands::create_cluster::{MIN_NODES, MIN_THRESHOLD};
 
 /// Result type for CLI operations.
 pub type Result<T> = std::result::Result<T, CliError>;
@@ -26,6 +29,7 @@ impl Termination for ExitResult {
 
 /// Errors that can occur in the Pluto CLI.
 #[derive(Error, Debug)]
+#[allow(dead_code)]
 pub enum CliError {
     /// Private key file not found.
     #[error(
@@ -94,4 +98,267 @@ pub enum CliError {
     /// Relay P2P error.
     #[error("Relay P2P error: {0}")]
     RelayP2PError(#[from] pluto_relay_server::error::RelayP2PError),
+
+    /// Create cluster error.
+    #[error("Create cluster error: {0}")]
+    CreateClusterError(#[from] CreateClusterError),
+
+    /// Eth1wrap error.
+    #[error("Eth1wrap error: {0}")]
+    Eth1wrapError(#[from] pluto_eth1wrap::EthClientError),
+
+    /// Eth2util network error.
+    #[error("Eth2util network error: {0}")]
+    Eth2utilNetworkError(#[from] eth2util::network::NetworkError),
+}
+
+#[derive(Error, Debug)]
+pub enum CreateClusterError {
+    /// Invalid threshold.
+    #[error("Invalid threshold: {0}")]
+    InvalidThreshold(#[from] ThresholdError),
+
+    /// Missing nodes or definition file.
+    #[error("Missing --nodes or --definition-file flag")]
+    MissingNodesOrDefinitionFile,
+
+    /// Invalid network configuration.
+    #[error("Invalid network configuration: {0}")]
+    InvalidNetworkConfig(InvalidNetworkConfigError),
+
+    /// Absolute path error.
+    #[error("Absolute path retrieval error: {0}")]
+    AbsolutePathError(std::io::Error),
+
+    /// IO error.
+    #[error("IO error: {0}")]
+    IoError(std::io::Error),
+
+    /// Node directory already exists.
+    #[error(
+        "Existing node directory found, please delete it before running this command: node_dir={node_dir}"
+    )]
+    NodeDirectoryAlreadyExists {
+        /// Node directory.
+        node_dir: PathBuf,
+    },
+
+    /// Invalid keymanager configuration.
+    #[error(
+        "number of --keymanager-addresses={keymanager_addrs} do not match --keymanager-auth-tokens={keymanager_auth_tokens}. Please fix configuration flags"
+    )]
+    InvalidKeymanagerConfig {
+        /// Number of keymanager addresses.
+        keymanager_addrs: usize,
+        /// Number of keymanager auth tokens.
+        keymanager_auth_tokens: usize,
+    },
+
+    /// Invalid deposit amounts.
+    #[error("Invalid deposit amounts: {0}")]
+    InvalidDepositAmounts(#[from] eth2util::deposit::DepositError),
+
+    /// Invalid keymanager URL.
+    #[error("Invalid keymanager URL: {0}")]
+    InvalidKeymanagerUrl(#[from] url::ParseError),
+
+    // todo(varex83): 1-to-1 replication of go impl, possible bug here. consider changing https to
+    // http.
+    /// Invalid keymanager URL scheme.
+    #[error("Keymanager URL does not use https protocol: {addr}")]
+    InvalidKeymanagerUrlScheme {
+        /// Keymanager URL.
+        addr: String,
+    },
+
+    /// Cannot specify --num-validators with --split-existing-keys.
+    #[error("Cannot specify --num-validators with --split-existing-keys")]
+    CannotSpecifyNumValidatorsWithSplitKeys,
+
+    /// Missing --num-validators or --definition-file flag.
+    #[error("Missing --num-validators or --definition-file flag")]
+    MissingNumValidatorsOrDefinitionFile,
+
+    /// Too few nodes.
+    #[error("Too few nodes: {num_nodes}. Minimum is {MIN_NODES}")]
+    TooFewNodes {
+        /// Number of nodes.
+        num_nodes: u64,
+    },
+
+    /// Unsupported consensus protocol.
+    #[error("Unsupported consensus protocol: {consensus_protocol}")]
+    UnsupportedConsensusProtocol {
+        /// Consensus protocol.
+        consensus_protocol: String,
+    },
+
+    /// Missing --split-keys-dir flag.
+    #[error("--split-keys-dir is required when splitting keys")]
+    MissingSplitKeysDir,
+
+    /// Missing --execution-client-rpc-endpoint flag.
+    #[error("--execution-client-rpc-endpoint is required when creating a new cluster")]
+    MissingExecutionEngineAddress,
+
+    /// Amount of keys read from disk differs from cluster definition.
+    #[error(
+        "Amount of keys read from disk differs from cluster definition: disk={disk_keys}, definition={definition_keys}"
+    )]
+    KeyCountMismatch {
+        /// Number of keys read from disk.
+        disk_keys: usize,
+        /// Number of validators in the definition.
+        definition_keys: u64,
+    },
+
+    /// Crypto error.
+    #[error("Crypto error: {0}")]
+    CryptoError(#[from] pluto_crypto::types::Error),
+
+    /// Value exceeds u8::MAX.
+    #[error("Value {value} exceeds u8::MAX (255)")]
+    ValueExceedsU8 {
+        /// The value that exceeds u8::MAX.
+        value: u64,
+    },
+
+    /// Keystore error.
+    #[error("Keystore error: {0}")]
+    KeystoreError(#[from] eth2util::keystore::KeystoreError),
+
+    /// Cannot create cluster with zero validators.
+    #[error("Cannot create cluster with zero validators, specify at least one")]
+    ZeroValidators,
+
+    /// Insufficient keymanager addresses.
+    #[error("Insufficient number of keymanager addresses: expected={expected}, got={got}")]
+    InsufficientKeymanagerAddresses {
+        /// Expected number of keymanager addresses.
+        expected: usize,
+        /// Actual number of keymanager addresses.
+        got: usize,
+    },
+
+    /// Insecure keys not supported on mainnet/gnosis.
+    #[error("Insecure keys not supported on mainnet or gnosis")]
+    InsecureKeysOnMainnetOrGnosis,
+
+    /// Definition name not provided.
+    #[error("Name not provided in cluster definition")]
+    DefinitionNameNotProvided,
+
+    /// Definition error.
+    #[error("Definition error: {0}")]
+    DefinitionError(#[from] pluto_cluster::definition::DefinitionError),
+
+    /// Unsupported network.
+    #[error("Unsupported network: {network}")]
+    UnsupportedNetwork {
+        /// Network name.
+        network: String,
+    },
+
+    /// Withdrawal validation error.
+    #[error("Withdrawal validation error: {0}")]
+    WithdrawalValidationError(#[from] crate::commands::create_dkg::WithdrawalValidationError),
+
+    /// Failed to read definition file.
+    #[error("Failed to read definition file: {0}")]
+    ReadDefinitionFile(#[from] std::io::Error),
+
+    /// Failed to parse definition JSON.
+    #[error("Failed to parse definition JSON: {0}")]
+    ParseDefinitionJson(#[from] serde_json::Error),
+
+    /// Cluster fetch error.
+    #[error("Failed to fetch cluster definition: {0}")]
+    FetchDefinition(#[from] pluto_cluster::helpers::FetchError),
+
+    /// No validators specified in definition.
+    #[error("No validators specified in the given definition")]
+    NoValidatorsInDefinition,
+
+    /// Mismatching number of fee recipient addresses.
+    #[error(
+        "mismatching --num-validators and --fee-recipient-addresses: num_validators={num_validators}, addresses={addresses}"
+    )]
+    MismatchingFeeRecipientAddresses {
+        /// Number of validators.
+        num_validators: u64,
+        /// Number of addresses.
+        addresses: usize,
+    },
+
+    /// Mismatching number of withdrawal addresses.
+    #[error(
+        "mismatching --num-validators and --withdrawal-addresses: num_validators={num_validators}, addresses={addresses}"
+    )]
+    MismatchingWithdrawalAddresses {
+        /// Number of validators.
+        num_validators: u64,
+        /// Number of addresses.
+        addresses: usize,
+    },
+
+    /// K1 error.
+    #[error("K1 error: {0}")]
+    K1Error(#[from] pluto_p2p::k1::K1Error),
+
+    /// Record error.
+    #[error("Record error: {0}")]
+    RecordError(#[from] eth2util::enr::RecordError),
+}
+
+#[derive(Error, Debug)]
+pub enum ThresholdError {
+    /// Threshold must be greater than {MIN_THRESHOLD}.
+    #[error("Threshold must be greater than {MIN_THRESHOLD}, got {threshold}")]
+    ThresholdTooLow {
+        /// Threshold value.
+        threshold: u64,
+    },
+
+    /// Threshold must be less than the number of nodes.
+    #[error(
+        "Threshold cannot be greater than number of operators (nodes): Threshold={threshold}, Number of nodes={number_of_nodes}"
+    )]
+    ThresholdTooHigh {
+        /// Threshold value.
+        threshold: u64,
+        /// Number of operators (nodes).
+        number_of_nodes: u64,
+    },
+}
+
+#[derive(Error, Debug)]
+pub enum InvalidNetworkConfigError {
+    /// Invalid network name.
+    #[error("Invalid network name: {0}")]
+    InvalidNetworkName(#[from] eth2util::network::NetworkError),
+
+    /// Invalid network specified.
+    #[error("Invalid network specified: network={network}")]
+    InvalidNetworkSpecified {
+        /// Network name.
+        network: String,
+    },
+
+    /// Missing --network flag or testnet config flags.
+    #[error("Missing --network flag and no testnet config flag")]
+    MissingNetworkFlagAndNoTestnetConfigFlag,
+}
+
+impl From<InvalidNetworkConfigError> for CreateClusterError {
+    fn from(error: InvalidNetworkConfigError) -> Self {
+        CreateClusterError::InvalidNetworkConfig(error)
+    }
+}
+
+impl From<eth2util::network::NetworkError> for CreateClusterError {
+    fn from(error: eth2util::network::NetworkError) -> Self {
+        CreateClusterError::InvalidNetworkConfig(InvalidNetworkConfigError::InvalidNetworkName(
+            error,
+        ))
+    }
 }
