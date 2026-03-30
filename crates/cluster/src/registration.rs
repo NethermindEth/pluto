@@ -1,9 +1,10 @@
 use chrono::{DateTime, Utc};
 use pluto_eth2api::spec::phase0;
+use pluto_ssz::serde_utils::Hex0x;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use crate::helpers::{EthHex, TimestampSeconds};
+use crate::helpers::TimestampSeconds;
 
 /// BuilderRegistration defines pre-generated signed validator builder
 /// registration to be sent to builder network.
@@ -14,7 +15,7 @@ pub struct BuilderRegistration {
     pub message: Registration,
 
     /// BLS signature of the registration message (96 bytes).
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub signature: phase0::BLSSignature,
 }
 
@@ -23,7 +24,7 @@ pub struct BuilderRegistration {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Registration {
     /// Fee recipient address for the registration.
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub fee_recipient: [u8; 20],
 
     /// Gas limit for the registration.
@@ -35,7 +36,7 @@ pub struct Registration {
 
     /// Validator's public key (48 bytes).
     #[serde(rename = "pubkey")]
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub pub_key: phase0::BLSPubKey,
 }
 

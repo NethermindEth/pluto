@@ -1,7 +1,16 @@
 use pluto_crypto::types::{PUBLIC_KEY_LENGTH, PublicKey};
+use pluto_eth2api::{
+    spec::{
+        BuilderVersion,
+        phase0::{BLS_PUBKEY_LEN, BLS_SIGNATURE_LEN},
+    },
+    v1,
+    versioned::VersionedSignedValidatorRegistration,
+};
+use pluto_ssz::serde_utils::Hex0x;
 use serde::{Deserialize, Serialize};
 
-use crate::{deposit::DepositData, helpers::EthHex, registration::BuilderRegistration};
+use crate::{definition::ADDRESS_LEN, deposit::DepositData, registration::BuilderRegistration};
 use serde_with::{
     base64::{Base64, Standard},
     serde_as,
@@ -13,14 +22,14 @@ use serde_with::{
 pub struct DistValidator {
     /// Distributed validator group public key.
     #[serde(rename = "distributed_public_key")]
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub pub_key: Vec<u8>,
 
     /// Public shares are the public keys corresponding to each node's secret
     /// key share. It can be used to verify a partial signature created by
     /// any node in the cluster.
     #[serde(rename = "public_shares")]
-    #[serde_as(as = "Vec<EthHex>")]
+    #[serde_as(as = "Vec<Hex0x>")]
     pub pub_shares: Vec<Vec<u8>>,
 
     /// Partial deposit data is the list of partial deposit data.
@@ -40,6 +49,9 @@ pub enum DistValidatorError {
     /// Invalid public share index.
     #[error("invalid public share index: got {0}, want less than {1}")]
     InvalidPublicShareIndex(usize, usize),
+    /// Invalid builder registration.
+    #[error("invalid registration")]
+    InvalidRegistration,
 }
 
 impl DistValidator {
@@ -82,20 +94,41 @@ impl DistValidator {
     }
 
     /// True if the validator has zero valued registration.
-    /// registration.
     pub fn zero_registration(&self) -> bool {
-        self.builder_registration.signature.is_empty()
-            && self.builder_registration.message.fee_recipient.is_empty()
+        self.builder_registration.signature == [0u8; BLS_SIGNATURE_LEN]
+            && self.builder_registration.message.fee_recipient == [0u8; ADDRESS_LEN]
             && self.builder_registration.message.gas_limit == 0
             && self.builder_registration.message.timestamp.timestamp() == 0
-            && self.builder_registration.message.pub_key.is_empty()
+            && self.builder_registration.message.pub_key == [0u8; BLS_PUBKEY_LEN]
     }
 
     /// Validator's Eth2 registration.
-    pub fn eth2_registration(&self) -> Result<(), DistValidatorError> {
-        unimplemented!(
-            "Eth2 registration requires to have ethereum types library which is not yet integrated in pluto-cluster"
-        )
+    pub fn eth2_registration(
+        &self,
+    ) -> Result<VersionedSignedValidatorRegistration, DistValidatorError> {
+        if self.zero_registration() {
+            return Err(DistValidatorError::InvalidRegistration);
+        }
+
+        let reg = &self.builder_registration;
+
+        Ok(VersionedSignedValidatorRegistration {
+            version: BuilderVersion::V1,
+            v1: Some(v1::SignedValidatorRegistration {
+                message: v1::ValidatorRegistration {
+                    fee_recipient: reg.message.fee_recipient,
+                    gas_limit: reg.message.gas_limit,
+                    timestamp: reg
+                        .message
+                        .timestamp
+                        .timestamp()
+                        .try_into()
+                        .map_err(|_| DistValidatorError::InvalidRegistration)?,
+                    pubkey: reg.message.pub_key,
+                },
+                signature: reg.signature,
+            }),
+        })
     }
 }
 
@@ -106,7 +139,7 @@ impl DistValidator {
 pub struct DistValidatorV1x0or1 {
     /// Distributed validator group public key.
     #[serde(rename = "distributed_public_key")]
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub pub_key: Vec<u8>,
 
     /// Public shares are the public keys corresponding to each node's secret
@@ -118,7 +151,7 @@ pub struct DistValidatorV1x0or1 {
 
     /// Fee recipient address for the validator.
     #[serde(default)]
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub fee_recipient_address: Vec<u8>,
 }
 
@@ -149,19 +182,19 @@ impl From<DistValidatorV1x0or1> for DistValidator {
 pub struct DistValidatorV1x2to5 {
     /// Distributed validator group public key.
     #[serde(rename = "distributed_public_key")]
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub pub_key: Vec<u8>,
 
     /// Public shares are the public keys corresponding to each node's secret
     /// key share. It can be used to verify a partial signature created by
     /// any node in the cluster.
     #[serde(rename = "public_shares")]
-    #[serde_as(as = "Vec<EthHex>")]
+    #[serde_as(as = "Vec<Hex0x>")]
     pub pub_shares: Vec<Vec<u8>>,
 
     /// Fee recipient address for the validator.
     #[serde(default)]
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub fee_recipient_address: Vec<u8>,
 }
 
@@ -192,14 +225,14 @@ impl From<DistValidatorV1x2to5> for DistValidator {
 pub struct DistValidatorV1x6 {
     /// Distributed validator group public key.
     #[serde(rename = "distributed_public_key")]
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub pub_key: Vec<u8>,
 
     /// Public shares are the public keys corresponding to each node's secret
     /// key share. It can be used to verify a partial signature created by
     /// any node in the cluster.
     #[serde(rename = "public_shares")]
-    #[serde_as(as = "Vec<EthHex>")]
+    #[serde_as(as = "Vec<Hex0x>")]
     pub pub_shares: Vec<Vec<u8>>,
 
     /// Deposit data defines the deposit data to activate a validator.
@@ -238,14 +271,14 @@ impl From<DistValidatorV1x6> for DistValidator {
 pub struct DistValidatorV1x7 {
     /// Distributed validator group public key.
     #[serde(rename = "distributed_public_key")]
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub pub_key: Vec<u8>,
 
     /// Public shares are the public keys corresponding to each node's secret
     /// key share. It can be used to verify a partial signature created by
     /// any node in the cluster.
     #[serde(rename = "public_shares")]
-    #[serde_as(as = "Vec<EthHex>")]
+    #[serde_as(as = "Vec<Hex0x>")]
     pub pub_shares: Vec<Vec<u8>>,
 
     /// Deposit data defines the deposit data to activate a validator.
@@ -288,14 +321,14 @@ impl From<DistValidatorV1x7> for DistValidator {
 pub struct DistValidatorV1x8orLater {
     /// Distributed validator group public key.
     #[serde(rename = "distributed_public_key")]
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub pub_key: Vec<u8>,
 
     /// Public shares are the public keys corresponding to each node's secret
     /// key share. It can be used to verify a partial signature created by
     /// any node in the cluster.
     #[serde(rename = "public_shares")]
-    #[serde_as(as = "Vec<EthHex>")]
+    #[serde_as(as = "Vec<Hex0x>")]
     pub pub_shares: Vec<Vec<u8>>,
 
     /// Deposit data defines the deposit data to activate a validator.

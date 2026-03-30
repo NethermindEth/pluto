@@ -5415,6 +5415,7 @@ dependencies = [
  "pluto-crypto",
  "pluto-eth2api",
  "pluto-k1util",
+ "pluto-ssz",
  "pluto-tracing",
  "prost 0.14.3",
  "prost-types 0.14.3",
@@ -5458,6 +5459,7 @@ dependencies = [
  "pluto-k1util",
  "pluto-p2p",
  "pluto-relay-server",
+ "pluto-ssz",
  "pluto-tracing",
  "rand 0.8.5",
  "reqwest 0.13.2",
@@ -5487,12 +5489,12 @@ dependencies = [
  "pluto-eth2util",
  "pluto-k1util",
  "pluto-p2p",
+ "pluto-ssz",
  "pluto-testutil",
  "prost 0.14.3",
  "prost-build",
  "prost-types 0.14.3",
  "rand 0.8.5",
- "rand_core 0.6.4",
  "reqwest 0.13.2",
  "serde",
  "serde_json",
@@ -5520,6 +5522,7 @@ dependencies = [
  "pluto-build-proto",
  "pluto-eth2api",
  "pluto-eth2util",
+ "pluto-ssz",
  "prost 0.14.3",
  "prost-types 0.14.3",
  "rand 0.8.5",
@@ -5561,19 +5564,26 @@ dependencies = [
  "pluto-build-proto",
  "pluto-cluster",
  "pluto-core",
+ "pluto-crypto",
+ "pluto-eth1wrap",
+ "pluto-eth2util",
  "pluto-k1util",
  "pluto-p2p",
  "pluto-testutil",
  "pluto-tracing",
  "prost 0.14.3",
  "prost-types 0.14.3",
+ "rand 0.8.5",
+ "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "tracing",
- "unsigned-varint 0.8.0",
+ "url",
+ "zeroize",
 ]
 
 [[package]]
@@ -5596,6 +5606,7 @@ dependencies = [
  "hex",
  "http",
  "oas3-gen-support",
+ "pluto-ssz",
  "regex",
  "reqwest 0.13.2",
  "serde",
@@ -5627,6 +5638,7 @@ dependencies = [
  "pluto-crypto",
  "pluto-eth2api",
  "pluto-k1util",
+ "pluto-ssz",
  "pluto-testutil",
  "rand 0.8.5",
  "regex",
@@ -5751,6 +5763,19 @@ dependencies = [
  "tracing",
  "vise",
  "vise-exporter",
+]
+
+[[package]]
+name = "pluto-ssz"
+version = "1.7.1"
+dependencies = [
+ "hex",
+ "k256",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "thiserror 2.0.18",
+ "tree_hash",
 ]
 
 [[package]]

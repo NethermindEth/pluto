@@ -29,8 +29,8 @@ serde_json.workspace = true
 pluto-core.workspace = true
 backon.workspace = true
 reqwest.workspace = true
-url.workspace = true
 unsigned-varint.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 pluto-testutil.workspace = true

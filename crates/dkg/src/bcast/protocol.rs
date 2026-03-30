@@ -53,9 +53,9 @@ pub fn verify_signatures(any: &Any, signatures: &[Vec<u8>], peers: &[PeerId]) ->
 
 /// Sends a signature request and awaits the corresponding response.
 pub async fn send_sig_request(mut stream: Stream, request: BCastSigRequest) -> Result<Vec<u8>> {
-    pluto_p2p::protobuf::write_protobuf(&mut stream, &request).await?;
+    pluto_p2p::proto::write_protobuf(&mut stream, &request).await?;
     let response: BCastSigResponse =
-        pluto_p2p::protobuf::read_protobuf(&mut stream, MAX_MESSAGE_SIZE).await?;
+        pluto_p2p::proto::read_protobuf_with_max_size(&mut stream, MAX_MESSAGE_SIZE).await?;
     stream.close().await?;
 
     Ok(response.signature.to_vec())
@@ -63,7 +63,7 @@ pub async fn send_sig_request(mut stream: Stream, request: BCastSigRequest) -> R
 
 /// Sends a fully-signed broadcast message and closes the stream.
 pub async fn send_bcast_message(mut stream: Stream, message: BCastMessage) -> Result<()> {
-    pluto_p2p::protobuf::write_protobuf(&mut stream, &message).await?;
+    pluto_p2p::proto::write_protobuf(&mut stream, &message).await?;
     stream.close().await?;
     Ok(())
 }

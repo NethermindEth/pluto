@@ -13,13 +13,22 @@ thiserror.workspace = true
 libp2p.workspace = true
 futures.workspace = true
 tokio.workspace = true
-unsigned-varint.workspace = true
 sha2.workspace = true
 tracing.workspace = true
 either.workspace = true
 k256.workspace = true
 pluto-k1util.workspace = true
 pluto-p2p.workspace = true
+pluto-cluster.workspace = true
+pluto-crypto.workspace = true
+pluto-eth1wrap.workspace = true
+pluto-eth2util.workspace = true
+hex.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+url.workspace = true
+zeroize.workspace = true
 
 [build-dependencies]
 pluto-build-proto.workspace = true
@@ -28,12 +37,13 @@ pluto-build-proto.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 hex.workspace = true
-pluto-cluster.workspace = true
+pluto-cluster = { workspace = true, features = ["test-cluster"] }
 pluto-core.workspace = true
 pluto-testutil.workspace = true
 pluto-tracing.workspace = true
 serde_json.workspace = true
 tokio-util.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true
