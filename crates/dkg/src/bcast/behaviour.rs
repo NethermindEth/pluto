@@ -60,7 +60,6 @@ struct BroadcastState {
 
 /// Swarm-owned behaviour for reliable broadcast.
 pub struct Behaviour {
-    local_peer_id: PeerId,
     peers: Arc<Vec<PeerId>>,
     p2p_context: P2PContext,
     secret: Arc<k256::SecretKey>,
@@ -76,7 +75,6 @@ pub struct Behaviour {
 impl Behaviour {
     /// Creates a new behaviour instance and its user-facing component handle.
     pub fn new(
-        local_peer_id: PeerId,
         peers: Vec<PeerId>,
         p2p_context: P2PContext,
         secret: k256::SecretKey,
@@ -84,7 +82,6 @@ impl Behaviour {
         let registry: Registry = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let behaviour = Self::with_parts(
-            local_peer_id,
             peers,
             p2p_context,
             secret,
@@ -97,7 +94,6 @@ impl Behaviour {
     }
 
     fn with_parts(
-        local_peer_id: PeerId,
         peers: Vec<PeerId>,
         p2p_context: P2PContext,
         secret: k256::SecretKey,
@@ -105,7 +101,6 @@ impl Behaviour {
         command_rx: mpsc::UnboundedReceiver<BroadcastCommand>,
     ) -> Self {
         Self {
-            local_peer_id,
             peers: Arc::new(peers),
             p2p_context,
             secret: Arc::new(secret),
@@ -179,10 +174,15 @@ impl Behaviour {
     }
 
     fn start_broadcast(&mut self, msg_id: String, any_msg: prost_types::Any) {
+        let Some(local_peer_id) = self.p2p_context.local_peer_id() else {
+            self.emit_broadcast_result(msg_id, Err(Error::LocalPeerMissing));
+            return;
+        };
+
         let local_index = match self
             .peers
             .iter()
-            .position(|peer_id| peer_id == &self.local_peer_id)
+            .position(|peer_id| peer_id == &local_peer_id)
         {
             Some(index) => index,
             None => {
@@ -204,7 +204,7 @@ impl Behaviour {
         let peers = self.peers.clone();
         let mut sig_dispatches = Vec::new();
         for (index, peer_id) in peers.iter().enumerate() {
-            if peer_id == &self.local_peer_id {
+            if peer_id == &local_peer_id {
                 continue;
             }
 
@@ -281,10 +281,14 @@ impl Behaviour {
                 .collect::<Vec<_>>(),
         };
 
+        let local_peer_id = self
+            .p2p_context
+            .local_peer_id()
+            .ok_or(Error::LocalPeerMissing)?;
         let peer_ids: Vec<PeerId> = self.peers.iter().copied().collect();
         let mut dispatches: Vec<(PeerId, u64)> = Vec::new();
         for peer_id in peer_ids {
-            if peer_id == self.local_peer_id {
+            if peer_id == local_peer_id {
                 continue;
             }
 
@@ -690,7 +694,7 @@ mod tests {
             let peer_id = peer_ids[index];
             let p2p_context = P2PContext::new(peer_ids.clone());
             let (behaviour, component) =
-                Behaviour::new(peer_id, peer_ids.clone(), p2p_context.clone(), key.clone());
+                Behaviour::new(peer_ids.clone(), p2p_context.clone(), key.clone());
             register_timestamp_message(&component, index, receipt_tx.clone()).await?;
             let node = Node::new_server(
                 P2PConfig::default(),

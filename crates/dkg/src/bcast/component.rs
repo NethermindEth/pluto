@@ -131,8 +131,9 @@ mod tests {
         let key = generate_insecure_k1_key(1);
         let peer_id = peer_id_from_key(key.public_key()).unwrap();
         let p2p_context = pluto_p2p::p2p_context::P2PContext::new(vec![peer_id]);
+        p2p_context.set_local_peer_id(peer_id);
         let (_behaviour, component) =
-            super::super::Behaviour::new(peer_id, vec![peer_id], p2p_context, key);
+            super::super::Behaviour::new(vec![peer_id], p2p_context, key);
 
         component
             .register_message::<prost_types::Timestamp>(

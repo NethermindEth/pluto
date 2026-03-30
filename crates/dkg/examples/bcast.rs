@@ -580,7 +580,6 @@ async fn main() -> Result<()> {
 
     let p2p_context = P2PContext::new(known_peers.clone());
     let (bcast_behaviour, component) = bcast::Behaviour::new(
-        local_peer_id,
         cluster_peers.clone(),
         p2p_context.clone(),
         key.clone(),

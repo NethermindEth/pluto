@@ -12,6 +12,8 @@ use libp2p::{Multiaddr, PeerId, swarm::ConnectionId};
 /// - Runtime peer connection state (mutable via `PeerStore`)
 #[derive(Debug, Clone, Default)]
 pub struct P2PContext {
+    /// Local peer ID for this node, once known.
+    local_peer_id: Arc<RwLock<Option<PeerId>>>,
     /// Known cluster peer IDs. These are the peers that are part of the
     /// cluster and should be tracked with peer metrics (as opposed to
     /// relay metrics for unknown peers).
@@ -24,9 +26,26 @@ impl P2PContext {
     /// Creates a new global context with the given known peers.
     pub fn new(known_peers: impl IntoIterator<Item = PeerId>) -> Self {
         Self {
+            local_peer_id: Arc::default(),
             known_peers: Arc::new(known_peers.into_iter().collect()),
             peer_store: Arc::default(),
         }
+    }
+
+    /// Sets the local peer ID for this node.
+    pub fn set_local_peer_id(&self, peer_id: PeerId) {
+        *self
+            .local_peer_id
+            .write()
+            .expect("Failed to write local peer id") = Some(peer_id);
+    }
+
+    /// Returns the local peer ID for this node, if known.
+    pub fn local_peer_id(&self) -> Option<PeerId> {
+        *self
+            .local_peer_id
+            .read()
+            .expect("Failed to read local peer id")
     }
 
     /// Returns true if the peer is a known cluster peer.
