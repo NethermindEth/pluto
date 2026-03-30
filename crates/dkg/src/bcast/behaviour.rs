@@ -1,7 +1,7 @@
 //! Swarm behaviour for the DKG reliable-broadcast protocol.
 
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     sync::Arc,
     task::{Context, Poll},
 };
@@ -15,6 +15,7 @@ use libp2p::{
     },
 };
 use prost::bytes::Bytes;
+use pluto_p2p::p2p_context::P2PContext;
 use tokio::sync::{mpsc, oneshot};
 use tracing::debug;
 
@@ -49,13 +50,13 @@ struct BroadcastState {
 pub struct Behaviour {
     local_peer_id: PeerId,
     peers: Arc<Vec<PeerId>>,
+    p2p_context: P2PContext,
     secret: Arc<k256::SecretKey>,
     registry: Registry,
     dedup: DedupStore,
     command_rx: mpsc::UnboundedReceiver<BroadcastCommand>,
     pending_commands: VecDeque<BroadcastCommand>,
     pending_events: VecDeque<ToSwarm<Event, InEvent>>,
-    connections: HashMap<PeerId, HashSet<ConnectionId>>,
     active_broadcast: Option<BroadcastState>,
     next_op_id: u64,
 }
@@ -65,12 +66,13 @@ impl Behaviour {
     pub fn new(
         local_peer_id: PeerId,
         peers: Vec<PeerId>,
+        p2p_context: P2PContext,
         secret: k256::SecretKey,
     ) -> (Self, Component) {
         let registry: Registry = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let behaviour =
-            Self::with_parts(local_peer_id, peers, secret, registry.clone(), command_rx);
+            Self::with_parts(local_peer_id, peers, p2p_context, secret, registry.clone(), command_rx);
         let component = Component::new(command_tx, registry);
 
         (behaviour, component)
@@ -79,6 +81,7 @@ impl Behaviour {
     fn with_parts(
         local_peer_id: PeerId,
         peers: Vec<PeerId>,
+        p2p_context: P2PContext,
         secret: k256::SecretKey,
         registry: Registry,
         command_rx: mpsc::UnboundedReceiver<BroadcastCommand>,
@@ -86,13 +89,13 @@ impl Behaviour {
         Self {
             local_peer_id,
             peers: Arc::new(peers),
+            p2p_context,
             secret: Arc::new(secret),
             registry,
             dedup: Arc::default(),
             command_rx,
             pending_commands: VecDeque::new(),
             pending_events: VecDeque::new(),
-            connections: HashMap::new(),
             active_broadcast: None,
             next_op_id: 0,
         }
@@ -105,7 +108,11 @@ impl Behaviour {
     }
 
     fn is_connected(&self, peer_id: &PeerId) -> bool {
-        self.connections.contains_key(peer_id)
+        !self
+            .p2p_context
+            .peer_store_lock()
+            .connections_to_peer(peer_id)
+            .is_empty()
     }
 
     fn new_handler(&self, peer: PeerId) -> Handler {
@@ -370,41 +377,25 @@ impl NetworkBehaviour for Behaviour {
     }
 
     fn on_swarm_event(&mut self, event: FromSwarm) {
-        match event {
-            FromSwarm::ConnectionEstablished(event) => {
-                if !self.peers.contains(&event.peer_id) {
-                    return;
-                }
-
-                self.connections
-                    .entry(event.peer_id)
-                    .or_default()
-                    .insert(event.connection_id);
+        if let FromSwarm::ConnectionClosed(event) = event {
+            if !self.peers.contains(&event.peer_id) {
+                return;
             }
-            FromSwarm::ConnectionClosed(event) => {
-                if !self.peers.contains(&event.peer_id) {
-                    return;
-                }
 
-                if let Some(connections) = self.connections.get_mut(&event.peer_id) {
-                    connections.remove(&event.connection_id);
-                    if connections.is_empty() {
-                        self.connections.remove(&event.peer_id);
-                    } else {
-                        return;
-                    }
-
-                    let should_fail = self.active_broadcast.as_ref().is_some_and(|state| {
-                        state.sig_ops.values().any(|op| op.peer == event.peer_id)
-                            || state.msg_ops.values().any(|peer| *peer == event.peer_id)
-                    });
-
-                    if should_fail {
-                        self.complete_active_broadcast(Err(Error::PeerNotConnected(event.peer_id)));
-                    }
-                }
+            // PlutoBehaviour runs conn_logger before inner behaviours, so the shared peer store
+            // already reflects the closed connection when bcast sees this event.
+            if self.is_connected(&event.peer_id) {
+                return;
             }
-            _ => {}
+
+            let should_fail = self.active_broadcast.as_ref().is_some_and(|state| {
+                state.sig_ops.values().any(|op| op.peer == event.peer_id)
+                    || state.msg_ops.values().any(|peer| *peer == event.peer_id)
+            });
+
+            if should_fail {
+                self.complete_active_broadcast(Err(Error::PeerNotConnected(event.peer_id)));
+            }
         }
     }
 
@@ -456,6 +447,7 @@ mod tests {
         config::P2PConfig,
         p2p::{Node, NodeType},
         peer::peer_id_from_key,
+        p2p_context::P2PContext,
     };
     use pluto_testutil::random::generate_insecure_k1_key;
     use tokio::sync::{mpsc, oneshot};
@@ -644,7 +636,9 @@ mod tests {
         let mut nodes = Vec::with_capacity(keys.len());
         for (index, key) in keys.into_iter().enumerate() {
             let peer_id = peer_ids[index];
-            let (behaviour, component) = Behaviour::new(peer_id, peer_ids.clone(), key.clone());
+            let p2p_context = P2PContext::new(peer_ids.clone());
+            let (behaviour, component) =
+                Behaviour::new(peer_id, peer_ids.clone(), p2p_context.clone(), key.clone());
             register_timestamp_message(&component, index, receipt_tx.clone()).await?;
             let node = Node::new_server(
                 P2PConfig::default(),
@@ -652,7 +646,11 @@ mod tests {
                 NodeType::TCP,
                 false,
                 peer_ids.clone(),
-                |builder, _keypair| builder.with_inner(behaviour),
+                move |builder, _keypair| {
+                    builder
+                        .with_p2p_context(p2p_context.clone())
+                        .with_inner(behaviour)
+                },
             )?;
             let addr: Multiaddr = format!("/ip4/127.0.0.1/tcp/{}", ports[index]).parse()?;
             nodes.push(LocalNode {
