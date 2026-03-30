@@ -103,10 +103,8 @@ impl Behaviour {
         current
     }
 
-    fn connection_for(&self, peer_id: &PeerId) -> Option<ConnectionId> {
-        self.connections
-            .get(peer_id)
-            .and_then(|connections| connections.iter().next().copied())
+    fn is_connected(&self, peer_id: &PeerId) -> bool {
+        self.connections.contains_key(peer_id)
     }
 
     fn new_handler(&self, peer: PeerId) -> Handler {
@@ -177,14 +175,11 @@ impl Behaviour {
                 continue;
             }
 
-            let connection_id = match self.connection_for(peer_id) {
-                Some(connection_id) => connection_id,
-                None => {
-                    let _ = resp_tx.send(Err(Error::PeerNotConnected(*peer_id)));
-                    return;
-                }
-            };
-            sig_dispatches.push((index, *peer_id, connection_id));
+            if !self.is_connected(peer_id) {
+                let _ = resp_tx.send(Err(Error::PeerNotConnected(*peer_id)));
+                return;
+            }
+            sig_dispatches.push((index, *peer_id));
         }
 
         let mut state = BroadcastState {
@@ -196,7 +191,7 @@ impl Behaviour {
             resp_tx,
         };
 
-        for (index, peer_id, connection_id) in sig_dispatches {
+        for (index, peer_id) in sig_dispatches {
             let op_id = self.next_op_id();
             state.sig_ops.insert(
                 op_id,
@@ -207,7 +202,7 @@ impl Behaviour {
             );
             self.pending_events.push_back(ToSwarm::NotifyHandler {
                 peer_id,
-                handler: NotifyHandler::One(connection_id),
+                handler: NotifyHandler::Any,
                 event: InEvent::RequestSignature {
                     op_id,
                     request: crate::dkgpb::v1::bcast::BCastSigRequest {
@@ -255,17 +250,17 @@ impl Behaviour {
         };
 
         let peer_ids: Vec<PeerId> = self.peers.iter().copied().collect();
-        let mut dispatches: Vec<(PeerId, ConnectionId, u64)> = Vec::new();
+        let mut dispatches: Vec<(PeerId, u64)> = Vec::new();
         for peer_id in peer_ids {
             if peer_id == self.local_peer_id {
                 continue;
             }
 
-            let connection_id = self
-                .connection_for(&peer_id)
-                .ok_or(Error::PeerNotConnected(peer_id))?;
+            if !self.is_connected(&peer_id) {
+                return Err(Error::PeerNotConnected(peer_id));
+            }
             let op_id = self.next_op_id();
-            dispatches.push((peer_id, connection_id, op_id));
+            dispatches.push((peer_id, op_id));
         }
 
         if dispatches.is_empty() {
@@ -274,15 +269,15 @@ impl Behaviour {
         }
 
         if let Some(state) = self.active_broadcast.as_mut() {
-            for (peer_id, _, op_id) in &dispatches {
+            for (peer_id, op_id) in &dispatches {
                 state.msg_ops.insert(*op_id, *peer_id);
             }
         }
 
-        for (peer_id, connection_id, op_id) in dispatches {
+        for (peer_id, op_id) in dispatches {
             self.pending_events.push_back(ToSwarm::NotifyHandler {
                 peer_id,
-                handler: NotifyHandler::One(connection_id),
+                handler: NotifyHandler::Any,
                 event: InEvent::BroadcastMessage {
                     op_id,
                     message: message.clone(),
@@ -378,16 +373,17 @@ impl NetworkBehaviour for Behaviour {
                     connections.remove(&event.connection_id);
                     if connections.is_empty() {
                         self.connections.remove(&event.peer_id);
-                        let should_fail = self.active_broadcast.as_ref().is_some_and(|state| {
-                            state.sig_ops.values().any(|op| op.peer == event.peer_id)
-                                || state.msg_ops.values().any(|peer| *peer == event.peer_id)
-                        });
+                    } else {
+                        return;
+                    }
 
-                        if should_fail {
-                            self.complete_active_broadcast(Err(Error::PeerNotConnected(
-                                event.peer_id,
-                            )));
-                        }
+                    let should_fail = self.active_broadcast.as_ref().is_some_and(|state| {
+                        state.sig_ops.values().any(|op| op.peer == event.peer_id)
+                            || state.msg_ops.values().any(|peer| *peer == event.peer_id)
+                    });
+
+                    if should_fail {
+                        self.complete_active_broadcast(Err(Error::PeerNotConnected(event.peer_id)));
                     }
                 }
             }
