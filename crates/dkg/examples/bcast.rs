@@ -579,11 +579,8 @@ async fn main() -> Result<()> {
     };
 
     let p2p_context = P2PContext::new(known_peers.clone());
-    let (bcast_behaviour, component) = bcast::Behaviour::new(
-        cluster_peers.clone(),
-        p2p_context.clone(),
-        key.clone(),
-    );
+    let (bcast_behaviour, component) =
+        bcast::Behaviour::new(cluster_peers.clone(), p2p_context.clone(), key.clone());
     register_message(&component, local_node_number)
         .await
         .expect("Failed to register demo bcast message");

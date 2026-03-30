@@ -81,13 +81,7 @@ impl Behaviour {
     ) -> (Self, Component) {
         let registry: Registry = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
         let (command_tx, command_rx) = mpsc::unbounded_channel();
-        let behaviour = Self::with_parts(
-            peers,
-            p2p_context,
-            secret,
-            registry.clone(),
-            command_rx,
-        );
+        let behaviour = Self::with_parts(peers, p2p_context, secret, registry.clone(), command_rx);
         let component = Component::new(command_tx, registry);
 
         (behaviour, component)
