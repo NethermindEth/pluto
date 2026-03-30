@@ -6,11 +6,12 @@ use std::{
     task::{Context, Poll},
 };
 
+use either::Either;
 use libp2p::{
     Multiaddr, PeerId,
     swarm::{
         ConnectionDenied, ConnectionId, FromSwarm, NetworkBehaviour, NotifyHandler, THandler,
-        THandlerInEvent, THandlerOutEvent, ToSwarm,
+        THandlerInEvent, THandlerOutEvent, ToSwarm, dummy,
     },
 };
 use prost::bytes::Bytes;
@@ -336,7 +337,7 @@ impl Behaviour {
 }
 
 impl NetworkBehaviour for Behaviour {
-    type ConnectionHandler = Handler;
+    type ConnectionHandler = Either<Handler, dummy::ConnectionHandler>;
     type ToSwarm = Event;
 
     fn handle_established_inbound_connection(
@@ -346,7 +347,11 @@ impl NetworkBehaviour for Behaviour {
         _local_addr: &Multiaddr,
         _remote_addr: &Multiaddr,
     ) -> std::result::Result<THandler<Self>, ConnectionDenied> {
-        Ok(self.new_handler(peer))
+        if self.peers.contains(&peer) {
+            Ok(Either::Left(self.new_handler(peer)))
+        } else {
+            Ok(Either::Right(dummy::ConnectionHandler))
+        }
     }
 
     fn handle_established_outbound_connection(
@@ -357,18 +362,30 @@ impl NetworkBehaviour for Behaviour {
         _role_override: libp2p::core::Endpoint,
         _port_use: libp2p::core::transport::PortUse,
     ) -> std::result::Result<THandler<Self>, ConnectionDenied> {
-        Ok(self.new_handler(peer))
+        if self.peers.contains(&peer) {
+            Ok(Either::Left(self.new_handler(peer)))
+        } else {
+            Ok(Either::Right(dummy::ConnectionHandler))
+        }
     }
 
     fn on_swarm_event(&mut self, event: FromSwarm) {
         match event {
             FromSwarm::ConnectionEstablished(event) => {
+                if !self.peers.contains(&event.peer_id) {
+                    return;
+                }
+
                 self.connections
                     .entry(event.peer_id)
                     .or_default()
                     .insert(event.connection_id);
             }
             FromSwarm::ConnectionClosed(event) => {
+                if !self.peers.contains(&event.peer_id) {
+                    return;
+                }
+
                 if let Some(connections) = self.connections.get_mut(&event.peer_id) {
                     connections.remove(&event.connection_id);
                     if connections.is_empty() {
@@ -397,6 +414,10 @@ impl NetworkBehaviour for Behaviour {
         _connection_id: ConnectionId,
         event: THandlerOutEvent<Self>,
     ) {
+        let event = match event {
+            Either::Left(event) => event,
+            Either::Right(unreachable) => match unreachable {},
+        };
         self.handle_handler_event(peer_id, event);
     }
 
@@ -405,7 +426,7 @@ impl NetworkBehaviour for Behaviour {
         cx: &mut Context<'_>,
     ) -> Poll<ToSwarm<Self::ToSwarm, THandlerInEvent<Self>>> {
         if let Some(event) = self.pending_events.pop_front() {
-            return Poll::Ready(event);
+            return Poll::Ready(event.map_in(Either::Left));
         }
 
         while let Poll::Ready(Some(command)) = self.command_rx.poll_recv(cx) {
@@ -417,7 +438,7 @@ impl NetworkBehaviour for Behaviour {
         }
 
         if let Some(event) = self.pending_events.pop_front() {
-            return Poll::Ready(event);
+            return Poll::Ready(event.map_in(Either::Left));
         }
 
         Poll::Pending
