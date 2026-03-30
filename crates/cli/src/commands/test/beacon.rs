@@ -1,6 +1,6 @@
 //! Beacon node API tests.
 //!
-//! Port of charon/cmd/testbeacon.go — runs connectivity, load, and simulation
+//! Connectivity, load, and simulation
 //! tests against one or more beacon node endpoints.
 
 use super::{
@@ -22,7 +22,11 @@ use rand::Rng;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io::Write, path::PathBuf, time::Duration as StdDuration};
-use tokio::{sync::mpsc, task::JoinSet};
+use tokio::{
+    sync::mpsc,
+    task::JoinSet,
+    time::{Instant, interval, interval_at, sleep, sleep_until},
+};
 use tokio_util::sync::CancellationToken;
 
 const THRESHOLD_BEACON_MEASURE_AVG: StdDuration = StdDuration::from_millis(40);
@@ -137,11 +141,11 @@ struct SimParams {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Simulation {
     pub general_cluster_requests: SimulationCluster,
-    pub validators_requests: SimulationValidatorsResult,
+    pub validators_requests: SimulationValidators,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct SimulationValidatorsResult {
+pub struct SimulationValidators {
     pub averaged: SimulationSingleValidator,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub all_validators: Vec<SimulationSingleValidator>,
@@ -291,7 +295,7 @@ pub async fn run(
 
     cancel_after(&shutdown, args.test_config.timeout);
 
-    let start = std::time::Instant::now();
+    let start = Instant::now();
 
     let mut set = JoinSet::new();
 
@@ -438,7 +442,8 @@ async fn beacon_version_test(
         Err(e) => return res.fail(e),
     };
 
-    // more strict than Charon check which requires status code to be > 399
+    // More strict than the Charon check, which requires the status code to be >
+    // 399.
     if !resp.status().is_success() {
         return res.fail(super::TestResultError::from_string(format!(
             "http status {}",
@@ -494,7 +499,8 @@ async fn beacon_is_synced_test(
         Err(e) => return res.fail(e),
     };
 
-    // more strict than Charon check which requires status code to be > 399
+    // More strict than the Charon check, which requires the status code to be >
+    // 399.
     if !resp.status().is_success() {
         return res.fail(super::TestResultError::from_string(format!(
             "http status {}",
@@ -545,7 +551,8 @@ async fn beacon_peer_count_test(
         Err(e) => return res.fail(e),
     };
 
-    // more strict than Charon check which requires status code to be > 399
+    // More strict than the Charon check, which requires the status code to be >
+    // 399.
     if !resp.status().is_success() {
         return res.fail(super::TestResultError::from_string(format!(
             "http status {}",
@@ -601,7 +608,7 @@ async fn ping_beacon_continuously(
                     return;
                 }
                 let jitter = rand::thread_rng().gen_range(0..100u64);
-                tokio::time::sleep(StdDuration::from_millis(jitter)).await;
+                sleep(StdDuration::from_millis(jitter)).await;
             }
         }
     }
@@ -627,7 +634,7 @@ async fn beacon_ping_load_test(
     cancel_after(&cancel, cfg.load_test_duration);
 
     let mut handles = Vec::new();
-    let mut interval = tokio::time::interval(StdDuration::from_secs(1));
+    let mut interval = interval(StdDuration::from_secs(1));
 
     loop {
         tokio::select! {
@@ -912,7 +919,7 @@ async fn beacon_simulation_test(
 
     let mut final_simulation = Simulation {
         general_cluster_requests: cluster_result,
-        validators_requests: SimulationValidatorsResult {
+        validators_requests: SimulationValidators {
             averaged,
             all_validators: all_validators.clone(),
         },
@@ -973,18 +980,27 @@ async fn single_cluster_simulation(
 
     let mut slot = get_current_slot(target).await.unwrap_or(1);
 
-    let mut slot_interval = tokio::time::interval(SLOT_TIME);
-    let mut interval_12_slots = tokio::time::interval(SLOT_TIME.saturating_mul(12));
-    let mut interval_10_sec = tokio::time::interval(StdDuration::from_secs(10));
-    let mut interval_minute = tokio::time::interval(StdDuration::from_secs(60));
+    let deadline = sim_deadline(sim_duration);
 
-    #[allow(clippy::arithmetic_side_effects)] // Instant + Duration; bounded sim_duration
-    let deadline = tokio::time::Instant::now() + sim_duration;
+    let now = Instant::now();
+    #[allow(clippy::arithmetic_side_effects)]
+    let mut slot_interval = interval_at(now + SLOT_TIME, SLOT_TIME);
+    #[allow(clippy::arithmetic_side_effects)]
+    let mut interval_12_slots = interval_at(
+        now + SLOT_TIME.saturating_mul(12),
+        SLOT_TIME.saturating_mul(12),
+    );
+    #[allow(clippy::arithmetic_side_effects)]
+    let mut interval_10_sec =
+        interval_at(now + StdDuration::from_secs(10), StdDuration::from_secs(10));
+    #[allow(clippy::arithmetic_side_effects)]
+    let mut interval_minute =
+        interval_at(now + StdDuration::from_secs(60), StdDuration::from_secs(60));
 
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
-            _ = tokio::time::sleep_until(deadline) => break,
+            _ = sleep_until(deadline) => break,
             _ = slot_interval.tick() => {
                 slot = slot.saturating_add(1);
                 let epoch = slot / SLOTS_IN_EPOCH;
@@ -1319,15 +1335,14 @@ async fn attestation_duty(
     get_tx: mpsc::Sender<StdDuration>,
     submit_tx: mpsc::Sender<StdDuration>,
 ) {
-    #[allow(clippy::arithmetic_side_effects)] // Instant + Duration; bounded sim_duration
-    let deadline = tokio::time::Instant::now() + sim_duration;
-    tokio::time::sleep(randomize_start(tick_time)).await;
-
-    let mut interval = tokio::time::interval(tick_time);
+    let deadline = sim_deadline(sim_duration);
+    sleep(randomize_start(tick_time)).await;
+    #[allow(clippy::arithmetic_side_effects)]
+    let mut interval = interval_at(Instant::now() + tick_time, tick_time);
     let mut slot = get_current_slot(target).await.unwrap_or(1);
 
     loop {
-        if cancel.is_cancelled() || tokio::time::Instant::now() >= deadline {
+        if cancel.is_cancelled() || Instant::now() >= deadline {
             break;
         }
 
@@ -1341,7 +1356,7 @@ async fn attestation_duty(
 
         tokio::select! {
             _ = cancel.cancelled() => break,
-            _ = tokio::time::sleep_until(deadline) => break,
+            _ = sleep_until(deadline) => break,
             _ = interval.tick() => {
                 slot = slot.saturating_add(tick_time.as_secs() / SLOT_TIME_SECS);
             }
@@ -1357,15 +1372,14 @@ async fn aggregation_duty(
     get_tx: mpsc::Sender<StdDuration>,
     submit_tx: mpsc::Sender<StdDuration>,
 ) {
-    #[allow(clippy::arithmetic_side_effects)] // Instant + Duration; bounded sim_duration
-    let deadline = tokio::time::Instant::now() + sim_duration;
+    let deadline = sim_deadline(sim_duration);
     let mut slot = get_current_slot(target).await.unwrap_or(1);
-    tokio::time::sleep(randomize_start(tick_time)).await;
-
-    let mut interval = tokio::time::interval(tick_time);
+    sleep(randomize_start(tick_time)).await;
+    #[allow(clippy::arithmetic_side_effects)]
+    let mut interval = interval_at(Instant::now() + tick_time, tick_time);
 
     loop {
-        if cancel.is_cancelled() || tokio::time::Instant::now() >= deadline {
+        if cancel.is_cancelled() || Instant::now() >= deadline {
             break;
         }
 
@@ -1384,7 +1398,7 @@ async fn aggregation_duty(
 
         tokio::select! {
             _ = cancel.cancelled() => break,
-            _ = tokio::time::sleep_until(deadline) => break,
+            _ = sleep_until(deadline) => break,
             _ = interval.tick() => {
                 slot = slot.saturating_add(tick_time.as_secs() / SLOT_TIME_SECS);
             }
@@ -1400,16 +1414,15 @@ async fn proposal_duty(
     produce_tx: mpsc::Sender<StdDuration>,
     publish_tx: mpsc::Sender<StdDuration>,
 ) {
-    #[allow(clippy::arithmetic_side_effects)] // Instant + Duration; bounded sim_duration
-    let deadline = tokio::time::Instant::now() + sim_duration;
-    tokio::time::sleep(randomize_start(tick_time)).await;
-
-    let mut interval = tokio::time::interval(tick_time);
+    let deadline = sim_deadline(sim_duration);
+    sleep(randomize_start(tick_time)).await;
+    #[allow(clippy::arithmetic_side_effects)]
+    let mut interval = interval_at(Instant::now() + tick_time, tick_time);
     let mut slot = get_current_slot(target).await.unwrap_or(1);
     let randao = "0x1fe79e4193450abda94aec753895cfb2aac2c2a930b6bab00fbb27ef6f4a69f4400ad67b5255b91837982b4c511ae1d94eae1cf169e20c11bd417c1fffdb1f99f4e13e2de68f3b5e73f1de677d73cd43e44bf9b133a79caf8e5fad06738e1b0c";
 
     loop {
-        if cancel.is_cancelled() || tokio::time::Instant::now() >= deadline {
+        if cancel.is_cancelled() || Instant::now() >= deadline {
             break;
         }
 
@@ -1422,7 +1435,7 @@ async fn proposal_duty(
 
         tokio::select! {
             _ = cancel.cancelled() => break,
-            _ = tokio::time::sleep_until(deadline) => break,
+            _ = sleep_until(deadline) => break,
             _ = interval.tick() => {
                 slot = slot.saturating_add(tick_time.as_secs() / SLOT_TIME_SECS).saturating_add(1); // produce block for the next slot, as the current one might have already been proposed
             }
@@ -1464,13 +1477,13 @@ async fn sync_committee_duties(
     });
 
     // Subscribe loop
-    #[allow(clippy::arithmetic_side_effects)] // Instant + Duration; bounded sim_duration
-    let deadline = tokio::time::Instant::now() + sim_duration;
-    tokio::time::sleep(randomize_start(tick_time_subscribe)).await;
-    let mut interval = tokio::time::interval(tick_time_subscribe);
+    let deadline = sim_deadline(sim_duration);
+    sleep(randomize_start(tick_time_subscribe)).await;
+    #[allow(clippy::arithmetic_side_effects)]
+    let mut interval = interval_at(Instant::now() + tick_time_subscribe, tick_time_subscribe);
 
     loop {
-        if cancel.is_cancelled() || tokio::time::Instant::now() >= deadline {
+        if cancel.is_cancelled() || Instant::now() >= deadline {
             break;
         }
 
@@ -1480,7 +1493,7 @@ async fn sync_committee_duties(
 
         tokio::select! {
             _ = cancel.cancelled() => break,
-            _ = tokio::time::sleep_until(deadline) => break,
+            _ = sleep_until(deadline) => break,
             _ = interval.tick() => {}
         }
     }
@@ -1494,14 +1507,14 @@ async fn sync_committee_contribution_duty(
     produce_tx: mpsc::Sender<StdDuration>,
     contrib_tx: mpsc::Sender<StdDuration>,
 ) {
-    #[allow(clippy::arithmetic_side_effects)] // Instant + Duration; bounded sim_duration
-    let deadline = tokio::time::Instant::now() + sim_duration;
-    tokio::time::sleep(randomize_start(tick_time)).await;
-    let mut interval = tokio::time::interval(tick_time);
+    let deadline = sim_deadline(sim_duration);
+    sleep(randomize_start(tick_time)).await;
+    #[allow(clippy::arithmetic_side_effects)]
+    let mut interval = interval_at(Instant::now() + tick_time, tick_time);
     let mut slot = get_current_slot(target).await.unwrap_or(1);
 
     loop {
-        if cancel.is_cancelled() || tokio::time::Instant::now() >= deadline {
+        if cancel.is_cancelled() || Instant::now() >= deadline {
             break;
         }
 
@@ -1519,7 +1532,7 @@ async fn sync_committee_contribution_duty(
 
         tokio::select! {
             _ = cancel.cancelled() => break,
-            _ = tokio::time::sleep_until(deadline) => break,
+            _ = sleep_until(deadline) => break,
             _ = interval.tick() => {
                 slot = slot.saturating_add(tick_time.as_secs() / SLOT_TIME_SECS);
             }
@@ -1534,13 +1547,13 @@ async fn sync_committee_message_duty(
     tick_time: StdDuration,
     msg_tx: mpsc::Sender<StdDuration>,
 ) {
-    #[allow(clippy::arithmetic_side_effects)] // Instant + Duration; bounded sim_duration
-    let deadline = tokio::time::Instant::now() + sim_duration;
-    tokio::time::sleep(randomize_start(tick_time)).await;
-    let mut interval = tokio::time::interval(tick_time);
+    let deadline = sim_deadline(sim_duration);
+    sleep(randomize_start(tick_time)).await;
+    #[allow(clippy::arithmetic_side_effects)]
+    let mut interval = interval_at(Instant::now() + tick_time, tick_time);
 
     loop {
-        if cancel.is_cancelled() || tokio::time::Instant::now() >= deadline {
+        if cancel.is_cancelled() || Instant::now() >= deadline {
             break;
         }
 
@@ -1550,7 +1563,7 @@ async fn sync_committee_message_duty(
 
         tokio::select! {
             _ = cancel.cancelled() => break,
-            _ = tokio::time::sleep_until(deadline) => break,
+            _ = sleep_until(deadline) => break,
             _ = interval.tick() => {}
         }
     }
@@ -1564,7 +1577,8 @@ async fn get_current_slot(target: &str) -> CliResult<u64> {
         .send()
         .await?;
 
-    // more strict than Charon check which requires status code to be > 399
+    // More strict than the Charon check, which requires the status code to be >
+    // 399.
     if !resp.status().is_success() {
         return Err(crate::error::CliError::Other(format!(
             "syncing request failed: {}",
@@ -1762,10 +1776,15 @@ fn cancel_after(token: &CancellationToken, duration: StdDuration) {
     let token = token.clone();
     tokio::spawn(async move {
         tokio::select! {
-            _ = tokio::time::sleep(duration) => token.cancel(),
+            _ = sleep(duration) => token.cancel(),
             _ = token.cancelled() => {}
         }
     });
+}
+
+#[allow(clippy::arithmetic_side_effects)]
+fn sim_deadline(sim_duration: StdDuration) -> Instant {
+    Instant::now() + sim_duration
 }
 
 fn randomize_start(tick_time: StdDuration) -> StdDuration {

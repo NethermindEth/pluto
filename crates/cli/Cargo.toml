@@ -21,7 +21,6 @@ pluto-app.workspace = true
 pluto-cluster.workspace = true
 pluto-relay-server.workspace = true
 pluto-tracing.workspace = true
-tracing-subscriber.workspace = true
 pluto-core.workspace = true
 pluto-p2p.workspace = true
 pluto-eth2util.workspace = true
