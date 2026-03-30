@@ -87,7 +87,7 @@ use pluto_p2p::{
 };
 use pluto_tracing::TracingConfig;
 use prost::Name;
-use tokio::{fs, signal, task::JoinHandle};
+use tokio::{fs, signal};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -329,15 +329,13 @@ fn print_cluster_overview(cluster_info: &ClusterInfo) {
     }
 }
 
-fn maybe_start_broadcast_task(
-    broadcast_task: &mut Option<JoinHandle<()>>,
+async fn maybe_start_broadcast(
+    broadcast_started: &mut bool,
     component: &Component,
     cluster_info: &ClusterInfo,
     connected_cluster_peers: &HashSet<PeerId>,
 ) -> Result<()> {
-    if broadcast_task.is_some()
-        || connected_cluster_peers.len() != cluster_info.expected_connections()
-    {
+    if *broadcast_started || connected_cluster_peers.len() != cluster_info.expected_connections() {
         return Ok(());
     }
 
@@ -350,28 +348,51 @@ fn maybe_start_broadcast_task(
         node_index: cluster_info.local_node_number,
         timestamp_seconds: now_unix_seconds()?,
     };
-    let local_node_number = cluster_info.local_node_number;
-    let recipients = cluster_info.recipients_description();
-    let component = component.clone();
+    info!(
+        local_node = cluster_info.local_node_number,
+        msg_id = DEMO_MSG_ID,
+        recipients = %cluster_info.recipients_description(),
+        msg = ?msg,
+        "Sending broadcast"
+    );
 
-    *broadcast_task = Some(tokio::spawn(async move {
-        info!(
-            local_node = local_node_number,
-            msg_id = DEMO_MSG_ID,
-            recipients = %recipients,
-            msg = ?msg,
-            "Sending broadcast"
-        );
-        if let Err(error) = component.broadcast(DEMO_MSG_ID, &msg).await {
+    match component.broadcast(DEMO_MSG_ID, &msg).await {
+        Ok(()) => {
+            *broadcast_started = true;
+            Ok(())
+        }
+        Err(error) => {
             error!(
-                local_node = local_node_number,
+                local_node = cluster_info.local_node_number,
                 msg_id = DEMO_MSG_ID,
                 err = %error,
+                "Failed to enqueue broadcast"
+            );
+            Ok(())
+        }
+    }
+}
+
+fn log_bcast_event(event: bcast::Event, local_node_number: u32) {
+    match event {
+        bcast::Event::BroadcastCompleted { msg_id } => {
+            info!(
+                local_node = local_node_number,
+                msg_id, "Broadcast completed"
+            );
+        }
+        bcast::Event::BroadcastFailed {
+            msg_id,
+            error: event_error,
+        } => {
+            error!(
+                local_node = local_node_number,
+                msg_id,
+                err = %event_error,
                 "Broadcast failed"
             );
         }
-    }));
-    Ok(())
+    }
 }
 
 fn log_cluster_connectivity(cluster_info: &ClusterInfo, connected_cluster_peers: &HashSet<PeerId>) {
@@ -558,8 +579,12 @@ async fn main() -> Result<()> {
     };
 
     let p2p_context = P2PContext::new(known_peers.clone());
-    let (bcast_behaviour, component) =
-        bcast::Behaviour::new(local_peer_id, cluster_peers.clone(), p2p_context.clone(), key.clone());
+    let (bcast_behaviour, component) = bcast::Behaviour::new(
+        local_peer_id,
+        cluster_peers.clone(),
+        p2p_context.clone(),
+        key.clone(),
+    );
     register_message(&component, local_node_number)
         .await
         .expect("Failed to register demo bcast message");
@@ -596,7 +621,7 @@ async fn main() -> Result<()> {
     print_cluster_overview(&cluster_info);
 
     let mut connected_cluster_peers = HashSet::<PeerId>::new();
-    let mut broadcast_task: Option<JoinHandle<()>> = None;
+    let mut broadcast_started = false;
 
     loop {
         tokio::select! {
@@ -606,6 +631,11 @@ async fn main() -> Result<()> {
                         ExampleBehaviourEvent::Relay(relay_event),
                     )) => {
                         log_relay_event(relay_event, &cluster_info);
+                    }
+                    SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(
+                        ExampleBehaviourEvent::Bcast(bcast_event),
+                    )) => {
+                        log_bcast_event(bcast_event, local_node_number);
                     }
                     SwarmEvent::Behaviour(PlutoBehaviourEvent::Ping(ping::Event {
                         peer,
@@ -635,12 +665,13 @@ async fn main() -> Result<()> {
                         if cluster_info.indices.contains_key(&peer_id) && peer_id != local_peer_id {
                             connected_cluster_peers.insert(peer_id);
                             log_cluster_connectivity(&cluster_info, &connected_cluster_peers);
-                            maybe_start_broadcast_task(
-                                &mut broadcast_task,
+                            maybe_start_broadcast(
+                                &mut broadcast_started,
                                 &component,
                                 &cluster_info,
                                 &connected_cluster_peers,
-                            )?;
+                            )
+                            .await?;
                         }
                     }
                     SwarmEvent::ConnectionClosed {
@@ -700,10 +731,6 @@ async fn main() -> Result<()> {
             }
             _ = signal::ctrl_c() => {
                 info!("Ctrl+C received, shutting down");
-                if let Some(task) = broadcast_task.take() {
-                    task.abort();
-                    let _ = task.await;
-                }
                 cancellation.cancel();
                 break;
             }

@@ -14,9 +14,9 @@ use libp2p::{
         THandlerInEvent, THandlerOutEvent, ToSwarm, dummy,
     },
 };
-use prost::bytes::Bytes;
 use pluto_p2p::p2p_context::P2PContext;
-use tokio::sync::{mpsc, oneshot};
+use prost::bytes::Bytes;
+use tokio::sync::mpsc;
 use tracing::debug;
 
 use crate::dkgpb::v1::bcast::BCastMessage;
@@ -29,8 +29,21 @@ use super::{
 };
 
 /// Event emitted by the reliable-broadcast behaviour.
-#[derive(Debug, Clone)]
-pub enum Event {}
+#[derive(Debug)]
+pub enum Event {
+    /// A queued broadcast completed successfully.
+    BroadcastCompleted {
+        /// Registered message ID.
+        msg_id: String,
+    },
+    /// A queued broadcast failed.
+    BroadcastFailed {
+        /// Registered message ID.
+        msg_id: String,
+        /// Failure reason.
+        error: Error,
+    },
+}
 
 struct SigOp {
     peer: PeerId,
@@ -43,7 +56,6 @@ struct BroadcastState {
     signatures: Vec<Option<Vec<u8>>>,
     sig_ops: HashMap<u64, SigOp>,
     msg_ops: HashMap<u64, PeerId>,
-    resp_tx: oneshot::Sender<Result<()>>,
 }
 
 /// Swarm-owned behaviour for reliable broadcast.
@@ -71,8 +83,14 @@ impl Behaviour {
     ) -> (Self, Component) {
         let registry: Registry = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
         let (command_tx, command_rx) = mpsc::unbounded_channel();
-        let behaviour =
-            Self::with_parts(local_peer_id, peers, p2p_context, secret, registry.clone(), command_rx);
+        let behaviour = Self::with_parts(
+            local_peer_id,
+            peers,
+            p2p_context,
+            secret,
+            registry.clone(),
+            command_rx,
+        );
         let component = Component::new(command_tx, registry);
 
         (behaviour, component)
@@ -125,9 +143,26 @@ impl Behaviour {
         )
     }
 
+    fn connection_handler_for_peer(&self, peer: PeerId) -> THandler<Self> {
+        if self.peers.contains(&peer) {
+            Either::Left(self.new_handler(peer))
+        } else {
+            Either::Right(dummy::ConnectionHandler)
+        }
+    }
+
+    fn emit_broadcast_result(&mut self, msg_id: String, result: Result<()>) {
+        let event = match result {
+            Ok(()) => Event::BroadcastCompleted { msg_id },
+            Err(error) => Event::BroadcastFailed { msg_id, error },
+        };
+
+        self.pending_events.push_back(ToSwarm::GenerateEvent(event));
+    }
+
     fn complete_active_broadcast(&mut self, result: Result<()>) {
         if let Some(state) = self.active_broadcast.take() {
-            let _ = state.resp_tx.send(result);
+            self.emit_broadcast_result(state.msg_id, result);
         }
     }
 
@@ -136,24 +171,14 @@ impl Behaviour {
             return;
         }
 
-        let Some(BroadcastCommand {
-            msg_id,
-            any_msg,
-            resp_tx,
-        }) = self.pending_commands.pop_front()
-        else {
+        let Some(BroadcastCommand { msg_id, any_msg }) = self.pending_commands.pop_front() else {
             return;
         };
 
-        self.start_broadcast(msg_id, any_msg, resp_tx);
+        self.start_broadcast(msg_id, any_msg);
     }
 
-    fn start_broadcast(
-        &mut self,
-        msg_id: String,
-        any_msg: prost_types::Any,
-        resp_tx: oneshot::Sender<Result<()>>,
-    ) {
+    fn start_broadcast(&mut self, msg_id: String, any_msg: prost_types::Any) {
         let local_index = match self
             .peers
             .iter()
@@ -161,7 +186,7 @@ impl Behaviour {
         {
             Some(index) => index,
             None => {
-                let _ = resp_tx.send(Err(Error::LocalPeerMissing));
+                self.emit_broadcast_result(msg_id, Err(Error::LocalPeerMissing));
                 return;
             }
         };
@@ -170,7 +195,7 @@ impl Behaviour {
         let local_signature = match protocol::sign_any(&self.secret, &any_msg) {
             Ok(signature) => signature,
             Err(error) => {
-                let _ = resp_tx.send(Err(error));
+                self.emit_broadcast_result(msg_id, Err(error));
                 return;
             }
         };
@@ -184,7 +209,7 @@ impl Behaviour {
             }
 
             if !self.is_connected(peer_id) {
-                let _ = resp_tx.send(Err(Error::PeerNotConnected(*peer_id)));
+                self.emit_broadcast_result(msg_id, Err(Error::PeerNotConnected(*peer_id)));
                 return;
             }
             sig_dispatches.push((index, *peer_id));
@@ -196,7 +221,6 @@ impl Behaviour {
             signatures,
             sig_ops: HashMap::new(),
             msg_ops: HashMap::new(),
-            resp_tx,
         };
 
         for (index, peer_id) in sig_dispatches {
@@ -354,11 +378,7 @@ impl NetworkBehaviour for Behaviour {
         _local_addr: &Multiaddr,
         _remote_addr: &Multiaddr,
     ) -> std::result::Result<THandler<Self>, ConnectionDenied> {
-        if self.peers.contains(&peer) {
-            Ok(Either::Left(self.new_handler(peer)))
-        } else {
-            Ok(Either::Right(dummy::ConnectionHandler))
-        }
+        Ok(self.connection_handler_for_peer(peer))
     }
 
     fn handle_established_outbound_connection(
@@ -369,11 +389,7 @@ impl NetworkBehaviour for Behaviour {
         _role_override: libp2p::core::Endpoint,
         _port_use: libp2p::core::transport::PortUse,
     ) -> std::result::Result<THandler<Self>, ConnectionDenied> {
-        if self.peers.contains(&peer) {
-            Ok(Either::Left(self.new_handler(peer)))
-        } else {
-            Ok(Either::Right(dummy::ConnectionHandler))
-        }
+        Ok(self.connection_handler_for_peer(peer))
     }
 
     fn on_swarm_event(&mut self, event: FromSwarm) {
@@ -382,8 +398,9 @@ impl NetworkBehaviour for Behaviour {
                 return;
             }
 
-            // PlutoBehaviour runs conn_logger before inner behaviours, so the shared peer store
-            // already reflects the closed connection when bcast sees this event.
+            // PlutoBehaviour runs conn_logger before inner behaviours, so the shared peer
+            // store already reflects the closed connection when bcast sees this
+            // event.
             if self.is_connected(&event.peer_id) {
                 return;
             }
@@ -444,15 +461,16 @@ mod tests {
     use futures::StreamExt;
     use libp2p::{Multiaddr, PeerId, swarm::SwarmEvent};
     use pluto_p2p::{
+        behaviours::pluto::PlutoBehaviourEvent,
         config::P2PConfig,
         p2p::{Node, NodeType},
-        peer::peer_id_from_key,
         p2p_context::P2PContext,
+        peer::peer_id_from_key,
     };
     use pluto_testutil::random::generate_insecure_k1_key;
     use tokio::sync::{mpsc, oneshot};
 
-    use crate::bcast::{Component, Error};
+    use crate::bcast::{Component, Error, Event};
 
     use super::Behaviour;
 
@@ -462,6 +480,12 @@ mod tests {
         source: PeerId,
         msg_id: String,
         seconds: i64,
+    }
+
+    #[derive(Debug)]
+    struct BehaviourEventRecord {
+        node: usize,
+        event: Event,
     }
 
     struct LocalNode {
@@ -532,6 +556,25 @@ mod tests {
         .context("timed out waiting for receipts")?
     }
 
+    async fn wait_for_bcast_event(
+        event_rx: &mut mpsc::UnboundedReceiver<BehaviourEventRecord>,
+        expected_node: usize,
+    ) -> anyhow::Result<Event> {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let record = event_rx
+                    .recv()
+                    .await
+                    .context("bcast event channel closed")?;
+                if record.node == expected_node {
+                    return Ok(record.event);
+                }
+            }
+        })
+        .await
+        .context("timed out waiting for bcast event")?
+    }
+
     async fn register_timestamp_message(
         component: &Component,
         node_index: usize,
@@ -559,6 +602,7 @@ mod tests {
     async fn spawn_nodes(
         mut nodes: Vec<LocalNode>,
         conn_tx: mpsc::UnboundedSender<(usize, PeerId)>,
+        event_tx: mpsc::UnboundedSender<BehaviourEventRecord>,
     ) -> anyhow::Result<Vec<RunningNode>> {
         for node in &mut nodes {
             node.node.listen_on(node.addr.clone())?;
@@ -579,6 +623,7 @@ mod tests {
         for (index, (local, targets)) in nodes.into_iter().zip(dial_targets).enumerate() {
             let mut node = local.node;
             let conn_tx = conn_tx.clone();
+            let event_tx = event_tx.clone();
             let (stop_tx, mut stop_rx) = oneshot::channel();
 
             let join = tokio::spawn(async move {
@@ -591,8 +636,14 @@ mod tests {
                     tokio::select! {
                         _ = &mut stop_rx => break,
                         event = node.select_next_some() => {
-                            if let SwarmEvent::ConnectionEstablished { peer_id, .. } = event {
-                                let _ = conn_tx.send((index, peer_id));
+                            match event {
+                                SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                                    let _ = conn_tx.send((index, peer_id));
+                                }
+                                SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(event)) => {
+                                    let _ = event_tx.send(BehaviourEventRecord { node: index, event });
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -623,6 +674,7 @@ mod tests {
     #[tokio::test]
     async fn broadcast_round_trip_and_duplicate_semantics() -> anyhow::Result<()> {
         let (conn_tx, mut conn_rx) = mpsc::unbounded_channel();
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
         let (receipt_tx, mut receipt_rx) = mpsc::unbounded_channel();
         let ports = (0..3)
             .map(|_| available_tcp_port())
@@ -662,7 +714,7 @@ mod tests {
         }
         let expected_peers = nodes.iter().map(|node| node.peer_id).collect::<Vec<_>>();
 
-        let running = spawn_nodes(nodes, conn_tx).await?;
+        let running = spawn_nodes(nodes, conn_tx, event_tx).await?;
         wait_for_connections(&mut conn_rx, &expected_peers).await?;
 
         running[0]
@@ -683,6 +735,10 @@ mod tests {
         assert_eq!(sources, HashSet::from([expected_peers[0]]));
         assert!(receipts.iter().all(|receipt| receipt.msg_id == "timestamp"));
         assert!(receipts.iter().all(|receipt| receipt.seconds == 10));
+        assert!(matches!(
+            wait_for_bcast_event(&mut event_rx, 0).await?,
+            Event::BroadcastCompleted { msg_id } if msg_id == "timestamp"
+        ));
 
         running[0]
             .component
@@ -690,13 +746,20 @@ mod tests {
             .await?;
         let receipts = wait_for_receipts(&mut receipt_rx, 2).await?;
         assert!(receipts.iter().all(|receipt| receipt.seconds == 10));
+        assert!(matches!(
+            wait_for_bcast_event(&mut event_rx, 0).await?,
+            Event::BroadcastCompleted { msg_id } if msg_id == "timestamp"
+        ));
 
-        let error = running[0]
+        running[0]
             .component
             .broadcast("timestamp", &timestamp(11))
-            .await
-            .unwrap_err();
-        assert!(matches!(error, Error::OutboundFailure { .. }));
+            .await?;
+        assert!(matches!(
+            wait_for_bcast_event(&mut event_rx, 0).await?,
+            Event::BroadcastFailed { msg_id, error: Error::OutboundFailure { .. } }
+                if msg_id == "timestamp"
+        ));
 
         let error = running[0]
             .component

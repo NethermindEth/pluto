@@ -5,7 +5,7 @@ use std::{collections::HashMap, sync::Arc};
 use libp2p::PeerId;
 use prost::{Message, Name};
 use prost_types::Any;
-use tokio::sync::{RwLock, mpsc, oneshot};
+use tokio::sync::{RwLock, mpsc};
 
 use super::error::{Error, Result};
 
@@ -25,8 +25,6 @@ pub(crate) struct BroadcastCommand {
     pub(crate) msg_id: String,
     /// Wrapped protobuf message.
     pub(crate) any_msg: Any,
-    /// Completion channel.
-    pub(crate) resp_tx: oneshot::Sender<Result<()>>,
 }
 
 /// Type-erased entry stored per registered message ID.
@@ -98,7 +96,9 @@ impl Component {
         Ok(())
     }
 
-    /// Broadcasts the provided message to all configured peers.
+    /// Enqueues the provided message for broadcast to all configured peers.
+    ///
+    /// Completion is reported asynchronously through [`super::Event`].
     pub async fn broadcast<M>(&self, msg_id: &str, msg: &M) -> Result<()>
     where
         M: Message + Name + Default + Clone + Send + Sync + 'static,
@@ -107,17 +107,15 @@ impl Component {
         if !self.registry.read().await.contains_key(msg_id) {
             return Err(Error::UnknownMessageId(msg_id.to_string()));
         }
-        let (resp_tx, resp_rx) = oneshot::channel();
 
         self.command_tx
             .send(BroadcastCommand {
                 msg_id: msg_id.to_string(),
                 any_msg,
-                resp_tx,
             })
             .map_err(|_| Error::BehaviourClosed)?;
 
-        resp_rx.await.map_err(|_| Error::BroadcastCancelled)?
+        Ok(())
     }
 }
 

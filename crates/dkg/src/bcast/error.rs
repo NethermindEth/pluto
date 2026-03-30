@@ -78,10 +78,6 @@ pub enum Error {
     #[error("bcast behaviour is no longer running")]
     BehaviourClosed,
 
-    /// The broadcast was cancelled before completion.
-    #[error("broadcast was cancelled before completion")]
-    BroadcastCancelled,
-
     /// The outbound operation failed.
     #[error("outbound operation to {peer} failed: {failure}")]
     OutboundFailure {
