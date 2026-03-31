@@ -10,10 +10,10 @@ use super::{
         SUB_COMMITTEE_SIZE,
     },
     helpers::{
-        CategoryScore, TestCaseName, TestCategory, TestCategoryResult, TestResult, TestVerdict,
-        calculate_score, evaluate_highest_rtt, evaluate_rtt, filter_tests,
-        must_output_to_file_on_quiet, publish_result_to_obol_api, request_rtt, sort_tests,
-        write_result_to_file, write_result_to_writer,
+        AllCategoriesResult, CategoryScore, TestCaseName, TestCategory, TestCategoryResult,
+        TestResult, TestResultError, TestVerdict, calculate_score, evaluate_highest_rtt,
+        evaluate_rtt, filter_tests, must_output_to_file_on_quiet, publish_result_to_obol_api,
+        request_rtt, sort_tests, write_result_to_file, write_result_to_writer,
     },
 };
 use crate::{duration::Duration, error::Result as CliResult};
@@ -266,12 +266,9 @@ async fn run_test_case(
         "Simulate500" => beacon_simulation_500_test(cancel, cfg, target).await,
         "Simulate1000" => beacon_simulation_1000_test(cancel, cfg, target).await,
         "SimulateCustom" => beacon_simulation_custom_test(cancel, cfg, target).await,
-        _ => {
-            let mut res = TestResult::new(name);
-            res.verdict = TestVerdict::Fail;
-            res.error = super::TestResultError::from_string(format!("unknown test case: {name}"));
-            res
-        }
+        _ => TestResult::new(name).fail(TestResultError::from_string(format!(
+            "unknown test case: {name}"
+        ))),
     }
 }
 
@@ -347,7 +344,7 @@ pub async fn run(
     }
 
     if args.test_config.publish {
-        let all = super::AllCategoriesResult {
+        let all = AllCategoriesResult {
             beacon: Some(res.clone()),
             ..Default::default()
         };
@@ -372,12 +369,10 @@ async fn test_single_beacon(
 
     for tc in queued.as_ref() {
         if cancel.is_cancelled() {
-            results.push(TestResult {
-                name: tc.name.to_string(),
-                verdict: TestVerdict::Fail,
-                error: super::TestResultError::from_string("timeout/interrupted"),
-                ..TestResult::new(tc.name)
-            });
+            results.push(
+                TestResult::new(tc.name.to_string())
+                    .fail(TestResultError::from_string("timeout/interrupted")),
+            );
             break;
         }
 
@@ -440,7 +435,7 @@ async fn beacon_version_test(
     // More strict than the Charon check, which requires the status code to be >
     // 399.
     if !resp.status().is_success() {
-        return res.fail(super::TestResultError::from_string(format!(
+        return res.fail(TestResultError::from_string(format!(
             "http status {}",
             resp.status().as_u16()
         )));
@@ -490,7 +485,7 @@ async fn beacon_is_synced_test(
     // More strict than the Charon check, which requires the status code to be >
     // 399.
     if !resp.status().is_success() {
-        return res.fail(super::TestResultError::from_string(format!(
+        return res.fail(TestResultError::from_string(format!(
             "http status {}",
             resp.status().as_u16()
         )));
@@ -535,7 +530,7 @@ async fn beacon_peer_count_test(
     // More strict than the Charon check, which requires the status code to be >
     // 399.
     if !resp.status().is_success() {
-        return res.fail(super::TestResultError::from_string(format!(
+        return res.fail(TestResultError::from_string(format!(
             "http status {}",
             resp.status().as_u16()
         )));
