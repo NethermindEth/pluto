@@ -39,8 +39,8 @@
 //! # }
 //! ```
 use crate::types::{Duty, DutyType, SlotNumber};
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use futures::future::BoxFuture;
 use pluto_eth2api::{EthBeaconNodeApiClient, EthBeaconNodeApiClientError};
 use std::{
     collections::HashSet,
@@ -71,10 +71,6 @@ pub enum DeadlineError {
     #[error("Failed to fetch beacon node configuration: {0}")]
     BeaconNodeConfigError(#[from] EthBeaconNodeApiClientError),
 
-    /// Deadliner has been shut down.
-    #[error("Deadliner has been shut down")]
-    Shutdown,
-
     /// Arithmetic overflow in deadline calculation.
     #[error("Arithmetic overflow in deadline calculation")]
     ArithmeticOverflow,
@@ -102,6 +98,7 @@ fn to_chrono_duration(duration: std::time::Duration) -> Result<chrono::Duration>
 /// It may only be called once and the returned channel should be used
 /// by a single task. Multiple instances are required for different
 /// components and use cases.
+#[async_trait]
 pub trait Deadliner: Send + Sync {
     /// Adds a duty for deadline scheduling.
     ///
@@ -112,7 +109,7 @@ pub trait Deadliner: Send + Sync {
     /// Returns `false` if:
     /// - The duty has already expired and cannot be scheduled
     /// - The duty never expires (e.g., Exit, BuilderRegistration)
-    fn add(&self, duty: Duty) -> BoxFuture<'_, bool>;
+    async fn add(&self, duty: Duty) -> bool;
 
     /// Returns the channel for receiving deadlined duties.
     ///
@@ -219,15 +216,24 @@ fn get_curr_duty(duties: &HashSet<Duty>, deadline_func: &DeadlineFunc) -> (Duty,
     let mut curr_deadline = DateTime::<Utc>::MAX_UTC;
 
     for duty in duties.iter() {
-        // Ignore duties that never expire
-        let Ok(Some(duty_deadline)) = deadline_func(duty.clone()) else {
-            continue;
-        };
-
-        // Update if this duty has an earlier deadline
-        if duty_deadline < curr_deadline {
-            curr_duty = duty.clone();
-            curr_deadline = duty_deadline;
+        match deadline_func(duty.clone()) {
+            Ok(Some(duty_deadline)) => {
+                // Update if this duty has an earlier deadline
+                if duty_deadline < curr_deadline {
+                    curr_duty = duty.clone();
+                    curr_deadline = duty_deadline;
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    duty = %duty,
+                    error = %err,
+                    "Failed to compute deadline for duty"
+                );
+            }
+            Ok(None) => {
+                // Ignore duties that never expire
+            }
         }
     }
 
@@ -247,25 +253,24 @@ struct DeadlinerImpl {
     output_rx: Mutex<Option<tokio::sync::mpsc::Receiver<Duty>>>,
 }
 
+#[async_trait]
 impl Deadliner for DeadlinerImpl {
-    fn add(&self, duty: Duty) -> BoxFuture<'_, bool> {
-        Box::pin(async move {
-            // Check if shut down
-            if self.cancel_token.is_cancelled() {
-                return false;
-            }
+    async fn add(&self, duty: Duty) -> bool {
+        // Check if shut down
+        if self.cancel_token.is_cancelled() {
+            return false;
+        }
 
-            let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-            let input = DeadlineInput { duty, response_tx };
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        let input = DeadlineInput { duty, response_tx };
 
-            // Send the duty to the background task
-            if self.input_tx.send(input).await.is_err() {
-                return false;
-            }
+        // Send the duty to the background task
+        if self.input_tx.send(input).await.is_err() {
+            return false;
+        }
 
-            // Wait for response
-            response_rx.await.unwrap_or(false)
-        })
+        // Wait for response
+        response_rx.await.unwrap_or(false)
     }
 
     fn c(&self) -> Option<tokio::sync::mpsc::Receiver<Duty>> {
@@ -314,41 +319,47 @@ impl DeadlinerImpl {
 
                 Some(input) = input_rx.recv() => {
                     let duty = input.duty;
-                    let Ok(deadline_opt) = deadline_func(duty.clone()) else {
-                        let _ = input.response_tx.send(false);
-                        continue;
-                    };
+                    match deadline_func(duty.clone()) {
+                        Ok(Some(deadline)) => {
+                            let now = Utc::now();
+                            let expired = deadline < now;
 
-                    // Drop duties that never expire
-                    let Some(deadline) = deadline_opt else {
-                        let _ = input.response_tx.send(false);
-                        continue;
-                    };
+                            let _ = input.response_tx.send(!expired);
 
-                    let now = Utc::now();
-                    let expired = deadline < now;
+                            // Ignore expired duties
+                            if expired {
+                                continue;
+                            }
 
-                    let _ = input.response_tx.send(!expired);
+                            // Add duty to the map (idempotent)
+                            duties.insert(duty);
 
-                    // Ignore expired duties
-                    if expired {
-                        continue;
-                    }
+                            // Update timer if this deadline is earlier
+                            if deadline < curr_deadline {
+                                let (new_duty, new_deadline) = get_curr_duty(&duties, &deadline_func);
+                                curr_duty = new_duty;
+                                curr_deadline = new_deadline;
 
-                    // Add duty to the map (idempotent)
-                    duties.insert(duty);
-
-                    // Update timer if this deadline is earlier
-                    if deadline < curr_deadline {
-                        let (new_duty, new_deadline) = get_curr_duty(&duties, &deadline_func);
-                        curr_duty = new_duty;
-                        curr_deadline = new_deadline;
-
-                        let duration = curr_deadline
-                            .signed_duration_since(Utc::now())
-                            .to_std()
-                            .unwrap_or(FAR_FUTURE_DURATION);
-                        sleep.set(tokio::time::sleep(duration));
+                                let duration = curr_deadline
+                                    .signed_duration_since(Utc::now())
+                                    .to_std()
+                                    .unwrap_or(FAR_FUTURE_DURATION);
+                                sleep.set(tokio::time::sleep(duration));
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                label = %label,
+                                duty = %duty,
+                                error = %err,
+                                "Failed to compute deadline for duty"
+                            );
+                            let _ = input.response_tx.send(false);
+                        }
+                        Ok(None) => {
+                            // Drop duties that never expire
+                            let _ = input.response_tx.send(false);
+                        }
                     }
                 }
 
