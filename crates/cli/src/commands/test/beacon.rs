@@ -301,13 +301,13 @@ pub async fn run(
 
     for endpoint in &args.endpoints {
         let queued = queued.clone();
-        let cfg = args.clone();
-        let target = endpoint.clone();
-        let cancel = shutdown.clone();
+        let args = args.clone();
+        let endpoint = endpoint.clone();
+        let shutdown = shutdown.clone();
 
         set.spawn(async move {
-            let results = test_single_beacon(cancel, &queued, cfg, &target).await;
-            (target, results)
+            let results = test_single_beacon(shutdown, &queued, args, &endpoint).await;
+            (endpoint, results)
         });
     }
 
@@ -619,11 +619,11 @@ async fn beacon_ping_load_test(
         tokio::select! {
             _ = cancel.cancelled() => break,
             _ = interval.tick() => {
-                let c = cancel.clone();
-                let t = target.to_string();
+                let cancel = cancel.clone();
+                let target = target.to_string();
                 let tx = tx.clone();
                 handles.push(tokio::spawn(async move {
-                    ping_beacon_continuously(c, t, tx).await;
+                    ping_beacon_continuously(cancel, target, tx).await;
                 }));
             }
         }
@@ -836,11 +836,11 @@ async fn beacon_simulation_test(
         "Starting validators performing duties attestation, aggregation, proposal, sync committee..."
     );
     for _ in 0..params.sync_committee_validators_count {
-        let c = cancel.clone();
-        let t = target.to_string();
+        let cancel = cancel.clone();
+        let target = target.to_string();
         let intensity = params.request_intensity;
         validator_handles.push(tokio::spawn(async move {
-            single_validator_simulation(c, sim_duration, &t, intensity, sync_duties).await
+            single_validator_simulation(cancel, sim_duration, &target, intensity, sync_duties).await
         }));
     }
 
@@ -855,11 +855,12 @@ async fn beacon_simulation_test(
         "Starting validators performing duties attestation, aggregation, proposal..."
     );
     for _ in 0..params.proposal_validators_count {
-        let c = cancel.clone();
-        let t = target.to_string();
+        let cancel = cancel.clone();
+        let target = target.to_string();
         let intensity = params.request_intensity;
         validator_handles.push(tokio::spawn(async move {
-            single_validator_simulation(c, sim_duration, &t, intensity, proposal_duties).await
+            single_validator_simulation(cancel, sim_duration, &target, intensity, proposal_duties)
+                .await
         }));
     }
 
@@ -874,11 +875,12 @@ async fn beacon_simulation_test(
         "Starting validators performing duties attestation, aggregation..."
     );
     for _ in 0..params.attestation_validators_count {
-        let c = cancel.clone();
-        let t = target.to_string();
+        let cancel = cancel.clone();
+        let target = target.to_string();
         let intensity = params.request_intensity;
         validator_handles.push(tokio::spawn(async move {
-            single_validator_simulation(c, sim_duration, &t, intensity, attester_duties).await
+            single_validator_simulation(cancel, sim_duration, &target, intensity, attester_duties)
+                .await
         }));
     }
 
@@ -1096,12 +1098,12 @@ async fn single_validator_simulation(
     let (att_get_tx, mut att_get_rx) = mpsc::channel(256);
     let (att_sub_tx, mut att_sub_rx) = mpsc::channel(256);
     if duties.attestation {
-        let c = cancel.clone();
-        let t = target.to_string();
+        let cancel = cancel.clone();
+        let target = target.to_string();
         tokio::spawn(async move {
             attestation_duty(
-                c,
-                &t,
+                cancel,
+                &target,
                 sim_duration,
                 intensity.attestation_duty,
                 att_get_tx,
@@ -1118,12 +1120,12 @@ async fn single_validator_simulation(
     let (agg_get_tx, mut agg_get_rx) = mpsc::channel(256);
     let (agg_sub_tx, mut agg_sub_rx) = mpsc::channel(256);
     if duties.aggregation {
-        let c = cancel.clone();
-        let t = target.to_string();
+        let cancel = cancel.clone();
+        let target = target.to_string();
         tokio::spawn(async move {
             aggregation_duty(
-                c,
-                &t,
+                cancel,
+                &target,
                 sim_duration,
                 intensity.aggregator_duty,
                 agg_get_tx,
@@ -1140,12 +1142,12 @@ async fn single_validator_simulation(
     let (prop_produce_tx, mut prop_produce_rx) = mpsc::channel(256);
     let (prop_publish_tx, mut prop_publish_rx) = mpsc::channel(256);
     if duties.proposal {
-        let c = cancel.clone();
-        let t = target.to_string();
+        let cancel = cancel.clone();
+        let target = target.to_string();
         tokio::spawn(async move {
             proposal_duty(
-                c,
-                &t,
+                cancel,
+                &target,
                 sim_duration,
                 intensity.proposal_duty,
                 prop_produce_tx,
@@ -1164,12 +1166,12 @@ async fn single_validator_simulation(
     let (sc_produce_tx, mut sc_produce_rx) = mpsc::channel(256);
     let (sc_contrib_tx, mut sc_contrib_rx) = mpsc::channel(256);
     if duties.sync_committee {
-        let c = cancel.clone();
-        let t = target.to_string();
+        let cancel = cancel.clone();
+        let target = target.to_string();
         tokio::spawn(async move {
             sync_committee_duties(
-                c,
-                &t,
+                cancel,
+                &target,
                 sim_duration,
                 intensity.sync_committee_submit,
                 intensity.sync_committee_subscribe,
