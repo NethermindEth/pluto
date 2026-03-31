@@ -73,7 +73,7 @@ pub enum CliError {
 
     /// SSZ hasher error.
     #[error("Hasher error: {0}")]
-    HasherError(#[from] pluto_cluster::ssz_hasher::HasherError),
+    HasherError(#[from] pluto_ssz::HasherError),
 
     /// HTTP request error.
     #[error("HTTP request error: {0}")]

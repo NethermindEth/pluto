@@ -43,6 +43,9 @@ chrono.workspace = true
 test-case.workspace = true
 pluto-eth2util.workspace = true
 pluto-testutil.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+wiremock.workspace = true
+pluto-ssz.workspace = true
 
 [build-dependencies]
 pluto-build-proto.workspace = true

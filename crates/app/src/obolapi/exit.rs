@@ -11,11 +11,11 @@ use serde::{Deserialize, Serialize};
 use pluto_cluster::{
     helpers::to_0x_hex,
     ssz::{SSZ_LEN_BLS_SIG, SSZ_LEN_PUB_KEY},
-    ssz_hasher::{HashWalker, Hasher},
 };
 use pluto_eth2api::types::{
     GetPoolVoluntaryExitsResponseResponseDatum, Phase0SignedVoluntaryExitMessage,
 };
+use pluto_ssz::{HashWalker, Hasher, put_bytes_n};
 
 use crate::obolapi::{
     client::Client,
@@ -26,9 +26,6 @@ use crate::obolapi::{
 /// Type alias for signed voluntary exit from eth2api.
 pub type SignedVoluntaryExit = GetPoolVoluntaryExitsResponseResponseDatum;
 
-// TODO: Unify SSZ hashing across the workspace. `pluto-cluster` already has
-// SSZ hashing utilities. Consider extracting a shared SSZ crate (or promoting
-// the existing hasher) so all crates share one SSZ interface and error type.
 /// Trait for types that can be hashed using SSZ hash tree root.
 pub trait SszHashable {
     /// Hashes this value into the provided hasher.
@@ -48,7 +45,7 @@ impl SszHashable for SignedVoluntaryExit {
 
         self.message.hash_with(hh)?;
         let sig_bytes = from_0x(&self.signature, SSZ_LEN_BLS_SIG)?;
-        pluto_cluster::helpers::put_bytes_n(hh, &sig_bytes, SSZ_LEN_BLS_SIG)?;
+        put_bytes_n(hh, &sig_bytes, SSZ_LEN_BLS_SIG)?;
 
         hh.merkleize(index)?;
         Ok(())
@@ -236,7 +233,7 @@ impl SszHashable for FullExitAuthBlob {
         let index = hh.index();
 
         hh.put_bytes(&self.lock_hash)?;
-        pluto_cluster::helpers::put_bytes_n(hh, &self.validator_pubkey, SSZ_LEN_PUB_KEY)?;
+        put_bytes_n(hh, &self.validator_pubkey, SSZ_LEN_PUB_KEY)?;
         hh.put_uint64(self.share_index)?;
 
         hh.merkleize(index)?;

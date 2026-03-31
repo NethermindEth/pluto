@@ -17,6 +17,9 @@ pub mod name;
 /// P2P configuration.
 pub mod config;
 
+/// Shared protobuf framing helpers.
+pub mod proto;
+
 /// Metrics.
 pub mod metrics;
 

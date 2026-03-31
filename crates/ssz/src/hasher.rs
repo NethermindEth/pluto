@@ -1,3 +1,5 @@
+//! SSZ hash walker and merkleization runtime.
+
 use std::sync::LazyLock;
 
 use k256::sha2::{Digest, Sha256};
@@ -16,7 +18,7 @@ const ZERO_BYTES: [u8; 32] = [0; 32];
 const TRUE_BYTES: [u8; 32] = calculate_bool_bytes(true);
 const FALSE_BYTES: [u8; 32] = calculate_bool_bytes(false);
 
-/// Precomputed zero hashes for each depth level (0-64)
+/// Precomputed zero hashes for each depth level (0-64).
 static ZERO_HASHES: LazyLock<[[u8; 32]; 65]> = LazyLock::new(|| {
     let mut hashes = [[0u8; 32]; 65];
 
@@ -30,54 +32,50 @@ static ZERO_HASHES: LazyLock<[[u8; 32]; 65]> = LazyLock::new(|| {
     hashes
 });
 
-/// Trait for objects that can walk (traverse/append) data for
-/// merkleization/hash calculations.
+/// Trait for objects that can walk data for SSZ merkleization and hashing.
 pub trait HashWalker {
-    /// The error type that can occur during hashing.
+    /// Error type returned by the walker implementation.
     type Error: std::error::Error;
 
-    /// Finalize and return the hash result.
+    /// Finalize and return the current hash result.
     fn hash(&self) -> Result<[u8; 32], Self::Error>;
     /// Append a single byte.
     fn append_u8(&mut self, i: u8) -> Result<(), Self::Error>;
-    /// Append a u32 integer.
+    /// Append a `u32`.
     fn append_u32(&mut self, i: u32) -> Result<(), Self::Error>;
-    /// Append a u64 integer.
+    /// Append a `u64`.
     fn append_u64(&mut self, i: u64) -> Result<(), Self::Error>;
-    /// Append a bytes array, and fill up to `k * 32` bytes if the length is not
-    /// a multiple of 32.
+    /// Append bytes and pad to a multiple of 32 bytes.
     fn append_bytes32(&mut self, b: &[u8]) -> Result<(), Self::Error>;
-    /// Append an array of 32 u64 values.
+    /// Append an array of `u64` values.
     fn put_uint64_array(
         &mut self,
         b: &[u64],
         max_capacity: Option<usize>,
     ) -> Result<(), Self::Error>;
-    /// Append a u64 value.
+    /// Append a `u64`.
     fn put_uint64(&mut self, i: u64) -> Result<(), Self::Error>;
-    /// Append a u32 value.
+    /// Append a `u32`.
     fn put_uint32(&mut self, i: u32) -> Result<(), Self::Error>;
-    /// Append a u16 value.
+    /// Append a `u16`.
     fn put_uint16(&mut self, i: u16) -> Result<(), Self::Error>;
-    /// Append a u8 value.
+    /// Append a `u8`.
     fn put_uint8(&mut self, i: u8) -> Result<(), Self::Error>;
-    /// Pad data up to 32 bytes.
+    /// Pad the buffer up to 32 bytes.
     fn fill_up_to_32(&mut self) -> Result<(), Self::Error>;
-    /// Append a byte slice.
+    /// Append raw bytes.
     fn append(&mut self, b: &[u8]) -> Result<(), Self::Error>;
-    /// Append a bitlist, with given max size.
+    /// Append an SSZ bitlist with the provided maximum size.
     fn put_bitlist(&mut self, bb: &[u8], max_size: usize) -> Result<(), Self::Error>;
-    /// Append a boolean value.
+    /// Append a boolean.
     fn put_bool(&mut self, b: bool) -> Result<(), Self::Error>;
-    /// Append a byte slice, if the length is less than or equal to 32, it will
-    /// be appended as is + padding to 32 bytes, otherwise it will be
-    /// merkleized.
+    /// Append bytes using SSZ byte-list or byte-vector semantics.
     fn put_bytes(&mut self, b: &[u8]) -> Result<(), Self::Error>;
-    /// Current byte index or position in buffer.
+    /// Return the current buffer index.
     fn index(&self) -> usize;
-    /// Perform merkleization at given index.
+    /// Merkleize the buffer from a starting index.
     fn merkleize(&mut self, index: usize) -> Result<(), Self::Error>;
-    /// Perform merkleization with mixin (limit value).
+    /// Merkleize the buffer from a starting index and mix in the list length.
     fn merkleize_with_mixin(
         &mut self,
         index: usize,
@@ -86,41 +84,30 @@ pub trait HashWalker {
     ) -> Result<(), Self::Error>;
 }
 
-/// Hash function for hashing SSZ data.
+/// Hash function used by the SSZ hasher.
 pub type HashFn = fn(src: &[u8]) -> Result<Vec<u8>, HasherError>;
 
-/// Errors that may occur during hashing/merkleization.
+/// Errors returned by the SSZ hasher.
 #[derive(Debug, thiserror::Error)]
 pub enum HasherError {
-    /// Invalid buffer length
+    /// Invalid buffer length.
     #[error("Invalid buffer length")]
     InvalidBufferLength,
-    /// Unsupported version
-    #[error("Unsupported version: {0}")]
-    UnsupportedVersion(String),
-    /// Integer overflow
-    #[error("Integer overflow")]
-    IntegerOverflow,
-    /// Integer underflow
-    #[error("Integer underflow")]
-    IntegerUnderflow,
-    /// Count greater than limit
+    /// Count exceeded the declared limit.
     #[error("Count greater than limit: count {count}, limit {limit}")]
     CountGreaterThanLimit {
-        /// Count
+        /// Actual count.
         count: usize,
-        /// Limit
+        /// Declared limit.
         limit: usize,
     },
 }
 
-/// SSZ hasher for calculating merkle roots.
+/// SSZ hasher for calculating Merkle roots.
 #[derive(Debug)]
 pub struct Hasher {
     buf: Vec<u8>,
-
     tmp: Vec<u8>,
-
     hash: HashFn,
 }
 
@@ -131,7 +118,7 @@ impl Default for Hasher {
 }
 
 impl Hasher {
-    /// Create a new hasher.
+    /// Creates a new hasher with the provided hash function.
     pub fn new(hash: HashFn) -> Self {
         Self {
             buf: Vec::new(),
@@ -140,7 +127,7 @@ impl Hasher {
         }
     }
 
-    /// Default hash function.
+    /// Default SHA-256 pairwise hash function used during merkleization.
     pub fn default_hash_fn(src: &[u8]) -> Result<Vec<u8>, HasherError> {
         let mut result = Vec::with_capacity(src.len() / 2);
 
@@ -152,6 +139,14 @@ impl Hasher {
         }
 
         Ok(result)
+    }
+
+    fn pad_to_32(buf: &mut Vec<u8>) {
+        let rest = buf.len() % 32;
+        if rest != 0 {
+            #[allow(clippy::arithmetic_side_effects)]
+            buf.extend_from_slice(&ZERO_BYTES[..32 - rest]);
+        }
     }
 
     #[allow(clippy::arithmetic_side_effects)]
@@ -217,7 +212,7 @@ impl Hasher {
         Ok(input)
     }
 
-    /// Compute the SSZ hash root.
+    /// Computes the SSZ hash root of the current buffer.
     pub fn hash_root(&self) -> Result<[u8; 32], HasherError> {
         if self.buf.len() != 32 {
             return Err(HasherError::InvalidBufferLength);
@@ -225,7 +220,7 @@ impl Hasher {
         self.hash()
     }
 
-    /// Reset the hasher.
+    /// Resets the internal buffer.
     pub fn reset(&mut self) {
         self.buf.clear();
     }
@@ -234,7 +229,6 @@ impl Hasher {
 impl HashWalker for Hasher {
     type Error = HasherError;
 
-    /// Return the hash of the current buffer.
     fn hash(&self) -> Result<[u8; 32], Self::Error> {
         if self.buf.len() < 32 {
             return Err(HasherError::InvalidBufferLength);
@@ -245,35 +239,24 @@ impl HashWalker for Hasher {
         Ok(result)
     }
 
-    /// Append a single byte.
     fn append_u8(&mut self, i: u8) -> Result<(), Self::Error> {
         self.append(&[i])
     }
 
-    /// Append a u32 integer.
     fn append_u32(&mut self, i: u32) -> Result<(), Self::Error> {
         self.append(&i.to_le_bytes())
     }
 
-    /// Append a u64 integer.
     fn append_u64(&mut self, i: u64) -> Result<(), Self::Error> {
         self.append(&i.to_le_bytes())
     }
 
-    /// Append a bytes array, and fill up to `k * 32` bytes if the length is not
-    /// a multiple of 32.
     fn append_bytes32(&mut self, b: &[u8]) -> Result<(), Self::Error> {
         self.buf.extend_from_slice(b);
-        let rest = b.len() % 32;
-        if rest != 0 {
-            #[allow(clippy::arithmetic_side_effects)]
-            // rest < 32, ZERO_BYTES is constant with length 32
-            self.buf.extend_from_slice(&ZERO_BYTES[..32 - rest]);
-        }
+        Self::pad_to_32(&mut self.buf);
         Ok(())
     }
 
-    /// Append an array of u64 values.
     fn put_uint64_array(
         &mut self,
         b: &[u64],
@@ -296,66 +279,47 @@ impl HashWalker for Hasher {
         Ok(())
     }
 
-    /// Append a u64 value.
     fn put_uint64(&mut self, i: u64) -> Result<(), Self::Error> {
         self.append_bytes32(&i.to_le_bytes())
     }
 
-    /// Append a u32 value.
     fn put_uint32(&mut self, i: u32) -> Result<(), Self::Error> {
         self.append_bytes32(&i.to_le_bytes())
     }
 
-    /// Append a u16 value.
     fn put_uint16(&mut self, i: u16) -> Result<(), Self::Error> {
         self.append_bytes32(&i.to_le_bytes())
     }
 
-    /// Append a u8 value.
     fn put_uint8(&mut self, i: u8) -> Result<(), Self::Error> {
         self.append_bytes32(&[i])
     }
 
-    /// Pad data up to 32 bytes.
     fn fill_up_to_32(&mut self) -> Result<(), Self::Error> {
-        let rest = self.buf.len() % 32;
-        if rest != 0 {
-            #[allow(clippy::arithmetic_side_effects)]
-            // rest < 32, ZERO_BYTES is constant with length 32
-            self.buf.extend_from_slice(&ZERO_BYTES[..32 - rest]);
-        }
+        Self::pad_to_32(&mut self.buf);
         Ok(())
     }
 
-    /// Append a byte slice.
     fn append(&mut self, b: &[u8]) -> Result<(), Self::Error> {
         self.buf.extend_from_slice(b);
         Ok(())
     }
 
-    /// Append a bitlist, with given max size.
     fn put_bitlist(&mut self, bb: &[u8], max_size: usize) -> Result<(), Self::Error> {
         let size = parse_bitlist(&mut self.tmp, bb)?;
 
-        // merkleize the content with mix in length
         let indx = self.index();
         self.append_bytes32(&self.tmp.clone())?;
-        self.merkleize_with_mixin(indx, size as usize, max_size.div_ceil(256))?;
+        self.merkleize_with_mixin(indx, size, max_size.div_ceil(256))?;
         Ok(())
     }
 
-    /// Append a boolean value.
     fn put_bool(&mut self, b: bool) -> Result<(), Self::Error> {
-        if b {
-            self.buf.extend_from_slice(&TRUE_BYTES)
-        } else {
-            self.buf.extend_from_slice(&FALSE_BYTES)
-        }
-
+        let bytes = if b { &TRUE_BYTES } else { &FALSE_BYTES };
+        self.buf.extend_from_slice(bytes);
         Ok(())
     }
 
-    /// Append a byte slice (copy).
     fn put_bytes(&mut self, b: &[u8]) -> Result<(), Self::Error> {
         if b.len() <= 32 {
             self.append_bytes32(b)
@@ -367,12 +331,10 @@ impl HashWalker for Hasher {
         }
     }
 
-    /// Get the current index in the buffer.
     fn index(&self) -> usize {
         self.buf.len()
     }
 
-    /// Perform merkleization at a given index.
     fn merkleize(&mut self, index: usize) -> Result<(), Self::Error> {
         // merkleizeImpl will expand the `input` by 32 bytes if some hashing depth
         // hits an odd chunk length. But if we're at the end of `h.buf` already,
@@ -392,7 +354,6 @@ impl HashWalker for Hasher {
         Ok(())
     }
 
-    /// Perform merkleization with a mixin value.
     fn merkleize_with_mixin(
         &mut self,
         index: usize,
@@ -401,7 +362,6 @@ impl HashWalker for Hasher {
     ) -> Result<(), Self::Error> {
         self.fill_up_to_32()?;
 
-        // merkleize the input
         let mut input: Vec<u8> = self.buf[index..].to_vec();
 
         input = self.merkleize_impl(&input, limit)?;
@@ -423,7 +383,7 @@ impl HashWalker for Hasher {
     }
 }
 
-/// Calculate the limit for the merkleization with a mixin value.
+/// Calculates the chunk limit used when merkleizing packed arrays.
 pub fn calculate_limit(max_capacity: usize, num_items: usize, size: usize) -> usize {
     let limit = (max_capacity.saturating_mul(size)).div_ceil(32);
     if limit != 0 {
@@ -445,7 +405,6 @@ fn parse_bitlist(tmp: &mut Vec<u8>, buf: &[u8]) -> Result<usize, HasherError> {
         return Err(HasherError::InvalidBufferLength);
     }
 
-    // Find the most significant bit in the last byte
     let last_byte = buf[buf.len().wrapping_sub(1)];
     let msb = 8u8
         .wrapping_sub(last_byte.leading_zeros() as u8)

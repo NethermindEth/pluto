@@ -25,7 +25,7 @@ pub struct ValidatorRegistration {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub timestamp: u64,
     /// Validator BLS public key (48 bytes).
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub pubkey: BLSPubKey,
 }
 
@@ -38,7 +38,7 @@ pub struct SignedValidatorRegistration {
     /// Unsigned validator registration message.
     pub message: ValidatorRegistration,
     /// Signature over the message.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: BLSSignature,
 }
 
@@ -55,7 +55,7 @@ pub struct BeaconCommitteeSelection {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub validator_index: ValidatorIndex,
     /// Selection proof.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub selection_proof: BLSSignature,
 }
 
@@ -75,7 +75,7 @@ pub struct SyncCommitteeSelection {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub subcommittee_index: u64,
     /// Selection proof.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub selection_proof: BLSSignature,
 }
 

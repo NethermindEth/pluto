@@ -32,9 +32,9 @@ use crate::{
 
 use k256::SecretKey;
 use pluto_app::obolapi::{Client, ClientOptions};
-use pluto_cluster::ssz_hasher::{HashWalker, Hasher};
 use pluto_eth2util::enr::Record;
 use pluto_k1util::{load, sign};
+use pluto_ssz::{HashWalker, Hasher};
 use reqwest::{Method, StatusCode, header::CONTENT_TYPE};
 use serde_with::{base64::Base64, serde_as};
 use std::os::unix::fs::PermissionsExt as _;
