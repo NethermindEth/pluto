@@ -19,3 +19,6 @@ pub mod corepb;
 
 /// Semver version parsing utilities.
 pub mod version;
+
+/// Duty deadline tracking and notification.
+pub mod deadline;
