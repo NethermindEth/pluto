@@ -19,12 +19,12 @@ pub struct MsgSync {
 }
 impl ::prost::Name for MsgSync {
     const NAME: &'static str = "MsgSync";
-    const PACKAGE: &'static str = "sync";
+    const PACKAGE: &'static str = "dkg.dkgpb.v1";
     fn full_name() -> ::prost::alloc::string::String {
-        "sync.MsgSync".into()
+        "dkg.dkgpb.v1.MsgSync".into()
     }
     fn type_url() -> ::prost::alloc::string::String {
-        "type.googleapis.com/sync.MsgSync".into()
+        "type.googleapis.com/dkg.dkgpb.v1.MsgSync".into()
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -36,11 +36,11 @@ pub struct MsgSyncResponse {
 }
 impl ::prost::Name for MsgSyncResponse {
     const NAME: &'static str = "MsgSyncResponse";
-    const PACKAGE: &'static str = "sync";
+    const PACKAGE: &'static str = "dkg.dkgpb.v1";
     fn full_name() -> ::prost::alloc::string::String {
-        "sync.MsgSyncResponse".into()
+        "dkg.dkgpb.v1.MsgSyncResponse".into()
     }
     fn type_url() -> ::prost::alloc::string::String {
-        "type.googleapis.com/sync.MsgSyncResponse".into()
+        "type.googleapis.com/dkg.dkgpb.v1.MsgSyncResponse".into()
     }
 }
