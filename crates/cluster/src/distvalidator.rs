@@ -1,8 +1,16 @@
 use pluto_crypto::types::{PUBLIC_KEY_LENGTH, PublicKey};
+use pluto_eth2api::{
+    spec::{
+        BuilderVersion,
+        phase0::{BLS_PUBKEY_LEN, BLS_SIGNATURE_LEN},
+    },
+    v1,
+    versioned::VersionedSignedValidatorRegistration,
+};
 use pluto_ssz::serde_utils::Hex0x;
 use serde::{Deserialize, Serialize};
 
-use crate::{deposit::DepositData, registration::BuilderRegistration};
+use crate::{definition::ADDRESS_LEN, deposit::DepositData, registration::BuilderRegistration};
 use serde_with::{
     base64::{Base64, Standard},
     serde_as,
@@ -41,6 +49,9 @@ pub enum DistValidatorError {
     /// Invalid public share index.
     #[error("invalid public share index: got {0}, want less than {1}")]
     InvalidPublicShareIndex(usize, usize),
+    /// Invalid builder registration.
+    #[error("invalid registration")]
+    InvalidRegistration,
 }
 
 impl DistValidator {
@@ -83,20 +94,41 @@ impl DistValidator {
     }
 
     /// True if the validator has zero valued registration.
-    /// registration.
     pub fn zero_registration(&self) -> bool {
-        self.builder_registration.signature.is_empty()
-            && self.builder_registration.message.fee_recipient.is_empty()
+        self.builder_registration.signature == [0u8; BLS_SIGNATURE_LEN]
+            && self.builder_registration.message.fee_recipient == [0u8; ADDRESS_LEN]
             && self.builder_registration.message.gas_limit == 0
             && self.builder_registration.message.timestamp.timestamp() == 0
-            && self.builder_registration.message.pub_key.is_empty()
+            && self.builder_registration.message.pub_key == [0u8; BLS_PUBKEY_LEN]
     }
 
     /// Validator's Eth2 registration.
-    pub fn eth2_registration(&self) -> Result<(), DistValidatorError> {
-        unimplemented!(
-            "Eth2 registration requires to have ethereum types library which is not yet integrated in pluto-cluster"
-        )
+    pub fn eth2_registration(
+        &self,
+    ) -> Result<VersionedSignedValidatorRegistration, DistValidatorError> {
+        if self.zero_registration() {
+            return Err(DistValidatorError::InvalidRegistration);
+        }
+
+        let reg = &self.builder_registration;
+
+        Ok(VersionedSignedValidatorRegistration {
+            version: BuilderVersion::V1,
+            v1: Some(v1::SignedValidatorRegistration {
+                message: v1::ValidatorRegistration {
+                    fee_recipient: reg.message.fee_recipient,
+                    gas_limit: reg.message.gas_limit,
+                    timestamp: reg
+                        .message
+                        .timestamp
+                        .timestamp()
+                        .try_into()
+                        .map_err(|_| DistValidatorError::InvalidRegistration)?,
+                    pubkey: reg.message.pub_key,
+                },
+                signature: reg.signature,
+            }),
+        })
     }
 }
 
