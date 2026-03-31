@@ -248,9 +248,11 @@ pub fn test_case_names() -> Vec<String> {
 async fn run_test_case(
     cancel: CancellationToken,
     cfg: TestBeaconArgs,
-    target: &str,
-    name: &str,
+    target: impl AsRef<str>,
+    name: impl AsRef<str>,
 ) -> TestResult {
+    let target = target.as_ref();
+    let name = name.as_ref();
     match name {
         "Ping" => beacon_ping_test(cancel, cfg, target).await,
         "PingMeasure" => beacon_ping_measure_test(cancel, cfg, target).await,
@@ -306,7 +308,7 @@ pub async fn run(
         let shutdown = shutdown.clone();
 
         set.spawn(async move {
-            let results = test_single_beacon(shutdown, &queued, args, &endpoint).await;
+            let results = test_single_beacon(&args, &queued, &endpoint, shutdown).await;
             (endpoint, results)
         });
     }
@@ -361,14 +363,14 @@ pub async fn run(
 }
 
 async fn test_single_beacon(
+    cfg: &TestBeaconArgs,
+    queued: impl AsRef<[TestCaseName]>,
+    target: impl AsRef<str>,
     cancel: CancellationToken,
-    queued: &[TestCaseName],
-    cfg: TestBeaconArgs,
-    target: &str,
 ) -> Vec<TestResult> {
     let mut results = Vec::new();
 
-    for tc in queued {
+    for tc in queued.as_ref() {
         if cancel.is_cancelled() {
             results.push(TestResult {
                 name: tc.name.to_string(),
@@ -379,7 +381,7 @@ async fn test_single_beacon(
             break;
         }
 
-        let result = run_test_case(cancel.clone(), cfg.clone(), target, tc.name).await;
+        let result = run_test_case(cancel.clone(), cfg.clone(), target.as_ref(), tc.name).await;
         results.push(result);
     }
 
