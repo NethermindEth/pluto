@@ -530,8 +530,11 @@ pub(crate) fn sort_tests(tests: &mut [TestCaseName]) {
     tests.sort_by_key(|t| t.order);
 }
 
-pub(crate) fn must_output_to_file_on_quiet(quiet: bool, output_json: &str) -> CliResult<()> {
-    if quiet && output_json.is_empty() {
+pub(crate) fn must_output_to_file_on_quiet(
+    quiet: bool,
+    output_json: impl AsRef<str>,
+) -> CliResult<()> {
+    if quiet && output_json.as_ref().is_empty() {
         Err(CliError::Other(
             "on --quiet, an --output-json is required".to_string(),
         ))
