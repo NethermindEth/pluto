@@ -570,43 +570,6 @@ pub(crate) fn hash_ssz(data: &[u8]) -> CliResult<[u8; 32]> {
     Ok(hasher.hash_root()?)
 }
 
-fn percent_decode(s: &str) -> String {
-    percent_encoding::percent_decode_str(s)
-        .decode_utf8_lossy()
-        .into_owned()
-}
-
-pub(crate) fn parse_endpoint_url(endpoint: &str) -> CliResult<(String, Option<(String, String)>)> {
-    let mut parsed = reqwest::Url::parse(endpoint)
-        .map_err(|e| CliError::Other(format!("parse endpoint URL: {e}")))?;
-
-    if parsed.username().is_empty() {
-        return Ok((endpoint.to_string(), None));
-    }
-
-    let username = percent_decode(parsed.username());
-    let password = percent_decode(parsed.password().unwrap_or_default());
-    parsed.set_username("").map_err(|e| {
-        CliError::Other(format!("failed to clear username from endpoint URL: {e:?}"))
-    })?;
-    parsed.set_password(None).map_err(|e| {
-        CliError::Other(format!("failed to clear password from endpoint URL: {e:?}"))
-    })?;
-
-    Ok((parsed.to_string(), Some((username, password))))
-}
-
-pub(crate) fn apply_basic_auth(
-    builder: reqwest::RequestBuilder,
-    credentials: &Option<(String, String)>,
-) -> reqwest::RequestBuilder {
-    if let Some((username, password)) = credentials {
-        builder.basic_auth(username, Some(password))
-    } else {
-        builder
-    }
-}
-
 /// Measures the round-trip time (RTT) for an HTTP request and logs a warning if
 /// the response status code doesn't match the expected status.
 pub(crate) async fn request_rtt(
@@ -615,11 +578,9 @@ pub(crate) async fn request_rtt(
     body: Option<Vec<u8>>,
     expected_status: StatusCode,
 ) -> CliResult<StdDuration> {
-    let (clean_url, credentials) = parse_endpoint_url(url.as_ref())?;
     let client = reqwest::Client::new();
 
-    let mut request_builder = client.request(method, &clean_url);
-    request_builder = apply_basic_auth(request_builder, &credentials);
+    let mut request_builder = client.request(method, url.as_ref());
 
     if let Some(body_bytes) = body {
         request_builder = request_builder
@@ -644,14 +605,14 @@ pub(crate) async fn request_rtt(
             Ok(body) if !body.is_empty() => tracing::warn!(
                 status_code = status.as_u16(),
                 expected_status_code = expected_status.as_u16(),
-                endpoint = clean_url,
+                endpoint = url.as_ref(),
                 body = body,
                 "Unexpected status code"
             ),
             _ => tracing::warn!(
                 status_code = status.as_u16(),
                 expected_status_code = expected_status.as_u16(),
-                endpoint = clean_url,
+                endpoint = url.as_ref(),
                 "Unexpected status code"
             ),
         }
@@ -979,53 +940,5 @@ mod tests {
         let written: AllCategoriesResult = serde_json::from_str(&content).unwrap();
 
         assert_eq!(written, expected);
-    }
-
-    #[test]
-    fn test_parse_endpoint_url_without_auth() {
-        let (clean, creds) = parse_endpoint_url("https://beacon.example.com/path").unwrap();
-        assert_eq!(clean, "https://beacon.example.com/path");
-        assert!(creds.is_none());
-    }
-
-    #[test]
-    fn test_parse_endpoint_url_with_auth() {
-        let (clean, creds) =
-            parse_endpoint_url("https://user:pass@beacon.example.com/path").unwrap();
-        assert_eq!(clean, "https://beacon.example.com/path");
-        let (user, pass) = creds.unwrap();
-        assert_eq!(user, "user");
-        assert_eq!(pass, "pass");
-    }
-
-    #[test]
-    fn test_parse_endpoint_url_with_query_params() {
-        let (clean, creds) =
-            parse_endpoint_url("https://user:pass@beacon.example.com/path?query=value").unwrap();
-        assert_eq!(clean, "https://beacon.example.com/path?query=value");
-        let (user, pass) = creds.unwrap();
-        assert_eq!(user, "user");
-        assert_eq!(pass, "pass");
-    }
-
-    #[test]
-    fn test_parse_endpoint_url_http_with_port() {
-        let (clean, creds) = parse_endpoint_url("http://admin:secret@localhost:5051").unwrap();
-        assert_eq!(clean, "http://localhost:5051/");
-        let (user, pass) = creds.unwrap();
-        assert_eq!(user, "admin");
-        assert_eq!(pass, "secret");
-    }
-
-    #[test]
-    fn test_parse_endpoint_url_with_special_chars_in_password() {
-        // Go source uses "p@ss!123" as the raw password; in Rust's url crate the '@'
-        // must be percent-encoded as "p%40ss!123" to be unambiguously parsed.
-        let (clean, creds) =
-            parse_endpoint_url("https://user:p%40ss!123@beacon.example.com").unwrap();
-        assert_eq!(clean, "https://beacon.example.com/");
-        let (user, pass) = creds.unwrap();
-        assert_eq!(user, "user");
-        assert_eq!(pass, "p@ss!123");
     }
 }

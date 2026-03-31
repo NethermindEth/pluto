@@ -11,9 +11,9 @@ use super::{
     },
     helpers::{
         CategoryScore, TestCaseName, TestCategory, TestCategoryResult, TestResult, TestVerdict,
-        apply_basic_auth, calculate_score, evaluate_highest_rtt, evaluate_rtt, filter_tests,
-        must_output_to_file_on_quiet, parse_endpoint_url, publish_result_to_obol_api, request_rtt,
-        sort_tests, write_result_to_file, write_result_to_writer,
+        calculate_score, evaluate_highest_rtt, evaluate_rtt, filter_tests,
+        must_output_to_file_on_quiet, publish_result_to_obol_api, request_rtt, sort_tests,
+        write_result_to_file, write_result_to_writer,
     },
 };
 use crate::{duration::Duration, error::Result as CliResult};
@@ -429,15 +429,8 @@ async fn beacon_version_test(
     let mut res = TestResult::new("Version");
     let url = format!("{target}/eth/v1/node/version");
 
-    let (clean_url, credentials) = match parse_endpoint_url(&url) {
-        Ok(v) => v,
-        Err(e) => return res.fail(e),
-    };
     let client = reqwest::Client::new();
-    let resp = match apply_basic_auth(client.get(&clean_url), &credentials)
-        .send()
-        .await
-    {
+    let resp = match client.get(&url).send().await {
         Ok(r) => r,
         Err(e) => return res.fail(e),
     };
@@ -486,15 +479,8 @@ async fn beacon_is_synced_test(
     let mut res = TestResult::new("Synced");
     let url = format!("{target}/eth/v1/node/syncing");
 
-    let (clean_url, credentials) = match parse_endpoint_url(&url) {
-        Ok(v) => v,
-        Err(e) => return res.fail(e),
-    };
     let client = reqwest::Client::new();
-    let resp = match apply_basic_auth(client.get(&clean_url), &credentials)
-        .send()
-        .await
-    {
+    let resp = match client.get(&url).send().await {
         Ok(r) => r,
         Err(e) => return res.fail(e),
     };
@@ -538,15 +524,8 @@ async fn beacon_peer_count_test(
     let mut res = TestResult::new("PeerCount");
     let url = format!("{target}/eth/v1/node/peers?state=connected");
 
-    let (clean_url, credentials) = match parse_endpoint_url(&url) {
-        Ok(v) => v,
-        Err(e) => return res.fail(e),
-    };
     let client = reqwest::Client::new();
-    let resp = match apply_basic_auth(client.get(&clean_url), &credentials)
-        .send()
-        .await
-    {
+    let resp = match client.get(&url).send().await {
         Ok(r) => r,
         Err(e) => return res.fail(e),
     };
@@ -1571,11 +1550,8 @@ async fn sync_committee_message_duty(
 
 async fn get_current_slot(target: &str) -> CliResult<u64> {
     let url = format!("{target}/eth/v1/node/syncing");
-    let (clean_url, credentials) = parse_endpoint_url(&url)?;
     let client = reqwest::Client::new();
-    let resp = apply_basic_auth(client.get(&clean_url), &credentials)
-        .send()
-        .await?;
+    let resp = client.get(&url).send().await?;
 
     // More strict than the Charon check, which requires the status code to be >
     // 399.
