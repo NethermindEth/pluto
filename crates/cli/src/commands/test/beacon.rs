@@ -121,6 +121,19 @@ struct RequestsIntensity {
     sync_committee_subscribe: StdDuration,
 }
 
+impl Default for RequestsIntensity {
+    fn default() -> Self {
+        Self {
+            attestation_duty: SLOT_TIME,
+            aggregator_duty: SLOT_TIME.saturating_mul(2),
+            proposal_duty: SLOT_TIME.saturating_mul(4),
+            sync_committee_submit: SLOT_TIME,
+            sync_committee_contribution: SLOT_TIME.saturating_mul(4),
+            sync_committee_subscribe: EPOCH_TIME,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct DutiesPerformed {
     attestation: bool,
@@ -384,19 +397,28 @@ async fn test_single_beacon(
 }
 
 async fn beacon_ping_test(
-    _cancel: CancellationToken,
+    cancel: CancellationToken,
     _cfg: TestBeaconArgs,
     target: &str,
 ) -> TestResult {
     let mut res = TestResult::new("Ping");
     let url = format!("{target}/eth/v1/node/health");
 
-    match request_rtt(&url, Method::GET, None, reqwest::StatusCode::OK).await {
-        Ok(_) => {
+    match cancel
+        .run_until_cancelled(request_rtt(
+            &url,
+            Method::GET,
+            None,
+            reqwest::StatusCode::OK,
+        ))
+        .await
+    {
+        Some(Ok(_)) => {
             res.verdict = TestVerdict::Ok;
             res
         }
-        Err(e) => res.fail(e),
+        Some(Err(e)) => res.fail(e),
+        None => res.fail(TestResultError::from_string("timeout/interrupted")),
     }
 }
 
@@ -590,7 +612,7 @@ async fn beacon_ping_load_test(
     target: &str,
 ) -> TestResult {
     if !cfg.load_test {
-        return skip_result("PingLoad");
+        return TestResult::skip("PingLoad");
     }
     let res = TestResult::new("PingLoad");
 
@@ -631,24 +653,13 @@ async fn beacon_ping_load_test(
     )
 }
 
-fn default_intensity() -> RequestsIntensity {
-    RequestsIntensity {
-        attestation_duty: SLOT_TIME,
-        aggregator_duty: SLOT_TIME.saturating_mul(2),
-        proposal_duty: SLOT_TIME.saturating_mul(4),
-        sync_committee_submit: SLOT_TIME,
-        sync_committee_contribution: SLOT_TIME.saturating_mul(4),
-        sync_committee_subscribe: EPOCH_TIME,
-    }
-}
-
 async fn beacon_simulation_1_test(
     cancel: CancellationToken,
     cfg: TestBeaconArgs,
     target: &str,
 ) -> TestResult {
     if !cfg.load_test {
-        return skip_result("Simulate1");
+        return TestResult::skip("Simulate1");
     }
     let res = TestResult::new("Simulate1");
     let params = SimParams {
@@ -656,7 +667,7 @@ async fn beacon_simulation_1_test(
         attestation_validators_count: 0,
         proposal_validators_count: 0,
         sync_committee_validators_count: 1,
-        request_intensity: default_intensity(),
+        request_intensity: RequestsIntensity::default(),
     };
     beacon_simulation_test(cancel, &cfg, target, res, params).await
 }
@@ -667,7 +678,7 @@ async fn beacon_simulation_10_test(
     target: &str,
 ) -> TestResult {
     if !cfg.load_test {
-        return skip_result("Simulate10");
+        return TestResult::skip("Simulate10");
     }
     let res = TestResult::new("Simulate10");
     let params = SimParams {
@@ -675,7 +686,7 @@ async fn beacon_simulation_10_test(
         attestation_validators_count: 6,
         proposal_validators_count: 3,
         sync_committee_validators_count: 1,
-        request_intensity: default_intensity(),
+        request_intensity: RequestsIntensity::default(),
     };
     beacon_simulation_test(cancel, &cfg, target, res, params).await
 }
@@ -686,7 +697,7 @@ async fn beacon_simulation_100_test(
     target: &str,
 ) -> TestResult {
     if !cfg.load_test {
-        return skip_result("Simulate100");
+        return TestResult::skip("Simulate100");
     }
     let res = TestResult::new("Simulate100");
     let params = SimParams {
@@ -694,7 +705,7 @@ async fn beacon_simulation_100_test(
         attestation_validators_count: 80,
         proposal_validators_count: 18,
         sync_committee_validators_count: 2,
-        request_intensity: default_intensity(),
+        request_intensity: RequestsIntensity::default(),
     };
     beacon_simulation_test(cancel, &cfg, target, res, params).await
 }
@@ -705,7 +716,7 @@ async fn beacon_simulation_500_test(
     target: &str,
 ) -> TestResult {
     if !cfg.load_test {
-        return skip_result("Simulate500");
+        return TestResult::skip("Simulate500");
     }
     let res = TestResult::new("Simulate500");
     let params = SimParams {
@@ -713,7 +724,7 @@ async fn beacon_simulation_500_test(
         attestation_validators_count: 450,
         proposal_validators_count: 45,
         sync_committee_validators_count: 5,
-        request_intensity: default_intensity(),
+        request_intensity: RequestsIntensity::default(),
     };
     beacon_simulation_test(cancel, &cfg, target, res, params).await
 }
@@ -724,7 +735,7 @@ async fn beacon_simulation_1000_test(
     target: &str,
 ) -> TestResult {
     if !cfg.load_test {
-        return skip_result("Simulate1000");
+        return TestResult::skip("Simulate1000");
     }
     let res = TestResult::new("Simulate1000");
     let params = SimParams {
@@ -732,7 +743,7 @@ async fn beacon_simulation_1000_test(
         attestation_validators_count: 930,
         proposal_validators_count: 65,
         sync_committee_validators_count: 5,
-        request_intensity: default_intensity(),
+        request_intensity: RequestsIntensity::default(),
     };
     beacon_simulation_test(cancel, &cfg, target, res, params).await
 }
@@ -768,7 +779,7 @@ async fn beacon_simulation_custom_test(
         attestation_validators_count: attestations,
         proposal_validators_count: proposals,
         sync_committee_validators_count: sync_committees,
-        request_intensity: default_intensity(),
+        request_intensity: RequestsIntensity::default(),
     };
     beacon_simulation_test(cancel, &cfg, target, res, params).await
 }
@@ -869,7 +880,13 @@ async fn beacon_simulation_test(
 
     tracing::info!("Waiting for simulation to complete...");
 
-    let cluster_result = cluster_handle.await.unwrap_or_default();
+    let cluster_result = match cluster_handle.await {
+        Ok(result) => result,
+        Err(e) => {
+            tracing::warn!("Cluster simulation failed: {:?}", e);
+            return test_res.fail(TestResultError::from_string(e.to_string()));
+        }
+    };
     let mut all_validators = Vec::new();
     for h in validator_handles {
         if let Ok(v) = h.await {
@@ -905,7 +922,7 @@ async fn beacon_simulation_test(
     let highest_rtt = all_validators
         .iter()
         .map(|v| v.values.max)
-        .max_by_key(|d| d.as_nanos())
+        .max_by_key(|d| *d)
         .unwrap_or_default();
 
     test_res = evaluate_rtt(
@@ -1642,6 +1659,9 @@ fn compute_two_phase_results(
     (cumulative_vals, first_vals, second_vals)
 }
 
+/// Computes aggregated statistics (min, max, median, avg) over a slice of
+/// durations for a given endpoint. Returns default zeroed values if the slice
+/// is empty.
 fn generate_simulation_values(durations: &[StdDuration], endpoint: &str) -> SimulationValues {
     if durations.is_empty() {
         return SimulationValues {
@@ -1655,6 +1675,8 @@ fn generate_simulation_values(durations: &[StdDuration], endpoint: &str) -> Simu
 
     let min = sorted[0];
     let max = sorted[sorted.len().saturating_sub(1)];
+    // For even-length slices this picks the upper-middle element, matching typical
+    // beacon tooling.
     let median = sorted[sorted.len() / 2];
     let sum: StdDuration = durations.iter().sum();
     let count = u32::try_from(durations.len()).unwrap_or_else(|_| {
@@ -1786,13 +1808,6 @@ fn average_validators_result(
                 "POST /eth/v1/validator/sync_committee_subscriptions",
             ),
         },
-    }
-}
-
-fn skip_result(name: &str) -> TestResult {
-    TestResult {
-        verdict: TestVerdict::Skip,
-        ..TestResult::new(name)
     }
 }
 

@@ -184,6 +184,17 @@ impl TestResult {
         self.verdict = TestVerdict::Ok;
         self
     }
+
+    pub fn skip(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            verdict: TestVerdict::Skip,
+            measurement: String::new(),
+            suggestion: String::new(),
+            error: TestResultError::empty(),
+            is_acceptable: false,
+        }
+    }
 }
 
 /// Test case name with execution order.
