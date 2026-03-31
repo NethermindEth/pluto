@@ -593,6 +593,10 @@ pub(crate) async fn request_rtt(
     let rtt = start.elapsed();
 
     let status = response.status();
+    if status == expected_status {
+        return Ok(rtt);
+    }
+
     if status.as_u16() > 399 {
         return Err(CliError::Other(format!(
             "HTTP status code {}",
@@ -600,22 +604,20 @@ pub(crate) async fn request_rtt(
         )));
     }
 
-    if status != expected_status {
-        match response.text().await {
-            Ok(body) if !body.is_empty() => tracing::warn!(
-                status_code = status.as_u16(),
-                expected_status_code = expected_status.as_u16(),
-                endpoint = url.as_ref(),
-                body = body,
-                "Unexpected status code"
-            ),
-            _ => tracing::warn!(
-                status_code = status.as_u16(),
-                expected_status_code = expected_status.as_u16(),
-                endpoint = url.as_ref(),
-                "Unexpected status code"
-            ),
-        }
+    match response.text().await {
+        Ok(body) if !body.is_empty() => tracing::warn!(
+            status_code = status.as_u16(),
+            expected_status_code = expected_status.as_u16(),
+            endpoint = url.as_ref(),
+            body = body,
+            "Unexpected status code"
+        ),
+        _ => tracing::warn!(
+            status_code = status.as_u16(),
+            expected_status_code = expected_status.as_u16(),
+            endpoint = url.as_ref(),
+            "Unexpected status code"
+        ),
     }
 
     Ok(rtt)

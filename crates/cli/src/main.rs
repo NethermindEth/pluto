@@ -19,9 +19,10 @@ use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
 async fn main() -> ExitResult {
-    let mut builder = pluto_tracing::TracingConfig::builder();
-    builder = builder.with_default_console();
-    builder.build();
+    let config = pluto_tracing::TracingConfig::builder()
+        .with_default_console()
+        .build();
+    let _ = pluto_tracing::init(&config);
 
     let cmd = commands::test::update_test_cases_help(Cli::command());
     let matches = cmd.get_matches();

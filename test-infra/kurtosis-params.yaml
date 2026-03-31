@@ -1,0 +1,15 @@
+participants:
+  - el_type: nethermind
+    cl_type: lighthouse
+    count: 1
+
+network_params:
+  preset: mainnet
+
+port_publisher:
+  cl:
+    enabled: true
+    public_port_start: 5052
+  el:
+    enabled: true
+    public_port_start: 32000

@@ -575,7 +575,7 @@ async fn beacon_ping_once(target: &str) -> CliResult<StdDuration> {
 async fn ping_beacon_continuously(cancel: CancellationToken, target: String) -> Vec<StdDuration> {
     let mut rtts = Vec::new();
     loop {
-        let Ok(rtt) = beacon_ping_once(&target).await else {
+        let Some(Ok(rtt)) = cancel.run_until_cancelled(beacon_ping_once(&target)).await else {
             return rtts;
         };
 
@@ -605,16 +605,17 @@ async fn beacon_ping_load_test(
         "Running ping load tests..."
     );
 
-    cancel_after(&cancel, cfg.load_test_duration);
+    let load_cancel = cancel.child_token();
+    cancel_after(&load_cancel, cfg.load_test_duration);
 
     let mut set = JoinSet::new();
     let mut interval = interval(StdDuration::from_secs(1));
 
     loop {
         tokio::select! {
-            _ = cancel.cancelled() => break,
+            _ = load_cancel.cancelled() => break,
             _ = interval.tick() => {
-                let cancel = cancel.clone();
+                let cancel = load_cancel.clone();
                 let target = target.to_string();
                 set.spawn(async move {
                     ping_beacon_continuously(cancel, target).await
@@ -798,11 +799,12 @@ async fn beacon_simulation_test(
         "Running beacon node simulation..."
     );
 
-    cancel_after(&cancel, sim_duration);
+    let sim_cancel = cancel.child_token();
+    cancel_after(&sim_cancel, sim_duration);
 
     // General cluster requests
     tracing::info!("Starting general cluster requests...");
-    let cluster_cancel = cancel.clone();
+    let cluster_cancel = sim_cancel.clone();
     let cluster_target = target.to_string();
     let cluster_handle = tokio::spawn(async move {
         single_cluster_simulation(cluster_cancel, sim_duration, &cluster_target).await
@@ -822,7 +824,7 @@ async fn beacon_simulation_test(
         "Starting validators performing duties attestation, aggregation, proposal, sync committee..."
     );
     for _ in 0..params.sync_committee_validators_count {
-        let cancel = cancel.clone();
+        let cancel = sim_cancel.clone();
         let target = target.to_string();
         let intensity = params.request_intensity;
         validator_handles.push(tokio::spawn(async move {
@@ -841,7 +843,7 @@ async fn beacon_simulation_test(
         "Starting validators performing duties attestation, aggregation, proposal..."
     );
     for _ in 0..params.proposal_validators_count {
-        let cancel = cancel.clone();
+        let cancel = sim_cancel.clone();
         let target = target.to_string();
         let intensity = params.request_intensity;
         validator_handles.push(tokio::spawn(async move {
@@ -861,7 +863,7 @@ async fn beacon_simulation_test(
         "Starting validators performing duties attestation, aggregation..."
     );
     for _ in 0..params.attestation_validators_count {
-        let cancel = cancel.clone();
+        let cancel = sim_cancel.clone();
         let target = target.to_string();
         let intensity = params.request_intensity;
         validator_handles.push(tokio::spawn(async move {
@@ -1069,82 +1071,43 @@ async fn single_validator_simulation(
     intensity: RequestsIntensity,
     duties: DutiesPerformed,
 ) -> SimulationSingleValidator {
-    let mut get_attestation_data_all = Vec::new();
-    let mut submit_attestation_object_all = Vec::new();
-    let mut get_aggregate_attestations_all = Vec::new();
-    let mut submit_aggregate_and_proofs_all = Vec::new();
-    let mut produce_block_all = Vec::new();
-    let mut publish_blinded_block_all = Vec::new();
     let mut sync_committee_subscription_all = Vec::new();
     let mut submit_sync_committee_message_all = Vec::new();
     let mut produce_sync_committee_contribution_all = Vec::new();
     let mut submit_sync_committee_contribution_all = Vec::new();
 
     // Attestation duty
-    let (att_get_tx, mut att_get_rx) = mpsc::channel(256);
-    let (att_sub_tx, mut att_sub_rx) = mpsc::channel(256);
-    if duties.attestation {
+    let att_handle = if duties.attestation {
         let cancel = cancel.clone();
         let target = target.to_string();
-        tokio::spawn(async move {
-            attestation_duty(
-                cancel,
-                &target,
-                sim_duration,
-                intensity.attestation_duty,
-                att_get_tx,
-                att_sub_tx,
-            )
-            .await;
-        });
+        Some(tokio::spawn(async move {
+            attestation_duty(cancel, &target, sim_duration, intensity.attestation_duty).await
+        }))
     } else {
-        drop(att_get_tx);
-        drop(att_sub_tx);
-    }
+        None
+    };
 
     // Aggregation duty
-    let (agg_get_tx, mut agg_get_rx) = mpsc::channel(256);
-    let (agg_sub_tx, mut agg_sub_rx) = mpsc::channel(256);
-    if duties.aggregation {
+    let agg_handle = if duties.aggregation {
         let cancel = cancel.clone();
         let target = target.to_string();
-        tokio::spawn(async move {
-            aggregation_duty(
-                cancel,
-                &target,
-                sim_duration,
-                intensity.aggregator_duty,
-                agg_get_tx,
-                agg_sub_tx,
-            )
-            .await;
-        });
+        Some(tokio::spawn(async move {
+            aggregation_duty(cancel, &target, sim_duration, intensity.aggregator_duty).await
+        }))
     } else {
-        drop(agg_get_tx);
-        drop(agg_sub_tx);
-    }
+        None
+    };
 
     // Proposal duty
-    let (prop_produce_tx, mut prop_produce_rx) = mpsc::channel(256);
-    let (prop_publish_tx, mut prop_publish_rx) = mpsc::channel(256);
-    if duties.proposal {
+    let prop_handle = if duties.proposal {
         let cancel = cancel.clone();
         let target = target.to_string();
-        tokio::spawn(async move {
-            proposal_duty(
-                cancel,
-                &target,
-                sim_duration,
-                intensity.proposal_duty,
-                prop_produce_tx,
-                prop_publish_tx,
-            )
-            .await;
-        });
+        Some(tokio::spawn(async move {
+            proposal_duty(cancel, &target, sim_duration, intensity.proposal_duty).await
+        }))
     } else {
-        drop(prop_produce_tx);
-        drop(prop_publish_tx);
-    }
+        None
+    };
 
     // Sync committee duties
     let (sc_sub_tx, mut sc_sub_rx) = mpsc::channel(256);
@@ -1176,16 +1139,13 @@ async fn single_validator_simulation(
         drop(sc_contrib_tx);
     }
 
-    // Collect results from all channels
+    // Collect results from sync committee channels
+    let sc_deadline = sim_deadline(sim_duration);
     loop {
         tokio::select! {
             biased;
-            Some(v) = att_get_rx.recv() => get_attestation_data_all.push(v),
-            Some(v) = att_sub_rx.recv() => submit_attestation_object_all.push(v),
-            Some(v) = agg_get_rx.recv() => get_aggregate_attestations_all.push(v),
-            Some(v) = agg_sub_rx.recv() => submit_aggregate_and_proofs_all.push(v),
-            Some(v) = prop_produce_rx.recv() => produce_block_all.push(v),
-            Some(v) = prop_publish_rx.recv() => publish_blinded_block_all.push(v),
+            _ = cancel.cancelled() => break,
+            _ = sleep_until(sc_deadline) => break,
             Some(v) = sc_sub_rx.recv() => sync_committee_subscription_all.push(v),
             Some(v) = sc_msg_rx.recv() => submit_sync_committee_message_all.push(v),
             Some(v) = sc_produce_rx.recv() => produce_sync_committee_contribution_all.push(v),
@@ -1193,6 +1153,19 @@ async fn single_validator_simulation(
             else => break,
         }
     }
+
+    let (get_attestation_data_all, submit_attestation_object_all) = match att_handle {
+        Some(h) => h.await.unwrap_or_default(),
+        None => (Vec::new(), Vec::new()),
+    };
+    let (get_aggregate_attestations_all, submit_aggregate_and_proofs_all) = match agg_handle {
+        Some(h) => h.await.unwrap_or_default(),
+        None => (Vec::new(), Vec::new()),
+    };
+    let (produce_block_all, publish_blinded_block_all) = match prop_handle {
+        Some(h) => h.await.unwrap_or_default(),
+        None => (Vec::new(), Vec::new()),
+    };
 
     let mut all_requests = Vec::new();
 
@@ -1299,14 +1272,24 @@ async fn attestation_duty(
     target: &str,
     sim_duration: StdDuration,
     tick_time: StdDuration,
-    get_tx: mpsc::Sender<StdDuration>,
-    submit_tx: mpsc::Sender<StdDuration>,
-) {
+) -> (Vec<StdDuration>, Vec<StdDuration>) {
+    let mut get_all = Vec::new();
+    let mut submit_all = Vec::new();
     let deadline = sim_deadline(sim_duration);
-    sleep(randomize_start(tick_time)).await;
+    if cancel
+        .run_until_cancelled(sleep(randomize_start(tick_time)))
+        .await
+        .is_none()
+    {
+        return Default::default();
+    }
     #[allow(clippy::arithmetic_side_effects)]
     let mut interval = interval_at(Instant::now() + tick_time, tick_time);
-    let mut slot = get_current_slot(target).await.unwrap_or(1);
+    let mut slot = cancel
+        .run_until_cancelled(get_current_slot(target))
+        .await
+        .and_then(|r| r.ok())
+        .unwrap_or(1);
 
     loop {
         if cancel.is_cancelled() || Instant::now() >= deadline {
@@ -1314,11 +1297,17 @@ async fn attestation_duty(
         }
 
         let committee_index = rand::thread_rng().gen_range(0..COMMITTEE_SIZE_PER_SLOT);
-        if let Ok(rtt) = req_get_attestation_data(target, slot, committee_index).await {
-            let _ = get_tx.send(rtt).await;
+        if let Some(Ok(rtt)) = cancel
+            .run_until_cancelled(req_get_attestation_data(target, slot, committee_index))
+            .await
+        {
+            get_all.push(rtt);
         }
-        if let Ok(rtt) = req_submit_attestation_object(target).await {
-            let _ = submit_tx.send(rtt).await;
+        if let Some(Ok(rtt)) = cancel
+            .run_until_cancelled(req_submit_attestation_object(target))
+            .await
+        {
+            submit_all.push(rtt);
         }
 
         tokio::select! {
@@ -1329,6 +1318,8 @@ async fn attestation_duty(
             }
         }
     }
+
+    (get_all, submit_all)
 }
 
 async fn aggregation_duty(
@@ -1336,12 +1327,22 @@ async fn aggregation_duty(
     target: &str,
     sim_duration: StdDuration,
     tick_time: StdDuration,
-    get_tx: mpsc::Sender<StdDuration>,
-    submit_tx: mpsc::Sender<StdDuration>,
-) {
+) -> (Vec<StdDuration>, Vec<StdDuration>) {
+    let mut get_all = Vec::new();
+    let mut submit_all = Vec::new();
     let deadline = sim_deadline(sim_duration);
-    let mut slot = get_current_slot(target).await.unwrap_or(1);
-    sleep(randomize_start(tick_time)).await;
+    let mut slot = cancel
+        .run_until_cancelled(get_current_slot(target))
+        .await
+        .and_then(|r| r.ok())
+        .unwrap_or(1);
+    if cancel
+        .run_until_cancelled(sleep(randomize_start(tick_time)))
+        .await
+        .is_none()
+    {
+        return Default::default();
+    }
     #[allow(clippy::arithmetic_side_effects)]
     let mut interval = interval_at(Instant::now() + tick_time, tick_time);
 
@@ -1350,17 +1351,21 @@ async fn aggregation_duty(
             break;
         }
 
-        if let Ok(rtt) = req_get_aggregate_attestations(
-            target,
-            slot,
-            "0x87db5c50a4586fa37662cf332382d56a0eeea688a7d7311a42735683dfdcbfa4",
-        )
-        .await
+        if let Some(Ok(rtt)) = cancel
+            .run_until_cancelled(req_get_aggregate_attestations(
+                target,
+                slot,
+                "0x87db5c50a4586fa37662cf332382d56a0eeea688a7d7311a42735683dfdcbfa4",
+            ))
+            .await
         {
-            let _ = get_tx.send(rtt).await;
+            get_all.push(rtt);
         }
-        if let Ok(rtt) = req_post_aggregate_and_proofs(target).await {
-            let _ = submit_tx.send(rtt).await;
+        if let Some(Ok(rtt)) = cancel
+            .run_until_cancelled(req_post_aggregate_and_proofs(target))
+            .await
+        {
+            submit_all.push(rtt);
         }
 
         tokio::select! {
@@ -1371,6 +1376,8 @@ async fn aggregation_duty(
             }
         }
     }
+
+    (get_all, submit_all)
 }
 
 async fn proposal_duty(
@@ -1378,14 +1385,24 @@ async fn proposal_duty(
     target: &str,
     sim_duration: StdDuration,
     tick_time: StdDuration,
-    produce_tx: mpsc::Sender<StdDuration>,
-    publish_tx: mpsc::Sender<StdDuration>,
-) {
+) -> (Vec<StdDuration>, Vec<StdDuration>) {
+    let mut produce_all = Vec::new();
+    let mut publish_all = Vec::new();
     let deadline = sim_deadline(sim_duration);
-    sleep(randomize_start(tick_time)).await;
+    if cancel
+        .run_until_cancelled(sleep(randomize_start(tick_time)))
+        .await
+        .is_none()
+    {
+        return Default::default();
+    }
     #[allow(clippy::arithmetic_side_effects)]
     let mut interval = interval_at(Instant::now() + tick_time, tick_time);
-    let mut slot = get_current_slot(target).await.unwrap_or(1);
+    let mut slot = cancel
+        .run_until_cancelled(get_current_slot(target))
+        .await
+        .and_then(|r| r.ok())
+        .unwrap_or(1);
     let randao = "0x1fe79e4193450abda94aec753895cfb2aac2c2a930b6bab00fbb27ef6f4a69f4400ad67b5255b91837982b4c511ae1d94eae1cf169e20c11bd417c1fffdb1f99f4e13e2de68f3b5e73f1de677d73cd43e44bf9b133a79caf8e5fad06738e1b0c";
 
     loop {
@@ -1393,11 +1410,17 @@ async fn proposal_duty(
             break;
         }
 
-        if let Ok(rtt) = req_produce_block(target, slot, randao).await {
-            let _ = produce_tx.send(rtt).await;
+        if let Some(Ok(rtt)) = cancel
+            .run_until_cancelled(req_produce_block(target, slot, randao))
+            .await
+        {
+            produce_all.push(rtt);
         }
-        if let Ok(rtt) = req_publish_blinded_block(target).await {
-            let _ = publish_tx.send(rtt).await;
+        if let Some(Ok(rtt)) = cancel
+            .run_until_cancelled(req_publish_blinded_block(target))
+            .await
+        {
+            publish_all.push(rtt);
         }
 
         tokio::select! {
@@ -1408,6 +1431,8 @@ async fn proposal_duty(
             }
         }
     }
+
+    (produce_all, publish_all)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1445,7 +1470,13 @@ async fn sync_committee_duties(
 
     // Subscribe loop
     let deadline = sim_deadline(sim_duration);
-    sleep(randomize_start(tick_time_subscribe)).await;
+    if cancel
+        .run_until_cancelled(sleep(randomize_start(tick_time_subscribe)))
+        .await
+        .is_none()
+    {
+        return;
+    }
     #[allow(clippy::arithmetic_side_effects)]
     let mut interval = interval_at(Instant::now() + tick_time_subscribe, tick_time_subscribe);
 
@@ -1454,7 +1485,10 @@ async fn sync_committee_duties(
             break;
         }
 
-        if let Ok(rtt) = req_sync_committee_subscription(target).await {
+        if let Some(Ok(rtt)) = cancel
+            .run_until_cancelled(req_sync_committee_subscription(target))
+            .await
+        {
             let _ = sub_tx.send(rtt).await;
         }
 
@@ -1475,10 +1509,20 @@ async fn sync_committee_contribution_duty(
     contrib_tx: mpsc::Sender<StdDuration>,
 ) {
     let deadline = sim_deadline(sim_duration);
-    sleep(randomize_start(tick_time)).await;
+    if cancel
+        .run_until_cancelled(sleep(randomize_start(tick_time)))
+        .await
+        .is_none()
+    {
+        return;
+    }
     #[allow(clippy::arithmetic_side_effects)]
     let mut interval = interval_at(Instant::now() + tick_time, tick_time);
-    let mut slot = get_current_slot(target).await.unwrap_or(1);
+    let mut slot = cancel
+        .run_until_cancelled(get_current_slot(target))
+        .await
+        .and_then(|r| r.ok())
+        .unwrap_or(1);
 
     loop {
         if cancel.is_cancelled() || Instant::now() >= deadline {
@@ -1488,12 +1532,21 @@ async fn sync_committee_contribution_duty(
         let sub_idx = rand::thread_rng().gen_range(0..SUB_COMMITTEE_SIZE);
         let beacon_block_root =
             "0xcf8e0d4e9587369b2301d0790347320302cc0943d5a1884560367e8208d920f2";
-        if let Ok(rtt) =
-            req_produce_sync_committee_contribution(target, slot, sub_idx, beacon_block_root).await
+        if let Some(Ok(rtt)) = cancel
+            .run_until_cancelled(req_produce_sync_committee_contribution(
+                target,
+                slot,
+                sub_idx,
+                beacon_block_root,
+            ))
+            .await
         {
             let _ = produce_tx.send(rtt).await;
         }
-        if let Ok(rtt) = req_submit_sync_committee_contribution(target).await {
+        if let Some(Ok(rtt)) = cancel
+            .run_until_cancelled(req_submit_sync_committee_contribution(target))
+            .await
+        {
             let _ = contrib_tx.send(rtt).await;
         }
 
@@ -1515,7 +1568,13 @@ async fn sync_committee_message_duty(
     msg_tx: mpsc::Sender<StdDuration>,
 ) {
     let deadline = sim_deadline(sim_duration);
-    sleep(randomize_start(tick_time)).await;
+    if cancel
+        .run_until_cancelled(sleep(randomize_start(tick_time)))
+        .await
+        .is_none()
+    {
+        return;
+    }
     #[allow(clippy::arithmetic_side_effects)]
     let mut interval = interval_at(Instant::now() + tick_time, tick_time);
 
@@ -1524,7 +1583,10 @@ async fn sync_committee_message_duty(
             break;
         }
 
-        if let Ok(rtt) = req_submit_sync_committee(target).await {
+        if let Some(Ok(rtt)) = cancel
+            .run_until_cancelled(req_submit_sync_committee(target))
+            .await
+        {
             let _ = msg_tx.send(rtt).await;
         }
 
