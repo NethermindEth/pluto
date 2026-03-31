@@ -572,25 +572,19 @@ async fn beacon_ping_once(target: &str) -> CliResult<StdDuration> {
     request_rtt(&url, Method::GET, None, reqwest::StatusCode::OK).await
 }
 
-async fn ping_beacon_continuously(
-    cancel: CancellationToken,
-    target: String,
-    tx: mpsc::Sender<StdDuration>,
-) {
+async fn ping_beacon_continuously(cancel: CancellationToken, target: String) -> Vec<StdDuration> {
+    let mut rtts = Vec::new();
     loop {
         let Ok(rtt) = beacon_ping_once(&target).await else {
-            return;
+            return rtts;
         };
 
+        rtts.push(rtt);
+
+        let jitter = rand::thread_rng().gen_range(0..100u64);
         tokio::select! {
-            _ = cancel.cancelled() => return,
-            r = tx.send(rtt) => {
-                if r.is_err() {
-                    return;
-                }
-                let jitter = rand::thread_rng().gen_range(0..100u64);
-                sleep(StdDuration::from_millis(jitter)).await;
-            }
+            _ = cancel.cancelled() => return rtts,
+            _ = sleep(StdDuration::from_millis(jitter)) => {}
         }
     }
 }
@@ -611,10 +605,9 @@ async fn beacon_ping_load_test(
         "Running ping load tests..."
     );
 
-    let (tx, mut rx) = mpsc::channel::<StdDuration>(i16::MAX as usize);
     cancel_after(&cancel, cfg.load_test_duration);
 
-    let mut handles = Vec::new();
+    let mut set = JoinSet::new();
     let mut interval = interval(StdDuration::from_secs(1));
 
     loop {
@@ -623,23 +616,14 @@ async fn beacon_ping_load_test(
             _ = interval.tick() => {
                 let cancel = cancel.clone();
                 let target = target.to_string();
-                let tx = tx.clone();
-                handles.push(tokio::spawn(async move {
-                    ping_beacon_continuously(cancel, target, tx).await;
-                }));
+                set.spawn(async move {
+                    ping_beacon_continuously(cancel, target).await
+                });
             }
         }
     }
 
-    drop(tx);
-    for h in handles {
-        let _ = h.await;
-    }
-
-    let mut rtts = Vec::new();
-    while let Some(rtt) = rx.recv().await {
-        rtts.push(rtt);
-    }
+    let rtts: Vec<StdDuration> = set.join_all().await.into_iter().flatten().collect();
 
     tracing::info!(target = %target, "Ping load tests finished");
 
