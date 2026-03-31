@@ -7,6 +7,11 @@ use unsigned_varint::aio::read_usize;
 /// Default maximum protobuf message size
 pub const MAX_MESSAGE_SIZE: usize = 128 << 20;
 
+/// Error returned when a fixed-size frame uses a negative length prefix.
+#[derive(Debug, thiserror::Error)]
+#[error("invalid fixed-size frame length: {0}")]
+pub struct InvalidFixedSizeLength(pub i64);
+
 /// Writes a length-delimited payload to the stream.
 ///
 /// Format: `[unsigned varint length][payload bytes]`
@@ -48,6 +53,43 @@ pub async fn read_length_delimited<S: AsyncRead + Unpin>(
     Ok(buf)
 }
 
+/// Writes a fixed-size length-delimited payload to the stream.
+///
+/// Format: `[i64 little-endian length][payload bytes]`
+pub async fn write_fixed_size_delimited<S: AsyncWrite + Unpin>(
+    stream: &mut S,
+    payload: &[u8],
+) -> io::Result<()> {
+    let len = i64::try_from(payload.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "payload length overflow"))?;
+
+    stream.write_all(&len.to_le_bytes()).await?;
+    stream.write_all(payload).await
+}
+
+/// Reads a fixed-size length-delimited payload from the stream.
+pub async fn read_fixed_size_delimited<S: AsyncRead + Unpin>(
+    stream: &mut S,
+) -> io::Result<Vec<u8>> {
+    let mut len_buf = [0_u8; 8];
+    stream.read_exact(&mut len_buf).await?;
+
+    let len = i64::from_le_bytes(len_buf);
+    if len < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            InvalidFixedSizeLength(len),
+        ));
+    }
+
+    let len = usize::try_from(len)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "payload length overflow"))?;
+    let mut payload = vec![0_u8; len];
+    stream.read_exact(&mut payload).await?;
+
+    Ok(payload)
+}
+
 /// Encodes a protobuf message and writes it with length-delimited framing.
 pub async fn write_protobuf<M: Message, S: AsyncWrite + Unpin>(
     stream: &mut S,
@@ -74,4 +116,43 @@ pub async fn read_protobuf_with_max_size<M: Message + Default, S: AsyncRead + Un
 ) -> io::Result<M> {
     let buf = read_length_delimited(stream, max_message_size).await?;
     M::decode(&buf[..]).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+#[cfg(test)]
+mod tests {
+    use futures::io::Cursor;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn fixed_size_round_trip() {
+        let payload = vec![1, 2, 3, 4];
+        let mut cursor = Cursor::new(Vec::new());
+
+        write_fixed_size_delimited(&mut cursor, &payload)
+            .await
+            .expect("write should succeed");
+        cursor.set_position(0);
+
+        let decoded = read_fixed_size_delimited(&mut cursor)
+            .await
+            .expect("read should succeed");
+
+        assert_eq!(decoded, payload);
+    }
+
+    #[tokio::test]
+    async fn negative_fixed_size_length_fails() {
+        let mut cursor = Cursor::new((-1_i64).to_le_bytes().to_vec());
+
+        let error = read_fixed_size_delimited(&mut cursor)
+            .await
+            .expect_err("negative sizes must fail");
+        let size = error
+            .get_ref()
+            .and_then(|source| source.downcast_ref::<InvalidFixedSizeLength>())
+            .map(|error| error.0);
+
+        assert_eq!(size, Some(-1));
+    }
 }
