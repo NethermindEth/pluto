@@ -19,6 +19,11 @@ use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
 async fn main() -> ExitResult {
+    let config = pluto_tracing::TracingConfig::builder()
+        .with_default_console()
+        .build();
+    let _ = pluto_tracing::init(&config);
+
     let cmd = commands::test::update_test_cases_help(Cli::command());
     let matches = cmd.get_matches();
     let cli = match Cli::from_arg_matches(&matches) {
@@ -43,7 +48,7 @@ async fn main() -> ExitResult {
         },
         Commands::Enr(args) => commands::enr::run(args),
         Commands::Version(args) => commands::version::run(args),
-        Commands::Relay(args) => commands::relay::run(*args, ct.child_token()).await,
+        Commands::Relay(args) => commands::relay::run(*args, ct.clone()).await,
         Commands::Alpha(args) => match args.command {
             AlphaCommands::Test(args) => {
                 let mut stdout = std::io::stdout();
@@ -51,9 +56,11 @@ async fn main() -> ExitResult {
                     TestCommands::Peers(args) => commands::test::peers::run(args, &mut stdout)
                         .await
                         .map(|_| ()),
-                    TestCommands::Beacon(args) => commands::test::beacon::run(args, &mut stdout)
-                        .await
-                        .map(|_| ()),
+                    TestCommands::Beacon(args) => {
+                        commands::test::beacon::run(args, &mut stdout, ct.clone())
+                            .await
+                            .map(|_| ())
+                    }
                     TestCommands::Validator(args) => {
                         commands::test::validator::run(args, &mut stdout)
                             .await
