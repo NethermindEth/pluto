@@ -3,11 +3,12 @@ use std::{
     task::{Context, Poll},
 };
 
+use either::Either;
 use libp2p::{
     Multiaddr, PeerId,
     swarm::{
         ConnectionDenied, ConnectionId, FromSwarm, NetworkBehaviour, THandler, THandlerInEvent,
-        THandlerOutEvent, ToSwarm,
+        THandlerOutEvent, ToSwarm, dummy,
         dial_opts::{DialOpts, PeerCondition},
     },
 };
@@ -55,6 +56,14 @@ impl Behaviour {
         Handler::new(peer, self.server.clone(), self.clients.get(&peer).cloned())
     }
 
+    fn connection_handler_for_peer(&self, peer: PeerId) -> THandler<Self> {
+        if self.clients.contains_key(&peer) {
+            Either::Left(self.new_handler(peer))
+        } else {
+            Either::Right(dummy::ConnectionHandler)
+        }
+    }
+
     fn is_connected(&self, peer_id: &PeerId) -> bool {
         !self
             .p2p_context
@@ -91,7 +100,7 @@ impl Behaviour {
 }
 
 impl NetworkBehaviour for Behaviour {
-    type ConnectionHandler = Handler;
+    type ConnectionHandler = Either<Handler, dummy::ConnectionHandler>;
     type ToSwarm = Event;
 
     fn handle_established_inbound_connection(
@@ -101,7 +110,7 @@ impl NetworkBehaviour for Behaviour {
         _local_addr: &Multiaddr,
         _remote_addr: &Multiaddr,
     ) -> std::result::Result<THandler<Self>, ConnectionDenied> {
-        Ok(self.new_handler(peer))
+        Ok(self.connection_handler_for_peer(peer))
     }
 
     fn handle_established_outbound_connection(
@@ -112,7 +121,7 @@ impl NetworkBehaviour for Behaviour {
         _role_override: libp2p::core::Endpoint,
         _port_use: libp2p::core::transport::PortUse,
     ) -> std::result::Result<THandler<Self>, ConnectionDenied> {
-        Ok(self.new_handler(peer))
+        Ok(self.connection_handler_for_peer(peer))
     }
 
     fn on_swarm_event(&mut self, event: FromSwarm) {
@@ -150,7 +159,10 @@ impl NetworkBehaviour for Behaviour {
         _connection_id: ConnectionId,
         event: THandlerOutEvent<Self>,
     ) {
-        match event {}
+        match event {
+            Either::Left(event) => match event {},
+            Either::Right(unreachable) => match unreachable {},
+        }
     }
 
     fn poll(
