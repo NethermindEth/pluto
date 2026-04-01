@@ -47,7 +47,7 @@ async fn main() -> ExitResult {
         },
         Commands::Enr(args) => commands::enr::run(args),
         Commands::Version(args) => commands::version::run(args),
-        Commands::Relay(args) => commands::relay::run(*args, ct.child_token()).await,
+        Commands::Relay(args) => commands::relay::run(*args, ct.clone()).await,
         Commands::Alpha(args) => match args.command {
             AlphaCommands::Test(args) => {
                 let mut stdout = std::io::stdout();
@@ -56,7 +56,7 @@ async fn main() -> ExitResult {
                         .await
                         .map(|_| ()),
                     TestCommands::Beacon(args) => {
-                        commands::test::beacon::run(args, &mut stdout, ct.child_token())
+                        commands::test::beacon::run(args, &mut stdout, ct.clone())
                             .await
                             .map(|_| ())
                     }
