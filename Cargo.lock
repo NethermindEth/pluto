@@ -5452,7 +5452,6 @@ dependencies = [
  "humantime",
  "k256",
  "libp2p",
- "percent-encoding",
  "pluto-app",
  "pluto-cluster",
  "pluto-core",

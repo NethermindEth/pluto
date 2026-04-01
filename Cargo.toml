@@ -58,7 +58,6 @@ tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7.11"
 libp2p = { version = "0.56", features = ["full", "secp256k1"] }
 url = "2.5"
-percent-encoding = "2.3"
 aes = "0.8.4"
 ctr = "0.9.2"
 cipher = "0.4.4"
