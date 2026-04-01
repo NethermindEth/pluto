@@ -817,7 +817,7 @@ async fn beacon_simulation_test(
     });
 
     // Validator simulations
-    let mut validator_handles = Vec::new();
+    let mut validator_set = tokio::task::JoinSet::new();
 
     let sync_duties = DutiesPerformed {
         attestation: true,
@@ -833,9 +833,9 @@ async fn beacon_simulation_test(
         let cancel = sim_cancel.clone();
         let target = target.to_string();
         let intensity = params.request_intensity;
-        validator_handles.push(tokio::spawn(async move {
+        validator_set.spawn(async move {
             single_validator_simulation(cancel, sim_duration, &target, intensity, sync_duties).await
-        }));
+        });
     }
 
     let proposal_duties = DutiesPerformed {
@@ -852,10 +852,10 @@ async fn beacon_simulation_test(
         let cancel = sim_cancel.clone();
         let target = target.to_string();
         let intensity = params.request_intensity;
-        validator_handles.push(tokio::spawn(async move {
+        validator_set.spawn(async move {
             single_validator_simulation(cancel, sim_duration, &target, intensity, proposal_duties)
                 .await
-        }));
+        });
     }
 
     let attester_duties = DutiesPerformed {
@@ -872,10 +872,10 @@ async fn beacon_simulation_test(
         let cancel = sim_cancel.clone();
         let target = target.to_string();
         let intensity = params.request_intensity;
-        validator_handles.push(tokio::spawn(async move {
+        validator_set.spawn(async move {
             single_validator_simulation(cancel, sim_duration, &target, intensity, attester_duties)
                 .await
-        }));
+        });
     }
 
     tracing::info!("Waiting for simulation to complete...");
@@ -888,8 +888,8 @@ async fn beacon_simulation_test(
         }
     };
     let mut all_validators = Vec::new();
-    for h in validator_handles {
-        if let Ok(v) = h.await {
+    while let Some(result) = validator_set.join_next().await {
+        if let Ok(v) = result {
             all_validators.push(v);
         }
     }
