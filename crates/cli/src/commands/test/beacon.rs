@@ -25,7 +25,7 @@ use std::{collections::HashMap, io::Write, path::PathBuf, time::Duration as StdD
 use tokio::{
     sync::mpsc,
     task::JoinSet,
-    time::{Instant, interval, interval_at, sleep, sleep_until},
+    time::{Instant, interval, interval_at, sleep},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -812,9 +812,10 @@ async fn beacon_simulation_test(
     tracing::info!("Starting general cluster requests...");
     let cluster_cancel = sim_cancel.clone();
     let cluster_target = target.to_string();
-    let cluster_handle = tokio::spawn(async move {
-        single_cluster_simulation(cluster_cancel, sim_duration, &cluster_target).await
-    });
+    let cluster_handle =
+        tokio::spawn(
+            async move { single_cluster_simulation(cluster_cancel, &cluster_target).await },
+        );
 
     // Validator simulations
     let mut validator_set = tokio::task::JoinSet::new();
@@ -834,7 +835,7 @@ async fn beacon_simulation_test(
         let target = target.to_string();
         let intensity = params.request_intensity;
         validator_set.spawn(async move {
-            single_validator_simulation(cancel, sim_duration, &target, intensity, sync_duties).await
+            single_validator_simulation(cancel, &target, intensity, sync_duties).await
         });
     }
 
@@ -853,8 +854,7 @@ async fn beacon_simulation_test(
         let target = target.to_string();
         let intensity = params.request_intensity;
         validator_set.spawn(async move {
-            single_validator_simulation(cancel, sim_duration, &target, intensity, proposal_duties)
-                .await
+            single_validator_simulation(cancel, &target, intensity, proposal_duties).await
         });
     }
 
@@ -873,8 +873,7 @@ async fn beacon_simulation_test(
         let target = target.to_string();
         let intensity = params.request_intensity;
         validator_set.spawn(async move {
-            single_validator_simulation(cancel, sim_duration, &target, intensity, attester_duties)
-                .await
+            single_validator_simulation(cancel, &target, intensity, attester_duties).await
         });
     }
 
@@ -941,11 +940,7 @@ async fn beacon_simulation_test(
     test_res
 }
 
-async fn single_cluster_simulation(
-    cancel: CancellationToken,
-    sim_duration: StdDuration,
-    target: &str,
-) -> SimulationCluster {
+async fn single_cluster_simulation(cancel: CancellationToken, target: &str) -> SimulationCluster {
     let mut attestations_for_block = Vec::new();
     let mut proposal_duties_for_epoch = Vec::new();
     let mut syncing = Vec::new();
@@ -960,8 +955,6 @@ async fn single_cluster_simulation(
     let mut node_version_all = Vec::new();
 
     let mut slot = get_current_slot(target).await.unwrap_or(1);
-
-    let deadline = sim_deadline(sim_duration);
 
     let now = Instant::now();
     #[allow(clippy::arithmetic_side_effects)]
@@ -981,7 +974,6 @@ async fn single_cluster_simulation(
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
-            _ = sleep_until(deadline) => break,
             _ = slot_interval.tick() => {
                 slot = slot.saturating_add(1);
                 let epoch = slot / SLOTS_IN_EPOCH;
@@ -1078,7 +1070,6 @@ async fn single_cluster_simulation(
 
 async fn single_validator_simulation(
     cancel: CancellationToken,
-    sim_duration: StdDuration,
     target: &str,
     intensity: RequestsIntensity,
     duties: DutiesPerformed,
@@ -1093,7 +1084,7 @@ async fn single_validator_simulation(
         let cancel = cancel.clone();
         let target = target.to_string();
         Some(tokio::spawn(async move {
-            attestation_duty(cancel, &target, sim_duration, intensity.attestation_duty).await
+            attestation_duty(cancel, &target, intensity.attestation_duty).await
         }))
     } else {
         None
@@ -1104,7 +1095,7 @@ async fn single_validator_simulation(
         let cancel = cancel.clone();
         let target = target.to_string();
         Some(tokio::spawn(async move {
-            aggregation_duty(cancel, &target, sim_duration, intensity.aggregator_duty).await
+            aggregation_duty(cancel, &target, intensity.aggregator_duty).await
         }))
     } else {
         None
@@ -1115,7 +1106,7 @@ async fn single_validator_simulation(
         let cancel = cancel.clone();
         let target = target.to_string();
         Some(tokio::spawn(async move {
-            proposal_duty(cancel, &target, sim_duration, intensity.proposal_duty).await
+            proposal_duty(cancel, &target, intensity.proposal_duty).await
         }))
     } else {
         None
@@ -1133,7 +1124,6 @@ async fn single_validator_simulation(
             sync_committee_duties(
                 cancel,
                 &target,
-                sim_duration,
                 intensity.sync_committee_submit,
                 intensity.sync_committee_subscribe,
                 intensity.sync_committee_contribution,
@@ -1152,12 +1142,10 @@ async fn single_validator_simulation(
     }
 
     // Collect results from sync committee channels
-    let sc_deadline = sim_deadline(sim_duration);
     loop {
         tokio::select! {
             biased;
             _ = cancel.cancelled() => break,
-            _ = sleep_until(sc_deadline) => break,
             Some(v) = sc_sub_rx.recv() => sync_committee_subscription_all.push(v),
             Some(v) = sc_msg_rx.recv() => submit_sync_committee_message_all.push(v),
             Some(v) = sc_produce_rx.recv() => produce_sync_committee_contribution_all.push(v),
@@ -1282,12 +1270,10 @@ async fn single_validator_simulation(
 async fn attestation_duty(
     cancel: CancellationToken,
     target: &str,
-    sim_duration: StdDuration,
     tick_time: StdDuration,
 ) -> (Vec<StdDuration>, Vec<StdDuration>) {
     let mut get_all = Vec::new();
     let mut submit_all = Vec::new();
-    let deadline = sim_deadline(sim_duration);
     if cancel
         .run_until_cancelled(sleep(randomize_start(tick_time)))
         .await
@@ -1304,10 +1290,6 @@ async fn attestation_duty(
         .unwrap_or(1);
 
     loop {
-        if cancel.is_cancelled() || Instant::now() >= deadline {
-            break;
-        }
-
         let committee_index = rand::thread_rng().gen_range(0..COMMITTEE_SIZE_PER_SLOT);
         if let Some(Ok(rtt)) = cancel
             .run_until_cancelled(req_get_attestation_data(target, slot, committee_index))
@@ -1324,7 +1306,6 @@ async fn attestation_duty(
 
         tokio::select! {
             _ = cancel.cancelled() => break,
-            _ = sleep_until(deadline) => break,
             _ = interval.tick() => {
                 slot = slot.saturating_add(tick_time.as_secs() / SLOT_TIME_SECS);
             }
@@ -1337,12 +1318,10 @@ async fn attestation_duty(
 async fn aggregation_duty(
     cancel: CancellationToken,
     target: &str,
-    sim_duration: StdDuration,
     tick_time: StdDuration,
 ) -> (Vec<StdDuration>, Vec<StdDuration>) {
     let mut get_all = Vec::new();
     let mut submit_all = Vec::new();
-    let deadline = sim_deadline(sim_duration);
     let mut slot = cancel
         .run_until_cancelled(get_current_slot(target))
         .await
@@ -1359,10 +1338,6 @@ async fn aggregation_duty(
     let mut interval = interval_at(Instant::now() + tick_time, tick_time);
 
     loop {
-        if cancel.is_cancelled() || Instant::now() >= deadline {
-            break;
-        }
-
         if let Some(Ok(rtt)) = cancel
             .run_until_cancelled(req_get_aggregate_attestations(
                 target,
@@ -1382,7 +1357,6 @@ async fn aggregation_duty(
 
         tokio::select! {
             _ = cancel.cancelled() => break,
-            _ = sleep_until(deadline) => break,
             _ = interval.tick() => {
                 slot = slot.saturating_add(tick_time.as_secs() / SLOT_TIME_SECS);
             }
@@ -1395,12 +1369,10 @@ async fn aggregation_duty(
 async fn proposal_duty(
     cancel: CancellationToken,
     target: &str,
-    sim_duration: StdDuration,
     tick_time: StdDuration,
 ) -> (Vec<StdDuration>, Vec<StdDuration>) {
     let mut produce_all = Vec::new();
     let mut publish_all = Vec::new();
-    let deadline = sim_deadline(sim_duration);
     if cancel
         .run_until_cancelled(sleep(randomize_start(tick_time)))
         .await
@@ -1418,10 +1390,6 @@ async fn proposal_duty(
     let randao = "0x1fe79e4193450abda94aec753895cfb2aac2c2a930b6bab00fbb27ef6f4a69f4400ad67b5255b91837982b4c511ae1d94eae1cf169e20c11bd417c1fffdb1f99f4e13e2de68f3b5e73f1de677d73cd43e44bf9b133a79caf8e5fad06738e1b0c";
 
     loop {
-        if cancel.is_cancelled() || Instant::now() >= deadline {
-            break;
-        }
-
         if let Some(Ok(rtt)) = cancel
             .run_until_cancelled(req_produce_block(target, slot, randao))
             .await
@@ -1437,7 +1405,6 @@ async fn proposal_duty(
 
         tokio::select! {
             _ = cancel.cancelled() => break,
-            _ = sleep_until(deadline) => break,
             _ = interval.tick() => {
                 slot = slot.saturating_add(tick_time.as_secs() / SLOT_TIME_SECS).saturating_add(1); // produce block for the next slot, as the current one might have already been proposed
             }
@@ -1451,7 +1418,6 @@ async fn proposal_duty(
 async fn sync_committee_duties(
     cancel: CancellationToken,
     target: &str,
-    sim_duration: StdDuration,
     tick_time_submit: StdDuration,
     tick_time_subscribe: StdDuration,
     tick_time_contribution: StdDuration,
@@ -1463,25 +1429,17 @@ async fn sync_committee_duties(
     let c1 = cancel.clone();
     let t1 = target.to_string();
     tokio::spawn(async move {
-        sync_committee_contribution_duty(
-            c1,
-            &t1,
-            sim_duration,
-            tick_time_contribution,
-            produce_tx,
-            contrib_tx,
-        )
-        .await;
+        sync_committee_contribution_duty(c1, &t1, tick_time_contribution, produce_tx, contrib_tx)
+            .await;
     });
 
     let c2 = cancel.clone();
     let t2 = target.to_string();
     tokio::spawn(async move {
-        sync_committee_message_duty(c2, &t2, sim_duration, tick_time_submit, msg_tx).await;
+        sync_committee_message_duty(c2, &t2, tick_time_submit, msg_tx).await;
     });
 
     // Subscribe loop
-    let deadline = sim_deadline(sim_duration);
     if cancel
         .run_until_cancelled(sleep(randomize_start(tick_time_subscribe)))
         .await
@@ -1493,10 +1451,6 @@ async fn sync_committee_duties(
     let mut interval = interval_at(Instant::now() + tick_time_subscribe, tick_time_subscribe);
 
     loop {
-        if cancel.is_cancelled() || Instant::now() >= deadline {
-            break;
-        }
-
         if let Some(Ok(rtt)) = cancel
             .run_until_cancelled(req_sync_committee_subscription(target))
             .await
@@ -1506,7 +1460,6 @@ async fn sync_committee_duties(
 
         tokio::select! {
             _ = cancel.cancelled() => break,
-            _ = sleep_until(deadline) => break,
             _ = interval.tick() => {}
         }
     }
@@ -1515,12 +1468,10 @@ async fn sync_committee_duties(
 async fn sync_committee_contribution_duty(
     cancel: CancellationToken,
     target: &str,
-    sim_duration: StdDuration,
     tick_time: StdDuration,
     produce_tx: mpsc::Sender<StdDuration>,
     contrib_tx: mpsc::Sender<StdDuration>,
 ) {
-    let deadline = sim_deadline(sim_duration);
     if cancel
         .run_until_cancelled(sleep(randomize_start(tick_time)))
         .await
@@ -1537,10 +1488,6 @@ async fn sync_committee_contribution_duty(
         .unwrap_or(1);
 
     loop {
-        if cancel.is_cancelled() || Instant::now() >= deadline {
-            break;
-        }
-
         let sub_idx = rand::thread_rng().gen_range(0..SUB_COMMITTEE_SIZE);
         let beacon_block_root =
             "0xcf8e0d4e9587369b2301d0790347320302cc0943d5a1884560367e8208d920f2";
@@ -1564,7 +1511,6 @@ async fn sync_committee_contribution_duty(
 
         tokio::select! {
             _ = cancel.cancelled() => break,
-            _ = sleep_until(deadline) => break,
             _ = interval.tick() => {
                 slot = slot.saturating_add(tick_time.as_secs() / SLOT_TIME_SECS);
             }
@@ -1575,11 +1521,9 @@ async fn sync_committee_contribution_duty(
 async fn sync_committee_message_duty(
     cancel: CancellationToken,
     target: &str,
-    sim_duration: StdDuration,
     tick_time: StdDuration,
     msg_tx: mpsc::Sender<StdDuration>,
 ) {
-    let deadline = sim_deadline(sim_duration);
     if cancel
         .run_until_cancelled(sleep(randomize_start(tick_time)))
         .await
@@ -1591,10 +1535,6 @@ async fn sync_committee_message_duty(
     let mut interval = interval_at(Instant::now() + tick_time, tick_time);
 
     loop {
-        if cancel.is_cancelled() || Instant::now() >= deadline {
-            break;
-        }
-
         if let Some(Ok(rtt)) = cancel
             .run_until_cancelled(req_submit_sync_committee(target))
             .await
@@ -1604,7 +1544,6 @@ async fn sync_committee_message_duty(
 
         tokio::select! {
             _ = cancel.cancelled() => break,
-            _ = sleep_until(deadline) => break,
             _ = interval.tick() => {}
         }
     }
@@ -1819,11 +1758,6 @@ fn cancel_after(token: &CancellationToken, duration: StdDuration) {
             _ = token.cancelled() => {}
         }
     });
-}
-
-#[allow(clippy::arithmetic_side_effects)]
-fn sim_deadline(sim_duration: StdDuration) -> Instant {
-    Instant::now() + sim_duration
 }
 
 fn randomize_start(tick_time: StdDuration) -> StdDuration {
