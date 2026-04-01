@@ -3,7 +3,6 @@ use std::{
     time::Duration,
 };
 
-use futures::future::{BoxFuture, FutureExt};
 use pluto_eth2api::{spec::altair, v1};
 use pluto_testutil as testutil;
 use test_case::test_case;
@@ -197,16 +196,14 @@ impl TestDeadliner {
     }
 }
 
+#[async_trait::async_trait]
 impl Deadliner for TestDeadliner {
-    fn add(&self, duty: Duty) -> BoxFuture<'_, bool> {
-        async move {
-            self.added
-                .lock()
-                .expect("test deadliner lock poisoned")
-                .push(duty);
-            true
-        }
-        .boxed()
+    async fn add(&self, duty: Duty) -> bool {
+        self.added
+            .lock()
+            .expect("test deadliner lock poisoned")
+            .push(duty);
+        true
     }
 
     fn c(&self) -> Option<mpsc::Receiver<Duty>> {
