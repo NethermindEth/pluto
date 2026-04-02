@@ -1,6 +1,6 @@
 //! Error types for the DKG reliable-broadcast protocol.
 
-use std::{error::Error as StdError, fmt};
+use std::fmt;
 
 use libp2p::PeerId;
 
@@ -8,18 +8,22 @@ use libp2p::PeerId;
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Cloneable failure used for handler-to-behaviour communication.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum Failure {
     /// The operation timed out.
+    #[error("operation timed out")]
     Timeout,
     /// The remote peer does not support the protocol.
+    #[error("protocol negotiation failed")]
     Unsupported,
     /// The operation failed due to an I/O error.
+    #[error("i/o error: {message}")]
     Io {
         /// The underlying error message.
         message: String,
     },
     /// The operation failed for another reason.
+    #[error("{message}")]
     Other {
         /// The underlying error message.
         message: String,
@@ -41,19 +45,6 @@ impl Failure {
         }
     }
 }
-
-impl fmt::Display for Failure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Timeout => f.write_str("operation timed out"),
-            Self::Unsupported => f.write_str("protocol negotiation failed"),
-            Self::Io { message } => write!(f, "i/o error: {message}"),
-            Self::Other { message } => f.write_str(message),
-        }
-    }
-}
-
-impl StdError for Failure {}
 
 /// User-facing reliable-broadcast error.
 #[derive(Debug, thiserror::Error)]
