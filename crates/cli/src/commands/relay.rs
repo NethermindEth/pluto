@@ -298,14 +298,7 @@ pub struct RelayLokiArgs {
     pub loki_service: String,
 }
 
-pub async fn run(args: RelayArgs, ct: CancellationToken) -> Result<(), CliError> {
-    let config: pluto_relay_server::config::Config = args.try_into()?;
-    pluto_tracing::init(&config.log_config).expect("Failed to initialize tracing");
-
-    run_with_config(config, ct).await
-}
-
-async fn run_with_config(
+pub async fn run(
     config: pluto_relay_server::config::Config,
     ct: CancellationToken,
 ) -> Result<(), CliError> {
@@ -553,7 +546,7 @@ mod tests {
         let cfg: pluto_relay_server::config::Config = args.clone().try_into().unwrap();
         let ct = CancellationToken::new();
 
-        let relay = tokio::spawn(super::run_with_config(cfg.clone(), ct.child_token()));
+        let relay = tokio::spawn(super::run(cfg.clone(), ct.child_token()));
 
         test_fn(cfg.clone()).await;
 

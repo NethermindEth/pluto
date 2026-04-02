@@ -42,7 +42,16 @@ async fn main() -> ExitResult {
         },
         Commands::Enr(args) => commands::enr::run(args),
         Commands::Version(args) => commands::version::run(args),
-        Commands::Relay(args) => commands::relay::run(*args, ct.clone()).await,
+        Commands::Relay(args) => match (*args).clone().try_into() {
+            Ok(config) => {
+                let config: pluto_relay_server::config::Config = config;
+                pluto_tracing::init(&config.log_config).expect("Failed to initialize tracing");
+                commands::relay::run(config, ct.clone()).await
+            }
+            Err(e) => {
+                return ExitResult(Err(e));
+            }
+        },
         Commands::Alpha(args) => match args.command {
             AlphaCommands::Test(args) => {
                 let mut stdout = std::io::stdout();
