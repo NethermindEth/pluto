@@ -17,7 +17,10 @@ use pluto_eth2util::{
     deposit::{eths_to_gweis, verify_deposit_amounts},
     enr::Record,
     helpers::{checksum_address, public_key_to_address},
-    network::{GOERLI, PRATER, network_to_fork_version, valid_network},
+    network::{
+        GNOSIS, GOERLI, HOLESKY, HOODI, MAINNET, PRATER, SEPOLIA, network_to_fork_version,
+        valid_network,
+    },
 };
 use tracing::{info, warn};
 
@@ -198,9 +201,9 @@ async fn run_create_dkg(mut args: CreateDkgArgs) -> Result<()> {
 
     let mut operators: Vec<Operator> = Vec::new();
 
-    for enr_str in &args.operator_enrs {
+    for (i, enr_str) in args.operator_enrs.iter().enumerate() {
         Record::try_from(enr_str.as_str())
-            .map_err(|e| CliError::Other(format!("invalid ENR: {e}")))?;
+            .map_err(|e| CliError::Other(format!("invalid ENR (operator {i}): {e}")))?;
 
         operators.push(Operator {
             enr: enr_str.clone(),
@@ -335,8 +338,8 @@ fn validate_dkg_config(
 
 fn validate_addresses(
     num_validators: u64,
-    mut fee_recipient_addrs: Vec<String>,
-    mut withdrawal_addrs: Vec<String>,
+    fee_recipient_addrs: Vec<String>,
+    withdrawal_addrs: Vec<String>,
 ) -> Result<(Vec<String>, Vec<String>)> {
     let num_vals = num_validators;
     let num_fee = u64::try_from(fee_recipient_addrs.len())
@@ -356,21 +359,17 @@ fn validate_addresses(
         ));
     }
 
-    if fee_recipient_addrs.len() == 1 {
-        let addr = fee_recipient_addrs[0].clone();
-        for _ in 1..num_validators {
-            fee_recipient_addrs.push(addr.clone());
+    let num_validators = usize::try_from(num_validators)
+        .map_err(|_| CliError::Other("num_validators is greater than usize::MAX".to_string()))?;
+    let expand = |addrs: Vec<String>| -> Vec<String> {
+        if addrs.len() == 1 {
+            vec![addrs[0].clone(); num_validators]
+        } else {
+            addrs
         }
-    }
+    };
 
-    if withdrawal_addrs.len() == 1 {
-        let addr = withdrawal_addrs[0].clone();
-        for _ in 1..num_validators {
-            withdrawal_addrs.push(addr.clone());
-        }
-    }
-
-    Ok((fee_recipient_addrs, withdrawal_addrs))
+    Ok((expand(fee_recipient_addrs), expand(withdrawal_addrs)))
 }
 
 fn validate_withdrawal_addrs(addrs: &[String], network: &str) -> Result<()> {
@@ -395,7 +394,7 @@ fn validate_withdrawal_addrs(addrs: &[String], network: &str) -> Result<()> {
 }
 
 fn is_main_or_gnosis(network: &str) -> bool {
-    network == "mainnet" || network == "gnosis"
+    network == MAINNET.name || network == GNOSIS.name
 }
 
 fn safe_threshold(num_operators: u64) -> Result<u64> {
@@ -409,12 +408,12 @@ fn safe_threshold(num_operators: u64) -> Result<u64> {
 }
 
 fn generate_launchpad_link(config_hash: &[u8], network: &str) -> String {
-    let network_prefix = match network {
-        "holesky" => "holesky.",
-        "hoodi" => "hoodi.",
-        "sepolia" => "sepolia.",
-        _ => "",
-    };
+    let network_prefix =
+        if network == HOLESKY.name || network == HOODI.name || network == SEPOLIA.name {
+            format!("{network}.")
+        } else {
+            String::new()
+        };
     format!(
         "https://{}launchpad.obol.org/dv#0x{}",
         network_prefix,
@@ -529,7 +528,7 @@ mod tests {
             threshold: 3, network: DEFAULT_NETWORK.to_string(),
             ..default_args()
         },
-        "invalid ENR: The format of the record is invalid: Record does not start with 'enr:'" ;
+        "invalid ENR (operator 0): The format of the record is invalid: Record does not start with 'enr:'" ;
         "missing_enr_prefix_dash"
     )]
     #[test_case(
@@ -542,7 +541,7 @@ mod tests {
             threshold: 3, network: DEFAULT_NETWORK.to_string(),
             ..default_args()
         },
-        "invalid ENR: Failed to decode the base64 encoded data: Invalid last symbol 117, offset 194." ;
+        "invalid ENR (operator 0): Failed to decode the base64 encoded data: Invalid last symbol 117, offset 194." ;
         "enr_colon_no_dash"
     )]
     #[test_case(
@@ -555,7 +554,7 @@ mod tests {
             threshold: 3, network: DEFAULT_NETWORK.to_string(),
             ..default_args()
         },
-        "invalid ENR: The format of the record is invalid: Record does not start with 'enr:'" ;
+        "invalid ENR (operator 0): The format of the record is invalid: Record does not start with 'enr:'" ;
         "enr_no_colon"
     )]
     #[test_case(
@@ -568,7 +567,7 @@ mod tests {
             threshold: 3, network: DEFAULT_NETWORK.to_string(),
             ..default_args()
         },
-        "invalid ENR: The format of the record is invalid: Record does not start with 'enr:'" ;
+        "invalid ENR (operator 0): The format of the record is invalid: Record does not start with 'enr:'" ;
         "no_enr_prefix"
     )]
     #[test_case(
