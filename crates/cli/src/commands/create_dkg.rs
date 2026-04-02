@@ -576,11 +576,6 @@ mod tests {
         "single_empty_enr"
     )]
     #[test_case(
-        CreateDkgArgs { ..default_args() },
-        "number of operators is below minimum: got 0, need at least 3 via --operator-enrs or --operator-addresses" ;
-        "no_operators"
-    )]
-    #[test_case(
         CreateDkgArgs {
             operator_enrs: VALID_ENRS[..3].iter().map(|s| s.to_string()).collect(),
             threshold: 3, network: DEFAULT_NETWORK.to_string(),
@@ -590,41 +585,62 @@ mod tests {
         "unsupported consensus protocol" ;
         "unsupported_consensus"
     )]
+    #[test_case(
+        CreateDkgArgs { ..default_args() },
+        "number of operators is below minimum: got 0, need at least 3 via --operator-enrs or --operator-addresses" ;
+        "no_operators"
+    )]
+    #[test_case(
+        CreateDkgArgs { operator_enrs: vec!["enr:-JG4QG472ZVvl8ySSnUK9uNVDrP_hjkUrUqIxUC75aayzmDVQedXkjbqc7QKyOOS71VmlqnYzri_taV8ZesFYaoQSIOGAYHtv1WsgmlkgnY0gmlwhH8AAAGJc2VjcDI1NmsxoQKwwq_CAld6oVKOrixE-JzMtvvNgb9yyI-_rwq4NFtajIN0Y3CCDhqDdWRwgg4u".to_string()], ..default_args() },
+        "number of operators is below minimum: got 1, need at least 3 via --operator-enrs or --operator-addresses" ;
+        "below_minimum"
+    )]
     #[tokio::test]
     async fn test_create_dkg_invalid(args: CreateDkgArgs, expected_err: &str) {
         let err = run_create_dkg(args).await.unwrap_err();
         assert_eq!(err.to_string(), expected_err);
     }
 
-    #[test]
-    fn test_require_operator_enr_flag_no_enrs() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let err = rt
-            .block_on(run(CreateDkgArgs {
-                operator_enrs: vec![],
-                operator_addresses: vec![],
-                publish: false,
-                ..default_args()
-            }))
-            .unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            r#"required flag(s) "operator-enrs" not set"#
-        );
+    #[test_case(
+        CreateDkgArgs { operator_enrs: vec![], operator_addresses: vec![], publish: false, ..default_args() },
+        r#"required flag(s) "operator-enrs" not set"# ;
+        "no_enrs"
+    )]
+    #[test_case(
+        CreateDkgArgs { threshold: 1, ..default_args() },
+        "threshold must be greater than 1" ;
+        "threshold_below_minimum"
+    )]
+    #[test_case(
+        CreateDkgArgs { operator_enrs: VALID_ENRS[..3].iter().map(|s| s.to_string()).collect(), threshold: 4, ..default_args() },
+        "threshold cannot be greater than number of operators" ;
+        "threshold_above_maximum"
+    )]
+    #[tokio::test]
+    async fn test_run_invalid(args: CreateDkgArgs, expected_err: &str) {
+        let err = run(args).await.unwrap_err();
+        assert_eq!(err.to_string(), expected_err);
     }
 
     #[tokio::test]
-    async fn test_require_operator_enr_flag_below_minimum() {
-        let err = run(CreateDkgArgs {
-            operator_enrs: vec!["enr:-JG4QG472ZVvl8ySSnUK9uNVDrP_hjkUrUqIxUC75aayzmDVQedXkjbqc7QKyOOS71VmlqnYzri_taV8ZesFYaoQSIOGAYHtv1WsgmlkgnY0gmlwhH8AAAGJc2VjcDI1NmsxoQKwwq_CAld6oVKOrixE-JzMtvvNgb9yyI-_rwq4NFtajIN0Y3CCDhqDdWRwgg4u".to_string()],
-            fee_recipient_addresses: vec!["0xa6430105220d0b29688b734b8ea0f3ca9936e846".to_string()],
-            withdrawal_addresses: vec!["0xa6430105220d0b29688b734b8ea0f3ca9936e846".to_string()],
+    async fn test_dkg_cli_no_threshold() {
+        let dir = temp_dir();
+        let enr = "enr:-JG4QG472ZVvl8ySSnUK9uNVDrP_hjkUrUqIxUC75aayzmDVQedXkjbqc7QKyOOS71VmlqnYzri_taV8ZesFYaoQSIOGAYHtv1WsgmlkgnY0gmlwhH8AAAGJc2VjcDI1NmsxoQKwwq_CAld6oVKOrixE-JzMtvvNgb9yyI-_rwq4NFtajIN0Y3CCDhqDdWRwgg4u";
+        let enrs: Vec<String> = (0..MIN_NODES).map(|_| enr.to_string()).collect();
+
+        run(CreateDkgArgs {
+            output_dir: dir.path().to_path_buf(),
+            operator_enrs: enrs,
+            fee_recipient_addresses: vec![VALID_ETH_ADDR.to_string()],
+            withdrawal_addresses: vec![VALID_ETH_ADDR.to_string()],
+            num_validators: 1,
+            threshold: 0,
             ..default_args()
-        }).await.unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "number of operators is below minimum: got 1, need at least 3 via --operator-enrs or --operator-addresses"
-        );
+        })
+        .await
+        .unwrap();
+
+        assert!(dir.path().join("cluster-definition.json").exists());
     }
 
     #[tokio::test]
@@ -657,124 +673,39 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_validate_withdrawal_addr_ok() {
-        validate_withdrawal_addrs(&[VALID_ETH_ADDR.to_string()], "goerli").unwrap();
+    #[test_case(VALID_ETH_ADDR, "goerli", None; "ok")]
+    #[test_case(ZERO_ADDRESS, "mainnet", Some("zero address forbidden on this network"); "invalid_network")]
+    #[test_case("0xBAD000BAD000BAD", "gnosis", Some("invalid withdrawal address"); "invalid_address")]
+    #[test_case("0x000BAD0000000BAD0000000BAD0000000BAD0000", "gnosis", Some("invalid checksummed address"); "invalid_checksum")]
+    fn test_validate_withdrawal_addr(addr: &str, network: &str, expected_err: Option<&str>) {
+        let result = validate_withdrawal_addrs(&[addr.to_string()], network);
+        match expected_err {
+            None => result.unwrap(),
+            Some(msg) => assert!(result.unwrap_err().to_string().contains(msg)),
+        }
     }
 
-    #[test]
-    fn test_validate_withdrawal_addr_invalid_network() {
-        let err = validate_withdrawal_addrs(&[ZERO_ADDRESS.to_string()], "mainnet").unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("zero address forbidden on this network")
-        );
-    }
-
-    #[test]
-    fn test_validate_withdrawal_addr_invalid_address() {
-        let err =
-            validate_withdrawal_addrs(&["0xBAD000BAD000BAD".to_string()], "gnosis").unwrap_err();
-        assert!(err.to_string().contains("invalid withdrawal address"));
-    }
-
-    #[test]
-    fn test_validate_withdrawal_addr_invalid_checksum() {
-        let err = validate_withdrawal_addrs(
-            &["0x000BAD0000000BAD0000000BAD0000000BAD0000".to_string()],
-            "gnosis",
+    #[test_case(2, "", &[], "", false, "number of operators is below minimum"; "insufficient_operators")]
+    #[test_case(4, "cosmos", &[], "", false, "unsupported network"; "invalid_network")]
+    #[test_case(4, "goerli", &[8, 16], "", false, "Sum of partial deposit amounts must be at least 32ETH, repetition is allowed"; "wrong_deposit_amounts")]
+    #[test_case(4, "goerli", &[], "unreal", false, "unsupported consensus protocol"; "unsupported_consensus")]
+    fn test_validate_dkg_config(
+        num_operators: usize,
+        network: &str,
+        deposit_amounts: &[u64],
+        consensus_protocol: &str,
+        compounding: bool,
+        expected_err: &str,
+    ) {
+        let err = validate_dkg_config(
+            num_operators,
+            network,
+            deposit_amounts,
+            consensus_protocol,
+            compounding,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("invalid checksummed address"));
-    }
-
-    #[test]
-    fn test_validate_dkg_config_insufficient_operators() {
-        let err = validate_dkg_config(2, "", &[], "", false).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("number of operators is below minimum")
-        );
-    }
-
-    #[test]
-    fn test_validate_dkg_config_invalid_network() {
-        let err = validate_dkg_config(4, "cosmos", &[], "", false).unwrap_err();
-        assert!(err.to_string().contains("unsupported network"));
-    }
-
-    #[test]
-    fn test_validate_dkg_config_wrong_deposit_amounts() {
-        let err = validate_dkg_config(4, "goerli", &[8, 16], "", false).unwrap_err();
-        assert!(err.to_string().contains(
-            "Sum of partial deposit amounts must be at least 32ETH, repetition is allowed"
-        ));
-    }
-
-    #[test]
-    fn test_validate_dkg_config_unsupported_consensus() {
-        let err = validate_dkg_config(4, "goerli", &[], "unreal", false).unwrap_err();
-        assert!(err.to_string().contains("unsupported consensus protocol"));
-    }
-
-    #[tokio::test]
-    async fn test_dkg_cli_threshold_below_minimum() {
-        let enr = "enr:-JG4QG472ZVvl8ySSnUK9uNVDrP_hjkUrUqIxUC75aayzmDVQedXkjbqc7QKyOOS71VmlqnYzri_taV8ZesFYaoQSIOGAYHtv1WsgmlkgnY0gmlwhH8AAAGJc2VjcDI1NmsxoQKwwq_CAld6oVKOrixE-JzMtvvNgb9yyI-_rwq4NFtajIN0Y3CCDhqDdWRwgg4u";
-        let enrs: Vec<String> = (0..MIN_NODES).map(|_| enr.to_string()).collect();
-
-        let err = run(CreateDkgArgs {
-            operator_enrs: enrs,
-            fee_recipient_addresses: vec![VALID_ETH_ADDR.to_string()],
-            withdrawal_addresses: vec![VALID_ETH_ADDR.to_string()],
-            threshold: 1,
-            ..default_args()
-        })
-        .await
-        .unwrap_err();
-
-        assert!(err.to_string().contains("threshold must be greater than 1"));
-    }
-
-    #[tokio::test]
-    async fn test_dkg_cli_threshold_above_maximum() {
-        let enr = "enr:-JG4QG472ZVvl8ySSnUK9uNVDrP_hjkUrUqIxUC75aayzmDVQedXkjbqc7QKyOOS71VmlqnYzri_taV8ZesFYaoQSIOGAYHtv1WsgmlkgnY0gmlwhH8AAAGJc2VjcDI1NmsxoQKwwq_CAld6oVKOrixE-JzMtvvNgb9yyI-_rwq4NFtajIN0Y3CCDhqDdWRwgg4u";
-        let enrs: Vec<String> = (0..MIN_NODES).map(|_| enr.to_string()).collect();
-
-        let err = run(CreateDkgArgs {
-            operator_enrs: enrs,
-            fee_recipient_addresses: vec![VALID_ETH_ADDR.to_string()],
-            withdrawal_addresses: vec![VALID_ETH_ADDR.to_string()],
-            threshold: 4,
-            ..default_args()
-        })
-        .await
-        .unwrap_err();
-
-        assert!(
-            err.to_string()
-                .contains("threshold cannot be greater than number of operators")
-        );
-    }
-
-    #[tokio::test]
-    async fn test_dkg_cli_no_threshold() {
-        let dir = temp_dir();
-        let enr = "enr:-JG4QG472ZVvl8ySSnUK9uNVDrP_hjkUrUqIxUC75aayzmDVQedXkjbqc7QKyOOS71VmlqnYzri_taV8ZesFYaoQSIOGAYHtv1WsgmlkgnY0gmlwhH8AAAGJc2VjcDI1NmsxoQKwwq_CAld6oVKOrixE-JzMtvvNgb9yyI-_rwq4NFtajIN0Y3CCDhqDdWRwgg4u";
-        let enrs: Vec<String> = (0..MIN_NODES).map(|_| enr.to_string()).collect();
-
-        run(CreateDkgArgs {
-            output_dir: dir.path().to_path_buf(),
-            operator_enrs: enrs,
-            fee_recipient_addresses: vec![VALID_ETH_ADDR.to_string()],
-            withdrawal_addresses: vec![VALID_ETH_ADDR.to_string()],
-            num_validators: 1,
-            threshold: 0,
-            ..default_args()
-        })
-        .await
-        .unwrap();
-
-        assert!(dir.path().join("cluster-definition.json").exists());
+        assert!(err.to_string().contains(expected_err));
     }
 
     #[test_case("mainnet", b"123abc", "https://launchpad.obol.org/dv#0x313233616263" ; "mainnet")]
