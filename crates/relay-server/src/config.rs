@@ -29,6 +29,7 @@ pub struct Config {
     /// The P2P configuration.
     pub p2p_config: P2PConfig,
     /// The logging configuration.
+    #[builder(default)]
     pub log_config: TracingConfig,
     /// Whether to automatically generate a P2P key.
     #[builder(default = false)]
