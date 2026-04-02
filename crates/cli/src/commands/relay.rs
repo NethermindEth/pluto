@@ -266,10 +266,9 @@ pub struct RelayLogFlags {
     #[arg(
         long = "log-output-path",
         env = "PLUTO_LOG_OUTPUT_PATH",
-        default_value = "",
         help = "Path in which to write on-disk logs."
     )]
-    pub log_output_path: PathBuf,
+    pub log_output_path: Option<PathBuf>,
 }
 
 #[derive(clap::ValueEnum, Clone, Default)]
@@ -350,7 +349,7 @@ async fn run_with_config(
 #[cfg(test)]
 mod tests {
     use backon::{BackoffBuilder, Retryable};
-    use std::{path::PathBuf, str::FromStr, time};
+    use std::{str::FromStr, time};
     use tokio::net;
     use tokio_util::sync::CancellationToken;
 
@@ -547,7 +546,7 @@ mod tests {
                 format: "console".into(),
                 level: "error".into(),
                 color: super::ConsoleColor::Disable,
-                log_output_path: PathBuf::new(),
+                log_output_path: None,
             },
             loki: super::RelayLokiArgs {
                 loki_addresses: vec![],
