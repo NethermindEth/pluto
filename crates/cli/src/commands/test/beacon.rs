@@ -18,7 +18,6 @@ use super::{
 };
 use crate::{duration::Duration, error::Result as CliResult};
 use clap::Args;
-use pluto_tracing::TracingConfig;
 use rand::Rng;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -292,8 +291,6 @@ pub async fn run(
     writer: &mut dyn Write,
     shutdown: CancellationToken,
 ) -> CliResult<TestCategoryResult> {
-    pluto_tracing::init(&TracingConfig::default()).expect("Failed to initialize tracing");
-
     must_output_to_file_on_quiet(args.test_config.quiet, &args.test_config.output_json)?;
 
     tracing::info!("Starting beacon node test");

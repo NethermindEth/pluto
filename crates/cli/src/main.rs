@@ -51,6 +51,8 @@ async fn main() -> ExitResult {
                         .await
                         .map(|_| ()),
                     TestCommands::Beacon(args) => {
+                        pluto_tracing::init(&pluto_tracing::TracingConfig::default())
+                            .expect("Failed to initialize tracing");
                         commands::test::beacon::run(args, &mut stdout, ct.clone())
                             .await
                             .map(|_| ())
