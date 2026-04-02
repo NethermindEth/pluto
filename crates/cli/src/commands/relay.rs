@@ -300,12 +300,7 @@ pub struct RelayLokiArgs {
 
 pub async fn run(args: RelayArgs, ct: CancellationToken) -> Result<(), CliError> {
     let config: pluto_relay_server::config::Config = args.try_into()?;
-
-    let log_config = config
-        .log_config
-        .as_ref()
-        .expect("Log config is always configured");
-    pluto_tracing::init(log_config).expect("Failed to initialize tracing");
+    pluto_tracing::init(&config.log_config).expect("Failed to initialize tracing");
 
     run_with_config(config, ct).await
 }
