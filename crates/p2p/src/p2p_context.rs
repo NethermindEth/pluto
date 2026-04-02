@@ -1,9 +1,10 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
+    sync::{Arc, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
 use libp2p::{Multiaddr, PeerId, swarm::ConnectionId};
+use tracing::error;
 
 /// Global context shared across P2P components.
 ///
@@ -13,7 +14,7 @@ use libp2p::{Multiaddr, PeerId, swarm::ConnectionId};
 #[derive(Debug, Clone, Default)]
 pub struct P2PContext {
     /// Local peer ID for this node, once known.
-    local_peer_id: Arc<RwLock<Option<PeerId>>>,
+    local_peer_id: Arc<OnceLock<PeerId>>,
     /// Known cluster peer IDs. These are the peers that are part of the
     /// cluster and should be tracked with peer metrics (as opposed to
     /// relay metrics for unknown peers).
@@ -34,18 +35,20 @@ impl P2PContext {
 
     /// Sets the local peer ID for this node.
     pub fn set_local_peer_id(&self, peer_id: PeerId) {
-        *self
-            .local_peer_id
-            .write()
-            .expect("Failed to write local peer id") = Some(peer_id);
+        if let Err(existing_peer_id) = self.local_peer_id.set(peer_id)
+            && existing_peer_id != peer_id
+        {
+            error!(
+                existing_peer_id = %existing_peer_id,
+                new_peer_id = %peer_id,
+                "ignoring attempt to reset local peer id"
+            );
+        }
     }
 
     /// Returns the local peer ID for this node, if known.
     pub fn local_peer_id(&self) -> Option<PeerId> {
-        *self
-            .local_peer_id
-            .read()
-            .expect("Failed to read local peer id")
+        self.local_peer_id.get().copied()
     }
 
     /// Returns true if the peer is a known cluster peer.
