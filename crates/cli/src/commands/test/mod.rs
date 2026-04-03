@@ -642,23 +642,6 @@ pub(crate) fn calculate_score(results: &[TestResult]) -> CategoryScore {
     }
 }
 
-/// Filters tests based on configuration.
-pub(crate) fn filter_tests<V>(
-    supported_test_cases: &HashMap<TestCaseName, V>,
-    test_cases: Option<&[String]>,
-) -> Vec<TestCaseName> {
-    let mut filtered: Vec<TestCaseName> = supported_test_cases.keys().cloned().collect();
-    if let Some(cases) = test_cases {
-        filtered.retain(|supported_case| cases.contains(&supported_case.name));
-    }
-    filtered
-}
-
-/// Sorts tests by their order field.
-pub(crate) fn sort_tests(tests: &mut [TestCaseName]) {
-    tests.sort_by_key(|t| t.order);
-}
-
 async fn load_or_generate_key(path: &Path) -> CliResult<SecretKey> {
     if tokio::fs::try_exists(path).await? {
         Ok(load(path)?)

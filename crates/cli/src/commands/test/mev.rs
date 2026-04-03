@@ -7,17 +7,18 @@ use std::{
 };
 
 use reqwest::{Method, StatusCode};
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use super::{
-    AllCategoriesResult, SLOT_TIME, SLOTS_IN_EPOCH, TestCaseName, TestCategory, TestCategoryResult,
+    AllCategoriesResult, SLOT_TIME, SLOTS_IN_EPOCH, TestCategory, TestCategoryResult,
     TestConfigArgs, TestResult, TestResultError, TestVerdict, calculate_score, evaluate_rtt,
-    filter_tests, must_output_to_file_on_quiet, publish_result_to_obol_api, request_rtt,
-    sort_tests, write_result_to_file, write_result_to_writer,
+    must_output_to_file_on_quiet, publish_result_to_obol_api, request_rtt, write_result_to_file,
+    write_result_to_writer,
 };
 use crate::{
+    commands::test::TestCaseName,
     duration::Duration as CliDuration,
     error::{CliError, Result},
 };
@@ -81,27 +82,33 @@ pub struct TestMevArgs {
     pub x_timeout_ms: u32,
 }
 
-/// A MEV test case function.
-type TestCaseMev =
-    for<'a> fn(
-        token: CancellationToken,
-        conf: &'a TestMevArgs,
-        target: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = TestResult> + Send + 'a>>;
+#[derive(Debug, Clone)]
+enum TestCaseMev {
+    Ping,
+    PingMeasure,
+    CreateBlock,
+}
 
-/// Returns the supported MEV test cases.
-fn supported_mev_test_cases() -> HashMap<TestCaseName, TestCaseMev> {
-    HashMap::from([
-        (TestCaseName::new("Ping", 1), mev_ping_test as TestCaseMev),
-        (
-            TestCaseName::new("PingMeasure", 2),
-            mev_ping_measure_test as TestCaseMev,
-        ),
-        (
-            TestCaseName::new("CreateBlock", 3),
-            mev_create_block_test as TestCaseMev,
-        ),
-    ])
+impl TestCaseMev {
+    fn all() -> Vec<TestCaseMev> {
+        vec![Self::Ping, Self::PingMeasure, Self::CreateBlock]
+    }
+
+    fn test_case_name(&self) -> TestCaseName {
+        match self {
+            TestCaseMev::Ping => TestCaseName::new("Ping", 1),
+            TestCaseMev::PingMeasure => TestCaseName::new("PingMeasure", 2),
+            TestCaseMev::CreateBlock => TestCaseName::new("CreateBlock", 3),
+        }
+    }
+
+    async fn run(&self, token: &CancellationToken, conf: &TestMevArgs, target: &str) -> TestResult {
+        match self {
+            TestCaseMev::Ping => mev_ping_test(token, conf, target).await,
+            TestCaseMev::PingMeasure => mev_ping_measure_test(token, conf, target).await,
+            TestCaseMev::CreateBlock => mev_create_block_test(token, conf, target).await,
+        }
+    }
 }
 
 /// Runs the MEV relay tests.
@@ -122,13 +129,16 @@ pub async fn run(args: TestMevArgs, writer: &mut dyn Write) -> Result<TestCatego
 
     info!("Starting MEV relays test");
 
-    let test_cases = supported_mev_test_cases();
-    let queued_tests = filter_tests(&test_cases, args.test_config.test_cases.as_deref());
+    let queued_tests = {
+        let mut filtered = TestCaseMev::all().to_vec();
+        if let Some(filtered_cases) = args.test_config.test_cases.as_ref() {
+            filtered.retain(|case| filtered_cases.contains(&case.test_case_name().name));
+        }
+        filtered
+    };
     if queued_tests.is_empty() {
         return Err(CliError::Other("test case not supported".to_string()));
     }
-    let mut queued_tests = queued_tests;
-    sort_tests(&mut queued_tests);
 
     let token = CancellationToken::new();
     let timeout_token = token.clone();
@@ -138,7 +148,7 @@ pub async fn run(args: TestMevArgs, writer: &mut dyn Write) -> Result<TestCatego
     });
 
     let start_time = Instant::now();
-    let test_results = test_all_mevs(&queued_tests, &test_cases, &args, token).await;
+    let test_results = test_all_mevs(&queued_tests, &args, token).await;
     let exec_time = CliDuration::new(start_time.elapsed());
 
     let score = test_results
@@ -177,26 +187,21 @@ pub async fn run(args: TestMevArgs, writer: &mut dyn Write) -> Result<TestCatego
 }
 
 async fn test_all_mevs(
-    queued_tests: &[TestCaseName],
-    test_cases: &HashMap<TestCaseName, TestCaseMev>,
+    queued_tests: &[TestCaseMev],
     conf: &TestMevArgs,
     token: CancellationToken,
 ) -> HashMap<String, Vec<TestResult>> {
     let (tx, mut rx) = mpsc::channel::<(String, Vec<TestResult>)>(conf.endpoints.len());
 
     for endpoint in &conf.endpoints {
-        let tx = tx.clone();
         let queued_tests = queued_tests.to_vec();
-
-        let test_cases = test_cases.clone();
-        let endpoint = endpoint.clone();
         let conf = conf.clone();
-
-        let child_token = token.child_token();
+        let endpoint = endpoint.clone();
+        let token = token.clone();
+        let tx = tx.clone();
 
         tokio::spawn(async move {
-            let results =
-                test_single_mev(&queued_tests, &test_cases, &conf, &endpoint, child_token).await;
+            let results = test_single_mev(&queued_tests, &conf, &endpoint, token).await;
             let relay_name = format_mev_relay_name(&endpoint);
             let _ = tx.send((relay_name, results)).await;
         });
@@ -213,284 +218,238 @@ async fn test_all_mevs(
 }
 
 async fn test_single_mev(
-    queued_tests: &[TestCaseName],
-    test_cases: &HashMap<TestCaseName, TestCaseMev>,
+    queued_tests: &[TestCaseMev],
     conf: &TestMevArgs,
     target: &str,
     token: CancellationToken,
 ) -> Vec<TestResult> {
-    let (result_tx, mut result_rx) = mpsc::channel::<TestResult>(queued_tests.len());
+    let runner_queued_tests = queued_tests.to_vec();
 
-    let queued = queued_tests.to_vec();
-    let test_cases = test_cases.clone();
-    let conf_clone = conf.clone();
-    let target_owned = target.to_string();
+    let mut join_set = JoinSet::new();
+    for test_case in runner_queued_tests {
+        let runner_token = token.clone();
+        let conf = conf.clone();
+        let target = target.to_string();
 
-    let runner_token = token.child_token();
-
-    tokio::spawn(async move {
-        for t in &queued {
-            if runner_token.is_cancelled() {
-                return;
-            }
-            if let Some(test_fn) = test_cases.get(t) {
-                let result = test_fn(runner_token.clone(), &conf_clone, &target_owned).await;
-                if result_tx.send(result).await.is_err() {
-                    return;
+        join_set.spawn(async move {
+            let tc_name = test_case.test_case_name();
+            tokio::select! {
+                _ = runner_token.cancelled() => {
+                    let tr = TestResult::new(&tc_name.name);
+                    tr.fail(TestResultError::from_string("timeout/interrupted"))
+                }
+                r = test_case.run(&runner_token, &conf, &target) => {
+                    r
                 }
             }
+        });
+    }
+
+    join_set.join_all().await
+}
+
+async fn mev_ping_test(token: &CancellationToken, _conf: &TestMevArgs, target: &str) -> TestResult {
+    let test_res = TestResult::new("Ping");
+    let url = format!("{target}/eth/v1/builder/status");
+    let client = reqwest::Client::new();
+
+    let (clean_url, creds) = match parse_endpoint_credentials(&url) {
+        Ok(v) => v,
+        Err(e) => return test_res.fail(e),
+    };
+
+    let resp = tokio::select! {
+        _ = token.cancelled() => return test_res.fail(CliError::Other("timeout/interrupted".to_string())),
+        r = apply_basic_auth(client.get(&clean_url), creds).send() => match r {
+            Ok(r) => r,
+            Err(e) => return test_res.fail(e),
         }
-    });
+    };
 
-    let mut all_results = Vec::new();
-    let mut test_counter = 0usize;
+    if resp.status().as_u16() > 399 {
+        return test_res.fail(CliError::Other(http_status_error(resp.status())));
+    }
 
-    loop {
+    test_res.ok()
+}
+
+async fn mev_ping_measure_test(
+    token: &CancellationToken,
+    _conf: &TestMevArgs,
+    target: &str,
+) -> TestResult {
+    let test_res = TestResult::new("PingMeasure");
+    let url = format!("{target}/eth/v1/builder/status");
+
+    let rtt = tokio::select! {
+        _ = token.cancelled() => return test_res.fail(CliError::Other("timeout/interrupted".to_string())),
+        r = request_rtt(&url, Method::GET, None, StatusCode::OK) => match r {
+            Ok(r) => r,
+            Err(e) => return test_res.fail(e),
+        }
+    };
+
+    evaluate_rtt(
+        rtt,
+        test_res,
+        THRESHOLD_MEV_MEASURE_AVG,
+        THRESHOLD_MEV_MEASURE_POOR,
+    )
+}
+
+async fn mev_create_block_test(
+    token: &CancellationToken,
+    conf: &TestMevArgs,
+    target: &str,
+) -> TestResult {
+    let test_res = TestResult::new("CreateBlock");
+
+    if !conf.load_test {
+        return TestResult {
+            verdict: TestVerdict::Skip,
+            ..test_res
+        };
+    }
+
+    let beacon_endpoint = match &conf.beacon_node_endpoint {
+        Some(ep) => ep.as_str(),
+        None => {
+            return test_res.fail(CliError::Other("beacon-node-endpoint required".to_string()));
+        }
+    };
+
+    let latest_block = match latest_beacon_block(beacon_endpoint, &token).await {
+        Ok(b) => b,
+        Err(e) => return test_res.fail(e),
+    };
+
+    let latest_block_ts_unix: i64 = match latest_block.body.execution_payload.timestamp.parse() {
+        Ok(v) => v,
+        Err(e) => return test_res.fail(CliError::Other(format!("parse timestamp: {e}"))),
+    };
+
+    let latest_block_ts = std::time::UNIX_EPOCH
+        .checked_add(Duration::from_secs(latest_block_ts_unix.unsigned_abs()))
+        .unwrap_or(std::time::UNIX_EPOCH);
+    let next_block_ts = latest_block_ts
+        .checked_add(SLOT_TIME)
+        .unwrap_or(latest_block_ts);
+
+    if let Ok(remaining) = next_block_ts.duration_since(std::time::SystemTime::now()) {
         tokio::select! {
-
-            _ = token.cancelled() => {
-                if test_counter < queued_tests.len() {
-                    all_results.push(TestResult {
-                        name: queued_tests[test_counter].name.clone(),
-                        verdict: TestVerdict::Fail,
-                        error: TestResultError::from_string("timeout/interrupted"),
-                        ..TestResult::new("")
-                    });
-                }
-                break;
-            }
-            result = result_rx.recv() => {
-                match result {
-                    Some(r) => {
-                        test_counter = test_counter.saturating_add(1);
-                        all_results.push(r);
-                    }
-                    None => break,
-                }
-            }
+            _ = token.cancelled() => return test_res.fail(CliError::Other("timeout/interrupted".to_string())),
+            _ = tokio::time::sleep(remaining) => {}
         }
     }
 
-    all_results
-}
+    let latest_slot: i64 = match latest_block.slot.parse() {
+        Ok(v) => v,
+        Err(e) => return test_res.fail(CliError::Other(format!("parse slot: {e}"))),
+    };
 
-fn mev_ping_test<'a>(
-    token: CancellationToken,
-    _conf: &'a TestMevArgs,
-    target: &'a str,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = TestResult> + Send + 'a>> {
-    Box::pin(async move {
-        let test_res = TestResult::new("Ping");
-        let url = format!("{target}/eth/v1/builder/status");
-        let client = reqwest::Client::new();
+    let mut next_slot = latest_slot.saturating_add(1);
+    let slots_in_epoch_i64 = i64::try_from(SLOTS_IN_EPOCH).unwrap_or(i64::MAX);
+    let epoch = next_slot.checked_div(slots_in_epoch_i64).unwrap_or(0);
 
-        let (clean_url, creds) = match parse_endpoint_credentials(&url) {
-            Ok(v) => v,
+    let mut proposer_duties = match fetch_proposers_for_epoch(beacon_endpoint, epoch, &token).await
+    {
+        Ok(d) => d,
+        Err(e) => return test_res.fail(e),
+    };
+
+    let mut all_blocks_rtt: Vec<Duration> = Vec::new();
+    let x_timeout_ms = conf.x_timeout_ms;
+
+    info!(
+        mev_relay = target,
+        blocks = conf.number_of_payloads,
+        x_timeout_ms = x_timeout_ms,
+        "Starting attempts for block creation"
+    );
+
+    let mut latest_block = latest_block;
+
+    loop {
+        if token.is_cancelled() {
+            break;
+        }
+
+        let start_iteration = Instant::now();
+
+        let rtt = match create_mev_block(
+            conf,
+            target,
+            x_timeout_ms,
+            next_slot,
+            &mut latest_block,
+            &mut proposer_duties,
+            beacon_endpoint,
+            &token,
+        )
+        .await
+        {
+            Ok(r) => r,
             Err(e) => return test_res.fail(e),
         };
 
-        let resp = tokio::select! {
-            _ = token.cancelled() => return test_res.fail(CliError::Other("timeout/interrupted".to_string())),
-            r = apply_basic_auth(client.get(&clean_url), creds).send() => match r {
-                Ok(r) => r,
-                Err(e) => return test_res.fail(e),
-            }
-        };
-
-        if resp.status().as_u16() > 399 {
-            return test_res.fail(CliError::Other(http_status_error(resp.status())));
+        all_blocks_rtt.push(rtt);
+        if all_blocks_rtt.len() == usize::try_from(conf.number_of_payloads).unwrap_or(usize::MAX) {
+            break;
         }
 
-        test_res.ok()
-    })
-}
-
-fn mev_ping_measure_test<'a>(
-    token: CancellationToken,
-    _conf: &'a TestMevArgs,
-    target: &'a str,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = TestResult> + Send + 'a>> {
-    Box::pin(async move {
-        let test_res = TestResult::new("PingMeasure");
-        let url = format!("{target}/eth/v1/builder/status");
-
-        let rtt = tokio::select! {
-            _ = token.cancelled() => return test_res.fail(CliError::Other("timeout/interrupted".to_string())),
-            r = request_rtt(&url, Method::GET, None, StatusCode::OK) => match r {
-                Ok(r) => r,
-                Err(e) => return test_res.fail(e),
+        let elapsed = start_iteration.elapsed();
+        let elapsed_nanos = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
+        let slot_nanos = u64::try_from(SLOT_TIME.as_nanos()).unwrap_or(1);
+        let remainder_nanos = elapsed_nanos.checked_rem(slot_nanos).unwrap_or(0);
+        let slot_remainder = SLOT_TIME
+            .checked_sub(Duration::from_nanos(remainder_nanos))
+            .unwrap_or_default();
+        if let Some(sleep_dur) = slot_remainder.checked_sub(Duration::from_secs(1)) {
+            tokio::select! {
+                _ = token.cancelled() => break,
+                _ = tokio::time::sleep(sleep_dur) => {}
             }
-        };
-
-        evaluate_rtt(
-            rtt,
-            test_res,
-            THRESHOLD_MEV_MEASURE_AVG,
-            THRESHOLD_MEV_MEASURE_POOR,
-        )
-    })
-}
-
-fn mev_create_block_test<'a>(
-    token: CancellationToken,
-    conf: &'a TestMevArgs,
-    target: &'a str,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = TestResult> + Send + 'a>> {
-    Box::pin(async move {
-        let test_res = TestResult::new("CreateBlock");
-
-        if !conf.load_test {
-            return TestResult {
-                verdict: TestVerdict::Skip,
-                ..test_res
-            };
         }
 
-        let beacon_endpoint = match &conf.beacon_node_endpoint {
-            Some(ep) => ep.as_str(),
-            None => {
-                return test_res.fail(CliError::Other("beacon-node-endpoint required".to_string()));
-            }
-        };
-
-        let latest_block = match latest_beacon_block(beacon_endpoint, &token).await {
+        let start_beacon_fetch = Instant::now();
+        latest_block = match latest_beacon_block(beacon_endpoint, &token).await {
             Ok(b) => b,
             Err(e) => return test_res.fail(e),
         };
 
-        let latest_block_ts_unix: i64 = match latest_block.body.execution_payload.timestamp.parse()
-        {
-            Ok(v) => v,
-            Err(e) => return test_res.fail(CliError::Other(format!("parse timestamp: {e}"))),
-        };
-
-        let latest_block_ts = std::time::UNIX_EPOCH
-            .checked_add(Duration::from_secs(latest_block_ts_unix.unsigned_abs()))
-            .unwrap_or(std::time::UNIX_EPOCH);
-        let next_block_ts = latest_block_ts
-            .checked_add(SLOT_TIME)
-            .unwrap_or(latest_block_ts);
-
-        if let Ok(remaining) = next_block_ts.duration_since(std::time::SystemTime::now()) {
-            tokio::select! {
-                _ = token.cancelled() => return test_res.fail(CliError::Other("timeout/interrupted".to_string())),
-                _ = tokio::time::sleep(remaining) => {}
-            }
-        }
-
-        let latest_slot: i64 = match latest_block.slot.parse() {
+        let latest_slot_parsed: i64 = match latest_block.slot.parse() {
             Ok(v) => v,
             Err(e) => return test_res.fail(CliError::Other(format!("parse slot: {e}"))),
         };
 
-        let mut next_slot = latest_slot.saturating_add(1);
-        let slots_in_epoch_i64 = i64::try_from(SLOTS_IN_EPOCH).unwrap_or(i64::MAX);
-        let epoch = next_slot.checked_div(slots_in_epoch_i64).unwrap_or(0);
+        next_slot = latest_slot_parsed.saturating_add(1);
 
-        let mut proposer_duties =
-            match fetch_proposers_for_epoch(beacon_endpoint, epoch, &token).await {
-                Ok(d) => d,
-                Err(e) => return test_res.fail(e),
-            };
-
-        let mut all_blocks_rtt: Vec<Duration> = Vec::new();
-        let x_timeout_ms = conf.x_timeout_ms;
-
-        info!(
-            mev_relay = target,
-            blocks = conf.number_of_payloads,
-            x_timeout_ms = x_timeout_ms,
-            "Starting attempts for block creation"
-        );
-
-        let mut latest_block = latest_block;
-
-        loop {
-            if token.is_cancelled() {
-                break;
-            }
-
-            let start_iteration = Instant::now();
-
-            let rtt = match create_mev_block(
-                conf,
-                target,
-                x_timeout_ms,
-                next_slot,
-                &mut latest_block,
-                &mut proposer_duties,
-                beacon_endpoint,
-                &token,
-            )
-            .await
-            {
-                Ok(r) => r,
-                Err(e) => return test_res.fail(e),
-            };
-
-            all_blocks_rtt.push(rtt);
-            if all_blocks_rtt.len()
-                == usize::try_from(conf.number_of_payloads).unwrap_or(usize::MAX)
-            {
-                break;
-            }
-
-            let elapsed = start_iteration.elapsed();
-            let elapsed_nanos = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
-            let slot_nanos = u64::try_from(SLOT_TIME.as_nanos()).unwrap_or(1);
-            let remainder_nanos = elapsed_nanos.checked_rem(slot_nanos).unwrap_or(0);
-            let slot_remainder = SLOT_TIME
-                .checked_sub(Duration::from_nanos(remainder_nanos))
-                .unwrap_or_default();
-            if let Some(sleep_dur) = slot_remainder.checked_sub(Duration::from_secs(1)) {
-                tokio::select! {
-                    _ = token.cancelled() => break,
-                    _ = tokio::time::sleep(sleep_dur) => {}
-                }
-            }
-
-            let start_beacon_fetch = Instant::now();
-            latest_block = match latest_beacon_block(beacon_endpoint, &token).await {
-                Ok(b) => b,
-                Err(e) => return test_res.fail(e),
-            };
-
-            let latest_slot_parsed: i64 = match latest_block.slot.parse() {
-                Ok(v) => v,
-                Err(e) => return test_res.fail(CliError::Other(format!("parse slot: {e}"))),
-            };
-
-            next_slot = latest_slot_parsed.saturating_add(1);
-
-            // Wait 1 second minus how long the fetch took.
-            if let Some(sleep_dur) =
-                Duration::from_secs(1).checked_sub(start_beacon_fetch.elapsed())
-            {
-                tokio::select! {
-                    _ = token.cancelled() => break,
-                    _ = tokio::time::sleep(sleep_dur) => {}
-                }
+        // Wait 1 second minus how long the fetch took.
+        if let Some(sleep_dur) = Duration::from_secs(1).checked_sub(start_beacon_fetch.elapsed()) {
+            tokio::select! {
+                _ = token.cancelled() => break,
+                _ = tokio::time::sleep(sleep_dur) => {}
             }
         }
+    }
 
-        if all_blocks_rtt.is_empty() {
-            return test_res.fail(CliError::Other("timeout/interrupted".to_string()));
-        }
+    if all_blocks_rtt.is_empty() {
+        return test_res.fail(CliError::Other("timeout/interrupted".to_string()));
+    }
 
-        let total_rtt: Duration = all_blocks_rtt.iter().sum();
-        let count = u32::try_from(all_blocks_rtt.len().max(1)).unwrap_or(u32::MAX);
-        let average_rtt = total_rtt.checked_div(count).unwrap_or_default();
+    let total_rtt: Duration = all_blocks_rtt.iter().sum();
+    let count = u32::try_from(all_blocks_rtt.len().max(1)).unwrap_or(u32::MAX);
+    let average_rtt = total_rtt.checked_div(count).unwrap_or_default();
 
-        let avg_threshold = Duration::from_millis(
-            u64::from(x_timeout_ms)
-                .saturating_mul(9)
-                .checked_div(10)
-                .unwrap_or(0),
-        );
-        let poor_threshold = Duration::from_millis(u64::from(x_timeout_ms));
+    let avg_threshold = Duration::from_millis(
+        u64::from(x_timeout_ms)
+            .saturating_mul(9)
+            .checked_div(10)
+            .unwrap_or(0),
+    );
+    let poor_threshold = Duration::from_millis(u64::from(x_timeout_ms));
 
-        evaluate_rtt(average_rtt, test_res, avg_threshold, poor_threshold)
-    })
+    evaluate_rtt(average_rtt, test_res, avg_threshold, poor_threshold)
 }
 
 // Helper types
