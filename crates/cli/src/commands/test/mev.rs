@@ -102,7 +102,7 @@ impl TestCaseMev {
         }
     }
 
-    async fn run(&self, token: &CancellationToken, conf: &TestMevArgs, target: &str) -> TestResult {
+    async fn run(&self, target: &str, conf: &TestMevArgs, token: &CancellationToken) -> TestResult {
         match self {
             TestCaseMev::Ping => mev_ping_test(target, conf, token).await,
             TestCaseMev::PingMeasure => mev_ping_measure_test(target, conf, token).await,
@@ -230,7 +230,7 @@ async fn test_single_mev(
                     let tr = TestResult::new(&tc_name.name);
                     tr.fail(TestResultError::from_string("timeout/interrupted"))
                 }
-                r = test_case.run(&token, &conf, &target) => {
+                r = test_case.run(&target, &conf, &token) => {
                     r
                 }
             }
