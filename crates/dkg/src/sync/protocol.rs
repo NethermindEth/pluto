@@ -35,7 +35,10 @@ pub fn validate_request_with_public_key(
         SemVer::parse(&msg.version).map_err(|error| Error::ParsePeerVersion(error.to_string()))?;
 
     if msg_version != *expected_version {
-        return Err(Error::version_mismatch(expected_version, &msg.version));
+        return Err(Error::VersionMismatch {
+            expected: expected_version.to_string(),
+            got: msg.version.clone(),
+        });
     }
 
     if !public_key.verify(def_hash, &msg.hash_signature) {

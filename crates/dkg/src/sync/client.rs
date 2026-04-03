@@ -195,7 +195,7 @@ impl Client {
                 }
                 changed = done_rx.changed() => {
                     if changed.is_err() {
-                        return Err(Error::message("sync client completion channel closed"));
+                        return Err(Error::CompletionChannelClosed);
                     }
                 }
             }

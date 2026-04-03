@@ -52,7 +52,7 @@ enum OutboundState {
 
 enum OutboundExit {
     GracefulShutdown,
-    Reconnectable { error: Error, relay: bool },
+    Reconnectable { error: Error, relay_reset: bool },
     Fatal(Error),
 }
 
@@ -122,17 +122,21 @@ impl Handler {
 
         client.release_outbound();
 
-        let error = match error {
-            StreamUpgradeError::NegotiationFailed => Error::Unsupported,
-            StreamUpgradeError::Timeout => Error::io(std::io::Error::new(
+        let (error, relay_reset) = match error {
+            StreamUpgradeError::NegotiationFailed => (Error::Unsupported, false),
+            StreamUpgradeError::Timeout => (Error::Io(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "sync protocol negotiation timed out",
-            )),
+            )
+            .to_string()), false),
             StreamUpgradeError::Apply(never) => match never {},
-            StreamUpgradeError::Io(error) => Error::io(error),
+            StreamUpgradeError::Io(error) => (
+                Error::Io(error.to_string()),
+                error.kind() == std::io::ErrorKind::ConnectionReset,
+            ),
         };
 
-        if client.should_reconnect() || error.is_relay_error() {
+        if relay_reset || client.should_reconnect() {
             self.schedule_retry();
         } else {
             client.finish(Err(error));
@@ -204,7 +208,7 @@ impl ConnectionHandler for Handler {
                     }
                     self.outbound = OutboundState::Disabled;
                 }
-                Poll::Ready(OutboundExit::Reconnectable { error, relay }) => {
+                Poll::Ready(OutboundExit::Reconnectable { error, relay_reset }) => {
                     let Some(client) = self.client.as_ref() else {
                         self.outbound = OutboundState::Disabled;
                         return Poll::Pending;
@@ -213,12 +217,8 @@ impl ConnectionHandler for Handler {
                     client.set_connected(false);
                     client.release_outbound();
 
-                    if relay || client.should_reconnect() {
-                        if relay {
-                            debug!(peer = %self.peer_id, err = %error, "Relay connection dropped, reconnecting sync client");
-                        } else {
-                            info!(peer = %self.peer_id, err = %error, "Disconnected from peer");
-                        }
+                    if relay_reset || client.should_reconnect() {
+                        info!(peer = %self.peer_id, err = %error, "Disconnected from peer");
                         self.outbound = OutboundState::Idle;
                     } else {
                         client.finish(Err(error));
@@ -294,7 +294,7 @@ async fn run_outbound_stream(client: Client, mut stream: Stream) -> OutboundExit
         let shutdown = client.shutdown_requested();
         let timestamp = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
             Ok(timestamp) => timestamp,
-            Err(error) => return OutboundExit::Fatal(Error::io(error)),
+            Err(error) => return OutboundExit::Fatal(Error::Io(error.to_string())),
         };
         let nanos = timestamp.subsec_nanos();
         let timestamp = Timestamp {
@@ -309,14 +309,11 @@ async fn run_outbound_stream(client: Client, mut stream: Stream) -> OutboundExit
             step: client.step(),
         };
 
-        let response: Result<MsgSyncResponse> =
-            match pluto_p2p::proto::write_fixed_size_protobuf(&mut stream, &request)
-                .await
-                .map_err(Error::io)
+        let response: std::io::Result<MsgSyncResponse> =
+            match pluto_p2p::proto::write_fixed_size_protobuf(&mut stream, &request).await
             {
                 Ok(()) => pluto_p2p::proto::read_fixed_size_protobuf(&mut stream)
-                    .await
-                    .map_err(Error::io),
+                    .await,
                 Err(error) => Err(error),
             };
 
@@ -324,8 +321,8 @@ async fn run_outbound_stream(client: Client, mut stream: Stream) -> OutboundExit
             Ok(response) => response,
             Err(error) => {
                 return OutboundExit::Reconnectable {
-                    relay: error.is_relay_error(),
-                    error,
+                    relay_reset: error.kind() == std::io::ErrorKind::ConnectionReset,
+                    error: Error::Io(error.to_string()),
                 };
             }
         };
@@ -358,12 +355,13 @@ async fn handle_inbound_stream(
         return Err(Error::ServerNotStarted);
     }
 
-    let public_key = pluto_p2p::peer::peer_id_to_libp2p_pk(&peer_id).map_err(Error::peer)?;
+    let public_key =
+        pluto_p2p::peer::peer_id_to_libp2p_pk(&peer_id).map_err(|error| Error::Peer(error.to_string()))?;
 
     loop {
         let message: MsgSync = pluto_p2p::proto::read_fixed_size_protobuf(&mut stream)
             .await
-            .map_err(Error::io)?;
+            .map_err(|error| Error::Io(error.to_string()))?;
         let mut response = MsgSyncResponse {
             sync_timestamp: message.timestamp,
             error: String::new(),
@@ -380,9 +378,10 @@ async fn handle_inbound_stream(
                 error: error.clone(),
             });
             server
-                .set_err(Error::message(format!(
-                    "invalid sync message: peer={peer_id} err={error}"
-                )))
+                .set_err(Error::InvalidSyncMessage {
+                    peer: peer_id,
+                    error: error.to_string(),
+                })
                 .await;
             response.error = error.to_string();
         } else {
@@ -406,7 +405,7 @@ async fn handle_inbound_stream(
 
         pluto_p2p::proto::write_fixed_size_protobuf(&mut stream, &response)
             .await
-            .map_err(Error::io)?;
+            .map_err(|error| Error::Io(error.to_string()))?;
 
         if message.shutdown {
             send_inbound_event(&inbound_events_tx, OutEvent::PeerShutdownObserved { peer_id });

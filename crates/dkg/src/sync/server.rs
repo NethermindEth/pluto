@@ -124,10 +124,10 @@ impl Server {
     ) -> Result<()> {
         let step_plus_one = step
             .checked_add(1)
-            .ok_or_else(|| Error::message("step overflow"))?;
+            .ok_or(Error::StepOverflow)?;
         let step_plus_two = step
             .checked_add(2)
-            .ok_or_else(|| Error::message("step overflow"))?;
+            .ok_or(Error::StepOverflow)?;
 
         loop {
             let notified = self.inner.notify.notified();
@@ -219,7 +219,7 @@ impl Server {
 
                 let current_plus_two = current
                     .checked_add(2)
-                    .ok_or_else(|| Error::message("step overflow"))?;
+                    .ok_or(Error::StepOverflow)?;
                 if step > current_plus_two {
                     return Err(Error::PeerStepAhead);
                 }
