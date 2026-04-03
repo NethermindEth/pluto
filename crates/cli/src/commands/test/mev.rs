@@ -224,7 +224,8 @@ async fn test_single_mev(
 ) -> Vec<TestResult> {
     let mut join_set = JoinSet::new();
 
-    for test_case in queued_tests.to_owned() {
+    let queued_tests = queued_tests.to_vec();
+    for test_case in queued_tests {
         let token = token.clone();
         let conf = conf.clone();
         let target = target.to_string();
