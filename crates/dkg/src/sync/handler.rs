@@ -20,8 +20,7 @@ use libp2p::{
     },
 };
 use prost_types::Timestamp;
-use tokio::sync::mpsc;
-use tokio::time::Sleep;
+use tokio::{sync::mpsc, time::Sleep};
 use tracing::{debug, info, warn};
 
 use crate::dkgpb::v1::sync::{MsgSync, MsgSyncResponse};
@@ -288,7 +287,7 @@ impl ConnectionHandler for Handler {
 
 async fn run_outbound_stream(client: Client, mut stream: Stream) -> OutboundExit {
     let mut interval = tokio::time::interval(client.period());
-    let hash_signature = prost::bytes::Bytes::from(client.hash_sig().to_vec());
+    let hash_signature = prost::bytes::Bytes::copy_from_slice(client.hash_sig());
     let version = client.version().to_string();
 
     client.set_connected(true);
@@ -297,15 +296,7 @@ async fn run_outbound_stream(client: Client, mut stream: Stream) -> OutboundExit
         interval.tick().await;
 
         let shutdown = client.shutdown_requested();
-        let timestamp = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-            Ok(timestamp) => timestamp,
-            Err(error) => return OutboundExit::Fatal(Error::Io(error.to_string())),
-        };
-        let nanos = timestamp.subsec_nanos();
-        let timestamp = Timestamp {
-            seconds: i64::try_from(timestamp.as_secs()).unwrap_or(i64::MAX),
-            nanos: i32::try_from(nanos).unwrap_or(i32::MAX),
-        };
+        let timestamp = Timestamp::from(std::time::SystemTime::now());
         let request = MsgSync {
             timestamp: Some(timestamp),
             hash_signature: hash_signature.clone(),
@@ -377,20 +368,18 @@ async fn handle_inbound_stream(
                 &public_key,
                 &message,
             ) {
+                let error_string = error.to_string();
                 send_inbound_event(
                     &inbound_events_tx,
-                    OutEvent::SyncRejected {
-                        peer_id,
-                        error: error.clone(),
-                    },
+                    OutEvent::SyncRejected { peer_id, error },
                 );
                 server
                     .set_err(Error::InvalidSyncMessage {
                         peer: peer_id,
-                        error: error.to_string(),
+                        error: error_string.clone(),
                     })
                     .await;
-                response.error = error.to_string();
+                response.error = error_string;
             } else {
                 let (inserted, count) = server.mark_connected(peer_id).await;
                 if inserted {

@@ -12,8 +12,10 @@ use pluto_core::version::SemVer;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
-use super::Command;
-use super::error::{Error, Result};
+use super::{
+    Command,
+    error::{Error, Result},
+};
 
 /// Default period between sync messages.
 pub const DEFAULT_PERIOD: Duration = Duration::from_millis(100);

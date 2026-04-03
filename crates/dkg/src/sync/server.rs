@@ -122,8 +122,8 @@ impl Server {
         step: i64,
         cancellation: CancellationToken,
     ) -> Result<()> {
-        let step_plus_one = step.checked_add(1).ok_or_else(|| Error::StepOverflow)?;
-        let step_plus_two = step.checked_add(2).ok_or_else(|| Error::StepOverflow)?;
+        let step_plus_one = step.checked_add(1).ok_or(Error::StepOverflow)?;
+        let step_plus_two = step.checked_add(2).ok_or(Error::StepOverflow)?;
 
         loop {
             let notified = self.inner.notify.notified();

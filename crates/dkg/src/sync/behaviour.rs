@@ -72,14 +72,13 @@ impl Behaviour {
     }
 
     fn connection_handler_for_peer(&self, peer: PeerId) -> THandler<Self> {
-        if self.clients.contains_key(&peer) {
-            Either::Left(Handler::new(
+        match self.clients.get(&peer) {
+            Some(client) => Either::Left(Handler::new(
                 peer,
                 self.server.clone(),
-                self.clients.get(&peer).cloned(),
-            ))
-        } else {
-            Either::Right(dummy::ConnectionHandler)
+                Some(client.clone()),
+            )),
+            None => Either::Right(dummy::ConnectionHandler),
         }
     }
 
@@ -90,22 +89,24 @@ impl Behaviour {
                     return;
                 };
 
-                if client.should_run() && !client.is_connected() {
-                    if !self
-                        .p2p_context
-                        .peer_store_lock()
-                        .connections_to_peer(&peer_id)
-                        .is_empty()
-                    {
-                        return;
-                    }
-
-                    self.pending_events.push_back(ToSwarm::Dial {
-                        opts: DialOpts::peer_id(peer_id)
-                            .condition(PeerCondition::DisconnectedAndNotDialing)
-                            .build(),
-                    });
+                if !client.should_run() || client.is_connected() || client.shutdown_requested() {
+                    return;
                 }
+
+                if !self
+                    .p2p_context
+                    .peer_store_lock()
+                    .connections_to_peer(&peer_id)
+                    .is_empty()
+                {
+                    return;
+                }
+
+                self.pending_events.push_back(ToSwarm::Dial {
+                    opts: DialOpts::peer_id(peer_id)
+                        .condition(PeerCondition::DisconnectedAndNotDialing)
+                        .build(),
+                });
             }
         }
     }
@@ -143,13 +144,13 @@ impl NetworkBehaviour for Behaviour {
                     return;
                 }
 
-                // TODO: Go retries sync client connections until reconnect is disabled.
-                // Re-queue active clients here (and on DialFailure below) so peers that
-                // restart before initial cluster sync can be dialed again.
                 if let Some(client) = self.clients.get(&event.peer_id) {
                     client.set_connected(false);
                     client.release_outbound();
                 }
+            }
+            FromSwarm::DialFailure(event) => {
+                let _ = event;
             }
             _ => {}
         }

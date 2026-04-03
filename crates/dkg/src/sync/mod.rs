@@ -1,10 +1,3 @@
-//! DKG peer step synchronization protocol.
-//!
-//! This module ports Go `charon/dkg/sync` into Rust while keeping the public
-//! API split into a per-peer [`Client`] handle and a shared [`Server`] handle.
-//! Internally, Pluto drives the protocol through a libp2p behaviour and
-//! connection handler because protocol streams are owned by the swarm.
-
 mod behaviour;
 mod client;
 mod error;

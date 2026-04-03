@@ -59,12 +59,22 @@ pub async fn write_fixed_size_delimited<S: AsyncWrite + Unpin>(
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "payload length overflow"))?;
 
     stream.write_all(&len.to_le_bytes()).await?;
-    stream.write_all(payload).await
+    stream.write_all(payload).await?;
+    stream.flush().await
 }
 
 /// Reads a fixed-size length-delimited payload from the stream.
 pub async fn read_fixed_size_delimited<S: AsyncRead + Unpin>(
     stream: &mut S,
+) -> io::Result<Vec<u8>> {
+    read_fixed_size_delimited_with_max(stream, MAX_MESSAGE_SIZE).await
+}
+
+/// Reads a fixed-size length-delimited payload from the stream, rejecting
+/// oversized messages.
+pub async fn read_fixed_size_delimited_with_max<S: AsyncRead + Unpin>(
+    stream: &mut S,
+    max_message_size: usize,
 ) -> io::Result<Vec<u8>> {
     let mut len_buf = [0_u8; 8];
     stream.read_exact(&mut len_buf).await?;
@@ -73,12 +83,19 @@ pub async fn read_fixed_size_delimited<S: AsyncRead + Unpin>(
     if len < 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("invalid data length"),
+            "invalid data length",
         ));
     }
 
     let len = usize::try_from(len)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "payload length overflow"))?;
+    if len > max_message_size {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("message too large: {len} bytes (max: {max_message_size})"),
+        ));
+    }
+
     let mut payload = vec![0_u8; len];
     stream.read_exact(&mut payload).await?;
 
@@ -163,6 +180,20 @@ mod tests {
         let error = read_fixed_size_delimited(&mut cursor)
             .await
             .expect_err("negative sizes must fail");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn oversized_fixed_size_length_fails() {
+        let too_large = i64::try_from(MAX_MESSAGE_SIZE)
+            .expect("max size should fit in i64")
+            .checked_add(1)
+            .expect("test length should not overflow");
+        let mut cursor = Cursor::new(too_large.to_le_bytes().to_vec());
+
+        let error = read_fixed_size_delimited(&mut cursor)
+            .await
+            .expect_err("oversized payloads must fail");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 }
