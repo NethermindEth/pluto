@@ -86,7 +86,7 @@ impl Client {
 
     /// Runs the client until shutdown, fatal error, or cancellation.
     pub async fn run(&self, cancellation: CancellationToken) -> Result<()> {
-        self.activate();
+        self.activate()?;
         self.wait_finished(cancellation, true).await
     }
 
@@ -165,12 +165,19 @@ impl Client {
         }
     }
 
-    pub(crate) fn activate(&self) {
+    pub(crate) fn activate(&self) -> Result<()> {
         self.inner.active.store(true, Ordering::SeqCst);
 
-        if let Some(command_tx) = &self.inner.command_tx {
-            let _ = command_tx.send(Command::Activate(self.inner.peer_id));
+        if let Some(command_tx) = &self.inner.command_tx
+            && command_tx
+                .send(Command::Activate(self.inner.peer_id))
+                .is_ok()
+        {
+            return Ok(());
         }
+
+        self.inner.active.store(false, Ordering::SeqCst);
+        Err(Error::ActivationChannelUnavailable)
     }
 
     async fn wait_finished(
@@ -200,5 +207,35 @@ impl Client {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use libp2p::PeerId;
+    use pluto_core::version::SemVer;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn run_fails_immediately_if_activation_channel_is_closed() {
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
+        drop(command_rx);
+
+        let client = Client::new(
+            PeerId::random(),
+            vec![1, 2, 3],
+            SemVer::parse("v1.7").expect("version"),
+            ClientConfig::default(),
+            Some(command_tx),
+        );
+
+        let error = client
+            .run(CancellationToken::new())
+            .await
+            .expect_err("closed activation channel should fail immediately");
+
+        assert!(matches!(error, Error::ActivationChannelUnavailable));
+        assert!(!client.should_run());
     }
 }

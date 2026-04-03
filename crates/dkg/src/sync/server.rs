@@ -122,12 +122,8 @@ impl Server {
         step: i64,
         cancellation: CancellationToken,
     ) -> Result<()> {
-        let step_plus_one = step
-            .checked_add(1)
-            .ok_or(Error::StepOverflow)?;
-        let step_plus_two = step
-            .checked_add(2)
-            .ok_or(Error::StepOverflow)?;
+        let step_plus_one = step.checked_add(1).ok_or_else(|| Error::StepOverflow)?;
+        let step_plus_two = step.checked_add(2).ok_or_else(|| Error::StepOverflow)?;
 
         loop {
             let notified = self.inner.notify.notified();
@@ -184,7 +180,9 @@ impl Server {
         let mut state = self.inner.state.write().await;
         let inserted = state.connected.insert(peer_id);
         let count = state.connected.len();
-        self.inner.notify.notify_waiters();
+        if inserted {
+            self.inner.notify.notify_waiters();
+        }
         (inserted, count)
     }
 
@@ -217,9 +215,7 @@ impl Server {
                     return Err(Error::PeerStepBehind);
                 }
 
-                let current_plus_two = current
-                    .checked_add(2)
-                    .ok_or(Error::StepOverflow)?;
+                let current_plus_two = current.checked_add(2).ok_or_else(|| Error::StepOverflow)?;
                 if step > current_plus_two {
                     return Err(Error::PeerStepAhead);
                 }

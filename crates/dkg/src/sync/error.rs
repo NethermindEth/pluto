@@ -87,6 +87,10 @@ pub enum Error {
     #[error("sync client completion channel closed")]
     CompletionChannelClosed,
 
+    /// The sync client activation channel was unavailable.
+    #[error("sync client activation channel unavailable")]
+    ActivationChannelUnavailable,
+
     /// An inbound sync message failed validation.
     #[error("invalid sync message: peer={peer} err={error}")]
     InvalidSyncMessage {
@@ -99,4 +103,8 @@ pub enum Error {
     /// The local peer ID was missing from the shared P2P context.
     #[error("local peer id missing from p2p context")]
     LocalPeerMissing,
+
+    /// The configured peer set did not include the local peer ID.
+    #[error("local peer id missing from sync peer set")]
+    LocalPeerNotInPeerSet,
 }

@@ -8,8 +8,9 @@ use libp2p::{
     Multiaddr, PeerId,
     swarm::{
         ConnectionDenied, ConnectionId, FromSwarm, NetworkBehaviour, THandler, THandlerInEvent,
-        THandlerOutEvent, ToSwarm, dummy,
+        THandlerOutEvent, ToSwarm,
         dial_opts::{DialOpts, PeerCondition},
+        dummy,
     },
 };
 use pluto_p2p::p2p_context::P2PContext;
@@ -228,7 +229,7 @@ mod tests {
         let p2p_context = P2PContext::new([peer_id]);
         let mut behaviour = Behaviour::new(server, [client.clone()], p2p_context, command_rx);
 
-        client.activate();
+        client.activate().expect("activate should succeed");
 
         let waker = noop_waker_ref();
         let mut cx = Context::from_waker(waker);

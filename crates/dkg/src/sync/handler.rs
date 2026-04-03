@@ -27,11 +27,11 @@ use tracing::{debug, info, warn};
 use crate::dkgpb::v1::sync::{MsgSync, MsgSyncResponse};
 
 use super::{
+    Event,
     client::Client,
     error::{Error, Result},
     protocol,
     server::Server,
-    Event,
 };
 
 const INITIAL_BACKOFF: Duration = Duration::from_millis(100);
@@ -124,11 +124,16 @@ impl Handler {
 
         let (error, relay_reset) = match error {
             StreamUpgradeError::NegotiationFailed => (Error::Unsupported, false),
-            StreamUpgradeError::Timeout => (Error::Io(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "sync protocol negotiation timed out",
-            )
-            .to_string()), false),
+            StreamUpgradeError::Timeout => (
+                Error::Io(
+                    std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "sync protocol negotiation timed out",
+                    )
+                    .to_string(),
+                ),
+                false,
+            ),
             StreamUpgradeError::Apply(never) => match never {},
             StreamUpgradeError::Io(error) => (
                 Error::Io(error.to_string()),
@@ -310,10 +315,8 @@ async fn run_outbound_stream(client: Client, mut stream: Stream) -> OutboundExit
         };
 
         let response: std::io::Result<MsgSyncResponse> =
-            match pluto_p2p::proto::write_fixed_size_protobuf(&mut stream, &request).await
-            {
-                Ok(()) => pluto_p2p::proto::read_fixed_size_protobuf(&mut stream)
-                    .await,
+            match pluto_p2p::proto::write_fixed_size_protobuf(&mut stream, &request).await {
+                Ok(()) => pluto_p2p::proto::read_fixed_size_protobuf(&mut stream).await,
                 Err(error) => Err(error),
             };
 
@@ -351,69 +354,83 @@ async fn handle_inbound_stream(
     inbound_events_tx: mpsc::UnboundedSender<OutEvent>,
     mut stream: Stream,
 ) -> Result<()> {
-    if !server.is_started() {
-        return Err(Error::ServerNotStarted);
-    }
+    let result = async {
+        if !server.is_started() {
+            return Err(Error::ServerNotStarted);
+        }
 
-    let public_key =
-        pluto_p2p::peer::peer_id_to_libp2p_pk(&peer_id).map_err(|error| Error::Peer(error.to_string()))?;
+        let public_key = pluto_p2p::peer::peer_id_to_libp2p_pk(&peer_id)
+            .map_err(|error| Error::Peer(error.to_string()))?;
 
-    loop {
-        let message: MsgSync = pluto_p2p::proto::read_fixed_size_protobuf(&mut stream)
-            .await
-            .map_err(|error| Error::Io(error.to_string()))?;
-        let mut response = MsgSyncResponse {
-            sync_timestamp: message.timestamp,
-            error: String::new(),
-        };
+        loop {
+            let message: MsgSync = pluto_p2p::proto::read_fixed_size_protobuf(&mut stream)
+                .await
+                .map_err(|error| Error::Io(error.to_string()))?;
+            let mut response = MsgSyncResponse {
+                sync_timestamp: message.timestamp,
+                error: String::new(),
+            };
 
-        if let Err(error) = protocol::validate_request_with_public_key(
-            server.def_hash(),
-            server.version(),
-            &public_key,
-            &message,
-        ) {
-            send_inbound_event(&inbound_events_tx, OutEvent::SyncRejected {
-                peer_id,
-                error: error.clone(),
-            });
-            server
-                .set_err(Error::InvalidSyncMessage {
-                    peer: peer_id,
-                    error: error.to_string(),
-                })
-                .await;
-            response.error = error.to_string();
-        } else {
-            let (inserted, count) = server.mark_connected(peer_id).await;
-            if inserted {
-                info!(
-                    peer = %peer_id,
-                    connected = count,
-                    expected = server.expected_peer_count(),
-                    "Connected to peer"
+            if let Err(error) = protocol::validate_request_with_public_key(
+                server.def_hash(),
+                server.version(),
+                &public_key,
+                &message,
+            ) {
+                send_inbound_event(
+                    &inbound_events_tx,
+                    OutEvent::SyncRejected {
+                        peer_id,
+                        error: error.clone(),
+                    },
+                );
+                server
+                    .set_err(Error::InvalidSyncMessage {
+                        peer: peer_id,
+                        error: error.to_string(),
+                    })
+                    .await;
+                response.error = error.to_string();
+            } else {
+                let (inserted, count) = server.mark_connected(peer_id).await;
+                if inserted {
+                    info!(
+                        peer = %peer_id,
+                        connected = count,
+                        expected = server.expected_peer_count(),
+                        "Connected to peer"
+                    );
+                }
+            }
+
+            if server.update_step(peer_id, message.step).await? {
+                send_inbound_event(
+                    &inbound_events_tx,
+                    OutEvent::PeerStepUpdated {
+                        peer_id,
+                        step: message.step,
+                    },
                 );
             }
-        }
 
-        if server.update_step(peer_id, message.step).await? {
-            send_inbound_event(&inbound_events_tx, OutEvent::PeerStepUpdated {
-                peer_id,
-                step: message.step,
-            });
-        }
+            pluto_p2p::proto::write_fixed_size_protobuf(&mut stream, &response)
+                .await
+                .map_err(|error| Error::Io(error.to_string()))?;
 
-        pluto_p2p::proto::write_fixed_size_protobuf(&mut stream, &response)
-            .await
-            .map_err(|error| Error::Io(error.to_string()))?;
-
-        if message.shutdown {
-            send_inbound_event(&inbound_events_tx, OutEvent::PeerShutdownObserved { peer_id });
-            server.set_shutdown(peer_id).await;
-            server.clear_connected(peer_id).await;
-            return Ok(());
+            if message.shutdown {
+                send_inbound_event(
+                    &inbound_events_tx,
+                    OutEvent::PeerShutdownObserved { peer_id },
+                );
+                server.set_shutdown(peer_id).await;
+                return Ok(());
+            }
         }
     }
+    .await;
+
+    server.clear_connected(peer_id).await;
+    result
 }
 
 fn send_inbound_event(inbound_events_tx: &mpsc::UnboundedSender<OutEvent>, event: OutEvent) {

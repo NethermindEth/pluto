@@ -36,12 +36,19 @@ pub fn new(
     version: SemVer,
 ) -> Result<(Behaviour, Server, Vec<Client>)> {
     let local_peer_id = p2p_context.local_peer_id().ok_or(Error::LocalPeerMissing)?;
+    if !peers.contains(&local_peer_id) {
+        return Err(Error::LocalPeerNotInPeerSet);
+    }
+
     let hash_sig = protocol::sign_definition_hash(secret, &def_hash)?;
-    let server = Server::new(peers.len().saturating_sub(1), def_hash, version.clone());
-    let (command_tx, command_rx) = mpsc::unbounded_channel();
-    let clients = peers
+    let remote_peers = peers
         .into_iter()
         .filter(|peer_id| *peer_id != local_peer_id)
+        .collect::<Vec<_>>();
+    let server = Server::new(remote_peers.len(), def_hash, version.clone());
+    let (command_tx, command_rx) = mpsc::unbounded_channel();
+    let clients = remote_peers
+        .into_iter()
         .map(|peer_id| {
             Client::new(
                 peer_id,
@@ -216,6 +223,28 @@ mod tests {
             .await
             .expect_err("ahead should fail");
         assert!(matches!(error, Error::PeerStepAhead));
+    }
+
+    #[test]
+    fn new_requires_local_peer_in_peer_set() {
+        let key = generate_insecure_k1_key(0);
+        let local_peer_id = peer_id_from_key(key.public_key()).expect("peer id");
+        let remote_peer = PeerId::random();
+        let p2p_context = P2PContext::new([local_peer_id, remote_peer]);
+        p2p_context.set_local_peer_id(local_peer_id);
+
+        let result = new(
+            vec![remote_peer],
+            p2p_context,
+            &key,
+            vec![1, 2, 3],
+            SemVer::parse("v1.7").expect("version"),
+        );
+
+        assert!(
+            matches!(result, Err(Error::LocalPeerNotInPeerSet)),
+            "local peer must be part of the sync peer set"
+        );
     }
 
     #[tokio::test]
