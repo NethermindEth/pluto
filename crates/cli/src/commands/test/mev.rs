@@ -102,11 +102,11 @@ impl TestCaseMev {
         }
     }
 
-    async fn run(&self, target: &str, conf: &TestMevArgs, token: &CancellationToken) -> TestResult {
+    async fn run(&self, target: &str, conf: &TestMevArgs) -> TestResult {
         match self {
-            TestCaseMev::Ping => mev_ping_test(target, conf, token).await,
-            TestCaseMev::PingMeasure => mev_ping_measure_test(target, conf, token).await,
-            TestCaseMev::CreateBlock => mev_create_block_test(target, conf, token).await,
+            TestCaseMev::Ping => mev_ping_test(target, conf).await,
+            TestCaseMev::PingMeasure => mev_ping_measure_test(target, conf).await,
+            TestCaseMev::CreateBlock => mev_create_block_test(target, conf).await,
         }
     }
 }
@@ -230,7 +230,7 @@ async fn test_single_mev(
                     let tr = TestResult::new(&tc_name.name);
                     tr.fail(TestResultError::from_string("timeout/interrupted"))
                 }
-                r = test_case.run(&target, &conf, &token) => {
+                r = test_case.run(&target, &conf) => {
                     r
                 }
             }
@@ -240,7 +240,7 @@ async fn test_single_mev(
     join_set.join_all().await
 }
 
-async fn mev_ping_test(target: &str, _conf: &TestMevArgs, token: &CancellationToken) -> TestResult {
+async fn mev_ping_test(target: &str, _conf: &TestMevArgs) -> TestResult {
     let test_res = TestResult::new("Ping");
     let url = format!("{target}/eth/v1/builder/status");
     let client = reqwest::Client::new();
@@ -250,12 +250,9 @@ async fn mev_ping_test(target: &str, _conf: &TestMevArgs, token: &CancellationTo
         Err(e) => return test_res.fail(e),
     };
 
-    let resp = tokio::select! {
-        _ = token.cancelled() => return test_res.fail(CliError::Other("timeout/interrupted".to_string())),
-        r = apply_basic_auth(client.get(&clean_url), creds).send() => match r {
-            Ok(r) => r,
-            Err(e) => return test_res.fail(e),
-        }
+    let resp = match apply_basic_auth(client.get(&clean_url), creds).send().await {
+        Ok(r) => r,
+        Err(e) => return test_res.fail(e),
     };
 
     if resp.status().as_u16() > 399 {
@@ -265,20 +262,13 @@ async fn mev_ping_test(target: &str, _conf: &TestMevArgs, token: &CancellationTo
     test_res.ok()
 }
 
-async fn mev_ping_measure_test(
-    target: &str,
-    _conf: &TestMevArgs,
-    token: &CancellationToken,
-) -> TestResult {
+async fn mev_ping_measure_test(target: &str, _conf: &TestMevArgs) -> TestResult {
     let test_res = TestResult::new("PingMeasure");
     let url = format!("{target}/eth/v1/builder/status");
 
-    let rtt = tokio::select! {
-        _ = token.cancelled() => return test_res.fail(CliError::Other("timeout/interrupted".to_string())),
-        r = request_rtt(&url, Method::GET, None, StatusCode::OK) => match r {
-            Ok(r) => r,
-            Err(e) => return test_res.fail(e),
-        }
+    let rtt = match request_rtt(&url, Method::GET, None, StatusCode::OK).await {
+        Ok(r) => r,
+        Err(e) => return test_res.fail(e),
     };
 
     evaluate_rtt(
@@ -289,11 +279,7 @@ async fn mev_ping_measure_test(
     )
 }
 
-async fn mev_create_block_test(
-    target: &str,
-    conf: &TestMevArgs,
-    token: &CancellationToken,
-) -> TestResult {
+async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
     let test_res = TestResult::new("CreateBlock");
 
     if !conf.load_test {
@@ -310,7 +296,7 @@ async fn mev_create_block_test(
         }
     };
 
-    let latest_block = match latest_beacon_block(beacon_endpoint, &token).await {
+    let latest_block = match latest_beacon_block(beacon_endpoint).await {
         Ok(b) => b,
         Err(e) => return test_res.fail(e),
     };
@@ -340,8 +326,7 @@ async fn mev_create_block_test(
     let slots_in_epoch_i64 = i64::try_from(SLOTS_IN_EPOCH).unwrap_or(i64::MAX);
     let epoch = next_slot.checked_div(slots_in_epoch_i64).unwrap_or(0);
 
-    let mut proposer_duties = match fetch_proposers_for_epoch(beacon_endpoint, epoch, &token).await
-    {
+    let mut proposer_duties = match fetch_proposers_for_epoch(beacon_endpoint, epoch).await {
         Ok(d) => d,
         Err(e) => return test_res.fail(e),
     };
@@ -369,7 +354,6 @@ async fn mev_create_block_test(
             &mut latest_block,
             &mut proposer_duties,
             beacon_endpoint,
-            &token,
         )
         .await
         {
@@ -394,7 +378,7 @@ async fn mev_create_block_test(
         }
 
         let start_beacon_fetch = Instant::now();
-        latest_block = match latest_beacon_block(beacon_endpoint, &token).await {
+        latest_block = match latest_beacon_block(beacon_endpoint).await {
             Ok(b) => b,
             Err(e) => return test_res.fail(e),
         };
@@ -476,20 +460,15 @@ struct BuilderBidResponse {
     data: serde_json::Value,
 }
 
-async fn latest_beacon_block(
-    endpoint: &str,
-    token: &CancellationToken,
-) -> Result<BeaconBlockMessage> {
+async fn latest_beacon_block(endpoint: &str) -> Result<BeaconBlockMessage> {
     let url = format!("{endpoint}/eth/v2/beacon/blocks/head");
     let (clean_url, creds) = parse_endpoint_credentials(&url)?;
     let client = reqwest::Client::new();
 
-    let resp = tokio::select! {
-        _ = token.cancelled() => return Err(CliError::Other("timeout/interrupted".to_string())),
-        r = apply_basic_auth(client.get(&clean_url), creds).send() => {
-            r.map_err(|e| CliError::Other(format!("http request do: {e}")))?
-        }
-    };
+    let resp = apply_basic_auth(client.get(&clean_url), creds)
+        .send()
+        .await
+        .map_err(|e| CliError::Other(format!("http request do: {e}")))?;
 
     let body = resp
         .bytes()
@@ -505,18 +484,15 @@ async fn latest_beacon_block(
 async fn fetch_proposers_for_epoch(
     beacon_endpoint: &str,
     epoch: i64,
-    token: &CancellationToken,
 ) -> Result<Vec<ProposerDutiesData>> {
     let url = format!("{beacon_endpoint}/eth/v1/validator/duties/proposer/{epoch}");
     let (clean_url, creds) = parse_endpoint_credentials(&url)?;
     let client = reqwest::Client::new();
 
-    let resp = tokio::select! {
-        _ = token.cancelled() => return Err(CliError::Other("timeout/interrupted".to_string())),
-        r = apply_basic_auth(client.get(&clean_url), creds).send() => {
-            r.map_err(|e| CliError::Other(format!("http request do: {e}")))?
-        }
-    };
+    let resp = apply_basic_auth(client.get(&clean_url), creds)
+        .send()
+        .await
+        .map_err(|e| CliError::Other(format!("http request do: {e}")))?;
 
     let body = resp
         .bytes()
@@ -543,7 +519,6 @@ async fn get_block_header(
     next_slot: i64,
     block_hash: &str,
     validator_pub_key: &str,
-    token: &CancellationToken,
 ) -> std::result::Result<(BuilderBidResponse, Duration), MevError> {
     let url =
         format!("{target}/eth/v1/builder/header/{next_slot}/{block_hash}/{validator_pub_key}");
@@ -554,24 +529,19 @@ async fn get_block_header(
     let client = reqwest::Client::new();
     let start = Instant::now();
 
-    let resp = tokio::select! {
-        _ = token.cancelled() => {
-            return Err(MevError::Cli(CliError::Other("timeout/interrupted".to_string())));
-        }
-        r = apply_basic_auth(client.get(&clean_url), creds)
-            .header("X-Timeout-Ms", x_timeout_ms.to_string())
-            .header(
-                "Date-Milliseconds",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis()
-                    .to_string(),
-            )
-            .send() => {
-            r.map_err(|e| MevError::Cli(CliError::Other(format!("http request rtt: {e}"))))?
-        }
-    };
+    let resp = apply_basic_auth(client.get(&clean_url), creds)
+        .header("X-Timeout-Ms", x_timeout_ms.to_string())
+        .header(
+            "Date-Milliseconds",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+                .to_string(),
+        )
+        .send()
+        .await
+        .map_err(|e| MevError::Cli(CliError::Other(format!("http request rtt: {e}"))))?;
 
     let rtt = start.elapsed();
 
@@ -599,16 +569,11 @@ async fn create_mev_block(
     latest_block: &mut BeaconBlockMessage,
     proposer_duties: &mut Vec<ProposerDutiesData>,
     beacon_endpoint: &str,
-    token: &CancellationToken,
 ) -> Result<Duration> {
     let rtt_get_header;
     let builder_bid;
 
     loop {
-        if token.is_cancelled() {
-            return Err(CliError::Other("timeout/interrupted".to_string()));
-        }
-
         let start_iteration = Instant::now();
         let slots_in_epoch_i64 = i64::try_from(SLOTS_IN_EPOCH).unwrap_or(i64::MAX);
         let epoch = next_slot.checked_div(slots_in_epoch_i64).unwrap_or(0);
@@ -616,7 +581,7 @@ async fn create_mev_block(
         let pk = if let Some(pk) = get_validator_pk_for_slot(proposer_duties, next_slot) {
             pk
         } else {
-            *proposer_duties = fetch_proposers_for_epoch(beacon_endpoint, epoch, token).await?;
+            *proposer_duties = fetch_proposers_for_epoch(beacon_endpoint, epoch).await?;
             get_validator_pk_for_slot(proposer_duties, next_slot)
                 .ok_or_else(|| CliError::Other("slot not found".to_string()))?
         };
@@ -627,7 +592,6 @@ async fn create_mev_block(
             next_slot,
             &latest_block.body.execution_payload.block_hash,
             &pk,
-            token,
         )
         .await
         {
@@ -648,27 +612,17 @@ async fn create_mev_block(
                 if let Some(sleep_dur) = SLOT_TIME.checked_sub(elapsed)
                     && let Some(sleep_dur) = sleep_dur.checked_sub(Duration::from_secs(1))
                 {
-                    tokio::select! {
-                        _ = token.cancelled() => {
-                            return Err(CliError::Other("timeout/interrupted".to_string()));
-                        }
-                        _ = tokio::time::sleep(sleep_dur) => {}
-                    }
+                    tokio::time::sleep(sleep_dur).await;
                 }
 
                 let start_beacon_fetch = Instant::now();
-                *latest_block = latest_beacon_block(beacon_endpoint, token).await?;
+                *latest_block = latest_beacon_block(beacon_endpoint).await?;
                 next_slot = next_slot.saturating_add(1);
 
                 if let Some(sleep_dur) =
                     Duration::from_secs(1).checked_sub(start_beacon_fetch.elapsed())
                 {
-                    tokio::select! {
-                        _ = token.cancelled() => {
-                            return Err(CliError::Other("timeout/interrupted".to_string()));
-                        }
-                        _ = tokio::time::sleep(sleep_dur) => {}
-                    }
+                    tokio::time::sleep(sleep_dur).await;
                 }
 
                 continue;
@@ -684,15 +638,13 @@ async fn create_mev_block(
         ))
     })?;
 
-    let rtt_submit_block = tokio::select! {
-        _ = token.cancelled() => return Err(CliError::Other("timeout/interrupted".to_string())),
-        r = request_rtt(
-            format!("{target}/eth/v1/builder/blinded_blocks"),
-            Method::POST,
-            Some(payload_json),
-            StatusCode::BAD_REQUEST,
-        ) => r?
-    };
+    let rtt_submit_block = request_rtt(
+        format!("{target}/eth/v1/builder/blinded_blocks"),
+        Method::POST,
+        Some(payload_json),
+        StatusCode::BAD_REQUEST,
+    )
+    .await?;
 
     Ok(rtt_get_header
         .checked_add(rtt_submit_block)
