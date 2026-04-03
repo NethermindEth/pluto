@@ -112,7 +112,11 @@ impl TestCaseMev {
 }
 
 /// Runs the MEV relay tests.
-pub async fn run(args: TestMevArgs, writer: &mut dyn Write) -> Result<TestCategoryResult> {
+pub async fn run(
+    args: TestMevArgs,
+    writer: &mut dyn Write,
+    token: &CancellationToken,
+) -> Result<TestCategoryResult> {
     must_output_to_file_on_quiet(args.test_config.quiet, &args.test_config.output_json)?;
 
     // Validate flag combinations.
@@ -140,11 +144,13 @@ pub async fn run(args: TestMevArgs, writer: &mut dyn Write) -> Result<TestCatego
         return Err(CliError::Other("test case not supported".to_string()));
     }
 
-    let token = CancellationToken::new();
-    let timeout_token = token.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(args.test_config.timeout).await;
-        timeout_token.cancel();
+    let token = token.child_token();
+    tokio::spawn({
+        let token = token.clone();
+        async move {
+            tokio::time::sleep(args.test_config.timeout).await;
+            token.cancel();
+        }
     });
 
     let start_time = Instant::now();

@@ -58,7 +58,7 @@ async fn main() -> ExitResult {
                             .await
                             .map(|_| ())
                     }
-                    TestCommands::Mev(args) => commands::test::mev::run(args, &mut stdout)
+                    TestCommands::Mev(args) => commands::test::mev::run(args, &mut stdout, &ct)
                         .await
                         .map(|_| ()),
                     TestCommands::Infra(args) => commands::test::infra::run(args, &mut stdout)
