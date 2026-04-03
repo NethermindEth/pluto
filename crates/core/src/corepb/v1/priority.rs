@@ -12,6 +12,16 @@ pub struct PriorityResult {
     #[prost(message, repeated, tag = "2")]
     pub topics: ::prost::alloc::vec::Vec<PriorityTopicResult>,
 }
+impl ::prost::Name for PriorityResult {
+    const NAME: &'static str = "PriorityResult";
+    const PACKAGE: &'static str = "priority";
+    fn full_name() -> ::prost::alloc::string::String {
+        "priority.PriorityResult".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/priority.PriorityResult".into()
+    }
+}
 /// PriorityMsg defines all the priorities and metadata of a single peer in the Prioritiser protocol.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PriorityMsg {
@@ -24,6 +34,16 @@ pub struct PriorityMsg {
     #[prost(bytes = "bytes", tag = "4")]
     pub signature: ::prost::bytes::Bytes,
 }
+impl ::prost::Name for PriorityMsg {
+    const NAME: &'static str = "PriorityMsg";
+    const PACKAGE: &'static str = "priority";
+    fn full_name() -> ::prost::alloc::string::String {
+        "priority.PriorityMsg".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/priority.PriorityMsg".into()
+    }
+}
 /// PriorityTopicProposal defines a single peers proposed priorities for a single topic in the Prioritiser protocol.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PriorityTopicProposal {
@@ -31,6 +51,16 @@ pub struct PriorityTopicProposal {
     pub topic: ::core::option::Option<::prost_types::Any>,
     #[prost(message, repeated, tag = "2")]
     pub priorities: ::prost::alloc::vec::Vec<::prost_types::Any>,
+}
+impl ::prost::Name for PriorityTopicProposal {
+    const NAME: &'static str = "PriorityTopicProposal";
+    const PACKAGE: &'static str = "priority";
+    fn full_name() -> ::prost::alloc::string::String {
+        "priority.PriorityTopicProposal".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/priority.PriorityTopicProposal".into()
+    }
 }
 /// PriorityTopicResult defines the cluster wide resulting priorities for a
 /// single topic in the Prioritiser protocol.
@@ -42,6 +72,16 @@ pub struct PriorityTopicResult {
     #[prost(message, repeated, tag = "2")]
     pub priorities: ::prost::alloc::vec::Vec<PriorityScoredResult>,
 }
+impl ::prost::Name for PriorityTopicResult {
+    const NAME: &'static str = "PriorityTopicResult";
+    const PACKAGE: &'static str = "priority";
+    fn full_name() -> ::prost::alloc::string::String {
+        "priority.PriorityTopicResult".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/priority.PriorityTopicResult".into()
+    }
+}
 /// PriorityScoredResult defines the cluster wide priority score in the Prioritiser protocol.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PriorityScoredResult {
@@ -49,4 +89,14 @@ pub struct PriorityScoredResult {
     pub priority: ::core::option::Option<::prost_types::Any>,
     #[prost(int64, tag = "2")]
     pub score: i64,
+}
+impl ::prost::Name for PriorityScoredResult {
+    const NAME: &'static str = "PriorityScoredResult";
+    const PACKAGE: &'static str = "priority";
+    fn full_name() -> ::prost::alloc::string::String {
+        "priority.PriorityScoredResult".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/priority.PriorityScoredResult".into()
+    }
 }

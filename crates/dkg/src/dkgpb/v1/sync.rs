@@ -17,10 +17,30 @@ pub struct MsgSync {
     #[prost(int64, tag = "5")]
     pub step: i64,
 }
+impl ::prost::Name for MsgSync {
+    const NAME: &'static str = "MsgSync";
+    const PACKAGE: &'static str = "sync";
+    fn full_name() -> ::prost::alloc::string::String {
+        "sync.MsgSync".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/sync.MsgSync".into()
+    }
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MsgSyncResponse {
     #[prost(message, optional, tag = "1")]
     pub sync_timestamp: ::core::option::Option<::prost_types::Timestamp>,
     #[prost(string, tag = "2")]
     pub error: ::prost::alloc::string::String,
+}
+impl ::prost::Name for MsgSyncResponse {
+    const NAME: &'static str = "MsgSyncResponse";
+    const PACKAGE: &'static str = "sync";
+    fn full_name() -> ::prost::alloc::string::String {
+        "sync.MsgSyncResponse".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/sync.MsgSyncResponse".into()
+    }
 }

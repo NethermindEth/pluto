@@ -11,3 +11,13 @@ pub struct ParSigExMsg {
     #[prost(message, optional, tag = "2")]
     pub data_set: ::core::option::Option<super::core::ParSignedDataSet>,
 }
+impl ::prost::Name for ParSigExMsg {
+    const NAME: &'static str = "ParSigExMsg";
+    const PACKAGE: &'static str = "parsigex";
+    fn full_name() -> ::prost::alloc::string::String {
+        "parsigex.ParSigExMsg".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/parsigex.ParSigExMsg".into()
+    }
+}
