@@ -63,14 +63,6 @@ pub enum Error {
     #[error("convert secret key to libp2p keypair: {0}")]
     KeyConversion(String),
 
-    /// Failed to decode a protobuf message.
-    #[error("protobuf decode failed: {0}")]
-    Decode(String),
-
-    /// Failed to encode a protobuf message.
-    #[error("protobuf encode failed: {0}")]
-    Encode(String),
-
     /// An I/O error occurred while reading or writing the stream.
     #[error("i/o error: {0}")]
     Io(String),
