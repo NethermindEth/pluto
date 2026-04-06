@@ -287,13 +287,17 @@ impl ConnectionHandler for Handler {
 
 async fn run_outbound_stream(client: Client, mut stream: Stream) -> OutboundExit {
     let mut interval = tokio::time::interval(client.period());
+    let mut stop_rx = client.stop_requested_rx();
     let hash_signature = prost::bytes::Bytes::copy_from_slice(client.hash_sig());
     let version = client.version().to_string();
 
     client.set_connected(true);
 
     loop {
-        interval.tick().await;
+        tokio::select! {
+            _ = interval.tick() => {}
+            _ = stop_rx.changed() => return OutboundExit::Fatal(Error::Canceled),
+        }
 
         let shutdown = client.shutdown_requested();
         let timestamp = Timestamp::from(std::time::SystemTime::now());
@@ -305,11 +309,15 @@ async fn run_outbound_stream(client: Client, mut stream: Stream) -> OutboundExit
             step: client.step(),
         };
 
-        let response: std::io::Result<MsgSyncResponse> =
-            match pluto_p2p::proto::write_fixed_size_protobuf(&mut stream, &request).await {
-                Ok(()) => pluto_p2p::proto::read_fixed_size_protobuf(&mut stream).await,
-                Err(error) => Err(error),
-            };
+        let response: std::io::Result<MsgSyncResponse> = tokio::select! {
+            response = async {
+                match pluto_p2p::proto::write_fixed_size_protobuf(&mut stream, &request).await {
+                    Ok(()) => pluto_p2p::proto::read_fixed_size_protobuf(&mut stream).await,
+                    Err(error) => Err(error),
+                }
+            } => response,
+            _ = stop_rx.changed() => return OutboundExit::Fatal(Error::Canceled),
+        };
 
         let response = match response {
             Ok(response) => response,

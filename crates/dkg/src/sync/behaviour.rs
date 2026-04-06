@@ -82,7 +82,8 @@ impl Behaviour {
         }
     }
 
-    /// Queues a dial for an active sync client when no connection to the peer exists.
+    /// Queues a dial for an active sync client when no connection to the peer
+    /// exists.
     ///
     /// This is used both for the initial activation path and for retrying
     /// transport-level dial failures during startup.

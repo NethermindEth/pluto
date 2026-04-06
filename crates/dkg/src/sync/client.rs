@@ -47,6 +47,7 @@ struct ClientInner {
     shutdown_requested: AtomicBool,
     finished: AtomicBool,
     outbound_claimed: AtomicBool,
+    stop_tx: watch::Sender<bool>,
     done_tx: watch::Sender<Option<Result<()>>>,
     command_tx: Option<mpsc::UnboundedSender<Command>>,
 }
@@ -66,6 +67,7 @@ impl Client {
         config: ClientConfig,
         command_tx: Option<mpsc::UnboundedSender<Command>>,
     ) -> Self {
+        let (stop_tx, _stop_rx) = watch::channel(false);
         let (done_tx, _done_rx) = watch::channel(None);
         Self {
             inner: Arc::new(ClientInner {
@@ -80,6 +82,7 @@ impl Client {
                 shutdown_requested: AtomicBool::new(false),
                 finished: AtomicBool::new(false),
                 outbound_claimed: AtomicBool::new(false),
+                stop_tx,
                 done_tx,
                 command_tx,
             }),
@@ -158,8 +161,7 @@ impl Client {
     }
 
     pub(crate) fn finish(&self, result: Result<()>) {
-        self.inner.active.store(false, Ordering::SeqCst);
-        self.inner.connected.store(false, Ordering::SeqCst);
+        self.request_stop();
         self.release_outbound();
 
         if !self.inner.finished.swap(true, Ordering::SeqCst) {
@@ -167,8 +169,13 @@ impl Client {
         }
     }
 
+    pub(crate) fn stop_requested_rx(&self) -> watch::Receiver<bool> {
+        self.inner.stop_tx.subscribe()
+    }
+
     pub(crate) fn activate(&self) -> Result<()> {
         self.inner.active.store(true, Ordering::SeqCst);
+        let _ = self.inner.stop_tx.send(false);
 
         if let Some(command_tx) = &self.inner.command_tx
             && command_tx
@@ -180,6 +187,12 @@ impl Client {
 
         self.inner.active.store(false, Ordering::SeqCst);
         Err(Error::ActivationChannelUnavailable)
+    }
+
+    fn request_stop(&self) {
+        self.inner.active.store(false, Ordering::SeqCst);
+        self.inner.connected.store(false, Ordering::SeqCst);
+        let _ = self.inner.stop_tx.send(true);
     }
 
     async fn wait_finished(
@@ -197,8 +210,7 @@ impl Client {
             tokio::select! {
                 _ = cancellation.cancelled() => {
                     if clear_on_cancel {
-                        self.inner.active.store(false, Ordering::SeqCst);
-                        self.inner.connected.store(false, Ordering::SeqCst);
+                        self.request_stop();
                     }
                     return Err(Error::Canceled);
                 }
@@ -239,5 +251,27 @@ mod tests {
 
         assert!(matches!(error, Error::ActivationChannelUnavailable));
         assert!(!client.should_run());
+    }
+
+    #[tokio::test]
+    async fn request_stop_notifies_outbound_waiters() {
+        let client = Client::new(
+            PeerId::random(),
+            vec![1, 2, 3],
+            SemVer::parse("v1.7").expect("version"),
+            ClientConfig::default(),
+            None,
+        );
+        let mut stop_rx = client.stop_requested_rx();
+
+        assert!(!*stop_rx.borrow());
+
+        client.request_stop();
+        stop_rx
+            .changed()
+            .await
+            .expect("stop sender should stay alive");
+
+        assert!(*stop_rx.borrow());
     }
 }
