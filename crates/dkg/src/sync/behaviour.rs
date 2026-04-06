@@ -7,8 +7,8 @@ use either::Either;
 use libp2p::{
     Multiaddr, PeerId,
     swarm::{
-        ConnectionDenied, ConnectionId, FromSwarm, NetworkBehaviour, THandler, THandlerInEvent,
-        THandlerOutEvent, ToSwarm,
+        ConnectionDenied, ConnectionId, DialError, FromSwarm, NetworkBehaviour, THandler,
+        THandlerInEvent, THandlerOutEvent, ToSwarm,
         dial_opts::{DialOpts, PeerCondition},
         dummy,
     },
@@ -82,32 +82,38 @@ impl Behaviour {
         }
     }
 
+    /// Queues a dial for an active sync client when no connection to the peer exists.
+    ///
+    /// This is used both for the initial activation path and for retrying
+    /// transport-level dial failures during startup.
+    fn schedule_dial_if_needed(&mut self, peer_id: PeerId) {
+        let Some(client) = self.clients.get(&peer_id) else {
+            return;
+        };
+
+        if !client.should_run() || client.is_connected() || client.shutdown_requested() {
+            return;
+        }
+
+        if !self
+            .p2p_context
+            .peer_store_lock()
+            .connections_to_peer(&peer_id)
+            .is_empty()
+        {
+            return;
+        }
+
+        self.pending_events.push_back(ToSwarm::Dial {
+            opts: DialOpts::peer_id(peer_id)
+                .condition(PeerCondition::DisconnectedAndNotDialing)
+                .build(),
+        });
+    }
+
     fn handle_command(&mut self, command: Command) {
         match command {
-            Command::Activate(peer_id) => {
-                let Some(client) = self.clients.get(&peer_id) else {
-                    return;
-                };
-
-                if !client.should_run() || client.is_connected() || client.shutdown_requested() {
-                    return;
-                }
-
-                if !self
-                    .p2p_context
-                    .peer_store_lock()
-                    .connections_to_peer(&peer_id)
-                    .is_empty()
-                {
-                    return;
-                }
-
-                self.pending_events.push_back(ToSwarm::Dial {
-                    opts: DialOpts::peer_id(peer_id)
-                        .condition(PeerCondition::DisconnectedAndNotDialing)
-                        .build(),
-                });
-            }
+            Command::Activate(peer_id) => self.schedule_dial_if_needed(peer_id),
         }
     }
 }
@@ -150,7 +156,15 @@ impl NetworkBehaviour for Behaviour {
                 }
             }
             FromSwarm::DialFailure(event) => {
-                let _ = event;
+                if let Some(peer_id) = event.peer_id
+                    && matches!(event.error, DialError::Transport(_))
+                    && self
+                        .clients
+                        .get(&peer_id)
+                        .is_some_and(|c| c.should_reconnect())
+                {
+                    self.schedule_dial_if_needed(peer_id);
+                }
             }
             _ => {}
         }
@@ -192,8 +206,8 @@ mod tests {
     use libp2p::{
         core::{ConnectedPoint, Endpoint, transport::PortUse},
         swarm::{
-            ConnectionClosed, ConnectionId, FromSwarm, NetworkBehaviour, ToSwarm,
-            dial_opts::DialOpts,
+            ConnectionClosed, ConnectionId, DialError, DialFailure, FromSwarm, NetworkBehaviour,
+            ToSwarm, dial_opts::DialOpts,
         },
     };
     use pluto_core::version::SemVer;
@@ -202,8 +216,10 @@ mod tests {
     use super::*;
     use crate::sync::ClientConfig;
 
-    fn test_behaviour(client: Client) -> Behaviour {
-        let (_unused_tx, command_rx) = mpsc::unbounded_channel();
+    fn test_behaviour_with_command_channel(
+        client: Client,
+        command_rx: mpsc::UnboundedReceiver<Command>,
+    ) -> Behaviour {
         let version = SemVer::parse("v1.7").expect("valid version");
         let p2p_context = P2PContext::new([client.peer_id()]);
         Behaviour::new(
@@ -214,33 +230,41 @@ mod tests {
         )
     }
 
+    fn test_behaviour(client: Client) -> Behaviour {
+        let (_unused_tx, command_rx) = mpsc::unbounded_channel();
+        test_behaviour_with_command_channel(client, command_rx)
+    }
+
+    fn assert_next_dial(behaviour: &mut Behaviour, peer_id: PeerId, message: &str) {
+        let waker = noop_waker_ref();
+        let mut cx = Context::from_waker(waker);
+        let poll = NetworkBehaviour::poll(behaviour, &mut cx);
+
+        let Poll::Ready(ToSwarm::Dial { opts }) = poll else {
+            panic!("{message}");
+        };
+        assert_eq!(DialOpts::get_peer_id(&opts), Some(peer_id));
+    }
+
+    fn activate_and_assert_dial(behaviour: &mut Behaviour, client: &Client) {
+        client.activate().expect("activate should succeed");
+        assert_next_dial(behaviour, client.peer_id(), "expected dial event");
+    }
+
     #[test]
     fn active_client_requests_dial() {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
-        let version = SemVer::parse("v1.7").expect("valid version");
         let peer_id = PeerId::random();
         let client = Client::new(
             peer_id,
             vec![1, 2, 3],
-            version.clone(),
+            SemVer::parse("v1.7").expect("valid version"),
             Default::default(),
             Some(command_tx),
         );
-        let server = Server::new(1, vec![1, 2, 3], version);
-        let p2p_context = P2PContext::new([peer_id]);
-        let mut behaviour = Behaviour::new(server, [client.clone()], p2p_context, command_rx);
+        let mut behaviour = test_behaviour_with_command_channel(client.clone(), command_rx);
 
-        client.activate().expect("activate should succeed");
-
-        let waker = noop_waker_ref();
-        let mut cx = Context::from_waker(waker);
-        let poll = NetworkBehaviour::poll(&mut behaviour, &mut cx);
-
-        let Poll::Ready(ToSwarm::Dial { opts }) = poll else {
-            panic!("expected dial event");
-        };
-
-        assert_eq!(DialOpts::get_peer_id(&opts), Some(peer_id));
+        activate_and_assert_dial(&mut behaviour, &client);
     }
 
     #[test]
@@ -287,5 +311,34 @@ mod tests {
 
         assert!(!client.is_connected());
         assert!(client.try_claim_outbound());
+    }
+
+    #[test]
+    fn dial_failure_retries_active_client() {
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
+        let peer_id = PeerId::random();
+        let client = Client::new(
+            peer_id,
+            vec![1, 2, 3],
+            SemVer::parse("v1.7").expect("valid version"),
+            Default::default(),
+            Some(command_tx),
+        );
+        let mut behaviour = test_behaviour_with_command_channel(client.clone(), command_rx);
+
+        activate_and_assert_dial(&mut behaviour, &client);
+
+        let address = "/ip4/127.0.0.1/tcp/9000".parse().expect("valid multiaddr");
+        let error = DialError::Transport(vec![(
+            address,
+            libp2p::TransportError::Other(std::io::Error::other("dial failed")),
+        )]);
+        behaviour.on_swarm_event(FromSwarm::DialFailure(DialFailure {
+            peer_id: Some(peer_id),
+            error: &error,
+            connection_id: ConnectionId::new_unchecked(1),
+        }));
+
+        assert_next_dial(&mut behaviour, peer_id, "expected retry dial event");
     }
 }

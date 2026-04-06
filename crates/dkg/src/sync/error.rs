@@ -15,7 +15,7 @@ pub enum Error {
     PeerRespondedWithError(String),
 
     /// The remote peer version did not match.
-    #[error("mismatching version; expect={expected}, got={got}")]
+    #[error("mismatching charon version; expect={expected}, got={got}")]
     VersionMismatch {
         /// The expected version string.
         expected: String,
