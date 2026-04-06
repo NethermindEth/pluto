@@ -1,31 +1,12 @@
 //! Error types for the Pluto CLI.
 
-use std::{
-    path::PathBuf,
-    process::{ExitCode, Termination},
-};
-
-use thiserror::Error;
+use std::path::PathBuf;
 
 /// Result type for CLI operations.
 pub type Result<T> = std::result::Result<T, CliError>;
 
-pub struct ExitResult(pub Result<()>);
-
-impl Termination for ExitResult {
-    fn report(self) -> ExitCode {
-        match self.0 {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(err) => {
-                eprintln!("Error: {}", err);
-                ExitCode::FAILURE
-            }
-        }
-    }
-}
-
 /// Errors that can occur in the Pluto CLI.
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum CliError {
     /// Private key file not found.
     #[error(
@@ -73,7 +54,7 @@ pub enum CliError {
 
     /// SSZ hasher error.
     #[error("Hasher error: {0}")]
-    HasherError(#[from] pluto_cluster::ssz_hasher::HasherError),
+    HasherError(#[from] pluto_ssz::HasherError),
 
     /// HTTP request error.
     #[error("HTTP request error: {0}")]
@@ -87,11 +68,15 @@ pub enum CliError {
     #[error("test case not supported")]
     _TestCaseNotSupported,
 
-    /// Generic error with message.
-    #[error("{0}")]
-    Other(String),
-
     /// Relay P2P error.
     #[error("Relay P2P error: {0}")]
     RelayP2PError(#[from] pluto_relay_server::error::RelayP2PError),
+
+    /// Command parsing error.
+    #[error("Command parsing error: {0}")]
+    CommandParsingError(#[from] clap::Error),
+
+    /// Generic error with message.
+    #[error("{0}")]
+    Other(String),
 }

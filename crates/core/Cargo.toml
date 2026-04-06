@@ -51,6 +51,9 @@ pluto-cluster.workspace = true
 pluto-p2p.workspace = true
 pluto-testutil.workspace = true
 pluto-tracing.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+wiremock.workspace = true
+pluto-ssz.workspace = true
 
 [build-dependencies]
 pluto-build-proto.workspace = true

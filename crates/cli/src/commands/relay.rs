@@ -266,10 +266,9 @@ pub struct RelayLogFlags {
     #[arg(
         long = "log-output-path",
         env = "PLUTO_LOG_OUTPUT_PATH",
-        default_value = "",
         help = "Path in which to write on-disk logs."
     )]
-    pub log_output_path: String,
+    pub log_output_path: Option<PathBuf>,
 }
 
 #[derive(clap::ValueEnum, Clone, Default)]
@@ -299,19 +298,7 @@ pub struct RelayLokiArgs {
     pub loki_service: String,
 }
 
-pub async fn run(args: RelayArgs, ct: CancellationToken) -> Result<(), CliError> {
-    let config: pluto_relay_server::config::Config = args.try_into()?;
-
-    let log_config = config
-        .log_config
-        .as_ref()
-        .expect("Log config is always configured");
-    pluto_tracing::init(log_config).expect("Failed to initialize tracing");
-
-    run_with_config(config, ct).await
-}
-
-async fn run_with_config(
+pub async fn run(
     config: pluto_relay_server::config::Config,
     ct: CancellationToken,
 ) -> Result<(), CliError> {
@@ -547,7 +534,7 @@ mod tests {
                 format: "console".into(),
                 level: "error".into(),
                 color: super::ConsoleColor::Disable,
-                log_output_path: "".into(),
+                log_output_path: None,
             },
             loki: super::RelayLokiArgs {
                 loki_addresses: vec![],
@@ -559,7 +546,7 @@ mod tests {
         let cfg: pluto_relay_server::config::Config = args.clone().try_into().unwrap();
         let ct = CancellationToken::new();
 
-        let relay = tokio::spawn(super::run_with_config(cfg.clone(), ct.child_token()));
+        let relay = tokio::spawn(super::run(cfg.clone(), ct.child_token()));
 
         test_fn(cfg.clone()).await;
 

@@ -1,9 +1,7 @@
 #![allow(missing_docs)]
 
-use crate::spec::{
-    altair, bellatrix, capella, deneb, electra, phase0,
-    ssz_types::{BitList, BitVector},
-};
+use crate::spec::{altair, bellatrix, capella, deneb, electra, phase0};
+use pluto_ssz::{BitList, BitVector};
 use serde_json::Value;
 use tree_hash::TreeHash;
 

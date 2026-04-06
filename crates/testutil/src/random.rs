@@ -18,10 +18,11 @@ use pluto_eth2api::{
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
 /// A deterministic RNG that always returns the same byte value.
-/// This counter-acts the library's attempt at making ECDSA signatures
-/// non-deterministic.
+///
+/// This is useful in tests and examples that need reproducible secp256k1 keys
+/// or signatures.
 #[derive(Debug, Clone, Copy)]
-struct ConstReader(u8);
+pub struct ConstReader(pub u8);
 
 impl RngCore for ConstReader {
     fn next_u32(&mut self) -> u32 {
@@ -80,11 +81,7 @@ pub fn generate_test_bls_key(seed: u64) -> PrivateKey {
 /// Returns a 96-byte (192 hex characters) BLS signature encoded as a hex string
 /// with "0x" prefix.
 pub fn random_eth2_signature() -> String {
-    let mut bytes = [0u8; 96];
-    let mut rng = rand::thread_rng();
-    for byte in &mut bytes {
-        *byte = rng.r#gen();
-    }
+    let bytes = random_eth2_signature_bytes();
     format!("0x{}", hex::encode(bytes))
 }
 
@@ -107,11 +104,7 @@ pub fn random_eth_address(rand: &mut impl Rng) -> [u8; 20] {
 /// Returns a 32-byte (64 hex characters) root encoded as a hex string with "0x"
 /// prefix.
 pub fn random_root() -> String {
-    let mut bytes = [0u8; 32];
-    let mut rng = rand::thread_rng();
-    for byte in &mut bytes {
-        *byte = rng.r#gen();
-    }
+    let bytes = random_root_bytes();
     format!("0x{}", hex::encode(bytes))
 }
 
@@ -337,12 +330,26 @@ mod tests {
 
     #[test]
     fn test_random_bit_list() {
-        let bitlist = random_bit_list(5);
+        for length in [5usize, 50, 256] {
+            let bitlist = random_bit_list(length);
 
-        // Check format
-        assert!(bitlist.starts_with("0x"));
-        // 32 bytes = 64 hex chars + "0x" prefix = 66 total
-        assert_eq!(bitlist.len(), 66);
+            // Check format
+            assert!(bitlist.starts_with("0x"));
+            // 32 bytes = 64 hex chars + "0x" prefix = 66 total
+            assert_eq!(bitlist.len(), 66);
+
+            // Decode to bytes and verify bit count
+            let bytes = hex::decode(&bitlist[2..]).unwrap();
+            let bit_count = bytes.iter().map(|b| b.count_ones()).sum::<u32>();
+            // Bit count must be <= length (collisions possible for large lengths)
+            assert!(bit_count <= u32::try_from(length).unwrap());
+        }
+
+        // For a small, exact length verify the exact bit count
+        let bitlist = random_bit_list(5);
+        let bytes = hex::decode(&bitlist[2..]).unwrap();
+        let bit_count = bytes.iter().map(|b| b.count_ones()).sum::<u32>();
+        assert_eq!(bit_count, 5);
     }
 
     #[test]

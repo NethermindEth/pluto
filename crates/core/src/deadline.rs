@@ -41,7 +41,6 @@
 use crate::types::{Duty, DutyType, SlotNumber};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use futures::future::{BoxFuture, FutureExt};
 use pluto_eth2api::{EthBeaconNodeApiClient, EthBeaconNodeApiClientError};
 use std::{
     collections::HashSet,
@@ -51,6 +50,12 @@ use tokio_util::sync::CancellationToken;
 
 /// Fraction of slot duration to use as a margin for network delays.
 const MARGIN_FACTOR: i32 = 12;
+
+/// A safe far-future duration (~10 years) for timeout calculations.
+/// Using Duration::MAX can cause panics when computing Instant::now() +
+/// duration, so we use a large but representable value instead.
+const FAR_FUTURE_DURATION: std::time::Duration =
+    std::time::Duration::from_secs(3600 * 24 * 365 * 10);
 
 /// Type alias for the deadline function.
 ///
@@ -62,13 +67,9 @@ pub type DeadlineFunc = Arc<dyn Fn(Duty) -> Result<Option<DateTime<Utc>>> + Send
 /// Error types for deadline operations.
 #[derive(Debug, thiserror::Error)]
 pub enum DeadlineError {
-    /// Failed to fetch genesis time from beacon node.
-    #[error("Failed to fetch genesis time: {0}")]
-    FetchGenesisTime(#[from] EthBeaconNodeApiClientError),
-
-    /// Deadliner has been shut down.
-    #[error("Deadliner has been shut down")]
-    Shutdown,
+    /// Failed to fetch beacon node configuration.
+    #[error("Failed to fetch beacon node configuration: {0}")]
+    BeaconNodeConfigError(#[from] EthBeaconNodeApiClientError),
 
     /// Arithmetic overflow in deadline calculation.
     #[error("Arithmetic overflow in deadline calculation")]
@@ -91,18 +92,13 @@ fn to_chrono_duration(duration: std::time::Duration) -> Result<chrono::Duration>
     chrono::Duration::from_std(duration).map_err(|_| DeadlineError::DurationConversion)
 }
 
-/// Converts seconds (u64) to `chrono::Duration`.
-fn secs_to_chrono(secs: u64) -> Result<chrono::Duration> {
-    let secs_i64 = i64::try_from(secs).map_err(|_| DeadlineError::ArithmeticOverflow)?;
-    chrono::Duration::try_seconds(secs_i64).ok_or(DeadlineError::DurationConversion)
-}
-
 /// Deadliner provides duty deadline functionality.
 ///
 /// The `c()` method returns a channel for receiving expired duties.
 /// It may only be called once and the returned channel should be used
 /// by a single task. Multiple instances are required for different
 /// components and use cases.
+#[async_trait]
 pub trait Deadliner: Send + Sync {
     /// Adds a duty for deadline scheduling.
     ///
@@ -113,42 +109,13 @@ pub trait Deadliner: Send + Sync {
     /// Returns `false` if:
     /// - The duty has already expired and cannot be scheduled
     /// - The duty never expires (e.g., Exit, BuilderRegistration)
-    fn add(&self, duty: Duty) -> BoxFuture<'_, bool>;
+    async fn add(&self, duty: Duty) -> bool;
 
     /// Returns the channel for receiving deadlined duties.
     ///
     /// This method may only be called once and returns `None` on subsequent
     /// calls. The returned channel should only be used by a single task.
     fn c(&self) -> Option<tokio::sync::mpsc::Receiver<Duty>>;
-}
-
-/// Trait for beacon clients that can provide genesis time and slot
-/// configuration.
-///
-/// This trait abstracts the necessary beacon node API calls for deadline
-/// calculation.
-#[async_trait]
-pub trait BeaconClientForDeadline {
-    /// Fetches the genesis time from the beacon node.
-    async fn fetch_genesis_time(&self) -> Result<DateTime<Utc>>;
-
-    /// Fetches the slot duration and slots per epoch from the beacon node.
-    async fn fetch_slots_config(&self) -> Result<(std::time::Duration, u64)>;
-}
-
-#[async_trait]
-impl BeaconClientForDeadline for EthBeaconNodeApiClient {
-    async fn fetch_genesis_time(&self) -> Result<DateTime<Utc>> {
-        self.fetch_genesis_time()
-            .await
-            .map_err(DeadlineError::FetchGenesisTime)
-    }
-
-    async fn fetch_slots_config(&self) -> Result<(std::time::Duration, u64)> {
-        self.fetch_slots_config()
-            .await
-            .map_err(DeadlineError::FetchGenesisTime)
-    }
 }
 
 /// Creates a deadline function from the Ethereum 2.0 beacon node configuration.
@@ -159,9 +126,7 @@ impl BeaconClientForDeadline for EthBeaconNodeApiClient {
 /// # Errors
 ///
 /// Returns an error if fetching genesis time or slots config fails.
-pub async fn new_duty_deadline_func<C: BeaconClientForDeadline>(
-    client: &C,
-) -> Result<DeadlineFunc> {
+pub async fn new_duty_deadline_func(client: &EthBeaconNodeApiClient) -> Result<DeadlineFunc> {
     let genesis_time = client.fetch_genesis_time().await?;
     let (slot_duration, _slots_per_epoch) = client.fetch_slots_config().await?;
 
@@ -170,11 +135,11 @@ pub async fn new_duty_deadline_func<C: BeaconClientForDeadline>(
 
     Ok(Arc::new(move |duty: Duty| {
         // Exit and BuilderRegistration duties never expire
-        match duty.duty_type {
-            DutyType::Exit | DutyType::BuilderRegistration => {
-                return Ok(None);
-            }
-            _ => {}
+        if matches!(
+            duty.duty_type,
+            DutyType::Exit | DutyType::BuilderRegistration
+        ) {
+            return Ok(None);
         }
 
         // Calculate slot start time
@@ -187,7 +152,9 @@ pub async fn new_duty_deadline_func<C: BeaconClientForDeadline>(
                     .map_err(|_| DeadlineError::ArithmeticOverflow)?,
             )
             .ok_or(DeadlineError::ArithmeticOverflow)?;
-        let slot_offset = secs_to_chrono(slot_secs)?;
+        let secs_i64 = i64::try_from(slot_secs).map_err(|_| DeadlineError::ArithmeticOverflow)?;
+        let slot_offset =
+            chrono::Duration::try_seconds(secs_i64).ok_or(DeadlineError::DurationConversion)?;
 
         let start: DateTime<Utc> = genesis_time
             .checked_add_signed(slot_offset)
@@ -246,23 +213,27 @@ fn get_curr_duty(duties: &HashSet<Duty>, deadline_func: &DeadlineFunc) -> (Duty,
 
     // Use far-future sentinel date (9999-01-01) matching Go implementation
     // This timestamp is a known constant and will never fail
-    let mut curr_deadline =
-        DateTime::from_timestamp(253402300799, 0).unwrap_or(DateTime::<Utc>::MAX_UTC);
+    let mut curr_deadline = DateTime::<Utc>::MAX_UTC;
 
     for duty in duties.iter() {
-        let Ok(deadline_opt) = deadline_func(duty.clone()) else {
-            continue;
-        };
-
-        // Ignore duties that never expire
-        let Some(duty_deadline) = deadline_opt else {
-            continue;
-        };
-
-        // Update if this duty has an earlier deadline
-        if duty_deadline < curr_deadline {
-            curr_duty = duty.clone();
-            curr_deadline = duty_deadline;
+        match deadline_func(duty.clone()) {
+            Ok(Some(duty_deadline)) => {
+                // Update if this duty has an earlier deadline
+                if duty_deadline < curr_deadline {
+                    curr_duty = duty.clone();
+                    curr_deadline = duty_deadline;
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    duty = %duty,
+                    error = %err,
+                    "Failed to compute deadline for duty"
+                );
+            }
+            Ok(None) => {
+                // Ignore duties that never expire
+            }
         }
     }
 
@@ -278,29 +249,28 @@ struct DeadlineInput {
 /// Implementation of the Deadliner trait.
 struct DeadlinerImpl {
     cancel_token: CancellationToken,
-    input_tx: tokio::sync::mpsc::UnboundedSender<DeadlineInput>,
-    output_rx: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<Duty>>>>,
+    input_tx: tokio::sync::mpsc::Sender<DeadlineInput>,
+    output_rx: Mutex<Option<tokio::sync::mpsc::Receiver<Duty>>>,
 }
 
+#[async_trait]
 impl Deadliner for DeadlinerImpl {
-    fn add(&self, duty: Duty) -> BoxFuture<'_, bool> {
-        Box::pin(async move {
-            // Check if shut down
-            if self.cancel_token.is_cancelled() {
-                return false;
-            }
+    async fn add(&self, duty: Duty) -> bool {
+        // Check if shut down
+        if self.cancel_token.is_cancelled() {
+            return false;
+        }
 
-            let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-            let input = DeadlineInput { duty, response_tx };
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        let input = DeadlineInput { duty, response_tx };
 
-            // Send the duty to the background task
-            if self.input_tx.send(input).is_err() {
-                return false;
-            }
+        // Send the duty to the background task
+        if self.input_tx.send(input).await.is_err() {
+            return false;
+        }
 
-            // Wait for response
-            response_rx.await.unwrap_or(false)
-        })
+        // Wait for response
+        response_rx.await.unwrap_or(false)
     }
 
     fn c(&self) -> Option<tokio::sync::mpsc::Receiver<Duty>> {
@@ -308,28 +278,6 @@ impl Deadliner for DeadlinerImpl {
             .lock()
             .ok()
             .and_then(|mut guard| guard.take())
-    }
-}
-
-/// Clock trait for abstracting time operations.
-trait Clock: Send + Sync {
-    /// Returns the current time.
-    fn now(&self) -> DateTime<Utc>;
-
-    /// Creates a sleep future that completes after the given duration.
-    fn sleep(&self, duration: std::time::Duration) -> BoxFuture<'static, ()>;
-}
-
-/// Real clock implementation using tokio::time.
-struct RealClock;
-
-impl Clock for RealClock {
-    fn now(&self) -> DateTime<Utc> {
-        Utc::now()
-    }
-
-    fn sleep(&self, duration: std::time::Duration) -> BoxFuture<'static, ()> {
-        tokio::time::sleep(duration).boxed()
     }
 }
 
@@ -342,20 +290,24 @@ impl DeadlinerImpl {
         cancel_token: CancellationToken,
         label: String,
         deadline_func: DeadlineFunc,
-        clock: Arc<dyn Clock>,
-        mut input_rx: tokio::sync::mpsc::UnboundedReceiver<DeadlineInput>,
+        mut input_rx: tokio::sync::mpsc::Receiver<DeadlineInput>,
         output_tx: tokio::sync::mpsc::Sender<Duty>,
     ) {
         let mut duties: HashSet<Duty> = HashSet::new();
         let (mut curr_duty, mut curr_deadline) = get_curr_duty(&duties, &deadline_func);
 
         // Create initial timer
-        let now = clock.now();
-        let initial_duration = curr_deadline
-            .signed_duration_since(now)
-            .to_std()
-            .unwrap_or(std::time::Duration::ZERO);
-        let mut timer = clock.sleep(initial_duration);
+        let now: DateTime<Utc> = Utc::now();
+        let initial_duration = if curr_deadline < now {
+            std::time::Duration::ZERO
+        } else {
+            curr_deadline
+                .signed_duration_since(now)
+                .to_std()
+                .unwrap_or(FAR_FUTURE_DURATION)
+        };
+        let sleep = tokio::time::sleep(initial_duration);
+        tokio::pin!(sleep);
 
         loop {
             tokio::select! {
@@ -367,45 +319,51 @@ impl DeadlinerImpl {
 
                 Some(input) = input_rx.recv() => {
                     let duty = input.duty;
-                    let Ok(deadline_opt) = deadline_func(duty.clone()) else {
-                        let _ = input.response_tx.send(false);
-                        continue;
-                    };
+                    match deadline_func(duty.clone()) {
+                        Ok(Some(deadline)) => {
+                            let now = Utc::now();
+                            let expired = deadline < now;
 
-                    // Drop duties that never expire
-                    let Some(deadline) = deadline_opt else {
-                        let _ = input.response_tx.send(false);
-                        continue;
-                    };
+                            let _ = input.response_tx.send(!expired);
 
-                    let now = clock.now();
-                    let expired = deadline < now;
+                            // Ignore expired duties
+                            if expired {
+                                continue;
+                            }
 
-                    let _ = input.response_tx.send(!expired);
+                            // Add duty to the map (idempotent)
+                            duties.insert(duty);
 
-                    // Ignore expired duties
-                    if expired {
-                        continue;
-                    }
+                            // Update timer if this deadline is earlier
+                            if deadline < curr_deadline {
+                                let (new_duty, new_deadline) = get_curr_duty(&duties, &deadline_func);
+                                curr_duty = new_duty;
+                                curr_deadline = new_deadline;
 
-                    // Add duty to the map (idempotent)
-                    duties.insert(duty);
-
-                    // Update timer if this deadline is earlier
-                    if deadline < curr_deadline {
-                        let (new_duty, new_deadline) = get_curr_duty(&duties, &deadline_func);
-                        curr_duty = new_duty;
-                        curr_deadline = new_deadline;
-
-                        let duration = curr_deadline
-                            .signed_duration_since(clock.now())
-                            .to_std()
-                            .unwrap_or(std::time::Duration::ZERO);
-                        timer = clock.sleep(duration);
+                                let duration = curr_deadline
+                                    .signed_duration_since(Utc::now())
+                                    .to_std()
+                                    .unwrap_or(FAR_FUTURE_DURATION);
+                                sleep.set(tokio::time::sleep(duration));
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                label = %label,
+                                duty = %duty,
+                                error = %err,
+                                "Failed to compute deadline for duty"
+                            );
+                            let _ = input.response_tx.send(false);
+                        }
+                        Ok(None) => {
+                            // Drop duties that never expire
+                            let _ = input.response_tx.send(false);
+                        }
                     }
                 }
 
-                _ = &mut timer => {
+                _ = &mut sleep => {
                     // Deadline expired - send duty to output channel
                     match output_tx.try_send(curr_duty.clone()) {
                         Ok(()) => {}
@@ -430,45 +388,13 @@ impl DeadlinerImpl {
                     curr_deadline = new_deadline;
 
                     let duration = curr_deadline
-                        .signed_duration_since(clock.now())
+                        .signed_duration_since(Utc::now())
                         .to_std()
-                        .unwrap_or(std::time::Duration::ZERO);
-                    timer = clock.sleep(duration);
+                        .unwrap_or(FAR_FUTURE_DURATION);
+                    sleep.set(tokio::time::sleep(duration));
                 }
             }
         }
-    }
-
-    /// Internal constructor for creating a deadliner with a specific clock.
-    fn new_internal(
-        cancel_token: CancellationToken,
-        label: impl Into<String>,
-        deadline_func: DeadlineFunc,
-        clock: Arc<dyn Clock>,
-    ) -> Arc<dyn Deadliner> {
-        const OUTPUT_BUFFER: usize = 10;
-
-        let label = label.into();
-        let (input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (output_tx, output_rx) = tokio::sync::mpsc::channel(OUTPUT_BUFFER);
-
-        let impl_instance: Arc<dyn Deadliner> = Arc::new(DeadlinerImpl {
-            cancel_token: cancel_token.clone(),
-            input_tx,
-            output_rx: Arc::new(Mutex::new(Some(output_rx))),
-        });
-
-        // Spawn background task
-        tokio::spawn(Self::run_task(
-            cancel_token,
-            label,
-            deadline_func,
-            clock,
-            input_rx,
-            output_tx,
-        ));
-
-        impl_instance
     }
 }
 
@@ -492,111 +418,84 @@ pub fn new_deadliner(
     label: impl Into<String>,
     deadline_func: DeadlineFunc,
 ) -> Arc<dyn Deadliner> {
-    DeadlinerImpl::new_internal(cancel_token, label, deadline_func, Arc::new(RealClock))
-}
+    const OUTPUT_BUFFER: usize = 256;
+    const INPUT_BUFFER: usize = 256;
 
-/// Creates a new Deadliner instance for testing with a fake clock.
-///
-/// This constructor is intended for use in tests where you need to control
-/// time progression.
-///
-/// # Arguments
-///
-/// * `cancel_token` - Token to cancel the background task
-/// * `label` - Label for logging purposes
-/// * `deadline_func` - Function that calculates deadlines for duties
-/// * `clock` - Test clock for controlling time in tests
-///
-/// # Returns
-///
-/// An Arc-wrapped Deadliner trait object
-#[cfg(test)]
-fn new_deadliner_for_test(
-    cancel_token: CancellationToken,
-    label: impl Into<String>,
-    deadline_func: DeadlineFunc,
-    clock: Arc<TestClock>,
-) -> Arc<dyn Deadliner> {
-    DeadlinerImpl::new_internal(cancel_token, label, deadline_func, clock)
-}
+    let label = label.into();
+    let (input_tx, input_rx) = tokio::sync::mpsc::channel(INPUT_BUFFER);
+    let (output_tx, output_rx) = tokio::sync::mpsc::channel(OUTPUT_BUFFER);
 
-/// Fake clock implementation for testing.
-#[cfg(test)]
-type WakerList = Vec<(DateTime<Utc>, std::task::Waker)>;
+    let impl_instance: Arc<dyn Deadliner> = Arc::new(DeadlinerImpl {
+        cancel_token: cancel_token.clone(),
+        input_tx,
+        output_rx: Mutex::new(Some(output_rx)),
+    });
 
-#[cfg(test)]
-struct TestClock {
-    start: std::sync::Arc<std::sync::Mutex<DateTime<Utc>>>,
-    wakers: std::sync::Arc<std::sync::Mutex<WakerList>>,
-}
+    // Spawn background task
+    tokio::spawn(DeadlinerImpl::run_task(
+        cancel_token,
+        label,
+        deadline_func,
+        input_rx,
+        output_tx,
+    ));
 
-#[cfg(test)]
-impl TestClock {
-    fn new(start: DateTime<Utc>) -> Self {
-        Self {
-            start: std::sync::Arc::new(std::sync::Mutex::new(start)),
-            wakers: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-        }
-    }
-
-    fn advance(&self, duration: std::time::Duration) {
-        let new_time = {
-            let mut start = self.start.lock().unwrap();
-            let chrono_duration = chrono::Duration::from_std(duration).unwrap();
-            *start = start.checked_add_signed(chrono_duration).unwrap();
-            *start
-        };
-
-        // Wake all timers that have expired
-        let mut wakers = self.wakers.lock().unwrap();
-        let (expired, pending): (Vec<_>, Vec<_>) = wakers
-            .drain(..)
-            .partition(|(deadline, _)| *deadline <= new_time);
-        *wakers = pending;
-
-        // Wake expired futures
-        for (_, waker) in expired {
-            waker.wake();
-        }
-    }
-}
-
-#[cfg(test)]
-impl Clock for TestClock {
-    fn now(&self) -> DateTime<Utc> {
-        *self.start.lock().unwrap()
-    }
-
-    fn sleep(&self, duration: std::time::Duration) -> BoxFuture<'static, ()> {
-        let deadline = self
-            .now()
-            .checked_add_signed(chrono::Duration::from_std(duration).unwrap())
-            .unwrap();
-        let wakers = Arc::clone(&self.wakers);
-        let start = Arc::clone(&self.start);
-
-        Box::pin(std::future::poll_fn(move |cx| {
-            let now = *start.lock().unwrap();
-            if now >= deadline {
-                std::task::Poll::Ready(())
-            } else {
-                // Register waker
-                let mut wakers = wakers.lock().unwrap();
-                // Check if this waker is already registered for this deadline
-                if !wakers.iter().any(|(d, _)| *d == deadline) {
-                    wakers.push((deadline, cx.waker().clone()));
-                }
-                std::task::Poll::Pending
-            }
-        }))
-    }
+    impl_instance
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use crate::types::SlotNumber;
-    use test_case::test_case;
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
+
+    /// Creates a mock beacon node API server and returns the client.
+    async fn create_mock_beacon_client(
+        genesis_time: DateTime<Utc>,
+        slot_duration_secs: u64,
+        slots_per_epoch: u64,
+    ) -> (MockServer, EthBeaconNodeApiClient) {
+        let mock_server = MockServer::start().await;
+
+        // Mock /eth/v1/beacon/genesis
+        let genesis_response = serde_json::json!({
+            "data": {
+                "genesis_time": genesis_time.timestamp().to_string(),
+                "genesis_validators_root": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "genesis_fork_version": "0x00000000"
+            }
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/eth/v1/beacon/genesis"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(genesis_response))
+            .mount(&mock_server)
+            .await;
+
+        // Mock /eth/v1/config/spec
+        let spec_response = serde_json::json!({
+            "data": {
+                "SECONDS_PER_SLOT": slot_duration_secs.to_string(),
+                "SLOTS_PER_EPOCH": slots_per_epoch.to_string()
+            }
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/eth/v1/config/spec"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(spec_response))
+            .mount(&mock_server)
+            .await;
+
+        let client = EthBeaconNodeApiClient::with_base_url(mock_server.uri())
+            .expect("Failed to create client");
+
+        (mock_server, client)
+    }
 
     /// Helper function to create expired duties, non-expired duties, and
     /// voluntary exits.
@@ -637,15 +536,15 @@ mod tests {
     async fn test_deadliner() {
         let (expired_duties, non_expired_duties, voluntary_exits) = setup_data();
 
-        let start_time = DateTime::from_timestamp(1000, 0).unwrap();
-        let clock = Arc::new(TestClock::new(start_time));
+        // Use real time with short durations (milliseconds instead of hours/seconds)
+        let start_time = Utc::now();
 
         // Create a deadline function provider
         let expired_set: std::collections::HashSet<_> = expired_duties.iter().cloned().collect();
         let deadline_func: DeadlineFunc = {
             Arc::new(move |duty: Duty| {
                 if duty.duty_type == DutyType::Exit {
-                    // Voluntary exits expire after 1 hour
+                    // Voluntary exits expire after 1 hour (far in the future)
                     let deadline = start_time
                         .checked_add_signed(chrono::Duration::try_hours(1).unwrap())
                         .ok_or(DeadlineError::DateTimeCalculation)?;
@@ -660,11 +559,17 @@ mod tests {
                     return Ok(Some(deadline));
                 }
 
-                // Non-expired duties expire after duty.slot seconds from start
+                // Non-expired duties expire after duty.slot * 10 milliseconds from now
+                // This gives us short, deterministic deadlines for testing
                 let deadline = start_time
                     .checked_add_signed(
-                        chrono::Duration::try_seconds(i64::try_from(duty.slot.inner()).unwrap())
-                            .unwrap(),
+                        chrono::Duration::try_milliseconds(
+                            i64::try_from(duty.slot.inner())
+                                .unwrap()
+                                .checked_mul(10)
+                                .unwrap(),
+                        )
+                        .unwrap(),
                     )
                     .ok_or(DeadlineError::DateTimeCalculation)?;
                 Ok(Some(deadline))
@@ -672,12 +577,7 @@ mod tests {
         };
 
         let cancel_token = CancellationToken::new();
-        let deadliner = new_deadliner_for_test(
-            cancel_token.clone(),
-            "test",
-            deadline_func,
-            Arc::clone(&clock),
-        );
+        let deadliner = new_deadliner(cancel_token.clone(), "test", deadline_func);
 
         // Get the output receiver
         let mut output_rx = deadliner.c().expect("should get receiver");
@@ -727,23 +627,8 @@ mod tests {
             assert!(result, "non-expired duties should return true");
         }
 
-        // Find max slot from non-expired duties
-        let max_slot = non_expired_duties
-            .iter()
-            .map(|d| d.slot.inner())
-            .max()
-            .unwrap();
-
-        // Advance clock to trigger deadline of all non-expired duties
-        clock.advance(std::time::Duration::from_secs(max_slot));
-
-        // Give the deadliner task time to wake up and process
-        // We need to yield multiple times to ensure the background task runs
-        for _ in 0..10 {
-            tokio::task::yield_now().await;
-        }
-
         // Collect expired duties from output channel
+        // Use a generous timeout since we're using real time
         let mut actual_duties = Vec::new();
         for _ in 0..non_expired_len {
             let duty = tokio::time::timeout(std::time::Duration::from_secs(1), output_rx.recv())
@@ -763,13 +648,18 @@ mod tests {
         cancel_token.cancel();
     }
 
-    #[test_case(DutyType::Exit ; "exit")]
-    #[test_case(DutyType::BuilderRegistration ; "builder_registration")]
+    #[test_case::test_case(DutyType::Exit ; "exit")]
+    #[test_case::test_case(DutyType::BuilderRegistration ; "builder_registration")]
     #[tokio::test]
     async fn test_never_expire_duties(duty_type: DutyType) {
-        let mock_client = create_mock_client();
+        let genesis_time = DateTime::from_timestamp(1606824023, 0).unwrap();
+        let slot_duration_secs = 12;
+        let slots_per_epoch = 32;
 
-        let deadline_func = new_duty_deadline_func(&mock_client)
+        let (_mock_server, client) =
+            create_mock_beacon_client(genesis_time, slot_duration_secs, slots_per_epoch).await;
+
+        let deadline_func = new_duty_deadline_func(&client)
             .await
             .expect("should create deadline func");
 
@@ -779,37 +669,31 @@ mod tests {
         assert_eq!(result, None, "duty should never expire");
     }
 
-    // todo: uses hardcode beacon client for testing, should be refactored to use a
-    // real beacon client (testutils/beaconmock)
-    #[test_case(DutyType::Proposer ; "proposer")]
-    #[test_case(DutyType::Attester ; "attester")]
-    #[test_case(DutyType::Aggregator ; "aggregator")]
-    #[test_case(DutyType::PrepareAggregator ; "prepare_aggregator")]
-    #[test_case(DutyType::SyncMessage ; "sync_message")]
-    #[test_case(DutyType::SyncContribution ; "sync_contribution")]
-    #[test_case(DutyType::Randao ; "randao")]
-    #[test_case(DutyType::InfoSync ; "info_sync")]
-    #[test_case(DutyType::PrepareSyncContribution ; "prepare_sync_contribution")]
+    #[test_case::test_case(DutyType::Proposer ; "proposer")]
+    #[test_case::test_case(DutyType::Attester ; "attester")]
+    #[test_case::test_case(DutyType::Aggregator ; "aggregator")]
+    #[test_case::test_case(DutyType::PrepareAggregator ; "prepare_aggregator")]
+    #[test_case::test_case(DutyType::SyncMessage ; "sync_message")]
+    #[test_case::test_case(DutyType::SyncContribution ; "sync_contribution")]
+    #[test_case::test_case(DutyType::Randao ; "randao")]
+    #[test_case::test_case(DutyType::InfoSync ; "info_sync")]
+    #[test_case::test_case(DutyType::PrepareSyncContribution ; "prepare_sync_contribution")]
     #[tokio::test]
     async fn test_duty_deadline_durations(duty_type: DutyType) {
-        let mock_client = create_mock_client();
+        let genesis_time = DateTime::from_timestamp(1606824023, 0).unwrap();
+        let slot_duration_secs = 12;
+        let slots_per_epoch = 32;
 
-        let genesis_time = mock_client.fetch_genesis_time().await.unwrap();
-        let (slot_duration, _) = mock_client.fetch_slots_config().await.unwrap();
+        let (_mock_server, client) =
+            create_mock_beacon_client(genesis_time, slot_duration_secs, slots_per_epoch).await;
 
+        let slot_duration = Duration::from_secs(slot_duration_secs);
         let margin = slot_duration
             .checked_div(12)
             .expect("margin calculation should not fail");
 
-        let time_since_genesis = Utc::now().signed_duration_since(genesis_time);
-        let slot_duration_chrono = to_chrono_duration(slot_duration).unwrap();
-        let current_slot = u64::try_from(
-            time_since_genesis
-                .num_seconds()
-                .checked_div(slot_duration_chrono.num_seconds())
-                .expect("slot duration should not be zero"),
-        )
-        .expect("current slot should be positive");
+        // Use a fixed slot for deterministic testing
+        let current_slot = 100u64;
 
         let slot_start = {
             let offset_secs = current_slot
@@ -824,7 +708,7 @@ mod tests {
                 .expect("slot start should not overflow")
         };
 
-        let deadline_func = new_duty_deadline_func(&mock_client)
+        let deadline_func = new_duty_deadline_func(&client)
             .await
             .expect("should create deadline func");
 
@@ -857,69 +741,27 @@ mod tests {
                     .checked_add(margin)
                     .expect("duration calculation should not fail")
             }
-            _ => panic!("unexpected duty type: {:?}", duty_type),
+            _ => panic!("unexpected duty type: {duty_type:?}"),
         };
 
         let duty = Duty::new(SlotNumber::new(current_slot), duty_type.clone());
 
-        let now_before_deadline = slot_start
+        let expected_deadline = slot_start
             .checked_add_signed(to_chrono_duration(expected_duration).unwrap())
-            .and_then(|t| t.checked_sub_signed(chrono::Duration::try_milliseconds(1).unwrap()))
-            .expect("time calculation should not fail");
+            .expect("deadline calculation should not fail");
 
         let deadline_opt = deadline_func(duty.clone()).expect("should compute deadline");
 
         assert!(
             deadline_opt.is_some(),
-            "duty {:?} should have a deadline",
-            duty_type
+            "duty {duty_type:?} should have a deadline"
         );
 
         let deadline = deadline_opt.unwrap();
 
-        assert!(
-            now_before_deadline < deadline,
-            "duty {:?}: now ({}) should be before deadline ({})",
-            duty_type,
-            now_before_deadline,
-            deadline
-        );
-
-        let time_until_deadline = deadline.signed_duration_since(now_before_deadline);
         assert_eq!(
-            time_until_deadline,
-            chrono::Duration::try_milliseconds(1).unwrap(),
-            "duty {:?}: deadline should be exactly 1ms after now (actual: {}ms)",
-            duty_type,
-            time_until_deadline.num_milliseconds()
+            deadline, expected_deadline,
+            "duty {duty_type:?}: deadline mismatch"
         );
-    }
-
-    /// Creates a mock EthBeaconNodeApiClient for testing.
-    fn create_mock_client() -> MockBeaconClient {
-        MockBeaconClient {
-            genesis_time: DateTime::from_timestamp(1646092800, 0).unwrap(), /* 2022-03-01
-                                                                             * 00:00:00 UTC */
-            slot_duration: std::time::Duration::from_secs(12),
-            slots_per_epoch: 16,
-        }
-    }
-
-    /// Mock beacon client for testing.
-    struct MockBeaconClient {
-        genesis_time: DateTime<Utc>,
-        slot_duration: std::time::Duration,
-        slots_per_epoch: u64,
-    }
-
-    #[async_trait]
-    impl BeaconClientForDeadline for MockBeaconClient {
-        async fn fetch_genesis_time(&self) -> Result<DateTime<Utc>> {
-            Ok(self.genesis_time)
-        }
-
-        async fn fetch_slots_config(&self) -> Result<(std::time::Duration, u64)> {
-            Ok((self.slot_duration, self.slots_per_epoch))
-        }
     }
 }
