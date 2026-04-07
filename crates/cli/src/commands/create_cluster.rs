@@ -18,7 +18,7 @@ use pluto_cluster::{
     definition::Definition,
     deposit::DepositData,
     distvalidator::DistValidator,
-    helpers::{create_validator_keys_dir, fetch_definition},
+    helpers,
     lock::Lock,
     operator::Operator,
     registration::{BuilderRegistration, Registration},
@@ -37,20 +37,20 @@ use pluto_eth2util::{
     deposit::{self, Gwei},
     enr::Record,
     keymanager,
-    keystore::{
-        CONFIRM_INSECURE_KEYS, Keystore, encrypt as keystore_encrypt, load_files_recursively,
-        load_files_unordered, store_keys, store_keys_insecure,
-    },
+    keystore::{self, CONFIRM_INSECURE_KEYS, Keystore},
     network, registration as eth2util_registration,
 };
-use pluto_p2p::k1::new_saved_priv_key;
+use pluto_p2p::k1 as p2p_k1;
 use pluto_ssz::to_0x_hex;
 use rand::rngs::OsRng;
 use tracing::{debug, info, warn};
 
 use crate::{
-    commands::create_dkg::validate_withdrawal_addrs,
-    error::{CreateClusterError, InvalidNetworkConfigError, Result as CliResult, ThresholdError},
+    commands::create_dkg,
+    error::{
+        CliError, CreateClusterError, InvalidNetworkConfigError, Result as CliResult,
+        ThresholdError,
+    },
 };
 
 /// Minimum number of nodes required in a cluster.
@@ -257,16 +257,18 @@ pub struct CreateClusterArgs {
     /// The number of charon nodes in the cluster
     #[arg(
         long = "nodes",
+        default_value = "0",
         help = "The number of charon nodes in the cluster. Minimum is 3."
     )]
-    pub nodes: Option<u64>,
+    pub nodes: u64,
 
     /// The number of distributed validators needed in the cluster
     #[arg(
         long = "num-validators",
+        default_value = "0",
         help = "The number of distributed validators needed in the cluster."
     )]
-    pub num_validators: Option<u64>,
+    pub num_validators: u64,
 
     /// Publish lock file to obol-api
     #[arg(long = "publish", help = "Publish lock file to obol-api.")]
@@ -355,6 +357,13 @@ impl From<TestnetConfig> for network::Network {
     }
 }
 
+fn init_tracing() -> CliResult<()> {
+    match pluto_tracing::init(&pluto_tracing::TracingConfig::default()) {
+        Ok(_) | Err(pluto_tracing::init::Error::InitError(_)) => Ok(()),
+        Err(err) => Err(CliError::from(err)),
+    }
+}
+
 fn validate_threshold(args: &CreateClusterArgs) -> Result<()> {
     let Some(threshold) = args.threshold else {
         return Ok(());
@@ -364,7 +373,7 @@ fn validate_threshold(args: &CreateClusterArgs) -> Result<()> {
         return Err(ThresholdError::ThresholdTooLow { threshold }.into());
     }
 
-    let number_of_nodes = args.nodes.unwrap_or(0);
+    let number_of_nodes = args.nodes;
     if threshold > number_of_nodes {
         return Err(ThresholdError::ThresholdTooHigh {
             threshold,
@@ -378,6 +387,30 @@ fn validate_threshold(args: &CreateClusterArgs) -> Result<()> {
 
 /// Runs the create cluster command
 pub async fn run(w: &mut dyn Write, mut args: CreateClusterArgs) -> CliResult<()> {
+    init_tracing()?;
+
+    let mut definition_input = None;
+
+    if let Some(definition_file) = args.definition_file.as_ref() {
+        let Some(addr) = args.execution_engine_addr.as_ref() else {
+            return Err(CreateClusterError::MissingExecutionEngineAddress.into());
+        };
+
+        let eth1cl = eth1wrap::EthClient::new(addr.clone()).await?;
+        let def = load_definition(definition_file, &eth1cl).await?;
+
+        args.nodes = u64::try_from(def.operators.len()).expect("operators length is too large");
+        args.threshold = Some(def.threshold);
+
+        let network_name = eth2util::network::fork_version_to_network(&def.fork_version)?;
+        args.network = Some(
+            Network::try_from(network_name.as_str())
+                .map_err(CreateClusterError::InvalidNetworkConfig)?,
+        );
+
+        definition_input = Some((def, eth1cl));
+    }
+
     validate_threshold(&args)?;
 
     validate_create_config(&args)?;
@@ -405,42 +438,19 @@ pub async fn run(w: &mut dyn Write, mut args: CreateClusterArgs) -> CliResult<()
 
         // Needed if --split-existing-keys is called without a definition file.
         // It's safe to unwrap here because we know the length is less than u64::MAX.
-        args.num_validators =
-            Some(u64::try_from(secrets.len()).expect("secrets length is too large"));
+        args.num_validators = u64::try_from(secrets.len()).expect("secrets length is too large");
     }
 
     // Get a cluster definition, either from a definition file or from the config.
-    let definition_file = args.definition_file.clone();
-    let (mut def, mut deposit_amounts) = if let Some(definition_file) = definition_file {
-        let Some(addr) = args.execution_engine_addr.clone() else {
-            return Err(CreateClusterError::MissingExecutionEngineAddress.into());
-        };
-
-        let eth1cl = eth1wrap::EthClient::new(addr).await?;
-
-        let def = load_definition(&definition_file, &eth1cl).await?;
-
-        // Should not happen, if it does - it won't affect the runtime, because the
-        // validation will fail.
-        args.nodes =
-            Some(u64::try_from(def.operators.len()).expect("operators length is too large"));
-        args.threshold = Some(def.threshold);
-
+    let (mut def, mut deposit_amounts) = if let Some((def, eth1cl)) = definition_input {
         validate_definition(&def, args.insecure_keys, &args.keymanager_addrs, &eth1cl).await?;
-
-        let network = eth2util::network::fork_version_to_network(&def.fork_version)?;
-
-        args.network = Some(
-            Network::try_from(network.as_str())
-                .map_err(CreateClusterError::InvalidNetworkConfig)?,
-        );
 
         let deposit_amounts = def.deposit_amounts.clone();
 
         (def, deposit_amounts)
     } else {
         // Create new definition from cluster config
-        let def = new_def_from_config(&args).await?;
+        let def = new_def_from_config(&args)?;
 
         let deposit_amounts = deposit::eths_to_gweis(&args.deposit_amounts);
 
@@ -458,7 +468,7 @@ pub async fn run(w: &mut dyn Write, mut args: CreateClusterArgs) -> CliResult<()
     }
 
     let num_validators_usize =
-        usize::try_from(def.num_validators).map_err(|_| CreateClusterError::ValueExceedsU8 {
+        usize::try_from(def.num_validators).map_err(|_| CreateClusterError::ValueExceedsUsize {
             value: def.num_validators,
         })?;
 
@@ -489,23 +499,6 @@ pub async fn run(w: &mut dyn Write, mut args: CreateClusterArgs) -> CliResult<()
     def.operators = ops;
 
     let keys_to_disk = args.keymanager_addrs.is_empty();
-
-    // Pre-compute public shares and clone private shares before share_sets is
-    // consumed by the write step.  The private share clone is needed for the
-    // aggregate BLS signature; the public shares are needed for DistValidator.
-    // Each entry is [share_node0, share_node1, ...] indexed by validator.
-    let tbls = BlstImpl;
-    let pub_shares_sets: Vec<Vec<PublicKey>> = share_sets
-        .clone()
-        .iter()
-        .map(|shares| {
-            shares
-                .iter()
-                .map(|s| tbls.secret_to_public_key(s))
-                .collect::<std::result::Result<Vec<_>, _>>()
-        })
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(CreateClusterError::CryptoError)?;
 
     if keys_to_disk {
         write_keys_to_disk(
@@ -551,7 +544,7 @@ pub async fn run(w: &mut dyn Write, mut args: CreateClusterArgs) -> CliResult<()
         args.target_gas_limit,
     )?;
 
-    let vals = get_validators(&pub_keys, &pub_shares_sets, &deposit_datas, val_regs)?;
+    let vals = get_validators(&pub_keys, &share_sets, &deposit_datas, val_regs)?;
 
     let mut lock = Lock {
         definition: def,
@@ -587,7 +580,7 @@ pub async fn run(w: &mut dyn Write, mut args: CreateClusterArgs) -> CliResult<()
     }
 
     if args.split_keys {
-        write_split_keys_warning(w)?;
+        write_split_keys_warning(w).map_err(CreateClusterError::IoError)?;
     }
 
     write_output(
@@ -597,7 +590,8 @@ pub async fn run(w: &mut dyn Write, mut args: CreateClusterArgs) -> CliResult<()
         num_nodes,
         keys_to_disk,
         args.zipped,
-    )?;
+    )
+    .map_err(CreateClusterError::IoError)?;
 
     if !dashboard_url.is_empty() {
         info!(
@@ -648,7 +642,7 @@ fn create_validator_registrations(
         target_gas_limit
     };
 
-    let fork_version_arr: [u8; 4] = fork_version
+    let fork_version: [u8; 4] = fork_version
         .try_into()
         .map_err(|_| CreateClusterError::InvalidForkVersionLength)?;
 
@@ -659,7 +653,7 @@ fn create_validator_registrations(
         let timestamp = if split_keys {
             Utc::now()
         } else {
-            eth2util::network::fork_version_to_genesis_time(fork_version)?
+            eth2util::network::fork_version_to_genesis_time(&fork_version)?
         };
 
         let pk = tbls.secret_to_public_key(secret)?;
@@ -668,11 +662,10 @@ fn create_validator_registrations(
             pk,
             fee_address,
             effective_gas_limit,
-            u64::try_from(timestamp.timestamp()).unwrap_or(0),
+            u64::try_from(timestamp.timestamp()).expect("timestamp should fit in u64"),
         )?;
 
-        let sig_root =
-            eth2util_registration::get_message_signing_root(&unsigned_reg, fork_version_arr);
+        let sig_root = eth2util_registration::get_message_signing_root(&unsigned_reg, fork_version);
 
         let sig = tbls.sign(secret, &sig_root)?;
 
@@ -718,14 +711,14 @@ async fn write_keys_to_disk(
             secrets.push(shares[i_usize]);
         }
 
-        let keys_dir = create_validator_keys_dir(node_dir(cluster_dir.as_ref(), i))
+        let keys_dir = helpers::create_validator_keys_dir(node_dir(cluster_dir.as_ref(), i))
             .await
             .map_err(CreateClusterError::IoError)?;
 
         if insecure_keys {
-            store_keys_insecure(&secrets, &keys_dir, &CONFIRM_INSECURE_KEYS).await?;
+            keystore::store_keys_insecure(&secrets, &keys_dir, &CONFIRM_INSECURE_KEYS).await?;
         } else {
-            store_keys(&secrets, &keys_dir).await?;
+            keystore::store_keys(&secrets, &keys_dir).await?;
         }
     }
 
@@ -767,11 +760,12 @@ async fn write_keys_to_keymanager(
         for shares in share_sets {
             let password = random_hex64()?;
             let pbkdf2_c = if args.insecure_keys {
+                // Match Charon's `keystorev4.WithCost(..., 4)` => 2^4 iterations.
                 Some(16u32)
             } else {
                 None
             };
-            let store = keystore_encrypt(&shares[i_usize], &password, pbkdf2_c, &mut OsRng)?;
+            let store = keystore::encrypt(&shares[i_usize], &password, pbkdf2_c, &mut OsRng)?;
             passwords.push(password);
             keystores.push(store);
         }
@@ -839,8 +833,9 @@ fn sign_deposit_datas(
     for &deposit_amount in deposit_amounts {
         let mut datas = Vec::new();
         for (secret, withdrawal_addr) in secrets.iter().zip(withdrawal_addresses.iter()) {
+            let withdrawal_addr = eth2util::helpers::checksum_address(withdrawal_addr)?;
             let pk = tbls.secret_to_public_key(secret)?;
-            let msg = deposit::new_message(pk, withdrawal_addr, deposit_amount, compounding)?;
+            let msg = deposit::new_message(pk, &withdrawal_addr, deposit_amount, compounding)?;
             let sig_root = deposit::get_message_signing_root(&msg, network)?;
             let sig = tbls.sign(secret, &sig_root)?;
             datas.push(DepositData {
@@ -890,7 +885,7 @@ fn get_operators(
 fn new_peer(cluster_dir: impl AsRef<Path>, peer_idx: u64) -> Result<(Record, SecretKey)> {
     let dir = node_dir(cluster_dir.as_ref(), peer_idx);
 
-    let p2p_key = new_saved_priv_key(&dir)?;
+    let p2p_key = p2p_k1::new_saved_priv_key(&dir)?;
 
     let record = Record::new(&p2p_key, Vec::new())?;
 
@@ -902,19 +897,20 @@ async fn get_keys(
     use_sequence_keys: bool,
 ) -> Result<Vec<PrivateKey>> {
     if use_sequence_keys {
-        let files = load_files_unordered(&split_keys_dir).await?;
+        let files = keystore::load_files_unordered(split_keys_dir).await?;
         Ok(files.sequenced_keys()?)
     } else {
-        let files = load_files_recursively(&split_keys_dir).await?;
+        let files = keystore::load_files_recursively(split_keys_dir).await?;
         Ok(files.keys())
     }
 }
 
 /// Creates a new cluster definition from the provided configuration.
-async fn new_def_from_config(args: &CreateClusterArgs) -> Result<Definition> {
-    let num_validators = args
-        .num_validators
-        .ok_or(CreateClusterError::MissingNumValidatorsOrDefinitionFile)?;
+fn new_def_from_config(args: &CreateClusterArgs) -> Result<Definition> {
+    let num_validators = args.num_validators;
+    if num_validators == 0 {
+        return Err(CreateClusterError::MissingNumValidatorsOrDefinitionFile);
+    }
 
     let (fee_recipient_addrs, withdrawal_addrs) = validate_addresses(
         num_validators,
@@ -932,9 +928,10 @@ async fn new_def_from_config(args: &CreateClusterArgs) -> Result<Definition> {
         ));
     };
 
-    let num_nodes = args
-        .nodes
-        .ok_or(CreateClusterError::MissingNodesOrDefinitionFile)?;
+    let num_nodes = args.nodes;
+    if num_nodes == 0 {
+        return Err(CreateClusterError::MissingNodesOrDefinitionFile);
+    }
 
     let operators = vec![
         pluto_cluster::operator::Operator::default();
@@ -961,7 +958,6 @@ async fn new_def_from_config(args: &CreateClusterArgs) -> Result<Definition> {
         args.compounding,
         vec![],
     )?;
-
     Ok(def)
 }
 
@@ -984,13 +980,9 @@ fn get_tss_shares(
 
         // Preserve order when transforming from map of private shares to array of
         // private keys
-        let mut secret_set = vec![PrivateKey::default(); shares.len()];
-        for i in 1..=shares.len() {
-            let i_u64 = u64::try_from(i).expect("shares length should fit in u64 on all platforms");
-            let idx =
-                u8::try_from(i).map_err(|_| CreateClusterError::ValueExceedsU8 { value: i_u64 })?;
-            secret_set[i.saturating_sub(1)] = shares[&idx];
-        }
+        let mut entries: Vec<_> = shares.into_iter().collect();
+        entries.sort_by_key(|(idx, _)| *idx);
+        let secret_set = entries.into_iter().map(|(_, share)| share).collect();
 
         splits.push(secret_set);
 
@@ -1060,7 +1052,7 @@ async fn validate_definition(
         });
     }
 
-    validate_withdrawal_addrs(&def.withdrawal_addresses(), &network_name)?;
+    create_dkg::validate_withdrawal_addrs(&def.withdrawal_addresses(), &network_name)?;
 
     Ok(())
 }
@@ -1070,14 +1062,14 @@ pub fn is_main_or_gnosis(network: &str) -> bool {
 }
 
 fn validate_create_config(args: &CreateClusterArgs) -> Result<()> {
-    if args.nodes.is_none() && args.definition_file.is_none() {
+    if args.nodes == 0 && args.definition_file.is_none() {
         return Err(CreateClusterError::MissingNodesOrDefinitionFile);
     }
 
     // Check for valid network configuration.
     validate_network_config(args)?;
 
-    detect_node_dirs(&args.cluster_dir, args.nodes.unwrap_or(0))?;
+    detect_node_dirs(&args.cluster_dir, args.nodes)?;
 
     // Ensure sufficient auth tokens are provided for the keymanager addresses
     if args.keymanager_addrs.len() != args.keymanager_auth_tokens.len() {
@@ -1097,19 +1089,19 @@ fn validate_create_config(args: &CreateClusterArgs) -> Result<()> {
         let keymanager_url =
             url::Url::parse(addr).map_err(CreateClusterError::InvalidKeymanagerUrl)?;
 
-        if keymanager_url.scheme() != HTTP_SCHEME {
-            return Err(CreateClusterError::InvalidKeymanagerUrlScheme { addr: addr.clone() });
+        if keymanager_url.scheme() == HTTP_SCHEME {
+            warn!(addr, "Keymanager URL does not use https protocol");
         }
     }
 
-    if args.split_keys && args.num_validators.is_some() {
+    if args.split_keys && args.num_validators != 0 {
         return Err(CreateClusterError::CannotSpecifyNumValidatorsWithSplitKeys);
-    } else if !args.split_keys && args.num_validators.is_none() && args.definition_file.is_none() {
+    } else if !args.split_keys && args.num_validators == 0 && args.definition_file.is_none() {
         return Err(CreateClusterError::MissingNumValidatorsOrDefinitionFile);
     }
 
     // Don't allow cluster size to be less than `MIN_NODES`.
-    let num_nodes = args.nodes.unwrap_or(0);
+    let num_nodes = args.nodes;
     if num_nodes < MIN_NODES {
         return Err(CreateClusterError::TooFewNodes { num_nodes });
     }
@@ -1190,7 +1182,7 @@ async fn load_definition(
 
     // Fetch definition from network if URI is provided
     let def = if is_valid_uri(def_file) {
-        let def = fetch_definition(def_file).await?;
+        let def = helpers::fetch_definition(def_file).await?;
 
         info!(
             url = def_file,
@@ -1234,7 +1226,7 @@ fn validate_addresses(
     withdrawal_addrs: &[String],
 ) -> Result<(Vec<String>, Vec<String>)> {
     let num_validators_usize =
-        usize::try_from(num_validators).map_err(|_| CreateClusterError::ValueExceedsU8 {
+        usize::try_from(num_validators).map_err(|_| CreateClusterError::ValueExceedsUsize {
             value: num_validators,
         })?;
 
@@ -1294,7 +1286,7 @@ fn safe_threshold(num_nodes: u64, threshold: Option<u64>) -> u64 {
 /// public shares, deposit data and validator registrations.
 fn get_validators(
     dv_pubkeys: &[PublicKey],
-    pub_shares_sets: &[Vec<PublicKey>],
+    dv_priv_shares: &[Vec<PrivateKey>],
     deposit_datas: &[Vec<DepositData>],
     val_regs: Vec<BuilderRegistration>,
 ) -> Result<Vec<DistValidator>> {
@@ -1309,13 +1301,22 @@ fn get_validators(
     }
 
     let mut vals = Vec::with_capacity(dv_pubkeys.len());
+    let tbls = BlstImpl;
 
     for (idx, dv_pubkey) in dv_pubkeys.iter().enumerate() {
-        // Public shares for this validator's nodes.
-        let pub_shares: Vec<Vec<u8>> = pub_shares_sets
+        let pub_shares: Vec<Vec<u8>> = dv_priv_shares
             .get(idx)
-            .map(|shares| shares.iter().map(|pk| pk.to_vec()).collect())
-            .unwrap_or_default();
+            .map(|shares| {
+                shares
+                    .iter()
+                    .map(|share| tbls.secret_to_public_key(share))
+                    .collect::<std::result::Result<Vec<_>, _>>()
+            })
+            .transpose()?
+            .unwrap_or_default()
+            .into_iter()
+            .map(|share| share.to_vec())
+            .collect();
 
         // Builder registration — same index as the validator.
         let builder_registration = val_regs
@@ -1341,22 +1342,16 @@ fn get_validators(
     Ok(vals)
 }
 
-/// Aggregates BLS signatures over `message` produced by every private share
-/// across all validators, mirroring Go's `aggSign`.
-///
-/// `share_sets` — outer dimension is per-validator, inner is per-node private
-/// key share.
-fn agg_sign(share_sets: &[Vec<PrivateKey>], message: &[u8]) -> Result<Vec<u8>> {
+/// Returns a BLS aggregate signature of the message signed by all the shares.
+fn agg_sign(secrets: &[Vec<PrivateKey>], message: &[u8]) -> Result<Vec<u8>> {
     use pluto_crypto::types::Signature;
 
     let tbls = BlstImpl;
     let mut sigs: Vec<Signature> = Vec::new();
 
-    for shares in share_sets {
+    for shares in secrets {
         for share in shares {
-            let sig = tbls
-                .sign(share, message)
-                .map_err(CreateClusterError::CryptoError)?;
+            let sig = tbls.sign(share, message)?;
             sigs.push(sig);
         }
     }
@@ -1365,9 +1360,7 @@ fn agg_sign(share_sets: &[Vec<PrivateKey>], message: &[u8]) -> Result<Vec<u8>> {
         return Ok(Vec::new());
     }
 
-    let agg = tbls
-        .aggregate(&sigs)
-        .map_err(CreateClusterError::CryptoError)?;
+    let agg = tbls.aggregate(&sigs)?;
     Ok(agg.to_vec())
 }
 
@@ -1400,82 +1393,136 @@ fn write_output(
     num_nodes: u64,
     keys_to_disk: bool,
     zipped: bool,
-) -> Result<()> {
-    let abs_cluster_dir =
-        std::path::absolute(cluster_dir.as_ref()).map_err(CreateClusterError::AbsolutePathError)?;
+) -> std::io::Result<()> {
+    let abs_cluster_dir = std::path::absolute(cluster_dir.as_ref())?;
     let abs_str = abs_cluster_dir.display().to_string();
     let abs_str = abs_str.trim_end_matches('/');
 
-    writeln!(w, "Created charon cluster:").map_err(CreateClusterError::IoError)?;
-    writeln!(w, " --split-existing-keys={}", split_keys).map_err(CreateClusterError::IoError)?;
-    writeln!(w).map_err(CreateClusterError::IoError)?;
-    writeln!(w, "{}/", abs_str).map_err(CreateClusterError::IoError)?;
+    writeln!(w, "Created charon cluster:")?;
+    writeln!(w, " --split-existing-keys={}", split_keys)?;
+    writeln!(w)?;
+    writeln!(w, "{}/", abs_str)?;
     writeln!(
         w,
         "├─ node[0-{}]/\t\t\tDirectory for each node",
         num_nodes.saturating_sub(1)
-    )
-    .map_err(CreateClusterError::IoError)?;
+    )?;
     writeln!(
         w,
         "│  ├─ charon-enr-private-key\tCharon networking private key for node authentication"
-    )
-    .map_err(CreateClusterError::IoError)?;
-    writeln!(w, "│  ├─ cluster-lock.json\t\tCluster lock defines the cluster lock file which is signed by all nodes").map_err(CreateClusterError::IoError)?;
-    writeln!(w, "│  ├─ deposit-data-*.json\tDeposit data files are used to activate a Distributed Validator on the DV Launchpad").map_err(CreateClusterError::IoError)?;
+    )?;
+    writeln!(
+        w,
+        "│  ├─ cluster-lock.json\t\tCluster lock defines the cluster lock file which is signed by all nodes"
+    )?;
+    writeln!(
+        w,
+        "│  ├─ deposit-data-*.json\tDeposit data files are used to activate a Distributed Validator on the DV Launchpad"
+    )?;
     if keys_to_disk {
         writeln!(
             w,
             "│  ├─ validator_keys\t\tValidator keystores and password"
-        )
-        .map_err(CreateClusterError::IoError)?;
+        )?;
         writeln!(
             w,
             "│  │  ├─ keystore-*.json\tValidator private share key for duty signing"
-        )
-        .map_err(CreateClusterError::IoError)?;
+        )?;
         writeln!(
             w,
             "│  │  ├─ keystore-*.txt\t\tKeystore password files for keystore-*.json"
-        )
-        .map_err(CreateClusterError::IoError)?;
+        )?;
     }
     if zipped {
-        writeln!(w).map_err(CreateClusterError::IoError)?;
-        writeln!(w, "Files compressed and archived to:").map_err(CreateClusterError::IoError)?;
-        writeln!(w, "{}/cluster.tar.gz", abs_str).map_err(CreateClusterError::IoError)?;
+        writeln!(w)?;
+        writeln!(w, "Files compressed and archived to:")?;
+        writeln!(w, "{}/cluster.tar.gz", abs_str)?;
     }
 
     Ok(())
 }
 
-fn write_split_keys_warning(w: &mut dyn Write) -> Result<()> {
-    writeln!(w).map_err(CreateClusterError::IoError)?;
+fn write_split_keys_warning(w: &mut dyn Write) -> std::io::Result<()> {
+    writeln!(w)?;
     writeln!(
         w,
         "***************** WARNING: Splitting keys **********************"
-    )
-    .map_err(CreateClusterError::IoError)?;
+    )?;
     writeln!(
         w,
         " Please make sure any existing validator has been shut down for"
-    )
-    .map_err(CreateClusterError::IoError)?;
+    )?;
     writeln!(
         w,
         " at least 2 finalised epochs before starting the charon cluster,"
-    )
-    .map_err(CreateClusterError::IoError)?;
+    )?;
     writeln!(
         w,
         " otherwise slashing could occur.                               "
-    )
-    .map_err(CreateClusterError::IoError)?;
+    )?;
     writeln!(
         w,
         "****************************************************************"
-    )
-    .map_err(CreateClusterError::IoError)?;
-    writeln!(w).map_err(CreateClusterError::IoError)?;
+    )?;
+    writeln!(w)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_args(cluster_dir: PathBuf) -> CreateClusterArgs {
+        CreateClusterArgs {
+            cluster_dir,
+            compounding: false,
+            consensus_protocol: None,
+            definition_file: None,
+            deposit_amounts: Vec::new(),
+            execution_engine_addr: None,
+            fee_recipient_addrs: vec!["0x000000000000000000000000000000000000dead".to_string()],
+            insecure_keys: false,
+            keymanager_addrs: Vec::new(),
+            keymanager_auth_tokens: Vec::new(),
+            name: Some("test-cluster".to_string()),
+            network: Some(Network::Mainnet),
+            nodes: 3,
+            num_validators: 1,
+            publish: false,
+            publish_address: "https://api.obol.tech/v1".to_string(),
+            split_keys: false,
+            split_keys_dir: None,
+            target_gas_limit: 60_000_000,
+            testnet_config: TestnetConfig::default(),
+            threshold: None,
+            withdrawal_addrs: vec!["0x000000000000000000000000000000000000dead".to_string()],
+            zipped: false,
+        }
+    }
+
+    #[test]
+    fn validate_create_config_allows_http_keymanager_urls() {
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let mut args = test_args(tempdir.path().to_path_buf());
+        args.keymanager_addrs = vec![
+            "http://127.0.0.1:3600".to_string(),
+            "http://127.0.0.1:3601".to_string(),
+            "http://127.0.0.1:3602".to_string(),
+        ];
+        args.keymanager_auth_tokens = vec!["a".into(), "b".into(), "c".into()];
+
+        assert!(validate_create_config(&args).is_ok());
+    }
+
+    #[test]
+    fn validate_create_config_rejects_zero_num_validators_without_definition() {
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let mut args = test_args(tempdir.path().to_path_buf());
+        args.num_validators = 0;
+
+        assert!(matches!(
+            validate_create_config(&args),
+            Err(CreateClusterError::MissingNumValidatorsOrDefinitionFile)
+        ));
+    }
 }

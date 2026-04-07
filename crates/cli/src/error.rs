@@ -5,7 +5,6 @@ use std::{
     process::{ExitCode, Termination},
 };
 
-use pluto_eth2util as eth2util;
 use thiserror::Error;
 
 use crate::commands::create_cluster::{MIN_NODES, MIN_THRESHOLD};
@@ -29,7 +28,6 @@ impl Termination for ExitResult {
 
 /// Errors that can occur in the Pluto CLI.
 #[derive(Error, Debug)]
-#[allow(dead_code)]
 pub enum CliError {
     /// Private key file not found.
     #[error(
@@ -109,11 +107,15 @@ pub enum CliError {
 
     /// Eth2util network error.
     #[error("Eth2util network error: {0}")]
-    Eth2utilNetworkError(#[from] eth2util::network::NetworkError),
+    Eth2utilNetworkError(#[from] pluto_eth2util::network::NetworkError),
 
     /// Eth2util deposit error.
     #[error("Eth2util deposit error: {0}")]
-    Eth2utilDepositError(#[from] eth2util::deposit::DepositError),
+    Eth2utilDepositError(#[from] pluto_eth2util::deposit::DepositError),
+
+    /// Tracing initialization error.
+    #[error("Tracing initialization error: {0}")]
+    TracingInitError(#[from] pluto_tracing::init::Error),
 }
 
 #[derive(Error, Debug)]
@@ -160,20 +162,11 @@ pub enum CreateClusterError {
 
     /// Invalid deposit amounts.
     #[error("Invalid deposit amounts: {0}")]
-    InvalidDepositAmounts(#[from] eth2util::deposit::DepositError),
+    InvalidDepositAmounts(#[from] pluto_eth2util::deposit::DepositError),
 
     /// Invalid keymanager URL.
     #[error("Invalid keymanager URL: {0}")]
     InvalidKeymanagerUrl(#[from] url::ParseError),
-
-    // todo(varex83): 1-to-1 replication of go impl, possible bug here. consider changing https to
-    // http.
-    /// Invalid keymanager URL scheme.
-    #[error("Keymanager URL does not use https protocol: {addr}")]
-    InvalidKeymanagerUrlScheme {
-        /// Keymanager URL.
-        addr: String,
-    },
 
     /// Cannot specify --num-validators with --split-existing-keys.
     #[error("Cannot specify --num-validators with --split-existing-keys")]
@@ -227,9 +220,16 @@ pub enum CreateClusterError {
         value: u64,
     },
 
+    /// Value exceeds usize::MAX.
+    #[error("Value {value} exceeds usize::MAX")]
+    ValueExceedsUsize {
+        /// The value that exceeds usize::MAX.
+        value: u64,
+    },
+
     /// Keystore error.
     #[error("Keystore error: {0}")]
-    KeystoreError(#[from] eth2util::keystore::KeystoreError),
+    KeystoreError(#[from] pluto_eth2util::keystore::KeystoreError),
 
     /// Cannot create cluster with zero validators.
     #[error("Cannot create cluster with zero validators, specify at least one")]
@@ -311,7 +311,11 @@ pub enum CreateClusterError {
 
     /// Record error.
     #[error("Record error: {0}")]
-    RecordError(#[from] eth2util::enr::RecordError),
+    RecordError(#[from] pluto_eth2util::enr::RecordError),
+
+    /// Eth2util helper error.
+    #[error("Eth2util helper error: {0}")]
+    Eth2utilHelperError(#[from] pluto_eth2util::helpers::HelperError),
 
     /// Insufficient withdrawal addresses.
     #[error("Insufficient withdrawal addresses")]
@@ -323,7 +327,7 @@ pub enum CreateClusterError {
 
     /// Keymanager error.
     #[error("Keymanager error: {0}")]
-    KeymanagerError(#[from] eth2util::keymanager::KeymanagerError),
+    KeymanagerError(#[from] pluto_eth2util::keymanager::KeymanagerError),
 
     /// Insufficient fee addresses.
     #[error("Insufficient fee addresses: expected {expected}, got {got}")]
@@ -340,7 +344,7 @@ pub enum CreateClusterError {
 
     /// Registration error.
     #[error("Registration error: {0}")]
-    RegistrationError(#[from] eth2util::registration::RegistrationError),
+    RegistrationError(#[from] pluto_eth2util::registration::RegistrationError),
 
     /// Validator registration not found at the given index.
     #[error("Validator registration not found at index {index}")]
@@ -398,7 +402,7 @@ pub enum ThresholdError {
 pub enum InvalidNetworkConfigError {
     /// Invalid network name.
     #[error("Invalid network name: {0}")]
-    InvalidNetworkName(#[from] eth2util::network::NetworkError),
+    InvalidNetworkName(#[from] pluto_eth2util::network::NetworkError),
 
     /// Invalid network specified.
     #[error("Invalid network specified: network={network}")]
@@ -418,8 +422,8 @@ impl From<InvalidNetworkConfigError> for CreateClusterError {
     }
 }
 
-impl From<eth2util::network::NetworkError> for CreateClusterError {
-    fn from(error: eth2util::network::NetworkError) -> Self {
+impl From<pluto_eth2util::network::NetworkError> for CreateClusterError {
+    fn from(error: pluto_eth2util::network::NetworkError) -> Self {
         CreateClusterError::InvalidNetworkConfig(InvalidNetworkConfigError::InvalidNetworkName(
             error,
         ))
