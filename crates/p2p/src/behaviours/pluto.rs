@@ -191,6 +191,7 @@ impl<B: NetworkBehaviour> PlutoBehaviourBuilder<B> {
     /// * `key` - The keypair for this node, used for identify and autonat
     pub fn build(self, key: &Keypair) -> PlutoBehaviour<B> {
         let local_peer_id = key.public().to_peer_id();
+        self.p2p_context.set_local_peer_id(local_peer_id);
 
         let identify_config = identify::Config::new(self.identify_protocol, key.public())
             .with_agent_version(self.user_agent)

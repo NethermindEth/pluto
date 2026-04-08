@@ -7,13 +7,22 @@ use k256::{
     elliptic_curve::rand_core::{CryptoRng, Error, RngCore},
 };
 use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PrivateKey};
+use pluto_eth2api::{
+    spec::phase0,
+    types::{
+        AltairBeaconStateCurrentJustifiedCheckpoint, Data,
+        GetBlockAttestationsV2ResponseResponseDataArray2,
+    },
+    versioned::{self, AttestationPayload},
+};
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
 /// A deterministic RNG that always returns the same byte value.
-/// This counter-acts the library's attempt at making ECDSA signatures
-/// non-deterministic.
+///
+/// This is useful in tests and examples that need reproducible secp256k1 keys
+/// or signatures.
 #[derive(Debug, Clone, Copy)]
-struct ConstReader(u8);
+pub struct ConstReader(pub u8);
 
 impl RngCore for ConstReader {
     fn next_u32(&mut self) -> u32 {
@@ -67,11 +76,151 @@ pub fn generate_test_bls_key(seed: u64) -> PrivateKey {
         .expect("deterministic key generation should not fail")
 }
 
+/// Generates a random BLS signature as a hex string for testing.
+///
+/// Returns a 96-byte (192 hex characters) BLS signature encoded as a hex string
+/// with "0x" prefix.
+pub fn random_eth2_signature() -> String {
+    let bytes = random_eth2_signature_bytes();
+    format!("0x{}", hex::encode(bytes))
+}
+
+/// Generates a random Ethereum consensus signature for testing.
+pub fn random_eth2_signature_bytes() -> phase0::BLSSignature {
+    let mut signature = [0u8; 96];
+    rand::thread_rng().fill(&mut signature[..]);
+    signature
+}
+
 /// Generate random Ethereum address for testing.
 pub fn random_eth_address(rand: &mut impl Rng) -> [u8; 20] {
     let mut bytes = [0u8; 20];
     rand.fill(&mut bytes[..]);
     bytes
+}
+
+/// Generates a random 32-byte root as a hex string for testing.
+///
+/// Returns a 32-byte (64 hex characters) root encoded as a hex string with "0x"
+/// prefix.
+pub fn random_root() -> String {
+    let bytes = random_root_bytes();
+    format!("0x{}", hex::encode(bytes))
+}
+
+/// Generates a random Ethereum consensus root for testing.
+pub fn random_root_bytes() -> phase0::Root {
+    let mut root = [0u8; 32];
+    rand::thread_rng().fill(&mut root);
+    root
+}
+
+/// Generates a random slot for testing.
+pub fn random_slot() -> phase0::Slot {
+    rand::thread_rng().r#gen()
+}
+
+/// Generates a random validator index for testing.
+pub fn random_v_idx() -> phase0::ValidatorIndex {
+    rand::thread_rng().r#gen()
+}
+
+/// Generates a random bitlist as a hex string for testing.
+///
+/// # Arguments
+///
+/// * `length` - The number of bits to set in the bitlist
+///
+/// Returns a hex-encoded bitlist string with "0x" prefix.
+pub fn random_bit_list(length: usize) -> String {
+    // Create a byte array large enough to hold the bits
+    // For simplicity, use 32 bytes (256 bits)
+    let mut bytes = [0u8; 32];
+    let mut rng = rand::thread_rng();
+
+    // Set 'length' random bits
+    for _ in 0..length {
+        let bit_idx = rng.r#gen::<usize>() % 256;
+        let byte_idx = bit_idx / 8;
+        let bit_offset = bit_idx % 8;
+        bytes[byte_idx] |= 1 << bit_offset;
+    }
+
+    format!("0x{}", hex::encode(bytes))
+}
+
+/// Generates a random checkpoint for testing.
+fn random_checkpoint() -> AltairBeaconStateCurrentJustifiedCheckpoint {
+    let mut rng = rand::thread_rng();
+    AltairBeaconStateCurrentJustifiedCheckpoint {
+        epoch: rng.r#gen::<u64>().to_string(),
+        root: random_root(),
+    }
+}
+
+/// Generates random attestation data for Phase 0.
+fn random_attestation_data_phase0() -> Data {
+    let mut rng = rand::thread_rng();
+    Data {
+        slot: rng.r#gen::<u64>().to_string(),
+        index: rng.r#gen::<u64>().to_string(),
+        beacon_block_root: random_root(),
+        source: random_checkpoint(),
+        target: random_checkpoint(),
+    }
+}
+
+/// Generates a random Phase 0 attestation.
+///
+/// Returns an attestation with random aggregation bits, attestation data, and
+/// signature.
+pub fn random_phase0_attestation() -> GetBlockAttestationsV2ResponseResponseDataArray2 {
+    GetBlockAttestationsV2ResponseResponseDataArray2 {
+        aggregation_bits: random_bit_list(1),
+        data: random_attestation_data_phase0(),
+        signature: random_eth2_signature(),
+    }
+}
+
+/// Generates a random Deneb versioned attestation.
+///
+/// Returns a versioned attestation containing a Phase 0 attestation with the
+/// Deneb version tag. This matches the Go implementation:
+///
+/// ```go
+/// func RandomDenebVersionedAttestation() *eth2spec.VersionedAttestation {
+///     return &eth2spec.VersionedAttestation{
+///         Version: eth2spec.DataVersionDeneb,
+///         Deneb:   RandomPhase0Attestation(),
+///     }
+/// }
+/// ```
+pub fn random_deneb_versioned_attestation() -> versioned::VersionedAttestation {
+    let mut rng = rand::thread_rng();
+
+    let attestation = phase0::Attestation {
+        aggregation_bits: phase0::BitList::default(),
+        data: phase0::AttestationData {
+            slot: rng.r#gen(),
+            index: rng.r#gen(),
+            beacon_block_root: random_root_bytes(),
+            source: phase0::Checkpoint {
+                epoch: rng.r#gen(),
+                root: random_root_bytes(),
+            },
+            target: phase0::Checkpoint {
+                epoch: rng.r#gen(),
+                root: random_root_bytes(),
+            },
+        },
+        signature: random_eth2_signature_bytes(),
+    };
+
+    versioned::VersionedAttestation {
+        version: versioned::DataVersion::Deneb,
+        validator_index: Some(rng.r#gen()),
+        attestation: Some(AttestationPayload::Deneb(attestation)),
+    }
 }
 
 #[cfg(test)]
@@ -149,5 +298,107 @@ mod tests {
             key1, key2,
             "Different seeds should produce different BLS keys"
         );
+    }
+
+    #[test]
+    fn test_random_eth2_signature() {
+        let sig1 = random_eth2_signature();
+        let sig2 = random_eth2_signature();
+
+        // Check format
+        assert!(sig1.starts_with("0x"));
+        // 96 bytes = 192 hex chars + "0x" prefix = 194 total
+        assert_eq!(sig1.len(), 194);
+
+        // Different calls should produce different signatures
+        assert_ne!(sig1, sig2);
+    }
+
+    #[test]
+    fn test_random_root() {
+        let root1 = random_root();
+        let root2 = random_root();
+
+        // Check format
+        assert!(root1.starts_with("0x"));
+        // 32 bytes = 64 hex chars + "0x" prefix = 66 total
+        assert_eq!(root1.len(), 66);
+
+        // Different calls should produce different roots
+        assert_ne!(root1, root2);
+    }
+
+    #[test]
+    fn test_random_bit_list() {
+        for length in [5usize, 50, 256] {
+            let bitlist = random_bit_list(length);
+
+            // Check format
+            assert!(bitlist.starts_with("0x"));
+            // 32 bytes = 64 hex chars + "0x" prefix = 66 total
+            assert_eq!(bitlist.len(), 66);
+
+            // Decode to bytes and verify bit count
+            let bytes = hex::decode(&bitlist[2..]).unwrap();
+            let bit_count = bytes.iter().map(|b| b.count_ones()).sum::<u32>();
+            // Bit count must be <= length (collisions possible for large lengths)
+            assert!(bit_count <= u32::try_from(length).unwrap());
+        }
+
+        // For a small, exact length verify the exact bit count
+        let bitlist = random_bit_list(5);
+        let bytes = hex::decode(&bitlist[2..]).unwrap();
+        let bit_count = bytes.iter().map(|b| b.count_ones()).sum::<u32>();
+        assert_eq!(bit_count, 5);
+    }
+
+    #[test]
+    fn test_random_phase0_attestation() {
+        let att = random_phase0_attestation();
+
+        // Check that all fields are populated
+        assert!(att.aggregation_bits.starts_with("0x"));
+        assert!(att.signature.starts_with("0x"));
+        assert!(att.data.beacon_block_root.starts_with("0x"));
+        assert!(!att.data.slot.is_empty());
+        assert!(!att.data.index.is_empty());
+    }
+
+    #[test]
+    fn test_random_deneb_versioned_attestation() {
+        let versioned_att = random_deneb_versioned_attestation();
+
+        // Check version is Deneb
+        assert!(matches!(
+            versioned_att.version,
+            versioned::DataVersion::Deneb
+        ));
+
+        // Check that data is populated
+        match versioned_att.attestation {
+            Some(AttestationPayload::Deneb(att)) => {
+                assert_eq!(att.signature.len(), 96);
+            }
+            _ => panic!("Expected Deneb attestation"),
+        }
+    }
+
+    #[test]
+    fn test_random_deneb_versioned_attestation_different() {
+        let att1 = random_deneb_versioned_attestation();
+        let att2 = random_deneb_versioned_attestation();
+
+        // Different calls should produce different attestations
+        // Check signatures are different
+        let sig1 = match &att1.attestation {
+            Some(AttestationPayload::Deneb(a)) => &a.signature,
+            _ => panic!("Expected Deneb attestation"),
+        };
+        let sig2 = match &att2.attestation {
+            Some(AttestationPayload::Deneb(a)) => &a.signature,
+            _ => panic!("Expected Deneb attestation"),
+        };
+
+        assert_ne!(sig1, sig2);
     }
 }

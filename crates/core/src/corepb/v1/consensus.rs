@@ -23,6 +23,16 @@ pub struct QbftMsg {
     #[prost(bytes = "bytes", tag = "12")]
     pub prepared_value_hash: ::prost::bytes::Bytes,
 }
+impl ::prost::Name for QbftMsg {
+    const NAME: &'static str = "QBFTMsg";
+    const PACKAGE: &'static str = "consensus";
+    fn full_name() -> ::prost::alloc::string::String {
+        "consensus.QBFTMsg".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/consensus.QBFTMsg".into()
+    }
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct QbftConsensusMsg {
     /// msg is the message that we send
@@ -35,6 +45,16 @@ pub struct QbftConsensusMsg {
     #[prost(message, repeated, tag = "3")]
     pub values: ::prost::alloc::vec::Vec<::prost_types::Any>,
 }
+impl ::prost::Name for QbftConsensusMsg {
+    const NAME: &'static str = "QBFTConsensusMsg";
+    const PACKAGE: &'static str = "consensus";
+    fn full_name() -> ::prost::alloc::string::String {
+        "consensus.QBFTConsensusMsg".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/consensus.QBFTConsensusMsg".into()
+    }
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SniffedConsensusMsg {
     #[prost(message, optional, tag = "1")]
@@ -42,6 +62,16 @@ pub struct SniffedConsensusMsg {
     /// Other consensus protocol messages can be added here
     #[prost(message, optional, tag = "2")]
     pub msg: ::core::option::Option<QbftConsensusMsg>,
+}
+impl ::prost::Name for SniffedConsensusMsg {
+    const NAME: &'static str = "SniffedConsensusMsg";
+    const PACKAGE: &'static str = "consensus";
+    fn full_name() -> ::prost::alloc::string::String {
+        "consensus.SniffedConsensusMsg".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/consensus.SniffedConsensusMsg".into()
+    }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SniffedConsensusInstance {
@@ -56,10 +86,30 @@ pub struct SniffedConsensusInstance {
     #[prost(string, tag = "5")]
     pub protocol_id: ::prost::alloc::string::String,
 }
+impl ::prost::Name for SniffedConsensusInstance {
+    const NAME: &'static str = "SniffedConsensusInstance";
+    const PACKAGE: &'static str = "consensus";
+    fn full_name() -> ::prost::alloc::string::String {
+        "consensus.SniffedConsensusInstance".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/consensus.SniffedConsensusInstance".into()
+    }
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SniffedConsensusInstances {
     #[prost(message, repeated, tag = "1")]
     pub instances: ::prost::alloc::vec::Vec<SniffedConsensusInstance>,
     #[prost(string, tag = "2")]
     pub git_hash: ::prost::alloc::string::String,
+}
+impl ::prost::Name for SniffedConsensusInstances {
+    const NAME: &'static str = "SniffedConsensusInstances";
+    const PACKAGE: &'static str = "consensus";
+    fn full_name() -> ::prost::alloc::string::String {
+        "consensus.SniffedConsensusInstances".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/consensus.SniffedConsensusInstances".into()
+    }
 }
