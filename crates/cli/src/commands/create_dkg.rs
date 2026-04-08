@@ -22,9 +22,8 @@ use pluto_eth2util::{
         valid_network,
     },
 };
+use thiserror::Error;
 use tracing::{info, warn};
-
-use crate::error::{CliError, Result};
 
 const DEFAULT_NETWORK: &str = "mainnet";
 const ZERO_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
@@ -119,49 +118,130 @@ pub struct CreateDkgArgs {
     pub operator_addresses: Vec<String>,
 }
 
-/// Runs the create dkg command.
-pub async fn run(args: CreateDkgArgs) -> Result<()> {
-    run_create_dkg(parse_args(args)?).await
+#[derive(Error, Debug)]
+pub enum CreateDkgError {
+    #[error("existing cluster-definition.json found. Try again after deleting it")]
+    DefinitionAlreadyExists,
+
+    #[error("invalid ENR (operator {index}): {source}")]
+    InvalidEnr {
+        index: usize,
+        #[source]
+        source: pluto_eth2util::enr::RecordError,
+    },
+
+    #[error("invalid operator address: {source} (operator {index})")]
+    InvalidOperatorAddress {
+        index: usize,
+        #[source]
+        source: pluto_eth2util::helpers::HelperError,
+    },
+
+    #[error("operator count overflow")]
+    OperatorCountOverflow,
+
+    #[error(
+        "number of operators is below minimum: got {num_operators}, need at least {MIN_NODES} via --operator-enrs or --operator-addresses"
+    )]
+    TooFewOperators { num_operators: usize },
+
+    #[error("unsupported network")]
+    UnsupportedNetwork,
+
+    #[error("unsupported consensus protocol")]
+    UnsupportedConsensusProtocol,
+
+    #[error("address count overflow")]
+    AddressCountOverflow,
+
+    #[error("mismatching --num-validators and --fee-recipient-addresses")]
+    MismatchingFeeRecipientAddresses,
+
+    #[error("mismatching --num-validators and --withdrawal-addresses")]
+    MismatchingWithdrawalAddresses,
+
+    #[error("num_validators is greater than usize::MAX")]
+    NumValidatorsOverflow,
+
+    #[error("threshold overflow")]
+    ThresholdOverflow,
+
+    #[error("threshold must be greater than 1")]
+    ThresholdTooLow,
+
+    #[error("threshold cannot be greater than number of operators")]
+    ThresholdTooHigh,
+
+    #[error("cannot provide both --operator-enrs and --operator-addresses")]
+    MutuallyExclusiveOperatorFlags,
+
+    #[error(r#"required flag(s) "operator-enrs" or "operator-addresses" not set"#)]
+    MissingOperatorEnrsOrAddresses,
+
+    #[error(r#"required flag(s) "operator-enrs" not set"#)]
+    MissingOperatorEnrs,
+
+    #[error(transparent)]
+    WithdrawalValidation(#[from] WithdrawalValidationError),
+
+    #[error(transparent)]
+    Network(#[from] pluto_eth2util::network::NetworkError),
+
+    #[error(transparent)]
+    Definition(#[from] pluto_cluster::definition::DefinitionError),
+
+    #[error(transparent)]
+    Eip712(#[from] pluto_cluster::eip712sigs::EIP712Error),
+
+    #[error(transparent)]
+    Eth1wrap(#[from] pluto_eth1wrap::EthClientError),
+
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+
+    #[error(transparent)]
+    Deposit(#[from] pluto_eth2util::deposit::DepositError),
+
+    #[error(transparent)]
+    ObolApi(#[from] pluto_app::obolapi::ObolApiError),
 }
 
-fn parse_args(args: CreateDkgArgs) -> Result<CreateDkgArgs> {
+/// Runs the create dkg command.
+pub async fn run(args: CreateDkgArgs) -> crate::error::Result<()> {
+    Ok(run_create_dkg(parse_args(args)?).await?)
+}
+
+fn parse_args(args: CreateDkgArgs) -> Result<CreateDkgArgs, CreateDkgError> {
     if args.threshold != 0 {
         if args.threshold < MIN_THRESHOLD {
-            return Err(CliError::Other(
-                "threshold must be greater than 1".to_string(),
-            ));
+            return Err(CreateDkgError::ThresholdTooLow);
         }
         let num_enrs = u64::try_from(args.operator_enrs.len())
-            .map_err(|_| CliError::Other("operator count overflow".to_string()))?;
+            .map_err(|_| CreateDkgError::OperatorCountOverflow)?;
         if args.threshold > num_enrs {
-            return Err(CliError::Other(
-                "threshold cannot be greater than number of operators".to_string(),
-            ));
+            return Err(CreateDkgError::ThresholdTooHigh);
         }
     }
 
     if !args.operator_enrs.is_empty() && !args.operator_addresses.is_empty() {
-        return Err(CliError::Other(
-            "cannot provide both --operator-enrs and --operator-addresses".to_string(),
-        ));
+        return Err(CreateDkgError::MutuallyExclusiveOperatorFlags);
     }
 
     if args.publish {
         if args.operator_enrs.is_empty() && args.operator_addresses.is_empty() {
-            return Err(CliError::Other(
-                r#"required flag(s) "operator-enrs" or "operator-addresses" not set"#.to_string(),
-            ));
+            return Err(CreateDkgError::MissingOperatorEnrsOrAddresses);
         }
     } else if args.operator_enrs.is_empty() {
-        return Err(CliError::Other(
-            r#"required flag(s) "operator-enrs" not set"#.to_string(),
-        ));
+        return Err(CreateDkgError::MissingOperatorEnrs);
     }
 
     Ok(args)
 }
 
-async fn run_create_dkg(mut args: CreateDkgArgs) -> Result<()> {
+async fn run_create_dkg(mut args: CreateDkgArgs) -> Result<(), CreateDkgError> {
     // Map prater to goerli to ensure backwards compatibility with older cluster
     // definitions.
     if args.network == PRATER {
@@ -194,16 +274,14 @@ async fn run_create_dkg(mut args: CreateDkgArgs) -> Result<()> {
 
     let def_path = args.output_dir.join("cluster-definition.json");
     if def_path.exists() {
-        return Err(CliError::Other(
-            "existing cluster-definition.json found. Try again after deleting it".to_string(),
-        ));
+        return Err(CreateDkgError::DefinitionAlreadyExists);
     }
 
     let mut operators: Vec<Operator> = Vec::new();
 
     for (i, enr_str) in args.operator_enrs.iter().enumerate() {
         Record::try_from(enr_str.as_str())
-            .map_err(|e| CliError::Other(format!("invalid ENR (operator {i}): {e}")))?;
+            .map_err(|source| CreateDkgError::InvalidEnr { index: i, source })?;
 
         operators.push(Operator {
             enr: enr_str.clone(),
@@ -212,17 +290,16 @@ async fn run_create_dkg(mut args: CreateDkgArgs) -> Result<()> {
     }
 
     for (i, addr) in args.operator_addresses.iter().enumerate() {
-        let checksum_addr = checksum_address(addr).map_err(|e| {
-            CliError::Other(format!("invalid operator address: {e} (operator {i})"))
-        })?;
+        let checksum_addr = checksum_address(addr)
+            .map_err(|source| CreateDkgError::InvalidOperatorAddress { index: i, source })?;
         operators.push(Operator {
             address: checksum_addr,
             ..Default::default()
         });
     }
 
-    let num_operators = u64::try_from(operators.len())
-        .map_err(|_| CliError::Other("operator count overflow".to_string()))?;
+    let num_operators =
+        u64::try_from(operators.len()).map_err(|_| CreateDkgError::OperatorCountOverflow)?;
     let safe_thresh = safe_threshold(num_operators)?;
     let threshold = if args.threshold == 0 {
         safe_thresh
@@ -311,15 +388,13 @@ fn validate_dkg_config(
     deposit_amounts: &[u64],
     consensus_protocol: &str,
     compounding: bool,
-) -> Result<()> {
+) -> Result<(), CreateDkgError> {
     if num_operators < MIN_NODES {
-        return Err(CliError::Other(format!(
-            "number of operators is below minimum: got {num_operators}, need at least {MIN_NODES} via --operator-enrs or --operator-addresses",
-        )));
+        return Err(CreateDkgError::TooFewOperators { num_operators });
     }
 
     if !valid_network(network) {
-        return Err(CliError::Other("unsupported network".to_string()));
+        return Err(CreateDkgError::UnsupportedNetwork);
     }
 
     if !deposit_amounts.is_empty() {
@@ -328,9 +403,7 @@ fn validate_dkg_config(
     }
 
     if !consensus_protocol.is_empty() && !is_supported_protocol_name(consensus_protocol) {
-        return Err(CliError::Other(
-            "unsupported consensus protocol".to_string(),
-        ));
+        return Err(CreateDkgError::UnsupportedConsensusProtocol);
     }
 
     Ok(())
@@ -340,27 +413,23 @@ fn validate_addresses(
     num_validators: u64,
     fee_recipient_addrs: Vec<String>,
     withdrawal_addrs: Vec<String>,
-) -> Result<(Vec<String>, Vec<String>)> {
+) -> Result<(Vec<String>, Vec<String>), CreateDkgError> {
     let num_vals = num_validators;
     let num_fee = u64::try_from(fee_recipient_addrs.len())
-        .map_err(|_| CliError::Other("address count overflow".to_string()))?;
-    let num_wa = u64::try_from(withdrawal_addrs.len())
-        .map_err(|_| CliError::Other("address count overflow".to_string()))?;
+        .map_err(|_| CreateDkgError::AddressCountOverflow)?;
+    let num_wa =
+        u64::try_from(withdrawal_addrs.len()).map_err(|_| CreateDkgError::AddressCountOverflow)?;
 
     if num_fee != num_vals && num_fee != 1 {
-        return Err(CliError::Other(
-            "mismatching --num-validators and --fee-recipient-addresses".to_string(),
-        ));
+        return Err(CreateDkgError::MismatchingFeeRecipientAddresses);
     }
 
     if num_wa != num_vals && num_wa != 1 {
-        return Err(CliError::Other(
-            "mismatching --num-validators and --withdrawal-addresses".to_string(),
-        ));
+        return Err(CreateDkgError::MismatchingWithdrawalAddresses);
     }
 
-    let num_validators = usize::try_from(num_validators)
-        .map_err(|_| CliError::Other("num_validators is greater than usize::MAX".to_string()))?;
+    let num_validators =
+        usize::try_from(num_validators).map_err(|_| CreateDkgError::NumValidatorsOverflow)?;
     let expand = |addrs: Vec<String>| -> Vec<String> {
         if addrs.len() == 1 {
             vec![addrs[0].clone(); num_validators]
@@ -372,21 +441,63 @@ fn validate_addresses(
     Ok((expand(fee_recipient_addrs), expand(withdrawal_addrs)))
 }
 
-fn validate_withdrawal_addrs(addrs: &[String], network: &str) -> Result<()> {
-    for addr in addrs {
-        let checksum = checksum_address(addr)
-            .map_err(|e| CliError::Other(format!("invalid withdrawal address: {e}")))?;
+/// Errors that can occur during withdrawal address validation.
+#[derive(Error, Debug)]
+pub enum WithdrawalValidationError {
+    /// Invalid withdrawal address.
+    #[error("invalid withdrawal address: {address}: {reason}")]
+    InvalidWithdrawalAddress {
+        /// The invalid address.
+        address: String,
+        /// The reason for the invalid address.
+        reason: String,
+    },
 
-        if checksum != *addr {
-            return Err(CliError::Other(format!(
-                "invalid checksummed address: {addr}"
-            )));
+    /// Invalid checksummed address.
+    #[error("invalid checksummed address: {address}")]
+    InvalidChecksummedAddress {
+        /// The address with invalid checksum.
+        address: String,
+    },
+
+    /// Zero address forbidden on mainnet/gnosis.
+    #[error("zero address forbidden on this network: {network}")]
+    ZeroAddressForbiddenOnNetwork {
+        /// The network name.
+        network: String,
+    },
+
+    /// Eth2util helpers error.
+    #[error("Eth2util helpers error: {0}")]
+    Eth2utilHelperError(#[from] pluto_eth2util::helpers::HelperError),
+}
+
+/// Validates withdrawal addresses for the given network.
+///
+/// Returns an error if any of the provided withdrawal addresses is invalid.
+pub fn validate_withdrawal_addrs(
+    addrs: &[String],
+    network: &str,
+) -> Result<(), WithdrawalValidationError> {
+    for addr in addrs {
+        let checksum_addr = checksum_address(addr).map_err(|e| {
+            WithdrawalValidationError::InvalidWithdrawalAddress {
+                address: addr.clone(),
+                reason: e.to_string(),
+            }
+        })?;
+
+        if checksum_addr != *addr {
+            return Err(WithdrawalValidationError::InvalidChecksummedAddress {
+                address: addr.clone(),
+            });
         }
 
+        // We cannot allow a zero withdrawal address on mainnet or gnosis.
         if is_main_or_gnosis(network) && addr == ZERO_ADDRESS {
-            return Err(CliError::Other(format!(
-                "zero address forbidden on this network: {network}"
-            )));
+            return Err(WithdrawalValidationError::ZeroAddressForbiddenOnNetwork {
+                network: network.to_string(),
+            });
         }
     }
 
@@ -397,13 +508,13 @@ fn is_main_or_gnosis(network: &str) -> bool {
     network == MAINNET.name || network == GNOSIS.name
 }
 
-fn safe_threshold(num_operators: u64) -> Result<u64> {
+fn safe_threshold(num_operators: u64) -> Result<u64, CreateDkgError> {
     let two_n = num_operators
         .checked_mul(2)
-        .ok_or_else(|| CliError::Other("threshold overflow".to_string()))?;
+        .ok_or(CreateDkgError::ThresholdOverflow)?;
     Ok(two_n
         .checked_add(2)
-        .ok_or_else(|| CliError::Other("threshold overflow".to_string()))?
+        .ok_or(CreateDkgError::ThresholdOverflow)?
         / 3)
 }
 
@@ -432,7 +543,7 @@ async fn publish_partial_definition(
     args: CreateDkgArgs,
     priv_key: SecretKey,
     def: Definition,
-) -> Result<()> {
+) -> Result<(), CreateDkgError> {
     let api_client = Client::new(
         &args.publish_address,
         ClientOptions::builder()
@@ -603,17 +714,17 @@ mod tests {
 
     #[test_case(
         CreateDkgArgs { operator_enrs: vec![], operator_addresses: vec![], publish: false, ..default_args() },
-        r#"required flag(s) "operator-enrs" not set"# ;
+        r#"Create DKG error: required flag(s) "operator-enrs" not set"# ;
         "no_enrs"
     )]
     #[test_case(
         CreateDkgArgs { threshold: 1, ..default_args() },
-        "threshold must be greater than 1" ;
+        "Create DKG error: threshold must be greater than 1" ;
         "threshold_below_minimum"
     )]
     #[test_case(
         CreateDkgArgs { operator_enrs: VALID_ENRS[..3].iter().map(|s| s.to_string()).collect(), threshold: 4, ..default_args() },
-        "threshold cannot be greater than number of operators" ;
+        "Create DKG error: threshold cannot be greater than number of operators" ;
         "threshold_above_maximum"
     )]
     #[tokio::test]

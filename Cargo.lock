@@ -5457,8 +5457,8 @@ dependencies = [
  "pluto-app",
  "pluto-cluster",
  "pluto-core",
- "pluto-eth1wrap",
  "pluto-crypto",
+ "pluto-eth1wrap",
  "pluto-eth2api",
  "pluto-eth2util",
  "pluto-k1util",
@@ -5478,9 +5478,9 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "wiremock",
  "url",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]

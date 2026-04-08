@@ -3,8 +3,8 @@
 use clap::{Parser, Subcommand};
 
 use crate::commands::{
-    create_dkg::CreateDkgArgs,
     create_cluster::CreateClusterArgs,
+    create_dkg::CreateDkgArgs,
     create_enr::CreateEnrArgs,
     enr::EnrArgs,
     relay::RelayArgs,
