@@ -8,7 +8,7 @@ use libp2p::{Multiaddr, multiaddr};
 pub const LICENSE: &str = concat!(
     "This software is licensed under the Maria DB Business Source License 1.1; ",
     "you may not use this software except in compliance with this license. You may obtain a ",
-    "copy of this license at https://github.com/ObolNetwork/charon/blob/main/LICENSE"
+    "copy of this license at https://github.com/NethermindEth/pluto/blob/main/LICENSE"
 );
 
 /// Shared default relay endpoints used by Charon-compatible commands.
