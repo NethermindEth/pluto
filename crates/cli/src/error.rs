@@ -1,33 +1,14 @@
 //! Error types for the Pluto CLI.
 
-use std::{
-    path::PathBuf,
-    process::{ExitCode, Termination},
-};
-
-use thiserror::Error;
+use std::path::PathBuf;
 
 use crate::commands::create_cluster::{MIN_NODES, MIN_THRESHOLD};
 
 /// Result type for CLI operations.
 pub type Result<T> = std::result::Result<T, CliError>;
 
-pub struct ExitResult(pub Result<()>);
-
-impl Termination for ExitResult {
-    fn report(self) -> ExitCode {
-        match self.0 {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(err) => {
-                eprintln!("Error: {}", err);
-                ExitCode::FAILURE
-            }
-        }
-    }
-}
-
 /// Errors that can occur in the Pluto CLI.
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum CliError {
     /// Private key file not found.
     #[error(
@@ -89,10 +70,6 @@ pub enum CliError {
     #[error("test case not supported")]
     _TestCaseNotSupported,
 
-    /// Generic error with message.
-    #[error("{0}")]
-    Other(String),
-
     /// Relay P2P error.
     #[error("Relay P2P error: {0}")]
     RelayP2PError(#[from] pluto_relay_server::error::RelayP2PError),
@@ -116,9 +93,17 @@ pub enum CliError {
     /// Tracing initialization error.
     #[error("Tracing initialization error: {0}")]
     TracingInitError(#[from] pluto_tracing::init::Error),
+
+    /// Command parsing error.
+    #[error("Command parsing error: {0}")]
+    CommandParsingError(#[from] clap::Error),
+
+    /// Generic error with message.
+    #[error("{0}")]
+    Other(String),
 }
 
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum CreateClusterError {
     /// Invalid threshold.
     #[error("Invalid threshold: {0}")]
@@ -369,7 +354,7 @@ pub enum CreateClusterError {
     BundleOutputError(#[from] pluto_app::utils::UtilsError),
 }
 
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum ThresholdError {
     /// Threshold must be greater than {MIN_THRESHOLD}.
     #[error("Threshold must be greater than {MIN_THRESHOLD}, got {threshold}")]
@@ -390,7 +375,7 @@ pub enum ThresholdError {
     },
 }
 
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum InvalidNetworkConfigError {
     /// Invalid network name.
     #[error("Invalid network name: {0}")]

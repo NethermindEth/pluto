@@ -48,6 +48,7 @@ tar.workspace = true
 tempfile.workspace = true
 test-case.workspace = true
 backon.workspace = true
+wiremock.workspace = true
 
 [lints]
 workspace = true

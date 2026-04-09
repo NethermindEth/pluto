@@ -17,14 +17,11 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use futures::prelude::*;
 use libp2p::{PeerId, swarm::Stream};
 use pluto_core::version::{self, SemVer, SemVerError};
-use prost::Message;
 use regex::Regex;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
-use unsigned_varint::aio::read_usize;
 
 use crate::{
     LocalPeerInfo,
@@ -49,57 +46,6 @@ pub struct ProtocolState {
     nicknames: Arc<Mutex<HashMap<String, String>>>,
 
     local_info: LocalPeerInfo,
-}
-
-/// Writes a protobuf message with unsigned varint length prefix to the stream.
-///
-/// Wire format: `[uvarint length][protobuf bytes]`
-async fn write_protobuf<M: Message, S: AsyncWrite + Unpin>(
-    stream: &mut S,
-    msg: &M,
-) -> io::Result<()> {
-    // Encode message to protobuf bytes
-    let mut buf = Vec::with_capacity(msg.encoded_len());
-    msg.encode(&mut buf)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-    // Write unsigned varint length prefix
-    let mut len_buf = unsigned_varint::encode::usize_buffer();
-    let encoded_len = unsigned_varint::encode::usize(buf.len(), &mut len_buf);
-    stream.write_all(encoded_len).await?;
-
-    // Write protobuf bytes
-    stream.write_all(&buf).await?;
-    stream.flush().await
-}
-
-/// Reads a protobuf message with unsigned varint length prefix from the stream.
-///
-/// Wire format: `[uvarint length][protobuf bytes]`
-///
-/// Returns an error if the message exceeds `MAX_MESSAGE_SIZE`.
-async fn read_protobuf<M: Message + Default, S: AsyncRead + Unpin>(
-    stream: &mut S,
-) -> io::Result<M> {
-    // Read unsigned varint length prefix
-    let msg_len = read_usize(&mut *stream).await.map_err(|e| match e {
-        unsigned_varint::io::ReadError::Io(io_err) => io_err,
-        other => io::Error::new(io::ErrorKind::InvalidData, other),
-    })?;
-
-    if msg_len > MAX_MESSAGE_SIZE {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("message too large: {msg_len} bytes (max: {MAX_MESSAGE_SIZE})"),
-        ));
-    }
-
-    // Read exactly `msg_len` protobuf bytes
-    let mut buf = vec![0u8; msg_len];
-    stream.read_exact(&mut buf).await?;
-
-    // Unmarshal protobuf
-    M::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
 /// Errors that can occur during the protocol.
@@ -317,8 +263,9 @@ impl ProtocolState {
         request: &PeerInfo,
     ) -> io::Result<(Stream, PeerInfo)> {
         let start = Instant::now();
-        write_protobuf(&mut stream, request).await?;
-        let response = read_protobuf(&mut stream).await?;
+        pluto_p2p::proto::write_protobuf(&mut stream, request).await?;
+        let response =
+            pluto_p2p::proto::read_protobuf_with_max_size(&mut stream, MAX_MESSAGE_SIZE).await?;
         let rtt = start.elapsed();
 
         self.validate_peer_info(&response, rtt).await;
@@ -334,8 +281,9 @@ impl ProtocolState {
         mut stream: Stream,
         local_info: &PeerInfo,
     ) -> io::Result<(Stream, PeerInfo)> {
-        let request = read_protobuf(&mut stream).await?;
-        write_protobuf(&mut stream, local_info).await?;
+        let request =
+            pluto_p2p::proto::read_protobuf_with_max_size(&mut stream, MAX_MESSAGE_SIZE).await?;
+        pluto_p2p::proto::write_protobuf(&mut stream, local_info).await?;
         Ok((stream, request))
     }
 }
@@ -344,6 +292,7 @@ impl ProtocolState {
 mod tests {
     use super::*;
     use hex_literal::hex;
+    use prost::Message;
 
     // Test case: minimal
     // CharonVersion: "v1.0.0"
@@ -571,7 +520,9 @@ mod tests {
 
         // Write to a cursor
         let mut buf = Vec::new();
-        write_protobuf(&mut buf, &original).await.unwrap();
+        pluto_p2p::proto::write_protobuf(&mut buf, &original)
+            .await
+            .unwrap();
 
         // The wire format should be: [varint length][protobuf bytes]
         // Minimal message is 14 bytes, so length prefix is just 1 byte (14 < 128)
@@ -580,7 +531,10 @@ mod tests {
 
         // Read it back
         let mut cursor = futures::io::Cursor::new(&buf[..]);
-        let decoded: PeerInfo = read_protobuf(&mut cursor).await.unwrap();
+        let decoded: PeerInfo =
+            pluto_p2p::proto::read_protobuf_with_max_size(&mut cursor, MAX_MESSAGE_SIZE)
+                .await
+                .unwrap();
         assert_eq!(original, decoded);
     }
 
@@ -589,11 +543,16 @@ mod tests {
         let original = make_full_peerinfo();
 
         let mut buf = Vec::new();
-        write_protobuf(&mut buf, &original).await.unwrap();
+        pluto_p2p::proto::write_protobuf(&mut buf, &original)
+            .await
+            .unwrap();
 
         // Read it back
         let mut cursor = futures::io::Cursor::new(&buf[..]);
-        let decoded: PeerInfo = read_protobuf(&mut cursor).await.unwrap();
+        let decoded: PeerInfo =
+            pluto_p2p::proto::read_protobuf_with_max_size(&mut cursor, MAX_MESSAGE_SIZE)
+                .await
+                .unwrap();
         assert_eq!(original, decoded);
     }
 
@@ -609,10 +568,15 @@ mod tests {
 
         for original in variants {
             let mut buf = Vec::new();
-            write_protobuf(&mut buf, &original).await.unwrap();
+            pluto_p2p::proto::write_protobuf(&mut buf, &original)
+                .await
+                .unwrap();
 
             let mut cursor = futures::io::Cursor::new(&buf[..]);
-            let decoded: PeerInfo = read_protobuf(&mut cursor).await.unwrap();
+            let decoded: PeerInfo =
+                pluto_p2p::proto::read_protobuf_with_max_size(&mut cursor, MAX_MESSAGE_SIZE)
+                    .await
+                    .unwrap();
             assert_eq!(original, decoded);
         }
     }
@@ -627,7 +591,8 @@ mod tests {
         buf.extend_from_slice(encoded_len);
 
         let mut cursor = futures::io::Cursor::new(&buf[..]);
-        let result: io::Result<PeerInfo> = read_protobuf(&mut cursor).await;
+        let result: io::Result<PeerInfo> =
+            pluto_p2p::proto::read_protobuf_with_max_size(&mut cursor, MAX_MESSAGE_SIZE).await;
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -641,7 +606,8 @@ mod tests {
         let invalid_data = [0x05, 0xff, 0xff, 0xff, 0xff, 0xff]; // length 5, then garbage
 
         let mut cursor = futures::io::Cursor::new(&invalid_data[..]);
-        let result: io::Result<PeerInfo> = read_protobuf(&mut cursor).await;
+        let result: io::Result<PeerInfo> =
+            pluto_p2p::proto::read_protobuf_with_max_size(&mut cursor, MAX_MESSAGE_SIZE).await;
 
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
@@ -653,7 +619,8 @@ mod tests {
         let truncated = [0x10]; // claims 16 bytes but has none
 
         let mut cursor = futures::io::Cursor::new(&truncated[..]);
-        let result: io::Result<PeerInfo> = read_protobuf(&mut cursor).await;
+        let result: io::Result<PeerInfo> =
+            pluto_p2p::proto::read_protobuf_with_max_size(&mut cursor, MAX_MESSAGE_SIZE).await;
 
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
@@ -667,15 +634,30 @@ mod tests {
 
         // Write multiple messages to the same buffer
         let mut buf = Vec::new();
-        write_protobuf(&mut buf, &msg1).await.unwrap();
-        write_protobuf(&mut buf, &msg2).await.unwrap();
-        write_protobuf(&mut buf, &msg3).await.unwrap();
+        pluto_p2p::proto::write_protobuf(&mut buf, &msg1)
+            .await
+            .unwrap();
+        pluto_p2p::proto::write_protobuf(&mut buf, &msg2)
+            .await
+            .unwrap();
+        pluto_p2p::proto::write_protobuf(&mut buf, &msg3)
+            .await
+            .unwrap();
 
         // Read them back in order
         let mut cursor = futures::io::Cursor::new(&buf[..]);
-        let decoded1: PeerInfo = read_protobuf(&mut cursor).await.unwrap();
-        let decoded2: PeerInfo = read_protobuf(&mut cursor).await.unwrap();
-        let decoded3: PeerInfo = read_protobuf(&mut cursor).await.unwrap();
+        let decoded1: PeerInfo =
+            pluto_p2p::proto::read_protobuf_with_max_size(&mut cursor, MAX_MESSAGE_SIZE)
+                .await
+                .unwrap();
+        let decoded2: PeerInfo =
+            pluto_p2p::proto::read_protobuf_with_max_size(&mut cursor, MAX_MESSAGE_SIZE)
+                .await
+                .unwrap();
+        let decoded3: PeerInfo =
+            pluto_p2p::proto::read_protobuf_with_max_size(&mut cursor, MAX_MESSAGE_SIZE)
+                .await
+                .unwrap();
 
         assert_eq!(msg1, decoded1);
         assert_eq!(msg2, decoded2);
