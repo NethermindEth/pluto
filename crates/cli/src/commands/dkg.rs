@@ -327,12 +327,14 @@ mod tests {
     use crate::cli::{Cli, Commands};
     use clap::Parser;
     use libp2p::{Multiaddr, multiaddr};
-    use std::str::FromStr;
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
+    use std::{
+        str::FromStr,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Duration as StdDuration,
     };
-    use std::time::Duration as StdDuration;
 
     #[test]
     fn dkg_is_registered_as_top_level_subcommand() {
