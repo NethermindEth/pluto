@@ -1,7 +1,5 @@
 use crate::{
-    commands::common::{
-        ConsoleColor, DEFAULT_RELAYS, LICENSE, build_console_tracing_config, parse_relay_addr,
-    },
+    commands::common::{ConsoleColor, LICENSE, build_console_tracing_config, parse_relay_addr},
     error::CliError,
 };
 use libp2p::multiaddr::Protocol;
@@ -171,7 +169,7 @@ pub struct RelayP2PArgs {
         long = "p2p-relays",
         env = "PLUTO_P2P_RELAYS",
         value_delimiter = ',',
-        default_values_t = DEFAULT_RELAYS.map(String::from),
+        default_values_t = pluto_p2p::config::DEFAULT_RELAYS.map(String::from),
         help = "Comma-separated list of libp2p relay URLs or multiaddrs."
     )]
     pub relays: Vec<String>,

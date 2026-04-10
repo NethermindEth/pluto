@@ -6,11 +6,6 @@ use tracing::warn;
 
 const DEFAULT_DATA_DIR: &str = ".charon";
 const DEFAULT_DEFINITION_FILE: &str = ".charon/cluster-definition.json";
-const DEFAULT_RELAYS: [&str; 3] = [
-    "https://0.relay.obol.tech",
-    "https://2.relay.obol.dev",
-    "https://1.relay.obol.tech",
-];
 const DEFAULT_PUBLISH_ADDRESS: &str = "https://api.obol.tech/v1";
 const DEFAULT_PUBLISH_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_SHUTDOWN_DELAY: Duration = Duration::from_secs(1);
@@ -151,13 +146,8 @@ pub struct TestConfig {
 }
 
 fn default_p2p_config() -> pluto_p2p::config::P2PConfig {
-    let relays = DEFAULT_RELAYS
-        .iter()
-        .map(|relay| libp2p::multiaddr::from_url(relay).expect("default relay should parse"))
-        .collect();
-
     pluto_p2p::config::P2PConfig {
-        relays,
+        relays: pluto_p2p::config::default_relay_multiaddrs(),
         ..Default::default()
     }
 }
@@ -220,7 +210,6 @@ fn validate_keymanager_flags(conf: &Config) -> Result<(), DkgError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libp2p::multiaddr;
 
     #[test]
     fn config_builder_defaults_match_charon() {
@@ -231,10 +220,7 @@ mod tests {
         assert_eq!(config.data_dir, path::PathBuf::from(DEFAULT_DATA_DIR));
         assert_eq!(
             config.p2p.relays,
-            DEFAULT_RELAYS
-                .iter()
-                .map(|relay| multiaddr::from_url(relay).expect("default relay should parse"))
-                .collect::<Vec<_>>()
+            pluto_p2p::config::default_relay_multiaddrs()
         );
         assert_eq!(config.log.override_env_filter.as_deref(), Some("info"));
         assert!(config.log.console.is_some());

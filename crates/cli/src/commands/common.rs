@@ -11,13 +11,6 @@ pub const LICENSE: &str = concat!(
     "copy of this license at https://github.com/NethermindEth/pluto/blob/main/LICENSE"
 );
 
-/// Shared default relay endpoints used by Charon-compatible commands.
-pub const DEFAULT_RELAYS: [&str; 3] = [
-    "https://0.relay.obol.tech",
-    "https://2.relay.obol.dev",
-    "https://1.relay.obol.tech",
-];
-
 /// Console color selection for terminal logging.
 #[derive(clap::ValueEnum, Clone, Copy, Debug, Default)]
 pub enum ConsoleColor {

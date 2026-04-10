@@ -3,9 +3,7 @@
 use std::{future::Future, path::PathBuf};
 
 use crate::{
-    commands::common::{
-        ConsoleColor, DEFAULT_RELAYS, LICENSE, build_console_tracing_config, parse_relay_addr,
-    },
+    commands::common::{ConsoleColor, LICENSE, build_console_tracing_config, parse_relay_addr},
     duration::Duration,
     error::{CliError, Result},
 };
@@ -177,7 +175,7 @@ pub struct DkgP2PArgs {
         long = "p2p-relays",
         env = "CHARON_P2P_RELAYS",
         value_delimiter = ',',
-        default_values_t = DEFAULT_RELAYS.map(String::from),
+        default_values_t = pluto_p2p::config::DEFAULT_RELAYS.map(String::from),
         help = "Comma-separated list of libp2p relay URLs or multiaddrs."
     )]
     pub relays: Vec<String>,
@@ -341,7 +339,10 @@ mod tests {
         assert_eq!(args.publish_address, "https://api.obol.tech/v1");
         assert!(!args.publish);
         assert!(!args.zipped);
-        assert_eq!(args.p2p.relays, DEFAULT_RELAYS.map(String::from).to_vec(),);
+        assert_eq!(
+            args.p2p.relays,
+            pluto_p2p::config::DEFAULT_RELAYS.map(String::from).to_vec(),
+        );
         assert_eq!(args.log.level, "info");
         assert_eq!(args.log.format, "console");
     }
