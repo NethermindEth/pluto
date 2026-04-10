@@ -137,6 +137,8 @@ pub struct Config {
 impl Config {
     /// Returns `true` if any test-only configuration is active.
     pub fn has_test_config(&self) -> bool {
+        // TODO: Extend this when more test-only hooks are added to TestConfig,
+        // so preflight skips stay aligned with the full test configuration.
         self.test_config.def.is_some()
     }
 }
