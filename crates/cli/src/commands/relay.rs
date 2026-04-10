@@ -267,7 +267,7 @@ pub async fn run(
     config: pluto_relay_server::config::Config,
     ct: CancellationToken,
 ) -> Result<(), CliError> {
-    info!(LICENSE);
+    info!("{LICENSE}");
     info!(config = ?config);
 
     let key = match pluto_p2p::k1::load_priv_key(&config.data_dir) {

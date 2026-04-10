@@ -270,7 +270,7 @@ where
     Runner: FnOnce(pluto_dkg::dkg::Config, CancellationToken) -> Fut,
     Fut: Future<Output = std::result::Result<(), pluto_dkg::dkg::DkgError>>,
 {
-    info!(LICENSE);
+    info!("{LICENSE}");
 
     runner(config, ct).await.map_err(Into::into)
 }
