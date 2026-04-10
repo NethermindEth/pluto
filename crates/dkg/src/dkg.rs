@@ -240,11 +240,7 @@ mod tests {
 
         let err = run(
             Config::builder()
-                .test_config(
-                    TestConfig::builder()
-                        .def(lock.definition.clone())
-                        .build(),
-                )
+                .test_config(TestConfig::builder().def(lock.definition.clone()).build())
                 .keymanager(
                     KeymanagerConfig::builder()
                         .address("https://keymanager.example".to_string())
