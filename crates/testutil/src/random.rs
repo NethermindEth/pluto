@@ -15,7 +15,7 @@ use pluto_eth2api::{
     },
     versioned::{self, AttestationPayload},
 };
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{Rng, SeedableRng, rngs::StdRng, seq::index};
 
 /// A deterministic RNG that always returns the same byte value.
 ///
@@ -138,9 +138,13 @@ pub fn random_bit_list(length: usize) -> String {
     let mut bytes = [0u8; 32];
     let mut rng = rand::thread_rng();
 
-    // Set 'length' random bits
-    for _ in 0..length {
-        let bit_idx = rng.r#gen::<usize>() % 256;
+    assert!(
+        length <= 256,
+        "cannot set {length} unique bits in a 256-bit bitlist",
+    );
+
+    // Set `length` distinct random bits.
+    for bit_idx in index::sample(&mut rng, 256, length) {
         let byte_idx = bit_idx / 8;
         let bit_offset = bit_idx % 8;
         bytes[byte_idx] |= 1 << bit_offset;
