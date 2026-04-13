@@ -23,7 +23,6 @@ use serde_with::{
     serde_as,
 };
 
-const EMPTY_FEE_RECIPIENT: [u8; 20] = [0; 20];
 const EMPTY_VALIDATOR_PUBKEY: pluto_eth2api::spec::phase0::BLSPubKey = [0; 48];
 const EMPTY_SIGNATURE: pluto_eth2api::spec::phase0::BLSSignature = [0; 96];
 
@@ -357,8 +356,12 @@ impl Lock {
         let fee_recipient_addresses = self.fee_recipient_addresses();
 
         for (validator_idx, validator) in self.distributed_validators.iter().enumerate() {
+            // In Go, `noRegistration` checks `len == 0` (empty slice), which catches fields
+            // missing from JSON. The zero Ethereum address ([0;20]) is a valid
+            // fee_recipient (len=20 in Go, passes the check). Only BLS
+            // signature and pubkey can never be legitimately all-zero for a
+            // real registration.
             let no_registration = validator.builder_registration.signature == EMPTY_SIGNATURE
-                || validator.builder_registration.message.fee_recipient == EMPTY_FEE_RECIPIENT
                 || validator.builder_registration.message.pub_key == EMPTY_VALIDATOR_PUBKEY;
 
             if matches!(

@@ -1037,9 +1037,11 @@ pub struct DefinitionV1x4 {
     pub threshold: u64,
     /// Fee recipient address for the
     /// validator.
+    #[serde(default)]
     pub fee_recipient_address: String,
     /// Withdrawal address for the
     /// validator.
+    #[serde(default)]
     pub withdrawal_address: String,
     /// DKG algorithm to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
@@ -1484,6 +1486,7 @@ pub struct DefinitionV1x10 {
     pub target_gas_limit: u64,
     /// Compounding flag enables compounding rewards for validators by using
     /// 0x02 withdrawal credentials.
+    #[serde(default)]
     pub compounding: bool,
     /// Config hash uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.

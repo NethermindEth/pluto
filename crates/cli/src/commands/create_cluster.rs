@@ -497,6 +497,8 @@ pub async fn run(w: &mut dyn Write, mut args: CreateClusterArgs) -> CliResult<()
     let (ops, node_keys) = get_operators(num_nodes, &args.cluster_dir)?;
 
     def.operators = ops;
+    def.set_definition_hashes()
+        .map_err(CreateClusterError::DefinitionError)?;
 
     let keys_to_disk = args.keymanager_addrs.is_empty();
 
@@ -1461,59 +1463,500 @@ fn write_split_keys_warning(w: &mut dyn Write) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
+    use pluto_cluster::{lock::Lock, version::versions::*};
+    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls as _};
+    use pluto_eth1wrap::EthClient;
+    use pluto_eth2util::{
+        deposit,
+        keystore::{self, CONFIRM_INSECURE_KEYS},
+    };
+    use rand::Rng as _;
+    use tempfile::TempDir;
+
     use super::*;
 
-    fn test_args(cluster_dir: PathBuf) -> CreateClusterArgs {
-        CreateClusterArgs {
-            cluster_dir,
+    const DEF_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../cluster/src/examples/cluster-definition-006.json"
+    );
+    const DEF_PATH_TWO_NODES: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../cluster/src/examples/cluster-definition-001.json"
+    );
+    const DEFAULT_NETWORK: &str = "mainnet";
+
+    #[derive(Debug, Clone)]
+    struct TestCaseConfig {
+        num_nodes: u64,
+        threshold: Option<u64>,
+        num_dvs: u64,
+        network: Option<&'static str>,
+        deposit_amounts: Vec<u64>,
+        split_keys: bool,
+        def_file_path: Option<&'static str>,
+        name: Option<&'static str>,
+        consensus_protocol: Option<&'static str>,
+        target_gas_limit: u64,
+        testnet_chain_id: Option<u64>,
+        testnet_name: Option<&'static str>,
+        testnet_fork_version: Option<&'static str>,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum PrepKind {
+        None,
+        SplitKeys { num_keys: usize },
+        RandomAddrs,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum DefProvider {
+        None,
+        Def006,
+        DefTwoNodes,
+    }
+
+    async fn test_eth1_client() -> EthClient {
+        EthClient::new("http://127.0.0.1:8545").await.unwrap()
+    }
+
+    fn random_checksummed_eth_address() -> String {
+        let mut bytes = [0u8; 20];
+        rand::thread_rng().fill(&mut bytes[..]);
+        let hex_addr = format!("0x{}", hex::encode(bytes));
+        pluto_eth2util::helpers::checksum_address(&hex_addr).unwrap()
+    }
+
+    /// Port of Go's testCreateCluster helper.
+    async fn run_test_create_cluster(
+        config: TestCaseConfig,
+        prep: PrepKind,
+        def_provider: DefProvider,
+        expected_err: Option<&str>,
+    ) {
+        let dir = TempDir::new().unwrap();
+
+        // Load reference definition for post-creation checks (used when def_file_path
+        // is set). Inject defaults for fields absent from older JSON examples
+        // (e.g. `compounding`).
+        let ref_def: pluto_cluster::definition::Definition = {
+            let bytes = tokio::fs::read(DEF_PATH).await.unwrap();
+            let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            if value.get("compounding").is_none() {
+                value["compounding"] = serde_json::json!(false);
+            }
+            serde_json::from_value(value).unwrap()
+        };
+
+        // Start a mock HTTP server when the test case needs to serve a definition over
+        // network.
+        let mock_server = match def_provider {
+            DefProvider::None => None,
+            path @ DefProvider::Def006 | path @ DefProvider::DefTwoNodes => {
+                let server = wiremock::MockServer::start().await;
+                let json = if matches!(path, DefProvider::Def006) {
+                    tokio::fs::read(DEF_PATH).await.unwrap()
+                } else {
+                    tokio::fs::read(DEF_PATH_TWO_NODES).await.unwrap()
+                };
+                wiremock::Mock::given(wiremock::matchers::any())
+                    .respond_with(wiremock::ResponseTemplate::new(200).set_body_bytes(json))
+                    .mount(&server)
+                    .await;
+                Some(server)
+            }
+        };
+
+        // Apply defaults matching the Go test loop.
+        let def_url = mock_server.as_ref().map(|s| s.uri());
+        let definition_file = if let Some(url) = &def_url {
+            Some(url.clone())
+        } else {
+            config.def_file_path.map(String::from)
+        };
+
+        let mut fee_addrs = vec![ZERO_ADDRESS.to_string()];
+        let mut withdrawal_addrs = vec![ZERO_ADDRESS.to_string()];
+
+        let target_gas_limit = if config.target_gas_limit != 0 {
+            config.target_gas_limit
+        } else if def_url.is_none() {
+            30_000_000
+        } else {
+            0
+        };
+
+        // Split keys temp dir kept alive for the full duration of the test.
+        let split_keys_temp = TempDir::new().unwrap();
+        let mut split_keys_dir: Option<std::path::PathBuf> = None;
+
+        match prep {
+            PrepKind::None => {}
+            PrepKind::SplitKeys { num_keys } => {
+                let tbls = BlstImpl;
+                let mut keys = Vec::new();
+                for _ in 0..num_keys {
+                    keys.push(tbls.generate_secret_key(rand::thread_rng()).unwrap());
+                }
+                keystore::store_keys_insecure(
+                    &keys,
+                    split_keys_temp.path(),
+                    &CONFIRM_INSECURE_KEYS,
+                )
+                .await
+                .unwrap();
+                split_keys_dir = Some(split_keys_temp.path().to_path_buf());
+            }
+            PrepKind::RandomAddrs => {
+                fee_addrs = vec![random_checksummed_eth_address()];
+                withdrawal_addrs = vec![random_checksummed_eth_address()];
+            }
+        }
+
+        let testnet_config = TestnetConfig {
+            chain_id: config.testnet_chain_id,
+            fork_version: config.testnet_fork_version.map(String::from),
+            genesis_timestamp: config.testnet_chain_id.map(|_| {
+                u64::try_from(chrono::Utc::now().timestamp()).expect("timestamp fits u64")
+            }),
+            testnet_name: config.testnet_name.map(String::from),
+        };
+
+        let network = config.network.and_then(|n| Network::try_from(n).ok());
+        let execution_engine_addr = definition_file
+            .as_ref()
+            .map(|_| "http://127.0.0.1:8545".to_string());
+
+        let args = CreateClusterArgs {
+            cluster_dir: dir.path().to_path_buf(),
             compounding: false,
-            consensus_protocol: None,
-            definition_file: None,
-            deposit_amounts: Vec::new(),
-            execution_engine_addr: None,
-            fee_recipient_addrs: vec!["0x000000000000000000000000000000000000dead".to_string()],
-            insecure_keys: false,
-            keymanager_addrs: Vec::new(),
-            keymanager_auth_tokens: Vec::new(),
-            name: Some("test-cluster".to_string()),
-            network: Some(Network::Mainnet),
-            nodes: 3,
-            num_validators: 1,
+            consensus_protocol: config.consensus_protocol.map(String::from),
+            definition_file,
+            deposit_amounts: config.deposit_amounts.clone(),
+            execution_engine_addr,
+            fee_recipient_addrs: fee_addrs,
+            insecure_keys: true,
+            keymanager_addrs: vec![],
+            keymanager_auth_tokens: vec![],
+            name: config.name.map(String::from),
+            network,
+            nodes: config.num_nodes,
+            num_validators: config.num_dvs,
             publish: false,
             publish_address: "https://api.obol.tech/v1".to_string(),
-            split_keys: false,
-            split_keys_dir: None,
-            target_gas_limit: 60_000_000,
-            testnet_config: TestnetConfig::default(),
-            threshold: None,
-            withdrawal_addrs: vec!["0x000000000000000000000000000000000000dead".to_string()],
+            split_keys: config.split_keys,
+            split_keys_dir,
+            target_gas_limit,
+            testnet_config,
+            threshold: config.threshold,
+            withdrawal_addrs,
             zipped: false,
+        };
+
+        let mut output = Vec::new();
+        let result = run(&mut output, args).await;
+
+        if let Some(expected) = expected_err {
+            let err = result.unwrap_err();
+            let err_str = format!("{err}");
+            assert!(
+                err_str.contains(expected),
+                "expected error containing '{expected}', got: {err_str}"
+            );
+            return;
+        }
+
+        result.unwrap();
+
+        // Validate lock (port of Go's t.Run("valid lock", ...)).
+        let eth1 = test_eth1_client().await;
+        let lock_bytes = tokio::fs::read(dir.path().join("node0/cluster-lock.json"))
+            .await
+            .unwrap();
+        let lock: Lock = serde_json::from_slice(&lock_bytes).unwrap();
+
+        lock.verify_hashes().unwrap();
+        lock.verify_signatures(&eth1).await.unwrap();
+
+        // Check validators have unique public keys.
+        let pub_keys: HashSet<Vec<u8>> = lock
+            .distributed_validators
+            .iter()
+            .map(|v| v.pub_key.clone())
+            .collect();
+        assert_eq!(
+            pub_keys.len(),
+            usize::try_from(lock.definition.num_validators).unwrap()
+        );
+
+        // Check partial deposit data amounts match expected.
+        let mut amounts = deposit::dedup_amounts(&deposit::eths_to_gweis(&config.deposit_amounts));
+        if amounts.is_empty() {
+            amounts = deposit::default_deposit_amounts(false);
+        }
+        for val in &lock.distributed_validators {
+            assert_eq!(val.partial_deposit_data.len(), amounts.len());
+            for (pdd, &expected_amount) in val.partial_deposit_data.iter().zip(amounts.iter()) {
+                assert_eq!(pdd.amount, expected_amount);
+            }
+        }
+
+        // If a definition file was loaded from disk, config hash and creator must be
+        // preserved, and operators must have their ENRs populated.
+        if config.def_file_path.is_some() {
+            assert_eq!(lock.definition.config_hash, ref_def.config_hash);
+            assert_eq!(lock.definition.creator, ref_def.creator);
+            for op in &lock.operators {
+                assert!(!op.enr.is_empty());
+            }
+        }
+
+        const PREV_VERSIONS: &[&str] = &[V1_0, V1_1, V1_2, V1_3, V1_4, V1_5];
+
+        // Builder registrations must be populated (v1.7+, always true for v1.10).
+        for val in &lock.distributed_validators {
+            if PREV_VERSIONS.contains(&lock.definition.version.as_str()) {
+                continue;
+            }
+
+            if matches!(lock.definition.version.as_str(), V1_6 | V1_7) {
+                assert_eq!(val.partial_deposit_data.len(), 1);
+            }
+
+            if lock.definition.version.as_str() == V1_7 {
+                assert!(!val.builder_registration.signature.is_empty());
+            }
+
+            if config.split_keys {
+                // For SplitKeys mode the timestamp must be close to now, not a genesis time.
+                let reg_ts = val.builder_registration.message.timestamp;
+                let diff = chrono::Utc::now().signed_duration_since(reg_ts);
+                assert!(
+                    diff.num_minutes().abs() < 5,
+                    "builder registration timestamp likely a genesis time"
+                );
+            }
+        }
+
+        // Node signatures must be populated (v1.7+).
+        if lock.version.as_str() == V1_7 {
+            assert!(!lock.node_signatures.is_empty());
+            for sig in &lock.node_signatures {
+                assert!(!sig.is_empty());
+            }
         }
     }
 
-    #[test]
-    fn validate_create_config_allows_http_keymanager_urls() {
-        let tempdir = tempfile::tempdir().expect("tempdir should be created");
-        let mut args = test_args(tempdir.path().to_path_buf());
-        args.keymanager_addrs = vec![
-            "http://127.0.0.1:3600".to_string(),
-            "http://127.0.0.1:3601".to_string(),
-            "http://127.0.0.1:3602".to_string(),
-        ];
-        args.keymanager_auth_tokens = vec!["a".into(), "b".into(), "c".into()];
-
-        assert!(validate_create_config(&args).is_ok());
-    }
-
-    #[test]
-    fn validate_create_config_rejects_zero_num_validators_without_definition() {
-        let tempdir = tempfile::tempdir().expect("tempdir should be created");
-        let mut args = test_args(tempdir.path().to_path_buf());
-        args.num_validators = 0;
-
-        assert!(matches!(
-            validate_create_config(&args),
-            Err(CreateClusterError::MissingNumValidatorsOrDefinitionFile)
-        ));
+    #[test_case::test_case(
+        TestCaseConfig {
+            num_nodes: 4, threshold: Some(3), num_dvs: 1,
+            network: Some("goerli"), deposit_amounts: vec![],
+            split_keys: false, def_file_path: None, name: None,
+            consensus_protocol: None, target_gas_limit: 0,
+            testnet_chain_id: None, testnet_name: None, testnet_fork_version: None,
+        },
+        PrepKind::None, DefProvider::None, None
+        ; "simnet"
+    )]
+    #[test_case::test_case(
+        TestCaseConfig {
+            num_nodes: 4, threshold: Some(3), num_dvs: 1,
+            network: Some("goerli"), deposit_amounts: vec![31, 1],
+            split_keys: false, def_file_path: None, name: None,
+            consensus_protocol: None, target_gas_limit: 0,
+            testnet_chain_id: None, testnet_name: None, testnet_fork_version: None,
+        },
+        PrepKind::None, DefProvider::None, None
+        ; "two partial deposits"
+    )]
+    #[test_case::test_case(
+        TestCaseConfig {
+            num_nodes: 4, threshold: Some(3), num_dvs: 1,
+            network: Some("goerli"), deposit_amounts: vec![8, 8, 8, 8],
+            split_keys: false, def_file_path: None, name: None,
+            consensus_protocol: None, target_gas_limit: 0,
+            testnet_chain_id: None, testnet_name: None, testnet_fork_version: None,
+        },
+        PrepKind::None, DefProvider::None, None
+        ; "four partial deposits"
+    )]
+    #[test_case::test_case(
+        TestCaseConfig {
+            num_nodes: 4, threshold: Some(3), num_dvs: 0,
+            network: Some("goerli"), deposit_amounts: vec![],
+            split_keys: true, def_file_path: None, name: None,
+            consensus_protocol: None, target_gas_limit: 0,
+            testnet_chain_id: None, testnet_name: None, testnet_fork_version: None,
+        },
+        PrepKind::SplitKeys { num_keys: 2 }, DefProvider::None, None
+        ; "splitkeys"
+    )]
+    #[test_case::test_case(
+        TestCaseConfig {
+            num_nodes: 0, threshold: None, num_dvs: 0,
+            network: Some(DEFAULT_NETWORK), deposit_amounts: vec![],
+            split_keys: true, def_file_path: Some(DEF_PATH), name: None,
+            consensus_protocol: None, target_gas_limit: 0,
+            testnet_chain_id: None, testnet_name: None, testnet_fork_version: None,
+        },
+        PrepKind::SplitKeys { num_keys: 2 }, DefProvider::None, None
+        ; "splitkeys with cluster definition"
+    )]
+    #[test_case::test_case(
+        TestCaseConfig {
+            num_nodes: 0, threshold: None, num_dvs: 0,
+            network: Some(DEFAULT_NETWORK), deposit_amounts: vec![],
+            split_keys: true, def_file_path: Some(DEF_PATH), name: None,
+            consensus_protocol: None, target_gas_limit: 0,
+            testnet_chain_id: None, testnet_name: None, testnet_fork_version: None,
+        },
+        PrepKind::SplitKeys { num_keys: 1 }, DefProvider::None,
+        Some("Amount of keys read from disk")
+        ; "splitkeys with cluster definition but amount of keys read from disk differ"
+    )]
+    #[test_case::test_case(
+        TestCaseConfig {
+            num_nodes: 0, threshold: None, num_dvs: 0,
+            network: Some(DEFAULT_NETWORK), deposit_amounts: vec![],
+            split_keys: false, def_file_path: None, name: None,
+            consensus_protocol: None, target_gas_limit: 0,
+            testnet_chain_id: None, testnet_name: None, testnet_fork_version: None,
+        },
+        PrepKind::None, DefProvider::None, Some("Missing --nodes")
+        ; "missing nodes amount flag"
+    )]
+    #[test_case::test_case(
+        TestCaseConfig {
+            num_nodes: 4, threshold: None, num_dvs: 0,
+            network: None, deposit_amounts: vec![],
+            split_keys: false, def_file_path: None, name: None,
+            consensus_protocol: None, target_gas_limit: 0,
+            testnet_chain_id: None, testnet_name: None, testnet_fork_version: None,
+        },
+        PrepKind::None, DefProvider::None, Some("Missing --network flag")
+        ; "missing network flag"
+    )]
+    #[test_case::test_case(
+        TestCaseConfig {
+            num_nodes: 4, threshold: Some(3), num_dvs: 0,
+            network: Some(DEFAULT_NETWORK), deposit_amounts: vec![],
+            split_keys: false, def_file_path: None, name: None,
+            consensus_protocol: None, target_gas_limit: 0,
+            testnet_chain_id: None, testnet_name: None, testnet_fork_version: None,
+        },
+        PrepKind::None, DefProvider::None, Some("Missing --num-validators")
+        ; "missing numdvs with no split keys set"
+    )]
+    #[test_case::test_case(
+        TestCaseConfig {
+            num_nodes: 4, threshold: Some(3), num_dvs: 1,
+            network: Some(DEFAULT_NETWORK), deposit_amounts: vec![],
+            split_keys: true, def_file_path: None, name: None,
+            consensus_protocol: None, target_gas_limit: 0,
+            testnet_chain_id: None, testnet_name: None, testnet_fork_version: None,
+        },
+        PrepKind::None, DefProvider::None, Some("--split-existing-keys")
+        ; "splitkeys with numdvs set"
+    )]
+    #[test_case::test_case(
+        TestCaseConfig {
+            num_nodes: MIN_NODES, threshold: Some(3), num_dvs: 2,
+            network: Some("goerli"), deposit_amounts: vec![],
+            split_keys: false, def_file_path: None, name: None,
+            consensus_protocol: None, target_gas_limit: 0,
+            testnet_chain_id: None, testnet_name: None, testnet_fork_version: None,
+        },
+        PrepKind::None, DefProvider::None, None
+        ; "goerli"
+    )]
+    #[test_case::test_case(
+        TestCaseConfig {
+            num_nodes: 0, threshold: None, num_dvs: 0,
+            network: Some("goerli"), deposit_amounts: vec![],
+            split_keys: false, def_file_path: Some(DEF_PATH), name: None,
+            consensus_protocol: None, target_gas_limit: 0,
+            testnet_chain_id: None, testnet_name: None, testnet_fork_version: None,
+        },
+        PrepKind::None, DefProvider::None, None
+        ; "solo flow definition from disk"
+    )]
+    #[test_case::test_case(
+        TestCaseConfig {
+            num_nodes: 0, threshold: None, num_dvs: 0,
+            network: Some("goerli"), deposit_amounts: vec![],
+            split_keys: false, def_file_path: None, name: None,
+            consensus_protocol: None, target_gas_limit: 0,
+            testnet_chain_id: None, testnet_name: None, testnet_fork_version: None,
+        },
+        PrepKind::None, DefProvider::Def006, None
+        ; "solo flow definition from network"
+    )]
+    #[test_case::test_case(
+        TestCaseConfig {
+            num_nodes: 3, threshold: Some(3), num_dvs: 5,
+            network: Some("goerli"), deposit_amounts: vec![],
+            split_keys: false, def_file_path: None, name: Some("test_cluster"),
+            consensus_protocol: None, target_gas_limit: 0,
+            testnet_chain_id: None, testnet_name: None, testnet_fork_version: None,
+        },
+        PrepKind::RandomAddrs, DefProvider::None, None
+        ; "test with fee recipient and withdrawal addresses"
+    )]
+    #[test_case::test_case(
+        TestCaseConfig {
+            num_nodes: 4, threshold: Some(3), num_dvs: 3,
+            network: None, deposit_amounts: vec![],
+            split_keys: false, def_file_path: None, name: Some("testnet"),
+            consensus_protocol: None, target_gas_limit: 0,
+            testnet_chain_id: Some(243),
+            testnet_name: Some("obolnetwork"),
+            testnet_fork_version: Some("0x00000101"),
+        },
+        PrepKind::None, DefProvider::None, None
+        ; "custom testnet flags"
+    )]
+    #[test_case::test_case(
+        TestCaseConfig {
+            num_nodes: 4, threshold: Some(3), num_dvs: 3,
+            network: Some(DEFAULT_NETWORK), deposit_amounts: vec![],
+            split_keys: false, def_file_path: None, name: Some("test_cluster"),
+            consensus_protocol: Some("unreal"), target_gas_limit: 0,
+            testnet_chain_id: None, testnet_name: None, testnet_fork_version: None,
+        },
+        PrepKind::None, DefProvider::None, Some("Unsupported consensus protocol")
+        ; "preferred consensus protocol"
+    )]
+    #[test_case::test_case(
+        TestCaseConfig {
+            num_nodes: 2, threshold: Some(2), num_dvs: 1,
+            network: Some("goerli"), deposit_amounts: vec![],
+            split_keys: false, def_file_path: None, name: Some("test_cluster"),
+            consensus_protocol: None, target_gas_limit: 0,
+            testnet_chain_id: None, testnet_name: None, testnet_fork_version: None,
+        },
+        PrepKind::None, DefProvider::DefTwoNodes, Some("Too few nodes")
+        ; "test with number of nodes below minimum"
+    )]
+    #[test_case::test_case(
+        TestCaseConfig {
+            num_nodes: 4, threshold: Some(3), num_dvs: 3,
+            network: Some("holesky"), deposit_amounts: vec![],
+            split_keys: false, def_file_path: None, name: Some("test_cluster"),
+            consensus_protocol: None, target_gas_limit: 36_000_000,
+            testnet_chain_id: None, testnet_name: None, testnet_fork_version: None,
+        },
+        PrepKind::None, DefProvider::None, None
+        ; "custom target gas limit"
+    )]
+    #[tokio::test]
+    async fn test_create_cluster(
+        config: TestCaseConfig,
+        prep: PrepKind,
+        def_provider: DefProvider,
+        expected_err: Option<&'static str>,
+    ) {
+        run_test_create_cluster(config, prep, def_provider, expected_err).await;
     }
 }
