@@ -583,15 +583,18 @@ mod tests {
                 "timestamp",
                 Box::new(|_peer_id, _msg| Ok(())),
                 Box::new(move |peer_id, msg_id, msg| {
-                    receipt_tx
-                        .send(Receipt {
-                            target: node_index,
-                            source: peer_id,
-                            msg_id: msg_id.to_string(),
-                            seconds: msg.seconds,
-                        })
-                        .map_err(|_| Error::ReceiptChannelClosed)?;
-                    Ok(())
+                    let receipt_tx = receipt_tx.clone();
+                    Box::pin(async move {
+                        receipt_tx
+                            .send(Receipt {
+                                target: node_index,
+                                source: peer_id,
+                                msg_id,
+                                seconds: msg.seconds,
+                            })
+                            .map_err(|_| Error::ReceiptChannelClosed)?;
+                        Ok(())
+                    })
                 }),
             )
             .await

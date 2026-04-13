@@ -59,13 +59,19 @@ impl NodeSigBcast {
         let (lock_hash_tx, lock_hash_rx) = watch::channel(None::<Vec<u8>>);
 
         let sigs_cb = Arc::clone(&sigs);
+        let peers = Arc::new(peers);
 
         bcast_comp
             .register_message::<MsgNodeSig>(
                 NODE_SIG_MSG_ID,
                 Box::new(|_peer_id, _msg| Ok(())),
                 Box::new(move |peer_id, _msg_id, msg| {
-                    receive(peer_id, msg, node_idx, &peers, &lock_hash_rx, &sigs_cb)
+                    let peers = Arc::clone(&peers);
+                    let lock_hash_rx = lock_hash_rx.clone();
+                    let sigs = Arc::clone(&sigs_cb);
+                    Box::pin(async move {
+                        receive(peer_id, msg, node_idx, &peers, &lock_hash_rx, &sigs).await
+                    })
                 }),
             )
             .await?;
@@ -139,7 +145,10 @@ fn all_sigs(sigs: &[Option<Vec<u8>>]) -> Option<Vec<Vec<u8>>> {
 }
 
 /// Validates and stores an incoming node signature message.
-fn receive(
+///
+/// Waits for the lock hash to become available via the watch channel before
+/// verifying the signature.
+async fn receive(
     peer_id: PeerId,
     msg: MsgNodeSig,
     node_idx: usize,
@@ -157,8 +166,12 @@ fn receive(
     let pubkey = peers[peer_idx].public_key()?;
 
     let lock_hash = {
-        let lock_hash_guard = lock_hash_rx.borrow();
-        lock_hash_guard
+        let mut rx = lock_hash_rx.clone();
+        let guard = rx
+            .wait_for(|v| v.is_some())
+            .await
+            .map_err(|_| bcast::Error::MissingField("lock_hash"))?;
+        guard
             .clone()
             .ok_or(bcast::Error::MissingField("lock_hash"))?
     };
@@ -233,7 +246,8 @@ mod tests {
     #[test_case( 1, None,                65, "missing protobuf field: lock_hash" ; "missing_lock_hash")]
     #[test_case( 1, Some(vec![42u8; 32]), 65, "The signature recovery id byte 42 is invalid" ; "signature_verification_failed")]
     #[test_case( 1, Some(vec![42u8; 32]),  2, "The signature length is invalid: expected 65, actual 2" ; "malformed_signature")]
-    fn sigs_callbacks(
+    #[tokio::test]
+    async fn sigs_callbacks(
         peer_index: u32,
         lock_hash: Option<Vec<u8>>,
         sig_len: usize,
@@ -251,15 +265,17 @@ mod tests {
             peer_index,
         };
 
-        let err = receive(peers[0].id, msg, 0, &peers, &rx, &sigs).unwrap_err();
+        let err = receive(peers[0].id, msg, 0, &peers, &rx, &sigs)
+            .await
+            .unwrap_err();
         assert!(
             err.to_string().contains(expected_msg),
             "expected '{expected_msg}' in '{err}'"
         );
     }
 
-    #[test]
-    fn sigs_callbacks_ok() {
+    #[tokio::test]
+    async fn sigs_callbacks_ok() {
         let (_, peer0) = make_peer(0, 0);
         let (key1, peer1) = make_peer(1, 1);
         let peers = vec![peer0, peer1.clone()];
@@ -273,7 +289,7 @@ mod tests {
             peer_index: 1,
         };
 
-        receive(peer1.id, msg, 0, &peers, &rx, &sigs).unwrap();
+        receive(peer1.id, msg, 0, &peers, &rx, &sigs).await.unwrap();
 
         let guard = sigs.lock().unwrap();
         assert_eq!(guard[1], Some(sig.to_vec()));
