@@ -5,7 +5,10 @@ mod error;
 mod handler;
 mod protocol;
 
-pub use behaviour::{Behaviour, Config, DutyGater, Event, Handle, Verifier};
+pub use behaviour::{
+    Behaviour, Config, DutyGater, Event, Handle, ReceivedSub, ReceivedSubFuture, Verifier,
+    received_subscriber,
+};
 pub use error::{Error, Failure, Result, VerifyError};
 pub use handler::Handler;
 pub use protocol::{decode_message, encode_message};

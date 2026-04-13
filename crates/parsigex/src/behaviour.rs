@@ -20,7 +20,7 @@ use libp2p::{
         THandlerInEvent, THandlerOutEvent, ToSwarm, dummy,
     },
 };
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 
 use pluto_core::types::{Duty, ParSignedData, ParSignedDataSet, PubKey};
 use pluto_p2p::p2p_context::P2PContext;
@@ -41,6 +41,24 @@ pub type Verifier =
 
 /// Duty gate callback type.
 pub type DutyGater = Arc<dyn Fn(&Duty) -> bool + Send + Sync + 'static>;
+
+/// Future returned by received subscriber callbacks.
+pub type ReceivedSubFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+
+/// Subscriber callback for received partial signature sets.
+///
+/// Called when a verified partial signature set is received from a peer.
+pub type ReceivedSub =
+    Arc<dyn Fn(Duty, ParSignedDataSet) -> ReceivedSubFuture + Send + Sync + 'static>;
+
+/// Helper to create a received subscriber from a closure.
+pub fn received_subscriber<F, Fut>(f: F) -> ReceivedSub
+where
+    F: Fn(Duty, ParSignedDataSet) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    Arc::new(move |duty, set| Box::pin(f(duty, set)))
+}
 
 /// Event emitted by the partial signature exchange behaviour.
 #[derive(Debug)]
@@ -101,11 +119,26 @@ enum Command {
     },
 }
 
+/// Shared subscriber list between [`Handle`] and [`Behaviour`].
+#[derive(Default)]
+struct SharedSubs {
+    subs: Mutex<Vec<ReceivedSub>>,
+}
+
 /// Async handle for outbound partial signature broadcasts.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Handle {
     tx: mpsc::UnboundedSender<Command>,
     next_request_id: Arc<AtomicU64>,
+    shared_subs: Arc<SharedSubs>,
+}
+
+impl std::fmt::Debug for Handle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Handle")
+            .field("next_request_id", &self.next_request_id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Handle {
@@ -120,6 +153,15 @@ impl Handle {
             })
             .map_err(|_| Error::Closed)?;
         Ok(request_id)
+    }
+
+    /// Registers a callback when a verified partial signature set is received
+    /// from a peer.
+    ///
+    /// This is not thread safe with respect to message delivery ordering — it
+    /// must be called before the swarm starts processing events.
+    pub async fn subscribe(&self, sub: ReceivedSub) {
+        self.shared_subs.subs.lock().await.push(sub);
     }
 }
 
@@ -163,6 +205,7 @@ pub struct Behaviour {
     rx: mpsc::UnboundedReceiver<Command>,
     pending_events: VecDeque<ToSwarm<Event, ToHandler>>,
     pending_broadcasts: HashMap<u64, PendingBroadcast>,
+    shared_subs: Arc<SharedSubs>,
 }
 
 impl Behaviour {
@@ -170,9 +213,11 @@ impl Behaviour {
     pub fn new(config: Config, peer_id: PeerId) -> (Self, Handle) {
         debug_assert_eq!(config.peer_id, peer_id);
         let (tx, rx) = mpsc::unbounded_channel();
+        let shared_subs = Arc::new(SharedSubs::default());
         let handle = Handle {
             tx,
             next_request_id: Arc::new(AtomicU64::new(0)),
+            shared_subs: shared_subs.clone(),
         };
         (
             Self {
@@ -180,6 +225,7 @@ impl Behaviour {
                 rx,
                 pending_events: VecDeque::new(),
                 pending_broadcasts: HashMap::new(),
+                shared_subs,
             },
             handle,
         )
@@ -314,6 +360,7 @@ impl Behaviour {
     ) {
         match event {
             FromHandler::Received { duty, data_set } => {
+                self.notify_subscribers(duty.clone(), data_set.clone());
                 self.pending_events
                     .push_back(ToSwarm::GenerateEvent(Event::Received {
                         peer: peer_id,
@@ -338,6 +385,21 @@ impl Behaviour {
                 self.emit_broadcast_error(request_id, Some(peer_id), error);
             }
         }
+    }
+
+    /// Notifies all registered subscribers of a received partial signature set.
+    ///
+    /// Each subscriber is invoked in a spawned task since `poll()` is
+    /// synchronous. This matches Go's intended behaviour (see Go TODO to call
+    /// subscribers async).
+    fn notify_subscribers(&self, duty: Duty, data_set: ParSignedDataSet) {
+        let shared_subs = self.shared_subs.clone();
+        tokio::spawn(async move {
+            let subs = shared_subs.subs.lock().await.clone();
+            for sub in &subs {
+                sub(duty.clone(), data_set.clone()).await;
+            }
+        });
     }
 }
 
