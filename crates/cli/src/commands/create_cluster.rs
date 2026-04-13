@@ -1800,7 +1800,7 @@ mod tests {
         // --- Golden tests ---
 
         // Extract the leaf test-case name from the thread name
-        // (e.g. "...::tests::simnet" → "simnet").
+        // (e.g. "...::tests::simnet" -> "simnet").
         let test_name = std::thread::current()
             .name()
             .unwrap_or("")
@@ -2057,5 +2057,190 @@ mod tests {
         expected_err: Option<&'static str>,
     ) {
         run_test_create_cluster(config, prep, def_provider, expected_err).await;
+    }
+
+    const DEF_PATH_002: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../cluster/src/examples/cluster-definition-002.json"
+    );
+
+    #[tokio::test]
+    async fn test_validate_definition() {
+        let num_dvs = 4u64;
+        let fee_recipient_addrs: Vec<String> = (0..num_dvs)
+            .map(|_| random_checksummed_eth_address())
+            .collect();
+        let withdrawal_addrs: Vec<String> =
+            vec![ZERO_ADDRESS.to_string(); usize::try_from(num_dvs).unwrap()];
+
+        let args = CreateClusterArgs {
+            cluster_dir: std::path::PathBuf::from("./"),
+            compounding: false,
+            consensus_protocol: None,
+            definition_file: None,
+            deposit_amounts: vec![],
+            execution_engine_addr: None,
+            fee_recipient_addrs,
+            insecure_keys: false,
+            keymanager_addrs: vec![],
+            keymanager_auth_tokens: vec![],
+            name: Some("test".to_string()),
+            network: Some(Network::Goerli),
+            nodes: 4,
+            num_validators: num_dvs,
+            publish: false,
+            publish_address: "https://api.obol.tech/v1".to_string(),
+            split_keys: false,
+            split_keys_dir: None,
+            target_gas_limit: 30_000_000,
+            testnet_config: TestnetConfig::default(),
+            threshold: Some(3),
+            withdrawal_addrs,
+            zipped: false,
+        };
+
+        let definition = super::new_def_from_config(&args).unwrap();
+
+        let remote_def: pluto_cluster::definition::Definition = {
+            let bytes = tokio::fs::read(DEF_PATH_002).await.unwrap();
+            let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            if value.get("compounding").is_none() {
+                value["compounding"] = serde_json::json!(false);
+            }
+            serde_json::from_value(value).unwrap()
+        };
+
+        let eth1 = test_eth1_client().await;
+        let keymanager_addrs: Vec<String> = vec![];
+
+        // "zero address": gnosis fork version with zero withdrawal addrs -> error
+        {
+            let mut def = definition.clone();
+            def.fork_version = vec![0x00, 0x00, 0x00, 0x64]; // gnosis
+            assert!(
+                super::validate_definition(&def, false, &keymanager_addrs, &eth1)
+                    .await
+                    .is_err()
+            );
+        }
+
+        // "fork versions": goerli -> ok; mainnet with zero withdrawal addrs -> error
+        {
+            let def = definition.clone();
+            super::validate_definition(&def, false, &keymanager_addrs, &eth1)
+                .await
+                .unwrap();
+
+            let mut def = definition.clone();
+            def.fork_version = vec![0x00, 0x00, 0x00, 0x00]; // mainnet
+            assert!(
+                super::validate_definition(&def, false, &keymanager_addrs, &eth1)
+                    .await
+                    .is_err()
+            );
+        }
+
+        // "insufficient keymanager addresses": 1 addr for 4-operator cluster -> error
+        {
+            let def = definition.clone();
+            let km_addrs = vec!["127.0.0.1:1234".to_string()];
+            assert!(
+                super::validate_definition(&def, true, &km_addrs, &eth1)
+                    .await
+                    .is_err()
+            );
+        }
+
+        // "insecure keys": insecure_keys=true, goerli -> ok
+        {
+            let def = definition.clone();
+            super::validate_definition(&def, true, &keymanager_addrs, &eth1)
+                .await
+                .unwrap();
+        }
+
+        // "insufficient number of nodes": no operators -> "Too few nodes"
+        {
+            let mut def = definition.clone();
+            def.operators = vec![];
+            let err = super::validate_definition(&def, false, &keymanager_addrs, &eth1)
+                .await
+                .unwrap_err();
+            let err_str = format!("{err}");
+            assert!(
+                err_str.contains("Too few nodes"),
+                "expected 'Too few nodes', got: {err_str}"
+            );
+        }
+
+        // "name not provided": empty name -> "Name not provided"
+        {
+            let mut def = definition.clone();
+            def.name = String::new();
+            let err = super::validate_definition(&def, false, &keymanager_addrs, &eth1)
+                .await
+                .unwrap_err();
+            let err_str = format!("{err}");
+            assert!(
+                err_str.contains("Name not provided"),
+                "expected 'Name not provided', got: {err_str}"
+            );
+        }
+
+        // "zero validators provided": num_validators=0 -> "zero validators"
+        {
+            let mut def = definition.clone();
+            def.num_validators = 0;
+            let err = super::validate_definition(&def, false, &keymanager_addrs, &eth1)
+                .await
+                .unwrap_err();
+            let err_str = format!("{err}");
+            assert!(
+                err_str.contains("zero validators"),
+                "expected 'zero validators', got: {err_str}"
+            );
+        }
+
+        // "invalid hash": remote def with modified num_validators -> "Invalid config
+        // hash"
+        {
+            let mut def = remote_def.clone();
+            def.num_validators = 3;
+            let err = super::validate_definition(&def, false, &keymanager_addrs, &eth1)
+                .await
+                .unwrap_err();
+            let err_str = format!("{err}");
+            assert!(
+                err_str.contains("Invalid config hash"),
+                "expected 'Invalid config hash', got: {err_str}"
+            );
+        }
+
+        // "invalid config signatures": remote def with modified num_validators + rehash
+        // -> "invalid creator config signature"
+        {
+            let mut def = remote_def.clone();
+            def.num_validators = 3;
+            def.set_definition_hashes().unwrap();
+            let err = super::validate_definition(&def, false, &keymanager_addrs, &eth1)
+                .await
+                .unwrap_err();
+            let err_str = format!("{err}");
+            assert!(
+                err_str.contains("invalid creator config signature"),
+                "expected 'invalid creator config signature', got: {err_str}"
+            );
+        }
+
+        // "unsupported consensus protocol": unrecognised protocol -> error
+        {
+            let mut def = definition.clone();
+            def.consensus_protocol = "unreal".to_string();
+            assert!(
+                super::validate_definition(&def, false, &keymanager_addrs, &eth1)
+                    .await
+                    .is_err()
+            );
+        }
     }
 }
