@@ -1,4 +1,57 @@
 #![allow(missing_docs)]
+//! Partial-signature exchange example.
+//!
+//! Each node periodically broadcasts a synthetic [`ParSignedDataSet`] to all
+//! cluster peers over the relay-routed libp2p network and logs every dataset it
+//! receives from others.
+//!
+//! # Running a multi-node setup
+//!
+//! ## 1. Create a cluster
+//!
+//! Use the Charon Go CLI to generate per-node data directories, each containing
+//! a `charon-enr-private-key` and a shared `cluster-lock.json`:
+//!
+//! ```bash
+//! charon create cluster --name parsigex-test --nodes 3 --threshold 2 --no-verify \
+//!   --cluster-dir ./cluster
+//! ```
+//!
+//! This writes `./cluster/node{0,1,2}/` — each directory is ready to use as
+//! `--data-dir`.
+//!
+//! ## 2. Run each node
+//!
+//! Obol operates public relay servers. Pass one or more via `--relays` and
+//! point `--data-dir` at the corresponding node directory from Step 1:
+//!
+//! ```bash
+//! # Terminal 1
+//! cargo run -p pluto-parsigex --example parsigex -- \
+//!   --relays https://0.relay.obol.tech,https://1.relay.obol.tech \
+//!   --data-dir ./cluster/node0 --share-idx 1
+//!
+//! # Terminal 2
+//! cargo run -p pluto-parsigex --example parsigex -- \
+//!   --relays https://0.relay.obol.tech,https://1.relay.obol.tech \
+//!   --data-dir ./cluster/node1 --share-idx 2
+//!
+//! # Terminal 3
+//! cargo run -p pluto-parsigex --example parsigex -- \
+//!   --relays https://0.relay.obol.tech,https://1.relay.obol.tech \
+//!   --data-dir ./cluster/node2 --share-idx 3
+//! ```
+//!
+//! Nodes discover each other through the relay and exchange partial signatures
+//! every `--broadcast-every` seconds (default: 10). Look for log lines:
+//!
+//! ```text
+//! INFO received partial signature set peer=... duty=... entries=...
+//! INFO broadcasted sample partial signature set request_id=... duty=...
+//! ```
+//!
+//! `--relays` also accepts raw libp2p multiaddrs
+//! (`/ip4/IP/tcp/PORT/p2p/PEER_ID`) and multiple comma-separated values.
 
 use std::{
     collections::{HashMap, HashSet},
