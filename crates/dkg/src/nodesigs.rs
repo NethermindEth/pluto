@@ -239,7 +239,9 @@ mod tests {
         expected_msg: &str,
     ) {
         const N: usize = 10;
-        let peers: Vec<Peer> = (0..N).map(|i| make_peer(i as u8, i).1).collect();
+        let peers: Vec<Peer> = (0..N)
+            .map(|i| make_peer(u8::try_from(i).expect("The number fits into u8"), i).1)
+            .collect();
         let (_, rx) = watch::channel(lock_hash);
         let sigs = Mutex::new(vec![None::<Vec<u8>>; N]);
 
