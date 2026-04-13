@@ -121,14 +121,19 @@ impl DkgArgs {
     /// Converts CLI arguments into the DKG crate configuration.
     pub fn into_config(self) -> Result<pluto_dkg::dkg::Config> {
         validate_p2p_args(&self.p2p)?;
-        warn_for_insecure_relays(&self.p2p.relays);
 
         let tracing_config = build_console_tracing_config(self.log.level.clone(), &self.log.color);
         let p2p_config = {
             let mut relays = Vec::new();
 
             for relay in &self.p2p.relays {
-                relays.push(parse_relay_addr(relay)?);
+                let multiaddr = parse_relay_addr(relay)?;
+
+                if multiaddr.iter().any(|protocol| protocol == Protocol::Http) {
+                    warn!(address = %relay, "Insecure relay address provided, not HTTPS");
+                }
+
+                relays.push(multiaddr);
             }
 
             pluto_p2p::config::P2PConfig {
@@ -280,22 +285,7 @@ fn validate_p2p_args(args: &DkgP2PArgs) -> Result<()> {
             .map_err(|err| CliError::Other(format!("invalid hostname: {host}: {err}")))?;
     }
 
-    for relay in &args.relays {
-        parse_relay_addr(relay)
-            .map_err(|err| CliError::Other(format!("parse relay address: {relay}: {err}")))?;
-    }
-
     Ok(())
-}
-
-fn warn_for_insecure_relays(relays: &[String]) {
-    for relay in relays {
-        let multiaddr = parse_relay_addr(relay).expect("validated relay should parse");
-
-        if multiaddr.iter().any(|protocol| protocol == Protocol::Http) {
-            warn!(address = %relay, "Insecure relay address provided, not HTTPS");
-        }
-    }
 }
 
 #[cfg(test)]
