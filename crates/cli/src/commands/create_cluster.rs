@@ -950,7 +950,7 @@ fn new_def_from_config(args: &CreateClusterArgs) -> Result<Definition> {
         fork_version,
         pluto_cluster::definition::Creator::default(),
         operators,
-        args.deposit_amounts.clone(),
+        deposit::eths_to_gweis(&args.deposit_amounts),
         consensus_protocol,
         args.target_gas_limit,
         args.compounding,
