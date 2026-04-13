@@ -92,6 +92,8 @@ oas3-gen-support = "0.24"
 bon = "3.8"
 testcontainers = "0.27"
 test-case = "3.3"
+ethereum_ssz = { version = "0.10" }
+ethereum_ssz_derive = { version = "0.10" }
 tree_hash = "0.12"
 tree_hash_derive = "0.12"
 tar = "0.4"

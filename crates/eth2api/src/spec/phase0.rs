@@ -3,6 +3,7 @@
 //! See: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md>
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use ssz_derive::{Decode, Encode};
 use tree_hash_derive::TreeHash;
 
 pub use pluto_ssz::{BitList, SszList, SszVector};
@@ -76,7 +77,7 @@ pub type BLSSignature = [u8; BLS_SIGNATURE_LEN];
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#depositmessage>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct DepositMessage {
     /// BLS public key.
     #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
@@ -103,7 +104,7 @@ impl From<&DepositData> for DepositMessage {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#depositdata>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct DepositData {
     /// BLS public key.
     #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
@@ -123,7 +124,7 @@ pub struct DepositData {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#forkdata>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct ForkData {
     /// Current fork version.
     #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
@@ -137,7 +138,7 @@ pub struct ForkData {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#signingdata>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct SigningData {
     /// Object root.
     #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
@@ -151,7 +152,7 @@ pub struct SigningData {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#eth1data>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct ETH1Data {
     /// Deposit tree root.
     #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
@@ -168,7 +169,7 @@ pub struct ETH1Data {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#beaconblockheader>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct BeaconBlockHeader {
     /// Block slot.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -191,7 +192,7 @@ pub struct BeaconBlockHeader {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#signedbeaconblockheader>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct SignedBeaconBlockHeader {
     /// Unsigned beacon block header.
     pub message: BeaconBlockHeader,
@@ -204,7 +205,7 @@ pub struct SignedBeaconBlockHeader {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#proposerslashing>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct ProposerSlashing {
     /// First conflicting signed header.
     pub signed_header_1: SignedBeaconBlockHeader,
@@ -216,7 +217,7 @@ pub struct ProposerSlashing {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#indexedattestation>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct IndexedAttestation {
     /// Indices of attesting validators.
     #[serde(with = "pluto_ssz::serde_utils::ssz_list_u64_string_serde")]
@@ -231,7 +232,7 @@ pub struct IndexedAttestation {
 /// Attester slashing container.
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#attesterslashing>
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct AttesterSlashing {
     /// First conflicting indexed attestation.
     pub attestation_1: IndexedAttestation,
@@ -242,7 +243,7 @@ pub struct AttesterSlashing {
 /// Deposit operation container.
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#deposit>
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct Deposit {
     /// Merkle proof branch.
     pub proof: SszVector<Root, DEPOSIT_PROOF_LEN>,
@@ -254,7 +255,7 @@ pub struct Deposit {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#beaconblockbody>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct BeaconBlockBody {
     /// RANDAO reveal.
     #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
@@ -280,7 +281,7 @@ pub struct BeaconBlockBody {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#beaconblock>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct BeaconBlock {
     /// Block slot.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -302,7 +303,7 @@ pub struct BeaconBlock {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#signedbeaconblock>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct SignedBeaconBlock {
     /// Unsigned block message.
     pub message: BeaconBlock,
@@ -315,7 +316,7 @@ pub struct SignedBeaconBlock {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#checkpoint>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct Checkpoint {
     /// Epoch associated with the checkpoint.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -329,7 +330,7 @@ pub struct Checkpoint {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#attestationdata>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct AttestationData {
     /// Slot for the attestation.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -350,7 +351,7 @@ pub struct AttestationData {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#attestation>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct Attestation {
     /// Aggregation bits.
     pub aggregation_bits: BitList<2048>,
@@ -365,7 +366,7 @@ pub struct Attestation {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/validator.md#aggregateandproof>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct AggregateAndProof {
     /// Aggregator validator index.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -381,7 +382,7 @@ pub struct AggregateAndProof {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/validator.md#signedaggregateandproof>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct SignedAggregateAndProof {
     /// Unsigned message.
     pub message: AggregateAndProof,
@@ -394,7 +395,7 @@ pub struct SignedAggregateAndProof {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#voluntaryexit>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct VoluntaryExit {
     /// Exit epoch.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -408,7 +409,7 @@ pub struct VoluntaryExit {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#signedvoluntaryexit>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct SignedVoluntaryExit {
     /// Unsigned voluntary exit message.
     pub message: VoluntaryExit,

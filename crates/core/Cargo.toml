@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+ethereum_ssz.workspace = true
 cancellation.workspace = true
 chrono.workspace = true
 crossbeam.workspace = true
@@ -31,6 +32,7 @@ tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 pluto-eth2util.workspace = true
+pluto-ssz.workspace = true
 tree_hash.workspace = true
 unsigned-varint.workspace = true
 
@@ -53,7 +55,6 @@ pluto-testutil.workspace = true
 pluto-tracing.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 wiremock.workspace = true
-pluto-ssz.workspace = true
 
 [build-dependencies]
 pluto-build-proto.workspace = true

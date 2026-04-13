@@ -24,5 +24,6 @@ lcov.info
 coverage.json
 
 .charon*
+.omx
 
 .peerinfo*

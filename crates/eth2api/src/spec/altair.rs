@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use ssz_derive::{Decode, Encode};
 use tree_hash_derive::TreeHash;
 
 use pluto_ssz::BitVector;
@@ -12,7 +13,7 @@ use crate::spec::phase0;
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/altair/beacon-chain.md#syncaggregate>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct SyncAggregate {
     /// Sync committee participation bits.
     pub sync_committee_bits: BitVector<512>,
@@ -25,7 +26,7 @@ pub struct SyncAggregate {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/altair/beacon-chain.md#beaconblockbody>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct BeaconBlockBody {
     /// RANDAO reveal.
     #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
@@ -56,7 +57,7 @@ pub struct BeaconBlockBody {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/altair/beacon-chain.md#beaconblock>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct BeaconBlock {
     /// Block slot.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -78,7 +79,7 @@ pub struct BeaconBlock {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/altair/beacon-chain.md#signedbeaconblock>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct SignedBeaconBlock {
     /// Unsigned block message.
     pub message: BeaconBlock,
@@ -91,7 +92,7 @@ pub struct SignedBeaconBlock {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/altair/validator.md#synccommitteemessage>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct SyncCommitteeMessage {
     /// Slot for the sync committee message.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -111,7 +112,7 @@ pub struct SyncCommitteeMessage {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/altair/validator.md#synccommitteecontribution>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct SyncCommitteeContribution {
     /// Slot for the contribution.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -133,7 +134,7 @@ pub struct SyncCommitteeContribution {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/altair/validator.md#contributionandproof>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct ContributionAndProof {
     /// Aggregator validator index.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -149,7 +150,7 @@ pub struct ContributionAndProof {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/altair/validator.md#signedcontributionandproof>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct SignedContributionAndProof {
     /// Unsigned contribution-and-proof message.
     pub message: ContributionAndProof,
@@ -162,7 +163,7 @@ pub struct SignedContributionAndProof {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/altair/validator.md#syncaggregatorselectiondata>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct SyncAggregatorSelectionData {
     /// Slot to be signed.
     #[serde_as(as = "serde_with::DisplayFromStr")]
