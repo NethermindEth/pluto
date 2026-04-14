@@ -9,6 +9,8 @@
 //! The output types ([`KeyPackage`], [`PublicKeyPackage`]) are standard
 //! frost-core types usable with frost-core's signing protocol.
 
+#![allow(clippy::arithmetic_side_effects)]
+
 use std::collections::BTreeMap;
 
 use blst::*;
@@ -270,13 +272,13 @@ pub fn round1<R: RngCore + CryptoRng>(
     rng: &mut R,
 ) -> Result<(Round1Bcast, BTreeMap<u32, ShamirShare>, Round1Secret), DkgError> {
     // Kryptology encodes participant identifiers into a single byte.
-    if max_signers > u8::MAX as u16 {
+    if max_signers > u16::from(u8::MAX) {
         return Err(DkgError::InvalidSignerCount);
     }
 
     validate_num_of_signers(threshold, max_signers)?;
 
-    if id == 0 || id > max_signers as u32 {
+    if id == 0 || id > u32::from(max_signers) {
         return Err(DkgError::InvalidParticipantId(id));
     }
 
@@ -310,7 +312,7 @@ pub fn round1<R: RngCore + CryptoRng>(
 
     // Pre-compute Shamir shares for every other participant
     let mut shares = BTreeMap::new();
-    for j in 1..=max_signers as u32 {
+    for j in 1..=u32::from(max_signers) {
         if j == id {
             continue;
         }
@@ -524,7 +526,7 @@ impl BlsSignature {
 
         let x_vals: Vec<Scalar> = partial_sigs
             .iter()
-            .map(|ps| Scalar::from(ps.identifier as u64))
+            .map(|ps| Scalar::from(u64::from(ps.identifier)))
             .collect();
 
         let mut combined = blst_p2::default();

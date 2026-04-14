@@ -88,7 +88,7 @@ fn kryptology_bls_round_trip_3_of_3() {
     let mut all_shares: BTreeMap<u32, BTreeMap<u32, kryptology::ShamirShare>> = BTreeMap::new();
     let mut secrets: BTreeMap<u32, kryptology::Round1Secret> = BTreeMap::new();
 
-    for id in 1..=max_signers as u32 {
+    for id in 1..=u32::from(max_signers) {
         let (bcast, shares, secret) = kryptology::round1(id, threshold, max_signers, ctx, &mut rng)
             .expect("round1 should succeed");
         bcasts.insert(id, bcast);
@@ -107,7 +107,7 @@ fn kryptology_bls_round_trip_3_of_3() {
     let mut public_key_packages = Vec::new();
     let mut round2_bcasts = BTreeMap::new();
 
-    for id in 1..=max_signers as u32 {
+    for id in 1..=u32::from(max_signers) {
         // Collect broadcasts from everyone except ourselves
         let received_bcasts: BTreeMap<u32, kryptology::Round1Bcast> = bcasts
             .iter()
@@ -178,7 +178,7 @@ fn kryptology_bls_round_trip_2_of_3() {
     let mut all_shares: BTreeMap<u32, BTreeMap<u32, kryptology::ShamirShare>> = BTreeMap::new();
     let mut secrets: BTreeMap<u32, kryptology::Round1Secret> = BTreeMap::new();
 
-    for id in 1..=max_signers as u32 {
+    for id in 1..=u32::from(max_signers) {
         let (bcast, shares, secret) =
             kryptology::round1(id, threshold, max_signers, ctx, &mut rng).unwrap();
         bcasts.insert(id, bcast);
@@ -195,7 +195,7 @@ fn kryptology_bls_round_trip_2_of_3() {
     let mut key_packages = BTreeMap::new();
     let mut public_key_packages = Vec::new();
 
-    for id in 1..=max_signers as u32 {
+    for id in 1..=u32::from(max_signers) {
         let received_bcasts: BTreeMap<_, _> = bcasts
             .iter()
             .filter(|(k, _)| **k != id)

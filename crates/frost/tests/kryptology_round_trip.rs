@@ -21,7 +21,7 @@ fn kryptology_bls_round_trip_2_of_4_ctx_0() {
     let mut round1_shares: BTreeMap<u32, BTreeMap<u32, kryptology::ShamirShare>> = BTreeMap::new();
     let mut round1_secrets = BTreeMap::new();
 
-    for id in 1..=max_signers as u32 {
+    for id in 1..=u32::from(max_signers) {
         let (bcast, shares, secret) = kryptology::round1(id, threshold, max_signers, ctx, &mut rng)
             .expect("round1 should succeed for each participant");
 
@@ -48,7 +48,7 @@ fn kryptology_bls_round_trip_2_of_4_ctx_0() {
     let mut key_packages = BTreeMap::new();
     let mut public_key_packages = BTreeMap::new();
 
-    for id in 1..=max_signers as u32 {
+    for id in 1..=u32::from(max_signers) {
         let received_bcasts: BTreeMap<u32, kryptology::Round1Bcast> = round1_bcasts
             .iter()
             .filter(|&(sender_id, _)| *sender_id != id)

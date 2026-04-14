@@ -4,6 +4,8 @@
 //! Contains the key material types (identifiers, shares, packages) and the
 //! polynomial evaluation functions needed by the kryptology-compatible DKG.
 
+#![allow(clippy::arithmetic_side_effects)]
+
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
@@ -37,7 +39,7 @@ pub struct Identifier(Scalar);
 impl Identifier {
     /// Create a new identifier from a non-zero u32.
     pub fn from_u32(id: u32) -> Result<Self, FrostCoreError> {
-        let scalar = Scalar::from(id as u64);
+        let scalar = Scalar::from(u64::from(id));
         if scalar == Scalar::ZERO {
             Err(FrostCoreError::InvalidZeroScalar)
         } else {
