@@ -1,8 +1,8 @@
-use alloc::{collections::BTreeMap, vec::Vec};
+use std::collections::BTreeMap;
 
 use rand::{SeedableRng, rngs::StdRng};
 
-use crate::kryptology::{self, BlsPartialSignature};
+use crate::kryptology;
 
 #[test]
 fn check_scalar_one_precomputed() {
@@ -151,7 +151,9 @@ fn check_kryptology_bls_round_trip_3_of_3() {
 
     let partial_sigs: Vec<_> = key_packages
         .keys()
-        .map(|&id| BlsPartialSignature::from_key_package(id, &key_packages[&id], message))
+        .map(|&id| {
+            kryptology::BlsPartialSignature::from_key_package(id, &key_packages[&id], message)
+        })
         .collect();
 
     let signature = kryptology::BlsSignature::from_partial_signatures(threshold, &partial_sigs)

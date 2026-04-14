@@ -5,7 +5,7 @@
 //! operator overloads, serialization, and safe constructors that enforce
 //! subgroup membership.
 
-use core::{
+use std::{
     fmt,
     ops::{Add, Mul, Sub},
 };

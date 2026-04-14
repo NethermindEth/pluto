@@ -4,12 +4,10 @@
 //! Contains the key material types (identifiers, shares, packages) and the
 //! polynomial evaluation functions needed by the kryptology-compatible DKG.
 
-use alloc::{
+use std::{
+    cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
-    vec,
-    vec::Vec,
 };
-use core::cmp::Ordering;
 
 use super::*;
 

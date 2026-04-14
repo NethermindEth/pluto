@@ -9,7 +9,7 @@
 //! The output types ([`KeyPackage`], [`PublicKeyPackage`]) are standard
 //! frost-core types usable with frost-core's signing protocol.
 
-use alloc::{collections::BTreeMap, vec, vec::Vec};
+use std::collections::BTreeMap;
 
 use blst::*;
 use rand_core::{CryptoRng, RngCore};
@@ -514,7 +514,7 @@ impl BlsSignature {
         }
 
         // Check for duplicate identifiers
-        let mut seen = alloc::collections::BTreeSet::new();
+        let mut seen = std::collections::BTreeSet::new();
         for ps in partial_sigs {
             if !seen.insert(ps.identifier) {
                 return Err(DkgError::DuplicateIdentifier(ps.identifier));

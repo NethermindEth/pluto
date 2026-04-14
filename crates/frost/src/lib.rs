@@ -6,8 +6,6 @@
 #![allow(non_snake_case)]
 #![doc = include_str!("../dkg.md")]
 
-extern crate alloc;
-
 pub mod curve;
 pub mod frost_core;
 pub mod kryptology;
