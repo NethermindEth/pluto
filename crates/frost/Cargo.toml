@@ -15,8 +15,3 @@ sha2.workspace = true
 hex.workspace = true
 rand.workspace = true
 serde_json.workspace = true
-
-[lib]
-# Disables non-criterion benchmark which is not used; prevents errors
-# when using criterion-specific flags
-bench = false
