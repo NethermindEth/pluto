@@ -52,11 +52,12 @@ enum ExpectedRound2 {
     },
 }
 
+#[derive(Deserialize)]
 struct FixtureScenario {
     threshold: u16,
     max_signers: u16,
     ctx: u8,
-    participants: BTreeMap<u32, FixtureParticipant>,
+    participants: Vec<FixtureParticipant>,
 }
 
 impl From<&FixtureRound1Bcast> for kryptology::Round1Bcast {
@@ -102,19 +103,20 @@ fn kryptology_fixture_round2_interop_invalid_proof() {
 }
 
 fn replay_fixture(json: &str, require_group_signature: bool) {
-    let scenario = parse_fixture(json);
+    let scenario: FixtureScenario = serde_json::from_str(json).expect("invalid fixture JSON");
 
     let mut key_packages = BTreeMap::new();
     let mut public_key_packages = Vec::new();
 
-    for (&id, participant) in &scenario.participants {
+    for participant in &scenario.participants {
+        let id = participant.id;
         let received_bcasts = scenario
             .participants
             .iter()
-            .filter(|&(&sender_id, _)| sender_id != id)
-            .map(|(&sender_id, sender)| {
+            .filter(|&sender| sender.id != id)
+            .map(|sender| {
                 (
-                    sender_id,
+                    sender.id,
                     kryptology::Round1Bcast::from(&sender.round1_bcast),
                 )
             })
@@ -123,15 +125,15 @@ fn replay_fixture(json: &str, require_group_signature: bool) {
         let received_shares = scenario
             .participants
             .iter()
-            .filter(|&(&sender_id, _)| sender_id != id)
-            .map(|(&sender_id, sender)| {
+            .filter(|&sender| sender.id != id)
+            .map(|sender| {
                 let s = sender
                     .shares_sent
                     .iter()
                     .find(|s| s.to == id)
                     .expect("share for recipient");
                 (
-                    sender_id,
+                    sender.id,
                     kryptology::ShamirShare {
                         id: s.id,
                         value: s.value,
@@ -210,24 +212,6 @@ fn replay_fixture(json: &str, require_group_signature: bool) {
         signature.verify(vk, message),
         "fixture-derived BLS threshold signature should verify"
     );
-}
-
-fn parse_fixture(json: &str) -> FixtureScenario {
-    #[derive(Deserialize)]
-    struct RawScenario {
-        threshold: u16,
-        max_signers: u16,
-        ctx: u8,
-        participants: Vec<FixtureParticipant>,
-    }
-
-    let raw: RawScenario = serde_json::from_str(json).expect("fixture JSON should parse");
-    FixtureScenario {
-        threshold: raw.threshold,
-        max_signers: raw.max_signers,
-        ctx: raw.ctx,
-        participants: raw.participants.into_iter().map(|p| (p.id, p)).collect(),
-    }
 }
 
 mod hex_serde {
