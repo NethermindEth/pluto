@@ -90,14 +90,14 @@ impl NodeSigBcast {
     /// polls until every peer's signature has been received and verified.
     /// Returns all collected signatures ordered by peer index.
     pub async fn exchange(
-        &self,
+        self,
         key: &SecretKey,
         lock_hash: impl AsRef<[u8]>,
         token: CancellationToken,
     ) -> Result<Vec<Vec<u8>>> {
         let lock_hash = lock_hash.as_ref();
 
-        let local_sig = pluto_k1util::sign(key, lock_hash)?;
+        let local_sig = pluto_k1util::sign(key, lock_hash)?.to_vec();
 
         // Make the lock hash available to incoming callbacks before broadcasting.
         // Only fails if all receivers are dropped, which cannot happen here.
@@ -107,7 +107,7 @@ impl NodeSigBcast {
             u32::try_from(self.node_idx).map_err(|_| Error::NodeIndexOutOfRange(self.node_idx))?;
 
         let bcast_data = MsgNodeSig {
-            signature: local_sig.to_vec().into(),
+            signature: local_sig.clone().into(),
             peer_index,
         };
 
@@ -126,11 +126,7 @@ impl NodeSigBcast {
             tokio::select! {
                 () = token.cancelled() => return Err(Error::Cancelled),
                 _ = ticker.tick() => {
-                    let result = {
-                        let sigs = self.sigs.lock().unwrap_or_else(|e| e.into_inner());
-                        all_sigs(&sigs)
-                    };
-                    if let Some(all) = result {
+                    if let Some(all) = all_sigs(&self.sigs.lock().unwrap_or_else(|e| e.into_inner())) {
                         return Ok(all);
                     }
                 }
@@ -141,7 +137,11 @@ impl NodeSigBcast {
 
 /// Returns a copy of all signatures if every slot is filled, otherwise `None`.
 fn all_sigs(sigs: &[Option<Vec<u8>>]) -> Option<Vec<Vec<u8>>> {
-    sigs.iter().cloned().collect()
+    if sigs.iter().all(|s| s.is_some()) {
+        Some(sigs.iter().cloned().flatten().collect())
+    } else {
+        None
+    }
 }
 
 /// Validates and stores an incoming node signature message.
