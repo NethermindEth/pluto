@@ -162,7 +162,7 @@ impl<'de> Deserialize<'de> for Definition {
                 let definition: DefinitionV1x5to7 =
                     serde_json::from_value(value).map_err(Error::custom)?;
                 if usize::try_from(definition.num_validators)
-                    .map_or(true, |n| definition.validator_addresses.len() != n)
+                    != Ok(definition.validator_addresses.len())
                 {
                     return Err(Error::custom(
                         "num_validators not matching validators length",
@@ -174,7 +174,7 @@ impl<'de> Deserialize<'de> for Definition {
                 let definition: DefinitionV1x8 =
                     serde_json::from_value(value).map_err(Error::custom)?;
                 if usize::try_from(definition.num_validators)
-                    .map_or(true, |n| definition.validator_addresses.len() != n)
+                    != Ok(definition.validator_addresses.len())
                 {
                     return Err(Error::custom(
                         "num_validators not matching validators length",
@@ -186,7 +186,7 @@ impl<'de> Deserialize<'de> for Definition {
                 let definition: DefinitionV1x9 =
                     serde_json::from_value(value).map_err(Error::custom)?;
                 if usize::try_from(definition.num_validators)
-                    .map_or(true, |n| definition.validator_addresses.len() != n)
+                    != Ok(definition.validator_addresses.len())
                 {
                     return Err(Error::custom(
                         "num_validators not matching validators length",
@@ -198,7 +198,7 @@ impl<'de> Deserialize<'de> for Definition {
                 let definition: DefinitionV1x10 =
                     serde_json::from_value(value).map_err(Error::custom)?;
                 if usize::try_from(definition.num_validators)
-                    .map_or(true, |n| definition.validator_addresses.len() != n)
+                    != Ok(definition.validator_addresses.len())
                 {
                     return Err(Error::custom(
                         "num_validators not matching validators length",

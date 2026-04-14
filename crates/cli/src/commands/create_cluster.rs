@@ -2467,4 +2467,381 @@ mod tests {
 
         assert_eq!(lock.target_gas_limit, expected_gas_limit);
     }
+
+    #[tokio::test]
+    async fn test_keymanager() {
+        #[derive(serde::Deserialize)]
+        struct MockKeymanagerReq {
+            keystores: Vec<String>,
+            passwords: Vec<String>,
+        }
+
+        const TEST_AUTH_TOKEN: &str = "api-token-test";
+
+        let tbls_impl = BlstImpl;
+
+        let original_secret = tbls_impl.generate_secret_key(rand::thread_rng()).unwrap();
+        let key_dir = TempDir::new().unwrap();
+        keystore::store_keys_insecure(
+            std::slice::from_ref(&original_secret),
+            key_dir.path(),
+            &CONFIRM_INSECURE_KEYS,
+        )
+        .await
+        .unwrap();
+
+        let auth_tokens: Vec<String> =
+            vec![TEST_AUTH_TOKEN.to_string(); usize::try_from(MIN_NODES).unwrap()];
+
+        // --- all successful ---
+        {
+            let mut servers = Vec::new();
+            let mut addrs = Vec::new();
+            for _ in 0..MIN_NODES {
+                let server = wiremock::MockServer::start().await;
+                addrs.push(server.uri());
+                servers.push(server);
+            }
+            for server in &servers {
+                wiremock::Mock::given(wiremock::matchers::method("POST"))
+                    .and(wiremock::matchers::path("/eth/v1/keystores"))
+                    .respond_with(wiremock::ResponseTemplate::new(200))
+                    .mount(server)
+                    .await;
+            }
+
+            let cluster_dir = TempDir::new().unwrap();
+            let mut output = Vec::new();
+            run(
+                &mut output,
+                CreateClusterArgs {
+                    cluster_dir: cluster_dir.path().to_path_buf(),
+                    compounding: false,
+                    consensus_protocol: None,
+                    definition_file: None,
+                    deposit_amounts: vec![],
+                    execution_engine_addr: None,
+                    fee_recipient_addrs: vec![ZERO_ADDRESS.to_string()],
+                    insecure_keys: true,
+                    keymanager_addrs: addrs,
+                    keymanager_auth_tokens: auth_tokens.clone(),
+                    name: Some("TestKeymanager".to_string()),
+                    network: Some(Network::Goerli),
+                    nodes: MIN_NODES,
+                    num_validators: 0,
+                    publish: false,
+                    publish_address: "https://api.obol.tech/v1".to_string(),
+                    split_keys: true,
+                    split_keys_dir: Some(key_dir.path().to_path_buf()),
+                    target_gas_limit: 30_000_000,
+                    testnet_config: TestnetConfig::default(),
+                    threshold: Some(MIN_THRESHOLD),
+                    withdrawal_addrs: vec![ZERO_ADDRESS.to_string()],
+                    zipped: false,
+                },
+            )
+            .await
+            .unwrap();
+
+            let mut shares = std::collections::HashMap::new();
+            for (i, server) in servers.iter().enumerate() {
+                let requests = server.received_requests().await.unwrap();
+                assert_eq!(
+                    requests.len(),
+                    1,
+                    "server {i} should have received exactly 1 request"
+                );
+
+                let req: MockKeymanagerReq = serde_json::from_slice(&requests[0].body).unwrap();
+                assert_eq!(req.keystores.len(), 1, "only 1 key was split");
+                assert_eq!(req.passwords.len(), 1);
+
+                let ks: keystore::Keystore = serde_json::from_str(&req.keystores[0]).unwrap();
+                let secret = keystore::decrypt(&ks, &req.passwords[0]).unwrap();
+                shares.insert(u8::try_from(i + 1).unwrap(), secret);
+            }
+
+            let recovered = tbls_impl.recover_secret(&shares).unwrap();
+            assert_eq!(recovered, original_secret);
+        }
+
+        // --- some unsuccessful ---
+        {
+            let mut addrs = vec!["http://127.0.0.1:1".to_string()];
+            let mut servers = Vec::new();
+            for _ in 1..MIN_NODES {
+                let server = wiremock::MockServer::start().await;
+                addrs.push(server.uri());
+                servers.push(server);
+            }
+            for server in &servers {
+                wiremock::Mock::given(wiremock::matchers::method("POST"))
+                    .and(wiremock::matchers::path("/eth/v1/keystores"))
+                    .respond_with(wiremock::ResponseTemplate::new(200))
+                    .mount(server)
+                    .await;
+            }
+
+            let cluster_dir = TempDir::new().unwrap();
+            let mut output = Vec::new();
+            let err = run(
+                &mut output,
+                CreateClusterArgs {
+                    cluster_dir: cluster_dir.path().to_path_buf(),
+                    compounding: false,
+                    consensus_protocol: None,
+                    definition_file: None,
+                    deposit_amounts: vec![],
+                    execution_engine_addr: None,
+                    fee_recipient_addrs: vec![ZERO_ADDRESS.to_string()],
+                    insecure_keys: true,
+                    keymanager_addrs: addrs,
+                    keymanager_auth_tokens: auth_tokens.clone(),
+                    name: Some("TestKeymanager".to_string()),
+                    network: Some(Network::Goerli),
+                    nodes: MIN_NODES,
+                    num_validators: 0,
+                    publish: false,
+                    publish_address: "https://api.obol.tech/v1".to_string(),
+                    split_keys: true,
+                    split_keys_dir: Some(key_dir.path().to_path_buf()),
+                    target_gas_limit: 30_000_000,
+                    testnet_config: TestnetConfig::default(),
+                    threshold: Some(MIN_THRESHOLD),
+                    withdrawal_addrs: vec![ZERO_ADDRESS.to_string()],
+                    zipped: false,
+                },
+            )
+            .await
+            .unwrap_err();
+
+            let err_str = format!("{err}");
+            assert!(
+                err_str.contains("cannot ping address"),
+                "expected 'cannot ping address' in error, got: {err_str}"
+            );
+        }
+
+        // --- lengths don't match ---
+        {
+            let mut addrs = Vec::new();
+            let mut servers = Vec::new();
+            for _ in 0..MIN_NODES {
+                let server = wiremock::MockServer::start().await;
+                addrs.push(server.uri());
+                servers.push(server);
+            }
+
+            let short_tokens = auth_tokens[1..].to_vec();
+
+            let cluster_dir = TempDir::new().unwrap();
+            let mut output = Vec::new();
+            let err = run(
+                &mut output,
+                CreateClusterArgs {
+                    cluster_dir: cluster_dir.path().to_path_buf(),
+                    compounding: false,
+                    consensus_protocol: None,
+                    definition_file: None,
+                    deposit_amounts: vec![],
+                    execution_engine_addr: None,
+                    fee_recipient_addrs: vec![ZERO_ADDRESS.to_string()],
+                    insecure_keys: true,
+                    keymanager_addrs: addrs,
+                    keymanager_auth_tokens: short_tokens,
+                    name: Some("TestKeymanager".to_string()),
+                    network: Some(Network::Goerli),
+                    nodes: MIN_NODES,
+                    num_validators: 0,
+                    publish: false,
+                    publish_address: "https://api.obol.tech/v1".to_string(),
+                    split_keys: true,
+                    split_keys_dir: Some(key_dir.path().to_path_buf()),
+                    target_gas_limit: 30_000_000,
+                    testnet_config: TestnetConfig::default(),
+                    threshold: Some(MIN_THRESHOLD),
+                    withdrawal_addrs: vec![ZERO_ADDRESS.to_string()],
+                    zipped: false,
+                },
+            )
+            .await
+            .unwrap_err();
+
+            let err_str = format!("{err}");
+            assert!(
+                err_str.contains("--keymanager-addresses")
+                    && err_str.contains("do not match --keymanager-auth-tokens"),
+                "expected mismatch error, got: {err_str}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_publish() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/lock"))
+            .respond_with(wiremock::ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let cluster_dir = TempDir::new().unwrap();
+        let mut output = Vec::new();
+        run(
+            &mut output,
+            CreateClusterArgs {
+                cluster_dir: cluster_dir.path().to_path_buf(),
+                compounding: false,
+                consensus_protocol: None,
+                definition_file: None,
+                deposit_amounts: vec![],
+                execution_engine_addr: None,
+                fee_recipient_addrs: vec![ZERO_ADDRESS.to_string()],
+                insecure_keys: true,
+                keymanager_addrs: vec![],
+                keymanager_auth_tokens: vec![],
+                name: Some("TestPublish".to_string()),
+                network: Some(Network::Goerli),
+                nodes: MIN_NODES,
+                num_validators: 1,
+                publish: true,
+                publish_address: server.uri(),
+                split_keys: false,
+                split_keys_dir: None,
+                target_gas_limit: 30_000_000,
+                testnet_config: TestnetConfig::default(),
+                threshold: Some(MIN_THRESHOLD),
+                withdrawal_addrs: vec![ZERO_ADDRESS.to_string()],
+                zipped: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "expected exactly 1 publish request");
+    }
+
+    const VALID_ETH_ADDR: &str = "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359";
+
+    #[test_case::test_case(Some(1), 3, Some("Threshold must be greater than") ; "threshold below minimum")]
+    #[test_case::test_case(Some(5), 4, Some("Threshold cannot be greater than number of operators") ; "threshold above maximum")]
+    #[test_case::test_case(None, 3, None ; "no threshold provided")]
+    #[tokio::test]
+    async fn test_cluster_cli(
+        threshold: Option<u64>,
+        nodes: u64,
+        expected_err: Option<&'static str>,
+    ) {
+        let cluster_dir = TempDir::new().unwrap();
+        let mut output = Vec::new();
+        let result = run(
+            &mut output,
+            CreateClusterArgs {
+                cluster_dir: cluster_dir.path().to_path_buf(),
+                compounding: false,
+                consensus_protocol: None,
+                definition_file: None,
+                deposit_amounts: vec![],
+                execution_engine_addr: None,
+                fee_recipient_addrs: vec![VALID_ETH_ADDR.to_string()],
+                insecure_keys: true,
+                keymanager_addrs: vec![],
+                keymanager_auth_tokens: vec![],
+                name: None,
+                network: Some(Network::Holesky),
+                nodes,
+                num_validators: 1,
+                publish: false,
+                publish_address: "https://api.obol.tech/v1".to_string(),
+                split_keys: false,
+                split_keys_dir: None,
+                target_gas_limit: 30_000_000,
+                testnet_config: TestnetConfig::default(),
+                threshold,
+                withdrawal_addrs: vec![VALID_ETH_ADDR.to_string()],
+                zipped: false,
+            },
+        )
+        .await;
+
+        if let Some(expected) = expected_err {
+            let err = result.unwrap_err();
+            let err_str = format!("{err}");
+            assert!(
+                err_str.contains(expected),
+                "expected error containing '{expected}', got: {err_str}"
+            );
+        } else {
+            result.unwrap();
+        }
+    }
+
+    fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(dst)?;
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            let ty = entry.file_type()?;
+            if ty.is_dir() {
+                copy_dir_all(&entry.path(), &dst.join(entry.file_name()))?;
+            } else {
+                std::fs::copy(entry.path(), dst.join(entry.file_name()))?;
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_zipped() {
+        let cluster_dir = TempDir::new().unwrap();
+        let backup_dir = TempDir::new().unwrap();
+
+        let mut output = Vec::new();
+        run(
+            &mut output,
+            CreateClusterArgs {
+                cluster_dir: cluster_dir.path().to_path_buf(),
+                compounding: false,
+                consensus_protocol: None,
+                definition_file: None,
+                deposit_amounts: vec![],
+                execution_engine_addr: None,
+                fee_recipient_addrs: vec![ZERO_ADDRESS.to_string()],
+                insecure_keys: true,
+                keymanager_addrs: vec![],
+                keymanager_auth_tokens: vec![],
+                name: Some("test".to_string()),
+                network: Some(Network::Goerli),
+                nodes: 4,
+                num_validators: 4,
+                publish: false,
+                publish_address: "https://api.obol.tech/v1".to_string(),
+                split_keys: false,
+                split_keys_dir: None,
+                target_gas_limit: 30_000_000,
+                testnet_config: TestnetConfig::default(),
+                threshold: Some(3),
+                withdrawal_addrs: vec![ZERO_ADDRESS.to_string()],
+                zipped: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        copy_dir_all(cluster_dir.path(), backup_dir.path()).unwrap();
+
+        app_utils::bundle_output(cluster_dir.path(), "cluster.tar.gz").unwrap();
+
+        let unzipped_dir = TempDir::new().unwrap();
+        app_utils::extract_archive(
+            cluster_dir.path().join("cluster.tar.gz"),
+            unzipped_dir.path(),
+        )
+        .unwrap();
+
+        std::fs::remove_file(cluster_dir.path().join("cluster.tar.gz")).unwrap();
+
+        app_utils::compare_directories(backup_dir.path(), unzipped_dir.path()).unwrap();
+    }
 }
