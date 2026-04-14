@@ -1,10 +1,14 @@
-//! Thin wrappers around [`blst`] types for the BLS12-381 scalar field and G1 curve group.
+//! Thin wrappers around [`blst`] types for the BLS12-381 scalar field and G1
+//! curve group.
 //!
-//! Provides [`Scalar`], [`G1Projective`], and [`G1Affine`] with arithmetic operator
-//! overloads, serialization, and safe constructors that enforce subgroup membership.
+//! Provides [`Scalar`], [`G1Projective`], and [`G1Affine`] with arithmetic
+//! operator overloads, serialization, and safe constructors that enforce
+//! subgroup membership.
 
-use core::fmt;
-use core::ops::{Add, Mul, Sub};
+use core::{
+    fmt,
+    ops::{Add, Mul, Sub},
+};
 
 use blst::*;
 use rand_core::{CryptoRng, RngCore};
@@ -20,9 +24,6 @@ impl fmt::Debug for Scalar {
 }
 
 impl Scalar {
-    /// Additive identity.
-    pub const ZERO: Self = Scalar(blst_fr { l: [0; 4] });
-
     /// Multiplicative identity.
     pub const ONE: Self = {
         // Montgomery form of 1 for BLS12-381 scalar field.
@@ -38,6 +39,8 @@ impl Scalar {
             ],
         })
     };
+    /// Additive identity.
+    pub const ZERO: Self = Scalar(blst_fr { l: [0; 4] });
 
     /// Serialize to 32 little-endian bytes.
     pub fn to_bytes(&self) -> [u8; 32] {
@@ -104,6 +107,7 @@ impl From<u64> for Scalar {
 
 impl Add for Scalar {
     type Output = Self;
+
     fn add(self, rhs: Self) -> Self {
         let mut out = blst_fr::default();
         unsafe { blst_fr_add(&mut out, &self.0, &rhs.0) };
@@ -113,6 +117,7 @@ impl Add for Scalar {
 
 impl Sub for Scalar {
     type Output = Self;
+
     fn sub(self, rhs: Self) -> Self {
         let mut out = blst_fr::default();
         unsafe { blst_fr_sub(&mut out, &self.0, &rhs.0) };
@@ -122,6 +127,7 @@ impl Sub for Scalar {
 
 impl Mul for Scalar {
     type Output = Self;
+
     fn mul(self, rhs: Self) -> Self {
         let mut out = blst_fr::default();
         unsafe { blst_fr_mul(&mut out, &self.0, &rhs.0) };
@@ -129,7 +135,8 @@ impl Mul for Scalar {
     }
 }
 
-/// BLS12-381 G1 point in projective (Jacobian) coordinates. Wrapper around `blst_p1`.
+/// BLS12-381 G1 point in projective (Jacobian) coordinates. Wrapper around
+/// `blst_p1`.
 #[derive(Copy, Clone, Default, Eq)]
 pub struct G1Projective(pub(crate) blst_p1);
 
@@ -164,7 +171,8 @@ impl G1Projective {
     }
 
     /// Deserialize from 48-byte compressed form.
-    /// Returns `None` on invalid encoding or point not in G1, or the identity (point at infinity).
+    /// Returns `None` on invalid encoding or point not in G1, or the identity
+    /// (point at infinity).
     pub fn from_compressed(bytes: &[u8; 48]) -> Option<Self> {
         let affine = G1Affine::from_compressed(bytes)?;
         if affine.is_identity() {
@@ -176,6 +184,7 @@ impl G1Projective {
 
 impl Add for G1Projective {
     type Output = Self;
+
     fn add(self, rhs: Self) -> Self {
         let mut out = blst_p1::default();
         unsafe { blst_p1_add_or_double(&mut out, &self.0, &rhs.0) };
@@ -185,6 +194,7 @@ impl Add for G1Projective {
 
 impl Sub for G1Projective {
     type Output = Self;
+
     fn sub(self, rhs: Self) -> Self {
         let mut neg = rhs.0;
         let mut out = blst_p1::default();
@@ -198,6 +208,7 @@ impl Sub for G1Projective {
 
 impl Mul<Scalar> for G1Projective {
     type Output = Self;
+
     fn mul(self, rhs: Scalar) -> Self {
         let mut scalar = blst_scalar::default();
         let mut out = blst_p1::default();
@@ -209,7 +220,8 @@ impl Mul<Scalar> for G1Projective {
     }
 }
 
-/// BLS12-381 G1 point in affine coordinates (for serialization). Wrapper around `blst_p1_affine`.
+/// BLS12-381 G1 point in affine coordinates (for serialization). Wrapper around
+/// `blst_p1_affine`.
 #[derive(Copy, Clone, Default)]
 pub struct G1Affine(pub(crate) blst_p1_affine);
 

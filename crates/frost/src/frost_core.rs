@@ -1,11 +1,14 @@
-//! Port of frost-core types and functions, specialized for BLS12-381 G1 curve operations.
+//! Port of frost-core types and functions, specialized for BLS12-381 G1 curve
+//! operations.
 //!
 //! Contains the key material types (identifiers, shares, packages) and the
 //! polynomial evaluation functions needed by the kryptology-compatible DKG.
 
-use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    vec,
+    vec::Vec,
+};
 use core::cmp::Ordering;
 
 use super::*;

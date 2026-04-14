@@ -9,8 +9,7 @@
 //! The output types ([`KeyPackage`], [`PublicKeyPackage`]) are standard
 //! frost-core types usable with frost-core's signing protocol.
 
-use alloc::collections::BTreeMap;
-use alloc::{vec, vec::Vec};
+use alloc::{collections::BTreeMap, vec, vec::Vec};
 
 use blst::*;
 use rand_core::{CryptoRng, RngCore};
@@ -354,7 +353,8 @@ pub fn round1<R: RngCore + CryptoRng>(
 ///
 /// # Arguments
 /// - `secret`: The [`Round1Secret`] from this participant's [`round1`] call.
-/// - `received_bcasts`: Map from source participant ID to their [`Round1Bcast`].
+/// - `received_bcasts`: Map from source participant ID to their
+///   [`Round1Bcast`].
 /// - `received_shares`: Map from source participant ID to the [`ShamirShare`]
 ///   they sent us.
 pub fn round2(
@@ -445,7 +445,8 @@ pub fn round2(
     Ok((bcast, key_package, public_key_package))
 }
 
-/// Domain separation tag for Ethereum 2.0 BLS signatures (proof of possession scheme).
+/// Domain separation tag for Ethereum 2.0 BLS signatures (proof of possession
+/// scheme).
 ///
 /// Matches Go's `bls.NewSigEth2()` which uses `blsSignaturePopDst`.
 pub const BLS_SIG_DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
@@ -462,8 +463,8 @@ impl BlsPartialSignature {
     /// Produce a BLS partial signature from a [`KeyPackage`] produced by
     /// kryptology DKG.
     ///
-    /// Computes `partial_sig = (key_package.signing_share) * H(msg)` where H hashes the message
-    /// to a G2 point using the Ethereum 2.0 DST.
+    /// Computes `partial_sig = (key_package.signing_share) * H(msg)` where H
+    /// hashes the message to a G2 point using the Ethereum 2.0 DST.
     ///
     /// The `id` must be the original 1-indexed kryptology participant ID.
     pub fn from_key_package(id: u32, key_package: &KeyPackage, msg: &[u8]) -> BlsPartialSignature {
