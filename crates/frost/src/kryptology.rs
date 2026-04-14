@@ -162,10 +162,17 @@ pub fn expand_msg_xmd(msg: &[u8], dst: &[u8], len_in_bytes: usize) -> Vec<u8> {
     const S_IN_BYTES: usize = 64; // SHA-256 block size
 
     let ell = len_in_bytes.div_ceil(B_IN_BYTES);
-    debug_assert!(ell <= 255 && len_in_bytes <= 65535 && dst.len() <= 255);
+    assert!(ell <= 255, "RFC 9380: ell must be at most 255");
+    assert!(
+        len_in_bytes <= 65535,
+        "RFC 9380: len_in_bytes must fit in 2 bytes"
+    );
+    assert!(dst.len() <= 255, "RFC 9380: DST must be at most 255 bytes");
 
-    let dst_prime_suffix = [dst.len() as u8];
-    let l_i_b_str = [(len_in_bytes >> 8) as u8, (len_in_bytes & 0xff) as u8];
+    let dst_prime_suffix = [u8::try_from(dst.len()).expect("asserted above")];
+    let l_i_b_str = u16::try_from(len_in_bytes)
+        .expect("asserted above")
+        .to_be_bytes();
 
     // b_0 = H(Z_pad || msg || l_i_b_str || I2OSP(0,1) || DST_prime)
     let mut h0 = Sha256::new();
@@ -196,7 +203,7 @@ pub fn expand_msg_xmd(msg: &[u8], dst: &[u8], len_in_bytes: usize) -> Vec<u8> {
         }
         let mut hi = Sha256::new();
         hi.update(xored);
-        hi.update([i as u8]);
+        hi.update([u8::try_from(i).expect("ell <= 255 asserted above")]);
         hi.update(dst);
         hi.update(dst_prime_suffix);
         let b_i: [u8; 32] = hi.finalize().into();
@@ -307,7 +314,8 @@ pub fn round1<R: RngCore + CryptoRng>(
         }
     };
     let r_point = G1Projective::generator() * k;
-    let ci = kryptology_challenge(id as u8, ctx, &commitment_points[0], &r_point);
+    let id_u8 = u8::try_from(id).expect("id <= max_signers <= u8::MAX validated above");
+    let ci = kryptology_challenge(id_u8, ctx, &commitment_points[0], &r_point);
     let wi = k + coefficients[0] * ci;
 
     // Pre-compute Shamir shares for every other participant
@@ -389,7 +397,9 @@ pub fn round2(
 
         // Reconstruct R' = Wi*G - Ci*A_{j,0}
         let r_reconstructed = G1Projective::generator() * wi - a0 * ci;
-        let ci_check = kryptology_challenge(sender_id as u8, secret.ctx, &a0, &r_reconstructed);
+        let sender_id_u8 =
+            u8::try_from(sender_id).map_err(|_| DkgError::InvalidParticipantId(sender_id))?;
+        let ci_check = kryptology_challenge(sender_id_u8, secret.ctx, &a0, &r_reconstructed);
         if ci_check != ci {
             return Err(DkgError::InvalidProof { culprit: sender_id });
         }
