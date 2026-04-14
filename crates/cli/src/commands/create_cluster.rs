@@ -1308,7 +1308,7 @@ fn get_validators(
                     .collect::<std::result::Result<Vec<_>, _>>()
             })
             .transpose()?
-            .unwrap_or_default()
+            .ok_or(CreateClusterError::DvPrivSharesNotFound { index: idx })?
             .into_iter()
             .map(|share| share.to_vec())
             .collect();

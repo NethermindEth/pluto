@@ -330,6 +330,13 @@ pub enum CreateClusterError {
         index: usize,
     },
 
+    /// Private key shares not found for distributed validator at the given index.
+    #[error("Private key shares not found for distributed validator at index {index}")]
+    DvPrivSharesNotFound {
+        /// Index that was not found.
+        index: usize,
+    },
+
     /// Deposit data not found for the given distributed validator pubkey.
     #[error("Deposit data not found for distributed validator pubkey: {dv}")]
     DepositDataNotFound {
