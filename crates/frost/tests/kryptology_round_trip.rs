@@ -3,11 +3,11 @@ use std::collections::BTreeMap;
 use pluto_frost::kryptology;
 use rand::{SeedableRng, rngs::StdRng};
 
-/// Follows: https://github.com/coinbase/kryptology/blob/f129811df480d7c65115a20b0461c4e406bd28f2/test/frost_dkg/bls/main.go#L23
-///
 /// FROST DKG + BLS threshold signing (Ethereum 2.0 compatible).
 /// This matches Go's signing flow: non-interactive BLS partial signatures
 /// combined via Lagrange interpolation, verified with standard BLS pairings.
+///
+/// See: https://github.com/coinbase/kryptology/blob/1dcc062313d99f2e56ce6abc2003ef63c52dd4a5/test/frost_dkg/bls/main.go#L23
 #[test]
 fn check_kryptology_bls_round_trip_2_of_4_ctx_0() {
     let mut rng = StdRng::seed_from_u64(20260410);

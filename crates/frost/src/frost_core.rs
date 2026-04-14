@@ -30,7 +30,7 @@ pub enum FrostCoreError {
 
 /// A participant identifier wrapping a non-zero scalar.
 ///
-/// Ported from frost-core/src/identifier.rs:26-48
+/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/identifier.rs#L14-L26
 #[derive(Copy, Clone, Debug)]
 pub struct Identifier(Scalar);
 
@@ -65,13 +65,13 @@ impl PartialOrd for Identifier {
     }
 }
 
+// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/identifier.rs#L121-L137
 impl Ord for Identifier {
+    /// Compare identifiers by their numeric scalar value, using big-endian byte
+    /// order. Serializes to little-endian, and compares in reverse order.
     fn cmp(&self, other: &Self) -> Ordering {
-        // Compare using serialized bytes in little-endian order.
-        // Ported from frost-core/src/identifier.rs:131-146
         let a = self.0.to_bytes();
         let b = other.0.to_bytes();
-        // Compare most-significant byte first (reversed from LE storage).
         for i in (0..32).rev() {
             match a[i].cmp(&b[i]) {
                 Ordering::Equal => continue,
@@ -84,7 +84,7 @@ impl Ord for Identifier {
 
 /// A commitment to a single polynomial coefficient (a group element).
 ///
-/// Ported from frost-core/src/keys.rs:249-274
+/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L242-L249
 #[derive(Copy, Clone, Debug)]
 pub struct CoefficientCommitment(G1Projective);
 
@@ -103,7 +103,7 @@ impl CoefficientCommitment {
 /// The commitments to the coefficients of a secret polynomial, used for
 /// Feldman verifiable secret sharing.
 ///
-/// Ported from frost-core/src/keys.rs:308-382
+/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L293-L310
 #[derive(Clone, Debug)]
 pub struct VerifiableSecretSharingCommitment(Vec<CoefficientCommitment>);
 
@@ -131,28 +131,22 @@ impl VerifiableSecretSharingCommitment {
 
 /// A secret scalar value representing a signer's share of the group secret.
 ///
-/// Ported from frost-core/src/keys.rs:87-121
+/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L82-L87
 #[derive(Copy, Clone, Debug)]
 pub struct SigningShare(Scalar);
 
 impl SigningShare {
     /// Create a signing share from a scalar.
-    ///
-    /// Ported from frost-core/src/keys.rs:96-98
     pub fn new(scalar: Scalar) -> Self {
         Self(scalar)
     }
 
     /// Return the underlying scalar.
-    ///
-    /// Ported from frost-core/src/keys.rs:103-105
     pub fn to_scalar(&self) -> Scalar {
         self.0
     }
 
     /// Evaluate the polynomial defined by `coefficients` at `peer`.
-    ///
-    /// Ported from frost-core/src/keys.rs:119-121
     pub fn from_coefficients(coefficients: &[Scalar], peer: Identifier) -> Self {
         Self::new(evaluate_polynomial(peer, coefficients))
     }
@@ -160,7 +154,7 @@ impl SigningShare {
 /// A public group element that represents a single signer's public
 /// verification share.
 ///
-/// Ported from frost-core/src/keys.rs:163-214
+/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L158-L165
 #[derive(Copy, Clone, Debug)]
 pub struct VerifyingShare(G1Projective);
 
@@ -177,8 +171,6 @@ impl VerifyingShare {
 
     /// Compute the verifying share for `identifier` from the summed VSS
     /// commitment.
-    ///
-    /// Ported from frost-core/src/keys.rs:198-214
     pub fn from_commitment(
         identifier: Identifier,
         commitment: &VerifiableSecretSharingCommitment,
@@ -189,7 +181,7 @@ impl VerifyingShare {
 
 /// The group public key, used to verify threshold signatures.
 ///
-/// Ported from frost-core/src/verifying_key.rs:15-93
+/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/verifying_key.rs#L10-L20
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct VerifyingKey(G1Projective);
 
@@ -206,7 +198,7 @@ impl VerifyingKey {
 
     /// Derive the verifying key from the first coefficient commitment.
     ///
-    /// Ported from frost-core/src/verifying_key.rs:83-93
+    /// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/verifying_key.rs#L81-L93
     pub fn from_commitment(
         commitment: &VerifiableSecretSharingCommitment,
     ) -> Result<Self, FrostCoreError> {
@@ -222,7 +214,7 @@ impl VerifyingKey {
 
 /// Secret and public key material generated during DKG.
 ///
-/// Ported from frost-core/src/keys.rs:399-468
+/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L384-L411
 pub struct SecretShare {
     identifier: Identifier,
     signing_share: SigningShare,
@@ -231,8 +223,6 @@ pub struct SecretShare {
 
 impl SecretShare {
     /// Create a new secret share.
-    ///
-    /// Ported from frost-core/src/keys.rs:418-429
     pub fn new(
         identifier: Identifier,
         signing_share: SigningShare,
@@ -249,7 +239,7 @@ impl SecretShare {
     ///
     /// Checks that `G * signing_share == evaluate_vss(identifier, commitment)`.
     ///
-    /// Ported from frost-core/src/keys.rs:445-468
+    /// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L431-L468
     pub fn verify(&self) -> Result<(), FrostCoreError> {
         let f_result = G1Projective::generator() * self.signing_share.to_scalar();
         let result = evaluate_vss(self.identifier, &self.commitment);
@@ -264,7 +254,7 @@ impl SecretShare {
 
 /// A key package containing all key material for a participant.
 ///
-/// Ported from frost-core/src/keys.rs:627-665
+/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L617-L643
 #[derive(Debug)]
 pub struct KeyPackage {
     identifier: Identifier,
@@ -276,8 +266,6 @@ pub struct KeyPackage {
 
 impl KeyPackage {
     /// Create a new key package.
-    ///
-    /// Ported from frost-core/src/keys.rs:650-665
     pub fn new(
         identifier: Identifier,
         signing_share: SigningShare,
@@ -323,7 +311,7 @@ impl KeyPackage {
 /// Public data containing all signers' verification shares and the group
 /// public key.
 ///
-/// Ported from frost-core/src/keys.rs:720-777
+/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L712-L729
 #[derive(Debug)]
 pub struct PublicKeyPackage {
     verifying_shares: BTreeMap<Identifier, VerifyingShare>,
@@ -332,8 +320,6 @@ pub struct PublicKeyPackage {
 
 impl PublicKeyPackage {
     /// Create a new public key package.
-    ///
-    /// Ported from frost-core/src/keys.rs:736-745
     pub fn new(
         verifying_shares: BTreeMap<Identifier, VerifyingShare>,
         verifying_key: VerifyingKey,
@@ -356,7 +342,7 @@ impl PublicKeyPackage {
 
     /// Derive a public key package from all participants' DKG commitments.
     ///
-    /// Ported from frost-core/src/keys.rs:770-777
+    /// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L765-L777
     pub fn from_dkg_commitments(
         commitments: &BTreeMap<Identifier, &VerifiableSecretSharingCommitment>,
     ) -> Result<Self, FrostCoreError> {
@@ -368,7 +354,7 @@ impl PublicKeyPackage {
 
     /// Derive verifying shares for each participant from a summed commitment.
     ///
-    /// Ported from frost-core/src/keys.rs:751-763
+    /// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L747-L763
     fn from_commitment(
         identifiers: &BTreeSet<Identifier>,
         commitment: &VerifiableSecretSharingCommitment,
@@ -389,7 +375,7 @@ impl PublicKeyPackage {
 /// Given coefficients `[a_0, a_1, ..., a_{t-1}]`, computes
 /// `a_0 + a_1 * x + a_2 * x^2 + ... + a_{t-1} * x^{t-1}`.
 ///
-/// Ported from frost-core/src/keys.rs:579-595
+/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L573-L595
 fn evaluate_polynomial(identifier: Identifier, coefficients: &[Scalar]) -> Scalar {
     let mut value = Scalar::ZERO;
     let x = identifier.to_scalar();
@@ -409,7 +395,7 @@ fn evaluate_polynomial(identifier: Identifier, coefficients: &[Scalar]) -> Scala
 ///
 /// Computes `sum_{k=0}^{t-1} commitment[k] * identifier^k`.
 ///
-/// Ported from frost-core/src/keys.rs:602-615
+/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L597-L615
 fn evaluate_vss(
     identifier: Identifier,
     commitment: &VerifiableSecretSharingCommitment,
@@ -431,7 +417,7 @@ fn evaluate_vss(
 /// commitment of length t where each element is the sum of the corresponding
 /// elements across all participants.
 ///
-/// Ported from frost-core/src/keys.rs:38-62
+/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L35-L62
 fn sum_commitments(
     commitments: &[&VerifiableSecretSharingCommitment],
 ) -> Result<VerifiableSecretSharingCommitment, FrostCoreError> {
@@ -460,7 +446,7 @@ fn sum_commitments(
 
 /// Validate that (min_signers, max_signers) form a valid pair.
 ///
-/// Ported from frost-core/src/keys.rs:798-815
+/// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L796-L815
 pub fn validate_num_of_signers(min_signers: u16, max_signers: u16) -> Result<(), FrostCoreError> {
     if min_signers < 2 {
         return Err(FrostCoreError::InvalidMinSigners);

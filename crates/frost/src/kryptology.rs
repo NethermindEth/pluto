@@ -207,7 +207,8 @@ pub fn expand_msg_xmd(msg: &[u8], dst: &[u8], len_in_bytes: usize) -> Vec<u8> {
 }
 
 /// Kryptology hash-to-scalar.
-/// See: https://github.com/coinbase/kryptology/blob/eef703320df46f97e86ead4eff178b095181b0ec/pkg/core/curves/bls12381_curve.go#L50
+///
+/// See: https://github.com/coinbase/kryptology/blob/1dcc062313d99f2e56ce6abc2003ef63c52dd4a5/pkg/core/curves/bls12381_curve.go#L50
 const KRYPTOLOGY_DST: &[u8] = b"BLS12381_XMD:SHA-256_SSWU_RO_";
 
 /// Hash to scalar using kryptology's ExpandMsgXmd construction.
