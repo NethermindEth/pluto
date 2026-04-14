@@ -138,7 +138,7 @@ impl NodeSigBcast {
 /// Returns a copy of all signatures if every slot is filled, otherwise `None`.
 fn all_sigs(sigs: &[Option<Vec<u8>>]) -> Option<Vec<Vec<u8>>> {
     if sigs.iter().all(|s| s.is_some()) {
-        Some(sigs.iter().cloned().flatten().collect())
+        Some(sigs.iter().flatten().cloned().collect())
     } else {
         None
     }
