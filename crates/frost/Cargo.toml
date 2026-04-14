@@ -1,26 +1,19 @@
 [package]
-name = "frost-bls12-381-g1"
-edition.workspace = true
-rust-version.workspace = true
+name = "pluto-frost"
 version.workspace = true
-authors.workspace = true
-readme = "README.md"
-license.workspace = true
+edition.workspace = true
 repository.workspace = true
-categories.workspace = true
-keywords = ["cryptography", "crypto", "bls12-381", "threshold", "signature"]
-description = "Kryptology-compatible FROST DKG and BLS threshold signing over BLS12-381 G1."
+license.workspace = true
+publish.workspace = true
 
 [dependencies]
-blst = { version = "0.3", default-features = false }
+blst.workspace = true
 rand_core.workspace = true
-sha2 = { version = "0.10.2", default-features = false }
+sha2.workspace = true
 
 [dev-dependencies]
 hex.workspace = true
-lazy_static.workspace = true
 rand.workspace = true
-rand_chacha.workspace = true
 serde_json.workspace = true
 
 [lib]

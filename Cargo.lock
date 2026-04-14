@@ -5670,6 +5670,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pluto-frost"
+version = "1.7.1"
+dependencies = [
+ "blst",
+ "hex",
+ "rand 0.8.5",
+ "rand_core 0.6.4",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "pluto-k1util"
 version = "1.7.1"
 dependencies = [
