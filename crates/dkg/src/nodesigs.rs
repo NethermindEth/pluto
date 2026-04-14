@@ -18,7 +18,7 @@ use crate::{
 };
 
 /// The message ID used for node signature broadcasts.
-pub const NODE_SIG_MSG_ID: &str = "/charon/dkg/node_sig";
+const NODE_SIG_MSG_ID: &str = "/charon/dkg/node_sig";
 
 /// Error returned by [`NodeSigBcast`] operations.
 #[derive(Debug, thiserror::Error)]
