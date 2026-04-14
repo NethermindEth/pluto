@@ -49,21 +49,6 @@ agent the full diff and relevant file contents in its prompt.
 | **rust-style** | `/rust-style` | Idiomatic Rust; memory orderings; error handling patterns; naming |
 | **code-quality** | — | Concurrency correctness; state-machine completeness; resource lifecycle |
 
-For the `/rust-style` agent, also apply these Pluto-specific checks:
-
-- [ ] `Ordering::SeqCst` is justified; prefer `Relaxed`/`AcqRel` for
-      standalone flags.
-- [ ] `Error::Io` wraps `std::io::Error` (not `String`) to preserve
-      `ErrorKind`.
-- [ ] New public functions accept `impl AsRef<[u8]>` / `impl AsRef<str>`
-      rather than concrete slice refs where appropriate.
-- [ ] No `unwrap()` / `expect()` / `panic!()` outside test code.
-- [ ] All arithmetic uses checked ops (`checked_add`, `checked_mul`, …).
-- [ ] Tests mirror the Go test names and shapes where applicable.
-- [ ] `use` declarations appear before all other items in each file.
-- [ ] No dead payload in error variants (every captured field appears in the
-      `#[error("...")]` string).
-
 Each agent must return findings as JSON objects:
 ```json
 {
