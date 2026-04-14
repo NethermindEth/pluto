@@ -5,12 +5,6 @@ use std::collections::BTreeMap;
 use pluto_frost::kryptology;
 use serde::Deserialize;
 
-const FIXTURE_2_OF_3_CTX_0: &str = include_str!("./kryptology_fixtures/2-of-3-ctx-0.json");
-const FIXTURE_3_OF_3_CTX_0: &str = include_str!("./kryptology_fixtures/3-of-3-ctx-0.json");
-const FIXTURE_MALFORMED_SHARE_ID: &str =
-    include_str!("./kryptology_fixtures/malformed-share-id.json");
-const FIXTURE_INVALID_PROOF: &str = include_str!("./kryptology_fixtures/invalid-proof.json");
-
 #[derive(Clone, Deserialize)]
 struct FixtureParticipant {
     id: u32,
@@ -77,22 +71,34 @@ impl From<&FixtureRound1Bcast> for kryptology::Round1Bcast {
 
 #[test]
 fn kryptology_fixture_round2_interop_2_of_3_ctx_0() {
-    replay_fixture(FIXTURE_2_OF_3_CTX_0, true);
+    replay_fixture(
+        include_str!("./kryptology_fixtures/2-of-3-ctx-0.json"),
+        true,
+    );
 }
 
 #[test]
 fn kryptology_fixture_round2_interop_3_of_3_ctx_0() {
-    replay_fixture(FIXTURE_3_OF_3_CTX_0, true);
+    replay_fixture(
+        include_str!("./kryptology_fixtures/3-of-3-ctx-0.json"),
+        true,
+    );
 }
 
 #[test]
 fn kryptology_fixture_round2_interop_malformed_share_id() {
-    replay_fixture(FIXTURE_MALFORMED_SHARE_ID, false);
+    replay_fixture(
+        include_str!("./kryptology_fixtures/malformed-share-id.json"),
+        false,
+    );
 }
 
 #[test]
 fn kryptology_fixture_round2_interop_invalid_proof() {
-    replay_fixture(FIXTURE_INVALID_PROOF, false);
+    replay_fixture(
+        include_str!("./kryptology_fixtures/invalid-proof.json"),
+        false,
+    );
 }
 
 fn replay_fixture(json: &str, require_group_signature: bool) {
