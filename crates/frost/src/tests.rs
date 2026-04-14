@@ -158,7 +158,7 @@ fn check_kryptology_bls_round_trip_3_of_3() {
         .expect("BLS signature combination should succeed");
 
     assert!(
-        signature.verify(&vk, message),
+        signature.verify(vk, message),
         "3-of-3 BLS threshold signature should verify"
     );
 }
@@ -224,13 +224,13 @@ fn check_kryptology_bls_round_trip_2_of_3() {
 
     let vk = public_key_packages[0].verifying_key();
     assert!(
-        signature.verify(&vk, message),
+        signature.verify(vk, message),
         "BLS threshold signature should verify"
     );
 
     // Verify wrong message fails
     assert!(
-        !signature.verify(&vk, b"wrong message"),
+        !signature.verify(vk, b"wrong message"),
         "BLS signature should not verify against a different message"
     );
 }

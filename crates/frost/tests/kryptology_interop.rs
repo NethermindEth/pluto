@@ -144,7 +144,7 @@ fn replay_fixture(json: &str, require_group_signature: bool) {
             .expect("BLS signature combination should succeed");
 
     assert!(
-        signature.verify(&vk, message),
+        signature.verify(vk, message),
         "fixture-derived BLS threshold signature should verify"
     );
 }

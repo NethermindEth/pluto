@@ -105,7 +105,7 @@ fn check_kryptology_bls_round_trip_2_of_4_ctx_0() {
         .expect("BLS signature combination should succeed");
 
     assert!(
-        signature.verify(&group_key, message),
+        signature.verify(group_key, message),
         "BLS threshold signature should verify against the group public key"
     );
 }
