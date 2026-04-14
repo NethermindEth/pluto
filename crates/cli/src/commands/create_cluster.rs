@@ -2059,6 +2059,96 @@ mod tests {
         run_test_create_cluster(config, prep, def_provider, expected_err).await;
     }
 
+    const DEF_PATH_004: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../cluster/src/examples/cluster-definition-004.json"
+    );
+
+    /// Port of Go's TestSplitKeys.
+    ///
+    /// Verifies that `run` correctly handles split-keys mode both when a
+    /// cluster definition is loaded from disk and when it is built from
+    /// inline config. For each case the test generates BLS private keys,
+    /// stores them insecurely, runs cluster creation, then checks the
+    /// produced lock for hash/signature validity and that the number of
+    /// distributed validators equals the number of keys that were split.
+    #[test_case::test_case(
+        2, Some(DEF_PATH_004), 4, None, None
+        ; "split keys from local definition"
+    )]
+    #[test_case::test_case(
+        3, None, MIN_NODES, Some(3), Some("test split keys")
+        ; "split keys from config with one num-validators"
+    )]
+    #[tokio::test]
+    async fn test_split_keys(
+        num_split_keys: usize,
+        def_file_path: Option<&'static str>,
+        num_nodes: u64,
+        threshold: Option<u64>,
+        cluster_name: Option<&'static str>,
+    ) {
+        let dir = TempDir::new().unwrap();
+        let split_keys_temp = TempDir::new().unwrap();
+
+        // Generate and store split keys insecurely.
+        let tbls_impl = BlstImpl;
+        let mut keys = Vec::new();
+        for _ in 0..num_split_keys {
+            keys.push(tbls_impl.generate_secret_key(rand::thread_rng()).unwrap());
+        }
+        keystore::store_keys_insecure(&keys, split_keys_temp.path(), &CONFIRM_INSECURE_KEYS)
+            .await
+            .unwrap();
+
+        let execution_engine_addr = def_file_path.map(|_| "http://127.0.0.1:8545".to_string());
+
+        let args = CreateClusterArgs {
+            cluster_dir: dir.path().to_path_buf(),
+            compounding: false,
+            consensus_protocol: None,
+            definition_file: def_file_path.map(String::from),
+            deposit_amounts: vec![],
+            execution_engine_addr,
+            fee_recipient_addrs: vec![ZERO_ADDRESS.to_string()],
+            insecure_keys: true,
+            keymanager_addrs: vec![],
+            keymanager_auth_tokens: vec![],
+            name: cluster_name.map(String::from),
+            network: Some(Network::Goerli),
+            nodes: num_nodes,
+            num_validators: 0,
+            publish: false,
+            publish_address: "https://api.obol.tech/v1".to_string(),
+            split_keys: true,
+            split_keys_dir: Some(split_keys_temp.path().to_path_buf()),
+            target_gas_limit: 30_000_000,
+            testnet_config: TestnetConfig::default(),
+            threshold,
+            withdrawal_addrs: vec![ZERO_ADDRESS.to_string()],
+            zipped: false,
+        };
+
+        let mut output = Vec::new();
+        run(&mut output, args).await.unwrap();
+
+        // Since `cluster-lock.json` is copied into each node directory, use node0.
+        let lock_bytes = tokio::fs::read(dir.path().join("node0/cluster-lock.json"))
+            .await
+            .unwrap();
+        let lock: Lock = serde_json::from_slice(&lock_bytes).unwrap();
+
+        lock.verify_hashes().unwrap();
+
+        let eth1 = test_eth1_client().await;
+        lock.verify_signatures(&eth1).await.unwrap();
+
+        assert_eq!(
+            usize::try_from(lock.definition.num_validators).unwrap(),
+            num_split_keys,
+        );
+    }
+
     const DEF_PATH_002: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../cluster/src/examples/cluster-definition-002.json"
