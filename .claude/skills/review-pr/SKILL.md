@@ -42,12 +42,27 @@ Also note the head commit SHA — you will need it for the review API call.
 Spawn **four agents in a single message** so they run concurrently.  Give each
 agent the full diff and relevant file contents in its prompt.
 
-| Agent | Focus |
-|---|---|
-| **pluto-review** | Functional equivalence with Charon Go; parity matrix; test coverage gaps |
-| **security-review** | Auth bypass, resource exhaustion, key-material handling, DoS vectors |
-| **rust-style** | Idiomatic Rust; memory orderings; error handling patterns; naming |
-| **code-quality** | Concurrency correctness; state-machine completeness; resource lifecycle |
+| Agent | Skill | Focus |
+|---|---|---|
+| **pluto-review** | `/pluto-review` | Functional equivalence with Charon Go; parity matrix; test coverage gaps |
+| **security-review** | — | Auth bypass, resource exhaustion, key-material handling, DoS vectors |
+| **rust-style** | `/rust-style` | Idiomatic Rust; memory orderings; error handling patterns; naming |
+| **code-quality** | — | Concurrency correctness; state-machine completeness; resource lifecycle |
+
+For the `/rust-style` agent, also apply these Pluto-specific checks:
+
+- [ ] `Ordering::SeqCst` is justified; prefer `Relaxed`/`AcqRel` for
+      standalone flags.
+- [ ] `Error::Io` wraps `std::io::Error` (not `String`) to preserve
+      `ErrorKind`.
+- [ ] New public functions accept `impl AsRef<[u8]>` / `impl AsRef<str>`
+      rather than concrete slice refs where appropriate.
+- [ ] No `unwrap()` / `expect()` / `panic!()` outside test code.
+- [ ] All arithmetic uses checked ops (`checked_add`, `checked_mul`, …).
+- [ ] Tests mirror the Go test names and shapes where applicable.
+- [ ] `use` declarations appear before all other items in each file.
+- [ ] No dead payload in error variants (every captured field appears in the
+      `#[error("...")]` string).
 
 Each agent must return findings as JSON objects:
 ```json
@@ -123,25 +138,6 @@ Write a 3–5 sentence overall body for the review covering:
 | Any `major` severity finding | `REQUEST_CHANGES` |
 | Only `minor` / `nit` findings | `COMMENT` (leave open for author discretion) |
 | No findings or only `nit` | `APPROVE` |
-
-## Pluto-specific checklist
-
-Apply in addition to general correctness:
-
-- [ ] Functional equivalence with Charon Go — read the Go source, do not guess.
-- [ ] Wire format / protocol constants match (sizes, names, framing).
-- [ ] `Ordering::SeqCst` is justified; prefer `Relaxed`/`AcqRel` for
-      standalone flags.
-- [ ] `Error::Io` wraps `std::io::Error` (not `String`) to preserve
-      `ErrorKind`.
-- [ ] New public functions accept `impl AsRef<[u8]>` / `impl AsRef<str>`
-      rather than concrete slice refs where appropriate.
-- [ ] No `unwrap()` / `expect()` / `panic!()` outside test code.
-- [ ] All arithmetic uses checked ops (`checked_add`, `checked_mul`, …).
-- [ ] Tests mirror the Go test names and shapes where applicable.
-- [ ] `use` declarations appear before all other items in each file.
-- [ ] No dead payload in error variants (every captured field appears in the
-      `#[error("...")]` string).
 
 ## Output
 
