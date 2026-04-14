@@ -24,7 +24,7 @@ Gob encoding is not part of this interoperability contract.
 ```rust
 use std::collections::BTreeMap;
 
-use frost_bls12_381_g1::kryptology;
+use pluto_frost::kryptology;
 
 let mut rng = rand::rngs::OsRng;
 
@@ -33,9 +33,9 @@ let max_signers = 5u16;
 let ctx = 0u8;
 
 // Round 1: each participant generates broadcast data and shares.
-let mut bcasts = BTreeMap::new();
+let mut bcasts: BTreeMap<u32, kryptology::Round1Bcast> = BTreeMap::new();
 let mut all_shares: BTreeMap<u32, BTreeMap<u32, kryptology::ShamirShare>> = BTreeMap::new();
-let mut secrets = BTreeMap::new();
+let mut secrets: BTreeMap<u32, kryptology::Round1Secret> = BTreeMap::new();
 
 for id in 1..=max_signers as u32 {
     let (bcast, shares, secret) =
@@ -55,8 +55,8 @@ let mut public_key_packages = Vec::new();
 for id in 1..=max_signers as u32 {
     let received_bcasts: BTreeMap<_, _> = bcasts
         .iter()
-        .filter(|(&k, _)| k != id)
-        .map(|(&k, v)| (k, v.clone()))
+        .filter(|(k, _)| **k != id)
+        .map(|(k, v)| (*k, v.clone()))
         .collect();
     let received_shares = all_shares.remove(&id).unwrap();
     let secret = secrets.remove(&id).unwrap();
