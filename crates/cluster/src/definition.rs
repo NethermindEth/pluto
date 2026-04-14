@@ -161,21 +161,49 @@ impl<'de> Deserialize<'de> for Definition {
             V1_5 | V1_6 | V1_7 => {
                 let definition: DefinitionV1x5to7 =
                     serde_json::from_value(value).map_err(Error::custom)?;
+                if usize::try_from(definition.num_validators)
+                    .map_or(true, |n| definition.validator_addresses.len() != n)
+                {
+                    return Err(Error::custom(
+                        "num_validators not matching validators length",
+                    ));
+                }
                 Ok(definition.into())
             }
             V1_8 => {
                 let definition: DefinitionV1x8 =
                     serde_json::from_value(value).map_err(Error::custom)?;
+                if usize::try_from(definition.num_validators)
+                    .map_or(true, |n| definition.validator_addresses.len() != n)
+                {
+                    return Err(Error::custom(
+                        "num_validators not matching validators length",
+                    ));
+                }
                 Ok(definition.into())
             }
             V1_9 => {
                 let definition: DefinitionV1x9 =
                     serde_json::from_value(value).map_err(Error::custom)?;
+                if usize::try_from(definition.num_validators)
+                    .map_or(true, |n| definition.validator_addresses.len() != n)
+                {
+                    return Err(Error::custom(
+                        "num_validators not matching validators length",
+                    ));
+                }
                 Ok(definition.into())
             }
             V1_10 => {
                 let definition: DefinitionV1x10 =
                     serde_json::from_value(value).map_err(Error::custom)?;
+                if usize::try_from(definition.num_validators)
+                    .map_or(true, |n| definition.validator_addresses.len() != n)
+                {
+                    return Err(Error::custom(
+                        "num_validators not matching validators length",
+                    ));
+                }
                 Ok(definition.into())
             }
             _ => Err(Error::custom(format!("Unsupported version: {}", version))),

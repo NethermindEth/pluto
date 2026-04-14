@@ -2333,4 +2333,138 @@ mod tests {
             );
         }
     }
+
+    /// Port of Go's TestMultipleAddresses.
+    #[tokio::test]
+    async fn test_multiple_addresses() {
+        // "insufficient fee recipient addresses": 0 addrs for 4 validators → error
+        {
+            let err = super::validate_addresses(4, &[], &[]).unwrap_err();
+            let err_str = format!("{err}");
+            assert!(
+                err_str.contains("mismatching --num-validators and --fee-recipient-addresses"),
+                "expected fee-recipient error, got: {err_str}"
+            );
+        }
+
+        // "insufficient withdrawal addresses": 0 withdrawal addrs for 1 validator →
+        // error
+        {
+            let fee_addr = "0x0000000000000000000000000000000000000000".to_string();
+            let err = super::validate_addresses(1, &[fee_addr], &[]).unwrap_err();
+            let err_str = format!("{err}");
+            assert!(
+                err_str.contains("mismatching --num-validators and --withdrawal-addresses"),
+                "expected withdrawal error, got: {err_str}"
+            );
+        }
+
+        // "insufficient addresses from remote URL": deserializing a definition
+        // with num_validators=2 but empty validators list must fail with the
+        // Go-compatible error message.  Testing at the JSON-parse level mirrors
+        // what Go's runCreateCluster triggers when it calls unmarshalDefinitionV1x10.
+        {
+            let def_json = tokio::fs::read(DEF_PATH).await.unwrap();
+            let mut def_value: serde_json::Value = serde_json::from_slice(&def_json).unwrap();
+            // Clear the validators list while keeping num_validators=2 to create a
+            // mismatch that mirrors the Go test (d.ValidatorAddresses = []).
+            def_value["validators"] = serde_json::json!([]);
+            let modified_json = serde_json::to_vec(&def_value).unwrap();
+
+            let err =
+                serde_json::from_slice::<pluto_cluster::definition::Definition>(&modified_json)
+                    .unwrap_err();
+            let err_str = format!("{err}");
+            assert!(
+                err_str.contains("num_validators not matching validators length"),
+                "expected validator length error, got: {err_str}"
+            );
+        }
+    }
+
+    const DEF_PATH_005: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../cluster/src/examples/cluster-definition-005.json"
+    );
+
+    #[test_case::test_case(
+        Some(DEF_PATH_005), 0, 0, None
+        ; "target gas limit from unsupported version"
+    )]
+    #[test_case::test_case(
+        Some(DEF_PATH), 0, 30_000_000, None
+        ; "target gas limit from supported version"
+    )]
+    #[test_case::test_case(
+        None, 36_000_000, 36_000_000, None
+        ; "target gas limit with default version"
+    )]
+    #[test_case::test_case(
+        None, 0, 0, Some("target gas limit should be set")
+        ; "no target gas limit with default version"
+    )]
+    #[tokio::test]
+    async fn test_target_gas_limit(
+        def_file_path: Option<&'static str>,
+        target_gas_limit: u64,
+        expected_gas_limit: u64,
+        expected_err: Option<&'static str>,
+    ) {
+        let dir = TempDir::new().unwrap();
+
+        let execution_engine_addr = def_file_path.map(|_| "http://127.0.0.1:8545".to_string());
+
+        let args = CreateClusterArgs {
+            cluster_dir: dir.path().to_path_buf(),
+            compounding: false,
+            consensus_protocol: None,
+            definition_file: def_file_path.map(String::from),
+            deposit_amounts: vec![],
+            execution_engine_addr,
+            fee_recipient_addrs: vec![ZERO_ADDRESS.to_string()],
+            insecure_keys: true,
+            keymanager_addrs: vec![],
+            keymanager_auth_tokens: vec![],
+            name: Some("test target gas limit".to_string()),
+            network: Some(Network::Mainnet),
+            nodes: 4,
+            num_validators: 1,
+            publish: false,
+            publish_address: "https://api.obol.tech/v1".to_string(),
+            split_keys: false,
+            split_keys_dir: None,
+            target_gas_limit,
+            testnet_config: TestnetConfig::default(),
+            threshold: Some(3),
+            withdrawal_addrs: vec![ZERO_ADDRESS.to_string()],
+            zipped: false,
+        };
+
+        let mut output = Vec::new();
+        let result = run(&mut output, args).await;
+
+        if let Some(expected) = expected_err {
+            let err = result.unwrap_err();
+            let err_str = format!("{err}");
+            assert!(
+                err_str.contains(expected),
+                "expected error containing '{expected}', got: {err_str}"
+            );
+            return;
+        }
+
+        result.unwrap();
+
+        let lock_bytes = tokio::fs::read(dir.path().join("node0/cluster-lock.json"))
+            .await
+            .unwrap();
+        let lock: Lock = serde_json::from_slice(&lock_bytes).unwrap();
+
+        lock.verify_hashes().unwrap();
+
+        let eth1 = test_eth1_client().await;
+        lock.verify_signatures(&eth1).await.unwrap();
+
+        assert_eq!(lock.target_gas_limit, expected_gas_limit);
+    }
 }
