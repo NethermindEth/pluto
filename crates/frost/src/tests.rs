@@ -1,8 +1,6 @@
-use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
+use alloc::{collections::BTreeMap, vec::Vec};
 
-use rand::rngs::StdRng;
-use rand::SeedableRng;
+use rand::{SeedableRng, rngs::StdRng};
 
 use crate::kryptology::{self, BlsPartialSignature};
 
@@ -113,8 +111,8 @@ fn check_kryptology_bls_round_trip_3_of_3() {
         // Collect broadcasts from everyone except ourselves
         let received_bcasts: BTreeMap<u32, kryptology::Round1Bcast> = bcasts
             .iter()
-            .filter(|(&k, _)| k != id)
-            .map(|(&k, v)| (k, v.clone()))
+            .filter(|(k, _)| **k != id)
+            .map(|(k, v)| (*k, v.clone()))
             .collect();
 
         let received_shares = all_shares.remove(&id).unwrap();
@@ -198,8 +196,8 @@ fn check_kryptology_bls_round_trip_2_of_3() {
     for id in 1..=max_signers as u32 {
         let received_bcasts: BTreeMap<_, _> = bcasts
             .iter()
-            .filter(|(&k, _)| k != id)
-            .map(|(&k, v)| (k, v.clone()))
+            .filter(|(k, _)| **k != id)
+            .map(|(k, v)| (*k, v.clone()))
             .collect();
         let received_shares = all_shares.remove(&id).unwrap();
         let secret = secrets.remove(&id).unwrap();
@@ -269,7 +267,8 @@ fn check_kryptology_invalid_proof_rejected() {
     }
 }
 
-/// Verify that a share addressed to the wrong participant is rejected in round2.
+/// Verify that a share addressed to the wrong participant is rejected in
+/// round2.
 #[test]
 fn check_kryptology_share_id_mismatch_rejected() {
     let mut rng = StdRng::seed_from_u64(42);

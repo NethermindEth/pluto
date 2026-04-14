@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use frost_bls12_381_g1::kryptology;
+use pluto_frost::kryptology;
 use serde_json::Value;
 
 const FIXTURE_2_OF_3_CTX_0: &str = include_str!("./kryptology_fixtures/2-of-3-ctx-0.json");

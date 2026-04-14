@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use frost_bls12_381_g1::kryptology;
-use rand::{rngs::StdRng, SeedableRng};
+use pluto_frost::kryptology;
+use rand::{SeedableRng, rngs::StdRng};
 
 /// Follows: https://github.com/coinbase/kryptology/blob/f129811df480d7c65115a20b0461c4e406bd28f2/test/frost_dkg/bls/main.go#L23
 ///
