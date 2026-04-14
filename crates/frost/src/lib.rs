@@ -3,11 +3,7 @@
 //! Go's Coinbase Kryptology FROST DKG, and BLS threshold signing (Ethereum 2.0
 //! compatible).
 
-#![no_std]
 #![allow(non_snake_case)]
-#![deny(missing_docs)]
-#![cfg_attr(docsrs, feature(doc_auto_cfg))]
-#![cfg_attr(docsrs, feature(doc_cfg))]
 #![doc = include_str!("../dkg.md")]
 
 extern crate alloc;
