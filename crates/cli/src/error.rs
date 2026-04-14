@@ -330,7 +330,8 @@ pub enum CreateClusterError {
         index: usize,
     },
 
-    /// Private key shares not found for distributed validator at the given index.
+    /// Private key shares not found for distributed validator at the given
+    /// index.
     #[error("Private key shares not found for distributed validator at index {index}")]
     DvPrivSharesNotFound {
         /// Index that was not found.
