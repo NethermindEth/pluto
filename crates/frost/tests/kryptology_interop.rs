@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use pluto_frost::kryptology;
-use serde_json::Value;
+use serde::Deserialize;
 
 const FIXTURE_2_OF_3_CTX_0: &str = include_str!("./kryptology_fixtures/2-of-3-ctx-0.json");
 const FIXTURE_3_OF_3_CTX_0: &str = include_str!("./kryptology_fixtures/3-of-3-ctx-0.json");
@@ -11,24 +11,49 @@ const FIXTURE_MALFORMED_SHARE_ID: &str =
     include_str!("./kryptology_fixtures/malformed-share-id.json");
 const FIXTURE_INVALID_PROOF: &str = include_str!("./kryptology_fixtures/invalid-proof.json");
 
-#[derive(Clone)]
+#[derive(Clone, Deserialize)]
 struct FixtureParticipant {
     id: u32,
+    #[serde(deserialize_with = "hex_serde::hex_32")]
     own_share: [u8; 32],
-    round1_bcast: kryptology::Round1Bcast,
-    shares_sent: BTreeMap<u32, kryptology::ShamirShare>,
+    round1_bcast: FixtureRound1Bcast,
+    shares_sent: Vec<FixtureShamirShare>,
     expected_round2: ExpectedRound2,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Deserialize)]
+struct FixtureRound1Bcast {
+    #[serde(deserialize_with = "hex_serde::hex_48_vec")]
+    commitments: Vec<[u8; 48]>,
+    #[serde(deserialize_with = "hex_serde::hex_32")]
+    wi: [u8; 32],
+    #[serde(deserialize_with = "hex_serde::hex_32")]
+    ci: [u8; 32],
+}
+
+#[derive(Clone, Deserialize)]
+struct FixtureShamirShare {
+    to: u32,
+    id: u32,
+    #[serde(deserialize_with = "hex_serde::hex_32")]
+    value: [u8; 32],
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 enum ExpectedRound2 {
     Success {
+        #[serde(deserialize_with = "hex_serde::hex_48")]
         verification_key: [u8; 48],
+        #[serde(deserialize_with = "hex_serde::hex_48")]
         vk_share: [u8; 48],
+        #[serde(deserialize_with = "hex_serde::hex_32")]
         signing_share: [u8; 32],
     },
-    Error {
-        kind: String,
+    InvalidShare {
+        culprit: u32,
+    },
+    InvalidProof {
         culprit: u32,
     },
 }
@@ -38,6 +63,16 @@ struct FixtureScenario {
     max_signers: u16,
     ctx: u8,
     participants: BTreeMap<u32, FixtureParticipant>,
+}
+
+impl From<&FixtureRound1Bcast> for kryptology::Round1Bcast {
+    fn from(f: &FixtureRound1Bcast) -> Self {
+        Self {
+            commitments: f.commitments.clone(),
+            wi: f.wi,
+            ci: f.ci,
+        }
+    }
 }
 
 #[test]
@@ -71,14 +106,32 @@ fn replay_fixture(json: &str, require_group_signature: bool) {
             .participants
             .iter()
             .filter(|&(&sender_id, _)| sender_id != id)
-            .map(|(&sender_id, sender)| (sender_id, sender.round1_bcast.clone()))
+            .map(|(&sender_id, sender)| {
+                (
+                    sender_id,
+                    kryptology::Round1Bcast::from(&sender.round1_bcast),
+                )
+            })
             .collect();
 
         let received_shares = scenario
             .participants
             .iter()
             .filter(|&(&sender_id, _)| sender_id != id)
-            .map(|(&sender_id, sender)| (sender_id, sender.shares_sent[&id].clone()))
+            .map(|(&sender_id, sender)| {
+                let s = sender
+                    .shares_sent
+                    .iter()
+                    .find(|s| s.to == id)
+                    .expect("share for recipient");
+                (
+                    sender_id,
+                    kryptology::ShamirShare {
+                        id: s.id,
+                        value: s.value,
+                    },
+                )
+            })
             .collect();
 
         let secret = kryptology::Round1Secret::from_raw(
@@ -110,17 +163,19 @@ fn replay_fixture(json: &str, require_group_signature: bool) {
                 key_packages.insert(id, key_package);
                 public_key_packages.push(public_key_package);
             }
-            ExpectedRound2::Error { kind, culprit } => {
+            ExpectedRound2::InvalidShare { culprit } => {
                 let err = result.expect_err("round2 should fail");
-                match (kind.as_str(), err) {
-                    ("invalid_share", kryptology::DkgError::InvalidShare { culprit: got }) => {
-                        assert_eq!(got, *culprit);
-                    }
-                    ("invalid_proof", kryptology::DkgError::InvalidProof { culprit: got }) => {
-                        assert_eq!(got, *culprit);
-                    }
-                    (expected, other) => panic!("expected {expected}, got {other:?}"),
-                }
+                assert!(
+                    matches!(err, kryptology::DkgError::InvalidShare { culprit: c } if c == *culprit),
+                    "expected InvalidShare(culprit={culprit}), got {err:?}"
+                );
+            }
+            ExpectedRound2::InvalidProof { culprit } => {
+                let err = result.expect_err("round2 should fail");
+                assert!(
+                    matches!(err, kryptology::DkgError::InvalidProof { culprit: c } if c == *culprit),
+                    "expected InvalidProof(culprit={culprit}), got {err:?}"
+                );
             }
         }
     }
@@ -152,113 +207,45 @@ fn replay_fixture(json: &str, require_group_signature: bool) {
 }
 
 fn parse_fixture(json: &str) -> FixtureScenario {
-    let root: Value = serde_json::from_str(json).expect("fixture JSON should parse");
-    let threshold = get_u64(&root, "threshold") as u16;
-    let max_signers = get_u64(&root, "max_signers") as u16;
-    let ctx = get_u64(&root, "ctx") as u8;
+    #[derive(Deserialize)]
+    struct RawScenario {
+        threshold: u16,
+        max_signers: u16,
+        ctx: u8,
+        participants: Vec<FixtureParticipant>,
+    }
 
-    let participants = get_array(&root, "participants")
-        .iter()
-        .map(parse_participant)
-        .map(|participant| (participant.id, participant))
-        .collect();
-
+    let raw: RawScenario = serde_json::from_str(json).expect("fixture JSON should parse");
     FixtureScenario {
-        threshold,
-        max_signers,
-        ctx,
-        participants,
+        threshold: raw.threshold,
+        max_signers: raw.max_signers,
+        ctx: raw.ctx,
+        participants: raw.participants.into_iter().map(|p| (p.id, p)).collect(),
     }
 }
 
-fn parse_participant(value: &Value) -> FixtureParticipant {
-    let id = get_u64(value, "id") as u32;
-    let own_share = decode_hex_32(get_str(value, "own_share"));
-    let round1_bcast = parse_round1_bcast(get_value(value, "round1_bcast"));
+mod hex_serde {
+    use serde::Deserialize;
 
-    let shares_sent = get_array(value, "shares_sent")
-        .iter()
-        .map(|share| {
-            let recipient = get_u64(share, "to") as u32;
-            let wire = kryptology::ShamirShare {
-                id: get_u64(share, "id") as u32,
-                value: decode_hex_32(get_str(share, "value")),
-            };
-            (recipient, wire)
-        })
-        .collect();
-
-    let expected_round2 = parse_expected_round2(get_value(value, "expected_round2"));
-
-    FixtureParticipant {
-        id,
-        own_share,
-        round1_bcast,
-        shares_sent,
-        expected_round2,
+    fn decode_hex<const N: usize>(s: &str) -> Result<[u8; N], String> {
+        hex::decode(s)
+            .map_err(|e| e.to_string())?
+            .try_into()
+            .map_err(|_| format!("expected {N} bytes"))
     }
-}
 
-fn parse_round1_bcast(value: &Value) -> kryptology::Round1Bcast {
-    let commitments = get_array(value, "commitments")
-        .iter()
-        .map(|commitment| decode_hex_48(commitment.as_str().expect("hex string")))
-        .collect();
-
-    kryptology::Round1Bcast {
-        commitments,
-        wi: decode_hex_32(get_str(value, "wi")),
-        ci: decode_hex_32(get_str(value, "ci")),
+    pub fn hex_32<'de, D: serde::Deserializer<'de>>(d: D) -> Result<[u8; 32], D::Error> {
+        decode_hex(<&str>::deserialize(d)?).map_err(serde::de::Error::custom)
     }
-}
 
-fn parse_expected_round2(value: &Value) -> ExpectedRound2 {
-    let kind = get_str(value, "kind");
-    match kind {
-        "success" => ExpectedRound2::Success {
-            verification_key: decode_hex_48(get_str(value, "verification_key")),
-            vk_share: decode_hex_48(get_str(value, "vk_share")),
-            signing_share: decode_hex_32(get_str(value, "signing_share")),
-        },
-        "invalid_share" | "invalid_proof" => ExpectedRound2::Error {
-            kind: String::from(kind),
-            culprit: get_u64(value, "culprit") as u32,
-        },
-        other => panic!("unsupported expected_round2 kind: {other}"),
+    pub fn hex_48<'de, D: serde::Deserializer<'de>>(d: D) -> Result<[u8; 48], D::Error> {
+        decode_hex(<&str>::deserialize(d)?).map_err(serde::de::Error::custom)
     }
-}
 
-fn get_value<'a>(value: &'a Value, key: &str) -> &'a Value {
-    value
-        .get(key)
-        .unwrap_or_else(|| panic!("missing key: {key}"))
-}
-
-fn get_array<'a>(value: &'a Value, key: &str) -> &'a [Value] {
-    get_value(value, key)
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or_else(|| panic!("{key} should be an array"))
-}
-
-fn get_str<'a>(value: &'a Value, key: &str) -> &'a str {
-    get_value(value, key)
-        .as_str()
-        .unwrap_or_else(|| panic!("{key} should be a string"))
-}
-
-fn get_u64(value: &Value, key: &str) -> u64 {
-    get_value(value, key)
-        .as_u64()
-        .unwrap_or_else(|| panic!("{key} should be a u64"))
-}
-
-fn decode_hex_32(hex_value: &str) -> [u8; 32] {
-    let bytes = hex::decode(hex_value).expect("hex should decode");
-    bytes.try_into().expect("expected 32-byte value")
-}
-
-fn decode_hex_48(hex_value: &str) -> [u8; 48] {
-    let bytes = hex::decode(hex_value).expect("hex should decode");
-    bytes.try_into().expect("expected 48-byte value")
+    pub fn hex_48_vec<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<[u8; 48]>, D::Error> {
+        Vec::<String>::deserialize(d)?
+            .iter()
+            .map(|s| decode_hex(s).map_err(serde::de::Error::custom))
+            .collect()
+    }
 }
