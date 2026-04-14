@@ -9,7 +9,7 @@ use rand::{SeedableRng, rngs::StdRng};
 ///
 /// See: https://github.com/coinbase/kryptology/blob/1dcc062313d99f2e56ce6abc2003ef63c52dd4a5/test/frost_dkg/bls/main.go#L23
 #[test]
-fn check_kryptology_bls_round_trip_2_of_4_ctx_0() {
+fn kryptology_bls_round_trip_2_of_4_ctx_0() {
     let mut rng = StdRng::seed_from_u64(20260410);
     let threshold = 2u16;
     let max_signers = 4u16;

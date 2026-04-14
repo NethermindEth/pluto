@@ -39,22 +39,22 @@ struct FixtureScenario {
 }
 
 #[test]
-fn check_kryptology_fixture_round2_interop_2_of_3_ctx_0() {
+fn kryptology_fixture_round2_interop_2_of_3_ctx_0() {
     replay_fixture(FIXTURE_2_OF_3_CTX_0, true);
 }
 
 #[test]
-fn check_kryptology_fixture_round2_interop_3_of_3_ctx_0() {
+fn kryptology_fixture_round2_interop_3_of_3_ctx_0() {
     replay_fixture(FIXTURE_3_OF_3_CTX_0, true);
 }
 
 #[test]
-fn check_kryptology_fixture_round2_interop_malformed_share_id() {
+fn kryptology_fixture_round2_interop_malformed_share_id() {
     replay_fixture(FIXTURE_MALFORMED_SHARE_ID, false);
 }
 
 #[test]
-fn check_kryptology_fixture_round2_interop_invalid_proof() {
+fn kryptology_fixture_round2_interop_invalid_proof() {
     replay_fixture(FIXTURE_INVALID_PROOF, false);
 }
 

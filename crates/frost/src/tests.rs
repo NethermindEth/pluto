@@ -5,7 +5,7 @@ use rand::{SeedableRng, rngs::StdRng};
 use crate::kryptology;
 
 #[test]
-fn check_scalar_one_precomputed() {
+fn scalar_one_precomputed() {
     let constant = crate::Scalar::ONE;
     let computed = crate::Scalar::from(1u64);
     assert_eq!(constant, computed);
@@ -15,7 +15,7 @@ fn check_scalar_one_precomputed() {
 /// DST = "QUUX-V01-CS02-with-expander-SHA256-128"
 /// msg = "" (empty), len_in_bytes = 0x20 (32)
 #[test]
-fn check_expand_msg_xmd_rfc9380_vector() {
+fn expand_msg_xmd_rfc9380_vector() {
     let dst = b"QUUX-V01-CS02-with-expander-SHA256-128";
     let msg = b"";
     let expected =
@@ -27,7 +27,7 @@ fn check_expand_msg_xmd_rfc9380_vector() {
 
 /// RFC 9380 test vector: msg = "abc", len = 32
 #[test]
-fn check_expand_msg_xmd_rfc9380_abc() {
+fn expand_msg_xmd_rfc9380_abc() {
     let dst = b"QUUX-V01-CS02-with-expander-SHA256-128";
     let msg = b"abc";
     let expected =
@@ -39,7 +39,7 @@ fn check_expand_msg_xmd_rfc9380_abc() {
 
 /// RFC 9380 test vector: msg = "", len = 0x80 (128 bytes)
 #[test]
-fn check_expand_msg_xmd_rfc9380_long_output() {
+fn expand_msg_xmd_rfc9380_long_output() {
     let dst = b"QUUX-V01-CS02-with-expander-SHA256-128";
     let msg = b"";
     let expected = hex::decode(
@@ -56,7 +56,7 @@ fn check_expand_msg_xmd_rfc9380_long_output() {
 }
 
 #[test]
-fn check_kryptology_rejects_more_than_255_signers() {
+fn kryptology_rejects_more_than_255_signers() {
     let mut rng = StdRng::seed_from_u64(42);
     let result = kryptology::round1(1, 2, 256, 0, &mut rng);
 
@@ -67,7 +67,7 @@ fn check_kryptology_rejects_more_than_255_signers() {
 }
 
 #[test]
-fn check_kryptology_accepts_255_signers_boundary() {
+fn kryptology_accepts_255_signers_boundary() {
     let mut rng = StdRng::seed_from_u64(4242);
     let (_bcast, shares, _secret) = kryptology::round1(1, 2, 255, 9, &mut rng)
         .expect("255 signers should remain within kryptology's u8 transport limit");
@@ -78,7 +78,7 @@ fn check_kryptology_accepts_255_signers_boundary() {
 
 /// Full DKG round-trip: 3-of-3 DKG, then BLS threshold sign and verify.
 #[test]
-fn check_kryptology_bls_round_trip_3_of_3() {
+fn kryptology_bls_round_trip_3_of_3() {
     let mut rng = StdRng::seed_from_u64(42);
     let threshold = 3u16;
     let max_signers = 3u16;
@@ -167,7 +167,7 @@ fn check_kryptology_bls_round_trip_3_of_3() {
 
 /// 2-of-3 DKG then BLS threshold signing (Ethereum 2.0 compatible).
 #[test]
-fn check_kryptology_bls_round_trip_2_of_3() {
+fn kryptology_bls_round_trip_2_of_3() {
     let mut rng = StdRng::seed_from_u64(123);
     let threshold = 2u16;
     let max_signers = 3u16;
@@ -239,7 +239,7 @@ fn check_kryptology_bls_round_trip_2_of_3() {
 
 /// Verify that an invalid proof is caught in round2.
 #[test]
-fn check_kryptology_invalid_proof_rejected() {
+fn kryptology_invalid_proof_rejected() {
     let mut rng = StdRng::seed_from_u64(99);
     let threshold = 2u16;
     let max_signers = 3u16;
@@ -272,7 +272,7 @@ fn check_kryptology_invalid_proof_rejected() {
 /// Verify that a share addressed to the wrong participant is rejected in
 /// round2.
 #[test]
-fn check_kryptology_share_id_mismatch_rejected() {
+fn kryptology_share_id_mismatch_rejected() {
     let mut rng = StdRng::seed_from_u64(42);
     let threshold = 2u16;
     let max_signers = 3u16;
