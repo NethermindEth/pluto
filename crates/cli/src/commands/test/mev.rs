@@ -108,7 +108,7 @@ impl TestCaseMev {
 pub async fn run(
     args: TestMevArgs,
     writer: &mut dyn Write,
-    token: &CancellationToken,
+    token: CancellationToken,
 ) -> Result<TestCategoryResult> {
     must_output_to_file_on_quiet(args.test_config.quiet, &args.test_config.output_json)?;
 
