@@ -54,7 +54,12 @@ pub struct NodeSigBcast {
 
 impl NodeSigBcast {
     /// Returns a new instance, registering bcast handlers on `bcast_comp`.
-    pub async fn new(peers: Vec<Peer>, node_idx: usize, bcast_comp: Component) -> Result<Self> {
+    pub async fn new(
+        peers: Vec<Peer>,
+        node_idx: usize,
+        bcast_comp: Component,
+        token: CancellationToken,
+    ) -> Result<Self> {
         let sigs = Arc::new(Mutex::new(vec![None::<Vec<u8>>; peers.len()]));
         let (lock_hash_tx, lock_hash_rx) = watch::channel(None::<Vec<u8>>);
 
@@ -69,8 +74,9 @@ impl NodeSigBcast {
                     let peers = Arc::clone(&peers);
                     let lock_hash_rx = lock_hash_rx.clone();
                     let sigs = Arc::clone(&sigs_cb);
+                    let token = token.clone();
                     Box::pin(async move {
-                        receive(peer_id, msg, node_idx, &peers, lock_hash_rx, &sigs).await
+                        receive(peer_id, msg, node_idx, &peers, lock_hash_rx, &sigs, token).await
                     })
                 }),
             )
@@ -143,7 +149,8 @@ fn all_sigs(sigs: &[Option<Vec<u8>>]) -> Option<Vec<Vec<u8>>> {
 /// Validates and stores an incoming node signature message.
 ///
 /// Waits for the lock hash to become available via the watch channel before
-/// verifying the signature.
+/// verifying the signature. Returns [`bcast::Error::Cancelled`] if `token` is
+/// cancelled while waiting.
 async fn receive(
     peer_id: PeerId,
     msg: MsgNodeSig,
@@ -151,6 +158,7 @@ async fn receive(
     peers: &[Peer],
     lock_hash_rx: watch::Receiver<Option<Vec<u8>>>,
     sigs: &Mutex<Vec<Option<Vec<u8>>>>,
+    token: CancellationToken,
 ) -> bcast::Result<()> {
     let peer_idx = usize::try_from(msg.peer_index).expect("peer_index out of usize range");
 
@@ -162,13 +170,15 @@ async fn receive(
 
     let lock_hash = {
         let mut rx = lock_hash_rx.clone();
-        let guard = rx
-            .wait_for(|v| v.is_some())
-            .await
-            .map_err(|_| bcast::Error::MissingField("lock_hash"))?;
-        guard
-            .clone()
-            .ok_or(bcast::Error::MissingField("lock_hash"))?
+        tokio::select! {
+            result = rx.wait_for(|v| v.is_some()) => {
+                let guard = result.map_err(|_| bcast::Error::MissingField("lock_hash"))?;
+                guard
+                    .clone()
+                    .ok_or(bcast::Error::MissingField("lock_hash"))?
+            }
+            () = token.cancelled() => return Err(bcast::Error::Cancelled),
+        }
     };
 
     if !pluto_k1util::verify_65(&pubkey, &lock_hash, msg.signature.as_ref())? {
@@ -260,9 +270,17 @@ mod tests {
             peer_index,
         };
 
-        let err = receive(peers[0].id, msg, 0, &peers, rx, &sigs)
-            .await
-            .unwrap_err();
+        let err = receive(
+            peers[0].id,
+            msg,
+            0,
+            &peers,
+            rx,
+            &sigs,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
         assert!(
             err.to_string().contains(expected_msg),
             "expected '{expected_msg}' in '{err}'"
@@ -284,7 +302,17 @@ mod tests {
             peer_index: 1,
         };
 
-        receive(peer1.id, msg, 0, &peers, rx, &sigs).await.unwrap();
+        receive(
+            peer1.id,
+            msg,
+            0,
+            &peers,
+            rx,
+            &sigs,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
 
         let guard = sigs.lock().unwrap();
         assert_eq!(guard[1], Some(sig.to_vec()));
@@ -409,6 +437,7 @@ mod tests {
             .collect::<anyhow::Result<Vec<_>>>()?;
 
         let (conn_tx, mut conn_rx) = mpsc::unbounded_channel();
+        let token = CancellationToken::new();
 
         let mut test_nodes = Vec::with_capacity(N);
         let mut nsig_list = Vec::with_capacity(N);
@@ -417,7 +446,8 @@ mod tests {
             let p2p_context = P2PContext::new(peer_ids.clone());
             let (behaviour, component) =
                 Behaviour::new(peer_ids.clone(), p2p_context.clone(), key.clone());
-            let nsig = NodeSigBcast::new(cluster_peers.clone(), index, component).await?;
+            let nsig =
+                NodeSigBcast::new(cluster_peers.clone(), index, component, token.clone()).await?;
             nsig_list.push(nsig);
 
             let node = Node::new_server(
@@ -437,7 +467,6 @@ mod tests {
         wait_for_all_connections(&mut conn_rx, N).await?;
 
         let lock_hash = [42u8; 32];
-        let token = CancellationToken::new();
         let mut handles = JoinSet::new();
 
         for (i, nsig) in nsig_list.into_iter().enumerate() {

@@ -123,6 +123,10 @@ pub enum Error {
     #[error("receipt channel closed")]
     ReceiptChannelClosed,
 
+    /// The operation was cancelled.
+    #[error("cancelled")]
+    Cancelled,
+
     /// A required message body field was absent.
     #[error("missing protobuf field: {0}")]
     MissingField(&'static str),
