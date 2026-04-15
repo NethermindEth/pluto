@@ -251,6 +251,11 @@ impl ConnectionHandler for Handler {
                 protocol: mut stream,
                 ..
             }) => {
+                if self.inbound.is_some() {
+                    warn!(peer = %self.peer_id, "Dropping duplicate inbound sync stream");
+                    return;
+                }
+
                 stream.ignore_for_keep_alive();
                 self.inbound = Some(
                     handle_inbound_stream(
