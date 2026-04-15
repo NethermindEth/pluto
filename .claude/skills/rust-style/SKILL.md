@@ -158,3 +158,22 @@ mod tests {
 ```
 
 - For hashing/serialization parity, generate Go-derived test vectors and hardcode them as Rust fixtures.
+
+---
+
+## Pluto-Specific Checklist
+
+Apply when reviewing or porting code:
+
+- [ ] `Ordering::SeqCst` is justified; prefer `Relaxed`/`AcqRel` for
+      standalone flags.
+- [ ] `Error::Io` wraps `std::io::Error` (not `String`) to preserve
+      `ErrorKind`.
+- [ ] New public functions accept `impl AsRef<[u8]>` / `impl AsRef<str>`
+      rather than concrete slice refs where appropriate.
+- [ ] No `unwrap()` / `expect()` / `panic!()` outside test code.
+- [ ] All arithmetic uses checked ops (`checked_add`, `checked_mul`, …).
+- [ ] Tests mirror the Go test names and shapes where applicable.
+- [ ] `use` declarations appear before all other items in each file.
+- [ ] No dead payload in error variants (every captured field appears in the
+      `#[error("...")]` string).
