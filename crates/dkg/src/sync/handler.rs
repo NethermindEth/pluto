@@ -424,6 +424,8 @@ async fn handle_inbound_stream(
                 }
             }
 
+            // Record observed step even after validation failure.
+            // Barrier waiters still fail fast on `server.err`
             if server.update_step(peer_id, message.step).await? {
                 send_inbound_event(
                     &inbound_events_tx,

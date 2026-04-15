@@ -1,6 +1,7 @@
 //! Protocol helpers for the DKG sync protocol.
 
 use libp2p::identity::{Keypair, PublicKey};
+use libp2p::StreamProtocol;
 use pluto_core::version::SemVer;
 
 use crate::dkgpb::v1::sync::MsgSync;
@@ -9,8 +10,6 @@ use super::error::{Error, Result};
 
 /// The protocol identifier for DKG sync.
 pub const PROTOCOL_NAME: libp2p::StreamProtocol = StreamProtocol::new("/charon/dkg/sync/1.0.0/");
-
-use libp2p::StreamProtocol;
 
 /// Signs the definition hash using the same libp2p signing path as Go.
 pub fn sign_definition_hash(secret: &k256::SecretKey, def_hash: &[u8]) -> Result<Vec<u8>> {
