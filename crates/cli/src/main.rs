@@ -72,7 +72,7 @@ async fn run() -> std::result::Result<(), CliError> {
                             .map(|_| ())
                     }
                     TestCommands::Validator(args) => {
-                        commands::test::validator::run(args, &mut stdout)
+                        commands::test::validator::run(args, &mut stdout, ct.clone())
                             .await
                             .map(|_| ())
                     }

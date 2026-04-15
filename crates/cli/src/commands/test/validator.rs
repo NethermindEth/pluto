@@ -9,11 +9,12 @@ use tokio::{
     sync::mpsc,
     time::{Instant, timeout},
 };
+use tokio_util::sync::CancellationToken;
 
 use super::{
     AllCategoriesResult, TestCategory, TestCategoryResult, TestConfigArgs, TestResult, TestVerdict,
 };
-use crate::{duration::Duration as CliDuration, error::Result};
+use crate::{duration::Duration as CliDuration, error::{CliError, Result}};
 
 // Thresholds (from Go implementation)
 const THRESHOLD_MEASURE_AVG: Duration = Duration::from_millis(50);
@@ -78,7 +79,11 @@ pub struct TestValidatorArgs {
 }
 
 /// Runs the validator client tests.
-pub async fn run(args: TestValidatorArgs, writer: &mut dyn Write) -> Result<TestCategoryResult> {
+pub async fn run(
+    args: TestValidatorArgs,
+    writer: &mut dyn Write,
+    ct: CancellationToken,
+) -> Result<TestCategoryResult> {
     pluto_tracing::init(
         &pluto_tracing::TracingConfig::builder()
             .with_default_console()
@@ -101,13 +106,11 @@ pub async fn run(args: TestValidatorArgs, writer: &mut dyn Write) -> Result<Test
     };
 
     if queued_tests.is_empty() {
-        return Err(crate::error::CliError::Other(
-            "test case not supported".into(),
-        ));
+        return Err(CliError::TestCaseNotSupported);
     }
 
     let start_time = Instant::now();
-    let test_results = run_tests_with_timeout(&args, &queued_tests).await;
+    let test_results = run_tests_with_timeout(&args, &queued_tests, ct).await;
     let elapsed = start_time.elapsed();
 
     let score = super::calculate_score(&test_results);
@@ -141,13 +144,11 @@ pub async fn run(args: TestValidatorArgs, writer: &mut dyn Write) -> Result<Test
     Ok(res)
 }
 
-/// Timeout error message.
-const ERR_TIMEOUT_INTERRUPTED: &str = "timeout/interrupted";
-
 /// Runs tests with timeout, keeping completed tests on timeout.
 async fn run_tests_with_timeout(
     args: &TestValidatorArgs,
     tests: &[ValidatorTestCase],
+    ct: CancellationToken,
 ) -> Vec<TestResult> {
     let mut results = Vec::new();
     let start = Instant::now();
@@ -155,12 +156,21 @@ async fn run_tests_with_timeout(
     for &test_case in tests {
         let remaining = args.test_config.timeout.saturating_sub(start.elapsed());
 
-        match tokio::time::timeout(remaining, run_single_test(args, test_case)).await {
-            Ok(result) => results.push(result),
-            Err(_) => {
+        tokio::select! {
+            result = run_single_test(args, test_case) => {
+                results.push(result);
+            }
+            _ = tokio::time::sleep(remaining) => {
                 results.push(
                     TestResult::new(test_case.to_string())
-                        .fail(std::io::Error::other(ERR_TIMEOUT_INTERRUPTED)),
+                        .fail(CliError::TimeoutInterrupted),
+                );
+                break;
+            }
+            _ = ct.cancelled() => {
+                results.push(
+                    TestResult::new(test_case.to_string())
+                        .fail(CliError::TimeoutInterrupted),
                 );
                 break;
             }
