@@ -14,7 +14,10 @@ use tokio_util::sync::CancellationToken;
 use super::{
     AllCategoriesResult, TestCategory, TestCategoryResult, TestConfigArgs, TestResult, TestVerdict,
 };
-use crate::{duration::Duration as CliDuration, error::{CliError, Result}};
+use crate::{
+    duration::Duration as CliDuration,
+    error::{CliError, Result},
+};
 
 // Thresholds (from Go implementation)
 const THRESHOLD_MEASURE_AVG: Duration = Duration::from_millis(50);
