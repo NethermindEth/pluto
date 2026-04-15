@@ -32,6 +32,8 @@ ignore = [
     { id = "RUSTSEC-2026-0097", reason = "transitive rand <0.9.3 via cuckoofilter and alloy-signer-local; not triggerable from our code" },
     # rustls-webpki URI name constraint bypass — transitive dep
     { id = "RUSTSEC-2026-0098" },
+    # rustls-webpki wildcard name constraint bypass — transitive dep
+    { id = "RUSTSEC-2026-0099" },
 ]
 unmaintained = "workspace"
 
