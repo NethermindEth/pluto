@@ -23,7 +23,12 @@ feature-depth = 1
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
-ignore = []
+ignore = [
+    # rand 0.8.x unsoundness — transitive dep, cannot upgrade immediately
+    { id = "RUSTSEC-2026-0097" },
+    # rustls-webpki URI name constraint bypass — transitive dep
+    { id = "RUSTSEC-2026-0098" },
+]
 unmaintained = "workspace"
 
 [licenses]
