@@ -211,9 +211,12 @@ impl Server {
     }
 
     pub(crate) async fn update_step(&self, peer_id: PeerId, step: i64) -> Result<bool> {
+        use std::collections::hash_map::Entry;
+
         let mut state = self.inner.state.write().await;
-        match state.steps.get(&peer_id).copied() {
-            Some(current) => {
+        match state.steps.entry(peer_id) {
+            Entry::Occupied(mut entry) => {
+                let current = *entry.get();
                 if step < current {
                     return Err(Error::PeerStepBehind);
                 }
@@ -226,14 +229,18 @@ impl Server {
                 if step == current {
                     return Ok(false);
                 }
+
+                entry.insert(step);
             }
-            None if !(0..=1).contains(&step) => {
-                return Err(Error::AbnormalInitialStep);
+            Entry::Vacant(entry) => {
+                if !(0..=1).contains(&step) {
+                    return Err(Error::AbnormalInitialStep);
+                }
+
+                entry.insert(step);
             }
-            None => {}
         }
 
-        state.steps.insert(peer_id, step);
         self.inner.notify.notify_waiters();
         Ok(true)
     }

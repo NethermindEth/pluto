@@ -286,10 +286,6 @@ impl ConnectionHandler for Handler {
                 self.outbound = OutboundState::Running(run_outbound_stream(client, stream).boxed());
             }
             ConnectionEvent::DialUpgradeError(error) => self.on_dial_upgrade_error(error),
-            ConnectionEvent::AddressChange(_)
-            | ConnectionEvent::LocalProtocolsChange(_)
-            | ConnectionEvent::RemoteProtocolsChange(_) => {}
-            ConnectionEvent::ListenUpgradeError(_) => {}
             _ => {}
         }
     }

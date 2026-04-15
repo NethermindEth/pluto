@@ -155,10 +155,7 @@ impl ClusterInfo {
 
     fn peer_label(&self, peer_id: &PeerId) -> String {
         match self.indices.get(peer_id) {
-            Some(index) => format!(
-                "node={} peer_id={peer_id}",
-                index.checked_add(1).unwrap_or(*index)
-            ),
+            Some(index) => format!("node={} peer_id={peer_id}", index.saturating_add(1)),
             None => format!("peer_id={peer_id}"),
         }
     }
