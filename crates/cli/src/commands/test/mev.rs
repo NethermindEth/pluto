@@ -1,19 +1,15 @@
 //! MEV relay tests.
 
-use std::{
-    collections::HashMap,
-    io::Write,
-    time::{Duration, Instant},
-};
+use std::{collections::HashMap, io::Write, time::Duration};
 
 use reqwest::{Method, StatusCode};
-use tokio::task::JoinSet;
+use tokio::{task::JoinSet, time::Instant};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use super::{
     AllCategoriesResult, SLOT_TIME, SLOTS_IN_EPOCH, TestCategory, TestCategoryResult,
-    TestConfigArgs, TestResult, TestResultError, TestVerdict, calculate_score, evaluate_rtt,
+    TestConfigArgs, TestResult, TestVerdict, calculate_score, evaluate_rtt,
     must_output_to_file_on_quiet, publish_result_to_obol_api, request_rtt, write_result_to_file,
     write_result_to_writer,
 };
@@ -141,7 +137,7 @@ pub async fn run(
         filtered
     };
     if queued_tests.is_empty() {
-        return Err(CliError::Other("test case not supported".to_string()));
+        return Err(CliError::TestCaseNotSupported);
     }
 
     let token = token.child_token();
@@ -235,7 +231,7 @@ async fn test_single_mev(
             tokio::select! {
                 _ = token.cancelled() => {
                     let tr = TestResult::new(&tc_name.name);
-                    tr.fail(TestResultError::from_string("timeout/interrupted"))
+                    tr.fail(CliError::TimeoutInterrupted)
                 }
                 r = test_case.run(&target, &conf) => {
                     r
@@ -404,7 +400,7 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
     }
 
     if all_blocks_rtt.is_empty() {
-        return test_res.fail(CliError::Other("timeout/interrupted".to_string()));
+        return test_res.fail(CliError::TimeoutInterrupted);
     }
 
     let total_rtt: Duration = all_blocks_rtt.iter().sum();
@@ -474,16 +470,9 @@ async fn latest_beacon_block(endpoint: &str) -> Result<BeaconBlockMessage> {
 
     let resp = apply_basic_auth(client.get(&clean_url), creds)
         .send()
-        .await
-        .map_err(|e| CliError::Other(format!("http request do: {e}")))?;
-
-    let body = resp
-        .bytes()
-        .await
-        .map_err(|e| CliError::Other(format!("http response body: {e}")))?;
-
-    let block: BeaconBlock = serde_json::from_slice(&body)
-        .map_err(|e| CliError::Other(format!("http response json: {e}")))?;
+        .await?;
+    let body = resp.bytes().await?;
+    let block: BeaconBlock = serde_json::from_slice(&body)?;
 
     Ok(block.data.message)
 }
@@ -498,16 +487,9 @@ async fn fetch_proposers_for_epoch(
 
     let resp = apply_basic_auth(client.get(&clean_url), creds)
         .send()
-        .await
-        .map_err(|e| CliError::Other(format!("http request do: {e}")))?;
-
-    let body = resp
-        .bytes()
-        .await
-        .map_err(|e| CliError::Other(format!("http response body: {e}")))?;
-
-    let duties: ProposerDuties = serde_json::from_slice(&body)
-        .map_err(|e| CliError::Other(format!("http response json: {e}")))?;
+        .await?;
+    let body = resp.bytes().await?;
+    let duties: ProposerDuties = serde_json::from_slice(&body)?;
 
     Ok(duties.data)
 }
@@ -530,8 +512,7 @@ async fn get_block_header(
     let url =
         format!("{target}/eth/v1/builder/header/{next_slot}/{block_hash}/{validator_pub_key}");
 
-    let (clean_url, creds) = parse_endpoint_credentials(&url)
-        .map_err(|e| MevError::Cli(CliError::Other(format!("parse url: {e}"))))?;
+    let (clean_url, creds) = parse_endpoint_credentials(&url).map_err(MevError::from)?;
 
     let client = reqwest::Client::new();
     let start = Instant::now();
@@ -548,7 +529,7 @@ async fn get_block_header(
         )
         .send()
         .await
-        .map_err(|e| MevError::Cli(CliError::Other(format!("http request rtt: {e}"))))?;
+        .map_err(|e| MevError::Cli(e.into()))?;
 
     let rtt = start.elapsed();
 
@@ -556,13 +537,10 @@ async fn get_block_header(
         return Err(MevError::StatusCodeNot200);
     }
 
-    let body = resp
-        .bytes()
-        .await
-        .map_err(|e| MevError::Cli(CliError::Other(format!("http response body: {e}"))))?;
+    let body = resp.bytes().await.map_err(|e| MevError::Cli(e.into()))?;
 
-    let bid: BuilderBidResponse = serde_json::from_slice(&body)
-        .map_err(|e| MevError::Cli(CliError::Other(format!("http response json: {e}"))))?;
+    let bid: BuilderBidResponse =
+        serde_json::from_slice(&body).map_err(|e| MevError::Cli(e.into()))?;
 
     Ok((bid, rtt))
 }
