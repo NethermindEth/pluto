@@ -34,6 +34,10 @@ enum MevError {
 const THRESHOLD_MEV_MEASURE_AVG: Duration = Duration::from_millis(40);
 /// Threshold for poor MEV ping measure.
 const THRESHOLD_MEV_MEASURE_POOR: Duration = Duration::from_millis(100);
+/// Threshold for average MEV block creation RTT.
+const THRESHOLD_MEV_BLOCK_AVG: Duration = Duration::from_millis(500);
+/// Threshold for poor MEV block creation RTT.
+const THRESHOLD_MEV_BLOCK_POOR: Duration = Duration::from_millis(800);
 
 /// Arguments for the MEV test command.
 #[derive(Args, Clone, Debug)]
@@ -68,14 +72,6 @@ pub struct TestMevArgs {
         help = "Increases the accuracy of the load test by asking for multiple payloads. Increases test duration."
     )]
     pub number_of_payloads: u32,
-
-    /// X-Timeout-Ms header flag for each request in milliseconds.
-    #[arg(
-        long = "x-timeout-ms",
-        default_value = "1000",
-        help = "X-Timeout-Ms header flag for each request in milliseconds, used by MEVs to compute maximum delay for reply."
-    )]
-    pub x_timeout_ms: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -248,12 +244,7 @@ async fn mev_ping_test(target: &str, _conf: &TestMevArgs) -> TestResult {
     let url = format!("{target}/eth/v1/builder/status");
     let client = reqwest::Client::new();
 
-    let (clean_url, creds) = match parse_endpoint_credentials(&url) {
-        Ok(v) => v,
-        Err(e) => return test_res.fail(e),
-    };
-
-    let resp = match apply_basic_auth(client.get(&clean_url), creds).send().await {
+    let resp = match client.get(&url).send().await {
         Ok(r) => r,
         Err(e) => return test_res.fail(e),
     };
@@ -335,12 +326,10 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
     };
 
     let mut all_blocks_rtt: Vec<Duration> = Vec::new();
-    let x_timeout_ms = conf.x_timeout_ms;
 
     info!(
         mev_relay = target,
         blocks = conf.number_of_payloads,
-        x_timeout_ms = x_timeout_ms,
         "Starting attempts for block creation"
     );
 
@@ -352,7 +341,6 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
         let rtt = match create_mev_block(
             conf,
             target,
-            x_timeout_ms,
             next_slot,
             &mut latest_block,
             &mut proposer_duties,
@@ -407,15 +395,12 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
     let count = u32::try_from(all_blocks_rtt.len().max(1)).unwrap_or(u32::MAX);
     let average_rtt = total_rtt.checked_div(count).unwrap_or_default();
 
-    let avg_threshold = Duration::from_millis(
-        u64::from(x_timeout_ms)
-            .saturating_mul(9)
-            .checked_div(10)
-            .unwrap_or(0),
-    );
-    let poor_threshold = Duration::from_millis(u64::from(x_timeout_ms));
-
-    evaluate_rtt(average_rtt, test_res, avg_threshold, poor_threshold)
+    evaluate_rtt(
+        average_rtt,
+        test_res,
+        THRESHOLD_MEV_BLOCK_AVG,
+        THRESHOLD_MEV_BLOCK_POOR,
+    )
 }
 
 // Helper types
@@ -465,12 +450,7 @@ struct BuilderBidResponse {
 
 async fn latest_beacon_block(endpoint: &str) -> Result<BeaconBlockMessage> {
     let url = format!("{endpoint}/eth/v2/beacon/blocks/head");
-    let (clean_url, creds) = parse_endpoint_credentials(&url)?;
-    let client = reqwest::Client::new();
-
-    let resp = apply_basic_auth(client.get(&clean_url), creds)
-        .send()
-        .await?;
+    let resp = reqwest::Client::new().get(&url).send().await?;
     let body = resp.bytes().await?;
     let block: BeaconBlock = serde_json::from_slice(&body)?;
 
@@ -482,12 +462,7 @@ async fn fetch_proposers_for_epoch(
     epoch: i64,
 ) -> Result<Vec<ProposerDutiesData>> {
     let url = format!("{beacon_endpoint}/eth/v1/validator/duties/proposer/{epoch}");
-    let (clean_url, creds) = parse_endpoint_credentials(&url)?;
-    let client = reqwest::Client::new();
-
-    let resp = apply_basic_auth(client.get(&clean_url), creds)
-        .send()
-        .await?;
+    let resp = reqwest::Client::new().get(&url).send().await?;
     let body = resp.bytes().await?;
     let duties: ProposerDuties = serde_json::from_slice(&body)?;
 
@@ -504,7 +479,6 @@ fn get_validator_pk_for_slot(proposers: &[ProposerDutiesData], slot: i64) -> Opt
 
 async fn get_block_header(
     target: &str,
-    x_timeout_ms: u32,
     next_slot: i64,
     block_hash: &str,
     validator_pub_key: &str,
@@ -512,21 +486,10 @@ async fn get_block_header(
     let url =
         format!("{target}/eth/v1/builder/header/{next_slot}/{block_hash}/{validator_pub_key}");
 
-    let (clean_url, creds) = parse_endpoint_credentials(&url).map_err(MevError::from)?;
-
-    let client = reqwest::Client::new();
     let start = Instant::now();
 
-    let resp = apply_basic_auth(client.get(&clean_url), creds)
-        .header("X-Timeout-Ms", x_timeout_ms.to_string())
-        .header(
-            "Date-Milliseconds",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-                .to_string(),
-        )
+    let resp = reqwest::Client::new()
+        .get(&url)
         .send()
         .await
         .map_err(|e| MevError::Cli(e.into()))?;
@@ -545,11 +508,9 @@ async fn get_block_header(
     Ok((bid, rtt))
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn create_mev_block(
     _conf: &TestMevArgs,
     target: &str,
-    x_timeout_ms: u32,
     mut next_slot: i64,
     latest_block: &mut BeaconBlockMessage,
     proposer_duties: &mut Vec<ProposerDutiesData>,
@@ -573,7 +534,6 @@ async fn create_mev_block(
 
         match get_block_header(
             target,
-            x_timeout_ms,
             next_slot,
             &latest_block.body.execution_payload.block_hash,
             &pk,
@@ -709,40 +669,6 @@ fn extract_execution_payload_header(
                 "not supported version or missing header: {version}"
             ))
         })
-}
-
-fn parse_endpoint_credentials(raw_url: &str) -> Result<(String, Option<(String, String)>)> {
-    let parsed =
-        url::Url::parse(raw_url).map_err(|e| CliError::Other(format!("parse url: {e}")))?;
-
-    let creds = if !parsed.username().is_empty() {
-        Some((
-            parsed.username().to_string(),
-            parsed.password().unwrap_or("").to_string(),
-        ))
-    } else {
-        None
-    };
-
-    let mut clean = parsed.clone();
-    clean
-        .set_username("")
-        .map_err(|()| CliError::Other("set username on URL".to_string()))?;
-    clean
-        .set_password(None)
-        .map_err(|()| CliError::Other("set password on URL".to_string()))?;
-
-    Ok((clean.to_string(), creds))
-}
-
-fn apply_basic_auth(
-    builder: reqwest::RequestBuilder,
-    creds: Option<(String, String)>,
-) -> reqwest::RequestBuilder {
-    match creds {
-        Some((user, pass)) => builder.basic_auth(user, Some(pass)),
-        None => builder,
-    }
 }
 
 fn format_mev_relay_name(url_string: &str) -> String {
