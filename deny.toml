@@ -23,7 +23,32 @@ feature-depth = 1
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
-ignore = []
+ignore = [
+    # Unsoundness in `rand` 0.7.3 and 0.8.5 reachable only via a custom `log`
+    # logger that calls `rand::rng()` and hits a reseed during the log event.
+    # The only affected pulls are transitive: `cuckoofilter` -> `libp2p-floodsub`
+    # (stuck on 0.7.3) and `alloy-signer-local` (stuck on 0.8.5). Neither is
+    # reachable from Pluto's loggers. Remove once upstream bumps to >=0.9.3.
+    { id = "RUSTSEC-2026-0097", reason = "transitive rand <0.9.3 via cuckoofilter and alloy-signer-local; not triggerable from our code" },
+    # CN validation logic error in aws-lc-sys <=0.38.0. Transitive dep via
+    # libp2p-quic, libp2p-websocket, reqwest, tracing-loki; can't upgrade yet.
+    { id = "RUSTSEC-2026-0044", reason = "transitive aws-lc-sys 0.38.0; upgrade blocked by transitive constraints" },
+    # CRL distribution point matching logic error in aws-lc-sys <=0.38.0.
+    # Same transitive path as RUSTSEC-2026-0044 above.
+    { id = "RUSTSEC-2026-0048", reason = "transitive aws-lc-sys 0.38.0; upgrade blocked by transitive constraints" },
+    # CRL distribution point incomplete check in rustls-webpki 0.103.9.
+    # Transitive via rustls-platform-verifier. Remove once upstream upgrades.
+    { id = "RUSTSEC-2026-0049", reason = "transitive rustls-webpki 0.103.9 via rustls-platform-verifier; not directly used" },
+    # URI name constraints ignored in rustls-webpki 0.103.9. Same path.
+    { id = "RUSTSEC-2026-0098", reason = "transitive rustls-webpki 0.103.9 via rustls-platform-verifier; not directly used" },
+    # tar-rs <=0.4.44 archive unpacking PAX handling issues (both advisories).
+    # Transitive via pluto-app. Remove once upstream bumps to >=0.4.45.
+    { id = "RUSTSEC-2026-0067", reason = "transitive tar 0.4.44 via pluto-app; upgrade blocked by upstream" },
+    { id = "RUSTSEC-2026-0068", reason = "transitive tar 0.4.44 via pluto-app; upgrade blocked by upstream" },
+    # astral-tokio-tar <=0.5.6 malformed PAX extension issue. Dev-only dep
+    # via testcontainers -> pluto-eth2api (test only). Not in production builds.
+    { id = "RUSTSEC-2026-0066", reason = "dev-only transitive astral-tokio-tar 0.5.6 via testcontainers; not in production" },
+]
 unmaintained = "workspace"
 
 [licenses]

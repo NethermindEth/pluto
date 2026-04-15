@@ -278,8 +278,7 @@ async fn ping_load_test(args: &TestValidatorArgs) -> TestResult {
         rtts.push(rtt);
     }
 
-    result =
-        super::evaluate_highest_rtt(rtts, result, THRESHOLD_LOAD_AVG, THRESHOLD_LOAD_POOR);
+    result = super::evaluate_highest_rtt(rtts, result, THRESHOLD_LOAD_AVG, THRESHOLD_LOAD_POOR);
 
     result
 }
