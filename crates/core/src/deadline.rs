@@ -536,7 +536,10 @@ mod tests {
     async fn test_deadliner() {
         let (expired_duties, non_expired_duties, voluntary_exits) = setup_data();
 
-        // Use real time with short durations (milliseconds instead of hours/seconds)
+        // Use real time with generous durations to avoid flakiness on loaded CI.
+        // Previous 10ms-per-slot margins caused races: wall-clock time elapsed
+        // between capturing start_time and the background task processing add()
+        // could exceed the deadline, making "non-expired" duties appear expired.
         let start_time = Utc::now();
 
         // Create a deadline function provider
@@ -559,14 +562,15 @@ mod tests {
                     return Ok(Some(deadline));
                 }
 
-                // Non-expired duties expire after duty.slot * 10 milliseconds from now
-                // This gives us short, deterministic deadlines for testing
+                // Non-expired duties expire after duty.slot * 500 milliseconds from now.
+                // 500ms per slot provides enough headroom for task scheduling jitter
+                // while keeping the test fast (completes within ~1-2s).
                 let deadline = start_time
                     .checked_add_signed(
                         chrono::Duration::try_milliseconds(
                             i64::try_from(duty.slot.inner())
                                 .unwrap()
-                                .checked_mul(10)
+                                .checked_mul(500)
                                 .unwrap(),
                         )
                         .unwrap(),
@@ -627,11 +631,11 @@ mod tests {
             assert!(result, "non-expired duties should return true");
         }
 
-        // Collect expired duties from output channel
-        // Use a generous timeout since we're using real time
+        // Collect expired duties from output channel.
+        // Timeout must exceed the longest non-expired deadline (~1s for slot 2).
         let mut actual_duties = Vec::new();
         for _ in 0..non_expired_len {
-            let duty = tokio::time::timeout(std::time::Duration::from_secs(1), output_rx.recv())
+            let duty = tokio::time::timeout(std::time::Duration::from_secs(5), output_rx.recv())
                 .await
                 .expect("should receive within timeout")
                 .expect("should receive duty");
