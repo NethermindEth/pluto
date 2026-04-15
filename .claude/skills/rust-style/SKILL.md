@@ -61,15 +61,24 @@ let x = a.checked_add(b).ok_or(Error::Overflow)?;
 
 ## Casts
 
-No lossy or unchecked casts — use fallible conversions:
+**Never use `as` for numeric type conversions** — use fallible conversions with `try_from`:
 
 ```rust
-// Bad
+// Bad - will cause clippy errors
 let x = value as u32;
+let y = some_usize as u64;
 
-// Good
+// Good - use try_from with proper error handling
 let x = u32::try_from(value)?;
+let y = u64::try_from(some_usize).expect("message explaining why this is safe");
 ```
+
+Rules:
+
+- Always use `TryFrom`/`try_from` for numeric conversions between different types
+- Handle conversion failures explicitly (either with `?` or `expect` with justification)
+- The only acceptable use of `expect` is when the conversion is guaranteed to succeed (e.g., `usize` to `u64` on 64-bit platforms)
+- Clippy will error on unchecked `as` casts: `cast_possible_truncation`, `cast_possible_wrap`, `cast_sign_loss`
 
 ---
 
@@ -158,3 +167,22 @@ mod tests {
 ```
 
 - For hashing/serialization parity, generate Go-derived test vectors and hardcode them as Rust fixtures.
+
+---
+
+## Pluto-Specific Checklist
+
+Apply when reviewing or porting code:
+
+- [ ] `Ordering::SeqCst` is justified; prefer `Relaxed`/`AcqRel` for
+      standalone flags.
+- [ ] `Error::Io` wraps `std::io::Error` (not `String`) to preserve
+      `ErrorKind`.
+- [ ] New public functions accept `impl AsRef<[u8]>` / `impl AsRef<str>`
+      rather than concrete slice refs where appropriate.
+- [ ] No `unwrap()` / `expect()` / `panic!()` outside test code.
+- [ ] All arithmetic uses checked ops (`checked_add`, `checked_mul`, …).
+- [ ] Tests mirror the Go test names and shapes where applicable.
+- [ ] `use` declarations appear before all other items in each file.
+- [ ] No dead payload in error variants (every captured field appears in the
+      `#[error("...")]` string).

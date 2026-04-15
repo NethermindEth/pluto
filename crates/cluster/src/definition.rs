@@ -45,7 +45,7 @@ pub struct NodeIdx {
 
 /// Definition defines an intended charon cluster configuration excluding
 /// validators.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Definition {
     /// Human-readable random unique identifier. Max 64 chars.
     pub uuid: String,
