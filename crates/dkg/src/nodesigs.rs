@@ -70,7 +70,7 @@ impl NodeSigBcast {
                     let lock_hash_rx = lock_hash_rx.clone();
                     let sigs = Arc::clone(&sigs_cb);
                     Box::pin(async move {
-                        receive(peer_id, msg, node_idx, &peers, &lock_hash_rx, &sigs).await
+                        receive(peer_id, msg, node_idx, &peers, lock_hash_rx, &sigs).await
                     })
                 }),
             )
@@ -117,7 +117,7 @@ impl NodeSigBcast {
 
         {
             let mut sigs = self.sigs.lock().unwrap_or_else(|e| e.into_inner());
-            sigs[self.node_idx] = Some(local_sig.to_vec());
+            sigs[self.node_idx] = Some(local_sig);
         }
 
         let mut ticker = tokio::time::interval(Duration::from_millis(100));
@@ -137,11 +137,7 @@ impl NodeSigBcast {
 
 /// Returns a copy of all signatures if every slot is filled, otherwise `None`.
 fn all_sigs(sigs: &[Option<Vec<u8>>]) -> Option<Vec<Vec<u8>>> {
-    if sigs.iter().all(|s| s.is_some()) {
-        Some(sigs.iter().flatten().cloned().collect())
-    } else {
-        None
-    }
+    sigs.iter().cloned().collect()
 }
 
 /// Validates and stores an incoming node signature message.
@@ -153,11 +149,10 @@ async fn receive(
     msg: MsgNodeSig,
     node_idx: usize,
     peers: &[Peer],
-    lock_hash_rx: &watch::Receiver<Option<Vec<u8>>>,
+    lock_hash_rx: watch::Receiver<Option<Vec<u8>>>,
     sigs: &Mutex<Vec<Option<Vec<u8>>>>,
 ) -> bcast::Result<()> {
-    let peer_idx =
-        usize::try_from(msg.peer_index).map_err(|_| bcast::Error::InvalidPeerIndex(peer_id))?;
+    let peer_idx = usize::try_from(msg.peer_index).expect("peer_index out of usize range");
 
     if peer_idx == node_idx || peer_idx >= peers.len() {
         return Err(bcast::Error::InvalidPeerIndex(peer_id));
@@ -265,7 +260,7 @@ mod tests {
             peer_index,
         };
 
-        let err = receive(peers[0].id, msg, 0, &peers, &rx, &sigs)
+        let err = receive(peers[0].id, msg, 0, &peers, rx, &sigs)
             .await
             .unwrap_err();
         assert!(
@@ -289,7 +284,7 @@ mod tests {
             peer_index: 1,
         };
 
-        receive(peer1.id, msg, 0, &peers, &rx, &sigs).await.unwrap();
+        receive(peer1.id, msg, 0, &peers, rx, &sigs).await.unwrap();
 
         let guard = sigs.lock().unwrap();
         assert_eq!(guard[1], Some(sig.to_vec()));
