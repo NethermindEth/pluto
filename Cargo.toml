@@ -50,7 +50,7 @@ humantime = "2.1"
 prost = "0.14"
 prost-build = "0.14"
 prost-types = "0.14"
-rand = { version = "0.8", features = ["std_rng"] }
+rand = { version = "0.9", features = ["std_rng"] }
 rand_core = "0.6"
 regex = "1.12"
 serde = { version = "1.0", features = ["derive"] }
