@@ -3,19 +3,18 @@ name: Claude Code Review
 on:
   pull_request:
     types: [review_requested]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
+  issue_comment:
+    types: [created]
 
 jobs:
   claude-review:
-    # Only run when a specific reviewer is requested (e.g., "claude-code" or specific team)
     if: |
-      contains(github.event.pull_request.requested_reviewers.*.login, 'claude-code') ||
-      contains(github.event.pull_request.requested_teams.*.slug, 'claude-code')
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request != null &&
+       contains(github.event.comment.body, '@claude-review')) ||
+      (github.event_name == 'pull_request' &&
+       (contains(github.event.pull_request.requested_reviewers.*.login, 'claude-code') ||
+        contains(github.event.pull_request.requested_teams.*.slug, 'claude-code')))
 
     runs-on: ubuntu-latest
     permissions:
@@ -50,4 +49,4 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_API_KEY }}
           track_progress: true
-          prompt: '/review-pr ${{ github.event.pull_request.number }}'
+          prompt: '/review-pr ${{ github.event.pull_request.number || github.event.issue.number }}'
