@@ -294,9 +294,18 @@ async fn run_outbound_stream(client: Client, mut stream: Stream) -> OutboundExit
     client.set_connected(true);
 
     loop {
+        if *stop_rx.borrow() {
+            return OutboundExit::Fatal(Error::Canceled);
+        }
+
         tokio::select! {
             _ = interval.tick() => {}
-            _ = stop_rx.changed() => return OutboundExit::Fatal(Error::Canceled),
+            changed = stop_rx.changed() => {
+                if changed.is_err() || *stop_rx.borrow() {
+                    return OutboundExit::Fatal(Error::Canceled);
+                }
+                continue;
+            }
         }
 
         let shutdown = client.shutdown_requested();
@@ -316,7 +325,12 @@ async fn run_outbound_stream(client: Client, mut stream: Stream) -> OutboundExit
                     Err(error) => Err(error),
                 }
             } => response,
-            _ = stop_rx.changed() => return OutboundExit::Fatal(Error::Canceled),
+            changed = stop_rx.changed() => {
+                if changed.is_err() || *stop_rx.borrow() {
+                    return OutboundExit::Fatal(Error::Canceled);
+                }
+                continue;
+            }
         };
 
         let response = match response {
