@@ -223,7 +223,8 @@ impl ConnectionHandler for Handler {
 
                     if relay_reset || client.should_reconnect() {
                         info!(peer = %self.peer_id, err = %error, "Disconnected from peer");
-                        self.outbound = OutboundState::Idle;
+                        self.backoff = INITIAL_BACKOFF;
+                        self.schedule_retry();
                     } else {
                         client.finish(Err(error));
                         self.outbound = OutboundState::Disabled;
