@@ -104,6 +104,9 @@ impl Server {
 
             {
                 let state = self.inner.state.read().await;
+                if let Some(error) = &state.err {
+                    return Err(error.clone());
+                }
                 if state.shutdown.len() == self.inner.all_count {
                     return Ok(());
                 }
