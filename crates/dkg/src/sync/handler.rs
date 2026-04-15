@@ -122,7 +122,11 @@ impl Handler {
         client.release_outbound();
 
         let (error, relay_reset) = match error {
-            StreamUpgradeError::NegotiationFailed => (Error::Unsupported, false),
+            StreamUpgradeError::NegotiationFailed => {
+                client.finish(Err(Error::Unsupported));
+                self.outbound = OutboundState::Disabled;
+                return;
+            }
             StreamUpgradeError::Timeout => (
                 Error::Io(
                     std::io::Error::new(
