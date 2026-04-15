@@ -1,6 +1,6 @@
 //! Validator client connectivity tests.
 
-use std::{io::Write, time::Duration};
+use std::{fmt, io::Write, time::Duration};
 
 use clap::Args;
 use rand::Rng;
@@ -12,8 +12,6 @@ use tokio::{
 
 use super::{
     AllCategoriesResult, TestCategory, TestCategoryResult, TestConfigArgs, TestResult, TestVerdict,
-    calculate_score, evaluate_highest_rtt, evaluate_rtt, publish_result_to_obol_api,
-    write_result_to_file, write_result_to_writer,
 };
 use crate::{duration::Duration as CliDuration, error::Result};
 
@@ -26,8 +24,11 @@ const THRESHOLD_LOAD_POOR: Duration = Duration::from_millis(240);
 /// Validator test cases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ValidatorTestCase {
+    /// TCP connectivity check.
     Ping,
+    /// TCP round-trip time measurement.
     PingMeasure,
+    /// Sustained TCP load test.
     PingLoad,
 }
 
@@ -40,14 +41,15 @@ impl ValidatorTestCase {
             ValidatorTestCase::PingLoad,
         ]
     }
+}
 
-    /// Returns the test name as a string.
-    pub fn name(&self) -> &'static str {
-        match self {
+impl fmt::Display for ValidatorTestCase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
             ValidatorTestCase::Ping => "Ping",
             ValidatorTestCase::PingMeasure => "PingMeasure",
             ValidatorTestCase::PingLoad => "PingLoad",
-        }
+        })
     }
 }
 
@@ -77,16 +79,21 @@ pub struct TestValidatorArgs {
 
 /// Runs the validator client tests.
 pub async fn run(args: TestValidatorArgs, writer: &mut dyn Write) -> Result<TestCategoryResult> {
-    tracing::info!("Starting validator client test");
+    pluto_tracing::init(
+        &pluto_tracing::TracingConfig::builder()
+            .with_default_console()
+            .build(),
+    )
+    .expect("Failed to initialize tracing");
 
-    let start_time = Instant::now();
+    tracing::info!("Starting validator client test");
 
     // Get and filter test cases
     let queued_tests: Vec<ValidatorTestCase> = if let Some(ref filter) = args.test_config.test_cases
     {
         ValidatorTestCase::all()
             .iter()
-            .filter(|tc| filter.contains(&tc.name().to_string()))
+            .filter(|tc| filter.contains(&tc.to_string()))
             .copied()
             .collect()
     } else {
@@ -99,22 +106,23 @@ pub async fn run(args: TestValidatorArgs, writer: &mut dyn Write) -> Result<Test
         ));
     }
 
-    // Run tests with timeout
+    let start_time = Instant::now();
     let test_results = run_tests_with_timeout(&args, &queued_tests).await;
+    let elapsed = start_time.elapsed();
 
-    let score = calculate_score(&test_results);
+    let score = super::calculate_score(&test_results);
 
     let mut res = TestCategoryResult::new(TestCategory::Validator);
     res.targets.insert(args.api_address.clone(), test_results);
-    res.execution_time = Some(CliDuration::new(start_time.elapsed()));
+    res.execution_time = Some(CliDuration::new(elapsed));
     res.score = Some(score);
 
     if !args.test_config.quiet {
-        write_result_to_writer(&res, writer)?;
+        super::write_result_to_writer(&res, writer)?;
     }
 
     if !args.test_config.output_json.is_empty() {
-        write_result_to_file(&res, args.test_config.output_json.as_ref()).await?;
+        super::write_result_to_file(&res, args.test_config.output_json.as_ref()).await?;
     }
 
     if args.test_config.publish {
@@ -122,7 +130,7 @@ pub async fn run(args: TestValidatorArgs, writer: &mut dyn Write) -> Result<Test
             validator: Some(res.clone()),
             ..Default::default()
         };
-        publish_result_to_obol_api(
+        super::publish_result_to_obol_api(
             all,
             &args.test_config.publish_addr,
             &args.test_config.publish_private_key_file,
@@ -133,8 +141,8 @@ pub async fn run(args: TestValidatorArgs, writer: &mut dyn Write) -> Result<Test
     Ok(res)
 }
 
-/// Timeout error message
-const ERR_TIMEOUT_INTERRUPTED: &str = "timeout";
+/// Timeout error message.
+const ERR_TIMEOUT_INTERRUPTED: &str = "timeout/interrupted";
 
 /// Runs tests with timeout, keeping completed tests on timeout.
 async fn run_tests_with_timeout(
@@ -142,18 +150,16 @@ async fn run_tests_with_timeout(
     tests: &[ValidatorTestCase],
 ) -> Vec<TestResult> {
     let mut results = Vec::new();
-    let timeout_deadline = tokio::time::Instant::now()
-        .checked_add(args.test_config.timeout)
-        .expect("timeout overflow");
+    let start = Instant::now();
 
     for &test_case in tests {
-        let remaining = timeout_deadline.saturating_duration_since(tokio::time::Instant::now());
+        let remaining = args.test_config.timeout.saturating_sub(start.elapsed());
 
         match tokio::time::timeout(remaining, run_single_test(args, test_case)).await {
             Ok(result) => results.push(result),
             Err(_) => {
                 results.push(
-                    TestResult::new(test_case.name())
+                    TestResult::new(test_case.to_string())
                         .fail(std::io::Error::other(ERR_TIMEOUT_INTERRUPTED)),
                 );
                 break;
@@ -174,7 +180,7 @@ async fn run_single_test(args: &TestValidatorArgs, test_case: ValidatorTestCase)
 }
 
 async fn ping_test(args: &TestValidatorArgs) -> TestResult {
-    let mut result = TestResult::new(ValidatorTestCase::Ping.name());
+    let mut result = TestResult::new(ValidatorTestCase::Ping.to_string());
 
     match timeout(
         Duration::from_secs(1),
@@ -200,7 +206,7 @@ async fn ping_test(args: &TestValidatorArgs) -> TestResult {
 }
 
 async fn ping_measure_test(args: &TestValidatorArgs) -> TestResult {
-    let mut result = TestResult::new(ValidatorTestCase::PingMeasure.name());
+    let mut result = TestResult::new(ValidatorTestCase::PingMeasure.to_string());
     let before = Instant::now();
 
     match timeout(
@@ -211,7 +217,8 @@ async fn ping_measure_test(args: &TestValidatorArgs) -> TestResult {
     {
         Ok(Ok(_conn)) => {
             let rtt = before.elapsed();
-            result = evaluate_rtt(rtt, result, THRESHOLD_MEASURE_AVG, THRESHOLD_MEASURE_POOR);
+            result =
+                super::evaluate_rtt(rtt, result, THRESHOLD_MEASURE_AVG, THRESHOLD_MEASURE_POOR);
         }
         Ok(Err(e)) => {
             return result.fail(e);
@@ -234,13 +241,12 @@ async fn ping_load_test(args: &TestValidatorArgs) -> TestResult {
         "Running ping load tests..."
     );
 
-    let mut result = TestResult::new(ValidatorTestCase::PingLoad.name());
-
+    let mut result = TestResult::new(ValidatorTestCase::PingLoad.to_string());
     let (tx, mut rx) = mpsc::channel::<Duration>(i16::MAX as usize);
     let address = args.api_address.clone();
     let duration = args.load_test_duration;
 
-    let handle = tokio::spawn(async move {
+    {
         let start = Instant::now();
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         let mut workers = tokio::task::JoinSet::new();
@@ -253,19 +259,17 @@ async fn ping_load_test(args: &TestValidatorArgs) -> TestResult {
             let addr = address.clone();
             let remaining = duration.saturating_sub(start.elapsed());
 
-            workers.spawn(async move {
-                ping_continuously(addr, tx, remaining).await;
-            });
+            workers.spawn(ping_continuously(addr, tx, remaining));
         }
 
         // Drop the scheduler's clone so only workers hold senders
         drop(tx);
 
         // Wait for all spawned ping workers to finish
-        while workers.join_next().await.is_some() {}
-    });
+        workers.join_all().await;
+    }
 
-    let _ = handle.await;
+    tracing::info!(target = %args.api_address, "Ping load tests finished");
 
     // All senders dropped, collect all RTTs
     rx.close();
@@ -274,24 +278,27 @@ async fn ping_load_test(args: &TestValidatorArgs) -> TestResult {
         rtts.push(rtt);
     }
 
-    tracing::info!(target = %args.api_address, "Ping load tests finished");
-
-    result = evaluate_highest_rtt(rtts, result, THRESHOLD_LOAD_AVG, THRESHOLD_LOAD_POOR);
+    result =
+        super::evaluate_highest_rtt(rtts, result, THRESHOLD_LOAD_AVG, THRESHOLD_LOAD_POOR);
 
     result
 }
 
-async fn ping_continuously(address: String, tx: mpsc::Sender<Duration>, max_duration: Duration) {
+async fn ping_continuously(
+    address: impl AsRef<str>,
+    tx: mpsc::Sender<Duration>,
+    max_duration: Duration,
+) {
+    let address = address.as_ref();
     let start = Instant::now();
 
     while start.elapsed() < max_duration {
         let before = Instant::now();
 
-        match timeout(Duration::from_secs(1), TcpStream::connect(&address)).await {
-            Ok(Ok(conn)) => {
+        match timeout(Duration::from_secs(1), TcpStream::connect(address)).await {
+            Ok(Ok(_conn)) => {
                 let rtt = before.elapsed();
                 if tx.send(rtt).await.is_err() {
-                    drop(conn);
                     return;
                 }
             }

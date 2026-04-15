@@ -125,7 +125,7 @@ fn list_test_cases(category: TestCategory) -> Vec<String> {
     match category {
         TestCategory::Validator => validator::ValidatorTestCase::all()
             .iter()
-            .map(|tc| tc.name().to_string())
+            .map(|tc| tc.to_string())
             .collect(),
         TestCategory::Beacon => {
             // TODO: Extract from beacon::supported_beacon_test_cases()
