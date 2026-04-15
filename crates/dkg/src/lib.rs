@@ -8,6 +8,9 @@
 /// Protobuf definitions.
 pub mod dkgpb;
 
+/// Reliable broadcast protocol for DKG messages.
+pub mod bcast;
+
 /// General DKG IO operations.
 pub mod disk;
 

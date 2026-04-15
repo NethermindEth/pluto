@@ -1,0 +1,53 @@
+# Hoodi testnet execution (Nethermind) and consensus (Lighthouse) node pair.
+# Exposes the beacon HTTP API on port 5052, suitable for use with `pluto alpha test beacon --endpoints http://localhost:5052`.
+# Data is persisted in named volumes so syncing progress survives restarts.
+
+services:
+  nethermind:
+    image: nethermind/nethermind:latest
+    restart: unless-stopped
+    ports:
+      - "8545:8545"   # JSON-RPC
+      - "8551:8551"   # Engine API
+      - "30303:30303" # P2P
+      - "30303:30303/udp"
+    volumes:
+      - nethermind-data:/nethermind/data
+      - ./jwt.hex:/jwt.hex:ro
+    command:
+      - --config=hoodi
+      - --datadir=/nethermind/data
+      - --JsonRpc.Enabled=true
+      - --JsonRpc.Host=0.0.0.0
+      - --JsonRpc.Port=8545
+      - --JsonRpc.EngineHost=0.0.0.0
+      - --JsonRpc.EnginePort=8551
+      - --JsonRpc.JwtSecretFile=/jwt.hex
+
+  lighthouse:
+    image: sigp/lighthouse:latest
+    restart: unless-stopped
+    depends_on:
+      - nethermind
+    ports:
+      - "5052:5052"   # Beacon HTTP API
+      - "9000:9000"   # P2P
+      - "9000:9000/udp"
+    volumes:
+      - lighthouse-data:/lighthouse/data
+      - ./jwt.hex:/jwt.hex:ro
+    command:
+      - lighthouse
+      - beacon_node
+      - --network=hoodi
+      - --datadir=/lighthouse/data
+      - --execution-endpoint=http://nethermind:8551
+      - --execution-jwt=/jwt.hex
+      - --http
+      - --http-address=0.0.0.0
+      - --http-port=5052
+      - --checkpoint-sync-url=https://checkpoint-sync.hoodi.ethpandaops.io
+
+volumes:
+  nethermind-data:
+  lighthouse-data:

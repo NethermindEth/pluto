@@ -531,7 +531,10 @@ mod tests {
 
         // Read it back
         let mut cursor = futures::io::Cursor::new(&buf[..]);
-        let decoded: PeerInfo = pluto_p2p::proto::read_protobuf(&mut cursor).await.unwrap();
+        let decoded: PeerInfo =
+            pluto_p2p::proto::read_protobuf_with_max_size(&mut cursor, MAX_MESSAGE_SIZE)
+                .await
+                .unwrap();
         assert_eq!(original, decoded);
     }
 
@@ -546,7 +549,10 @@ mod tests {
 
         // Read it back
         let mut cursor = futures::io::Cursor::new(&buf[..]);
-        let decoded: PeerInfo = pluto_p2p::proto::read_protobuf(&mut cursor).await.unwrap();
+        let decoded: PeerInfo =
+            pluto_p2p::proto::read_protobuf_with_max_size(&mut cursor, MAX_MESSAGE_SIZE)
+                .await
+                .unwrap();
         assert_eq!(original, decoded);
     }
 
@@ -567,7 +573,10 @@ mod tests {
                 .unwrap();
 
             let mut cursor = futures::io::Cursor::new(&buf[..]);
-            let decoded: PeerInfo = pluto_p2p::proto::read_protobuf(&mut cursor).await.unwrap();
+            let decoded: PeerInfo =
+                pluto_p2p::proto::read_protobuf_with_max_size(&mut cursor, MAX_MESSAGE_SIZE)
+                    .await
+                    .unwrap();
             assert_eq!(original, decoded);
         }
     }
@@ -597,7 +606,8 @@ mod tests {
         let invalid_data = [0x05, 0xff, 0xff, 0xff, 0xff, 0xff]; // length 5, then garbage
 
         let mut cursor = futures::io::Cursor::new(&invalid_data[..]);
-        let result: io::Result<PeerInfo> = pluto_p2p::proto::read_protobuf(&mut cursor).await;
+        let result: io::Result<PeerInfo> =
+            pluto_p2p::proto::read_protobuf_with_max_size(&mut cursor, MAX_MESSAGE_SIZE).await;
 
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
@@ -609,7 +619,8 @@ mod tests {
         let truncated = [0x10]; // claims 16 bytes but has none
 
         let mut cursor = futures::io::Cursor::new(&truncated[..]);
-        let result: io::Result<PeerInfo> = pluto_p2p::proto::read_protobuf(&mut cursor).await;
+        let result: io::Result<PeerInfo> =
+            pluto_p2p::proto::read_protobuf_with_max_size(&mut cursor, MAX_MESSAGE_SIZE).await;
 
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
@@ -635,9 +646,18 @@ mod tests {
 
         // Read them back in order
         let mut cursor = futures::io::Cursor::new(&buf[..]);
-        let decoded1: PeerInfo = pluto_p2p::proto::read_protobuf(&mut cursor).await.unwrap();
-        let decoded2: PeerInfo = pluto_p2p::proto::read_protobuf(&mut cursor).await.unwrap();
-        let decoded3: PeerInfo = pluto_p2p::proto::read_protobuf(&mut cursor).await.unwrap();
+        let decoded1: PeerInfo =
+            pluto_p2p::proto::read_protobuf_with_max_size(&mut cursor, MAX_MESSAGE_SIZE)
+                .await
+                .unwrap();
+        let decoded2: PeerInfo =
+            pluto_p2p::proto::read_protobuf_with_max_size(&mut cursor, MAX_MESSAGE_SIZE)
+                .await
+                .unwrap();
+        let decoded3: PeerInfo =
+            pluto_p2p::proto::read_protobuf_with_max_size(&mut cursor, MAX_MESSAGE_SIZE)
+                .await
+                .unwrap();
 
         assert_eq!(msg1, decoded1);
         assert_eq!(msg2, decoded2);

@@ -21,3 +21,13 @@ pub struct PeerInfo {
     #[prost(string, tag = "7")]
     pub nickname: ::prost::alloc::string::String,
 }
+impl ::prost::Name for PeerInfo {
+    const NAME: &'static str = "PeerInfo";
+    const PACKAGE: &'static str = "peerinfo";
+    fn full_name() -> ::prost::alloc::string::String {
+        "peerinfo.PeerInfo".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/peerinfo.PeerInfo".into()
+    }
+}

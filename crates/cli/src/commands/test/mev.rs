@@ -8,10 +8,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use super::{
-    AllCategoriesResult, SLOT_TIME, SLOTS_IN_EPOCH, TestCategory, TestCategoryResult,
-    TestConfigArgs, TestResult, TestVerdict, calculate_score, evaluate_rtt,
-    must_output_to_file_on_quiet, publish_result_to_obol_api, request_rtt, write_result_to_file,
-    write_result_to_writer,
+    AllCategoriesResult, TestCategory, TestCategoryResult, TestConfigArgs, TestResult, TestVerdict,
+    calculate_score,
+    constants::{SLOT_TIME, SLOTS_IN_EPOCH},
+    evaluate_rtt, must_output_to_file_on_quiet, publish_result_to_obol_api, request_rtt,
+    write_result_to_file, write_result_to_writer,
 };
 use crate::{
     commands::test::TestCaseName,
@@ -128,7 +129,11 @@ pub async fn run(
     let queued_tests = {
         let mut filtered = TestCaseMev::all().to_vec();
         if let Some(filtered_cases) = args.test_config.test_cases.as_ref() {
-            filtered.retain(|case| filtered_cases.contains(&case.test_case_name().name));
+            filtered.retain(|case| {
+                filtered_cases
+                    .iter()
+                    .any(|s| s == case.test_case_name().name)
+            });
         }
         filtered
     };
@@ -226,7 +231,7 @@ async fn test_single_mev(
             let tc_name = test_case.test_case_name();
             tokio::select! {
                 _ = token.cancelled() => {
-                    let tr = TestResult::new(&tc_name.name);
+                    let tr = TestResult::new(tc_name.name);
                     tr.fail(CliError::TimeoutInterrupted)
                 }
                 r = test_case.run(&target, &conf) => {
@@ -317,7 +322,7 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
     };
 
     let mut next_slot = latest_slot.saturating_add(1);
-    let slots_in_epoch_i64 = i64::try_from(SLOTS_IN_EPOCH).unwrap_or(i64::MAX);
+    let slots_in_epoch_i64 = i64::try_from(SLOTS_IN_EPOCH.get()).unwrap_or(i64::MAX);
     let epoch = next_slot.checked_div(slots_in_epoch_i64).unwrap_or(0);
 
     let mut proposer_duties = match fetch_proposers_for_epoch(beacon_endpoint, epoch).await {
@@ -521,7 +526,7 @@ async fn create_mev_block(
 
     loop {
         let start_iteration = Instant::now();
-        let slots_in_epoch_i64 = i64::try_from(SLOTS_IN_EPOCH).unwrap_or(i64::MAX);
+        let slots_in_epoch_i64 = i64::try_from(SLOTS_IN_EPOCH.get()).unwrap_or(i64::MAX);
         let epoch = next_slot.checked_div(slots_in_epoch_i64).unwrap_or(0);
 
         let pk = if let Some(pk) = get_validator_pk_for_slot(proposer_duties, next_slot) {
