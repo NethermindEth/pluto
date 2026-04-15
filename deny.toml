@@ -30,6 +30,10 @@ ignore = [
     # (stuck on 0.7.3) and `alloy-signer-local` (stuck on 0.8.5). Neither is
     # reachable from Pluto's loggers. Remove once upstream bumps to >=0.9.3.
     { id = "RUSTSEC-2026-0097", reason = "transitive rand <0.9.3 via cuckoofilter and alloy-signer-local; not triggerable from our code" },
+    # `multihash` 0.19.x still requires `core2` 0.4.0 and libp2p 0.56 has no
+    # compatible update that removes it yet. Remove once upstream publishes a
+    # non-yanked replacement in the current dependency line.
+    { crate = "core2@0.4.0", reason = "transitive via multihash/libp2p; no compatible non-yanked release available yet" },
 ]
 unmaintained = "workspace"
 
