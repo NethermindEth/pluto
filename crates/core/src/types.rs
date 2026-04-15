@@ -3,8 +3,12 @@
 use std::{collections::HashMap, fmt::Display, iter};
 
 use chrono::{DateTime, Duration, Utc};
+use dyn_clone::DynClone;
+use dyn_eq::DynEq;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug as StdDebug;
+
+use crate::signeddata::SignedDataError;
 
 /// The type of duty.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -448,42 +452,64 @@ impl AsRef<[u8; SIG_LEN]> for Signature {
 }
 
 /// Signed data type
-pub trait SignedData: Clone + Serialize + StdDebug {
-    /// The error type
-    type Error: std::error::Error;
-
+pub trait SignedData: DynClone + DynEq + StdDebug + Send + Sync {
     /// signature returns the signed duty data's signature.
-    fn signature(&self) -> Result<Signature, Self::Error>;
+    fn signature(&self) -> Result<Signature, SignedDataError>;
 
     /// Returns a copy of signed duty data with the signature replaced.
-    fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error>
+    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError>
     where
         Self: Sized;
 
     /// message_root returns the message root for the unsigned data.
-    fn message_root(&self) -> Result<[u8; 32], Self::Error>;
+    fn message_root(&self) -> Result<[u8; 32], SignedDataError>;
 }
+
+dyn_eq::eq_trait_object!(SignedData);
+dyn_clone::clone_trait_object!(SignedData);
 
 // todo: add Eth2SignedData type
 // https://github.com/ObolNetwork/charon/blob/b3008103c5429b031b63518195f4c49db4e9a68d/core/types.go#L396
 
 /// ParSignedData is a partially signed duty data only signed by a single
 /// threshold BLS share.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParSignedData<T: SignedData> {
+#[derive(Debug)]
+pub struct ParSignedData {
     /// Partially signed duty data.
-    pub signed_data: T,
+    pub signed_data: Box<dyn SignedData>,
 
     /// Threshold BLS share index.
     pub share_idx: u64,
 }
 
-impl<T> ParSignedData<T>
-where
-    T: SignedData,
-{
+impl Clone for ParSignedData {
+    fn clone(&self) -> Self {
+        Self {
+            signed_data: self.signed_data.clone(),
+            share_idx: self.share_idx,
+        }
+    }
+}
+
+impl PartialEq for ParSignedData {
+    fn eq(&self, other: &Self) -> bool {
+        self.share_idx == other.share_idx && self.signed_data == other.signed_data
+    }
+}
+
+impl Eq for ParSignedData {}
+
+impl ParSignedData {
     /// Create a new partially signed data.
-    pub fn new(partially_signed_data: T, share_idx: u64) -> Self {
+    pub fn new<T: SignedData>(partially_signed_data: T, share_idx: u64) -> Self {
+        Self {
+            signed_data: Box::new(partially_signed_data),
+            share_idx,
+        }
+    }
+
+    /// Create a new partially signed data from a boxed signed data.
+    pub fn new_boxed(partially_signed_data: Box<dyn SignedData>, share_idx: u64) -> Self {
         Self {
             signed_data: partially_signed_data,
             share_idx,
@@ -493,49 +519,37 @@ where
 
 /// ParSignedDataSet is a set of partially signed duty data only signed by a
 /// single threshold BLS share.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParSignedDataSet<T: SignedData>(HashMap<PubKey, ParSignedData<T>>);
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ParSignedDataSet(HashMap<PubKey, ParSignedData>);
 
-impl<T> Default for ParSignedDataSet<T>
-where
-    T: SignedData,
-{
-    fn default() -> Self {
-        Self(HashMap::default())
-    }
-}
-
-impl<T> ParSignedDataSet<T>
-where
-    T: SignedData,
-{
+impl ParSignedDataSet {
     /// Create a new partially signed data set.
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Get a partially signed data by public key.
-    pub fn get(&self, pub_key: &PubKey) -> Option<&ParSignedData<T>> {
+    pub fn get(&self, pub_key: &PubKey) -> Option<&ParSignedData> {
         self.inner().get(pub_key)
     }
 
     /// Insert a partially signed data.
-    pub fn insert(&mut self, pub_key: PubKey, partially_signed_data: ParSignedData<T>) {
+    pub fn insert(&mut self, pub_key: PubKey, partially_signed_data: ParSignedData) {
         self.inner_mut().insert(pub_key, partially_signed_data);
     }
 
     /// Remove a partially signed data by public key.
-    pub fn remove(&mut self, pub_key: &PubKey) -> Option<ParSignedData<T>> {
+    pub fn remove(&mut self, pub_key: &PubKey) -> Option<ParSignedData> {
         self.inner_mut().remove(pub_key)
     }
 
     /// Inner partially signed data set.
-    pub fn inner(&self) -> &HashMap<PubKey, ParSignedData<T>> {
+    pub fn inner(&self) -> &HashMap<PubKey, ParSignedData> {
         &self.0
     }
 
     /// Inner partially signed data set.
-    pub fn inner_mut(&mut self) -> &mut HashMap<PubKey, ParSignedData<T>> {
+    pub fn inner_mut(&mut self) -> &mut HashMap<PubKey, ParSignedData> {
         &mut self.0
     }
 }
@@ -856,17 +870,15 @@ mod tests {
     struct MockSignedData;
 
     impl SignedData for MockSignedData {
-        type Error = std::io::Error;
-
-        fn signature(&self) -> Result<Signature, std::io::Error> {
+        fn signature(&self) -> Result<Signature, SignedDataError> {
             Ok(Signature::new([42u8; SIG_LEN]))
         }
 
-        fn set_signature(&self, _signature: Signature) -> Result<Self, std::io::Error> {
+        fn set_signature(&self, _signature: Signature) -> Result<Self, SignedDataError> {
             Ok(self.clone())
         }
 
-        fn message_root(&self) -> Result<[u8; 32], std::io::Error> {
+        fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
             Ok([42u8; 32])
         }
     }
@@ -874,13 +886,15 @@ mod tests {
     #[test]
     fn test_partially_signed_data_set() {
         let mut partially_signed_data_set = ParSignedDataSet::new();
-        partially_signed_data_set.insert(
-            PubKey::new([42u8; PK_LEN]),
-            ParSignedData::new(MockSignedData, 0),
-        );
+        let par_signed = ParSignedData::new(MockSignedData, 0);
+        partially_signed_data_set.insert(PubKey::new([42u8; PK_LEN]), par_signed.clone());
+        let retrieved = partially_signed_data_set.get(&PubKey::new([42u8; PK_LEN]));
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.share_idx, 0);
         assert_eq!(
-            partially_signed_data_set.get(&PubKey::new([42u8; PK_LEN])),
-            Some(&ParSignedData::new(MockSignedData, 0))
+            retrieved.signed_data.signature().unwrap(),
+            Signature::new([42u8; SIG_LEN])
         );
     }
 

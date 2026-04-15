@@ -5,7 +5,7 @@ use tree_hash::TreeHash;
 
 use base64::Engine as _;
 use pluto_eth2api::{
-    spec::{altair, phase0},
+    spec::{altair, phase0, serde_legacy_builder_version, serde_legacy_data_version},
     v1, versioned,
 };
 use pluto_eth2util::types::SignedEpoch;
@@ -56,7 +56,8 @@ fn hash_root<T: TreeHash>(value: &T) -> [u8; 32] {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct VersionedRawBlockJson<T> {
-    version: pluto_eth2util::types::DataVersion,
+    #[serde(with = "serde_legacy_data_version")]
+    version: versioned::DataVersion,
     block: T,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     blinded: bool,
@@ -64,7 +65,8 @@ struct VersionedRawBlockJson<T> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct VersionedRawAttestationJson<T> {
-    version: pluto_eth2util::types::DataVersion,
+    #[serde(with = "serde_legacy_data_version")]
+    version: versioned::DataVersion,
     #[serde(default)]
     validator_index: Option<serde_json::Value>,
     attestation: T,
@@ -72,13 +74,15 @@ struct VersionedRawAttestationJson<T> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct VersionedRawValidatorRegistrationJson<T> {
-    version: pluto_eth2util::types::BuilderVersion,
+    #[serde(with = "serde_legacy_builder_version")]
+    version: versioned::BuilderVersion,
     registration: T,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct VersionedRawAggregateAndProofJson<T> {
-    version: pluto_eth2util::types::DataVersion,
+    #[serde(with = "serde_legacy_data_version")]
+    version: versioned::DataVersion,
     aggregate_and_proof: T,
 }
 
@@ -127,23 +131,21 @@ impl Signature {
     }
 
     /// Creates a partially signed signature wrapper.
-    pub fn new_partial(sig: Self, share_idx: u64) -> ParSignedData<Self> {
+    pub fn new_partial(sig: Self, share_idx: u64) -> ParSignedData {
         ParSignedData::new(sig, share_idx)
     }
 }
 
 impl SignedData for Signature {
-    type Error = SignedDataError;
-
-    fn signature(&self) -> Result<Signature, Self::Error> {
+    fn signature(&self) -> Result<Signature, SignedDataError> {
         Ok(self.clone())
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
+    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         Ok(signature)
     }
 
-    fn message_root(&self) -> Result<[u8; 32], Self::Error> {
+    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         Err(SignedDataError::UnsupportedSignatureMessageRoot)
     }
 }
@@ -179,7 +181,7 @@ impl VersionedSignedProposal {
     pub fn new_partial(
         proposal: versioned::VersionedSignedProposal,
         share_idx: u64,
-    ) -> Result<ParSignedData<Self>, SignedDataError> {
+    ) -> Result<ParSignedData, SignedDataError> {
         Ok(ParSignedData::new(Self::new(proposal)?, share_idx))
     }
 
@@ -222,7 +224,7 @@ impl VersionedSignedProposal {
     pub fn new_partial_from_blinded_proposal(
         proposal: versioned::VersionedSignedBlindedProposal,
         share_idx: u64,
-    ) -> Result<ParSignedData<Self>, SignedDataError> {
+    ) -> Result<ParSignedData, SignedDataError> {
         Ok(ParSignedData::new(
             Self::from_blinded_proposal(proposal)?,
             share_idx,
@@ -231,9 +233,7 @@ impl VersionedSignedProposal {
 }
 
 impl SignedData for VersionedSignedProposal {
-    type Error = SignedDataError;
-
-    fn signature(&self) -> Result<Signature, Self::Error> {
+    fn signature(&self) -> Result<Signature, SignedDataError> {
         let proposal = &self.0;
         if proposal.version == versioned::DataVersion::Unknown {
             return Err(SignedDataError::UnknownVersion);
@@ -241,7 +241,7 @@ impl SignedData for VersionedSignedProposal {
         Ok(sig_from_eth2(proposal.block.signature()))
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
+    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
         let proposal = &mut out.0;
         if proposal.version == versioned::DataVersion::Unknown {
@@ -253,7 +253,7 @@ impl SignedData for VersionedSignedProposal {
         Ok(out)
     }
 
-    fn message_root(&self) -> Result<[u8; 32], Self::Error> {
+    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         let proposal = &self.0;
         if proposal.version == versioned::DataVersion::Unknown {
             return Err(SignedDataError::UnknownVersion);
@@ -287,10 +287,8 @@ impl Serialize for VersionedSignedProposal {
         if proposal.version == versioned::DataVersion::Unknown {
             return Err(serde::ser::Error::custom(SignedDataError::UnknownVersion));
         }
-        let version_eth2 = proposal.version;
+        let version = proposal.version;
         let blinded = proposal.blinded;
-        let version = pluto_eth2util::types::DataVersion::from_eth2(version_eth2)
-            .map_err(serde::ser::Error::custom)?;
 
         VersionedRawBlockJson {
             version,
@@ -309,53 +307,52 @@ impl<'de> Deserialize<'de> for VersionedSignedProposal {
         let raw = VersionedRawBlockJson::<serde_json::Value>::deserialize(deserializer)?;
         let version = raw.version;
         let blinded = raw.blinded;
-        use pluto_eth2util::types::DataVersion;
         use versioned::SignedProposalBlock;
         let block = match (version, blinded) {
-            (DataVersion::Unknown, _) => {
+            (versioned::DataVersion::Unknown, _) => {
                 return Err(serde::de::Error::custom(SignedDataError::UnknownVersion));
             }
-            (DataVersion::Phase0, _) => {
+            (versioned::DataVersion::Phase0, _) => {
                 serde_json::from_value(raw.block).map(SignedProposalBlock::Phase0)
             }
-            (DataVersion::Altair, _) => {
+            (versioned::DataVersion::Altair, _) => {
                 serde_json::from_value(raw.block).map(SignedProposalBlock::Altair)
             }
-            (DataVersion::Bellatrix, true) => {
+            (versioned::DataVersion::Bellatrix, true) => {
                 serde_json::from_value(raw.block).map(SignedProposalBlock::BellatrixBlinded)
             }
-            (DataVersion::Bellatrix, false) => {
+            (versioned::DataVersion::Bellatrix, false) => {
                 serde_json::from_value(raw.block).map(SignedProposalBlock::Bellatrix)
             }
-            (DataVersion::Capella, true) => {
+            (versioned::DataVersion::Capella, true) => {
                 serde_json::from_value(raw.block).map(SignedProposalBlock::CapellaBlinded)
             }
-            (DataVersion::Capella, false) => {
+            (versioned::DataVersion::Capella, false) => {
                 serde_json::from_value(raw.block).map(SignedProposalBlock::Capella)
             }
-            (DataVersion::Deneb, true) => {
+            (versioned::DataVersion::Deneb, true) => {
                 serde_json::from_value(raw.block).map(SignedProposalBlock::DenebBlinded)
             }
-            (DataVersion::Deneb, false) => {
+            (versioned::DataVersion::Deneb, false) => {
                 serde_json::from_value(raw.block).map(SignedProposalBlock::Deneb)
             }
-            (DataVersion::Electra, true) => {
+            (versioned::DataVersion::Electra, true) => {
                 serde_json::from_value(raw.block).map(SignedProposalBlock::ElectraBlinded)
             }
-            (DataVersion::Electra, false) => {
+            (versioned::DataVersion::Electra, false) => {
                 serde_json::from_value(raw.block).map(SignedProposalBlock::Electra)
             }
-            (DataVersion::Fulu, true) => {
+            (versioned::DataVersion::Fulu, true) => {
                 serde_json::from_value(raw.block).map(SignedProposalBlock::FuluBlinded)
             }
-            (DataVersion::Fulu, false) => {
+            (versioned::DataVersion::Fulu, false) => {
                 serde_json::from_value(raw.block).map(SignedProposalBlock::Fulu)
             }
         }
         .map_err(serde::de::Error::custom)?;
 
         Self::new(versioned::VersionedSignedProposal {
-            version: version.to_eth2(),
+            version,
             blinded,
             block,
         })
@@ -378,25 +375,23 @@ impl Attestation {
     }
 
     /// Creates a partial signed attestation wrapper.
-    pub fn new_partial(attestation: phase0::Attestation, share_idx: u64) -> ParSignedData<Self> {
+    pub fn new_partial(attestation: phase0::Attestation, share_idx: u64) -> ParSignedData {
         ParSignedData::new(Self::new(attestation), share_idx)
     }
 }
 
 impl SignedData for Attestation {
-    type Error = SignedDataError;
-
-    fn signature(&self) -> Result<Signature, Self::Error> {
+    fn signature(&self) -> Result<Signature, SignedDataError> {
         Ok(sig_from_eth2(self.0.signature))
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
+    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
         out.0.signature = sig_to_eth2(&signature);
         Ok(out)
     }
 
-    fn message_root(&self) -> Result<[u8; 32], Self::Error> {
+    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         Ok(hash_root(&self.0.data))
     }
 }
@@ -427,7 +422,7 @@ impl VersionedAttestation {
     pub fn new_partial(
         attestation: versioned::VersionedAttestation,
         share_idx: u64,
-    ) -> Result<ParSignedData<Self>, SignedDataError> {
+    ) -> Result<ParSignedData, SignedDataError> {
         Ok(ParSignedData::new(Self::new(attestation)?, share_idx))
     }
 
@@ -447,9 +442,7 @@ impl VersionedAttestation {
 }
 
 impl SignedData for VersionedAttestation {
-    type Error = SignedDataError;
-
-    fn signature(&self) -> Result<Signature, Self::Error> {
+    fn signature(&self) -> Result<Signature, SignedDataError> {
         let version = self.0.version;
         if version == versioned::DataVersion::Unknown {
             return Err(SignedDataError::UnknownVersion);
@@ -461,7 +454,7 @@ impl SignedData for VersionedAttestation {
             .ok_or(SignedDataError::MissingAttestation(version))
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
+    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
         let version = out.0.version;
         if version == versioned::DataVersion::Unknown {
@@ -476,7 +469,7 @@ impl SignedData for VersionedAttestation {
         Ok(out)
     }
 
-    fn message_root(&self) -> Result<[u8; 32], Self::Error> {
+    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         let version = self.0.version;
         if version == versioned::DataVersion::Unknown {
             return Err(SignedDataError::UnknownVersion);
@@ -495,18 +488,16 @@ impl Serialize for VersionedAttestation {
     where
         S: Serializer,
     {
-        let version_eth2 = self.0.version;
-        if version_eth2 == versioned::DataVersion::Unknown {
+        let version = self.0.version;
+        if version == versioned::DataVersion::Unknown {
             return Err(serde::ser::Error::custom(SignedDataError::UnknownVersion));
         }
-        let version = pluto_eth2util::types::DataVersion::from_eth2(version_eth2)
-            .map_err(serde::ser::Error::custom)?;
         let validator_index = self
             .0
             .validator_index
             .map(|value| serde_json::Value::String(value.to_string()));
         let attestation = self.0.attestation.as_ref().ok_or_else(|| {
-            serde::ser::Error::custom(SignedDataError::MissingAttestation(version_eth2))
+            serde::ser::Error::custom(SignedDataError::MissingAttestation(version))
         })?;
 
         VersionedRawAttestationJson {
@@ -536,38 +527,37 @@ impl<'de> Deserialize<'de> for VersionedAttestation {
 
         let version = raw.version;
 
-        use pluto_eth2util::types::DataVersion;
         use versioned::AttestationPayload;
         let attestation = match version {
-            DataVersion::Phase0 => {
+            versioned::DataVersion::Phase0 => {
                 serde_json::from_value(raw.attestation).map(AttestationPayload::Phase0)
             }
-            DataVersion::Altair => {
+            versioned::DataVersion::Altair => {
                 serde_json::from_value(raw.attestation).map(AttestationPayload::Altair)
             }
-            DataVersion::Bellatrix => {
+            versioned::DataVersion::Bellatrix => {
                 serde_json::from_value(raw.attestation).map(AttestationPayload::Bellatrix)
             }
-            DataVersion::Capella => {
+            versioned::DataVersion::Capella => {
                 serde_json::from_value(raw.attestation).map(AttestationPayload::Capella)
             }
-            DataVersion::Deneb => {
+            versioned::DataVersion::Deneb => {
                 serde_json::from_value(raw.attestation).map(AttestationPayload::Deneb)
             }
-            DataVersion::Electra => {
+            versioned::DataVersion::Electra => {
                 serde_json::from_value(raw.attestation).map(AttestationPayload::Electra)
             }
-            DataVersion::Fulu => {
+            versioned::DataVersion::Fulu => {
                 serde_json::from_value(raw.attestation).map(AttestationPayload::Fulu)
             }
-            DataVersion::Unknown => {
+            versioned::DataVersion::Unknown => {
                 return Err(serde::de::Error::custom(SignedDataError::UnknownVersion));
             }
         }
         .map_err(serde::de::Error::custom)?;
 
         Self::new(versioned::VersionedAttestation {
-            version: version.to_eth2(),
+            version,
             validator_index,
             attestation: Some(attestation),
         })
@@ -584,19 +574,17 @@ pub struct SignedVoluntaryExit(
 );
 
 impl SignedData for SignedVoluntaryExit {
-    type Error = SignedDataError;
-
-    fn signature(&self) -> Result<Signature, Self::Error> {
+    fn signature(&self) -> Result<Signature, SignedDataError> {
         Ok(sig_from_eth2(self.0.signature))
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
+    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
         out.0.signature = sig_to_eth2(&signature);
         Ok(out)
     }
 
-    fn message_root(&self) -> Result<[u8; 32], Self::Error> {
+    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         Ok(hash_root(&self.0.message))
     }
 }
@@ -608,7 +596,7 @@ impl SignedVoluntaryExit {
     }
 
     /// Creates a partially signed voluntary exit wrapper.
-    pub fn new_partial(exit: phase0::SignedVoluntaryExit, share_idx: u64) -> ParSignedData<Self> {
+    pub fn new_partial(exit: phase0::SignedVoluntaryExit, share_idx: u64) -> ParSignedData {
         ParSignedData::new(Self::new(exit), share_idx)
     }
 }
@@ -643,15 +631,13 @@ impl VersionedSignedValidatorRegistration {
     pub fn new_partial(
         registration: versioned::VersionedSignedValidatorRegistration,
         share_idx: u64,
-    ) -> Result<ParSignedData<Self>, SignedDataError> {
+    ) -> Result<ParSignedData, SignedDataError> {
         Ok(ParSignedData::new(Self::new(registration)?, share_idx))
     }
 }
 
 impl SignedData for VersionedSignedValidatorRegistration {
-    type Error = SignedDataError;
-
-    fn signature(&self) -> Result<Signature, Self::Error> {
+    fn signature(&self) -> Result<Signature, SignedDataError> {
         match self.0.version {
             versioned::BuilderVersion::V1 => self
                 .0
@@ -663,7 +649,7 @@ impl SignedData for VersionedSignedValidatorRegistration {
         }
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
+    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
         match out.0.version {
             versioned::BuilderVersion::V1 => {
@@ -680,7 +666,7 @@ impl SignedData for VersionedSignedValidatorRegistration {
         Ok(out)
     }
 
-    fn message_root(&self) -> Result<[u8; 32], Self::Error> {
+    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         match self.0.version {
             versioned::BuilderVersion::V1 => {
                 let Some(v1) = self.0.v1.as_ref() else {
@@ -700,7 +686,7 @@ impl Serialize for VersionedSignedValidatorRegistration {
     {
         match self.0.version {
             versioned::BuilderVersion::V1 => VersionedRawValidatorRegistrationJson {
-                version: pluto_eth2util::types::BuilderVersion::V1,
+                version: versioned::BuilderVersion::V1,
                 registration: self
                     .0
                     .v1
@@ -726,13 +712,13 @@ impl<'de> Deserialize<'de> for VersionedSignedValidatorRegistration {
                 deserializer,
             )?;
         match raw.version {
-            pluto_eth2util::types::BuilderVersion::V1 => {
+            versioned::BuilderVersion::V1 => {
                 Ok(Self(versioned::VersionedSignedValidatorRegistration {
                     version: versioned::BuilderVersion::V1,
                     v1: Some(raw.registration),
                 }))
             }
-            pluto_eth2util::types::BuilderVersion::Unknown => {
+            versioned::BuilderVersion::Unknown => {
                 Err(serde::de::Error::custom(SignedDataError::UnknownVersion))
             }
         }
@@ -748,19 +734,17 @@ pub struct SignedRandao(
 );
 
 impl SignedData for SignedRandao {
-    type Error = SignedDataError;
-
-    fn signature(&self) -> Result<Signature, Self::Error> {
+    fn signature(&self) -> Result<Signature, SignedDataError> {
         Ok(sig_from_eth2(self.0.signature))
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
+    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
         out.0.signature = sig_to_eth2(&signature);
         Ok(out)
     }
 
-    fn message_root(&self) -> Result<[u8; 32], Self::Error> {
+    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         Ok(hash_root(&self.0))
     }
 }
@@ -779,7 +763,7 @@ impl SignedRandao {
         epoch: phase0::Epoch,
         randao: phase0::BLSSignature,
         share_idx: u64,
-    ) -> ParSignedData<Self> {
+    ) -> ParSignedData {
         ParSignedData::new(Self::new(epoch, randao), share_idx)
     }
 }
@@ -793,19 +777,17 @@ pub struct BeaconCommitteeSelection(
 );
 
 impl SignedData for BeaconCommitteeSelection {
-    type Error = SignedDataError;
-
-    fn signature(&self) -> Result<Signature, Self::Error> {
+    fn signature(&self) -> Result<Signature, SignedDataError> {
         Ok(sig_from_eth2(self.0.selection_proof))
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
+    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
         out.0.selection_proof = sig_to_eth2(&signature);
         Ok(out)
     }
 
-    fn message_root(&self) -> Result<[u8; 32], Self::Error> {
+    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         Ok(hash_root(&self.0.slot))
     }
 }
@@ -817,10 +799,7 @@ impl BeaconCommitteeSelection {
     }
 
     /// Creates a partial beacon committee selection wrapper.
-    pub fn new_partial(
-        selection: v1::BeaconCommitteeSelection,
-        share_idx: u64,
-    ) -> ParSignedData<Self> {
+    pub fn new_partial(selection: v1::BeaconCommitteeSelection, share_idx: u64) -> ParSignedData {
         ParSignedData::new(Self::new(selection), share_idx)
     }
 }
@@ -834,19 +813,17 @@ pub struct SyncCommitteeSelection(
 );
 
 impl SignedData for SyncCommitteeSelection {
-    type Error = SignedDataError;
-
-    fn signature(&self) -> Result<Signature, Self::Error> {
+    fn signature(&self) -> Result<Signature, SignedDataError> {
         Ok(sig_from_eth2(self.0.selection_proof))
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
+    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
         out.0.selection_proof = sig_to_eth2(&signature);
         Ok(out)
     }
 
-    fn message_root(&self) -> Result<[u8; 32], Self::Error> {
+    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         let data = altair::SyncAggregatorSelectionData {
             slot: self.0.slot,
             subcommittee_index: self.0.subcommittee_index,
@@ -863,10 +840,7 @@ impl SyncCommitteeSelection {
     }
 
     /// Creates a partial sync committee selection wrapper.
-    pub fn new_partial(
-        selection: v1::SyncCommitteeSelection,
-        share_idx: u64,
-    ) -> ParSignedData<Self> {
+    pub fn new_partial(selection: v1::SyncCommitteeSelection, share_idx: u64) -> ParSignedData {
         ParSignedData::new(Self::new(selection), share_idx)
     }
 }
@@ -880,19 +854,17 @@ pub struct SignedAggregateAndProof(
 );
 
 impl SignedData for SignedAggregateAndProof {
-    type Error = SignedDataError;
-
-    fn signature(&self) -> Result<Signature, Self::Error> {
+    fn signature(&self) -> Result<Signature, SignedDataError> {
         Ok(sig_from_eth2(self.0.signature))
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
+    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
         out.0.signature = sig_to_eth2(&signature);
         Ok(out)
     }
 
-    fn message_root(&self) -> Result<[u8; 32], Self::Error> {
+    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         Ok(hash_root(&self.0.message))
     }
 }
@@ -904,10 +876,7 @@ impl SignedAggregateAndProof {
     }
 
     /// Creates a partial signed aggregate-and-proof wrapper.
-    pub fn new_partial(
-        data: phase0::SignedAggregateAndProof,
-        share_idx: u64,
-    ) -> ParSignedData<Self> {
+    pub fn new_partial(data: phase0::SignedAggregateAndProof, share_idx: u64) -> ParSignedData {
         ParSignedData::new(Self::new(data), share_idx)
     }
 }
@@ -947,15 +916,13 @@ impl VersionedSignedAggregateAndProof {
     pub fn new_partial(
         data: versioned::VersionedSignedAggregateAndProof,
         share_idx: u64,
-    ) -> ParSignedData<Self> {
+    ) -> ParSignedData {
         ParSignedData::new(Self::new(data), share_idx)
     }
 }
 
 impl SignedData for VersionedSignedAggregateAndProof {
-    type Error = SignedDataError;
-
-    fn signature(&self) -> Result<Signature, Self::Error> {
+    fn signature(&self) -> Result<Signature, SignedDataError> {
         let version = self.0.version;
         if version == versioned::DataVersion::Unknown {
             return Err(SignedDataError::UnknownVersion);
@@ -964,7 +931,7 @@ impl SignedData for VersionedSignedAggregateAndProof {
         Ok(sig_from_eth2(self.0.aggregate_and_proof.signature()))
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
+    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
         let version = out.0.version;
         if version == versioned::DataVersion::Unknown {
@@ -977,7 +944,7 @@ impl SignedData for VersionedSignedAggregateAndProof {
         Ok(out)
     }
 
-    fn message_root(&self) -> Result<[u8; 32], Self::Error> {
+    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         let version = self.0.version;
         if version == versioned::DataVersion::Unknown {
             return Err(SignedDataError::UnknownVersion);
@@ -1004,12 +971,10 @@ impl Serialize for VersionedSignedAggregateAndProof {
     where
         S: Serializer,
     {
-        let version_eth2 = self.0.version;
-        if version_eth2 == versioned::DataVersion::Unknown {
+        let version = self.0.version;
+        if version == versioned::DataVersion::Unknown {
             return Err(serde::ser::Error::custom(SignedDataError::UnknownVersion));
         }
-        let version = pluto_eth2util::types::DataVersion::from_eth2(version_eth2)
-            .map_err(serde::ser::Error::custom)?;
 
         VersionedRawAggregateAndProofJson {
             version,
@@ -1028,32 +993,31 @@ impl<'de> Deserialize<'de> for VersionedSignedAggregateAndProof {
             VersionedRawAggregateAndProofJson::<serde_json::Value>::deserialize(deserializer)?;
         let version = raw.version;
 
-        use pluto_eth2util::types::DataVersion;
         use versioned::SignedAggregateAndProofPayload;
 
         let aggregate_and_proof = match version {
-            DataVersion::Phase0 => serde_json::from_value(raw.aggregate_and_proof)
+            versioned::DataVersion::Phase0 => serde_json::from_value(raw.aggregate_and_proof)
                 .map(SignedAggregateAndProofPayload::Phase0),
-            DataVersion::Altair => serde_json::from_value(raw.aggregate_and_proof)
+            versioned::DataVersion::Altair => serde_json::from_value(raw.aggregate_and_proof)
                 .map(SignedAggregateAndProofPayload::Altair),
-            DataVersion::Bellatrix => serde_json::from_value(raw.aggregate_and_proof)
+            versioned::DataVersion::Bellatrix => serde_json::from_value(raw.aggregate_and_proof)
                 .map(SignedAggregateAndProofPayload::Bellatrix),
-            DataVersion::Capella => serde_json::from_value(raw.aggregate_and_proof)
+            versioned::DataVersion::Capella => serde_json::from_value(raw.aggregate_and_proof)
                 .map(SignedAggregateAndProofPayload::Capella),
-            DataVersion::Deneb => serde_json::from_value(raw.aggregate_and_proof)
+            versioned::DataVersion::Deneb => serde_json::from_value(raw.aggregate_and_proof)
                 .map(SignedAggregateAndProofPayload::Deneb),
-            DataVersion::Electra => serde_json::from_value(raw.aggregate_and_proof)
+            versioned::DataVersion::Electra => serde_json::from_value(raw.aggregate_and_proof)
                 .map(SignedAggregateAndProofPayload::Electra),
-            DataVersion::Fulu => serde_json::from_value(raw.aggregate_and_proof)
+            versioned::DataVersion::Fulu => serde_json::from_value(raw.aggregate_and_proof)
                 .map(SignedAggregateAndProofPayload::Fulu),
-            DataVersion::Unknown => {
+            versioned::DataVersion::Unknown => {
                 return Err(serde::de::Error::custom(SignedDataError::UnknownVersion));
             }
         }
         .map_err(serde::de::Error::custom)?;
 
         Ok(Self(versioned::VersionedSignedAggregateAndProof {
-            version: version.to_eth2(),
+            version,
             aggregate_and_proof,
         }))
     }
@@ -1068,19 +1032,17 @@ pub struct SignedSyncMessage(
 );
 
 impl SignedData for SignedSyncMessage {
-    type Error = SignedDataError;
-
-    fn signature(&self) -> Result<Signature, Self::Error> {
+    fn signature(&self) -> Result<Signature, SignedDataError> {
         Ok(sig_from_eth2(self.0.signature))
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
+    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
         out.0.signature = sig_to_eth2(&signature);
         Ok(out)
     }
 
-    fn message_root(&self) -> Result<[u8; 32], Self::Error> {
+    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         Ok(self.0.beacon_block_root)
     }
 }
@@ -1092,7 +1054,7 @@ impl SignedSyncMessage {
     }
 
     /// Creates a partial signed sync committee message wrapper.
-    pub fn new_partial(data: altair::SyncCommitteeMessage, share_idx: u64) -> ParSignedData<Self> {
+    pub fn new_partial(data: altair::SyncCommitteeMessage, share_idx: u64) -> ParSignedData {
         ParSignedData::new(Self::new(data), share_idx)
     }
 }
@@ -1106,19 +1068,17 @@ pub struct SyncContributionAndProof(
 );
 
 impl SignedData for SyncContributionAndProof {
-    type Error = SignedDataError;
-
-    fn signature(&self) -> Result<Signature, Self::Error> {
+    fn signature(&self) -> Result<Signature, SignedDataError> {
         Ok(sig_from_eth2(self.0.selection_proof))
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
+    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
         out.0.selection_proof = sig_to_eth2(&signature);
         Ok(out)
     }
 
-    fn message_root(&self) -> Result<[u8; 32], Self::Error> {
+    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         let data = altair::SyncAggregatorSelectionData {
             slot: self.0.contribution.slot,
             subcommittee_index: self.0.contribution.subcommittee_index,
@@ -1135,7 +1095,7 @@ impl SyncContributionAndProof {
     }
 
     /// Creates a partial sync contribution-and-proof wrapper.
-    pub fn new_partial(proof: altair::ContributionAndProof, share_idx: u64) -> ParSignedData<Self> {
+    pub fn new_partial(proof: altair::ContributionAndProof, share_idx: u64) -> ParSignedData {
         ParSignedData::new(Self::new(proof), share_idx)
     }
 }
@@ -1149,19 +1109,17 @@ pub struct SignedSyncContributionAndProof(
 );
 
 impl SignedData for SignedSyncContributionAndProof {
-    type Error = SignedDataError;
-
-    fn signature(&self) -> Result<Signature, Self::Error> {
+    fn signature(&self) -> Result<Signature, SignedDataError> {
         Ok(sig_from_eth2(self.0.signature))
     }
 
-    fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
+    fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         let mut out = self.clone();
         out.0.signature = sig_to_eth2(&signature);
         Ok(out)
     }
 
-    fn message_root(&self) -> Result<[u8; 32], Self::Error> {
+    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         Ok(hash_root(&self.0.message))
     }
 }
@@ -1173,10 +1131,7 @@ impl SignedSyncContributionAndProof {
     }
 
     /// Creates a partial signed sync contribution-and-proof wrapper.
-    pub fn new_partial(
-        proof: altair::SignedContributionAndProof,
-        share_idx: u64,
-    ) -> ParSignedData<Self> {
+    pub fn new_partial(proof: altair::SignedContributionAndProof, share_idx: u64) -> ParSignedData {
         ParSignedData::new(Self::new(proof), share_idx)
     }
 }
@@ -1185,10 +1140,8 @@ impl SignedSyncContributionAndProof {
 mod tests {
     use super::*;
     use alloy::primitives::U256;
-    use pluto_eth2api::spec::{
-        altair, bellatrix, capella, deneb, electra, fulu,
-        ssz_types::{BitList, BitVector},
-    };
+    use pluto_eth2api::spec::{altair, bellatrix, capella, deneb, electra, fulu};
+    use pluto_ssz::{BitList, BitVector};
     use serde::{Serialize, de::DeserializeOwned};
     use std::{fs, path::PathBuf};
     use test_case::test_case;
@@ -2052,7 +2005,7 @@ mod tests {
 
     fn assert_set_signature<T>(data: T)
     where
-        T: SignedData<Error = SignedDataError> + std::fmt::Debug + PartialEq,
+        T: SignedData + std::fmt::Debug + PartialEq,
     {
         let clone = data.set_signature(sample_signature(0xAB)).unwrap();
         let clone_sig = clone.signature().unwrap();

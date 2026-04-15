@@ -1,14 +1,15 @@
 use std::collections::HashSet;
 
+use pluto_ssz::{Hasher, serde_utils::Hex0x};
+
 use crate::{
     eip712sigs::{
         EIP712Error, digest_eip712, eip712_creator_config_hash, eip712_enr,
         get_operator_eip712_type,
     },
-    helpers::{EthHex, from_0x_hex_str},
+    helpers::from_0x_hex_str,
     operator::{Operator, OperatorV1X1, OperatorV1X2OrLater},
     ssz::{SSZError, hash_definition},
-    ssz_hasher::Hasher,
     version::{CURRENT_VERSION, DKG_ALGO, versions::*},
 };
 use chrono::{DateTime, Timelike, Utc};
@@ -44,7 +45,7 @@ pub struct NodeIdx {
 
 /// Definition defines an intended charon cluster configuration excluding
 /// validators.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Definition {
     /// Human-readable random unique identifier. Max 64 chars.
     pub uuid: String,
@@ -771,7 +772,7 @@ pub struct Creator {
     /// The Ethereum address of the creator
     pub address: String,
     /// The creator's signature over the config hash
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub config_signature: Vec<u8>,
 }
 
@@ -817,7 +818,7 @@ pub struct DefinitionV1x0or1 {
     pub dkg_algorithm: String,
     /// Cluster's 4 byte beacon chain fork version
     /// (network/chain identifier).
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub fork_version: Vec<u8>,
     /// Config hash uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.
@@ -928,15 +929,17 @@ pub struct DefinitionV1x2or3 {
     pub dkg_algorithm: String,
     /// Cluster's 4 byte beacon chain fork version
     /// (network/chain identifier).
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub fork_version: Vec<u8>,
     /// Config hash uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
+    #[serde(default)]
     pub config_hash: Vec<u8>,
     /// Definition hash uniquely identifies a cluster definition including
     /// operator ENRs and signatures.
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
+    #[serde(default)]
     pub definition_hash: Vec<u8>,
 }
 
@@ -1042,15 +1045,17 @@ pub struct DefinitionV1x4 {
     pub dkg_algorithm: String,
     /// Cluster's 4 byte beacon chain fork version
     /// (network/chain identifier).
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub fork_version: Vec<u8>,
     /// Config hash uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
+    #[serde(default)]
     pub config_hash: Vec<u8>,
     /// Definition hash uniquely identifies a cluster definition including
     /// operator ENRs and signatures.
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
+    #[serde(default)]
     pub definition_hash: Vec<u8>,
 }
 
@@ -1154,15 +1159,17 @@ pub struct DefinitionV1x5to7 {
     pub dkg_algorithm: String,
     /// Cluster's 4 byte beacon chain fork version
     /// (network/chain identifier).
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub fork_version: Vec<u8>,
     /// Config hash uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
+    #[serde(default)]
     pub config_hash: Vec<u8>,
     /// Definition hash uniquely identifies a cluster definition including
     /// operator ENRs and signatures.
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
+    #[serde(default)]
     pub definition_hash: Vec<u8>,
 }
 
@@ -1251,7 +1258,7 @@ pub struct DefinitionV1x8 {
     pub dkg_algorithm: String,
     /// ForkVersion defines the cluster's 4 byte beacon chain fork version
     /// (network/chain identifier).
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub fork_version: Vec<u8>,
     /// DepositAmounts specifies partial deposit amounts that sum up to at least
     /// 32ETH.
@@ -1259,11 +1266,13 @@ pub struct DefinitionV1x8 {
     pub deposit_amounts: Vec<u64>,
     /// ConfigHash uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
+    #[serde(default)]
     pub config_hash: Vec<u8>,
     /// DefinitionHash uniquely identifies a cluster definition including
     /// operator ENRs and signatures.
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
+    #[serde(default)]
     pub definition_hash: Vec<u8>,
 }
 
@@ -1353,7 +1362,7 @@ pub struct DefinitionV1x9 {
     pub dkg_algorithm: String,
     /// ForkVersion defines the cluster's 4 byte beacon chain fork version
     /// (network/chain identifier).
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub fork_version: Vec<u8>,
     /// DepositAmounts specifies partial deposit amounts that sum up to at least
     /// 32ETH.
@@ -1364,11 +1373,13 @@ pub struct DefinitionV1x9 {
     pub consensus_protocol: String,
     /// ConfigHash uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
+    #[serde(default)]
     pub config_hash: Vec<u8>,
     /// DefinitionHash uniquely identifies a cluster definition including
     /// operator ENRs and signatures.
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
+    #[serde(default)]
     pub definition_hash: Vec<u8>,
 }
 
@@ -1460,7 +1471,7 @@ pub struct DefinitionV1x10 {
     pub dkg_algorithm: String,
     /// Cluster's 4 byte beacon chain fork version
     /// (network/chain identifier).
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub fork_version: Vec<u8>,
     /// Partial deposit amounts that sum up to at least
     /// 32ETH.
@@ -1476,11 +1487,13 @@ pub struct DefinitionV1x10 {
     pub compounding: bool,
     /// Config hash uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
+    #[serde(default)]
     pub config_hash: Vec<u8>,
     /// Definition hash uniquely identifies a cluster definition including
     /// operator ENRs and signatures.
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
+    #[serde(default)]
     pub definition_hash: Vec<u8>,
 }
 

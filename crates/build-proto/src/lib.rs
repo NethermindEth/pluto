@@ -18,7 +18,12 @@ pub fn compile_protos(proto_dir: &str) -> Result<()> {
     }
 
     let mut config = prost_build::Config::new();
-    config.btree_map(["."]).bytes(["."]).out_dir(proto_dir);
+    config
+        .btree_map(["."])
+        .bytes(["."])
+        .enable_type_names()
+        .type_name_domain(["."], "type.googleapis.com")
+        .out_dir(proto_dir);
 
     config.compile_protos(
         &proto_files.iter().map(|p| p.as_path()).collect::<Vec<_>>(),

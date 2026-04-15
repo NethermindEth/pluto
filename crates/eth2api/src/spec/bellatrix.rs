@@ -26,7 +26,7 @@ pub type BaseFeePerGas = U256;
 #[serde(transparent)]
 pub struct Transaction {
     /// Transaction bytes.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub bytes: phase0::SszList<u8, MAX_BYTES_PER_TRANSACTION>,
 }
 
@@ -47,9 +47,10 @@ impl AsRef<[u8]> for Transaction {
 /// JSON (de)serialization helpers for execution addresses.
 pub(crate) mod execution_address_serde {
     use alloy::primitives::Address;
+    use pluto_ssz::serde_utils::trim_0x_prefix;
     use serde::{Deserialize, Deserializer, Serializer, de::Error as DeError};
 
-    use crate::spec::{bellatrix::ExecutionAddress, serde_utils};
+    use crate::spec::bellatrix::ExecutionAddress;
 
     pub fn serialize<S: Serializer>(
         value: &ExecutionAddress,
@@ -64,7 +65,7 @@ pub(crate) mod execution_address_serde {
         deserializer: D,
     ) -> Result<ExecutionAddress, D::Error> {
         let value = String::deserialize(deserializer)?;
-        let trimmed = serde_utils::trim_0x_prefix(value.as_str());
+        let trimmed = trim_0x_prefix(value.as_str());
         let bytes = hex::decode(trimmed).map_err(D::Error::custom)?;
         if bytes.len() != 20 {
             return Err(D::Error::custom(format!(
@@ -86,22 +87,22 @@ pub(crate) mod execution_address_serde {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct ExecutionPayload {
     /// Parent execution block hash.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub parent_hash: phase0::Hash32,
     /// Fee recipient address.
     #[serde(with = "execution_address_serde")]
     pub fee_recipient: ExecutionAddress,
     /// State root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub state_root: phase0::Root,
     /// Receipts root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub receipts_root: phase0::Root,
     /// Logs bloom.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub logs_bloom: [u8; 256],
     /// Prev randao value.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub prev_randao: [u8; 32],
     /// Block number.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -116,13 +117,13 @@ pub struct ExecutionPayload {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub timestamp: u64,
     /// Extra data bytes.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub extra_data: phase0::SszList<u8, MAX_EXTRA_DATA_BYTES>,
     /// Base fee per gas.
     #[serde(with = "crate::spec::serde_utils::u256_dec_serde")]
     pub base_fee_per_gas: BaseFeePerGas,
     /// Execution block hash.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub block_hash: phase0::Hash32,
     /// Transactions in the payload.
     pub transactions: phase0::SszList<Transaction, MAX_TRANSACTIONS_PER_PAYLOAD>,
@@ -135,22 +136,22 @@ pub struct ExecutionPayload {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct ExecutionPayloadHeader {
     /// Parent execution block hash.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub parent_hash: phase0::Hash32,
     /// Fee recipient address.
     #[serde(with = "execution_address_serde")]
     pub fee_recipient: ExecutionAddress,
     /// State root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub state_root: phase0::Root,
     /// Receipts root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub receipts_root: phase0::Root,
     /// Logs bloom.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub logs_bloom: [u8; 256],
     /// Prev randao value.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub prev_randao: [u8; 32],
     /// Block number.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -165,16 +166,16 @@ pub struct ExecutionPayloadHeader {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub timestamp: u64,
     /// Extra data bytes.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub extra_data: phase0::SszList<u8, MAX_EXTRA_DATA_BYTES>,
     /// Base fee per gas.
     #[serde(with = "crate::spec::serde_utils::u256_dec_serde")]
     pub base_fee_per_gas: BaseFeePerGas,
     /// Execution block hash.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub block_hash: phase0::Hash32,
     /// Transactions root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub transactions_root: phase0::Root,
 }
 
@@ -185,12 +186,12 @@ pub struct ExecutionPayloadHeader {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct BeaconBlockBody {
     /// RANDAO reveal.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub randao_reveal: phase0::BLSSignature,
     /// ETH1 data vote.
     pub eth1_data: phase0::ETH1Data,
     /// Graffiti bytes.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub graffiti: phase0::Root,
     /// Proposer slashings included in the block.
     pub proposer_slashings:
@@ -224,10 +225,10 @@ pub struct BeaconBlock {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub proposer_index: phase0::ValidatorIndex,
     /// Parent root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub parent_root: phase0::Root,
     /// State root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub state_root: phase0::Root,
     /// Block body.
     pub body: BeaconBlockBody,
@@ -240,12 +241,12 @@ pub struct BeaconBlock {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct BlindedBeaconBlockBody {
     /// RANDAO reveal.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub randao_reveal: phase0::BLSSignature,
     /// ETH1 data vote.
     pub eth1_data: phase0::ETH1Data,
     /// Graffiti bytes.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub graffiti: phase0::Root,
     /// Proposer slashings included in the block.
     pub proposer_slashings:
@@ -279,10 +280,10 @@ pub struct BlindedBeaconBlock {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub proposer_index: phase0::ValidatorIndex,
     /// Parent root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub parent_root: phase0::Root,
     /// State root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub state_root: phase0::Root,
     /// Blinded block body.
     pub body: BlindedBeaconBlockBody,
@@ -297,7 +298,7 @@ pub struct SignedBeaconBlock {
     /// Unsigned block message.
     pub message: BeaconBlock,
     /// Signature of the message.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: phase0::BLSSignature,
 }
 
@@ -310,7 +311,7 @@ pub struct SignedBlindedBeaconBlock {
     /// Unsigned blinded block message.
     pub message: BlindedBeaconBlock,
     /// Signature of the message.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: phase0::BLSSignature,
 }
 

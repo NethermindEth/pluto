@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 k256.workspace = true
 pluto-crypto.workspace = true
+pluto-eth2api.workspace = true
 rand.workspace = true
 rand_core.workspace = true
 thiserror.workspace = true

@@ -1,6 +1,6 @@
 //! MEV relay tests.
 
-use super::{TestCategoryResult, TestConfigArgs};
+use super::{TestConfigArgs, helpers::TestCategoryResult};
 use crate::error::Result;
 use clap::Args;
 use std::io::Write;

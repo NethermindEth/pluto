@@ -13,6 +13,7 @@ members = [
     "crates/k1util",
     "crates/relay-server",
     "crates/p2p",
+    "crates/ssz",
     "crates/testutil",
     "crates/tracing",
     "crates/peerinfo",
@@ -27,6 +28,7 @@ license = "BUSL-1.1"
 publish = false
 
 [workspace.dependencies]
+async-trait = "0.1.89"
 alloy = { version = "1.3", features = ["essentials"] }
 built = { version = "0.8.0", features = ["git2", "chrono", "cargo-lock"] }
 blst = "0.3"
@@ -36,6 +38,8 @@ cancellation = "0.1.0"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5.53", features = ["derive", "env", "cargo"] }
 crossbeam = "0.8.4"
+dyn-clone = "1.0"
+dyn-eq = "0.1.3"
 either = "1.13"
 futures = "0.3"
 futures-timer = "3.0"
@@ -85,7 +89,7 @@ assert-json-diff = "2.0"
 validator = { version = "0.20", features = ["derive"] }
 oas3-gen-support = "0.24"
 bon = "3.8"
-testcontainers = "0.26"
+testcontainers = "0.27"
 test-case = "3.3"
 tree_hash = "0.12"
 tree_hash_derive = "0.12"
@@ -106,6 +110,7 @@ pluto-eth2util = { path = "crates/eth2util" }
 pluto-eth1wrap = { path = "crates/eth1wrap" }
 pluto-k1util = { path = "crates/k1util" }
 pluto-relay-server = { path = "crates/relay-server" }
+pluto-ssz = { path = "crates/ssz" }
 pluto-testutil = { path = "crates/testutil" }
 pluto-tracing = { path = "crates/tracing" }
 pluto-p2p = { path = "crates/p2p" }
