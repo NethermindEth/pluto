@@ -700,6 +700,227 @@ fn http_status_error(status: StatusCode) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration as StdDuration;
+    use tokio_util::sync::CancellationToken;
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+    fn default_test_config() -> TestConfigArgs {
+        TestConfigArgs {
+            output_json: String::new(),
+            quiet: false,
+            test_cases: None,
+            timeout: StdDuration::from_secs(60),
+            publish: false,
+            publish_addr: String::new(),
+            publish_private_key_file: std::path::PathBuf::new(),
+        }
+    }
+
+    fn default_mev_args(endpoints: Vec<String>) -> TestMevArgs {
+        TestMevArgs {
+            test_config: default_test_config(),
+            endpoints,
+            beacon_node_endpoint: None,
+            load_test: false,
+            number_of_payloads: 1,
+        }
+    }
+
+    async fn start_healthy_mocked_mev_node() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn assert_verdict(
+        results: &std::collections::HashMap<String, Vec<TestResult>>,
+        target: &str,
+        expected: &[(&str, TestVerdict)],
+    ) {
+        let target_results = results.get(target).expect("missing target in results");
+        assert_eq!(
+            target_results.len(),
+            expected.len(),
+            "result count mismatch for {target}"
+        );
+        let by_name: std::collections::HashMap<&str, TestVerdict> = target_results
+            .iter()
+            .map(|r| (r.name.as_str(), r.verdict))
+            .collect();
+        for (name, verdict) in expected {
+            let actual = by_name
+                .get(name)
+                .unwrap_or_else(|| panic!("missing result for {name}"));
+            assert_eq!(*actual, *verdict, "verdict mismatch for {name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_mev_default_scenario() {
+        let server = start_healthy_mocked_mev_node().await;
+        let url = server.uri();
+        let args = default_mev_args(vec![url.clone()]);
+
+        let mut buf = Vec::new();
+        let res = run(args, &mut buf, &CancellationToken::new())
+            .await
+            .unwrap();
+
+        assert_verdict(
+            &res.targets,
+            &url,
+            &[
+                ("Ping", TestVerdict::Ok),
+                ("PingMeasure", TestVerdict::Good),
+                ("CreateBlock", TestVerdict::Skip),
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mev_connection_refused() {
+        let endpoint1 = "http://localhost:19950".to_string();
+        let endpoint2 = "http://localhost:19951".to_string();
+        let args = default_mev_args(vec![endpoint1.clone(), endpoint2.clone()]);
+
+        let mut buf = Vec::new();
+        let res = run(args, &mut buf, &CancellationToken::new())
+            .await
+            .unwrap();
+
+        for endpoint in [&endpoint1, &endpoint2] {
+            let target_results = res.targets.get(endpoint).expect("missing target");
+            for r in target_results {
+                if r.name == "CreateBlock" {
+                    assert_eq!(
+                        r.verdict,
+                        TestVerdict::Skip,
+                        "expected skip for CreateBlock"
+                    );
+                } else {
+                    assert_eq!(r.verdict, TestVerdict::Fail, "expected fail for {}", r.name);
+                    assert!(
+                        r.error.message().is_some(),
+                        "expected error message for {}",
+                        r.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_mev_timeout() {
+        let endpoint1 = "http://localhost:19952".to_string();
+        let endpoint2 = "http://localhost:19953".to_string();
+        let mut args = default_mev_args(vec![endpoint1.clone(), endpoint2.clone()]);
+        args.test_config.timeout = StdDuration::from_nanos(100);
+
+        let mut buf = Vec::new();
+        let res = run(args, &mut buf, &CancellationToken::new())
+            .await
+            .unwrap();
+
+        for endpoint in [&endpoint1, &endpoint2] {
+            let target_results = res.targets.get(endpoint).expect("missing target");
+            assert!(!target_results.is_empty());
+            for r in target_results {
+                // CreateBlock skips immediately (load_test=false); others should fail due to
+                // timeout
+                let expected = if r.name == "CreateBlock" {
+                    TestVerdict::Skip
+                } else {
+                    TestVerdict::Fail
+                };
+                assert_eq!(r.verdict, expected, "verdict mismatch for {}", r.name);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_mev_quiet() {
+        let dir = tempfile::tempdir().unwrap();
+        let json_path = dir.path().join("output.json");
+
+        let endpoint1 = "http://localhost:19954".to_string();
+        let endpoint2 = "http://localhost:19955".to_string();
+        let mut args = default_mev_args(vec![endpoint1, endpoint2]);
+        args.test_config.quiet = true;
+        args.test_config.output_json = json_path.to_str().unwrap().to_string();
+
+        let mut buf = Vec::new();
+        run(args, &mut buf, &CancellationToken::new())
+            .await
+            .unwrap();
+
+        assert!(buf.is_empty(), "expected no output on quiet mode");
+    }
+
+    #[tokio::test]
+    async fn test_mev_unsupported_test() {
+        let mut args = default_mev_args(vec!["http://localhost:19956".to_string()]);
+        args.test_config.test_cases = Some(vec!["notSupportedTest".to_string()]);
+
+        let mut buf = Vec::new();
+        let err = run(args, &mut buf, &CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("test case not supported"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mev_custom_test_cases() {
+        let endpoint1 = "http://localhost:19957".to_string();
+        let endpoint2 = "http://localhost:19958".to_string();
+        let mut args = default_mev_args(vec![endpoint1.clone(), endpoint2.clone()]);
+        args.test_config.test_cases = Some(vec!["Ping".to_string()]);
+
+        let mut buf = Vec::new();
+        let res = run(args, &mut buf, &CancellationToken::new())
+            .await
+            .unwrap();
+
+        for endpoint in [&endpoint1, &endpoint2] {
+            let target_results = res.targets.get(endpoint).expect("missing target");
+            assert_eq!(target_results.len(), 1);
+            assert_eq!(target_results[0].name, "Ping");
+            assert_eq!(target_results[0].verdict, TestVerdict::Fail);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_mev_write_to_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("mev-test-output.json");
+
+        let endpoint1 = "http://localhost:19959".to_string();
+        let endpoint2 = "http://localhost:19960".to_string();
+        let mut args = default_mev_args(vec![endpoint1, endpoint2]);
+        args.test_config.output_json = file_path.to_str().unwrap().to_string();
+
+        let mut buf = Vec::new();
+        let res = run(args, &mut buf, &CancellationToken::new())
+            .await
+            .unwrap();
+
+        assert!(file_path.exists(), "output file should exist");
+
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        let written: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert!(
+            written.get("mev").is_some(),
+            "expected mev key in output JSON"
+        );
+
+        assert_eq!(res.category_name, Some(TestCategory::Mev));
+        assert!(res.score.is_some());
+    }
 
     #[test]
     fn test_format_mev_relay_name() {
