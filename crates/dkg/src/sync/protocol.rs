@@ -1,7 +1,9 @@
 //! Protocol helpers for the DKG sync protocol.
 
-use libp2p::identity::{Keypair, PublicKey};
-use libp2p::StreamProtocol;
+use libp2p::{
+    StreamProtocol,
+    identity::{Keypair, PublicKey},
+};
 use pluto_core::version::SemVer;
 
 use crate::dkgpb::v1::sync::MsgSync;
