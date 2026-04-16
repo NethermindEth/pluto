@@ -17,7 +17,7 @@ use pluto_eth2util::{
     enr::Record,
     helpers::{checksum_address, public_key_to_address},
     network::{
-        GNOSIS, GOERLI, HOLESKY, HOODI, MAINNET, PRATER, SEPOLIA, network_to_fork_version,
+        GNOSIS, GOERLI, HOODI, MAINNET, PRATER, SEPOLIA, network_to_fork_version,
         valid_network,
     },
 };
@@ -72,7 +72,7 @@ pub struct CreateDkgArgs {
     )]
     pub withdrawal_addresses: Vec<String>,
 
-    #[arg(long, default_value = DEFAULT_NETWORK, help = "Ethereum network to create validators for. Options: mainnet, goerli, sepolia, hoodi, holesky, gnosis, chiado.")]
+    #[arg(long, default_value = DEFAULT_NETWORK, help = "Ethereum network to create validators for. Options: mainnet, goerli, sepolia, hoodi, gnosis, chiado.")]
     pub network: String,
 
     #[arg(
@@ -495,7 +495,7 @@ fn is_main_or_gnosis(network: &str) -> bool {
 
 fn generate_launchpad_link(config_hash: &[u8], network: &str) -> String {
     let network_prefix =
-        if network == HOLESKY.name || network == HOODI.name || network == SEPOLIA.name {
+        if network == HOODI.name || network == SEPOLIA.name {
             format!("{network}.")
         } else {
             String::new()
@@ -795,7 +795,6 @@ mod tests {
     }
 
     #[test_case("mainnet", b"123abc", "https://launchpad.obol.org/dv#0x313233616263" ; "mainnet")]
-    #[test_case("holesky", b"123abc", "https://holesky.launchpad.obol.org/dv#0x313233616263" ; "holesky")]
     #[test_case("hoodi",   b"123abc", "https://hoodi.launchpad.obol.org/dv#0x313233616263"   ; "hoodi")]
     #[test_case("sepolia", b"123abc", "https://sepolia.launchpad.obol.org/dv#0x313233616263" ; "sepolia")]
     #[test_case("testnet-1", b"123abc", "https://launchpad.obol.org/dv#0x313233616263"       ; "unknown_network")]
