@@ -1,20 +1,27 @@
 name: Claude Code Review
 
 on:
-  issue_comment:
-    types: [created]
+  pull_request:
+    types: [review_requested]
+    # Optional: Only run on specific file changes
+    # paths:
+    #   - "src/**/*.ts"
+    #   - "src/**/*.tsx"
+    #   - "src/**/*.js"
+    #   - "src/**/*.jsx"
 
 jobs:
   claude-review:
+    # Only run when a specific reviewer is requested (e.g., "claude-code" or specific team)
     if: |
-      github.event.issue.pull_request != null &&
-      contains(github.event.comment.body, '/claude-review')
+      contains(github.event.pull_request.requested_reviewers.*.login, 'claude-code') ||
+      contains(github.event.pull_request.requested_teams.*.slug, 'claude-code')
 
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
-      issues: write
+      pull-requests: read
+      issues: read
       id-token: write
 
     steps:
@@ -42,6 +49,9 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_API_KEY }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
           track_progress: true
-          prompt: '/review-pr ${{ github.event.pull_request.number || github.event.issue.number }}'
+          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugins: 'code-review@claude-code-plugins'
+          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
+          # or https://code.claude.com/docs/en/cli-reference for available options
