@@ -331,6 +331,8 @@ async fn run_create_dkg(mut args: CreateDkgArgs) -> Result<(), CreateDkgError> {
         });
     }
 
+    // Taking total number of operators, operator_enrs and operator_addresses are
+    // mutually exclusive so no if statement is needed.
     let num_operators = operators.len() as u64;
     let safe_thresh = safe_threshold(num_operators)?;
     let threshold = if args.threshold == 0 {
@@ -387,10 +389,7 @@ async fn run_create_dkg(mut args: CreateDkgArgs) -> Result<(), CreateDkgError> {
             pluto_cluster::eip712sigs::sign_cluster_definition_hash(key, &def)?;
     }
 
-    // Verify signatures when an ETH1 endpoint is available. Skipped when the
-    // endpoint is empty because the client cannot connect — safe for DKG create
-    // since operators have no signatures at this stage.
-    if !args.publish && !args.execution_engine_addr.is_empty() {
+    if !args.publish {
         let eth1 = pluto_eth1wrap::EthClient::new(&args.execution_engine_addr).await?;
         def.verify_signatures(&eth1).await?;
     }
@@ -541,6 +540,10 @@ fn is_main_or_gnosis(network: &str) -> bool {
     network == MAINNET.name || network == GNOSIS.name
 }
 
+// Ports cluster.Threshold from charon (cluster/helpers.go), which computes
+// ceil(2n/3) using math.Ceil(float64(2*n) / 3). The integer identity
+// ceil(a/b) == (a + b - 1) / b gives ceil(2n/3) == (2n + 2) / 3, producing
+// identical results for all n.
 fn safe_threshold(num_operators: u64) -> Result<u64, CreateDkgError> {
     let two_n = num_operators
         .checked_mul(2)
@@ -752,12 +755,12 @@ mod tests {
     )]
     #[test_case(
         CreateDkgArgs { threshold: 1, ..default_args() },
-        "Create DKG error: threshold must be greater than 1" ;
+        "Create DKG error: threshold must be greater than 1 (threshold=1, min=2)" ;
         "threshold_below_minimum"
     )]
     #[test_case(
         CreateDkgArgs { operator_enrs: VALID_ENRS[..3].iter().map(|s| s.to_string()).collect(), threshold: 4, ..default_args() },
-        "Create DKG error: threshold cannot be greater than number of operators" ;
+        "Create DKG error: threshold (4) cannot be greater than number of operators (3)" ;
         "threshold_above_maximum"
     )]
     #[tokio::test]
