@@ -46,17 +46,17 @@ use rand::rngs::OsRng;
 use tracing::{debug, info, warn};
 
 use crate::{
-    commands::{address_validation::validate_addresses, create_dkg},
+    commands::{
+        address_validation::validate_addresses,
+        constants::{MIN_NODES, MIN_THRESHOLD},
+        create_dkg,
+    },
     error::{
         CliError, CreateClusterError, InvalidNetworkConfigError, Result as CliResult,
         ThresholdError,
     },
 };
 
-/// Minimum number of nodes required in a cluster.
-pub const MIN_NODES: u64 = 3;
-/// Minimum threshold value.
-pub const MIN_THRESHOLD: u64 = 2;
 /// HTTP scheme.
 const HTTP_SCHEME: &str = "http";
 /// HTTPS scheme.

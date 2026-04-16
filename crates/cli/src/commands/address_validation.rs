@@ -37,7 +37,7 @@ type Result<T> = std::result::Result<T, AddressValidationError>;
 ///
 /// Returns an error if the number of addresses doesn't match and isn't exactly
 /// 1.
-pub(crate) fn validate_addresses(
+pub(super) fn validate_addresses(
     num_validators: u64,
     fee_recipient_addrs: &[String],
     withdrawal_addrs: &[String],

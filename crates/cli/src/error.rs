@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::commands::create_cluster::{MIN_NODES, MIN_THRESHOLD};
+use crate::commands::constants::{MIN_NODES, MIN_THRESHOLD};
 
 /// Result type for CLI operations.
 pub type Result<T> = std::result::Result<T, CliError>;

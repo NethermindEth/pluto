@@ -24,10 +24,7 @@ use pluto_eth2util::{
 use thiserror::Error;
 use tracing::{info, warn};
 
-const DEFAULT_NETWORK: &str = "mainnet";
-const ZERO_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
-const MIN_NODES: usize = 3;
-const MIN_THRESHOLD: u64 = 2;
+use super::constants::{DEFAULT_NETWORK, MIN_NODES, MIN_THRESHOLD, ZERO_ADDRESS};
 
 /// Arguments for the `pluto create dkg` command.
 #[derive(clap::Args)]
@@ -412,7 +409,7 @@ fn validate_dkg_config(
     consensus_protocol: &str,
     compounding: bool,
 ) -> Result<(), CreateDkgError> {
-    if num_operators < MIN_NODES {
+    if (num_operators as u64) < MIN_NODES {
         return Err(CreateDkgError::TooFewOperators { num_operators });
     }
 
