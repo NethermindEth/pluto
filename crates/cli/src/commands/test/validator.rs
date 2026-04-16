@@ -314,11 +314,8 @@ async fn ping_continuously(
                     return;
                 }
             }
-            Ok(Err(e)) => {
-                tracing::warn!(target = %address, error = ?e, "Ping connection attempt failed during load test");
-            }
-            Err(e) => {
-                tracing::warn!(target = %address, error = ?e, "Ping connection attempt timed out during load test");
+            Ok(Err(_)) | Err(_) => {
+                return;
             }
         }
         let sleep_ms = rand::thread_rng().gen_range(0..100);
