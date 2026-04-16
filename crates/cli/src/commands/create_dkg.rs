@@ -9,7 +9,6 @@ use k256::{SecretKey, elliptic_curve::rand_core::OsRng};
 use pluto_app::obolapi::{Client, ClientOptions};
 use pluto_cluster::{
     definition::{Creator, Definition},
-    eip712sigs::{sign_cluster_definition_hash, sign_terms_and_conditions},
     operator::Operator,
 };
 use pluto_core::consensus::protocols::is_supported_protocol_name;
@@ -37,84 +36,116 @@ const MIN_THRESHOLD: u64 = 2;
     long_about = "Create a cluster definition file that will be used by all participants of a DKG."
 )]
 pub struct CreateDkgArgs {
-    /// The folder to write the output cluster-definition.json file to.
-    #[arg(long, default_value = ".charon")]
+    #[arg(
+        long,
+        default_value = ".charon",
+        help = "The folder to write the output cluster-definition.json file to."
+    )]
     pub output_dir: PathBuf,
 
-    /// Optional cosmetic cluster name.
-    #[arg(long, default_value = "")]
+    #[arg(long, default_value = "", help = "Optional cosmetic cluster name")]
     pub name: String,
 
-    /// The number of distributed validators the cluster will manage (32ETH+
-    /// staked for each).
-    #[arg(long, default_value_t = 1)]
+    #[arg(
+        long,
+        default_value_t = 1,
+        help = "The number of distributed validators the cluster will manage (32ETH+ staked for each)."
+    )]
     pub num_validators: u64,
 
-    /// Optional override of threshold required for signature reconstruction.
-    /// Defaults to ceil(n*2/3) if zero. Warning, non-default values
-    /// decrease security.
-    #[arg(long, short = 't', default_value_t = 0)]
+    #[arg(
+        long,
+        short = 't',
+        default_value_t = 0,
+        help = "Optional override of threshold required for signature reconstruction. Defaults to ceil(n*2/3) if zero. Warning, non-default values decrease security."
+    )]
     pub threshold: u64,
 
-    /// Comma separated list of Ethereum addresses of the fee recipient for each
-    /// validator. Either provide a single fee recipient address or one per
-    /// validator.
-    #[arg(long, value_delimiter = ',')]
+    #[arg(
+        long,
+        value_delimiter = ',',
+        help = "Comma separated list of Ethereum addresses of the fee recipient for each validator. Either provide a single fee recipient address or fee recipient addresses for each validator."
+    )]
     pub fee_recipient_addresses: Vec<String>,
 
-    /// Comma separated list of Ethereum addresses to receive the returned stake
-    /// and accrued rewards for each validator. Either provide a single
-    /// withdrawal address or one per validator.
-    #[arg(long, value_delimiter = ',')]
+    #[arg(
+        long,
+        value_delimiter = ',',
+        help = "Comma separated list of Ethereum addresses to receive the returned stake and accrued rewards for each validator. Either provide a single withdrawal address or withdrawal addresses for each validator."
+    )]
     pub withdrawal_addresses: Vec<String>,
 
-    /// Ethereum network to create validators for.
-    /// Options: mainnet, goerli, sepolia, hoodi, holesky, gnosis, chiado.
-    #[arg(long, default_value = DEFAULT_NETWORK)]
+    #[arg(long, default_value = DEFAULT_NETWORK, help = "Ethereum network to create validators for. Options: mainnet, goerli, sepolia, hoodi, holesky, gnosis, chiado.")]
     pub network: String,
 
-    /// DKG algorithm to use; default, frost.
-    #[arg(long = "dkg-algorithm", default_value = "default")]
+    #[arg(
+        long = "dkg-algorithm",
+        default_value = "default",
+        help = "DKG algorithm to use; default, frost"
+    )]
     pub dkg_algo: String,
 
-    /// List of partial deposit amounts (integers) in ETH. Values must sum up to
-    /// at least 32ETH.
-    #[arg(long, value_delimiter = ',')]
+    #[arg(
+        long,
+        value_delimiter = ',',
+        help = "List of partial deposit amounts (integers) in ETH. Values must sum up to at least 32ETH."
+    )]
     pub deposit_amounts: Vec<u64>,
 
-    /// Comma-separated list of each operator's Charon ENR address.
-    #[arg(long, value_delimiter = ',')]
+    #[arg(
+        long,
+        value_delimiter = ',',
+        help = "Comma-separated list of each operator's Charon ENR address."
+    )]
     pub operator_enrs: Vec<String>,
 
-    /// Preferred consensus protocol name for the cluster. Selected
-    /// automatically when not specified.
-    #[arg(long, default_value = "")]
+    #[arg(
+        long,
+        default_value = "",
+        help = "Preferred consensus protocol name for the cluster. Selected automatically when not specified."
+    )]
     pub consensus_protocol: String,
 
-    /// Preferred target gas limit for transactions.
-    #[arg(long, default_value_t = 60_000_000)]
+    #[arg(
+        long,
+        default_value_t = 60_000_000,
+        help = "Preferred target gas limit for transactions."
+    )]
     pub target_gas_limit: u64,
 
-    /// Enable compounding rewards for validators by using 0x02 withdrawal
-    /// credentials.
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Enable compounding rewards for validators by using 0x02 withdrawal credentials."
+    )]
     pub compounding: bool,
 
-    /// The address of the execution engine JSON-RPC API.
-    #[arg(long = "execution-client-rpc-endpoint", default_value = "")]
+    #[arg(
+        long = "execution-client-rpc-endpoint",
+        default_value = "",
+        help = "The address of the execution engine JSON-RPC API."
+    )]
     pub execution_engine_addr: String,
 
-    /// Creates an invitation to the DKG ceremony on the DV Launchpad.
-    /// Terms and conditions apply.
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Creates an invitation to the DKG ceremony on the DV Launchpad. Terms and conditions apply."
+    )]
     pub publish: bool,
 
-    /// The URL to publish the cluster to.
-    #[arg(long, default_value = "https://api.obol.tech/v1")]
+    #[arg(
+        long,
+        default_value = "https://api.obol.tech/v1",
+        help = "The URL to publish the cluster to."
+    )]
     pub publish_address: String,
 
-    /// Comma-separated list of each operator's Ethereum address.
-    #[arg(long, value_delimiter = ',')]
+    #[arg(
+        long,
+        value_delimiter = ',',
+        help = "Comma-separated list of each operator's Ethereum address."
+    )]
     pub operator_addresses: Vec<String>,
 }
 
@@ -136,9 +167,6 @@ pub enum CreateDkgError {
         #[source]
         source: pluto_eth2util::helpers::HelperError,
     },
-
-    #[error("operator count overflow")]
-    OperatorCountOverflow,
 
     #[error(
         "number of operators is below minimum: got {num_operators}, need at least {MIN_NODES} via --operator-enrs or --operator-addresses"
@@ -166,11 +194,11 @@ pub enum CreateDkgError {
     #[error("threshold overflow")]
     ThresholdOverflow,
 
-    #[error("threshold must be greater than 1")]
-    ThresholdTooLow,
+    #[error("threshold must be greater than 1 (threshold={threshold}, min={min})")]
+    ThresholdTooLow { threshold: u64, min: u64 },
 
-    #[error("threshold cannot be greater than number of operators")]
-    ThresholdTooHigh,
+    #[error("threshold ({threshold}) cannot be greater than number of operators ({num_enrs})")]
+    ThresholdTooHigh { threshold: u64, num_enrs: u64 },
 
     #[error("cannot provide both --operator-enrs and --operator-addresses")]
     MutuallyExclusiveOperatorFlags,
@@ -217,12 +245,17 @@ pub async fn run(args: CreateDkgArgs) -> crate::error::Result<()> {
 fn parse_args(args: CreateDkgArgs) -> Result<CreateDkgArgs, CreateDkgError> {
     if args.threshold != 0 {
         if args.threshold < MIN_THRESHOLD {
-            return Err(CreateDkgError::ThresholdTooLow);
+            return Err(CreateDkgError::ThresholdTooLow {
+                threshold: args.threshold,
+                min: MIN_THRESHOLD,
+            });
         }
-        let num_enrs = u64::try_from(args.operator_enrs.len())
-            .map_err(|_| CreateDkgError::OperatorCountOverflow)?;
+        let num_enrs = args.operator_enrs.len() as u64;
         if args.threshold > num_enrs {
-            return Err(CreateDkgError::ThresholdTooHigh);
+            return Err(CreateDkgError::ThresholdTooHigh {
+                threshold: args.threshold,
+                num_enrs,
+            });
         }
     }
 
@@ -298,8 +331,7 @@ async fn run_create_dkg(mut args: CreateDkgArgs) -> Result<(), CreateDkgError> {
         });
     }
 
-    let num_operators =
-        u64::try_from(operators.len()).map_err(|_| CreateDkgError::OperatorCountOverflow)?;
+    let num_operators = operators.len() as u64;
     let safe_thresh = safe_threshold(num_operators)?;
     let threshold = if args.threshold == 0 {
         safe_thresh
@@ -351,7 +383,8 @@ async fn run_create_dkg(mut args: CreateDkgArgs) -> Result<(), CreateDkgError> {
     def.set_definition_hashes()?;
 
     if let Some(key) = &priv_key {
-        def.creator.config_signature = sign_cluster_definition_hash(key, &def)?;
+        def.creator.config_signature =
+            pluto_cluster::eip712sigs::sign_cluster_definition_hash(key, &def)?;
     }
 
     // Verify signatures when an ETH1 endpoint is available. Skipped when the
@@ -551,7 +584,7 @@ async fn publish_partial_definition(
             .build(),
     )?;
 
-    let sig = sign_terms_and_conditions(&priv_key, &def)?;
+    let sig = pluto_cluster::eip712sigs::sign_terms_and_conditions(&priv_key, &def)?;
 
     api_client
         .sign_terms_and_conditions(&def.creator.address, &def.fork_version, &sig)
