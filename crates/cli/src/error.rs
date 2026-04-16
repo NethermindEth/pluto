@@ -64,11 +64,11 @@ pub enum CliError {
 
     /// Test timeout or interrupted.
     #[error("timeout/interrupted")]
-    _TimeoutInterrupted,
+    TimeoutInterrupted,
 
     /// Test case not supported.
     #[error("test case not supported")]
-    _TestCaseNotSupported,
+    TestCaseNotSupported,
 
     /// Relay P2P error.
     #[error("Relay P2P error: {0}")]
