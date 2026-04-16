@@ -179,9 +179,6 @@ pub enum CreateDkgError {
     #[error(transparent)]
     AddressValidation(#[from] super::address_validation::AddressValidationError),
 
-    #[error("threshold overflow")]
-    ThresholdOverflow,
-
     #[error("threshold must be greater than 1 (threshold={threshold}, min={min})")]
     ThresholdTooLow { threshold: u64, min: u64 },
 
@@ -322,13 +319,13 @@ async fn run_create_dkg(mut args: CreateDkgArgs) -> Result<(), CreateDkgError> {
     // Taking total number of operators, operator_enrs and operator_addresses are
     // mutually exclusive so no if statement is needed.
     let num_operators = operators.len() as u64;
-    let safe_thresh = safe_threshold(num_operators)?;
+    let safe_threshold = pluto_cluster::helpers::threshold(num_operators);
     let threshold = if args.threshold == 0 {
-        safe_thresh
+        safe_threshold
     } else {
         warn!(
             threshold = args.threshold,
-            safe_threshold = safe_thresh,
+            safe_threshold = safe_threshold,
             "Non standard `--threshold` flag provided, this will affect cluster safety"
         );
         args.threshold
@@ -494,20 +491,6 @@ pub fn validate_withdrawal_addrs(
 
 fn is_main_or_gnosis(network: &str) -> bool {
     network == MAINNET.name || network == GNOSIS.name
-}
-
-// Ports cluster.Threshold from charon (cluster/helpers.go), which computes
-// ceil(2n/3) using math.Ceil(float64(2*n) / 3). The integer identity
-// ceil(a/b) == (a + b - 1) / b gives ceil(2n/3) == (2n + 2) / 3, producing
-// identical results for all n.
-fn safe_threshold(num_operators: u64) -> Result<u64, CreateDkgError> {
-    let two_n = num_operators
-        .checked_mul(2)
-        .ok_or(CreateDkgError::ThresholdOverflow)?;
-    Ok(two_n
-        .checked_add(2)
-        .ok_or(CreateDkgError::ThresholdOverflow)?
-        / 3)
 }
 
 fn generate_launchpad_link(config_hash: &[u8], network: &str) -> String {
