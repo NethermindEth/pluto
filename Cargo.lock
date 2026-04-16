@@ -5458,6 +5458,7 @@ name = "pluto-cli"
 version = "1.7.1"
 dependencies = [
  "backon",
+ "chrono",
  "clap",
  "hex",
  "humantime",
@@ -5466,6 +5467,9 @@ dependencies = [
  "pluto-app",
  "pluto-cluster",
  "pluto-core",
+ "pluto-crypto",
+ "pluto-eth1wrap",
+ "pluto-eth2api",
  "pluto-eth2util",
  "pluto-k1util",
  "pluto-p2p",
@@ -5483,6 +5487,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "url",
  "wiremock",
 ]
 
