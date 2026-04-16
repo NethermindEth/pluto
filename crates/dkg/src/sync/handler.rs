@@ -422,7 +422,14 @@ async fn handle_inbound_stream(
 
             // Record observed step even after validation failure.
             // Barrier waiters still fail fast on `server.err`
-            if server.update_step(peer_id, message.step).await? {
+            let updated = match server.update_step(peer_id, message.step).await {
+                Ok(updated) => updated,
+                Err(error) => {
+                    server.set_err(error.clone()).await;
+                    return Err(error);
+                }
+            };
+            if updated {
                 send_inbound_event(
                     &inbound_events_tx,
                     OutEvent::PeerStepUpdated {
@@ -454,6 +461,6 @@ async fn handle_inbound_stream(
 
 fn send_inbound_event(inbound_events_tx: &mpsc::UnboundedSender<OutEvent>, event: OutEvent) {
     if let Err(error) = inbound_events_tx.send(event) {
-        tracing::error!(err = %error, "Failed to deliver inbound sync event");
+        debug!(err = %error, "dropping inbound sync event: handler event receiver closed");
     }
 }

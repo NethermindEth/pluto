@@ -190,10 +190,10 @@ impl Server {
     }
 
     pub(crate) async fn clear_connected(&self, peer_id: PeerId) {
-        self.mutate_state(|state| {
-            state.connected.remove(&peer_id);
-        })
-        .await;
+        let mut state = self.inner.state.write().await;
+        if state.connected.remove(&peer_id) {
+            self.inner.notify.notify_waiters();
+        }
     }
 
     pub(crate) async fn set_shutdown(&self, peer_id: PeerId) {

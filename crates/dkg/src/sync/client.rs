@@ -175,7 +175,7 @@ impl Client {
 
     pub(crate) fn activate(&self) -> Result<()> {
         self.inner.active.store(true, Ordering::SeqCst);
-        let _ = self.inner.stop_tx.send(false);
+        self.set_stop_requested(false);
 
         if let Some(command_tx) = &self.inner.command_tx
             && command_tx
@@ -192,7 +192,18 @@ impl Client {
     fn request_stop(&self) {
         self.inner.active.store(false, Ordering::SeqCst);
         self.inner.connected.store(false, Ordering::SeqCst);
-        let _ = self.inner.stop_tx.send(true);
+        self.set_stop_requested(true);
+    }
+
+    fn set_stop_requested(&self, stop_requested: bool) {
+        self.inner.stop_tx.send_if_modified(|current| {
+            if *current == stop_requested {
+                false
+            } else {
+                *current = stop_requested;
+                true
+            }
+        });
     }
 
     async fn wait_finished(
@@ -217,6 +228,10 @@ impl Client {
                 changed = done_rx.changed() => {
                     if changed.is_err() {
                         return Err(Error::CompletionChannelClosed);
+                    }
+
+                    if let Some(result) = done_rx.borrow().clone() {
+                        return result;
                     }
                 }
             }
