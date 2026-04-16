@@ -17,8 +17,7 @@ use pluto_eth2util::{
     enr::Record,
     helpers::{checksum_address, public_key_to_address},
     network::{
-        GNOSIS, GOERLI, HOODI, MAINNET, PRATER, SEPOLIA, network_to_fork_version,
-        valid_network,
+        GNOSIS, GOERLI, HOODI, MAINNET, PRATER, SEPOLIA, network_to_fork_version, valid_network,
     },
 };
 use thiserror::Error;
@@ -494,12 +493,11 @@ fn is_main_or_gnosis(network: &str) -> bool {
 }
 
 fn generate_launchpad_link(config_hash: &[u8], network: &str) -> String {
-    let network_prefix =
-        if network == HOODI.name || network == SEPOLIA.name {
-            format!("{network}.")
-        } else {
-            String::new()
-        };
+    let network_prefix = if network == HOODI.name || network == SEPOLIA.name {
+        format!("{network}.")
+    } else {
+        String::new()
+    };
     format!(
         "https://{}launchpad.obol.org/dv#0x{}",
         network_prefix,
