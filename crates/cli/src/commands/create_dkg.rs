@@ -303,7 +303,7 @@ async fn run_create_dkg(mut args: CreateDkgArgs) -> Result<(), CreateDkgError> {
 
     validate_withdrawal_addrs(&withdrawal_addrs, &args.network)?;
 
-    info!("Pluto create DKG starting");
+    pluto_core::version::log_info("Pluto create DKG starting");
 
     let def_path = args.output_dir.join("cluster-definition.json");
     if def_path.exists() {
