@@ -1,3 +1,4 @@
+pub(crate) mod address_validation;
 pub mod create_cluster;
 pub mod create_dkg;
 pub mod create_enr;

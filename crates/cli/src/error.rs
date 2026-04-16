@@ -264,27 +264,9 @@ pub enum CreateClusterError {
     #[error("No validators specified in the given definition")]
     NoValidatorsInDefinition,
 
-    /// Mismatching number of fee recipient addresses.
-    #[error(
-        "mismatching --num-validators and --fee-recipient-addresses: num_validators={num_validators}, addresses={addresses}"
-    )]
-    MismatchingFeeRecipientAddresses {
-        /// Number of validators.
-        num_validators: u64,
-        /// Number of addresses.
-        addresses: usize,
-    },
-
-    /// Mismatching number of withdrawal addresses.
-    #[error(
-        "mismatching --num-validators and --withdrawal-addresses: num_validators={num_validators}, addresses={addresses}"
-    )]
-    MismatchingWithdrawalAddresses {
-        /// Number of validators.
-        num_validators: u64,
-        /// Number of addresses.
-        addresses: usize,
-    },
+    /// Address validation error.
+    #[error("Address validation error: {0}")]
+    AddressValidationError(#[from] crate::commands::address_validation::AddressValidationError),
 
     /// K1 error.
     #[error("K1 error: {0}")]

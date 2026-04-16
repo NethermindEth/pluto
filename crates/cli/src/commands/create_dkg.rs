@@ -179,17 +179,8 @@ pub enum CreateDkgError {
     #[error("unsupported consensus protocol")]
     UnsupportedConsensusProtocol,
 
-    #[error("address count overflow")]
-    AddressCountOverflow,
-
-    #[error("mismatching --num-validators and --fee-recipient-addresses")]
-    MismatchingFeeRecipientAddresses,
-
-    #[error("mismatching --num-validators and --withdrawal-addresses")]
-    MismatchingWithdrawalAddresses,
-
-    #[error("num_validators is greater than usize::MAX")]
-    NumValidatorsOverflow,
+    #[error(transparent)]
+    AddressValidation(#[from] super::address_validation::AddressValidationError),
 
     #[error("threshold overflow")]
     ThresholdOverflow,
@@ -295,10 +286,10 @@ async fn run_create_dkg(mut args: CreateDkgArgs) -> Result<(), CreateDkgError> {
         args.compounding,
     )?;
 
-    let (fee_recipient_addrs, withdrawal_addrs) = validate_addresses(
+    let (fee_recipient_addrs, withdrawal_addrs) = super::address_validation::validate_addresses(
         args.num_validators,
-        args.fee_recipient_addresses.clone(),
-        args.withdrawal_addresses.clone(),
+        &args.fee_recipient_addresses,
+        &args.withdrawal_addresses,
     )?;
 
     validate_withdrawal_addrs(&withdrawal_addrs, &args.network)?;
@@ -439,38 +430,6 @@ fn validate_dkg_config(
     }
 
     Ok(())
-}
-
-fn validate_addresses(
-    num_validators: u64,
-    fee_recipient_addrs: Vec<String>,
-    withdrawal_addrs: Vec<String>,
-) -> Result<(Vec<String>, Vec<String>), CreateDkgError> {
-    let num_vals = num_validators;
-    let num_fee = u64::try_from(fee_recipient_addrs.len())
-        .map_err(|_| CreateDkgError::AddressCountOverflow)?;
-    let num_wa =
-        u64::try_from(withdrawal_addrs.len()).map_err(|_| CreateDkgError::AddressCountOverflow)?;
-
-    if num_fee != num_vals && num_fee != 1 {
-        return Err(CreateDkgError::MismatchingFeeRecipientAddresses);
-    }
-
-    if num_wa != num_vals && num_wa != 1 {
-        return Err(CreateDkgError::MismatchingWithdrawalAddresses);
-    }
-
-    let num_validators =
-        usize::try_from(num_validators).map_err(|_| CreateDkgError::NumValidatorsOverflow)?;
-    let expand = |addrs: Vec<String>| -> Vec<String> {
-        if addrs.len() == 1 {
-            vec![addrs[0].clone(); num_validators]
-        } else {
-            addrs
-        }
-    };
-
-    Ok((expand(fee_recipient_addrs), expand(withdrawal_addrs)))
 }
 
 /// Errors that can occur during withdrawal address validation.
