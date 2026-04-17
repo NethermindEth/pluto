@@ -527,10 +527,14 @@ async fn main() -> Result<()> {
     };
 
     let cancellation = CancellationToken::new();
-    let lock_hash_hex = hex::encode(&lock.lock_hash);
-    let relays = bootnode::new_relays(cancellation.child_token(), &args.relays, &lock_hash_hex)
-        .await
-        .context("failed to resolve relays")?;
+    let definition_hash_hex = hex::encode(&lock.definition_hash);
+    let relays = bootnode::new_relays(
+        cancellation.child_token(),
+        &args.relays,
+        &definition_hash_hex,
+    )
+    .await
+    .context("failed to resolve relays")?;
     let relay_peer_ids = relays
         .iter()
         .filter_map(|relay| relay.peer().ok().flatten().map(|peer| peer.id))
@@ -560,7 +564,7 @@ async fn main() -> Result<()> {
         cluster_peers.clone(),
         p2p_context.clone(),
         &key,
-        lock.lock_hash.clone(),
+        lock.definition_hash.clone(),
         version,
     )?;
 
