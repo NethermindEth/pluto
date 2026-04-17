@@ -46,6 +46,25 @@ impl Failure {
     }
 }
 
+/// Peer IDs involved in an [`Error::InvalidSenderPeerIndex`] error.
+#[derive(Debug)]
+pub struct SenderPeerMismatch {
+    /// The peer ID of the actual sender.
+    pub sender: PeerId,
+    /// The peer ID expected at the claimed index.
+    pub expected: PeerId,
+}
+
+impl fmt::Display for SenderPeerMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "sender peer ID ({}) does not match claimed peer index {}",
+            self.sender, self.expected
+        )
+    }
+}
+
 /// User-facing reliable-broadcast error.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -98,6 +117,11 @@ pub enum Error {
     /// The peer index in the message is out of range or matches the local node.
     #[error("invalid peer index: {0}")]
     InvalidPeerIndex(PeerId),
+
+    /// The sender's peer index in the message does not match the sender's
+    /// actual index.
+    #[error("{0}")]
+    InvalidSenderPeerIndex(Box<SenderPeerMismatch>),
 
     /// The repeated hash for the same `(peer, msg_id)` differed.
     #[error("duplicate id with mismatching hash")]

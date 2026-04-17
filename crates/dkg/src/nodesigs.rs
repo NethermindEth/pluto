@@ -166,6 +166,15 @@ async fn receive(
         return Err(bcast::Error::InvalidPeerIndex(peer_id));
     }
 
+    if peers[peer_idx].id != peer_id {
+        return Err(bcast::Error::InvalidSenderPeerIndex(Box::new(
+            bcast::SenderPeerMismatch {
+                sender: peer_id,
+                expected: peers[peer_idx].id,
+            },
+        )));
+    }
+
     let pubkey = peers[peer_idx].public_key()?;
 
     let lock_hash = {
@@ -245,14 +254,17 @@ mod tests {
 
     // Ports TestSigsCallbacks from charon/dkg/nodesigs_internal_test.go.
     // n=10 peers; peer_index 11 = n+1, 10 = n.
-    #[test_case( 0, Some(vec![0u8; 32]), 65, "invalid peer index" ; "wrong_peer_index_equal_to_ours")]
-    #[test_case(11, Some(vec![0u8; 32]), 65, "invalid peer index" ; "wrong_peer_index_more_than_operators")]
-    #[test_case(10, Some(vec![0u8; 32]), 65, "invalid peer index" ; "wrong_peer_index_exactly_at_len")]
-    #[test_case( 1, None,                65, "missing protobuf field: lock_hash" ; "missing_lock_hash")]
-    #[test_case( 1, Some(vec![42u8; 32]), 65, "The signature recovery id byte 42 is invalid" ; "signature_verification_failed")]
-    #[test_case( 1, Some(vec![42u8; 32]),  2, "The signature length is invalid: expected 65, actual 2" ; "malformed_signature")]
+    // sender_peer_idx is the index into `peers` used as the transport-layer PeerId.
+    #[test_case(0,  0, Some(vec![0u8; 32]), 65, "invalid peer index" ; "wrong_peer_index_equal_to_ours")]
+    #[test_case(0, 11, Some(vec![0u8; 32]), 65, "invalid peer index" ; "wrong_peer_index_more_than_operators")]
+    #[test_case(0, 10, Some(vec![0u8; 32]), 65, "invalid peer index" ; "wrong_peer_index_exactly_at_len")]
+    #[test_case(0,  1, Some(vec![0u8; 32]), 65, "does not match" ; "sender_peer_id_mismatch")]
+    #[test_case(1,  1, None,                65, "missing protobuf field: lock_hash" ; "missing_lock_hash")]
+    #[test_case(1,  1, Some(vec![42u8; 32]), 65, "The signature recovery id byte 42 is invalid" ; "signature_verification_failed")]
+    #[test_case(1,  1, Some(vec![42u8; 32]),  2, "The signature length is invalid: expected 65, actual 2" ; "malformed_signature")]
     #[tokio::test]
     async fn sigs_callbacks(
+        sender_peer_idx: usize,
         peer_index: u32,
         lock_hash: Option<Vec<u8>>,
         sig_len: usize,
@@ -271,7 +283,7 @@ mod tests {
         };
 
         let err = receive(
-            peers[0].id,
+            peers[sender_peer_idx].id,
             msg,
             0,
             &peers,
