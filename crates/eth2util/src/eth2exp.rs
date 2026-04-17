@@ -2,8 +2,7 @@
 
 use k256::sha2::{Digest, Sha256};
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, GetSpecRequest, GetSpecResponse,
-    spec::phase0::BLSSignature,
+    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, spec::phase0::BLSSignature,
 };
 
 /// Error type for aggregator selection operations.
@@ -45,30 +44,14 @@ pub enum Eth2ExpError {
     ZeroTargetAggregatorsPerSyncSubcommittee,
 }
 
-/// Provides chain spec parameters from a beacon node.
-#[allow(async_fn_in_trait)]
-pub trait SpecProvider {
-    /// Returns the raw beacon node chain spec as a JSON object.
-    async fn spec(&self) -> Result<serde_json::Value, EthBeaconNodeApiClientError>;
-}
-
-impl SpecProvider for EthBeaconNodeApiClient {
-    async fn spec(&self) -> Result<serde_json::Value, EthBeaconNodeApiClientError> {
-        match self.get_spec(GetSpecRequest {}).await? {
-            GetSpecResponse::Ok(resp) => Ok(resp.data),
-            _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
-        }
-    }
-}
-
 /// Returns true if the validator is the attestation aggregator for the given
 /// committee. Refer: <https://github.com/ethereum/consensus-specs/blob/0fe57a94ca543f02cb5eee4d8aab8495e36c0b86/specs/phase0/validator.md#aggregation-selection>
-pub async fn is_att_aggregator<S: SpecProvider>(
-    spec_provider: &S,
+pub async fn is_att_aggregator(
+    client: &EthBeaconNodeApiClient,
     comm_len: u64,
     slot_sig: BLSSignature,
 ) -> Result<bool, Eth2ExpError> {
-    let spec = spec_provider.spec().await?;
+    let spec = client.fetch_spec().await?;
 
     let aggs_per_comm = spec
         .as_object()
@@ -87,11 +70,11 @@ pub async fn is_att_aggregator<S: SpecProvider>(
 
 /// Returns true if the validator is the aggregator for the provided sync
 /// subcommittee. Refer: <https://github.com/ethereum/consensus-specs/blob/0fe57a94ca543f02cb5eee4d8aab8495e36c0b86/specs/altair/validator.md#aggregation-selection>
-pub async fn is_sync_comm_aggregator<S: SpecProvider>(
-    spec_provider: &S,
+pub async fn is_sync_comm_aggregator(
+    client: &EthBeaconNodeApiClient,
     sig: BLSSignature,
 ) -> Result<bool, Eth2ExpError> {
-    let spec = spec_provider.spec().await?;
+    let spec = client.fetch_spec().await?;
 
     let comm_size = spec
         .as_object()
@@ -136,26 +119,27 @@ mod tests {
     use super::*;
     use serde_json::json;
     use test_case::test_case;
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
 
-    struct MockSpecProvider {
-        spec: serde_json::Value,
+    async fn mock_client(spec_fields: serde_json::Value) -> (MockServer, EthBeaconNodeApiClient) {
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/eth/v1/config/spec"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": spec_fields })))
+            .mount(&server)
+            .await;
+        let client = EthBeaconNodeApiClient::with_base_url(server.uri()).unwrap();
+        (server, client)
     }
 
-    fn default_mock() -> MockSpecProvider {
-        MockSpecProvider {
-            spec: json!({
-                "TARGET_AGGREGATORS_PER_COMMITTEE": "16",
-                "SYNC_COMMITTEE_SIZE": "512",
-                "SYNC_COMMITTEE_SUBNET_COUNT": "4",
-                "TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE": "16"
-            }),
-        }
-    }
-
-    impl SpecProvider for MockSpecProvider {
-        async fn spec(&self) -> Result<serde_json::Value, EthBeaconNodeApiClientError> {
-            Ok(self.spec.clone())
-        }
+    async fn default_client() -> (MockServer, EthBeaconNodeApiClient) {
+        mock_client(json!({
+            "TARGET_AGGREGATORS_PER_COMMITTEE": "16",
+            "SYNC_COMMITTEE_SIZE": "512",
+            "SYNC_COMMITTEE_SUBNET_COUNT": "4",
+            "TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE": "16"
+        }))
+        .await
     }
 
     fn decode_sig(hex_str: &str) -> BLSSignature {
@@ -169,22 +153,26 @@ mod tests {
     const ATT_SIG_HEX: &str = "8776a37d6802c4797d113169c5fcfda50e68a32058eb6356a6f00d06d7da64c841a00c7c38b9b94a204751eca53707bd03523ce4797827d9bacff116a6e776a20bbccff4b683bf5201b610797ed0502557a58a65c8395f8a1649b976c3112d15";
 
     #[tokio::test]
-    async fn test_is_att_aggregator_aggregator() {
+    async fn is_att_aggregator() {
+        let (_server, client) = default_client().await;
         // comm_len=3, TARGET_AGGREGATORS_PER_COMMITTEE=16 → modulo=max(3/16,1)=1 →
         // always true
-        let result = is_att_aggregator(&default_mock(), 3, decode_sig(ATT_SIG_HEX))
-            .await
-            .unwrap();
-        assert!(result);
+        assert!(
+            super::is_att_aggregator(&client, 3, decode_sig(ATT_SIG_HEX))
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
-    async fn test_is_att_aggregator_not_aggregator() {
+    async fn is_not_att_aggregator() {
+        let (_server, client) = default_client().await;
         // comm_len=64, TARGET_AGGREGATORS_PER_COMMITTEE=16 → modulo=4 → false
-        let result = is_att_aggregator(&default_mock(), 64, decode_sig(ATT_SIG_HEX))
-            .await
-            .unwrap();
-        assert!(!result);
+        assert!(
+            !super::is_att_aggregator(&client, 64, decode_sig(ATT_SIG_HEX))
+                .await
+                .unwrap()
+        );
     }
 
     // Non-aggregator test vectors from https://github.com/prysmaticlabs/prysm/blob/39a7988e9edbed5b517229b4d66c2a8aab7c7b4d/beacon-chain/sync/validate_sync_contribution_proof_test.go#L336
@@ -198,8 +186,9 @@ mod tests {
     #[test_case("a9dbd88a49a7269e91b8ef1296f1e07f87fed919d51a446b67122bfdfd61d23f3f929fc1cd5209bd6862fd60f739b27213fb0a8d339f7f081fc84281f554b190bb49cc97a6b3364e622af9e7ca96a97fe2b766f9e746dead0b33b58473d91562", true ; "aggregator_2")]
     #[test_case("99e60f20dde4d4872b048d703f1943071c20213d504012e7e520c229da87661803b9f139b9a0c5be31de3cef6821c080125aed38ebaf51ba9a2e9d21d7fbf2903577983109d097a8599610a92c0305408d97c1fd4b0b2d1743fb4eedf5443f99", true ; "aggregator_3")]
     #[tokio::test]
-    async fn test_is_sync_comm_aggregator(sig_hex: &str, expected: bool) {
-        let result = is_sync_comm_aggregator(&default_mock(), decode_sig(sig_hex))
+    async fn is_sync_comm_aggregator(sig_hex: &str, expected: bool) {
+        let (_server, client) = default_client().await;
+        let result = super::is_sync_comm_aggregator(&client, decode_sig(sig_hex))
             .await
             .unwrap();
         assert_eq!(result, expected);
