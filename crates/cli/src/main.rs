@@ -55,7 +55,7 @@ async fn run() -> std::result::Result<(), CliError> {
         Commands::Relay(args) => {
             let config: pluto_relay_server::config::Config = (*args).clone().try_into()?;
             pluto_tracing::init(&config.log_config).expect("Failed to initialize tracing");
-            commands::relay::run(config, ct.clone()).await
+            commands::relay::run(config, ct).await
         }
         Commands::Alpha(args) => match args.command {
             AlphaCommands::Test(args) => {
@@ -67,7 +67,7 @@ async fn run() -> std::result::Result<(), CliError> {
                     TestCommands::Beacon(args) => {
                         pluto_tracing::init(&pluto_tracing::TracingConfig::default())
                             .expect("Failed to initialize tracing");
-                        commands::test::beacon::run(args, &mut stdout, ct.clone())
+                        commands::test::beacon::run(args, &mut stdout, ct)
                             .await
                             .map(|_| ())
                     }
@@ -76,7 +76,7 @@ async fn run() -> std::result::Result<(), CliError> {
                             .await
                             .map(|_| ())
                     }
-                    TestCommands::Mev(args) => commands::test::mev::run(args, &mut stdout)
+                    TestCommands::Mev(args) => commands::test::mev::run(args, &mut stdout, ct)
                         .await
                         .map(|_| ()),
                     TestCommands::Infra(args) => commands::test::infra::run(args, &mut stdout)
