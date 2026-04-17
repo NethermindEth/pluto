@@ -20,6 +20,11 @@ use crate::{
 /// The message ID used for node signature broadcasts.
 const NODE_SIG_MSG_ID: &str = "/charon/dkg/node_sig";
 
+/// Sentinel value used in place of a real signature when a peer has nothing to
+/// sign. Filling the slot with this value unblocks `all_sigs` without
+/// contributing a real signature to the result.
+const NONE_DATA: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
+
 /// Error returned by [`NodeSigBcast`] operations.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -97,17 +102,20 @@ impl NodeSigBcast {
     /// Returns all collected signatures ordered by peer index.
     pub async fn exchange(
         self,
-        key: &SecretKey,
+        key: Option<&SecretKey>,
         lock_hash: impl AsRef<[u8]>,
         token: CancellationToken,
     ) -> Result<Vec<Vec<u8>>> {
-        let lock_hash = lock_hash.as_ref();
-
-        let local_sig = pluto_k1util::sign(key, lock_hash)?.to_vec();
+        let (local_sig, lock_hash) = if let Some(k) = key {
+            let sig = pluto_k1util::sign(k, lock_hash.as_ref())?.to_vec();
+            (sig, lock_hash.as_ref().to_vec())
+        } else {
+            (NONE_DATA.to_vec(), NONE_DATA.to_vec())
+        };
 
         // Make the lock hash available to incoming callbacks before broadcasting.
         // Only fails if all receivers are dropped, which cannot happen here.
-        let _ = self.lock_hash_tx.send(Some(lock_hash.to_vec()));
+        let _ = self.lock_hash_tx.send(Some(lock_hash));
 
         let peer_index =
             u32::try_from(self.node_idx).map_err(|_| Error::NodeIndexOutOfRange(self.node_idx))?;
@@ -143,7 +151,10 @@ impl NodeSigBcast {
 
 /// Returns a copy of all signatures if every slot is filled, otherwise `None`.
 fn all_sigs(sigs: &[Option<Vec<u8>>]) -> Option<Vec<Vec<u8>>> {
-    sigs.iter().cloned().collect()
+    sigs.iter()
+        .filter(|slot| slot.as_deref() != Some(&NONE_DATA))
+        .cloned()
+        .collect()
 }
 
 /// Validates and stores an incoming node signature message.
@@ -175,6 +186,11 @@ async fn receive(
         )));
     }
 
+    if msg.signature.as_ref() == NONE_DATA {
+        sigs.lock().unwrap_or_else(|e| e.into_inner())[peer_idx] = Some(NONE_DATA.to_vec());
+        return Ok(());
+    }
+
     let pubkey = peers[peer_idx].public_key()?;
 
     let lock_hash = {
@@ -189,6 +205,11 @@ async fn receive(
             () = token.cancelled() => return Err(bcast::Error::Cancelled),
         }
     };
+
+    if lock_hash.as_slice() == NONE_DATA {
+        sigs.lock().unwrap_or_else(|e| e.into_inner())[peer_idx] = Some(NONE_DATA.to_vec());
+        return Ok(());
+    }
 
     if !pluto_k1util::verify_65(&pubkey, &lock_hash, msg.signature.as_ref())? {
         return Err(bcast::Error::InvalidSignature(peer_id));
@@ -250,6 +271,25 @@ mod tests {
     #[test]
     fn all_sigs_empty_input() {
         assert_eq!(all_sigs(&[]), Some(vec![]));
+    }
+
+    #[test]
+    fn all_sigs_filters_none_data() {
+        let none_data = NONE_DATA.to_vec();
+        let real_sig = vec![1u8, 2, 3];
+        let result = all_sigs(&[
+            Some(none_data.clone()),
+            Some(real_sig.clone()),
+            Some(none_data),
+        ])
+        .unwrap();
+        assert_eq!(result, vec![real_sig]);
+    }
+
+    #[test]
+    fn all_sigs_returns_none_when_slot_empty_with_none_data() {
+        let none_data = NONE_DATA.to_vec();
+        assert!(all_sigs(&[None, Some(none_data)]).is_none());
     }
 
     // Ports TestSigsCallbacks from charon/dkg/nodesigs_internal_test.go.
@@ -328,6 +368,66 @@ mod tests {
 
         let guard = sigs.lock().unwrap();
         assert_eq!(guard[1], Some(sig.to_vec()));
+    }
+
+    #[tokio::test]
+    async fn receive_none_sig_stores_sentinel() {
+        let (_, peer0) = make_peer(0, 0);
+        let (_, peer1) = make_peer(1, 1);
+        let peers = vec![peer0, peer1.clone()];
+        let (_, rx) = watch::channel(None::<Vec<u8>>);
+        let sigs = Mutex::new(vec![None::<Vec<u8>>; 2]);
+
+        let msg = MsgNodeSig {
+            signature: NONE_DATA.to_vec().into(),
+            peer_index: 1,
+        };
+
+        receive(
+            peer1.id,
+            msg,
+            0,
+            &peers,
+            rx,
+            &sigs,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let guard = sigs.lock().unwrap();
+        assert_eq!(guard[1], Some(NONE_DATA.to_vec()));
+    }
+
+    #[tokio::test]
+    async fn receive_none_lock_hash_stores_sentinel() {
+        let (_, peer0) = make_peer(0, 0);
+        let (key1, peer1) = make_peer(1, 1);
+        let peers = vec![peer0, peer1.clone()];
+        let lock_hash = vec![42u8; 32];
+        let sig = pluto_k1util::sign(&key1, &lock_hash).unwrap();
+        let (_, rx) = watch::channel(Some(NONE_DATA.to_vec()));
+        let sigs = Mutex::new(vec![None::<Vec<u8>>; 2]);
+
+        let msg = MsgNodeSig {
+            signature: sig.to_vec().into(),
+            peer_index: 1,
+        };
+
+        receive(
+            peer1.id,
+            msg,
+            0,
+            &peers,
+            rx,
+            &sigs,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let guard = sigs.lock().unwrap();
+        assert_eq!(guard[1], Some(NONE_DATA.to_vec()));
     }
 
     struct TestNode {
@@ -484,7 +584,7 @@ mod tests {
         for (i, nsig) in nsig_list.into_iter().enumerate() {
             let key = keys[i].clone();
             let token = token.clone();
-            handles.spawn(async move { nsig.exchange(&key, lock_hash, token).await });
+            handles.spawn(async move { nsig.exchange(Some(&key), lock_hash, token).await });
         }
 
         let results = tokio::time::timeout(Duration::from_secs(45), async {
