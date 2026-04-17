@@ -62,7 +62,7 @@ impl SpecProvider for EthBeaconNodeApiClient {
 }
 
 /// Returns true if the validator is the attestation aggregator for the given
-/// committee. Refer: <https://github.com/ethereum/consensus-specs/blob/dev/specs/phase0/validator.md#aggregation-selection>
+/// committee. Refer: <https://github.com/ethereum/consensus-specs/blob/0fe57a94ca543f02cb5eee4d8aab8495e36c0b86/specs/phase0/validator.md#aggregation-selection>
 pub async fn is_att_aggregator<S: SpecProvider>(
     spec_provider: &S,
     comm_len: u64,
@@ -86,7 +86,7 @@ pub async fn is_att_aggregator<S: SpecProvider>(
 }
 
 /// Returns true if the validator is the aggregator for the provided sync
-/// subcommittee. Refer: <https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/validator.md#aggregation-selection>
+/// subcommittee. Refer: <https://github.com/ethereum/consensus-specs/blob/0fe57a94ca543f02cb5eee4d8aab8495e36c0b86/specs/altair/validator.md#aggregation-selection>
 pub async fn is_sync_comm_aggregator<S: SpecProvider>(
     spec_provider: &S,
     sig: BLSSignature,
