@@ -2,8 +2,6 @@
 // Source License 1.1
 
 //! Aggregator selection for attestation and sync committee duties.
-//!
-//! Ported from charon/eth2util/eth2exp/attagg_old.go (v1.7.1).
 
 use k256::sha2::{Digest, Sha256};
 use pluto_eth2api::{
