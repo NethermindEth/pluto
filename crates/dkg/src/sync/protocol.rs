@@ -13,6 +13,8 @@ use super::error::{Error, Result};
 /// The protocol identifier for DKG sync.
 pub const PROTOCOL_NAME: StreamProtocol = StreamProtocol::new("/charon/dkg/sync/1.0.0/");
 
+pub(crate) const MAX_MESSAGE_SIZE: usize = 32 * 1024 * 1024;
+
 /// Signs the definition hash using the same libp2p signing path as Go.
 pub fn sign_definition_hash(secret: &k256::SecretKey, def_hash: &[u8]) -> Result<Vec<u8>> {
     let mut der = secret

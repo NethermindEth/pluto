@@ -327,7 +327,13 @@ async fn run_outbound_stream(client: Client, mut stream: Stream) -> OutboundExit
         let response: std::io::Result<MsgSyncResponse> = tokio::select! {
             response = async {
                 match pluto_p2p::proto::write_fixed_size_protobuf(&mut stream, &request).await {
-                    Ok(()) => pluto_p2p::proto::read_fixed_size_protobuf(&mut stream).await,
+                    Ok(()) => {
+                        pluto_p2p::proto::read_fixed_size_protobuf_with_max_size(
+                            &mut stream,
+                            protocol::MAX_MESSAGE_SIZE,
+                        )
+                        .await
+                    }
                     Err(error) => Err(error),
                 }
             } => response,
@@ -382,9 +388,12 @@ async fn handle_inbound_stream(
             .map_err(|error| Error::Peer(error.to_string()))?;
 
         loop {
-            let message: MsgSync = pluto_p2p::proto::read_fixed_size_protobuf(&mut stream)
-                .await
-                .map_err(|error| Error::Io(error.to_string()))?;
+            let message: MsgSync = pluto_p2p::proto::read_fixed_size_protobuf_with_max_size(
+                &mut stream,
+                protocol::MAX_MESSAGE_SIZE,
+            )
+            .await
+            .map_err(|error| Error::Io(error.to_string()))?;
             let mut response = MsgSyncResponse {
                 sync_timestamp: message.timestamp,
                 error: String::new(),
