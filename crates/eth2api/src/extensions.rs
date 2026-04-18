@@ -77,6 +77,14 @@ impl EthBeaconNodeApiClient {
             })
     }
 
+    /// Fetches the raw chain spec as a JSON object.
+    pub async fn fetch_spec(&self) -> Result<serde_json::Value, EthBeaconNodeApiClientError> {
+        match self.get_spec(GetSpecRequest {}).await? {
+            GetSpecResponse::Ok(resp) => Ok(resp.data),
+            _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
+        }
+    }
+
     /// Fetches the slot duration and slots per epoch.
     pub async fn fetch_slots_config(
         &self,
