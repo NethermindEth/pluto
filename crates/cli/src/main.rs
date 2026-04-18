@@ -44,6 +44,7 @@ async fn run() -> std::result::Result<(), CliError> {
 
     match cli.command {
         Commands::Create(args) => match args.command {
+            CreateCommands::Dkg(args) => commands::create_dkg::run(*args).await,
             CreateCommands::Enr(args) => commands::create_enr::run(args),
             CreateCommands::Cluster(args) => {
                 let mut stdout = std::io::stdout();
