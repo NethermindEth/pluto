@@ -1,6 +1,7 @@
 //! Versioned wrappers and version enums used by signeddata flows.
 
 use serde::{Deserialize, Serialize};
+use tree_hash::TreeHash;
 
 pub use crate::spec::{BuilderVersion, DataVersion};
 use crate::{
@@ -315,6 +316,18 @@ impl SignedAggregateAndProofPayload {
                 .into_bytes(),
         }
     }
+
+    /// Returns the SSZ message root of the unsigned aggregate-and-proof payload.
+    pub fn message_root(&self) -> phase0::Root {
+        match self {
+            Self::Phase0(payload)
+            | Self::Altair(payload)
+            | Self::Bellatrix(payload)
+            | Self::Capella(payload)
+            | Self::Deneb(payload) => payload.message.tree_hash_root().0,
+            Self::Electra(payload) | Self::Fulu(payload) => payload.message.tree_hash_root().0,
+        }
+    }
 }
 
 /// Versioned signed validator registration wrapper.
@@ -324,4 +337,78 @@ pub struct VersionedSignedValidatorRegistration {
     pub version: BuilderVersion,
     /// V1 payload.
     pub v1: Option<v1::SignedValidatorRegistration>,
+}
+
+impl VersionedSignedAggregateAndProof {
+    /// Returns the SSZ message root of the wrapped payload.
+    pub fn message_root(&self) -> Option<phase0::Root> {
+        if self.version == DataVersion::Unknown {
+            return None;
+        }
+
+        Some(self.aggregate_and_proof.message_root())
+    }
+}
+
+impl VersionedSignedValidatorRegistration {
+    /// Returns the SSZ message root of the wrapped builder registration.
+    pub fn message_root(&self) -> Option<phase0::Root> {
+        match self.version {
+            BuilderVersion::V1 => self.v1.as_ref().map(|value| value.message.message_root()),
+            BuilderVersion::Unknown => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_fixtures;
+
+    #[test]
+    fn versioned_signed_aggregate_and_proof_message_root_delegates_to_payload() {
+        let signed = electra::SignedAggregateAndProof {
+            message: electra::AggregateAndProof {
+                aggregator_index: 456,
+                aggregate: serde_json::from_str(
+                    test_fixtures::VECTORS.electra_oversized_attestation_json,
+                )
+                .expect("electra attestation"),
+                selection_proof: test_fixtures::seq::<96>(0xE0),
+            },
+            signature: test_fixtures::seq::<96>(0xE1),
+        };
+        let expected = signed.message.tree_hash_root().0;
+
+        let wrapped = VersionedSignedAggregateAndProof {
+            version: DataVersion::Electra,
+            aggregate_and_proof: SignedAggregateAndProofPayload::Electra(signed),
+        };
+
+        assert_eq!(wrapped.message_root(), Some(expected));
+    }
+
+    #[test]
+    fn versioned_signed_validator_registration_message_root_matches_v1_message() {
+        let message = v1::ValidatorRegistration {
+            fee_recipient: test_fixtures::seq::<20>(0xD1),
+            gas_limit: 30_000_000,
+            timestamp: 1_700_000_789,
+            pubkey: test_fixtures::seq::<48>(0xD2),
+        };
+        let signed = v1::SignedValidatorRegistration {
+            message: message.clone(),
+            signature: test_fixtures::seq::<96>(0xD3),
+        };
+        let expected = message.message_root();
+
+        assert_eq!(
+            VersionedSignedValidatorRegistration {
+                version: BuilderVersion::V1,
+                v1: Some(signed),
+            }
+            .message_root(),
+            Some(expected)
+        );
+    }
 }
