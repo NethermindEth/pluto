@@ -430,19 +430,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_submit_partial_exit_url() {
+    fn submit_partial_exit_url_works() {
         let url = submit_partial_exit_url("0xabcd1234");
         assert_eq!(url, "/exp/partial_exits/0xabcd1234");
     }
 
     #[test]
-    fn test_delete_partial_exit_url() {
+    fn delete_partial_exit_url_works() {
         let url = delete_partial_exit_url("0xpubkey", "0xlockhash", 5);
         assert_eq!(url, "/exp/partial_exits/0xlockhash/5/0xpubkey");
     }
 
     #[test]
-    fn test_fetch_full_exit_url() {
+    fn fetch_full_exit_url_works() {
         let url = fetch_full_exit_url("0xpubkey", "0xlockhash", 5);
         assert_eq!(url, "/exp/exit/0xlockhash/5/0xpubkey");
     }
@@ -450,7 +450,7 @@ mod tests {
     /// These test vectors were generated from Go `charon/app/obolapi` using
     /// fastssz
     #[test]
-    fn test_ssz_root_parity_exit_models() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn ssz_root_parity_exit_models() -> std::result::Result<(), Box<dyn std::error::Error>> {
         fn decode_hex(s: &str) -> std::result::Result<Vec<u8>, hex::FromHexError> {
             hex::decode(s)
         }

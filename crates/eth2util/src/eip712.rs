@@ -203,7 +203,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_creator_hash() {
+    fn creator_hash() {
         // Obtained from legacy unit tests.
         let data = TypedData {
             domain: Domain {
