@@ -1,7 +1,7 @@
 //! Network behaviour and control handle for partial signature exchange.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     future::Future,
     pin::Pin,
     sync::{
@@ -106,7 +106,7 @@ pub enum Event {
 
 #[derive(Debug)]
 struct PendingBroadcast {
-    remaining: usize,
+    pending_peers: HashSet<PeerId>,
     failed: bool,
 }
 
@@ -258,7 +258,7 @@ impl Behaviour {
             .iter()
             .copied()
             .collect();
-        let mut targeted = 0usize;
+        let mut pending_peers = HashSet::new();
         for peer in peers {
             if peer == self.config.peer_id {
                 continue;
@@ -289,30 +289,34 @@ impl Behaviour {
                     payload: message.clone(),
                 },
             });
-            targeted = targeted.saturating_add(1);
+            pending_peers.insert(peer);
         }
 
-        if targeted == 0 {
+        if pending_peers.is_empty() {
+            self.pending_events
+                .push_back(ToSwarm::GenerateEvent(Event::BroadcastFailed {
+                    request_id,
+                }));
             return;
         }
 
         self.pending_broadcasts.insert(
             request_id,
             PendingBroadcast {
-                remaining: targeted,
+                pending_peers,
                 failed: false,
             },
         );
     }
 
-    fn finish_broadcast_result(&mut self, request_id: u64, failed: bool) {
+    fn finish_broadcast_result(&mut self, request_id: u64, peer_id: PeerId, failed: bool) {
         let Some(entry) = self.pending_broadcasts.get_mut(&request_id) else {
             return;
         };
 
         entry.failed |= failed;
-        entry.remaining = entry.remaining.saturating_sub(1);
-        if entry.remaining == 0 {
+        entry.pending_peers.remove(&peer_id);
+        if entry.pending_peers.is_empty() {
             let failed = self
                 .pending_broadcasts
                 .remove(&request_id)
@@ -367,10 +371,10 @@ impl Behaviour {
                     }));
             }
             FromHandler::OutboundSuccess { request_id } => {
-                self.finish_broadcast_result(request_id, false);
+                self.finish_broadcast_result(request_id, peer_id, false);
             }
             FromHandler::OutboundError { request_id, error } => {
-                self.finish_broadcast_result(request_id, true);
+                self.finish_broadcast_result(request_id, peer_id, true);
                 self.emit_broadcast_error(request_id, Some(peer_id), error);
             }
         }
@@ -417,7 +421,27 @@ impl NetworkBehaviour for Behaviour {
         Ok(self.connection_handler_for_peer(peer))
     }
 
-    fn on_swarm_event(&mut self, _event: FromSwarm) {}
+    fn on_swarm_event(&mut self, event: FromSwarm) {
+        if let FromSwarm::ConnectionClosed(e) = event {
+            if e.remaining_established == 0 {
+                let peer_id = e.peer_id;
+                let affected: Vec<u64> = self
+                    .pending_broadcasts
+                    .iter()
+                    .filter(|(_, b)| b.pending_peers.contains(&peer_id))
+                    .map(|(id, _)| *id)
+                    .collect();
+                for request_id in affected {
+                    self.emit_broadcast_error(
+                        request_id,
+                        Some(peer_id),
+                        Failure::Io(std::io::Error::other("connection closed")),
+                    );
+                    self.finish_broadcast_result(request_id, peer_id, true);
+                }
+            }
+        }
+    }
 
     fn on_connection_handler_event(
         &mut self,
