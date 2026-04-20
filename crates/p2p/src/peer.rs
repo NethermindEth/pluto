@@ -296,7 +296,7 @@ mod tests {
     use pluto_testutil::random::generate_insecure_k1_key;
 
     #[test]
-    fn test_new_peer() {
+    fn new_peer() {
         let p2p_key = generate_insecure_k1_key(1);
 
         let record = Record::new(&p2p_key, vec![]).unwrap();
@@ -311,24 +311,24 @@ mod tests {
 
     #[test]
     #[ignore]
-    fn test_new_tcp_host() {
+    fn new_tcp_host() {
         todo!("add this test after implementing p2p.NewNode function");
     }
 
     #[test]
     #[ignore]
-    fn test_verify_p2p_key() {
+    fn verify_p2p_key() {
         todo!("add this test after implementing cluster.NewForT function");
     }
 
     #[test]
     #[ignore]
-    fn test_peer_id_key() {
+    fn peer_id_key() {
         todo!("add this test after implementing peer_id_key function");
     }
 
     #[test]
-    fn test_addr_infos_from_p2p_addrs_multiple_peers() {
+    fn addr_infos_from_p2p_addrs_multiple_peers() {
         // Test with multiple peers
         let addrs: Vec<Multiaddr> = vec![
             "/ip4/127.0.0.1/tcp/9000/p2p/16Uiu2HAkzdQ5Y9SYT91K1ue5SxXwgmajXntfScGnLYeip5hHyWmT"
@@ -366,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn test_addr_infos_from_p2p_addrs_missing_peer_id() {
+    fn addr_infos_from_p2p_addrs_missing_peer_id() {
         // Test error case: address without /p2p/ component
         let addr: Multiaddr = "/ip4/127.0.0.1/tcp/9000".parse().unwrap();
 
@@ -380,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn test_addr_infos_from_p2p_addrs_empty_input() {
+    fn addr_infos_from_p2p_addrs_empty_input() {
         // Test edge case: empty input
         let result = addr_infos_from_p2p_addrs(&[]).unwrap();
         assert_eq!(result.len(), 0);

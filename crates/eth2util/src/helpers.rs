@@ -121,7 +121,7 @@ mod tests {
     use k256::SecretKey;
 
     #[test]
-    fn test_checksummed_address() {
+    fn checksummed_address() {
         // Test examples from https://eips.ethereum.org/EIPS/eip-55.
         let addrs = vec![
             "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed",
@@ -147,7 +147,7 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_addrs() {
+    fn invalid_addrs() {
         let addrs = vec![
             "0x0000000000000000000000000000000000dead",
             "0x00000000000000000000000000000000000000dead",
@@ -162,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn test_public_key_to_address() {
+    fn public_key_to_address_works() {
         // Test fixtures from geth/crypto package.
         const TEST_ADDR_HEX: &str = "0x970E8128AB834E8EAC17Ab8E3812F010678CF791";
         const TEST_PRIV_HEX: &str =
@@ -177,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_http_headers() {
+    fn validate_http_headers_works() {
         struct TestCase {
             name: &'static str,
             headers: Vec<String>,
@@ -267,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_http_headers() {
+    fn parse_http_headers_works() {
         struct TestCase {
             name: &'static str,
             headers: Vec<String>,

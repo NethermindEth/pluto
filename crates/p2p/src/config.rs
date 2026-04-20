@@ -241,13 +241,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_resolve_listen_addr_p2p_bind_tcp_ip_not_specified() {
+    fn resolve_listen_addr_p2p_bind_tcp_ip_not_specified() {
         let err = resolve_listen_tcp_addr(":1234").unwrap_err();
         assert!(matches!(err, P2PConfigError::FailedToParseTcpAddresses(_)));
     }
 
     #[test]
-    fn test_resolve_listen_addr_ip() {
+    fn resolve_listen_addr_ip() {
         let addr = resolve_listen_tcp_addr("10.4.3.3:1234").unwrap();
         assert_eq!(
             addr,
@@ -256,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_listen_addr_all_interfaces() {
+    fn resolve_listen_addr_all_interfaces() {
         let tcp_addr = resolve_listen_tcp_addr("0.0.0.0:0").unwrap();
         assert_eq!(
             tcp_addr,
@@ -271,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn test_config_multiaddrs() {
+    fn config_multiaddrs() {
         let ipv6_linklocal_all_nodes = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1);
 
         let config = P2PConfig {
@@ -314,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn test_config_invalid_multiaddrs() {
+    fn config_invalid_multiaddrs() {
         let config = P2PConfig {
             tcp_addrs: vec!["not_a_valid_addr".to_string()],
             ..Default::default()

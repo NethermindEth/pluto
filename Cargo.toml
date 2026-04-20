@@ -129,6 +129,7 @@ cast_precision_loss = "deny"
 cast_sign_loss = "deny"
 needless_return = "deny"
 panicking_overflow_checks = "deny"
+redundant_test_prefix = "deny"
 unwrap_used = "deny"
 
 # Optimize crypto dependencies in test builds for faster tests

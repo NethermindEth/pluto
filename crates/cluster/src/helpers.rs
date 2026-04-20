@@ -153,6 +153,22 @@ pub fn sign_operator(
     Ok(())
 }
 
+/// Returns minimum threshold required for a cluster with given nodes.
+/// This formula has been taken from: <https://github.com/ObolNetwork/charon/blob/a8fc3185bdda154412fe034dcd07c95baf5c1aaf/core/qbft/qbft.go#L63>
+///
+/// Computes ceil(2*nodes / 3) using integer arithmetic to avoid floating point
+/// conversions.
+pub fn threshold(nodes: u64) -> u64 {
+    // Integer ceiling division: ceil(a/b) = (a + b - 1) / b
+    // Here we compute: ceil(2*nodes / 3) = (2*nodes + 3 - 1) / 3 = (2*nodes + 2) /
+    // 3
+    let numerator = nodes.checked_mul(2).expect("threshold: nodes * 2 overflow");
+    let adjusted = numerator
+        .checked_add(2)
+        .expect("threshold: numerator + 2 overflow");
+    adjusted / 3
+}
+
 /// Returns a BLS aggregate signature of the message signed by all the shares.
 pub fn agg_sign(
     secrets: &[Vec<pluto_crypto::types::PrivateKey>],
@@ -190,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn test_with_serde_as() {
+    fn with_serde_as() {
         let test = TestStruct {
             data: vec![0xde, 0xad, 0xbe, 0xef],
             hash: [0xaa; 32],

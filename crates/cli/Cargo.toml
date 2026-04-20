@@ -18,12 +18,15 @@ hex.workspace = true
 humantime.workspace = true
 tokio.workspace = true
 pluto-app.workspace = true
+pluto-eth1wrap.workspace = true
 pluto-cluster.workspace = true
 pluto-dkg.workspace = true
+pluto-crypto.workspace = true
 pluto-relay-server.workspace = true
 pluto-tracing.workspace = true
 pluto-core.workspace = true
 pluto-p2p.workspace = true
+pluto-eth2api.workspace = true
 pluto-eth2util.workspace = true
 pluto-k1util.workspace = true
 pluto-ssz.workspace = true
@@ -37,6 +40,7 @@ rand.workspace = true
 tempfile.workspace = true
 reqwest.workspace = true
 url.workspace = true
+chrono.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
