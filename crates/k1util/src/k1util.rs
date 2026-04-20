@@ -220,7 +220,7 @@ mod tests {
     const SIG_1: &str = "e08097bed6dc40d70aa0076f9d8250057566cdf40c652b3785ad9c06b1e38d584f8f331bf46f68e3737823a3bda905e90ca96735d510a6934b215753c09acec201";
 
     #[test]
-    fn test_k1_util() {
+    fn k1_util() {
         let key_bytes = hex::decode(PRIV_KEY_1).unwrap();
         let key = SecretKey::from_slice(&key_bytes).unwrap();
 
@@ -255,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn test_random() {
+    fn random_works() {
         let key = SecretKey::random(&mut OsRng);
 
         let digest = vec![0u8; K1_HASH_LEN];
@@ -283,14 +283,14 @@ mod tests {
     }
 
     #[test]
-    fn test_load_nonexistent_file() {
+    fn load_nonexistent_file() {
         let file = Path::new("nonexistent-file");
         let result = load(file);
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_invalid_hex_encoded_file() {
+    fn invalid_hex_encoded_file() {
         let mut temp_file = tempfile::NamedTempFile::new().unwrap();
         write!(temp_file, "abcXYZ123").unwrap(); // invalid hex encoded file
 
@@ -303,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn test_valid_hex_strings() {
+    fn valid_hex_strings() {
         let key = SecretKey::random(&mut OsRng);
         let key_str = hex::encode(key.to_bytes()).to_string();
 

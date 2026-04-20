@@ -62,7 +62,7 @@ mod tests {
     use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
 
     #[test]
-    fn test_new_message() {
+    fn new_message_works() {
         let pubkey = [0xABu8; 48];
         let fee_recipient = "0x321dcb529f3945bc94fecea9d3bc5caf35253b94";
         let gas_limit = 30_000_000u64;
@@ -84,7 +84,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_message_bad_address() {
+    fn new_message_bad_address() {
         let pubkey = [0xABu8; 48];
         // Truncated address (39 hex chars instead of 40)
         let fee_recipient = "0x321dcb529f3945bc94fecea9d3bc5caf35253b9";
@@ -101,7 +101,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_message_signing_root() {
+    fn get_message_signing_root_works() {
         let pubkey = [0xABu8; 48];
         let fee_recipient: ExecutionAddress = [
             50, 29, 203, 82, 159, 57, 69, 188, 148, 254, 206, 169, 211, 188, 92, 175, 53, 37, 59,
@@ -127,7 +127,7 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_signed_registration() {
+    fn verify_signed_registration() {
         // Test data obtained from teku.
         let sk_bytes =
             hex::decode("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b")
