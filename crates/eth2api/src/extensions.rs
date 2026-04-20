@@ -29,7 +29,7 @@ pub enum EthBeaconNodeApiClientError {
 
     /// Domain type not found in the beacon spec response
     #[error("Domain type not found: {0}")]
-    DomainTypeNotFound(DomainName),
+    DomainTypeNotFound(String),
 }
 
 const FORKS: [ConsensusVersion; 6] = [
@@ -49,61 +49,6 @@ pub struct ForkSchedule {
     pub version: phase0::Version,
     /// The epoch at which the fork activates.
     pub epoch: phase0::Epoch,
-}
-
-/// Domain name as defined in the consensus and builder specs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DomainName {
-    /// `DOMAIN_BEACON_PROPOSER`
-    BeaconProposer,
-    /// `DOMAIN_BEACON_ATTESTER`
-    BeaconAttester,
-    /// `DOMAIN_RANDAO`
-    Randao,
-    /// `DOMAIN_VOLUNTARY_EXIT`
-    VoluntaryExit,
-    /// `DOMAIN_APPLICATION_BUILDER`
-    ApplicationBuilder,
-    /// `DOMAIN_SELECTION_PROOF`
-    SelectionProof,
-    /// `DOMAIN_AGGREGATE_AND_PROOF`
-    AggregateAndProof,
-    /// `DOMAIN_SYNC_COMMITTEE`
-    SyncCommittee,
-    /// `DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF`
-    SyncCommitteeSelectionProof,
-    /// `DOMAIN_CONTRIBUTION_AND_PROOF`
-    ContributionAndProof,
-    /// `DOMAIN_DEPOSIT`
-    Deposit,
-    /// `DOMAIN_BLOB_SIDECAR`
-    BlobSidecar,
-}
-
-impl std::fmt::Display for DomainName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_spec_key())
-    }
-}
-
-impl DomainName {
-    /// Returns the spec key used in `/eth/v1/config/spec`.
-    pub const fn as_spec_key(self) -> &'static str {
-        match self {
-            Self::BeaconProposer => "DOMAIN_BEACON_PROPOSER",
-            Self::BeaconAttester => "DOMAIN_BEACON_ATTESTER",
-            Self::Randao => "DOMAIN_RANDAO",
-            Self::VoluntaryExit => "DOMAIN_VOLUNTARY_EXIT",
-            Self::ApplicationBuilder => "DOMAIN_APPLICATION_BUILDER",
-            Self::SelectionProof => "DOMAIN_SELECTION_PROOF",
-            Self::AggregateAndProof => "DOMAIN_AGGREGATE_AND_PROOF",
-            Self::SyncCommittee => "DOMAIN_SYNC_COMMITTEE",
-            Self::SyncCommitteeSelectionProof => "DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF",
-            Self::ContributionAndProof => "DOMAIN_CONTRIBUTION_AND_PROOF",
-            Self::Deposit => "DOMAIN_DEPOSIT",
-            Self::BlobSidecar => "DOMAIN_BLOB_SIDECAR",
-        }
-    }
 }
 
 fn decode_fixed_hex<const N: usize>(value: &str) -> Result<[u8; N], EthBeaconNodeApiClientError> {
@@ -187,13 +132,13 @@ pub fn compute_builder_domain(
 /// Resolves the domain type from the beacon spec.
 pub fn resolve_domain_type(
     spec_data: &serde_json::Value,
-    name: DomainName,
+    spec_key: &str,
 ) -> Result<phase0::DomainType, EthBeaconNodeApiClientError> {
     let raw = spec_data
         .as_object()
-        .and_then(|o| o.get(name.as_spec_key()))
+        .and_then(|o| o.get(spec_key))
         .and_then(|value| value.as_str())
-        .ok_or(EthBeaconNodeApiClientError::DomainTypeNotFound(name))?;
+        .ok_or_else(|| EthBeaconNodeApiClientError::DomainTypeNotFound(spec_key.to_string()))?;
 
     decode_fixed_hex(raw)
 }
@@ -212,22 +157,15 @@ pub fn resolve_fork_version(
         .unwrap_or(genesis_fork_version)
 }
 
-/// Resolves the final domain for the provided domain name and epoch.
-pub fn resolve_domain(
-    spec_data: &serde_json::Value,
+fn resolve_domain(
+    domain_type: phase0::DomainType,
+    voluntary_exit_domain_type: phase0::DomainType,
     fork_schedule: &HashMap<ConsensusVersion, ForkSchedule>,
     genesis_fork_version: phase0::Version,
     genesis_validators_root: phase0::Root,
-    name: DomainName,
     epoch: phase0::Epoch,
-) -> Result<phase0::Domain, EthBeaconNodeApiClientError> {
-    let domain_type = resolve_domain_type(spec_data, name)?;
-
-    if name == DomainName::ApplicationBuilder {
-        return Ok(compute_builder_domain(domain_type, genesis_fork_version));
-    }
-
-    let fork_version = if name == DomainName::VoluntaryExit {
+) -> phase0::Domain {
+    let fork_version = if domain_type == voluntary_exit_domain_type {
         // EIP-7044: voluntary exits always use the Capella domain.
         fork_schedule
             .get(&ConsensusVersion::Capella)
@@ -237,11 +175,7 @@ pub fn resolve_domain(
         resolve_fork_version(epoch, genesis_fork_version, fork_schedule)
     };
 
-    Ok(compute_domain(
-        domain_type,
-        fork_version,
-        genesis_validators_root,
-    ))
+    compute_domain(domain_type, fork_version, genesis_validators_root)
 }
 
 impl ValidatorStatus {
@@ -328,6 +262,27 @@ impl EthBeaconNodeApiClient {
         fork_schedule_from_spec(&spec)
     }
 
+    /// Fetches the domain type with the provided config/spec key.
+    pub async fn fetch_domain_type(
+        &self,
+        spec_key: &str,
+    ) -> Result<phase0::DomainType, EthBeaconNodeApiClientError> {
+        let spec = self.fetch_spec_data().await?;
+        resolve_domain_type(&spec, spec_key)
+    }
+
+    /// Fetches the genesis domain for the provided domain type.
+    pub async fn fetch_genesis_domain(
+        &self,
+        domain_type: phase0::DomainType,
+    ) -> Result<phase0::Domain, EthBeaconNodeApiClientError> {
+        Ok(compute_domain(
+            domain_type,
+            self.fetch_genesis_fork_version().await?,
+            phase0::Root::default(),
+        ))
+    }
+
     /// Fetches the genesis validators root from the beacon node.
     pub async fn fetch_genesis_validators_root(
         &self,
@@ -354,25 +309,26 @@ impl EthBeaconNodeApiClient {
         decode_fixed_hex(version)
     }
 
-    /// Fetches the resolved beacon domain for the provided domain name and epoch.
+    /// Fetches the resolved beacon domain for the provided domain type and epoch.
     pub async fn fetch_domain(
         &self,
-        name: DomainName,
+        domain_type: phase0::DomainType,
         epoch: phase0::Epoch,
     ) -> Result<phase0::Domain, EthBeaconNodeApiClientError> {
         let spec = self.fetch_spec_data().await?;
         let fork_schedule = fork_schedule_from_spec(&spec)?;
         let genesis_fork_version = self.fetch_genesis_fork_version().await?;
         let genesis_validators_root = self.fetch_genesis_validators_root().await?;
+        let voluntary_exit_domain_type = resolve_domain_type(&spec, "DOMAIN_VOLUNTARY_EXIT")?;
 
-        resolve_domain(
-            &spec,
+        Ok(resolve_domain(
+            domain_type,
+            voluntary_exit_domain_type,
             &fork_schedule,
             genesis_fork_version,
             genesis_validators_root,
-            name,
             epoch,
-        )
+        ))
     }
 }
 
@@ -402,83 +358,35 @@ mod tests {
     }
 
     #[test]
-    fn resolve_domain_uses_genesis_version_before_first_fork() {
+    fn resolve_fork_version_uses_genesis_version_before_first_fork() {
         let spec = spec_fixture();
         let fork_schedule = fork_schedule_from_spec(&spec).unwrap();
         let genesis_fork_version = [0x11, 0x22, 0x33, 0x44];
-        let genesis_validators_root = [0xAA; 32];
-
-        let domain = resolve_domain(
-            &spec,
-            &fork_schedule,
-            genesis_fork_version,
-            genesis_validators_root,
-            DomainName::BeaconProposer,
-            0,
-        )
-        .unwrap();
 
         assert_eq!(
-            domain,
-            compute_domain(
-                [0x00, 0x00, 0x00, 0x00],
-                genesis_fork_version,
-                genesis_validators_root,
-            )
+            resolve_fork_version(0, genesis_fork_version, &fork_schedule),
+            genesis_fork_version
         );
     }
 
     #[test]
-    fn resolve_domain_uses_latest_active_fork_version() {
+    fn resolve_fork_version_uses_latest_active_fork_version() {
         let spec = spec_fixture();
         let fork_schedule = fork_schedule_from_spec(&spec).unwrap();
         let genesis_fork_version = [0x11, 0x22, 0x33, 0x44];
-        let genesis_validators_root = [0xBB; 32];
-
-        let domain = resolve_domain(
-            &spec,
-            &fork_schedule,
-            genesis_fork_version,
-            genesis_validators_root,
-            DomainName::BeaconProposer,
-            25,
-        )
-        .unwrap();
 
         assert_eq!(
-            domain,
-            compute_domain(
-                [0x00, 0x00, 0x00, 0x00],
-                [0x02, 0x03, 0x04, 0x05],
-                genesis_validators_root,
-            )
+            resolve_fork_version(25, genesis_fork_version, &fork_schedule),
+            [0x02, 0x03, 0x04, 0x05]
         );
     }
 
     #[test]
-    fn resolve_builder_domain_stays_constant_across_fork_schedule() {
-        let spec = spec_fixture();
-        let fork_schedule = fork_schedule_from_spec(&spec).unwrap();
+    fn compute_builder_domain_stays_constant() {
         let genesis_fork_version = [0x01, 0x01, 0x70, 0x00];
 
-        let at_genesis = resolve_domain(
-            &spec,
-            &fork_schedule,
-            genesis_fork_version,
-            [0xCC; 32],
-            DomainName::ApplicationBuilder,
-            0,
-        )
-        .unwrap();
-        let post_forks = resolve_domain(
-            &spec,
-            &fork_schedule,
-            genesis_fork_version,
-            [0xDD; 32],
-            DomainName::ApplicationBuilder,
-            1_000,
-        )
-        .unwrap();
+        let at_genesis = compute_builder_domain([0x00, 0x00, 0x00, 0x01], genesis_fork_version);
+        let post_forks = compute_builder_domain([0x00, 0x00, 0x00, 0x01], genesis_fork_version);
 
         assert_eq!(at_genesis, post_forks);
         assert_eq!(
@@ -488,21 +396,22 @@ mod tests {
     }
 
     #[test]
-    fn resolve_voluntary_exit_domain_uses_capella_version_after_later_forks() {
+    fn resolve_domain_uses_capella_for_voluntary_exit_domain_type() {
         let spec = spec_fixture();
         let fork_schedule = fork_schedule_from_spec(&spec).unwrap();
         let genesis_fork_version = [0x11, 0x22, 0x33, 0x44];
         let genesis_validators_root = [0xEE; 32];
+        let voluntary_exit_domain_type =
+            resolve_domain_type(&spec, "DOMAIN_VOLUNTARY_EXIT").unwrap();
 
         let domain = resolve_domain(
-            &spec,
+            voluntary_exit_domain_type,
+            voluntary_exit_domain_type,
             &fork_schedule,
             genesis_fork_version,
             genesis_validators_root,
-            DomainName::VoluntaryExit,
             1_000,
-        )
-        .unwrap();
+        );
 
         assert_eq!(
             domain,

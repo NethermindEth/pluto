@@ -27,6 +27,9 @@ pub mod keystore;
 /// Validator registration for builder API.
 pub mod registration;
 
+/// Shared eth2 signing helpers.
+pub mod signing;
+
 /// ETH2 Keymanager API client.
 pub mod keymanager;
 

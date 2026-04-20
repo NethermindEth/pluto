@@ -259,6 +259,11 @@ pub enum SignedAggregateAndProofPayload {
 }
 
 impl SignedAggregateAndProofPayload {
+    /// Returns the attestation slot embedded in this payload.
+    pub fn slot(&self) -> phase0::Slot {
+        self.data().slot
+    }
+
     /// Returns the BLS signature embedded in this payload.
     pub fn signature(&self) -> phase0::BLSSignature {
         match self {
@@ -317,6 +322,18 @@ impl SignedAggregateAndProofPayload {
         }
     }
 
+    /// Returns the selection proof embedded in this payload.
+    pub fn selection_proof(&self) -> phase0::BLSSignature {
+        match self {
+            Self::Phase0(payload)
+            | Self::Altair(payload)
+            | Self::Bellatrix(payload)
+            | Self::Capella(payload)
+            | Self::Deneb(payload) => payload.message.selection_proof,
+            Self::Electra(payload) | Self::Fulu(payload) => payload.message.selection_proof,
+        }
+    }
+
     /// Returns the SSZ message root of the unsigned aggregate-and-proof payload.
     pub fn message_root(&self) -> phase0::Root {
         match self {
@@ -340,6 +357,24 @@ pub struct VersionedSignedValidatorRegistration {
 }
 
 impl VersionedSignedAggregateAndProof {
+    /// Returns the attestation slot of the wrapped payload.
+    pub fn slot(&self) -> Option<phase0::Slot> {
+        if self.version == DataVersion::Unknown {
+            return None;
+        }
+
+        Some(self.aggregate_and_proof.slot())
+    }
+
+    /// Returns the selection proof of the wrapped payload.
+    pub fn selection_proof(&self) -> Option<phase0::BLSSignature> {
+        if self.version == DataVersion::Unknown {
+            return None;
+        }
+
+        Some(self.aggregate_and_proof.selection_proof())
+    }
+
     /// Returns the SSZ message root of the wrapped payload.
     pub fn message_root(&self) -> Option<phase0::Root> {
         if self.version == DataVersion::Unknown {

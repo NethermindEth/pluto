@@ -204,7 +204,8 @@ mod tests {
         .try_into()
         .unwrap();
 
-        crate::signing::verify(&pubkey, signing_root, None, &signature)
+        BlstImpl
+            .verify(&pubkey, &signing_root, &signature)
             .expect("BLS signature verification failed");
     }
 }
