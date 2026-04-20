@@ -23,7 +23,9 @@ feature-depth = 1
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
-ignore = []
+ignore = [
+    { id = "RUSTSEC-2026-0097", reason = "Unsoundness requires a custom logger that calls rand::rng() during logging; we don't implement such a logger" },
+]
 unmaintained = "workspace"
 
 [licenses]
