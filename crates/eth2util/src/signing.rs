@@ -428,4 +428,36 @@ mod tests {
 
         assert!(matches!(err, SigningError::Verification(_)));
     }
+
+    #[tokio::test]
+    async fn verify_rejects_wrong_message_root() {
+        let (_server, client) = mock_beacon_client().await;
+
+        let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
+        let pubkey = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let signed_message_root = [0x55; 32];
+        let verified_message_root = [0x66; 32];
+        let signing_root = get_data_root(
+            &client,
+            DomainName::ApplicationBuilder,
+            0,
+            signed_message_root,
+        )
+        .await
+        .unwrap();
+        let signature = BlstImpl.sign(&secret, &signing_root).unwrap();
+
+        let err = verify(
+            &client,
+            DomainName::ApplicationBuilder,
+            0,
+            verified_message_root,
+            &signature,
+            &pubkey,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, SigningError::Verification(_)));
+    }
 }
