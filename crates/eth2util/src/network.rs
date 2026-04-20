@@ -254,7 +254,7 @@ mod tests {
     const INVALID_NETWORK: &str = "invalidNetwork";
 
     #[test]
-    fn test_fork_version_to_chain_id() {
+    fn fork_version_to_chain_id_works() {
         let gnosis_fork_version = hex::decode(
             GNOSIS
                 .genesis_fork_version_hex
@@ -269,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fork_version_to_network() {
+    fn fork_version_to_network_works() {
         let sepolia_fork_version = hex::decode(
             SEPOLIA
                 .genesis_fork_version_hex
@@ -293,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn test_network_to_fork_version() {
+    fn network_to_fork_version_works() {
         let fv = network_to_fork_version(SEPOLIA.name).unwrap();
         assert_eq!(fv, SEPOLIA.genesis_fork_version_hex.to_string());
 
@@ -308,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn test_network_to_fork_version_bytes() {
+    fn network_to_fork_version_bytes_works() {
         let fv = network_to_fork_version_bytes(SEPOLIA.name).unwrap();
         assert_eq!(
             fv,
@@ -332,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn test_valid_network() {
+    fn valid_network_works() {
         let supported_networks = vec![
             "mainnet", "goerli", "sepolia", "holesky", "gnosis", "chiado",
         ];
