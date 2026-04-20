@@ -20,7 +20,7 @@ use libp2p::{
         THandlerInEvent, THandlerOutEvent, ToSwarm, dummy,
     },
 };
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{RwLock, mpsc};
 
 use pluto_core::types::{Duty, ParSignedData, ParSignedDataSet, PubKey};
 use pluto_p2p::p2p_context::P2PContext;
@@ -122,7 +122,7 @@ enum Command {
 /// Shared subscriber list between [`Handle`] and [`Behaviour`].
 #[derive(Default)]
 struct SharedSubs {
-    subs: Mutex<Vec<ReceivedSub>>,
+    subs: RwLock<Vec<ReceivedSub>>,
 }
 
 /// Async handle for outbound partial signature broadcasts.
@@ -155,13 +155,11 @@ impl Handle {
         Ok(request_id)
     }
 
-    /// Registers a callback when a verified partial signature set is received
-    /// from a peer.
-    ///
-    /// This is not thread safe with respect to message delivery ordering — it
-    /// must be called before the swarm starts processing events.
+    /// Subscribers registered after the swarm begins polling may miss messages
+    /// already in flight. Register all subscribers before starting the event
+    /// loop.
     pub async fn subscribe(&self, sub: ReceivedSub) {
-        self.shared_subs.subs.lock().await.push(sub);
+        self.shared_subs.subs.write().await.push(sub);
     }
 }
 
@@ -210,8 +208,7 @@ pub struct Behaviour {
 
 impl Behaviour {
     /// Creates a behaviour and a clonable broadcast handle.
-    pub fn new(config: Config, peer_id: PeerId) -> (Self, Handle) {
-        debug_assert_eq!(config.peer_id, peer_id);
+    pub fn new(config: Config) -> (Self, Handle) {
         let (tx, rx) = mpsc::unbounded_channel();
         let shared_subs = Arc::new(SharedSubs::default());
         let handle = Handle {
@@ -239,7 +236,6 @@ impl Behaviour {
             self.config.timeout,
             self.config.verifier.clone(),
             self.config.duty_gater.clone(),
-            peer,
         ))
     }
 
@@ -395,7 +391,7 @@ impl Behaviour {
     fn notify_subscribers(&self, duty: Duty, data_set: ParSignedDataSet) {
         let shared_subs = self.shared_subs.clone();
         tokio::spawn(async move {
-            let subs = shared_subs.subs.lock().await.clone();
+            let subs = shared_subs.subs.read().await.clone();
             for sub in &subs {
                 sub(duty.clone(), data_set.clone()).await;
             }

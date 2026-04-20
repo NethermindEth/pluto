@@ -9,11 +9,14 @@
 //!
 //! ## 1. Create a cluster
 //!
-//! Use the Charon Go CLI to generate per-node data directories, each containing
-//! a `charon-enr-private-key` and a shared `cluster-lock.json`:
+//! Use the built-in Pluto CLI to generate per-node data directories, each
+//! containing a `charon-enr-private-key` and a shared `cluster-lock.json`:
 //!
 //! ```bash
-//! charon create cluster --name parsigex-test --nodes 3 --threshold 2 --no-verify \
+//! cargo run -p pluto-cli -- create cluster --name parsigex-test --nodes 3 \
+//!   --threshold 2 --num-validators 1 --network mainnet --insecure-keys \
+//!   --fee-recipient-addresses 0x0000000000000000000000000000000000000000 \
+//!   --withdrawal-addresses 0x0000000000000000000000000000000000000000 \
 //!   --cluster-dir ./cluster
 //! ```
 //!
@@ -275,7 +278,7 @@ async fn main() -> Result<()> {
                 duty_gater.clone(),
             )
             .with_timeout(Duration::from_secs(10));
-            let (parsigex, handle) = parsigex::Behaviour::new(config, local_peer_id);
+            let (parsigex, handle) = parsigex::Behaviour::new(config);
             parsigex_handle = Some(handle);
 
             builder
@@ -551,9 +554,6 @@ async fn main() -> Result<()> {
                         } else {
                             warn!(request_id, "partial signature broadcast finished with failures");
                         }
-                    }
-                    SwarmEvent::NewListenAddr { address, .. } => {
-                        info!(address = %address, "listening");
                     }
                     _ => {}
                 }

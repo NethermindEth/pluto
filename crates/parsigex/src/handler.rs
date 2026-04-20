@@ -8,7 +8,6 @@ use std::{
 
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use libp2p::{
-    PeerId,
     core::upgrade::ReadyUpgrade,
     swarm::{
         ConnectionHandler, ConnectionHandlerEvent, StreamProtocol, StreamUpgradeError,
@@ -83,12 +82,7 @@ pub struct Handler {
 
 impl Handler {
     /// Creates a new handler for one connection.
-    pub fn new(
-        timeout: Duration,
-        verifier: Verifier,
-        duty_gater: DutyGater,
-        _peer: PeerId,
-    ) -> Self {
+    pub fn new(timeout: Duration, verifier: Verifier, duty_gater: DutyGater) -> Self {
         Self {
             timeout,
             verifier,

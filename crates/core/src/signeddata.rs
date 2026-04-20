@@ -50,7 +50,7 @@ pub enum SignedDataError {
     AttestationJson,
     /// Custom error.
     #[error("{0}")]
-    Custom(Box<dyn std::error::Error>),
+    Custom(Box<dyn std::error::Error + Send + Sync>),
 }
 
 fn hash_root<T: TreeHash>(value: &T) -> [u8; 32] {

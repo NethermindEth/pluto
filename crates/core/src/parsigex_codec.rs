@@ -23,10 +23,6 @@ pub enum ParSigExCodecError {
     #[error("invalid partial signed data set proto fields")]
     InvalidParSignedDataSetFields,
 
-    /// Invalid partial signed proto.
-    #[error("invalid partial signed proto")]
-    InvalidParSignedProto,
-
     /// Invalid duty type.
     #[error("invalid duty")]
     InvalidDuty,
@@ -111,7 +107,9 @@ pub(crate) fn deserialize_signed_data(
         DutyType::SyncMessage => deserialize_json!(SignedSyncMessage),
         DutyType::PrepareSyncContribution => deserialize_json!(SyncCommitteeSelection),
         DutyType::SyncContribution => deserialize_json!(SignedSyncContributionAndProof),
-        DutyType::Unknown | DutyType::InfoSync | DutyType::DutySentinel(_) => {
+        // InfoSync is not used in parsigex in Go (handled via a separate channel);
+        // Unknown and DutySentinel are sentinel/invalid values that are never transmitted.
+        DutyType::Unknown | DutyType::DutySentinel(_) | DutyType::InfoSync => {
             Err(ParSigExCodecError::UnsupportedDutyType)
         }
     }

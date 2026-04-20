@@ -71,9 +71,19 @@ impl DutyType {
     }
 }
 
-impl From<&DutyType> for i32 {
-    fn from(duty_type: &DutyType) -> Self {
-        match duty_type {
+/// Error type for duty type conversion.
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+pub enum DutyTypeError {
+    /// Invalid duty type.
+    #[error("invalid duty type")]
+    InvalidDutyType,
+}
+
+impl TryFrom<&DutyType> for i32 {
+    type Error = DutyTypeError;
+
+    fn try_from(duty_type: &DutyType) -> Result<Self, Self::Error> {
+        Ok(match duty_type {
             DutyType::Unknown => 0,
             DutyType::Proposer => 1,
             DutyType::Attester => 2,
@@ -88,8 +98,8 @@ impl From<&DutyType> for i32 {
             DutyType::PrepareSyncContribution => 11,
             DutyType::SyncContribution => 12,
             DutyType::InfoSync => 13,
-            DutyType::DutySentinel(_) => 14,
-        }
+            _ => return Err(DutyTypeError::InvalidDutyType),
+        })
     }
 }
 
@@ -243,12 +253,14 @@ impl Duty {
     }
 }
 
-impl From<&Duty> for pbcore::Duty {
-    fn from(duty: &Duty) -> Self {
-        Self {
+impl TryFrom<&Duty> for pbcore::Duty {
+    type Error = DutyTypeError;
+
+    fn try_from(duty: &Duty) -> Result<Self, Self::Error> {
+        Ok(Self {
             slot: duty.slot.inner(),
-            r#type: i32::from(&duty.duty_type),
-        }
+            r#type: i32::try_from(&duty.duty_type)?,
+        })
     }
 }
 

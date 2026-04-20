@@ -12,7 +12,7 @@ use pluto_core::{
 };
 use pluto_p2p::proto;
 
-use super::{Error, Result as ParasigexResult};
+use super::{Error, Result as ParsigexResult};
 
 /// Encodes a protobuf message to bytes.
 pub fn encode_protobuf<M: Message>(message: &M) -> Vec<u8> {
@@ -31,9 +31,9 @@ pub fn decode_protobuf<M: Message + Default>(
 }
 
 /// Encodes a partial signature exchange message.
-pub fn encode_message(duty: &Duty, data_set: &ParSignedDataSet) -> ParasigexResult<Vec<u8>> {
+pub fn encode_message(duty: &Duty, data_set: &ParSignedDataSet) -> ParsigexResult<Vec<u8>> {
     let pb = pbparsigex::ParSigExMsg {
-        duty: Some(pbcore::Duty::from(duty)),
+        duty: Some(pbcore::Duty::try_from(duty)?),
         data_set: Some(pbcore::ParSignedDataSet::try_from(data_set)?),
     };
 
@@ -41,7 +41,7 @@ pub fn encode_message(duty: &Duty, data_set: &ParSignedDataSet) -> ParasigexResu
 }
 
 /// Decodes a partial signature exchange message.
-pub fn decode_message(bytes: &[u8]) -> ParasigexResult<(Duty, ParSignedDataSet)> {
+pub fn decode_message(bytes: &[u8]) -> ParsigexResult<(Duty, ParSignedDataSet)> {
     let pb: pbparsigex::ParSigExMsg = decode_protobuf(bytes)
         .map_err(|_| Error::from(pluto_core::ParSigExCodecError::InvalidMessageFields))?;
     let duty_pb = pb

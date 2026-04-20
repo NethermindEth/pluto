@@ -1,7 +1,6 @@
 //! Error types for the partial signature exchange protocol.
 
-use libp2p::PeerId;
-use pluto_core::ParSigExCodecError;
+use pluto_core::{ParSigExCodecError, types::DutyTypeError};
 
 /// Result type for partial signature exchange.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -61,16 +60,7 @@ pub enum Error {
     /// Handle channel closed.
     #[error("parsigex handle closed")]
     Closed,
-    /// Broadcast failed for a peer.
-    #[error("broadcast to peer {peer} failed: {source}")]
-    BroadcastPeer {
-        /// Peer for which the broadcast failed.
-        peer: PeerId,
-        /// Source failure.
-        #[source]
-        source: Failure,
-    },
-    /// Peer is not currently connected.
-    #[error("peer {0} is not connected")]
-    PeerNotConnected(PeerId),
+    /// Duty type error.
+    #[error(transparent)]
+    DutyTypeError(#[from] DutyTypeError),
 }
