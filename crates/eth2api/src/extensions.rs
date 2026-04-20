@@ -60,6 +60,23 @@ fn decode_fixed_hex<const N: usize>(value: &str) -> Result<[u8; N], EthBeaconNod
         .map_err(|_| EthBeaconNodeApiClientError::UnexpectedType)
 }
 
+fn parse_genesis_fork_version_and_validators_root(
+    genesis_data: &serde_json::Value,
+) -> Result<(phase0::Version, phase0::Root), EthBeaconNodeApiClientError> {
+    let fork_version = genesis_data
+        .get("genesis_fork_version")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(EthBeaconNodeApiClientError::UnexpectedType)
+        .and_then(decode_fixed_hex)?;
+    let validators_root = genesis_data
+        .get("genesis_validators_root")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(EthBeaconNodeApiClientError::UnexpectedType)
+        .and_then(decode_fixed_hex)?;
+
+    Ok((fork_version, validators_root))
+}
+
 fn fork_schedule_from_spec(
     spec_data: &serde_json::Value,
 ) -> Result<HashMap<ConsensusVersion, ForkSchedule>, EthBeaconNodeApiClientError> {
@@ -285,9 +302,12 @@ impl EthBeaconNodeApiClient {
         &self,
         domain_type: phase0::DomainType,
     ) -> Result<phase0::Domain, EthBeaconNodeApiClientError> {
+        let genesis = self.fetch_genesis_data().await?;
+        let (genesis_fork_version, _) = parse_genesis_fork_version_and_validators_root(&genesis)?;
+
         Ok(compute_domain(
             domain_type,
-            self.fetch_genesis_fork_version().await?,
+            genesis_fork_version,
             phase0::Root::default(),
         ))
     }
@@ -297,12 +317,9 @@ impl EthBeaconNodeApiClient {
         &self,
     ) -> Result<phase0::Root, EthBeaconNodeApiClientError> {
         let genesis = self.fetch_genesis_data().await?;
-        let root = genesis
-            .get("genesis_validators_root")
-            .and_then(serde_json::Value::as_str)
-            .ok_or(EthBeaconNodeApiClientError::UnexpectedType)?;
+        let (_, validators_root) = parse_genesis_fork_version_and_validators_root(&genesis)?;
 
-        decode_fixed_hex(root)
+        Ok(validators_root)
     }
 
     /// Fetches the genesis fork version from the beacon node.
@@ -310,12 +327,9 @@ impl EthBeaconNodeApiClient {
         &self,
     ) -> Result<phase0::Version, EthBeaconNodeApiClientError> {
         let genesis = self.fetch_genesis_data().await?;
-        let version = genesis
-            .get("genesis_fork_version")
-            .and_then(serde_json::Value::as_str)
-            .ok_or(EthBeaconNodeApiClientError::UnexpectedType)?;
+        let (fork_version, _) = parse_genesis_fork_version_and_validators_root(&genesis)?;
 
-        decode_fixed_hex(version)
+        Ok(fork_version)
     }
 
     /// Fetches the resolved beacon domain for the provided domain type and
@@ -327,8 +341,9 @@ impl EthBeaconNodeApiClient {
     ) -> Result<phase0::Domain, EthBeaconNodeApiClientError> {
         let spec = self.fetch_spec_data().await?;
         let fork_schedule = fork_schedule_from_spec(&spec)?;
-        let genesis_fork_version = self.fetch_genesis_fork_version().await?;
-        let genesis_validators_root = self.fetch_genesis_validators_root().await?;
+        let genesis = self.fetch_genesis_data().await?;
+        let (genesis_fork_version, genesis_validators_root) =
+            parse_genesis_fork_version_and_validators_root(&genesis)?;
         let voluntary_exit_domain_type = resolve_domain_type(&spec, "DOMAIN_VOLUNTARY_EXIT")?;
 
         Ok(resolve_domain(
