@@ -422,23 +422,23 @@ impl NetworkBehaviour for Behaviour {
     }
 
     fn on_swarm_event(&mut self, event: FromSwarm) {
-        if let FromSwarm::ConnectionClosed(e) = event {
-            if e.remaining_established == 0 {
-                let peer_id = e.peer_id;
-                let affected: Vec<u64> = self
-                    .pending_broadcasts
-                    .iter()
-                    .filter(|(_, b)| b.pending_peers.contains(&peer_id))
-                    .map(|(id, _)| *id)
-                    .collect();
-                for request_id in affected {
-                    self.emit_broadcast_error(
-                        request_id,
-                        Some(peer_id),
-                        Failure::Io(std::io::Error::other("connection closed")),
-                    );
-                    self.finish_broadcast_result(request_id, peer_id, true);
-                }
+        if let FromSwarm::ConnectionClosed(e) = event
+            && e.remaining_established == 0
+        {
+            let peer_id = e.peer_id;
+            let affected: Vec<u64> = self
+                .pending_broadcasts
+                .iter()
+                .filter(|(_, b)| b.pending_peers.contains(&peer_id))
+                .map(|(id, _)| *id)
+                .collect();
+            for request_id in affected {
+                self.emit_broadcast_error(
+                    request_id,
+                    Some(peer_id),
+                    Failure::Io(std::io::Error::other("connection closed")),
+                );
+                self.finish_broadcast_result(request_id, peer_id, true);
             }
         }
     }
