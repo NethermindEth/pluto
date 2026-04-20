@@ -99,7 +99,7 @@ async fn test_get_threshold_matching(input: Vec<usize>, output: Vec<usize>) {
 }
 
 #[tokio::test]
-async fn test_memdb_threshold() {
+async fn memdb_threshold() {
     const THRESHOLD: u64 = 7;
     const N: usize = 10;
 

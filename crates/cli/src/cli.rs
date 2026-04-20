@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 
 use crate::commands::{
     create_cluster::CreateClusterArgs,
+    create_dkg::CreateDkgArgs,
     create_enr::CreateEnrArgs,
     enr::EnrArgs,
     relay::RelayArgs,
@@ -133,6 +134,10 @@ pub struct CreateArgs {
 /// Create subcommands
 #[derive(Subcommand)]
 pub enum CreateCommands {
+    /// Create a cluster definition file for a new Distributed Key Generation
+    /// ceremony
+    Dkg(Box<CreateDkgArgs>),
+
     /// Create an Ethereum Node Record (ENR) private key to identify this charon
     /// client
     Enr(CreateEnrArgs),

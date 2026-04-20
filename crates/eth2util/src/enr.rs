@@ -343,7 +343,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse() {
+    fn parse() {
         let r = Record::try_from("enr:-Iu4QJyserRukhG0Vgi2csu7GjpHYUGufNEbZ8Q7ZBrcZUb0KqpL5QzHonkh1xxHlxatTxrIcX_IS5J3SEWR_sa0ptGAgmlkgnY0gmlwhH8AAAGJc2VjcDI1NmsxoQMAUgEqczOjevyculnUIofhCj0DkgJudErM7qCYIvIkzIN0Y3CCDhqDdWRwgg4u").unwrap();
 
         let pk = r.public_key.expect("Public key should be set");
@@ -364,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_decode() {
+    fn encode_decode() {
         let secret_key: SecretKey<Secp256k1> = SecretKey::random(&mut OsRng);
 
         let r1 = Record::new(&secret_key, vec![]).expect("Failed to create record");
@@ -378,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ip_tcp() {
+    fn ip_tcp() {
         let secret_key: SecretKey<Secp256k1> = SecretKey::random(&mut OsRng);
 
         let expect_ip = Ipv4Addr::new(1, 2, 3, 4);
@@ -419,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new() {
+    fn new() {
         let secret_key: SecretKey<Secp256k1> = generate_insecure_k1_key(0);
 
         let r = Record::new(&secret_key, vec![]).expect("Failed to create record");
@@ -478,7 +478,7 @@ mod tests {
         }
 
         #[test]
-        fn test_duplicate_keys() {
+        fn duplicate_keys() {
             let kvs = DuplicateKeys::new(HashMap::new());
             let r = Record::try_from(kvs.to_string().as_str())
                 .expect_err("Should fail to parse record");
