@@ -4,8 +4,6 @@ use std::io;
 
 use futures::AsyncWriteExt;
 use libp2p::swarm::Stream;
-use prost::Message;
-
 use pluto_core::{
     corepb::v1::{core as pbcore, parsigex as pbparsigex},
     types::{Duty, ParSignedDataSet},
@@ -14,35 +12,20 @@ use pluto_p2p::proto;
 
 use super::{Error, Result as ParsigexResult};
 
-/// Encodes a protobuf message to bytes.
-pub fn encode_protobuf<M: Message>(message: &M) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(message.encoded_len());
-    message
-        .encode(&mut buf)
-        .expect("vec-backed protobuf encoding cannot fail");
-    buf
-}
-
-/// Decodes a protobuf message from bytes.
-pub fn decode_protobuf<M: Message + Default>(
-    bytes: &[u8],
-) -> std::result::Result<M, prost::DecodeError> {
-    M::decode(bytes)
-}
-
 /// Encodes a partial signature exchange message.
 pub fn encode_message(duty: &Duty, data_set: &ParSignedDataSet) -> ParsigexResult<Vec<u8>> {
+    use prost::Message as _;
     let pb = pbparsigex::ParSigExMsg {
         duty: Some(pbcore::Duty::try_from(duty)?),
         data_set: Some(pbcore::ParSignedDataSet::try_from(data_set)?),
     };
-
-    Ok(encode_protobuf(&pb))
+    Ok(pb.encode_to_vec())
 }
 
 /// Decodes a partial signature exchange message.
 pub fn decode_message(bytes: &[u8]) -> ParsigexResult<(Duty, ParSignedDataSet)> {
-    let pb: pbparsigex::ParSigExMsg = decode_protobuf(bytes)
+    use prost::Message as _;
+    let pb: pbparsigex::ParSigExMsg = pbparsigex::ParSigExMsg::decode(bytes)
         .map_err(|_| Error::from(pluto_core::ParSigExCodecError::InvalidMessageFields))?;
     let duty_pb = pb
         .duty

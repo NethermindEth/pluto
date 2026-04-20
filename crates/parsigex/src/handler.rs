@@ -62,10 +62,13 @@ pub enum FromHandler {
     },
 }
 
-/// Outbound open info that carries the request context through stream
-/// negotiation.
+/// Pending outbound stream open, held by libp2p until the stream is negotiated.
 pub struct PendingOpen {
+    /// Caller-assigned identifier used to correlate
+    /// [`FromHandler::OutboundSuccess`] and [`FromHandler::OutboundError`]
+    /// events back to the originating broadcast.
     request_id: u64,
+    /// Encoded protobuf payload to send once the stream is ready.
     payload: Vec<u8>,
 }
 
@@ -149,9 +152,11 @@ impl Handler {
         let request_id = info.request_id;
         let failure = match error {
             StreamUpgradeError::Timeout => Failure::Timeout,
-            StreamUpgradeError::NegotiationFailed => Failure::io("protocol negotiation failed"),
-            StreamUpgradeError::Apply(e) => Failure::io(e),
-            StreamUpgradeError::Io(e) => Failure::io(e),
+            StreamUpgradeError::NegotiationFailed => {
+                Failure::Io(std::io::Error::other("protocol negotiation failed"))
+            }
+            StreamUpgradeError::Apply(e) => Failure::Io(std::io::Error::other(e)),
+            StreamUpgradeError::Io(e) => Failure::Io(e),
         };
         self.active_futures.push(
             async move {
@@ -246,7 +251,7 @@ async fn do_recv(
 ) -> Result<(Duty, ParSignedDataSet), Failure> {
     let bytes = protocol::recv_message(&mut stream)
         .await
-        .map_err(Failure::io)?;
+        .map_err(Failure::Io)?;
     let (duty, data_set) = protocol::decode_message(&bytes).map_err(|_| Failure::InvalidPayload)?;
     if !duty_gater(&duty) {
         return Err(Failure::InvalidDuty);
@@ -254,7 +259,7 @@ async fn do_recv(
     for (pub_key, par_sig) in data_set.inner() {
         verifier(duty.clone(), *pub_key, par_sig.clone())
             .await
-            .map_err(|_| Failure::InvalidPartialSignature)?;
+            .map_err(|e| Failure::InvalidPartialSignature(e.to_string()))?;
     }
     Ok((duty, data_set))
 }
@@ -262,5 +267,5 @@ async fn do_recv(
 async fn do_send(mut stream: libp2p::swarm::Stream, payload: Vec<u8>) -> Result<(), Failure> {
     protocol::send_message(&mut stream, &payload)
         .await
-        .map_err(Failure::io)
+        .map_err(Failure::Io)
 }

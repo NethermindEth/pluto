@@ -609,11 +609,10 @@ impl TryFrom<&ParSignedData> for pbcore::ParSignedData {
         let encoded = serialize_signed_data(data.signed_data.as_ref())?;
         let share_idx =
             i32::try_from(data.share_idx).map_err(|_| ParSigExCodecError::InvalidShareIndex)?;
-        let signature = data.signed_data.signature().map_err(|err| {
-            ParSigExCodecError::Serialize(serde_json::Error::io(std::io::Error::other(
-                err.to_string(),
-            )))
-        })?;
+        let signature = data
+            .signed_data
+            .signature()
+            .map_err(|err| ParSigExCodecError::InvalidSignature(err.to_string()))?;
 
         Ok(Self {
             data: encoded.into(),
