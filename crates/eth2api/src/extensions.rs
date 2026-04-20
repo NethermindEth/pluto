@@ -95,7 +95,8 @@ fn fork_schedule_from_spec(
     Ok(result)
 }
 
-/// Computes the final 32-byte beacon domain from domain type, fork version, and genesis root.
+/// Computes the final 32-byte beacon domain from domain type, fork version, and
+/// genesis root.
 pub fn compute_domain(
     domain_type: phase0::DomainType,
     fork_version: phase0::Version,
@@ -317,7 +318,8 @@ impl EthBeaconNodeApiClient {
         decode_fixed_hex(version)
     }
 
-    /// Fetches the resolved beacon domain for the provided domain type and epoch.
+    /// Fetches the resolved beacon domain for the provided domain type and
+    /// epoch.
     pub async fn fetch_domain(
         &self,
         domain_type: phase0::DomainType,

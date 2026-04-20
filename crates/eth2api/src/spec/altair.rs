@@ -193,7 +193,8 @@ impl ContributionAndProof {
 }
 
 impl SignedContributionAndProof {
-    /// Returns the SSZ message root of the unsigned contribution-and-proof payload.
+    /// Returns the SSZ message root of the unsigned contribution-and-proof
+    /// payload.
     pub fn message_root(&self) -> phase0::Root {
         self.message.tree_hash_root().0
     }

@@ -334,7 +334,8 @@ impl SignedAggregateAndProofPayload {
         }
     }
 
-    /// Returns the SSZ message root of the unsigned aggregate-and-proof payload.
+    /// Returns the SSZ message root of the unsigned aggregate-and-proof
+    /// payload.
     pub fn message_root(&self) -> phase0::Root {
         match self {
             Self::Phase0(payload)

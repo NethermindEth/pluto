@@ -116,7 +116,8 @@ pub async fn get_domain(
     Ok(client.fetch_domain(domain_type, epoch).await?)
 }
 
-/// Wraps the message root with the resolved domain and returns the signing-data root.
+/// Wraps the message root with the resolved domain and returns the signing-data
+/// root.
 pub async fn get_data_root(
     client: &EthBeaconNodeApiClient,
     name: DomainName,
