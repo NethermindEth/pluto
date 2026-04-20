@@ -145,7 +145,7 @@ type Result<T> = std::result::Result<T, LockError>;
 
 /// Lock extends the cluster config Definition with bls threshold public keys
 /// and checksums.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Lock {
     /// Definition is embedded and extended by Lock.
     pub definition: Definition,

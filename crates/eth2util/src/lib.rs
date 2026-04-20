@@ -36,5 +36,8 @@ pub mod keymanager;
 /// Go-parity type/version conversion helpers.
 pub mod types;
 
+/// Attestation and sync committee aggregator selection.
+pub mod eth2exp;
+
 /// Utilities.
 pub(crate) mod utils;

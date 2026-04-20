@@ -69,18 +69,13 @@ pub struct TestConfigArgs {
 }
 
 /// Lists available test case names for a given test category.
-/// TODO: Fill with enums TestCases of each category
 fn list_test_cases(category: TestCategory) -> Vec<String> {
     // Returns available test case names for each category.
     match category {
-        TestCategory::Validator => {
-            // From validator::supported_validator_test_cases()
-            vec![
-                "Ping".to_string(),
-                "PingMeasure".to_string(),
-                "PingLoad".to_string(),
-            ]
-        }
+        TestCategory::Validator => validator::ValidatorTestCase::all()
+            .iter()
+            .map(|tc| tc.to_string())
+            .collect(),
         TestCategory::Beacon => beacon::test_case_names(),
         TestCategory::Mev => {
             vec![
