@@ -170,7 +170,13 @@ pub fn compute_domain(
     domain
 }
 
-/// Computes the builder domain using `GENESIS_FORK_VERSION` and a zero validators root.
+/// Computes the builder domain using `GENESIS_FORK_VERSION` and a zero
+/// validators root.
+///
+/// Builder registrations do not use the fork-at-epoch beacon domain.
+/// References:
+/// - <https://github.com/ethereum/builder-specs/blob/100d4faf32e5dc672c963741769390ff09ab194a/specs/bellatrix/builder.md#signing>
+/// - <https://github.com/ethereum/consensus-specs/blob/dev/specs/phase0/beacon-chain.md#compute_domain>
 pub fn compute_builder_domain(
     domain_type: phase0::DomainType,
     genesis_fork_version: phase0::Version,
