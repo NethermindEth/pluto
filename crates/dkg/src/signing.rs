@@ -27,6 +27,10 @@ pub enum SigningError {
     #[error(transparent)]
     Deposit(#[from] deposit::DepositError),
 
+    /// Failed to normalize the withdrawal address.
+    #[error(transparent)]
+    Helper(#[from] pluto_eth2util::helpers::HelperError),
+
     /// Failed to build or hash validator registrations.
     #[error(transparent)]
     Registration(#[from] registration::RegistrationError),
