@@ -576,7 +576,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_dkg_valid() {
+    async fn create_dkg_valid() {
         let dir = temp_dir();
         let args = CreateDkgArgs {
             output_dir: dir.path().to_path_buf(),
@@ -707,7 +707,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_dkg_cli_no_threshold() {
+    async fn dkg_cli_no_threshold() {
         let dir = temp_dir();
         let enr = "enr:-JG4QG472ZVvl8ySSnUK9uNVDrP_hjkUrUqIxUC75aayzmDVQedXkjbqc7QKyOOS71VmlqnYzri_taV8ZesFYaoQSIOGAYHtv1WsgmlkgnY0gmlwhH8AAAGJc2VjcDI1NmsxoQKwwq_CAld6oVKOrixE-JzMtvvNgb9yyI-_rwq4NFtajIN0Y3CCDhqDdWRwgg4u";
         let enrs: Vec<String> = (0..MIN_NODES).map(|_| enr.to_string()).collect();
@@ -728,7 +728,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_existing_cluster_definition() {
+    async fn existing_cluster_definition() {
         let dir = temp_dir();
         tokio::fs::write(
             dir.path().join("cluster-definition.json"),

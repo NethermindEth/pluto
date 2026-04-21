@@ -533,7 +533,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_deadliner() {
+    async fn deadliner() {
         let (expired_duties, non_expired_duties, voluntary_exits) = setup_data();
 
         // Use real time with generous durations to avoid flakiness on loaded CI.
@@ -655,7 +655,7 @@ mod tests {
     #[test_case::test_case(DutyType::Exit ; "exit")]
     #[test_case::test_case(DutyType::BuilderRegistration ; "builder_registration")]
     #[tokio::test]
-    async fn test_never_expire_duties(duty_type: DutyType) {
+    async fn never_expire_duties(duty_type: DutyType) {
         let genesis_time = DateTime::from_timestamp(1606824023, 0).unwrap();
         let slot_duration_secs = 12;
         let slots_per_epoch = 32;
@@ -683,7 +683,7 @@ mod tests {
     #[test_case::test_case(DutyType::InfoSync ; "info_sync")]
     #[test_case::test_case(DutyType::PrepareSyncContribution ; "prepare_sync_contribution")]
     #[tokio::test]
-    async fn test_duty_deadline_durations(duty_type: DutyType) {
+    async fn duty_deadline_durations(duty_type: DutyType) {
         let genesis_time = DateTime::from_timestamp(1606824023, 0).unwrap();
         let slot_duration_secs = 12;
         let slots_per_epoch = 32;

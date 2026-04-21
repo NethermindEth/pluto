@@ -366,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_relay_addr() {
+    fn is_relay_addr() {
         assert!(!utils::is_relay_addr(&tcp_direct_addr()));
         assert!(!utils::is_relay_addr(&quic_direct_addr()));
         assert!(utils::is_relay_addr(&tcp_relay_addr()));
@@ -374,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_quic_addr() {
+    fn is_quic_addr() {
         assert!(!utils::is_quic_addr(&tcp_direct_addr()));
         assert!(utils::is_quic_addr(&quic_direct_addr()));
         assert!(!utils::is_quic_addr(&tcp_relay_addr()));
@@ -382,7 +382,7 @@ mod tests {
     }
 
     #[test]
-    fn test_addr_type() {
+    fn addr_type() {
         assert_eq!(utils::addr_type(&tcp_direct_addr()), ConnectionType::Direct);
         assert_eq!(
             utils::addr_type(&quic_direct_addr()),
@@ -393,7 +393,7 @@ mod tests {
     }
 
     #[test]
-    fn test_addr_protocol() {
+    fn addr_protocol() {
         assert_eq!(utils::addr_protocol(&tcp_direct_addr()), Protocol::Tcp);
         assert_eq!(utils::addr_protocol(&quic_direct_addr()), Protocol::Quic);
         assert_eq!(utils::addr_protocol(&tcp_relay_addr()), Protocol::Tcp);
@@ -401,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn test_increment_connection_for_known_peer() {
+    fn increment_connection_for_known_peer() {
         let peer = random_peer_id();
         let mut behaviour = make_behaviour([peer]);
 
@@ -418,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn test_increment_connection_multiple_times() {
+    fn increment_connection_multiple_times() {
         let peer = random_peer_id();
         let mut behaviour = make_behaviour([peer]);
 
@@ -436,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn test_increment_connection_different_types() {
+    fn increment_connection_different_types() {
         let peer = random_peer_id();
         let mut behaviour = make_behaviour([peer]);
 
@@ -450,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn test_decrement_connection() {
+    fn decrement_connection() {
         let peer = random_peer_id();
         let mut behaviour = make_behaviour([peer]);
 
@@ -468,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn test_decrement_connection_to_zero() {
+    fn decrement_connection_to_zero() {
         let peer = random_peer_id();
         let mut behaviour = make_behaviour([peer]);
 
@@ -485,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn test_decrement_nonexistent_connection() {
+    fn decrement_nonexistent_connection() {
         let peer = random_peer_id();
         let mut behaviour = make_behaviour([peer]);
 
@@ -496,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn test_metrics_for_known_peer() {
+    fn metrics_for_known_peer() {
         let peer = random_peer_id();
         let mut behaviour = make_behaviour([peer]);
 
@@ -515,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn test_metrics_for_unknown_peer_uses_relay_metrics() {
+    fn metrics_for_unknown_peer_uses_relay_metrics() {
         let known_peer = random_peer_id();
         let unknown_peer = random_peer_id();
         let mut behaviour = make_behaviour([known_peer]);
@@ -539,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn test_metrics_decrement_to_zero_sets_gauge() {
+    fn metrics_decrement_to_zero_sets_gauge() {
         let peer = random_peer_id();
         let mut behaviour = make_behaviour([peer]);
 
@@ -555,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn test_relay_metrics_decrement() {
+    fn relay_metrics_decrement() {
         let known_peer = random_peer_id();
         let relay_peer = random_peer_id();
         let mut behaviour = make_behaviour([known_peer]);
@@ -575,7 +575,7 @@ mod tests {
     }
 
     #[test]
-    fn test_conn_key_equality() {
+    fn conn_key_equality() {
         let peer = random_peer_id();
         let key1 = ConnKey {
             peer_id: peer,
@@ -606,7 +606,7 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_established_inbound_connection() {
+    fn handle_established_inbound_connection() {
         let peer = random_peer_id();
         let mut behaviour = make_behaviour([peer]);
 
@@ -637,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_established_outbound_connection() {
+    fn handle_established_outbound_connection() {
         let peer = random_peer_id();
         let mut behaviour = make_behaviour([peer]);
 
@@ -668,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_established_inbound_connection_relay() {
+    fn handle_established_inbound_connection_relay() {
         let peer = random_peer_id();
         let mut behaviour = make_behaviour([peer]);
 
@@ -694,7 +694,7 @@ mod tests {
     }
 
     #[test]
-    fn test_on_swarm_event_connection_closed_dialer() {
+    fn on_swarm_event_connection_closed_dialer() {
         let peer = random_peer_id();
         let mut behaviour = make_behaviour([peer]);
 
@@ -726,7 +726,7 @@ mod tests {
     }
 
     #[test]
-    fn test_on_swarm_event_connection_closed_listener() {
+    fn on_swarm_event_connection_closed_listener() {
         let peer = random_peer_id();
         let mut behaviour = make_behaviour([peer]);
 
@@ -758,7 +758,7 @@ mod tests {
     }
 
     #[test]
-    fn test_full_connection_lifecycle() {
+    fn full_connection_lifecycle() {
         let peer = random_peer_id();
         let mut behaviour = make_behaviour([peer]);
 
@@ -824,7 +824,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_peers_connection_lifecycle() {
+    fn multiple_peers_connection_lifecycle() {
         let peer1 = random_peer_id();
         let peer2 = random_peer_id();
         let mut behaviour = make_behaviour([peer1, peer2]);
@@ -873,7 +873,7 @@ mod tests {
     }
 
     #[test]
-    fn test_relay_vs_known_peer_metrics() {
+    fn relay_vs_known_peer_metrics() {
         let known_peer = random_peer_id();
         let relay_peer = random_peer_id(); // Not in the known peers list
         let mut behaviour = make_behaviour([known_peer]);
