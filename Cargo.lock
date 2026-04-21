@@ -5622,6 +5622,7 @@ version = "1.7.1"
 dependencies = [
  "anyhow",
  "bon",
+ "chrono",
  "clap",
  "either",
  "futures",
@@ -5633,6 +5634,7 @@ dependencies = [
  "pluto-core",
  "pluto-crypto",
  "pluto-eth1wrap",
+ "pluto-eth2api",
  "pluto-eth2util",
  "pluto-k1util",
  "pluto-p2p",
@@ -5651,6 +5653,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+ "wiremock",
  "zeroize",
 ]
 

@@ -1,8 +1,19 @@
 use std::{path, time::Duration};
 
 use bon::Builder;
+use libp2p::PeerId;
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
+use tracing::{info, warn};
+
+pub use crate::{
+    aggregate::{AggregateError, agg_deposit_data, agg_lock_hash_sig, agg_validator_registrations},
+    publish::{PublishError, write_lock_to_api},
+    signing::{SigningError, sign_deposit_msgs, sign_lock_hash, sign_validator_registrations},
+    validators::{
+        ValidatorsError, builder_registration_from_eth2, create_dist_validators,
+        set_registration_signature,
+    },
+};
 
 const DEFAULT_DATA_DIR: &str = ".charon";
 const DEFAULT_DEFINITION_FILE: &str = ".charon/cluster-definition.json";
@@ -210,6 +221,49 @@ fn validate_keymanager_flags(conf: &Config) -> Result<(), DkgError> {
     }
 
     Ok(())
+}
+
+/// Logs peer summary with peer names and operator addresses.
+pub fn log_peer_summary(
+    current_peer: PeerId,
+    peers: &[pluto_p2p::peer::Peer],
+    operators: &[pluto_cluster::operator::Operator],
+) {
+    for (idx, peer) in peers.iter().enumerate() {
+        let address = operators
+            .get(idx)
+            .filter(|operator| !operator.address.is_empty())
+            .map(|operator| operator.address.as_str());
+        let is_current_peer = peer.id == current_peer;
+
+        if let Some(address) = address {
+            if is_current_peer {
+                info!(
+                    peer = peer.name,
+                    index = peer.index,
+                    address,
+                    you = "⭐️",
+                    "Peer summary"
+                );
+            } else {
+                info!(
+                    peer = peer.name,
+                    index = peer.index,
+                    address,
+                    "Peer summary"
+                );
+            }
+        } else if is_current_peer {
+            info!(
+                peer = peer.name,
+                index = peer.index,
+                you = "⭐️",
+                "Peer summary"
+            );
+        } else {
+            info!(peer = peer.name, index = peer.index, "Peer summary");
+        }
+    }
 }
 
 async fn verify_keymanager_connection(conf: &Config) -> Result<(), DkgError> {

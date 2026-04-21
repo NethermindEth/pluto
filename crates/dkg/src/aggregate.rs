@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use pluto_core::{
     signeddata::{SignedDataError, VersionedSignedValidatorRegistration},
-    types::{ParSignedData, PubKey, Signature as CoreSignature},
+    types::{ParSignedData, PubKey},
 };
 use pluto_crypto::{
     blst_impl::BlstImpl,
@@ -213,7 +213,7 @@ pub fn agg_validator_registrations(
 
         res.push(set_registration_signature(
             msg,
-            CoreSignature::new(agg_sig),
+            pluto_core::types::Signature::new(agg_sig),
         )?);
     }
 
@@ -309,7 +309,7 @@ mod tests {
     }
 
     fn partial_signature(sig: Signature, share_idx: u64) -> ParSignedData {
-        ParSignedData::new(CoreSignature::new(sig), share_idx)
+        ParSignedData::new(pluto_core::types::Signature::new(sig), share_idx)
     }
 
     #[test]
