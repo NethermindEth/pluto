@@ -788,7 +788,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_write_result_to_file_creates_new_file() {
+    async fn write_result_to_file_creates_new_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("output.json");
 
@@ -812,7 +812,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_write_result_to_file_merges_categories() {
+    async fn write_result_to_file_merges_categories() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("output.json");
 
@@ -843,7 +843,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_write_result_to_file_overwrites_same_category() {
+    async fn write_result_to_file_overwrites_same_category() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("output.json");
 
@@ -903,7 +903,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn test_write_result_to_file_sets_permissions() {
+    async fn write_result_to_file_sets_permissions() {
         use std::os::unix::fs::PermissionsExt as _;
 
         let dir = tempfile::tempdir().unwrap();
@@ -917,7 +917,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_write_result_to_file_all_categories() {
+    async fn write_result_to_file_all_categories() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("output.json");
 

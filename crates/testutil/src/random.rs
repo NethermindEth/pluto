@@ -15,7 +15,7 @@ use pluto_eth2api::{
     },
     versioned::{self, AttestationPayload},
 };
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{Rng, SeedableRng, rngs::StdRng, seq::index};
 
 /// A deterministic RNG that always returns the same byte value.
 ///
@@ -138,9 +138,13 @@ pub fn random_bit_list(length: usize) -> String {
     let mut bytes = [0u8; 32];
     let mut rng = rand::thread_rng();
 
-    // Set 'length' random bits
-    for _ in 0..length {
-        let bit_idx = rng.r#gen::<usize>() % 256;
+    assert!(
+        length <= 256,
+        "cannot set {length} unique bits in a 256-bit bitlist",
+    );
+
+    // Set `length` distinct random bits.
+    for bit_idx in index::sample(&mut rng, 256, length) {
         let byte_idx = bit_idx / 8;
         let bit_offset = bit_idx % 8;
         bytes[byte_idx] |= 1 << bit_offset;
@@ -229,7 +233,7 @@ mod tests {
     use k256::PublicKey;
 
     #[test]
-    fn test_deterministic_generation() {
+    fn deterministic_generation() {
         let key1 = generate_insecure_k1_key(42);
         let key2 = generate_insecure_k1_key(42);
 
@@ -241,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn test_different_seeds_produce_different_keys() {
+    fn different_seeds_produce_different_keys() {
         let key1 = generate_insecure_k1_key(1);
         let key2 = generate_insecure_k1_key(2);
 
@@ -253,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    fn test_zero_seed_is_handled() {
+    fn zero_seed_is_handled() {
         // Should not panic or loop infinitely
         let key = generate_insecure_k1_key(0);
 
@@ -282,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bls_key_deterministic() {
+    fn bls_key_deterministic() {
         let key1 = generate_test_bls_key(42);
         let key2 = generate_test_bls_key(42);
 
@@ -290,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bls_key_different_seeds() {
+    fn bls_key_different_seeds() {
         let key1 = generate_test_bls_key(1);
         let key2 = generate_test_bls_key(2);
 
@@ -301,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn test_random_eth2_signature() {
+    fn random_eth2_signature_works() {
         let sig1 = random_eth2_signature();
         let sig2 = random_eth2_signature();
 
@@ -315,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn test_random_root() {
+    fn random_root_works() {
         let root1 = random_root();
         let root2 = random_root();
 
@@ -329,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn test_random_bit_list() {
+    fn random_bit_list_works() {
         for length in [5usize, 50, 256] {
             let bitlist = random_bit_list(length);
 
@@ -353,7 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn test_random_phase0_attestation() {
+    fn random_phase0_attestation_works() {
         let att = random_phase0_attestation();
 
         // Check that all fields are populated
@@ -365,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn test_random_deneb_versioned_attestation() {
+    fn random_deneb_versioned_attestation_works() {
         let versioned_att = random_deneb_versioned_attestation();
 
         // Check version is Deneb
@@ -384,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn test_random_deneb_versioned_attestation_different() {
+    fn random_deneb_versioned_attestation_different() {
         let att1 = random_deneb_versioned_attestation();
         let att2 = random_deneb_versioned_attestation();
 

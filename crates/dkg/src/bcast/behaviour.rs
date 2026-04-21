@@ -346,13 +346,15 @@ impl Behaviour {
                 }
             }
             OutEvent::OutboundFailure { op_id, failure } => {
-                if let Some(state) = self.active_broadcast.as_mut() {
-                    let failed_peer = state
+                let failed_peer = self.active_broadcast.as_mut().and_then(|state| {
+                    state
                         .sig_ops
                         .remove(&op_id)
                         .map(|sig_op| sig_op.peer)
                         .or_else(|| state.msg_ops.remove(&op_id))
-                        .unwrap_or(peer_id);
+                });
+
+                if let Some(failed_peer) = failed_peer {
                     self.complete_active_broadcast(Err(Error::OutboundFailure {
                         peer: failed_peer,
                         failure,
