@@ -746,7 +746,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lock_v1_10_0() {
+    fn lock_v1_10_0() {
         let lock = serde_json::from_str::<Lock>(include_str!("testdata/cluster_lock_v1_10_0.json"))
             .unwrap();
 
@@ -925,7 +925,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_lock_v1_10_0() {
+    fn cluster_lock_v1_10_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_10_0.json");
         let _ = serde_json::from_str::<LockV1x8orLater>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(include_str!("testdata/cluster_lock_v1_10_0.json"))
@@ -935,7 +935,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_lock_v1_9_0() {
+    fn cluster_lock_v1_9_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_9_0.json");
         let _ = serde_json::from_str::<LockV1x8orLater>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(json_str).unwrap();
@@ -943,7 +943,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_lock_v1_8_0() {
+    fn cluster_lock_v1_8_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_8_0.json");
         let _ = serde_json::from_str::<LockV1x8orLater>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(json_str).unwrap();
@@ -951,7 +951,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_lock_v1_7_0() {
+    fn cluster_lock_v1_7_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_7_0.json");
         let _ = serde_json::from_str::<LockV1x7>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(json_str).unwrap();
@@ -959,7 +959,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_lock_v1_6_0() {
+    fn cluster_lock_v1_6_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_6_0.json");
         let _ = serde_json::from_str::<LockV1x6>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(json_str).unwrap();
@@ -967,7 +967,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_lock_v1_5_0() {
+    fn cluster_lock_v1_5_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_5_0.json");
         let _ = serde_json::from_str::<LockV1x2to5>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(json_str).unwrap();
@@ -975,7 +975,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_lock_v1_4_0() {
+    fn cluster_lock_v1_4_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_4_0.json");
         let _ = serde_json::from_str::<LockV1x2to5>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(json_str).unwrap();
@@ -983,7 +983,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_lock_v1_3_0() {
+    fn cluster_lock_v1_3_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_3_0.json");
         let _ = serde_json::from_str::<LockV1x2to5>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(json_str).unwrap();
@@ -991,7 +991,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_lock_v1_2_0() {
+    fn cluster_lock_v1_2_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_2_0.json");
         let _ = serde_json::from_str::<LockV1x2to5>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(json_str).unwrap();
@@ -999,7 +999,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_lock_v1_1_0() {
+    fn cluster_lock_v1_1_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_1_0.json");
         let _ = serde_json::from_str::<LockV1x0or1>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(json_str).unwrap();
@@ -1007,7 +1007,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_lock_v1_0_0() {
+    fn cluster_lock_v1_0_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_0_0.json");
         let _ = serde_json::from_str::<LockV1x0or1>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(json_str).unwrap();

@@ -46,19 +46,17 @@ use rand::rngs::OsRng;
 use tracing::{debug, info, warn};
 
 use crate::{
-    commands::create_dkg,
+    commands::{
+        address_validation::validate_addresses,
+        constants::{MIN_NODES, MIN_THRESHOLD},
+        create_dkg,
+    },
     error::{
         CliError, CreateClusterError, InvalidNetworkConfigError, Result as CliResult,
         ThresholdError,
     },
 };
 
-/// Minimum number of nodes required in a cluster.
-pub const MIN_NODES: u64 = 3;
-/// Minimum threshold value.
-pub const MIN_THRESHOLD: u64 = 2;
-/// Zero ethereum address (not allowed on mainnet/gnosis).
-pub const ZERO_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
 /// HTTP scheme.
 const HTTP_SCHEME: &str = "http";
 /// HTTPS scheme.
@@ -1208,52 +1206,6 @@ async fn load_definition(
     }
 
     Ok(def)
-}
-
-/// Validates that addresses match the number of validators.
-/// If only one address is provided, it fills the slice to match num_validators.
-///
-/// Returns an error if the number of addresses doesn't match and isn't exactly
-/// 1.
-fn validate_addresses(
-    num_validators: u64,
-    fee_recipient_addrs: &[String],
-    withdrawal_addrs: &[String],
-) -> Result<(Vec<String>, Vec<String>)> {
-    let num_validators_usize =
-        usize::try_from(num_validators).map_err(|_| CreateClusterError::ValueExceedsUsize {
-            value: num_validators,
-        })?;
-
-    if fee_recipient_addrs.len() != num_validators_usize && fee_recipient_addrs.len() != 1 {
-        return Err(CreateClusterError::MismatchingFeeRecipientAddresses {
-            num_validators,
-            addresses: fee_recipient_addrs.len(),
-        });
-    }
-
-    if withdrawal_addrs.len() != num_validators_usize && withdrawal_addrs.len() != 1 {
-        return Err(CreateClusterError::MismatchingWithdrawalAddresses {
-            num_validators,
-            addresses: withdrawal_addrs.len(),
-        });
-    }
-
-    let mut fee_addrs = fee_recipient_addrs.to_vec();
-    let mut withdraw_addrs = withdrawal_addrs.to_vec();
-
-    // Expand single address to match num_validators
-    if fee_addrs.len() == 1 {
-        let addr = fee_addrs[0].clone();
-        fee_addrs = vec![addr; num_validators_usize];
-    }
-
-    if withdraw_addrs.len() == 1 {
-        let addr = withdraw_addrs[0].clone();
-        withdraw_addrs = vec![addr; num_validators_usize];
-    }
-
-    Ok((fee_addrs, withdraw_addrs))
 }
 
 /// Returns the safe threshold, logging a warning if a non-standard threshold is
