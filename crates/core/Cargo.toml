@@ -42,6 +42,7 @@ hex.workspace = true
 chrono.workspace = true
 test-case.workspace = true
 pluto-eth2util.workspace = true
+pluto-p2p.workspace = true
 pluto-testutil.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 wiremock.workspace = true
