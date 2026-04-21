@@ -71,6 +71,8 @@ Run the first charon node (`node0`):
 
 > **Important:** Start the Charon node before starting Pluto nodes, otherwise Pluto will hang waiting for the connection.
 
+> **Note:** In this mixed setup (1 Charon node + 2 Pluto peers), the Charon node will log consensus timeout errors like `Permanent failure calling consensus/participate: consensus timeout`. This is expected because Charon requires a quorum of nodes (2 out of 3) to reach consensus, but only 1 is a full Charon node. These errors do not affect the peerinfo protocol test—peer discovery and information exchange work correctly regardless.
+
 Run `node1` in a separate terminal, pluto directory:
 
 ```bash
