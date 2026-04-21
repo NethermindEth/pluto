@@ -2,6 +2,12 @@
 
 Demonstrates the peerinfo protocol with mDNS auto-discovery.
 
+## Prerequisites
+
+> **Note:** This example uses two projects: **Pluto** and **Charon**. Charon is used only for running the `charon run` command to start the distributed validator middleware node. Pluto handles the peer discovery and information sharing.
+We'll refer to Pluto directory as `$PLUTO_PATH` in the following steps.
+
+
 ## Running Grafana Locally
 
 Before running the nodes, start the monitoring infrastructure. We use `docker compose` to run both Prometheus (for metrics) and Loki (for logs).
@@ -20,6 +26,16 @@ Grafana will be accessible at `http://localhost:3000`.
 
 For now we use a simple approach by creating a cluster in charon and taking private keys from the generated nodes.
 
+### Creating Cluster Configuration
+
+Create a cluster by running a commond in Pluto:
+
+```bash
+cargo run -- create cluster --nodes 3 --network mainnet --num-validators 1 --cluster-dir ./test-cluster --insecure-keys --fee-recipient-addresses 0x0000000000000000000000000000000000000000 --withdrawal-addresses 0x0000000000000000000000000000000000000000
+```
+
+This command initializes a testing cluster with 3 nodes and 1 validator, putting output artifacts in the `./test-cluster` folder. Each node configuration has a separate subfolder in the format `node<NODE_NUMBER>` (i.e. node0, node1, node2 etc.).
+
 ### Building Charon
 
 Clone the [charon repository](https://github.com/ObolNetwork/charon.git) at tag `v1.7.1`:
@@ -29,8 +45,6 @@ git clone --branch v1.7.1 https://github.com/ObolNetwork/charon.git
 cd charon
 ```
 
-We'll refer to this directory as `$CHARON_PATH` in the following steps.
-
 Build charon:
 
 ```bash
@@ -39,22 +53,12 @@ make charon
 
 The output binary (`charon`) will be in the project's root directory and accessible via `./charon <args>`.
 
-### Creating Cluster Configuration
-
-Create a cluster by running:
-
-```bash
-./charon create cluster --nodes 3 --network mainnet --num-validators 1 --cluster-dir ./test-cluster --insecure-keys --fee-recipient-addresses 0x0000000000000000000000000000000000000000 --withdrawal-addresses 0x0000000000000000000000000000000000000000
-```
-
-This command initializes a testing cluster with 3 nodes and 1 validator, putting output artifacts in the `./test-cluster` folder. Each node configuration has a separate subfolder in the format `node<NODE_NUMBER>` (i.e. node0, node1, node2 etc.).
-
 ### Running the Charon Node
 
 Run the first charon node (`node0`):
 
 ```bash
-./charon run --simnet-beacon-mock --no-verify --nickname=node0 --lock-file=test-cluster/node0/cluster-lock.json --private-key-file=test-cluster/node0/charon-enr-private-key --p2p-tcp-address=0.0.0.0:3610 --validator-api-address=0.0.0.0:3680 --monitoring-address=0.0.0.0:9464 --log-level=debug
+./charon run --simnet-beacon-mock --no-verify --nickname=node0 --lock-file=$PLUTO_PATH/test-cluster/node0/cluster-lock.json --private-key-file=$PLUTO_PATH/test-cluster/node0/charon-enr-private-key --p2p-tcp-address=0.0.0.0:3610 --validator-api-address=0.0.0.0:3680 --monitoring-address=0.0.0.0:9464 --log-level=debug
 ```
 
 **Flag explanations:**
@@ -67,13 +71,13 @@ Run the first charon node (`node0`):
 
 > **Important:** Start the Charon node before starting Pluto nodes, otherwise Pluto will hang waiting for the connection.
 
-Run `node1` in a separate terminal:
+Run `node1` in a separate terminal, pluto directory:
 
 ```bash
 cargo run -p pluto-peerinfo --example peerinfo -- \
     --port 4001 \
     --nickname node1 \
-    --data-dir $CHARON_PATH/test-cluster/node1 \
+    --data-dir test-cluster/node1 \
     --metrics-port 9465 \
     --loki-url http://localhost:3100 \
     --loki-label cluster=peerinfo-example \
@@ -86,7 +90,7 @@ Run `node2` in another terminal:
 cargo run -p pluto-peerinfo --example peerinfo -- \
     --port 4002 \
     --nickname node2 \
-    --data-dir $CHARON_PATH/test-cluster/node2 \
+    --data-dir test-cluster/node2 \
     --metrics-port 9466 \
     --loki-url http://localhost:3100 \
     --loki-label cluster=peerinfo-example \
@@ -95,7 +99,7 @@ cargo run -p pluto-peerinfo --example peerinfo -- \
 
 **Notes on `--data-dir`:**
 
-- The `--data-dir` argument specifies the node directory created by `charon create cluster`
+- The `--data-dir` argument specifies the node directory created by `create cluster`
 - The directory should contain:
   - `charon-enr-private-key`: The node's private key (required)
   - `cluster-lock.json`: The cluster lock file (optional, but needed for proper peer identification)
@@ -115,7 +119,7 @@ Pluto node is configured to send `peerinfo` every 5 seconds and you will be able
 On charon's side you can track the metrics endpoint by:
 
 ```bash
-curl -s 0.0.0.0:9464/metrics | grep app_peerinfo
+curl -s 127.0.0.1:9464/metrics | grep app_peerinfo
 ```
 
 For Pluto nodes:
@@ -123,11 +127,11 @@ For Pluto nodes:
 `node1`:
 
 ```bash
-curl -s 0.0.0.0:9465/metrics | grep app_peerinfo
+curl -s 127.0.0.1:9465/metrics | grep app_peerinfo
 ```
 
 `node2`:
 
 ```bash
-curl -s 0.0.0.0:9466/metrics | grep app_peerinfo
+curl -s 127.0.0.1:9466/metrics | grep app_peerinfo
 ```
