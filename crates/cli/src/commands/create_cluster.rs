@@ -46,19 +46,17 @@ use rand::rngs::OsRng;
 use tracing::{debug, info, warn};
 
 use crate::{
-    commands::create_dkg,
+    commands::{
+        address_validation::validate_addresses,
+        constants::{MIN_NODES, MIN_THRESHOLD},
+        create_dkg,
+    },
     error::{
         CliError, CreateClusterError, InvalidNetworkConfigError, Result as CliResult,
         ThresholdError,
     },
 };
 
-/// Minimum number of nodes required in a cluster.
-pub const MIN_NODES: u64 = 3;
-/// Minimum threshold value.
-pub const MIN_THRESHOLD: u64 = 2;
-/// Zero ethereum address (not allowed on mainnet/gnosis).
-pub const ZERO_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
 /// HTTP scheme.
 const HTTP_SCHEME: &str = "http";
 /// HTTPS scheme.
@@ -1212,52 +1210,6 @@ async fn load_definition(
     Ok(def)
 }
 
-/// Validates that addresses match the number of validators.
-/// If only one address is provided, it fills the slice to match num_validators.
-///
-/// Returns an error if the number of addresses doesn't match and isn't exactly
-/// 1.
-fn validate_addresses(
-    num_validators: u64,
-    fee_recipient_addrs: &[String],
-    withdrawal_addrs: &[String],
-) -> Result<(Vec<String>, Vec<String>)> {
-    let num_validators_usize =
-        usize::try_from(num_validators).map_err(|_| CreateClusterError::ValueExceedsUsize {
-            value: num_validators,
-        })?;
-
-    if fee_recipient_addrs.len() != num_validators_usize && fee_recipient_addrs.len() != 1 {
-        return Err(CreateClusterError::MismatchingFeeRecipientAddresses {
-            num_validators,
-            addresses: fee_recipient_addrs.len(),
-        });
-    }
-
-    if withdrawal_addrs.len() != num_validators_usize && withdrawal_addrs.len() != 1 {
-        return Err(CreateClusterError::MismatchingWithdrawalAddresses {
-            num_validators,
-            addresses: withdrawal_addrs.len(),
-        });
-    }
-
-    let mut fee_addrs = fee_recipient_addrs.to_vec();
-    let mut withdraw_addrs = withdrawal_addrs.to_vec();
-
-    // Expand single address to match num_validators
-    if fee_addrs.len() == 1 {
-        let addr = fee_addrs[0].clone();
-        fee_addrs = vec![addr; num_validators_usize];
-    }
-
-    if withdraw_addrs.len() == 1 {
-        let addr = withdraw_addrs[0].clone();
-        withdraw_addrs = vec![addr; num_validators_usize];
-    }
-
-    Ok((fee_addrs, withdraw_addrs))
-}
-
 /// Returns the safe threshold, logging a warning if a non-standard threshold is
 /// provided.
 fn safe_threshold(num_nodes: u64, threshold: Option<u64>) -> u64 {
@@ -1310,7 +1262,7 @@ fn get_validators(
                     .collect::<std::result::Result<Vec<_>, _>>()
             })
             .transpose()?
-            .unwrap_or_default()
+            .ok_or(CreateClusterError::DvPrivSharesNotFound { index: idx })?
             .into_iter()
             .map(|share| share.to_vec())
             .collect();
@@ -1474,6 +1426,8 @@ mod tests {
     };
     use rand::Rng as _;
     use tempfile::TempDir;
+
+    use crate::commands::constants::ZERO_ADDRESS;
 
     use super::*;
 
@@ -2001,7 +1955,7 @@ mod tests {
             testnet_chain_id: None, testnet_name: None, testnet_fork_version: None,
         },
         PrepKind::RandomAddrs, DefProvider::None, None
-        ; "test with fee recipient and withdrawal addresses"
+        ; "with fee recipient and withdrawal addresses"
     )]
     #[test_case::test_case(
         TestCaseConfig {
@@ -2036,7 +1990,7 @@ mod tests {
             testnet_chain_id: None, testnet_name: None, testnet_fork_version: None,
         },
         PrepKind::None, DefProvider::DefTwoNodes, Some("Too few nodes")
-        ; "test with number of nodes below minimum"
+        ; "with number of nodes below minimum"
     )]
     #[test_case::test_case(
         TestCaseConfig {
@@ -2050,7 +2004,7 @@ mod tests {
         ; "custom target gas limit"
     )]
     #[tokio::test]
-    async fn test_create_cluster(
+    async fn create_cluster(
         config: TestCaseConfig,
         prep: PrepKind,
         def_provider: DefProvider,
@@ -2081,7 +2035,7 @@ mod tests {
         ; "split keys from config with one num-validators"
     )]
     #[tokio::test]
-    async fn test_split_keys(
+    async fn split_keys(
         num_split_keys: usize,
         def_file_path: Option<&'static str>,
         num_nodes: u64,
@@ -2155,7 +2109,7 @@ mod tests {
     );
 
     #[tokio::test]
-    async fn test_validate_definition() {
+    async fn validate_definition() {
         let num_dvs = 4u64;
         let fee_recipient_addrs: Vec<String> = (0..num_dvs)
             .map(|_| random_checksummed_eth_address())
@@ -2336,7 +2290,7 @@ mod tests {
 
     /// Port of Go's TestMultipleAddresses.
     #[tokio::test]
-    async fn test_multiple_addresses() {
+    async fn multiple_addresses() {
         // "insufficient fee recipient addresses": 0 addrs for 4 validators → error
         {
             let err = super::validate_addresses(4, &[], &[]).unwrap_err();
@@ -2469,7 +2423,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_keymanager() {
+    async fn keymanager() {
         #[derive(serde::Deserialize)]
         struct MockKeymanagerReq {
             keystores: Vec<String>,
@@ -2677,7 +2631,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_publish() {
+    async fn publish() {
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/lock"))
@@ -2793,7 +2747,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_zipped() {
+    async fn zipped() {
         let cluster_dir = TempDir::new().unwrap();
         let backup_dir = TempDir::new().unwrap();
 

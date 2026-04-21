@@ -551,8 +551,6 @@ mod tests {
     }
 
     async fn noop_eth1_client() -> pluto_eth1wrap::EthClient {
-        pluto_eth1wrap::EthClient::new("http://0.0.0.0:0")
-            .await
-            .unwrap()
+        pluto_eth1wrap::EthClient::new("").await.unwrap()
     }
 }

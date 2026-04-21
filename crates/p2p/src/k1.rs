@@ -94,14 +94,14 @@ mod tests {
     }
 
     #[test]
-    fn test_key_path() {
+    fn key_path_works() {
         let data_dir = Path::new("/test/data");
         let path = key_path(data_dir);
         assert_eq!(path, PathBuf::from("/test/data/charon-enr-private-key"));
     }
 
     #[test]
-    fn test_new_saved_priv_key_creates_key() -> Result<()> {
+    fn new_saved_priv_key_creates_key() -> Result<()> {
         let temp_dir = setup_temp_dir();
         let data_dir = temp_dir.path();
 
@@ -117,7 +117,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_saved_priv_key_creates_data_dir() -> Result<()> {
+    fn new_saved_priv_key_creates_data_dir() -> Result<()> {
         let temp_dir = setup_temp_dir();
         let data_dir = temp_dir.path().join("new_dir");
 
@@ -134,7 +134,7 @@ mod tests {
     }
 
     #[test]
-    fn test_load_priv_key_success() -> Result<()> {
+    fn load_priv_key_success() -> Result<()> {
         let temp_dir = setup_temp_dir();
         let data_dir = temp_dir.path();
 
@@ -148,7 +148,7 @@ mod tests {
     }
 
     #[test]
-    fn test_load_priv_key_file_not_found() {
+    fn load_priv_key_file_not_found() {
         let temp_dir = setup_temp_dir();
         let data_dir = temp_dir.path();
 
@@ -159,7 +159,7 @@ mod tests {
     }
 
     #[test]
-    fn test_backup_priv_key_creates_backup() -> Result<()> {
+    fn backup_priv_key_creates_backup() -> Result<()> {
         let temp_dir = setup_temp_dir();
         let data_dir = temp_dir.path();
 
@@ -178,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_saved_priv_key_with_existing_key() -> Result<()> {
+    fn new_saved_priv_key_with_existing_key() -> Result<()> {
         let temp_dir = setup_temp_dir();
         let data_dir = temp_dir.path();
 
@@ -201,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn test_backup_uniqueness() -> Result<()> {
+    fn backup_uniqueness() -> Result<()> {
         const NUM_BACKUPS: usize = 5;
 
         let temp_dir = setup_temp_dir();
