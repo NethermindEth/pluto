@@ -82,7 +82,6 @@ use pluto_p2p::{
     config::P2PConfig,
     gater, k1,
     p2p::{Node, NodeType},
-    p2p_context::P2PContext,
     relay::{MutableRelayReservation, RelayRouter},
 };
 use pluto_tracing::TracingConfig;
@@ -578,22 +577,20 @@ async fn main() -> Result<()> {
         disable_reuse_port: args.disable_reuse_port,
     };
 
-    let p2p_context = P2PContext::new(known_peers.clone());
-    let (bcast_behaviour, component) =
-        bcast::Behaviour::new(cluster_peers.clone(), p2p_context.clone(), key.clone());
-    register_message(&component, local_node_number)
-        .await
-        .expect("Failed to register demo bcast message");
-
+    let mut component = None;
     let mut node: Node<ExampleBehaviour> = Node::new(
         p2p_config,
-        key,
+        key.clone(),
         NodeType::QUIC,
         args.filter_private_addrs,
         known_peers,
         |builder, keypair, relay_client| {
             let p2p_context = builder.p2p_context();
             let local_peer_id = keypair.public().to_peer_id();
+
+            let (bcast_behaviour, c) =
+                bcast::Behaviour::new(cluster_peers.clone(), p2p_context.clone(), key.clone());
+            component = Some(c);
 
             builder
                 .with_p2p_context(p2p_context.clone())
@@ -606,6 +603,11 @@ async fn main() -> Result<()> {
                 })
         },
     )?;
+
+    let component = component.expect("BCast component was not initialized");
+    register_message(&component, local_node_number)
+        .await
+        .expect("Failed to register demo bcast message");
 
     info!(
         local_peer_id = %local_peer_id,
