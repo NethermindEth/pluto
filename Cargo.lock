@@ -5576,7 +5576,6 @@ dependencies = [
  "dyn-clone",
  "dyn-eq",
  "futures",
- "futures-timer",
  "hex",
  "libp2p",
  "pluto-build-proto",
@@ -5598,7 +5597,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tree_hash",
- "unsigned-varint 0.8.0",
  "vise",
  "wiremock",
 ]

@@ -12,7 +12,6 @@ cancellation.workspace = true
 chrono.workspace = true
 crossbeam.workspace = true
 futures.workspace = true
-futures-timer.workspace = true
 dyn-clone.workspace = true
 dyn-eq.workspace = true
 hex.workspace = true
@@ -32,7 +31,6 @@ tokio-util.workspace = true
 tracing.workspace = true
 pluto-eth2util.workspace = true
 tree_hash.workspace = true
-unsigned-varint.workspace = true
 
 [dev-dependencies]
 alloy.workspace = true
