@@ -522,7 +522,7 @@ mod tests {
 
     // Ports `TestSigsExchange` from charon/dkg/nodesigs_internal_test.go.
     #[tokio::test]
-    async fn test_sigs_exchange() -> anyhow::Result<()> {
+    async fn sigs_exchange() -> anyhow::Result<()> {
         const N: usize = 7;
 
         let keys: Vec<SecretKey> = (0..N)
