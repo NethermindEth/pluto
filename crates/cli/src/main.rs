@@ -80,7 +80,7 @@ async fn run() -> std::result::Result<(), CliError> {
                     TestCommands::Mev(args) => commands::test::mev::run(args, &mut stdout, ct)
                         .await
                         .map(|_| ()),
-                    TestCommands::Infra(args) => commands::test::infra::run(args, &mut stdout)
+                    TestCommands::Infra(args) => commands::test::infra::run(args, &mut stdout, ct)
                         .await
                         .map(|_| ()),
                     TestCommands::All(args) => commands::test::all::run(*args, &mut stdout).await,
