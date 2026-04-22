@@ -624,7 +624,7 @@ async fn run_single_test(
     name: &str,
     args: &TestInfraArgs,
     disk_dir: &Path,
-    tool: &FioTestTool,
+    tool: &impl DiskTestTool,
     client: &reqwest::Client,
 ) -> TestResult {
     match name {
