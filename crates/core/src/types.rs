@@ -1,6 +1,6 @@
 //! Types for the Charon core.
 
-use std::{collections::HashMap, fmt::Display, iter};
+use std::{any::Any, collections::HashMap, fmt::Display, iter};
 
 use chrono::{DateTime, Duration, Utc};
 use dyn_clone::DynClone;
@@ -8,7 +8,12 @@ use dyn_eq::DynEq;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug as StdDebug;
 
-use crate::signeddata::SignedDataError;
+use crate::{
+    ParSigExCodecError,
+    corepb::v1::core as pbcore,
+    parsigex_codec::{deserialize_signed_data, serialize_signed_data},
+    signeddata::SignedDataError,
+};
 
 /// The type of duty.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -63,6 +68,62 @@ impl DutyType {
     /// Returns true if the duty type is valid.
     pub fn is_valid(&self) -> bool {
         !matches!(self, DutyType::Unknown | DutyType::DutySentinel(_))
+    }
+}
+
+/// Error type for duty type conversion.
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+pub enum DutyTypeError {
+    /// Invalid duty type.
+    #[error("invalid duty type")]
+    InvalidDutyType,
+}
+
+impl TryFrom<&DutyType> for i32 {
+    type Error = DutyTypeError;
+
+    fn try_from(duty_type: &DutyType) -> Result<Self, Self::Error> {
+        Ok(match duty_type {
+            DutyType::Unknown => 0,
+            DutyType::Proposer => 1,
+            DutyType::Attester => 2,
+            DutyType::Signature => 3,
+            DutyType::Exit => 4,
+            DutyType::BuilderProposer => 5,
+            DutyType::BuilderRegistration => 6,
+            DutyType::Randao => 7,
+            DutyType::PrepareAggregator => 8,
+            DutyType::Aggregator => 9,
+            DutyType::SyncMessage => 10,
+            DutyType::PrepareSyncContribution => 11,
+            DutyType::SyncContribution => 12,
+            DutyType::InfoSync => 13,
+            _ => return Err(DutyTypeError::InvalidDutyType),
+        })
+    }
+}
+
+impl TryFrom<i32> for DutyType {
+    type Error = ParSigExCodecError;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(DutyType::Unknown),
+            1 => Ok(DutyType::Proposer),
+            2 => Ok(DutyType::Attester),
+            3 => Ok(DutyType::Signature),
+            4 => Ok(DutyType::Exit),
+            5 => Ok(DutyType::BuilderProposer),
+            6 => Ok(DutyType::BuilderRegistration),
+            7 => Ok(DutyType::Randao),
+            8 => Ok(DutyType::PrepareAggregator),
+            9 => Ok(DutyType::Aggregator),
+            10 => Ok(DutyType::SyncMessage),
+            11 => Ok(DutyType::PrepareSyncContribution),
+            12 => Ok(DutyType::SyncContribution),
+            13 => Ok(DutyType::InfoSync),
+            _ => Err(ParSigExCodecError::InvalidDuty),
+        }
     }
 }
 
@@ -189,6 +250,30 @@ impl Duty {
     /// Create a new info sync duty.
     pub fn new_info_sync_duty(slot: SlotNumber) -> Self {
         Self::new(slot, DutyType::InfoSync)
+    }
+}
+
+impl TryFrom<&Duty> for pbcore::Duty {
+    type Error = DutyTypeError;
+
+    fn try_from(duty: &Duty) -> Result<Self, Self::Error> {
+        Ok(Self {
+            slot: duty.slot.inner(),
+            r#type: i32::try_from(&duty.duty_type)?,
+        })
+    }
+}
+
+impl TryFrom<&pbcore::Duty> for Duty {
+    type Error = ParSigExCodecError;
+
+    fn try_from(duty: &pbcore::Duty) -> Result<Self, Self::Error> {
+        let duty_type = DutyType::try_from(duty.r#type)?;
+        if !duty_type.is_valid() {
+            return Err(ParSigExCodecError::InvalidDuty);
+        }
+
+        Ok(Self::new(duty.slot.into(), duty_type))
     }
 }
 
@@ -452,7 +537,7 @@ impl AsRef<[u8; SIG_LEN]> for Signature {
 }
 
 /// Signed data type
-pub trait SignedData: DynClone + DynEq + StdDebug + Send + Sync {
+pub trait SignedData: Any + DynClone + DynEq + StdDebug + Send + Sync {
     /// signature returns the signed duty data's signature.
     fn signature(&self) -> Result<Signature, SignedDataError>;
 
@@ -517,6 +602,38 @@ impl ParSignedData {
     }
 }
 
+impl TryFrom<&ParSignedData> for pbcore::ParSignedData {
+    type Error = ParSigExCodecError;
+
+    fn try_from(data: &ParSignedData) -> Result<Self, Self::Error> {
+        let encoded = serialize_signed_data(data.signed_data.as_ref())?;
+        let share_idx =
+            i32::try_from(data.share_idx).map_err(|_| ParSigExCodecError::InvalidShareIndex)?;
+        let signature = data
+            .signed_data
+            .signature()
+            .map_err(|err| ParSigExCodecError::InvalidSignature(err.to_string()))?;
+
+        Ok(Self {
+            data: encoded.into(),
+            signature: signature.as_ref().to_vec().into(),
+            share_idx,
+        })
+    }
+}
+
+impl TryFrom<(&DutyType, &pbcore::ParSignedData)> for ParSignedData {
+    type Error = ParSigExCodecError;
+
+    fn try_from(value: (&DutyType, &pbcore::ParSignedData)) -> Result<Self, Self::Error> {
+        let (duty_type, data) = value;
+        let share_idx =
+            u64::try_from(data.share_idx).map_err(|_| ParSigExCodecError::InvalidShareIndex)?;
+        let signed_data = deserialize_signed_data(duty_type, &data.data)?;
+        Ok(Self::new_boxed(signed_data, share_idx))
+    }
+}
+
 /// ParSignedDataSet is a set of partially signed duty data only signed by a
 /// single threshold BLS share.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -551,6 +668,39 @@ impl ParSignedDataSet {
     /// Inner partially signed data set.
     pub fn inner_mut(&mut self) -> &mut HashMap<PubKey, ParSignedData> {
         &mut self.0
+    }
+}
+
+impl TryFrom<&ParSignedDataSet> for pbcore::ParSignedDataSet {
+    type Error = ParSigExCodecError;
+
+    fn try_from(set: &ParSignedDataSet) -> Result<Self, Self::Error> {
+        let mut out = std::collections::BTreeMap::new();
+        for (pub_key, value) in set.inner() {
+            out.insert(pub_key.to_string(), pbcore::ParSignedData::try_from(value)?);
+        }
+
+        Ok(Self { set: out })
+    }
+}
+
+impl TryFrom<(&DutyType, &pbcore::ParSignedDataSet)> for ParSignedDataSet {
+    type Error = ParSigExCodecError;
+
+    fn try_from(value: (&DutyType, &pbcore::ParSignedDataSet)) -> Result<Self, Self::Error> {
+        let (duty_type, set) = value;
+        if set.set.is_empty() {
+            return Err(ParSigExCodecError::InvalidParSignedDataSetFields);
+        }
+
+        let mut out = Self::new();
+        for (pub_key, value) in &set.set {
+            let pub_key = PubKey::try_from(pub_key.as_str())
+                .map_err(|_| ParSigExCodecError::InvalidPubKey(pub_key.clone()))?;
+            out.insert(pub_key, ParSignedData::try_from((duty_type, value))?);
+        }
+
+        Ok(out)
     }
 }
 
