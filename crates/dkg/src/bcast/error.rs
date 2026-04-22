@@ -59,7 +59,7 @@ impl fmt::Display for SenderPeerMismatch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "sender peer ID ({}) does not match claimed peer index {}",
+            "sender peer ID ({}) does not match claimed peer ID {}",
             self.sender, self.expected
         )
     }

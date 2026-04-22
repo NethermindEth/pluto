@@ -59,6 +59,8 @@ pub struct NodeSigBcast {
 
 impl NodeSigBcast {
     /// Returns a new instance, registering bcast handlers on `bcast_comp`.
+    /// Each message ID can only be registered once per registry — passing a
+    /// clone of `bcast_comp` to another `NodeSigBcast::new` will fail.
     pub async fn new(
         peers: Vec<Peer>,
         node_idx: usize,
