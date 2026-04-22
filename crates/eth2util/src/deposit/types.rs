@@ -1,8 +1,9 @@
+use crate::network;
 use serde::{Deserialize, Serialize};
+use tree_hash::TreeHash;
 
 pub use pluto_eth2api::spec::phase0::{
-    DepositData, DepositMessage, Domain, ForkData, Gwei, Root, SigningData, Version,
-    WithdrawalCredentials,
+    DepositData, DepositMessage, Gwei, Root, Version, WithdrawalCredentials,
 };
 
 /// DepositDataJson is the json representation of Deposit Data.
@@ -61,26 +62,21 @@ pub fn get_message_signing_root(
     deposit_message: &DepositMessage,
     network: &str,
 ) -> super::Result<Root> {
-    use tree_hash::TreeHash;
-
-    let msg_root = deposit_message.tree_hash_root();
-
-    let fork_version_bytes = super::network::network_to_fork_version_bytes(network)?;
+    let fork_version_bytes = network::network_to_fork_version_bytes(network)?;
 
     let fork_version: Version = fork_version_bytes.as_slice().try_into().map_err(|_| {
-        super::DepositError::NetworkError(super::network::NetworkError::InvalidForkVersion {
+        super::DepositError::NetworkError(network::NetworkError::InvalidForkVersion {
             fork_version: hex::encode(&fork_version_bytes),
         })
     })?;
 
-    let domain = super::get_deposit_domain(fork_version);
+    let domain =
+        pluto_eth2api::compute_domain(super::DEPOSIT_DOMAIN_TYPE, fork_version, Root::default());
 
-    let signing_data = SigningData {
-        object_root: msg_root.0,
+    Ok(crate::signing::compute_signing_root(
+        deposit_message.tree_hash_root().0,
         domain,
-    };
-
-    Ok(signing_data.tree_hash_root().0)
+    ))
 }
 
 #[cfg(test)]

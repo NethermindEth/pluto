@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use tree_hash::TreeHash;
 use tree_hash_derive::TreeHash;
 
 use pluto_ssz::BitVector;
@@ -170,6 +171,33 @@ pub struct SyncAggregatorSelectionData {
     /// Subcommittee index to be signed.
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub subcommittee_index: u64,
+}
+
+impl SyncCommitteeMessage {
+    /// Returns the message root signed by sync committee messages.
+    pub fn message_root(&self) -> phase0::Root {
+        self.beacon_block_root
+    }
+}
+
+impl ContributionAndProof {
+    /// Returns the message root used for sync committee selection proofs.
+    pub fn selection_proof_message_root(&self) -> phase0::Root {
+        SyncAggregatorSelectionData {
+            slot: self.contribution.slot,
+            subcommittee_index: self.contribution.subcommittee_index,
+        }
+        .tree_hash_root()
+        .0
+    }
+}
+
+impl SignedContributionAndProof {
+    /// Returns the SSZ message root of the unsigned contribution-and-proof
+    /// payload.
+    pub fn message_root(&self) -> phase0::Root {
+        self.message.tree_hash_root().0
+    }
 }
 
 #[cfg(test)]
