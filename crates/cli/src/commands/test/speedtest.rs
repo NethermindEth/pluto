@@ -154,11 +154,17 @@ pub(super) async fn fetch_best_server(
     best.ok_or_else(|| CliError::Other("find Ookla server: no reachable servers".to_string()))
 }
 
-#[allow(clippy::cast_precision_loss, clippy::arithmetic_side_effects)]
 pub(super) fn bytes_to_mbps(bytes: usize, elapsed: Duration) -> f64 {
     let secs = elapsed.as_secs_f64();
     if secs == 0.0 {
         return 0.0;
     }
-    bytes as f64 * 8.0 / secs / 1_000_000.0
+
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::arithmetic_side_effects,
+        reason = "precision loss requires >8PB transferred; arithmetic overflow is impossible for realistic network speeds"
+    )]
+    let bytes: f64 = bytes as f64;
+    bytes * 8.0 / secs / 1_000_000.0
 }

@@ -201,6 +201,11 @@ fn available_memory_linux() -> Result<i64> {
         let kbs: i64 = kbs_str
             .parse()
             .map_err(|_| CliError::Other("parse MemAvailable int".to_string()))?;
+
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "The memory won't overflow i64 because the value would be larger than 9223372TB"
+        )]
         return Ok(kbs * 1024);
     }
 
@@ -279,6 +284,11 @@ fn total_memory_linux() -> Result<i64> {
         let kbs: i64 = kbs_str
             .parse()
             .map_err(|_| CliError::Other("parse MemTotal int".to_string()))?;
+
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "The memory won't overflow i64 because the value would be larger than 9223372TB"
+        )]
         return Ok(kbs * 1024);
     }
 
@@ -788,4 +798,3 @@ pub struct TestInfraArgs {
     )]
     pub internet_test_servers_exclude: Vec<String>,
 }
-
