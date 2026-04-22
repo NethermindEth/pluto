@@ -5622,6 +5622,7 @@ name = "pluto-dkg"
 version = "1.7.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "either",
  "futures",
@@ -5636,6 +5637,7 @@ dependencies = [
  "pluto-eth2util",
  "pluto-k1util",
  "pluto-p2p",
+ "pluto-parsigex",
  "pluto-testutil",
  "pluto-tracing",
  "prost 0.14.3",
