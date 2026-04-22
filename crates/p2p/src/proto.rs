@@ -16,7 +16,6 @@ pub async fn write_length_delimited<S: AsyncWrite + Unpin>(
 ) -> io::Result<()> {
     let mut len_buf = unsigned_varint::encode::usize_buffer();
     let encoded_len = unsigned_varint::encode::usize(payload.len(), &mut len_buf);
-
     stream.write_all(encoded_len).await?;
     stream.write_all(payload).await?;
     stream.flush().await

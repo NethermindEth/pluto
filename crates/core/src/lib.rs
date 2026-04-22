@@ -26,6 +26,10 @@ pub mod deadline;
 /// parsigdb
 pub mod parsigdb;
 
+mod parsigex_codec;
+
+pub use parsigex_codec::ParSigExCodecError;
+
 /// Test utilities.
 #[cfg(test)]
 pub mod testutils;

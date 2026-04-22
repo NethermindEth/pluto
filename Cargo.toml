@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/app",
+    "crates/parsigex",
     "crates/build-proto",
     "crates/cli",
     "crates/cluster",
@@ -99,6 +100,7 @@ wiremock = "0.6"
 
 # Crates in the workspace
 pluto-app = { path = "crates/app" }
+pluto-parsigex = { path = "crates/parsigex" }
 pluto-build-proto = { path = "crates/build-proto" }
 pluto-cli = { path = "crates/cli" }
 pluto-cluster = { path = "crates/cluster" }
