@@ -23,6 +23,10 @@ pub enum EthBeaconNodeApiClientError {
     #[error("Unexpected type in response")]
     UnexpectedType,
 
+    /// Failed to parse a response field.
+    #[error("Parse error: {0}")]
+    ParseError(String),
+
     /// Zero slot duration or slots per epoch in network spec
     #[error("Zero slot duration or slots per epoch in network spec")]
     ZeroSlotDurationOrSlotsPerEpoch,
@@ -51,28 +55,48 @@ pub struct ForkSchedule {
     pub epoch: phase0::Epoch,
 }
 
-fn decode_fixed_hex<const N: usize>(value: &str) -> Result<[u8; N], EthBeaconNodeApiClientError> {
+fn required_str_field<'a>(
+    value: &'a serde_json::Value,
+    field: &str,
+) -> Result<&'a str, EthBeaconNodeApiClientError> {
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| EthBeaconNodeApiClientError::ParseError(format!("missing {field}")))
+}
+
+fn parse_u64_field(
+    value: &serde_json::Value,
+    field: &str,
+) -> Result<u64, EthBeaconNodeApiClientError> {
+    required_str_field(value, field)?
+        .parse::<u64>()
+        .map_err(|_| EthBeaconNodeApiClientError::ParseError(format!("parse {field}")))
+}
+
+fn decode_fixed_hex<const N: usize, F: Fn() -> String>(
+    value: &str,
+    step: F,
+) -> Result<[u8; N], EthBeaconNodeApiClientError> {
     let value = value.strip_prefix("0x").unwrap_or(value);
-    let bytes = hex::decode(value).map_err(|_| EthBeaconNodeApiClientError::UnexpectedType)?;
+    let bytes = hex::decode(value).map_err(|_| EthBeaconNodeApiClientError::ParseError(step()))?;
 
     bytes
         .try_into()
-        .map_err(|_| EthBeaconNodeApiClientError::UnexpectedType)
+        .map_err(|_| EthBeaconNodeApiClientError::ParseError(step()))
 }
 
 fn parse_genesis_fork_version_and_validators_root(
     genesis_data: &serde_json::Value,
 ) -> Result<(phase0::Version, phase0::Root), EthBeaconNodeApiClientError> {
-    let fork_version = genesis_data
-        .get("genesis_fork_version")
-        .and_then(serde_json::Value::as_str)
-        .ok_or(EthBeaconNodeApiClientError::UnexpectedType)
-        .and_then(decode_fixed_hex)?;
-    let validators_root = genesis_data
-        .get("genesis_validators_root")
-        .and_then(serde_json::Value::as_str)
-        .ok_or(EthBeaconNodeApiClientError::UnexpectedType)
-        .and_then(decode_fixed_hex)?;
+    let fork_version = decode_fixed_hex(
+        required_str_field(genesis_data, "genesis_fork_version")?,
+        || "decode genesis_fork_version".to_string(),
+    )?;
+    let validators_root = decode_fixed_hex(
+        required_str_field(genesis_data, "genesis_validators_root")?,
+        || "decode genesis_validators_root".to_string(),
+    )?;
 
     Ok((fork_version, validators_root))
 }
@@ -89,16 +113,13 @@ fn fork_schedule_from_spec(
             .as_object()
             .and_then(|o| o.get(&version_field))
             .and_then(|f| f.as_str())
-            .ok_or(EthBeaconNodeApiClientError::UnexpectedType)
-            .and_then(decode_fixed_hex)?;
+            .ok_or_else(|| {
+                EthBeaconNodeApiClientError::ParseError(format!("missing {version_field}"))
+            })
+            .and_then(|value| decode_fixed_hex(value, || format!("decode {version_field}")))?;
 
         let epoch_field = format!("{}_FORK_EPOCH", fork.to_string().to_uppercase());
-        let epoch = spec_data
-            .as_object()
-            .and_then(|o| o.get(&epoch_field))
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<u64>().ok())
-            .ok_or(EthBeaconNodeApiClientError::UnexpectedType)?;
+        let epoch = parse_u64_field(spec_data, &epoch_field)?;
 
         Ok(ForkSchedule { version, epoch })
     }
@@ -158,7 +179,7 @@ pub fn resolve_domain_type(
         .and_then(|value| value.as_str())
         .ok_or_else(|| EthBeaconNodeApiClientError::DomainTypeNotFound(spec_key.to_string()))?;
 
-    decode_fixed_hex(raw)
+    decode_fixed_hex(raw, || format!("decode {spec_key}"))
 }
 
 /// Resolves the active fork version at the given epoch.
@@ -230,17 +251,17 @@ impl EthBeaconNodeApiClient {
     /// Fetches the genesis time.
     pub async fn fetch_genesis_time(&self) -> Result<DateTime<Utc>, EthBeaconNodeApiClientError> {
         let genesis = self.fetch_genesis_data().await?;
-        let genesis_time = genesis
-            .get("genesis_time")
-            .and_then(serde_json::Value::as_str)
-            .ok_or(EthBeaconNodeApiClientError::UnexpectedType)?;
+        let genesis_time = required_str_field(&genesis, "genesis_time")?;
 
         genesis_time
             .parse()
-            .map_err(|_| EthBeaconNodeApiClientError::UnexpectedType)
+            .map_err(|_| EthBeaconNodeApiClientError::ParseError("parse genesis_time".into()))
             .and_then(|timestamp| {
-                DateTime::from_timestamp(timestamp, 0)
-                    .ok_or(EthBeaconNodeApiClientError::UnexpectedType)
+                DateTime::from_timestamp(timestamp, 0).ok_or_else(|| {
+                    EthBeaconNodeApiClientError::ParseError(
+                        "convert genesis_time to timestamp".into(),
+                    )
+                })
             })
     }
 
@@ -258,20 +279,8 @@ impl EthBeaconNodeApiClient {
     ) -> Result<(time::Duration, u64), EthBeaconNodeApiClientError> {
         let spec = self.fetch_spec_data().await?;
 
-        let slot_duration = spec
-            .as_object()
-            .and_then(|o| o.get("SECONDS_PER_SLOT"))
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<u64>().ok())
-            .ok_or(EthBeaconNodeApiClientError::UnexpectedType)
-            .map(time::Duration::from_secs)?;
-
-        let slots_per_epoch = spec
-            .as_object()
-            .and_then(|o| o.get("SLOTS_PER_EPOCH"))
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<u64>().ok())
-            .ok_or(EthBeaconNodeApiClientError::UnexpectedType)?;
+        let slot_duration = time::Duration::from_secs(parse_u64_field(&spec, "SECONDS_PER_SLOT")?);
+        let slots_per_epoch = parse_u64_field(&spec, "SLOTS_PER_EPOCH")?;
 
         if slot_duration == time::Duration::ZERO || slots_per_epoch == 0 {
             return Err(EthBeaconNodeApiClientError::ZeroSlotDurationOrSlotsPerEpoch);
