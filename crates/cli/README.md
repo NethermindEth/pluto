@@ -61,9 +61,10 @@ Charon source of truth: `charon/cmd/cmd.go` (root command wiring).
 | `run` | ✅ | ❌ | Not implemented (`charon/cmd/run.go`) |
 | `relay` | ✅ | ❌ | Not implemented (`charon/cmd/relay.go`) |
 | `dkg` | ✅ | ❌ | Not implemented (`charon/cmd/dkg.go`) |
-| `create` | ✅ | ✅ (partial) | Support `create enr` only. |
-| `create dkg` | ✅ | ❌ | Not implemented (`charon/cmd/createdkg.go`) |
-| `create cluster` | ✅ | ❌ | Not implemented (`charon/cmd/createcluster.go`) |
+| `create` | ✅ | ✅ | |
+| `create dkg` | ✅ | ✅ | |
+| `create enr` | ✅ | ✅ | |
+| `create cluster` | ✅ | ✅ | |
 | `combine` | ✅ | ❌ | Not implemented (`charon/cmd/combine.go`) |
 | `alpha` | ✅ | ❌ | Not implemented (`charon/cmd/alpha.go`) |
 | `alpha add-validators` | ✅ | ❌ | Not implemented (`charon/cmd/addvalidators.go`) |
