@@ -64,7 +64,6 @@ use pluto_p2p::{
     config::P2PConfig,
     gater, k1,
     p2p::{Node, NodeType},
-    p2p_context::P2PContext,
     relay::{MutableRelayReservation, RelayRouter},
 };
 use pluto_tracing::TracingConfig;
@@ -541,15 +540,9 @@ async fn main() -> Result<()> {
     };
 
     let version = VERSION.to_minor();
-    let p2p_context = P2PContext::new(known_peers.clone());
-    p2p_context.set_local_peer_id(local_peer_id);
-    let (sync_behaviour, server, clients) = sync::new(
-        cluster_peers.clone(),
-        p2p_context.clone(),
-        &key,
-        lock.definition_hash.clone(),
-        version,
-    )?;
+    let sync_key = key.clone();
+    let sync_definition_hash = lock.definition_hash.clone();
+    let mut sync_runtime = None;
 
     let mut node: Node<ExampleBehaviour> = Node::new(
         p2p_config,
@@ -557,24 +550,30 @@ async fn main() -> Result<()> {
         NodeType::QUIC,
         args.filter_private_addrs,
         known_peers,
-        {
-            let p2p_context = p2p_context.clone();
-            move |builder, keypair, relay_client| {
-                let p2p_context = p2p_context.clone();
-                let local_peer_id = keypair.public().to_peer_id();
+        |builder, keypair, relay_client| {
+            let p2p_context = builder.p2p_context();
+            let local_peer_id = keypair.public().to_peer_id();
+            p2p_context.set_local_peer_id(local_peer_id);
 
-                builder
-                    .with_p2p_context(p2p_context.clone())
-                    .with_gater(conn_gater)
-                    .with_inner(ExampleBehaviour {
-                        relay: relay_client,
-                        relay_reservation: MutableRelayReservation::new(relays.clone()),
-                        relay_router: RelayRouter::new(relays.clone(), p2p_context, local_peer_id),
-                        sync: sync_behaviour,
-                    })
-            }
+            let (sync_behaviour, server, clients) = sync::new(
+                cluster_peers.clone(),
+                p2p_context.clone(),
+                &sync_key,
+                sync_definition_hash.clone(),
+                version.clone(),
+            )
+            .expect("sync example should initialize for a local cluster peer");
+            sync_runtime = Some((server, clients));
+
+            builder.with_gater(conn_gater).with_inner(ExampleBehaviour {
+                relay: relay_client,
+                relay_reservation: MutableRelayReservation::new(relays.clone()),
+                relay_router: RelayRouter::new(relays.clone(), p2p_context, local_peer_id),
+                sync: sync_behaviour,
+            })
         },
     )?;
+    let (server, clients) = sync_runtime.expect("sync runtime was not initialized");
 
     info!(
         local_peer_id = %local_peer_id,
