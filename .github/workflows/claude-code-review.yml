@@ -1,26 +1,19 @@
 name: Claude Code Review
 
 on:
-  pull_request:
-    types: [review_requested]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
+  issue_comment:
+    types: [created]
 
 jobs:
   claude-review:
-    # Only run when a specific reviewer is requested (e.g., "claude-code" or specific team)
     if: |
-      contains(github.event.pull_request.requested_reviewers.*.login, 'claude-code') ||
-      contains(github.event.pull_request.requested_teams.*.slug, 'claude-code')
+      github.event.issue.pull_request != null &&
+      contains(github.event.comment.body, '/claude-review')
 
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: write
       issues: read
       id-token: write
 
@@ -30,15 +23,24 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Cache Go reference
+        uses: actions/cache@v4
+        with:
+          path: charon
+          key: charon-go-ref-v1.7.1
+
+      - name: Prepare Go reference checkout
+        run: |
+          if [ ! -d charon/.git ] || ! git -C charon describe --tags --exact-match HEAD 2>/dev/null | grep -qx 'v1.7.1'; then
+            rm -rf charon
+            git clone --branch v1.7.1 --depth 1 https://github.com/ObolNetwork/charon.git charon
+          fi
+          git -C charon rev-parse HEAD
+
       - name: Run Claude Code Review
         id: claude-review
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.CLAUDE_CODE_API_KEY }}
           track_progress: true
-          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
-          plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
-
+          prompt: '/review-pr ${{ github.event.pull_request.number || github.event.issue.number }}'

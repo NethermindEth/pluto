@@ -810,7 +810,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_pub_key_to_string() {
+    fn pub_key_to_string() {
         const ORIGINAL_PK_LEN: usize = 98;
 
         let key = PubKey::new([0; PK_LEN]);
@@ -825,7 +825,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_builder_registration_duty() {
+    fn new_builder_registration_duty() {
         let duty = Duty::new_builder_registration_duty(SlotNumber(1));
         assert_eq!(duty.duty_type, DutyType::BuilderRegistration);
         assert_eq!(duty.to_string(), "1/builder_registration");
@@ -833,7 +833,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_signature_duty() {
+    fn new_signature_duty() {
         let duty = Duty::new_signature_duty(SlotNumber(1));
         assert_eq!(duty.duty_type, DutyType::Signature);
         assert_eq!(duty.to_string(), "1/signature");
@@ -841,7 +841,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_prepare_aggregator_duty() {
+    fn new_prepare_aggregator_duty() {
         let duty = Duty::new_prepare_aggregator_duty(SlotNumber(1));
         assert_eq!(duty.duty_type, DutyType::PrepareAggregator);
         assert_eq!(duty.to_string(), "1/prepare_aggregator");
@@ -849,7 +849,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_aggregator_duty() {
+    fn new_aggregator_duty() {
         let duty = Duty::new_aggregator_duty(SlotNumber(1));
         assert_eq!(duty.duty_type, DutyType::Aggregator);
         assert_eq!(duty.to_string(), "1/aggregator");
@@ -857,7 +857,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_sync_contribution_duty() {
+    fn new_sync_contribution_duty() {
         let duty = Duty::new_sync_contribution_duty(SlotNumber(1));
         assert_eq!(duty.duty_type, DutyType::SyncContribution);
         assert_eq!(duty.to_string(), "1/sync_contribution");
@@ -865,7 +865,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_sync_message_duty() {
+    fn new_sync_message_duty() {
         let duty = Duty::new_sync_message_duty(SlotNumber(1));
         assert_eq!(duty.duty_type, DutyType::SyncMessage);
         assert_eq!(duty.to_string(), "1/sync_message");
@@ -873,7 +873,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_prepare_sync_contribution_duty() {
+    fn new_prepare_sync_contribution_duty() {
         let duty = Duty::new_prepare_sync_contribution_duty(SlotNumber(1));
         assert_eq!(duty.duty_type, DutyType::PrepareSyncContribution);
         assert_eq!(duty.to_string(), "1/prepare_sync_contribution");
@@ -881,7 +881,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_info_sync_duty() {
+    fn new_info_sync_duty() {
         let duty = Duty::new_info_sync_duty(SlotNumber(1));
         assert_eq!(duty.duty_type, DutyType::InfoSync);
         assert_eq!(duty.to_string(), "1/info_sync");
@@ -889,7 +889,7 @@ mod tests {
     }
 
     #[test]
-    fn test_slot() {
+    fn slot() {
         let slot = Slot {
             slot: SlotNumber(123),
             time: DateTime::from_timestamp(100, 100).unwrap(),
@@ -910,21 +910,21 @@ mod tests {
     }
 
     #[test]
-    fn test_serialize_pubkey() {
+    fn serialize_pubkey() {
         let pk = PubKey::new([42u8; PK_LEN]);
         let serialized = serde_json::to_string(&pk).unwrap();
         assert_eq!(serialized, format!("\"0x{}\"", hex::encode([42u8; PK_LEN])));
     }
 
     #[test]
-    fn test_deserialize_pubkey() {
+    fn deserialize_pubkey() {
         let serialized = format!("\"0x{}\"", hex::encode([42u8; PK_LEN]));
         let deserialized: PubKey = serde_json::from_str(&serialized).unwrap();
         assert_eq!(deserialized, PubKey::new([42u8; PK_LEN]));
     }
 
     #[test]
-    fn test_slot_iter() {
+    fn slot_iter() {
         let slot = Slot {
             slot: SlotNumber(123),
             time: DateTime::from_timestamp(100, 100).unwrap(),
@@ -939,7 +939,7 @@ mod tests {
     }
 
     #[test]
-    fn test_display_duty_type() {
+    fn display_duty_type() {
         assert_eq!(DutyType::Unknown.to_string(), "unknown");
         assert_eq!(DutyType::Proposer.to_string(), "proposer");
         assert_eq!(DutyType::Attester.to_string(), "attester");
@@ -966,7 +966,7 @@ mod tests {
     }
 
     #[test]
-    fn test_duty_type_is_valid() {
+    fn duty_type_is_valid() {
         assert!(!DutyType::Unknown.is_valid());
         assert!(DutyType::Proposer.is_valid());
         assert!(DutyType::Attester.is_valid());
@@ -977,27 +977,27 @@ mod tests {
     }
 
     #[test]
-    fn test_pub_key_from_bytes() {
+    fn pub_key_from_bytes() {
         let bytes = [42u8; PK_LEN];
         let pk = PubKey::try_from(&bytes[..]).unwrap();
         assert_eq!(pk, PubKey::new(bytes));
     }
 
     #[test]
-    fn test_pub_key_from_bytes_invalid_length() {
+    fn pub_key_from_bytes_invalid_length() {
         let bytes = [42u8; PK_LEN + 1];
         let result = PubKey::try_from(&bytes[..]);
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_pub_key_abbreviated() {
+    fn pub_key_abbreviated() {
         let pk = PubKey::new([42u8; PK_LEN]);
         assert_eq!(pk.abbreviated(), "2a2_a2a");
     }
 
     #[test]
-    fn test_duty_definition_set() {
+    fn duty_definition_set() {
         let mut duty_definition_set = DutyDefinitionSet::new();
         duty_definition_set.insert(DutyType::Proposer, DutyDefinition::new(DutyType::Proposer));
         assert_eq!(
@@ -1007,7 +1007,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unsigned_data_set() {
+    fn unsigned_data_set() {
         let mut unsigned_data_set = UnsignedDataSet::new();
         unsigned_data_set.insert(DutyType::Proposer, UnsignedData::new(DutyType::Proposer));
         assert_eq!(
@@ -1034,7 +1034,7 @@ mod tests {
     }
 
     #[test]
-    fn test_partially_signed_data_set() {
+    fn partially_signed_data_set() {
         let mut partially_signed_data_set = ParSignedDataSet::new();
         let par_signed = ParSignedData::new(MockSignedData, 0);
         partially_signed_data_set.insert(PubKey::new([42u8; PK_LEN]), par_signed.clone());
@@ -1049,7 +1049,7 @@ mod tests {
     }
 
     #[test]
-    fn test_signed_data_set() {
+    fn signed_data_set() {
         let mut signed_data_set = SignedDataSet::new();
         signed_data_set.insert(PubKey::new([42u8; PK_LEN]), MockSignedData);
         assert_eq!(
@@ -1059,7 +1059,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pub_key_from_string() {
+    fn pub_key_from_string() {
         let pk_str = "0x7f790ba343adf8891fac21a94b02d6ca93d0bc2199a5ec083ff6676e8c2f9f78b08bb122f1093675f9d24c8b5e7af241".to_string();
         let pk = PubKey::try_from(pk_str.as_str()).unwrap();
         assert_eq!(
@@ -1073,7 +1073,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pub_key_from_string_invalid_length() {
+    fn pub_key_from_string_invalid_length() {
         let pk_str = "0x7f790ba343adf8891fac21a94b02d6ca93d0bc2199a5ec083ff6676e8c2f9f78b08bb121093675f9d24c8b5e7af241".to_string();
         let result = PubKey::try_from(pk_str.as_str());
         assert!(result.is_err());

@@ -93,7 +93,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_left_pad() {
+    fn left_pad_works() {
         assert_eq!(left_pad(&[0x12, 0x34], 4), vec![0x00, 0x00, 0x12, 0x34]);
         assert_eq!(left_pad(&[0xab], 3), vec![0x00, 0x00, 0xab]);
         assert_eq!(left_pad(&[1, 2, 3], 3), vec![1, 2, 3]);
