@@ -128,6 +128,11 @@ pub(super) async fn fetch_best_server(
         .await
         .map_err(|e| CliError::Other(format!("fetch Ookla servers: {e}")))?;
 
+    // Go bug parity: the original Go implementation (testinfra.go) appends both
+    // servers_only and servers_exclude filter results independently (union), so
+    // excluded servers can still appear if they also match servers_only. The Rust
+    // implementation correctly chains the filters as intersection, which is the
+    // intended behaviour. This intentional divergence from Go is kept.
     let candidates: Vec<_> = servers
         .into_iter()
         .filter(|s| servers_only.is_empty() || servers_only.contains(&s.name))
