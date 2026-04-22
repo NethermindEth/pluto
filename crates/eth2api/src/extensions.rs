@@ -1,6 +1,6 @@
 use crate::{
     ConsensusVersion, EthBeaconNodeApiClient, GetGenesisRequest, GetGenesisResponse,
-    GetSpecRequest, GetSpecResponse, ValidatorStatus, spec::phase0,
+    GetGenesisResponseResponseData, GetSpecRequest, GetSpecResponse, ValidatorStatus, spec::phase0,
 };
 use chrono::{DateTime, Utc};
 use std::{collections::HashMap, time};
@@ -87,16 +87,14 @@ fn decode_fixed_hex<const N: usize, F: Fn() -> String>(
 }
 
 fn parse_genesis_fork_version_and_validators_root(
-    genesis_data: &serde_json::Value,
+    genesis_data: &GetGenesisResponseResponseData,
 ) -> Result<(phase0::Version, phase0::Root), EthBeaconNodeApiClientError> {
-    let fork_version = decode_fixed_hex(
-        required_str_field(genesis_data, "genesis_fork_version")?,
-        || "decode genesis_fork_version".to_string(),
-    )?;
-    let validators_root = decode_fixed_hex(
-        required_str_field(genesis_data, "genesis_validators_root")?,
-        || "decode genesis_validators_root".to_string(),
-    )?;
+    let fork_version = decode_fixed_hex(&genesis_data.genesis_fork_version, || {
+        "decode genesis_fork_version".to_string()
+    })?;
+    let validators_root = decode_fixed_hex(&genesis_data.genesis_validators_root, || {
+        "decode genesis_validators_root".to_string()
+    })?;
 
     Ok((fork_version, validators_root))
 }
@@ -237,13 +235,11 @@ impl EthBeaconNodeApiClient {
         }
     }
 
-    async fn fetch_genesis_data(&self) -> Result<serde_json::Value, EthBeaconNodeApiClientError> {
+    async fn fetch_genesis_data(
+        &self,
+    ) -> Result<GetGenesisResponseResponseData, EthBeaconNodeApiClientError> {
         match self.get_genesis(GetGenesisRequest {}).await? {
-            GetGenesisResponse::Ok(genesis) => Ok(serde_json::json!({
-                "genesis_time": genesis.data.genesis_time,
-                "genesis_validators_root": genesis.data.genesis_validators_root,
-                "genesis_fork_version": genesis.data.genesis_fork_version,
-            })),
+            GetGenesisResponse::Ok(genesis) => Ok(genesis.data),
             _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
         }
     }
@@ -251,9 +247,9 @@ impl EthBeaconNodeApiClient {
     /// Fetches the genesis time.
     pub async fn fetch_genesis_time(&self) -> Result<DateTime<Utc>, EthBeaconNodeApiClientError> {
         let genesis = self.fetch_genesis_data().await?;
-        let genesis_time = required_str_field(&genesis, "genesis_time")?;
 
-        genesis_time
+        genesis
+            .genesis_time
             .parse()
             .map_err(|_| EthBeaconNodeApiClientError::ParseError("parse genesis_time".into()))
             .and_then(|timestamp| {
