@@ -47,7 +47,13 @@ impl SpeedtestServer {
     }
 
     fn base_url(&self) -> &str {
-        self.url.strip_suffix("upload.php").unwrap_or(&self.url)
+        match self.url.strip_suffix("upload.php") {
+            Some(base) => base,
+            None => {
+                tracing::warn!(url = %self.url, "Ookla server URL does not end in 'upload.php'; subsequent requests may fail");
+                &self.url
+            }
+        }
     }
 
     pub(super) async fn ping_test(&mut self, client: &reqwest::Client) -> Result<()> {
