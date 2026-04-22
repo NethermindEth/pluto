@@ -1532,34 +1532,21 @@ mod tests {
         pluto_eth2util::helpers::checksum_address(&hex_addr).unwrap()
     }
 
-    /// Port of Go's testCreateCluster helper.
-    async fn run_test_create_cluster(
-        config: TestCaseConfig,
-        prep: PrepKind,
-        def_provider: DefProvider,
-        expected_err: Option<&str>,
-    ) {
-        let dir = TempDir::new().unwrap();
+    async fn load_ref_def() -> pluto_cluster::definition::Definition {
+        let bytes = tokio::fs::read(DEF_PATH).await.unwrap();
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        if value.get("compounding").is_none() {
+            value["compounding"] = serde_json::json!(false);
+        }
+        serde_json::from_value(value).unwrap()
+    }
 
-        // Load reference definition for post-creation checks (used when def_file_path
-        // is set). Inject defaults for fields absent from older JSON examples
-        // (e.g. `compounding`).
-        let ref_def: pluto_cluster::definition::Definition = {
-            let bytes = tokio::fs::read(DEF_PATH).await.unwrap();
-            let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-            if value.get("compounding").is_none() {
-                value["compounding"] = serde_json::json!(false);
-            }
-            serde_json::from_value(value).unwrap()
-        };
-
-        // Start a mock HTTP server when the test case needs to serve a definition over
-        // network.
-        let mock_server = match def_provider {
+    async fn start_def_mock_server(def_provider: DefProvider) -> Option<wiremock::MockServer> {
+        match def_provider {
             DefProvider::None => None,
-            path @ DefProvider::Def006 | path @ DefProvider::DefTwoNodes => {
+            DefProvider::Def006 | DefProvider::DefTwoNodes => {
                 let server = wiremock::MockServer::start().await;
-                let json = if matches!(path, DefProvider::Def006) {
+                let json = if matches!(def_provider, DefProvider::Def006) {
                     tokio::fs::read(DEF_PATH).await.unwrap()
                 } else {
                     tokio::fs::read(DEF_PATH_TWO_NODES).await.unwrap()
@@ -1570,54 +1557,18 @@ mod tests {
                     .await;
                 Some(server)
             }
-        };
-
-        // Apply defaults matching the Go test loop.
-        let def_url = mock_server.as_ref().map(|s| s.uri());
-        let definition_file = if let Some(url) = &def_url {
-            Some(url.clone())
-        } else {
-            config.def_file_path.map(String::from)
-        };
-
-        let mut fee_addrs = vec![ZERO_ADDRESS.to_string()];
-        let mut withdrawal_addrs = vec![ZERO_ADDRESS.to_string()];
-
-        let target_gas_limit = if config.target_gas_limit != 0 {
-            config.target_gas_limit
-        } else if def_url.is_none() {
-            30_000_000
-        } else {
-            0
-        };
-
-        // Split keys temp dir kept alive for the full duration of the test.
-        let split_keys_temp = TempDir::new().unwrap();
-        let mut split_keys_dir: Option<std::path::PathBuf> = None;
-
-        match prep {
-            PrepKind::None => {}
-            PrepKind::SplitKeys { num_keys } => {
-                let tbls = BlstImpl;
-                let mut keys = Vec::new();
-                for _ in 0..num_keys {
-                    keys.push(tbls.generate_secret_key(rand::thread_rng()).unwrap());
-                }
-                keystore::store_keys_insecure(
-                    &keys,
-                    split_keys_temp.path(),
-                    &CONFIRM_INSECURE_KEYS,
-                )
-                .await
-                .unwrap();
-                split_keys_dir = Some(split_keys_temp.path().to_path_buf());
-            }
-            PrepKind::RandomAddrs => {
-                fee_addrs = vec![random_checksummed_eth_address()];
-                withdrawal_addrs = vec![random_checksummed_eth_address()];
-            }
         }
+    }
 
+    fn build_create_cluster_args(
+        config: &TestCaseConfig,
+        cluster_dir: std::path::PathBuf,
+        definition_file: Option<String>,
+        fee_addrs: Vec<String>,
+        withdrawal_addrs: Vec<String>,
+        split_keys_dir: Option<std::path::PathBuf>,
+        target_gas_limit: u64,
+    ) -> CreateClusterArgs {
         let testnet_config = TestnetConfig {
             chain_id: config.testnet_chain_id,
             fork_version: config.testnet_fork_version.map(String::from),
@@ -1626,14 +1577,12 @@ mod tests {
             }),
             testnet_name: config.testnet_name.map(String::from),
         };
-
         let network = config.network.and_then(|n| Network::try_from(n).ok());
         let execution_engine_addr = definition_file
             .as_ref()
             .map(|_| "http://127.0.0.1:8545".to_string());
-
-        let args = CreateClusterArgs {
-            cluster_dir: dir.path().to_path_buf(),
+        CreateClusterArgs {
+            cluster_dir,
             compounding: false,
             consensus_protocol: config.consensus_protocol.map(String::from),
             definition_file,
@@ -1656,30 +1605,15 @@ mod tests {
             threshold: config.threshold,
             withdrawal_addrs,
             zipped: false,
-        };
-
-        let mut output = Vec::new();
-        let result = run(&mut output, args).await;
-
-        if let Some(expected) = expected_err {
-            let err = result.unwrap_err();
-            let err_str = format!("{err}");
-            assert!(
-                err_str.contains(expected),
-                "expected error containing '{expected}', got: {err_str}"
-            );
-            return;
         }
+    }
 
-        result.unwrap();
-
-        // Validate lock (port of Go's t.Run("valid lock", ...)).
+    async fn validate_cluster_lock(
+        lock: &Lock,
+        config: &TestCaseConfig,
+        ref_def: &pluto_cluster::definition::Definition,
+    ) {
         let eth1 = test_eth1_client().await;
-        let lock_bytes = tokio::fs::read(dir.path().join("node0/cluster-lock.json"))
-            .await
-            .unwrap();
-        let lock: Lock = serde_json::from_slice(&lock_bytes).unwrap();
-
         lock.verify_hashes().unwrap();
         lock.verify_signatures(&eth1).await.unwrap();
 
@@ -1750,25 +1684,15 @@ mod tests {
                 assert!(!sig.is_empty());
             }
         }
+    }
 
-        // --- Golden tests ---
-
-        // Extract the leaf test-case name from the thread name
-        // (e.g. "...::tests::simnet" -> "simnet").
-        let test_name = std::thread::current()
-            .name()
-            .unwrap_or("")
-            .rsplit("::")
-            .next()
-            .unwrap_or("unknown")
-            .to_string();
-
+    fn check_golden_files(test_name: &str, output: Vec<u8>, dir: &TempDir) {
         // Output golden: replace the temp cluster-dir path with "pluto" to
         // produce a deterministic, portable snapshot.
         let abs_dir = std::path::absolute(dir.path()).unwrap();
         let output_str = String::from_utf8(output).unwrap();
         let output_replaced = output_str.replace(abs_dir.to_string_lossy().as_ref(), "pluto");
-        require_golden_bytes(&test_name, "output", output_replaced.as_bytes());
+        require_golden_bytes(test_name, "output", output_replaced.as_bytes());
 
         // Files golden: list cluster-dir contents two levels deep (sorted),
         // L1 entries first then L2 entries — mirrors Go's
@@ -1799,7 +1723,109 @@ mod tests {
             }
         }
 
-        require_golden_json(&test_name, "files", &files);
+        require_golden_json(test_name, "files", &files);
+    }
+
+    /// Port of Go's testCreateCluster helper.
+    async fn run_test_create_cluster(
+        config: TestCaseConfig,
+        prep: PrepKind,
+        def_provider: DefProvider,
+        expected_err: Option<&str>,
+    ) {
+        let dir = TempDir::new().unwrap();
+        let ref_def = load_ref_def().await;
+        let mock_server = start_def_mock_server(def_provider).await;
+
+        // Apply defaults matching the Go test loop.
+        let def_url = mock_server.as_ref().map(|s| s.uri());
+        let definition_file = if let Some(url) = &def_url {
+            Some(url.clone())
+        } else {
+            config.def_file_path.map(String::from)
+        };
+
+        let mut fee_addrs = vec![ZERO_ADDRESS.to_string()];
+        let mut withdrawal_addrs = vec![ZERO_ADDRESS.to_string()];
+
+        let target_gas_limit = if config.target_gas_limit != 0 {
+            config.target_gas_limit
+        } else if def_url.is_none() {
+            30_000_000
+        } else {
+            0
+        };
+
+        // Split keys temp dir kept alive for the full duration of the test.
+        let split_keys_temp = TempDir::new().unwrap();
+        let mut split_keys_dir: Option<std::path::PathBuf> = None;
+
+        match prep {
+            PrepKind::None => {}
+            PrepKind::SplitKeys { num_keys } => {
+                let tbls = BlstImpl;
+                let mut keys = Vec::new();
+                for _ in 0..num_keys {
+                    keys.push(tbls.generate_secret_key(rand::thread_rng()).unwrap());
+                }
+                keystore::store_keys_insecure(
+                    &keys,
+                    split_keys_temp.path(),
+                    &CONFIRM_INSECURE_KEYS,
+                )
+                .await
+                .unwrap();
+                split_keys_dir = Some(split_keys_temp.path().to_path_buf());
+            }
+            PrepKind::RandomAddrs => {
+                fee_addrs = vec![random_checksummed_eth_address()];
+                withdrawal_addrs = vec![random_checksummed_eth_address()];
+            }
+        }
+
+        let args = build_create_cluster_args(
+            &config,
+            dir.path().to_path_buf(),
+            definition_file,
+            fee_addrs,
+            withdrawal_addrs,
+            split_keys_dir,
+            target_gas_limit,
+        );
+
+        let mut output = Vec::new();
+        let result = run(&mut output, args).await;
+
+        if let Some(expected) = expected_err {
+            let err = result.unwrap_err();
+            let err_str = format!("{err}");
+            assert!(
+                err_str.contains(expected),
+                "expected error containing '{expected}', got: {err_str}"
+            );
+            return;
+        }
+
+        result.unwrap();
+
+        let lock_bytes = tokio::fs::read(dir.path().join("node0/cluster-lock.json"))
+            .await
+            .unwrap();
+        let lock: Lock = serde_json::from_slice(&lock_bytes).unwrap();
+
+        validate_cluster_lock(&lock, &config, &ref_def).await;
+
+        // Extract the leaf test-case name from the thread name
+        // (e.g. "...::tests::simnet" -> "simnet").
+        let test_name = std::thread::current()
+            .name()
+            .unwrap_or("")
+            .rsplit("::")
+            .next()
+            .unwrap_or("unknown")
+            .to_string();
+
+        check_golden_files(&test_name, output, &dir);
     }
 
     #[test_case::test_case(
