@@ -160,18 +160,21 @@ async fn fio_command(path: &Path, block_size_kb: i32, operation: &str) -> Result
         .arg("--runtime=60s")
         .arg("--group_reporting")
         .arg("--output-format=json")
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| CliError::Other(format!("exec fio command: {e}")))?
+        .wait_with_output()
         .await
         .map_err(|e| CliError::Other(format!("exec fio command: {e}")))?;
+
+    let _ = tokio::fs::remove_file(&filename).await;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(CliError::Other(format!("exec fio command: {stderr}")));
     }
-
-    tokio::fs::remove_file(&filename)
-        .await
-        .map_err(|e| CliError::Other(format!("delete fio test file: {e}")))?;
 
     Ok(output.stdout)
 }
@@ -198,7 +201,7 @@ fn available_memory_linux() -> Result<i64> {
         let kbs: i64 = kbs_str
             .parse()
             .map_err(|_| CliError::Other("parse MemAvailable int".to_string()))?;
-        return Ok(kbs.saturating_mul(1024));
+        return Ok(kbs * 1024);
     }
 
     Err(CliError::Other(
@@ -276,7 +279,7 @@ fn total_memory_linux() -> Result<i64> {
         let kbs: i64 = kbs_str
             .parse()
             .map_err(|_| CliError::Other("parse MemTotal int".to_string()))?;
-        return Ok(kbs.saturating_mul(1024));
+        return Ok(kbs * 1024);
     }
 
     Err(CliError::Other(
@@ -563,7 +566,7 @@ async fn internet_download_speed_test(
     } else {
         TestVerdict::Good
     };
-    result.measurement = format!("{speed:.2}MB/s");
+    result.measurement = format!("{speed:.2}Mb/s");
     result
 }
 
@@ -785,3 +788,4 @@ pub struct TestInfraArgs {
     )]
     pub internet_test_servers_exclude: Vec<String>,
 }
+
