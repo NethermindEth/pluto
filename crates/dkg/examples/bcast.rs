@@ -82,6 +82,7 @@ use pluto_p2p::{
     config::P2PConfig,
     gater, k1,
     p2p::{Node, NodeType},
+    p2p_context::P2PContext,
     relay::{MutableRelayReservation, RelayRouter},
 };
 use pluto_tracing::TracingConfig;
@@ -577,13 +578,14 @@ async fn main() -> Result<()> {
         disable_reuse_port: args.disable_reuse_port,
     };
 
+    let p2p_context = P2PContext::new(known_peers.clone());
     let mut component = None;
     let mut node: Node<ExampleBehaviour> = Node::new(
         p2p_config,
         key.clone(),
         NodeType::QUIC,
         args.filter_private_addrs,
-        known_peers,
+        p2p_context,
         |builder, keypair, relay_client| {
             let p2p_context = builder.p2p_context();
             let local_peer_id = keypair.public().to_peer_id();
@@ -592,15 +594,12 @@ async fn main() -> Result<()> {
                 bcast::Behaviour::new(cluster_peers.clone(), p2p_context.clone(), key.clone());
             component = Some(c);
 
-            builder
-                .with_p2p_context(p2p_context.clone())
-                .with_gater(conn_gater)
-                .with_inner(ExampleBehaviour {
-                    relay: relay_client,
-                    relay_reservation: MutableRelayReservation::new(relays.clone()),
-                    relay_router: RelayRouter::new(relays.clone(), p2p_context, local_peer_id),
-                    bcast: bcast_behaviour,
-                })
+            builder.with_gater(conn_gater).with_inner(ExampleBehaviour {
+                relay: relay_client,
+                relay_reservation: MutableRelayReservation::new(relays.clone()),
+                relay_router: RelayRouter::new(relays.clone(), p2p_context, local_peer_id),
+                bcast: bcast_behaviour,
+            })
         },
     )?;
 

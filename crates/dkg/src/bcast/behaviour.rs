@@ -697,12 +697,8 @@ mod tests {
                 key,
                 NodeType::TCP,
                 false,
-                peer_ids.clone(),
-                move |builder, _keypair| {
-                    builder
-                        .with_p2p_context(p2p_context.clone())
-                        .with_inner(behaviour)
-                },
+                p2p_context.clone(),
+                move |builder, _keypair| builder.with_inner(behaviour),
             )?;
             let addr: Multiaddr = format!("/ip4/127.0.0.1/tcp/{}", ports[index]).parse()?;
             nodes.push(LocalNode {

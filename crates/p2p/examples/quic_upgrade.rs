@@ -59,6 +59,7 @@ use pluto_p2p::{
     behaviours::pluto::PlutoBehaviourEvent,
     config::P2PConfig,
     p2p::{Node, NodeType},
+    p2p_context::P2PContext,
     quic_upgrade::QuicUpgradeEvent,
 };
 use tokio::signal;
@@ -112,7 +113,7 @@ async fn main() -> Result<()> {
         key,
         NodeType::QUIC, // Enable QUIC transport
         false,          // Don't filter private addresses (for local testing)
-        known_peers,
+        P2PContext::new(known_peers),
         |builder, _keypair, relay_client| {
             builder
                 .with_user_agent("quic-upgrade-example/1.0.0")
