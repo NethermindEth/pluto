@@ -5629,6 +5629,7 @@ dependencies = [
  "hex",
  "k256",
  "libp2p",
+ "pluto-app",
  "pluto-build-proto",
  "pluto-cluster",
  "pluto-core",
