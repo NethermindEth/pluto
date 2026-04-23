@@ -36,17 +36,6 @@
 //!   │
 //!   └─► loop { check sig_type_data[slot].len() == expected_dvs; notify.notified().await }
 //! ```
-//!
-//! ## Divergence from Go
-//!
-//! Go's `exchanger` uses a single `sigDatasChan` (capacity 1) shared between
-//! all concurrent `exchange()` goroutines.  A goroutine for sig type A can
-//! accidentally return data intended for sig type B when both have the same DV
-//! count.  This Rust implementation is stricter: each `exchange(sig_type, …)`
-//! waits until **its own** sig type slot has data for all expected DVs.
-//! Concurrent exchanges for different sig types operate independently and
-//! correctly.  For all legitimate inputs — each sig type carries distinct data
-//! — the observable result is identical.
 
 use std::{
     collections::{HashMap, HashSet},
