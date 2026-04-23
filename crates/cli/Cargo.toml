@@ -40,6 +40,7 @@ tempfile.workspace = true
 reqwest.workspace = true
 url.workspace = true
 chrono.workspace = true
+sysinfo.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -1,7 +1,7 @@
 //! Infrastructure and hardware tests.
 
 use std::{
-    io::{BufRead as _, BufReader, Write},
+    io::Write,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -33,10 +33,10 @@ const DISK_READ_SPEED_MBS_AVG: f64 = 1000.0;
 const DISK_READ_SPEED_MBS_POOR: f64 = 500.0;
 const DISK_READ_IOPS_AVG: f64 = 2000.0;
 const DISK_READ_IOPS_POOR: f64 = 1000.0;
-const AVAILABLE_MEMORY_MBS_AVG: i64 = 4000;
-const AVAILABLE_MEMORY_MBS_POOR: i64 = 2000;
-const TOTAL_MEMORY_MBS_AVG: i64 = 8000;
-const TOTAL_MEMORY_MBS_POOR: i64 = 4000;
+const AVAILABLE_MEMORY_MBS_AVG: u64 = 4000;
+const AVAILABLE_MEMORY_MBS_POOR: u64 = 2000;
+const TOTAL_MEMORY_MBS_AVG: u64 = 8000;
+const TOTAL_MEMORY_MBS_POOR: u64 = 4000;
 const INTERNET_LATENCY_AVG: Duration = Duration::from_millis(20);
 const INTERNET_LATENCY_POOR: Duration = Duration::from_millis(50);
 const INTERNET_DOWNLOAD_SPEED_MBPS_AVG: f64 = 50.0;
@@ -177,140 +177,6 @@ async fn fio_command(path: &Path, block_size_kb: i32, operation: &str) -> Result
     }
 
     Ok(output.stdout)
-}
-
-fn available_memory_linux() -> Result<i64> {
-    let file = std::fs::File::open("/proc/meminfo")
-        .map_err(|e| CliError::Other(format!("open /proc/meminfo: {e}")))?;
-    let reader = BufReader::new(file);
-
-    for line_result in reader.lines() {
-        let line = line_result.map_err(|e| CliError::Other(format!("open /proc/meminfo: {e}")))?;
-        if !line.contains("MemAvailable") {
-            continue;
-        }
-        let (_, value_part) = line
-            .split_once(": ")
-            .ok_or_else(|| CliError::Other("parse MemAvailable int".to_string()))?;
-        let kbs_str = value_part
-            .split("kB")
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        let kbs: i64 = kbs_str
-            .parse()
-            .map_err(|_| CliError::Other("parse MemAvailable int".to_string()))?;
-
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "The memory won't overflow i64 because the value would be larger than 9223372TB"
-        )]
-        return Ok(kbs * 1024);
-    }
-
-    Err(CliError::Other(
-        "memAvailable not found in /proc/meminfo".to_string(),
-    ))
-}
-
-async fn available_memory_macos() -> Result<i64> {
-    let page_size_out = tokio::process::Command::new("pagesize")
-        .output()
-        .await
-        .map_err(|e| CliError::Other(format!("run pagesize: {e}")))?;
-    let page_size_str = String::from_utf8_lossy(&page_size_out.stdout);
-    let page_size: i64 = page_size_str
-        .trim()
-        .parse()
-        .map_err(|_| CliError::Other("parse memorySizePerPage int".to_string()))?;
-
-    let vm_stat_out = tokio::process::Command::new("vm_stat")
-        .output()
-        .await
-        .map_err(|e| CliError::Other(format!("run vm_stat: {e}")))?;
-    let vm_stat = String::from_utf8_lossy(&vm_stat_out.stdout).into_owned();
-
-    let mut pages_free: i64 = 0;
-    let mut pages_inactive: i64 = 0;
-    let mut pages_speculative: i64 = 0;
-
-    for line in vm_stat.lines() {
-        let Some((key, value)) = line.split_once(": ") else {
-            continue;
-        };
-        let num_str = value.split('.').next().unwrap_or_default().trim();
-
-        if key.contains("Pages free") {
-            pages_free = num_str
-                .parse()
-                .map_err(|_| CliError::Other("parse Pages free int".to_string()))?;
-        } else if key.contains("Pages inactive") {
-            pages_inactive = num_str
-                .parse()
-                .map_err(|_| CliError::Other("parse Pages inactive int".to_string()))?;
-        } else if key.contains("Pages speculative") {
-            pages_speculative = num_str
-                .parse()
-                .map_err(|_| CliError::Other("parse Pages speculative int".to_string()))?;
-        }
-    }
-
-    let total = pages_free
-        .saturating_add(pages_inactive)
-        .saturating_add(pages_speculative);
-    Ok(total.saturating_mul(page_size))
-}
-
-fn total_memory_linux() -> Result<i64> {
-    let file = std::fs::File::open("/proc/meminfo")
-        .map_err(|e| CliError::Other(format!("open /proc/meminfo: {e}")))?;
-    let reader = BufReader::new(file);
-
-    for line_result in reader.lines() {
-        let line = line_result.map_err(|e| CliError::Other(format!("open /proc/meminfo: {e}")))?;
-        if !line.contains("MemTotal") {
-            continue;
-        }
-        let (_, value_part) = line
-            .split_once(": ")
-            .ok_or_else(|| CliError::Other("parse MemTotal int".to_string()))?;
-        let kbs_str = value_part
-            .split("kB")
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        let kbs: i64 = kbs_str
-            .parse()
-            .map_err(|_| CliError::Other("parse MemTotal int".to_string()))?;
-
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "The memory won't overflow i64 because the value would be larger than 9223372TB"
-        )]
-        return Ok(kbs * 1024);
-    }
-
-    Err(CliError::Other(
-        "memTotal not found in /proc/meminfo".to_string(),
-    ))
-}
-
-async fn total_memory_macos() -> Result<i64> {
-    let out = tokio::process::Command::new("sysctl")
-        .arg("hw.memsize")
-        .output()
-        .await
-        .map_err(|e| CliError::Other(format!("run sysctl hw.memsize: {e}")))?;
-    let output_str = String::from_utf8_lossy(&out.stdout);
-    let mem_str = output_str
-        .split_once(": ")
-        .map(|(_, v)| v.trim())
-        .ok_or_else(|| CliError::Other("parse memSize int".to_string()))?;
-    mem_str
-        .parse()
-        .map_err(|_| CliError::Other("parse memSize int".to_string()))
 }
 
 async fn disk_write_speed_test(
@@ -455,54 +321,38 @@ async fn disk_read_iops_test(
 
 async fn available_memory_test() -> TestResult {
     let mut result = TestResult::new("AvailableMemory");
-
-    let bytes = match std::env::consts::OS {
-        "linux" => available_memory_linux(),
-        "macos" => available_memory_macos().await,
-        os => return result.fail(CliError::Other(format!("unknown OS {os}"))),
+    let sys = sysinfo::System::new_with_specifics(
+        sysinfo::RefreshKind::nothing()
+            .with_memory(sysinfo::MemoryRefreshKind::nothing().with_ram()),
+    );
+    let mb = sys.available_memory() / 1024 / 1024;
+    result.verdict = if mb < AVAILABLE_MEMORY_MBS_POOR {
+        TestVerdict::Poor
+    } else if mb < AVAILABLE_MEMORY_MBS_AVG {
+        TestVerdict::Avg
+    } else {
+        TestVerdict::Good
     };
-
-    match bytes {
-        Err(e) => result.fail(e),
-        Ok(b) => {
-            let mb = b / 1024 / 1024;
-            result.verdict = if mb < AVAILABLE_MEMORY_MBS_POOR {
-                TestVerdict::Poor
-            } else if mb < AVAILABLE_MEMORY_MBS_AVG {
-                TestVerdict::Avg
-            } else {
-                TestVerdict::Good
-            };
-            result.measurement = format!("{mb}MB");
-            result
-        }
-    }
+    result.measurement = format!("{mb}MB");
+    result
 }
 
 async fn total_memory_test() -> TestResult {
     let mut result = TestResult::new("TotalMemory");
-
-    let bytes = match std::env::consts::OS {
-        "linux" => total_memory_linux(),
-        "macos" => total_memory_macos().await,
-        os => return result.fail(CliError::Other(format!("unknown OS {os}"))),
+    let sys = sysinfo::System::new_with_specifics(
+        sysinfo::RefreshKind::nothing()
+            .with_memory(sysinfo::MemoryRefreshKind::nothing().with_ram()),
+    );
+    let mb = sys.total_memory() / 1024 / 1024;
+    result.verdict = if mb < TOTAL_MEMORY_MBS_POOR {
+        TestVerdict::Poor
+    } else if mb < TOTAL_MEMORY_MBS_AVG {
+        TestVerdict::Avg
+    } else {
+        TestVerdict::Good
     };
-
-    match bytes {
-        Err(e) => result.fail(e),
-        Ok(b) => {
-            let mb = b / 1024 / 1024;
-            result.verdict = if mb < TOTAL_MEMORY_MBS_POOR {
-                TestVerdict::Poor
-            } else if mb < TOTAL_MEMORY_MBS_AVG {
-                TestVerdict::Avg
-            } else {
-                TestVerdict::Good
-            };
-            result.measurement = format!("{mb}MB");
-            result
-        }
-    }
+    result.measurement = format!("{mb}MB");
+    result
 }
 
 async fn internet_latency_test(args: &TestInfraArgs, client: &reqwest::Client) -> TestResult {

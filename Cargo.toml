@@ -97,6 +97,7 @@ tree_hash_derive = "0.12"
 tar = "0.4"
 flate2 = "1.1"
 wiremock = "0.6"
+sysinfo = "0.33"
 
 # Crates in the workspace
 pluto-app = { path = "crates/app" }
