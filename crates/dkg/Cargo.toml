@@ -19,7 +19,6 @@ sha2.workspace = true
 tracing.workspace = true
 either.workspace = true
 k256.workspace = true
-tokio-util.workspace = true
 pluto-k1util.workspace = true
 pluto-p2p.workspace = true
 pluto-cluster.workspace = true
