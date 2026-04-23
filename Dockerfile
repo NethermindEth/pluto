@@ -13,15 +13,17 @@ RUN apt-get update && \
   openssl libssl-dev \
   protobuf-compiler=3.21.12*
 
-# Install Rust using rustup, the official installer
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0
+# Install Rust and required toolchain
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
 ENV PATH="/root/.cargo/bin:${PATH}"
+WORKDIR /build
+COPY rust-toolchain.toml .
+RUN rustup show
 
 # Install Rust dependencies
 RUN cargo install oas3-gen@0.24.0
 
 # Build the Pluto CLI
-WORKDIR /build
 COPY . .
 RUN cargo build --locked --release --package pluto-cli
 
