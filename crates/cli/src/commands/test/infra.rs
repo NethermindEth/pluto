@@ -319,6 +319,17 @@ async fn disk_read_iops_test(
     }
 }
 
+fn apply_memory_result(result: &mut TestResult, mb: u64, poor: u64, avg: u64) {
+    result.verdict = if mb < poor {
+        TestVerdict::Poor
+    } else if mb < avg {
+        TestVerdict::Avg
+    } else {
+        TestVerdict::Good
+    };
+    result.measurement = format!("{mb}MB");
+}
+
 async fn available_memory_test() -> TestResult {
     let mut result = TestResult::new("AvailableMemory");
     let sys = sysinfo::System::new_with_specifics(
@@ -326,14 +337,12 @@ async fn available_memory_test() -> TestResult {
             .with_memory(sysinfo::MemoryRefreshKind::nothing().with_ram()),
     );
     let mb = sys.available_memory() / 1024 / 1024;
-    result.verdict = if mb < AVAILABLE_MEMORY_MBS_POOR {
-        TestVerdict::Poor
-    } else if mb < AVAILABLE_MEMORY_MBS_AVG {
-        TestVerdict::Avg
-    } else {
-        TestVerdict::Good
-    };
-    result.measurement = format!("{mb}MB");
+    apply_memory_result(
+        &mut result,
+        mb,
+        AVAILABLE_MEMORY_MBS_POOR,
+        AVAILABLE_MEMORY_MBS_AVG,
+    );
     result
 }
 
@@ -344,14 +353,7 @@ async fn total_memory_test() -> TestResult {
             .with_memory(sysinfo::MemoryRefreshKind::nothing().with_ram()),
     );
     let mb = sys.total_memory() / 1024 / 1024;
-    result.verdict = if mb < TOTAL_MEMORY_MBS_POOR {
-        TestVerdict::Poor
-    } else if mb < TOTAL_MEMORY_MBS_AVG {
-        TestVerdict::Avg
-    } else {
-        TestVerdict::Good
-    };
-    result.measurement = format!("{mb}MB");
+    apply_memory_result(&mut result, mb, TOTAL_MEMORY_MBS_POOR, TOTAL_MEMORY_MBS_AVG);
     result
 }
 
