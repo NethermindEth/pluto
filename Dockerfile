@@ -14,7 +14,7 @@ RUN apt-get update && \
   protobuf-compiler=3.21.12*
 
 # Install Rust using rustup, the official installer
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.89.0
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Install Rust dependencies
