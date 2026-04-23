@@ -441,7 +441,7 @@ async fn handle_inbound_msg(
             .ok_or_else(|| Error::UnknownMessageId(message.id.clone()))?
     };
 
-    handler.callback(peer_id, &message.id, &any)?;
+    handler.callback(peer_id, message.id, any).await?;
     stream.close().await?;
     Ok(())
 }

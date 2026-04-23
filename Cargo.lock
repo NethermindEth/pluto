@@ -5506,6 +5506,7 @@ dependencies = [
  "pluto-cluster",
  "pluto-core",
  "pluto-crypto",
+ "pluto-dkg",
  "pluto-eth1wrap",
  "pluto-eth2api",
  "pluto-eth2util",
@@ -5623,6 +5624,7 @@ version = "1.7.1"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bon",
  "clap",
  "either",
  "futures",
@@ -5647,6 +5649,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "test-case",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
@@ -5661,6 +5664,7 @@ version = "1.7.1"
 dependencies = [
  "alloy",
  "thiserror 2.0.18",
+ "tokio",
  "url",
 ]
 
@@ -6745,9 +6749,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.38"
+version = "0.23.39"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69f9466fb2c14ea04357e91413efb882e2a6d4a406e625449bc0a5d360d53a21"
+checksum = "7c2c118cb077cca2822033836dfb1b975355dfb784b5e8da48f7b6c5db74e60e"
 dependencies = [
  "aws-lc-rs",
  "log",

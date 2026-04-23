@@ -8,6 +8,13 @@ use std::{
 
 use libp2p::{Multiaddr, multiaddr, ping};
 
+/// Shared default relay endpoints used by commands and P2P-facing configs.
+pub const DEFAULT_RELAYS: [&str; 3] = [
+    "https://0.relay.obol.tech",
+    "https://2.relay.obol.dev",
+    "https://1.relay.obol.tech",
+];
+
 /// P2P configuration error.
 #[derive(Debug, thiserror::Error)]
 pub enum P2PConfigError {
@@ -99,6 +106,14 @@ impl P2PConfig {
     pub fn builder() -> P2PConfigBuilder {
         P2PConfigBuilder::new()
     }
+}
+
+/// Returns the default relay endpoints parsed as [`Multiaddr`]s.
+pub fn default_relay_multiaddrs() -> Vec<Multiaddr> {
+    DEFAULT_RELAYS
+        .iter()
+        .map(|relay| multiaddr::from_url(relay).expect("default relay should parse"))
+        .collect()
 }
 
 /// Builder for [`P2PConfig`].
