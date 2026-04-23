@@ -391,6 +391,17 @@ async fn internet_latency_test(args: &TestInfraArgs, client: &reqwest::Client) -
     )
 }
 
+fn apply_speed_result(result: &mut TestResult, speed: f64, poor: f64, avg: f64) {
+    result.verdict = if speed < poor {
+        TestVerdict::Poor
+    } else if speed < avg {
+        TestVerdict::Avg
+    } else {
+        TestVerdict::Good
+    };
+    result.measurement = format!("{speed:.2}Mb/s");
+}
+
 async fn internet_download_speed_test(
     args: &TestInfraArgs,
     client: &reqwest::Client,
@@ -421,14 +432,12 @@ async fn internet_download_speed_test(
     }
 
     let speed = server.dl_speed_mbps;
-    result.verdict = if speed < INTERNET_DOWNLOAD_SPEED_MBPS_POOR {
-        TestVerdict::Poor
-    } else if speed < INTERNET_DOWNLOAD_SPEED_MBPS_AVG {
-        TestVerdict::Avg
-    } else {
-        TestVerdict::Good
-    };
-    result.measurement = format!("{speed:.2}Mb/s");
+    apply_speed_result(
+        &mut result,
+        speed,
+        INTERNET_DOWNLOAD_SPEED_MBPS_POOR,
+        INTERNET_DOWNLOAD_SPEED_MBPS_AVG,
+    );
     result
 }
 
@@ -459,14 +468,12 @@ async fn internet_upload_speed_test(args: &TestInfraArgs, client: &reqwest::Clie
     }
 
     let speed = server.ul_speed_mbps;
-    result.verdict = if speed < INTERNET_UPLOAD_SPEED_MBPS_POOR {
-        TestVerdict::Poor
-    } else if speed < INTERNET_UPLOAD_SPEED_MBPS_AVG {
-        TestVerdict::Avg
-    } else {
-        TestVerdict::Good
-    };
-    result.measurement = format!("{speed:.2}Mb/s");
+    apply_speed_result(
+        &mut result,
+        speed,
+        INTERNET_UPLOAD_SPEED_MBPS_POOR,
+        INTERNET_UPLOAD_SPEED_MBPS_AVG,
+    );
     result
 }
 
