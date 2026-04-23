@@ -82,6 +82,7 @@ impl SpeedtestServer {
                     response.status()
                 )));
             }
+            // "The loop downloads 16MB in total, no overflow is possible"
             total_bytes = total_bytes.saturating_add(response.bytes().await?.len());
         }
         self.dl_speed_mbps = bytes_to_mbps(total_bytes, start.elapsed());
@@ -104,6 +105,9 @@ impl SpeedtestServer {
                 response.status()
             )));
         }
+        // Read and discard the body so the connection is left in a clean state
+        // for the connection pool; dropping Response without reading closes the
+        // underlying TCP socket and corrupts pool state for subsequent requests.
         let _ = response.bytes().await?;
         self.ul_speed_mbps = bytes_to_mbps(SPEEDTEST_UPLOAD_BYTES, start.elapsed());
         Ok(())
