@@ -166,14 +166,13 @@ impl Exchanger {
         let st: HashSet<SigType> = sig_types.iter().copied().collect();
 
         let duty_gater_fn: DutyGaterFn = {
-            let sig_types = sig_types.clone();
             let st = st.clone();
             Arc::new(move |duty: &Duty| {
                 if duty.duty_type != DutyType::Signature {
                     return false;
                 }
 
-                if sig_types.contains(&SIG_DEPOSIT_DATA) && duty.slot.inner() >= SIG_DEPOSIT_DATA {
+                if st.contains(&SIG_DEPOSIT_DATA) && duty.slot.inner() >= SIG_DEPOSIT_DATA {
                     return true;
                 }
 
@@ -204,12 +203,7 @@ impl Exchanger {
                     Ok(())
                 }
             });
-            sigdb
-                .lock()
-                .await
-                .subscribe_internal(sub)
-                .await
-                .expect("subscribe_internal is infallible");
+            sigdb.lock().await.subscribe_internal(sub).await;
         }
 
         {
@@ -225,12 +219,7 @@ impl Exchanger {
                     Ok(())
                 }
             });
-            sigdb
-                .lock()
-                .await
-                .subscribe_threshold(sub)
-                .await
-                .expect("subscribe_threshold is infallible");
+            sigdb.lock().await.subscribe_threshold(sub).await;
         }
 
         {
@@ -349,10 +338,10 @@ mod tests {
     use pluto_parsigex::{Behaviour as ParsexBehaviour, Config as ParsexConfig};
     use pluto_testutil::random::generate_insecure_k1_key;
     use rand::{Rng as _, RngCore as _};
-    use tokio::sync::{mpsc, oneshot};
+    use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
-    use super::{Exchanger, SIG_DEPOSIT_DATA, SIG_LOCK, SIG_VALIDATOR_REG, SigType, SigTypeStore};
+    use super::{Exchanger, SIG_DEPOSIT_DATA, SIG_LOCK, SIG_VALIDATOR_REG, SigTypeStore};
 
     fn available_tcp_port() -> anyhow::Result<u16> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
@@ -465,13 +454,10 @@ mod tests {
 
         // Spawn swarm event loops; each node dials all nodes with higher index
         let mut conn_rxs: Vec<mpsc::UnboundedReceiver<libp2p::PeerId>> = Vec::with_capacity(NODES);
-        let mut stop_txs: Vec<oneshot::Sender<()>> = Vec::with_capacity(NODES);
 
         for (i, mut node) in nodes.into_iter().enumerate() {
             let (conn_tx, conn_rx) = mpsc::unbounded_channel::<libp2p::PeerId>();
-            let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
             conn_rxs.push(conn_rx);
-            stop_txs.push(stop_tx);
 
             let dial_targets: Vec<Multiaddr> = (i + 1..NODES)
                 .map(|j| {
@@ -487,13 +473,9 @@ mod tests {
                     let _ = node.dial(target);
                 }
                 loop {
-                    tokio::select! {
-                        _ = &mut stop_rx => break,
-                        event = node.select_next_some() => {
-                            if let SwarmEvent::ConnectionEstablished { peer_id, .. } = event {
-                                let _ = conn_tx.send(peer_id);
-                            }
-                        }
+                    let event = node.select_next_some().await;
+                    if let SwarmEvent::ConnectionEstablished { peer_id, .. } = event {
+                        let _ = conn_tx.send(peer_id);
                     }
                 }
             });
@@ -513,30 +495,21 @@ mod tests {
         }
 
         // Run concurrent exchanges: for each (node, sig_type) pair, spawn a task
-        let (result_tx, mut result_rx) =
-            mpsc::unbounded_channel::<(SigType, HashMap<PubKey, Vec<ParSignedData>>)>();
-
         let mut join_set = tokio::task::JoinSet::new();
         for (node_idx, ex) in exchangers.iter().enumerate() {
             for &sig_type in &sig_types {
                 let ex = Arc::clone(ex);
                 let set = data_to_be_sent[node_idx].clone();
-                let tx = result_tx.clone();
                 join_set.spawn(async move {
                     let data = ex.exchange(sig_type, set).await.expect("exchange failed");
-                    let _ = tx.send((sig_type, data));
+                    (sig_type, data)
                 });
             }
         }
-        drop(result_tx);
 
         // Collect results into actual: one entry per sig_type (last writer wins,
         // all nodes return equivalent data for each sig_type)
-        let mut actual: SigTypeStore = HashMap::new();
-        while let Some((sig_type, data)) = result_rx.recv().await {
-            actual.insert(sig_type, data);
-        }
-        while join_set.join_next().await.is_some() {}
+        let actual: SigTypeStore = join_set.join_all().await.into_iter().collect();
 
         // Assert all expected sig types arrived (matches the Go test assertions).
         // The Go reflect.DeepEqual is intentionally discarded there — we only
@@ -558,10 +531,6 @@ mod tests {
             }
         }
         assert_eq!(actual.len(), sig_types.len());
-
-        for stop_tx in stop_txs {
-            let _ = stop_tx.send(());
-        }
 
         Ok(())
     }
