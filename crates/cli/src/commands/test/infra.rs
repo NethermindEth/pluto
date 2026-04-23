@@ -614,7 +614,7 @@ async fn internet_upload_speed_test(args: &TestInfraArgs, client: &reqwest::Clie
     } else {
         TestVerdict::Good
     };
-    result.measurement = format!("{speed:.2}MB/s");
+    result.measurement = format!("{speed:.2}Mb/s");
     result
 }
 
