@@ -299,14 +299,16 @@ async fn register_message(component: &Component, local_node_number: u32) -> bcas
                 Ok(())
             }),
             Box::new(move |peer_id, received_msg_id, msg| {
-                info!(
-                    local_node = local_node_number,
-                    sender = %peer_id,
-                    msg_id = received_msg_id,
-                    msg = ?msg,
-                    "Received broadcast"
-                );
-                Ok(())
+                Box::pin(async move {
+                    info!(
+                        local_node = local_node_number,
+                        sender = %peer_id,
+                        msg_id = received_msg_id,
+                        msg = ?msg,
+                        "Received broadcast"
+                    );
+                    Ok(())
+                })
             }),
         )
         .await

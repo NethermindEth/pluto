@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use tree_hash::TreeHash;
 use tree_hash_derive::TreeHash;
 
 use crate::spec::{
@@ -77,6 +78,32 @@ pub struct SyncCommitteeSelection {
     /// Selection proof.
     #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub selection_proof: BLSSignature,
+}
+
+impl ValidatorRegistration {
+    /// Returns the SSZ message root of the unsigned builder registration.
+    pub fn message_root(&self) -> crate::spec::phase0::Root {
+        self.tree_hash_root().0
+    }
+}
+
+impl BeaconCommitteeSelection {
+    /// Returns the message root used for aggregation selection proofs.
+    pub fn message_root(&self) -> crate::spec::phase0::Root {
+        self.slot.tree_hash_root().0
+    }
+}
+
+impl SyncCommitteeSelection {
+    /// Returns the message root used for sync committee selection proofs.
+    pub fn message_root(&self) -> crate::spec::phase0::Root {
+        crate::spec::altair::SyncAggregatorSelectionData {
+            slot: self.slot,
+            subcommittee_index: self.subcommittee_index,
+        }
+        .tree_hash_root()
+        .0
+    }
 }
 
 #[cfg(test)]

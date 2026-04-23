@@ -85,12 +85,11 @@ impl EthClient {
         hash: [u8; 32],
         sig: &[u8],
     ) -> Result<bool> {
+        // Magic value defined in [ERC-1271](https://eips.ethereum.org/EIPS/eip-1271).
+        const MAGIC_VALUE: [u8; 4] = [0x16, 0x26, 0xba, 0x7e];
         let EthClient::Connected(provider) = self else {
             return Err(EthClientError::NoExecutionEngineAddr);
         };
-
-        // Magic value defined in [ERC-1271](https://eips.ethereum.org/EIPS/eip-1271).
-        const MAGIC_VALUE: [u8; 4] = [0x16, 0x26, 0xba, 0x7e];
 
         let address = alloy::primitives::Address::parse_checksummed(contract_address, None)?;
 
@@ -102,5 +101,25 @@ impl EthClient {
             .await?;
 
         Ok(call == MAGIC_VALUE)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn empty_address_returns_noop_client() {
+        let client = EthClient::new("").await.expect("noop eth client");
+        let err = client
+            .verify_smart_contract_based_signature(
+                "0x0000000000000000000000000000000000000000",
+                [0u8; 32],
+                &[],
+            )
+            .await
+            .expect_err("empty address should not verify contract signatures");
+
+        assert!(matches!(err, EthClientError::NoExecutionEngineAddr));
     }
 }

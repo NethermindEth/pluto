@@ -13,7 +13,6 @@ pub use types::*;
 
 use errors::Result;
 
-use crate::network;
 use pluto_crypto::{
     blst_impl::BlstImpl,
     tbls::Tbls,
@@ -87,22 +86,6 @@ pub fn marshal_deposit_data(
     };
 
     Ok(bytes)
-}
-
-/// Returns the deposit signature domain.
-pub(crate) fn get_deposit_domain(fork_version: Version) -> Domain {
-    let fork_data = ForkData {
-        current_version: fork_version,
-        genesis_validators_root: Root::default(),
-    };
-
-    let fork_data_root = fork_data.tree_hash_root();
-
-    let mut domain = Domain::default();
-    domain[0..4].copy_from_slice(&DEPOSIT_DOMAIN_TYPE);
-    domain[4..32].copy_from_slice(&fork_data_root.0[0..28]);
-
-    domain
 }
 
 /// Converts an Ethereum address to withdrawal credentials.
