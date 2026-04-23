@@ -110,6 +110,14 @@ use crate::{
     utils,
 };
 
+const YAMUX_MAX_NUM_STREAMS: usize = 2_048;
+
+fn yamux_config() -> yamux::Config {
+    let mut config = yamux::Config::default();
+    config.set_max_num_streams(YAMUX_MAX_NUM_STREAMS);
+    config
+}
+
 /// P2P error.
 #[derive(Debug, thiserror::Error)]
 pub enum P2PError {
@@ -323,20 +331,17 @@ impl<B: NetworkBehaviour> Node<B> {
     {
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
-            .with_tcp(
-                tcp::Config::default(),
-                noise::Config::new,
-                yamux::Config::default,
-            )
+            .with_tcp(tcp::Config::default(), noise::Config::new, yamux_config)
             .map_err(P2PError::failed_to_build_swarm)?
             .with_quic()
             .with_dns()
             .map_err(P2PError::failed_to_build_swarm)?
-            .with_relay_client(noise::Config::new, yamux::Config::default)
+            .with_relay_client(noise::Config::new, yamux_config)
             .map_err(P2PError::failed_to_build_swarm)?
             .with_behaviour(|key, relay_client| {
-                let builder =
-                    PlutoBehaviourBuilder::default().with_p2p_context(p2p_context.clone());
+                let builder = PlutoBehaviourBuilder::default()
+                    .with_p2p_context(p2p_context.clone())
+                    .with_quic_enabled(true);
                 behaviour_fn(builder, key, relay_client).build(key)
             })
             .map_err(P2PError::failed_to_build_swarm)?
@@ -364,15 +369,11 @@ impl<B: NetworkBehaviour> Node<B> {
     {
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
-            .with_tcp(
-                tcp::Config::default(),
-                noise::Config::new,
-                yamux::Config::default,
-            )
+            .with_tcp(tcp::Config::default(), noise::Config::new, yamux_config)
             .map_err(P2PError::failed_to_build_swarm)?
             .with_dns()
             .map_err(P2PError::failed_to_build_swarm)?
-            .with_relay_client(noise::Config::new, yamux::Config::default)
+            .with_relay_client(noise::Config::new, yamux_config)
             .map_err(P2PError::failed_to_build_swarm)?
             .with_behaviour(|key, relay_client| {
                 let builder =
@@ -400,11 +401,7 @@ impl<B: NetworkBehaviour> Node<B> {
     {
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
-            .with_tcp(
-                tcp::Config::default(),
-                noise::Config::new,
-                yamux::Config::default,
-            )
+            .with_tcp(tcp::Config::default(), noise::Config::new, yamux_config)
             .map_err(P2PError::failed_to_build_swarm)?
             .with_quic()
             .with_dns()
@@ -435,11 +432,7 @@ impl<B: NetworkBehaviour> Node<B> {
     {
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
-            .with_tcp(
-                tcp::Config::default(),
-                noise::Config::new,
-                yamux::Config::default,
-            )
+            .with_tcp(tcp::Config::default(), noise::Config::new, yamux_config)
             .map_err(P2PError::failed_to_build_swarm)?
             .with_quic()
             .with_dns()

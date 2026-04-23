@@ -1,0 +1,31 @@
+[package]
+name = "pluto-parsigex"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+either.workspace = true
+futures.workspace = true
+libp2p.workspace = true
+prost.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+unsigned-varint.workspace = true
+pluto-core.workspace = true
+pluto-p2p.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+clap.workspace = true
+hex.workspace = true
+pluto-cluster.workspace = true
+pluto-tracing.workspace = true
+tokio-util.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

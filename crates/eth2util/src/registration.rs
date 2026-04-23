@@ -1,11 +1,11 @@
 use pluto_eth2api::{
+    compute_builder_domain,
     spec::{
         bellatrix::ExecutionAddress,
-        phase0::{BLSPubKey, Domain, DomainType, ForkData, Root, SigningData, Version},
+        phase0::{BLSPubKey, DomainType, Root, Version},
     },
     v1::ValidatorRegistration,
 };
-use tree_hash::TreeHash;
 
 /// Default gas limit used in validator registration pre-generation.
 pub const DEFAULT_GAS_LIMIT: u64 = 30_000_000;
@@ -47,41 +47,13 @@ fn execution_address_from_str(addr: &str) -> Result<ExecutionAddress> {
     Ok(address.0.0)
 }
 
-/// Returns the validator registration signature domain.
-/// `DOMAIN_APPLICATION_BUILDER` uses `GENESIS_FORK_VERSION` to compute domain.
-/// Refer:
-/// - https://github.com/ethereum/builder-specs/blob/100d4faf32e5dc672c963741769390ff09ab194a/specs/bellatrix/builder.md#signing
-/// - https://github.com/ethereum/consensus-specs/blob/dev/specs/phase0/beacon-chain.md#compute_domain
-fn get_registration_domain(genesis_fork_version: Version) -> Domain {
-    let fork_data = ForkData {
-        current_version: genesis_fork_version,
-        genesis_validators_root: Root::default(), /* GenesisValidatorsRoot is zero for validator
-                                                   * registration. */
-    };
-
-    let fork_data_root = fork_data.tree_hash_root();
-
-    let mut domain = Domain::default();
-    domain[0..4].copy_from_slice(&REGISTRATION_DOMAIN_TYPE);
-    domain[4..].copy_from_slice(&fork_data_root.0[..28]);
-
-    domain
-}
-
 /// Returns the validator registration message signing root.
 pub fn get_message_signing_root(
     msg: &ValidatorRegistration,
     genesis_fork_version: Version,
 ) -> Root {
-    let msg_root = msg.tree_hash_root();
-    let domain = get_registration_domain(genesis_fork_version);
-
-    let signing_data = SigningData {
-        object_root: msg_root.0,
-        domain,
-    };
-
-    signing_data.tree_hash_root().0
+    let domain = compute_builder_domain(REGISTRATION_DOMAIN_TYPE, genesis_fork_version);
+    crate::signing::compute_signing_root(msg.message_root(), domain)
 }
 
 #[cfg(test)]

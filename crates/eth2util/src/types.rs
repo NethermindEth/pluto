@@ -1,5 +1,6 @@
 use pluto_eth2api::spec::phase0;
 use serde::{Deserialize, Serialize};
+use tree_hash::TreeHash;
 use tree_hash_derive::TreeHash;
 
 /// Signature of a corresponding epoch.
@@ -13,6 +14,13 @@ pub struct SignedEpoch {
     #[tree_hash(skip_hashing)]
     #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: phase0::BLSSignature,
+}
+
+impl SignedEpoch {
+    /// Returns the SSZ message root of the epoch payload.
+    pub fn message_root(&self) -> phase0::Root {
+        self.tree_hash_root().0
+    }
 }
 
 #[cfg(test)]
