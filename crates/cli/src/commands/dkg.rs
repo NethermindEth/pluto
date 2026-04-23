@@ -117,16 +117,18 @@ pub struct DkgArgs {
     pub zipped: bool,
 }
 
-impl DkgArgs {
-    /// Converts CLI arguments into the DKG crate configuration.
-    pub fn into_config(self) -> Result<pluto_dkg::dkg::Config> {
-        validate_p2p_args(&self.p2p)?;
+impl TryFrom<DkgArgs> for pluto_dkg::dkg::Config {
+    type Error = CliError;
 
-        let tracing_config = build_console_tracing_config(self.log.level.clone(), &self.log.color);
+    /// Converts CLI arguments into the DKG crate configuration.
+    fn try_from(args: DkgArgs) -> Result<Self> {
+        validate_p2p_args(&args.p2p)?;
+
+        let tracing_config = build_console_tracing_config(args.log.level.clone(), &args.log.color);
         let p2p_config = {
             let mut relays = Vec::new();
 
-            for relay in &self.p2p.relays {
+            for relay in &args.p2p.relays {
                 let multiaddr = parse_relay_addr(relay)?;
 
                 if multiaddr.iter().any(|protocol| protocol == Protocol::Http) {
@@ -138,37 +140,37 @@ impl DkgArgs {
 
             pluto_p2p::config::P2PConfig {
                 relays,
-                external_ip: self.p2p.external_ip,
-                external_host: self.p2p.external_host,
-                tcp_addrs: self.p2p.tcp_addrs,
-                udp_addrs: self.p2p.udp_addrs,
-                disable_reuse_port: self.p2p.disable_reuseport,
+                external_ip: args.p2p.external_ip,
+                external_host: args.p2p.external_host,
+                tcp_addrs: args.p2p.tcp_addrs,
+                udp_addrs: args.p2p.udp_addrs,
+                disable_reuse_port: args.p2p.disable_reuseport,
             }
         };
 
-        Ok(pluto_dkg::dkg::Config::builder()
-            .def_file(self.definition_file)
-            .no_verify(self.no_verify)
-            .data_dir(self.data_dir)
+        Ok(Self::builder()
+            .def_file(args.definition_file)
+            .no_verify(args.no_verify)
+            .data_dir(args.data_dir)
             .p2p(p2p_config)
             .log(tracing_config)
             .keymanager(
                 pluto_dkg::dkg::KeymanagerConfig::builder()
-                    .address(self.keymanager_address)
-                    .auth_token(self.keymanager_auth_token)
+                    .address(args.keymanager_address)
+                    .auth_token(args.keymanager_auth_token)
                     .build(),
             )
             .publish(
                 pluto_dkg::dkg::PublishConfig::builder()
-                    .address(self.publish_address)
-                    .timeout(self.publish_timeout.into())
-                    .enabled(self.publish)
+                    .address(args.publish_address)
+                    .timeout(args.publish_timeout.into())
+                    .enabled(args.publish)
                     .build(),
             )
-            .shutdown_delay(self.shutdown_delay.into())
-            .timeout(self.timeout.into())
-            .execution_engine_addr(self.execution_client_rpc_endpoint)
-            .zipped(self.zipped)
+            .shutdown_delay(args.shutdown_delay.into())
+            .timeout(args.timeout.into())
+            .execution_engine_addr(args.execution_client_rpc_endpoint)
+            .zipped(args.zipped)
             .test_config(pluto_dkg::dkg::TestConfig::builder().build())
             .build())
     }
@@ -419,7 +421,7 @@ mod tests {
         };
         let args = *args;
 
-        let config = args.into_config().expect("config should map");
+        let config: pluto_dkg::dkg::Config = args.try_into().expect("config should map");
 
         assert_eq!(config.data_dir, PathBuf::from("/tmp/charon"));
         assert_eq!(config.def_file, "/tmp/definition.json");
@@ -464,7 +466,7 @@ mod tests {
         let Commands::Dkg(args) = cli.command else {
             panic!("expected dkg command");
         };
-        let config = (*args).into_config().expect("config should map");
+        let config: pluto_dkg::dkg::Config = (*args).try_into().expect("config should map");
 
         let events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let ct = CancellationToken::new();

@@ -42,10 +42,6 @@ async fn run() -> std::result::Result<(), CliError> {
         }
     });
 
-    dispatch(cli, ct).await
-}
-
-async fn dispatch(cli: Cli, ct: CancellationToken) -> std::result::Result<(), CliError> {
     match cli.command {
         Commands::Create(args) => match args.command {
             CreateCommands::Dkg(args) => commands::create_dkg::run(*args).await,
@@ -58,7 +54,7 @@ async fn dispatch(cli: Cli, ct: CancellationToken) -> std::result::Result<(), Cl
         Commands::Enr(args) => commands::enr::run(args),
         Commands::Version(args) => commands::version::run(args),
         Commands::Dkg(args) => {
-            let config = (*args).into_config()?;
+            let config: pluto_dkg::dkg::Config = (*args).try_into()?;
             pluto_tracing::init(&config.log).expect("Failed to initialize tracing");
             commands::dkg::run(config, ct.clone()).await
         }
