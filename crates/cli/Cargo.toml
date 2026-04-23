@@ -20,6 +20,7 @@ tokio.workspace = true
 pluto-app.workspace = true
 pluto-eth1wrap.workspace = true
 pluto-cluster.workspace = true
+pluto-dkg.workspace = true
 pluto-crypto.workspace = true
 pluto-relay-server.workspace = true
 pluto-tracing.workspace = true
