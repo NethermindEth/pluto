@@ -5506,6 +5506,7 @@ dependencies = [
  "pluto-cluster",
  "pluto-core",
  "pluto-crypto",
+ "pluto-dkg",
  "pluto-eth1wrap",
  "pluto-eth2api",
  "pluto-eth2util",
@@ -5620,6 +5621,7 @@ name = "pluto-dkg"
 version = "1.7.1"
 dependencies = [
  "anyhow",
+ "bon",
  "clap",
  "either",
  "futures",
@@ -5658,6 +5660,7 @@ version = "1.7.1"
 dependencies = [
  "alloy",
  "thiserror 2.0.18",
+ "tokio",
  "url",
 ]
 
