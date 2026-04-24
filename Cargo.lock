@@ -5496,6 +5496,7 @@ name = "pluto-cli"
 version = "1.7.1"
 dependencies = [
  "backon",
+ "bytes",
  "chrono",
  "clap",
  "futures",

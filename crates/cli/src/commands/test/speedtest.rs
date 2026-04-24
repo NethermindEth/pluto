@@ -182,18 +182,19 @@ impl SpeedtestServer {
             .checked_add(SPEED_TEST_DURATION)
             .expect("deadline does not overflow");
 
+        let chunk = bytes::Bytes::from(vec![0u8; UPLOAD_CHUNK_BYTES]);
         let mut set = tokio::task::JoinSet::new();
         for _ in 0..speed_test_concurrency() {
             let client = client.clone();
             let url = upload_url.clone();
+            let chunk = chunk.clone();
             set.spawn(async move {
                 let mut bytes: usize = 0;
                 while Instant::now() < deadline {
-                    let chunk = vec![0u8; UPLOAD_CHUNK_BYTES];
                     let Ok(resp) = client
                         .post(&url)
                         .header("Content-Type", "application/octet-stream")
-                        .body(chunk)
+                        .body(chunk.clone())
                         .send()
                         .await
                     else {
