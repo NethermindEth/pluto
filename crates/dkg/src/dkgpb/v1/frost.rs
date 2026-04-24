@@ -14,12 +14,32 @@ pub struct FrostMsgKey {
     #[prost(uint32, tag = "3")]
     pub target_id: u32,
 }
+impl ::prost::Name for FrostMsgKey {
+    const NAME: &'static str = "FrostMsgKey";
+    const PACKAGE: &'static str = "frost";
+    fn full_name() -> ::prost::alloc::string::String {
+        "frost.FrostMsgKey".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/frost.FrostMsgKey".into()
+    }
+}
 /// Reliable-broadcast
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FrostRound1Casts {
     /// One per validator
     #[prost(message, repeated, tag = "1")]
     pub casts: ::prost::alloc::vec::Vec<FrostRound1Cast>,
+}
+impl ::prost::Name for FrostRound1Casts {
+    const NAME: &'static str = "FrostRound1Casts";
+    const PACKAGE: &'static str = "frost";
+    fn full_name() -> ::prost::alloc::string::String {
+        "frost.FrostRound1Casts".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/frost.FrostRound1Casts".into()
+    }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FrostRound1Cast {
@@ -32,12 +52,32 @@ pub struct FrostRound1Cast {
     #[prost(bytes = "bytes", repeated, tag = "4")]
     pub commitments: ::prost::alloc::vec::Vec<::prost::bytes::Bytes>,
 }
+impl ::prost::Name for FrostRound1Cast {
+    const NAME: &'static str = "FrostRound1Cast";
+    const PACKAGE: &'static str = "frost";
+    fn full_name() -> ::prost::alloc::string::String {
+        "frost.FrostRound1Cast".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/frost.FrostRound1Cast".into()
+    }
+}
 /// Direct peer-to-peer
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FrostRound1P2p {
     /// One per validator
     #[prost(message, repeated, tag = "1")]
     pub shares: ::prost::alloc::vec::Vec<FrostRound1ShamirShare>,
+}
+impl ::prost::Name for FrostRound1P2p {
+    const NAME: &'static str = "FrostRound1P2P";
+    const PACKAGE: &'static str = "frost";
+    fn full_name() -> ::prost::alloc::string::String {
+        "frost.FrostRound1P2P".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/frost.FrostRound1P2P".into()
+    }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FrostRound1ShamirShare {
@@ -48,12 +88,32 @@ pub struct FrostRound1ShamirShare {
     #[prost(bytes = "bytes", tag = "3")]
     pub value: ::prost::bytes::Bytes,
 }
+impl ::prost::Name for FrostRound1ShamirShare {
+    const NAME: &'static str = "FrostRound1ShamirShare";
+    const PACKAGE: &'static str = "frost";
+    fn full_name() -> ::prost::alloc::string::String {
+        "frost.FrostRound1ShamirShare".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/frost.FrostRound1ShamirShare".into()
+    }
+}
 /// Reliable-broadcast
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FrostRound2Casts {
     /// One per validator
     #[prost(message, repeated, tag = "1")]
     pub casts: ::prost::alloc::vec::Vec<FrostRound2Cast>,
+}
+impl ::prost::Name for FrostRound2Casts {
+    const NAME: &'static str = "FrostRound2Casts";
+    const PACKAGE: &'static str = "frost";
+    fn full_name() -> ::prost::alloc::string::String {
+        "frost.FrostRound2Casts".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/frost.FrostRound2Casts".into()
+    }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FrostRound2Cast {
@@ -63,4 +123,14 @@ pub struct FrostRound2Cast {
     pub verification_key: ::prost::bytes::Bytes,
     #[prost(bytes = "bytes", tag = "3")]
     pub vk_share: ::prost::bytes::Bytes,
+}
+impl ::prost::Name for FrostRound2Cast {
+    const NAME: &'static str = "FrostRound2Cast";
+    const PACKAGE: &'static str = "frost";
+    fn full_name() -> ::prost::alloc::string::String {
+        "frost.FrostRound2Cast".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/frost.FrostRound2Cast".into()
+    }
 }

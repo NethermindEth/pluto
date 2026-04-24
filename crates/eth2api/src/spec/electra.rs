@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tree_hash_derive::TreeHash;
 
-use crate::spec::ssz_types::{BitList, BitVector};
+use pluto_ssz::{BitList, BitVector};
 
 use crate::spec::{altair, bellatrix, capella, deneb, phase0};
 
@@ -26,12 +26,12 @@ pub const MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD: usize = 2;
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct IndexedAttestation {
     /// Indices of attesting validators.
-    #[serde(with = "crate::spec::serde_utils::ssz_list_u64_string_serde")]
+    #[serde(with = "pluto_ssz::serde_utils::ssz_list_u64_string_serde")]
     pub attesting_indices: phase0::SszList<phase0::ValidatorIndex, 131_072>,
     /// Attestation data.
     pub data: phase0::AttestationData,
     /// Aggregate signature.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: phase0::BLSSignature,
 }
 
@@ -57,7 +57,7 @@ pub struct Attestation {
     /// Attestation data.
     pub data: phase0::AttestationData,
     /// Aggregate signature.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: phase0::BLSSignature,
     /// Committee bits.
     pub committee_bits: BitVector<64>,
@@ -70,16 +70,16 @@ pub struct Attestation {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct DepositRequest {
     /// Validator public key.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub pubkey: phase0::BLSPubKey,
     /// Withdrawal credentials.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub withdrawal_credentials: phase0::WithdrawalCredentials,
     /// Amount in gwei.
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub amount: phase0::Gwei,
     /// Signature.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: phase0::BLSSignature,
     /// Request index.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -96,7 +96,7 @@ pub struct WithdrawalRequest {
     #[serde(with = "bellatrix::execution_address_serde")]
     pub source_address: bellatrix::ExecutionAddress,
     /// Validator public key.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub validator_pubkey: phase0::BLSPubKey,
     /// Amount in gwei.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -113,10 +113,10 @@ pub struct ConsolidationRequest {
     #[serde(with = "bellatrix::execution_address_serde")]
     pub source_address: bellatrix::ExecutionAddress,
     /// Source validator public key.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub source_pubkey: phase0::BLSPubKey,
     /// Target validator public key.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub target_pubkey: phase0::BLSPubKey,
 }
 
@@ -141,12 +141,12 @@ pub struct ExecutionRequests {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct BeaconBlockBody {
     /// RANDAO reveal.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub randao_reveal: phase0::BLSSignature,
     /// ETH1 data vote.
     pub eth1_data: phase0::ETH1Data,
     /// Graffiti bytes.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub graffiti: phase0::Root,
     /// Proposer slashings included in the block.
     pub proposer_slashings:
@@ -189,10 +189,10 @@ pub struct BeaconBlock {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub proposer_index: phase0::ValidatorIndex,
     /// Parent root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub parent_root: phase0::Root,
     /// State root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub state_root: phase0::Root,
     /// Block body.
     pub body: BeaconBlockBody,
@@ -205,12 +205,12 @@ pub struct BeaconBlock {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct BlindedBeaconBlockBody {
     /// RANDAO reveal.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub randao_reveal: phase0::BLSSignature,
     /// ETH1 data vote.
     pub eth1_data: phase0::ETH1Data,
     /// Graffiti bytes.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub graffiti: phase0::Root,
     /// Proposer slashings included in the block.
     pub proposer_slashings:
@@ -253,10 +253,10 @@ pub struct BlindedBeaconBlock {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub proposer_index: phase0::ValidatorIndex,
     /// Parent root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub parent_root: phase0::Root,
     /// State root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub state_root: phase0::Root,
     /// Blinded block body.
     pub body: BlindedBeaconBlockBody,
@@ -271,7 +271,7 @@ pub struct SignedBeaconBlock {
     /// Unsigned block message.
     pub message: BeaconBlock,
     /// Signature of the message.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: phase0::BLSSignature,
 }
 
@@ -284,7 +284,7 @@ pub struct SignedBlindedBeaconBlock {
     /// Unsigned blinded block message.
     pub message: BlindedBeaconBlock,
     /// Signature of the message.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: phase0::BLSSignature,
 }
 
@@ -313,7 +313,7 @@ pub struct AggregateAndProof {
     /// Aggregate attestation.
     pub aggregate: Attestation,
     /// Selection proof.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub selection_proof: phase0::BLSSignature,
 }
 
@@ -326,7 +326,7 @@ pub struct SignedAggregateAndProof {
     /// Unsigned message.
     pub message: AggregateAndProof,
     /// Signature over the message.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: phase0::BLSSignature,
 }
 

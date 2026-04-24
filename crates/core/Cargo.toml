@@ -7,21 +7,28 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+async-trait.workspace = true
 cancellation.workspace = true
 chrono.workspace = true
 crossbeam.workspace = true
+futures.workspace = true
+dyn-clone.workspace = true
+dyn-eq.workspace = true
 hex.workspace = true
+libp2p.workspace = true
+vise.workspace = true
+pluto-eth2api.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
 base64.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-libp2p.workspace = true
-regex.workspace = true
-prost.workspace = true
-prost-types.workspace = true
-pluto-eth2api.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
 pluto-eth2util.workspace = true
 tree_hash.workspace = true
 
@@ -34,6 +41,12 @@ prost-types.workspace = true
 hex.workspace = true
 chrono.workspace = true
 test-case.workspace = true
+pluto-eth2util.workspace = true
+pluto-p2p.workspace = true
+pluto-testutil.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+wiremock.workspace = true
+pluto-ssz.workspace = true
 
 [build-dependencies]
 pluto-build-proto.workspace = true

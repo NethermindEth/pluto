@@ -16,7 +16,10 @@ use crate::{
     metrics::{PeerWithPeerClusterLabels, RELAY_METRICS},
     web::{enr_server, monitoring_server},
 };
-use pluto_p2p::p2p::{Node, NodeType};
+use pluto_p2p::{
+    p2p::{Node, NodeType},
+    p2p_context::P2PContext,
+};
 
 /// Runs a relay P2P node.
 #[instrument(skip(config, key, ct))]
@@ -26,14 +29,13 @@ pub async fn run_relay_p2p_node(
     ct: CancellationToken,
 ) -> Result<Node<relay::Behaviour>> {
     let relay_config = create_relay_config(config);
-    // Relay servers don't track cluster peers - they serve all connections
-    let known_peers: Vec<libp2p::PeerId> = vec![];
     let mut node = Node::new_server(
         config.p2p_config.clone(),
         key.clone(),
         NodeType::TCP,
         false,
-        known_peers,
+        // Relay servers don't track cluster peers - they serve all connections.
+        P2PContext::default(),
         |builder, keypair| {
             builder.with_inner(relay::Behaviour::new(
                 keypair.public().to_peer_id(),

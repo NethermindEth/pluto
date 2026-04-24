@@ -4,7 +4,11 @@
 //! This crate provides the CLI tools and commands for managing and operating
 //! Pluto validator nodes.
 
+use crate::error::CliError;
 use clap::{CommandFactory, FromArgMatches};
+use cli::{AlphaCommands, Cli, Commands, CreateCommands, TestCommands};
+use std::process::ExitCode;
+use tokio_util::sync::CancellationToken;
 
 mod ascii;
 mod cli;
@@ -12,19 +16,21 @@ mod commands;
 mod duration;
 mod error;
 
-use cli::{AlphaCommands, Cli, Commands, CreateCommands, TestCommands};
-
-use crate::error::ExitResult;
-use tokio_util::sync::CancellationToken;
-
 #[tokio::main]
-async fn main() -> ExitResult {
+async fn main() -> ExitCode {
+    match run().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("Error: {}", err);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run() -> std::result::Result<(), CliError> {
     let cmd = commands::test::update_test_cases_help(Cli::command());
     let matches = cmd.get_matches();
-    let cli = match Cli::from_arg_matches(&matches) {
-        Ok(cli) => cli,
-        Err(e) => return ExitResult(Err(error::CliError::Other(e.to_string()))),
-    };
+    let cli = Cli::from_arg_matches(&matches)?;
 
     // Top level cancellation token for graceful shutdown on Ctrl+C
     let ct = CancellationToken::new();
@@ -36,13 +42,27 @@ async fn main() -> ExitResult {
         }
     });
 
-    let result = match cli.command {
+    match cli.command {
         Commands::Create(args) => match args.command {
+            CreateCommands::Dkg(args) => commands::create_dkg::run(*args).await,
             CreateCommands::Enr(args) => commands::create_enr::run(args),
+            CreateCommands::Cluster(args) => {
+                let mut stdout = std::io::stdout();
+                commands::create_cluster::run(&mut stdout, *args).await
+            }
         },
         Commands::Enr(args) => commands::enr::run(args),
         Commands::Version(args) => commands::version::run(args),
-        Commands::Relay(args) => commands::relay::run(*args, ct.child_token()).await,
+        Commands::Dkg(args) => {
+            let config: pluto_dkg::dkg::Config = (*args).try_into()?;
+            pluto_tracing::init(&config.log).expect("Failed to initialize tracing");
+            commands::dkg::run(config, ct.clone()).await
+        }
+        Commands::Relay(args) => {
+            let config: pluto_relay_server::config::Config = (*args).clone().try_into()?;
+            pluto_tracing::init(&config.log_config).expect("Failed to initialize tracing");
+            commands::relay::run(config, ct).await
+        }
         Commands::Alpha(args) => match args.command {
             AlphaCommands::Test(args) => {
                 let mut stdout = std::io::stdout();
@@ -50,15 +70,19 @@ async fn main() -> ExitResult {
                     TestCommands::Peers(args) => commands::test::peers::run(args, &mut stdout)
                         .await
                         .map(|_| ()),
-                    TestCommands::Beacon(args) => commands::test::beacon::run(args, &mut stdout)
-                        .await
-                        .map(|_| ()),
-                    TestCommands::Validator(args) => {
-                        commands::test::validator::run(args, &mut stdout)
+                    TestCommands::Beacon(args) => {
+                        pluto_tracing::init(&pluto_tracing::TracingConfig::default())
+                            .expect("Failed to initialize tracing");
+                        commands::test::beacon::run(args, &mut stdout, ct)
                             .await
                             .map(|_| ())
                     }
-                    TestCommands::Mev(args) => commands::test::mev::run(args, &mut stdout)
+                    TestCommands::Validator(args) => {
+                        commands::test::validator::run(args, &mut stdout, ct.clone())
+                            .await
+                            .map(|_| ())
+                    }
+                    TestCommands::Mev(args) => commands::test::mev::run(args, &mut stdout, ct)
                         .await
                         .map(|_| ()),
                     TestCommands::Infra(args) => commands::test::infra::run(args, &mut stdout)
@@ -68,7 +92,5 @@ async fn main() -> ExitResult {
                 }
             }
         },
-    };
-
-    ExitResult(result)
+    }
 }

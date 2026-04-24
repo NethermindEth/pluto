@@ -19,3 +19,17 @@ pub mod corepb;
 
 /// Semver version parsing utilities.
 pub mod version;
+
+/// Duty deadline tracking and notification.
+pub mod deadline;
+
+/// parsigdb
+pub mod parsigdb;
+
+mod parsigex_codec;
+
+pub use parsigex_codec::ParSigExCodecError;
+
+/// Test utilities.
+#[cfg(test)]
+pub mod testutils;

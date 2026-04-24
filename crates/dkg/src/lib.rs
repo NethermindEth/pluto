@@ -7,3 +7,18 @@
 
 /// Protobuf definitions.
 pub mod dkgpb;
+
+/// Reliable broadcast protocol for DKG messages.
+pub mod bcast;
+
+/// General DKG IO operations.
+pub mod disk;
+
+/// Main DKG protocol implementation.
+pub mod dkg;
+
+/// Node signature exchange over the lock hash.
+pub mod nodesigs;
+
+/// Shares distributed to each node in the cluster.
+pub mod share;

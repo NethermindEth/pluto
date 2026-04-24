@@ -4,6 +4,7 @@ use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, tblsconv};
 use pluto_eth1wrap::EthClient;
 use pluto_eth2api::spec::phase0::{VERSION_LEN, Version};
 use pluto_eth2util::registration;
+use pluto_ssz::{Hasher, serde_utils::Hex0x};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
@@ -12,9 +13,7 @@ use crate::{
         DistValidator, DistValidatorV1x0or1, DistValidatorV1x2to5, DistValidatorV1x6,
         DistValidatorV1x7, DistValidatorV1x8orLater,
     },
-    helpers::EthHex,
     ssz::{SSZError, hash_lock},
-    ssz_hasher::Hasher,
     version::versions::*,
 };
 use pluto_eth2util::enr::{Record, RecordError};
@@ -146,7 +145,7 @@ type Result<T> = std::result::Result<T, LockError>;
 
 /// Lock extends the cluster config Definition with bls threshold public keys
 /// and checksums.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Lock {
     /// Definition is embedded and extended by Lock.
     pub definition: Definition,
@@ -484,14 +483,14 @@ pub struct LockV1x2to5 {
     pub distributed_validators: Vec<DistValidatorV1x2to5>,
 
     /// LockHash uniquely identifies a cluster lock.
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub lock_hash: Vec<u8>,
 
     /// BLS aggregate signature of the lock hash
     /// signed by all the private key shares of all the distributed
     /// validators. It acts as an attestation by all the distributed
     /// validators of the charon cluster they are part of.
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub signature_aggregate: Vec<u8>,
 }
 
@@ -539,14 +538,14 @@ pub struct LockV1x6 {
     pub distributed_validators: Vec<DistValidatorV1x6>,
 
     /// Lock hash uniquely identifies a cluster lock.
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub lock_hash: Vec<u8>,
 
     /// BLS aggregate signature of the lock hash
     /// signed by all the private key shares of all the distributed
     /// validators. It acts as an attestation by all the distributed
     /// validators of the charon cluster they are part of.
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub signature_aggregate: Vec<u8>,
 }
 
@@ -594,19 +593,19 @@ pub struct LockV1x7 {
     pub distributed_validators: Vec<DistValidatorV1x7>,
 
     /// Lock hash uniquely identifies a cluster lock.
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub lock_hash: Vec<u8>,
 
     /// BLS aggregate signature of the lock hash
     /// signed by all the private key shares of all the distributed
     /// validators. It acts as an attestation by all the distributed
     /// validators of the charon cluster they are part of.
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub signature_aggregate: Vec<u8>,
 
     /// Signatures of the lock hash for each operator
     /// defined in the Definition.
-    #[serde_as(as = "Vec<EthHex>")]
+    #[serde_as(as = "Vec<Hex0x>")]
     pub node_signatures: Vec<Vec<u8>>,
 }
 
@@ -655,19 +654,19 @@ pub struct LockV1x8orLater {
     pub distributed_validators: Vec<DistValidatorV1x8orLater>,
 
     /// Lock hash uniquely identifies a cluster lock.
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub lock_hash: Vec<u8>,
 
     /// BLS aggregate signature of the lock hash
     /// signed by all the private key shares of all the distributed
     /// validators. It acts as an attestation by all the distributed
     /// validators of the charon cluster they are part of.
-    #[serde_as(as = "EthHex")]
+    #[serde_as(as = "Hex0x")]
     pub signature_aggregate: Vec<u8>,
 
     /// Signatures of the lock hash for each operator
     /// defined in the Definition.
-    #[serde_as(as = "Vec<EthHex>")]
+    #[serde_as(as = "Vec<Hex0x>")]
     pub node_signatures: Vec<Vec<u8>>,
 }
 
@@ -747,7 +746,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lock_v1_10_0() {
+    fn lock_v1_10_0() {
         let lock = serde_json::from_str::<Lock>(include_str!("testdata/cluster_lock_v1_10_0.json"))
             .unwrap();
 
@@ -926,7 +925,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_lock_v1_10_0() {
+    fn cluster_lock_v1_10_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_10_0.json");
         let _ = serde_json::from_str::<LockV1x8orLater>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(include_str!("testdata/cluster_lock_v1_10_0.json"))
@@ -936,7 +935,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_lock_v1_9_0() {
+    fn cluster_lock_v1_9_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_9_0.json");
         let _ = serde_json::from_str::<LockV1x8orLater>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(json_str).unwrap();
@@ -944,7 +943,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_lock_v1_8_0() {
+    fn cluster_lock_v1_8_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_8_0.json");
         let _ = serde_json::from_str::<LockV1x8orLater>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(json_str).unwrap();
@@ -952,7 +951,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_lock_v1_7_0() {
+    fn cluster_lock_v1_7_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_7_0.json");
         let _ = serde_json::from_str::<LockV1x7>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(json_str).unwrap();
@@ -960,7 +959,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_lock_v1_6_0() {
+    fn cluster_lock_v1_6_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_6_0.json");
         let _ = serde_json::from_str::<LockV1x6>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(json_str).unwrap();
@@ -968,7 +967,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_lock_v1_5_0() {
+    fn cluster_lock_v1_5_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_5_0.json");
         let _ = serde_json::from_str::<LockV1x2to5>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(json_str).unwrap();
@@ -976,7 +975,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_lock_v1_4_0() {
+    fn cluster_lock_v1_4_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_4_0.json");
         let _ = serde_json::from_str::<LockV1x2to5>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(json_str).unwrap();
@@ -984,7 +983,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_lock_v1_3_0() {
+    fn cluster_lock_v1_3_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_3_0.json");
         let _ = serde_json::from_str::<LockV1x2to5>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(json_str).unwrap();
@@ -992,7 +991,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_lock_v1_2_0() {
+    fn cluster_lock_v1_2_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_2_0.json");
         let _ = serde_json::from_str::<LockV1x2to5>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(json_str).unwrap();
@@ -1000,7 +999,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_lock_v1_1_0() {
+    fn cluster_lock_v1_1_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_1_0.json");
         let _ = serde_json::from_str::<LockV1x0or1>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(json_str).unwrap();
@@ -1008,7 +1007,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cluster_lock_v1_0_0() {
+    fn cluster_lock_v1_0_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_0_0.json");
         let _ = serde_json::from_str::<LockV1x0or1>(json_str).unwrap();
         let lock = serde_json::from_str::<Lock>(json_str).unwrap();

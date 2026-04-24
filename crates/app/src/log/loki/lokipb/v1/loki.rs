@@ -9,6 +9,16 @@ pub struct PushRequest {
     #[prost(message, repeated, tag = "1")]
     pub streams: ::prost::alloc::vec::Vec<Stream>,
 }
+impl ::prost::Name for PushRequest {
+    const NAME: &'static str = "PushRequest";
+    const PACKAGE: &'static str = "loki";
+    fn full_name() -> ::prost::alloc::string::String {
+        "loki.PushRequest".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/loki.PushRequest".into()
+    }
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Stream {
     #[prost(string, tag = "1")]
@@ -18,10 +28,30 @@ pub struct Stream {
     #[prost(uint64, tag = "3")]
     pub hash: u64,
 }
+impl ::prost::Name for Stream {
+    const NAME: &'static str = "Stream";
+    const PACKAGE: &'static str = "loki";
+    fn full_name() -> ::prost::alloc::string::String {
+        "loki.Stream".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/loki.Stream".into()
+    }
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Entry {
     #[prost(message, optional, tag = "1")]
     pub timestamp: ::core::option::Option<::prost_types::Timestamp>,
     #[prost(string, tag = "2")]
     pub line: ::prost::alloc::string::String,
+}
+impl ::prost::Name for Entry {
+    const NAME: &'static str = "Entry";
+    const PACKAGE: &'static str = "loki";
+    fn full_name() -> ::prost::alloc::string::String {
+        "loki.Entry".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/loki.Entry".into()
+    }
 }

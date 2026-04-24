@@ -1060,7 +1060,7 @@ where
         }
 
         if (qrc.len() as i64) >= d.quorum() && has_highest_prepared {
-            qrc.extend(prepares.into_iter());
+            qrc.extend(prepares);
             return Some(qrc);
         }
     }

@@ -62,8 +62,8 @@ pub struct PlutoBehaviour<B: NetworkBehaviour> {
 
 impl<B: NetworkBehaviour> PlutoBehaviour<B> {
     /// Returns a new builder for configuring a PlutoBehaviour.
-    pub fn builder() -> PlutoBehaviourBuilder<B> {
-        PlutoBehaviourBuilder::default()
+    pub fn builder(p2p_context: P2PContext) -> PlutoBehaviourBuilder<B> {
+        PlutoBehaviourBuilder::new(p2p_context)
     }
 }
 
@@ -96,24 +96,19 @@ pub struct PlutoBehaviourBuilder<B> {
     inner: Option<B>,
 }
 
-impl<B> Default for PlutoBehaviourBuilder<B> {
-    fn default() -> Self {
+impl<B: NetworkBehaviour> PlutoBehaviourBuilder<B> {
+    /// Creates a new builder with default configuration and the provided shared
+    /// P2P context.
+    pub fn new(p2p_context: P2PContext) -> Self {
         Self {
             gater: None,
             identify_protocol: DEFAULT_IDENTIFY_PROTOCOL.clone(),
             user_agent: DEFAULT_USER_AGENT.clone(),
             autonat_config: autonat::Config::default(),
-            p2p_context: P2PContext::default(),
+            p2p_context,
             quic_enabled: false,
             inner: None,
         }
-    }
-}
-
-impl<B: NetworkBehaviour> PlutoBehaviourBuilder<B> {
-    /// Creates a new builder with default configuration.
-    pub fn new() -> Self {
-        Self::default()
     }
 
     /// Returns the cloned P2P context.
@@ -164,14 +159,6 @@ impl<B: NetworkBehaviour> PlutoBehaviourBuilder<B> {
     /// - A custom composed behaviour with multiple protocols
     pub fn with_inner(mut self, inner: B) -> Self {
         self.inner = Some(inner);
-        self
-    }
-
-    /// Sets the global context.
-    ///
-    /// The global context is used to store the peer store.
-    pub fn with_p2p_context(mut self, p2p_context: P2PContext) -> Self {
-        self.p2p_context = p2p_context;
         self
     }
 

@@ -23,8 +23,8 @@
 //!     secret_key,
 //!     NodeType::QUIC,
 //!     false, // filter_private_addrs
-//!     vec![], // known_peers
-//!     |builder, _p2p_ctx, _keypair, relay_client| {
+//!     P2PContext::default(),
+//!     |builder, _keypair, relay_client| {
 //!         builder
 //!             .with_user_agent("my-app/1.0.0")
 //!             .with_inner(relay_client)
@@ -42,8 +42,8 @@
 //!     secret_key,
 //!     NodeType::QUIC,
 //!     false, // filter_private_addrs
-//!     vec![], // known_peers
-//!     |builder, _p2p_ctx, keypair, relay_client| {
+//!     P2PContext::default(),
+//!     |builder, keypair, relay_client| {
 //!         builder
 //!             .with_user_agent("my-app/1.0.0")
 //!             .with_inner(MyBehaviour {
@@ -67,8 +67,8 @@
 //!     secret_key,
 //!     NodeType::TCP,
 //!     false, // filter_private_addrs
-//!     vec![], // known_peers
-//!     |builder, _p2p_ctx, keypair| {
+//!     P2PContext::default(),
+//!     |builder, keypair| {
 //!         builder.with_inner(
 //!             relay::Behaviour::new(keypair.public().to_peer_id(), relay_config)
 //!         )
@@ -110,6 +110,14 @@ use crate::{
     utils,
 };
 
+const YAMUX_MAX_NUM_STREAMS: usize = 2_048;
+
+fn yamux_config() -> yamux::Config {
+    let mut config = yamux::Config::default();
+    config.set_max_num_streams(YAMUX_MAX_NUM_STREAMS);
+    config
+}
+
 /// P2P error.
 #[derive(Debug, thiserror::Error)]
 pub enum P2PError {
@@ -140,6 +148,15 @@ pub enum P2PError {
     /// Failed to parse IP address.
     #[error("Failed to parse IP address: {0}")]
     FailedToParseIpAddress(#[from] std::net::AddrParseError),
+
+    /// The provided P2P context is already bound to a different local peer ID.
+    #[error("P2P context local peer ID mismatch: expected {expected}, got {actual}")]
+    LocalPeerIdMismatch {
+        /// Local peer ID derived from the node keypair.
+        expected: Box<PeerId>,
+        /// Local peer ID already bound in the shared P2P context.
+        actual: Box<PeerId>,
+    },
 }
 
 impl P2PError {
@@ -175,10 +192,10 @@ pub struct Node<B: NetworkBehaviour> {
 impl<B: NetworkBehaviour> Node<B> {
     /// Creates a new client node with relay client support.
     ///
-    /// The `behaviour_fn` receives a default `PlutoBehaviourBuilder`, the P2P
-    /// context, keypair, and relay client. It should configure the builder
-    /// (e.g., set user agent, inner behaviour) and return it. The builder
-    /// will then be finalized internally.
+    /// The `behaviour_fn` receives a `PlutoBehaviourBuilder`, keypair, and
+    /// relay client. It should configure the builder (e.g., set user agent,
+    /// inner behaviour) and return it. The builder will then be finalized
+    /// internally.
     ///
     /// # Arguments
     ///
@@ -186,7 +203,7 @@ impl<B: NetworkBehaviour> Node<B> {
     /// * `key` - Secret key for node identity
     /// * `node_type` - Transport type (TCP or QUIC)
     /// * `filter_private_addrs` - Whether to filter private addresses
-    /// * `known_peers` - List of known cluster peer IDs for metrics tracking
+    /// * `p2p_context` - Shared P2P runtime context for this node
     /// * `behaviour_fn` - Closure that configures and returns the behaviour
     ///   builder
     ///
@@ -198,8 +215,8 @@ impl<B: NetworkBehaviour> Node<B> {
     ///     secret_key,
     ///     NodeType::QUIC,
     ///     false,
-    ///     vec![peer1, peer2], // known cluster peers
-    ///     |builder, _p2p_ctx, _keypair, relay_client| {
+    ///     P2PContext::new(vec![peer1, peer2]),
+    ///     |builder, _keypair, relay_client| {
     ///         builder
     ///             .with_user_agent("my-app/1.0.0")
     ///             .with_inner(MyBehaviour { relay_client, peerinfo: ... })
@@ -211,7 +228,7 @@ impl<B: NetworkBehaviour> Node<B> {
         key: k256::SecretKey,
         node_type: NodeType,
         filter_private_addrs: bool,
-        known_peers: impl IntoIterator<Item = PeerId>,
+        p2p_context: P2PContext,
         behaviour_fn: F,
     ) -> Result<Self>
     where
@@ -222,7 +239,7 @@ impl<B: NetworkBehaviour> Node<B> {
         ) -> PlutoBehaviourBuilder<B>,
     {
         let keypair = utils::keypair_from_secret_key(key)?;
-        let p2p_context = P2PContext::new(known_peers);
+        Self::bind_local_peer_id(&p2p_context, keypair.public().to_peer_id())?;
 
         let mut node = match node_type {
             NodeType::TCP => Self::build_tcp_client(keypair, p2p_context, behaviour_fn),
@@ -239,22 +256,22 @@ impl<B: NetworkBehaviour> Node<B> {
     /// Server nodes (like relay servers) don't include relay client support
     /// since they are expected to be publicly reachable.
     ///
-    /// The `behaviour_fn` receives a default `PlutoBehaviourBuilder`, the P2P
-    /// context, and keypair. It should configure the builder (e.g., set user
-    /// agent, inner behaviour) and return it.
+    /// The `behaviour_fn` receives a `PlutoBehaviourBuilder` and keypair. It
+    /// should configure the builder (e.g., set user agent, inner behaviour)
+    /// and return it.
     pub fn new_server<F>(
         cfg: P2PConfig,
         key: k256::SecretKey,
         node_type: NodeType,
         filter_private_addrs: bool,
-        known_peers: impl IntoIterator<Item = PeerId>,
+        p2p_context: P2PContext,
         behaviour_fn: F,
     ) -> Result<Self>
     where
         F: FnOnce(PlutoBehaviourBuilder<B>, &Keypair) -> PlutoBehaviourBuilder<B>,
     {
         let keypair = utils::keypair_from_secret_key(key)?;
-        let p2p_context = P2PContext::new(known_peers);
+        Self::bind_local_peer_id(&p2p_context, keypair.public().to_peer_id())?;
 
         let mut node = match node_type {
             NodeType::TCP => Self::build_tcp_server(keypair, p2p_context, behaviour_fn),
@@ -309,6 +326,22 @@ impl<B: NetworkBehaviour> Node<B> {
         Ok(())
     }
 
+    fn bind_local_peer_id(p2p_context: &P2PContext, local_peer_id: PeerId) -> Result<()> {
+        match p2p_context.local_peer_id() {
+            Some(existing_peer_id) if existing_peer_id != local_peer_id => {
+                Err(P2PError::LocalPeerIdMismatch {
+                    expected: Box::new(local_peer_id),
+                    actual: Box::new(existing_peer_id),
+                })
+            }
+            Some(_) => Ok(()),
+            None => {
+                p2p_context.set_local_peer_id(local_peer_id);
+                Ok(())
+            }
+        }
+    }
+
     fn build_quic_client<F>(
         keypair: Keypair,
         p2p_context: P2PContext,
@@ -323,20 +356,16 @@ impl<B: NetworkBehaviour> Node<B> {
     {
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
-            .with_tcp(
-                tcp::Config::default(),
-                noise::Config::new,
-                yamux::Config::default,
-            )
+            .with_tcp(tcp::Config::default(), noise::Config::new, yamux_config)
             .map_err(P2PError::failed_to_build_swarm)?
             .with_quic()
             .with_dns()
             .map_err(P2PError::failed_to_build_swarm)?
-            .with_relay_client(noise::Config::new, yamux::Config::default)
+            .with_relay_client(noise::Config::new, yamux_config)
             .map_err(P2PError::failed_to_build_swarm)?
             .with_behaviour(|key, relay_client| {
                 let builder =
-                    PlutoBehaviourBuilder::default().with_p2p_context(p2p_context.clone());
+                    PlutoBehaviourBuilder::new(p2p_context.clone()).with_quic_enabled(true);
                 behaviour_fn(builder, key, relay_client).build(key)
             })
             .map_err(P2PError::failed_to_build_swarm)?
@@ -364,19 +393,14 @@ impl<B: NetworkBehaviour> Node<B> {
     {
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
-            .with_tcp(
-                tcp::Config::default(),
-                noise::Config::new,
-                yamux::Config::default,
-            )
+            .with_tcp(tcp::Config::default(), noise::Config::new, yamux_config)
             .map_err(P2PError::failed_to_build_swarm)?
             .with_dns()
             .map_err(P2PError::failed_to_build_swarm)?
-            .with_relay_client(noise::Config::new, yamux::Config::default)
+            .with_relay_client(noise::Config::new, yamux_config)
             .map_err(P2PError::failed_to_build_swarm)?
             .with_behaviour(|key, relay_client| {
-                let builder =
-                    PlutoBehaviourBuilder::default().with_p2p_context(p2p_context.clone());
+                let builder = PlutoBehaviourBuilder::new(p2p_context.clone());
                 behaviour_fn(builder, key, relay_client).build(key)
             })
             .map_err(P2PError::failed_to_build_swarm)?
@@ -400,18 +424,13 @@ impl<B: NetworkBehaviour> Node<B> {
     {
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
-            .with_tcp(
-                tcp::Config::default(),
-                noise::Config::new,
-                yamux::Config::default,
-            )
+            .with_tcp(tcp::Config::default(), noise::Config::new, yamux_config)
             .map_err(P2PError::failed_to_build_swarm)?
             .with_quic()
             .with_dns()
             .map_err(P2PError::failed_to_build_swarm)?
             .with_behaviour(|key| {
-                let builder =
-                    PlutoBehaviourBuilder::default().with_p2p_context(p2p_context.clone());
+                let builder = PlutoBehaviourBuilder::new(p2p_context.clone());
                 behaviour_fn(builder, key).build(key)
             })
             .map_err(P2PError::failed_to_build_swarm)?
@@ -435,18 +454,13 @@ impl<B: NetworkBehaviour> Node<B> {
     {
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
-            .with_tcp(
-                tcp::Config::default(),
-                noise::Config::new,
-                yamux::Config::default,
-            )
+            .with_tcp(tcp::Config::default(), noise::Config::new, yamux_config)
             .map_err(P2PError::failed_to_build_swarm)?
             .with_quic()
             .with_dns()
             .map_err(P2PError::failed_to_build_swarm)?
             .with_behaviour(|key| {
-                let builder =
-                    PlutoBehaviourBuilder::default().with_p2p_context(p2p_context.clone());
+                let builder = PlutoBehaviourBuilder::new(p2p_context.clone());
                 behaviour_fn(builder, key).build(key)
             })
             .map_err(P2PError::failed_to_build_swarm)?

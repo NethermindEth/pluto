@@ -6,3 +6,8 @@
 
 /// Random utilities.
 pub mod random;
+
+pub use random::{
+    random_deneb_versioned_attestation, random_eth2_signature, random_eth2_signature_bytes,
+    random_root, random_root_bytes, random_slot, random_v_idx,
+};

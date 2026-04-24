@@ -3,9 +3,10 @@
 //! See: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md>
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use tree_hash::TreeHash;
 use tree_hash_derive::TreeHash;
 
-pub use crate::spec::ssz_types::{BitList, SszList, SszVector};
+pub use pluto_ssz::{BitList, SszList, SszVector};
 
 /// Fork version length in bytes.
 pub const VERSION_LEN: usize = 4;
@@ -79,10 +80,10 @@ pub type BLSSignature = [u8; BLS_SIGNATURE_LEN];
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct DepositMessage {
     /// BLS public key.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub pubkey: BLSPubKey,
     /// Withdrawal credentials.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub withdrawal_credentials: WithdrawalCredentials,
     /// Amount in Gwei.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -106,16 +107,16 @@ impl From<&DepositData> for DepositMessage {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct DepositData {
     /// BLS public key.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub pubkey: BLSPubKey,
     /// Withdrawal credentials.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub withdrawal_credentials: WithdrawalCredentials,
     /// Amount in Gwei.
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub amount: Gwei,
     /// BLS signature.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: BLSSignature,
 }
 
@@ -126,10 +127,10 @@ pub struct DepositData {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct ForkData {
     /// Current fork version.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub current_version: Version,
     /// Genesis validators root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub genesis_validators_root: Root,
 }
 
@@ -140,11 +141,18 @@ pub struct ForkData {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct SigningData {
     /// Object root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub object_root: Root,
     /// Signature domain.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub domain: Domain,
+}
+
+impl SignedVoluntaryExit {
+    /// Returns the SSZ message root of the unsigned voluntary exit.
+    pub fn message_root(&self) -> Root {
+        self.message.tree_hash_root().0
+    }
 }
 
 /// ETH1 voting data.
@@ -154,13 +162,13 @@ pub struct SigningData {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct ETH1Data {
     /// Deposit tree root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub deposit_root: Root,
     /// Deposit count at the voted ETH1 block.
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub deposit_count: u64,
     /// ETH1 block hash.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub block_hash: Hash32,
 }
 
@@ -177,13 +185,13 @@ pub struct BeaconBlockHeader {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub proposer_index: ValidatorIndex,
     /// Parent root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub parent_root: Root,
     /// State root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub state_root: Root,
     /// Body root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub body_root: Root,
 }
 
@@ -196,7 +204,7 @@ pub struct SignedBeaconBlockHeader {
     /// Unsigned beacon block header.
     pub message: BeaconBlockHeader,
     /// Signature over the header.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: BLSSignature,
 }
 
@@ -219,12 +227,12 @@ pub struct ProposerSlashing {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct IndexedAttestation {
     /// Indices of attesting validators.
-    #[serde(with = "crate::spec::serde_utils::ssz_list_u64_string_serde")]
+    #[serde(with = "pluto_ssz::serde_utils::ssz_list_u64_string_serde")]
     pub attesting_indices: SszList<ValidatorIndex, MAX_VALIDATORS_PER_COMMITTEE>,
     /// Attestation data.
     pub data: AttestationData,
     /// Aggregate signature.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: BLSSignature,
 }
 
@@ -257,12 +265,12 @@ pub struct Deposit {
 #[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
 pub struct BeaconBlockBody {
     /// RANDAO reveal.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub randao_reveal: BLSSignature,
     /// ETH1 data vote.
     pub eth1_data: ETH1Data,
     /// Graffiti bytes.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub graffiti: Root,
     /// Proposer slashings included in the block.
     pub proposer_slashings: SszList<ProposerSlashing, MAX_PROPOSER_SLASHINGS>,
@@ -289,10 +297,10 @@ pub struct BeaconBlock {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub proposer_index: ValidatorIndex,
     /// Parent root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub parent_root: Root,
     /// State root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub state_root: Root,
     /// Block body.
     pub body: BeaconBlockBody,
@@ -307,7 +315,7 @@ pub struct SignedBeaconBlock {
     /// Unsigned block message.
     pub message: BeaconBlock,
     /// Signature of the message.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: BLSSignature,
 }
 
@@ -321,7 +329,7 @@ pub struct Checkpoint {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub epoch: Epoch,
     /// Root of the checkpoint.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub root: Root,
 }
 
@@ -338,7 +346,7 @@ pub struct AttestationData {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     pub index: u64,
     /// Beacon block root.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub beacon_block_root: Root,
     /// Source checkpoint.
     pub source: Checkpoint,
@@ -357,7 +365,7 @@ pub struct Attestation {
     /// Attestation data.
     pub data: AttestationData,
     /// Aggregate signature.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: BLSSignature,
 }
 
@@ -373,7 +381,7 @@ pub struct AggregateAndProof {
     /// Aggregate attestation.
     pub aggregate: Attestation,
     /// Selection proof.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub selection_proof: BLSSignature,
 }
 
@@ -386,7 +394,7 @@ pub struct SignedAggregateAndProof {
     /// Unsigned message.
     pub message: AggregateAndProof,
     /// Signature of the message.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: BLSSignature,
 }
 
@@ -413,7 +421,7 @@ pub struct SignedVoluntaryExit {
     /// Unsigned voluntary exit message.
     pub message: VoluntaryExit,
     /// Signature of the message.
-    #[serde_as(as = "crate::spec::serde_utils::Hex0x")]
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: BLSSignature,
 }
 

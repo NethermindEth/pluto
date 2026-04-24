@@ -11,6 +11,8 @@
 //! - `share_idx_for_cluster` - Returns share index for cluster's ENR identity
 //!   key
 
+use std::path::Path;
+
 use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PrivateKey};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -41,7 +43,7 @@ pub static CONFIRM_INSECURE_KEYS: ConfirmInsecure = ConfirmInsecure;
 /// security.
 pub async fn store_keys_insecure(
     secrets: &[PrivateKey],
-    dir: impl AsRef<str>,
+    dir: impl AsRef<Path>,
     _confirm: &ConfirmInsecure,
 ) -> Result<()> {
     store_keys_internal(
@@ -57,25 +59,24 @@ pub async fn store_keys_insecure(
 /// with new random passwords stored in `dir/keystore-%d.txt`.
 ///
 /// Note: this doesn't ensure the folder `dir` exists.
-pub async fn store_keys(secrets: &[PrivateKey], dir: impl AsRef<str>) -> Result<()> {
+pub async fn store_keys(secrets: &[PrivateKey], dir: impl AsRef<Path>) -> Result<()> {
     store_keys_internal(secrets, dir.as_ref(), "keystore-", None).await
 }
 
 /// Internal implementation for storing keystore files concurrently.
 async fn store_keys_internal(
     secrets: &[PrivateKey],
-    dir: impl AsRef<str>,
-    filename_prefix: impl AsRef<str>,
+    dir: impl AsRef<Path>,
+    filename_prefix: &str,
     pbkdf2_c: Option<u32>,
 ) -> Result<()> {
     check_dir(&dir).await?;
 
     let mut set = tokio::task::JoinSet::new();
     let dir = dir.as_ref();
-    let prefix = filename_prefix.as_ref();
     for (i, secret) in secrets.iter().enumerate() {
         let secret = *secret;
-        let filename = format!("{dir}/{prefix}{i}.json");
+        let filename = dir.join(format!("{filename_prefix}{i}.json"));
         set.spawn(async move {
             let password = random_hex32();
             let store = encrypt(&secret, &password, pbkdf2_c, &mut rand::thread_rng())?;
@@ -155,25 +156,26 @@ pub fn decrypt(store: &Keystore, password: impl AsRef<str>) -> Result<PrivateKey
 }
 
 /// Loads a keystore password from the keystore's associated password file.
-pub(crate) async fn load_password(key_file: impl AsRef<str>) -> Result<String> {
+pub(crate) async fn load_password(key_file: impl AsRef<Path>) -> Result<String> {
+    let key_file = key_file.as_ref();
     if matches!(
-        tokio::fs::metadata(key_file.as_ref()).await,
+        tokio::fs::metadata(key_file).await,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound
     ) {
         return Err(KeystoreError::PasswordNotFound {
-            path: key_file.as_ref().to_string(),
+            path: key_file.to_path_buf(),
         });
     }
 
-    let password_file = key_file.as_ref().replacen(".json", ".txt", 1);
+    let password_file = key_file.with_extension("txt");
     let b = tokio::fs::read_to_string(&password_file).await?;
 
     Ok(b)
 }
 
 /// Stores a password to the keystore's associated password file.
-async fn store_password(key_file: impl AsRef<str>, password: impl AsRef<str>) -> Result<()> {
-    let password_file = key_file.as_ref().replacen(".json", ".txt", 1);
+async fn store_password(key_file: impl AsRef<Path>, password: impl AsRef<str>) -> Result<()> {
+    let password_file = key_file.as_ref().with_extension("txt");
     // Write password file with 0o400 permissions (read-only for owner).
     write_file(&password_file, password.as_ref().as_bytes(), 0o400).await
 }
@@ -186,12 +188,12 @@ fn random_hex32() -> String {
 }
 
 /// Checks if `dir` exists and is a directory.
-async fn check_dir(dir: impl AsRef<str>) -> Result<()> {
-    let dir_str = dir.as_ref();
-    let metadata = tokio::fs::metadata(dir_str).await.map_err(|e| {
+async fn check_dir(dir: impl AsRef<Path>) -> Result<()> {
+    let dir = dir.as_ref();
+    let metadata = tokio::fs::metadata(dir).await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             KeystoreError::DirNotExist {
-                path: dir_str.to_string(),
+                path: dir.to_path_buf(),
             }
         } else {
             KeystoreError::Io(e)
@@ -200,7 +202,7 @@ async fn check_dir(dir: impl AsRef<str>) -> Result<()> {
 
     if !metadata.is_dir() {
         return Err(KeystoreError::NotADirectory {
-            path: dir_str.to_string(),
+            path: dir.to_path_buf(),
         });
     }
 
@@ -217,7 +219,7 @@ fn serialize_keystore(store: &Keystore) -> Result<Vec<u8>> {
 }
 
 /// Writes `data` to `path` with the given unix mode bits.
-async fn write_file(path: impl AsRef<str>, data: &[u8], mode: u32) -> Result<()> {
+async fn write_file(path: impl AsRef<Path>, data: &[u8], mode: u32) -> Result<()> {
     use tokio::io::AsyncWriteExt;
 
     let mut file = tokio::fs::OpenOptions::new()
@@ -251,18 +253,17 @@ mod tests {
     #[tokio::test]
     async fn store_load_insecure() {
         let dir = TempDir::new().unwrap();
-        let dir_path = dir.path().to_string_lossy().to_string();
 
         let mut secrets = Vec::new();
         for _ in 0..2 {
             secrets.push(generate_secret_key());
         }
 
-        store_keys_insecure(&secrets, &dir_path, &CONFIRM_INSECURE_KEYS)
+        store_keys_insecure(&secrets, dir.path(), &CONFIRM_INSECURE_KEYS)
             .await
             .unwrap();
 
-        let key_files = load_files_unordered(&dir_path).await.unwrap();
+        let key_files = load_files_unordered(dir.path()).await.unwrap();
 
         let actual = key_files.sequenced_keys().unwrap();
 
@@ -271,13 +272,11 @@ mod tests {
 
     #[tokio::test]
     async fn check_dir_test() {
-        let err = store_keys(&[], "foo").await.unwrap_err();
+        let err = store_keys(&[], Path::new("foo")).await.unwrap_err();
         assert!(matches!(err, KeystoreError::DirNotExist { .. }));
 
         let testdata_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("src/keystore/testdata/keystore-scrypt.json")
-            .to_string_lossy()
-            .to_string();
+            .join("src/keystore/testdata/keystore-scrypt.json");
 
         let err = store_keys(&[], &testdata_path).await.unwrap_err();
         assert!(matches!(err, KeystoreError::NotADirectory { .. }));

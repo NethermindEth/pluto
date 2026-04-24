@@ -1,18 +1,12 @@
-use crate::error::CliError;
-use libp2p::{
-    Multiaddr,
-    multiaddr::{self, Protocol},
+use crate::{
+    commands::common::{ConsoleColor, LICENSE, build_console_tracing_config, parse_relay_addr},
+    error::CliError,
 };
+use libp2p::multiaddr::Protocol;
 use pluto_p2p::k1;
-use std::{path::PathBuf, str::FromStr};
+use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
-
-pub const LICENSE: &str = concat!(
-    "This software is licensed under the Maria DB Business Source License 1.1; ",
-    "you may not use this software except in compliance with this license. You may obtain a ",
-    "copy of this license at https://github.com/ObolNetwork/charon/blob/main/LICENSE"
-);
 
 /// Arguments for the relay command.
 #[derive(clap::Args, Clone)]
@@ -44,8 +38,7 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
             let mut relays = Vec::new();
 
             for relay in &self.p2p.relays {
-                let multiaddr =
-                    multiaddr::from_url(relay).or_else(|_| Multiaddr::from_str(relay))?;
+                let multiaddr = parse_relay_addr(relay)?;
 
                 if multiaddr.iter().any(|protocol| protocol == Protocol::Http) {
                     tracing::warn!(
@@ -67,23 +60,7 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
             }
         };
 
-        let log_config = {
-            let mut builder = pluto_tracing::TracingConfig::builder();
-
-            builder = builder.with_default_console();
-            builder = match self.log.color {
-                ConsoleColor::Auto => builder.console_with_ansi(std::env::var("NO_COLOR").is_err()),
-                ConsoleColor::Force => builder.console_with_ansi(true),
-                ConsoleColor::Disable => builder.console_with_ansi(false),
-            };
-            builder = builder.override_env_filter(self.log.level);
-
-            // TODO: Handle loki config
-
-            // TODO: Handle log output path
-
-            builder.build()
-        };
+        let log_config = build_console_tracing_config(self.log.level.clone(), &self.log.color);
 
         let builder = pluto_relay_server::config::Config::builder()
             .data_dir(self.data_dir.data_dir)
@@ -186,19 +163,13 @@ pub struct RelayDebugMonitoringArgs {
     pub debug_addr: Option<String>,
 }
 
-const DEFAULT_RELAYS: [&str; 3] = [
-    "https://0.relay.obol.tech",
-    "https://2.relay.obol.dev",
-    "https://1.relay.obol.tech",
-];
-
 #[derive(clap::Args, Clone)]
 pub struct RelayP2PArgs {
     #[arg(
         long = "p2p-relays",
         env = "PLUTO_P2P_RELAYS",
         value_delimiter = ',',
-        default_values_t = DEFAULT_RELAYS.map(String::from),
+        default_values_t = pluto_p2p::config::DEFAULT_RELAYS.map(String::from),
         help = "Comma-separated list of libp2p relay URLs or multiaddrs."
     )]
     pub relays: Vec<String>,
@@ -266,18 +237,9 @@ pub struct RelayLogFlags {
     #[arg(
         long = "log-output-path",
         env = "PLUTO_LOG_OUTPUT_PATH",
-        default_value = "",
         help = "Path in which to write on-disk logs."
     )]
-    pub log_output_path: String,
-}
-
-#[derive(clap::ValueEnum, Clone, Default)]
-pub enum ConsoleColor {
-    #[default]
-    Auto,
-    Force,
-    Disable,
+    pub log_output_path: Option<PathBuf>,
 }
 
 #[derive(clap::Args, Clone)]
@@ -299,23 +261,11 @@ pub struct RelayLokiArgs {
     pub loki_service: String,
 }
 
-pub async fn run(args: RelayArgs, ct: CancellationToken) -> Result<(), CliError> {
-    let config: pluto_relay_server::config::Config = args.try_into()?;
-
-    let log_config = config
-        .log_config
-        .as_ref()
-        .expect("Log config is always configured");
-    pluto_tracing::init(log_config).expect("Failed to initialize tracing");
-
-    run_with_config(config, ct).await
-}
-
-async fn run_with_config(
+pub async fn run(
     config: pluto_relay_server::config::Config,
     ct: CancellationToken,
 ) -> Result<(), CliError> {
-    info!(LICENSE);
+    info!("{LICENSE}");
     info!(config = ?config);
 
     let key = match pluto_p2p::k1::load_priv_key(&config.data_dir) {
@@ -567,7 +517,7 @@ mod tests {
                 format: "console".into(),
                 level: "error".into(),
                 color: super::ConsoleColor::Disable,
-                log_output_path: "".into(),
+                log_output_path: None,
             },
             loki: super::RelayLokiArgs {
                 loki_addresses: vec![],
@@ -579,7 +529,7 @@ mod tests {
         let cfg: pluto_relay_server::config::Config = args.clone().try_into().unwrap();
         let ct = CancellationToken::new();
 
-        let relay = tokio::spawn(super::run_with_config(cfg.clone(), ct.child_token()));
+        let relay = tokio::spawn(super::run(cfg.clone(), ct.child_token()));
 
         test_fn(cfg.clone()).await;
 
