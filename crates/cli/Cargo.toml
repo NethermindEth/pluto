@@ -38,9 +38,13 @@ serde_json.workspace = true
 serde_with = { workspace = true, features = ["base64"] }
 rand.workspace = true
 tempfile.workspace = true
+bytes.workspace = true
 reqwest.workspace = true
 url.workspace = true
 chrono.workspace = true
+sysinfo.workspace = true
+quick-xml.workspace = true
+futures.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
