@@ -131,14 +131,18 @@ impl SpeedtestServer {
             samples.push(start.elapsed());
         }
         let total: Duration = samples.iter().sum();
-        self.latency = total / PING_COUNT;
+        self.latency = total
+            .checked_div(PING_COUNT)
+            .expect("PING_COUNT is non-zero");
         Ok(())
     }
 
     pub(super) async fn download_test(&mut self, client: &reqwest::Client) -> Result<()> {
         let download_url = format!("{}random1000x1000.jpg", self.base_url());
         let start = Instant::now();
-        let deadline = start + SPEED_TEST_DURATION;
+        let deadline = start
+            .checked_add(SPEED_TEST_DURATION)
+            .expect("deadline does not overflow");
 
         // Go measures throughput via a Welford EWMA sampled every 50ms. Here we use
         // total_bytes/elapsed, which is simpler but equally valid for a single
@@ -148,7 +152,7 @@ impl SpeedtestServer {
             let client = client.clone();
             let url = download_url.clone();
             set.spawn(async move {
-                let mut bytes = 0usize;
+                let mut bytes: usize = 0;
                 while Instant::now() < deadline {
                     let Ok(resp) = client.get(&url).send().await else {
                         break;
@@ -157,7 +161,9 @@ impl SpeedtestServer {
                         break;
                     }
                     if let Ok(body) = resp.bytes().await {
-                        bytes += body.len();
+                        bytes = bytes
+                            .checked_add(body.len())
+                            .expect("download byte count does not overflow");
                     }
                 }
                 bytes
@@ -172,14 +178,16 @@ impl SpeedtestServer {
     pub(super) async fn upload_test(&mut self, client: &reqwest::Client) -> Result<()> {
         let upload_url = self.url.clone();
         let start = Instant::now();
-        let deadline = start + SPEED_TEST_DURATION;
+        let deadline = start
+            .checked_add(SPEED_TEST_DURATION)
+            .expect("deadline does not overflow");
 
         let mut set = tokio::task::JoinSet::new();
         for _ in 0..speed_test_concurrency() {
             let client = client.clone();
             let url = upload_url.clone();
             set.spawn(async move {
-                let mut bytes = 0usize;
+                let mut bytes: usize = 0;
                 while Instant::now() < deadline {
                     let chunk = vec![0u8; UPLOAD_CHUNK_BYTES];
                     let Ok(resp) = client
@@ -195,7 +203,9 @@ impl SpeedtestServer {
                         break;
                     }
                     let _ = resp.bytes().await;
-                    bytes += UPLOAD_CHUNK_BYTES;
+                    bytes = bytes
+                        .checked_add(UPLOAD_CHUNK_BYTES)
+                        .expect("upload byte count does not overflow");
                 }
                 bytes
             });
