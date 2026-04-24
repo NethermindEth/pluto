@@ -5093,7 +5093,7 @@ dependencies = [
  "oas3",
  "prettyplease",
  "proc-macro2",
- "quick-xml 0.39.2",
+ "quick-xml",
  "quote",
  "regex",
  "reqwest 0.13.2",
@@ -5517,7 +5517,7 @@ dependencies = [
  "pluto-relay-server",
  "pluto-ssz",
  "pluto-tracing",
- "quick-xml 0.37.5",
+ "quick-xml",
  "rand 0.8.6",
  "reqwest 0.13.2",
  "serde",
@@ -6188,16 +6188,6 @@ dependencies = [
  "quick-protobuf",
  "thiserror 1.0.69",
  "unsigned-varint 0.8.0",
-]
-
-[[package]]
-name = "quick-xml"
-version = "0.37.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "331e97a1af0bf59823e6eadffe373d7b27f485be8748f71471c662c1f269b7fb"
-dependencies = [
- "memchr",
- "serde",
 ]
 
 [[package]]
