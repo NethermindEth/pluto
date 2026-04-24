@@ -189,4 +189,3 @@ impl From<BLST_ERROR> for Error {
         Error::BlsError(BlsError::from(err))
     }
 }
-

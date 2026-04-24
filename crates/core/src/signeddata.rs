@@ -135,8 +135,8 @@ impl Signature {
 impl SignedData for Signature {
     type Error = SignedDataError;
 
-    fn signature(&self) -> Result<Signature, Self::Error> {
-        Ok(self.clone())
+    fn signature(&self) -> Signature {
+        self.clone()
     }
 
     fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
@@ -233,12 +233,8 @@ impl VersionedSignedProposal {
 impl SignedData for VersionedSignedProposal {
     type Error = SignedDataError;
 
-    fn signature(&self) -> Result<Signature, Self::Error> {
-        let proposal = &self.0;
-        if proposal.version == versioned::DataVersion::Unknown {
-            return Err(SignedDataError::UnknownVersion);
-        }
-        Ok(sig_from_eth2(proposal.block.signature()))
+    fn signature(&self) -> Signature {
+        sig_from_eth2(self.0.block.signature())
     }
 
     fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
@@ -386,8 +382,8 @@ impl Attestation {
 impl SignedData for Attestation {
     type Error = SignedDataError;
 
-    fn signature(&self) -> Result<Signature, Self::Error> {
-        Ok(sig_from_eth2(self.0.signature))
+    fn signature(&self) -> Signature {
+        sig_from_eth2(self.0.signature)
     }
 
     fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
@@ -449,16 +445,12 @@ impl VersionedAttestation {
 impl SignedData for VersionedAttestation {
     type Error = SignedDataError;
 
-    fn signature(&self) -> Result<Signature, Self::Error> {
-        let version = self.0.version;
-        if version == versioned::DataVersion::Unknown {
-            return Err(SignedDataError::UnknownVersion);
-        }
+    fn signature(&self) -> Signature {
         self.0
             .attestation
             .as_ref()
             .map(|a| sig_from_eth2(versioned::AttestationPayload::signature(a)))
-            .ok_or(SignedDataError::MissingAttestation(version))
+            .unwrap_or_else(|| Signature::new([0u8; 96]))
     }
 
     fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
@@ -586,8 +578,8 @@ pub struct SignedVoluntaryExit(
 impl SignedData for SignedVoluntaryExit {
     type Error = SignedDataError;
 
-    fn signature(&self) -> Result<Signature, Self::Error> {
-        Ok(sig_from_eth2(self.0.signature))
+    fn signature(&self) -> Signature {
+        sig_from_eth2(self.0.signature)
     }
 
     fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
@@ -651,15 +643,15 @@ impl VersionedSignedValidatorRegistration {
 impl SignedData for VersionedSignedValidatorRegistration {
     type Error = SignedDataError;
 
-    fn signature(&self) -> Result<Signature, Self::Error> {
+    fn signature(&self) -> Signature {
         match self.0.version {
             versioned::BuilderVersion::V1 => self
                 .0
                 .v1
                 .as_ref()
                 .map(|value| sig_from_eth2(value.signature))
-                .ok_or(SignedDataError::MissingV1Registration),
-            versioned::BuilderVersion::Unknown => Err(SignedDataError::UnknownVersion),
+                .unwrap_or_else(|| Signature::new([0u8; 96])),
+            versioned::BuilderVersion::Unknown => Signature::new([0u8; 96]),
         }
     }
 
@@ -750,8 +742,8 @@ pub struct SignedRandao(
 impl SignedData for SignedRandao {
     type Error = SignedDataError;
 
-    fn signature(&self) -> Result<Signature, Self::Error> {
-        Ok(sig_from_eth2(self.0.signature))
+    fn signature(&self) -> Signature {
+        sig_from_eth2(self.0.signature)
     }
 
     fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
@@ -795,8 +787,8 @@ pub struct BeaconCommitteeSelection(
 impl SignedData for BeaconCommitteeSelection {
     type Error = SignedDataError;
 
-    fn signature(&self) -> Result<Signature, Self::Error> {
-        Ok(sig_from_eth2(self.0.selection_proof))
+    fn signature(&self) -> Signature {
+        sig_from_eth2(self.0.selection_proof)
     }
 
     fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
@@ -836,8 +828,8 @@ pub struct SyncCommitteeSelection(
 impl SignedData for SyncCommitteeSelection {
     type Error = SignedDataError;
 
-    fn signature(&self) -> Result<Signature, Self::Error> {
-        Ok(sig_from_eth2(self.0.selection_proof))
+    fn signature(&self) -> Signature {
+        sig_from_eth2(self.0.selection_proof)
     }
 
     fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
@@ -882,8 +874,8 @@ pub struct SignedAggregateAndProof(
 impl SignedData for SignedAggregateAndProof {
     type Error = SignedDataError;
 
-    fn signature(&self) -> Result<Signature, Self::Error> {
-        Ok(sig_from_eth2(self.0.signature))
+    fn signature(&self) -> Signature {
+        sig_from_eth2(self.0.signature)
     }
 
     fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
@@ -955,13 +947,11 @@ impl VersionedSignedAggregateAndProof {
 impl SignedData for VersionedSignedAggregateAndProof {
     type Error = SignedDataError;
 
-    fn signature(&self) -> Result<Signature, Self::Error> {
-        let version = self.0.version;
-        if version == versioned::DataVersion::Unknown {
-            return Err(SignedDataError::UnknownVersion);
+    fn signature(&self) -> Signature {
+        if self.0.version == versioned::DataVersion::Unknown {
+            return Signature::new([0u8; 96]);
         }
-
-        Ok(sig_from_eth2(self.0.aggregate_and_proof.signature()))
+        sig_from_eth2(self.0.aggregate_and_proof.signature())
     }
 
     fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
@@ -1070,8 +1060,8 @@ pub struct SignedSyncMessage(
 impl SignedData for SignedSyncMessage {
     type Error = SignedDataError;
 
-    fn signature(&self) -> Result<Signature, Self::Error> {
-        Ok(sig_from_eth2(self.0.signature))
+    fn signature(&self) -> Signature {
+        sig_from_eth2(self.0.signature)
     }
 
     fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
@@ -1108,8 +1098,8 @@ pub struct SyncContributionAndProof(
 impl SignedData for SyncContributionAndProof {
     type Error = SignedDataError;
 
-    fn signature(&self) -> Result<Signature, Self::Error> {
-        Ok(sig_from_eth2(self.0.selection_proof))
+    fn signature(&self) -> Signature {
+        sig_from_eth2(self.0.selection_proof)
     }
 
     fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
@@ -1151,8 +1141,8 @@ pub struct SignedSyncContributionAndProof(
 impl SignedData for SignedSyncContributionAndProof {
     type Error = SignedDataError;
 
-    fn signature(&self) -> Result<Signature, Self::Error> {
-        Ok(sig_from_eth2(self.0.signature))
+    fn signature(&self) -> Signature {
+        sig_from_eth2(self.0.signature)
     }
 
     fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error> {
@@ -2055,8 +2045,8 @@ mod tests {
         T: SignedData<Error = SignedDataError> + std::fmt::Debug + PartialEq,
     {
         let clone = data.set_signature(sample_signature(0xAB)).unwrap();
-        let clone_sig = clone.signature().unwrap();
-        let data_sig = data.signature().unwrap();
+        let clone_sig = clone.signature();
+        let data_sig = data.signature();
         assert_ne!(clone_sig, data_sig);
         assert!(clone_sig.as_ref().iter().any(|byte| *byte != 0));
 
@@ -2450,10 +2440,10 @@ mod tests {
             sig1.message_root(),
             Err(SignedDataError::UnsupportedSignatureMessageRoot)
         ));
-        assert_eq!(sig1, sig1.signature().unwrap());
-        assert_eq!(sig1.to_eth2(), sig2.signature().unwrap().to_eth2());
+        assert_eq!(sig1, sig1.signature());
+        assert_eq!(sig1.to_eth2(), sig2.signature().to_eth2());
 
-        let ss = sig1.set_signature(sig2.signature().unwrap()).unwrap();
+        let ss = sig1.set_signature(sig2.signature()).unwrap();
         assert_eq!(sig2, ss);
 
         let js = serde_json::to_vec(&sig1).unwrap();
@@ -2526,20 +2516,6 @@ mod tests {
         assert!(matches!(
             wrapped.to_blinded(),
             Err(SignedDataError::ProposalNotBlinded)
-        ));
-    }
-
-    #[test]
-    fn versioned_signed_proposal_signature_unknown_version_error() {
-        let proposal = VersionedSignedProposal(versioned::VersionedSignedProposal {
-            version: versioned::DataVersion::Unknown,
-            blinded: false,
-            block: versioned::SignedProposalBlock::Phase0(sample_phase0_block(0x22)),
-        });
-
-        assert!(matches!(
-            proposal.signature(),
-            Err(SignedDataError::UnknownVersion)
         ));
     }
 
@@ -2633,7 +2609,7 @@ mod tests {
 
         let signature = sample_signature(0x99);
         let updated = wrapped.set_signature(signature.clone()).unwrap();
-        assert_eq!(signature, updated.signature().unwrap());
+        assert_eq!(signature, updated.signature());
 
         let js = serde_json::to_vec(&wrapped).unwrap();
         let wrapped2: VersionedSignedProposal = serde_json::from_slice(&js).unwrap();

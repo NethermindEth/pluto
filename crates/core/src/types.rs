@@ -457,10 +457,10 @@ pub trait SignedData: Clone + Serialize + StdDebug {
 
     /// set_signature returns a copy of signed duty data with the signature
     /// replaced.
-    fn set_signature(&mut self, signature: Signature) -> Result<(), Self::Error>;
+    fn set_signature(&self, signature: Signature) -> Result<Self, Self::Error>;
 
     /// message_root returns the message root for the unsigned data.
-    fn message_root(&self) -> [u8; 32];
+    fn message_root(&self) -> Result<[u8; 32], Self::Error>;
 }
 
 // todo: add Eth2SignedData type
@@ -861,12 +861,12 @@ mod tests {
             Signature::new([42u8; SIG_LEN])
         }
 
-        fn set_signature(&mut self, _signature: Signature) -> Result<(), std::io::Error> {
-            Ok(())
+        fn set_signature(&self, _signature: Signature) -> Result<Self, std::io::Error> {
+            Ok(MockSignedData)
         }
 
-        fn message_root(&self) -> [u8; 32] {
-            [42u8; 32]
+        fn message_root(&self) -> Result<[u8; 32], std::io::Error> {
+            Ok([42u8; 32])
         }
     }
 
