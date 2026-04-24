@@ -42,6 +42,8 @@ reqwest.workspace = true
 url.workspace = true
 chrono.workspace = true
 sysinfo.workspace = true
+quick-xml.workspace = true
+futures.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

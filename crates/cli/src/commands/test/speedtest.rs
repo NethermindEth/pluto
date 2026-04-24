@@ -8,8 +8,24 @@ use crate::error::{CliError, Result};
 
 const SPEEDTEST_SERVERS_URL: &str =
     "https://www.speedtest.net/api/js/servers?engine=js&https_functional=true&limit=10";
-const SPEEDTEST_MAX_CANDIDATES: usize = 5;
-const SPEEDTEST_UPLOAD_BYTES: usize = 50_000_000;
+const SPEEDTEST_SERVERS_FALLBACK_URL: &str =
+    "https://www.speedtest.net/speedtest-servers-static.php";
+const FETCH_PING_TIMEOUT: Duration = Duration::from_secs(4);
+const PING_COUNT: u32 = 10;
+const PING_INTERVAL: Duration = Duration::from_millis(200);
+const SPEED_TEST_DURATION: Duration = Duration::from_secs(15);
+// Matches Go's ulSizes[4]=1000: chunkSize = (1000*100-51)*10
+const UPLOAD_CHUNK_BYTES: usize = 999_490;
+
+fn speed_test_concurrency() -> usize {
+    match std::thread::available_parallelism() {
+        Ok(n) => n.get(),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to query CPU count, defaulting to 1 concurrent stream");
+            1
+        }
+    }
+}
 
 #[derive(Deserialize)]
 struct OoklaServerResponse {
@@ -19,6 +35,41 @@ struct OoklaServerResponse {
     url: String,
     #[serde(default)]
     distance: f64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename = "settings")]
+struct XmlServerList {
+    servers: XmlServersWrapper,
+}
+
+#[derive(Deserialize)]
+struct XmlServersWrapper {
+    server: Vec<XmlServer>,
+}
+
+#[derive(Deserialize)]
+struct XmlServer {
+    #[serde(rename = "@url")]
+    url: String,
+    #[serde(rename = "@name")]
+    name: String,
+    #[serde(rename = "@country")]
+    country: String,
+    #[serde(rename = "@id")]
+    id: String,
+}
+
+impl From<XmlServer> for OoklaServerResponse {
+    fn from(s: XmlServer) -> Self {
+        Self {
+            id: s.id,
+            name: s.name,
+            country: s.country,
+            url: s.url,
+            distance: 0.0,
+        }
+    }
 }
 
 pub(super) struct SpeedtestServer {
@@ -56,60 +107,102 @@ impl SpeedtestServer {
         }
     }
 
-    pub(super) async fn ping_test(&mut self, client: &reqwest::Client) -> Result<()> {
+    async fn quick_ping(&mut self, client: &reqwest::Client) -> Result<()> {
         let latency_url = format!("{}latency.txt", self.base_url());
         let start = Instant::now();
+        let response = client.get(&latency_url).send().await?;
         // Read and discard the body so the connection is left in a clean state
         // for the connection pool; dropping Response without reading closes the
         // underlying TCP socket and corrupts pool state for subsequent requests.
-        let response = client.get(&latency_url).send().await?;
         let _ = response.bytes().await?;
         self.latency = start.elapsed();
         Ok(())
     }
 
-    pub(super) async fn download_test(&mut self, client: &reqwest::Client) -> Result<()> {
-        // Download multiple large images sequentially to saturate the link long enough
-        // for an accurate throughput measurement (single 4000x4000 JPEG is ~4MB).
-        let download_url = format!("{}random4000x4000.jpg", self.base_url());
-        let mut total_bytes = 0usize;
-        let start = Instant::now();
-        for _ in 0..4 {
-            let response = client.get(&download_url).send().await?;
-            if !response.status().is_success() {
-                return Err(CliError::Other(format!(
-                    "download test failed: HTTP {}",
-                    response.status()
-                )));
-            }
-            // "The loop downloads 16MB in total, no overflow is possible"
-            total_bytes = total_bytes.saturating_add(response.bytes().await?.len());
+    pub(super) async fn ping_test(&mut self, client: &reqwest::Client) -> Result<()> {
+        let latency_url = format!("{}latency.txt", self.base_url());
+        let mut samples = Vec::with_capacity(PING_COUNT as usize);
+        let mut ticker = tokio::time::interval(PING_INTERVAL);
+        for _ in 0..PING_COUNT {
+            ticker.tick().await;
+            let start = Instant::now();
+            let response = client.get(&latency_url).send().await?;
+            let _ = response.bytes().await?;
+            samples.push(start.elapsed());
         }
+        let total: Duration = samples.iter().sum();
+        self.latency = total / PING_COUNT;
+        Ok(())
+    }
+
+    pub(super) async fn download_test(&mut self, client: &reqwest::Client) -> Result<()> {
+        let download_url = format!("{}random1000x1000.jpg", self.base_url());
+        let start = Instant::now();
+        let deadline = start + SPEED_TEST_DURATION;
+
+        // Go measures throughput via a Welford EWMA sampled every 50ms. Here we use
+        // total_bytes/elapsed, which is simpler but equally valid for a single
+        // measurement.
+        let mut set = tokio::task::JoinSet::new();
+        for _ in 0..speed_test_concurrency() {
+            let client = client.clone();
+            let url = download_url.clone();
+            set.spawn(async move {
+                let mut bytes = 0usize;
+                while Instant::now() < deadline {
+                    let Ok(resp) = client.get(&url).send().await else {
+                        break;
+                    };
+                    if !resp.status().is_success() {
+                        break;
+                    }
+                    if let Ok(body) = resp.bytes().await {
+                        bytes += body.len();
+                    }
+                }
+                bytes
+            });
+        }
+
+        let total_bytes: usize = set.join_all().await.into_iter().sum();
         self.dl_speed_mbps = bytes_to_mbps(total_bytes, start.elapsed());
         Ok(())
     }
 
     pub(super) async fn upload_test(&mut self, client: &reqwest::Client) -> Result<()> {
-        let upload_data = vec![0u8; SPEEDTEST_UPLOAD_BYTES];
+        let upload_url = self.url.clone();
         let start = Instant::now();
-        let response = client
-            .post(&self.url)
-            .header("Content-Type", "application/octet-stream")
-            .header("Content-Length", SPEEDTEST_UPLOAD_BYTES.to_string())
-            .body(upload_data)
-            .send()
-            .await?;
-        if !response.status().is_success() {
-            return Err(CliError::Other(format!(
-                "upload test failed: HTTP {}",
-                response.status()
-            )));
+        let deadline = start + SPEED_TEST_DURATION;
+
+        let mut set = tokio::task::JoinSet::new();
+        for _ in 0..speed_test_concurrency() {
+            let client = client.clone();
+            let url = upload_url.clone();
+            set.spawn(async move {
+                let mut bytes = 0usize;
+                while Instant::now() < deadline {
+                    let chunk = vec![0u8; UPLOAD_CHUNK_BYTES];
+                    let Ok(resp) = client
+                        .post(&url)
+                        .header("Content-Type", "application/octet-stream")
+                        .body(chunk)
+                        .send()
+                        .await
+                    else {
+                        break;
+                    };
+                    if !resp.status().is_success() {
+                        break;
+                    }
+                    let _ = resp.bytes().await;
+                    bytes += UPLOAD_CHUNK_BYTES;
+                }
+                bytes
+            });
         }
-        // Read and discard the body so the connection is left in a clean state
-        // for the connection pool; dropping Response without reading closes the
-        // underlying TCP socket and corrupts pool state for subsequent requests.
-        let _ = response.bytes().await?;
-        self.ul_speed_mbps = bytes_to_mbps(SPEEDTEST_UPLOAD_BYTES, start.elapsed());
+
+        let total_bytes: usize = set.join_all().await.into_iter().sum();
+        self.ul_speed_mbps = bytes_to_mbps(total_bytes, start.elapsed());
         Ok(())
     }
 }
@@ -122,21 +215,52 @@ pub(super) fn build_client() -> Result<reqwest::Client> {
         .map_err(|e| CliError::Other(format!("build HTTP client: {e}")))
 }
 
-/// Fetches the Ookla server list, applies filters, pings candidates, and
-/// returns the lowest-latency reachable server.
+async fn fetch_server_list(client: &reqwest::Client) -> Result<Vec<OoklaServerResponse>> {
+    let response = client
+        .get(SPEEDTEST_SERVERS_URL)
+        .send()
+        .await
+        .map_err(|e| CliError::Other(format!("fetch Ookla servers: {e}")))?;
+
+    if response.content_length() == Some(0) {
+        return fetch_server_list_xml(client).await;
+    }
+
+    response
+        .json()
+        .await
+        .map_err(|e| CliError::Other(format!("fetch Ookla servers: {e}")))
+}
+
+async fn fetch_server_list_xml(client: &reqwest::Client) -> Result<Vec<OoklaServerResponse>> {
+    let body = client
+        .get(SPEEDTEST_SERVERS_FALLBACK_URL)
+        .send()
+        .await
+        .map_err(|e| CliError::Other(format!("fetch Ookla servers (XML fallback): {e}")))?
+        .bytes()
+        .await
+        .map_err(|e| CliError::Other(format!("fetch Ookla servers (XML fallback): {e}")))?;
+
+    let list: XmlServerList = quick_xml::de::from_reader(body.as_ref())
+        .map_err(|e| CliError::Other(format!("parse Ookla servers XML: {e}")))?;
+
+    Ok(list
+        .servers
+        .server
+        .into_iter()
+        .map(OoklaServerResponse::from)
+        .collect())
+}
+
+/// Fetches the Ookla server list, applies filters, pings all candidates
+/// concurrently, and returns the lowest-latency reachable server.
 pub(super) async fn fetch_best_server(
     servers_only: &[String],
     servers_exclude: &[String],
     client: &reqwest::Client,
 ) -> Result<SpeedtestServer> {
-    let servers: Vec<OoklaServerResponse> = client
-        .get(SPEEDTEST_SERVERS_URL)
-        .send()
-        .await
-        .map_err(|e| CliError::Other(format!("fetch Ookla servers: {e}")))?
-        .json()
-        .await
-        .map_err(|e| CliError::Other(format!("fetch Ookla servers: {e}")))?;
+    let servers = fetch_server_list(client).await?;
 
     // Go bug parity: the original Go implementation (testinfra.go) appends both
     // servers_only and servers_exclude filter results independently (union), so
@@ -155,18 +279,33 @@ pub(super) async fn fetch_best_server(
         ));
     }
 
-    let mut best: Option<SpeedtestServer> = None;
-    for candidate in candidates.into_iter().take(SPEEDTEST_MAX_CANDIDATES) {
-        let mut server = SpeedtestServer::from_response(candidate);
-        if server.ping_test(client).await.is_ok() {
-            let is_better = best.as_ref().is_none_or(|b| server.latency < b.latency);
-            if is_better {
-                best = Some(server);
+    let ping_futures: Vec<_> = candidates
+        .into_iter()
+        .map(|r| {
+            let client = client.clone();
+            async move {
+                let mut server = SpeedtestServer::from_response(r);
+                let result =
+                    tokio::time::timeout(FETCH_PING_TIMEOUT, server.quick_ping(&client)).await;
+                match result {
+                    Ok(Ok(())) => Some(server),
+                    _ => None,
+                }
             }
-        }
-    }
+        })
+        .collect();
 
-    best.ok_or_else(|| CliError::Other("find Ookla server: no reachable servers".to_string()))
+    let mut reachable: Vec<SpeedtestServer> = futures::future::join_all(ping_futures)
+        .await
+        .into_iter()
+        .flatten()
+        .collect();
+
+    reachable.sort_by_key(|s| s.latency);
+    reachable
+        .into_iter()
+        .next()
+        .ok_or_else(|| CliError::Other("find Ookla server: no reachable servers".to_string()))
 }
 
 pub(super) fn bytes_to_mbps(bytes: usize, elapsed: Duration) -> f64 {
