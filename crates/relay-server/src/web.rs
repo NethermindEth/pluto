@@ -248,8 +248,18 @@ pub async fn enr_handler(
             }
             (tcp_ip, tcp_p, udp_p)
         }
-        (Some((ip, tcp_p)), None) => (ip, tcp_p, 9999), // Dummy UDP port
-        (None, Some((ip, udp_p))) => (ip, 9999, udp_p), // Dummy TCP port
+        (Some(_), None) => {
+            return Err(HandlerError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "no udp address available".to_string(),
+            });
+        }
+        (None, Some(_)) => {
+            return Err(HandlerError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "no tcp address available".to_string(),
+            });
+        }
         (None, None) => {
             return Err(HandlerError {
                 status: StatusCode::INTERNAL_SERVER_ERROR,

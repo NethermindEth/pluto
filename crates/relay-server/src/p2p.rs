@@ -182,7 +182,12 @@ fn handle_swarm_event(event: &SwarmEvent<PlutoBehaviourEvent<relay::Behaviour>>)
             debug!(%address, "listening on new address");
             AddrUpdate::Add(address.clone())
         }
-        SwarmEvent::ListenerClosed { addresses, .. } => AddrUpdate::RemoveAll(addresses.clone()),
+        SwarmEvent::ListenerClosed { addresses, .. } => {
+            for address in addresses {
+                debug!(%address, "listener closed");
+            }
+            AddrUpdate::RemoveAll(addresses.clone())
+        }
         SwarmEvent::ExpiredListenAddr { address, .. } => {
             debug!(%address, "listen address expired");
             AddrUpdate::Remove(address.clone())
