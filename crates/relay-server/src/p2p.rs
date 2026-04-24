@@ -27,14 +27,13 @@ pub async fn run_relay_p2p_node(
     ct: CancellationToken,
 ) -> Result<Node<relay::Behaviour>> {
     let relay_config = create_relay_config(config);
-    // Relay servers don't track cluster peers - they serve all connections
-    let p2p_context = P2PContext::default();
     let mut node = Node::new_server(
         config.p2p_config.clone(),
         key.clone(),
         NodeType::TCP,
         false,
-        p2p_context,
+        // Relay servers don't track cluster peers - they serve all connections.
+        P2PContext::default(),
         |builder, keypair| {
             builder.with_inner(relay::Behaviour::new(
                 keypair.public().to_peer_id(),
