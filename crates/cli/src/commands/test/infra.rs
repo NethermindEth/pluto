@@ -145,8 +145,14 @@ fn can_write_to_dir(dir: &Path) -> bool {
 }
 
 async fn fio_command(path: &Path, block_size_kb: i32, operation: &str) -> Result<Vec<u8>> {
-    let filename = path.join("fiotest");
-    let filename_str = filename.to_string_lossy().into_owned();
+    let tmp = tempfile::Builder::new()
+        .prefix("fiotest")
+        .tempfile_in(path)
+        .map_err(|e| CliError::Other(format!("create fio temp file: {e}")))?;
+    let filename_str = tmp
+        .path()
+        .to_str()
+        .ok_or_else(|| CliError::Other("fio temp file path is not valid UTF-8".to_string()))?;
     let size_per_job = DISK_OPS_MBS_TOTAL / DISK_OPS_NUM_OF_JOBS;
 
     let output = tokio::process::Command::new("fio")
@@ -168,8 +174,6 @@ async fn fio_command(path: &Path, block_size_kb: i32, operation: &str) -> Result
         .wait_with_output()
         .await
         .map_err(|e| CliError::Other(format!("exec fio command: {e}")))?;
-
-    let _ = tokio::fs::remove_file(&filename).await;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
