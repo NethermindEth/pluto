@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
 use pluto_frost::{
     G1Affine,
     kryptology::{self, Round1Bcast, Round1Secret, Round2Bcast, ShamirShare, scalar_to_be},
@@ -64,6 +65,9 @@ pub enum FrostError {
     /// A numeric value was out of its valid range.
     #[error("value out of range")]
     Overflow,
+    /// Neither secret-share byte encoding matched the FROST verifying share.
+    #[error("failed to encode secret share for BLST signing")]
+    SecretShareEncoding,
 }
 
 impl From<pluto_frost::kryptology::DkgError> for FrostError {
@@ -273,8 +277,7 @@ pub async fn run_frost_parallel(
     share_idx: u32,
     dkg_ctx: &str,
 ) -> Result<Vec<Share>, FrostError> {
-    // Kryptology uses the first byte of the context string.
-    let ctx_byte = dkg_ctx.as_bytes().first().copied().unwrap_or(0);
+    let ctx_byte = kryptology_context_byte(dkg_ctx);
     let threshold_u16 = u16::try_from(threshold).map_err(|_| FrostError::Overflow)?;
     let max_signers_u16 = u16::try_from(num_nodes).map_err(|_| FrostError::Overflow)?;
     let mut rng = rand::rngs::OsRng;
@@ -383,9 +386,7 @@ pub async fn run_frost_parallel(
         let pub_key: pluto_crypto::types::PublicKey =
             G1Affine::from(key_pkg.verifying_key().to_element()).to_compressed();
 
-        // Secret share scalar → big-endian 32 bytes.
-        let secret_share: pluto_crypto::types::PrivateKey =
-            scalar_to_be(&key_pkg.signing_share().to_scalar());
+        let secret_share = encode_secret_share(&key_pkg)?;
 
         let public_shares = pub_shares_by_val.remove(&v_idx).unwrap_or_default();
 
@@ -397,6 +398,32 @@ pub async fn run_frost_parallel(
     }
 
     Ok(shares)
+}
+
+fn encode_secret_share(
+    key_pkg: &pluto_frost::KeyPackage,
+) -> Result<pluto_crypto::types::PrivateKey, FrostError> {
+    let scalar = key_pkg.signing_share().to_scalar();
+    let expected_pubshare: pluto_crypto::types::PublicKey =
+        G1Affine::from(key_pkg.verifying_share().to_element()).to_compressed();
+
+    let candidates = [scalar_to_be(&scalar), scalar.to_bytes()];
+    for candidate in candidates {
+        if BlstImpl
+            .secret_to_public_key(&candidate)
+            .is_ok_and(|pubshare| pubshare == expected_pubshare)
+        {
+            return Ok(candidate);
+        }
+    }
+
+    Err(FrostError::SecretShareEncoding)
+}
+
+fn kryptology_context_byte(dkg_ctx: &str) -> u8 {
+    // Match Obol kryptology's `strconv.Atoi(ctx)` + `byte(ctxV)` behavior.
+    // Invalid decimal strings (such as "0x<definition-hash>") become 0.
+    dkg_ctx.parse::<i64>().map(|value| value as u8).unwrap_or(0)
 }
 
 // ── Proto conversion helpers ────────────────────────────────────────────────
@@ -570,4 +597,50 @@ fn make_round2_response(
         }
     }
     Ok(cast_map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{encode_secret_share, kryptology_context_byte};
+    use std::collections::BTreeMap;
+
+    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
+    use pluto_frost::{G1Affine, kryptology};
+
+    #[test]
+    fn kryptology_context_byte_matches_go_atoi_semantics() {
+        assert_eq!(kryptology_context_byte("0xdeadbeef"), 0);
+        assert_eq!(kryptology_context_byte("48"), 48);
+        assert_eq!(kryptology_context_byte("-1"), 255);
+    }
+
+    #[test]
+    fn secret_share_encoding_matches_verifying_share() {
+        let (_bcast_1, shares_1, secret_1) =
+            kryptology::round1(1, 3, 4, 0, &mut rand::rngs::OsRng).expect("round1");
+        let (bcast_2, shares_2, _secret_2) =
+            kryptology::round1(2, 3, 4, 0, &mut rand::rngs::OsRng).expect("round1");
+        let (bcast_3, shares_3, _secret_3) =
+            kryptology::round1(3, 3, 4, 0, &mut rand::rngs::OsRng).expect("round1");
+        let (bcast_4, shares_4, _secret_4) =
+            kryptology::round1(4, 3, 4, 0, &mut rand::rngs::OsRng).expect("round1");
+
+        let received_bcasts = BTreeMap::from([(2, bcast_2), (3, bcast_3), (4, bcast_4)]);
+        let received_shares = BTreeMap::from([
+            (2, shares_2.get(&1).expect("share").clone()),
+            (3, shares_3.get(&1).expect("share").clone()),
+            (4, shares_4.get(&1).expect("share").clone()),
+        ]);
+        let (_round2_bcast, key_pkg, _pub_pkg) =
+            kryptology::round2(secret_1, &received_bcasts, &received_shares).expect("round2");
+
+        let secret_share = encode_secret_share(&key_pkg).expect("secret share encoding");
+        let pubshare = BlstImpl
+            .secret_to_public_key(&secret_share)
+            .expect("public share");
+        let expected_pubshare = G1Affine::from(key_pkg.verifying_share().to_element()).to_compressed();
+
+        assert_eq!(pubshare, expected_pubshare);
+        drop(shares_1);
+    }
 }

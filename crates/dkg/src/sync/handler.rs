@@ -404,6 +404,15 @@ async fn handle_inbound_stream(
                 &public_key,
                 &message,
             ) {
+                tracing::warn!(
+                    peer = %peer_id,
+                    expected_version = %server.version(),
+                    got_version = %message.version,
+                    definition_hash = %format!("0x{}", hex::encode(server.def_hash())),
+                    hash_signature_len = message.hash_signature.len(),
+                    error = %error,
+                    "Rejected sync request"
+                );
                 let error_string = error.to_string();
                 send_inbound_event(
                     &inbound_events_tx,

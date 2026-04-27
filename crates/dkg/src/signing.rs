@@ -70,6 +70,28 @@ pub enum SigningError {
     /// No deposit message was produced for a DV's public key.
     #[error("deposit message not found for pubkey")]
     MissingDepositMsg,
+    /// A partial deposit signature failed verification against its public share.
+    #[error("invalid deposit data partial signature from share {share_idx} for pubkey {pubkey}")]
+    InvalidDepositPartialSignature {
+        /// 1-indexed share index carried on the partial signature.
+        share_idx: u64,
+        /// DV public key the partial signature belongs to.
+        pubkey: String,
+    },
+    /// A threshold-aggregated deposit signature failed final verification.
+    #[error("invalid deposit data aggregated signature for pubkey {pubkey}")]
+    InvalidDepositAggregateSignature {
+        /// DV public key the aggregate signature belongs to.
+        pubkey: String,
+    },
+    /// Pluto's own freshly generated partial deposit signature failed local verification.
+    #[error("locally generated deposit data partial signature failed verification for share {share_idx} pubkey {pubkey}")]
+    InvalidLocalDepositPartialSignature {
+        /// 1-indexed share index for this Pluto node.
+        share_idx: u64,
+        /// DV public key the partial signature belongs to.
+        pubkey: String,
+    },
     /// No validator registration was produced for a DV's public key.
     #[error("registration not found for pubkey")]
     MissingRegistration,
@@ -228,6 +250,18 @@ fn sign_deposit_msgs(
 
         let raw_sig = BlstImpl.sign(&share.secret_share, signing_root.as_ref())?;
         let pk = PubKey::new(share.pub_key);
+        let local_pubshare = share.public_shares.get(&(share_idx as u64)).ok_or_else(|| {
+            SigningError::InvalidLocalDepositPartialSignature {
+                share_idx: share_idx as u64,
+                pubkey: pk.to_string(),
+            }
+        })?;
+        BlstImpl
+            .verify(local_pubshare, signing_root.as_ref(), &raw_sig)
+            .map_err(|_| SigningError::InvalidLocalDepositPartialSignature {
+                share_idx: share_idx as u64,
+                pubkey: pk.to_string(),
+            })?;
         set.insert(
             pk,
             ParSignedData::new(Signature::new(raw_sig), share_idx as u64),
@@ -271,14 +305,23 @@ fn agg_deposit_data(
             let pubshare = pubshares
                 .get(&psig.share_idx)
                 .ok_or_else(|| SigningError::MissingPartialSig(pk.to_string()))?;
-            BlstImpl.verify(pubshare, signing_root.as_ref(), &raw_sig)?;
+            BlstImpl
+                .verify(pubshare, signing_root.as_ref(), &raw_sig)
+                .map_err(|_| SigningError::InvalidDepositPartialSignature {
+                    share_idx: psig.share_idx,
+                    pubkey: pk.to_string(),
+                })?;
             let idx = u8::try_from(psig.share_idx).map_err(|_| SigningError::Overflow)?;
             partial_sigs.insert(idx, raw_sig);
         }
 
         let agg_sig = BlstImpl.threshold_aggregate(&partial_sigs)?;
         let pk_arr = pk_bytes(pk);
-        BlstImpl.verify(&pk_arr, signing_root.as_ref(), &agg_sig)?;
+        BlstImpl
+            .verify(&pk_arr, signing_root.as_ref(), &agg_sig)
+            .map_err(|_| SigningError::InvalidDepositAggregateSignature {
+                pubkey: pk.to_string(),
+            })?;
 
         result.push(Eth2DepositData {
             pubkey: msg.pubkey,

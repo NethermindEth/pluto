@@ -60,6 +60,10 @@ pub struct Handler {
     inbound: Option<BoxFuture<'static, Option<FrostRound1P2p>>>,
     pending_send: Option<Vec<u8>>,
     outbound: Option<BoxFuture<'static, ()>>,
+    /// True while an `OutboundSubstreamRequest` has been emitted but
+    /// `FullyNegotiatedOutbound` / `DialUpgradeError` has not yet fired.
+    /// Prevents emitting a second request before the first resolves.
+    outbound_pending: bool,
 }
 
 impl Handler {
@@ -68,12 +72,34 @@ impl Handler {
             inbound: None,
             pending_send: None,
             outbound: None,
+            outbound_pending: false,
         }
     }
 
     fn substream_protocol() -> SubstreamProtocol<ReadyUpgrade<libp2p::swarm::StreamProtocol>> {
         SubstreamProtocol::new(ReadyUpgrade::new(PROTOCOL), ())
     }
+}
+
+async fn read_inbound_message<S>(stream: &mut S) -> Option<FrostRound1P2p>
+where
+    S: futures::AsyncRead + futures::AsyncWrite + Unpin,
+{
+    let message = match pluto_p2p::proto::read_length_delimited(stream, MAX_MSG_SIZE).await {
+        Ok(bytes) => FrostRound1P2p::decode(bytes.as_slice()).ok(),
+        Err(e) => {
+            warn!(err = %e, "Failed to read frost p2p inbound message");
+            None
+        }
+    };
+
+    // Match Charon's one-shot handler semantics: always close the inbound
+    // stream after handling a single request.
+    if let Err(e) = stream.close().await {
+        warn!(err = %e, "Failed to close frost p2p inbound stream");
+    }
+
+    message
 }
 
 impl ConnectionHandler for Handler {
@@ -107,20 +133,13 @@ impl ConnectionHandler for Handler {
                 protocol: mut stream,
                 ..
             }) => {
-                self.inbound = Some(Box::pin(async move {
-                    match pluto_p2p::proto::read_length_delimited(&mut stream, MAX_MSG_SIZE).await {
-                        Ok(bytes) => FrostRound1P2p::decode(bytes.as_slice()).ok(),
-                        Err(e) => {
-                            warn!(err = %e, "Failed to read frost p2p inbound message");
-                            None
-                        }
-                    }
-                }));
+                self.inbound = Some(Box::pin(async move { read_inbound_message(&mut stream).await }));
             }
             ConnectionEvent::FullyNegotiatedOutbound(FullyNegotiatedOutbound {
                 protocol: mut stream,
                 ..
             }) => {
+                self.outbound_pending = false;
                 let payload = self.pending_send.take().unwrap_or_default();
                 self.outbound = Some(Box::pin(async move {
                     if let Err(e) =
@@ -137,6 +156,7 @@ impl ConnectionHandler for Handler {
                 ..
             }) => {
                 warn!(err = ?error, "Frost p2p dial upgrade error");
+                self.outbound_pending = false;
                 self.pending_send = None;
             }
             _ => {}
@@ -167,14 +187,88 @@ impl ConnectionHandler for Handler {
             self.outbound = None;
         }
 
-        // Request a new outbound stream if we have a pending payload.
-        if self.outbound.is_none() && self.pending_send.is_some() {
+        // Request a new outbound stream if we have a pending payload and no
+        // negotiation is already in flight.
+        if self.outbound.is_none() && self.pending_send.is_some() && !self.outbound_pending {
+            self.outbound_pending = true;
             return Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest {
                 protocol: Self::substream_protocol(),
             });
         }
 
         Poll::Pending
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io,
+        pin::Pin,
+        task::{Context, Poll},
+    };
+
+    use futures::io::Cursor;
+
+    use super::*;
+
+    struct CloseTrackingStream {
+        read_buf: Cursor<Vec<u8>>,
+        close_count: usize,
+    }
+
+    impl CloseTrackingStream {
+        fn new(bytes: Vec<u8>) -> Self {
+            Self {
+                read_buf: Cursor::new(bytes),
+                close_count: 0,
+            }
+        }
+    }
+
+    impl futures::AsyncRead for CloseTrackingStream {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut [u8],
+        ) -> Poll<io::Result<usize>> {
+            Pin::new(&mut self.read_buf).poll_read(cx, buf)
+        }
+    }
+
+    impl futures::AsyncWrite for CloseTrackingStream {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(0))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            self.close_count += 1;
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn inbound_read_closes_stream_after_message() {
+        let msg = FrostRound1P2p::default();
+        let mut writer = Cursor::new(Vec::new());
+        pluto_p2p::proto::write_length_delimited(&mut writer, &msg.encode_to_vec())
+            .await
+            .expect("message should encode");
+        let bytes = writer.into_inner();
+
+        let mut stream = CloseTrackingStream::new(bytes);
+        let decoded = read_inbound_message(&mut stream).await;
+
+        assert!(decoded.is_some(), "message should decode successfully");
+        assert_eq!(stream.close_count, 1, "inbound stream must be closed");
     }
 }
 

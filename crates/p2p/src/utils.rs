@@ -109,11 +109,18 @@ pub(crate) fn multi_addrs_via_relay(
 ) -> Vec<Multiaddr> {
     let mut addrs = vec![];
 
-    for mut addr in relay_peer.addresses.clone() {
-        addr = addr.with(MaProtocol::P2p(relay_peer.id));
-        addr = addr.with(MaProtocol::P2pCircuit);
-        addr = addr.with(MaProtocol::P2p(*peer_id));
-        addrs.push(addr);
+    for addr in &relay_peer.addresses {
+        // Strip any trailing /p2p/... before re-adding (matches Go peer.SplitAddr)
+        let transport: Multiaddr = addr
+            .iter()
+            .filter(|p| !matches!(p, MaProtocol::P2p(_)))
+            .collect();
+        addrs.push(
+            transport
+                .with(MaProtocol::P2p(relay_peer.id))
+                .with(MaProtocol::P2pCircuit)
+                .with(MaProtocol::P2p(*peer_id)),
+        );
     }
 
     addrs

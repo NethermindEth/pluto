@@ -6,8 +6,9 @@
 
 use futures::StreamExt;
 use libp2p::{
-    Multiaddr, PeerId, relay,
+    Multiaddr, PeerId,
     multiaddr::Protocol,
+    relay,
     swarm::{NetworkBehaviour, SwarmEvent},
 };
 use pluto_cluster::definition::{Definition, NodeIdx};
@@ -155,12 +156,13 @@ pub async fn setup_node(
             bcast_comp_out = Some(bcast_comp);
 
             // ── sync ───────────────────────────────────────────────────────
+            let sync_version = VERSION.to_minor();
             let (sync_beh, sync_server, sync_clients) = sync::new(
                 peer_ids.clone(),
                 p2p_ctx.clone(),
                 &key,
                 def_hash.clone(),
-                VERSION.clone(),
+                sync_version,
             )
             .expect("sync::new requires local peer in peer set");
             sync_server_out = Some(sync_server);

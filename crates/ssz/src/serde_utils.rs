@@ -22,6 +22,9 @@ pub fn trim_0x_prefix(value: &str) -> &str {
 
 /// Encodes bytes as lowercase `0x`-prefixed hex.
 pub fn encode_0x_hex(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return String::new();
+    }
     format!("0x{}", hex::encode(bytes))
 }
 
