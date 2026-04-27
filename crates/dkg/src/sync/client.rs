@@ -152,14 +152,17 @@ impl Client {
         self.inner.connected.store(connected, Ordering::SeqCst);
     }
 
+    /// Claims ownership of this client's outbound stream for one handler.
     pub(crate) fn try_claim_outbound(&self) -> bool {
         !self.inner.outbound_claimed.swap(true, Ordering::SeqCst)
     }
 
+    /// Releases the outbound stream claim after the handler exits.
     pub(crate) fn release_outbound(&self) {
         self.inner.outbound_claimed.store(false, Ordering::SeqCst);
     }
 
+    /// Completes the client once and publishes the result to all waiters.
     pub(crate) fn finish(&self, result: Result<()>) {
         self.request_stop();
         self.release_outbound();
@@ -169,10 +172,12 @@ impl Client {
         }
     }
 
+    /// Subscribes to stop requests from an already-running outbound stream.
     pub(crate) fn stop_requested_rx(&self) -> watch::Receiver<bool> {
         self.inner.stop_tx.subscribe()
     }
 
+    /// Marks the client active and asks the behaviour to open an outbound stream.
     pub(crate) fn activate(&self) -> Result<()> {
         self.inner.active.store(true, Ordering::SeqCst);
         self.set_stop_requested(false);
@@ -189,12 +194,14 @@ impl Client {
         Err(Error::ActivationChannelUnavailable)
     }
 
+    /// Requests any live outbound stream loop to exit.
     fn request_stop(&self) {
         self.inner.active.store(false, Ordering::SeqCst);
         self.inner.connected.store(false, Ordering::SeqCst);
         self.set_stop_requested(true);
     }
 
+    /// Updates the stop flag without waking watchers when the value is unchanged.
     fn set_stop_requested(&self, stop_requested: bool) {
         self.inner.stop_tx.send_if_modified(|current| {
             if *current == stop_requested {
@@ -206,11 +213,14 @@ impl Client {
         });
     }
 
+    /// Waits for `finish` to publish a result or for local cancellation.
     async fn wait_finished(
         &self,
         cancellation: CancellationToken,
         clear_on_cancel: bool,
     ) -> Result<()> {
+        // `run()` uses cancellation to stop the live stream. `shutdown()` has
+        // already requested shutdown, so its cancellation only stops waiting.
         let mut done_rx = self.inner.done_tx.subscribe();
 
         loop {

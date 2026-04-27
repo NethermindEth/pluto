@@ -52,7 +52,7 @@ pub fn new(
             )
         })
         .collect::<Vec<_>>();
-    let behaviour = Behaviour::new(server.clone(), clients.clone(), p2p_context, command_rx);
+    let behaviour = Behaviour::new(server.clone(), clients.clone(), command_rx);
     Ok((behaviour, server, clients))
 }
 

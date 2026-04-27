@@ -179,19 +179,27 @@ impl Server {
         self.inner.started.load(Ordering::SeqCst)
     }
 
-    pub(crate) async fn mark_connected(&self, peer_id: PeerId) -> (bool, usize) {
-        let mut state = self.inner.state.write().await;
-        let inserted = state.connected.insert(peer_id);
-        let count = state.connected.len();
+    pub(crate) async fn set_connected(&self, peer_id: PeerId) -> (bool, usize) {
+        let (inserted, count) = self
+            .mutate_state(|state| {
+                let inserted = state.connected.insert(peer_id);
+                let count = state.connected.len();
+                (inserted, count)
+            })
+            .await;
+
         if inserted {
             self.inner.notify.notify_waiters();
         }
+
         (inserted, count)
     }
 
     pub(crate) async fn clear_connected(&self, peer_id: PeerId) {
-        let mut state = self.inner.state.write().await;
-        if state.connected.remove(&peer_id) {
+        let removed = self
+            .mutate_state(|state| state.connected.remove(&peer_id))
+            .await;
+        if removed {
             self.inner.notify.notify_waiters();
         }
     }
@@ -201,6 +209,7 @@ impl Server {
             state.shutdown.insert(peer_id);
         })
         .await;
+        self.inner.notify.notify_waiters();
     }
 
     pub(crate) async fn set_err(&self, error: Error) {
@@ -208,36 +217,39 @@ impl Server {
             state.err = Some(error);
         })
         .await;
+        self.inner.notify.notify_waiters();
     }
 
     pub(crate) async fn update_step(&self, peer_id: PeerId, step: i64) -> Result<bool> {
         use std::collections::hash_map::Entry;
 
-        let mut state = self.inner.state.write().await;
-        match state.steps.entry(peer_id) {
-            Entry::Occupied(mut entry) => {
-                let current = *entry.get();
-                if step < current {
-                    return Err(Error::PeerStepBehind);
-                }
+        {
+            let mut state = self.inner.state.write().await;
+            match state.steps.entry(peer_id) {
+                Entry::Occupied(mut entry) => {
+                    let current = *entry.get();
+                    if step < current {
+                        return Err(Error::PeerStepBehind);
+                    }
 
-                let current_plus_two = current.checked_add(2).ok_or(Error::StepOverflow)?;
-                if step > current_plus_two {
-                    return Err(Error::PeerStepAhead);
-                }
+                    let current_plus_two = current.checked_add(2).ok_or(Error::StepOverflow)?;
+                    if step > current_plus_two {
+                        return Err(Error::PeerStepAhead);
+                    }
 
-                if step == current {
-                    return Ok(false);
-                }
+                    if step == current {
+                        return Ok(false);
+                    }
 
-                entry.insert(step);
-            }
-            Entry::Vacant(entry) => {
-                if !(0..=1).contains(&step) {
-                    return Err(Error::AbnormalInitialStep);
+                    entry.insert(step);
                 }
+                Entry::Vacant(entry) => {
+                    if step < 0 || step > 1 {
+                        return Err(Error::AbnormalInitialStep);
+                    }
 
-                entry.insert(step);
+                    entry.insert(step);
+                }
             }
         }
 
@@ -245,9 +257,8 @@ impl Server {
         Ok(true)
     }
 
-    async fn mutate_state(&self, mutate: impl FnOnce(&mut ServerState)) {
+    async fn mutate_state<R>(&self, mutate: impl FnOnce(&mut ServerState) -> R) -> R {
         let mut state = self.inner.state.write().await;
-        mutate(&mut state);
-        self.inner.notify.notify_waiters();
+        mutate(&mut state)
     }
 }

@@ -13,7 +13,6 @@ use libp2p::{
         dummy,
     },
 };
-use pluto_p2p::p2p_context::P2PContext;
 use tokio::sync::mpsc;
 
 use super::{Command, client::Client, handler::Handler, server::Server};
@@ -46,7 +45,6 @@ pub enum Event {
 pub struct Behaviour {
     server: Server,
     clients: HashMap<PeerId, Client>,
-    p2p_context: P2PContext,
     command_rx: mpsc::UnboundedReceiver<Command>,
     pending_events: VecDeque<ToSwarm<Event, THandlerInEvent<Self>>>,
 }
@@ -56,7 +54,6 @@ impl Behaviour {
     pub(crate) fn new(
         server: Server,
         clients: impl IntoIterator<Item = Client>,
-        p2p_context: P2PContext,
         command_rx: mpsc::UnboundedReceiver<Command>,
     ) -> Self {
         Self {
@@ -65,7 +62,6 @@ impl Behaviour {
                 .into_iter()
                 .map(|client| (client.peer_id(), client))
                 .collect(),
-            p2p_context,
             command_rx,
             pending_events: VecDeque::new(),
         }
@@ -93,15 +89,6 @@ impl Behaviour {
         };
 
         if !client.should_run() || client.is_connected() || client.shutdown_requested() {
-            return;
-        }
-
-        if !self
-            .p2p_context
-            .peer_store_lock()
-            .connections_to_peer(&peer_id)
-            .is_empty()
-        {
             return;
         }
 
@@ -222,11 +209,9 @@ mod tests {
         command_rx: mpsc::UnboundedReceiver<Command>,
     ) -> Behaviour {
         let version = SemVer::parse("v1.7").expect("valid version");
-        let p2p_context = P2PContext::new([client.peer_id()]);
         Behaviour::new(
             Server::new(1, vec![1, 2, 3], version),
             [client],
-            p2p_context,
             command_rx,
         )
     }

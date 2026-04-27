@@ -253,7 +253,7 @@ impl ConnectionHandler for Handler {
     ) {
         match event {
             ConnectionEvent::FullyNegotiatedInbound(FullyNegotiatedInbound {
-                protocol: mut stream,
+                protocol: stream,
                 ..
             }) => {
                 if self.inbound.is_some() {
@@ -261,7 +261,6 @@ impl ConnectionHandler for Handler {
                     return;
                 }
 
-                stream.ignore_for_keep_alive();
                 self.inbound = Some(
                     handle_inbound_stream(
                         self.peer_id,
@@ -418,7 +417,7 @@ async fn handle_inbound_stream(
                     .await;
                 response.error = error_string;
             } else {
-                let (inserted, count) = server.mark_connected(peer_id).await;
+                let (inserted, count) = server.set_connected(peer_id).await;
                 if inserted {
                     info!(
                         peer = %peer_id,
