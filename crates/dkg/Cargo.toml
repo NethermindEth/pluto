@@ -11,6 +11,7 @@ bon.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 thiserror.workspace = true
+bon.workspace = true
 libp2p.workspace = true
 futures.workspace = true
 tokio.workspace = true
@@ -26,6 +27,7 @@ pluto-core.workspace = true
 pluto-crypto.workspace = true
 pluto-eth1wrap.workspace = true
 pluto-eth2util.workspace = true
+pluto-tracing.workspace = true
 hex.workspace = true
 rand.workspace = true
 serde.workspace = true
@@ -38,6 +40,7 @@ pluto-build-proto.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
+test-case.workspace = true
 clap.workspace = true
 hex.workspace = true
 pluto-cluster = { workspace = true, features = ["test-cluster"] }

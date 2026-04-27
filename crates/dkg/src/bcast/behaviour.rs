@@ -585,15 +585,18 @@ mod tests {
                 "timestamp",
                 Box::new(|_peer_id, _msg| Ok(())),
                 Box::new(move |peer_id, msg_id, msg| {
-                    receipt_tx
-                        .send(Receipt {
-                            target: node_index,
-                            source: peer_id,
-                            msg_id: msg_id.to_string(),
-                            seconds: msg.seconds,
-                        })
-                        .map_err(|_| Error::ReceiptChannelClosed)?;
-                    Ok(())
+                    let receipt_tx = receipt_tx.clone();
+                    Box::pin(async move {
+                        receipt_tx
+                            .send(Receipt {
+                                target: node_index,
+                                source: peer_id,
+                                msg_id,
+                                seconds: msg.seconds,
+                            })
+                            .map_err(|_| Error::ReceiptChannelClosed)?;
+                        Ok(())
+                    })
                 }),
             )
             .await
@@ -697,12 +700,8 @@ mod tests {
                 key,
                 NodeType::TCP,
                 false,
-                peer_ids.clone(),
-                move |builder, _keypair| {
-                    builder
-                        .with_p2p_context(p2p_context.clone())
-                        .with_inner(behaviour)
-                },
+                p2p_context.clone(),
+                move |builder, _keypair| builder.with_inner(behaviour),
             )?;
             let addr: Multiaddr = format!("/ip4/127.0.0.1/tcp/{}", ports[index]).parse()?;
             nodes.push(LocalNode {

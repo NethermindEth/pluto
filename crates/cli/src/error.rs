@@ -74,6 +74,10 @@ pub enum CliError {
     #[error("Relay P2P error: {0}")]
     RelayP2PError(#[from] pluto_relay_server::error::RelayP2PError),
 
+    /// DKG command error.
+    #[error("DKG error: {0}")]
+    DkgError(#[from] pluto_dkg::dkg::DkgError),
+
     /// Create cluster error.
     #[error("Create cluster error: {0}")]
     CreateClusterError(#[from] CreateClusterError),

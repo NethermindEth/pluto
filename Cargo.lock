@@ -5496,8 +5496,10 @@ name = "pluto-cli"
 version = "1.7.1"
 dependencies = [
  "backon",
+ "bytes",
  "chrono",
  "clap",
+ "futures",
  "hex",
  "humantime",
  "k256",
@@ -5506,6 +5508,7 @@ dependencies = [
  "pluto-cluster",
  "pluto-core",
  "pluto-crypto",
+ "pluto-dkg",
  "pluto-eth1wrap",
  "pluto-eth2api",
  "pluto-eth2util",
@@ -5514,11 +5517,13 @@ dependencies = [
  "pluto-relay-server",
  "pluto-ssz",
  "pluto-tracing",
+ "quick-xml",
  "rand 0.8.6",
  "reqwest 0.13.2",
  "serde",
  "serde_json",
  "serde_with",
+ "sysinfo",
  "tempfile",
  "test-case",
  "thiserror 2.0.18",
@@ -5644,6 +5649,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "test-case",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
@@ -5658,6 +5664,7 @@ version = "1.7.1"
 dependencies = [
  "alloy",
  "thiserror 2.0.18",
+ "tokio",
  "url",
 ]
 

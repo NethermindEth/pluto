@@ -588,7 +588,7 @@ impl SignedData for SignedVoluntaryExit {
     }
 
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
-        Ok(hash_root(&self.0.message))
+        Ok(self.0.message_root())
     }
 }
 
@@ -671,12 +671,10 @@ impl SignedData for VersionedSignedValidatorRegistration {
 
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         match self.0.version {
-            versioned::BuilderVersion::V1 => {
-                let Some(v1) = self.0.v1.as_ref() else {
-                    return Err(SignedDataError::MissingV1Registration);
-                };
-                Ok(hash_root(&v1.message))
-            }
+            versioned::BuilderVersion::V1 => self
+                .0
+                .message_root()
+                .ok_or(SignedDataError::MissingV1Registration),
             versioned::BuilderVersion::Unknown => Err(SignedDataError::UnknownVersion),
         }
     }
@@ -748,7 +746,7 @@ impl SignedData for SignedRandao {
     }
 
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
-        Ok(hash_root(&self.0))
+        Ok(self.0.message_root())
     }
 }
 
@@ -791,7 +789,7 @@ impl SignedData for BeaconCommitteeSelection {
     }
 
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
-        Ok(hash_root(&self.0.slot))
+        Ok(self.0.message_root())
     }
 }
 
@@ -827,12 +825,7 @@ impl SignedData for SyncCommitteeSelection {
     }
 
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
-        let data = altair::SyncAggregatorSelectionData {
-            slot: self.0.slot,
-            subcommittee_index: self.0.subcommittee_index,
-        };
-
-        Ok(hash_root(&data))
+        Ok(self.0.message_root())
     }
 }
 
@@ -953,19 +946,7 @@ impl SignedData for VersionedSignedAggregateAndProof {
             return Err(SignedDataError::UnknownVersion);
         }
 
-        Ok(match &self.0.aggregate_and_proof {
-            versioned::SignedAggregateAndProofPayload::Phase0(payload)
-            | versioned::SignedAggregateAndProofPayload::Altair(payload)
-            | versioned::SignedAggregateAndProofPayload::Bellatrix(payload)
-            | versioned::SignedAggregateAndProofPayload::Capella(payload)
-            | versioned::SignedAggregateAndProofPayload::Deneb(payload) => {
-                hash_root(&payload.message)
-            }
-            versioned::SignedAggregateAndProofPayload::Electra(payload)
-            | versioned::SignedAggregateAndProofPayload::Fulu(payload) => {
-                hash_root(&payload.message)
-            }
-        })
+        self.0.message_root().ok_or(SignedDataError::UnknownVersion)
     }
 }
 
@@ -1046,7 +1027,7 @@ impl SignedData for SignedSyncMessage {
     }
 
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
-        Ok(self.0.beacon_block_root)
+        Ok(self.0.message_root())
     }
 }
 
@@ -1082,12 +1063,7 @@ impl SignedData for SyncContributionAndProof {
     }
 
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
-        let data = altair::SyncAggregatorSelectionData {
-            slot: self.0.contribution.slot,
-            subcommittee_index: self.0.contribution.subcommittee_index,
-        };
-
-        Ok(hash_root(&data))
+        Ok(self.0.selection_proof_message_root())
     }
 }
 
@@ -1123,7 +1099,7 @@ impl SignedData for SignedSyncContributionAndProof {
     }
 
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
-        Ok(hash_root(&self.0.message))
+        Ok(self.0.message_root())
     }
 }
 
