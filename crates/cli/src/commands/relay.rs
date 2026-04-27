@@ -429,19 +429,7 @@ mod tests {
                 args.debug_monitoring.monitor_addr = Some(monitoring_addr);
             },
             async move |_cfg| {
-                let request = async || {
-                    reqwest::get(&monitoring_url)
-                        .await
-                        .and_then(|r| r.error_for_status())
-                };
-
-                let mut backoff = backon::ExponentialBuilder::default()
-                    .with_min_delay(time::Duration::from_millis(200))
-                    .with_max_delay(time::Duration::from_secs(2))
-                    .with_factor(1.0)
-                    .with_max_times(8)
-                    .build();
-                let response = request.retry(&mut backoff).await.unwrap();
+                let response = retry_get(&monitoring_url).await.unwrap();
                 let body = response.text().await.unwrap();
 
                 // Check prometheus text format is returned
@@ -543,12 +531,11 @@ mod tests {
         path: &str,
     ) -> Result<reqwest::Response, reqwest::Error> {
         let http_address = cfg.http_addr.unwrap();
-        let request = async || {
-            reqwest::get(format!("http://{}{}", http_address, path))
-                .await
-                .and_then(|r| r.error_for_status())
-        };
+        retry_get(&format!("http://{}{}", http_address, path)).await
+    }
 
+    async fn retry_get(url: &str) -> Result<reqwest::Response, reqwest::Error> {
+        let request = async || reqwest::get(url).await.and_then(|r| r.error_for_status());
         let mut backoff = backon::ExponentialBuilder::default()
             .with_min_delay(time::Duration::from_millis(200))
             .with_max_delay(time::Duration::from_secs(2))
