@@ -175,10 +175,10 @@ impl Client {
 
     /// Completes the client once and publishes the result to all waiters.
     pub(crate) fn finish(&self, result: Result<()>) {
-        self.request_stop();
-
         let should_send = {
             let mut state = self.write_state();
+            state.active = false;
+            state.connected = false;
             state.outbound_claimed = false;
             if state.finished {
                 false
@@ -188,6 +188,7 @@ impl Client {
             }
         };
 
+        self.set_stop_requested(true);
         if should_send {
             let _ = self.inner.done_tx.send(Some(result));
         }
