@@ -237,7 +237,7 @@ fn log_relay_event(relay_event: relay::client::Event, cluster_info: &ClusterInfo
             renewal,
             limit,
         } => {
-            debug!(
+            info!(
                 relay_peer_id = %relay_peer_id,
                 renewal,
                 limit = ?limit,
