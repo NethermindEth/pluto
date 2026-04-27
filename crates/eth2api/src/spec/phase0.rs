@@ -3,8 +3,8 @@
 //! See: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md>
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use tree_hash::TreeHash;
 use ssz_derive::{Decode, Encode};
+use tree_hash::TreeHash;
 use tree_hash_derive::TreeHash;
 
 pub use pluto_ssz::{BitList, SszList, SszVector};

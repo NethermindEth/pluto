@@ -51,7 +51,10 @@ pub fn support_pregen_registrations(version: &str) -> bool {
 /// deposits.
 #[must_use]
 pub fn support_partial_deposits(version: &str) -> bool {
-    !matches!(version, V1_0 | V1_1 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7)
+    !matches!(
+        version,
+        V1_0 | V1_1 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7
+    )
 }
 
 /// Returns true if the provided cluster lock version supports node signatures.
@@ -63,8 +66,8 @@ pub fn support_node_signatures(version: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        V1_0, V1_1, V1_2, V1_3, V1_4, V1_5, V1_6, V1_7, V1_8, V1_9, V1_10,
-        support_node_signatures, support_partial_deposits, support_pregen_registrations,
+        V1_0, V1_1, V1_2, V1_3, V1_4, V1_5, V1_6, V1_7, V1_8, V1_9, V1_10, support_node_signatures,
+        support_partial_deposits, support_pregen_registrations,
     };
     use test_case::test_case;
 

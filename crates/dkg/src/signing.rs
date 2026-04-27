@@ -70,7 +70,8 @@ pub enum SigningError {
     /// No deposit message was produced for a DV's public key.
     #[error("deposit message not found for pubkey")]
     MissingDepositMsg,
-    /// A partial deposit signature failed verification against its public share.
+    /// A partial deposit signature failed verification against its public
+    /// share.
     #[error("invalid deposit data partial signature from share {share_idx} for pubkey {pubkey}")]
     InvalidDepositPartialSignature {
         /// 1-indexed share index carried on the partial signature.
@@ -84,8 +85,11 @@ pub enum SigningError {
         /// DV public key the aggregate signature belongs to.
         pubkey: String,
     },
-    /// Pluto's own freshly generated partial deposit signature failed local verification.
-    #[error("locally generated deposit data partial signature failed verification for share {share_idx} pubkey {pubkey}")]
+    /// Pluto's own freshly generated partial deposit signature failed local
+    /// verification.
+    #[error(
+        "locally generated deposit data partial signature failed verification for share {share_idx} pubkey {pubkey}"
+    )]
     InvalidLocalDepositPartialSignature {
         /// 1-indexed share index for this Pluto node.
         share_idx: u64,
@@ -250,12 +254,13 @@ fn sign_deposit_msgs(
 
         let raw_sig = BlstImpl.sign(&share.secret_share, signing_root.as_ref())?;
         let pk = PubKey::new(share.pub_key);
-        let local_pubshare = share.public_shares.get(&(share_idx as u64)).ok_or_else(|| {
-            SigningError::InvalidLocalDepositPartialSignature {
+        let local_pubshare = share
+            .public_shares
+            .get(&(share_idx as u64))
+            .ok_or_else(|| SigningError::InvalidLocalDepositPartialSignature {
                 share_idx: share_idx as u64,
                 pubkey: pk.to_string(),
-            }
-        })?;
+            })?;
         BlstImpl
             .verify(local_pubshare, signing_root.as_ref(), &raw_sig)
             .map_err(|_| SigningError::InvalidLocalDepositPartialSignature {

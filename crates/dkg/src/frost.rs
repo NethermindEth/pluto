@@ -423,7 +423,11 @@ fn encode_secret_share(
 fn kryptology_context_byte(dkg_ctx: &str) -> u8 {
     // Match Obol kryptology's `strconv.Atoi(ctx)` + `byte(ctxV)` behavior.
     // Invalid decimal strings (such as "0x<definition-hash>") become 0.
-    dkg_ctx.parse::<i64>().map(|value| value as u8).unwrap_or(0)
+    dkg_ctx
+        .parse::<i64>()
+        .ok()
+        .and_then(|value| u8::try_from(value.rem_euclid(256)).ok())
+        .unwrap_or(0)
 }
 
 // ── Proto conversion helpers ────────────────────────────────────────────────
@@ -638,7 +642,8 @@ mod tests {
         let pubshare = BlstImpl
             .secret_to_public_key(&secret_share)
             .expect("public share");
-        let expected_pubshare = G1Affine::from(key_pkg.verifying_share().to_element()).to_compressed();
+        let expected_pubshare =
+            G1Affine::from(key_pkg.verifying_share().to_element()).to_compressed();
 
         assert_eq!(pubshare, expected_pubshare);
         drop(shares_1);

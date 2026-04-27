@@ -589,7 +589,7 @@ mod tests {
     use pluto_cluster::{
         definition::{Creator, Definition},
         operator::Operator,
-        version::{V1_10, V1_7},
+        version::{V1_7, V1_10},
     };
 
     fn test_definition(version: &str, deposit_amounts: Vec<u64>, compounding: bool) -> Definition {

@@ -133,7 +133,9 @@ impl ConnectionHandler for Handler {
                 protocol: mut stream,
                 ..
             }) => {
-                self.inbound = Some(Box::pin(async move { read_inbound_message(&mut stream).await }));
+                self.inbound = Some(Box::pin(
+                    async move { read_inbound_message(&mut stream).await },
+                ));
             }
             ConnectionEvent::FullyNegotiatedOutbound(FullyNegotiatedOutbound {
                 protocol: mut stream,
@@ -197,78 +199,6 @@ impl ConnectionHandler for Handler {
         }
 
         Poll::Pending
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{
-        io,
-        pin::Pin,
-        task::{Context, Poll},
-    };
-
-    use futures::io::Cursor;
-
-    use super::*;
-
-    struct CloseTrackingStream {
-        read_buf: Cursor<Vec<u8>>,
-        close_count: usize,
-    }
-
-    impl CloseTrackingStream {
-        fn new(bytes: Vec<u8>) -> Self {
-            Self {
-                read_buf: Cursor::new(bytes),
-                close_count: 0,
-            }
-        }
-    }
-
-    impl futures::AsyncRead for CloseTrackingStream {
-        fn poll_read(
-            mut self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-            buf: &mut [u8],
-        ) -> Poll<io::Result<usize>> {
-            Pin::new(&mut self.read_buf).poll_read(cx, buf)
-        }
-    }
-
-    impl futures::AsyncWrite for CloseTrackingStream {
-        fn poll_write(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-            _buf: &[u8],
-        ) -> Poll<io::Result<usize>> {
-            Poll::Ready(Ok(0))
-        }
-
-        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-            Poll::Ready(Ok(()))
-        }
-
-        fn poll_close(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-            self.close_count += 1;
-            Poll::Ready(Ok(()))
-        }
-    }
-
-    #[tokio::test]
-    async fn inbound_read_closes_stream_after_message() {
-        let msg = FrostRound1P2p::default();
-        let mut writer = Cursor::new(Vec::new());
-        pluto_p2p::proto::write_length_delimited(&mut writer, &msg.encode_to_vec())
-            .await
-            .expect("message should encode");
-        let bytes = writer.into_inner();
-
-        let mut stream = CloseTrackingStream::new(bytes);
-        let decoded = read_inbound_message(&mut stream).await;
-
-        assert!(decoded.is_some(), "message should decode successfully");
-        assert_eq!(stream.close_count, 1, "inbound stream must be closed");
     }
 }
 
@@ -408,5 +338,80 @@ impl NetworkBehaviour for FrostP2PBehaviour {
         }
 
         Poll::Pending
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io,
+        pin::Pin,
+        task::{Context, Poll},
+    };
+
+    use futures::io::Cursor;
+
+    use super::*;
+
+    struct CloseTrackingStream {
+        read_buf: Cursor<Vec<u8>>,
+        close_count: usize,
+    }
+
+    impl CloseTrackingStream {
+        fn new(bytes: Vec<u8>) -> Self {
+            Self {
+                read_buf: Cursor::new(bytes),
+                close_count: 0,
+            }
+        }
+    }
+
+    impl futures::AsyncRead for CloseTrackingStream {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut [u8],
+        ) -> Poll<io::Result<usize>> {
+            Pin::new(&mut self.read_buf).poll_read(cx, buf)
+        }
+    }
+
+    impl futures::AsyncWrite for CloseTrackingStream {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(0))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            self.close_count = self
+                .close_count
+                .checked_add(1)
+                .expect("close count should not overflow");
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn inbound_read_closes_stream_after_message() {
+        let msg = FrostRound1P2p::default();
+        let mut writer = Cursor::new(Vec::new());
+        pluto_p2p::proto::write_length_delimited(&mut writer, &msg.encode_to_vec())
+            .await
+            .expect("message should encode");
+        let bytes = writer.into_inner();
+
+        let mut stream = CloseTrackingStream::new(bytes);
+        let decoded = read_inbound_message(&mut stream).await;
+
+        assert!(decoded.is_some(), "message should decode successfully");
+        assert_eq!(stream.close_count, 1, "inbound stream must be closed");
     }
 }

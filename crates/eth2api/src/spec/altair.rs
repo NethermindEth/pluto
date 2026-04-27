@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use tree_hash::TreeHash;
 use ssz_derive::{Decode, Encode};
+use tree_hash::TreeHash;
 use tree_hash_derive::TreeHash;
 
 use pluto_ssz::BitVector;
