@@ -125,8 +125,7 @@ async fn memdb_threshold() {
             }
         }
     }))
-    .await
-    .expect("subscription should succeed");
+    .await;
 
     let pubkey = random_core_pub_key();
     let attestation = testutil::random_deneb_versioned_attestation();
