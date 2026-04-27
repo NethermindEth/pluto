@@ -26,11 +26,19 @@ PLUTO_NODES=0 CHARON_NODES=4 ./scripts/dkg-runner/run.sh
 # 1 Pluto + 3 Charon
 NODES=4 THRESHOLD=3 PLUTO_NODES=1 CHARON_NODES=3 ./scripts/dkg-runner/run.sh
 
+# Run a single node manually after setup
+./scripts/dkg-runner/setup.sh
+./scripts/dkg-runner/run-node.sh 0 charon
+./scripts/dkg-runner/run-node.sh 1 pluto
+
 # Release binary, custom relay, longer timeout
 PLUTO_BIN=./target/release/pluto \
 RELAY_URL=https://relay.obol.tech \
 TIMEOUT=300 \
 ./scripts/dkg-runner/run.sh
+
+# Keep nodes running after a successful ceremony for inspection
+KEEP_NODES=1 ./scripts/dkg-runner/run.sh
 
 # Run multiple times back-to-back
 for i in $(seq 1 5); do ./scripts/dkg-runner/run.sh; done
@@ -54,6 +62,7 @@ All variables are optional. Set them in the environment before calling any scrip
 | `PLUTO_BIN` | `./target/debug/pluto` | Path to the Pluto binary |
 | `CHARON_BIN` | `charon` | Path to the Charon binary |
 | `WORK_DIR` | `/tmp/dkg-run` | Scratch directory — wiped at the start of every run |
+| `KEEP_NODES` | `0` | Leave node processes running after a successful ceremony when set to `1`, `true`, or `yes` |
 
 `PLUTO_NODES + CHARON_NODES` must equal `NODES`.
 
@@ -64,10 +73,11 @@ All variables are optional. Set them in the environment before calling any scrip
 | 1 | `setup.sh` | Wipes `WORK_DIR`, creates `node-0/`…`node-N/` data dirs, generates a p2p key + ENR for each node (`pluto create enr` / `charon create enr`), then runs `charon create dkg --operator-enrs=…` |
 | 2 | `start-nodes.sh` | Starts Pluto nodes (slots 0…PLUTO_NODES-1) and Charon nodes (remaining slots) as background processes; logs to `node-N/node.log` |
 | 3 | `monitor.sh` | Polls logs for completion signals; prints live progress; exits 0 when all nodes complete, 1 on timeout |
-| 4 | *(inline)* | Sends SIGTERM to all node processes |
+| 4 | *(inline)* | Sends SIGTERM to all node processes unless `KEEP_NODES` is enabled |
 | 5 | `collect.sh` | Copies keystores and `cluster-lock.json` to `WORK_DIR/output/`; prints a summary |
 
 On success, outputs are under `$WORK_DIR/output/`. On failure or timeout, partial outputs are collected before cleanup.
+If `KEEP_NODES` is enabled, successful runs leave the node processes running; use `./scripts/dkg-runner/reset.sh` to stop them later.
 
 Ctrl-C at any point kills all nodes cleanly via a SIGINT trap.
 
@@ -79,6 +89,7 @@ Ctrl-C at any point kills all nodes cleanly via a SIGINT trap.
 | `run.sh` | Main entry point — runs all phases in order (plain terminal) |
 | `setup.sh` | Creates the cluster definition and data directories |
 | `start-nodes.sh` | Launches node processes in the background |
+| `run-node.sh` | Runs a single node in the foreground: `run-node.sh <index> <pluto|charon>` |
 | `monitor.sh` | Waits for ceremony completion or timeout |
 | `collect.sh` | Gathers keystores and lock file into `output/` |
 | `reset.sh` | Kills all nodes and removes `WORK_DIR` |
@@ -90,6 +101,7 @@ Each script is independently runnable if you need to step through phases manuall
 # Step through manually
 ./scripts/dkg-runner/setup.sh
 ./scripts/dkg-runner/start-nodes.sh
+./scripts/dkg-runner/run-node.sh 0 pluto
 ./scripts/dkg-runner/monitor.sh
 ./scripts/dkg-runner/collect.sh
 ./scripts/dkg-runner/reset.sh

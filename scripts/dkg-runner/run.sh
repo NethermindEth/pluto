@@ -17,6 +17,8 @@
 #   CHARON_BIN=charon    Path to the Charon binary.
 #   WORK_DIR=/tmp/dkg-run
 #                        Scratch directory for the run (wiped on every call).
+#   KEEP_NODES=0         Leave nodes running after a successful ceremony when
+#                        set to 1/true/yes.
 #   NETWORK=holesky      Ethereum network for the cluster definition.
 #   FEE_RECIPIENT=0xDeaD...
 #                        Fee recipient address passed to charon create dkg.
@@ -68,6 +70,13 @@ trap '_cleanup' INT TERM
 
 # ── Main flow ────────────────────────────────────────────────────────────────
 
+should_keep_nodes() {
+    case "${KEEP_NODES}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 echo "[run] =============================================="
 echo "[run] DKG runner starting"
 echo "[run]   NODES        = ${NODES}"
@@ -80,6 +89,7 @@ echo "[run]   TIMEOUT      = ${TIMEOUT}s"
 echo "[run]   PLUTO_BIN    = ${PLUTO_BIN}"
 echo "[run]   CHARON_BIN   = ${CHARON_BIN}"
 echo "[run]   WORK_DIR     = ${WORK_DIR}"
+echo "[run]   KEEP_NODES   = ${KEEP_NODES}"
 echo "[run] =============================================="
 
 echo "[run] --- Phase 1: Setup ---"
@@ -103,17 +113,21 @@ if (( monitor_exit != 0 )); then
     exit 1
 fi
 
-echo "[run] --- Phase 4: Kill nodes (ceremony complete) ---"
-# Kill all nodes cleanly.  Nodes may already have exited on their own after
-# completing the ceremony, so we suppress errors here.
-PID_FILE="${WORK_DIR}/pids"
-if [[ -f "${PID_FILE}" ]]; then
-    while IFS= read -r pid; do
-        [[ -z "${pid}" ]] && continue
-        if kill -0 "${pid}" 2>/dev/null; then
-            kill -TERM "${pid}" 2>/dev/null || true
-        fi
-    done < "${PID_FILE}"
+if should_keep_nodes; then
+    echo "[run] --- Phase 4: Keep nodes running (ceremony complete) ---"
+else
+    echo "[run] --- Phase 4: Kill nodes (ceremony complete) ---"
+    # Kill all nodes cleanly.  Nodes may already have exited on their own after
+    # completing the ceremony, so we suppress errors here.
+    PID_FILE="${WORK_DIR}/pids"
+    if [[ -f "${PID_FILE}" ]]; then
+        while IFS= read -r pid; do
+            [[ -z "${pid}" ]] && continue
+            if kill -0 "${pid}" 2>/dev/null; then
+                kill -TERM "${pid}" 2>/dev/null || true
+            fi
+        done < "${PID_FILE}"
+    fi
 fi
 
 echo "[run] --- Phase 5: Collect outputs ---"
@@ -122,6 +136,9 @@ echo "[run] --- Phase 5: Collect outputs ---"
 echo "[run] =============================================="
 echo "[run] DKG ceremony completed successfully."
 echo "[run] Outputs available in: ${WORK_DIR}/output"
+if should_keep_nodes; then
+    echo "[run] Node processes were left running. Use ./scripts/dkg-runner/reset.sh to stop them."
+fi
 echo "[run] =============================================="
 
 # Disarm the trap before a clean exit.

@@ -14,6 +14,7 @@
 : "${PLUTO_BIN:=./target/debug/pluto}"
 : "${CHARON_BIN:=charon}"
 : "${WORK_DIR:=/tmp/dkg-run}"
+: "${KEEP_NODES:=0}"
 : "${NETWORK:=holesky}"
 : "${FEE_RECIPIENT:=0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF}"
 : "${WITHDRAWAL_ADDR:=0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF}"

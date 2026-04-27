@@ -2,7 +2,7 @@ use std::{path, time::Duration};
 
 use bon::Builder;
 use pluto_cluster::version::{
-    MIN_VERSION_FOR_PARTIAL_DEPOSITS, support_node_signatures, support_pregen_registrations,
+    support_node_signatures, support_partial_deposits, support_pregen_registrations,
 };
 use pluto_eth2util::{
     deposit::{dedup_amounts, default_deposit_amounts},
@@ -174,6 +174,18 @@ fn default_tracing_config() -> pluto_tracing::TracingConfig {
         .build()
 }
 
+fn resolve_deposit_amounts(definition: &pluto_cluster::definition::Definition) -> Vec<u64> {
+    if definition.deposit_amounts.is_empty() {
+        if support_partial_deposits(&definition.version) {
+            default_deposit_amounts(definition.compounding)
+        } else {
+            vec![pluto_eth2util::deposit::DEFAULT_DEPOSIT_AMOUNT]
+        }
+    } else {
+        dedup_amounts(&definition.deposit_amounts)
+    }
+}
+
 /// Errors that can arise in the DKG backend (beyond preflight).
 #[derive(Debug, thiserror::Error)]
 pub enum BackendError {
@@ -326,15 +338,7 @@ async fn run_ceremony(
     sync.next_step(ct.child_token()).await?; // step 1 → 2
 
     // ── Deposit data ──────────────────────────────────────────────────────────
-    let deposit_amounts: Vec<u64> = if definition.deposit_amounts.is_empty() {
-        if definition.version.as_str() >= MIN_VERSION_FOR_PARTIAL_DEPOSITS {
-            default_deposit_amounts(definition.compounding)
-        } else {
-            vec![pluto_eth2util::deposit::DEFAULT_DEPOSIT_AMOUNT]
-        }
-    } else {
-        dedup_amounts(&definition.deposit_amounts)
-    };
+    let deposit_amounts = resolve_deposit_amounts(&definition);
 
     let deposit_datas = crate::signing::sign_and_agg_deposit_data(
         &exchanger,
@@ -424,6 +428,12 @@ async fn run_ceremony(
 
     sync.next_step(ct.child_token()).await?; // step 6 → 7
     sync.stop(ct.child_token()).await?;
+
+    debug!(
+        delay_secs = conf.shutdown_delay.as_secs_f64(),
+        "Graceful shutdown delay"
+    );
+    tokio::time::sleep(conf.shutdown_delay).await;
 
     info!("DKG ceremony complete 🎉");
     Ok(())
@@ -576,6 +586,33 @@ async fn verify_keymanager_connection(conf: &Config) -> Result<(), DkgError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pluto_cluster::{
+        definition::{Creator, Definition},
+        operator::Operator,
+        version::{V1_10, V1_7},
+    };
+
+    fn test_definition(version: &str, deposit_amounts: Vec<u64>, compounding: bool) -> Definition {
+        let mut definition = Definition::new(
+            "test".into(),
+            1,
+            1,
+            vec!["0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF".into()],
+            vec!["0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF".into()],
+            "0x01017000".to_string(),
+            Creator::default(),
+            vec![Operator::default()],
+            deposit_amounts,
+            String::new(),
+            30_000_000,
+            compounding,
+            Vec::new(),
+        )
+        .unwrap();
+        definition.version = version.to_string();
+
+        definition
+    }
 
     #[test]
     fn config_builder_defaults_match_charon() {
@@ -725,5 +762,28 @@ mod tests {
             err,
             DkgError::Disk(crate::disk::DiskError::MissingRequiredFiles { .. })
         ));
+    }
+
+    #[test]
+    fn resolve_deposit_amounts_defaults_partial_deposits_for_v1_10() {
+        let definition = test_definition(V1_10, Vec::new(), false);
+
+        assert_eq!(
+            resolve_deposit_amounts(&definition),
+            vec![
+                pluto_eth2util::deposit::MIN_DEPOSIT_AMOUNT,
+                pluto_eth2util::deposit::DEFAULT_DEPOSIT_AMOUNT,
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_deposit_amounts_defaults_single_deposit_before_partial_support() {
+        let definition = test_definition(V1_7, Vec::new(), false);
+
+        assert_eq!(
+            resolve_deposit_amounts(&definition),
+            vec![pluto_eth2util::deposit::DEFAULT_DEPOSIT_AMOUNT]
+        );
     }
 }
