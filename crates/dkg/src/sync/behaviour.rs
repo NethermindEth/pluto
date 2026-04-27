@@ -209,11 +209,7 @@ mod tests {
         command_rx: mpsc::UnboundedReceiver<Command>,
     ) -> Behaviour {
         let version = SemVer::parse("v1.7").expect("valid version");
-        Behaviour::new(
-            Server::new(1, vec![1, 2, 3], version),
-            [client],
-            command_rx,
-        )
+        Behaviour::new(Server::new(1, vec![1, 2, 3], version), [client], command_rx)
     }
 
     fn test_behaviour(client: Client) -> Behaviour {

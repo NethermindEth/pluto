@@ -244,7 +244,7 @@ impl Server {
                     entry.insert(step);
                 }
                 Entry::Vacant(entry) => {
-                    if step < 0 || step > 1 {
+                    if !(0..=1).contains(&step) {
                         return Err(Error::AbnormalInitialStep);
                     }
 

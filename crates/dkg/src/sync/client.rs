@@ -177,7 +177,8 @@ impl Client {
         self.inner.stop_tx.subscribe()
     }
 
-    /// Marks the client active and asks the behaviour to open an outbound stream.
+    /// Marks the client active and asks the behaviour to open an outbound
+    /// stream.
     pub(crate) fn activate(&self) -> Result<()> {
         self.inner.active.store(true, Ordering::SeqCst);
         self.set_stop_requested(false);
@@ -201,7 +202,8 @@ impl Client {
         self.set_stop_requested(true);
     }
 
-    /// Updates the stop flag without waking watchers when the value is unchanged.
+    /// Updates the stop flag without waking watchers when the value is
+    /// unchanged.
     fn set_stop_requested(&self, stop_requested: bool) {
         self.inner.stop_tx.send_if_modified(|current| {
             if *current == stop_requested {
