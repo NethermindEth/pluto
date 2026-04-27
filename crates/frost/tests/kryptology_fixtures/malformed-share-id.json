@@ -1,0 +1,96 @@
+{
+  "scenario": "malformed-share-id",
+  "threshold": 2,
+  "max_signers": 3,
+  "ctx": 0,
+  "participants": [
+    {
+      "id": 1,
+      "own_share": "5a003ff621865347e52d252e6d1be691b9431caf11585cdbbb4b770e848f1d5a",
+      "round1_bcast": {
+        "commitments": [
+          "883e25f48cabc48002e04f7eb58482dbeed7aea6cb0af4160f1d39ce830036f534ee3def786e342d0aa0fe3504840b5a",
+          "a9ca86507b03fe948b81b2eedf8f692fa08a60ebf2fab5042fd4a314ad39e0aed933ebab3bdbd2167d39a4ea6ea4de7f"
+        ],
+        "wi": "3d72a1abdf3e71f5fbd0b18e1b4d7ccf21947d045ef88054474b6c62203b6ed0",
+        "ci": "032ee5e8bf5c4bf510daa1d434b9cfc448a935a8df10d8393ee9d32d3e9798e9"
+      },
+      "shares_sent": [
+        {
+          "to": 2,
+          "id": 3,
+          "value": "3b77bd501fc44e3302a2d22082d7c779e8780986ecfba8e817b37a08026365fd"
+        },
+        {
+          "to": 3,
+          "id": 3,
+          "value": "1cef3aaa1e02491e20187f129893a86217acf65ec89ef4f4741b7d018037aea0"
+        }
+      ],
+      "expected_round2": {
+        "kind": "success",
+        "verification_key": "ab2761905e0a0400fc6b5b9b8a309bc68102cbaa9f54801f3bf1bd61072c6e21dca51d4cdb26ee16dd96583dadaf3a45",
+        "vk_share": "a248443c0eab2131e2430700a02fd0ea797856ffc407fb8c980aa4ea015455c3cad0799e4e16de3053db73fe1d17a2cc",
+        "signing_share": "2091fc8168c8e615be05d2382f9b940f95711e63c0d775d4ae9b4518feef321e"
+      }
+    },
+    {
+      "id": 2,
+      "own_share": "1e8152a8e8d089fcb7eb4c8d88696c5a8ccaa96969e7873562ba53373d7c5b06",
+      "round1_bcast": {
+        "commitments": [
+          "b87c923a2070b0dd6072593237b60cdc944c229c4b5b0b14b6124dbeda3ec7b572c844b26de0dbf462205c775dd2d041",
+          "a544de0ac6d1e324d877bc9430f57cd5a06127feb13d51de3be1c45b824e0816f066bd8bbec1ff40264001a7466de305"
+        ],
+        "wi": "22317987a9fde571a811960e109559c92c03cf2fb961935334be97f1636c0e8e",
+        "ci": "2d22b1dfeeb27df560dfb9fad565d747340d01df9e678d8be7a7edc64ba1e25b"
+      },
+      "shares_sent": [
+        {
+          "to": 1,
+          "id": 1,
+          "value": "4fcda7ddf2e27adef98bb60ceb024a961b06f73dd312b9f77bff6d95bcb3451c"
+        },
+        {
+          "to": 3,
+          "id": 3,
+          "value": "6122a4c7085c1662a984bb162f726624524bff9800bab072497538d7be4570f1"
+        }
+      ],
+      "expected_round2": {
+        "kind": "invalid_share",
+        "culprit": 1
+      }
+    },
+    {
+      "id": 3,
+      "own_share": "681887db99f3584ee8d5b3c3ea980beae36f032b7a9f793acb2a0c985e90cf10",
+      "round1_bcast": {
+        "commitments": [
+          "90b0825a65430965219c3d1356b065ac3fbc59c98917d82842ec614f933f87d6c54e96368febbb1e06136f40cc4ebd69",
+          "88e449375604235bf195f04bfdbc15811def80697916e0c0cbd78b85d7509004d722ac46d522a93f0e8d0f53cd4271c7"
+        ],
+        "wi": "33bae1ae3df865782681200578a54d295985c8015a8957942e8d8be7a53e9b0a",
+        "ci": "4998088840ea240616e56aef6150813b30958419e3eabe5e52ed8b139eae4626"
+      },
+      "shares_sent": [
+        {
+          "to": 1,
+          "id": 1,
+          "value": "5e9f6353a79b127f45c0a70ceac112f268a2527cdc6916ff77506072bdaccfaa"
+        },
+        {
+          "to": 2,
+          "id": 2,
+          "value": "635bf597a0c73567174b2d686aac8f6ea608aad42b84481d213d36858e1ecf5d"
+        }
+      ],
+      "expected_round2": {
+        "kind": "success",
+        "verification_key": "ab2761905e0a0400fc6b5b9b8a309bc68102cbaa9f54801f3bf1bd61072c6e21dca51d4cdb26ee16dd96583dadaf3a45",
+        "vk_share": "95e4e1281513eafc4129a144fe689c120f8a81c1e77b62a510321be725fa081706d183dc1e4d74a59dfe9c00a2e1129d",
+        "signing_share": "723cbff996b43a877f3915e4a8fc426bf9aa551f43fac2a288bac2729d0deea0"
+      }
+    }
+  ]
+}

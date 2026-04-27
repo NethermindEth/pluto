@@ -18,6 +18,7 @@ members = [
     "crates/testutil",
     "crates/tracing",
     "crates/peerinfo",
+    "crates/frost",
 ]
 resolver = "3"
 
@@ -120,6 +121,7 @@ pluto-testutil = { path = "crates/testutil" }
 pluto-tracing = { path = "crates/tracing" }
 pluto-p2p = { path = "crates/p2p" }
 pluto-peerinfo = { path = "crates/peerinfo" }
+pluto-frost = { path = "crates/frost" }
 
 [workspace.lints.rust]
 missing_docs = "deny"

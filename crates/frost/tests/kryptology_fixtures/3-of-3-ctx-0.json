@@ -1,0 +1,101 @@
+{
+  "scenario": "3-of-3-ctx-0",
+  "threshold": 3,
+  "max_signers": 3,
+  "ctx": 0,
+  "participants": [
+    {
+      "id": 1,
+      "own_share": "0492e87deb89041f39fb02ef29e34a5e56b2866e34d1d0bc424cb782dc8eec01",
+      "round1_bcast": {
+        "commitments": [
+          "96fe8b3ef10133d9e30991a9347a08d9d684e5f0c22e960877993e7f8cc1965fcd525c654c1cf28cf8b14cc96abaa046",
+          "b8ee7a50aa1fdbd81b60644ee2f256f11b14165b5be57b8e4091bd55ccd2fe60536ede23677e96d7e5328dc60d00f097",
+          "b0463740d12d80a834d87f66f50dca6b5860872092e5e6cb1d438488a02f1c016d017a009ff606956862e9a341abe9a9"
+        ],
+        "wi": "3b07c49d669794cbb3b09c338975ccc369ba1b9926e479cdb93f3c537f04ddc9",
+        "ci": "445a769c5e06a2ce71b7ea4664ef197837d11a342ac4e618b7f106cdd79d5b0a"
+      },
+      "shares_sent": [
+        {
+          "to": 2,
+          "id": 2,
+          "value": "0e152b19bf45bbe122f40593f4b47b6cd196a468e3a8e22e949c7807f16b4196"
+        },
+        {
+          "to": 3,
+          "id": 3,
+          "value": "6d1f077dc51978f69ffff1f8dbcff11337942cb3ba344891f368626aea771c65"
+        }
+      ],
+      "expected_round2": {
+        "kind": "success",
+        "verification_key": "b67cc957b409abf46072441ca39f38f3c4475f83054a70ae6a622226fcfe12112782400d3213d8925b5ee40a1dc79514",
+        "vk_share": "855e8c7950a705f29afe4190c0387e3eab5a5b4096ac89e4d7bc9ef5ab29e0833f478b389e3d3e90b4d5ddc576420a88",
+        "signing_share": "732e6f52828c69371fb185c8ce16a516cb6a8100616b3dd57c10c09c0a827b43"
+      }
+    },
+    {
+      "id": 2,
+      "own_share": "3c9d784f782cf9a7fe2ce1a66bb3704bf971d5b2e287ee78234abb3bb6329862",
+      "round1_bcast": {
+        "commitments": [
+          "b497486677c8e128032d80378a0f4bcdb4b355e461e42bd627c4ef7d9b5a4f9f84058e82908d715c143381c3c3502f98",
+          "957d0a403152ef8ddefa27198ef5b29657ea1aa1b37b0604ab15448dfec2c3bb2693ec0bd1871aa6edfa2bfc70647124",
+          "a409004071377662c431e7d4600f69bc2b1c4f17ff309746361dba309ea15b411b4045f8a2d4116b9e69b0e281e5e1e7"
+        ],
+        "wi": "39efdb83bc0c0721c79f70098b51e0b9c600d22ad20768f75177cfde7ace7bf3",
+        "ci": "0d929e099f0aeaecd7bbf0d4e0c0bfbf83760ed7097868803dc6fc7947b32355"
+      },
+      "shares_sent": [
+        {
+          "to": 1,
+          "id": 1,
+          "value": "5ef15fc54fb3cd0413255d2ef5bf7e4557047a88e00b83274c9e667a0989ca18"
+        },
+        {
+          "to": 3,
+          "id": 3,
+          "value": "15ca8516d0b92fcfb67ec74fd2c0bc195e27051506ba90c810f700145c20cafb"
+        }
+      ],
+      "expected_round2": {
+        "kind": "success",
+        "verification_key": "b67cc957b409abf46072441ca39f38f3c4475f83054a70ae6a622226fcfe12112782400d3213d8925b5ee40a1dc79514",
+        "vk_share": "b9da3e740ab266b479bc0c39b0ea8fda261ef24df18a34310e77b302d20275e7743b6f17cd9b9ed1052ea10f4924e4d0",
+        "signing_share": "2077c7d5feab13d2404d658b8273056c052fc6e7291d64a35e36c42d3e71462d"
+      }
+    },
+    {
+      "id": 3,
+      "own_share": "495275c3d50c4b19f69c13c0c068ec146a62020e811bf717701527f80d0fb758",
+      "round1_bcast": {
+        "commitments": [
+          "a3ff23a2c87d82db33ac84d8975bd687b0514600cf8a7ef48ffd76ef2596d424cf873f71c60e095069a19a0c91bd8927",
+          "972e6e4644c2e5af5883cc3cdbc0380cb9d53ee41854cacc7c19933a444d14d39c02dc410f616b001da236c9835d33bf",
+          "9440c02c432c6446fe41efea6d8990c7efd6707c7f9f1ec84efc0e2c7dfd5b6b77e9bd015e2056090eb553c270275eb9"
+        ],
+        "wi": "6249ec86b032596e931ba95b26e69d45ef323afe2bff6ed171005867df6d7d22",
+        "ci": "1daa00119cb5a1f83606a8808f2d2688f3712ed34effde90b8b67a2efaf2fe04"
+      },
+      "shares_sent": [
+        {
+          "to": 1,
+          "id": 1,
+          "value": "0faa270f474f9813d29125aaae73dc731db380094c8de9f1ed25a29f2469c52a"
+        },
+        {
+          "to": 2,
+          "id": 2,
+          "value": "49b2cbbff0d5db91526656592bacf1b88de4f0ce62eaeffba64f90e896d36c36"
+        }
+      ],
+      "expected_round2": {
+        "kind": "success",
+        "verification_key": "b67cc957b409abf46072441ca39f38f3c4475f83054a70ae6a622226fcfe12112782400d3213d8925b5ee40a1dc79514",
+        "vk_share": "8ed40869c509af07504e08226464a475385154fc26ad4f989c814f36a6ded57e1e424f66c9ffddf2b1d2fa4717cd38b2",
+        "signing_share": "584e5b054141769819e0f5016557c13bac5f8fd4420c747274748a7853a79eb7"
+      }
+    }
+  ]
+}

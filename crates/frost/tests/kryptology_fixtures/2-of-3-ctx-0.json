@@ -1,0 +1,98 @@
+{
+  "scenario": "2-of-3-ctx-0",
+  "threshold": 2,
+  "max_signers": 3,
+  "ctx": 0,
+  "participants": [
+    {
+      "id": 1,
+      "own_share": "6fe7a63102bb215f2e63c80e34a3d566272391470057cc18cb2b9f7a895d446f",
+      "round1_bcast": {
+        "commitments": [
+          "83d8ecdc5a7d2b003537db556b72d227939aa8aaf828cb3c815938532ec5c83e61de12417b5dbf632e574fc94f71f6a8",
+          "9699520ce41c1a7cea3e65a0fd38bb605908590fb436b50ff0463ea0695c7d13dbe6054949774391aeacf09ca8a093cf"
+        ],
+        "wi": "1924dfa0b455ec631a7a528f7efe3f8db92a5a4f558f95d5069299fd1a1b5fd6",
+        "ci": "169cee884e7a8d3e1aeafc96fc6f24465808f7ac7eb7ac1fbfb066ba2c024087"
+      },
+      "shares_sent": [
+        {
+          "to": 2,
+          "id": 2,
+          "value": "5525c01444985e474b3b657c3f0bd30e082a7f671601956ebc08317b42ebeb88"
+        },
+        {
+          "to": 3,
+          "id": 3,
+          "value": "3a63d9f786759b2f681302ea4973d0b5e9316d872bab5ec4ace4c37bfc7a92a1"
+        }
+      ],
+      "expected_round2": {
+        "kind": "success",
+        "verification_key": "a8b196cd671819853edff76cb77b4fa8640a92d76e238ecf33fe70144ffc16885fb9d2f4a57d22232c7925e51d1bffc3",
+        "vk_share": "8dc83405eb8edc0e88c38b13223b16d3c3bb58e3c6f273c32c478065de8faa177dfc38cacda76688adfcee318291b464",
+        "signing_share": "15c87b3e2d2d32333cf62de8bfeaaceeaaac521886eccca0f255d093680108f7"
+      }
+    },
+    {
+      "id": 2,
+      "own_share": "4e065ffa61ad2365a33d42190e91c85bd8661934ffaf23db147252909faa05a6",
+      "round1_bcast": {
+        "commitments": [
+          "a8cd4313241b0433a155fcf367c22ae226e29fc954ab9e30838ffdc2bc6a4df7baca24a05fd9bbb38f99e9d558a21cf7",
+          "95cd8b8cf649da7090cf8e562a956f37c32e342cc8e5e18470227f71811493472e02dd60ced839b9ea4accc8421c3112"
+        ],
+        "wi": "2c6af59835a5ea910aec7b411432b13a78c221caae7258340e0a9a9ea35eb47f",
+        "ci": "34fd58ac0868df644430c56faf7d849c46f54986597ff55e09bf29b0dcf158cc"
+      },
+      "shares_sent": [
+        {
+          "to": 1,
+          "id": 1,
+          "value": "43550d90fd0969c2b8badc3657501399314b9ae4fe96e191aae5ca625292b176"
+        },
+        {
+          "to": 3,
+          "id": 3,
+          "value": "58b7b263c650dd088dbfa7fbc5d37d1e7f80978500c766247dfedabeecc159d6"
+        }
+      ],
+      "expected_round2": {
+        "kind": "success",
+        "verification_key": "a8b196cd671819853edff76cb77b4fa8640a92d76e238ecf33fe70144ffc16885fb9d2f4a57d22232c7925e51d1bffc3",
+        "vk_share": "a7882f0fc549be8adaacc32a4d0a34fa3cf0d2a1363e09045db47a4017c99a6377aa387acae343a01c110d7c54981981",
+        "signing_share": "18d20bf9d4bd67bbfda0e15f3a2f7d105992491a1a65d9c30fa57bdd6a0ca2f1"
+      }
+    },
+    {
+      "id": 3,
+      "own_share": "709b5f0082c21f9d2eec99ffb870af68474183158168d9fa021188ea82dc5076",
+      "round1_bcast": {
+        "commitments": [
+          "a4c9ff28683d0dbc12f9e38b6850c6e56f91fada9749fe24530824021b9b1f5740b5eedf925a99afa420e30727f52764",
+          "b3c299d13d0032d04b321d8ec112eb7609030d90d2dca421c95288dd224fc8088ae4aac1da5266fae179575be51e272b"
+        ],
+        "wi": "07651a18f871afe03c190d594061ca5baebc352be98ad8a7385b3efc9a9d2630",
+        "ci": "240ef8016b73c0d6c98ce323141e131b7f46ed6d00716113eee75af24fb11c92"
+      },
+      "shares_sent": [
+        {
+          "to": 1,
+          "id": 1,
+          "value": "4a67162280a3a1a1bc4b39b4473a73f9f9b86df287fad6f47c4466b48c111314"
+        },
+        {
+          "to": 2,
+          "id": 2,
+          "value": "5d813a9181b2e09f759be9d9ffd591b1207cf88404b1d8773f2af7cf8776b1c5"
+        }
+      ],
+      "expected_round2": {
+        "kind": "success",
+        "verification_key": "a8b196cd671819853edff76cb77b4fa8640a92d76e238ecf33fe70144ffc16885fb9d2f4a57d22232c7925e51d1bffc3",
+        "vk_share": "b0642f02c228b4a13b87dbf6053be2aec4f162848187defb7b674f71561eb1af4c6da58616f39e0ac84eb9ff5a2a7fe6",
+        "signing_share": "1bdb9cb57c4d9d44be4b94d5b4744d320878401baddee6e52cf527276c183ceb"
+      }
+    }
+  ]
+}
