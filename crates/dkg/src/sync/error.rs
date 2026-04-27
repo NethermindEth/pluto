@@ -4,7 +4,7 @@ use libp2p::PeerId;
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Error type for the DKG sync protocol.
-#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum Error {
     /// The sync client was canceled.
     #[error("sync client canceled")]

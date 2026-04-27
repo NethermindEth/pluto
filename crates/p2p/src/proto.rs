@@ -125,13 +125,6 @@ pub async fn write_fixed_size_protobuf<M: Message, S: AsyncWrite + Unpin>(
     write_fixed_size_delimited(stream, &buf).await
 }
 
-/// Reads a protobuf message using the default maximum message size.
-pub async fn read_protobuf<M: Message + Default, S: AsyncRead + Unpin>(
-    stream: &mut S,
-) -> io::Result<M> {
-    read_protobuf_with_max_size(stream, MAX_MESSAGE_SIZE).await
-}
-
 /// Reads a protobuf message using an explicit maximum message size.
 pub async fn read_protobuf_with_max_size<M: Message + Default, S: AsyncRead + Unpin>(
     stream: &mut S,
@@ -141,11 +134,13 @@ pub async fn read_protobuf_with_max_size<M: Message + Default, S: AsyncRead + Un
     M::decode(&buf[..]).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
-/// Reads a protobuf message using fixed-size framing.
-pub async fn read_fixed_size_protobuf<M: Message + Default, S: AsyncRead + Unpin>(
+/// Reads a protobuf message using fixed-size framing and an explicit maximum
+/// message size.
+pub async fn read_fixed_size_protobuf_with_max_size<M: Message + Default, S: AsyncRead + Unpin>(
     stream: &mut S,
+    max_message_size: usize,
 ) -> io::Result<M> {
-    let buf = read_fixed_size_delimited(stream).await?;
+    let buf = read_fixed_size_delimited_with_max(stream, max_message_size).await?;
     M::decode(&buf[..]).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
@@ -193,6 +188,21 @@ mod tests {
         let error = read_fixed_size_delimited(&mut cursor)
             .await
             .expect_err("oversized payloads must fail");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn oversized_fixed_size_length_respects_explicit_limit() {
+        let explicit_limit = 8_usize;
+        let too_large = i64::try_from(explicit_limit)
+            .expect("limit should fit in i64")
+            .checked_add(1)
+            .expect("test length should not overflow");
+        let mut cursor = Cursor::new(too_large.to_le_bytes().to_vec());
+
+        let error = read_fixed_size_delimited_with_max(&mut cursor, explicit_limit)
+            .await
+            .expect_err("explicit fixed-size limit must be enforced");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 }

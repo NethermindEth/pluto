@@ -122,7 +122,11 @@ impl Handler {
         client.release_outbound();
 
         let (error, relay_reset) = match error {
-            StreamUpgradeError::NegotiationFailed => (Error::Unsupported, false),
+            StreamUpgradeError::NegotiationFailed => {
+                client.finish(Err(Error::Unsupported));
+                self.outbound = OutboundState::Disabled;
+                return;
+            }
             StreamUpgradeError::Timeout => (
                 Error::Io(
                     std::io::Error::new(
@@ -223,7 +227,8 @@ impl ConnectionHandler for Handler {
 
                     if relay_reset || client.should_reconnect() {
                         info!(peer = %self.peer_id, err = %error, "Disconnected from peer");
-                        self.outbound = OutboundState::Idle;
+                        self.backoff = INITIAL_BACKOFF;
+                        self.schedule_retry();
                     } else {
                         client.finish(Err(error));
                         self.outbound = OutboundState::Disabled;
@@ -248,10 +253,14 @@ impl ConnectionHandler for Handler {
     ) {
         match event {
             ConnectionEvent::FullyNegotiatedInbound(FullyNegotiatedInbound {
-                protocol: mut stream,
+                protocol: stream,
                 ..
             }) => {
-                stream.ignore_for_keep_alive();
+                if self.inbound.is_some() {
+                    warn!(peer = %self.peer_id, "Dropping duplicate inbound sync stream");
+                    return;
+                }
+
                 self.inbound = Some(
                     handle_inbound_stream(
                         self.peer_id,
@@ -276,10 +285,6 @@ impl ConnectionHandler for Handler {
                 self.outbound = OutboundState::Running(run_outbound_stream(client, stream).boxed());
             }
             ConnectionEvent::DialUpgradeError(error) => self.on_dial_upgrade_error(error),
-            ConnectionEvent::AddressChange(_)
-            | ConnectionEvent::LocalProtocolsChange(_)
-            | ConnectionEvent::RemoteProtocolsChange(_) => {}
-            ConnectionEvent::ListenUpgradeError(_) => {}
             _ => {}
         }
     }
@@ -294,29 +299,49 @@ async fn run_outbound_stream(client: Client, mut stream: Stream) -> OutboundExit
     client.set_connected(true);
 
     loop {
-        tokio::select! {
-            _ = interval.tick() => {}
-            _ = stop_rx.changed() => return OutboundExit::Fatal(Error::Canceled),
+        if *stop_rx.borrow() {
+            return OutboundExit::Fatal(Error::Canceled);
         }
 
-        let shutdown = client.shutdown_requested();
+        tokio::select! {
+            _ = interval.tick() => {}
+            changed = stop_rx.changed() => {
+                if changed.is_err() || *stop_rx.borrow() {
+                    return OutboundExit::Fatal(Error::Canceled);
+                }
+                continue;
+            }
+        }
+
+        let (shutdown, step) = client.outbound_message_state();
         let timestamp = Timestamp::from(std::time::SystemTime::now());
         let request = MsgSync {
             timestamp: Some(timestamp),
             hash_signature: hash_signature.clone(),
             shutdown,
             version: version.clone(),
-            step: client.step(),
+            step,
         };
 
         let response: std::io::Result<MsgSyncResponse> = tokio::select! {
             response = async {
                 match pluto_p2p::proto::write_fixed_size_protobuf(&mut stream, &request).await {
-                    Ok(()) => pluto_p2p::proto::read_fixed_size_protobuf(&mut stream).await,
+                    Ok(()) => {
+                        pluto_p2p::proto::read_fixed_size_protobuf_with_max_size(
+                            &mut stream,
+                            protocol::MAX_MESSAGE_SIZE,
+                        )
+                        .await
+                    }
                     Err(error) => Err(error),
                 }
             } => response,
-            _ = stop_rx.changed() => return OutboundExit::Fatal(Error::Canceled),
+            changed = stop_rx.changed() => {
+                if changed.is_err() || *stop_rx.borrow() {
+                    return OutboundExit::Fatal(Error::Canceled);
+                }
+                continue;
+            }
         };
 
         let response = match response {
@@ -362,9 +387,12 @@ async fn handle_inbound_stream(
             .map_err(|error| Error::Peer(error.to_string()))?;
 
         loop {
-            let message: MsgSync = pluto_p2p::proto::read_fixed_size_protobuf(&mut stream)
-                .await
-                .map_err(|error| Error::Io(error.to_string()))?;
+            let message: MsgSync = pluto_p2p::proto::read_fixed_size_protobuf_with_max_size(
+                &mut stream,
+                protocol::MAX_MESSAGE_SIZE,
+            )
+            .await
+            .map_err(|error| Error::Io(error.to_string()))?;
             let mut response = MsgSyncResponse {
                 sync_timestamp: message.timestamp,
                 error: String::new(),
@@ -389,7 +417,7 @@ async fn handle_inbound_stream(
                     .await;
                 response.error = error_string;
             } else {
-                let (inserted, count) = server.mark_connected(peer_id).await;
+                let (inserted, count) = server.set_connected(peer_id).await;
                 if inserted {
                     info!(
                         peer = %peer_id,
@@ -400,7 +428,16 @@ async fn handle_inbound_stream(
                 }
             }
 
-            if server.update_step(peer_id, message.step).await? {
+            // Record observed step even after validation failure.
+            // Barrier waiters still fail fast on `server.err`
+            let updated = match server.update_step(peer_id, message.step).await {
+                Ok(updated) => updated,
+                Err(error) => {
+                    server.set_err(error.clone()).await;
+                    return Err(error);
+                }
+            };
+            if updated {
                 send_inbound_event(
                     &inbound_events_tx,
                     OutEvent::PeerStepUpdated {
@@ -432,6 +469,6 @@ async fn handle_inbound_stream(
 
 fn send_inbound_event(inbound_events_tx: &mpsc::UnboundedSender<OutEvent>, event: OutEvent) {
     if let Err(error) = inbound_events_tx.send(event) {
-        tracing::error!(err = %error, "Failed to deliver inbound sync event");
+        debug!(err = %error, "dropping inbound sync event: handler event receiver closed");
     }
 }

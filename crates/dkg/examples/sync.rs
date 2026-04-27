@@ -1,62 +1,44 @@
-//! Relay-based example for the DKG sync protocol.
-//!
-//! This example follows the same high-level shape as the `bcast` example:
-//! - load a local private key from a data directory
-//! - load cluster peers from `cluster-lock.json`
-//! - resolve relay URLs with `bootnode::new_relays`
-//! - create relay reservations and relay routing
-//! - run `sync` over relay-mediated connectivity
+//! Example for the DKG sync protocol.
 //!
 //! To try it locally:
 //!
 //! ```text
-//! # Terminal 1: start a relay server
-//! cargo run -p pluto-relay-server --example relay_server
+//! # Data preparation: create a local 3-node cluster fixture
+//! cargo run -p pluto-cli -- create cluster \
+//!   --cluster-dir /tmp/pluto-sync-demo \
+//!   --name sync-demo \
+//!   --network holesky \
+//!   --nodes 3 \
+//!   --num-validators 1 \
+//!   --insecure-keys \
+//!   --fee-recipient-addresses 0x000000000000000000000000000000000000dead \
+//!   --withdrawal-addresses 0x000000000000000000000000000000000000dead
 //!
-//! # Terminals 2-4: run three node directories from the same cluster
+//! # Run in 3 terminals against the generated node directories
 //! cargo run -p pluto-dkg --example sync -- \
-//!   --relays http://127.0.0.1:8888 \
-//!   --data-dir /path/to/node0
+//!   --relays https://0.relay.obol.tech,https://1.relay.obol.tech \
+//!   --data-dir /tmp/pluto-sync-demo/node0
 //!
 //! cargo run -p pluto-dkg --example sync -- \
-//!   --relays http://127.0.0.1:8888 \
-//!   --data-dir /path/to/node1
+//!   --relays https://0.relay.obol.tech,https://1.relay.obol.tech \
+//!   --data-dir /tmp/pluto-sync-demo/node1
 //!
 //! cargo run -p pluto-dkg --example sync -- \
-//!   --relays http://127.0.0.1:8888 \
-//!   --data-dir /path/to/node2
+//!   --relays https://0.relay.obol.tech,https://1.relay.obol.tech \
+//!   --data-dir /tmp/pluto-sync-demo/node2
 //! ```
 //!
-//! Assumption:
-//! - the three data directories already exist
-//! - each one belongs to one node in the same cluster
+//! For stable local repros or CI-style runs, prefer a self-hosted relay
+//! instead of shared public relays.
 //!
-//! Required files in each data directory:
-//! - `charon-enr-private-key`
-//! - `cluster-lock.json`
-//!
-//! Expected flow:
-//! 1. Each node loads the same cluster peer order from the lock file.
-//! 2. Nodes resolve the configured relays and establish relay reservations.
-//! 3. The relay router dials known cluster peers through relay circuits.
-//! 4. Each node starts one sync client per remote peer.
-//! 5. Once all clients are connected, the demo advances through steps 1 and 2.
-//! 6. The demo keeps the sync clients running in steady state.
-//! 7. Press `Ctrl+C` on any node to stop that node immediately and let the
-//!    other nodes observe the fault.
-//!
-//! Success signals:
+//! What to expect:
+//! - all nodes must use the same `--relays` value
 //! - `Relay reservation accepted`
-//! - `Connection established` with `peer_type="CLUSTER"`
 //! - `All sync clients connected`
 //! - `Sync step reached`
 //! - `Sync demo is now idling until Ctrl+C`
-//! - `Sync steady-state heartbeat`
-//! - `Ctrl+C received, exiting without graceful shutdown`
-//!
-//! Transient relay warnings can occur during startup and reconnects. The demo
-//! is healthy once all cluster peers are connected and the sync steps complete.
-#![allow(missing_docs)]
+//! - press `Ctrl+C` on one node to stop it immediately and let the other nodes
+//!   observe the fault
 
 use std::{
     collections::{HashMap, HashSet},
@@ -107,7 +89,8 @@ struct Args {
     relays: Vec<String>,
 
     /// Data directory containing `charon-enr-private-key` and
-    /// `cluster-lock.json`.
+    /// `cluster-lock.json`, typically one of the `nodeN/` directories produced
+    /// by `pluto create cluster`.
     #[arg(long)]
     data_dir: PathBuf,
 
@@ -155,10 +138,7 @@ impl ClusterInfo {
 
     fn peer_label(&self, peer_id: &PeerId) -> String {
         match self.indices.get(peer_id) {
-            Some(index) => format!(
-                "node={} peer_id={peer_id}",
-                index.checked_add(1).unwrap_or(*index)
-            ),
+            Some(index) => format!("node={} peer_id={peer_id}", index.saturating_add(1)),
             None => format!("peer_id={peer_id}"),
         }
     }
@@ -258,7 +238,7 @@ fn log_relay_event(relay_event: relay::client::Event, cluster_info: &ClusterInfo
             renewal,
             limit,
         } => {
-            debug!(
+            info!(
                 relay_peer_id = %relay_peer_id,
                 renewal,
                 limit = ?limit,
@@ -530,10 +510,14 @@ async fn main() -> Result<()> {
     };
 
     let cancellation = CancellationToken::new();
-    let lock_hash_hex = hex::encode(&lock.lock_hash);
-    let relays = bootnode::new_relays(cancellation.child_token(), &args.relays, &lock_hash_hex)
-        .await
-        .context("failed to resolve relays")?;
+    let definition_hash_hex = hex::encode(&lock.definition_hash);
+    let relays = bootnode::new_relays(
+        cancellation.child_token(),
+        &args.relays,
+        &definition_hash_hex,
+    )
+    .await
+    .context("failed to resolve relays")?;
     let relay_peer_ids = relays
         .iter()
         .filter_map(|relay| relay.peer().ok().flatten().map(|peer| peer.id))
@@ -546,6 +530,7 @@ async fn main() -> Result<()> {
             .with_relays(relays.clone())
             .with_peer_ids(known_peers.clone()),
     );
+    let p2p_context = P2PContext::new(known_peers);
 
     let p2p_config = P2PConfig {
         relays: vec![],
@@ -557,40 +542,39 @@ async fn main() -> Result<()> {
     };
 
     let version = VERSION.to_minor();
-    let p2p_context = P2PContext::new(known_peers.clone());
-    p2p_context.set_local_peer_id(local_peer_id);
-    let (sync_behaviour, server, clients) = sync::new(
-        cluster_peers.clone(),
-        p2p_context.clone(),
-        &key,
-        lock.lock_hash.clone(),
-        version,
-    )?;
+    let sync_key = key.clone();
+    let sync_definition_hash = lock.definition_hash.clone();
+    let mut sync_runtime = None;
 
     let mut node: Node<ExampleBehaviour> = Node::new(
         p2p_config,
         key,
         NodeType::QUIC,
         args.filter_private_addrs,
-        known_peers,
-        {
-            let p2p_context = p2p_context.clone();
-            move |builder, keypair, relay_client| {
-                let p2p_context = p2p_context.clone();
-                let local_peer_id = keypair.public().to_peer_id();
+        p2p_context,
+        |builder, keypair, relay_client| {
+            let p2p_context = builder.p2p_context();
+            let local_peer_id = keypair.public().to_peer_id();
 
-                builder
-                    .with_p2p_context(p2p_context.clone())
-                    .with_gater(conn_gater)
-                    .with_inner(ExampleBehaviour {
-                        relay: relay_client,
-                        relay_reservation: MutableRelayReservation::new(relays.clone()),
-                        relay_router: RelayRouter::new(relays.clone(), p2p_context, local_peer_id),
-                        sync: sync_behaviour,
-                    })
-            }
+            let (sync_behaviour, server, clients) = sync::new(
+                cluster_peers.clone(),
+                p2p_context.clone(),
+                &sync_key,
+                sync_definition_hash.clone(),
+                version.clone(),
+            )
+            .expect("sync example should initialize for a local cluster peer");
+            sync_runtime = Some((server, clients));
+
+            builder.with_gater(conn_gater).with_inner(ExampleBehaviour {
+                relay: relay_client,
+                relay_reservation: MutableRelayReservation::new(relays.clone()),
+                relay_router: RelayRouter::new(relays.clone(), p2p_context, local_peer_id),
+                sync: sync_behaviour,
+            })
         },
     )?;
+    let (server, clients) = sync_runtime.expect("sync runtime was not initialized");
 
     info!(
         local_peer_id = %local_peer_id,
@@ -658,21 +642,19 @@ async fn main() -> Result<()> {
                         peer_id,
                         cause,
                         ..
-                    } => {
-                        if cluster_info.indices.contains_key(&peer_id)
-                            && connected_cluster_peers.remove(&peer_id)
-                        {
-                            error!(
-                                local_node = cluster_info.local_node_number,
-                                peer_id = %peer_id,
-                                peer_label = %cluster_info.peer_label(&peer_id),
-                                connected = connected_cluster_peers.len(),
-                                expected = cluster_info.expected_connections(),
-                                missing_peers = ?cluster_info.missing_peers(&connected_cluster_peers),
-                                cause = ?cause,
-                                "Cluster peer disconnected"
-                            );
-                        }
+                    } if cluster_info.indices.contains_key(&peer_id)
+                        && connected_cluster_peers.remove(&peer_id) =>
+                    {
+                        error!(
+                            local_node = cluster_info.local_node_number,
+                            peer_id = %peer_id,
+                            peer_label = %cluster_info.peer_label(&peer_id),
+                            connected = connected_cluster_peers.len(),
+                            expected = cluster_info.expected_connections(),
+                            missing_peers = ?cluster_info.missing_peers(&connected_cluster_peers),
+                            cause = ?cause,
+                            "Cluster peer disconnected"
+                        );
                     }
                     SwarmEvent::OutgoingConnectionError {
                         peer_id,

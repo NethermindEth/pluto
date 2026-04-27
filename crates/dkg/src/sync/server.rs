@@ -104,6 +104,9 @@ impl Server {
 
             {
                 let state = self.inner.state.read().await;
+                if let Some(error) = &state.err {
+                    return Err(error.clone());
+                }
                 if state.shutdown.len() == self.inner.all_count {
                     return Ok(());
                 }
@@ -176,21 +179,29 @@ impl Server {
         self.inner.started.load(Ordering::SeqCst)
     }
 
-    pub(crate) async fn mark_connected(&self, peer_id: PeerId) -> (bool, usize) {
-        let mut state = self.inner.state.write().await;
-        let inserted = state.connected.insert(peer_id);
-        let count = state.connected.len();
+    pub(crate) async fn set_connected(&self, peer_id: PeerId) -> (bool, usize) {
+        let (inserted, count) = self
+            .mutate_state(|state| {
+                let inserted = state.connected.insert(peer_id);
+                let count = state.connected.len();
+                (inserted, count)
+            })
+            .await;
+
         if inserted {
             self.inner.notify.notify_waiters();
         }
+
         (inserted, count)
     }
 
     pub(crate) async fn clear_connected(&self, peer_id: PeerId) {
-        self.mutate_state(|state| {
-            state.connected.remove(&peer_id);
-        })
-        .await;
+        let removed = self
+            .mutate_state(|state| state.connected.remove(&peer_id))
+            .await;
+        if removed {
+            self.inner.notify.notify_waiters();
+        }
     }
 
     pub(crate) async fn set_shutdown(&self, peer_id: PeerId) {
@@ -198,6 +209,7 @@ impl Server {
             state.shutdown.insert(peer_id);
         })
         .await;
+        self.inner.notify.notify_waiters();
     }
 
     pub(crate) async fn set_err(&self, error: Error) {
@@ -205,39 +217,48 @@ impl Server {
             state.err = Some(error);
         })
         .await;
+        self.inner.notify.notify_waiters();
     }
 
     pub(crate) async fn update_step(&self, peer_id: PeerId, step: i64) -> Result<bool> {
-        let mut state = self.inner.state.write().await;
-        match state.steps.get(&peer_id).copied() {
-            Some(current) => {
-                if step < current {
-                    return Err(Error::PeerStepBehind);
-                }
+        use std::collections::hash_map::Entry;
 
-                let current_plus_two = current.checked_add(2).ok_or(Error::StepOverflow)?;
-                if step > current_plus_two {
-                    return Err(Error::PeerStepAhead);
-                }
+        {
+            let mut state = self.inner.state.write().await;
+            match state.steps.entry(peer_id) {
+                Entry::Occupied(mut entry) => {
+                    let current = *entry.get();
+                    if step < current {
+                        return Err(Error::PeerStepBehind);
+                    }
 
-                if step == current {
-                    return Ok(false);
+                    let current_plus_two = current.checked_add(2).ok_or(Error::StepOverflow)?;
+                    if step > current_plus_two {
+                        return Err(Error::PeerStepAhead);
+                    }
+
+                    if step == current {
+                        return Ok(false);
+                    }
+
+                    entry.insert(step);
+                }
+                Entry::Vacant(entry) => {
+                    if !(0..=1).contains(&step) {
+                        return Err(Error::AbnormalInitialStep);
+                    }
+
+                    entry.insert(step);
                 }
             }
-            None if !(0..=1).contains(&step) => {
-                return Err(Error::AbnormalInitialStep);
-            }
-            None => {}
         }
 
-        state.steps.insert(peer_id, step);
         self.inner.notify.notify_waiters();
         Ok(true)
     }
 
-    async fn mutate_state(&self, mutate: impl FnOnce(&mut ServerState)) {
+    async fn mutate_state<R>(&self, mutate: impl FnOnce(&mut ServerState) -> R) -> R {
         let mut state = self.inner.state.write().await;
-        mutate(&mut state);
-        self.inner.notify.notify_waiters();
+        mutate(&mut state)
     }
 }
