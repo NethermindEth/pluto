@@ -2,6 +2,7 @@
 
 use crate::serde_utils::{decode_0x_hex, encode_0x_hex};
 use serde::{Deserialize, Serialize, de::Error as DeError};
+use ssz::{BYTES_PER_LENGTH_OFFSET, Decode, DecodeError, Encode};
 use tree_hash::{
     BYTES_PER_CHUNK, Hash256, PackedEncoding, TreeHash, TreeHashType, merkle_root, mix_in_length,
 };
@@ -80,6 +81,37 @@ impl<const MAX: usize> AsRef<[u8]> for SszList<u8, MAX> {
     }
 }
 
+impl<T: Encode, const MAX: usize> Encode for SszList<T, MAX> {
+    fn is_ssz_fixed_len() -> bool {
+        false
+    }
+
+    fn ssz_append(&self, buf: &mut Vec<u8>) {
+        self.0.ssz_append(buf);
+    }
+
+    fn ssz_bytes_len(&self) -> usize {
+        self.0.ssz_bytes_len()
+    }
+}
+
+impl<T: Decode, const MAX: usize> Decode for SszList<T, MAX> {
+    fn is_ssz_fixed_len() -> bool {
+        false
+    }
+
+    fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, DecodeError> {
+        let values = Vec::<T>::from_ssz_bytes(bytes)?;
+        if MAX > 0 && values.len() > MAX {
+            return Err(DecodeError::BytesInvalid(format!(
+                "list length {} exceeds max {MAX}",
+                values.len(),
+            )));
+        }
+        Ok(Self(values))
+    }
+}
+
 impl<T: TreeHash, const MAX: usize> TreeHash for SszList<T, MAX> {
     fn tree_hash_type() -> TreeHashType {
         TreeHashType::List
@@ -145,6 +177,59 @@ impl<const SIZE: usize> AsRef<[u8]> for SszVector<u8, SIZE> {
     }
 }
 
+impl<T: Encode, const SIZE: usize> Encode for SszVector<T, SIZE> {
+    fn is_ssz_fixed_len() -> bool {
+        T::is_ssz_fixed_len()
+    }
+
+    fn ssz_fixed_len() -> usize {
+        if T::is_ssz_fixed_len() {
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                T::ssz_fixed_len() * SIZE
+            }
+        } else {
+            BYTES_PER_LENGTH_OFFSET
+        }
+    }
+
+    fn ssz_append(&self, buf: &mut Vec<u8>) {
+        self.0.ssz_append(buf);
+    }
+
+    fn ssz_bytes_len(&self) -> usize {
+        self.0.ssz_bytes_len()
+    }
+}
+
+impl<T: Decode, const SIZE: usize> Decode for SszVector<T, SIZE> {
+    fn is_ssz_fixed_len() -> bool {
+        T::is_ssz_fixed_len()
+    }
+
+    fn ssz_fixed_len() -> usize {
+        if T::is_ssz_fixed_len() {
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                T::ssz_fixed_len() * SIZE
+            }
+        } else {
+            BYTES_PER_LENGTH_OFFSET
+        }
+    }
+
+    fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, DecodeError> {
+        let values = Vec::<T>::from_ssz_bytes(bytes)?;
+        if values.len() != SIZE {
+            return Err(DecodeError::BytesInvalid(format!(
+                "vector length {} does not match required {SIZE}",
+                values.len(),
+            )));
+        }
+        Ok(Self(values))
+    }
+}
+
 impl<T: TreeHash, const SIZE: usize> TreeHash for SszVector<T, SIZE> {
     fn tree_hash_type() -> TreeHashType {
         TreeHashType::Vector
@@ -206,7 +291,8 @@ impl<const MAX: usize> BitList<MAX> {
         self.len == 0
     }
 
-    fn from_ssz_bytes(ssz: Vec<u8>) -> Self {
+    /// Decodes SSZ-encoded bytes (with sentinel bit) into a `BitList`.
+    pub fn from_ssz_bytes(ssz: Vec<u8>) -> Self {
         if ssz.is_empty() {
             return Self::default();
         }
@@ -233,7 +319,8 @@ impl<const MAX: usize> BitList<MAX> {
         Self { bytes, len }
     }
 
-    fn to_ssz_bytes(&self) -> Vec<u8> {
+    /// Encodes the `BitList` as SSZ bytes with sentinel bit appended.
+    pub fn to_ssz_bytes(&self) -> Vec<u8> {
         let mut ssz = self.bytes.clone();
         Self::append_sentinel(&mut ssz, self.len);
         ssz
@@ -273,6 +360,30 @@ impl<'de, const MAX: usize> Deserialize<'de> for BitList<MAX> {
     }
 }
 
+impl<const MAX: usize> Encode for BitList<MAX> {
+    fn is_ssz_fixed_len() -> bool {
+        false
+    }
+
+    fn ssz_append(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.to_ssz_bytes());
+    }
+
+    fn ssz_bytes_len(&self) -> usize {
+        self.to_ssz_bytes().len()
+    }
+}
+
+impl<const MAX: usize> Decode for BitList<MAX> {
+    fn is_ssz_fixed_len() -> bool {
+        false
+    }
+
+    fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Ok(Self::from_ssz_bytes(bytes.to_vec()))
+    }
+}
+
 impl<const MAX: usize> TreeHash for BitList<MAX> {
     fn tree_hash_type() -> TreeHashType {
         TreeHashType::List
@@ -297,7 +408,7 @@ impl<const MAX: usize> TreeHash for BitList<MAX> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BitVector<const SIZE: usize> {
     /// Packed bits, little-endian bit order.
-    bytes: Vec<u8>,
+    pub bytes: Vec<u8>,
 }
 
 impl<const SIZE: usize> Default for BitVector<SIZE> {
@@ -342,6 +453,47 @@ impl<'de, const SIZE: usize> Deserialize<'de> for BitVector<SIZE> {
             )));
         }
         Ok(Self { bytes })
+    }
+}
+
+impl<const SIZE: usize> Encode for BitVector<SIZE> {
+    fn is_ssz_fixed_len() -> bool {
+        true
+    }
+
+    fn ssz_fixed_len() -> usize {
+        SIZE.div_ceil(8)
+    }
+
+    fn ssz_append(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.bytes);
+    }
+
+    fn ssz_bytes_len(&self) -> usize {
+        SIZE.div_ceil(8)
+    }
+}
+
+impl<const SIZE: usize> Decode for BitVector<SIZE> {
+    fn is_ssz_fixed_len() -> bool {
+        true
+    }
+
+    fn ssz_fixed_len() -> usize {
+        SIZE.div_ceil(8)
+    }
+
+    fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, DecodeError> {
+        let expected = SIZE.div_ceil(8);
+        if bytes.len() != expected {
+            return Err(DecodeError::InvalidByteLength {
+                len: bytes.len(),
+                expected,
+            });
+        }
+        Ok(Self {
+            bytes: bytes.to_vec(),
+        })
     }
 }
 
