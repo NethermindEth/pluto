@@ -367,7 +367,7 @@ pub enum DefinitionError {
 }
 
 /// InvalidGasLimitError is an error type for invalid gas limit errors.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, PartialEq)]
 pub enum InvalidGasLimitError {
     /// The version does not support custom target gas limit
     #[error("the version does not support custom target gas limit")]

@@ -1417,7 +1417,11 @@ fn write_split_keys_warning(w: &mut dyn Write) -> std::io::Result<()> {
 mod tests {
     use std::collections::HashSet;
 
-    use pluto_cluster::{lock::Lock, version::versions::*};
+    use pluto_cluster::{
+        definition::{DefinitionError, InvalidGasLimitError},
+        lock::Lock,
+        version::versions::*,
+    };
     use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls as _};
     use pluto_eth1wrap::EthClient;
     use pluto_eth2util::{
@@ -1467,12 +1471,7 @@ mod tests {
                 path.display()
             )
         });
-        assert_eq!(
-            String::from_utf8_lossy(actual),
-            String::from_utf8_lossy(&expected),
-            "golden file mismatch: {}",
-            path.display()
-        );
+        assert_eq!(actual, expected, "golden file mismatch: {}", path.display());
     }
 
     /// Serializes `data` as a JSON array with 1-space indent (matching Go's
@@ -1522,7 +1521,7 @@ mod tests {
     }
 
     async fn test_eth1_client() -> EthClient {
-        EthClient::new("http://127.0.0.1:8545").await.unwrap()
+        EthClient::Noop
     }
 
     fn random_checksummed_eth_address() -> String {
@@ -1572,9 +1571,7 @@ mod tests {
         let testnet_config = TestnetConfig {
             chain_id: config.testnet_chain_id,
             fork_version: config.testnet_fork_version.map(String::from),
-            genesis_timestamp: config.testnet_chain_id.map(|_| {
-                u64::try_from(chrono::Utc::now().timestamp()).expect("timestamp fits u64")
-            }),
+            genesis_timestamp: config.testnet_chain_id,
             testnet_name: config.testnet_name.map(String::from),
         };
         let network = config.network.and_then(|n| Network::try_from(n).ok());
@@ -2380,7 +2377,10 @@ mod tests {
         ; "target gas limit with default version"
     )]
     #[test_case::test_case(
-        None, 0, 0, Some("target gas limit should be set")
+        None, 0, 0,
+        Some(CliError::CreateClusterError(CreateClusterError::DefinitionError(
+            DefinitionError::InvalidTargetGasLimit(InvalidGasLimitError::GasLimitNotSet)
+        )))
         ; "no target gas limit with default version"
     )]
     #[tokio::test]
@@ -2388,7 +2388,7 @@ mod tests {
         def_file_path: Option<&'static str>,
         target_gas_limit: u64,
         expected_gas_limit: u64,
-        expected_err: Option<&'static str>,
+        expected_err: Option<CliError>,
     ) {
         let dir = TempDir::new().unwrap();
 
@@ -2424,11 +2424,20 @@ mod tests {
         let result = run(&mut output, args).await;
 
         if let Some(expected) = expected_err {
-            let err = result.unwrap_err();
-            let err_str = format!("{err}");
+            let actual = result.unwrap_err();
             assert!(
-                err_str.contains(expected),
-                "expected error containing '{expected}', got: {err_str}"
+                matches!(
+                    (&actual, &expected),
+                    (
+                        CliError::CreateClusterError(CreateClusterError::DefinitionError(
+                            DefinitionError::InvalidTargetGasLimit(a)
+                        )),
+                        CliError::CreateClusterError(CreateClusterError::DefinitionError(
+                            DefinitionError::InvalidTargetGasLimit(b)
+                        )),
+                    ) if a == b
+                ),
+                "expected {expected:?}, got {actual:?}"
             );
             return;
         }
