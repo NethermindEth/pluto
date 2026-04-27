@@ -428,14 +428,13 @@ mod tests {
             let config = ParsexConfig::new(peer_ids[i], p2p_context.clone(), verifier, duty_gater);
             let (behaviour, handle) = ParsexBehaviour::new(config);
 
-            let p2p_ctx = p2p_context.clone();
             let node = Node::new_server(
                 P2PConfig::default(),
                 key,
                 NodeType::TCP,
                 false,
-                peer_ids.clone(),
-                move |builder, _key| builder.with_p2p_context(p2p_ctx).with_inner(behaviour),
+                p2p_context,
+                move |builder, _key| builder.with_inner(behaviour),
             )?;
 
             handles.push(handle);

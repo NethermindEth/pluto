@@ -14,6 +14,7 @@ pub mod helpers;
 pub mod infra;
 pub mod mev;
 pub mod peers;
+pub(super) mod speedtest;
 pub mod validator;
 
 pub(crate) use helpers::*;
@@ -89,10 +90,10 @@ fn list_test_cases(category: TestCategory) -> Vec<String> {
             // supported_self_test_cases()
             vec![]
         }
-        TestCategory::Infra => {
-            // TODO: Extract from infra::supported_infra_test_cases()
-            vec![]
-        }
+        TestCategory::Infra => infra::supported_infra_test_cases()
+            .into_iter()
+            .map(|tc| tc.name.to_string())
+            .collect(),
         TestCategory::All => {
             // TODO: Combine all test cases from all categories
             vec![]
