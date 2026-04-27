@@ -5,6 +5,59 @@
 #![allow(rustdoc::all)]
 
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BCastSigRequest {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "3")]
+    pub message: ::core::option::Option<::prost_types::Any>,
+}
+impl ::prost::Name for BCastSigRequest {
+    const NAME: &'static str = "BCastSigRequest";
+    const PACKAGE: &'static str = "dkg.dkgpb.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "dkg.dkgpb.v1.BCastSigRequest".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/dkg.dkgpb.v1.BCastSigRequest".into()
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BCastSigResponse {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub signature: ::prost::bytes::Bytes,
+}
+impl ::prost::Name for BCastSigResponse {
+    const NAME: &'static str = "BCastSigResponse";
+    const PACKAGE: &'static str = "dkg.dkgpb.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "dkg.dkgpb.v1.BCastSigResponse".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/dkg.dkgpb.v1.BCastSigResponse".into()
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BCastMessage {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub message: ::core::option::Option<::prost_types::Any>,
+    #[prost(bytes = "bytes", repeated, tag = "3")]
+    pub signatures: ::prost::alloc::vec::Vec<::prost::bytes::Bytes>,
+}
+impl ::prost::Name for BCastMessage {
+    const NAME: &'static str = "BCastMessage";
+    const PACKAGE: &'static str = "dkg.dkgpb.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "dkg.dkgpb.v1.BCastMessage".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/dkg.dkgpb.v1.BCastMessage".into()
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MsgSync {
     #[prost(message, optional, tag = "1")]
     pub timestamp: ::core::option::Option<::prost_types::Timestamp>,
@@ -42,5 +95,152 @@ impl ::prost::Name for MsgSyncResponse {
     }
     fn type_url() -> ::prost::alloc::string::String {
         "type.googleapis.com/dkg.dkgpb.v1.MsgSyncResponse".into()
+    }
+}
+/// dkg.msgKey
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FrostMsgKey {
+    #[prost(uint32, tag = "1")]
+    pub val_idx: u32,
+    #[prost(uint32, tag = "2")]
+    pub source_id: u32,
+    #[prost(uint32, tag = "3")]
+    pub target_id: u32,
+}
+impl ::prost::Name for FrostMsgKey {
+    const NAME: &'static str = "FrostMsgKey";
+    const PACKAGE: &'static str = "dkg.dkgpb.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "dkg.dkgpb.v1.FrostMsgKey".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/dkg.dkgpb.v1.FrostMsgKey".into()
+    }
+}
+/// Reliable-broadcast
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FrostRound1Casts {
+    /// One per validator
+    #[prost(message, repeated, tag = "1")]
+    pub casts: ::prost::alloc::vec::Vec<FrostRound1Cast>,
+}
+impl ::prost::Name for FrostRound1Casts {
+    const NAME: &'static str = "FrostRound1Casts";
+    const PACKAGE: &'static str = "dkg.dkgpb.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "dkg.dkgpb.v1.FrostRound1Casts".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/dkg.dkgpb.v1.FrostRound1Casts".into()
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FrostRound1Cast {
+    #[prost(message, optional, tag = "1")]
+    pub key: ::core::option::Option<FrostMsgKey>,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub wi: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub ci: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", repeated, tag = "4")]
+    pub commitments: ::prost::alloc::vec::Vec<::prost::bytes::Bytes>,
+}
+impl ::prost::Name for FrostRound1Cast {
+    const NAME: &'static str = "FrostRound1Cast";
+    const PACKAGE: &'static str = "dkg.dkgpb.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "dkg.dkgpb.v1.FrostRound1Cast".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/dkg.dkgpb.v1.FrostRound1Cast".into()
+    }
+}
+/// Direct peer-to-peer
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FrostRound1P2p {
+    /// One per validator
+    #[prost(message, repeated, tag = "1")]
+    pub shares: ::prost::alloc::vec::Vec<FrostRound1ShamirShare>,
+}
+impl ::prost::Name for FrostRound1P2p {
+    const NAME: &'static str = "FrostRound1P2P";
+    const PACKAGE: &'static str = "dkg.dkgpb.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "dkg.dkgpb.v1.FrostRound1P2P".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/dkg.dkgpb.v1.FrostRound1P2P".into()
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FrostRound1ShamirShare {
+    #[prost(message, optional, tag = "1")]
+    pub key: ::core::option::Option<FrostMsgKey>,
+    #[prost(uint32, tag = "2")]
+    pub id: u32,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub value: ::prost::bytes::Bytes,
+}
+impl ::prost::Name for FrostRound1ShamirShare {
+    const NAME: &'static str = "FrostRound1ShamirShare";
+    const PACKAGE: &'static str = "dkg.dkgpb.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "dkg.dkgpb.v1.FrostRound1ShamirShare".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/dkg.dkgpb.v1.FrostRound1ShamirShare".into()
+    }
+}
+/// Reliable-broadcast
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FrostRound2Casts {
+    /// One per validator
+    #[prost(message, repeated, tag = "1")]
+    pub casts: ::prost::alloc::vec::Vec<FrostRound2Cast>,
+}
+impl ::prost::Name for FrostRound2Casts {
+    const NAME: &'static str = "FrostRound2Casts";
+    const PACKAGE: &'static str = "dkg.dkgpb.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "dkg.dkgpb.v1.FrostRound2Casts".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/dkg.dkgpb.v1.FrostRound2Casts".into()
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FrostRound2Cast {
+    #[prost(message, optional, tag = "1")]
+    pub key: ::core::option::Option<FrostMsgKey>,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub verification_key: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub vk_share: ::prost::bytes::Bytes,
+}
+impl ::prost::Name for FrostRound2Cast {
+    const NAME: &'static str = "FrostRound2Cast";
+    const PACKAGE: &'static str = "dkg.dkgpb.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "dkg.dkgpb.v1.FrostRound2Cast".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/dkg.dkgpb.v1.FrostRound2Cast".into()
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MsgNodeSig {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub signature: ::prost::bytes::Bytes,
+    #[prost(uint32, tag = "2")]
+    pub peer_index: u32,
+}
+impl ::prost::Name for MsgNodeSig {
+    const NAME: &'static str = "MsgNodeSig";
+    const PACKAGE: &'static str = "dkg.dkgpb.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "dkg.dkgpb.v1.MsgNodeSig".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/dkg.dkgpb.v1.MsgNodeSig".into()
     }
 }

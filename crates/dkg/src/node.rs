@@ -6,7 +6,8 @@
 
 use futures::StreamExt;
 use libp2p::{
-    PeerId, relay,
+    Multiaddr, PeerId, relay,
+    multiaddr::Protocol,
     swarm::{NetworkBehaviour, SwarmEvent},
 };
 use pluto_cluster::definition::{Definition, NodeIdx};
@@ -118,7 +119,7 @@ pub async fn setup_node(
     let def_hash = definition.definition_hash.clone();
     let def_hash_hex = hex::encode(&def_hash);
 
-    let relay_strs: Vec<String> = conf.p2p.relays.iter().map(|a| a.to_string()).collect();
+    let relay_strs: Vec<String> = conf.p2p.relays.iter().map(multiaddr_to_relay_str).collect();
     let relays = bootnode::new_relays(ct.child_token(), &relay_strs, &def_hash_hex).await?;
 
     let known_peers = peer_ids.clone();
@@ -265,5 +266,38 @@ async fn run_swarm(mut node: Node<DkgBehaviour>, ct: CancellationToken) {
                 }
             }
         }
+    }
+}
+
+/// Converts a [`Multiaddr`] to the string format expected by
+/// [`bootnode::new_relays`]:
+/// - HTTP/HTTPS relay multiaddrs (e.g. `/ip4/…/tcp/…/http`) are converted
+///   back to URL strings (`http://…`).
+/// - All other multiaddrs are returned as-is via `to_string()`.
+fn multiaddr_to_relay_str(addr: &Multiaddr) -> String {
+    let mut ip = String::new();
+    let mut port: u16 = 0;
+    let mut is_http = false;
+    let mut is_https = false;
+
+    for proto in addr.iter() {
+        match proto {
+            Protocol::Ip4(a) => ip = a.to_string(),
+            Protocol::Ip6(a) => ip = format!("[{a}]"),
+            Protocol::Dns(h) | Protocol::Dns4(h) | Protocol::Dns6(h) => {
+                ip = h.to_string();
+            }
+            Protocol::Tcp(p) => port = p,
+            Protocol::Http => is_http = true,
+            Protocol::Https => is_https = true,
+            _ => {}
+        }
+    }
+
+    if (is_http || is_https) && !ip.is_empty() {
+        let scheme = if is_https { "https" } else { "http" };
+        format!("{scheme}://{ip}:{port}")
+    } else {
+        addr.to_string()
     }
 }
