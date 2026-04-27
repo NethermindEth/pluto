@@ -25,3 +25,6 @@ pub mod nodesigs;
 
 /// Shares distributed to each node in the cluster.
 pub mod share;
+
+/// Step synchronization protocol for DKG peers.
+pub mod sync;
