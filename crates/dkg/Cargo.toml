@@ -27,6 +27,11 @@ pluto-crypto.workspace = true
 pluto-eth1wrap.workspace = true
 pluto-eth2util.workspace = true
 pluto-parsigex.workspace = true
+pluto-frost.workspace = true
+pluto-peerinfo.workspace = true
+pluto-eth2api.workspace = true
+reqwest = { workspace = true }
+chrono.workspace = true
 async-trait.workspace = true
 pluto-tracing.workspace = true
 hex.workspace = true

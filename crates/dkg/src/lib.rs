@@ -28,3 +28,15 @@ pub mod share;
 
 /// Step synchronization protocol for DKG peers.
 pub mod sync;
+
+/// FROST round-1 direct P2P stream behaviour.
+pub mod frostp2p;
+
+/// Compound DKG libp2p node setup.
+pub mod node;
+
+/// FROST DKG orchestration and P2P transport.
+pub mod frost;
+
+/// Post-DKG signing and aggregation.
+pub mod signing;
