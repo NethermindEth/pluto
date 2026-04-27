@@ -257,10 +257,6 @@ impl Exchanger {
         sig_type: SigType,
         set: ParSignedDataSet,
     ) -> Result<HashMap<PubKey, Vec<ParSignedData>>, ExchangerError> {
-        if !self.sig_types.contains(&sig_type) {
-            return Err(ExchangerError::UnrecognisedSigType(sig_type));
-        }
-
         // Start the process by storing current peer's ParSignedDataSet
         let duty = Duty::new_signature_duty(SlotNumber::new(sig_type));
 
