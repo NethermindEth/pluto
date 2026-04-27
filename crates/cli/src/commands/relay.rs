@@ -422,7 +422,7 @@ mod tests {
             .local_addr()
             .unwrap()
             .to_string();
-        let monitoring_url = format!("http://{}/metrics", monitoring_addr);
+        let monitoring_url = format!("http://{monitoring_addr}/metrics");
 
         with_relay_server(
             move |args| {
@@ -432,8 +432,9 @@ mod tests {
                 let response = retry_get(&monitoring_url).await.unwrap();
                 let body = response.text().await.unwrap();
 
-                // Check prometheus text format is returned
-                assert!(body.contains("relay_p2p_") || body.contains("p2p_"));
+                assert!(body.contains("relay_p2p_connection_total"));
+                assert!(body.contains("relay_p2p_active_connections"));
+                assert!(body.contains("relay_p2p_ping_latency"));
             },
         )
         .await
