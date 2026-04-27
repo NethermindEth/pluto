@@ -64,6 +64,7 @@ use pluto_p2p::{
     config::P2PConfig,
     gater, k1,
     p2p::{Node, NodeType},
+    p2p_context::P2PContext,
     relay::{MutableRelayReservation, RelayRouter},
 };
 use pluto_tracing::TracingConfig;
@@ -529,6 +530,7 @@ async fn main() -> Result<()> {
             .with_relays(relays.clone())
             .with_peer_ids(known_peers.clone()),
     );
+    let p2p_context = P2PContext::new(known_peers);
 
     let p2p_config = P2PConfig {
         relays: vec![],
@@ -549,11 +551,10 @@ async fn main() -> Result<()> {
         key,
         NodeType::QUIC,
         args.filter_private_addrs,
-        known_peers,
+        p2p_context,
         |builder, keypair, relay_client| {
             let p2p_context = builder.p2p_context();
             let local_peer_id = keypair.public().to_peer_id();
-            p2p_context.set_local_peer_id(local_peer_id);
 
             let (sync_behaviour, server, clients) = sync::new(
                 cluster_peers.clone(),
@@ -641,21 +642,19 @@ async fn main() -> Result<()> {
                         peer_id,
                         cause,
                         ..
-                    } => {
-                        if cluster_info.indices.contains_key(&peer_id)
-                            && connected_cluster_peers.remove(&peer_id)
-                        {
-                            error!(
-                                local_node = cluster_info.local_node_number,
-                                peer_id = %peer_id,
-                                peer_label = %cluster_info.peer_label(&peer_id),
-                                connected = connected_cluster_peers.len(),
-                                expected = cluster_info.expected_connections(),
-                                missing_peers = ?cluster_info.missing_peers(&connected_cluster_peers),
-                                cause = ?cause,
-                                "Cluster peer disconnected"
-                            );
-                        }
+                    } if cluster_info.indices.contains_key(&peer_id)
+                        && connected_cluster_peers.remove(&peer_id) =>
+                    {
+                        error!(
+                            local_node = cluster_info.local_node_number,
+                            peer_id = %peer_id,
+                            peer_label = %cluster_info.peer_label(&peer_id),
+                            connected = connected_cluster_peers.len(),
+                            expected = cluster_info.expected_connections(),
+                            missing_peers = ?cluster_info.missing_peers(&connected_cluster_peers),
+                            cause = ?cause,
+                            "Cluster peer disconnected"
+                        );
                     }
                     SwarmEvent::OutgoingConnectionError {
                         peer_id,

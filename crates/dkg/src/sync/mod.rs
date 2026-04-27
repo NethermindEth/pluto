@@ -256,21 +256,28 @@ mod tests {
             let peer_id = peer_ids[index];
             let p2p_context = P2PContext::new(peer_ids.clone());
             p2p_context.set_local_peer_id(peer_id);
-            let (behaviour, server, clients) = new(
-                peer_ids.clone(),
-                p2p_context.clone(),
-                &key,
-                vec![1, 2, 3],
-                version.clone(),
-            )?;
+            let mut sync_runtime = None;
             let node = Node::new_server(
                 P2PConfig::default(),
-                key,
+                key.clone(),
                 NodeType::TCP,
                 false,
-                peer_ids.clone(),
-                |builder, _keypair| builder.with_p2p_context(p2p_context).with_inner(behaviour),
+                p2p_context,
+                |builder, _keypair| {
+                    let p2p_context = builder.p2p_context();
+                    let (behaviour, server, clients) = new(
+                        peer_ids.clone(),
+                        p2p_context,
+                        &key,
+                        vec![1, 2, 3],
+                        version.clone(),
+                    )
+                    .expect("sync test should initialize for a local peer");
+                    sync_runtime = Some((server, clients));
+                    builder.with_inner(behaviour)
+                },
             )?;
+            let (server, clients) = sync_runtime.expect("sync runtime initialized");
             let addr = format!("/ip4/127.0.0.1/tcp/{}", ports[index]).parse()?;
             nodes.push(LocalNode {
                 server,
