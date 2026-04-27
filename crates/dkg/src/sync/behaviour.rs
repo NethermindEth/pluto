@@ -88,7 +88,7 @@ impl Behaviour {
             return;
         };
 
-        if !client.should_run() || client.is_connected() || client.shutdown_requested() {
+        if !client.should_schedule_dial() {
             return;
         }
 

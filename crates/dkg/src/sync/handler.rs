@@ -313,14 +313,14 @@ async fn run_outbound_stream(client: Client, mut stream: Stream) -> OutboundExit
             }
         }
 
-        let shutdown = client.shutdown_requested();
+        let (shutdown, step) = client.outbound_message_state();
         let timestamp = Timestamp::from(std::time::SystemTime::now());
         let request = MsgSync {
             timestamp: Some(timestamp),
             hash_signature: hash_signature.clone(),
             shutdown,
             version: version.clone(),
-            step: client.step(),
+            step,
         };
 
         let response: std::io::Result<MsgSyncResponse> = tokio::select! {

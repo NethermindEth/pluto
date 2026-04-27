@@ -1,8 +1,5 @@
 use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicI64, Ordering},
-    },
+    sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
     time::Duration,
 };
 
@@ -40,16 +37,21 @@ struct ClientInner {
     hash_sig: Vec<u8>,
     version: SemVer,
     period: Duration,
-    active: AtomicBool,
-    connected: AtomicBool,
-    reconnect: AtomicBool,
-    step: AtomicI64,
-    shutdown_requested: AtomicBool,
-    finished: AtomicBool,
-    outbound_claimed: AtomicBool,
+    state: RwLock<ClientState>,
     stop_tx: watch::Sender<bool>,
     done_tx: watch::Sender<Option<Result<()>>>,
     command_tx: Option<mpsc::UnboundedSender<Command>>,
+}
+
+#[derive(Debug)]
+struct ClientState {
+    active: bool,
+    connected: bool,
+    reconnect: bool,
+    step: i64,
+    shutdown_requested: bool,
+    finished: bool,
+    outbound_claimed: bool,
 }
 
 /// User-facing handle for one outbound sync client.
@@ -75,13 +77,15 @@ impl Client {
                 hash_sig,
                 version,
                 period: config.period,
-                active: AtomicBool::new(false),
-                connected: AtomicBool::new(false),
-                reconnect: AtomicBool::new(true),
-                step: AtomicI64::new(0),
-                shutdown_requested: AtomicBool::new(false),
-                finished: AtomicBool::new(false),
-                outbound_claimed: AtomicBool::new(false),
+                state: RwLock::new(ClientState {
+                    active: false,
+                    connected: false,
+                    reconnect: true,
+                    step: 0,
+                    shutdown_requested: false,
+                    finished: false,
+                    outbound_claimed: false,
+                }),
                 stop_tx,
                 done_tx,
                 command_tx,
@@ -97,23 +101,23 @@ impl Client {
 
     /// Sets the current client step.
     pub fn set_step(&self, step: i64) {
-        self.inner.step.store(step, Ordering::SeqCst);
+        self.write_state().step = step;
     }
 
     /// Returns whether the client currently has an active sync stream.
     pub fn is_connected(&self) -> bool {
-        self.inner.connected.load(Ordering::SeqCst)
+        self.read_state().connected
     }
 
     /// Requests a graceful shutdown and waits for the client to finish.
     pub async fn shutdown(&self, cancellation: CancellationToken) -> Result<()> {
-        self.inner.shutdown_requested.store(true, Ordering::SeqCst);
+        self.write_state().shutdown_requested = true;
         self.wait_finished(cancellation, false).await
     }
 
     /// Disables reconnecting for non-relay disconnects.
     pub fn disable_reconnect(&self) {
-        self.inner.reconnect.store(false, Ordering::SeqCst);
+        self.write_state().reconnect = false;
     }
 
     pub(crate) fn peer_id(&self) -> PeerId {
@@ -133,41 +137,58 @@ impl Client {
     }
 
     pub(crate) fn should_run(&self) -> bool {
-        self.inner.active.load(Ordering::SeqCst)
+        self.read_state().active
     }
 
     pub(crate) fn should_reconnect(&self) -> bool {
-        self.inner.reconnect.load(Ordering::SeqCst)
+        self.read_state().reconnect
     }
 
-    pub(crate) fn shutdown_requested(&self) -> bool {
-        self.inner.shutdown_requested.load(Ordering::SeqCst)
+    pub(crate) fn should_schedule_dial(&self) -> bool {
+        let state = self.read_state();
+        state.active && !state.connected && !state.shutdown_requested
     }
 
-    pub(crate) fn step(&self) -> i64 {
-        self.inner.step.load(Ordering::SeqCst)
+    pub(crate) fn outbound_message_state(&self) -> (bool, i64) {
+        let state = self.read_state();
+        (state.shutdown_requested, state.step)
     }
 
     pub(crate) fn set_connected(&self, connected: bool) {
-        self.inner.connected.store(connected, Ordering::SeqCst);
+        self.write_state().connected = connected;
     }
 
     /// Claims ownership of this client's outbound stream for one handler.
     pub(crate) fn try_claim_outbound(&self) -> bool {
-        !self.inner.outbound_claimed.swap(true, Ordering::SeqCst)
+        let mut state = self.write_state();
+        if state.outbound_claimed {
+            return false;
+        }
+        state.outbound_claimed = true;
+        true
     }
 
     /// Releases the outbound stream claim after the handler exits.
     pub(crate) fn release_outbound(&self) {
-        self.inner.outbound_claimed.store(false, Ordering::SeqCst);
+        self.write_state().outbound_claimed = false;
     }
 
     /// Completes the client once and publishes the result to all waiters.
     pub(crate) fn finish(&self, result: Result<()>) {
         self.request_stop();
-        self.release_outbound();
 
-        if !self.inner.finished.swap(true, Ordering::SeqCst) {
+        let should_send = {
+            let mut state = self.write_state();
+            state.outbound_claimed = false;
+            if state.finished {
+                false
+            } else {
+                state.finished = true;
+                true
+            }
+        };
+
+        if should_send {
             let _ = self.inner.done_tx.send(Some(result));
         }
     }
@@ -180,7 +201,7 @@ impl Client {
     /// Marks the client active and asks the behaviour to open an outbound
     /// stream.
     pub(crate) fn activate(&self) -> Result<()> {
-        self.inner.active.store(true, Ordering::SeqCst);
+        self.write_state().active = true;
         self.set_stop_requested(false);
 
         if let Some(command_tx) = &self.inner.command_tx
@@ -191,14 +212,17 @@ impl Client {
             return Ok(());
         }
 
-        self.inner.active.store(false, Ordering::SeqCst);
+        self.write_state().active = false;
         Err(Error::ActivationChannelUnavailable)
     }
 
     /// Requests any live outbound stream loop to exit.
     fn request_stop(&self) {
-        self.inner.active.store(false, Ordering::SeqCst);
-        self.inner.connected.store(false, Ordering::SeqCst);
+        {
+            let mut state = self.write_state();
+            state.active = false;
+            state.connected = false;
+        }
         self.set_stop_requested(true);
     }
 
@@ -213,6 +237,20 @@ impl Client {
                 true
             }
         });
+    }
+
+    fn read_state(&self) -> RwLockReadGuard<'_, ClientState> {
+        self.inner
+            .state
+            .read()
+            .expect("sync client state lock poisoned")
+    }
+
+    fn write_state(&self) -> RwLockWriteGuard<'_, ClientState> {
+        self.inner
+            .state
+            .write()
+            .expect("sync client state lock poisoned")
     }
 
     /// Waits for `finish` to publish a result or for local cancellation.
