@@ -269,9 +269,9 @@ impl<S: AsyncWrite> AsyncWrite for PeerInstrumentedStream<S> {
 }
 
 #[cfg(test)]
+#[allow(clippy::arithmetic_side_effects)]
 mod tests {
     use super::*;
-    use futures::io::{AsyncReadExt, AsyncWriteExt};
 
     struct MockStream {
         read_data: Vec<u8>,
@@ -326,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bandwidth_received() {
+    fn bandwidth_received() {
         let peer_id = PeerId::random();
         let metrics = PeerConnectionMetrics::for_peer(&peer_id);
         let initial = metrics.received.get();
@@ -345,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bandwidth_sent() {
+    fn bandwidth_sent() {
         let peer_id = PeerId::random();
         let metrics = PeerConnectionMetrics::for_peer(&peer_id);
         let initial = metrics.sent.get();
@@ -364,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bandwidth_multiple_operations() {
+    fn bandwidth_multiple_operations() {
         let peer_id = PeerId::random();
         let metrics = PeerConnectionMetrics::for_peer(&peer_id);
         let initial_recv = metrics.received.get();
