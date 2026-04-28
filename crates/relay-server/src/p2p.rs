@@ -1,6 +1,6 @@
 //! Relay P2P node implementation.
 
-use std::{sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use futures::StreamExt;
 use k256::SecretKey;
@@ -13,6 +13,7 @@ use tracing::{debug, info, instrument, warn};
 use crate::{
     Result,
     config::{Config, create_relay_config},
+    error::RelayP2PError,
     metrics::{PeerWithPeerClusterLabels, RELAY_METRICS},
     web::{enr_server, monitoring_server},
 };
@@ -58,11 +59,6 @@ pub async fn run_relay_p2p_node(
         "Pluto relay starting"
     );
 
-    for tcp_addr in config.p2p_config.tcp_multiaddrs()? {
-        debug!("Listening on TCP address {}", tcp_addr);
-        node.listen_on(tcp_addr)?;
-    }
-
     for udp_addr in config.p2p_config.udp_multiaddrs()? {
         debug!("Listening on UDP address {}", udp_addr);
         node.listen_on(udp_addr)?;
@@ -89,10 +85,10 @@ pub async fn run_relay_p2p_node(
 
     // Start monitoring server if configured
     let monitoring_handle = if let Some(monitoring_addr) = config.monitoring_addr.clone() {
-        Some(tokio::spawn(monitoring_server(
-            monitoring_addr,
-            ct.child_token(),
-        )))
+        let bind_addr = monitoring_addr
+            .parse::<SocketAddr>()
+            .map_err(|_| RelayP2PError::FailedToParseMonitoringAddr(monitoring_addr))?;
+        Some(tokio::spawn(monitoring_server(bind_addr, ct.child_token())))
     } else {
         info!("Prometheus monitoring not available, since monitoring-address flag is not set");
         None
@@ -271,6 +267,10 @@ fn handle_swarm_event(event: &SwarmEvent<PlutoBehaviourEvent<relay::Behaviour>>)
                 error = ?error,
                 "relay circuit closed"
             );
+            AddrUpdate::None
+        }
+        SwarmEvent::ListenerError { listener_id, error } => {
+            warn!(?listener_id, ?error, "listener error");
             AddrUpdate::None
         }
         _ => AddrUpdate::None,

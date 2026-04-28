@@ -145,13 +145,8 @@ pub async fn enr_server(
 
 /// Starts the Prometheus monitoring server on the given address.
 #[instrument(skip(ct))]
-pub async fn monitoring_server(monitoring_addr: String, ct: CancellationToken) {
-    let Ok(bind_addr) = monitoring_addr.parse::<SocketAddr>() else {
-        warn!("Failed to parse monitoring address: {monitoring_addr}");
-        return;
-    };
-
-    info!("Starting monitoring server on {monitoring_addr}");
+pub async fn monitoring_server(bind_addr: SocketAddr, ct: CancellationToken) {
+    info!("Starting monitoring server on {bind_addr}");
 
     MetricsExporter::default()
         .with_graceful_shutdown(ct.cancelled_owned())
