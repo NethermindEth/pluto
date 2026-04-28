@@ -213,11 +213,18 @@ impl Server {
     }
 
     pub(crate) async fn set_err(&self, error: Error) {
-        self.mutate_state(|state| {
-            state.err = Some(error);
-        })
-        .await;
-        self.inner.notify.notify_waiters();
+        let inserted = self
+            .mutate_state(|state| {
+                if state.err.is_some() {
+                    return false;
+                }
+                state.err = Some(error);
+                true
+            })
+            .await;
+        if inserted {
+            self.inner.notify.notify_waiters();
+        }
     }
 
     pub(crate) async fn update_step(&self, peer_id: PeerId, step: i64) -> Result<bool> {
@@ -260,5 +267,26 @@ impl Server {
     async fn mutate_state<R>(&self, mutate: impl FnOnce(&mut ServerState) -> R) -> R {
         let mut state = self.inner.state.write().await;
         mutate(&mut state)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pluto_core::version::SemVer;
+
+    use super::*;
+
+    fn test_server() -> Server {
+        Server::new(1, vec![1, 2, 3], SemVer::parse("v1.7").unwrap())
+    }
+
+    #[tokio::test]
+    async fn set_err_keeps_first_error() {
+        let server = test_server();
+
+        server.set_err(Error::PeerStepBehind).await;
+        server.set_err(Error::PeerStepAhead).await;
+
+        assert!(matches!(server.err().await, Some(Error::PeerStepBehind)));
     }
 }
