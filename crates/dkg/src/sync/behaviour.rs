@@ -94,10 +94,7 @@ impl Behaviour {
     }
 
     /// Queues a dial for an active sync client when no connection to the peer
-    /// exists.
-    ///
-    /// This is used both for the initial activation path and for retrying
-    /// transport-level dial failures during startup.
+    /// exists. Initial activation does not require reconnect to be enabled.
     fn schedule_dial_if_needed(&mut self, peer_id: PeerId) {
         let Some(client) = self.clients.get(&peer_id) else {
             return;
@@ -114,20 +111,30 @@ impl Behaviour {
         });
     }
 
-    fn schedule_no_addresses_retry_if_needed(&mut self, peer_id: PeerId) {
-        let Some(client) = self.clients.get(&peer_id) else {
-            return;
-        };
-
-        if !client.should_reconnect() || !client.should_schedule_dial() {
-            return;
-        }
-
-        self.no_addresses_retries
-            .entry(peer_id)
-            .or_insert_with(|| Box::pin(tokio::time::sleep(NO_ADDRESSES_RETRY_DELAY)));
+    /// Returns whether a failed dial should be retried for this peer.
+    fn should_retry_dial(&self, peer_id: PeerId) -> bool {
+        self.clients
+            .get(&peer_id)
+            .is_some_and(|client| client.should_reconnect() && client.should_schedule_dial())
     }
 
+    /// Queues an immediate retry for dial failures that already had addresses.
+    fn schedule_dial_retry_if_needed(&mut self, peer_id: PeerId) {
+        if self.should_retry_dial(peer_id) {
+            self.schedule_dial_if_needed(peer_id);
+        }
+    }
+
+    /// Schedules a delayed retry when no peer address is known yet.
+    fn schedule_no_addresses_retry_if_needed(&mut self, peer_id: PeerId) {
+        if self.should_retry_dial(peer_id) {
+            self.no_addresses_retries
+                .entry(peer_id)
+                .or_insert_with(|| Box::pin(tokio::time::sleep(NO_ADDRESSES_RETRY_DELAY)));
+        }
+    }
+
+    /// Polls delayed no-address retry timers and queues ready dials.
     fn poll_no_addresses_retries(&mut self, cx: &mut Context<'_>) {
         let ready = self
             .no_addresses_retries
@@ -137,13 +144,7 @@ impl Behaviour {
 
         for peer_id in ready {
             self.no_addresses_retries.remove(&peer_id);
-            if self
-                .clients
-                .get(&peer_id)
-                .is_some_and(|client| client.should_reconnect())
-            {
-                self.schedule_dial_if_needed(peer_id);
-            }
+            self.schedule_dial_retry_if_needed(peer_id);
         }
     }
 
@@ -201,14 +202,7 @@ impl NetworkBehaviour for Behaviour {
             FromSwarm::DialFailure(event) => {
                 if let Some(peer_id) = event.peer_id {
                     match event.error {
-                        DialError::Transport(_)
-                            if self
-                                .clients
-                                .get(&peer_id)
-                                .is_some_and(|c| c.should_reconnect()) =>
-                        {
-                            self.schedule_dial_if_needed(peer_id);
-                        }
+                        DialError::Transport(_) => self.schedule_dial_retry_if_needed(peer_id),
                         DialError::NoAddresses => {
                             // Peer addresses may appear shortly after relay
                             // reservation/routing; avoid a tight retry loop.
