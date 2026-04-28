@@ -1,8 +1,8 @@
 //! DKG sync protocol.
 //!
 //! Sync is intentionally split between user-facing handles and libp2p runtime
-//! objects. The caller only keeps [`Client`] and [`Server`] handles; libp2p owns
-//! [`Behaviour`] and [`handler::Handler`] while the swarm is running.
+//! objects. The caller only keeps [`Client`] and [`Server`] handles; libp2p
+//! owns [`Behaviour`] and [`handler::Handler`] while the swarm is running.
 //!
 //! The protocol has four moving parts:
 //! - [`Client`] is the local outbound handle for one remote peer. It owns local
@@ -83,9 +83,9 @@
 //!   definition-hash signature, and shutdown flag. Stream errors either retry
 //!   or finish the client depending on reconnect state and error type.
 //!
-//! Keep the ownership boundary clear: [`Client`] describes what this node sends,
-//! [`Server`] records what this node received, [`Behaviour`] manages swarm
-//! connectivity, and [`handler::Handler`] owns live stream execution.
+//! Keep the ownership boundary clear: [`Client`] describes what this node
+//! sends, [`Server`] records what this node received, [`Behaviour`] manages
+//! swarm connectivity, and [`handler::Handler`] owns live stream execution.
 
 mod behaviour;
 mod client;
