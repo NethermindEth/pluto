@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
+    pin::Pin,
     task::{Context, Poll},
     time::Duration,
 };
@@ -15,8 +16,11 @@ use libp2p::{
     },
 };
 use tokio::sync::mpsc;
+use tokio::time::Sleep;
 
 use super::{Command, client::Client, handler::Handler, server::Server};
+
+const NO_ADDRESSES_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 /// Event emitted by the sync behaviour.
 #[derive(Debug, Clone)]
@@ -56,6 +60,7 @@ pub struct Behaviour {
     clients: HashMap<PeerId, Client>,
     command_rx: mpsc::UnboundedReceiver<Command>,
     pending_events: VecDeque<ToSwarm<Event, THandlerInEvent<Self>>>,
+    no_addresses_retries: HashMap<PeerId, Pin<Box<Sleep>>>,
 }
 
 impl Behaviour {
@@ -73,6 +78,7 @@ impl Behaviour {
                 .collect(),
             command_rx,
             pending_events: VecDeque::new(),
+            no_addresses_retries: HashMap::new(),
         }
     }
 
@@ -108,8 +114,37 @@ impl Behaviour {
         });
     }
 
-    fn is_retryable_dial_error(error: &DialError) -> bool {
-        matches!(error, DialError::Transport(_) | DialError::NoAddresses)
+    fn schedule_no_addresses_retry_if_needed(&mut self, peer_id: PeerId) {
+        let Some(client) = self.clients.get(&peer_id) else {
+            return;
+        };
+
+        if !client.should_reconnect() || !client.should_schedule_dial() {
+            return;
+        }
+
+        self.no_addresses_retries
+            .entry(peer_id)
+            .or_insert_with(|| Box::pin(tokio::time::sleep(NO_ADDRESSES_RETRY_DELAY)));
+    }
+
+    fn poll_no_addresses_retries(&mut self, cx: &mut Context<'_>) {
+        let ready = self
+            .no_addresses_retries
+            .iter_mut()
+            .filter_map(|(peer_id, delay)| delay.as_mut().poll(cx).is_ready().then_some(*peer_id))
+            .collect::<Vec<_>>();
+
+        for peer_id in ready {
+            self.no_addresses_retries.remove(&peer_id);
+            if self
+                .clients
+                .get(&peer_id)
+                .is_some_and(|client| client.should_reconnect())
+            {
+                self.schedule_dial_if_needed(peer_id);
+            }
+        }
     }
 
     fn handle_command(&mut self, command: Command) {
@@ -164,14 +199,23 @@ impl NetworkBehaviour for Behaviour {
                 }
             }
             FromSwarm::DialFailure(event) => {
-                if let Some(peer_id) = event.peer_id
-                    && Self::is_retryable_dial_error(event.error)
-                    && self
-                        .clients
-                        .get(&peer_id)
-                        .is_some_and(|c| c.should_reconnect())
-                {
-                    self.schedule_dial_if_needed(peer_id);
+                if let Some(peer_id) = event.peer_id {
+                    match event.error {
+                        DialError::Transport(_)
+                            if self
+                                .clients
+                                .get(&peer_id)
+                                .is_some_and(|c| c.should_reconnect()) =>
+                        {
+                            self.schedule_dial_if_needed(peer_id);
+                        }
+                        DialError::NoAddresses => {
+                            // Peer addresses may appear shortly after relay
+                            // reservation/routing; avoid a tight retry loop.
+                            self.schedule_no_addresses_retry_if_needed(peer_id);
+                        }
+                        _ => {}
+                    }
                 }
             }
             _ => {}
@@ -197,6 +241,8 @@ impl NetworkBehaviour for Behaviour {
         while let Poll::Ready(Some(command)) = self.command_rx.poll_recv(cx) {
             self.handle_command(command);
         }
+
+        self.poll_no_addresses_retries(cx);
 
         if let Some(event) = self.pending_events.pop_front() {
             return Poll::Ready(event);
@@ -250,6 +296,15 @@ mod tests {
             panic!("{message}");
         };
         assert_eq!(DialOpts::get_peer_id(&opts), Some(peer_id));
+    }
+
+    fn assert_pending(behaviour: &mut Behaviour, message: &str) {
+        let waker = noop_waker_ref();
+        let mut cx = Context::from_waker(waker);
+        assert!(
+            NetworkBehaviour::poll(behaviour, &mut cx).is_pending(),
+            "{message}"
+        );
     }
 
     fn activate_and_assert_dial(behaviour: &mut Behaviour, client: &Client) {
@@ -348,8 +403,8 @@ mod tests {
         assert_next_dial(&mut behaviour, peer_id, "expected retry dial event");
     }
 
-    #[test]
-    fn no_addresses_dial_failure_retries_active_client() {
+    #[tokio::test]
+    async fn no_addresses_dial_failure_retries_active_client_after_delay() {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let peer_id = PeerId::random();
         let client = Client::new(
@@ -370,6 +425,8 @@ mod tests {
             connection_id: ConnectionId::new_unchecked(1),
         }));
 
+        assert_pending(&mut behaviour, "NoAddresses retry should be delayed");
+        tokio::time::sleep(NO_ADDRESSES_RETRY_DELAY + Duration::from_millis(10)).await;
         assert_next_dial(&mut behaviour, peer_id, "expected retry dial event");
     }
 

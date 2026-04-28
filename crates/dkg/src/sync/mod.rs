@@ -58,10 +58,10 @@ pub fn new(
 
 #[cfg(test)]
 mod tests {
-    use std::{net::TcpListener, time::Duration};
+    use std::{collections::HashSet, net::TcpListener, sync::Arc, time::Duration};
 
     use futures::StreamExt;
-    use libp2p::PeerId;
+    use libp2p::{PeerId, swarm::SwarmEvent};
     use pluto_core::version::SemVer;
     use pluto_p2p::{
         config::P2PConfig,
@@ -70,7 +70,10 @@ mod tests {
         peer::peer_id_from_key,
     };
     use pluto_testutil::random::generate_insecure_k1_key;
-    use tokio::{sync::oneshot, time::timeout};
+    use tokio::{
+        sync::{Barrier, oneshot},
+        time::timeout,
+    };
     use tokio_util::sync::CancellationToken;
 
     use super::*;
@@ -85,6 +88,7 @@ mod tests {
     struct RunningNode {
         server: Server,
         clients: Vec<Client>,
+        cancellation: CancellationToken,
         stop_tx: oneshot::Sender<()>,
         join: tokio::task::JoinHandle<anyhow::Result<()>>,
         client_joins: Vec<tokio::task::JoinHandle<Result<()>>>,
@@ -95,8 +99,7 @@ mod tests {
         Ok(listener.local_addr()?.port())
     }
 
-    async fn spawn_nodes(nodes: Vec<LocalNode>) -> anyhow::Result<Vec<RunningNode>> {
-        let mut nodes = nodes;
+    async fn spawn_nodes(mut nodes: Vec<LocalNode>) -> anyhow::Result<Vec<RunningNode>> {
         for node in &mut nodes {
             node.node.listen_on(node.addr.clone())?;
         }
@@ -112,33 +115,54 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
+        let node_count = nodes.len();
+        let connected_barrier_count = node_count
+            .checked_add(1)
+            .expect("test node count should not overflow");
+        let expected_connections = node_count
+            .checked_sub(1)
+            .expect("test should contain at least one node");
+        let listen_barrier = Arc::new(Barrier::new(nodes.len()));
+        let connected_barrier = Arc::new(Barrier::new(connected_barrier_count));
         let mut running = Vec::with_capacity(nodes.len());
         for (local, targets) in nodes.into_iter().zip(dial_targets) {
+            local.server.start();
             let mut node = local.node;
-            let server = local.server.clone();
-            server.start();
             let cancellation = CancellationToken::new();
-            let client_joins = local
-                .clients
-                .iter()
-                .map(|client| {
-                    let cancellation = cancellation.child_token();
-                    let client = client.clone();
-                    tokio::spawn(async move { client.run(cancellation).await })
-                })
-                .collect::<Vec<_>>();
+            let listen_barrier = listen_barrier.clone();
+            let connected_barrier = connected_barrier.clone();
             let (stop_tx, mut stop_rx) = oneshot::channel();
 
             let join = tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(200)).await;
+                loop {
+                    if matches!(
+                        node.select_next_some().await,
+                        SwarmEvent::NewListenAddr { .. }
+                    ) {
+                        break;
+                    }
+                }
+
+                listen_barrier.wait().await;
                 for target in targets {
                     node.dial(target)?;
                 }
 
+                let mut connected_peers = HashSet::new();
+                let mut connected_barrier = Some(connected_barrier);
                 loop {
                     tokio::select! {
                         _ = &mut stop_rx => break,
-                        _event = node.select_next_some() => {}
+                        _event = node.select_next_some() => {
+                            if let SwarmEvent::ConnectionEstablished { peer_id, .. } = _event {
+                                connected_peers.insert(peer_id);
+                                if connected_peers.len() == expected_connections
+                                    && let Some(connected_barrier) = connected_barrier.take()
+                                {
+                                    connected_barrier.wait().await;
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -148,10 +172,27 @@ mod tests {
             running.push(RunningNode {
                 server: local.server,
                 clients: local.clients,
+                cancellation,
                 stop_tx,
                 join,
-                client_joins,
+                client_joins: Vec::new(),
             });
+        }
+
+        timeout(Duration::from_secs(10), connected_barrier.wait())
+            .await
+            .map_err(|error| anyhow::anyhow!("p2p mesh did not connect: {error}"))?;
+
+        for node in &mut running {
+            node.client_joins = node
+                .clients
+                .iter()
+                .map(|client| {
+                    let cancellation = node.cancellation.child_token();
+                    let client = client.clone();
+                    tokio::spawn(async move { client.run(cancellation).await })
+                })
+                .collect();
         }
 
         Ok(running)
@@ -159,10 +200,11 @@ mod tests {
 
     async fn shutdown_nodes(nodes: Vec<RunningNode>) -> anyhow::Result<()> {
         for node in nodes {
+            node.cancellation.cancel();
             let _ = node.stop_tx.send(());
-            node.join.await??;
+            timeout(Duration::from_secs(10), node.join).await???;
             for join in node.client_joins {
-                let _ = join.await;
+                let _ = timeout(Duration::from_secs(10), join).await?;
             }
         }
 
@@ -240,7 +282,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn sync_round_trip_matches_go_shape() -> anyhow::Result<()> {
         let ports = (0..3)
             .map(|_| available_tcp_port())
@@ -290,22 +332,26 @@ mod tests {
         let running = spawn_nodes(nodes).await?;
         let cancellation = CancellationToken::new();
 
-        for node in &running {
+        for (index, node) in running.iter().enumerate() {
             timeout(
                 Duration::from_secs(10),
                 node.server.await_all_connected(cancellation.child_token()),
             )
-            .await??;
+            .await
+            .map_err(|error| anyhow::anyhow!("node {index} did not connect: {error}"))??;
         }
 
         for step in 0_i64..5 {
-            for node in &running {
+            for (index, node) in running.iter().enumerate() {
                 timeout(
                     Duration::from_secs(10),
                     node.server
                         .await_all_at_step(step, cancellation.child_token()),
                 )
-                .await??;
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("node {index} did not reach step {step}: {error}")
+                })??;
 
                 let future = node
                     .server
@@ -325,18 +371,28 @@ mod tests {
             assert!(node.clients.iter().all(Client::is_connected));
         }
 
-        for node in &running {
-            for client in &node.clients {
-                client.shutdown(cancellation.child_token()).await?;
+        for (node_index, node) in running.iter().enumerate() {
+            for (client_index, client) in node.clients.iter().enumerate() {
+                timeout(
+                    Duration::from_secs(10),
+                    client.shutdown(cancellation.child_token()),
+                )
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!(
+                        "client {client_index} on node {node_index} did not shutdown: {error}"
+                    )
+                })??;
             }
         }
 
-        for node in &running {
+        for (index, node) in running.iter().enumerate() {
             timeout(
                 Duration::from_secs(10),
                 node.server.await_all_shutdown(cancellation.child_token()),
             )
-            .await??;
+            .await
+            .map_err(|error| anyhow::anyhow!("node {index} did not observe shutdown: {error}"))??;
         }
 
         shutdown_nodes(running).await?;
