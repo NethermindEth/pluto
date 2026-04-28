@@ -271,7 +271,10 @@ mod tests {
             let partial = set.get(&pub_key).expect("partial signature should exist");
 
             assert_eq!(partial.share_idx, 2);
-            let sig = partial.signed_data.signature().expect("signature should exist");
+            let sig = partial
+                .signed_data
+                .signature()
+                .expect("signature should exist");
             BlstImpl
                 .verify(&share.public_shares[&2], &hash, sig.as_ref())
                 .expect("partial signature should verify against share public key");

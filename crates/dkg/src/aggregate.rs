@@ -350,7 +350,10 @@ mod tests {
             .map(|idx| {
                 partial_signature(
                     BlstImpl
-                        .sign(secret_shares.get(&idx).expect("share should exist"), &sig_root)
+                        .sign(
+                            secret_shares.get(&idx).expect("share should exist"),
+                            &sig_root,
+                        )
                         .expect("partial signing should succeed"),
                     u64::from(idx),
                 )
@@ -363,13 +366,9 @@ mod tests {
         let mut msgs = HashMap::new();
         msgs.insert(core_pub_key, reg.clone());
 
-        let res = agg_validator_registrations(
-            &data,
-            std::slice::from_ref(&share),
-            &msgs,
-            &fork_version,
-        )
-        .expect("aggregation should succeed");
+        let res =
+            agg_validator_registrations(&data, std::slice::from_ref(&share), &msgs, &fork_version)
+                .expect("aggregation should succeed");
 
         assert_eq!(res.len(), 1);
         let agg = res[0].0.v1.as_ref().expect("v1 registration should exist");
