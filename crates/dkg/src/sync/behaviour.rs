@@ -108,6 +108,10 @@ impl Behaviour {
         });
     }
 
+    fn is_retryable_dial_error(error: &DialError) -> bool {
+        matches!(error, DialError::Transport(_) | DialError::NoAddresses)
+    }
+
     fn handle_command(&mut self, command: Command) {
         match command {
             Command::Activate(peer_id) => self.schedule_dial_if_needed(peer_id),
@@ -161,7 +165,7 @@ impl NetworkBehaviour for Behaviour {
             }
             FromSwarm::DialFailure(event) => {
                 if let Some(peer_id) = event.peer_id
-                    && matches!(event.error, DialError::Transport(_))
+                    && Self::is_retryable_dial_error(event.error)
                     && self
                         .clients
                         .get(&peer_id)
@@ -316,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn dial_failure_retries_active_client() {
+    fn transport_dial_failure_retries_active_client() {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let peer_id = PeerId::random();
         let client = Client::new(
@@ -335,6 +339,31 @@ mod tests {
             address,
             libp2p::TransportError::Other(std::io::Error::other("dial failed")),
         )]);
+        behaviour.on_swarm_event(FromSwarm::DialFailure(DialFailure {
+            peer_id: Some(peer_id),
+            error: &error,
+            connection_id: ConnectionId::new_unchecked(1),
+        }));
+
+        assert_next_dial(&mut behaviour, peer_id, "expected retry dial event");
+    }
+
+    #[test]
+    fn no_addresses_dial_failure_retries_active_client() {
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
+        let peer_id = PeerId::random();
+        let client = Client::new(
+            peer_id,
+            vec![1, 2, 3],
+            SemVer::parse("v1.7").expect("valid version"),
+            Default::default(),
+            Some(command_tx),
+        );
+        let mut behaviour = test_behaviour_with_command_channel(client.clone(), command_rx);
+
+        activate_and_assert_dial(&mut behaviour, &client);
+
+        let error = DialError::NoAddresses;
         behaviour.on_swarm_event(FromSwarm::DialFailure(DialFailure {
             peer_id: Some(peer_id),
             error: &error,
