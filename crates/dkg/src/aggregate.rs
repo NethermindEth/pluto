@@ -57,21 +57,46 @@ pub enum AggregateError {
         context: &'static str,
     },
 
+    /// Local share data contained an invalid validator pubkey.
+    #[error("invalid pubkey in local share")]
+    InvalidLocalSharePubKey,
+
     /// Partial signatures referenced a missing public share.
     #[error("invalid pubshare")]
     InvalidPubshare,
 
     /// Partial signature verification failed for deposit data.
-    #[error("invalid deposit data partial signature from peer")]
-    InvalidDepositPartialSignature,
+    #[error("invalid deposit data partial signature from peer {share_idx} for pubkey {pub_key}")]
+    InvalidDepositPartialSignature {
+        /// Peer share index.
+        share_idx: u64,
+        /// Validator pubkey.
+        pub_key: String,
+    },
 
     /// Partial signature verification failed for validator registrations.
-    #[error("invalid validator registration partial signature from peer")]
-    InvalidValidatorRegistrationPartialSignature,
+    #[error(
+        "invalid validator registration partial signature from peer {share_idx} for pubkey {pub_key}"
+    )]
+    InvalidValidatorRegistrationPartialSignature {
+        /// Peer share index.
+        share_idx: u64,
+        /// Validator pubkey.
+        pub_key: String,
+    },
 
     /// Partial signature verification failed for lock hash.
-    #[error("invalid lock hash partial signature from peer: {0}")]
-    InvalidLockHashPartialSignature(pluto_crypto::types::Error),
+    #[error(
+        "invalid lock hash partial signature from peer {share_idx} for pubkey {pub_key}: {source}"
+    )]
+    InvalidLockHashPartialSignature {
+        /// Peer share index.
+        share_idx: u64,
+        /// Validator pubkey.
+        pub_key: String,
+        /// Verification error.
+        source: pluto_crypto::types::Error,
+    },
 
     /// Aggregate signature verification failed for deposit data.
     #[error("invalid deposit data aggregated signature: {0}")]
@@ -108,6 +133,7 @@ pub fn agg_lock_hash_sig(
     let mut pubkeys = Vec::new();
 
     for (pub_key, partials) in data {
+        let pub_key_hex = hex_pubkey(pub_key);
         let share = shares
             .get(pub_key)
             .ok_or(AggregateError::InvalidPubKeyFromPeer {
@@ -121,9 +147,13 @@ pub fn agg_lock_hash_sig(
                 .get(&partial.share_idx)
                 .ok_or(AggregateError::InvalidPubshare)?;
 
-            BlstImpl
-                .verify(pubshare, hash, &sig)
-                .map_err(AggregateError::InvalidLockHashPartialSignature)?;
+            BlstImpl.verify(pubshare, hash, &sig).map_err(|source| {
+                AggregateError::InvalidLockHashPartialSignature {
+                    share_idx: partial.share_idx,
+                    pub_key: pub_key_hex.clone(),
+                    source,
+                }
+            })?;
 
             sigs.push(sig);
             pubkeys.push(*pubshare);
@@ -144,6 +174,7 @@ pub fn agg_deposit_data(
     let mut res = Vec::with_capacity(data.len());
 
     for (pub_key, partials) in data {
+        let pub_key_hex = hex_pubkey(pub_key);
         let msg = msgs
             .get(pub_key)
             .ok_or(AggregateError::DepositMessageNotFound)?;
@@ -154,8 +185,11 @@ pub fn agg_deposit_data(
                 context: "deposit data",
             })?;
         let partial_sigs =
-            verify_threshold_partials(partials, &share.public_shares, &sig_root, || {
-                AggregateError::InvalidDepositPartialSignature
+            verify_threshold_partials(partials, &share.public_shares, &sig_root, |share_idx| {
+                AggregateError::InvalidDepositPartialSignature {
+                    share_idx,
+                    pub_key: pub_key_hex.clone(),
+                }
             })?;
 
         let agg_sig = BlstImpl.threshold_aggregate(&partial_sigs)?;
@@ -188,6 +222,7 @@ pub fn agg_validator_registrations(
     let mut res = Vec::with_capacity(data.len());
 
     for (pub_key, partials) in data {
+        let pub_key_hex = hex_pubkey(pub_key);
         let msg = msgs
             .get(pub_key)
             .ok_or(AggregateError::ValidatorRegistrationNotFound)?;
@@ -199,8 +234,11 @@ pub fn agg_validator_registrations(
                 context: "validator registrations",
             })?;
         let partial_sigs =
-            verify_threshold_partials(partials, &share.public_shares, &sig_root, || {
-                AggregateError::InvalidValidatorRegistrationPartialSignature
+            verify_threshold_partials(partials, &share.public_shares, &sig_root, |share_idx| {
+                AggregateError::InvalidValidatorRegistrationPartialSignature {
+                    share_idx,
+                    pub_key: pub_key_hex.clone(),
+                }
             })?;
 
         let agg_sig = BlstImpl.threshold_aggregate(&partial_sigs)?;
@@ -231,14 +269,15 @@ fn shares_by_pubkey(shares: &[Share]) -> Result<HashMap<PubKey, &Share>> {
     shares
         .iter()
         .map(|share| {
-            let pub_key = PubKey::try_from(share.pub_key.as_slice()).map_err(|_| {
-                AggregateError::InvalidPubKeyFromPeer {
-                    context: "local share",
-                }
-            })?;
+            let pub_key = PubKey::try_from(share.pub_key.as_slice())
+                .map_err(|_| AggregateError::InvalidLocalSharePubKey)?;
             Ok((pub_key, share))
         })
         .collect()
+}
+
+fn hex_pubkey(pub_key: &PubKey) -> String {
+    hex::encode(pub_key.as_ref())
 }
 
 fn extract_partial_signature(partial: &ParSignedData) -> Result<Signature> {
@@ -250,7 +289,7 @@ fn verify_threshold_partials(
     partials: &[ParSignedData],
     public_shares: &HashMap<u64, PublicKey>,
     message: &[u8],
-    invalid_signature_error: fn() -> AggregateError,
+    invalid_signature_error: impl Fn(u64) -> AggregateError,
 ) -> Result<HashMap<u8, Signature>> {
     let mut res = HashMap::with_capacity(partials.len());
 
@@ -262,7 +301,7 @@ fn verify_threshold_partials(
 
         BlstImpl
             .verify(pubshare, message, &sig)
-            .map_err(|_| invalid_signature_error())?;
+            .map_err(|_| invalid_signature_error(partial.share_idx))?;
 
         res.insert(u8::try_from(partial.share_idx)?, sig);
     }
@@ -418,7 +457,7 @@ mod tests {
 
         assert!(matches!(
             err,
-            AggregateError::InvalidDepositPartialSignature
+            AggregateError::InvalidDepositPartialSignature { share_idx: 3, .. }
         ));
     }
 
@@ -453,7 +492,7 @@ mod tests {
 
         assert!(matches!(
             err,
-            AggregateError::InvalidLockHashPartialSignature(_)
+            AggregateError::InvalidLockHashPartialSignature { share_idx: 3, .. }
         ));
     }
 

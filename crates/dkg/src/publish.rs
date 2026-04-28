@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use pluto_app::obolapi;
 use pluto_cluster::lock::Lock;
-use tracing::info;
+use tracing::debug;
 
 /// Result type for DKG publish helpers.
 pub type Result<T> = std::result::Result<T, PublishError>;
@@ -27,7 +27,7 @@ pub async fn write_lock_to_api(
     )?;
 
     client.publish_lock(lock.clone()).await?;
-    info!(addr = publish_addr, "Published lock file");
+    debug!(addr = publish_addr, "Published lock file");
 
     Ok(client.launchpad_url_for_lock(lock)?)
 }

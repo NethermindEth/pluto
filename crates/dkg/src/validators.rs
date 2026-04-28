@@ -113,7 +113,8 @@ pub fn create_dist_validators(
             .ok_or(ValidatorsError::ValidatorRegistrationNotFound)?;
 
         let partial_deposit_data = deposit_datas_map
-            .remove(&share.pub_key)
+            .get(&share.pub_key)
+            .cloned()
             .ok_or_else(|| ValidatorsError::DepositDataNotFound(hex::encode(share.pub_key)))?;
 
         dvs.push(DistValidator {
