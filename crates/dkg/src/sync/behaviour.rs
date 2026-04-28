@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     task::{Context, Poll},
+    time::Duration,
 };
 
 use either::Either;
@@ -38,6 +39,14 @@ pub enum Event {
         peer_id: PeerId,
         /// The validation error.
         error: super::error::Error,
+    },
+    /// A peer responded to an outbound sync message.
+    PeerRttObserved {
+        /// The peer that responded.
+        peer_id: PeerId,
+        /// Round-trip time between sending the sync message and receiving the
+        /// response.
+        rtt: Duration,
     },
 }
 
@@ -206,8 +215,10 @@ mod tests {
         },
     };
     use pluto_core::version::SemVer;
-    use tokio::sync::mpsc;
-    use tokio::time::{Duration, timeout};
+    use tokio::{
+        sync::mpsc,
+        time::{Duration, timeout},
+    };
     use tokio_util::sync::CancellationToken;
 
     use super::*;

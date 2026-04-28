@@ -21,7 +21,10 @@ use libp2p::{
     },
 };
 use prost_types::Timestamp;
-use tokio::{sync::mpsc, time::Sleep};
+use tokio::{
+    sync::mpsc,
+    time::{Instant, Sleep},
+};
 use tracing::{debug, info, warn};
 
 use crate::dkgpb::v1::sync::{MsgSync, MsgSyncResponse};
@@ -73,8 +76,8 @@ pub struct Handler {
     server: Server,
     client: Option<Client>,
     inbound: Option<InboundFuture>,
-    inbound_events_tx: mpsc::UnboundedSender<OutEvent>,
-    inbound_events_rx: mpsc::UnboundedReceiver<OutEvent>,
+    events_tx: mpsc::UnboundedSender<OutEvent>,
+    events_rx: mpsc::UnboundedReceiver<OutEvent>,
     outbound: OutboundState,
     backoff: Duration,
 }
@@ -82,14 +85,14 @@ pub struct Handler {
 impl Handler {
     /// Creates a new handler for a single connection.
     pub fn new(peer_id: PeerId, server: Server, client: Option<Client>) -> Self {
-        let (inbound_events_tx, inbound_events_rx) = mpsc::unbounded_channel();
+        let (events_tx, events_rx) = mpsc::unbounded_channel();
         Self {
             peer_id,
             server,
             client,
             inbound: None,
-            inbound_events_tx,
-            inbound_events_rx,
+            events_tx,
+            events_rx,
             outbound: OutboundState::Idle,
             backoff: INITIAL_BACKOFF,
         }
@@ -209,7 +212,7 @@ impl ConnectionHandler for Handler {
     ) -> Poll<
         ConnectionHandlerEvent<Self::OutboundProtocol, Self::OutboundOpenInfo, Self::ToBehaviour>,
     > {
-        if let Poll::Ready(Some(event)) = self.inbound_events_rx.poll_recv(cx) {
+        if let Poll::Ready(Some(event)) = self.events_rx.poll_recv(cx) {
             return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(event));
         }
 
@@ -299,7 +302,7 @@ impl ConnectionHandler for Handler {
                     handle_inbound_stream(
                         self.peer_id,
                         self.server.clone(),
-                        self.inbound_events_tx.clone(),
+                        self.events_tx.clone(),
                         stream,
                     )
                     .boxed(),
@@ -316,7 +319,9 @@ impl ConnectionHandler for Handler {
 
                 stream.ignore_for_keep_alive();
                 self.backoff = INITIAL_BACKOFF;
-                self.outbound = OutboundState::Running(run_outbound_stream(client, stream).boxed());
+                self.outbound = OutboundState::Running(
+                    run_outbound_stream(client, self.events_tx.clone(), stream).boxed(),
+                );
             }
             ConnectionEvent::DialUpgradeError(error) => self.on_dial_upgrade_error(error),
             _ => {}
@@ -324,7 +329,11 @@ impl ConnectionHandler for Handler {
     }
 }
 
-async fn run_outbound_stream(client: Client, mut stream: Stream) -> OutboundExit {
+async fn run_outbound_stream(
+    client: Client,
+    events_tx: mpsc::UnboundedSender<OutEvent>,
+    mut stream: Stream,
+) -> OutboundExit {
     let mut interval = tokio::time::interval(client.period());
     let mut stop_rx = client.stop_requested_rx();
     let hash_signature = prost::bytes::Bytes::copy_from_slice(client.hash_sig());
@@ -356,6 +365,7 @@ async fn run_outbound_stream(client: Client, mut stream: Stream) -> OutboundExit
             version: version.clone(),
             step,
         };
+        let sent_at = Instant::now();
 
         let response: std::io::Result<MsgSyncResponse> = tokio::select! {
             response = async {
@@ -392,6 +402,13 @@ async fn run_outbound_stream(client: Client, mut stream: Stream) -> OutboundExit
             return OutboundExit::Fatal(Error::PeerRespondedWithError(response.error));
         }
 
+        send_event(
+            &events_tx,
+            OutEvent::PeerRttObserved {
+                peer_id: client.peer_id(),
+                rtt: sent_at.elapsed(),
+            },
+        );
         if let Some(sync_timestamp) = response.sync_timestamp {
             debug!(
                 peer = %client.peer_id(),
@@ -409,7 +426,7 @@ async fn run_outbound_stream(client: Client, mut stream: Stream) -> OutboundExit
 async fn handle_inbound_stream(
     peer_id: PeerId,
     server: Server,
-    inbound_events_tx: mpsc::UnboundedSender<OutEvent>,
+    events_tx: mpsc::UnboundedSender<OutEvent>,
     mut stream: Stream,
 ) -> Result<()> {
     let result = async {
@@ -439,10 +456,7 @@ async fn handle_inbound_stream(
                 &message,
             ) {
                 let error_string = error.to_string();
-                send_inbound_event(
-                    &inbound_events_tx,
-                    OutEvent::SyncRejected { peer_id, error },
-                );
+                send_event(&events_tx, OutEvent::SyncRejected { peer_id, error });
                 server
                     .set_err(Error::InvalidSyncMessage {
                         peer: peer_id,
@@ -472,8 +486,8 @@ async fn handle_inbound_stream(
                 }
             };
             if updated {
-                send_inbound_event(
-                    &inbound_events_tx,
+                send_event(
+                    &events_tx,
                     OutEvent::PeerStepUpdated {
                         peer_id,
                         step: message.step,
@@ -486,10 +500,7 @@ async fn handle_inbound_stream(
                 .map_err(|error| Error::Io(error.to_string()))?;
 
             if message.shutdown {
-                send_inbound_event(
-                    &inbound_events_tx,
-                    OutEvent::PeerShutdownObserved { peer_id },
-                );
+                send_event(&events_tx, OutEvent::PeerShutdownObserved { peer_id });
                 server.set_shutdown(peer_id).await;
                 return Ok(());
             }
@@ -501,9 +512,9 @@ async fn handle_inbound_stream(
     result
 }
 
-fn send_inbound_event(inbound_events_tx: &mpsc::UnboundedSender<OutEvent>, event: OutEvent) {
-    if let Err(error) = inbound_events_tx.send(event) {
-        debug!(err = %error, "dropping inbound sync event: handler event receiver closed");
+fn send_event(events_tx: &mpsc::UnboundedSender<OutEvent>, event: OutEvent) {
+    if let Err(error) = events_tx.send(event) {
+        debug!(err = %error, "dropping sync event: handler event receiver closed");
     }
 }
 

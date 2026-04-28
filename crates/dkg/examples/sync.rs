@@ -323,6 +323,42 @@ fn log_ping_event(
     }
 }
 
+fn log_sync_event(event: sync::Event, cluster_info: &ClusterInfo) {
+    match event {
+        sync::Event::PeerStepUpdated { peer_id, step } => {
+            debug!(
+                peer_id = %peer_id,
+                peer_label = %cluster_info.peer_label(&peer_id),
+                step,
+                "Sync peer step updated"
+            );
+        }
+        sync::Event::PeerShutdownObserved { peer_id } => {
+            debug!(
+                peer_id = %peer_id,
+                peer_label = %cluster_info.peer_label(&peer_id),
+                "Sync peer shutdown observed"
+            );
+        }
+        sync::Event::SyncRejected { peer_id, error } => {
+            error!(
+                peer_id = %peer_id,
+                peer_label = %cluster_info.peer_label(&peer_id),
+                err = %error,
+                "Sync message rejected"
+            );
+        }
+        sync::Event::PeerRttObserved { peer_id, rtt } => {
+            debug!(
+                peer_id = %peer_id,
+                peer_label = %cluster_info.peer_label(&peer_id),
+                rtt = ?rtt,
+                "Sync RTT observed"
+            );
+        }
+    }
+}
+
 fn print_cluster_overview(cluster_info: &ClusterInfo) {
     info!("Cluster peer order:");
     for (index, peer_id) in cluster_info.peers.iter().enumerate() {
@@ -601,6 +637,11 @@ async fn main() -> Result<()> {
                         ExampleBehaviourEvent::Relay(relay_event),
                     )) => {
                         log_relay_event(relay_event, &cluster_info);
+                    }
+                    SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(
+                        ExampleBehaviourEvent::Sync(sync_event),
+                    )) => {
+                        log_sync_event(sync_event, &cluster_info);
                     }
                     SwarmEvent::Behaviour(PlutoBehaviourEvent::Ping(ping::Event {
                         peer,
