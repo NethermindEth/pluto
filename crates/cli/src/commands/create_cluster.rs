@@ -51,10 +51,7 @@ use crate::{
         constants::{MIN_NODES, MIN_THRESHOLD},
         create_dkg,
     },
-    error::{
-        CliError, CreateClusterError, InvalidNetworkConfigError, Result as CliResult,
-        ThresholdError,
-    },
+    error::{CreateClusterError, InvalidNetworkConfigError, Result as CliResult, ThresholdError},
 };
 
 /// HTTP scheme.
@@ -355,13 +352,6 @@ impl From<TestnetConfig> for network::Network {
     }
 }
 
-fn init_tracing() -> CliResult<()> {
-    match pluto_tracing::init(&pluto_tracing::TracingConfig::default()) {
-        Ok(_) | Err(pluto_tracing::init::Error::InitError(_)) => Ok(()),
-        Err(err) => Err(CliError::from(err)),
-    }
-}
-
 fn validate_threshold(args: &CreateClusterArgs) -> Result<()> {
     let Some(threshold) = args.threshold else {
         return Ok(());
@@ -385,8 +375,6 @@ fn validate_threshold(args: &CreateClusterArgs) -> Result<()> {
 
 /// Runs the create cluster command
 pub async fn run(w: &mut dyn Write, mut args: CreateClusterArgs) -> CliResult<()> {
-    init_tracing()?;
-
     let mut definition_input = None;
 
     if let Some(definition_file) = args.definition_file.as_ref() {
@@ -1431,7 +1419,7 @@ mod tests {
     use rand::Rng as _;
     use tempfile::TempDir;
 
-    use crate::commands::constants::ZERO_ADDRESS;
+    use crate::{commands::constants::ZERO_ADDRESS, error::CliError};
 
     use super::*;
 
