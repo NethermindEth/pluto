@@ -5496,8 +5496,10 @@ name = "pluto-cli"
 version = "1.7.1"
 dependencies = [
  "backon",
+ "bytes",
  "chrono",
  "clap",
+ "futures",
  "hex",
  "humantime",
  "k256",
@@ -5515,11 +5517,13 @@ dependencies = [
  "pluto-relay-server",
  "pluto-ssz",
  "pluto-tracing",
+ "quick-xml",
  "rand 0.8.6",
  "reqwest 0.13.2",
  "serde",
  "serde_json",
  "serde_with",
+ "sysinfo",
  "tempfile",
  "test-case",
  "thiserror 2.0.18",
@@ -5621,6 +5625,7 @@ name = "pluto-dkg"
 version = "1.7.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bon",
  "chrono",
  "clap",
@@ -5639,6 +5644,7 @@ dependencies = [
  "pluto-eth2util",
  "pluto-k1util",
  "pluto-p2p",
+ "pluto-parsigex",
  "pluto-testutil",
  "pluto-tracing",
  "prost 0.14.3",
@@ -6663,9 +6669,9 @@ dependencies = [
 
 [[package]]
 name = "ruint"
-version = "1.17.2"
+version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c141e807189ad38a07276942c6623032d3753c8859c146104ac2e4d68865945a"
+checksum = "0298da754d1395046b0afdc2f20ee76d29a8ae310cd30ffa84ed42acba9cb12a"
 dependencies = [
  "alloy-rlp",
  "ark-ff 0.3.0",
@@ -6749,9 +6755,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.38"
+version = "0.23.39"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69f9466fb2c14ea04357e91413efb882e2a6d4a406e625449bc0a5d360d53a21"
+checksum = "7c2c118cb077cca2822033836dfb1b975355dfb784b5e8da48f7b6c5db74e60e"
 dependencies = [
  "aws-lc-rs",
  "log",

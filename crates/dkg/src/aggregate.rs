@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use pluto_core::{
     signeddata::{SignedDataError, VersionedSignedValidatorRegistration},
-    types::{ParSignedData, PubKey},
+    types::{ParSignedData, PubKey, SignedData},
 };
 use pluto_crypto::{
     blst_impl::BlstImpl,
@@ -13,10 +13,7 @@ use pluto_crypto::{
 use pluto_eth2api::spec::phase0;
 use pluto_eth2util::{deposit, registration};
 
-use crate::{
-    share::Share,
-    validators::{ValidatorsError, set_registration_signature},
-};
+use crate::share::Share;
 
 /// Result type for DKG aggregation helpers.
 pub type Result<T> = std::result::Result<T, AggregateError>;
@@ -40,13 +37,17 @@ pub enum AggregateError {
     #[error(transparent)]
     Registration(#[from] registration::RegistrationError),
 
-    /// Failed to update the aggregated validator registration.
-    #[error(transparent)]
-    Validators(#[from] ValidatorsError),
-
     /// Failed to extract a signature from partially signed data.
     #[error(transparent)]
     SignedData(#[from] SignedDataError),
+
+    /// Validator registration payload is missing.
+    #[error("no V1 registration")]
+    MissingV1Registration,
+
+    /// Validator registration version is unsupported.
+    #[error("unknown version")]
+    UnknownVersion,
 
     /// Partial signatures referenced a pubkey that is not in the local share
     /// set.
@@ -181,7 +182,7 @@ pub fn agg_validator_registrations(
     fork_version: &[u8],
 ) -> Result<Vec<VersionedSignedValidatorRegistration>> {
     let shares_by_pubkey = shares_by_pubkey(shares)?;
-    let fork_version: phase0::Version = fork_version
+    let fork_version_arr: phase0::Version = fork_version
         .try_into()
         .map_err(|_| AggregateError::InvalidForkVersionLength)?;
     let mut res = Vec::with_capacity(data.len());
@@ -190,12 +191,8 @@ pub fn agg_validator_registrations(
         let msg = msgs
             .get(pub_key)
             .ok_or(AggregateError::ValidatorRegistrationNotFound)?;
-        let v1 = msg
-            .0
-            .v1
-            .as_ref()
-            .ok_or(ValidatorsError::MissingV1Registration)?;
-        let sig_root = registration::get_message_signing_root(&v1.message, fork_version);
+        let v1 = registration_v1(msg)?;
+        let sig_root = registration::get_message_signing_root(&v1.message, fork_version_arr);
         let share = shares_by_pubkey
             .get(pub_key)
             .ok_or(AggregateError::InvalidPubKeyFromPeer {
@@ -211,13 +208,23 @@ pub fn agg_validator_registrations(
             .verify(&share.pub_key, &sig_root, &agg_sig)
             .map_err(AggregateError::InvalidValidatorRegistrationAggregatedSignature)?;
 
-        res.push(set_registration_signature(
-            msg,
-            pluto_core::types::Signature::new(agg_sig),
-        )?);
+        res.push(msg.set_signature(pluto_core::types::Signature::new(agg_sig))?);
     }
 
     Ok(res)
+}
+
+fn registration_v1(
+    reg: &VersionedSignedValidatorRegistration,
+) -> Result<&pluto_eth2api::v1::SignedValidatorRegistration> {
+    match reg.0.version {
+        pluto_eth2api::versioned::BuilderVersion::V1 => reg
+            .0
+            .v1
+            .as_ref()
+            .ok_or(AggregateError::MissingV1Registration),
+        pluto_eth2api::versioned::BuilderVersion::Unknown => Err(AggregateError::UnknownVersion),
+    }
 }
 
 fn shares_by_pubkey(shares: &[Share]) -> Result<HashMap<PubKey, &Share>> {
@@ -310,6 +317,66 @@ mod tests {
 
     fn partial_signature(sig: Signature, share_idx: u64) -> ParSignedData {
         ParSignedData::new(pluto_core::types::Signature::new(sig), share_idx)
+    }
+
+    #[test]
+    fn agg_validator_registrations_accepts_valid_signatures() {
+        let (share, secret_shares) = build_share_fixture();
+        let core_pub_key = PubKey::try_from(share.pub_key.as_slice()).expect("pubkey should fit");
+        let fee_recipient = [0x22; 20];
+        let gas_limit = 30_000_000;
+        let timestamp = 1_746_843_400;
+        let fork_version: phase0::Version = network::network_to_fork_version_bytes("goerli")
+            .expect("fork version should exist")
+            .try_into()
+            .expect("fork version should fit");
+        let reg_msg = v1::ValidatorRegistration {
+            fee_recipient,
+            gas_limit,
+            timestamp,
+            pubkey: pubkey_to_eth2(share.pub_key),
+        };
+        let sig_root = registration::get_message_signing_root(&reg_msg, fork_version);
+        let reg = CoreRegistration::new(VersionedSignedValidatorRegistration {
+            version: BuilderVersion::V1,
+            v1: Some(v1::SignedValidatorRegistration {
+                message: reg_msg,
+                signature: [0u8; 96],
+            }),
+        })
+        .expect("registration should be valid");
+        let partials = [1u8, 2, 3]
+            .into_iter()
+            .map(|idx| {
+                partial_signature(
+                    BlstImpl
+                        .sign(secret_shares.get(&idx).expect("share should exist"), &sig_root)
+                        .expect("partial signing should succeed"),
+                    u64::from(idx),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let mut data = HashMap::new();
+        data.insert(core_pub_key, partials);
+
+        let mut msgs = HashMap::new();
+        msgs.insert(core_pub_key, reg.clone());
+
+        let res = agg_validator_registrations(
+            &data,
+            std::slice::from_ref(&share),
+            &msgs,
+            &fork_version,
+        )
+        .expect("aggregation should succeed");
+
+        assert_eq!(res.len(), 1);
+        let agg = res[0].0.v1.as_ref().expect("v1 registration should exist");
+        assert_eq!(agg.message, reg.0.v1.as_ref().expect("v1 reg").message);
+        BlstImpl
+            .verify(&share.pub_key, &sig_root, &agg.signature)
+            .expect("aggregate signature should verify");
     }
 
     #[test]

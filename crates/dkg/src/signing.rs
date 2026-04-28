@@ -259,6 +259,26 @@ mod tests {
     }
 
     #[test]
+    fn sign_lock_hash_returns_one_partial_signature_per_share() {
+        let shares = build_shares(2, 4, 3, 2);
+        let hash = [0x42; 32];
+
+        let set = sign_lock_hash(2, &shares, &hash).expect("lock hash signing should succeed");
+
+        assert_eq!(set.inner().len(), shares.len());
+        for share in &shares {
+            let pub_key = PubKey::try_from(share.pub_key.as_slice()).expect("pubkey should fit");
+            let partial = set.get(&pub_key).expect("partial signature should exist");
+
+            assert_eq!(partial.share_idx, 2);
+            let sig = partial.signed_data.signature().expect("signature should exist");
+            BlstImpl
+                .verify(&share.public_shares[&2], &hash, sig.as_ref())
+                .expect("partial signature should verify against share public key");
+        }
+    }
+
+    #[test]
     fn sign_validator_registrations_uses_fork_version_timestamp() {
         let shares = build_shares(1, 4, 3, 1);
         let fork_version =

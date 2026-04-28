@@ -569,8 +569,8 @@ mod tests {
                 key.clone(),
                 NodeType::TCP,
                 false,
-                peer_ids.clone(),
-                move |builder, _| builder.with_p2p_context(p2p_context).with_inner(behaviour),
+                p2p_context,
+                move |builder, _| builder.with_inner(behaviour),
             )?;
 
             let addr: Multiaddr = format!("/ip4/127.0.0.1/tcp/{}", ports[index]).parse()?;
