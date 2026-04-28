@@ -37,6 +37,7 @@ const INITIAL_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_BACKOFF: Duration = Duration::from_secs(1);
 
 type InboundFuture = BoxFuture<'static, Result<()>>;
+type OutboundEvent = ConnectionHandlerEvent<ReadyUpgrade<StreamProtocol>, (), OutEvent>;
 
 /// Protocol-level events emitted by the sync handler.
 pub type OutEvent = Event;
@@ -53,6 +54,16 @@ enum OutboundExit {
     GracefulShutdown,
     Reconnectable { error: Error, relay_reset: bool },
     Fatal(Error),
+}
+
+enum OutboundRequest {
+    /// This handler claimed outbound ownership and requested a new substream.
+    Requested(OutboundEvent),
+    /// The client is active, but another handler already owns the outbound
+    /// stream.
+    Busy,
+    /// The client is not active, or this connection has no outbound client.
+    Inactive,
 }
 
 /// Sync connection handler.
@@ -93,18 +104,41 @@ impl Handler {
         self.backoff = self.backoff.saturating_mul(2).min(MAX_BACKOFF);
     }
 
-    fn try_request_outbound(
-        &mut self,
-    ) -> Option<ConnectionHandlerEvent<ReadyUpgrade<StreamProtocol>, (), OutEvent>> {
-        let client = self.client.as_ref()?;
-        if !client.should_run() || !client.try_claim_outbound() {
-            return None;
+    fn schedule_retry_and_poll(&mut self, cx: &mut Context<'_>) {
+        self.schedule_retry();
+        if let OutboundState::WaitingRetry(delay) = &mut self.outbound {
+            let _ = delay.as_mut().poll(cx);
+        }
+    }
+
+    fn try_request_outbound(&mut self) -> OutboundRequest {
+        let Some(client) = self.client.as_ref() else {
+            return OutboundRequest::Inactive;
+        };
+
+        if !client.should_run() {
+            return OutboundRequest::Inactive;
+        }
+
+        if !client.try_claim_outbound() {
+            return OutboundRequest::Busy;
         }
 
         self.outbound = OutboundState::OpenStream;
-        Some(ConnectionHandlerEvent::OutboundSubstreamRequest {
+        OutboundRequest::Requested(ConnectionHandlerEvent::OutboundSubstreamRequest {
             protocol: self.substream_protocol(),
         })
+    }
+
+    fn poll_idle_outbound(&mut self, cx: &mut Context<'_>) -> Option<OutboundEvent> {
+        match self.try_request_outbound() {
+            OutboundRequest::Requested(event) => Some(event),
+            OutboundRequest::Busy => {
+                self.schedule_retry_and_poll(cx);
+                None
+            }
+            OutboundRequest::Inactive => None,
+        }
     }
 
     fn on_dial_upgrade_error(
@@ -194,18 +228,18 @@ impl ConnectionHandler for Handler {
 
         match &mut self.outbound {
             OutboundState::Idle => {
-                if let Some(event) = self.try_request_outbound() {
+                if let Some(event) = self.poll_idle_outbound(cx) {
                     return Poll::Ready(event);
                 }
             }
             OutboundState::OpenStream => {}
             OutboundState::WaitingRetry(delay) => {
                 if delay.as_mut().poll(cx).is_ready() {
-                    if let Some(event) = self.try_request_outbound() {
-                        return Poll::Ready(event);
+                    match self.try_request_outbound() {
+                        OutboundRequest::Requested(event) => return Poll::Ready(event),
+                        OutboundRequest::Busy => self.schedule_retry_and_poll(cx),
+                        OutboundRequest::Inactive => self.outbound = OutboundState::Idle,
                     }
-
-                    self.outbound = OutboundState::Idle;
                 }
             }
             OutboundState::Running(fut) => match fut.poll_unpin(cx) {
@@ -228,7 +262,7 @@ impl ConnectionHandler for Handler {
                     if relay_reset || client.should_reconnect() {
                         info!(peer = %self.peer_id, err = %error, "Disconnected from peer");
                         self.backoff = INITIAL_BACKOFF;
-                        self.schedule_retry();
+                        self.schedule_retry_and_poll(cx);
                     } else {
                         client.finish(Err(error));
                         self.outbound = OutboundState::Disabled;
@@ -470,5 +504,56 @@ async fn handle_inbound_stream(
 fn send_inbound_event(inbound_events_tx: &mpsc::UnboundedSender<OutEvent>, event: OutEvent) {
     if let Err(error) = inbound_events_tx.send(event) {
         debug!(err = %error, "dropping inbound sync event: handler event receiver closed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::task::{Context, Poll};
+
+    use futures::task::noop_waker_ref;
+    use libp2p::swarm::{ConnectionHandler, ConnectionHandlerEvent};
+    use pluto_core::version::SemVer;
+    use tokio::{sync::mpsc, time::Duration};
+
+    use super::*;
+    use crate::sync::ClientConfig;
+
+    #[tokio::test]
+    async fn retry_stays_scheduled_while_outbound_claim_is_busy() {
+        let peer_id = PeerId::random();
+        let version = SemVer::parse("v1.7").expect("valid version");
+        let (command_tx, _command_rx) = mpsc::unbounded_channel();
+        let client = Client::new(
+            peer_id,
+            vec![1, 2, 3],
+            version.clone(),
+            ClientConfig::default(),
+            Some(command_tx),
+        );
+        client.activate().expect("client should activate");
+        assert!(client.try_claim_outbound());
+
+        let server = Server::new(1, vec![1, 2, 3], version);
+        let mut handler = Handler::new(peer_id, server, Some(client.clone()));
+        handler.backoff = Duration::from_millis(1);
+        handler.schedule_retry();
+
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        let waker = noop_waker_ref();
+        let mut cx = Context::from_waker(waker);
+
+        let poll = ConnectionHandler::poll(&mut handler, &mut cx);
+        assert!(matches!(poll, Poll::Pending));
+        assert!(matches!(handler.outbound, OutboundState::WaitingRetry(_)));
+
+        client.release_outbound();
+        tokio::time::sleep(Duration::from_millis(3)).await;
+
+        let poll = ConnectionHandler::poll(&mut handler, &mut cx);
+        assert!(matches!(
+            poll,
+            Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest { .. })
+        ));
     }
 }
