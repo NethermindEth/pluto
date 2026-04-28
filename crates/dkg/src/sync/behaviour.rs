@@ -142,6 +142,13 @@ impl NetworkBehaviour for Behaviour {
                     client.set_connected(false);
                     client.release_outbound();
                 }
+                let server = self.server.clone();
+                let peer_id = event.peer_id;
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    handle.spawn(async move {
+                        server.clear_connected(peer_id).await;
+                    });
+                }
             }
             FromSwarm::DialFailure(event) => {
                 if let Some(peer_id) = event.peer_id
@@ -200,6 +207,8 @@ mod tests {
     };
     use pluto_core::version::SemVer;
     use tokio::sync::mpsc;
+    use tokio::time::{Duration, timeout};
+    use tokio_util::sync::CancellationToken;
 
     use super::*;
     use crate::sync::ClientConfig;
@@ -322,5 +331,62 @@ mod tests {
         }));
 
         assert_next_dial(&mut behaviour, peer_id, "expected retry dial event");
+    }
+
+    #[tokio::test]
+    async fn last_connection_closed_clears_server_connected_state() {
+        let peer_id = PeerId::random();
+        let client = Client::new(
+            peer_id,
+            vec![1, 2, 3],
+            SemVer::parse("v1.7").expect("valid version"),
+            ClientConfig::default(),
+            None,
+        );
+        let mut behaviour = test_behaviour(client);
+        behaviour.server.start();
+        behaviour.server.set_connected(peer_id).await;
+
+        timeout(
+            Duration::from_millis(10),
+            behaviour
+                .server
+                .await_all_connected(CancellationToken::new()),
+        )
+        .await
+        .expect("server should initially be connected")
+        .expect("connected barrier should succeed");
+
+        let address = "/ip4/127.0.0.1/tcp/9000".parse().expect("valid multiaddr");
+        let endpoint = ConnectedPoint::Dialer {
+            address,
+            role_override: Endpoint::Dialer,
+            port_use: PortUse::New,
+        };
+
+        behaviour.on_swarm_event(FromSwarm::ConnectionClosed(ConnectionClosed {
+            peer_id,
+            connection_id: ConnectionId::new_unchecked(1),
+            endpoint: &endpoint,
+            cause: None,
+            remaining_established: 0,
+        }));
+
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+            if timeout(
+                Duration::from_millis(1),
+                behaviour
+                    .server
+                    .await_all_connected(CancellationToken::new()),
+            )
+            .await
+            .is_err()
+            {
+                return;
+            }
+        }
+
+        panic!("connection close did not clear server connected state");
     }
 }
