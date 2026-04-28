@@ -305,12 +305,16 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
         Err(e) => return test_res.fail(CliError::Other(format!("parse timestamp: {e}"))),
     };
 
-    let latest_block_ts = std::time::UNIX_EPOCH
+    let latest_block_ts = match std::time::UNIX_EPOCH
         .checked_add(Duration::from_secs(latest_block_ts_unix.unsigned_abs()))
-        .unwrap_or(std::time::UNIX_EPOCH);
-    let next_block_ts = latest_block_ts
-        .checked_add(SLOT_TIME)
-        .unwrap_or(latest_block_ts);
+    {
+        Some(ts) => ts,
+        None => return test_res.fail(CliError::Other("timestamp overflow".to_string())),
+    };
+    let next_block_ts = match latest_block_ts.checked_add(SLOT_TIME) {
+        Some(ts) => ts,
+        None => return test_res.fail(CliError::Other("next block timestamp overflow".to_string())),
+    };
 
     if let Ok(remaining) = next_block_ts.duration_since(std::time::SystemTime::now()) {
         tokio::time::sleep(remaining).await;
@@ -322,8 +326,14 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
     };
 
     let mut next_slot = latest_slot.saturating_add(1);
-    let slots_in_epoch_i64 = i64::try_from(SLOTS_IN_EPOCH.get()).unwrap_or(i64::MAX);
-    let epoch = next_slot.checked_div(slots_in_epoch_i64).unwrap_or(0);
+    let slots_in_epoch_i64 = match i64::try_from(SLOTS_IN_EPOCH.get()) {
+        Ok(v) => v,
+        Err(e) => return test_res.fail(CliError::Other(format!("slots_in_epoch conversion: {e}"))),
+    };
+    let epoch = match next_slot.checked_div(slots_in_epoch_i64) {
+        Some(v) => v,
+        None => return test_res.fail(CliError::Other("epoch calculation overflow".to_string())),
+    };
 
     let mut proposer_duties = match fetch_proposers_for_epoch(beacon_endpoint, epoch).await {
         Ok(d) => d,
@@ -363,7 +373,12 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
         }
 
         let elapsed = start_iteration.elapsed();
-        let elapsed_nanos = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
+        let elapsed_nanos = match u64::try_from(elapsed.as_nanos()) {
+            Ok(v) => v,
+            Err(e) => {
+                return test_res.fail(CliError::Other(format!("elapsed nanos conversion: {e}")))
+            }
+        };
         let slot_nanos = u64::try_from(SLOT_TIME.as_nanos()).unwrap_or(1);
         let remainder_nanos = elapsed_nanos.checked_rem(slot_nanos).unwrap_or(0);
         let slot_remainder = SLOT_TIME
@@ -397,7 +412,10 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
     }
 
     let total_rtt: Duration = all_blocks_rtt.iter().sum();
-    let count = u32::try_from(all_blocks_rtt.len().max(1)).unwrap_or(u32::MAX);
+    let count = match u32::try_from(all_blocks_rtt.len().max(1)) {
+        Ok(v) => v,
+        Err(e) => return test_res.fail(CliError::Other(format!("block count conversion: {e}"))),
+    };
     let average_rtt = total_rtt.checked_div(count).unwrap_or_default();
 
     evaluate_rtt(
@@ -526,8 +544,11 @@ async fn create_mev_block(
 
     loop {
         let start_iteration = Instant::now();
-        let slots_in_epoch_i64 = i64::try_from(SLOTS_IN_EPOCH.get()).unwrap_or(i64::MAX);
-        let epoch = next_slot.checked_div(slots_in_epoch_i64).unwrap_or(0);
+        let slots_in_epoch_i64 = i64::try_from(SLOTS_IN_EPOCH.get())
+            .map_err(|e| CliError::Other(format!("slots_in_epoch conversion: {e}")))?;
+        let epoch = next_slot
+            .checked_div(slots_in_epoch_i64)
+            .ok_or_else(|| CliError::Other("epoch calculation overflow".to_string()))?;
 
         let pk = if let Some(pk) = get_validator_pk_for_slot(proposer_duties, next_slot) {
             pk
