@@ -55,12 +55,12 @@ start_node() {
 }
 
 # Start Pluto nodes (slots 0 .. PLUTO_NODES-1)
-for i in $(seq 0 $(( PLUTO_NODES - 1 ))); do
+for (( i = 0; i < PLUTO_NODES; i++ )); do
     start_node "${i}" "${PLUTO_BIN}" "pluto"
 done
 
 # Start Charon nodes (slots PLUTO_NODES .. NODES-1)
-for i in $(seq "${PLUTO_NODES}" $(( NODES - 1 ))); do
+for (( i = PLUTO_NODES; i < NODES; i++ )); do
     start_node "${i}" "${CHARON_BIN}" "charon"
 done
 

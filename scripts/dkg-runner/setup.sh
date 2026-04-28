@@ -22,7 +22,7 @@ echo "[setup] Creating per-node data directories and generating ENRs"
 enrs=()
 
 # ── Pluto nodes (slots 0 .. PLUTO_NODES-1) ───────────────────────────────────
-for i in $(seq 0 $(( PLUTO_NODES - 1 ))); do
+for (( i = 0; i < PLUTO_NODES; i++ )); do
     data_dir="${WORK_DIR}/node-${i}"
     mkdir -p "${data_dir}"
 
@@ -39,7 +39,7 @@ for i in $(seq 0 $(( PLUTO_NODES - 1 ))); do
 done
 
 # ── Charon nodes (slots PLUTO_NODES .. NODES-1) ───────────────────────────────
-for i in $(seq "${PLUTO_NODES}" $(( NODES - 1 ))); do
+for (( i = PLUTO_NODES; i < NODES; i++ )); do
     data_dir="${WORK_DIR}/node-${i}"
     mkdir -p "${data_dir}"
 
