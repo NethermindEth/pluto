@@ -1,13 +1,12 @@
 //! Error types for the partial signature exchange protocol.
 
-use libp2p::PeerId;
-use pluto_core::ParSigExCodecError;
+use pluto_core::{ParSigExCodecError, types::DutyTypeError};
 
 /// Result type for partial signature exchange.
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Handler-to-behaviour failure.
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum Failure {
     /// Stream negotiation or operation timed out.
     #[error("parsigex timed out")]
@@ -19,20 +18,14 @@ pub enum Failure {
     #[error("invalid duty")]
     InvalidDuty,
     /// Signature verification failed.
-    #[error("invalid partial signature")]
-    InvalidPartialSignature,
+    #[error("invalid partial signature: {0}")]
+    InvalidPartialSignature(String),
     /// I/O error.
-    #[error("{0}")]
-    Io(String),
+    #[error("i/o: {0}")]
+    Io(#[from] std::io::Error),
     /// Codec error.
     #[error("codec error: {0}")]
     Codec(String),
-}
-
-impl Failure {
-    pub(crate) fn io(error: impl std::fmt::Display) -> Self {
-        Self::Io(error.to_string())
-    }
 }
 
 /// Error type for signature verification callbacks.
@@ -61,16 +54,7 @@ pub enum Error {
     /// Handle channel closed.
     #[error("parsigex handle closed")]
     Closed,
-    /// Broadcast failed for a peer.
-    #[error("broadcast to peer {peer} failed: {source}")]
-    BroadcastPeer {
-        /// Peer for which the broadcast failed.
-        peer: PeerId,
-        /// Source failure.
-        #[source]
-        source: Failure,
-    },
-    /// Peer is not currently connected.
-    #[error("peer {0} is not connected")]
-    PeerNotConnected(PeerId),
+    /// Duty type error.
+    #[error(transparent)]
+    DutyTypeError(#[from] DutyTypeError),
 }

@@ -24,9 +24,12 @@ db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
 ignore = [
-    # rand 0.8.5 unsoundness with custom logger — pre-existing transitive dep,
-    # not introduced by this branch.
-    "RUSTSEC-2026-0097",
+    # Unsoundness in `rand` 0.7.3 and 0.8.5 reachable only via a custom `log`
+    # logger that calls `rand::rng()` and hits a reseed during the log event.
+    # The only affected pulls are transitive: `cuckoofilter` -> `libp2p-floodsub`
+    # (stuck on 0.7.3) and `alloy-signer-local` (stuck on 0.8.5). Neither is
+    # reachable from Pluto's loggers. Remove once upstream bumps to >=0.9.3.
+    { id = "RUSTSEC-2026-0097", reason = "transitive rand <0.9.3 via cuckoofilter and alloy-signer-local; not triggerable from our code" },
 ]
 unmaintained = "workspace"
 

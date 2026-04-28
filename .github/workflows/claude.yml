@@ -30,6 +30,20 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Cache Go reference
+        uses: actions/cache@v4
+        with:
+          path: charon
+          key: charon-go-ref-v1.7.1
+
+      - name: Prepare Go reference checkout
+        run: |
+          if [ ! -d charon/.git ] || ! git -C charon describe --tags --exact-match HEAD 2>/dev/null | grep -qx 'v1.7.1'; then
+            rm -rf charon
+            git clone --branch v1.7.1 --depth 1 https://github.com/ObolNetwork/charon.git charon
+          fi
+          git -C charon rev-parse HEAD
+
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@v1
@@ -48,4 +62,3 @@ jobs:
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
           # claude_args: '--allowed-tools Bash(gh pr:*)'
-

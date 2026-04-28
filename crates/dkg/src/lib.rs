@@ -17,5 +17,11 @@ pub mod disk;
 /// Main DKG protocol implementation.
 pub mod dkg;
 
+/// Partial-signature exchanger for DKG.
+pub mod exchanger;
+
+/// Node signature exchange over the lock hash.
+pub mod nodesigs;
+
 /// Shares distributed to each node in the cluster.
 pub mod share;

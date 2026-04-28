@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use ssz_derive::{Decode, Encode};
+use tree_hash::TreeHash;
 use tree_hash_derive::TreeHash;
 
 pub use pluto_ssz::{BitList, SszList, SszVector};
@@ -146,6 +147,13 @@ pub struct SigningData {
     /// Signature domain.
     #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub domain: Domain,
+}
+
+impl SignedVoluntaryExit {
+    /// Returns the SSZ message root of the unsigned voluntary exit.
+    pub fn message_root(&self) -> Root {
+        self.message.tree_hash_root().0
+    }
 }
 
 /// ETH1 voting data.

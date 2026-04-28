@@ -1,7 +1,7 @@
 //! Network behaviour and control handle for partial signature exchange.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     future::Future,
     pin::Pin,
     sync::{
@@ -20,7 +20,7 @@ use libp2p::{
         THandlerInEvent, THandlerOutEvent, ToSwarm, dummy,
     },
 };
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{RwLock, mpsc};
 
 use pluto_core::types::{Duty, ParSignedData, ParSignedDataSet, PubKey};
 use pluto_p2p::p2p_context::P2PContext;
@@ -106,29 +106,27 @@ pub enum Event {
 
 #[derive(Debug)]
 struct PendingBroadcast {
-    remaining: usize,
+    pending_peers: HashSet<PeerId>,
     failed: bool,
 }
 
 #[derive(Debug)]
-enum Command {
-    Broadcast {
-        request_id: u64,
-        duty: Duty,
-        data_set: ParSignedDataSet,
-    },
+struct BroadcastRequest {
+    request_id: u64,
+    duty: Duty,
+    data_set: ParSignedDataSet,
 }
 
 /// Shared subscriber list between [`Handle`] and [`Behaviour`].
 #[derive(Default)]
 struct SharedSubs {
-    subs: Mutex<Vec<ReceivedSub>>,
+    subs: RwLock<Vec<ReceivedSub>>,
 }
 
 /// Async handle for outbound partial signature broadcasts.
 #[derive(Clone)]
 pub struct Handle {
-    tx: mpsc::UnboundedSender<Command>,
+    tx: mpsc::UnboundedSender<BroadcastRequest>,
     next_request_id: Arc<AtomicU64>,
     shared_subs: Arc<SharedSubs>,
 }
@@ -146,7 +144,7 @@ impl Handle {
     pub async fn broadcast(&self, duty: Duty, data_set: ParSignedDataSet) -> Result<u64> {
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         self.tx
-            .send(Command::Broadcast {
+            .send(BroadcastRequest {
                 request_id,
                 duty,
                 data_set,
@@ -155,13 +153,11 @@ impl Handle {
         Ok(request_id)
     }
 
-    /// Registers a callback when a verified partial signature set is received
-    /// from a peer.
-    ///
-    /// This is not thread safe with respect to message delivery ordering — it
-    /// must be called before the swarm starts processing events.
+    /// Subscribers registered after the swarm begins polling may miss messages
+    /// already in flight. Register all subscribers before starting the event
+    /// loop.
     pub async fn subscribe(&self, sub: ReceivedSub) {
-        self.shared_subs.subs.lock().await.push(sub);
+        self.shared_subs.subs.write().await.push(sub);
     }
 }
 
@@ -202,7 +198,7 @@ impl Config {
 /// Behaviour for partial signature exchange.
 pub struct Behaviour {
     config: Config,
-    rx: mpsc::UnboundedReceiver<Command>,
+    rx: mpsc::UnboundedReceiver<BroadcastRequest>,
     pending_events: VecDeque<ToSwarm<Event, ToHandler>>,
     pending_broadcasts: HashMap<u64, PendingBroadcast>,
     shared_subs: Arc<SharedSubs>,
@@ -210,8 +206,7 @@ pub struct Behaviour {
 
 impl Behaviour {
     /// Creates a behaviour and a clonable broadcast handle.
-    pub fn new(config: Config, peer_id: PeerId) -> (Self, Handle) {
-        debug_assert_eq!(config.peer_id, peer_id);
+    pub fn new(config: Config) -> (Self, Handle) {
         let (tx, rx) = mpsc::unbounded_channel();
         let shared_subs = Arc::new(SharedSubs::default());
         let handle = Handle {
@@ -239,91 +234,89 @@ impl Behaviour {
             self.config.timeout,
             self.config.verifier.clone(),
             self.config.duty_gater.clone(),
-            peer,
         ))
     }
 
-    fn handle_command(&mut self, command: Command) {
-        match command {
-            Command::Broadcast {
-                request_id,
-                duty,
-                data_set,
-            } => {
-                let message = match encode_message(&duty, &data_set) {
-                    Ok(message) => message,
-                    Err(err) => {
-                        self.emit_broadcast_error(
-                            request_id,
-                            None,
-                            Failure::Codec(err.to_string()),
-                        );
-                        return;
-                    }
-                };
-
-                let peers: Vec<_> = self
-                    .config
-                    .p2p_context
-                    .known_peers()
-                    .iter()
-                    .copied()
-                    .collect();
-                let mut targeted = 0usize;
-                for peer in peers {
-                    if peer == self.config.peer_id {
-                        continue;
-                    }
-
-                    if self
-                        .config
-                        .p2p_context
-                        .peer_store_lock()
-                        .connections_to_peer(&peer)
-                        .is_empty()
-                    {
-                        self.emit_broadcast_error(
-                            request_id,
-                            Some(peer),
-                            Failure::io(format!("peer {peer} is not connected")),
-                        );
-                        continue;
-                    }
-
-                    self.pending_events.push_back(ToSwarm::NotifyHandler {
-                        peer_id: peer,
-                        handler: NotifyHandler::Any,
-                        event: ToHandler::Send {
-                            request_id,
-                            payload: message.clone(),
-                        },
-                    });
-                    targeted = targeted.saturating_add(1);
-                }
-
-                if targeted == 0 {
-                    return;
-                }
-
-                self.pending_broadcasts.insert(
-                    request_id,
-                    PendingBroadcast {
-                        remaining: targeted,
-                        failed: false,
-                    },
-                );
+    fn handle_command(&mut self, req: BroadcastRequest) {
+        let BroadcastRequest {
+            request_id,
+            duty,
+            data_set,
+        } = req;
+        let message = match encode_message(&duty, &data_set) {
+            Ok(message) => message,
+            Err(err) => {
+                self.emit_broadcast_error(request_id, None, Failure::Codec(err.to_string()));
+                return;
             }
+        };
+
+        let peers: Vec<_> = self
+            .config
+            .p2p_context
+            .known_peers()
+            .iter()
+            .copied()
+            .collect();
+        let mut pending_peers = HashSet::new();
+        for peer in peers {
+            if peer == self.config.peer_id {
+                continue;
+            }
+
+            if self
+                .config
+                .p2p_context
+                .peer_store_lock()
+                .connections_to_peer(&peer)
+                .is_empty()
+            {
+                self.emit_broadcast_error(
+                    request_id,
+                    Some(peer),
+                    Failure::Io(std::io::Error::other(format!(
+                        "peer {peer} is not connected"
+                    ))),
+                );
+                continue;
+            }
+
+            self.pending_events.push_back(ToSwarm::NotifyHandler {
+                peer_id: peer,
+                handler: NotifyHandler::Any,
+                event: ToHandler::Send {
+                    request_id,
+                    payload: message.clone(),
+                },
+            });
+            pending_peers.insert(peer);
         }
+
+        if pending_peers.is_empty() {
+            self.pending_events
+                .push_back(ToSwarm::GenerateEvent(Event::BroadcastFailed {
+                    request_id,
+                }));
+            return;
+        }
+
+        self.pending_broadcasts.insert(
+            request_id,
+            PendingBroadcast {
+                pending_peers,
+                failed: false,
+            },
+        );
     }
 
-    fn finish_broadcast_result(&mut self, request_id: u64, failed: bool) {
+    fn finish_broadcast_result(&mut self, request_id: u64, peer_id: PeerId, failed: bool) {
         let Some(entry) = self.pending_broadcasts.get_mut(&request_id) else {
             return;
         };
 
         entry.failed |= failed;
-        entry.remaining = entry.remaining.saturating_sub(1);
-        if entry.remaining == 0 {
+        entry.pending_peers.remove(&peer_id);
+        if entry.pending_peers.is_empty() {
             let failed = self
                 .pending_broadcasts
                 .remove(&request_id)
@@ -378,10 +371,10 @@ impl Behaviour {
                     }));
             }
             FromHandler::OutboundSuccess { request_id } => {
-                self.finish_broadcast_result(request_id, false);
+                self.finish_broadcast_result(request_id, peer_id, false);
             }
             FromHandler::OutboundError { request_id, error } => {
-                self.finish_broadcast_result(request_id, true);
+                self.finish_broadcast_result(request_id, peer_id, true);
                 self.emit_broadcast_error(request_id, Some(peer_id), error);
             }
         }
@@ -395,7 +388,7 @@ impl Behaviour {
     fn notify_subscribers(&self, duty: Duty, data_set: ParSignedDataSet) {
         let shared_subs = self.shared_subs.clone();
         tokio::spawn(async move {
-            let subs = shared_subs.subs.lock().await.clone();
+            let subs = shared_subs.subs.read().await.clone();
             for sub in &subs {
                 sub(duty.clone(), data_set.clone()).await;
             }
@@ -428,7 +421,27 @@ impl NetworkBehaviour for Behaviour {
         Ok(self.connection_handler_for_peer(peer))
     }
 
-    fn on_swarm_event(&mut self, _event: FromSwarm) {}
+    fn on_swarm_event(&mut self, event: FromSwarm) {
+        if let FromSwarm::ConnectionClosed(e) = event
+            && e.remaining_established == 0
+        {
+            let peer_id = e.peer_id;
+            let affected: Vec<u64> = self
+                .pending_broadcasts
+                .iter()
+                .filter(|(_, b)| b.pending_peers.contains(&peer_id))
+                .map(|(id, _)| *id)
+                .collect();
+            for request_id in affected {
+                self.emit_broadcast_error(
+                    request_id,
+                    Some(peer_id),
+                    Failure::Io(std::io::Error::other("connection closed")),
+                );
+                self.finish_broadcast_result(request_id, peer_id, true);
+            }
+        }
+    }
 
     fn on_connection_handler_event(
         &mut self,

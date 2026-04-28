@@ -520,14 +520,14 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_insecure_secret() {
+    fn generate_insecure_secret() {
         let blst = setup();
         let sk = blst.generate_insecure_secret(rand::rngs::OsRng).unwrap();
         assert_eq!(sk.len(), 32);
     }
 
     #[test]
-    fn test_verify_aggregate_from_data() {
+    fn verify_aggregate_from_data() {
         let blst = setup();
         let data = b"hello obol!";
 
@@ -567,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_and_derive_key() {
+    fn generate_and_derive_key() {
         use rand::rngs::OsRng;
 
         let blst = setup();
@@ -579,7 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sign_and_verify() {
+    fn sign_and_verify() {
         use rand::rngs::OsRng;
 
         let blst = setup();
@@ -595,7 +595,7 @@ mod tests {
     }
 
     #[test]
-    fn test_threshold_split_and_recover() {
+    fn threshold_split_and_recover() {
         use rand::rngs::OsRng;
 
         let blst = setup();
@@ -618,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn test_recover_secret_with_all_shares() {
+    fn recover_secret_with_all_shares() {
         use rand::rngs::OsRng;
 
         let blst = setup();
@@ -638,7 +638,7 @@ mod tests {
     }
 
     #[test]
-    fn test_threshold_aggregate_matches_direct_sign() {
+    fn threshold_aggregate_matches_direct_sign() {
         use rand::rngs::OsRng;
 
         let blst = setup();
@@ -668,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_with_correct_signature() {
+    fn verify_with_correct_signature() {
         use rand::rngs::OsRng;
 
         let blst = setup();
@@ -686,7 +686,7 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_fails_with_wrong_message() {
+    fn verify_fails_with_wrong_message() {
         use rand::rngs::OsRng;
 
         let blst = setup();
@@ -705,7 +705,7 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_fails_with_wrong_public_key() {
+    fn verify_fails_with_wrong_public_key() {
         use rand::rngs::OsRng;
 
         let blst = setup();
@@ -724,7 +724,7 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_aggregate_success() {
+    fn verify_aggregate_success() {
         use rand::rngs::OsRng;
 
         let blst = setup();
@@ -756,7 +756,7 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_aggregate_fails_with_wrong_data() {
+    fn verify_aggregate_fails_with_wrong_data() {
         use rand::rngs::OsRng;
 
         let blst = setup();
@@ -792,7 +792,7 @@ mod tests {
     }
 
     #[test]
-    fn test_aggregate_single_signature() {
+    fn aggregate_single_signature() {
         use rand::rngs::OsRng;
 
         let blst = setup();
@@ -809,7 +809,7 @@ mod tests {
     }
 
     #[test]
-    fn test_aggregate_multiple_signatures() {
+    fn aggregate_multiple_signatures() {
         use rand::rngs::OsRng;
 
         let blst = setup();
@@ -832,7 +832,7 @@ mod tests {
     }
 
     #[test]
-    fn test_threshold_split_minimum_threshold() {
+    fn threshold_split_minimum_threshold() {
         use rand::rngs::OsRng;
 
         let blst = setup();
@@ -851,7 +851,7 @@ mod tests {
     }
 
     #[test]
-    fn test_threshold_split_invalid_threshold() {
+    fn threshold_split_invalid_threshold() {
         use rand::rngs::OsRng;
 
         let blst = setup();
@@ -867,7 +867,7 @@ mod tests {
     }
 
     #[test]
-    fn test_different_keys_produce_different_signatures() {
+    fn different_keys_produce_different_signatures() {
         use rand::rngs::OsRng;
 
         let blst = setup();
@@ -886,7 +886,7 @@ mod tests {
     }
 
     #[test]
-    fn test_same_key_produces_same_signature() {
+    fn same_key_produces_same_signature() {
         use rand::rngs::OsRng;
 
         let blst = setup();
@@ -904,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_aggregate_fails() {
+    fn empty_aggregate_fails() {
         let blst = setup();
 
         let result = blst.aggregate(&[]);
@@ -915,7 +915,7 @@ mod tests {
     }
 
     #[test]
-    fn test_public_key_is_deterministic() {
+    fn public_key_is_deterministic() {
         use rand::rngs::OsRng;
 
         let blst = setup();
@@ -928,7 +928,7 @@ mod tests {
     }
 
     #[test]
-    fn test_different_secrets_produce_different_public_keys() {
+    fn different_secrets_produce_different_public_keys() {
         use rand::rngs::OsRng;
 
         let blst = setup();
@@ -946,7 +946,7 @@ mod tests {
     }
 
     #[test]
-    fn test_threshold_split_returns_1_indexed_keys() {
+    fn threshold_split_returns_1_indexed_keys() {
         use rand::rngs::OsRng;
 
         let blst = setup();

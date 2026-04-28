@@ -52,7 +52,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_run_version_cmd_default() {
+    fn run_version_cmd_default() {
         let mut buf = Vec::new();
         let args = VersionArgs { verbose: false };
 
@@ -98,7 +98,7 @@ mod tests {
     }
 
     #[test]
-    fn test_run_version_cmd_verbose() {
+    fn run_version_cmd_verbose() {
         let mut buf = Vec::new();
         let args = VersionArgs { verbose: true };
 

@@ -1,4 +1,60 @@
 #![allow(missing_docs)]
+//! Partial-signature exchange example.
+//!
+//! Each node periodically broadcasts a synthetic [`ParSignedDataSet`] to all
+//! cluster peers over the relay-routed libp2p network and logs every dataset it
+//! receives from others.
+//!
+//! # Running a multi-node setup
+//!
+//! ## 1. Create a cluster
+//!
+//! Use the built-in Pluto CLI to generate per-node data directories, each
+//! containing a `charon-enr-private-key` and a shared `cluster-lock.json`:
+//!
+//! ```bash
+//! cargo run -p pluto-cli -- create cluster --name parsigex-test --nodes 3 \
+//!   --threshold 2 --num-validators 1 --network mainnet --insecure-keys \
+//!   --fee-recipient-addresses 0x0000000000000000000000000000000000000000 \
+//!   --withdrawal-addresses 0x0000000000000000000000000000000000000000 \
+//!   --cluster-dir ./cluster
+//! ```
+//!
+//! This writes `./cluster/node{0,1,2}/` — each directory is ready to use as
+//! `--data-dir`.
+//!
+//! ## 2. Run each node
+//!
+//! Obol operates public relay servers. Pass one or more via `--relays` and
+//! point `--data-dir` at the corresponding node directory from Step 1:
+//!
+//! ```bash
+//! # Terminal 1
+//! cargo run -p pluto-parsigex --example parsigex -- \
+//!   --relays https://0.relay.obol.tech,https://1.relay.obol.tech \
+//!   --data-dir ./cluster/node0 --share-idx 1
+//!
+//! # Terminal 2
+//! cargo run -p pluto-parsigex --example parsigex -- \
+//!   --relays https://0.relay.obol.tech,https://1.relay.obol.tech \
+//!   --data-dir ./cluster/node1 --share-idx 2
+//!
+//! # Terminal 3
+//! cargo run -p pluto-parsigex --example parsigex -- \
+//!   --relays https://0.relay.obol.tech,https://1.relay.obol.tech \
+//!   --data-dir ./cluster/node2 --share-idx 3
+//! ```
+//!
+//! Nodes discover each other through the relay and exchange partial signatures
+//! every `--broadcast-every` seconds (default: 10). Look for log lines:
+//!
+//! ```text
+//! INFO received partial signature set peer=... duty=... entries=...
+//! INFO broadcasted sample partial signature set request_id=... duty=...
+//! ```
+//!
+//! `--relays` also accepts raw libp2p multiaddrs
+//! (`/ip4/IP/tcp/PORT/p2p/PEER_ID`) and multiple comma-separated values.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -25,6 +81,7 @@ use pluto_p2p::{
     config::P2PConfig,
     gater, k1,
     p2p::{Node, NodeType},
+    p2p_context::P2PContext,
     peer::peer_id_from_key,
     relay::{MutableRelayReservation, RelayRouter},
 };
@@ -211,7 +268,7 @@ async fn main() -> Result<()> {
         key,
         NodeType::QUIC,
         args.filter_private_addrs,
-        known_peers.clone(),
+        P2PContext::new(known_peers.clone()),
         |builder, keypair, relay_client| {
             let p2p_context = builder.p2p_context();
             let local_peer_id = keypair.public().to_peer_id();
@@ -222,7 +279,7 @@ async fn main() -> Result<()> {
                 duty_gater.clone(),
             )
             .with_timeout(Duration::from_secs(10));
-            let (parsigex, handle) = parsigex::Behaviour::new(config, local_peer_id);
+            let (parsigex, handle) = parsigex::Behaviour::new(config);
             parsigex_handle = Some(handle);
 
             builder
@@ -498,9 +555,6 @@ async fn main() -> Result<()> {
                         } else {
                             warn!(request_id, "partial signature broadcast finished with failures");
                         }
-                    }
-                    SwarmEvent::NewListenAddr { address, .. } => {
-                        info!(address = %address, "listening");
                     }
                     _ => {}
                 }

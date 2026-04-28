@@ -346,13 +346,15 @@ impl Behaviour {
                 }
             }
             OutEvent::OutboundFailure { op_id, failure } => {
-                if let Some(state) = self.active_broadcast.as_mut() {
-                    let failed_peer = state
+                let failed_peer = self.active_broadcast.as_mut().and_then(|state| {
+                    state
                         .sig_ops
                         .remove(&op_id)
                         .map(|sig_op| sig_op.peer)
                         .or_else(|| state.msg_ops.remove(&op_id))
-                        .unwrap_or(peer_id);
+                });
+
+                if let Some(failed_peer) = failed_peer {
                     self.complete_active_broadcast(Err(Error::OutboundFailure {
                         peer: failed_peer,
                         failure,
@@ -583,15 +585,18 @@ mod tests {
                 "timestamp",
                 Box::new(|_peer_id, _msg| Ok(())),
                 Box::new(move |peer_id, msg_id, msg| {
-                    receipt_tx
-                        .send(Receipt {
-                            target: node_index,
-                            source: peer_id,
-                            msg_id: msg_id.to_string(),
-                            seconds: msg.seconds,
-                        })
-                        .map_err(|_| Error::ReceiptChannelClosed)?;
-                    Ok(())
+                    let receipt_tx = receipt_tx.clone();
+                    Box::pin(async move {
+                        receipt_tx
+                            .send(Receipt {
+                                target: node_index,
+                                source: peer_id,
+                                msg_id,
+                                seconds: msg.seconds,
+                            })
+                            .map_err(|_| Error::ReceiptChannelClosed)?;
+                        Ok(())
+                    })
                 }),
             )
             .await
@@ -695,12 +700,8 @@ mod tests {
                 key,
                 NodeType::TCP,
                 false,
-                peer_ids.clone(),
-                move |builder, _keypair| {
-                    builder
-                        .with_p2p_context(p2p_context.clone())
-                        .with_inner(behaviour)
-                },
+                p2p_context.clone(),
+                move |builder, _keypair| builder.with_inner(behaviour),
             )?;
             let addr: Multiaddr = format!("/ip4/127.0.0.1/tcp/{}", ports[index]).parse()?;
             nodes.push(LocalNode {

@@ -65,6 +65,10 @@ pub enum ParSigExCodecError {
     /// Signed data construction error.
     #[error("signed data: {0}")]
     SignedData(String),
+
+    /// Failed to extract the signature from signed data.
+    #[error("invalid signature: {0}")]
+    InvalidSignature(String),
 }
 
 pub(crate) fn serialize_signed_data(data: &dyn SignedData) -> Result<Vec<u8>, ParSigExCodecError> {

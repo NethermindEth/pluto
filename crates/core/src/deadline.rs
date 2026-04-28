@@ -533,10 +533,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_deadliner() {
+    async fn deadliner() {
         let (expired_duties, non_expired_duties, voluntary_exits) = setup_data();
 
-        // Use real time with short durations (milliseconds instead of hours/seconds)
+        // Use real time with generous durations to avoid flakiness on loaded CI.
+        // Previous 10ms-per-slot margins caused races: wall-clock time elapsed
+        // between capturing start_time and the background task processing add()
+        // could exceed the deadline, making "non-expired" duties appear expired.
         let start_time = Utc::now();
 
         // Create a deadline function provider
@@ -559,14 +562,15 @@ mod tests {
                     return Ok(Some(deadline));
                 }
 
-                // Non-expired duties expire after duty.slot * 10 milliseconds from now
-                // This gives us short, deterministic deadlines for testing
+                // Non-expired duties expire after duty.slot * 500 milliseconds from now.
+                // 500ms per slot provides enough headroom for task scheduling jitter
+                // while keeping the test fast (completes within ~1-2s).
                 let deadline = start_time
                     .checked_add_signed(
                         chrono::Duration::try_milliseconds(
                             i64::try_from(duty.slot.inner())
                                 .unwrap()
-                                .checked_mul(10)
+                                .checked_mul(500)
                                 .unwrap(),
                         )
                         .unwrap(),
@@ -627,11 +631,11 @@ mod tests {
             assert!(result, "non-expired duties should return true");
         }
 
-        // Collect expired duties from output channel
-        // Use a generous timeout since we're using real time
+        // Collect expired duties from output channel.
+        // Timeout must exceed the longest non-expired deadline (~1s for slot 2).
         let mut actual_duties = Vec::new();
         for _ in 0..non_expired_len {
-            let duty = tokio::time::timeout(std::time::Duration::from_secs(1), output_rx.recv())
+            let duty = tokio::time::timeout(std::time::Duration::from_secs(5), output_rx.recv())
                 .await
                 .expect("should receive within timeout")
                 .expect("should receive duty");
@@ -651,7 +655,7 @@ mod tests {
     #[test_case::test_case(DutyType::Exit ; "exit")]
     #[test_case::test_case(DutyType::BuilderRegistration ; "builder_registration")]
     #[tokio::test]
-    async fn test_never_expire_duties(duty_type: DutyType) {
+    async fn never_expire_duties(duty_type: DutyType) {
         let genesis_time = DateTime::from_timestamp(1606824023, 0).unwrap();
         let slot_duration_secs = 12;
         let slots_per_epoch = 32;
@@ -679,7 +683,7 @@ mod tests {
     #[test_case::test_case(DutyType::InfoSync ; "info_sync")]
     #[test_case::test_case(DutyType::PrepareSyncContribution ; "prepare_sync_contribution")]
     #[tokio::test]
-    async fn test_duty_deadline_durations(duty_type: DutyType) {
+    async fn duty_deadline_durations(duty_type: DutyType) {
         let genesis_time = DateTime::from_timestamp(1606824023, 0).unwrap();
         let slot_duration_secs = 12;
         let slots_per_epoch = 32;
