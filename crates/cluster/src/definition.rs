@@ -161,21 +161,49 @@ impl<'de> Deserialize<'de> for Definition {
             V1_5 | V1_6 | V1_7 => {
                 let definition: DefinitionV1x5to7 =
                     serde_json::from_value(value).map_err(Error::custom)?;
+                if usize::try_from(definition.num_validators)
+                    != Ok(definition.validator_addresses.len())
+                {
+                    return Err(Error::custom(
+                        "num_validators not matching validators length",
+                    ));
+                }
                 Ok(definition.into())
             }
             V1_8 => {
                 let definition: DefinitionV1x8 =
                     serde_json::from_value(value).map_err(Error::custom)?;
+                if usize::try_from(definition.num_validators)
+                    != Ok(definition.validator_addresses.len())
+                {
+                    return Err(Error::custom(
+                        "num_validators not matching validators length",
+                    ));
+                }
                 Ok(definition.into())
             }
             V1_9 => {
                 let definition: DefinitionV1x9 =
                     serde_json::from_value(value).map_err(Error::custom)?;
+                if usize::try_from(definition.num_validators)
+                    != Ok(definition.validator_addresses.len())
+                {
+                    return Err(Error::custom(
+                        "num_validators not matching validators length",
+                    ));
+                }
                 Ok(definition.into())
             }
             V1_10 => {
                 let definition: DefinitionV1x10 =
                     serde_json::from_value(value).map_err(Error::custom)?;
+                if usize::try_from(definition.num_validators)
+                    != Ok(definition.validator_addresses.len())
+                {
+                    return Err(Error::custom(
+                        "num_validators not matching validators length",
+                    ));
+                }
                 Ok(definition.into())
             }
             _ => Err(Error::custom(format!("Unsupported version: {}", version))),
@@ -339,7 +367,7 @@ pub enum DefinitionError {
 }
 
 /// InvalidGasLimitError is an error type for invalid gas limit errors.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, PartialEq)]
 pub enum InvalidGasLimitError {
     /// The version does not support custom target gas limit
     #[error("the version does not support custom target gas limit")]
@@ -1037,9 +1065,11 @@ pub struct DefinitionV1x4 {
     pub threshold: u64,
     /// Fee recipient address for the
     /// validator.
+    #[serde(default)]
     pub fee_recipient_address: String,
     /// Withdrawal address for the
     /// validator.
+    #[serde(default)]
     pub withdrawal_address: String,
     /// DKG algorithm to use for key generation. Max 32 chars.
     pub dkg_algorithm: String,
@@ -1484,6 +1514,7 @@ pub struct DefinitionV1x10 {
     pub target_gas_limit: u64,
     /// Compounding flag enables compounding rewards for validators by using
     /// 0x02 withdrawal credentials.
+    #[serde(default)]
     pub compounding: bool,
     /// Config hash uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.
