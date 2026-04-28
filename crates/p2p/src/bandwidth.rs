@@ -38,14 +38,18 @@ struct BandwidthMetrics {
 #[vise::register]
 static BANDWIDTH_METRICS: Global<BandwidthMetrics> = Global::new();
 
+/// Per-peer bandwidth metrics counters.
 #[derive(Clone)]
-struct PeerConnectionMetrics {
-    sent: Counter,
-    received: Counter,
+pub struct PeerConnectionMetrics {
+    /// Bytes sent to the peer.
+    pub sent: Counter,
+    /// Bytes received from the peer.
+    pub received: Counter,
 }
 
 impl PeerConnectionMetrics {
-    fn for_peer(peer_id: &PeerId) -> Self {
+    /// Get or create metrics counters for a peer.
+    pub fn for_peer(peer_id: &PeerId) -> Self {
         let label = PeerLabel {
             peer: peer_id.to_string(),
             peer_cluster: String::new(),
