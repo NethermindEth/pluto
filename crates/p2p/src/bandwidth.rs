@@ -263,3 +263,132 @@ impl<S: AsyncWrite> AsyncWrite for PeerInstrumentedStream<S> {
         self.project().inner.poll_close(cx)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::io::{AsyncReadExt, AsyncWriteExt};
+
+    struct MockStream {
+        read_data: Vec<u8>,
+        write_buffer: Vec<u8>,
+        read_pos: usize,
+    }
+
+    impl MockStream {
+        fn new(read_data: Vec<u8>) -> Self {
+            Self {
+                read_data,
+                write_buffer: Vec::new(),
+                read_pos: 0,
+            }
+        }
+    }
+
+    impl AsyncRead for MockStream {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut [u8],
+        ) -> Poll<io::Result<usize>> {
+            let remaining = self.read_data.len() - self.read_pos;
+            let to_read = std::cmp::min(buf.len(), remaining);
+            if to_read > 0 {
+                buf[..to_read]
+                    .copy_from_slice(&self.read_data[self.read_pos..self.read_pos + to_read]);
+                self.read_pos += to_read;
+            }
+            Poll::Ready(Ok(to_read))
+        }
+    }
+
+    impl AsyncWrite for MockStream {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            self.write_buffer.extend_from_slice(buf);
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[test]
+    fn test_bandwidth_received() {
+        let peer_id = PeerId::random();
+        let metrics = PeerConnectionMetrics::for_peer(&peer_id);
+        let initial = metrics.received.get();
+
+        let mock = MockStream::new(vec![1, 2, 3, 4, 5]);
+        let mut stream = PeerInstrumentedStream {
+            inner: mock,
+            metrics: metrics.clone(),
+        };
+
+        let mut buf = [0u8; 3];
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        let _ = Pin::new(&mut stream).poll_read(&mut cx, &mut buf);
+
+        assert_eq!(metrics.received.get(), initial + 3);
+    }
+
+    #[test]
+    fn test_bandwidth_sent() {
+        let peer_id = PeerId::random();
+        let metrics = PeerConnectionMetrics::for_peer(&peer_id);
+        let initial = metrics.sent.get();
+
+        let mock = MockStream::new(Vec::new());
+        let mut stream = PeerInstrumentedStream {
+            inner: mock,
+            metrics: metrics.clone(),
+        };
+
+        let data = b"hello";
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        let _ = Pin::new(&mut stream).poll_write(&mut cx, data);
+
+        assert_eq!(metrics.sent.get(), initial + 5);
+    }
+
+    #[test]
+    fn test_bandwidth_multiple_operations() {
+        let peer_id = PeerId::random();
+        let metrics = PeerConnectionMetrics::for_peer(&peer_id);
+        let initial_recv = metrics.received.get();
+        let initial_sent = metrics.sent.get();
+
+        let mock = MockStream::new(vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        let mut stream = PeerInstrumentedStream {
+            inner: mock,
+            metrics: metrics.clone(),
+        };
+
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+
+        // Read 3 bytes
+        let mut buf = [0u8; 3];
+        let _ = Pin::new(&mut stream).poll_read(&mut cx, &mut buf);
+
+        // Write 5 bytes
+        let _ = Pin::new(&mut stream).poll_write(&mut cx, b"hello");
+
+        // Read 2 bytes
+        let mut buf2 = [0u8; 2];
+        let _ = Pin::new(&mut stream).poll_read(&mut cx, &mut buf2);
+
+        // Write 4 bytes
+        let _ = Pin::new(&mut stream).poll_write(&mut cx, b"test");
+
+        assert_eq!(metrics.received.get(), initial_recv + 5);
+        assert_eq!(metrics.sent.get(), initial_sent + 9);
+    }
+}
