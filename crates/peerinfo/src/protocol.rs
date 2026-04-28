@@ -19,7 +19,6 @@ use std::{
 use chrono::{DateTime, Utc};
 use libp2p::{PeerId, swarm::Stream};
 use pluto_core::version::{self, SemVer, SemVerError};
-use pluto_p2p::proto::MAX_MESSAGE_SIZE;
 use regex::Regex;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
