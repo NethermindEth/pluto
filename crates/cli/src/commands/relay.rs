@@ -432,9 +432,14 @@ mod tests {
                 let response = retry_get(&monitoring_url).await.unwrap();
                 let body = response.text().await.unwrap();
 
+                println!("body: {body}");
+
                 assert!(body.contains("relay_p2p_connection_total"));
                 assert!(body.contains("relay_p2p_active_connections"));
                 assert!(body.contains("relay_p2p_ping_latency"));
+                assert!(body.contains("relay_p2p_network_sent_bytes"));
+                assert!(body.contains("relay_p2p_network_receive_bytes"));
+                assert!(body.ends_with("# EOF\n"));
             },
         )
         .await

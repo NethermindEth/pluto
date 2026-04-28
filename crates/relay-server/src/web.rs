@@ -153,25 +153,11 @@ pub async fn monitoring_server(monitoring_addr: String, ct: CancellationToken) {
 
     info!("Starting monitoring server on {monitoring_addr}");
 
-    let exporter = match MetricsExporter::default().bind(bind_addr).await {
-        Ok(exporter) => exporter,
-        Err(e) => {
-            warn!("Failed to bind monitoring server on {monitoring_addr}: {e}");
-            return;
-        }
-    };
-
-    tokio::select! {
-        biased;
-        _ = ct.cancelled() => {
-            info!("Monitoring server shutdown complete");
-        }
-        result = exporter.start() => {
-            if let Err(e) = result {
-                warn!("Monitoring server error: {e}");
-            }
-        }
-    }
+    MetricsExporter::default()
+        .with_graceful_shutdown(ct.cancelled_owned())
+        .start(bind_addr)
+        .await
+        .unwrap_or_else(|e| warn!("Monitoring server error: {e}"));
 }
 
 /// Error response for HTTP handlers.

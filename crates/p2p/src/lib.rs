@@ -5,6 +5,9 @@
 //! and communication mechanisms for validator nodes to coordinate and exchange
 //! information.
 
+/// Per-peer bandwidth tracking transport wrapper.
+pub(crate) mod bandwidth;
+
 /// Bootnode and relay resolution.
 pub mod bootnode;
 
