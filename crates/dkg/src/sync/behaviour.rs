@@ -15,8 +15,7 @@ use libp2p::{
         dummy,
     },
 };
-use tokio::sync::mpsc;
-use tokio::time::Sleep;
+use tokio::{sync::mpsc, time::Sleep};
 
 use super::{Command, client::Client, handler::Handler, server::Server};
 

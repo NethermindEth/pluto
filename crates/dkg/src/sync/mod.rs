@@ -198,21 +198,114 @@ mod tests {
         Ok(running)
     }
 
-    async fn shutdown_nodes(nodes: Vec<RunningNode>) -> anyhow::Result<()> {
+    async fn stop_nodes(
+        nodes: Vec<RunningNode>,
+        require_clean_clients: bool,
+    ) -> anyhow::Result<()> {
         for node in nodes {
             node.cancellation.cancel();
             let _ = node.stop_tx.send(());
             timeout(Duration::from_secs(10), node.join).await???;
             for join in node.client_joins {
-                let _ = timeout(Duration::from_secs(10), join).await?;
+                let result = timeout(Duration::from_secs(10), join).await?;
+                if require_clean_clients {
+                    result??;
+                } else {
+                    let _ = result?;
+                }
             }
         }
 
         Ok(())
     }
 
+    async fn spawn_sync_cluster(
+        versions: Vec<SemVer>,
+        definition_hashes: Vec<Vec<u8>>,
+    ) -> anyhow::Result<Vec<RunningNode>> {
+        let node_count = versions.len();
+        assert_eq!(
+            node_count,
+            definition_hashes.len(),
+            "test versions and definition hashes must be per-node"
+        );
+
+        let ports = (0..node_count)
+            .map(|_| available_tcp_port())
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let keys = (0..node_count)
+            .map(|index| {
+                let seed = u8::try_from(index).expect("test node count fits in u8");
+                generate_insecure_k1_key(seed)
+            })
+            .collect::<Vec<_>>();
+        let peer_ids = keys
+            .iter()
+            .map(|key| peer_id_from_key(key.public_key()))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut nodes = Vec::new();
+        for (index, key) in keys.into_iter().enumerate() {
+            let peer_id = peer_ids[index];
+            let version = versions[index].clone();
+            let definition_hash = definition_hashes[index].clone();
+            let p2p_context = P2PContext::new(peer_ids.clone());
+            p2p_context.set_local_peer_id(peer_id);
+            let mut sync_runtime = None;
+            let node = Node::new_server(
+                P2PConfig::default(),
+                key.clone(),
+                NodeType::TCP,
+                false,
+                p2p_context,
+                |builder, _keypair| {
+                    let p2p_context = builder.p2p_context();
+                    let (behaviour, server, clients) = new(
+                        peer_ids.clone(),
+                        p2p_context,
+                        &key,
+                        definition_hash.clone(),
+                        version.clone(),
+                    )
+                    .expect("sync test should initialize for a local peer");
+                    sync_runtime = Some((server, clients));
+                    builder.with_inner(behaviour)
+                },
+            )?;
+            let (server, clients) = sync_runtime.expect("sync runtime initialized");
+            let addr = format!("/ip4/127.0.0.1/tcp/{}", ports[index]).parse()?;
+            nodes.push(LocalNode {
+                server,
+                clients,
+                node,
+                addr,
+            });
+        }
+
+        spawn_nodes(nodes).await
+    }
+
+    async fn expect_all_connected_error(
+        node: &RunningNode,
+        cancellation: &CancellationToken,
+        expected: &str,
+    ) -> anyhow::Result<()> {
+        let error = timeout(
+            Duration::from_secs(10),
+            node.server.await_all_connected(cancellation.child_token()),
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("node did not report sync error: {error}"))?
+        .expect_err("sync should fail");
+        let error = error.to_string();
+        assert!(
+            error.contains(expected),
+            "expected error containing {expected:?}, got {error:?}"
+        );
+        Ok(())
+    }
+
     #[tokio::test]
-    async fn update_step_rules_match_go() {
+    async fn update_step_rules() {
         let version = SemVer::parse("v0.1").expect("valid version");
         let server = Server::new(1, vec![0; 32], version);
         let peer = PeerId::random();
@@ -283,53 +376,9 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn sync_round_trip_matches_go_shape() -> anyhow::Result<()> {
-        let ports = (0..3)
-            .map(|_| available_tcp_port())
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        let keys = (0_u8..3).map(generate_insecure_k1_key).collect::<Vec<_>>();
-        let peer_ids = keys
-            .iter()
-            .map(|key| peer_id_from_key(key.public_key()))
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+    async fn sync_round_trip() -> anyhow::Result<()> {
         let version = SemVer::parse("v1.7")?;
-        let mut nodes = Vec::new();
-        for (index, key) in keys.into_iter().enumerate() {
-            let peer_id = peer_ids[index];
-            let p2p_context = P2PContext::new(peer_ids.clone());
-            p2p_context.set_local_peer_id(peer_id);
-            let mut sync_runtime = None;
-            let node = Node::new_server(
-                P2PConfig::default(),
-                key.clone(),
-                NodeType::TCP,
-                false,
-                p2p_context,
-                |builder, _keypair| {
-                    let p2p_context = builder.p2p_context();
-                    let (behaviour, server, clients) = new(
-                        peer_ids.clone(),
-                        p2p_context,
-                        &key,
-                        vec![1, 2, 3],
-                        version.clone(),
-                    )
-                    .expect("sync test should initialize for a local peer");
-                    sync_runtime = Some((server, clients));
-                    builder.with_inner(behaviour)
-                },
-            )?;
-            let (server, clients) = sync_runtime.expect("sync runtime initialized");
-            let addr = format!("/ip4/127.0.0.1/tcp/{}", ports[index]).parse()?;
-            nodes.push(LocalNode {
-                server,
-                clients,
-                node,
-                addr,
-            });
-        }
-
-        let running = spawn_nodes(nodes).await?;
+        let running = spawn_sync_cluster(vec![version; 3], vec![vec![1, 2, 3]; 3]).await?;
         let cancellation = CancellationToken::new();
 
         for (index, node) in running.iter().enumerate() {
@@ -395,7 +444,40 @@ mod tests {
             .map_err(|error| anyhow::anyhow!("node {index} did not observe shutdown: {error}"))??;
         }
 
-        shutdown_nodes(running).await?;
+        stop_nodes(running, true).await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn await_all_connected_fails_on_version_mismatch() -> anyhow::Result<()> {
+        let running = spawn_sync_cluster(
+            vec![SemVer::parse("v1.7")?, SemVer::parse("v1.8")?],
+            vec![vec![1, 2, 3]; 2],
+        )
+        .await?;
+        let cancellation = CancellationToken::new();
+
+        for node in &running {
+            expect_all_connected_error(node, &cancellation, "mismatching version").await?;
+        }
+
+        stop_nodes(running, false).await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn await_all_connected_fails_on_invalid_hash_signature() -> anyhow::Result<()> {
+        let version = SemVer::parse("v1.7")?;
+        let running =
+            spawn_sync_cluster(vec![version; 2], vec![vec![1, 2, 3], vec![4, 5, 6]]).await?;
+        let cancellation = CancellationToken::new();
+
+        for node in &running {
+            expect_all_connected_error(node, &cancellation, "invalid definition hash signature")
+                .await?;
+        }
+
+        stop_nodes(running, false).await?;
         Ok(())
     }
 }
