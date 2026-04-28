@@ -5764,6 +5764,7 @@ dependencies = [
  "hex",
  "k256",
  "libp2p",
+ "pin-project",
  "pluto-cluster",
  "pluto-core",
  "pluto-eth2util",

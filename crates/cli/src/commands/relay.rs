@@ -415,17 +415,29 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "/metrics endpoint not implemented"]
     async fn serve_addr_metrics() {
+        let monitoring_addr = net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .to_string();
+        let monitoring_url = format!("http://{monitoring_addr}/metrics");
+
         with_relay_server(
-            |_| {},
-            async |cfg| {
-                let response = relay_server_get(cfg, "/metrics").await.unwrap();
+            move |args| {
+                args.debug_monitoring.monitor_addr = Some(monitoring_addr);
+            },
+            async move |_cfg| {
+                let response = retry_get(&monitoring_url).await.unwrap();
                 let body = response.text().await.unwrap();
 
-                dbg!(&body);
-
-                assert!(body.contains("libp2p_relaysvc_"));
+                assert!(body.contains("relay_p2p_connection_total"));
+                assert!(body.contains("relay_p2p_active_connections"));
+                assert!(body.contains("relay_p2p_ping_latency"));
+                assert!(body.contains("relay_p2p_network_sent_bytes"));
+                assert!(body.contains("relay_p2p_network_receive_bytes"));
+                assert!(body.ends_with("# EOF\n"));
             },
         )
         .await
@@ -523,12 +535,11 @@ mod tests {
         path: &str,
     ) -> Result<reqwest::Response, reqwest::Error> {
         let http_address = cfg.http_addr.unwrap();
-        let request = async || {
-            reqwest::get(format!("http://{}{}", http_address, path))
-                .await
-                .and_then(|r| r.error_for_status())
-        };
+        retry_get(&format!("http://{}{}", http_address, path)).await
+    }
 
+    async fn retry_get(url: &str) -> Result<reqwest::Response, reqwest::Error> {
+        let request = async || reqwest::get(url).await.and_then(|r| r.error_for_status());
         let mut backoff = backon::ExponentialBuilder::default()
             .with_min_delay(time::Duration::from_millis(200))
             .with_max_delay(time::Duration::from_secs(2))
