@@ -2,6 +2,7 @@
 
 use std::{
     convert::Infallible,
+    io,
     pin::Pin,
     task::{Context, Poll},
     time::Duration,
@@ -172,10 +173,9 @@ impl Handler {
                 false,
             ),
             StreamUpgradeError::Apply(never) => match never {},
-            StreamUpgradeError::Io(error) => (
-                Error::Io(error.to_string()),
-                error.kind() == std::io::ErrorKind::ConnectionReset,
-            ),
+            StreamUpgradeError::Io(error) => {
+                (Error::Io(error.to_string()), is_relay_io_error(&error))
+            }
         };
 
         if relay_reset || client.should_reconnect() {
@@ -382,7 +382,7 @@ async fn run_outbound_stream(client: Client, mut stream: Stream) -> OutboundExit
             Ok(response) => response,
             Err(error) => {
                 return OutboundExit::Reconnectable {
-                    relay_reset: error.kind() == std::io::ErrorKind::ConnectionReset,
+                    relay_reset: is_relay_io_error(&error),
                     error: Error::Io(error.to_string()),
                 };
             }
@@ -507,6 +507,15 @@ fn send_inbound_event(inbound_events_tx: &mpsc::UnboundedSender<OutEvent>, event
     }
 }
 
+fn is_relay_io_error(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::BrokenPipe
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::task::{Context, Poll};
@@ -518,6 +527,21 @@ mod tests {
 
     use super::*;
     use crate::sync::ClientConfig;
+
+    #[test]
+    fn relay_io_errors_match_rust_libp2p_relay_closure_paths() {
+        for kind in [
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::ConnectionAborted,
+            io::ErrorKind::BrokenPipe,
+        ] {
+            assert!(is_relay_io_error(&io::Error::from(kind)));
+        }
+
+        assert!(!is_relay_io_error(&io::Error::from(
+            io::ErrorKind::TimedOut
+        )));
+    }
 
     #[tokio::test]
     async fn retry_stays_scheduled_while_outbound_claim_is_busy() {
