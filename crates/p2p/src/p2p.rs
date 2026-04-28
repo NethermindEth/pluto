@@ -302,12 +302,10 @@ impl<B: NetworkBehaviour> Node<B> {
     /// should configure the builder (e.g., set user agent, inner behaviour)
     /// and return it.
     ///
-    /// Per-peer bandwidth counters
-    /// (`relay_p2p_network_sent_bytes_total{peer,peer_cluster}` and
-    /// `relay_p2p_network_receive_bytes_total{peer,peer_cluster}`) are tracked
-    /// automatically via [`crate::bandwidth::PeerBandwidthTransport`] and
-    /// registered as vise globals. `peer_cluster` is always empty since the
-    /// relay cannot resolve cluster membership.
+    /// Pass a [`crate::BandwidthFactory`] to track per-peer bytes
+    /// sent/received. The factory is called once per established connection
+    /// and should return the appropriate [`crate::PeerConnectionMetrics`]
+    /// counters. Pass `None` to skip bandwidth tracking.
     ///
     /// Note: upstream rust-libp2p does not yet expose per-peer callbacks
     /// natively; see <https://github.com/libp2p/rust-libp2p/issues/3262>.
@@ -317,6 +315,7 @@ impl<B: NetworkBehaviour> Node<B> {
         node_type: NodeType,
         filter_private_addrs: bool,
         p2p_context: P2PContext,
+        bandwidth: Option<crate::BandwidthFactory>,
         behaviour_fn: F,
     ) -> Result<Self>
     where
@@ -326,8 +325,10 @@ impl<B: NetworkBehaviour> Node<B> {
         Self::bind_local_peer_id(&p2p_context, keypair.public().to_peer_id())?;
 
         let mut node = match node_type {
-            NodeType::TCP => Self::build_tcp_server(keypair, p2p_context, behaviour_fn),
-            NodeType::QUIC => Self::build_quic_server(keypair, p2p_context, behaviour_fn),
+            NodeType::TCP => Self::build_tcp_server(keypair, p2p_context, bandwidth, behaviour_fn),
+            NodeType::QUIC => {
+                Self::build_quic_server(keypair, p2p_context, bandwidth, behaviour_fn)
+            }
         }?;
 
         node.apply_config(&cfg, filter_private_addrs)?;
@@ -469,12 +470,14 @@ impl<B: NetworkBehaviour> Node<B> {
     fn build_quic_server<F>(
         keypair: Keypair,
         p2p_context: P2PContext,
+        bandwidth: Option<crate::BandwidthFactory>,
         behaviour_fn: F,
     ) -> Result<Self>
     where
         F: FnOnce(PlutoBehaviourBuilder<B>, &Keypair) -> PlutoBehaviourBuilder<B>,
     {
-        let swarm = Self::build_server_swarm(keypair, p2p_context.clone(), behaviour_fn)?;
+        let swarm =
+            Self::build_server_swarm(keypair, p2p_context.clone(), bandwidth, behaviour_fn)?;
         Ok(Node {
             swarm,
             node_type: NodeType::QUIC,
@@ -485,12 +488,14 @@ impl<B: NetworkBehaviour> Node<B> {
     fn build_tcp_server<F>(
         keypair: Keypair,
         p2p_context: P2PContext,
+        bandwidth: Option<crate::BandwidthFactory>,
         behaviour_fn: F,
     ) -> Result<Self>
     where
         F: FnOnce(PlutoBehaviourBuilder<B>, &Keypair) -> PlutoBehaviourBuilder<B>,
     {
-        let swarm = Self::build_server_swarm(keypair, p2p_context.clone(), behaviour_fn)?;
+        let swarm =
+            Self::build_server_swarm(keypair, p2p_context.clone(), bandwidth, behaviour_fn)?;
         Ok(Node {
             swarm,
             node_type: NodeType::TCP,
@@ -501,6 +506,7 @@ impl<B: NetworkBehaviour> Node<B> {
     fn build_server_swarm<F>(
         keypair: Keypair,
         p2p_context: P2PContext,
+        bandwidth: Option<crate::BandwidthFactory>,
         behaviour_fn: F,
     ) -> Result<Swarm<PlutoBehaviour<B>>>
     where
@@ -530,9 +536,12 @@ impl<B: NetworkBehaviour> Node<B> {
         let dns =
             dns::tokio::Transport::system(combined).map_err(P2PError::failed_to_configure_dns)?;
 
-        let transport = crate::bandwidth::PeerBandwidthTransport::new(dns)
-            .map(|(peer_id, conn), _| (peer_id, StreamMuxerBox::new(conn)))
-            .boxed();
+        let transport = match bandwidth {
+            Some(factory) => crate::bandwidth::PeerBandwidthTransport::new(dns, factory)
+                .map(|(peer_id, conn), _| (peer_id, StreamMuxerBox::new(conn)))
+                .boxed(),
+            None => dns.boxed(),
+        };
 
         let behaviour =
             behaviour_fn(PlutoBehaviourBuilder::new(p2p_context), &keypair).build(&keypair);

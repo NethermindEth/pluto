@@ -17,6 +17,7 @@ use crate::{
     web::{enr_server, monitoring_server},
 };
 use pluto_p2p::{
+    BandwidthFactory, PeerConnectionMetrics,
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
 };
@@ -29,6 +30,10 @@ pub async fn run_relay_p2p_node(
     ct: CancellationToken,
 ) -> Result<Node<relay::Behaviour>> {
     let relay_config = create_relay_config(config);
+    let bandwidth: BandwidthFactory = std::sync::Arc::new(|peer_id| PeerConnectionMetrics {
+        sent: RELAY_METRICS.network_sent_bytes_total[&relay_labels(peer_id)].clone(),
+        received: RELAY_METRICS.network_receive_bytes_total[&relay_labels(peer_id)].clone(),
+    });
     let mut node = Node::new_server(
         config.p2p_config.clone(),
         key.clone(),
@@ -36,6 +41,7 @@ pub async fn run_relay_p2p_node(
         false,
         // Relay servers don't track cluster peers - they serve all connections.
         P2PContext::default(),
+        Some(bandwidth),
         |builder, keypair| {
             builder.with_inner(relay::Behaviour::new(
                 keypair.public().to_peer_id(),

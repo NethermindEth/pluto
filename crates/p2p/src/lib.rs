@@ -7,6 +7,7 @@
 
 /// Per-peer bandwidth tracking transport wrapper.
 pub(crate) mod bandwidth;
+pub use bandwidth::{BandwidthFactory, PeerConnectionMetrics};
 
 /// Bootnode and relay resolution.
 pub mod bootnode;

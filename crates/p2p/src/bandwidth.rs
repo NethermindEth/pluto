@@ -2,6 +2,7 @@ use std::{
     convert::TryFrom as _,
     io,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -18,28 +19,9 @@ use libp2p::{
         transport::{DialOpts, ListenerId, TransportError, TransportEvent},
     },
 };
-use vise::{Counter, EncodeLabelSet, Family, Global, Metrics};
+use vise::Counter;
 
-#[derive(EncodeLabelSet, Hash, Clone, Eq, PartialEq, Debug)]
-struct PeerLabel {
-    peer: String,
-    peer_cluster: String,
-}
-
-#[derive(Debug, Metrics)]
-#[metrics(prefix = "relay_p2p")]
-struct BandwidthMetrics {
-    /// Bytes sent to peer and cluster.
-    network_sent_bytes: Family<PeerLabel, Counter>,
-    /// Bytes received from peer and cluster.
-    network_receive_bytes: Family<PeerLabel, Counter>,
-}
-
-#[vise::register]
-static BANDWIDTH_METRICS: Global<BandwidthMetrics> = Global::new();
-
-/// Per-peer bandwidth metrics counters.
-#[derive(Clone)]
+/// Per-peer bandwidth counters injected into [`PeerBandwidthTransport`].
 pub struct PeerConnectionMetrics {
     /// Bytes sent to the peer.
     pub sent: Counter,
@@ -47,34 +29,23 @@ pub struct PeerConnectionMetrics {
     pub received: Counter,
 }
 
-impl PeerConnectionMetrics {
-    /// Get or create metrics counters for a peer.
-    pub fn for_peer(peer_id: &PeerId) -> Self {
-        let label = PeerLabel {
-            peer: peer_id.to_string(),
-            peer_cluster: String::new(),
-        };
-        Self {
-            sent: BANDWIDTH_METRICS.network_sent_bytes[&label].clone(),
-            received: BANDWIDTH_METRICS.network_receive_bytes[&label].clone(),
-        }
-    }
-}
+/// Factory that creates [`PeerConnectionMetrics`] for a given peer.
+pub type BandwidthFactory = Arc<dyn Fn(&PeerId) -> PeerConnectionMetrics + Send + Sync>;
 
 /// Per-peer bandwidth tracking transport wrapper.
 ///
-/// Populates `relay_p2p_network_sent_bytes_total` and
-/// `relay_p2p_network_receive_bytes_total` with `{peer, peer_cluster}` labels,
-/// matching Charon's metric names.
+/// Calls the supplied [`BandwidthFactory`] for every established connection and
+/// records bytes through the returned [`PeerConnectionMetrics`] counters.
 #[pin_project::pin_project]
 pub(crate) struct PeerBandwidthTransport<T> {
     #[pin]
     inner: T,
+    factory: BandwidthFactory,
 }
 
 impl<T> PeerBandwidthTransport<T> {
-    pub(crate) fn new(inner: T) -> Self {
-        PeerBandwidthTransport { inner }
+    pub(crate) fn new(inner: T, factory: BandwidthFactory) -> Self {
+        PeerBandwidthTransport { inner, factory }
     }
 }
 
@@ -108,11 +79,12 @@ where
         addr: Multiaddr,
         dial_opts: DialOpts,
     ) -> Result<Self::Dial, TransportError<Self::Error>> {
+        let factory = Arc::clone(&self.factory);
         Ok(self
             .inner
             .dial(addr, dial_opts)?
             .map_ok(Box::new(move |(peer_id, muxer)| {
-                let metrics = PeerConnectionMetrics::for_peer(&peer_id);
+                let metrics = factory(&peer_id);
                 (peer_id, PeerMuxer::new(muxer, metrics))
             })))
     }
@@ -121,7 +93,9 @@ where
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<TransportEvent<Self::ListenerUpgrade, Self::Error>> {
-        match self.project().inner.poll(cx) {
+        let this = self.project();
+        let factory = Arc::clone(this.factory);
+        match this.inner.poll(cx) {
             Poll::Ready(TransportEvent::Incoming {
                 listener_id,
                 upgrade,
@@ -130,7 +104,7 @@ where
             }) => Poll::Ready(TransportEvent::Incoming {
                 listener_id,
                 upgrade: upgrade.map_ok(Box::new(move |(peer_id, muxer)| {
-                    let metrics = PeerConnectionMetrics::for_peer(&peer_id);
+                    let metrics = factory(&peer_id);
                     (peer_id, PeerMuxer::new(muxer, metrics))
                 })),
                 local_addr,
@@ -176,7 +150,8 @@ impl<M: StreamMuxer> StreamMuxer for PeerMuxer<M> {
         let inner = ready!(this.inner.poll_inbound(cx)?);
         Poll::Ready(Ok(PeerInstrumentedStream {
             inner,
-            metrics: this.metrics.clone(),
+            sent: this.metrics.sent.clone(),
+            received: this.metrics.received.clone(),
         }))
     }
 
@@ -188,7 +163,8 @@ impl<M: StreamMuxer> StreamMuxer for PeerMuxer<M> {
         let inner = ready!(this.inner.poll_outbound(cx)?);
         Poll::Ready(Ok(PeerInstrumentedStream {
             inner,
-            metrics: this.metrics.clone(),
+            sent: this.metrics.sent.clone(),
+            received: this.metrics.received.clone(),
         }))
     }
 
@@ -201,7 +177,8 @@ impl<M: StreamMuxer> StreamMuxer for PeerMuxer<M> {
 pub(crate) struct PeerInstrumentedStream<S> {
     #[pin]
     inner: S,
-    metrics: PeerConnectionMetrics,
+    sent: Counter,
+    received: Counter,
 }
 
 impl<S: AsyncRead> AsyncRead for PeerInstrumentedStream<S> {
@@ -212,8 +189,7 @@ impl<S: AsyncRead> AsyncRead for PeerInstrumentedStream<S> {
     ) -> Poll<io::Result<usize>> {
         let this = self.project();
         let num_bytes = ready!(this.inner.poll_read(cx, buf))?;
-        this.metrics
-            .received
+        this.received
             .inc_by(u64::try_from(num_bytes).unwrap_or(u64::MAX));
         Poll::Ready(Ok(num_bytes))
     }
@@ -225,8 +201,7 @@ impl<S: AsyncRead> AsyncRead for PeerInstrumentedStream<S> {
     ) -> Poll<io::Result<usize>> {
         let this = self.project();
         let num_bytes = ready!(this.inner.poll_read_vectored(cx, bufs))?;
-        this.metrics
-            .received
+        this.received
             .inc_by(u64::try_from(num_bytes).unwrap_or(u64::MAX));
         Poll::Ready(Ok(num_bytes))
     }
@@ -240,8 +215,7 @@ impl<S: AsyncWrite> AsyncWrite for PeerInstrumentedStream<S> {
     ) -> Poll<io::Result<usize>> {
         let this = self.project();
         let num_bytes = ready!(this.inner.poll_write(cx, buf))?;
-        this.metrics
-            .sent
+        this.sent
             .inc_by(u64::try_from(num_bytes).unwrap_or(u64::MAX));
         Poll::Ready(Ok(num_bytes))
     }
@@ -253,8 +227,7 @@ impl<S: AsyncWrite> AsyncWrite for PeerInstrumentedStream<S> {
     ) -> Poll<io::Result<usize>> {
         let this = self.project();
         let num_bytes = ready!(this.inner.poll_write_vectored(cx, bufs))?;
-        this.metrics
-            .sent
+        this.sent
             .inc_by(u64::try_from(num_bytes).unwrap_or(u64::MAX));
         Poll::Ready(Ok(num_bytes))
     }
@@ -325,74 +298,66 @@ mod tests {
         }
     }
 
+    fn make_stream() -> (PeerInstrumentedStream<MockStream>, Counter, Counter) {
+        let sent = Counter::default();
+        let received = Counter::default();
+        let stream = PeerInstrumentedStream {
+            inner: MockStream::new(vec![1, 2, 3, 4, 5]),
+            sent: sent.clone(),
+            received: received.clone(),
+        };
+        (stream, sent, received)
+    }
+
     #[test]
     fn bandwidth_received() {
-        let peer_id = PeerId::random();
-        let metrics = PeerConnectionMetrics::for_peer(&peer_id);
-        let initial = metrics.received.get();
-
-        let mock = MockStream::new(vec![1, 2, 3, 4, 5]);
-        let mut stream = PeerInstrumentedStream {
-            inner: mock,
-            metrics: metrics.clone(),
-        };
+        let (mut stream, _, received) = make_stream();
+        let initial = received.get();
 
         let mut buf = [0u8; 3];
         let mut cx = Context::from_waker(futures::task::noop_waker_ref());
         let _ = Pin::new(&mut stream).poll_read(&mut cx, &mut buf);
 
-        assert_eq!(metrics.received.get(), initial + 3);
+        assert_eq!(received.get(), initial + 3);
     }
 
     #[test]
     fn bandwidth_sent() {
-        let peer_id = PeerId::random();
-        let metrics = PeerConnectionMetrics::for_peer(&peer_id);
-        let initial = metrics.sent.get();
-
-        let mock = MockStream::new(Vec::new());
-        let mut stream = PeerInstrumentedStream {
-            inner: mock,
-            metrics: metrics.clone(),
-        };
+        let (mut stream, sent, _) = make_stream();
+        let initial = sent.get();
 
         let data = b"hello";
         let mut cx = Context::from_waker(futures::task::noop_waker_ref());
         let _ = Pin::new(&mut stream).poll_write(&mut cx, data);
 
-        assert_eq!(metrics.sent.get(), initial + 5);
+        assert_eq!(sent.get(), initial + 5);
     }
 
     #[test]
     fn bandwidth_multiple_operations() {
-        let peer_id = PeerId::random();
-        let metrics = PeerConnectionMetrics::for_peer(&peer_id);
-        let initial_recv = metrics.received.get();
-        let initial_sent = metrics.sent.get();
-
-        let mock = MockStream::new(vec![1, 2, 3, 4, 5, 6, 7, 8]);
-        let mut stream = PeerInstrumentedStream {
-            inner: mock,
-            metrics: metrics.clone(),
+        let (mut stream, sent, received) = make_stream();
+        let mut stream2 = PeerInstrumentedStream {
+            inner: MockStream::new(vec![1, 2, 3, 4, 5, 6, 7, 8]),
+            sent: sent.clone(),
+            received: received.clone(),
         };
+
+        let initial_recv = received.get();
+        let initial_sent = sent.get();
 
         let mut cx = Context::from_waker(futures::task::noop_waker_ref());
 
-        // Read 3 bytes
         let mut buf = [0u8; 3];
-        let _ = Pin::new(&mut stream).poll_read(&mut cx, &mut buf);
+        let _ = Pin::new(&mut stream2).poll_read(&mut cx, &mut buf);
 
-        // Write 5 bytes
         let _ = Pin::new(&mut stream).poll_write(&mut cx, b"hello");
 
-        // Read 2 bytes
         let mut buf2 = [0u8; 2];
-        let _ = Pin::new(&mut stream).poll_read(&mut cx, &mut buf2);
+        let _ = Pin::new(&mut stream2).poll_read(&mut cx, &mut buf2);
 
-        // Write 4 bytes
         let _ = Pin::new(&mut stream).poll_write(&mut cx, b"test");
 
-        assert_eq!(metrics.received.get(), initial_recv + 5);
-        assert_eq!(metrics.sent.get(), initial_sent + 9);
+        assert_eq!(received.get(), initial_recv + 5);
+        assert_eq!(sent.get(), initial_sent + 9);
     }
 }

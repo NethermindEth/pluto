@@ -15,6 +15,12 @@ pub struct RelayMetrics {
     /// Ping latency by peer and cluster.
     #[metrics(buckets = &BUCKETS)]
     pub ping_latency: Family<PeerWithPeerClusterLabels, Histogram>,
+
+    /// Total number of network bytes sent to the peer and cluster.
+    pub network_sent_bytes_total: Family<PeerWithPeerClusterLabels, Counter>,
+
+    /// Total number of network bytes received from the peer and cluster.
+    pub network_receive_bytes_total: Family<PeerWithPeerClusterLabels, Counter>,
 }
 
 /// Labels for peer with peer cluster.
