@@ -104,14 +104,10 @@ pub async fn run(
 
     // Validate flag combinations.
     if args.load_test && args.beacon_node_endpoint.is_none() {
-        return Err(CliError::Other(
-            "beacon-node-endpoint required when load-test enabled".to_string(),
-        ));
+        return Err(MevTestError::BeaconNodeEndpointRequired.into());
     }
     if !args.load_test && args.beacon_node_endpoint.is_some() {
-        return Err(CliError::Other(
-            "beacon-node-endpoint only supported when load-test enabled".to_string(),
-        ));
+        return Err(MevTestError::BeaconNodeEndpointNotAllowed.into());
     }
 
     info!("Starting MEV relays test");
@@ -245,7 +241,7 @@ async fn mev_ping_test(target: &str, _conf: &TestMevArgs) -> TestResult {
     };
 
     if resp.status().as_u16() > 399 {
-        return test_res.fail(CliError::Other(http_status_error(resp.status())));
+        return test_res.fail(MevTestError::HttpStatus(resp.status().as_u16()));
     }
 
     test_res.ok()
@@ -281,7 +277,7 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
     let beacon_endpoint = match &conf.beacon_node_endpoint {
         Some(ep) => ep.as_str(),
         None => {
-            return test_res.fail(CliError::Other("beacon-node-endpoint required".to_string()));
+            return test_res.fail(MevTestError::BeaconNodeEndpointRequired);
         }
     };
 
@@ -292,18 +288,18 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
 
     let latest_block_ts_unix: i64 = match latest_block.body.execution_payload.timestamp.parse() {
         Ok(v) => v,
-        Err(e) => return test_res.fail(CliError::Other(format!("parse timestamp: {e}"))),
+        Err(e) => return test_res.fail(MevTestError::ParseTimestamp(e.to_string())),
     };
 
     let latest_block_ts = match std::time::UNIX_EPOCH
         .checked_add(Duration::from_secs(latest_block_ts_unix.unsigned_abs()))
     {
         Some(ts) => ts,
-        None => return test_res.fail(CliError::Other("timestamp overflow".to_string())),
+        None => return test_res.fail(MevTestError::TimestampOverflow),
     };
     let next_block_ts = match latest_block_ts.checked_add(SLOT_TIME) {
         Some(ts) => ts,
-        None => return test_res.fail(CliError::Other("next block timestamp overflow".to_string())),
+        None => return test_res.fail(MevTestError::NextBlockTimestampOverflow),
     };
 
     if let Ok(remaining) = next_block_ts.duration_since(std::time::SystemTime::now()) {
@@ -312,17 +308,17 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
 
     let latest_slot: i64 = match latest_block.slot.parse() {
         Ok(v) => v,
-        Err(e) => return test_res.fail(CliError::Other(format!("parse slot: {e}"))),
+        Err(e) => return test_res.fail(MevTestError::ParseSlot(e.to_string())),
     };
 
     let mut next_slot = latest_slot.saturating_add(1);
     let slots_in_epoch_i64 = match i64::try_from(SLOTS_IN_EPOCH.get()) {
         Ok(v) => v,
-        Err(e) => return test_res.fail(CliError::Other(format!("slots_in_epoch conversion: {e}"))),
+        Err(e) => return test_res.fail(MevTestError::SlotsInEpochConversion(e.to_string())),
     };
     let epoch = match next_slot.checked_div(slots_in_epoch_i64) {
         Some(v) => v,
-        None => return test_res.fail(CliError::Other("epoch calculation overflow".to_string())),
+        None => return test_res.fail(MevTestError::EpochCalculationOverflow),
     };
 
     let mut proposer_duties = match fetch_proposers_for_epoch(beacon_endpoint, epoch).await {
@@ -366,7 +362,7 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
         let elapsed_nanos = match u64::try_from(elapsed.as_nanos()) {
             Ok(v) => v,
             Err(e) => {
-                return test_res.fail(CliError::Other(format!("elapsed nanos conversion: {e}")));
+                return test_res.fail(MevTestError::ElapsedNanosConversion(e.to_string()));
             }
         };
         let slot_nanos = u64::try_from(SLOT_TIME.as_nanos()).unwrap_or(1);
@@ -386,7 +382,7 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
 
         let latest_slot_parsed: i64 = match latest_block.slot.parse() {
             Ok(v) => v,
-            Err(e) => return test_res.fail(CliError::Other(format!("parse slot: {e}"))),
+            Err(e) => return test_res.fail(MevTestError::ParseSlot(e.to_string())),
         };
 
         next_slot = latest_slot_parsed.saturating_add(1);
@@ -404,7 +400,7 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
     let total_rtt: Duration = all_blocks_rtt.iter().sum();
     let count = match u32::try_from(all_blocks_rtt.len().max(1)) {
         Ok(v) => v,
-        Err(e) => return test_res.fail(CliError::Other(format!("block count conversion: {e}"))),
+        Err(e) => return test_res.fail(MevTestError::BlockCountConversion(e.to_string())),
     };
     let average_rtt = total_rtt.checked_div(count).unwrap_or_default();
 
@@ -501,10 +497,7 @@ async fn get_block_header(
 
     let start = Instant::now();
 
-    let resp = reqwest::Client::new()
-        .get(&url)
-        .send()
-        .await?;
+    let resp = reqwest::Client::new().get(&url).send().await?;
 
     let rtt = start.elapsed();
 
@@ -533,17 +526,17 @@ async fn create_mev_block(
     loop {
         let start_iteration = Instant::now();
         let slots_in_epoch_i64 = i64::try_from(SLOTS_IN_EPOCH.get())
-            .map_err(|e| CliError::Other(format!("slots_in_epoch conversion: {e}")))?;
+            .map_err(|e| MevTestError::SlotsInEpochConversion(e.to_string()))?;
         let epoch = next_slot
             .checked_div(slots_in_epoch_i64)
-            .ok_or_else(|| CliError::Other("epoch calculation overflow".to_string()))?;
+            .ok_or(MevTestError::EpochCalculationOverflow)?;
 
         let pk = if let Some(pk) = get_validator_pk_for_slot(proposer_duties, next_slot) {
             pk
         } else {
             *proposer_duties = fetch_proposers_for_epoch(beacon_endpoint, epoch).await?;
             get_validator_pk_for_slot(proposer_duties, next_slot)
-                .ok_or_else(|| CliError::Other("slot not found".to_string()))?
+                .ok_or(MevTestError::SlotNotFound)?
         };
 
         match get_block_header(
@@ -591,11 +584,8 @@ async fn create_mev_block(
     }
 
     let payload = build_blinded_block_payload(&builder_bid)?;
-    let payload_json = serde_json::to_vec(&payload).map_err(|e| {
-        CliError::Other(format!(
-            "signed blinded beacon block json payload marshal: {e}"
-        ))
-    })?;
+    let payload_json = serde_json::to_vec(&payload)
+        .map_err(|e| MevTestError::PayloadMarshal(e.to_string()))?;
 
     let rtt_submit_block = request_rtt(
         format!("{target}/eth/v1/builder/blinded_blocks"),
@@ -678,11 +668,7 @@ fn extract_execution_payload_header(
     data.get("message")
         .and_then(|m| m.get("header"))
         .cloned()
-        .ok_or_else(|| {
-            CliError::Other(format!(
-                "not supported version or missing header: {version}"
-            ))
-        })
+        .ok_or_else(|| MevTestError::UnsupportedVersionOrMissingHeader(version.to_string()).into())
 }
 
 fn format_mev_relay_name(url_string: &str) -> String {
@@ -702,9 +688,6 @@ fn format_mev_relay_name(url_string: &str) -> String {
     format!("{scheme}://{hash_short}@{host}")
 }
 
-fn http_status_error(status: StatusCode) -> String {
-    format!("status code {}", status.as_u16())
-}
 
 #[cfg(test)]
 mod tests {
