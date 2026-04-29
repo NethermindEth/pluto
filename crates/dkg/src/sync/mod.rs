@@ -263,6 +263,7 @@ mod tests {
                 NodeType::TCP,
                 false,
                 p2p_context,
+                None,
                 |builder, _keypair| {
                     let p2p_context = builder.p2p_context();
                     let (behaviour, server, clients) = new(
