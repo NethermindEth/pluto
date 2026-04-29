@@ -12,6 +12,7 @@ bon.workspace = true
 futures.workspace = true
 libp2p.workspace = true
 thiserror.workspace = true
+vise-exporter.workspace = true
 k256.workspace = true
 pluto-eth2util.workspace = true
 vise.workspace = true
@@ -24,7 +25,6 @@ pluto-p2p.workspace = true
 pluto-core.workspace = true
 
 [dev-dependencies]
-vise-exporter.workspace = true
 
 [lints]
 workspace = true
