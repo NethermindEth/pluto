@@ -115,6 +115,7 @@ pub fn decode_sync_committee_message(
 }
 
 /// Encodes an `altair::ContributionAndProof` to SSZ binary.
+#[cfg(test)]
 pub fn encode_contribution_and_proof(
     cap: &altair::ContributionAndProof,
 ) -> Result<Vec<u8>, SszCodecError> {
@@ -298,7 +299,7 @@ fn decode_attestation_payload(
         DataVersion::Fulu => Ok(AttestationPayload::Fulu(
             electra::Attestation::from_ssz_bytes(inner)?,
         )),
-        DataVersion::Unknown => Err(SszCodecError::UnknownVersion(0)),
+        DataVersion::Unknown => Err(SszCodecError::UnknownVersion(u64::MAX)),
     }
 }
 
@@ -371,7 +372,7 @@ pub fn decode_versioned_signed_aggregate_and_proof(
         DataVersion::Fulu => SignedAggregateAndProofPayload::Fulu(
             electra::SignedAggregateAndProof::from_ssz_bytes(inner)?,
         ),
-        DataVersion::Unknown => return Err(SszCodecError::UnknownVersion(0)),
+        DataVersion::Unknown => return Err(SszCodecError::UnknownVersion(u64::MAX)),
     };
 
     Ok(versioned::VersionedSignedAggregateAndProof {
@@ -491,7 +492,7 @@ fn decode_proposal_block(
         (DataVersion::Fulu, true) => SignedProposalBlock::FuluBlinded(
             electra::SignedBlindedBeaconBlock::from_ssz_bytes(bytes)?,
         ),
-        (DataVersion::Unknown, _) => return Err(SszCodecError::UnknownVersion(0)),
+        (DataVersion::Unknown, _) => return Err(SszCodecError::UnknownVersion(u64::MAX)),
     })
 }
 

@@ -4,13 +4,13 @@ use crate::SszBinaryError;
 
 /// Decodes a `u8` from a single byte.
 pub fn decode_u8(bytes: &[u8]) -> Result<u8, SszBinaryError> {
-    if bytes.is_empty() {
-        return Err(SszBinaryError::InvalidLength {
+    let arr: [u8; 1] = bytes
+        .try_into()
+        .map_err(|_| SszBinaryError::InvalidLength {
             expected: 1,
-            actual: 0,
-        });
-    }
-    Ok(bytes[0])
+            actual: bytes.len(),
+        })?;
+    Ok(arr[0])
 }
 
 /// Decodes a `u32` from 4 little-endian bytes.
