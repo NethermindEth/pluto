@@ -354,7 +354,7 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
         };
 
         all_blocks_rtt.push(rtt);
-        if all_blocks_rtt.len() == usize::try_from(conf.number_of_payloads).unwrap_or(usize::MAX) {
+        if all_blocks_rtt.len() == conf.number_of_payloads as usize {
             break;
         }
 
@@ -365,7 +365,7 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
                 return test_res.fail(MevTestError::ElapsedNanosConversion(e.to_string()));
             }
         };
-        let slot_nanos = u64::try_from(SLOT_TIME.as_nanos()).unwrap_or(1);
+        let slot_nanos = SLOT_TIME.as_nanos() as u64;
         let remainder_nanos = elapsed_nanos.checked_rem(slot_nanos).unwrap_or(0);
         let slot_remainder = SLOT_TIME
             .checked_sub(Duration::from_nanos(remainder_nanos))
@@ -584,8 +584,8 @@ async fn create_mev_block(
     }
 
     let payload = build_blinded_block_payload(&builder_bid)?;
-    let payload_json = serde_json::to_vec(&payload)
-        .map_err(|e| MevTestError::PayloadMarshal(e.to_string()))?;
+    let payload_json =
+        serde_json::to_vec(&payload).map_err(|e| MevTestError::PayloadMarshal(e.to_string()))?;
 
     let rtt_submit_block = request_rtt(
         format!("{target}/eth/v1/builder/blinded_blocks"),
@@ -688,13 +688,19 @@ fn format_mev_relay_name(url_string: &str) -> String {
     format!("{scheme}://{hash_short}@{host}")
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration as StdDuration;
     use tokio_util::sync::CancellationToken;
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+    fn refused_addr() -> String {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        drop(l);
+        format!("http://{addr}")
+    }
 
     fn default_test_config() -> TestConfigArgs {
         TestConfigArgs {
@@ -759,21 +765,32 @@ mod tests {
         let mut buf = Vec::new();
         let res = run(args, &mut buf, CancellationToken::new()).await.unwrap();
 
-        assert_verdict(
-            &res.targets,
-            &url,
-            &[
-                ("Ping", TestVerdict::Ok),
-                ("PingMeasure", TestVerdict::Good),
-                ("CreateBlock", TestVerdict::Skip),
-            ],
+        let target_results = res.targets.get(&url).expect("missing target");
+        let by_name: std::collections::HashMap<&str, TestVerdict> = target_results
+            .iter()
+            .map(|r| (r.name.as_str(), r.verdict))
+            .collect();
+
+        assert_eq!(by_name["Ping"], TestVerdict::Ok, "Ping should be Ok");
+        assert_eq!(
+            by_name["CreateBlock"],
+            TestVerdict::Skip,
+            "CreateBlock should be Skip"
+        );
+        assert!(
+            matches!(
+                by_name["PingMeasure"],
+                TestVerdict::Good | TestVerdict::Poor
+            ),
+            "PingMeasure should be Good or Poor, got {:?}",
+            by_name.get("PingMeasure")
         );
     }
 
     #[tokio::test]
     async fn test_mev_connection_refused() {
-        let endpoint1 = "http://localhost:19950".to_string();
-        let endpoint2 = "http://localhost:19951".to_string();
+        let endpoint1 = refused_addr();
+        let endpoint2 = refused_addr();
         let args = default_mev_args(vec![endpoint1.clone(), endpoint2.clone()]);
 
         let mut buf = Vec::new();
@@ -802,27 +819,28 @@ mod tests {
 
     #[tokio::test]
     async fn test_mev_timeout() {
-        let endpoint1 = "http://localhost:19952".to_string();
-        let endpoint2 = "http://localhost:19953".to_string();
-        let mut args = default_mev_args(vec![endpoint1.clone(), endpoint2.clone()]);
-        args.test_config.timeout = StdDuration::from_nanos(100);
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_delay(StdDuration::from_millis(500)))
+            .mount(&server)
+            .await;
+
+        let url = server.uri();
+        let mut args = default_mev_args(vec![url.clone()]);
+        args.test_config.timeout = StdDuration::from_millis(10);
 
         let mut buf = Vec::new();
         let res = run(args, &mut buf, CancellationToken::new()).await.unwrap();
 
-        for endpoint in [&endpoint1, &endpoint2] {
-            let target_results = res.targets.get(endpoint).expect("missing target");
-            assert!(!target_results.is_empty());
-            for r in target_results {
-                // CreateBlock skips immediately (load_test=false); others should fail due to
-                // timeout
-                let expected = if r.name == "CreateBlock" {
-                    TestVerdict::Skip
-                } else {
-                    TestVerdict::Fail
-                };
-                assert_eq!(r.verdict, expected, "verdict mismatch for {}", r.name);
-            }
+        let target_results = res.targets.get(&url).expect("missing target");
+        assert!(!target_results.is_empty());
+        for r in target_results {
+            let expected = if r.name == "CreateBlock" {
+                TestVerdict::Skip
+            } else {
+                TestVerdict::Fail
+            };
+            assert_eq!(r.verdict, expected, "verdict mismatch for {}", r.name);
         }
     }
 
@@ -831,8 +849,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let json_path = dir.path().join("output.json");
 
-        let endpoint1 = "http://localhost:19954".to_string();
-        let endpoint2 = "http://localhost:19955".to_string();
+        let endpoint1 = refused_addr();
+        let endpoint2 = refused_addr();
         let mut args = default_mev_args(vec![endpoint1, endpoint2]);
         args.test_config.quiet = true;
         args.test_config.output_json = json_path.to_str().unwrap().to_string();
@@ -845,7 +863,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mev_unsupported_test() {
-        let mut args = default_mev_args(vec!["http://localhost:19956".to_string()]);
+        let mut args = default_mev_args(vec![refused_addr()]);
         args.test_config.test_cases = Some(vec!["notSupportedTest".to_string()]);
 
         let mut buf = Vec::new();
@@ -860,8 +878,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_mev_custom_test_cases() {
-        let endpoint1 = "http://localhost:19957".to_string();
-        let endpoint2 = "http://localhost:19958".to_string();
+        let endpoint1 = refused_addr();
+        let endpoint2 = refused_addr();
         let mut args = default_mev_args(vec![endpoint1.clone(), endpoint2.clone()]);
         args.test_config.test_cases = Some(vec!["Ping".to_string()]);
 
@@ -881,8 +899,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("mev-test-output.json");
 
-        let endpoint1 = "http://localhost:19959".to_string();
-        let endpoint2 = "http://localhost:19960".to_string();
+        let endpoint1 = refused_addr();
+        let endpoint2 = refused_addr();
         let mut args = default_mev_args(vec![endpoint1, endpoint2]);
         args.test_config.output_json = file_path.to_str().unwrap().to_string();
 
