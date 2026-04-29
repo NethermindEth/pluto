@@ -7,10 +7,10 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+bon.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 thiserror.workspace = true
-bon.workspace = true
 libp2p.workspace = true
 futures.workspace = true
 tokio.workspace = true
@@ -27,6 +27,11 @@ pluto-crypto.workspace = true
 pluto-eth1wrap.workspace = true
 pluto-eth2util.workspace = true
 pluto-parsigex.workspace = true
+pluto-frost.workspace = true
+pluto-peerinfo.workspace = true
+pluto-eth2api.workspace = true
+reqwest = { workspace = true }
+chrono.workspace = true
 async-trait.workspace = true
 pluto-tracing.workspace = true
 hex.workspace = true
@@ -48,7 +53,6 @@ pluto-cluster = { workspace = true, features = ["test-cluster"] }
 pluto-testutil.workspace = true
 pluto-tracing.workspace = true
 serde_json.workspace = true
-tokio-util.workspace = true
 tempfile.workspace = true
 
 [lints]

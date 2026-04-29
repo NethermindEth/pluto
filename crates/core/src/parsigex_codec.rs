@@ -11,8 +11,9 @@ use crate::{
     signeddata::{
         Attestation, BeaconCommitteeSelection, SignedAggregateAndProof, SignedRandao,
         SignedSyncContributionAndProof, SignedSyncMessage, SignedVoluntaryExit,
-        SyncCommitteeSelection, VersionedAttestation, VersionedSignedAggregateAndProof,
-        VersionedSignedProposal, VersionedSignedValidatorRegistration,
+        SyncCommitteeSelection, SyncContributionAndProof, VersionedAttestation,
+        VersionedSignedAggregateAndProof, VersionedSignedProposal,
+        VersionedSignedValidatorRegistration,
     },
     ssz_codec,
     types::{DutyType, Signature, SignedData},
@@ -104,6 +105,11 @@ pub(crate) fn serialize_signed_data(data: &dyn SignedData) -> Result<Vec<u8>, Pa
     // altair::SyncCommitteeMessage (non-versioned, all fixed)
     if let Some(value) = any.downcast_ref::<SignedSyncMessage>() {
         return Ok(ssz_codec::encode_sync_committee_message(&value.0)?);
+    }
+
+    // altair::ContributionAndProof (non-versioned, all fixed)
+    if let Some(value) = any.downcast_ref::<SyncContributionAndProof>() {
+        return Ok(ssz_codec::encode_contribution_and_proof(&value.0)?);
     }
 
     // altair::SignedContributionAndProof (non-versioned, all fixed)
@@ -386,6 +392,30 @@ mod tests {
         let decoded: SignedAggregateAndProof =
             downcast(deserialize_signed_data(&DutyType::Aggregator, &bytes).unwrap());
         assert_eq!(sap, decoded);
+    }
+
+    /// SSZ-capable types: SyncContributionAndProof round-trip.
+    #[test]
+    fn marshal_unmarshal_ssz_sync_contribution_and_proof() {
+        let cap = SyncContributionAndProof::new(altair::ContributionAndProof {
+            aggregator_index: 33,
+            contribution: altair::SyncCommitteeContribution {
+                slot: 200,
+                beacon_block_root: [0xab; 32],
+                subcommittee_index: 2,
+                aggregation_bits: BitVector::with_bits(&[0, 5]),
+                signature: [0xcd; 96],
+            },
+            selection_proof: [0xef; 96],
+        });
+        let bytes = serialize_signed_data(&cap).unwrap();
+        assert_ne!(bytes.first(), Some(&b'{'));
+        // SyncContribution duty uses SignedSyncContributionAndProof, but
+        // SyncContributionAndProof is encoded via encode_contribution_and_proof.
+        // The deserialize side for PrepareSyncContribution is JSON-only.
+        // Let's verify we can round-trip via the SSZ codec directly.
+        let decoded = ssz_codec::decode_contribution_and_proof(&bytes).unwrap();
+        assert_eq!(cap.0, decoded);
     }
 
     /// JSON-only types still serialize as JSON.
