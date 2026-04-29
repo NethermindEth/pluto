@@ -32,13 +32,6 @@ echo "[monitor] Waiting for ${NODES} nodes to complete (timeout: ${TIMEOUT}s)"
 
 start_time="${SECONDS}"
 
-node_has_success_artifacts() {
-    local node_dir="${1}"
-
-    [[ -f "${node_dir}/cluster-lock.json" ]] || return 1
-    find "${node_dir}" -maxdepth 1 -name 'deposit-data*.json' -print -quit | grep -q .
-}
-
 while true; do
     elapsed=$(( SECONDS - start_time ))
 
@@ -57,7 +50,7 @@ while true; do
         [[ -f "${sentinel}" ]] && continue
         [[ -f "${log}" ]] || continue
 
-        if grep -q "${COMPLETION_PATTERN}" "${log}" 2>/dev/null || node_has_success_artifacts "${node_dir}"; then
+        if grep -q "${COMPLETION_PATTERN}" "${log}" 2>/dev/null; then
             touch "${sentinel}"
             done_count=$(ls -1 "${DONE_DIR}" 2>/dev/null | wc -l | tr -d ' ')
             echo "[monitor] Node ${i} completed (${done_count}/${NODES})"
