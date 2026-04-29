@@ -30,6 +30,10 @@ pub enum ParSigExCodecError {
     #[error("invalid partial signed data set proto fields")]
     InvalidParSignedDataSetFields,
 
+    /// Invalid partial signed proto.
+    #[error("invalid partial signed proto")]
+    InvalidParSignedProto,
+
     /// Invalid duty type.
     #[error("invalid duty")]
     InvalidDuty,
@@ -54,9 +58,6 @@ pub enum ParSigExCodecError {
     #[error("marshal signed data: {0}")]
     Serialize(#[from] serde_json::Error),
 
-    /// Failed to extract the signature from signed data.
-    #[error("invalid signature: {0}")]
-    InvalidSignature(String),
     /// SSZ codec error.
     #[error("ssz codec: {0}")]
     SszCodec(#[from] ssz_codec::SszCodecError),
@@ -64,6 +65,10 @@ pub enum ParSigExCodecError {
     /// Signed data construction error.
     #[error("signed data: {0}")]
     SignedData(String),
+
+    /// Failed to extract the signature from signed data.
+    #[error("invalid signature: {0}")]
+    InvalidSignature(String),
 }
 
 pub(crate) fn serialize_signed_data(data: &dyn SignedData) -> Result<Vec<u8>, ParSigExCodecError> {

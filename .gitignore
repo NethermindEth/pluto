@@ -27,3 +27,5 @@ coverage.json
 .omx
 
 .peerinfo*
+
+test-infra/sszfixtures/sszfixtures

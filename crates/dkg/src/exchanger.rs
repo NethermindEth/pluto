@@ -434,6 +434,7 @@ mod tests {
                 NodeType::TCP,
                 false,
                 p2p_context,
+                None,
                 move |builder, _key| builder.with_inner(behaviour),
             )?;
 

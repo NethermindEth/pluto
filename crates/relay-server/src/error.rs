@@ -28,6 +28,10 @@ pub enum RelayP2PError {
     /// Failed to parse multiaddress.
     #[error("Failed to parse multiaddress: {0}")]
     FailedToParseMultiaddr(#[from] multiaddr::Error),
+
+    /// Failed to parse monitoring address.
+    #[error("Failed to parse monitoring address: {0}")]
+    FailedToParseMonitoringAddr(String),
 }
 
 /// Relay P2P result.

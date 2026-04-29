@@ -30,7 +30,7 @@ pub enum SszBinaryError {
         /// Actual byte count.
         actual: usize,
     },
-    /// Generic decoding error.
-    #[error("{0}")]
-    Custom(String),
+    /// Invalid byte value for a boolean field.
+    #[error("invalid bool byte: {0}")]
+    InvalidBool(u8),
 }
