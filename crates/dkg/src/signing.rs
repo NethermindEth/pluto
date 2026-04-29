@@ -16,8 +16,11 @@ pub type Result<T> = std::result::Result<T, SigningError>;
 #[derive(Debug, thiserror::Error)]
 pub enum SigningError {
     /// Failed to build a core public key from bytes.
-    #[error("invalid public key length")]
-    InvalidPublicKeyLength,
+    #[error("invalid public key length while {error_context}")]
+    InvalidPublicKeyLength {
+        /// Signing helper that encountered the invalid key.
+        error_context: &'static str,
+    },
 
     /// Failed to sign or verify with threshold BLS.
     #[error(transparent)]
@@ -65,8 +68,7 @@ pub fn sign_lock_hash(share_idx: u64, shares: &[Share], hash: &[u8]) -> Result<P
     let mut set = ParSignedDataSet::new();
 
     for share in shares {
-        let pub_key = PubKey::try_from(share.pub_key.as_slice())
-            .map_err(|_| SigningError::InvalidPublicKeyLength)?;
+        let pub_key = share_pubkey(share, "signing lock hash")?;
         let sig = BlstImpl.sign(&share.secret_share, hash)?;
 
         set.insert(
@@ -97,7 +99,7 @@ pub fn sign_deposit_msgs(
 
     for (share, withdrawal_address) in shares.iter().zip(withdrawal_addresses.iter()) {
         let eth2_pubkey = pubkey_to_eth2(share.pub_key);
-        let pub_key = share_pubkey(share)?;
+        let pub_key = share_pubkey(share, "signing deposit message")?;
         let withdrawal_address = pluto_eth2util::helpers::checksum_address(withdrawal_address)?;
 
         let msg = deposit::new_message(eth2_pubkey, &withdrawal_address, amount, compounding)?;
@@ -139,7 +141,7 @@ pub fn sign_validator_registrations(
 
     for (share, fee_recipient) in shares.iter().zip(fee_recipients.iter()) {
         let eth2_pubkey = pubkey_to_eth2(share.pub_key);
-        let pub_key = share_pubkey(share)?;
+        let pub_key = share_pubkey(share, "signing validator registration")?;
 
         let reg_msg = registration::new_message(
             eth2_pubkey,
@@ -170,8 +172,9 @@ pub fn sign_validator_registrations(
     Ok((set, msgs))
 }
 
-fn share_pubkey(share: &Share) -> Result<PubKey> {
-    PubKey::try_from(share.pub_key.as_slice()).map_err(|_| SigningError::InvalidPublicKeyLength)
+fn share_pubkey(share: &Share, error_context: &'static str) -> Result<PubKey> {
+    PubKey::try_from(share.pub_key.as_slice())
+        .map_err(|_| SigningError::InvalidPublicKeyLength { error_context })
 }
 
 #[cfg(test)]

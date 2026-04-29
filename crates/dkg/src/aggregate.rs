@@ -399,11 +399,8 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let mut data = HashMap::new();
-        data.insert(core_pub_key, partials);
-
-        let mut msgs = HashMap::new();
-        msgs.insert(core_pub_key, reg.clone());
+        let data = HashMap::from([(core_pub_key, partials)]);
+        let msgs = HashMap::from([(core_pub_key, reg.clone())]);
 
         let res =
             agg_validator_registrations(&data, std::slice::from_ref(&share), &msgs, &fork_version)

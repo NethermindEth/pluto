@@ -250,34 +250,15 @@ pub fn log_peer_summary(
             .filter(|operator| !operator.address.is_empty())
             .map(|operator| operator.address.as_str());
         let is_current_peer = peer.id == current_peer;
+        let you = is_current_peer.then_some("⭐");
 
-        if let Some(address) = address {
-            if is_current_peer {
-                info!(
-                    peer = peer.name,
-                    index = peer.index,
-                    address,
-                    you = "⭐️",
-                    "Peer summary"
-                );
-            } else {
-                info!(
-                    peer = peer.name,
-                    index = peer.index,
-                    address,
-                    "Peer summary"
-                );
-            }
-        } else if is_current_peer {
-            info!(
-                peer = peer.name,
-                index = peer.index,
-                you = "⭐️",
-                "Peer summary"
-            );
-        } else {
-            info!(peer = peer.name, index = peer.index, "Peer summary");
-        }
+        info!(
+            peer = peer.name,
+            index = peer.index,
+            address,
+            you,
+            "Peer summary"
+        );
     }
 }
 
