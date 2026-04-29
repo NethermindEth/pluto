@@ -30,6 +30,8 @@ ignore = [
     # (stuck on 0.7.3) and `alloy-signer-local` (stuck on 0.8.5). Neither is
     # reachable from Pluto's loggers. Remove once upstream bumps to >=0.9.3.
     { id = "RUSTSEC-2026-0097", reason = "transitive rand <0.9.3 via cuckoofilter and alloy-signer-local; not triggerable from our code" },
+    { id = "RUSTSEC-2026-0098", reason = "rustls-webpki URI name constraint bypass; transitive dep via hyper-rustls, not triggerable from our code" },
+    { id = "RUSTSEC-2026-0099", reason = "rustls-webpki wildcard name constraint bypass; transitive dep via hyper-rustls, not triggerable from our code" },
 ]
 unmaintained = "workspace"
 
