@@ -340,12 +340,13 @@ mod tests {
             let p2p_context = P2PContext::new(peer_ids.clone());
             p2p_context.set_local_peer_id(peer_id);
             let mut sync_runtime = None;
-            let node = Node::new_server(
+            let node: Node<Behaviour> = Node::new_server(
                 P2PConfig::default(),
                 key.clone(),
                 NodeType::TCP,
                 false,
                 p2p_context,
+                None,
                 |builder, _keypair| {
                     let p2p_context = builder.p2p_context();
                     let (behaviour, server, clients) = new(
