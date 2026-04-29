@@ -1,8 +1,19 @@
 use std::{path, time::Duration};
 
 use bon::Builder;
+use libp2p::PeerId;
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
+use tracing::{info, warn};
+
+pub use crate::{
+    aggregate::{AggregateError, agg_deposit_data, agg_lock_hash_sig, agg_validator_registrations},
+    publish::{PublishError, write_lock_to_api},
+    signing::{SigningError, sign_deposit_msgs, sign_lock_hash, sign_validator_registrations},
+    validators::{
+        ValidatorsError, builder_registration_from_eth2, create_dist_validators,
+        set_registration_signature,
+    },
+};
 
 const DEFAULT_DATA_DIR: &str = ".charon";
 const DEFAULT_DEFINITION_FILE: &str = ".charon/cluster-definition.json";
@@ -50,6 +61,21 @@ pub enum DkgError {
     /// Failed to verify keymanager connectivity.
     #[error("verify keymanager address: {0}")]
     Keymanager(#[from] pluto_eth2util::keymanager::KeymanagerError),
+
+    /// Failed to decode distributed validator data from the existing lock.
+    #[error("existing shares lock decode failed: {0}")]
+    DistValidator(#[from] pluto_cluster::distvalidator::DistValidatorError),
+
+    /// There are more secret shares than distributed validators in the lock.
+    #[error(
+        "existing shares input invalid: got {secret_shares} secret shares for {validators} distributed validators"
+    )]
+    ExistingSharesCountMismatch {
+        /// Number of secret shares provided.
+        secret_shares: usize,
+        /// Number of distributed validators present in the lock.
+        validators: usize,
+    },
 }
 
 /// Keymanager configuration accepted by the entrypoint.
@@ -212,6 +238,68 @@ fn validate_keymanager_flags(conf: &Config) -> Result<(), DkgError> {
     Ok(())
 }
 
+/// Logs peer summary with peer names and operator addresses.
+pub fn log_peer_summary(
+    current_peer: PeerId,
+    peers: &[pluto_p2p::peer::Peer],
+    operators: &[pluto_cluster::operator::Operator],
+) {
+    for (idx, peer) in peers.iter().enumerate() {
+        let address = operators
+            .get(idx)
+            .filter(|operator| !operator.address.is_empty())
+            .map(|operator| operator.address.as_str());
+        let is_current_peer = peer.id == current_peer;
+        let you = is_current_peer.then_some("⭐");
+
+        info!(
+            peer = peer.name,
+            index = peer.index,
+            address,
+            you,
+            "Peer summary"
+        );
+    }
+}
+
+/// Rebuilds existing shares from a cluster lock plus the local secret shares.
+pub fn get_existing_shares(
+    lock: &pluto_cluster::lock::Lock,
+    secret_shares: &[pluto_crypto::types::PrivateKey],
+) -> Result<Vec<crate::share::Share>, DkgError> {
+    if secret_shares.len() > lock.distributed_validators.len() {
+        return Err(DkgError::ExistingSharesCountMismatch {
+            secret_shares: secret_shares.len(),
+            validators: lock.distributed_validators.len(),
+        });
+    }
+
+    let mut shares = Vec::with_capacity(secret_shares.len());
+
+    for (idx, secret_share) in secret_shares.iter().enumerate() {
+        let validator = &lock.distributed_validators[idx];
+        let pub_key = validator.public_key()?;
+
+        let mut public_shares =
+            std::collections::HashMap::with_capacity(validator.pub_shares.len());
+        for share_idx in 0..validator.pub_shares.len() {
+            let share_id = u64::try_from(share_idx)
+                .expect("share index should fit in u64")
+                .checked_add(1)
+                .expect("share index should not overflow");
+            public_shares.insert(share_id, validator.public_share(share_idx)?);
+        }
+
+        shares.push(crate::share::Share {
+            pub_key,
+            secret_share: *secret_share,
+            public_shares,
+        });
+    }
+
+    Ok(shares)
+}
+
 async fn verify_keymanager_connection(conf: &Config) -> Result<(), DkgError> {
     let addr = conf.keymanager.address.as_str();
 
@@ -250,6 +338,48 @@ mod tests {
         assert_eq!(config.execution_engine_addr, "");
         assert!(!config.zipped);
         assert!(config.test_config.def.is_none());
+    }
+
+    #[test]
+    fn get_existing_shares_rebuilds_share_shape_from_lock() {
+        let (lock, _, dv_shares) = pluto_cluster::test_cluster::new_for_test(2, 3, 4, 1);
+        let secret_shares = dv_shares.iter().map(|shares| shares[0]).collect::<Vec<_>>();
+
+        let shares = get_existing_shares(&lock, &secret_shares).unwrap();
+
+        assert_eq!(shares.len(), secret_shares.len());
+
+        for (idx, share) in shares.iter().enumerate() {
+            let validator = &lock.distributed_validators[idx];
+
+            assert_eq!(share.secret_share, secret_shares[idx]);
+            assert_eq!(share.pub_key, validator.public_key().unwrap());
+            assert_eq!(share.public_shares.len(), validator.pub_shares.len());
+
+            for share_idx in 0..validator.pub_shares.len() {
+                assert_eq!(
+                    share.public_shares.get(&((share_idx + 1) as u64)),
+                    Some(&validator.public_share(share_idx).unwrap())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn get_existing_shares_rejects_more_secret_shares_than_validators() {
+        let (lock, _, dv_shares) = pluto_cluster::test_cluster::new_for_test(2, 3, 4, 1);
+        let mut secret_shares = dv_shares.iter().map(|shares| shares[0]).collect::<Vec<_>>();
+        secret_shares.push([0x55; 32]);
+
+        let err = get_existing_shares(&lock, &secret_shares).unwrap_err();
+
+        assert!(matches!(
+            err,
+            DkgError::ExistingSharesCountMismatch {
+                secret_shares: 3,
+                validators: 2
+            }
+        ));
     }
 
     #[tokio::test]
