@@ -2548,6 +2548,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ethereum_ssz_derive"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2cd82c68120c89361e1a457245cf212f7d9f541bffaffed530c8f2d54a160b2"
+dependencies = [
+ "darling 0.23.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "event-listener"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5561,23 +5573,30 @@ name = "pluto-core"
 version = "1.7.1"
 dependencies = [
  "alloy",
+ "anyhow",
  "async-trait",
  "base64 0.22.1",
  "built",
  "cancellation",
  "chrono",
+ "clap",
  "crossbeam",
  "dyn-clone",
  "dyn-eq",
+ "ethereum_ssz",
  "futures",
+ "futures-timer",
  "hex",
+ "k256",
  "libp2p",
  "pluto-build-proto",
+ "pluto-cluster",
  "pluto-eth2api",
  "pluto-eth2util",
  "pluto-p2p",
  "pluto-ssz",
  "pluto-testutil",
+ "pluto-tracing",
  "prost 0.14.3",
  "prost-types 0.14.3",
  "rand 0.8.6",
@@ -5591,6 +5610,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tree_hash",
+ "unsigned-varint 0.8.0",
  "vise",
  "wiremock",
 ]
@@ -5667,6 +5687,8 @@ dependencies = [
  "anyhow",
  "bon",
  "chrono",
+ "ethereum_ssz",
+ "ethereum_ssz_derive",
  "hex",
  "http",
  "oas3-gen-support",
@@ -5857,6 +5879,7 @@ dependencies = [
 name = "pluto-ssz"
 version = "1.7.1"
 dependencies = [
+ "ethereum_ssz",
  "hex",
  "k256",
  "serde",

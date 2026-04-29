@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use ssz_derive::{Decode, Encode};
 use tree_hash_derive::TreeHash;
 
 use crate::spec::{altair, bellatrix, phase0};
@@ -15,7 +16,7 @@ pub const MAX_BLS_TO_EXECUTION_CHANGES: usize = 16;
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/capella/beacon-chain.md#withdrawal>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct Withdrawal {
     /// Withdrawal index.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -35,7 +36,7 @@ pub struct Withdrawal {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/capella/beacon-chain.md#blstoexecutionchange>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct BLSToExecutionChange {
     /// Validator index.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -52,7 +53,7 @@ pub struct BLSToExecutionChange {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/capella/beacon-chain.md#signedblstoexecutionchange>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct SignedBLSToExecutionChange {
     /// Unsigned message.
     pub message: BLSToExecutionChange,
@@ -65,7 +66,7 @@ pub struct SignedBLSToExecutionChange {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/capella/beacon-chain.md#executionpayload>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct ExecutionPayload {
     /// Parent execution block hash.
     #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
@@ -117,7 +118,7 @@ pub struct ExecutionPayload {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/capella/beacon-chain.md#executionpayloadheader>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct ExecutionPayloadHeader {
     /// Parent execution block hash.
     #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
@@ -170,7 +171,7 @@ pub struct ExecutionPayloadHeader {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/capella/beacon-chain.md#beaconblockbody>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct BeaconBlockBody {
     /// RANDAO reveal.
     #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
@@ -206,7 +207,7 @@ pub struct BeaconBlockBody {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/capella/beacon-chain.md#beaconblock>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct BeaconBlock {
     /// Block slot.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -228,7 +229,7 @@ pub struct BeaconBlock {
 ///
 /// Spec: <https://github.com/ethereum/builder-specs/blob/main/specs/capella/blinded-beacon-block.md#blindedbeaconblockbody>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct BlindedBeaconBlockBody {
     /// RANDAO reveal.
     #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
@@ -264,7 +265,7 @@ pub struct BlindedBeaconBlockBody {
 ///
 /// Spec: <https://github.com/ethereum/builder-specs/blob/main/specs/capella/blinded-beacon-block.md#blindedbeaconblock>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct BlindedBeaconBlock {
     /// Block slot.
     #[serde_as(as = "serde_with::DisplayFromStr")]
@@ -286,7 +287,7 @@ pub struct BlindedBeaconBlock {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/capella/beacon-chain.md#signedbeaconblock>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct SignedBeaconBlock {
     /// Unsigned block message.
     pub message: BeaconBlock,
@@ -299,7 +300,7 @@ pub struct SignedBeaconBlock {
 ///
 /// Spec: <https://github.com/ethereum/builder-specs/blob/main/specs/capella/blinded-beacon-block.md#signedblindedbeaconblock>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct SignedBlindedBeaconBlock {
     /// Unsigned blinded block message.
     pub message: BlindedBeaconBlock,
