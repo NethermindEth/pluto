@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package nodesigs;
+package dkg.dkgpb.v1;
 
 message MsgNodeSig {
   bytes signature = 1;
