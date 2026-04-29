@@ -108,7 +108,7 @@ impl TestCaseMev {
 pub async fn run(
     args: TestMevArgs,
     writer: &mut dyn Write,
-    token: &CancellationToken,
+    token: CancellationToken,
 ) -> Result<TestCategoryResult> {
     must_output_to_file_on_quiet(args.test_config.quiet, &args.test_config.output_json)?;
 
@@ -786,7 +786,7 @@ mod tests {
         let args = default_mev_args(vec![url.clone()]);
 
         let mut buf = Vec::new();
-        let res = run(args, &mut buf, &CancellationToken::new())
+        let res = run(args, &mut buf, CancellationToken::new())
             .await
             .unwrap();
 
@@ -808,7 +808,7 @@ mod tests {
         let args = default_mev_args(vec![endpoint1.clone(), endpoint2.clone()]);
 
         let mut buf = Vec::new();
-        let res = run(args, &mut buf, &CancellationToken::new())
+        let res = run(args, &mut buf, CancellationToken::new())
             .await
             .unwrap();
 
@@ -841,7 +841,7 @@ mod tests {
         args.test_config.timeout = StdDuration::from_nanos(100);
 
         let mut buf = Vec::new();
-        let res = run(args, &mut buf, &CancellationToken::new())
+        let res = run(args, &mut buf, CancellationToken::new())
             .await
             .unwrap();
 
@@ -873,7 +873,7 @@ mod tests {
         args.test_config.output_json = json_path.to_str().unwrap().to_string();
 
         let mut buf = Vec::new();
-        run(args, &mut buf, &CancellationToken::new())
+        run(args, &mut buf, CancellationToken::new())
             .await
             .unwrap();
 
@@ -886,7 +886,7 @@ mod tests {
         args.test_config.test_cases = Some(vec!["notSupportedTest".to_string()]);
 
         let mut buf = Vec::new();
-        let err = run(args, &mut buf, &CancellationToken::new())
+        let err = run(args, &mut buf, CancellationToken::new())
             .await
             .unwrap_err();
         assert!(
@@ -903,7 +903,7 @@ mod tests {
         args.test_config.test_cases = Some(vec!["Ping".to_string()]);
 
         let mut buf = Vec::new();
-        let res = run(args, &mut buf, &CancellationToken::new())
+        let res = run(args, &mut buf, CancellationToken::new())
             .await
             .unwrap();
 
@@ -926,7 +926,7 @@ mod tests {
         args.test_config.output_json = file_path.to_str().unwrap().to_string();
 
         let mut buf = Vec::new();
-        let res = run(args, &mut buf, &CancellationToken::new())
+        let res = run(args, &mut buf, CancellationToken::new())
             .await
             .unwrap();
 
@@ -944,7 +944,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_mev_relay_name() {
+    fn format_mev_relay_name_works() {
         assert_eq!(
             format_mev_relay_name(
                 "https://0xac6e77dfe25ecd6110b8e780608cce0dab71fdd5ebea22a16c0205200f2f8e2e3ad3b71d3499c54ad14d6c21b41a37ae@boost-relay.flashbots.net"
@@ -974,7 +974,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_validator_pk_for_slot() {
+    fn get_validator_pk_for_slot_works() {
         let duties = vec![
             ProposerDutiesData {
                 pubkey: "0xabc".to_string(),

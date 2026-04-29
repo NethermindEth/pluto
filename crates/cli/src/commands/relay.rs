@@ -1,18 +1,12 @@
-use crate::error::CliError;
-use libp2p::{
-    Multiaddr,
-    multiaddr::{self, Protocol},
+use crate::{
+    commands::common::{ConsoleColor, LICENSE, build_console_tracing_config, parse_relay_addr},
+    error::CliError,
 };
+use libp2p::multiaddr::Protocol;
 use pluto_p2p::k1;
-use std::{path::PathBuf, str::FromStr};
+use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
-
-pub const LICENSE: &str = concat!(
-    "This software is licensed under the Maria DB Business Source License 1.1; ",
-    "you may not use this software except in compliance with this license. You may obtain a ",
-    "copy of this license at https://github.com/ObolNetwork/charon/blob/main/LICENSE"
-);
 
 /// Arguments for the relay command.
 #[derive(clap::Args, Clone)]
@@ -44,8 +38,7 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
             let mut relays = Vec::new();
 
             for relay in &self.p2p.relays {
-                let multiaddr =
-                    multiaddr::from_url(relay).or_else(|_| Multiaddr::from_str(relay))?;
+                let multiaddr = parse_relay_addr(relay)?;
 
                 if multiaddr.iter().any(|protocol| protocol == Protocol::Http) {
                     tracing::warn!(
@@ -67,23 +60,7 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
             }
         };
 
-        let log_config = {
-            let mut builder = pluto_tracing::TracingConfig::builder();
-
-            builder = builder.with_default_console();
-            builder = match self.log.color {
-                ConsoleColor::Auto => builder.console_with_ansi(std::env::var("NO_COLOR").is_err()),
-                ConsoleColor::Force => builder.console_with_ansi(true),
-                ConsoleColor::Disable => builder.console_with_ansi(false),
-            };
-            builder = builder.override_env_filter(self.log.level);
-
-            // TODO: Handle loki config
-
-            // TODO: Handle log output path
-
-            builder.build()
-        };
+        let log_config = build_console_tracing_config(self.log.level.clone(), &self.log.color);
 
         let builder = pluto_relay_server::config::Config::builder()
             .data_dir(self.data_dir.data_dir)
@@ -186,19 +163,13 @@ pub struct RelayDebugMonitoringArgs {
     pub debug_addr: Option<String>,
 }
 
-const DEFAULT_RELAYS: [&str; 3] = [
-    "https://0.relay.obol.tech",
-    "https://2.relay.obol.dev",
-    "https://1.relay.obol.tech",
-];
-
 #[derive(clap::Args, Clone)]
 pub struct RelayP2PArgs {
     #[arg(
         long = "p2p-relays",
         env = "PLUTO_P2P_RELAYS",
         value_delimiter = ',',
-        default_values_t = DEFAULT_RELAYS.map(String::from),
+        default_values_t = pluto_p2p::config::DEFAULT_RELAYS.map(String::from),
         help = "Comma-separated list of libp2p relay URLs or multiaddrs."
     )]
     pub relays: Vec<String>,
@@ -271,14 +242,6 @@ pub struct RelayLogFlags {
     pub log_output_path: Option<PathBuf>,
 }
 
-#[derive(clap::ValueEnum, Clone, Default)]
-pub enum ConsoleColor {
-    #[default]
-    Auto,
-    Force,
-    Disable,
-}
-
 #[derive(clap::Args, Clone)]
 pub struct RelayLokiArgs {
     #[arg(
@@ -302,7 +265,7 @@ pub async fn run(
     config: pluto_relay_server::config::Config,
     ct: CancellationToken,
 ) -> Result<(), CliError> {
-    info!(LICENSE);
+    info!("{LICENSE}");
     info!(config = ?config);
 
     let key = match pluto_p2p::k1::load_priv_key(&config.data_dir) {
@@ -452,17 +415,29 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "/metrics endpoint not implemented"]
     async fn serve_addr_metrics() {
+        let monitoring_addr = net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .to_string();
+        let monitoring_url = format!("http://{monitoring_addr}/metrics");
+
         with_relay_server(
-            |_| {},
-            async |cfg| {
-                let response = relay_server_get(cfg, "/metrics").await.unwrap();
+            move |args| {
+                args.debug_monitoring.monitor_addr = Some(monitoring_addr);
+            },
+            async move |_cfg| {
+                let response = retry_get(&monitoring_url).await.unwrap();
                 let body = response.text().await.unwrap();
 
-                dbg!(&body);
-
-                assert!(body.contains("libp2p_relaysvc_"));
+                assert!(body.contains("relay_p2p_connection_total"));
+                assert!(body.contains("relay_p2p_active_connections"));
+                assert!(body.contains("relay_p2p_ping_latency"));
+                assert!(body.contains("relay_p2p_network_sent_bytes"));
+                assert!(body.contains("relay_p2p_network_receive_bytes"));
+                assert!(body.ends_with("# EOF\n"));
             },
         )
         .await
@@ -560,12 +535,11 @@ mod tests {
         path: &str,
     ) -> Result<reqwest::Response, reqwest::Error> {
         let http_address = cfg.http_addr.unwrap();
-        let request = async || {
-            reqwest::get(format!("http://{}{}", http_address, path))
-                .await
-                .and_then(|r| r.error_for_status())
-        };
+        retry_get(&format!("http://{}{}", http_address, path)).await
+    }
 
+    async fn retry_get(url: &str) -> Result<reqwest::Response, reqwest::Error> {
+        let request = async || reqwest::get(url).await.and_then(|r| r.error_for_status());
         let mut backoff = backon::ExponentialBuilder::default()
             .with_min_delay(time::Duration::from_millis(200))
             .with_max_delay(time::Duration::from_secs(2))

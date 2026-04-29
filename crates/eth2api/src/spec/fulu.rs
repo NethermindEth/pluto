@@ -1,11 +1,12 @@
 //! Fulu consensus types from the Ethereum beacon chain specification.
 
 use serde::{Deserialize, Serialize};
+use ssz_derive::{Decode, Encode};
 
 use crate::spec::{deneb, electra};
 
 /// Fulu signed block contents container.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Serialize, Deserialize)]
 pub struct SignedBlockContents {
     /// Signed block.
     pub signed_block: electra::SignedBeaconBlock,

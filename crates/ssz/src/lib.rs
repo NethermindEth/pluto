@@ -1,5 +1,7 @@
 //! Shared SSZ hashing primitives, helpers, and container wrappers.
 
+pub mod decode;
+pub mod encode;
 mod error;
 mod hasher;
 mod helpers;
@@ -16,3 +18,19 @@ pub use helpers::{
 };
 /// Generic SSZ list, vector, and bitfield wrappers.
 pub use types::{BitList, BitVector, SszList, SszVector};
+
+/// Error type for SSZ binary encode/decode operations.
+#[derive(Debug, thiserror::Error)]
+pub enum SszBinaryError {
+    /// Byte slice length does not match the expected size.
+    #[error("invalid length: expected {expected}, got {actual}")]
+    InvalidLength {
+        /// Expected byte count.
+        expected: usize,
+        /// Actual byte count.
+        actual: usize,
+    },
+    /// Invalid byte value for a boolean field.
+    #[error("invalid bool byte: {0}")]
+    InvalidBool(u8),
+}

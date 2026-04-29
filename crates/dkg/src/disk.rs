@@ -338,11 +338,10 @@ mod tests {
         let json = serde_json::to_string(definition).unwrap();
         tokio::fs::write(&definition_path, json).await.unwrap();
 
-        let cfg = dkg::Config {
-            def_file: definition_path.to_string_lossy().into(),
-            no_verify: false,
-            ..Default::default()
-        };
+        let cfg = dkg::Config::builder()
+            .def_file(definition_path.to_string_lossy().into_owned())
+            .no_verify(false)
+            .build();
 
         let client = noop_eth1_client().await;
         let actual = super::load_definition(&cfg, &client).await.unwrap();
@@ -352,11 +351,10 @@ mod tests {
 
     #[tokio::test]
     async fn load_definition_file_does_not_exist() {
-        let cfg = dkg::Config {
-            def_file: "".into(),
-            no_verify: false,
-            ..Default::default()
-        };
+        let cfg = dkg::Config::builder()
+            .def_file(String::new())
+            .no_verify(false)
+            .build();
 
         let client = noop_eth1_client().await;
         let result = super::load_definition(&cfg, &client).await;
@@ -369,11 +367,10 @@ mod tests {
         let tempfile = tempfile::NamedTempFile::new().unwrap();
         tokio::fs::write(tempfile.path(), r#"{}"#).await.unwrap();
 
-        let cfg = dkg::Config {
-            def_file: tempfile.path().to_string_lossy().into(),
-            no_verify: false,
-            ..Default::default()
-        };
+        let cfg = dkg::Config::builder()
+            .def_file(tempfile.path().to_string_lossy().into_owned())
+            .no_verify(false)
+            .build();
 
         let client = noop_eth1_client().await;
         let result = super::load_definition(&cfg, &client).await;
@@ -400,11 +397,10 @@ mod tests {
         };
         tokio::fs::write(&definition_path, json).await.unwrap();
 
-        let cfg = dkg::Config {
-            def_file: definition_path.to_string_lossy().into(),
-            no_verify: true, // Intentionally set to `true` to bypass verification
-            ..Default::default()
-        };
+        let cfg = dkg::Config::builder()
+            .def_file(definition_path.to_string_lossy().into_owned())
+            .no_verify(true)
+            .build();
 
         let client = noop_eth1_client().await;
         let actual = super::load_definition(&cfg, &client).await.unwrap();
@@ -431,11 +427,10 @@ mod tests {
         };
         tokio::fs::write(&definition_path, json).await.unwrap();
 
-        let cfg = dkg::Config {
-            def_file: definition_path.to_string_lossy().into(),
-            no_verify: false, // Verify the definition
-            ..Default::default()
-        };
+        let cfg = dkg::Config::builder()
+            .def_file(definition_path.to_string_lossy().into_owned())
+            .no_verify(false)
+            .build();
 
         let client = noop_eth1_client().await;
         let result = super::load_definition(&cfg, &client).await;
@@ -551,8 +546,6 @@ mod tests {
     }
 
     async fn noop_eth1_client() -> pluto_eth1wrap::EthClient {
-        pluto_eth1wrap::EthClient::new("http://0.0.0.0:0")
-            .await
-            .unwrap()
+        pluto_eth1wrap::EthClient::new("").await.unwrap()
     }
 }

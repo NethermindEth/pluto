@@ -4,7 +4,9 @@ use clap::{Parser, Subcommand};
 
 use crate::commands::{
     create_cluster::CreateClusterArgs,
+    create_dkg::CreateDkgArgs,
     create_enr::CreateEnrArgs,
+    dkg::DkgArgs,
     enr::EnrArgs,
     relay::RelayArgs,
     test::{
@@ -51,6 +53,12 @@ pub enum Commands {
         long_about = "Starts a libp2p circuit relay that charon clients can use to discover and connect to their peers."
     )]
     Relay(Box<RelayArgs>),
+
+    #[command(
+        about = "Participate in a Distributed Key Generation ceremony",
+        long_about = "Participate in a distributed key generation ceremony for a specific cluster definition that creates distributed validator key shares and a final cluster lock configuration. Note that all other cluster operators should run this command at the same time."
+    )]
+    Dkg(Box<DkgArgs>),
 
     #[command(
         about = "Alpha subcommands provide early access to in-development features",
@@ -133,6 +141,10 @@ pub struct CreateArgs {
 /// Create subcommands
 #[derive(Subcommand)]
 pub enum CreateCommands {
+    /// Create a cluster definition file for a new Distributed Key Generation
+    /// ceremony
+    Dkg(Box<CreateDkgArgs>),
+
     /// Create an Ethereum Node Record (ENR) private key to identify this charon
     /// client
     Enr(CreateEnrArgs),

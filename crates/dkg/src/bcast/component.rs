@@ -2,6 +2,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+use futures::future::BoxFuture;
 use libp2p::PeerId;
 use prost::{Message, Name};
 use prost_types::Any;
@@ -13,7 +14,12 @@ use super::error::{Error, Result};
 pub type CheckFn<M> = Box<dyn Fn(PeerId, &M) -> Result<()> + Send + Sync + 'static>;
 
 /// Typed message callback invoked for validated broadcast messages.
-pub type CallbackFn<M> = Box<dyn Fn(PeerId, &str, M) -> Result<()> + Send + Sync + 'static>;
+///
+/// The returned future is awaited by the inbound message handler, allowing
+/// the callback to perform async operations (e.g. waiting for state that
+/// becomes available later).
+pub type CallbackFn<M> =
+    Box<dyn Fn(PeerId, String, M) -> BoxFuture<'static, Result<()>> + Send + Sync + 'static>;
 
 pub(crate) type Registry = Arc<RwLock<HashMap<String, Arc<dyn RegisteredMessage>>>>;
 
@@ -33,7 +39,8 @@ pub(crate) trait RegisteredMessage: Send + Sync {
     fn check(&self, peer_id: PeerId, any: &Any) -> Result<()>;
 
     /// Dispatches the incoming wrapped protobuf message to the typed callback.
-    fn callback(&self, peer_id: PeerId, msg_id: &str, any: &Any) -> Result<()>;
+    fn callback(&self, peer_id: PeerId, msg_id: String, any: Any)
+    -> BoxFuture<'static, Result<()>>;
 }
 
 struct TypedRegistration<M> {
@@ -50,9 +57,16 @@ where
         (self.check)(peer_id, &message)
     }
 
-    fn callback(&self, peer_id: PeerId, msg_id: &str, any: &Any) -> Result<()> {
-        let message = any.to_msg::<M>()?;
-        (self.callback)(peer_id, msg_id, message)
+    fn callback(
+        &self,
+        peer_id: PeerId,
+        msg_id: String,
+        any: Any,
+    ) -> BoxFuture<'static, Result<()>> {
+        match any.to_msg::<M>() {
+            Ok(message) => (self.callback)(peer_id, msg_id, message),
+            Err(e) => Box::pin(async move { Err(e.into()) }),
+        }
     }
 }
 
@@ -138,7 +152,7 @@ mod tests {
             .register_message::<prost_types::Timestamp>(
                 "timestamp",
                 Box::new(|_, _| Ok(())),
-                Box::new(|_, _, _| Ok(())),
+                Box::new(|_, _, _| Box::pin(async { Ok(()) })),
             )
             .await
             .unwrap();
@@ -147,7 +161,7 @@ mod tests {
             .register_message::<prost_types::Timestamp>(
                 "timestamp",
                 Box::new(|_, _| Ok(())),
-                Box::new(|_, _, _| Ok(())),
+                Box::new(|_, _, _| Box::pin(async { Ok(()) })),
             )
             .await
             .unwrap_err();
