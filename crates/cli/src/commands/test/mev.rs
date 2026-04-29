@@ -365,7 +365,7 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
                 return test_res.fail(MevTestError::ElapsedNanosConversion(e.to_string()));
             }
         };
-        let slot_nanos = SLOT_TIME.as_nanos() as u64;
+        let slot_nanos = u64::try_from(SLOT_TIME.as_nanos()).unwrap_or(1);
         let remainder_nanos = elapsed_nanos.checked_rem(slot_nanos).unwrap_or(0);
         let slot_remainder = SLOT_TIME
             .checked_sub(Duration::from_nanos(remainder_nanos))
@@ -757,7 +757,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_mev_default_scenario() {
+    async fn mev_default_scenario() {
         let server = start_healthy_mocked_mev_node().await;
         let url = server.uri();
         let args = default_mev_args(vec![url.clone()]);
@@ -788,7 +788,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_mev_connection_refused() {
+    async fn mev_connection_refused() {
         let endpoint1 = refused_addr();
         let endpoint2 = refused_addr();
         let args = default_mev_args(vec![endpoint1.clone(), endpoint2.clone()]);
@@ -818,7 +818,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_mev_timeout() {
+    async fn mev_timeout() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .respond_with(ResponseTemplate::new(200).set_delay(StdDuration::from_millis(500)))
@@ -845,7 +845,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_mev_quiet() {
+    async fn mev_quiet() {
         let dir = tempfile::tempdir().unwrap();
         let json_path = dir.path().join("output.json");
 
@@ -862,7 +862,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_mev_unsupported_test() {
+    async fn mev_unsupported_test() {
         let mut args = default_mev_args(vec![refused_addr()]);
         args.test_config.test_cases = Some(vec!["notSupportedTest".to_string()]);
 
@@ -877,7 +877,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_mev_custom_test_cases() {
+    async fn mev_custom_test_cases() {
         let endpoint1 = refused_addr();
         let endpoint2 = refused_addr();
         let mut args = default_mev_args(vec![endpoint1.clone(), endpoint2.clone()]);
@@ -895,7 +895,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_mev_write_to_file() {
+    async fn mev_write_to_file() {
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("mev-test-output.json");
 
