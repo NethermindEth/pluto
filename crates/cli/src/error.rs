@@ -106,9 +106,21 @@ pub enum CliError {
     #[error("Create DKG error: {0}")]
     CreateDKGError(#[from] crate::commands::create_dkg::CreateDkgError),
 
+    /// MEV test error.
+    #[error("MEV test error: {0}")]
+    MevTest(#[from] MevTestError),
+
     /// Generic error with message.
     #[error("{0}")]
     Other(String),
+}
+
+/// Errors specific to MEV relay tests.
+#[derive(thiserror::Error, Debug)]
+pub enum MevTestError {
+    /// Relay returned non-200 for the header request.
+    #[error("status code not 200 OK")]
+    StatusCodeNot200,
 }
 
 #[derive(thiserror::Error, Debug)]

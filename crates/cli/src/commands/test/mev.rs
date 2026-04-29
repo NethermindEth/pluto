@@ -17,19 +17,9 @@ use super::{
 use crate::{
     commands::test::TestCaseName,
     duration::Duration as CliDuration,
-    error::{CliError, Result},
+    error::{CliError, MevTestError, Result},
 };
 use clap::Args;
-
-/// MEV-specific errors.
-#[derive(Debug, thiserror::Error)]
-enum MevError {
-    /// Relay returned non-200 for the header request.
-    #[error("status code not 200 OK")]
-    StatusCodeNot200,
-    #[error(transparent)]
-    Cli(#[from] CliError),
-}
 
 /// Thresholds for MEV ping measure test.
 const THRESHOLD_MEV_MEASURE_AVG: Duration = Duration::from_millis(40);
@@ -376,7 +366,7 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
         let elapsed_nanos = match u64::try_from(elapsed.as_nanos()) {
             Ok(v) => v,
             Err(e) => {
-                return test_res.fail(CliError::Other(format!("elapsed nanos conversion: {e}")))
+                return test_res.fail(CliError::Other(format!("elapsed nanos conversion: {e}")));
             }
         };
         let slot_nanos = u64::try_from(SLOT_TIME.as_nanos()).unwrap_or(1);
@@ -505,7 +495,7 @@ async fn get_block_header(
     next_slot: i64,
     block_hash: &str,
     validator_pub_key: &str,
-) -> std::result::Result<(BuilderBidResponse, Duration), MevError> {
+) -> Result<(BuilderBidResponse, Duration)> {
     let url =
         format!("{target}/eth/v1/builder/header/{next_slot}/{block_hash}/{validator_pub_key}");
 
@@ -514,19 +504,17 @@ async fn get_block_header(
     let resp = reqwest::Client::new()
         .get(&url)
         .send()
-        .await
-        .map_err(|e| MevError::Cli(e.into()))?;
+        .await?;
 
     let rtt = start.elapsed();
 
     if resp.status() != StatusCode::OK {
-        return Err(MevError::StatusCodeNot200);
+        return Err(MevTestError::StatusCodeNot200.into());
     }
 
-    let body = resp.bytes().await.map_err(|e| MevError::Cli(e.into()))?;
+    let body = resp.bytes().await?;
 
-    let bid: BuilderBidResponse =
-        serde_json::from_slice(&body).map_err(|e| MevError::Cli(e.into()))?;
+    let bid: BuilderBidResponse = serde_json::from_slice(&body)?;
 
     Ok((bid, rtt))
 }
@@ -578,7 +566,7 @@ async fn create_mev_block(
                 break;
             }
 
-            Err(MevError::StatusCodeNot200) => {
+            Err(CliError::MevTest(MevTestError::StatusCodeNot200)) => {
                 let elapsed = start_iteration.elapsed();
                 if let Some(sleep_dur) = SLOT_TIME.checked_sub(elapsed)
                     && let Some(sleep_dur) = sleep_dur.checked_sub(Duration::from_secs(1))
@@ -598,7 +586,7 @@ async fn create_mev_block(
 
                 continue;
             }
-            Err(MevError::Cli(e)) => return Err(e),
+            Err(e) => return Err(e),
         }
     }
 
@@ -786,9 +774,7 @@ mod tests {
         let args = default_mev_args(vec![url.clone()]);
 
         let mut buf = Vec::new();
-        let res = run(args, &mut buf, CancellationToken::new())
-            .await
-            .unwrap();
+        let res = run(args, &mut buf, CancellationToken::new()).await.unwrap();
 
         assert_verdict(
             &res.targets,
@@ -808,9 +794,7 @@ mod tests {
         let args = default_mev_args(vec![endpoint1.clone(), endpoint2.clone()]);
 
         let mut buf = Vec::new();
-        let res = run(args, &mut buf, CancellationToken::new())
-            .await
-            .unwrap();
+        let res = run(args, &mut buf, CancellationToken::new()).await.unwrap();
 
         for endpoint in [&endpoint1, &endpoint2] {
             let target_results = res.targets.get(endpoint).expect("missing target");
@@ -841,9 +825,7 @@ mod tests {
         args.test_config.timeout = StdDuration::from_nanos(100);
 
         let mut buf = Vec::new();
-        let res = run(args, &mut buf, CancellationToken::new())
-            .await
-            .unwrap();
+        let res = run(args, &mut buf, CancellationToken::new()).await.unwrap();
 
         for endpoint in [&endpoint1, &endpoint2] {
             let target_results = res.targets.get(endpoint).expect("missing target");
@@ -873,9 +855,7 @@ mod tests {
         args.test_config.output_json = json_path.to_str().unwrap().to_string();
 
         let mut buf = Vec::new();
-        run(args, &mut buf, CancellationToken::new())
-            .await
-            .unwrap();
+        run(args, &mut buf, CancellationToken::new()).await.unwrap();
 
         assert!(buf.is_empty(), "expected no output on quiet mode");
     }
@@ -903,9 +883,7 @@ mod tests {
         args.test_config.test_cases = Some(vec!["Ping".to_string()]);
 
         let mut buf = Vec::new();
-        let res = run(args, &mut buf, CancellationToken::new())
-            .await
-            .unwrap();
+        let res = run(args, &mut buf, CancellationToken::new()).await.unwrap();
 
         for endpoint in [&endpoint1, &endpoint2] {
             let target_results = res.targets.get(endpoint).expect("missing target");
@@ -926,9 +904,7 @@ mod tests {
         args.test_config.output_json = file_path.to_str().unwrap().to_string();
 
         let mut buf = Vec::new();
-        let res = run(args, &mut buf, CancellationToken::new())
-            .await
-            .unwrap();
+        let res = run(args, &mut buf, CancellationToken::new()).await.unwrap();
 
         assert!(file_path.exists(), "output file should exist");
 
