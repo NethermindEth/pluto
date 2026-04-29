@@ -151,7 +151,7 @@ fn encode_version(version: DataVersion) -> Result<[u8; 8], SszCodecError> {
     version
         .to_legacy_u64()
         .map(encode_u64)
-        .map_err(|_| SszCodecError::UnknownVersion(0))
+        .map_err(|_| SszCodecError::Decode(format!("unsupported data version: {version}")))
 }
 
 fn decode_version(bytes: &[u8]) -> Result<DataVersion, SszCodecError> {
@@ -161,41 +161,77 @@ fn decode_version(bytes: &[u8]) -> Result<DataVersion, SszCodecError> {
 
 // ---------------------------------------------------------------------------
 // VersionedAttestation
-// Header: version(8) + offset(4) = 12 bytes (same as other versioned types)
+// Two header formats (Charon added validator_index in a later version):
+//   - Without validator_index: version(8) + offset(4) = 12 bytes
+//   - With validator_index:    version(8) + validator_index(8) + offset(4) = 20
+//     bytes
 // ---------------------------------------------------------------------------
 
+const VERSIONED_ATTESTATION_VAL_IDX_HEADER: u32 = 20;
+
 /// Encodes a `VersionedAttestation` to SSZ binary with Charon versioned
-/// header.
+/// header. Uses the 20-byte header when `validator_index` is set, otherwise
+/// falls back to the legacy 12-byte header.
 pub fn encode_versioned_attestation(
     va: &versioned::VersionedAttestation,
 ) -> Result<Vec<u8>, SszCodecError> {
     let version = encode_version(va.version)?;
-    let inner = match &va.attestation {
-        Some(AttestationPayload::Phase0(att))
-        | Some(AttestationPayload::Altair(att))
-        | Some(AttestationPayload::Bellatrix(att))
-        | Some(AttestationPayload::Capella(att))
-        | Some(AttestationPayload::Deneb(att)) => att.as_ssz_bytes(),
-        Some(AttestationPayload::Electra(att)) | Some(AttestationPayload::Fulu(att)) => {
-            att.as_ssz_bytes()
-        }
-        None => {
-            return Err(SszCodecError::Decode(
-                "missing attestation payload".to_string(),
-            ));
-        }
-    };
+    let inner = encode_attestation_payload(va.attestation.as_ref())?;
 
-    let mut buf = Vec::with_capacity(VERSIONED_SIGNED_AGGREGATE_HEADER as usize + inner.len());
-    buf.extend_from_slice(&version);
-    buf.extend_from_slice(&encode_u32(VERSIONED_SIGNED_AGGREGATE_HEADER));
-    buf.extend_from_slice(&inner);
-    Ok(buf)
+    if let Some(val_idx) = va.validator_index {
+        let mut buf =
+            Vec::with_capacity(VERSIONED_ATTESTATION_VAL_IDX_HEADER as usize + inner.len());
+        buf.extend_from_slice(&version);
+        buf.extend_from_slice(&encode_u64(val_idx));
+        buf.extend_from_slice(&encode_u32(VERSIONED_ATTESTATION_VAL_IDX_HEADER));
+        buf.extend_from_slice(&inner);
+        Ok(buf)
+    } else {
+        let mut buf = Vec::with_capacity(VERSIONED_SIGNED_AGGREGATE_HEADER as usize + inner.len());
+        buf.extend_from_slice(&version);
+        buf.extend_from_slice(&encode_u32(VERSIONED_SIGNED_AGGREGATE_HEADER));
+        buf.extend_from_slice(&inner);
+        Ok(buf)
+    }
 }
 
 /// Decodes a `VersionedAttestation` from SSZ binary with Charon versioned
-/// header.
+/// header. Tries the 20-byte validator_index format first, falling back to the
+/// legacy 12-byte format when the offset field doesn't match.
 pub fn decode_versioned_attestation(
+    bytes: &[u8],
+) -> Result<versioned::VersionedAttestation, SszCodecError> {
+    match try_decode_versioned_attestation_with_val_idx(bytes) {
+        Ok(result) => return Ok(result),
+        Err(SszCodecError::InvalidOffset { .. }) => {}
+        Err(e) => return Err(e),
+    }
+    decode_versioned_attestation_no_val_idx(bytes)
+}
+
+fn try_decode_versioned_attestation_with_val_idx(
+    bytes: &[u8],
+) -> Result<versioned::VersionedAttestation, SszCodecError> {
+    require(bytes, VERSIONED_ATTESTATION_VAL_IDX_HEADER as usize)?;
+    let version = decode_version(&bytes[0..8])?;
+    let val_idx = decode_u64(&bytes[8..16])?;
+    let offset = decode_u32(&bytes[16..20])?;
+    if offset != VERSIONED_ATTESTATION_VAL_IDX_HEADER {
+        return Err(SszCodecError::InvalidOffset {
+            expected: VERSIONED_ATTESTATION_VAL_IDX_HEADER,
+            got: offset,
+        });
+    }
+    let inner = &bytes[VERSIONED_ATTESTATION_VAL_IDX_HEADER as usize..];
+    let attestation = decode_attestation_payload(version, inner)?;
+    Ok(versioned::VersionedAttestation {
+        version,
+        validator_index: Some(val_idx),
+        attestation: Some(attestation),
+    })
+}
+
+fn decode_versioned_attestation_no_val_idx(
     bytes: &[u8],
 ) -> Result<versioned::VersionedAttestation, SszCodecError> {
     require(bytes, VERSIONED_SIGNED_AGGREGATE_HEADER as usize)?;
@@ -207,36 +243,63 @@ pub fn decode_versioned_attestation(
             got: offset,
         });
     }
-
     let inner = &bytes[VERSIONED_SIGNED_AGGREGATE_HEADER as usize..];
-    let attestation = match version {
-        DataVersion::Phase0 => {
-            AttestationPayload::Phase0(phase0::Attestation::from_ssz_bytes(inner)?)
-        }
-        DataVersion::Altair => {
-            AttestationPayload::Altair(phase0::Attestation::from_ssz_bytes(inner)?)
-        }
-        DataVersion::Bellatrix => {
-            AttestationPayload::Bellatrix(phase0::Attestation::from_ssz_bytes(inner)?)
-        }
-        DataVersion::Capella => {
-            AttestationPayload::Capella(phase0::Attestation::from_ssz_bytes(inner)?)
-        }
-        DataVersion::Deneb => {
-            AttestationPayload::Deneb(phase0::Attestation::from_ssz_bytes(inner)?)
-        }
-        DataVersion::Electra => {
-            AttestationPayload::Electra(electra::Attestation::from_ssz_bytes(inner)?)
-        }
-        DataVersion::Fulu => AttestationPayload::Fulu(electra::Attestation::from_ssz_bytes(inner)?),
-        DataVersion::Unknown => return Err(SszCodecError::UnknownVersion(0)),
-    };
-
+    let attestation = decode_attestation_payload(version, inner)?;
     Ok(versioned::VersionedAttestation {
         version,
         validator_index: None,
         attestation: Some(attestation),
     })
+}
+
+fn encode_attestation_payload(
+    attestation: Option<&AttestationPayload>,
+) -> Result<Vec<u8>, SszCodecError> {
+    match attestation {
+        Some(
+            AttestationPayload::Phase0(att)
+            | AttestationPayload::Altair(att)
+            | AttestationPayload::Bellatrix(att)
+            | AttestationPayload::Capella(att)
+            | AttestationPayload::Deneb(att),
+        ) => Ok(att.as_ssz_bytes()),
+        Some(AttestationPayload::Electra(att) | AttestationPayload::Fulu(att)) => {
+            Ok(att.as_ssz_bytes())
+        }
+        None => Err(SszCodecError::Decode(
+            "missing attestation payload".to_string(),
+        )),
+    }
+}
+
+fn decode_attestation_payload(
+    version: DataVersion,
+    inner: &[u8],
+) -> Result<AttestationPayload, SszCodecError> {
+    match version {
+        DataVersion::Phase0 => Ok(AttestationPayload::Phase0(
+            phase0::Attestation::from_ssz_bytes(inner)?,
+        )),
+        DataVersion::Altair => Ok(AttestationPayload::Altair(
+            phase0::Attestation::from_ssz_bytes(inner)?,
+        )),
+        DataVersion::Bellatrix => Ok(AttestationPayload::Bellatrix(
+            phase0::Attestation::from_ssz_bytes(inner)?,
+        )),
+        DataVersion::Capella => Ok(AttestationPayload::Capella(
+            phase0::Attestation::from_ssz_bytes(inner)?,
+        )),
+        DataVersion::Deneb => Ok(AttestationPayload::Deneb(
+            phase0::Attestation::from_ssz_bytes(inner)?,
+        )),
+        DataVersion::Electra => Ok(AttestationPayload::Electra(
+            electra::Attestation::from_ssz_bytes(inner)?,
+        )),
+        DataVersion::Fulu => Ok(AttestationPayload::Fulu(
+            electra::Attestation::from_ssz_bytes(inner)?,
+        )),
+        DataVersion::Unknown => Err(SszCodecError::UnknownVersion(0)),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -570,6 +633,22 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_versioned_attestation_with_validator_index() {
+        let va = versioned::VersionedAttestation {
+            version: DataVersion::Phase0,
+            validator_index: Some(7),
+            attestation: Some(AttestationPayload::Phase0(phase0::Attestation {
+                aggregation_bits: BitList::with_bits(8, &[1, 3]),
+                data: sample_attestation_data(),
+                signature: [0x11; 96],
+            })),
+        };
+        let encoded = encode_versioned_attestation(&va).unwrap();
+        let decoded = decode_versioned_attestation(&encoded).unwrap();
+        assert_eq!(va, decoded);
+    }
+
+    #[test]
     fn roundtrip_versioned_attestation_electra() {
         let va = versioned::VersionedAttestation {
             version: DataVersion::Electra,
@@ -711,6 +790,32 @@ mod tests {
             .expect("decode Go versioned_attestation fixture");
 
         assert_eq!(decoded.version, DataVersion::Phase0);
+        assert_eq!(decoded.validator_index, None);
+        let att = decoded.attestation.as_ref().unwrap();
+        match att {
+            AttestationPayload::Phase0(a) => {
+                assert_eq!(a.data.slot, 42);
+                assert_eq!(a.signature, [0x11; 96]);
+            }
+            _ => panic!("expected Phase0 attestation"),
+        }
+
+        let rust_bytes = encode_versioned_attestation(&decoded).unwrap();
+        assert_eq!(
+            rust_bytes, go_bytes,
+            "Rust SSZ output must match Go SSZ output"
+        );
+    }
+
+    #[test]
+    fn go_fixture_versioned_attestation_phase0_with_validator_index() {
+        let go_bytes = read_go_fixture("versioned_attestation_phase0_with_validator_index");
+
+        let decoded = decode_versioned_attestation(&go_bytes)
+            .expect("decode Go versioned_attestation_with_validator_index fixture");
+
+        assert_eq!(decoded.version, DataVersion::Phase0);
+        assert_eq!(decoded.validator_index, Some(123));
         let att = decoded.attestation.as_ref().unwrap();
         match att {
             AttestationPayload::Phase0(a) => {

@@ -40,7 +40,7 @@ pub fn decode_bool(bytes: &[u8]) -> Result<bool, SszBinaryError> {
     match decode_u8(bytes)? {
         0 => Ok(false),
         1 => Ok(true),
-        v => Err(SszBinaryError::Custom(format!("invalid bool byte: {v}"))),
+        v => Err(SszBinaryError::InvalidBool(v)),
     }
 }
 

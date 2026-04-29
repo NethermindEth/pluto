@@ -221,10 +221,10 @@ impl<T: Decode, const SIZE: usize> Decode for SszVector<T, SIZE> {
     fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, DecodeError> {
         let values = Vec::<T>::from_ssz_bytes(bytes)?;
         if values.len() != SIZE {
-            return Err(DecodeError::BytesInvalid(format!(
-                "vector length {} does not match required {SIZE}",
-                values.len(),
-            )));
+            return Err(DecodeError::InvalidByteLength {
+                len: values.len(),
+                expected: SIZE,
+            });
         }
         Ok(Self(values))
     }
