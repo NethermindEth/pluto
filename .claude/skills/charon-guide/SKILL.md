@@ -28,6 +28,10 @@ When you need deeper understanding:
 | Package structure | `charon/docs/structure.md` |
 | Product docs | https://docs.obol.org/next |
 
+## Reference Version
+
+Use Charon v1.7.1 as the default Go reference for AI-assisted porting and review. For DKG, sync, reshare, FetchDefinition, and peer-indexed broadcast code, treat the [February 20, 2026 Trail of Bits Charon Pedersen DKG audit](https://github.com/ObolNetwork/charon/blob/main/docs/audit/2026%20-%20Charon%20V2%20Audit%20-%20TrailOfBits.pdf) as a required security overlay: preserve v1.7.1 compatibility unless the audit documents vulnerable behavior, then port the audited fix intent.
+
 ## Core Workflow
 
 Every validator duty (attestation, block proposal, etc.) flows through these components in order:

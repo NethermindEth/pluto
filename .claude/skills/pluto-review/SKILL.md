@@ -6,9 +6,22 @@ description: Pluto-specific code review guidelines. Use as a general guideline w
 Principles:
 
 - Functional equivalence first; document and justify deviations.
+- Use Charon v1.7.1 as the Go parity baseline. For DKG, sync, reshare, FetchDefinition, and peer-indexed broadcast code, also apply the [February 20, 2026 Trail of Bits Charon Pedersen DKG audit](https://github.com/ObolNetwork/charon/blob/main/docs/audit/2026%20-%20Charon%20V2%20Audit%20-%20TrailOfBits.pdf) fixes when v1.7.1 behavior conflicts with the audit.
 - Evidence-based: prefer tests, outputs, and file/line references over guesses.
 - Minimal change bias; avoid scope creep.
 - No time estimates in review output.
+
+Audit-aware DKG review checklist:
+
+- TOB-CHARON-1: Reject complete cluster replacement and reshare paths with fewer than the old threshold of participating old nodes.
+- TOB-CHARON-2: Validate DKG thresholds before constructing protocol state: threshold >= 1 and threshold <= node count.
+- TOB-CHARON-3: Bound size-prefixed sync/protobuf reads before allocating buffers.
+- TOB-CHARON-4: Verify broadcast sender identity matches the claimed peer index.
+- TOB-CHARON-5: When converting `oldShareIndices` into `PublicShares`, store each public key under its actual share index (`oi`), not the compact loop position (`i + 1`).
+- TOB-CHARON-6: Generate distinct nonces per validator iteration in DKG and reshare DKG; no nonce reuse across iterations.
+- TOB-CHARON-7: Treat out-of-range share numbers as structured errors, not panics.
+- TOB-CHARON-8: Validate polynomial commitments for new nodes during reshare against expected validator public keys.
+- TOB-CHARON-9: Bound `FetchDefinition` HTTP body reads before `ReadAll`-style buffering.
 
 When producing a review, include:
 
