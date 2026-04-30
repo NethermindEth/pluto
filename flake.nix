@@ -28,6 +28,7 @@
         buildInputs = with pkgs; [
           cargo-deny
           cargo-llvm-cov
+          cargo-machete
           protobuf
           oas3-gen
         ];
