@@ -67,7 +67,7 @@ async fn run() -> std::result::Result<(), CliError> {
             AlphaCommands::Test(args) => {
                 let mut stdout = std::io::stdout();
                 match args.command {
-                    TestCommands::Peers(args) => commands::test::peers::run(args, &mut stdout)
+                    TestCommands::Peers(args) => commands::test::peers::run(args, &mut stdout, ct)
                         .await
                         .map(|_| ()),
                     TestCommands::Beacon(args) => {
