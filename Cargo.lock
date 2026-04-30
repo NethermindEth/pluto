@@ -5452,7 +5452,6 @@ dependencies = [
 name = "pluto-app"
 version = "1.7.1"
 dependencies = [
- "anyhow",
  "backon",
  "bon",
  "chrono",
@@ -5466,7 +5465,6 @@ dependencies = [
  "pluto-eth2api",
  "pluto-k1util",
  "pluto-ssz",
- "pluto-tracing",
  "prost 0.14.3",
  "prost-types 0.14.3",
  "regex",
@@ -5480,7 +5478,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "tracing-subscriber",
  "url",
  "wiremock",
 ]
@@ -5511,7 +5508,6 @@ dependencies = [
  "pluto-crypto",
  "pluto-dkg",
  "pluto-eth1wrap",
- "pluto-eth2api",
  "pluto-eth2util",
  "pluto-k1util",
  "pluto-p2p",
@@ -5584,8 +5580,6 @@ dependencies = [
  "dyn-clone",
  "dyn-eq",
  "ethereum_ssz",
- "futures",
- "futures-timer",
  "hex",
  "k256",
  "libp2p",
@@ -5603,14 +5597,12 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
- "serde_with",
  "test-case",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "tracing",
  "tree_hash",
- "unsigned-varint 0.8.0",
  "vise",
  "wiremock",
 ]
@@ -5624,7 +5616,6 @@ dependencies = [
  "pluto-eth2api",
  "rand 0.8.6",
  "rand_core 0.6.4",
- "serde",
  "test-case",
  "thiserror 2.0.18",
 ]
@@ -5766,7 +5757,6 @@ name = "pluto-p2p"
 version = "1.7.1"
 dependencies = [
  "anyhow",
- "axum",
  "backon",
  "chrono",
  "clap",
@@ -5785,7 +5775,6 @@ dependencies = [
  "prost 0.14.3",
  "rand 0.8.6",
  "reqwest 0.13.3",
- "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
@@ -5818,7 +5807,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "unsigned-varint 0.8.0",
 ]
 
 [[package]]
@@ -5898,8 +5886,6 @@ dependencies = [
  "pluto-crypto",
  "pluto-eth2api",
  "rand 0.8.6",
- "rand_core 0.6.4",
- "thiserror 2.0.18",
 ]
 
 [[package]]

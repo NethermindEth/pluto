@@ -6,6 +6,11 @@ repository.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[package.metadata.cargo-machete]
+# `oas3-gen` writes `src/client.rs` and `src/types.rs` during build; these
+# dependencies are used by that generated code but absent in a fresh checkout.
+ignored = ["bon", "http", "oas3-gen-support", "regex", "reqwest", "validator"]
+
 [dependencies]
 anyhow.workspace = true
 bon.workspace = true
@@ -20,8 +25,8 @@ thiserror.workspace = true
 chrono.workspace = true
 hex.workspace = true
 validator.workspace = true
-ethereum_ssz.workspace = true
-ethereum_ssz_derive.workspace = true
+ssz.workspace = true
+ssz_derive.workspace = true
 tree_hash.workspace = true
 tree_hash_derive.workspace = true
 alloy.workspace = true
