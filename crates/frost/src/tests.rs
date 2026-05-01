@@ -62,7 +62,7 @@ fn kryptology_rejects_more_than_255_signers() {
 
     assert!(matches!(
         result,
-        Err(kryptology::DkgError::InvalidSignerCount)
+        Err(kryptology::KryptologyError::InvalidSignerCount)
     ));
 }
 
@@ -82,19 +82,19 @@ fn kryptology_rejects_invalid_signer_counts() {
 
     assert!(matches!(
         kryptology::round1(1, 1, 3, 0, &mut rng),
-        Err(kryptology::DkgError::FrostCoreError(
+        Err(kryptology::KryptologyError::FrostCoreError(
             crate::FrostCoreError::InvalidMinSigners
         ))
     ));
     assert!(matches!(
         kryptology::round1(1, 3, 2, 0, &mut rng),
-        Err(kryptology::DkgError::FrostCoreError(
+        Err(kryptology::KryptologyError::FrostCoreError(
             crate::FrostCoreError::InvalidMinSigners
         ))
     ));
     assert!(matches!(
         kryptology::round1(0, 2, 3, 0, &mut rng),
-        Err(kryptology::DkgError::InvalidParticipantId(0))
+        Err(kryptology::KryptologyError::InvalidParticipantId(0))
     ));
 }
 
@@ -282,7 +282,7 @@ fn kryptology_invalid_proof_rejected() {
     let result = kryptology::round2(secret2, &received_bcasts, &received_shares);
     assert!(result.is_err());
     match result.unwrap_err() {
-        kryptology::DkgError::InvalidProof { culprit } => assert_eq!(culprit, 1),
+        kryptology::KryptologyError::InvalidProof { culprit } => assert_eq!(culprit, 1),
         other => panic!("expected InvalidProof, got {other:?}"),
     }
 }
@@ -313,7 +313,7 @@ fn kryptology_share_id_mismatch_rejected() {
     let result = kryptology::round2(secret2, &received_bcasts, &received_shares);
     assert!(result.is_err());
     match result.unwrap_err() {
-        kryptology::DkgError::InvalidShare { culprit } => assert_eq!(culprit, 1),
+        kryptology::KryptologyError::InvalidShare { culprit } => assert_eq!(culprit, 1),
         other => panic!("expected InvalidShare, got {other:?}"),
     }
 }
@@ -359,7 +359,7 @@ fn kryptology_round2_rejects_missing_share_with_culprit() {
     let result = kryptology::round2(secret2, &received_bcasts, &received_shares);
     assert!(matches!(
         result,
-        Err(kryptology::DkgError::InvalidShare { culprit: 1 })
+        Err(kryptology::KryptologyError::InvalidShare { culprit: 1 })
     ));
 }
 
@@ -381,7 +381,7 @@ fn kryptology_round2_rejects_self_broadcast() {
     let result = kryptology::round2(secret2, &received_bcasts, &received_shares);
     assert!(matches!(
         result,
-        Err(kryptology::DkgError::InvalidParticipantId(2))
+        Err(kryptology::KryptologyError::InvalidParticipantId(2))
     ));
 }
 
@@ -417,6 +417,6 @@ fn kryptology_duplicate_partial_signatures_rejected() {
 
     assert!(matches!(
         result,
-        Err(kryptology::DkgError::DuplicateIdentifier(1))
+        Err(kryptology::KryptologyError::DuplicateIdentifier(1))
     ));
 }

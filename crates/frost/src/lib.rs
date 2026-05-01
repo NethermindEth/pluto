@@ -16,4 +16,6 @@ pub use rand_core::{CryptoRng, RngCore};
 #[cfg(test)]
 mod kryptology_interop_tests;
 #[cfg(test)]
+mod kryptology_round_trip_tests;
+#[cfg(test)]
 mod tests;

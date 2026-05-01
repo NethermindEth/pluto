@@ -18,9 +18,9 @@ use zeroize::ZeroizeOnDrop;
 
 use super::*;
 
-/// Errors from the kryptology-compatible DKG.
+/// Errors from the kryptology-compatible FROST protocol.
 #[derive(Debug, thiserror::Error)]
-pub enum DkgError {
+pub enum KryptologyError {
     /// Participant ID is zero or out of range.
     #[error("invalid participant ID {0}")]
     InvalidParticipantId(u32),
@@ -62,13 +62,7 @@ pub enum DkgError {
     },
     /// An error from frost-core.
     #[error(transparent)]
-    FrostCoreError(FrostCoreError),
-}
-
-impl From<FrostCoreError> for DkgError {
-    fn from(e: FrostCoreError) -> Self {
-        DkgError::FrostCoreError(e)
-    }
+    FrostCoreError(#[from] FrostCoreError),
 }
 
 /// Kryptology Round 1 broadcast data matching Go's `frost.Round1Bcast`.
@@ -141,7 +135,7 @@ impl Round1Secret {
         max_signers: u16,
         own_share: &[u8; 32],
         commitment_bytes: &[[u8; 48]],
-    ) -> Result<Self, DkgError> {
+    ) -> Result<Self, KryptologyError> {
         validate_round_parameters(id, threshold, max_signers)?;
 
         let own_share_scalar = scalar_from_be(own_share)?;
@@ -169,10 +163,10 @@ pub fn scalar_to_be(s: &Scalar) -> [u8; 32] {
 }
 
 /// Convert big-endian 32 bytes to a `Scalar`.
-pub fn scalar_from_be(bytes: &[u8; 32]) -> Result<Scalar, DkgError> {
+pub fn scalar_from_be(bytes: &[u8; 32]) -> Result<Scalar, KryptologyError> {
     let mut le = *bytes;
     le.reverse();
-    Scalar::from_bytes(&le).ok_or(DkgError::InvalidScalar)
+    Scalar::from_bytes(&le).ok_or(KryptologyError::InvalidScalar)
 }
 
 /// RFC 9380 Section 5.3.1 using SHA-256
@@ -235,16 +229,20 @@ pub(crate) fn expand_msg_xmd(msg: &[u8], dst: &[u8], len_in_bytes: usize) -> Vec
     out
 }
 
-fn validate_round_parameters(id: u32, threshold: u16, max_signers: u16) -> Result<(), DkgError> {
+fn validate_round_parameters(
+    id: u32,
+    threshold: u16,
+    max_signers: u16,
+) -> Result<(), KryptologyError> {
     // Kryptology encodes participant identifiers into a single byte.
     if max_signers > u16::from(u8::MAX) {
-        return Err(DkgError::InvalidSignerCount);
+        return Err(KryptologyError::InvalidSignerCount);
     }
 
     validate_num_of_signers(threshold, max_signers)?;
 
     if id == 0 || id > u32::from(max_signers) {
-        return Err(DkgError::InvalidParticipantId(id));
+        return Err(KryptologyError::InvalidParticipantId(id));
     }
 
     Ok(())
@@ -280,12 +278,13 @@ fn deserialize_commitment(
     participant: u32,
     threshold: u16,
     commitments: &[[u8; 48]],
-) -> Result<VerifiableSecretSharingCommitment, DkgError> {
+) -> Result<VerifiableSecretSharingCommitment, KryptologyError> {
     if commitments.len() != threshold as usize {
-        return Err(DkgError::InvalidCommitmentCount { participant });
+        return Err(KryptologyError::InvalidCommitmentCount { participant });
     }
 
-    VerifiableSecretSharingCommitment::from_commitments(commitments).ok_or(DkgError::InvalidPoint)
+    VerifiableSecretSharingCommitment::from_commitments(commitments)
+        .ok_or(KryptologyError::InvalidPoint)
 }
 
 /// Perform Round 1 of the kryptology-compatible DKG.
@@ -307,7 +306,7 @@ pub fn round1<R: RngCore + CryptoRng>(
     max_signers: u16,
     ctx: u8,
     rng: &mut R,
-) -> Result<(Round1Bcast, BTreeMap<u32, ShamirShare>, Round1Secret), DkgError> {
+) -> Result<(Round1Bcast, BTreeMap<u32, ShamirShare>, Round1Secret), KryptologyError> {
     validate_round_parameters(id, threshold, max_signers)?;
 
     // Generate random polynomial coefficients [a_0, ..., a_{t-1}]
@@ -394,7 +393,7 @@ pub fn round2(
     secret: Round1Secret,
     received_bcasts: &BTreeMap<u32, Round1Bcast>,
     received_shares: &BTreeMap<u32, ShamirShare>,
-) -> Result<(Round2Bcast, KeyPackage, PublicKeyPackage), DkgError> {
+) -> Result<(Round2Bcast, KeyPackage, PublicKeyPackage), KryptologyError> {
     let min_received = (secret.threshold - 1) as usize;
     let max_received = (secret.max_signers - 1) as usize;
     if received_bcasts.len() < min_received
@@ -402,7 +401,7 @@ pub fn round2(
         || received_shares.len() < min_received
         || received_shares.len() > max_received
     {
-        return Err(DkgError::IncorrectPackageCount);
+        return Err(KryptologyError::IncorrectPackageCount);
     }
 
     let own_identifier = Identifier::from_u32(secret.id)?;
@@ -415,7 +414,7 @@ pub fn round2(
 
     for (&sender_id, bcast) in received_bcasts {
         if sender_id == secret.id {
-            return Err(DkgError::InvalidParticipantId(sender_id));
+            return Err(KryptologyError::InvalidParticipantId(sender_id));
         }
 
         let sender_commitment =
@@ -426,24 +425,25 @@ pub fn round2(
         let wi = scalar_from_be(&bcast.wi)?;
         let ci = scalar_from_be(&bcast.ci)?;
         if ci == Scalar::ZERO {
-            return Err(DkgError::InvalidProof { culprit: sender_id });
+            return Err(KryptologyError::InvalidProof { culprit: sender_id });
         }
 
         // Reconstruct R' = Wi*G - Ci*A_{j,0}
         let r_reconstructed = G1Projective::generator() * wi - a0 * ci;
         let sender_id_u8 =
-            u8::try_from(sender_id).map_err(|_| DkgError::InvalidParticipantId(sender_id))?;
+            u8::try_from(sender_id)
+                .map_err(|_| KryptologyError::InvalidParticipantId(sender_id))?;
         let ci_check = kryptology_challenge(sender_id_u8, secret.ctx, &a0, &r_reconstructed);
         if !ci_check.constant_time_eq(&ci) {
-            return Err(DkgError::InvalidProof { culprit: sender_id });
+            return Err(KryptologyError::InvalidProof { culprit: sender_id });
         }
 
         // Verify Feldman share
         let share = received_shares
             .get(&sender_id)
-            .ok_or(DkgError::InvalidShare { culprit: sender_id })?;
+            .ok_or(KryptologyError::InvalidShare { culprit: sender_id })?;
         if share.id != secret.id {
-            return Err(DkgError::InvalidShare { culprit: sender_id });
+            return Err(KryptologyError::InvalidShare { culprit: sender_id });
         }
         let share_scalar = scalar_from_be(&share.value)?;
 
@@ -452,7 +452,7 @@ pub fn round2(
             SecretShare::new(own_identifier, signing_share, sender_commitment.clone());
         secret_share
             .verify()
-            .map_err(|_| DkgError::InvalidShare { culprit: sender_id })?;
+            .map_err(|_| KryptologyError::InvalidShare { culprit: sender_id })?;
 
         share_sum = share_sum + share_scalar;
 
@@ -545,22 +545,22 @@ impl BlsSignature {
     /// Matches Go's `combineSigs` in
     /// `kryptology/pkg/signatures/bls/bls_sig/usual_bls_sig.go`.
     ///
-    /// Returns [`DkgError::InsufficientSigners`] if `min_signers < 2` or
+    /// Returns [`KryptologyError::InsufficientSigners`] if `min_signers < 2` or
     /// fewer than `min_signers` partial signatures are provided.
     #[allow(clippy::arithmetic_side_effects)]
     pub fn from_partial_signatures(
         min_signers: u16,
         partial_sigs: &[BlsPartialSignature],
-    ) -> Result<Self, DkgError> {
+    ) -> Result<Self, KryptologyError> {
         if min_signers < 2 || partial_sigs.len() < min_signers as usize {
-            return Err(DkgError::InsufficientSigners);
+            return Err(KryptologyError::InsufficientSigners);
         }
 
         // Check for duplicate identifiers
         let mut seen = std::collections::BTreeSet::new();
         for ps in partial_sigs {
             if !seen.insert(ps.identifier) {
-                return Err(DkgError::DuplicateIdentifier(ps.identifier));
+                return Err(KryptologyError::DuplicateIdentifier(ps.identifier));
             }
         }
 
@@ -581,7 +581,7 @@ impl BlsSignature {
                 }
                 let num = x_vals[j];
                 let den = x_vals[j] - x_vals[i];
-                let den_inv = den.invert().ok_or(DkgError::InvalidSignerCount)?;
+                let den_inv = den.invert().ok_or(KryptologyError::InvalidSignerCount)?;
                 lambda = lambda * num * den_inv;
             }
 

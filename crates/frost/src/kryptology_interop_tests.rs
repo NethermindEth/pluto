@@ -174,14 +174,14 @@ fn replay_fixture(json: &str, require_group_signature: bool) {
             ExpectedRound2::InvalidShare { culprit } => {
                 let err = result.expect_err("round2 should fail");
                 assert!(
-                    matches!(err, kryptology::DkgError::InvalidShare { culprit: c } if c == *culprit),
+                    matches!(err, kryptology::KryptologyError::InvalidShare { culprit: c } if c == *culprit),
                     "expected InvalidShare(culprit={culprit}), got {err:?}"
                 );
             }
             ExpectedRound2::InvalidProof { culprit } => {
                 let err = result.expect_err("round2 should fail");
                 assert!(
-                    matches!(err, kryptology::DkgError::InvalidProof { culprit: c } if c == *culprit),
+                    matches!(err, kryptology::KryptologyError::InvalidProof { culprit: c } if c == *culprit),
                     "expected InvalidProof(culprit={culprit}), got {err:?}"
                 );
             }
