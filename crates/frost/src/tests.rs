@@ -4,13 +4,6 @@ use rand::{SeedableRng, rngs::StdRng};
 
 use crate::kryptology;
 
-#[test]
-fn scalar_one_precomputed() {
-    let constant = crate::Scalar::ONE;
-    let computed = crate::Scalar::from(1u64);
-    assert_eq!(constant, computed);
-}
-
 /// RFC 9380 Section 5.3.1 test vector for expand_msg_xmd with SHA-256.
 /// DST = "QUUX-V01-CS02-with-expander-SHA256-128"
 /// msg = "" (empty), len_in_bytes = 0x20 (32)

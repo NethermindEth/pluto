@@ -302,3 +302,87 @@ impl From<G1Affine> for G1Projective {
         G1Projective(p)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scalar_one_matches_blst_conversion() {
+        assert_eq!(Scalar::ONE, Scalar::from(1u64));
+    }
+
+    #[test]
+    fn scalar_round_trips_little_endian_bytes() {
+        let scalar = Scalar::from(42);
+        let bytes = scalar.to_bytes();
+
+        assert_eq!(Scalar::from_bytes(&bytes), Some(scalar));
+    }
+
+    #[test]
+    fn scalar_rejects_out_of_range_bytes() {
+        assert_eq!(Scalar::from_bytes(&[0xff; 32]), None);
+    }
+
+    #[test]
+    fn scalar_from_be_bytes_wide_matches_reversed_le_wide() {
+        let be = [7u8; 48];
+        let from_be = Scalar::from_be_bytes_wide(&be);
+
+        let mut reversed = be;
+        reversed.reverse();
+        let mut wide = [0u8; 64];
+        wide[..48].copy_from_slice(&reversed);
+
+        assert_eq!(from_be, Scalar::from_bytes_wide(&wide));
+    }
+
+    #[test]
+    fn scalar_constant_time_eq_matches_equality() {
+        let a = Scalar::from(42);
+        let b = Scalar::from(42);
+        let c = Scalar::from(43);
+
+        assert!(a.constant_time_eq(&b));
+        assert!(!a.constant_time_eq(&c));
+    }
+
+    #[test]
+    fn scalar_zeroize_clears_limbs() {
+        let mut scalar = Scalar::from(42);
+
+        scalar.zeroize();
+
+        assert_eq!(scalar, Scalar::ZERO);
+    }
+
+    #[test]
+    fn scalar_invert_returns_none_for_zero() {
+        assert_eq!(Scalar::ZERO.invert(), None);
+    }
+
+    #[test]
+    fn scalar_invert_returns_multiplicative_inverse() {
+        let scalar = Scalar::from(42);
+        let inverse = scalar.invert().expect("non-zero scalar should invert");
+
+        assert_eq!(scalar * inverse, Scalar::ONE);
+    }
+
+    #[test]
+    fn g1_projective_rejects_identity_compressed_point() {
+        let identity = G1Affine::from(G1Projective::identity()).to_compressed();
+
+        assert_eq!(G1Projective::from_compressed(&identity), None);
+    }
+
+    #[test]
+    fn g1_affine_round_trips_generator_compressed_point() {
+        let generator = G1Projective::generator();
+        let compressed = G1Affine::from(generator).to_compressed();
+        let affine = G1Affine::from_compressed(&compressed).expect("generator should deserialize");
+
+        assert_eq!(G1Projective::from(affine), generator);
+    }
+}
