@@ -474,3 +474,64 @@ pub fn validate_num_of_signers(min_signers: u16, max_signers: u16) -> Result<(),
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identifier_from_u32_rejects_zero() {
+        assert!(matches!(
+            Identifier::from_u32(0),
+            Err(FrostCoreError::InvalidZeroScalar)
+        ));
+    }
+
+    #[test]
+    fn validate_num_of_signers_rejects_invalid_bounds() {
+        assert!(matches!(
+            validate_num_of_signers(1, 3),
+            Err(FrostCoreError::InvalidMinSigners)
+        ));
+        assert!(matches!(
+            validate_num_of_signers(2, 1),
+            Err(FrostCoreError::InvalidMaxSigners)
+        ));
+        assert!(matches!(
+            validate_num_of_signers(3, 2),
+            Err(FrostCoreError::InvalidMinSigners)
+        ));
+    }
+
+    #[test]
+    fn secret_share_verify_rejects_invalid_share() {
+        let id = Identifier::from_u32(1).unwrap();
+        let commitment = VerifiableSecretSharingCommitment::new(vec![CoefficientCommitment::new(
+            G1Projective::generator(),
+        )]);
+        let invalid_share =
+            SecretShare::new(id, SigningShare::new(Scalar::ZERO), commitment.clone());
+        assert!(matches!(
+            invalid_share.verify(),
+            Err(FrostCoreError::InvalidSecretShare)
+        ));
+    }
+
+    #[test]
+    fn verifying_key_from_commitment_rejects_empty_commitment() {
+        let empty_commitment = VerifiableSecretSharingCommitment::new(vec![]);
+        assert!(matches!(
+            VerifyingKey::from_commitment(&empty_commitment),
+            Err(FrostCoreError::IncorrectCommitment)
+        ));
+    }
+
+    #[test]
+    fn public_key_package_from_dkg_commitments_rejects_empty_commitments() {
+        let empty_commitments = BTreeMap::new();
+        assert!(matches!(
+            PublicKeyPackage::from_dkg_commitments(&empty_commitments),
+            Err(FrostCoreError::IncorrectNumberOfCommitments)
+        ));
+    }
+}
