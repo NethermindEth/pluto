@@ -371,6 +371,12 @@ mod tests {
     }
 
     #[test]
+    fn g1_projective_identity_reports_identity() {
+        assert!(G1Projective::identity().is_identity());
+        assert!(!G1Projective::generator().is_identity());
+    }
+
+    #[test]
     fn g1_projective_rejects_identity_compressed_point() {
         let identity = G1Affine::from(G1Projective::identity()).to_compressed();
 

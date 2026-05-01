@@ -430,9 +430,8 @@ pub fn round2(
 
         // Reconstruct R' = Wi*G - Ci*A_{j,0}
         let r_reconstructed = G1Projective::generator() * wi - a0 * ci;
-        let sender_id_u8 =
-            u8::try_from(sender_id)
-                .map_err(|_| KryptologyError::InvalidParticipantId(sender_id))?;
+        let sender_id_u8 = u8::try_from(sender_id)
+            .map_err(|_| KryptologyError::InvalidParticipantId(sender_id))?;
         let ci_check = kryptology_challenge(sender_id_u8, secret.ctx, &a0, &r_reconstructed);
         if !ci_check.constant_time_eq(&ci) {
             return Err(KryptologyError::InvalidProof { culprit: sender_id });
@@ -880,7 +879,8 @@ mod tests {
         let mut secrets: BTreeMap<u32, Round1Secret> = BTreeMap::new();
 
         for id in 1..=u32::from(max_signers) {
-            let (bcast, shares, secret) = round1(id, threshold, max_signers, ctx, &mut rng).unwrap();
+            let (bcast, shares, secret) =
+                round1(id, threshold, max_signers, ctx, &mut rng).unwrap();
             bcasts.insert(id, bcast);
             secrets.insert(id, secret);
             for (&target_id, share) in &shares {
@@ -925,6 +925,10 @@ mod tests {
             signature.verify(vk, message),
             "BLS threshold signature should verify"
         );
+        let signature_bytes = signature.to_bytes();
+        let parsed_signature = blst::min_pk::Signature::from_bytes(&signature_bytes)
+            .expect("combined signature should serialize to compressed bytes");
+        assert_eq!(parsed_signature.to_bytes(), signature_bytes);
 
         assert!(
             !signature.verify(vk, b"wrong message"),
@@ -944,8 +948,7 @@ mod tests {
             round1(1, threshold, max_signers, ctx, &mut rng).unwrap();
         let (_bcast2, _shares2, secret2) =
             round1(2, threshold, max_signers, ctx, &mut rng).unwrap();
-        let (bcast3, shares3, _secret3) =
-            round1(3, threshold, max_signers, ctx, &mut rng).unwrap();
+        let (bcast3, shares3, _secret3) = round1(3, threshold, max_signers, ctx, &mut rng).unwrap();
 
         bcast1.ci[31] ^= 0x01;
 
@@ -962,6 +965,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn round2_rejects_zero_challenge() {
+        let mut rng = StdRng::seed_from_u64(98);
+        let threshold = 2u16;
+        let max_signers = 3u16;
+        let ctx = 0u8;
+
+        let (mut bcast1, shares1, _secret1) =
+            round1(1, threshold, max_signers, ctx, &mut rng).unwrap();
+        let (_bcast2, _shares2, secret2) =
+            round1(2, threshold, max_signers, ctx, &mut rng).unwrap();
+
+        bcast1.ci = [0; 32];
+
+        let result = round2(
+            secret2,
+            &[(1, bcast1)].into(),
+            &[(1, shares1[&2].clone())].into(),
+        );
+
+        assert!(matches!(
+            result,
+            Err(KryptologyError::InvalidProof { culprit: 1 })
+        ));
+    }
+
     /// Verify that a share addressed to the wrong participant is rejected in
     /// round2.
     #[test]
@@ -971,12 +1000,10 @@ mod tests {
         let max_signers = 3u16;
         let ctx = 0u8;
 
-        let (bcast1, shares1, _secret1) =
-            round1(1, threshold, max_signers, ctx, &mut rng).unwrap();
+        let (bcast1, shares1, _secret1) = round1(1, threshold, max_signers, ctx, &mut rng).unwrap();
         let (_bcast2, _shares2, secret2) =
             round1(2, threshold, max_signers, ctx, &mut rng).unwrap();
-        let (bcast3, shares3, _secret3) =
-            round1(3, threshold, max_signers, ctx, &mut rng).unwrap();
+        let (bcast3, shares3, _secret3) = round1(3, threshold, max_signers, ctx, &mut rng).unwrap();
 
         let received_bcasts: BTreeMap<u32, Round1Bcast> = [(1, bcast1), (3, bcast3)].into();
 
@@ -1000,8 +1027,7 @@ mod tests {
         let max_signers = 3u16;
         let ctx = 0u8;
 
-        let (bcast1, shares1, _secret1) =
-            round1(1, threshold, max_signers, ctx, &mut rng).unwrap();
+        let (bcast1, shares1, _secret1) = round1(1, threshold, max_signers, ctx, &mut rng).unwrap();
         let (_bcast2, _shares2, secret2) =
             round1(2, threshold, max_signers, ctx, &mut rng).unwrap();
         let (_bcast3, _shares3, _secret3) =
@@ -1025,8 +1051,7 @@ mod tests {
             round1(1, threshold, max_signers, ctx, &mut rng).unwrap();
         let (_bcast2, _shares2, secret2) =
             round1(2, threshold, max_signers, ctx, &mut rng).unwrap();
-        let (bcast3, shares3, _secret3) =
-            round1(3, threshold, max_signers, ctx, &mut rng).unwrap();
+        let (bcast3, shares3, _secret3) = round1(3, threshold, max_signers, ctx, &mut rng).unwrap();
 
         let received_bcasts: BTreeMap<u32, Round1Bcast> = [(1, bcast1), (3, bcast3)].into();
         let received_shares: BTreeMap<u32, ShamirShare> = [(3, shares3[&2].clone())].into();
@@ -1047,8 +1072,7 @@ mod tests {
 
         let (_bcast1, shares1, _secret1) =
             round1(1, threshold, max_signers, ctx, &mut rng).unwrap();
-        let (bcast2, _shares2, secret2) =
-            round1(2, threshold, max_signers, ctx, &mut rng).unwrap();
+        let (bcast2, _shares2, secret2) = round1(2, threshold, max_signers, ctx, &mut rng).unwrap();
 
         let received_bcasts: BTreeMap<u32, Round1Bcast> = [(2, bcast2)].into();
         let received_shares: BTreeMap<u32, ShamirShare> = [(2, shares1[&2].clone())].into();
@@ -1068,10 +1092,8 @@ mod tests {
         let ctx = 0u8;
         let message = b"duplicate signer";
 
-        let (bcast1, shares1, secret1) =
-            round1(1, threshold, max_signers, ctx, &mut rng).unwrap();
-        let (bcast2, shares2, secret2) =
-            round1(2, threshold, max_signers, ctx, &mut rng).unwrap();
+        let (bcast1, shares1, secret1) = round1(1, threshold, max_signers, ctx, &mut rng).unwrap();
+        let (bcast2, shares2, secret2) = round1(2, threshold, max_signers, ctx, &mut rng).unwrap();
 
         let (_round2_bcast1, key_package1, _public_key_package1) = round2(
             secret1,
@@ -1087,8 +1109,7 @@ mod tests {
         .unwrap();
 
         let partial = BlsPartialSignature::from_key_package(&key_package1, message);
-        let result =
-            BlsSignature::from_partial_signatures(threshold, &[partial.clone(), partial]);
+        let result = BlsSignature::from_partial_signatures(threshold, &[partial.clone(), partial]);
 
         assert!(matches!(
             result,
