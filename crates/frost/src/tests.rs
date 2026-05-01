@@ -76,6 +76,28 @@ fn kryptology_accepts_255_signers_boundary() {
     assert!(shares.contains_key(&255));
 }
 
+#[test]
+fn kryptology_rejects_invalid_signer_counts() {
+    let mut rng = StdRng::seed_from_u64(7);
+
+    assert!(matches!(
+        kryptology::round1(1, 1, 3, 0, &mut rng),
+        Err(kryptology::DkgError::FrostCoreError(
+            crate::FrostCoreError::InvalidMinSigners
+        ))
+    ));
+    assert!(matches!(
+        kryptology::round1(1, 3, 2, 0, &mut rng),
+        Err(kryptology::DkgError::FrostCoreError(
+            crate::FrostCoreError::InvalidMinSigners
+        ))
+    ));
+    assert!(matches!(
+        kryptology::round1(0, 2, 3, 0, &mut rng),
+        Err(kryptology::DkgError::InvalidParticipantId(0))
+    ));
+}
+
 /// Full DKG round-trip: 3-of-3 DKG, then BLS threshold sign and verify.
 #[test]
 fn kryptology_bls_round_trip_3_of_3() {
@@ -151,9 +173,7 @@ fn kryptology_bls_round_trip_3_of_3() {
 
     let partial_sigs: Vec<_> = key_packages
         .keys()
-        .map(|&id| {
-            kryptology::BlsPartialSignature::from_key_package(id, &key_packages[&id], message)
-        })
+        .map(|&id| kryptology::BlsPartialSignature::from_key_package(&key_packages[&id], message))
         .collect();
 
     let signature = kryptology::BlsSignature::from_partial_signatures(threshold, &partial_sigs)
@@ -216,9 +236,7 @@ fn kryptology_bls_round_trip_2_of_3() {
 
     let partial_sigs: Vec<_> = signers
         .iter()
-        .map(|&id| {
-            kryptology::BlsPartialSignature::from_key_package(id, &key_packages[&id], message)
-        })
+        .map(|&id| kryptology::BlsPartialSignature::from_key_package(&key_packages[&id], message))
         .collect();
 
     let signature = kryptology::BlsSignature::from_partial_signatures(threshold, &partial_sigs)
@@ -298,4 +316,107 @@ fn kryptology_share_id_mismatch_rejected() {
         kryptology::DkgError::InvalidShare { culprit } => assert_eq!(culprit, 1),
         other => panic!("expected InvalidShare, got {other:?}"),
     }
+}
+
+#[test]
+fn kryptology_round2_accepts_threshold_subset() {
+    let mut rng = StdRng::seed_from_u64(321);
+    let threshold = 2u16;
+    let max_signers = 3u16;
+    let ctx = 0u8;
+
+    let (bcast1, shares1, _secret1) =
+        kryptology::round1(1, threshold, max_signers, ctx, &mut rng).unwrap();
+    let (_bcast2, _shares2, secret2) =
+        kryptology::round1(2, threshold, max_signers, ctx, &mut rng).unwrap();
+    let (_bcast3, _shares3, _secret3) =
+        kryptology::round1(3, threshold, max_signers, ctx, &mut rng).unwrap();
+
+    let received_bcasts: BTreeMap<u32, kryptology::Round1Bcast> = [(1, bcast1)].into();
+    let received_shares: BTreeMap<u32, kryptology::ShamirShare> = [(1, shares1[&2].clone())].into();
+
+    kryptology::round2(secret2, &received_bcasts, &received_shares)
+        .expect("threshold-1 peer packages should be enough");
+}
+
+#[test]
+fn kryptology_round2_rejects_missing_share_with_culprit() {
+    let mut rng = StdRng::seed_from_u64(322);
+    let threshold = 2u16;
+    let max_signers = 3u16;
+    let ctx = 0u8;
+
+    let (bcast1, _shares1, _secret1) =
+        kryptology::round1(1, threshold, max_signers, ctx, &mut rng).unwrap();
+    let (_bcast2, _shares2, secret2) =
+        kryptology::round1(2, threshold, max_signers, ctx, &mut rng).unwrap();
+    let (bcast3, shares3, _secret3) =
+        kryptology::round1(3, threshold, max_signers, ctx, &mut rng).unwrap();
+
+    let received_bcasts: BTreeMap<u32, kryptology::Round1Bcast> = [(1, bcast1), (3, bcast3)].into();
+    let received_shares: BTreeMap<u32, kryptology::ShamirShare> = [(3, shares3[&2].clone())].into();
+
+    let result = kryptology::round2(secret2, &received_bcasts, &received_shares);
+    assert!(matches!(
+        result,
+        Err(kryptology::DkgError::InvalidShare { culprit: 1 })
+    ));
+}
+
+#[test]
+fn kryptology_round2_rejects_self_broadcast() {
+    let mut rng = StdRng::seed_from_u64(323);
+    let threshold = 2u16;
+    let max_signers = 3u16;
+    let ctx = 0u8;
+
+    let (_bcast1, shares1, _secret1) =
+        kryptology::round1(1, threshold, max_signers, ctx, &mut rng).unwrap();
+    let (bcast2, _shares2, secret2) =
+        kryptology::round1(2, threshold, max_signers, ctx, &mut rng).unwrap();
+
+    let received_bcasts: BTreeMap<u32, kryptology::Round1Bcast> = [(2, bcast2)].into();
+    let received_shares: BTreeMap<u32, kryptology::ShamirShare> = [(2, shares1[&2].clone())].into();
+
+    let result = kryptology::round2(secret2, &received_bcasts, &received_shares);
+    assert!(matches!(
+        result,
+        Err(kryptology::DkgError::InvalidParticipantId(2))
+    ));
+}
+
+#[test]
+fn kryptology_duplicate_partial_signatures_rejected() {
+    let mut rng = StdRng::seed_from_u64(324);
+    let threshold = 2u16;
+    let max_signers = 2u16;
+    let ctx = 0u8;
+    let message = b"duplicate signer";
+
+    let (bcast1, shares1, secret1) =
+        kryptology::round1(1, threshold, max_signers, ctx, &mut rng).unwrap();
+    let (bcast2, shares2, secret2) =
+        kryptology::round1(2, threshold, max_signers, ctx, &mut rng).unwrap();
+
+    let (_round2_bcast1, key_package1, _public_key_package1) = kryptology::round2(
+        secret1,
+        &[(2, bcast2.clone())].into(),
+        &[(2, shares2[&1].clone())].into(),
+    )
+    .unwrap();
+    let (_round2_bcast2, _key_package2, _public_key_package2) = kryptology::round2(
+        secret2,
+        &[(1, bcast1)].into(),
+        &[(1, shares1[&2].clone())].into(),
+    )
+    .unwrap();
+
+    let partial = kryptology::BlsPartialSignature::from_key_package(&key_package1, message);
+    let result =
+        kryptology::BlsSignature::from_partial_signatures(threshold, &[partial.clone(), partial]);
+
+    assert!(matches!(
+        result,
+        Err(kryptology::DkgError::DuplicateIdentifier(1))
+    ));
 }

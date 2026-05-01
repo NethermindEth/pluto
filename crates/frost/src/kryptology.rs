@@ -9,49 +9,59 @@
 //! The output types ([`KeyPackage`], [`PublicKeyPackage`]) are standard
 //! frost-core types usable with frost-core's signing protocol.
 
-#![allow(clippy::arithmetic_side_effects)]
-
 use std::collections::BTreeMap;
 
 use blst::*;
 use rand_core::{CryptoRng, RngCore};
 use sha2::{Digest, Sha256};
+use zeroize::ZeroizeOnDrop;
 
 use super::*;
 
 /// Errors from the kryptology-compatible DKG.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum DkgError {
     /// Participant ID is zero or out of range.
+    #[error("invalid participant ID {0}")]
     InvalidParticipantId(u32),
     /// Two or more partial signatures share the same identifier.
+    #[error("duplicate participant identifier {0}")]
     DuplicateIdentifier(u32),
     /// Fewer partial signatures than the threshold were provided.
+    #[error("insufficient signers")]
     InsufficientSigners,
     /// Invalid number of signers.
+    #[error("invalid signer count")]
     InvalidSignerCount,
     /// Invalid proof of knowledge from a specific participant.
+    #[error("invalid proof from participant {culprit}")]
     InvalidProof {
         /// The 1-indexed ID of the participant whose proof failed.
         culprit: u32,
     },
     /// Invalid Feldman share from a specific participant.
+    #[error("invalid share from participant {culprit}")]
     InvalidShare {
         /// The 1-indexed ID of the participant whose share failed.
         culprit: u32,
     },
     /// Wrong number of received packages.
+    #[error("incorrect package count")]
     IncorrectPackageCount,
     /// Failed to deserialize a scalar from wire format bytes.
+    #[error("invalid scalar encoding")]
     InvalidScalar,
     /// Failed to deserialize a G1 point from wire format bytes.
+    #[error("invalid point encoding")]
     InvalidPoint,
     /// Commitment count does not match threshold.
+    #[error("invalid commitment count from participant {participant}")]
     InvalidCommitmentCount {
         /// The participant whose commitment count was wrong.
         participant: u32,
     },
     /// An error from frost-core.
+    #[error(transparent)]
     FrostCoreError(FrostCoreError),
 }
 
@@ -87,9 +97,10 @@ pub struct Round2Bcast {
 /// A Shamir secret share matching Go's `sharing.ShamirShare`.
 ///
 /// The `value` field is in **big-endian** byte order.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, ZeroizeOnDrop)]
 pub struct ShamirShare {
     /// The share identifier (1-indexed participant ID).
+    #[zeroize(skip)]
     pub id: u32,
     /// The share value as big-endian scalar bytes.
     pub value: [u8; 32],
@@ -100,24 +111,30 @@ pub struct ShamirShare {
 /// # Security
 ///
 /// This MUST NOT be sent to other participants.
+#[derive(ZeroizeOnDrop)]
 pub struct Round1Secret {
+    #[zeroize(skip)]
     id: u32,
+    #[zeroize(skip)]
     ctx: u8,
     coefficients: Vec<Scalar>,
+    #[zeroize(skip)]
     commitment: VerifiableSecretSharingCommitment,
+    #[zeroize(skip)]
     threshold: u16,
+    #[zeroize(skip)]
     max_signers: u16,
 }
 
 impl Round1Secret {
-    /// Reconstruct a [`Round1Secret`] from wire-format data (e.g. a test
-    /// fixture) so that the standard [`round2`] function can be called.
+    /// Reconstruct a [`Round1Secret`] from wire-format test fixture data so
+    /// that the standard [`round2`] function can be called.
     ///
-    /// `own_share` is the big-endian scalar the participant computed for
-    /// itself.  It is stored as the constant term of a zero polynomial so
-    /// that [`round2`]'s `from_coefficients` evaluation returns it
-    /// unchanged.
-    pub fn from_raw(
+    /// Testing-only helper: `own_share` is stored as the constant term of a
+    /// synthetic zero polynomial so that [`round2`]'s `from_coefficients`
+    /// evaluation returns it unchanged.
+    #[cfg(test)]
+    pub(crate) fn from_raw(
         id: u32,
         ctx: u8,
         threshold: u16,
@@ -125,6 +142,8 @@ impl Round1Secret {
         own_share: &[u8; 32],
         commitment_bytes: &[[u8; 48]],
     ) -> Result<Self, DkgError> {
+        validate_round_parameters(id, threshold, max_signers)?;
+
         let own_share_scalar = scalar_from_be(own_share)?;
         let commitment = deserialize_commitment(id, threshold, commitment_bytes)?;
 
@@ -157,7 +176,8 @@ pub fn scalar_from_be(bytes: &[u8; 32]) -> Result<Scalar, DkgError> {
 }
 
 /// RFC 9380 Section 5.3.1 using SHA-256
-pub fn expand_msg_xmd(msg: &[u8], dst: &[u8], len_in_bytes: usize) -> Vec<u8> {
+#[allow(clippy::arithmetic_side_effects)]
+pub(crate) fn expand_msg_xmd(msg: &[u8], dst: &[u8], len_in_bytes: usize) -> Vec<u8> {
     const B_IN_BYTES: usize = 32; // SHA-256 output
     const S_IN_BYTES: usize = 64; // SHA-256 block size
 
@@ -215,6 +235,21 @@ pub fn expand_msg_xmd(msg: &[u8], dst: &[u8], len_in_bytes: usize) -> Vec<u8> {
     out
 }
 
+fn validate_round_parameters(id: u32, threshold: u16, max_signers: u16) -> Result<(), DkgError> {
+    // Kryptology encodes participant identifiers into a single byte.
+    if max_signers > u16::from(u8::MAX) {
+        return Err(DkgError::InvalidSignerCount);
+    }
+
+    validate_num_of_signers(threshold, max_signers)?;
+
+    if id == 0 || id > u32::from(max_signers) {
+        return Err(DkgError::InvalidParticipantId(id));
+    }
+
+    Ok(())
+}
+
 /// Kryptology hash-to-scalar.
 ///
 /// See: https://github.com/coinbase/kryptology/blob/1dcc062313d99f2e56ce6abc2003ef63c52dd4a5/pkg/core/curves/bls12381_curve.go#L50
@@ -222,16 +257,10 @@ const KRYPTOLOGY_DST: &[u8] = b"BLS12381_XMD:SHA-256_SSWU_RO_";
 
 /// Hash to scalar using kryptology's ExpandMsgXmd construction.
 ///
-/// `ExpandMsgXmd(SHA-256, msg, DST, 48)` -> reverse bytes -> pad to 64 ->
-/// `Scalar::from_bytes_wide`.
+/// `ExpandMsgXmd(SHA-256, msg, DST, 48)` -> `Scalar::from_be_bytes_wide`.
 fn kryptology_hash_to_scalar(msg: &[u8]) -> Scalar {
     let xmd = expand_msg_xmd(msg, KRYPTOLOGY_DST, 48);
-    let mut reversed = [0u8; 48];
-    reversed.copy_from_slice(&xmd);
-    reversed.reverse();
-    let mut wide = [0u8; 64];
-    wide[..48].copy_from_slice(&reversed);
-    Scalar::from_bytes_wide(&wide)
+    Scalar::from_be_bytes_wide(&xmd)
 }
 
 /// Compute the DKG challenge matching kryptology's format.
@@ -271,6 +300,7 @@ fn deserialize_commitment(
 /// - `max_signers`: Total number of signers (n).
 /// - `ctx`: DKG context byte (typically 0).
 /// - `rng`: Cryptographic RNG.
+#[allow(clippy::arithmetic_side_effects)]
 pub fn round1<R: RngCore + CryptoRng>(
     id: u32,
     threshold: u16,
@@ -278,16 +308,7 @@ pub fn round1<R: RngCore + CryptoRng>(
     ctx: u8,
     rng: &mut R,
 ) -> Result<(Round1Bcast, BTreeMap<u32, ShamirShare>, Round1Secret), DkgError> {
-    // Kryptology encodes participant identifiers into a single byte.
-    if max_signers > u16::from(u8::MAX) {
-        return Err(DkgError::InvalidSignerCount);
-    }
-
-    validate_num_of_signers(threshold, max_signers)?;
-
-    if id == 0 || id > u32::from(max_signers) {
-        return Err(DkgError::InvalidParticipantId(id));
-    }
+    validate_round_parameters(id, threshold, max_signers)?;
 
     // Generate random polynomial coefficients [a_0, ..., a_{t-1}]
     let coefficients: Vec<Scalar> = (0..threshold).map(|_| Scalar::random(&mut *rng)).collect();
@@ -368,13 +389,19 @@ pub fn round1<R: RngCore + CryptoRng>(
 ///   [`Round1Bcast`].
 /// - `received_shares`: Map from source participant ID to the [`ShamirShare`]
 ///   they sent us.
+#[allow(clippy::arithmetic_side_effects)]
 pub fn round2(
     secret: Round1Secret,
     received_bcasts: &BTreeMap<u32, Round1Bcast>,
     received_shares: &BTreeMap<u32, ShamirShare>,
 ) -> Result<(Round2Bcast, KeyPackage, PublicKeyPackage), DkgError> {
-    let expected = (secret.max_signers - 1) as usize;
-    if received_bcasts.len() != expected || received_shares.len() != expected {
+    let min_received = (secret.threshold - 1) as usize;
+    let max_received = (secret.max_signers - 1) as usize;
+    if received_bcasts.len() < min_received
+        || received_bcasts.len() > max_received
+        || received_shares.len() < min_received
+        || received_shares.len() > max_received
+    {
         return Err(DkgError::IncorrectPackageCount);
     }
 
@@ -387,6 +414,10 @@ pub fn round2(
     let mut share_sum = Scalar::ZERO;
 
     for (&sender_id, bcast) in received_bcasts {
+        if sender_id == secret.id {
+            return Err(DkgError::InvalidParticipantId(sender_id));
+        }
+
         let sender_commitment =
             deserialize_commitment(sender_id, secret.threshold, &bcast.commitments)?;
         let a0 = sender_commitment.coefficients()[0].value();
@@ -394,20 +425,23 @@ pub fn round2(
         // Verify proof of knowledge
         let wi = scalar_from_be(&bcast.wi)?;
         let ci = scalar_from_be(&bcast.ci)?;
+        if ci == Scalar::ZERO {
+            return Err(DkgError::InvalidProof { culprit: sender_id });
+        }
 
         // Reconstruct R' = Wi*G - Ci*A_{j,0}
         let r_reconstructed = G1Projective::generator() * wi - a0 * ci;
         let sender_id_u8 =
             u8::try_from(sender_id).map_err(|_| DkgError::InvalidParticipantId(sender_id))?;
         let ci_check = kryptology_challenge(sender_id_u8, secret.ctx, &a0, &r_reconstructed);
-        if ci_check != ci {
+        if !ci_check.constant_time_eq(&ci) {
             return Err(DkgError::InvalidProof { culprit: sender_id });
         }
 
         // Verify Feldman share
         let share = received_shares
             .get(&sender_id)
-            .ok_or(DkgError::IncorrectPackageCount)?;
+            .ok_or(DkgError::InvalidShare { culprit: sender_id })?;
         if share.id != secret.id {
             return Err(DkgError::InvalidShare { culprit: sender_id });
         }
@@ -433,7 +467,7 @@ pub fn round2(
     let verifying_share = VerifyingShare::new(verifying_share_element);
 
     // Build PublicKeyPackage from all participants' commitments
-    peer_commitments.insert(own_identifier, secret.commitment);
+    peer_commitments.insert(own_identifier, secret.commitment.clone());
     let commitment_refs: BTreeMap<Identifier, &VerifiableSecretSharingCommitment> =
         peer_commitments.iter().map(|(id, c)| (*id, c)).collect();
     let public_key_package = PublicKeyPackage::from_dkg_commitments(&commitment_refs)?;
@@ -478,17 +512,12 @@ impl BlsPartialSignature {
     ///
     /// Computes `partial_sig = (key_package.signing_share) * H(msg)` where H
     /// hashes the message to a G2 point using the Ethereum 2.0 DST.
-    ///
-    /// The `id` must be the original 1-indexed kryptology participant ID.
-    pub fn from_key_package(id: u32, key_package: &KeyPackage, msg: &[u8]) -> BlsPartialSignature {
+    pub fn from_key_package(key_package: &KeyPackage, msg: &[u8]) -> BlsPartialSignature {
         let scalar = key_package.signing_share().to_scalar();
-        {
-            let signing_share: &Scalar = &scalar;
-            let h_msg = hash_to_g2(msg);
-            BlsPartialSignature {
-                identifier: id,
-                point: p2_mult(&h_msg, signing_share),
-            }
+        let h_msg = hash_to_g2(msg);
+        BlsPartialSignature {
+            identifier: key_package.identifier().to_u32(),
+            point: p2_mult(&h_msg, &scalar),
         }
     }
 }
@@ -518,6 +547,7 @@ impl BlsSignature {
     ///
     /// Returns [`DkgError::InsufficientSigners`] if `min_signers < 2` or
     /// fewer than `min_signers` partial signatures are provided.
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn from_partial_signatures(
         min_signers: u16,
         partial_sigs: &[BlsPartialSignature],
@@ -609,6 +639,7 @@ fn p2_mult(point: &blst_p2, scalar: &Scalar) -> blst_p2 {
     let mut out = blst_p2::default();
     unsafe {
         blst_scalar_from_fr(&mut s, &scalar.0);
+        // BLS12-381 scalar field order has 255 significant bits.
         blst_p2_mult(&mut out, point, s.b.as_ptr(), 255);
     }
     out

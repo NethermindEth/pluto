@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use pluto_frost::kryptology;
+use crate::kryptology;
 use serde::Deserialize;
 
 #[derive(Clone, Deserialize)]
@@ -73,7 +73,7 @@ impl From<&FixtureRound1Bcast> for kryptology::Round1Bcast {
 #[test]
 fn kryptology_fixture_round2_interop_2_of_3_ctx_0() {
     replay_fixture(
-        include_str!("./kryptology_fixtures/2-of-3-ctx-0.json"),
+        include_str!("../tests/kryptology_fixtures/2-of-3-ctx-0.json"),
         true,
     );
 }
@@ -81,7 +81,7 @@ fn kryptology_fixture_round2_interop_2_of_3_ctx_0() {
 #[test]
 fn kryptology_fixture_round2_interop_3_of_3_ctx_0() {
     replay_fixture(
-        include_str!("./kryptology_fixtures/3-of-3-ctx-0.json"),
+        include_str!("../tests/kryptology_fixtures/3-of-3-ctx-0.json"),
         true,
     );
 }
@@ -89,7 +89,7 @@ fn kryptology_fixture_round2_interop_3_of_3_ctx_0() {
 #[test]
 fn kryptology_fixture_round2_interop_malformed_share_id() {
     replay_fixture(
-        include_str!("./kryptology_fixtures/malformed-share-id.json"),
+        include_str!("../tests/kryptology_fixtures/malformed-share-id.json"),
         false,
     );
 }
@@ -97,7 +97,7 @@ fn kryptology_fixture_round2_interop_malformed_share_id() {
 #[test]
 fn kryptology_fixture_round2_interop_invalid_proof() {
     replay_fixture(
-        include_str!("./kryptology_fixtures/invalid-proof.json"),
+        include_str!("../tests/kryptology_fixtures/invalid-proof.json"),
         false,
     );
 }
@@ -200,8 +200,8 @@ fn replay_fixture(json: &str, require_group_signature: bool) {
     let message = b"kryptology fixture signing";
 
     let partial_sigs: Vec<_> = key_packages
-        .iter()
-        .map(|(&id, kp)| kryptology::BlsPartialSignature::from_key_package(id, kp, message))
+        .values()
+        .map(|kp| kryptology::BlsPartialSignature::from_key_package(kp, message))
         .collect();
 
     let signature =

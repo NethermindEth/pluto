@@ -96,9 +96,7 @@ fn kryptology_bls_round_trip_2_of_4_ctx_0() {
 
     let partial_sigs: Vec<_> = signing_participants
         .iter()
-        .map(|&id| {
-            kryptology::BlsPartialSignature::from_key_package(id, &key_packages[&id], message)
-        })
+        .map(|&id| kryptology::BlsPartialSignature::from_key_package(&key_packages[&id], message))
         .collect();
 
     assert_eq!(partial_sigs.len(), threshold as usize);

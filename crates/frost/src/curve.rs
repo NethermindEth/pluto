@@ -12,6 +12,8 @@ use std::{
 
 use blst::*;
 use rand_core::{CryptoRng, RngCore};
+use subtle::ConstantTimeEq;
+use zeroize::Zeroize;
 
 /// BLS12-381 scalar field element. Wrapper around `blst_fr` in Montgomery form.
 #[derive(Copy, Clone, Default, PartialEq, Eq)]
@@ -78,6 +80,17 @@ impl Scalar {
         Scalar(fr)
     }
 
+    /// Reduce big-endian bytes modulo the scalar field order.
+    pub(crate) fn from_be_bytes_wide(bytes: &[u8]) -> Self {
+        let mut scalar = blst_scalar::default();
+        let mut fr = blst_fr::default();
+        unsafe {
+            blst_scalar_from_be_bytes(&mut scalar, bytes.as_ptr(), bytes.len());
+            blst_fr_from_scalar(&mut fr, &scalar);
+        }
+        Scalar(fr)
+    }
+
     /// Generate a uniformly random scalar.
     pub fn random<R: RngCore + CryptoRng>(rng: &mut R) -> Self {
         let mut wide = [0u8; 64];
@@ -93,6 +106,17 @@ impl Scalar {
         let mut out = blst_fr::default();
         unsafe { blst_fr_eucl_inverse(&mut out, &self.0) };
         Some(Scalar(out))
+    }
+
+    /// Compare scalar limbs without early-exit equality.
+    pub(crate) fn constant_time_eq(&self, other: &Self) -> bool {
+        self.0.l.ct_eq(&other.0.l).into()
+    }
+}
+
+impl Zeroize for Scalar {
+    fn zeroize(&mut self) {
+        self.0.l.zeroize();
     }
 }
 
@@ -214,6 +238,7 @@ impl Mul<Scalar> for G1Projective {
         let mut out = blst_p1::default();
         unsafe {
             blst_scalar_from_fr(&mut scalar, &rhs.0);
+            // BLS12-381 scalar field order has 255 significant bits.
             blst_p1_mult(&mut out, &self.0, scalar.b.as_ptr(), 255);
         }
         G1Projective(out)
