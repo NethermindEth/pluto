@@ -42,6 +42,7 @@ use pluto_p2p::{
     config::P2PConfig,
     gater, k1,
     p2p::{Node, NodeType},
+    p2p_context::P2PContext,
     relay::{MutableRelayReservation, RelayRouter},
 };
 use pluto_tracing::TracingConfig;
@@ -143,7 +144,7 @@ pub async fn main() -> Result<()> {
         pk,
         NodeType::QUIC,
         false,
-        known_peers.clone(),
+        P2PContext::new(known_peers.clone()),
         |builder, keypair, relay_client| {
             let p2p_context = builder.p2p_context();
             let local_peer_id = keypair.public().to_peer_id();

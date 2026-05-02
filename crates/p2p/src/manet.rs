@@ -310,7 +310,7 @@ mod tests {
     use std::str::FromStr;
 
     #[test]
-    fn test_ipv4_private() {
+    fn ipv4_private() {
         // Localhost
         assert!(Ipv4Addr::new(127, 0, 0, 1).is_private_ip());
         assert!(Ipv4Addr::new(127, 255, 255, 255).is_private_ip());
@@ -337,7 +337,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ipv4_public() {
+    fn ipv4_public() {
         // Public addresses
         assert!(Ipv4Addr::new(8, 8, 8, 8).is_public_ip());
         assert!(Ipv4Addr::new(1, 1, 1, 1).is_public_ip());
@@ -355,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ipv6_private() {
+    fn ipv6_private() {
         // Localhost
         assert!(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1).is_private_ip());
 
@@ -371,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ipv6_public() {
+    fn ipv6_public() {
         // Google DNS
         assert!(Ipv6Addr::new(0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888).is_public_ip());
 
@@ -391,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multiaddr_public_ipv4() {
+    fn multiaddr_public_ipv4() {
         let public_addr = Multiaddr::from_str("/ip4/8.8.8.8/tcp/4001").unwrap();
         assert!(public_addr.is_public());
 
@@ -403,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multiaddr_public_ipv6() {
+    fn multiaddr_public_ipv6() {
         let public_addr = Multiaddr::from_str("/ip6/2001:4860:4860::8888/tcp/4001").unwrap();
         assert!(public_addr.is_public());
 
@@ -419,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multiaddr_private() {
+    fn multiaddr_private() {
         // IPv4 private
         let private_ipv4 = Multiaddr::from_str("/ip4/192.168.1.1/tcp/4001").unwrap();
         assert!(private_ipv4.is_private());
@@ -434,7 +434,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multiaddr_dns_public() {
+    fn multiaddr_dns_public() {
         let public_dns = Multiaddr::from_str("/dns/example.com/tcp/4001").unwrap();
         assert!(public_dns.is_public());
 
@@ -443,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multiaddr_dns_private() {
+    fn multiaddr_dns_private() {
         // .localhost
         let localhost = Multiaddr::from_str("/dns/localhost/tcp/4001").unwrap();
         assert!(!localhost.is_public());
@@ -471,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_subdomain() {
+    fn is_subdomain_works() {
         assert!(is_subdomain("localhost", ".localhost"));
         assert!(is_subdomain("app.localhost", ".localhost"));
         assert!(is_subdomain("deep.app.localhost", ".localhost"));
@@ -484,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn test_nat64_addresses() {
+    fn nat64_addresses() {
         // RFC 6052 WellKnown NAT64 prefix
         let nat64_wellknown = Ipv6Addr::new(0x64, 0xff9b, 0, 0, 0, 0, 0x0808, 0x0808);
         assert!(nat64_wellknown.is_public_ip());
@@ -495,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cgnat_private() {
+    fn cgnat_private() {
         // 100.64.0.0/10 (CGNAT)
         assert!(Ipv4Addr::new(100, 64, 0, 1).is_private_ip());
         assert!(Ipv4Addr::new(100, 127, 255, 255).is_private_ip());
@@ -505,7 +505,7 @@ mod tests {
     /// Test cases from the original Go implementation.
     /// See: https://github.com/multiformats/go-multiaddr/blob/master/net/private_test.go
     #[test]
-    fn test_is_public_addr_go_compat() {
+    fn is_public_addr_go_compat() {
         struct TestCase {
             addr: &'static str,
             is_public: bool,

@@ -398,7 +398,7 @@ mod tests {
     use crate::{name::peer_name, peer::Peer};
 
     #[test]
-    fn test_peer_name_by_enr() {
+    fn peer_name_by_enr() {
         let enr_str = "enr:-JG4QBqxg9KCQ1vnvVagJsg08-qbtOjJ9Mkcm3d-FOX1Z2dqdw6Rp0S5lBRC2Uh4_Hk6KvyZoRJY5VGlkVb8scEWXaeGAYDhsvrogmlkgnY0gmlwhH8AAAGJc2VjcDI1NmsxoQMsMU_1-8n0xkoOJD9v-DOSjmc8FFTXv9xWW8gqbZxlcIN0Y3CCPoODdWRwgj6E";
 
         let enr = Record::try_from(enr_str).unwrap();
@@ -409,7 +409,7 @@ mod tests {
     }
 
     #[test]
-    fn test_peer_name_by_peer_id() {
+    fn peer_name_by_peer_id() {
         let peer_id = "16Uiu2HAmDTemdrDfAgG1DX5q3NmfART3PcTFZe69yrNHdde3Qq3v";
         let name = "different-course";
 

@@ -174,7 +174,7 @@ mod tests {
     ];
 
     #[test]
-    fn test_bytes_list_cat_dog() {
+    fn bytes_list_cat_dog() {
         let input = vec![b"cat".to_vec(), b"dog".to_vec()];
         let expected = vec![0xc8, 0x83, b'c', b'a', b't', 0x83, b'd', b'o', b'g'];
 
@@ -186,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bytes_list_empty() {
+    fn bytes_list_empty() {
         let input: Vec<Vec<u8>> = vec![];
         let expected = vec![0xc0];
 
@@ -198,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bytes_list_long() {
+    fn bytes_list_long() {
         let input = vec![
             LOREM_IN.to_vec(),
             LOREM_IN.to_vec(),
@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bytes_dog() {
+    fn bytes_dog() {
         let input = b"dog";
         let expected = vec![0x83, b'd', b'o', b'g'];
 
@@ -235,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bytes_empty() {
+    fn bytes_empty() {
         let input = b"";
         let expected = vec![0x80];
 
@@ -247,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bytes_single_zero() {
+    fn bytes_single_zero() {
         let input = &[0x00];
         let expected = vec![0x00];
 
@@ -259,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bytes_single_low() {
+    fn bytes_single_low() {
         let input = &[0x0f];
         let expected = vec![0x0f];
 
@@ -271,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bytes_lorem() {
+    fn bytes_lorem() {
         let encoded = encode_bytes(LOREM_IN);
         assert_eq!(encoded, LOREM_OUT);
 
@@ -280,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn test_various_lengths() {
+    fn various_lengths() {
         for length in [0, 1, 55, 56, 1023, 1024] {
             let buf: Vec<u8> = (0..length)
                 .map(|i| u8::try_from(i % 256).unwrap())
@@ -294,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn test_roundtrip_bytes() {
+    fn roundtrip_bytes() {
         let data = b"hello world";
         let encoded = encode_bytes(data);
         let decoded = decode_bytes(&encoded).unwrap();
@@ -302,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn test_roundtrip_bytes_list() {
+    fn roundtrip_bytes_list() {
         let items = vec![b"foo".to_vec(), b"bar".to_vec(), b"baz".to_vec()];
         let encoded = encode_bytes_list(&items.iter().map(|v| v.as_slice()).collect::<Vec<_>>());
         let decoded = decode_bytes_list(&encoded).unwrap();
@@ -310,20 +310,20 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_empty_input() {
+    fn decode_empty_input() {
         assert!(decode_bytes(&[]).unwrap().is_empty());
         assert!(decode_bytes_list(&[]).unwrap().is_empty());
     }
 
     #[test]
-    fn test_decode_bytes_list_input_too_short() {
+    fn decode_bytes_list_input_too_short() {
         // Malformed input: claims to have more data than available
         let result = decode_bytes_list(&[0xc5, 0x83]);
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_decode_bytes_input_too_short() {
+    fn decode_bytes_input_too_short() {
         // Malformed input: claims to have more data than available
         let result = decode_bytes(&[0x85, 0x01, 0x02]);
         assert!(result.is_err());

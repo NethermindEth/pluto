@@ -27,11 +27,17 @@ pub mod keystore;
 /// Validator registration for builder API.
 pub mod registration;
 
+/// Shared eth2 signing helpers.
+pub mod signing;
+
 /// ETH2 Keymanager API client.
 pub mod keymanager;
 
 /// Go-parity type/version conversion helpers.
 pub mod types;
+
+/// Attestation and sync committee aggregator selection.
+pub mod eth2exp;
 
 /// Utilities.
 pub(crate) mod utils;

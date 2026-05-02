@@ -61,6 +61,17 @@ pub fn git_commit() -> (String, String) {
     (hash, timestamp)
 }
 
+/// Logs pluto version information along with the provided message.
+pub fn log_info(msg: &str) {
+    let (git_hash, git_timestamp) = git_commit();
+    tracing::info!(
+        version = %*VERSION,
+        git_commit_hash = git_hash,
+        git_commit_time = git_timestamp,
+        "{msg}"
+    );
+}
+
 /// Dependency list from build info in `name v{version}` format.
 pub fn dependencies() -> Vec<String> {
     let mut deps: Vec<String> = built_info::DEPENDENCIES

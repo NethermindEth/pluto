@@ -702,7 +702,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_format_mev_relay_name() {
+    fn format_mev_relay_name_works() {
         assert_eq!(
             format_mev_relay_name(
                 "https://0xac6e77dfe25ecd6110b8e780608cce0dab71fdd5ebea22a16c0205200f2f8e2e3ad3b71d3499c54ad14d6c21b41a37ae@boost-relay.flashbots.net"
@@ -732,7 +732,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_validator_pk_for_slot() {
+    fn get_validator_pk_for_slot_works() {
         let duties = vec![
             ProposerDutiesData {
                 pubkey: "0xabc".to_string(),

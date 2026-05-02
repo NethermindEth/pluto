@@ -23,7 +23,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_random_core_pub_key_generates_valid_keys() {
+    fn random_core_pub_key_generates_valid_keys() {
         let pk1 = random_core_pub_key();
         let pk2 = random_core_pub_key();
 
@@ -36,7 +36,7 @@ mod tests {
     }
 
     #[test]
-    fn test_random_core_pub_key_seed_is_deterministic() {
+    fn random_core_pub_key_seed_is_deterministic() {
         let seed = 12345u64;
         let rng1 = rand::rngs::StdRng::seed_from_u64(seed);
         let rng2 = rand::rngs::StdRng::seed_from_u64(seed);
@@ -49,7 +49,7 @@ mod tests {
     }
 
     #[test]
-    fn test_random_core_pub_key_seed_different_rngs() {
+    fn random_core_pub_key_seed_different_rngs() {
         let rng1 = rand::rngs::StdRng::seed_from_u64(1);
         let rng2 = rand::rngs::StdRng::seed_from_u64(2);
 

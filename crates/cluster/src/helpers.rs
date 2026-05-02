@@ -206,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn test_with_serde_as() {
+    fn with_serde_as() {
         let test = TestStruct {
             data: vec![0xde, 0xad, 0xbe, 0xef],
             hash: [0xaa; 32],

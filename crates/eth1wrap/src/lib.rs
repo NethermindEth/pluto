@@ -33,23 +33,32 @@ pub enum EthClientError {
     /// The Ethereum Address was invalid.
     #[error("Invalid address: {0}")]
     InvalidAddress(#[from] alloy::primitives::AddressError),
+
+    /// No execution engine endpoint was configured.
+    #[error("execution engine endpoint is not set")]
+    NoExecutionEngineAddr,
 }
 
 /// Defines the interface for the Ethereum EL RPC client.
-pub struct EthClient(DynProvider);
-
-impl std::ops::Deref for EthClient {
-    type Target = DynProvider;
-
-    fn deref(&self) -> &DynProvider {
-        &self.0
-    }
+pub enum EthClient {
+    /// Connected client backed by a live provider.
+    Connected(DynProvider),
+    /// Noop client returned when no address is provided. Mirrors Go's
+    /// noopClient.
+    Noop,
 }
 
 impl EthClient {
-    /// Create a new `EthClient` connected to the given address using defaults
-    /// for retry.
+    /// Create a new `EthClient`. When `address` is empty a noop client is
+    /// returned that errors with [`EthClientError::NoExecutionEngineAddr`]
+    /// if `verify_smart_contract_based_signature` is ever called, matching
+    /// Go's `NewDefaultEthClientRunner("")` behaviour.
     pub async fn new(address: impl AsRef<str>) -> Result<EthClient> {
+        let address = address.as_ref();
+        if address.is_empty() {
+            return Ok(EthClient::Noop);
+        }
+
         // The maximum number of retries for rate limit errors.
         const MAX_RETRY: u32 = 10;
         // The initial backoff in milliseconds.
@@ -61,12 +70,12 @@ impl EthClient {
 
         let client = ClientBuilder::default()
             .layer(retry_layer)
-            .connect(address.as_ref())
+            .connect(address)
             .await?;
 
         let provider = ProviderBuilder::new().connect_client(client);
 
-        Ok(EthClient(provider.erased()))
+        Ok(EthClient::Connected(provider.erased()))
     }
 
     /// Check if `sig` is a valid signature of `hash` according to ERC-1271.
@@ -78,10 +87,13 @@ impl EthClient {
     ) -> Result<bool> {
         // Magic value defined in [ERC-1271](https://eips.ethereum.org/EIPS/eip-1271).
         const MAGIC_VALUE: [u8; 4] = [0x16, 0x26, 0xba, 0x7e];
+        let EthClient::Connected(provider) = self else {
+            return Err(EthClientError::NoExecutionEngineAddr);
+        };
 
         let address = alloy::primitives::Address::parse_checksummed(contract_address, None)?;
 
-        let instance = IERC1271::new(address, &self.0);
+        let instance = IERC1271::new(address, provider);
 
         let call = instance
             .isValidSignature(hash.into(), sig.to_vec().into())
@@ -89,5 +101,25 @@ impl EthClient {
             .await?;
 
         Ok(call == MAGIC_VALUE)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn empty_address_returns_noop_client() {
+        let client = EthClient::new("").await.expect("noop eth client");
+        let err = client
+            .verify_smart_contract_based_signature(
+                "0x0000000000000000000000000000000000000000",
+                [0u8; 32],
+                &[],
+            )
+            .await
+            .expect_err("empty address should not verify contract signatures");
+
+        assert!(matches!(err, EthClientError::NoExecutionEngineAddr));
     }
 }

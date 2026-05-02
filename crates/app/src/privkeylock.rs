@@ -159,7 +159,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[tokio::test]
-    async fn test_service() {
+    async fn service() {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         let path: PathBuf = dir.path().join("privkeylocktest");
 

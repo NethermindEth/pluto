@@ -73,7 +73,7 @@ pub type ThreshSub = Arc<
 ///         }
 ///     }
 /// });
-/// db.subscribe_internal(sub).await?;
+/// db.subscribe_internal(sub).await;
 /// ```
 pub fn internal_subscriber<F, Fut>(f: F) -> InternalSub
 where
@@ -105,7 +105,7 @@ where
 ///         }
 ///     }
 /// });
-/// db.subscribe_threshold(sub).await?;
+/// db.subscribe_threshold(sub).await;
 /// ```
 pub fn threshold_subscriber<F, Fut>(f: F) -> ThreshSub
 where
@@ -193,20 +193,18 @@ impl MemDB {
     ///
     /// The subscriber will be called when the node generates partial signed
     /// data that needs to be exchanged with peers.
-    pub async fn subscribe_internal(&self, sub: InternalSub) -> Result<()> {
+    pub async fn subscribe_internal(&self, sub: InternalSub) {
         let mut inner = self.inner.lock().await;
         inner.internal_subs.push(sub);
-        Ok(())
     }
 
     /// Registers a subscriber for threshold-reached partial signed data.
     ///
     /// The subscriber will be called when enough matching partial signatures
     /// have been collected to meet the threshold requirement.
-    pub async fn subscribe_threshold(&self, sub: ThreshSub) -> Result<()> {
+    pub async fn subscribe_threshold(&self, sub: ThreshSub) {
         let mut inner = self.inner.lock().await;
         inner.thresh_subs.push(sub);
-        Ok(())
     }
 
     /// Stores internally generated partial signed data and notifies

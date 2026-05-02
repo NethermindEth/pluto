@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::commands::create_cluster::{MIN_NODES, MIN_THRESHOLD};
+use crate::commands::constants::{MIN_NODES, MIN_THRESHOLD};
 
 /// Result type for CLI operations.
 pub type Result<T> = std::result::Result<T, CliError>;
@@ -74,6 +74,10 @@ pub enum CliError {
     #[error("Relay P2P error: {0}")]
     RelayP2PError(#[from] pluto_relay_server::error::RelayP2PError),
 
+    /// DKG command error.
+    #[error("DKG error: {0}")]
+    DkgError(#[from] pluto_dkg::dkg::DkgError),
+
     /// Create cluster error.
     #[error("Create cluster error: {0}")]
     CreateClusterError(#[from] CreateClusterError),
@@ -97,6 +101,10 @@ pub enum CliError {
     /// Command parsing error.
     #[error("Command parsing error: {0}")]
     CommandParsingError(#[from] clap::Error),
+
+    /// Create DKG error.
+    #[error("Create DKG error: {0}")]
+    CreateDKGError(#[from] crate::commands::create_dkg::CreateDkgError),
 
     /// Generic error with message.
     #[error("{0}")]
@@ -260,27 +268,9 @@ pub enum CreateClusterError {
     #[error("No validators specified in the given definition")]
     NoValidatorsInDefinition,
 
-    /// Mismatching number of fee recipient addresses.
-    #[error(
-        "mismatching --num-validators and --fee-recipient-addresses: num_validators={num_validators}, addresses={addresses}"
-    )]
-    MismatchingFeeRecipientAddresses {
-        /// Number of validators.
-        num_validators: u64,
-        /// Number of addresses.
-        addresses: usize,
-    },
-
-    /// Mismatching number of withdrawal addresses.
-    #[error(
-        "mismatching --num-validators and --withdrawal-addresses: num_validators={num_validators}, addresses={addresses}"
-    )]
-    MismatchingWithdrawalAddresses {
-        /// Number of validators.
-        num_validators: u64,
-        /// Number of addresses.
-        addresses: usize,
-    },
+    /// Address validation error.
+    #[error("Address validation error: {0}")]
+    AddressValidationError(#[from] crate::commands::address_validation::AddressValidationError),
 
     /// K1 error.
     #[error("K1 error: {0}")]

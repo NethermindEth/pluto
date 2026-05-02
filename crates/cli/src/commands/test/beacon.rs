@@ -2232,7 +2232,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_beacon_default_scenario() {
+    async fn beacon_default_scenario() {
         let server = start_healthy_mocked_beacon_node().await;
         let url = server.uri();
         let args = default_beacon_args(vec![url.clone()]);
@@ -2245,7 +2245,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_beacon_connection_refused() {
+    async fn beacon_connection_refused() {
         let port1 = 19876;
         let port2 = 19877;
         let endpoint1 = format!("http://localhost:{port1}");
@@ -2277,7 +2277,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_beacon_timeout() {
+    async fn beacon_timeout() {
         let endpoint1 = "http://localhost:19878".to_string();
         let endpoint2 = "http://localhost:19879".to_string();
         let mut args = default_beacon_args(vec![endpoint1.clone(), endpoint2.clone()]);
@@ -2295,7 +2295,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_beacon_quiet() {
+    async fn beacon_quiet() {
         let dir = tempfile::tempdir().unwrap();
         let json_path = dir.path().join("output.json");
 
@@ -2313,7 +2313,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_beacon_unsupported_test() {
+    async fn beacon_unsupported_test() {
         let args = TestBeaconArgs {
             test_config: TestConfigArgs {
                 test_cases: Some(vec!["notSupportedTest".to_string()]),
@@ -2333,7 +2333,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_beacon_custom_test_cases() {
+    async fn beacon_custom_test_cases() {
         let endpoint1 = "http://localhost:19883".to_string();
         let endpoint2 = "http://localhost:19884".to_string();
         let mut args = default_beacon_args(vec![endpoint1.clone(), endpoint2.clone()]);
@@ -2351,7 +2351,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_beacon_write_to_file() {
+    async fn beacon_write_to_file() {
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("beacon-test-output.json");
 
@@ -2377,7 +2377,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_beacon_basic_auth_with_credentials() {
+    async fn beacon_basic_auth_with_credentials() {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))
@@ -2398,7 +2398,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_beacon_basic_auth_without_credentials() {
+    async fn beacon_basic_auth_without_credentials() {
         let server = MockServer::start().await;
 
         Mock::given(method("GET"))

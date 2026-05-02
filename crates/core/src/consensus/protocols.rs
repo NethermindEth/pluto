@@ -52,19 +52,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_is_supported_protocol_name() {
+    fn is_supported_protocol_name_works() {
         assert!(is_supported_protocol_name("qbft"));
         assert!(!is_supported_protocol_name("unreal"));
     }
 
     #[test]
-    fn test_protocols() {
+    fn protocols_works() {
         let protocols = protocols();
         assert_eq!(protocols, vec![StreamProtocol::new(QBFT_V2_PROTOCOL_ID)]);
     }
 
     #[test]
-    fn test_most_preferred_consensus_protocol_default_is_qbft() {
+    fn most_preferred_consensus_protocol_default_is_qbft() {
         assert_eq!(
             most_preferred_consensus_protocol(&["unreal"]),
             QBFT_V2_PROTOCOL_ID
@@ -73,7 +73,7 @@ mod tests {
     }
 
     #[test]
-    fn test_most_preferred_consensus_protocol_latest_abft_is_preferred() {
+    fn most_preferred_consensus_protocol_latest_abft_is_preferred() {
         let pp = vec![
             "/charon/consensus/abft/3.0.0",
             "/charon/consensus/abft/1.0.0",
@@ -87,7 +87,7 @@ mod tests {
     }
 
     #[test]
-    fn test_prioritize_protocols_by_name() {
+    fn prioritize_protocols_by_name_works() {
         let initial = vec![
             StreamProtocol::new("/charon/consensus/hotstuff/1.0.0"),
             StreamProtocol::new("/charon/consensus/abft/3.0.0"),

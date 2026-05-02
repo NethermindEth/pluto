@@ -25,6 +25,7 @@ use pluto_p2p::{
     k1,
     name::peer_name,
     p2p::{Node, NodeType},
+    p2p_context::P2PContext,
 };
 use pluto_peerinfo::{Behaviour, Config, Event, LocalPeerInfo};
 use pluto_tracing::{LokiConfig, TracingConfig};
@@ -316,13 +317,13 @@ async fn main() -> anyhow::Result<()> {
 
     // Build the node
     // No known cluster peers in this example
-    let known_peers: Vec<libp2p::PeerId> = vec![];
+    let p2p_context = P2PContext::default();
     let mut node = Node::new(
         P2PConfig::default(),
         key,
         NodeType::TCP,
         false,
-        known_peers,
+        p2p_context,
         |builder, keypair, relay_client| {
             let peer_id = keypair.public().to_peer_id();
             builder.with_inner(CombinedBehaviour {

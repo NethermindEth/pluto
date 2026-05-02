@@ -1,63 +1,45 @@
-//! Relay-based example for the DKG reliable-broadcast protocol.
-//!
-//! This example follows the same high-level shape as the `bootnode` example:
-//! - load a local private key from a data directory
-//! - load cluster peers from `cluster-lock.json`
-//! - resolve relay URLs with `bootnode::new_relays`
-//! - create relay reservations and relay routing
-//! - run `bcast` over relay-mediated connectivity
+//! Example for the DKG reliable-broadcast protocol.
 //!
 //! To try it locally:
 //!
 //! ```text
-//! # Terminal 1: start a relay server
-//! cargo run -p pluto-relay-server --example relay_server
+//! # Data preparation: create a local 3-node cluster fixture
+//! cargo run -p pluto-cli -- create cluster \
+//!   --cluster-dir /tmp/pluto-bcast-demo \
+//!   --name bcast-demo \
+//!   --network holesky \
+//!   --nodes 3 \
+//!   --num-validators 1 \
+//!   --insecure-keys \
+//!   --fee-recipient-addresses 0x000000000000000000000000000000000000dead \
+//!   --withdrawal-addresses 0x000000000000000000000000000000000000dead
 //!
-//! # Terminals 2-4: run three node directories from the same cluster
+//! # Run in 3 terminals against the generated node directories
 //! cargo run -p pluto-dkg --example bcast -- \
-//!   --relays http://127.0.0.1:8888 \
-//!   --data-dir /path/to/node0
+//!   --relays https://0.relay.obol.tech,https://1.relay.obol.tech \
+//!   --data-dir /tmp/pluto-bcast-demo/node0
 //!
 //! cargo run -p pluto-dkg --example bcast -- \
-//!   --relays http://127.0.0.1:8888 \
-//!   --data-dir /path/to/node1
+//!   --relays https://0.relay.obol.tech,https://1.relay.obol.tech \
+//!   --data-dir /tmp/pluto-bcast-demo/node1
 //!
 //! cargo run -p pluto-dkg --example bcast -- \
-//!   --relays http://127.0.0.1:8888 \
-//!   --data-dir /path/to/node2
+//!   --relays https://0.relay.obol.tech,https://1.relay.obol.tech \
+//!   --data-dir /tmp/pluto-bcast-demo/node2
 //! ```
 //!
-//! Assumption:
-//! - the three data directories already exist
-//! - each one belongs to one node in the same cluster
+//! For stable local repros or CI-style runs, prefer a self-hosted relay
+//! instead of shared public relays.
 //!
-//! Required files in each data directory:
-//! - `charon-enr-private-key`
-//! - `cluster-lock.json`
-//!
-//! Expected flow:
-//! 1. Each node loads the same cluster peer order from the lock file.
-//! 2. Nodes resolve the configured relays and establish relay reservations.
-//! 3. The relay router dials known cluster peers through relay circuits.
-//! 4. Once all cluster peers are connected, each node sends one signed
-//!    `DemoTick`.
-//! 5. Receiver logs show inbound signature requests and final broadcasts.
-//!
-//! Success signals:
+//! What to expect:
+//! - all nodes must use the same `--relays` value
 //! - `Relay reservation accepted`
-//! - `Connection established` with `peer_type="CLUSTER"`
-//! - `Cluster connectivity update connected=2 expected=2`
 //! - `Sending broadcast`
 //! - `Received signature request`
 //! - `Received broadcast`
 //!
-//! Transient relay warnings can occur during startup and reconnects. The demo
-//! is healthy once all cluster peers are connected and the single broadcast is
-//! delivered.
-//!
 //! The demo uses a single fixed message ID because `bcast` is intended for
 //! one-shot protocol-step messages, not a changing heartbeat stream.
-#![allow(missing_docs)]
 
 use std::{
     collections::{HashMap, HashSet},
@@ -110,7 +92,8 @@ struct Args {
     relays: Vec<String>,
 
     /// Data directory containing `charon-enr-private-key` and
-    /// `cluster-lock.json`.
+    /// `cluster-lock.json`, typically one of the `nodeN/` directories produced
+    /// by `pluto create cluster`.
     #[arg(long)]
     data_dir: PathBuf,
 
@@ -299,14 +282,16 @@ async fn register_message(component: &Component, local_node_number: u32) -> bcas
                 Ok(())
             }),
             Box::new(move |peer_id, received_msg_id, msg| {
-                info!(
-                    local_node = local_node_number,
-                    sender = %peer_id,
-                    msg_id = received_msg_id,
-                    msg = ?msg,
-                    "Received broadcast"
-                );
-                Ok(())
+                Box::pin(async move {
+                    info!(
+                        local_node = local_node_number,
+                        sender = %peer_id,
+                        msg_id = received_msg_id,
+                        msg = ?msg,
+                        "Received broadcast"
+                    );
+                    Ok(())
+                })
             }),
         )
         .await
@@ -579,33 +564,34 @@ async fn main() -> Result<()> {
     };
 
     let p2p_context = P2PContext::new(known_peers.clone());
-    let (bcast_behaviour, component) =
-        bcast::Behaviour::new(cluster_peers.clone(), p2p_context.clone(), key.clone());
-    register_message(&component, local_node_number)
-        .await
-        .expect("Failed to register demo bcast message");
-
+    let mut component = None;
     let mut node: Node<ExampleBehaviour> = Node::new(
         p2p_config,
-        key,
+        key.clone(),
         NodeType::QUIC,
         args.filter_private_addrs,
-        known_peers,
+        p2p_context,
         |builder, keypair, relay_client| {
             let p2p_context = builder.p2p_context();
             let local_peer_id = keypair.public().to_peer_id();
 
-            builder
-                .with_p2p_context(p2p_context.clone())
-                .with_gater(conn_gater)
-                .with_inner(ExampleBehaviour {
-                    relay: relay_client,
-                    relay_reservation: MutableRelayReservation::new(relays.clone()),
-                    relay_router: RelayRouter::new(relays.clone(), p2p_context, local_peer_id),
-                    bcast: bcast_behaviour,
-                })
+            let (bcast_behaviour, c) =
+                bcast::Behaviour::new(cluster_peers.clone(), p2p_context.clone(), key.clone());
+            component = Some(c);
+
+            builder.with_gater(conn_gater).with_inner(ExampleBehaviour {
+                relay: relay_client,
+                relay_reservation: MutableRelayReservation::new(relays.clone()),
+                relay_router: RelayRouter::new(relays.clone(), p2p_context, local_peer_id),
+                bcast: bcast_behaviour,
+            })
         },
     )?;
+
+    let component = component.expect("BCast component was not initialized");
+    register_message(&component, local_node_number)
+        .await
+        .expect("Failed to register demo bcast message");
 
     info!(
         local_peer_id = %local_peer_id,

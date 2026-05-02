@@ -20,6 +20,7 @@ use pluto_p2p::{
     behaviours::pluto::PlutoBehaviourEvent,
     config::P2PConfig,
     p2p::{Node, NodeType},
+    p2p_context::P2PContext,
 };
 use tokio::signal;
 
@@ -73,13 +74,13 @@ async fn main() -> Result<()> {
 
     // Create node with composed behaviour
     // No known cluster peers in this example
-    let known_peers: Vec<libp2p::PeerId> = vec![];
+    let p2p_context = P2PContext::default();
     let mut p2p = Node::new(
         P2PConfig::default(),
         key.clone(),
         NodeType::QUIC,
         false,
-        known_peers,
+        p2p_context,
         |builder, keypair, relay_client| {
             builder
                 .with_user_agent("pluto-p2p-example/1.0.0")

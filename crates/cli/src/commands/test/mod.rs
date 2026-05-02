@@ -14,6 +14,7 @@ pub mod helpers;
 pub mod infra;
 pub mod mev;
 pub mod peers;
+pub(super) mod speedtest;
 pub mod validator;
 
 pub(crate) use helpers::*;
@@ -69,18 +70,13 @@ pub struct TestConfigArgs {
 }
 
 /// Lists available test case names for a given test category.
-/// TODO: Fill with enums TestCases of each category
 fn list_test_cases(category: TestCategory) -> Vec<String> {
     // Returns available test case names for each category.
     match category {
-        TestCategory::Validator => {
-            // From validator::supported_validator_test_cases()
-            vec![
-                "Ping".to_string(),
-                "PingMeasure".to_string(),
-                "PingLoad".to_string(),
-            ]
-        }
+        TestCategory::Validator => validator::ValidatorTestCase::all()
+            .iter()
+            .map(|tc| tc.to_string())
+            .collect(),
         TestCategory::Beacon => beacon::test_case_names(),
         TestCategory::Mev => {
             vec![
@@ -94,10 +90,10 @@ fn list_test_cases(category: TestCategory) -> Vec<String> {
             // supported_self_test_cases()
             vec![]
         }
-        TestCategory::Infra => {
-            // TODO: Extract from infra::supported_infra_test_cases()
-            vec![]
-        }
+        TestCategory::Infra => infra::supported_infra_test_cases()
+            .into_iter()
+            .map(|tc| tc.name.to_string())
+            .collect(),
         TestCategory::All => {
             // TODO: Combine all test cases from all categories
             vec![]

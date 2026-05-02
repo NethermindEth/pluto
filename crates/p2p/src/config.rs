@@ -8,6 +8,13 @@ use std::{
 
 use libp2p::{Multiaddr, multiaddr, ping};
 
+/// Shared default relay endpoints used by commands and P2P-facing configs.
+pub const DEFAULT_RELAYS: [&str; 3] = [
+    "https://0.relay.obol.tech",
+    "https://2.relay.obol.dev",
+    "https://1.relay.obol.tech",
+];
+
 /// P2P configuration error.
 #[derive(Debug, thiserror::Error)]
 pub enum P2PConfigError {
@@ -99,6 +106,14 @@ impl P2PConfig {
     pub fn builder() -> P2PConfigBuilder {
         P2PConfigBuilder::new()
     }
+}
+
+/// Returns the default relay endpoints parsed as [`Multiaddr`]s.
+pub fn default_relay_multiaddrs() -> Vec<Multiaddr> {
+    DEFAULT_RELAYS
+        .iter()
+        .map(|relay| multiaddr::from_url(relay).expect("default relay should parse"))
+        .collect()
 }
 
 /// Builder for [`P2PConfig`].
@@ -226,13 +241,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_resolve_listen_addr_p2p_bind_tcp_ip_not_specified() {
+    fn resolve_listen_addr_p2p_bind_tcp_ip_not_specified() {
         let err = resolve_listen_tcp_addr(":1234").unwrap_err();
         assert!(matches!(err, P2PConfigError::FailedToParseTcpAddresses(_)));
     }
 
     #[test]
-    fn test_resolve_listen_addr_ip() {
+    fn resolve_listen_addr_ip() {
         let addr = resolve_listen_tcp_addr("10.4.3.3:1234").unwrap();
         assert_eq!(
             addr,
@@ -241,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_listen_addr_all_interfaces() {
+    fn resolve_listen_addr_all_interfaces() {
         let tcp_addr = resolve_listen_tcp_addr("0.0.0.0:0").unwrap();
         assert_eq!(
             tcp_addr,
@@ -256,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn test_config_multiaddrs() {
+    fn config_multiaddrs() {
         let ipv6_linklocal_all_nodes = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1);
 
         let config = P2PConfig {
@@ -299,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn test_config_invalid_multiaddrs() {
+    fn config_invalid_multiaddrs() {
         let config = P2PConfig {
             tcp_addrs: vec!["not_a_valid_addr".to_string()],
             ..Default::default()

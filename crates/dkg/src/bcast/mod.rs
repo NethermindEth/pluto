@@ -10,7 +10,7 @@ mod protocol;
 
 pub use behaviour::{Behaviour, Event};
 pub use component::{CallbackFn, CheckFn, Component};
-pub use error::{Error, Failure, Result};
+pub use error::{Error, Failure, Result, SenderPeerMismatch};
 
 /// The request-response protocol used to gather peer signatures.
 pub const SIG_PROTOCOL_NAME: StreamProtocol = StreamProtocol::new("/charon/dkg/bcast/1.0.0/sig");

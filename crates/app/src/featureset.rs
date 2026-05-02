@@ -295,7 +295,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_all_feature_status() {
+    fn all_feature_status() {
         let featureset = FeatureSet::new();
 
         let features = Feature::all();
@@ -312,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn test_status_display() {
+    fn status_display() {
         assert_eq!(Status::Disable.to_string(), "disable");
         assert_eq!(Status::Alpha.to_string(), "alpha");
         assert_eq!(Status::Beta.to_string(), "beta");
@@ -322,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn test_custom_enabled_all() {
+    fn custom_enabled_all() {
         let featureset = FeatureSet::new();
 
         // Initially no custom enabled features
@@ -343,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    fn test_config() {
+    fn config() {
         let featureset = FeatureSet::new();
         assert_eq!(featureset.min_status, Status::Stable);
 
@@ -359,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn test_enable_feature() {
+    fn enable_feature() {
         let featureset = FeatureSet::new();
 
         // Initially disabled (MockAlpha is Alpha status, min_status is Stable)
@@ -377,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn test_disable_feature() {
+    fn disable_feature() {
         // First create with a stable feature (EagerDoubleLinear is Stable by default)
         let featureset = FeatureSet::from_config(Config {
             min_status: Status::Stable,
@@ -404,7 +404,7 @@ mod tests {
     // Verifies FeatureSet::new() matches Go's
     // featureset.Init(featureset.DefaultConfig()) Reference:
     // app/featureset/featureset.go and app/featureset/config.go
-    fn test_default_matches_go_implementation() {
+    fn default_matches_go_implementation() {
         // Verify Config::default() matches Go's DefaultConfig()
         let config = Config::default();
         assert_eq!(config.min_status, Status::Stable);
@@ -446,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn test_enable_gnosis_block_hotfix_if_not_disabled() {
+    fn enable_gnosis_block_hotfix_if_not_disabled() {
         // Test method when not disabled explicitly
         let config = Config::default();
         let mut featureset =

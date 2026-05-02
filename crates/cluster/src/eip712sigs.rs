@@ -209,7 +209,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_sign_terms_and_conditions() {
+    fn sign_terms_and_conditions_works() {
         let secret_key = SecretKey::from_slice(
             &hex::decode("0000000000000000000000000000000000000000000000000000000000000001")
                 .unwrap(),
@@ -225,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sign_cluster_definition_hash() {
+    fn sign_cluster_definition_hash_works() {
         let secret_key = SecretKey::from_slice(
             &hex::decode("0000000000000000000000000000000000000000000000000000000000000001")
                 .unwrap(),
@@ -241,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn test_enr_digest() {
+    fn enr_digest() {
         let definition = serde_json::from_str::<Definition>(include_str!(
             "examples/cluster-definition-000.json"
         ))

@@ -19,31 +19,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_from_0x_with_prefix() {
+    fn from_0x_with_prefix() {
         let bytes = from_0x("0x1234", 2).unwrap();
         assert_eq!(bytes, vec![0x12, 0x34]);
     }
 
     #[test]
-    fn test_from_0x_without_prefix() {
+    fn from_0x_without_prefix() {
         let bytes = from_0x("1234", 2).unwrap();
         assert_eq!(bytes, vec![0x12, 0x34]);
     }
 
     #[test]
-    fn test_from_0x_empty_string() {
+    fn from_0x_empty_string() {
         let result = from_0x("", 2);
         assert!(matches!(result, Err(Error::EmptyHex)));
     }
 
     #[test]
-    fn test_from_0x_wrong_length() {
+    fn from_0x_wrong_length() {
         let result = from_0x("0x1234", 3);
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_bearer_string() {
+    fn bearer_string_works() {
         let bearer = bearer_string(&[0x12, 0x34, 0xab, 0xcd]);
         assert_eq!(bearer, "Bearer 0x1234abcd");
     }

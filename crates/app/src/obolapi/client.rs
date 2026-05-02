@@ -218,7 +218,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_client_valid_url() {
+    fn new_client_valid_url() {
         assert!(
             Client::new(
                 "https://api.obol.tech",
@@ -231,12 +231,12 @@ mod tests {
     }
 
     #[test]
-    fn test_new_client_invalid_url() {
+    fn new_client_invalid_url() {
         assert!(Client::new("not-a-url", ClientOptions::default()).is_err());
     }
 
     #[test]
-    fn test_base_url_normalization() {
+    fn base_url_normalization() {
         let c1 = Client::new("https://api.obol.tech", ClientOptions::default()).unwrap();
         assert_eq!(c1.base_url.as_str(), "https://api.obol.tech/");
 
@@ -251,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_url_root_base() {
+    fn build_url_root_base() {
         let client = Client::new("https://api.obol.tech", ClientOptions::default()).unwrap();
         assert_eq!(
             client.build_url("definition").unwrap().as_str(),
@@ -271,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_url_versioned_base() {
+    fn build_url_versioned_base() {
         let client = Client::new("https://api.obol.tech/v1", ClientOptions::default()).unwrap();
         assert_eq!(
             client.build_url("definition").unwrap().as_str(),
@@ -291,13 +291,13 @@ mod tests {
     }
 
     #[test]
-    fn test_launchpad_url_path() {
+    fn launchpad_url_path_works() {
         let lock = test_lock_with_hash(vec![0x12, 0x34, 0xab, 0xcd]);
         assert_eq!(launchpad_url_path(&lock), "/lock/0x1234ABCD/launchpad");
     }
 
     #[test]
-    fn test_launchpad_url_for_lock() {
+    fn launchpad_url_for_lock() {
         let lock = test_lock_with_hash(vec![0x12, 0x34, 0xab, 0xcd]);
 
         let c1 = Client::new("https://api.obol.tech", ClientOptions::default()).unwrap();

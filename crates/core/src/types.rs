@@ -1,6 +1,6 @@
 //! Types for the Charon core.
 
-use std::{collections::HashMap, fmt::Display, iter};
+use std::{any::Any, collections::HashMap, fmt::Display, iter};
 
 use chrono::{DateTime, Duration, Utc};
 use dyn_clone::DynClone;
@@ -8,7 +8,12 @@ use dyn_eq::DynEq;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug as StdDebug;
 
-use crate::signeddata::SignedDataError;
+use crate::{
+    ParSigExCodecError,
+    corepb::v1::core as pbcore,
+    parsigex_codec::{deserialize_signed_data, serialize_signed_data},
+    signeddata::SignedDataError,
+};
 
 /// The type of duty.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -63,6 +68,62 @@ impl DutyType {
     /// Returns true if the duty type is valid.
     pub fn is_valid(&self) -> bool {
         !matches!(self, DutyType::Unknown | DutyType::DutySentinel(_))
+    }
+}
+
+/// Error type for duty type conversion.
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+pub enum DutyTypeError {
+    /// Invalid duty type.
+    #[error("invalid duty type")]
+    InvalidDutyType,
+}
+
+impl TryFrom<&DutyType> for i32 {
+    type Error = DutyTypeError;
+
+    fn try_from(duty_type: &DutyType) -> Result<Self, Self::Error> {
+        Ok(match duty_type {
+            DutyType::Unknown => 0,
+            DutyType::Proposer => 1,
+            DutyType::Attester => 2,
+            DutyType::Signature => 3,
+            DutyType::Exit => 4,
+            DutyType::BuilderProposer => 5,
+            DutyType::BuilderRegistration => 6,
+            DutyType::Randao => 7,
+            DutyType::PrepareAggregator => 8,
+            DutyType::Aggregator => 9,
+            DutyType::SyncMessage => 10,
+            DutyType::PrepareSyncContribution => 11,
+            DutyType::SyncContribution => 12,
+            DutyType::InfoSync => 13,
+            _ => return Err(DutyTypeError::InvalidDutyType),
+        })
+    }
+}
+
+impl TryFrom<i32> for DutyType {
+    type Error = ParSigExCodecError;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(DutyType::Unknown),
+            1 => Ok(DutyType::Proposer),
+            2 => Ok(DutyType::Attester),
+            3 => Ok(DutyType::Signature),
+            4 => Ok(DutyType::Exit),
+            5 => Ok(DutyType::BuilderProposer),
+            6 => Ok(DutyType::BuilderRegistration),
+            7 => Ok(DutyType::Randao),
+            8 => Ok(DutyType::PrepareAggregator),
+            9 => Ok(DutyType::Aggregator),
+            10 => Ok(DutyType::SyncMessage),
+            11 => Ok(DutyType::PrepareSyncContribution),
+            12 => Ok(DutyType::SyncContribution),
+            13 => Ok(DutyType::InfoSync),
+            _ => Err(ParSigExCodecError::InvalidDuty),
+        }
     }
 }
 
@@ -189,6 +250,30 @@ impl Duty {
     /// Create a new info sync duty.
     pub fn new_info_sync_duty(slot: SlotNumber) -> Self {
         Self::new(slot, DutyType::InfoSync)
+    }
+}
+
+impl TryFrom<&Duty> for pbcore::Duty {
+    type Error = DutyTypeError;
+
+    fn try_from(duty: &Duty) -> Result<Self, Self::Error> {
+        Ok(Self {
+            slot: duty.slot.inner(),
+            r#type: i32::try_from(&duty.duty_type)?,
+        })
+    }
+}
+
+impl TryFrom<&pbcore::Duty> for Duty {
+    type Error = ParSigExCodecError;
+
+    fn try_from(duty: &pbcore::Duty) -> Result<Self, Self::Error> {
+        let duty_type = DutyType::try_from(duty.r#type)?;
+        if !duty_type.is_valid() {
+            return Err(ParSigExCodecError::InvalidDuty);
+        }
+
+        Ok(Self::new(duty.slot.into(), duty_type))
     }
 }
 
@@ -452,7 +537,7 @@ impl AsRef<[u8; SIG_LEN]> for Signature {
 }
 
 /// Signed data type
-pub trait SignedData: DynClone + DynEq + StdDebug + Send + Sync {
+pub trait SignedData: Any + DynClone + DynEq + StdDebug + Send + Sync {
     /// signature returns the signed duty data's signature.
     fn signature(&self) -> Result<Signature, SignedDataError>;
 
@@ -517,6 +602,38 @@ impl ParSignedData {
     }
 }
 
+impl TryFrom<&ParSignedData> for pbcore::ParSignedData {
+    type Error = ParSigExCodecError;
+
+    fn try_from(data: &ParSignedData) -> Result<Self, Self::Error> {
+        let encoded = serialize_signed_data(data.signed_data.as_ref())?;
+        let share_idx =
+            i32::try_from(data.share_idx).map_err(|_| ParSigExCodecError::InvalidShareIndex)?;
+        let signature = data
+            .signed_data
+            .signature()
+            .map_err(|err| ParSigExCodecError::InvalidSignature(err.to_string()))?;
+
+        Ok(Self {
+            data: encoded.into(),
+            signature: signature.as_ref().to_vec().into(),
+            share_idx,
+        })
+    }
+}
+
+impl TryFrom<(&DutyType, &pbcore::ParSignedData)> for ParSignedData {
+    type Error = ParSigExCodecError;
+
+    fn try_from(value: (&DutyType, &pbcore::ParSignedData)) -> Result<Self, Self::Error> {
+        let (duty_type, data) = value;
+        let share_idx =
+            u64::try_from(data.share_idx).map_err(|_| ParSigExCodecError::InvalidShareIndex)?;
+        let signed_data = deserialize_signed_data(duty_type, &data.data)?;
+        Ok(Self::new_boxed(signed_data, share_idx))
+    }
+}
+
 /// ParSignedDataSet is a set of partially signed duty data only signed by a
 /// single threshold BLS share.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -551,6 +668,39 @@ impl ParSignedDataSet {
     /// Inner partially signed data set.
     pub fn inner_mut(&mut self) -> &mut HashMap<PubKey, ParSignedData> {
         &mut self.0
+    }
+}
+
+impl TryFrom<&ParSignedDataSet> for pbcore::ParSignedDataSet {
+    type Error = ParSigExCodecError;
+
+    fn try_from(set: &ParSignedDataSet) -> Result<Self, Self::Error> {
+        let mut out = std::collections::BTreeMap::new();
+        for (pub_key, value) in set.inner() {
+            out.insert(pub_key.to_string(), pbcore::ParSignedData::try_from(value)?);
+        }
+
+        Ok(Self { set: out })
+    }
+}
+
+impl TryFrom<(&DutyType, &pbcore::ParSignedDataSet)> for ParSignedDataSet {
+    type Error = ParSigExCodecError;
+
+    fn try_from(value: (&DutyType, &pbcore::ParSignedDataSet)) -> Result<Self, Self::Error> {
+        let (duty_type, set) = value;
+        if set.set.is_empty() {
+            return Err(ParSigExCodecError::InvalidParSignedDataSetFields);
+        }
+
+        let mut out = Self::new();
+        for (pub_key, value) in &set.set {
+            let pub_key = PubKey::try_from(pub_key.as_str())
+                .map_err(|_| ParSigExCodecError::InvalidPubKey(pub_key.clone()))?;
+            out.insert(pub_key, ParSignedData::try_from((duty_type, value))?);
+        }
+
+        Ok(out)
     }
 }
 
@@ -660,7 +810,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_pub_key_to_string() {
+    fn pub_key_to_string() {
         const ORIGINAL_PK_LEN: usize = 98;
 
         let key = PubKey::new([0; PK_LEN]);
@@ -675,7 +825,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_builder_registration_duty() {
+    fn new_builder_registration_duty() {
         let duty = Duty::new_builder_registration_duty(SlotNumber(1));
         assert_eq!(duty.duty_type, DutyType::BuilderRegistration);
         assert_eq!(duty.to_string(), "1/builder_registration");
@@ -683,7 +833,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_signature_duty() {
+    fn new_signature_duty() {
         let duty = Duty::new_signature_duty(SlotNumber(1));
         assert_eq!(duty.duty_type, DutyType::Signature);
         assert_eq!(duty.to_string(), "1/signature");
@@ -691,7 +841,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_prepare_aggregator_duty() {
+    fn new_prepare_aggregator_duty() {
         let duty = Duty::new_prepare_aggregator_duty(SlotNumber(1));
         assert_eq!(duty.duty_type, DutyType::PrepareAggregator);
         assert_eq!(duty.to_string(), "1/prepare_aggregator");
@@ -699,7 +849,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_aggregator_duty() {
+    fn new_aggregator_duty() {
         let duty = Duty::new_aggregator_duty(SlotNumber(1));
         assert_eq!(duty.duty_type, DutyType::Aggregator);
         assert_eq!(duty.to_string(), "1/aggregator");
@@ -707,7 +857,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_sync_contribution_duty() {
+    fn new_sync_contribution_duty() {
         let duty = Duty::new_sync_contribution_duty(SlotNumber(1));
         assert_eq!(duty.duty_type, DutyType::SyncContribution);
         assert_eq!(duty.to_string(), "1/sync_contribution");
@@ -715,7 +865,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_sync_message_duty() {
+    fn new_sync_message_duty() {
         let duty = Duty::new_sync_message_duty(SlotNumber(1));
         assert_eq!(duty.duty_type, DutyType::SyncMessage);
         assert_eq!(duty.to_string(), "1/sync_message");
@@ -723,7 +873,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_prepare_sync_contribution_duty() {
+    fn new_prepare_sync_contribution_duty() {
         let duty = Duty::new_prepare_sync_contribution_duty(SlotNumber(1));
         assert_eq!(duty.duty_type, DutyType::PrepareSyncContribution);
         assert_eq!(duty.to_string(), "1/prepare_sync_contribution");
@@ -731,7 +881,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_info_sync_duty() {
+    fn new_info_sync_duty() {
         let duty = Duty::new_info_sync_duty(SlotNumber(1));
         assert_eq!(duty.duty_type, DutyType::InfoSync);
         assert_eq!(duty.to_string(), "1/info_sync");
@@ -739,7 +889,7 @@ mod tests {
     }
 
     #[test]
-    fn test_slot() {
+    fn slot() {
         let slot = Slot {
             slot: SlotNumber(123),
             time: DateTime::from_timestamp(100, 100).unwrap(),
@@ -760,21 +910,21 @@ mod tests {
     }
 
     #[test]
-    fn test_serialize_pubkey() {
+    fn serialize_pubkey() {
         let pk = PubKey::new([42u8; PK_LEN]);
         let serialized = serde_json::to_string(&pk).unwrap();
         assert_eq!(serialized, format!("\"0x{}\"", hex::encode([42u8; PK_LEN])));
     }
 
     #[test]
-    fn test_deserialize_pubkey() {
+    fn deserialize_pubkey() {
         let serialized = format!("\"0x{}\"", hex::encode([42u8; PK_LEN]));
         let deserialized: PubKey = serde_json::from_str(&serialized).unwrap();
         assert_eq!(deserialized, PubKey::new([42u8; PK_LEN]));
     }
 
     #[test]
-    fn test_slot_iter() {
+    fn slot_iter() {
         let slot = Slot {
             slot: SlotNumber(123),
             time: DateTime::from_timestamp(100, 100).unwrap(),
@@ -789,7 +939,7 @@ mod tests {
     }
 
     #[test]
-    fn test_display_duty_type() {
+    fn display_duty_type() {
         assert_eq!(DutyType::Unknown.to_string(), "unknown");
         assert_eq!(DutyType::Proposer.to_string(), "proposer");
         assert_eq!(DutyType::Attester.to_string(), "attester");
@@ -816,7 +966,7 @@ mod tests {
     }
 
     #[test]
-    fn test_duty_type_is_valid() {
+    fn duty_type_is_valid() {
         assert!(!DutyType::Unknown.is_valid());
         assert!(DutyType::Proposer.is_valid());
         assert!(DutyType::Attester.is_valid());
@@ -827,27 +977,27 @@ mod tests {
     }
 
     #[test]
-    fn test_pub_key_from_bytes() {
+    fn pub_key_from_bytes() {
         let bytes = [42u8; PK_LEN];
         let pk = PubKey::try_from(&bytes[..]).unwrap();
         assert_eq!(pk, PubKey::new(bytes));
     }
 
     #[test]
-    fn test_pub_key_from_bytes_invalid_length() {
+    fn pub_key_from_bytes_invalid_length() {
         let bytes = [42u8; PK_LEN + 1];
         let result = PubKey::try_from(&bytes[..]);
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_pub_key_abbreviated() {
+    fn pub_key_abbreviated() {
         let pk = PubKey::new([42u8; PK_LEN]);
         assert_eq!(pk.abbreviated(), "2a2_a2a");
     }
 
     #[test]
-    fn test_duty_definition_set() {
+    fn duty_definition_set() {
         let mut duty_definition_set = DutyDefinitionSet::new();
         duty_definition_set.insert(DutyType::Proposer, DutyDefinition::new(DutyType::Proposer));
         assert_eq!(
@@ -857,7 +1007,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unsigned_data_set() {
+    fn unsigned_data_set() {
         let mut unsigned_data_set = UnsignedDataSet::new();
         unsigned_data_set.insert(DutyType::Proposer, UnsignedData::new(DutyType::Proposer));
         assert_eq!(
@@ -884,7 +1034,7 @@ mod tests {
     }
 
     #[test]
-    fn test_partially_signed_data_set() {
+    fn partially_signed_data_set() {
         let mut partially_signed_data_set = ParSignedDataSet::new();
         let par_signed = ParSignedData::new(MockSignedData, 0);
         partially_signed_data_set.insert(PubKey::new([42u8; PK_LEN]), par_signed.clone());
@@ -899,7 +1049,7 @@ mod tests {
     }
 
     #[test]
-    fn test_signed_data_set() {
+    fn signed_data_set() {
         let mut signed_data_set = SignedDataSet::new();
         signed_data_set.insert(PubKey::new([42u8; PK_LEN]), MockSignedData);
         assert_eq!(
@@ -909,7 +1059,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pub_key_from_string() {
+    fn pub_key_from_string() {
         let pk_str = "0x7f790ba343adf8891fac21a94b02d6ca93d0bc2199a5ec083ff6676e8c2f9f78b08bb122f1093675f9d24c8b5e7af241".to_string();
         let pk = PubKey::try_from(pk_str.as_str()).unwrap();
         assert_eq!(
@@ -923,7 +1073,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pub_key_from_string_invalid_length() {
+    fn pub_key_from_string_invalid_length() {
         let pk_str = "0x7f790ba343adf8891fac21a94b02d6ca93d0bc2199a5ec083ff6676e8c2f9f78b08bb121093675f9d24c8b5e7af241".to_string();
         let result = PubKey::try_from(pk_str.as_str());
         assert!(result.is_err());
