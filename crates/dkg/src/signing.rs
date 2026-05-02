@@ -1,204 +1,294 @@
 //! Post-DKG signing and aggregation.
 //!
-//! Ports Charon's `signLockHash`, `signDepositMsgs`,
-//! `signValidatorRegistrations`, `aggLockHashSig`, `aggDepositData`,
-//! `aggValidatorRegistrations`, `createDistValidators`, and the `signAndAgg*`
-//! driver functions (charon/dkg/dkg.go:600-1146).
+//! Primitive signing functions for lock hash, deposit messages, and validator
+//! registrations. Async orchestration wrappers coordinate exchange with peers
+//! and aggregate the collected partial signatures.
 
 use std::collections::HashMap;
 
-use chrono::DateTime;
 use pluto_cluster::{
     definition::{Definition, NodeIdx},
-    distvalidator::DistValidator,
     lock::Lock,
-    registration::{BuilderRegistration, Registration},
 };
-use pluto_core::types::{ParSignedData, ParSignedDataSet, PubKey, Signature};
-use pluto_crypto::{
-    blst_impl::BlstImpl,
-    tbls::Tbls,
-    types::{PublicKey, Signature as CryptoSignature},
+use pluto_core::{
+    signeddata::VersionedSignedValidatorRegistration,
+    types::{ParSignedData, ParSignedDataSet, PubKey},
 };
-use pluto_eth2api::{
-    spec::{phase0::Version, version::BuilderVersion},
-    v1::SignedValidatorRegistration,
-    versioned::VersionedSignedValidatorRegistration,
-};
-use pluto_eth2util::{
-    deposit as deposit_util, network::fork_version_to_genesis_time, registration as reg_util,
-};
+use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, tblsconv::pubkey_to_eth2};
+use pluto_eth2api::{spec::phase0, v1, versioned};
+use pluto_eth2util::{deposit, network, registration};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use crate::{
+    aggregate::{agg_deposit_data, agg_lock_hash_sig, agg_validator_registrations},
     exchanger::{Exchanger, SIG_DEPOSIT_DATA, SIG_LOCK, SIG_VALIDATOR_REG},
     share::Share,
+    validators::create_dist_validators,
 };
 
-// Type aliases for clarity.
-type Eth2DepositData = pluto_eth2api::spec::phase0::DepositData;
-type ClusterDepositData = pluto_cluster::deposit::DepositData;
+/// Result type for DKG signing helpers.
+pub type Result<T> = std::result::Result<T, SigningError>;
 
-/// Error from signing/aggregation operations.
+/// Error type for DKG signing helpers.
 #[derive(Debug, thiserror::Error)]
 pub enum SigningError {
-    /// BLS sign, verify, or aggregate operation failed.
-    #[error("BLS sign/verify/aggregate: {0:?}")]
-    Bls(pluto_crypto::types::Error),
-    /// Deposit message construction or signing-root computation failed.
-    #[error("deposit: {0}")]
-    Deposit(#[from] pluto_eth2util::deposit::DepositError),
-    /// Validator registration construction failed.
-    #[error("registration: {0}")]
-    Registration(#[from] pluto_eth2util::registration::RegistrationError),
-    /// Network/fork-version mapping failed.
-    #[error("network: {0}")]
-    Network(#[from] pluto_eth2util::network::NetworkError),
+    /// Failed to build a core public key from bytes.
+    #[error("invalid public key length while {error_context}")]
+    InvalidPublicKeyLength {
+        /// Signing helper that encountered the invalid key.
+        error_context: &'static str,
+    },
+
+    /// Failed to sign or verify with threshold BLS.
+    #[error(transparent)]
+    Crypto(#[from] pluto_crypto::types::Error),
+
+    /// Failed to build or hash deposit data.
+    #[error(transparent)]
+    Deposit(#[from] deposit::DepositError),
+
+    /// Failed to normalize the withdrawal address.
+    #[error(transparent)]
+    Helper(#[from] pluto_eth2util::helpers::HelperError),
+
+    /// Failed to build or hash validator registrations.
+    #[error(transparent)]
+    Registration(#[from] registration::RegistrationError),
+
+    /// Failed to resolve network metadata from the fork version.
+    #[error(transparent)]
+    Network(#[from] network::NetworkError),
+
+    /// Fork version is not 4 bytes.
+    #[error("invalid fork version length")]
+    InvalidForkVersionLength,
+
+    /// Failed to build a versioned validator registration wrapper.
+    #[error(transparent)]
+    SignedData(#[from] pluto_core::signeddata::SignedDataError),
+
+    /// Failed to convert a timestamp to seconds.
+    #[error(transparent)]
+    Timestamp(#[from] std::num::TryFromIntError),
+
+    /// Withdrawal addresses do not cover all shares.
+    #[error("insufficient withdrawal addresses")]
+    InsufficientWithdrawalAddresses,
+
+    /// Fee recipients do not cover all shares.
+    #[error("insufficient fee recipients")]
+    InsufficientFeeRecipients,
+
     /// Partial-signature exchange failed.
-    #[error("exchanger: {0}")]
+    #[error(transparent)]
     Exchanger(#[from] crate::exchanger::ExchangerError),
+
+    /// Partial-signature aggregation failed.
+    #[error(transparent)]
+    Aggregate(#[from] crate::aggregate::AggregateError),
+
+    /// Distributed-validator assembly failed.
+    #[error(transparent)]
+    Validators(#[from] crate::validators::ValidatorsError),
+
     /// Lock hash computation failed.
-    #[error("lock hash: {0}")]
-    LockHash(#[from] pluto_cluster::lock::LockError),
-    /// A public key had the wrong byte length.
-    #[error("invalid public key bytes")]
-    InvalidPubKey,
-    /// No partial signatures were found for a given DV public key.
-    #[error("no partial signatures for pubkey {0}")]
-    MissingPartialSig(String),
-    /// No deposit message was produced for a DV's public key.
-    #[error("deposit message not found for pubkey")]
-    MissingDepositMsg,
-    /// A partial deposit signature failed verification against its public
-    /// share.
-    #[error("invalid deposit data partial signature from share {share_idx} for pubkey {pubkey}")]
-    InvalidDepositPartialSignature {
-        /// 1-indexed share index carried on the partial signature.
-        share_idx: u64,
-        /// DV public key the partial signature belongs to.
-        pubkey: String,
-    },
-    /// A threshold-aggregated deposit signature failed final verification.
-    #[error("invalid deposit data aggregated signature for pubkey {pubkey}")]
-    InvalidDepositAggregateSignature {
-        /// DV public key the aggregate signature belongs to.
-        pubkey: String,
-    },
-    /// Pluto's own freshly generated partial deposit signature failed local
-    /// verification.
-    #[error(
-        "locally generated deposit data partial signature failed verification for share {share_idx} pubkey {pubkey}"
-    )]
-    InvalidLocalDepositPartialSignature {
-        /// 1-indexed share index for this Pluto node.
-        share_idx: u64,
-        /// DV public key the partial signature belongs to.
-        pubkey: String,
-    },
-    /// No validator registration was produced for a DV's public key.
-    #[error("registration not found for pubkey")]
-    MissingRegistration,
-    /// A share or peer index exceeded its allowed range.
-    #[error("share index overflow")]
+    #[error(transparent)]
+    Lock(#[from] pluto_cluster::lock::LockError),
+
+    /// Integer overflow in deposit-amount slot calculation.
+    #[error("overflow in deposit amount slot index")]
     Overflow,
-    /// Fork version to genesis time mapping failed.
-    #[error("fork version genesis time: {0}")]
-    GenesisTime(String),
-    /// Fork version bytes had the wrong length.
-    #[error("fork version: {0}")]
-    ForkVersion(String),
 }
 
-impl From<pluto_crypto::types::Error> for SigningError {
-    fn from(e: pluto_crypto::types::Error) -> Self {
-        SigningError::Bls(e)
-    }
-}
-
-// ── Helpers for private-field access ────────────────────────────────────────
-
-/// Extract raw bytes from a pluto_core::types::Signature (field is pub(crate)).
-fn sig_bytes(sig: &pluto_core::types::Signature) -> CryptoSignature {
-    *sig.as_ref()
-}
-
-/// Extract raw bytes from a pluto_core::types::PubKey (field is pub(crate)).
-fn pk_bytes(pk: &PubKey) -> [u8; 48] {
-    pk.as_ref().try_into().expect("PubKey always 48 bytes")
-}
-
-// ── Lock hash ───────────────────────────────────────────────────────────────
-
-/// Signs the lock hash with each share's secret key and returns a
-/// `ParSignedDataSet` containing one partial signature per DV.
-/// Reference: charon/dkg/dkg.go:793 `signLockHash`.
-fn sign_lock_hash(
-    share_idx: usize,
-    shares: &[Share],
-    hash: &[u8],
-) -> Result<ParSignedDataSet, SigningError> {
+/// Returns partially signed signatures of the lock hash.
+pub fn sign_lock_hash(share_idx: u64, shares: &[Share], hash: &[u8]) -> Result<ParSignedDataSet> {
     let mut set = ParSignedDataSet::new();
+
     for share in shares {
-        let sig_bytes = BlstImpl.sign(&share.secret_share, hash)?;
-        let pk = PubKey::new(share.pub_key);
+        let pub_key = share_pubkey(share, "signing lock hash")?;
+        let sig = BlstImpl.sign(&share.secret_share, hash)?;
+
         set.insert(
-            pk,
-            ParSignedData::new(Signature::new(sig_bytes), share_idx as u64),
+            pub_key,
+            ParSignedData::new(pluto_core::types::Signature::new(sig), share_idx),
         );
     }
+
     Ok(set)
 }
 
-/// Aggregates (non-threshold) partial lock-hash signatures from all peers.
-/// Returns the aggregate signature and the list of contributing public shares.
-/// Reference: charon/dkg/dkg.go:747 `aggLockHashSig`.
-fn agg_lock_hash_sig(
-    data: &HashMap<PubKey, Vec<ParSignedData>>,
-    shares_by_pk: &HashMap<PubKey, &Share>,
-    hash: &[u8],
-) -> Result<(CryptoSignature, Vec<PublicKey>), SigningError> {
-    let mut all_sigs: Vec<CryptoSignature> = Vec::new();
-    let mut all_pubshares: Vec<PublicKey> = Vec::new();
-
-    for (pk, psigs) in data {
-        let share = shares_by_pk
-            .get(pk)
-            .ok_or_else(|| SigningError::MissingPartialSig(pk.to_string()))?;
-
-        for psig in psigs {
-            let raw_sig: CryptoSignature = sig_bytes(
-                &psig
-                    .signed_data
-                    .signature()
-                    .map_err(|_| SigningError::InvalidPubKey)?,
-            );
-            let pubshare = share
-                .public_shares
-                .get(&psig.share_idx)
-                .ok_or_else(|| SigningError::MissingPartialSig(pk.to_string()))?;
-
-            BlstImpl.verify(pubshare, hash, &raw_sig)?;
-            all_sigs.push(raw_sig);
-            all_pubshares.push(*pubshare);
-        }
+/// Returns partially signed deposit-message signatures keyed by validator
+/// pubkey.
+pub fn sign_deposit_msgs(
+    shares: &[Share],
+    share_idx: u64,
+    withdrawal_addresses: &[String],
+    network_name: &str,
+    amount: phase0::Gwei,
+    compounding: bool,
+) -> Result<(ParSignedDataSet, HashMap<PubKey, phase0::DepositMessage>)> {
+    if shares.len() != withdrawal_addresses.len() {
+        return Err(SigningError::InsufficientWithdrawalAddresses);
     }
 
-    Ok((BlstImpl.aggregate(&all_sigs)?, all_pubshares))
+    let mut msgs = HashMap::with_capacity(shares.len());
+    let mut set = ParSignedDataSet::new();
+
+    for (share, withdrawal_address) in shares.iter().zip(withdrawal_addresses.iter()) {
+        let eth2_pubkey = pubkey_to_eth2(share.pub_key);
+        let pub_key = share_pubkey(share, "signing deposit message")?;
+        let withdrawal_address = pluto_eth2util::helpers::checksum_address(withdrawal_address)?;
+
+        let msg = deposit::new_message(eth2_pubkey, &withdrawal_address, amount, compounding)?;
+        let sig_root = deposit::get_message_signing_root(&msg, network_name)?;
+        let sig = BlstImpl.sign(&share.secret_share, &sig_root)?;
+
+        set.insert(
+            pub_key,
+            ParSignedData::new(pluto_core::types::Signature::new(sig), share_idx),
+        );
+        msgs.insert(pub_key, msg);
+    }
+
+    Ok((set, msgs))
+}
+
+/// Returns partially signed validator registrations keyed by validator pubkey.
+pub fn sign_validator_registrations(
+    shares: &[Share],
+    share_idx: u64,
+    fee_recipients: &[String],
+    gas_limit: u64,
+    fork_version: &[u8],
+) -> Result<(
+    ParSignedDataSet,
+    HashMap<PubKey, VersionedSignedValidatorRegistration>,
+)> {
+    if shares.len() != fee_recipients.len() {
+        return Err(SigningError::InsufficientFeeRecipients);
+    }
+
+    let timestamp = network::fork_version_to_genesis_time(fork_version)?;
+    let fork_version_arr: phase0::Version = fork_version
+        .try_into()
+        .map_err(|_| SigningError::InvalidForkVersionLength)?;
+
+    let mut msgs = HashMap::with_capacity(shares.len());
+    let mut set = ParSignedDataSet::new();
+
+    for (share, fee_recipient) in shares.iter().zip(fee_recipients.iter()) {
+        let eth2_pubkey = pubkey_to_eth2(share.pub_key);
+        let pub_key = share_pubkey(share, "signing validator registration")?;
+
+        let reg_msg = registration::new_message(
+            eth2_pubkey,
+            fee_recipient,
+            gas_limit,
+            u64::try_from(timestamp.timestamp())?,
+        )?;
+        let sig_root = registration::get_message_signing_root(&reg_msg, fork_version_arr);
+        let sig = BlstImpl.sign(&share.secret_share, &sig_root)?;
+
+        let signed_reg = VersionedSignedValidatorRegistration::new(
+            versioned::VersionedSignedValidatorRegistration {
+                version: versioned::BuilderVersion::V1,
+                v1: Some(v1::SignedValidatorRegistration {
+                    message: reg_msg,
+                    signature: sig,
+                }),
+            },
+        )?;
+
+        set.insert(
+            pub_key,
+            ParSignedData::new(pluto_core::types::Signature::new(sig), share_idx),
+        );
+        msgs.insert(pub_key, signed_reg);
+    }
+
+    Ok((set, msgs))
+}
+
+// ── Async orchestration ──────────────────────────────────────────────────────
+
+/// Signs, exchanges, and aggregates deposit data for each deposit amount.
+pub async fn sign_and_agg_deposit_data(
+    exchanger: &Exchanger,
+    shares: &[Share],
+    withdrawal_addresses: &[String],
+    network: &str,
+    node_idx: &NodeIdx,
+    deposit_amounts: &[u64],
+    compounding: bool,
+) -> Result<Vec<Vec<phase0::DepositData>>> {
+    let share_idx = u64::try_from(node_idx.share_idx)?;
+    let mut result = Vec::with_capacity(deposit_amounts.len());
+
+    for (i, &amount) in deposit_amounts.iter().enumerate() {
+        let (set, msgs) = sign_deposit_msgs(
+            shares,
+            share_idx,
+            withdrawal_addresses,
+            network,
+            amount,
+            compounding,
+        )?;
+
+        let sig_type = SIG_DEPOSIT_DATA
+            .checked_add(u64::try_from(i)?)
+            .ok_or(SigningError::Overflow)?;
+        let peer_sigs = exchanger.exchange(sig_type, set).await?;
+        let deposit_data = agg_deposit_data(&peer_sigs, shares, &msgs, network)?;
+        result.push(deposit_data);
+    }
+
+    Ok(result)
+}
+
+/// Signs, exchanges, and aggregates validator registrations.
+pub async fn sign_and_agg_validator_registrations(
+    exchanger: &Exchanger,
+    shares: &[Share],
+    fee_recipients: &[String],
+    gas_limit: u64,
+    node_idx: &NodeIdx,
+    fork_version: &[u8],
+) -> Result<Vec<VersionedSignedValidatorRegistration>> {
+    let effective_gas_limit = if gas_limit == 0 {
+        warn!(
+            default = registration::DEFAULT_GAS_LIMIT,
+            "gas_limit not set, using default"
+        );
+        registration::DEFAULT_GAS_LIMIT
+    } else {
+        gas_limit
+    };
+
+    let share_idx = u64::try_from(node_idx.share_idx)?;
+    let (set, msgs) = sign_validator_registrations(
+        shares,
+        share_idx,
+        fee_recipients,
+        effective_gas_limit,
+        fork_version,
+    )?;
+
+    let peer_sigs = exchanger.exchange(SIG_VALIDATOR_REG, set).await?;
+    Ok(agg_validator_registrations(&peer_sigs, shares, &msgs, fork_version)?)
 }
 
 /// Signs, exchanges, and aggregates lock-hash partial signatures; builds the
 /// cluster lock.
-/// Reference: charon/dkg/dkg.go:599 `signAndAggLockHash`.
-pub async fn sign_and_agg_lock_hash(
+pub async fn sign_and_aggregate_lock_hash(
     _ct: CancellationToken,
     shares: &[Share],
     definition: Definition,
     node_idx: &NodeIdx,
     exchanger: &Exchanger,
-    deposit_datas: Vec<Vec<Eth2DepositData>>,
+    deposit_datas: Vec<Vec<phase0::DepositData>>,
     val_regs: Vec<VersionedSignedValidatorRegistration>,
-) -> Result<Lock, SigningError> {
+) -> Result<Lock> {
     let validators = create_dist_validators(shares, &deposit_datas, &val_regs)?;
 
     let mut lock = Lock {
@@ -210,401 +300,170 @@ pub async fn sign_and_agg_lock_hash(
     };
     lock.set_lock_hash()?;
 
-    let lock_hash_sig_set = sign_lock_hash(node_idx.share_idx, shares, &lock.lock_hash)?;
+    let share_idx = u64::try_from(node_idx.share_idx)?;
+    let lock_hash_sig_set = sign_lock_hash(share_idx, shares, &lock.lock_hash)?;
     let peer_sigs = exchanger.exchange(SIG_LOCK, lock_hash_sig_set).await?;
 
-    let shares_by_pk: HashMap<PubKey, &Share> =
-        shares.iter().map(|s| (PubKey::new(s.pub_key), s)).collect();
+    let shares_map: HashMap<PubKey, Share> = shares
+        .iter()
+        .map(|s| {
+            PubKey::try_from(s.pub_key.as_slice())
+                .map(|pk| (pk, s.clone()))
+                .map_err(|_| SigningError::InvalidPublicKeyLength {
+                    error_context: "building lock hash shares map",
+                })
+        })
+        .collect::<Result<_>>()?;
 
-    let (agg_sig, all_pubshares) = agg_lock_hash_sig(&peer_sigs, &shares_by_pk, &lock.lock_hash)?;
+    let (agg_sig, all_pubshares) =
+        agg_lock_hash_sig(&peer_sigs, &shares_map, &lock.lock_hash)?;
 
     BlstImpl.verify_aggregate(&all_pubshares, agg_sig, &lock.lock_hash)?;
-
     lock.signature_aggregate = agg_sig.to_vec();
+
     Ok(lock)
 }
 
-// ── Deposit data ────────────────────────────────────────────────────────────
-
-// DepositMessage is the unsigned portion; DepositData adds the signature.
-type Eth2DepositMessage = pluto_eth2api::spec::phase0::DepositMessage;
-
-/// Signs deposit messages for each DV share and returns a
-/// `(ParSignedDataSet, msgs_map)` for the given deposit amount.
-/// Reference: charon/dkg/dkg.go:812 `signDepositMsgs`.
-fn sign_deposit_msgs(
-    shares: &[Share],
-    share_idx: usize,
-    withdrawal_addresses: &[String],
-    network: &str,
-    amount: u64,
-    compounding: bool,
-) -> Result<(ParSignedDataSet, HashMap<PubKey, Eth2DepositMessage>), SigningError> {
-    let mut msgs: HashMap<PubKey, Eth2DepositMessage> = HashMap::new();
-    let mut set = ParSignedDataSet::new();
-
-    for (i, share) in shares.iter().enumerate() {
-        let withdrawal_addr = withdrawal_addresses
-            .get(i)
-            .map(String::as_str)
-            .unwrap_or_default();
-
-        let msg = deposit_util::new_message(share.pub_key, withdrawal_addr, amount, compounding)?;
-        let signing_root = deposit_util::get_message_signing_root(&msg, network)?;
-
-        let raw_sig = BlstImpl.sign(&share.secret_share, signing_root.as_ref())?;
-        let pk = PubKey::new(share.pub_key);
-        let local_pubshare = share
-            .public_shares
-            .get(&(share_idx as u64))
-            .ok_or_else(|| SigningError::InvalidLocalDepositPartialSignature {
-                share_idx: share_idx as u64,
-                pubkey: pk.to_string(),
-            })?;
-        BlstImpl
-            .verify(local_pubshare, signing_root.as_ref(), &raw_sig)
-            .map_err(|_| SigningError::InvalidLocalDepositPartialSignature {
-                share_idx: share_idx as u64,
-                pubkey: pk.to_string(),
-            })?;
-        set.insert(
-            pk,
-            ParSignedData::new(Signature::new(raw_sig), share_idx as u64),
-        );
-        msgs.insert(pk, msg);
-    }
-
-    Ok((set, msgs))
+fn share_pubkey(share: &Share, error_context: &'static str) -> Result<PubKey> {
+    PubKey::try_from(share.pub_key.as_slice())
+        .map_err(|_| SigningError::InvalidPublicKeyLength { error_context })
 }
 
-/// Threshold-aggregates partial deposit signatures into complete deposit data.
-/// Reference: charon/dkg/dkg.go:910 `aggDepositData`.
-fn agg_deposit_data(
-    data: &HashMap<PubKey, Vec<ParSignedData>>,
-    shares: &[Share],
-    msgs: &HashMap<PubKey, Eth2DepositMessage>,
-    network: &str,
-) -> Result<Vec<Eth2DepositData>, SigningError> {
-    let pubshares_by_pk: HashMap<PubKey, &HashMap<u64, PublicKey>> = shares
-        .iter()
-        .map(|s| (PubKey::new(s.pub_key), &s.public_shares))
-        .collect();
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::SeedableRng;
 
-    let mut result = Vec::new();
+    fn build_shares(num_validators: usize, total: u8, threshold: u8, share_idx: u8) -> Vec<Share> {
+        let mut res = Vec::with_capacity(num_validators);
 
-    for (pk, psigs) in data {
-        let msg = msgs.get(pk).ok_or(SigningError::MissingDepositMsg)?;
-        let signing_root = deposit_util::get_message_signing_root(msg, network)?;
-        let pubshares = pubshares_by_pk
-            .get(pk)
-            .ok_or_else(|| SigningError::MissingPartialSig(pk.to_string()))?;
+        for seed in 0..num_validators {
+            let secret = BlstImpl
+                .generate_insecure_secret(rand::rngs::StdRng::seed_from_u64(
+                    u64::try_from(seed)
+                        .expect("seed should fit")
+                        .checked_add(1)
+                        .expect("seed increment should not overflow"),
+                ))
+                .expect("secret generation should succeed");
+            let pub_key = BlstImpl
+                .secret_to_public_key(&secret)
+                .expect("public key derivation should succeed");
+            let shares = BlstImpl
+                .threshold_split(&secret, total, threshold)
+                .expect("threshold split should succeed");
 
-        let mut partial_sigs: HashMap<u8, CryptoSignature> = HashMap::new();
-        for psig in psigs {
-            let raw_sig: CryptoSignature = sig_bytes(
-                &psig
-                    .signed_data
-                    .signature()
-                    .map_err(|_| SigningError::InvalidPubKey)?,
+            res.push(Share {
+                pub_key,
+                secret_share: *shares
+                    .get(&share_idx)
+                    .expect("requested share index should exist"),
+                public_shares: shares
+                    .into_iter()
+                    .map(|(idx, secret_share)| {
+                        (
+                            u64::from(idx),
+                            BlstImpl
+                                .secret_to_public_key(&secret_share)
+                                .expect("public share derivation should succeed"),
+                        )
+                    })
+                    .collect(),
+            });
+        }
+
+        res
+    }
+
+    #[test]
+    fn sign_deposit_msgs_returns_one_message_per_share() {
+        let shares = build_shares(2, 4, 3, 1);
+        let withdrawal_addresses = vec![
+            "0x000000000000000000000000000000000000dEaD".to_string(),
+            "0x000000000000000000000000000000000000bEEF".to_string(),
+        ];
+
+        let (set, msgs) = sign_deposit_msgs(
+            &shares,
+            1,
+            &withdrawal_addresses,
+            "goerli",
+            deposit::DEFAULT_DEPOSIT_AMOUNT,
+            true,
+        )
+        .expect("deposit signing should succeed");
+
+        assert_eq!(set.inner().len(), 2);
+        assert_eq!(msgs.len(), 2);
+        for (share, withdrawal_address) in shares.iter().zip(withdrawal_addresses.iter()) {
+            let pub_key = PubKey::try_from(share.pub_key.as_slice()).expect("pubkey should fit");
+            let msg = msgs.get(&pub_key).expect("message should exist");
+            let expected = deposit::new_message(
+                share.pub_key,
+                withdrawal_address,
+                deposit::DEFAULT_DEPOSIT_AMOUNT,
+                true,
+            )
+            .expect("message should build");
+            assert_eq!(*msg, expected);
+            assert_eq!(
+                set.get(&pub_key).expect("signature should exist").share_idx,
+                1
             );
-            let pubshare = pubshares
-                .get(&psig.share_idx)
-                .ok_or_else(|| SigningError::MissingPartialSig(pk.to_string()))?;
+        }
+    }
+
+    #[test]
+    fn sign_lock_hash_returns_one_partial_signature_per_share() {
+        let shares = build_shares(2, 4, 3, 2);
+        let hash = [0x42; 32];
+
+        let set = sign_lock_hash(2, &shares, &hash).expect("lock hash signing should succeed");
+
+        assert_eq!(set.inner().len(), shares.len());
+        for share in &shares {
+            let pub_key = PubKey::try_from(share.pub_key.as_slice()).expect("pubkey should fit");
+            let partial = set.get(&pub_key).expect("partial signature should exist");
+
+            assert_eq!(partial.share_idx, 2);
+            let sig = partial
+                .signed_data
+                .signature()
+                .expect("signature should exist");
             BlstImpl
-                .verify(pubshare, signing_root.as_ref(), &raw_sig)
-                .map_err(|_| SigningError::InvalidDepositPartialSignature {
-                    share_idx: psig.share_idx,
-                    pubkey: pk.to_string(),
-                })?;
-            let idx = u8::try_from(psig.share_idx).map_err(|_| SigningError::Overflow)?;
-            partial_sigs.insert(idx, raw_sig);
+                .verify(&share.public_shares[&2], &hash, sig.as_ref())
+                .expect("partial signature should verify against share public key");
         }
-
-        let agg_sig = BlstImpl.threshold_aggregate(&partial_sigs)?;
-        let pk_arr = pk_bytes(pk);
-        BlstImpl
-            .verify(&pk_arr, signing_root.as_ref(), &agg_sig)
-            .map_err(|_| SigningError::InvalidDepositAggregateSignature {
-                pubkey: pk.to_string(),
-            })?;
-
-        result.push(Eth2DepositData {
-            pubkey: msg.pubkey,
-            withdrawal_credentials: msg.withdrawal_credentials,
-            amount: msg.amount,
-            signature: agg_sig,
-        }); // DepositMessage + sig → DepositData
     }
 
-    Ok(result)
-}
+    #[test]
+    fn sign_validator_registrations_uses_fork_version_timestamp() {
+        let shares = build_shares(1, 4, 3, 1);
+        let fork_version =
+            network::network_to_fork_version_bytes("goerli").expect("network should exist");
+        let (set, msgs) = sign_validator_registrations(
+            &shares,
+            1,
+            &["0x000000000000000000000000000000000000dEaD".to_string()],
+            registration::DEFAULT_GAS_LIMIT,
+            &fork_version,
+        )
+        .expect("registration signing should succeed");
 
-/// Signs, exchanges, and aggregates deposit data.
-/// Reference: charon/dkg/dkg.go:688 `signAndAggDepositData`.
-pub async fn sign_and_agg_deposit_data(
-    exchanger: &Exchanger,
-    shares: &[Share],
-    withdrawal_addresses: &[String],
-    network: &str,
-    node_idx: &NodeIdx,
-    deposit_amounts: &[u64],
-    compounding: bool,
-) -> Result<Vec<Vec<Eth2DepositData>>, SigningError> {
-    let mut result = Vec::new();
+        let pub_key = PubKey::try_from(shares[0].pub_key.as_slice()).expect("pubkey should fit");
+        let msg = msgs.get(&pub_key).expect("message should exist");
+        let expected_timestamp = network::fork_version_to_genesis_time(&fork_version)
+            .expect("fork version should be valid")
+            .timestamp();
 
-    for (i, &amount) in deposit_amounts.iter().enumerate() {
-        let (set, msgs): (ParSignedDataSet, HashMap<PubKey, Eth2DepositMessage>) =
-            sign_deposit_msgs(
-                shares,
-                node_idx.share_idx,
-                withdrawal_addresses,
-                network,
-                amount,
-                compounding,
-            )?;
-
-        let sig_type = SIG_DEPOSIT_DATA
-            .checked_add(u64::try_from(i).map_err(|_| SigningError::Overflow)?)
-            .ok_or(SigningError::Overflow)?;
-        let peer_sigs = exchanger.exchange(sig_type, set).await?;
-        let deposit_data = agg_deposit_data(&peer_sigs, shares, &msgs, network)?;
-        result.push(deposit_data);
-    }
-
-    Ok(result)
-}
-
-// ── Validator registrations ─────────────────────────────────────────────────
-
-/// Signs validator registration messages for each DV share.
-/// Reference: charon/dkg/dkg.go:859 `signValidatorRegistrations`.
-fn sign_validator_registrations(
-    shares: &[Share],
-    share_idx: usize,
-    fee_recipients: &[String],
-    gas_limit: u64,
-    fork_version: &[u8],
-) -> Result<
-    (
-        ParSignedDataSet,
-        HashMap<PubKey, VersionedSignedValidatorRegistration>,
-    ),
-    SigningError,
-> {
-    let timestamp = u64::try_from(
-        fork_version_to_genesis_time(fork_version)
-            .map_err(|e| SigningError::GenesisTime(e.to_string()))?
-            .timestamp(),
-    )
-    .map_err(|_| SigningError::GenesisTime("timestamp out of u64 range".into()))?;
-
-    let genesis_fork_version: Version = fork_version
-        .try_into()
-        .map_err(|_| SigningError::ForkVersion("wrong length".into()))?;
-
-    let mut msgs: HashMap<PubKey, VersionedSignedValidatorRegistration> = HashMap::new();
-    let mut set = ParSignedDataSet::new();
-
-    for (i, share) in shares.iter().enumerate() {
-        let fee_recipient = fee_recipients
-            .get(i)
-            .map(String::as_str)
-            .unwrap_or_default();
-        let reg_msg = reg_util::new_message(share.pub_key, fee_recipient, gas_limit, timestamp)?;
-        let signing_root = reg_util::get_message_signing_root(&reg_msg, genesis_fork_version);
-
-        let raw_sig = BlstImpl.sign(&share.secret_share, signing_root.as_ref())?;
-
-        let versioned_reg = VersionedSignedValidatorRegistration {
-            version: BuilderVersion::V1,
-            v1: Some(SignedValidatorRegistration {
-                message: reg_msg,
-                signature: raw_sig,
-            }),
-        };
-
-        let pk = PubKey::new(share.pub_key);
-        set.insert(
-            pk,
-            ParSignedData::new(Signature::new(raw_sig), share_idx as u64),
+        let v1 = msg.0.v1.as_ref().expect("v1 payload should exist");
+        assert_eq!(
+            i64::try_from(v1.message.timestamp).expect("timestamp should fit"),
+            expected_timestamp
         );
-        msgs.insert(pk, versioned_reg);
-    }
-
-    Ok((set, msgs))
-}
-
-/// Threshold-aggregates partial registration signatures.
-/// Reference: charon/dkg/dkg.go:992 `aggValidatorRegistrations`.
-fn agg_validator_registrations(
-    data: &HashMap<PubKey, Vec<ParSignedData>>,
-    shares: &[Share],
-    msgs: &HashMap<PubKey, VersionedSignedValidatorRegistration>,
-    fork_version: &[u8],
-) -> Result<Vec<VersionedSignedValidatorRegistration>, SigningError> {
-    let genesis_fork_version: Version = fork_version
-        .try_into()
-        .map_err(|_| SigningError::ForkVersion("wrong length".into()))?;
-
-    let pubshares_by_pk: HashMap<PubKey, &HashMap<u64, PublicKey>> = shares
-        .iter()
-        .map(|s| (PubKey::new(s.pub_key), &s.public_shares))
-        .collect();
-
-    let mut result = Vec::new();
-
-    for (pk, psigs) in data {
-        let versioned_reg = msgs.get(pk).ok_or(SigningError::MissingRegistration)?;
-        let v1 = versioned_reg
-            .v1
-            .as_ref()
-            .ok_or(SigningError::MissingRegistration)?;
-        let reg_msg = v1.message.clone();
-
-        let signing_root = reg_util::get_message_signing_root(&reg_msg, genesis_fork_version);
-        let pubshares = pubshares_by_pk
-            .get(pk)
-            .ok_or_else(|| SigningError::MissingPartialSig(pk.to_string()))?;
-
-        let mut partial_sigs: HashMap<u8, CryptoSignature> = HashMap::new();
-        for psig in psigs {
-            let raw_sig: CryptoSignature = sig_bytes(
-                &psig
-                    .signed_data
-                    .signature()
-                    .map_err(|_| SigningError::InvalidPubKey)?,
-            );
-            let pubshare = pubshares
-                .get(&psig.share_idx)
-                .ok_or_else(|| SigningError::MissingPartialSig(pk.to_string()))?;
-            BlstImpl.verify(pubshare, signing_root.as_ref(), &raw_sig)?;
-            let idx = u8::try_from(psig.share_idx).map_err(|_| SigningError::Overflow)?;
-            partial_sigs.insert(idx, raw_sig);
-        }
-
-        let agg_sig = BlstImpl.threshold_aggregate(&partial_sigs)?;
-        let pk_arr = pk_bytes(pk);
-        BlstImpl.verify(&pk_arr, signing_root.as_ref(), &agg_sig)?;
-
-        result.push(VersionedSignedValidatorRegistration {
-            version: BuilderVersion::V1,
-            v1: Some(SignedValidatorRegistration {
-                message: reg_msg,
-                signature: agg_sig,
-            }),
-        });
-    }
-
-    Ok(result)
-}
-
-/// Signs, exchanges, and aggregates validator registrations.
-/// Reference: charon/dkg/dkg.go:717 `signAndAggValidatorRegistrations`.
-pub async fn sign_and_agg_validator_registrations(
-    exchanger: &Exchanger,
-    shares: &[Share],
-    fee_recipients: &[String],
-    gas_limit: u64,
-    node_idx: &NodeIdx,
-    fork_version: &[u8],
-) -> Result<Vec<VersionedSignedValidatorRegistration>, SigningError> {
-    let effective_gas_limit = if gas_limit == 0 {
-        warn!(
-            default = reg_util::DEFAULT_GAS_LIMIT,
-            "gas_limit not set, using default"
+        assert_eq!(
+            set.get(&pub_key).expect("signature should exist").share_idx,
+            1
         );
-        reg_util::DEFAULT_GAS_LIMIT
-    } else {
-        gas_limit
-    };
-
-    let (set, msgs) = sign_validator_registrations(
-        shares,
-        node_idx.share_idx,
-        fee_recipients,
-        effective_gas_limit,
-        fork_version,
-    )?;
-
-    let peer_sigs = exchanger.exchange(SIG_VALIDATOR_REG, set).await?;
-    agg_validator_registrations(&peer_sigs, shares, &msgs, fork_version)
-}
-
-// ── create_dist_validators ──────────────────────────────────────────────────
-
-/// Builds cluster [`DistValidator`]s from DKG shares, deposit data, and
-/// validator registrations.
-/// Reference: charon/dkg/dkg.go:1077 `createDistValidators`.
-pub fn create_dist_validators(
-    shares: &[Share],
-    deposit_datas: &[Vec<Eth2DepositData>],
-    val_regs: &[VersionedSignedValidatorRegistration],
-) -> Result<Vec<DistValidator>, SigningError> {
-    // Build deposit data lookup: pubkey → all deposit data for that validator.
-    let mut deposit_by_pk: HashMap<[u8; 48], Vec<Eth2DepositData>> = HashMap::new();
-    for amount_deposits in deposit_datas {
-        for dd in amount_deposits {
-            deposit_by_pk.entry(dd.pubkey).or_default().push(dd.clone());
-        }
     }
-
-    let mut dvs = Vec::with_capacity(shares.len());
-
-    for share in shares {
-        let reg = val_regs
-            .iter()
-            .find(|r| {
-                r.v1.as_ref()
-                    .map(|v| v.message.pubkey == share.pub_key)
-                    .unwrap_or(false)
-            })
-            .ok_or(SigningError::MissingRegistration)?;
-
-        let v1 = reg.v1.as_ref().ok_or(SigningError::MissingRegistration)?;
-
-        // Public shares sorted by share index (1-indexed per cluster convention).
-        let mut pub_share_entries: Vec<(u64, PublicKey)> =
-            share.public_shares.iter().map(|(&k, &v)| (k, v)).collect();
-        pub_share_entries.sort_by_key(|(k, _)| *k);
-        let pub_shares: Vec<Vec<u8>> = pub_share_entries
-            .into_iter()
-            .map(|(_, pk)| pk.to_vec())
-            .collect();
-
-        let eth2_deposits = deposit_by_pk
-            .get(&share.pub_key)
-            .ok_or(SigningError::MissingDepositMsg)?;
-
-        let partial_deposit_data: Vec<ClusterDepositData> = eth2_deposits
-            .iter()
-            .map(|dd| ClusterDepositData {
-                pub_key: dd.pubkey,
-                withdrawal_credentials: dd.withdrawal_credentials,
-                amount: dd.amount,
-                signature: dd.signature,
-            })
-            .collect();
-
-        let timestamp =
-            DateTime::from_timestamp(v1.message.timestamp.cast_signed(), 0).unwrap_or_default();
-
-        let builder_registration = BuilderRegistration {
-            message: Registration {
-                fee_recipient: v1.message.fee_recipient,
-                gas_limit: v1.message.gas_limit,
-                timestamp,
-                pub_key: v1.message.pubkey,
-            },
-            signature: v1.signature,
-        };
-
-        dvs.push(DistValidator {
-            pub_key: share.pub_key.to_vec(),
-            pub_shares,
-            partial_deposit_data,
-            builder_registration,
-        });
-    }
-
-    Ok(dvs)
 }

@@ -12,7 +12,6 @@ hex.workspace = true
 pluto-eth2api.workspace = true
 rand.workspace = true
 rand_core.workspace = true
-serde.workspace = true
 thiserror.workspace = true
 
 [lints.rust]

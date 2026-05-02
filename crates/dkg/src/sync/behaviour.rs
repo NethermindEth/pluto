@@ -1,6 +1,8 @@
 use std::{
     collections::{HashMap, VecDeque},
+    pin::Pin,
     task::{Context, Poll},
+    time::Duration,
 };
 
 use either::Either;
@@ -13,9 +15,11 @@ use libp2p::{
         dummy,
     },
 };
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time::Sleep};
 
 use super::{Command, client::Client, handler::Handler, server::Server};
+
+const NO_ADDRESSES_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 /// Event emitted by the sync behaviour.
 #[derive(Debug, Clone)]
@@ -39,6 +43,14 @@ pub enum Event {
         /// The validation error.
         error: super::error::Error,
     },
+    /// A peer responded to an outbound sync message.
+    PeerRttObserved {
+        /// The peer that responded.
+        peer_id: PeerId,
+        /// Round-trip time between sending the sync message and receiving the
+        /// response.
+        rtt: Duration,
+    },
 }
 
 /// Swarm behaviour backing the DKG sync protocol.
@@ -47,6 +59,7 @@ pub struct Behaviour {
     clients: HashMap<PeerId, Client>,
     command_rx: mpsc::UnboundedReceiver<Command>,
     pending_events: VecDeque<ToSwarm<Event, THandlerInEvent<Self>>>,
+    no_addresses_retries: HashMap<PeerId, Pin<Box<Sleep>>>,
 }
 
 impl Behaviour {
@@ -64,6 +77,7 @@ impl Behaviour {
                 .collect(),
             command_rx,
             pending_events: VecDeque::new(),
+            no_addresses_retries: HashMap::new(),
         }
     }
 
@@ -79,10 +93,7 @@ impl Behaviour {
     }
 
     /// Queues a dial for an active sync client when no connection to the peer
-    /// exists.
-    ///
-    /// This is used both for the initial activation path and for retrying
-    /// transport-level dial failures during startup.
+    /// exists. Initial activation does not require reconnect to be enabled.
     fn schedule_dial_if_needed(&mut self, peer_id: PeerId) {
         let Some(client) = self.clients.get(&peer_id) else {
             return;
@@ -97,6 +108,43 @@ impl Behaviour {
                 .condition(PeerCondition::DisconnectedAndNotDialing)
                 .build(),
         });
+    }
+
+    /// Returns whether a failed dial should be retried for this peer.
+    fn should_retry_dial(&self, peer_id: PeerId) -> bool {
+        self.clients
+            .get(&peer_id)
+            .is_some_and(|client| client.should_reconnect() && client.should_schedule_dial())
+    }
+
+    /// Queues an immediate retry for dial failures that already had addresses.
+    fn schedule_dial_retry_if_needed(&mut self, peer_id: PeerId) {
+        if self.should_retry_dial(peer_id) {
+            self.schedule_dial_if_needed(peer_id);
+        }
+    }
+
+    /// Schedules a delayed retry when no peer address is known yet.
+    fn schedule_no_addresses_retry_if_needed(&mut self, peer_id: PeerId) {
+        if self.should_retry_dial(peer_id) {
+            self.no_addresses_retries
+                .entry(peer_id)
+                .or_insert_with(|| Box::pin(tokio::time::sleep(NO_ADDRESSES_RETRY_DELAY)));
+        }
+    }
+
+    /// Polls delayed no-address retry timers and queues ready dials.
+    fn poll_no_addresses_retries(&mut self, cx: &mut Context<'_>) {
+        let ready = self
+            .no_addresses_retries
+            .iter_mut()
+            .filter_map(|(peer_id, delay)| delay.as_mut().poll(cx).is_ready().then_some(*peer_id))
+            .collect::<Vec<_>>();
+
+        for peer_id in ready {
+            self.no_addresses_retries.remove(&peer_id);
+            self.schedule_dial_retry_if_needed(peer_id);
+        }
     }
 
     fn handle_command(&mut self, command: Command) {
@@ -142,16 +190,25 @@ impl NetworkBehaviour for Behaviour {
                     client.set_connected(false);
                     client.release_outbound();
                 }
+                let server = self.server.clone();
+                let peer_id = event.peer_id;
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    handle.spawn(async move {
+                        server.clear_connected(peer_id).await;
+                    });
+                }
             }
             FromSwarm::DialFailure(event) => {
-                if let Some(peer_id) = event.peer_id
-                    && matches!(event.error, DialError::Transport(_))
-                    && self
-                        .clients
-                        .get(&peer_id)
-                        .is_some_and(|c| c.should_reconnect())
-                {
-                    self.schedule_dial_if_needed(peer_id);
+                if let Some(peer_id) = event.peer_id {
+                    match event.error {
+                        DialError::Transport(_) => self.schedule_dial_retry_if_needed(peer_id),
+                        DialError::NoAddresses => {
+                            // Peer addresses may appear shortly after relay
+                            // reservation/routing; avoid a tight retry loop.
+                            self.schedule_no_addresses_retry_if_needed(peer_id);
+                        }
+                        _ => {}
+                    }
                 }
             }
             _ => {}
@@ -178,6 +235,8 @@ impl NetworkBehaviour for Behaviour {
             self.handle_command(command);
         }
 
+        self.poll_no_addresses_retries(cx);
+
         if let Some(event) = self.pending_events.pop_front() {
             return Poll::Ready(event);
         }
@@ -199,7 +258,11 @@ mod tests {
         },
     };
     use pluto_core::version::SemVer;
-    use tokio::sync::mpsc;
+    use tokio::{
+        sync::mpsc,
+        time::{Duration, timeout},
+    };
+    use tokio_util::sync::CancellationToken;
 
     use super::*;
     use crate::sync::ClientConfig;
@@ -226,6 +289,15 @@ mod tests {
             panic!("{message}");
         };
         assert_eq!(DialOpts::get_peer_id(&opts), Some(peer_id));
+    }
+
+    fn assert_pending(behaviour: &mut Behaviour, message: &str) {
+        let waker = noop_waker_ref();
+        let mut cx = Context::from_waker(waker);
+        assert!(
+            NetworkBehaviour::poll(behaviour, &mut cx).is_pending(),
+            "{message}"
+        );
     }
 
     fn activate_and_assert_dial(behaviour: &mut Behaviour, client: &Client) {
@@ -296,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn dial_failure_retries_active_client() {
+    fn transport_dial_failure_retries_active_client() {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let peer_id = PeerId::random();
         let client = Client::new(
@@ -322,5 +394,89 @@ mod tests {
         }));
 
         assert_next_dial(&mut behaviour, peer_id, "expected retry dial event");
+    }
+
+    #[tokio::test]
+    async fn no_addresses_dial_failure_retries_active_client_after_delay() {
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
+        let peer_id = PeerId::random();
+        let client = Client::new(
+            peer_id,
+            vec![1, 2, 3],
+            SemVer::parse("v1.7").expect("valid version"),
+            Default::default(),
+            Some(command_tx),
+        );
+        let mut behaviour = test_behaviour_with_command_channel(client.clone(), command_rx);
+
+        activate_and_assert_dial(&mut behaviour, &client);
+
+        let error = DialError::NoAddresses;
+        behaviour.on_swarm_event(FromSwarm::DialFailure(DialFailure {
+            peer_id: Some(peer_id),
+            error: &error,
+            connection_id: ConnectionId::new_unchecked(1),
+        }));
+
+        assert_pending(&mut behaviour, "NoAddresses retry should be delayed");
+        tokio::time::sleep(NO_ADDRESSES_RETRY_DELAY + Duration::from_millis(10)).await;
+        assert_next_dial(&mut behaviour, peer_id, "expected retry dial event");
+    }
+
+    #[tokio::test]
+    async fn last_connection_closed_clears_server_connected_state() {
+        let peer_id = PeerId::random();
+        let client = Client::new(
+            peer_id,
+            vec![1, 2, 3],
+            SemVer::parse("v1.7").expect("valid version"),
+            ClientConfig::default(),
+            None,
+        );
+        let mut behaviour = test_behaviour(client);
+        behaviour.server.start();
+        behaviour.server.set_connected(peer_id).await;
+
+        timeout(
+            Duration::from_millis(10),
+            behaviour
+                .server
+                .await_all_connected(CancellationToken::new()),
+        )
+        .await
+        .expect("server should initially be connected")
+        .expect("connected barrier should succeed");
+
+        let address = "/ip4/127.0.0.1/tcp/9000".parse().expect("valid multiaddr");
+        let endpoint = ConnectedPoint::Dialer {
+            address,
+            role_override: Endpoint::Dialer,
+            port_use: PortUse::New,
+        };
+
+        behaviour.on_swarm_event(FromSwarm::ConnectionClosed(ConnectionClosed {
+            peer_id,
+            connection_id: ConnectionId::new_unchecked(1),
+            endpoint: &endpoint,
+            cause: None,
+            remaining_established: 0,
+        }));
+
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+            if timeout(
+                Duration::from_millis(1),
+                behaviour
+                    .server
+                    .await_all_connected(CancellationToken::new()),
+            )
+            .await
+            .is_err()
+            {
+                return;
+            }
+        }
+
+        panic!("connection close did not clear server connected state");
     }
 }
