@@ -189,6 +189,9 @@ fn replay_fixture(json: &str, require_group_signature: bool) {
     }
 
     if !require_group_signature {
+        // Error fixtures assert each participant's expected round2 outcome
+        // above; they intentionally do not produce enough key packages for a
+        // group signature check.
         return;
     }
 

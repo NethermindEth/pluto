@@ -9,7 +9,7 @@
 //! The output types ([`KeyPackage`], [`PublicKeyPackage`]) are standard
 //! frost-core types usable with frost-core's signing protocol.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt};
 
 use blst::*;
 use rand_core::{CryptoRng, RngCore};
@@ -171,7 +171,7 @@ pub fn scalar_from_be(bytes: &[u8; 32]) -> Result<Scalar, KryptologyError> {
 
 /// RFC 9380 Section 5.3.1 using SHA-256
 #[allow(clippy::arithmetic_side_effects)]
-pub(crate) fn expand_msg_xmd(msg: &[u8], dst: &[u8], len_in_bytes: usize) -> Vec<u8> {
+fn expand_msg_xmd(msg: &[u8], dst: &[u8], len_in_bytes: usize) -> Vec<u8> {
     const B_IN_BYTES: usize = 32; // SHA-256 output
     const S_IN_BYTES: usize = 64; // SHA-256 block size
 
@@ -505,6 +505,22 @@ pub struct BlsPartialSignature {
     point: blst_p2,
 }
 
+impl fmt::Debug for BlsPartialSignature {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut affine = blst_p2_affine::default();
+        let mut bytes = [0u8; 96];
+        unsafe {
+            blst_p2_to_affine(&mut affine, &self.point);
+            blst_p2_affine_compress(bytes.as_mut_ptr(), &affine);
+        }
+
+        f.debug_struct("BlsPartialSignature")
+            .field("identifier", &self.identifier)
+            .field("point", &bytes)
+            .finish()
+    }
+}
+
 impl BlsPartialSignature {
     /// Produce a BLS partial signature from a [`KeyPackage`] produced by
     /// kryptology DKG.
@@ -525,6 +541,14 @@ impl BlsPartialSignature {
 #[derive(Clone)]
 pub struct BlsSignature {
     point: blst_p2,
+}
+
+impl fmt::Debug for BlsSignature {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("BlsSignature")
+            .field(&self.to_bytes())
+            .finish()
+    }
 }
 
 impl BlsSignature {
@@ -569,7 +593,6 @@ impl BlsSignature {
             .collect();
 
         let mut combined = blst_p2::default();
-        let mut first = true;
 
         for (i, ps) in partial_sigs.iter().enumerate() {
             // Lagrange coefficient: L_i(0) = prod_{j!=i} ( x_j / (x_j - x_i) )
@@ -580,20 +603,17 @@ impl BlsSignature {
                 }
                 let num = x_vals[j];
                 let den = x_vals[j] - x_vals[i];
+                // Duplicate identifiers are rejected above, so this should
+                // only fail if the invariant is broken.
                 let den_inv = den.invert().ok_or(KryptologyError::InvalidSignerCount)?;
                 lambda = lambda * num * den_inv;
             }
 
             let weighted = p2_mult(&ps.point, &lambda);
 
-            if first {
-                combined = weighted;
-                first = false;
-            } else {
-                let mut tmp = blst_p2::default();
-                unsafe { blst_p2_add_or_double(&mut tmp, &combined, &weighted) };
-                combined = tmp;
-            }
+            let mut tmp = blst_p2::default();
+            unsafe { blst_p2_add_or_double(&mut tmp, &combined, &weighted) };
+            combined = tmp;
         }
 
         Ok(BlsSignature { point: combined })
