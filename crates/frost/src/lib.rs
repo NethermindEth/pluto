@@ -3,7 +3,6 @@
 //! Go's Coinbase Kryptology FROST DKG, and BLS threshold signing (Ethereum 2.0
 //! compatible).
 
-#![allow(non_snake_case)]
 #![doc = include_str!("../dkg.md")]
 
 pub mod curve;
@@ -12,7 +11,9 @@ pub mod kryptology;
 
 pub use curve::*;
 pub use frost_core::*;
-pub use rand_core;
+pub use rand_core::{CryptoRng, RngCore};
 
 #[cfg(test)]
-mod tests;
+mod kryptology_interop_tests;
+#[cfg(test)]
+mod kryptology_round_trip_tests;

@@ -4,29 +4,34 @@
 //! Contains the key material types (identifiers, shares, packages) and the
 //! polynomial evaluation functions needed by the kryptology-compatible DKG.
 
-#![allow(clippy::arithmetic_side_effects)]
-
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
 };
 
 use super::*;
+use zeroize::ZeroizeOnDrop;
 
 /// Errors from key operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum FrostCoreError {
     /// Participant ID is zero.
+    #[error("participant ID is zero")]
     InvalidZeroScalar,
     /// Invalid number of minimum signers (must be >= 2 and <= max_signers).
+    #[error("invalid minimum signer count")]
     InvalidMinSigners,
     /// Invalid number of maximum signers (must be >= 2).
+    #[error("invalid maximum signer count")]
     InvalidMaxSigners,
     /// The secret share verification (Feldman VSS) failed.
+    #[error("invalid secret share")]
     InvalidSecretShare,
     /// Commitment count mismatch during aggregation.
+    #[error("incorrect number of commitments")]
     IncorrectNumberOfCommitments,
     /// The commitment has no coefficients.
+    #[error("incorrect commitment")]
     IncorrectCommitment,
 }
 
@@ -34,7 +39,10 @@ pub enum FrostCoreError {
 ///
 /// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/identifier.rs#L14-L26
 #[derive(Copy, Clone, Debug)]
-pub struct Identifier(Scalar);
+pub struct Identifier {
+    id: u32,
+    scalar: Scalar,
+}
 
 impl Identifier {
     /// Create a new identifier from a non-zero u32.
@@ -43,19 +51,24 @@ impl Identifier {
         if scalar == Scalar::ZERO {
             Err(FrostCoreError::InvalidZeroScalar)
         } else {
-            Ok(Self(scalar))
+            Ok(Self { id, scalar })
         }
+    }
+
+    /// Return the raw participant ID.
+    pub fn to_u32(&self) -> u32 {
+        self.id
     }
 
     /// Return the underlying scalar.
     pub fn to_scalar(&self) -> Scalar {
-        self.0
+        self.scalar
     }
 }
 
 impl PartialEq for Identifier {
     fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
+        self.id == other.id
     }
 }
 
@@ -69,18 +82,9 @@ impl PartialOrd for Identifier {
 
 // See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/identifier.rs#L121-L137
 impl Ord for Identifier {
-    /// Compare identifiers by their numeric scalar value, using big-endian byte
-    /// order. Serializes to little-endian, and compares in reverse order.
+    /// Compare identifiers by their original participant ID.
     fn cmp(&self, other: &Self) -> Ordering {
-        let a = self.0.to_bytes();
-        let b = other.0.to_bytes();
-        for i in (0..32).rev() {
-            match a[i].cmp(&b[i]) {
-                Ordering::Equal => continue,
-                other => return other,
-            }
-        }
-        Ordering::Equal
+        self.id.cmp(&other.id)
     }
 }
 
@@ -134,7 +138,7 @@ impl VerifiableSecretSharingCommitment {
 /// A secret scalar value representing a signer's share of the group secret.
 ///
 /// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L82-L87
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug, ZeroizeOnDrop)]
 pub struct SigningShare(Scalar);
 
 impl SigningShare {
@@ -153,6 +157,7 @@ impl SigningShare {
         Self::new(evaluate_polynomial(peer, coefficients))
     }
 }
+
 /// A public group element that represents a single signer's public
 /// verification share.
 ///
@@ -242,6 +247,7 @@ impl SecretShare {
     /// Checks that `G * signing_share == evaluate_vss(identifier, commitment)`.
     ///
     /// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L431-L468
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn verify(&self) -> Result<(), FrostCoreError> {
         let f_result = G1Projective::generator() * self.signing_share.to_scalar();
         let result = evaluate_vss(self.identifier, &self.commitment);
@@ -257,12 +263,16 @@ impl SecretShare {
 /// A key package containing all key material for a participant.
 ///
 /// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L617-L643
-#[derive(Debug)]
+#[derive(Debug, ZeroizeOnDrop)]
 pub struct KeyPackage {
+    #[zeroize(skip)]
     identifier: Identifier,
     signing_share: SigningShare,
+    #[zeroize(skip)]
     verifying_share: VerifyingShare,
+    #[zeroize(skip)]
     verifying_key: VerifyingKey,
+    #[zeroize(skip)]
     min_signers: u16,
 }
 
@@ -378,6 +388,7 @@ impl PublicKeyPackage {
 /// `a_0 + a_1 * x + a_2 * x^2 + ... + a_{t-1} * x^{t-1}`.
 ///
 /// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L573-L595
+#[allow(clippy::arithmetic_side_effects)]
 fn evaluate_polynomial(identifier: Identifier, coefficients: &[Scalar]) -> Scalar {
     let mut value = Scalar::ZERO;
     let x = identifier.to_scalar();
@@ -398,6 +409,7 @@ fn evaluate_polynomial(identifier: Identifier, coefficients: &[Scalar]) -> Scala
 /// Computes `sum_{k=0}^{t-1} commitment[k] * identifier^k`.
 ///
 /// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L597-L615
+#[allow(clippy::arithmetic_side_effects)]
 fn evaluate_vss(
     identifier: Identifier,
     commitment: &VerifiableSecretSharingCommitment,
@@ -420,6 +432,7 @@ fn evaluate_vss(
 /// elements across all participants.
 ///
 /// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L35-L62
+#[allow(clippy::arithmetic_side_effects)]
 fn sum_commitments(
     commitments: &[&VerifiableSecretSharingCommitment],
 ) -> Result<VerifiableSecretSharingCommitment, FrostCoreError> {
@@ -460,4 +473,65 @@ pub fn validate_num_of_signers(min_signers: u16, max_signers: u16) -> Result<(),
         return Err(FrostCoreError::InvalidMinSigners);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identifier_from_u32_rejects_zero() {
+        assert!(matches!(
+            Identifier::from_u32(0),
+            Err(FrostCoreError::InvalidZeroScalar)
+        ));
+    }
+
+    #[test]
+    fn validate_num_of_signers_rejects_invalid_bounds() {
+        assert!(matches!(
+            validate_num_of_signers(1, 3),
+            Err(FrostCoreError::InvalidMinSigners)
+        ));
+        assert!(matches!(
+            validate_num_of_signers(2, 1),
+            Err(FrostCoreError::InvalidMaxSigners)
+        ));
+        assert!(matches!(
+            validate_num_of_signers(3, 2),
+            Err(FrostCoreError::InvalidMinSigners)
+        ));
+    }
+
+    #[test]
+    fn secret_share_verify_rejects_invalid_share() {
+        let id = Identifier::from_u32(1).unwrap();
+        let commitment = VerifiableSecretSharingCommitment::new(vec![CoefficientCommitment::new(
+            G1Projective::generator(),
+        )]);
+        let invalid_share =
+            SecretShare::new(id, SigningShare::new(Scalar::ZERO), commitment.clone());
+        assert!(matches!(
+            invalid_share.verify(),
+            Err(FrostCoreError::InvalidSecretShare)
+        ));
+    }
+
+    #[test]
+    fn verifying_key_from_commitment_rejects_empty_commitment() {
+        let empty_commitment = VerifiableSecretSharingCommitment::new(vec![]);
+        assert!(matches!(
+            VerifyingKey::from_commitment(&empty_commitment),
+            Err(FrostCoreError::IncorrectCommitment)
+        ));
+    }
+
+    #[test]
+    fn public_key_package_from_dkg_commitments_rejects_empty_commitments() {
+        let empty_commitments = BTreeMap::new();
+        assert!(matches!(
+            PublicKeyPackage::from_dkg_commitments(&empty_commitments),
+            Err(FrostCoreError::IncorrectNumberOfCommitments)
+        ));
+    }
 }
