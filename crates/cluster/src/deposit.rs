@@ -1,12 +1,12 @@
 use pluto_eth2api::spec::phase0;
-use pluto_ssz::serde_utils::Hex0x;
+use pluto_ssz::serde_utils::HexBytes;
 use serde::{Deserialize, Serialize};
 use serde_with::{DisplayFromStr, serde_as};
 
 /// DepositData defines the deposit data to activate a validator.
 ///
 /// This is a cluster-specific wrapper around the canonical
-/// `phase0::DepositData` that uses `Hex0x` serialization (with 0x prefix) to
+/// `phase0::DepositData` that uses `HexBytes` serialization (with 0x prefix) to
 /// maintain lock file JSON compatibility.
 ///
 /// Specification: <https://github.com/ethereum/consensus-specs/blob/dev/specs/phase0/beacon-chain.md#depositdata>
@@ -14,12 +14,12 @@ use serde_with::{DisplayFromStr, serde_as};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DepositData {
     /// Validator's public key (48 bytes).
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     #[serde(rename = "pubkey")]
     pub pub_key: phase0::BLSPubKey,
 
     /// Withdrawal credentials included in the deposit (32 bytes).
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     pub withdrawal_credentials: phase0::WithdrawalCredentials,
 
     /// Amount in Gwei to be deposited [1ETH..2048ETH].
@@ -28,7 +28,7 @@ pub struct DepositData {
     pub amount: phase0::Gwei,
 
     /// Signature is the BLS signature of the deposit message (96 bytes).
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     pub signature: phase0::BLSSignature,
 }
 

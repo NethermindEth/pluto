@@ -188,20 +188,20 @@ pub fn agg_sign(
 #[cfg(test)]
 mod tests {
     use crate::test_cluster;
-    use pluto_ssz::serde_utils::Hex0x;
+    use pluto_ssz::serde_utils::HexBytes;
     use serde::{Deserialize, Serialize};
     use serde_with::serde_as;
 
     #[serde_as]
     #[derive(Serialize, Deserialize, Debug, PartialEq)]
     struct TestStruct {
-        #[serde_as(as = "Hex0x")]
+        #[serde_as(as = "HexBytes")]
         data: Vec<u8>,
 
-        #[serde_as(as = "Hex0x")]
+        #[serde_as(as = "HexBytes")]
         hash: [u8; 32],
 
-        #[serde_as(as = "Option<Hex0x>")]
+        #[serde_as(as = "Option<HexBytes>")]
         optional_data: Option<Vec<u8>>,
     }
 
