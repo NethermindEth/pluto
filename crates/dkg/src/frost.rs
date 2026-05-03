@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use async_trait::async_trait;
 use pluto_crypto::{
     tblsconv::{privkey_from_bytes, pubkey_from_bytes},
-    types::{PrivateKey, PublicKey},
+    types::PublicKey,
 };
 use pluto_frost::{
     G1Affine, G1Projective, KeyPackage,
@@ -15,6 +15,8 @@ use pluto_frost::{
 use tokio_util::sync::CancellationToken;
 
 use crate::share::Share;
+
+type Round1Output = (BTreeMap<MsgKey, Round1Bcast>, BTreeMap<MsgKey, ShamirShare>);
 
 /// Identifies the source and target nodes and validator index the message
 /// belongs to.
@@ -34,7 +36,7 @@ pub(crate) struct MsgKey {
 
 /// Abstracts the transport of frost DKG messages.
 #[async_trait]
-pub(crate) trait FTransport: Sync {
+pub(crate) trait FTransport: Send + Sync {
     /// Returns results of all round 1 communication: the received round 1
     /// broadcasts from all other nodes and the round 1 P2P sends to this
     /// node.
@@ -43,7 +45,7 @@ pub(crate) trait FTransport: Sync {
         cancellation: CancellationToken,
         bcast: BTreeMap<MsgKey, Round1Bcast>,
         shares: BTreeMap<MsgKey, ShamirShare>,
-    ) -> Result<(BTreeMap<MsgKey, Round1Bcast>, BTreeMap<MsgKey, ShamirShare>), FrostError>;
+    ) -> Result<Round1Output, FrostError>;
 
     /// Returns results of all round 2 communication: the received round 2
     /// broadcasts from all other nodes.
@@ -66,12 +68,6 @@ pub(crate) enum FrostError {
     /// Failed during local round 2 execution.
     #[error("exec round 2: {0}")]
     ExecRound2(#[source] pluto_frost::kryptology::KryptologyError),
-    /// Transport failed during round 1.
-    #[error("transport round 1: {0}")]
-    TransportRound1(#[source] Box<FrostError>),
-    /// Transport failed during round 2.
-    #[error("transport round 2: {0}")]
-    TransportRound2(#[source] Box<FrostError>),
     /// Failed to convert public key bytes.
     #[error("public key conversion: {0}")]
     PublicKey(#[from] pluto_crypto::tblsconv::ConvError),
@@ -165,6 +161,8 @@ impl DkgParticipant {
             .round1_secret
             .take()
             .ok_or(FrostError::MissingRoundState)?;
+        // get_round2_inputs keeps this node's broadcast. Strip it here to
+        // match Charon's participant behavior; kryptology::round2 rejects self IDs.
         let bcasts = bcasts
             .iter()
             .filter(|(id, _)| **id != self.id)
@@ -198,16 +196,10 @@ pub(crate) async fn run_frost_parallel<T: FTransport>(
         new_frost_participants(num_validators, num_nodes, threshold, share_idx, dkg_ctx)?;
 
     let (cast_r1, p2p_r1) = round1(&mut validators)?;
-    let (cast_r1_result, p2p_r1_result) = tp
-        .round1(cancellation.clone(), cast_r1, p2p_r1)
-        .await
-        .map_err(|e| FrostError::TransportRound1(Box::new(e)))?;
+    let (cast_r1_result, p2p_r1_result) = tp.round1(cancellation.clone(), cast_r1, p2p_r1).await?;
 
     let cast_r2 = round2(&mut validators, &cast_r1_result, &p2p_r1_result)?;
-    let cast_r2_result = tp
-        .round2(cancellation, cast_r2)
-        .await
-        .map_err(|e| FrostError::TransportRound2(Box::new(e)))?;
+    let cast_r2_result = tp.round2(cancellation, cast_r2).await?;
 
     make_shares(&validators, &cast_r2_result)
 }
@@ -239,10 +231,7 @@ fn other_ids(num_nodes: u32, share_idx: u32) -> Vec<u32> {
 
 /// Executes round 1 for each validator and returns all round 1
 /// broadcast and p2p messages for all validators.
-#[allow(clippy::type_complexity)]
-fn round1(
-    validators: &mut BTreeMap<u32, DkgParticipant>,
-) -> Result<(BTreeMap<MsgKey, Round1Bcast>, BTreeMap<MsgKey, ShamirShare>), FrostError> {
+fn round1(validators: &mut BTreeMap<u32, DkgParticipant>) -> Result<Round1Output, FrostError> {
     let mut cast_results = BTreeMap::new();
     let mut p2p_results = BTreeMap::new();
 
@@ -348,7 +337,7 @@ fn make_shares(
 
         shares.push(Share {
             pub_key: point_to_pubkey(G1Affine::from(pub_key).to_compressed())?,
-            secret_share: scalar_to_secret_share(&kryptology::scalar_to_be(&secret_share))?,
+            secret_share: privkey_from_bytes(&kryptology::scalar_to_be(&secret_share))?,
             public_shares: pub_shares.get(&v_idx).cloned().unwrap_or_default(),
         });
     }
@@ -357,13 +346,10 @@ fn make_shares(
 }
 
 fn point_to_pubkey(point: [u8; 48]) -> Result<PublicKey, FrostError> {
-    // `pubkey_from_bytes` only checks length; transport bytes still need G1 validation.
+    // `pubkey_from_bytes` only checks length; transport bytes still need G1
+    // validation.
     G1Projective::from_compressed(&point).ok_or(FrostError::InvalidPublicKeyPoint)?;
     Ok(pubkey_from_bytes(&point)?)
-}
-
-fn scalar_to_secret_share(scalar: &[u8; 32]) -> Result<PrivateKey, FrostError> {
-    Ok(privkey_from_bytes(scalar)?)
 }
 
 fn validate_participant_inputs(
@@ -383,6 +369,8 @@ fn validate_participant_inputs(
 }
 
 fn dkg_context_byte(dkg_ctx: &str) -> u8 {
+    // Match Charon's strconv.Atoi(ctx) with ignored errors. Production passes a
+    // hex definition hash ("0x..."), so this intentionally becomes 0.
     dkg_ctx
         .parse::<isize>()
         .map(|value| value.to_le_bytes()[0])
@@ -398,7 +386,6 @@ mod tests {
 
     use super::*;
 
-    #[derive(Default)]
     struct FrostMemTransport {
         nodes: usize,
         inner: Mutex<FrostMemTransportInner>,
@@ -431,8 +418,7 @@ mod tests {
             cancellation: CancellationToken,
             bcast: BTreeMap<MsgKey, Round1Bcast>,
             shares: BTreeMap<MsgKey, ShamirShare>,
-        ) -> Result<(BTreeMap<MsgKey, Round1Bcast>, BTreeMap<MsgKey, ShamirShare>), FrostError>
-        {
+        ) -> Result<Round1Output, FrostError> {
             let source_id = bcast
                 .keys()
                 .next()
@@ -442,6 +428,11 @@ mod tests {
 
             {
                 let mut inner = self.inner.lock().await;
+                if inner.round1 == self.nodes {
+                    inner.round1 = 0;
+                    inner.round1_bcast.clear();
+                    inner.round1_shares.clear();
+                }
                 for (key, round1_bcast) in bcast {
                     inner.round1_bcast.insert(
                         MsgKey {
@@ -496,6 +487,10 @@ mod tests {
         ) -> Result<BTreeMap<MsgKey, Round2Bcast>, FrostError> {
             {
                 let mut inner = self.inner.lock().await;
+                if inner.round2 == self.nodes {
+                    inner.round2 = 0;
+                    inner.round2_bcast.clear();
+                }
                 for (key, round2_bcast) in bcast {
                     inner.round2_bcast.insert(
                         MsgKey {
@@ -532,26 +527,47 @@ mod tests {
 
     #[tokio::test]
     async fn frost_dkg() {
-        let cancellation = CancellationToken::new();
         const NODES: u32 = 3;
         const THRESHOLD: u32 = 3;
         const VALS: u32 = 2;
 
+        let node_shares = run_mem_dkg(NODES, THRESHOLD, VALS).await;
+        verify_returned_shares(
+            &node_shares,
+            usize::try_from(THRESHOLD).expect("threshold should fit"),
+        );
+    }
+
+    #[tokio::test]
+    async fn frost_dkg_partial_quorum() {
+        const NODES: u32 = 3;
+        const THRESHOLD: u32 = 2;
+        const VALS: u32 = 2;
+
+        let node_shares = run_mem_dkg(NODES, THRESHOLD, VALS).await;
+        verify_returned_shares(
+            &node_shares,
+            usize::try_from(THRESHOLD).expect("threshold should fit"),
+        );
+    }
+
+    async fn run_mem_dkg(nodes: u32, threshold: u32, vals: u32) -> Vec<Vec<Share>> {
+        let cancellation = CancellationToken::new();
         let tp = Arc::new(FrostMemTransport::new(
-            usize::try_from(NODES).expect("nodes should fit"),
+            usize::try_from(nodes).expect("nodes should fit"),
         ));
 
         let mut tasks = Vec::new();
-        for i in 0..NODES {
+        for i in 0..nodes {
             let tp = Arc::clone(&tp);
             let cancellation = cancellation.clone();
             tasks.push(tokio::spawn(async move {
                 run_frost_parallel(
                     cancellation,
                     tp.as_ref(),
-                    VALS,
-                    NODES,
-                    THRESHOLD,
+                    vals,
+                    nodes,
+                    threshold,
                     i.checked_add(1).expect("share index should not overflow"),
                     "0",
                 )
@@ -567,15 +583,35 @@ mod tests {
                 .expect("DKG should run");
             assert_eq!(
                 shares.len(),
-                usize::try_from(VALS).expect("vals should fit")
+                usize::try_from(vals).expect("vals should fit")
             );
             node_shares.push(shares);
         }
 
-        verify_returned_shares(
-            &node_shares,
-            usize::try_from(THRESHOLD).expect("threshold should fit"),
-        );
+        node_shares
+    }
+
+    #[tokio::test]
+    async fn transport_returns_cancelled_while_waiting() {
+        let cancellation = CancellationToken::new();
+        let tp = Arc::new(FrostMemTransport::new(2));
+
+        let task = {
+            let tp = Arc::clone(&tp);
+            let cancellation = cancellation.clone();
+            tokio::spawn(async move {
+                run_frost_parallel(cancellation, tp.as_ref(), 1, 2, 2, 1, "0").await
+            })
+        };
+
+        tokio::task::yield_now().await;
+        cancellation.cancel();
+
+        let err = task
+            .await
+            .expect("task should not panic")
+            .expect_err("DKG should be cancelled");
+        assert!(matches!(err, FrostError::Cancelled));
     }
 
     #[test]
@@ -621,17 +657,28 @@ mod tests {
 
     #[test]
     fn get_round2_inputs_filters_by_validator_index() {
-        let mut validators =
-            new_frost_participants(2, 3, 3, 1, "0").expect("participants should build");
-        let (casts, shares) = round1(&mut validators).expect("round1 should run");
+        let mut casts = BTreeMap::new();
+        let mut shares = BTreeMap::new();
+
+        for share_idx in 2..=3 {
+            let mut validators =
+                new_frost_participants(2, 3, 3, share_idx, "0").expect("participants should build");
+            let (node_casts, node_shares) = round1(&mut validators).expect("round1 should run");
+            casts.extend(node_casts);
+            shares.extend(
+                node_shares
+                    .into_iter()
+                    .filter(|(key, _)| key.target_id == 1),
+            );
+        }
 
         let (v0_casts, v0_shares) = get_round2_inputs(&casts, &shares, 0);
         let (v1_casts, v1_shares) = get_round2_inputs(&casts, &shares, 1);
 
-        assert_eq!(v0_casts.len(), 1);
-        assert_eq!(v0_shares.len(), 1);
-        assert_eq!(v1_casts.len(), 1);
-        assert_eq!(v1_shares.len(), 1);
+        assert_eq!(v0_casts.keys().copied().collect::<Vec<_>>(), vec![2, 3]);
+        assert_eq!(v0_shares.keys().copied().collect::<Vec<_>>(), vec![2, 3]);
+        assert_eq!(v1_casts.keys().copied().collect::<Vec<_>>(), vec![2, 3]);
+        assert_eq!(v1_shares.keys().copied().collect::<Vec<_>>(), vec![2, 3]);
         assert_ne!(v0_casts, v1_casts);
     }
 
@@ -649,22 +696,23 @@ mod tests {
             }));
         }
 
-        let shares = tasks
-            .remove(0)
-            .await
-            .expect("task should not panic")
-            .expect("DKG should run");
+        let mut node_shares = Vec::new();
         for task in tasks {
-            task.await
-                .expect("task should not panic")
-                .expect("DKG should run");
+            node_shares.push(
+                task.await
+                    .expect("task should not panic")
+                    .expect("DKG should run"),
+            );
         }
 
-        assert_eq!(shares.len(), 3);
-        for share in shares {
-            let mut share_ids = share.public_shares.keys().copied().collect::<Vec<_>>();
-            share_ids.sort_unstable();
-            assert_eq!(share_ids, vec![1, 2, 3]);
+        assert_eq!(node_shares.len(), 3);
+        for shares in node_shares {
+            assert_eq!(shares.len(), 3);
+            for share in shares {
+                let mut share_ids = share.public_shares.keys().copied().collect::<Vec<_>>();
+                share_ids.sort_unstable();
+                assert_eq!(share_ids, vec![1, 2, 3]);
+            }
         }
     }
 
