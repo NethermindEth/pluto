@@ -70,6 +70,7 @@ pbkdf2 = "0.12.2"
 pin-project = "1"
 sha2 = "0.10.9"
 scrypt = "0.11.0"
+subtle = "2.6"
 unicode-normalization = "0.1.25"
 zeroize = "1.8.2"
 uuid = { version = "1.19", features = ["serde", "v4"] }

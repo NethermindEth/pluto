@@ -49,7 +49,7 @@ pub struct MsgKey {
 pub enum FrostError {
     /// Kryptology FROST DKG algorithm failed.
     #[error("kryptology DKG error: {0:?}")]
-    Kryptology(pluto_frost::kryptology::DkgError),
+    Kryptology(pluto_frost::kryptology::KryptologyError),
     /// Broadcast component error.
     #[error("bcast error: {0}")]
     Bcast(#[from] crate::bcast::Error),
@@ -70,8 +70,8 @@ pub enum FrostError {
     SecretShareEncoding,
 }
 
-impl From<pluto_frost::kryptology::DkgError> for FrostError {
-    fn from(e: pluto_frost::kryptology::DkgError) -> Self {
+impl From<pluto_frost::kryptology::KryptologyError> for FrostError {
+    fn from(e: pluto_frost::kryptology::KryptologyError) -> Self {
         FrostError::Kryptology(e)
     }
 }

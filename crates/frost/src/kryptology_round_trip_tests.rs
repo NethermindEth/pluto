@@ -2,8 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use pluto_frost::kryptology;
 use rand::{SeedableRng, rngs::StdRng};
+
+use crate::kryptology;
 
 /// FROST DKG + BLS threshold signing (Ethereum 2.0 compatible).
 /// This matches Go's signing flow: non-interactive BLS partial signatures
@@ -96,9 +97,7 @@ fn kryptology_bls_round_trip_2_of_4_ctx_0() {
 
     let partial_sigs: Vec<_> = signing_participants
         .iter()
-        .map(|&id| {
-            kryptology::BlsPartialSignature::from_key_package(id, &key_packages[&id], message)
-        })
+        .map(|&id| kryptology::BlsPartialSignature::from_key_package(&key_packages[&id], message))
         .collect();
 
     assert_eq!(partial_sigs.len(), threshold as usize);
