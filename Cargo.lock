@@ -5642,6 +5642,7 @@ dependencies = [
  "pluto-eth1wrap",
  "pluto-eth2api",
  "pluto-eth2util",
+ "pluto-frost",
  "pluto-k1util",
  "pluto-p2p",
  "pluto-parsigex",

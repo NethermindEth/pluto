@@ -20,6 +20,9 @@ pub mod disk;
 /// Main DKG protocol implementation.
 pub mod dkg;
 
+/// Kryptology-compatible FROST DKG orchestration.
+mod frost;
+
 /// Partial-signature exchanger for DKG.
 pub mod exchanger;
 
