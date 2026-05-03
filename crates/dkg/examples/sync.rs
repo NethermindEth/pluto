@@ -639,10 +639,13 @@ async fn main() -> Result<()> {
                         log_relay_event(relay_event, &cluster_info);
                     }
                     SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(
+                        ExampleBehaviourEvent::Sync(sync_event),
+                    )) => {
                         log_sync_event(sync_event, &cluster_info);
                     }
                     SwarmEvent::Behaviour(PlutoBehaviourEvent::Ping(ping::Event {
                         peer,
+                        result,
                         ..
                     })) => {
                         log_ping_event(peer, result, &relay_peer_ids, &cluster_info);
@@ -749,7 +752,6 @@ async fn main() -> Result<()> {
             }
         }
     }
-
     cancellation.cancel();
     Ok(())
 }

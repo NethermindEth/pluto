@@ -1,6 +1,7 @@
 use std::{path, time::Duration};
 
 use bon::Builder;
+use libp2p::PeerId;
 use pluto_cluster::version::{
     support_node_signatures, support_partial_deposits, support_pregen_registrations,
 };
@@ -10,7 +11,6 @@ use pluto_eth2util::{
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
-use libp2p::PeerId;
 
 pub use crate::{
     aggregate::{AggregateError, agg_deposit_data, agg_lock_hash_sig, agg_validator_registrations},
@@ -26,7 +26,7 @@ const DEFAULT_DATA_DIR: &str = ".charon";
 const DEFAULT_DEFINITION_FILE: &str = ".charon/cluster-definition.json";
 const DEFAULT_PUBLISH_ADDRESS: &str = "https://api.obol.tech/v1";
 const DEFAULT_PUBLISH_TIMEOUT: Duration = Duration::from_secs(30);
-const DEFAULT_SHUTDOWN_DELAY: Duration = Duration::from_secs(1);
+const DEFAULT_SHUTDOWN_DELAY: Duration = Duration::from_secs(10);
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Entry-point DKG error.

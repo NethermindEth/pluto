@@ -275,7 +275,12 @@ pub async fn sign_and_agg_validator_registrations(
     )?;
 
     let peer_sigs = exchanger.exchange(SIG_VALIDATOR_REG, set).await?;
-    Ok(agg_validator_registrations(&peer_sigs, shares, &msgs, fork_version)?)
+    Ok(agg_validator_registrations(
+        &peer_sigs,
+        shares,
+        &msgs,
+        fork_version,
+    )?)
 }
 
 /// Signs, exchanges, and aggregates lock-hash partial signatures; builds the
@@ -315,8 +320,7 @@ pub async fn sign_and_aggregate_lock_hash(
         })
         .collect::<Result<_>>()?;
 
-    let (agg_sig, all_pubshares) =
-        agg_lock_hash_sig(&peer_sigs, &shares_map, &lock.lock_hash)?;
+    let (agg_sig, all_pubshares) = agg_lock_hash_sig(&peer_sigs, &shares_map, &lock.lock_hash)?;
 
     BlstImpl.verify_aggregate(&all_pubshares, agg_sig, &lock.lock_hash)?;
     lock.signature_aggregate = agg_sig.to_vec();
