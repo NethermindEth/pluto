@@ -165,10 +165,16 @@ impl DkgParticipant {
             .round1_secret
             .take()
             .ok_or(FrostError::MissingRoundState)?;
-        let mut bcasts = bcasts.clone();
-        let mut shares = shares.clone();
-        bcasts.remove(&self.id);
-        shares.remove(&self.id);
+        let bcasts = bcasts
+            .iter()
+            .filter(|(id, _)| **id != self.id)
+            .map(|(id, bcast)| (*id, bcast.clone()))
+            .collect();
+        let shares = shares
+            .iter()
+            .filter(|(id, _)| **id != self.id)
+            .map(|(id, share)| (*id, share.clone()))
+            .collect();
         let (cast, key_package, _public_key_package) =
             kryptology::round2(secret, &bcasts, &shares).map_err(FrostError::ExecRound2)?;
         self.key_package = Some(key_package);
@@ -351,6 +357,7 @@ fn make_shares(
 }
 
 fn point_to_pubkey(point: [u8; 48]) -> Result<PublicKey, FrostError> {
+    // `pubkey_from_bytes` only checks length; transport bytes still need G1 validation.
     G1Projective::from_compressed(&point).ok_or(FrostError::InvalidPublicKeyPoint)?;
     Ok(pubkey_from_bytes(&point)?)
 }
@@ -431,6 +438,7 @@ mod tests {
                 .next()
                 .map(|key| key.source_id)
                 .ok_or(FrostError::MissingRoundState)?;
+            debug_assert!(bcast.keys().all(|key| key.source_id == source_id));
 
             {
                 let mut inner = self.inner.lock().await;
@@ -526,6 +534,7 @@ mod tests {
     async fn frost_dkg() {
         let cancellation = CancellationToken::new();
         const NODES: u32 = 3;
+        const THRESHOLD: u32 = 3;
         const VALS: u32 = 2;
 
         let tp = Arc::new(FrostMemTransport::new(
@@ -542,7 +551,7 @@ mod tests {
                     tp.as_ref(),
                     VALS,
                     NODES,
-                    NODES,
+                    THRESHOLD,
                     i.checked_add(1).expect("share index should not overflow"),
                     "0",
                 )
@@ -563,7 +572,10 @@ mod tests {
             node_shares.push(shares);
         }
 
-        verify_returned_shares(&node_shares);
+        verify_returned_shares(
+            &node_shares,
+            usize::try_from(THRESHOLD).expect("threshold should fit"),
+        );
     }
 
     #[test]
@@ -656,7 +668,7 @@ mod tests {
         }
     }
 
-    fn verify_returned_shares(node_shares: &[Vec<Share>]) {
+    fn verify_returned_shares(node_shares: &[Vec<Share>], threshold: usize) {
         let msg = b"frost dkg parity test";
         let validator_count = node_shares
             .first()
@@ -666,7 +678,7 @@ mod tests {
         for val_idx in 0..validator_count {
             let pub_key = node_shares[0][val_idx].pub_key;
             let mut partials = HashMap::new();
-            for (node_idx, shares) in node_shares.iter().enumerate() {
+            for (node_idx, shares) in node_shares.iter().take(threshold).enumerate() {
                 assert_eq!(shares[val_idx].pub_key, pub_key);
                 let share_id = Index::try_from(
                     node_idx
