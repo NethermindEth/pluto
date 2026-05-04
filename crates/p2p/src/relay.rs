@@ -261,6 +261,55 @@ impl MutableRelayReservation {
             );
         }
     }
+
+    /// Fires any scheduled re-dials whose backoff delay has elapsed and re-arms
+    /// the sleep timer.
+    fn poll_pending_redials(&mut self, cx: &mut Context<'_>) {
+        let retry_due = self
+            .next_retry
+            .as_mut()
+            .is_some_and(|sleep| sleep.as_mut().poll(cx).is_ready());
+        if !retry_due {
+            return;
+        }
+
+        self.next_retry = None;
+        let now = Instant::now();
+        let mut remaining = Vec::new();
+        let mut due = Vec::new();
+        for item in self.retry_queue.drain(..) {
+            if item.0 <= now {
+                due.push(item);
+            } else {
+                remaining.push(item);
+            }
+        }
+        self.retry_queue = remaining;
+
+        for (_, peer) in due {
+            Self::queue_relay_dial(
+                &mut self.events,
+                &mut self.pending_relays,
+                &mut self.pending_circuit_addrs,
+                &mut self.relay_peers,
+                &self.connected_relays,
+                &peer,
+            );
+        }
+
+        // Arm the sleep for the next pending retry, if any.
+        if let Some(earliest) = self
+            .retry_queue
+            .iter()
+            .min_by_key(|(t, _)| t)
+            .map(|(t, _)| *t)
+        {
+            let mut sleep = Box::pin(sleep_until(earliest));
+            // Poll once to register the waker before returning Pending.
+            let _ = sleep.as_mut().poll(cx);
+            self.next_retry = Some(sleep);
+        }
+    }
 }
 
 impl NetworkBehaviour for MutableRelayReservation {
@@ -350,48 +399,7 @@ impl NetworkBehaviour for MutableRelayReservation {
         self.process_subscription_events();
 
         // Fire any scheduled re-dials whose backoff delay has elapsed.
-        let retry_due = self
-            .next_retry
-            .as_mut()
-            .is_some_and(|sleep| sleep.as_mut().poll(cx).is_ready());
-        if retry_due {
-            self.next_retry = None;
-            let now = Instant::now();
-            let mut remaining = Vec::new();
-            let mut due = Vec::new();
-            for item in self.retry_queue.drain(..) {
-                if item.0 <= now {
-                    due.push(item);
-                } else {
-                    remaining.push(item);
-                }
-            }
-            self.retry_queue = remaining;
-
-            for (_, peer) in due {
-                Self::queue_relay_dial(
-                    &mut self.events,
-                    &mut self.pending_relays,
-                    &mut self.pending_circuit_addrs,
-                    &mut self.relay_peers,
-                    &self.connected_relays,
-                    &peer,
-                );
-            }
-
-            // Arm the sleep for the next pending retry, if any.
-            if let Some(earliest) = self
-                .retry_queue
-                .iter()
-                .min_by_key(|(t, _)| t)
-                .map(|(t, _)| *t)
-            {
-                let mut sleep = Box::pin(sleep_until(earliest));
-                // Poll once to register the waker before returning Pending.
-                let _ = sleep.as_mut().poll(cx);
-                self.next_retry = Some(sleep);
-            }
-        }
+        self.poll_pending_redials(cx);
 
         if let Some(event) = self.events.pop_front() {
             return Poll::Ready(event);
