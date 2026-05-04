@@ -490,7 +490,9 @@ async fn libp2p_tcp_port_open_test(addrs: &[String]) -> TestResult {
     let result = TestResult::new("Libp2pTCPPortOpen");
 
     if addrs.is_empty() {
-        return result.fail(CliError::Other("no --p2p-tcp-address configured".to_string()));
+        return result.fail(CliError::Other(
+            "no --p2p-tcp-address configured".to_string(),
+        ));
     }
 
     // rust-libp2p multistream-select V1: the listener waits for the dialer to send
