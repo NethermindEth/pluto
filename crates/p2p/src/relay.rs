@@ -395,6 +395,10 @@ impl NetworkBehaviour for MutableRelayReservation {
         &mut self,
         cx: &mut Context<'_>,
     ) -> std::task::Poll<ToSwarm<Self::ToSwarm, THandlerInEvent<Self>>> {
+        if let Some(event) = self.events.pop_front() {
+            return Poll::Ready(event);
+        }
+
         // Process any pending subscription updates first
         self.process_subscription_events();
 
@@ -404,6 +408,7 @@ impl NetworkBehaviour for MutableRelayReservation {
         if let Some(event) = self.events.pop_front() {
             return Poll::Ready(event);
         }
+
         Poll::Pending
     }
 }
@@ -546,6 +551,9 @@ impl NetworkBehaviour for RelayRouter {
         }
         if self.interval.poll_tick(cx).is_ready() {
             self.run_relay_router();
+        }
+        if let Some(event) = self.events.pop_front() {
+            return Poll::Ready(event);
         }
         Poll::Pending
     }
