@@ -43,7 +43,8 @@ const RELAY_BACKOFF_BASE: Duration = Duration::from_secs(1);
 /// Maximum backoff delay between reconnect attempts. Matches Charon's
 /// `DefaultConfig.MaxDelay`.
 const RELAY_BACKOFF_MAX: Duration = Duration::from_secs(120);
-/// Jitter factor applied to backoff delays. Matches Charon's `DefaultConfig.Jitter`.
+/// Jitter factor applied to backoff delays. Matches Charon's
+/// `DefaultConfig.Jitter`.
 const RELAY_BACKOFF_JITTER: f64 = 0.2;
 
 /// Mutable relay reservation behaviour.
@@ -580,7 +581,10 @@ mod tests {
     #[test]
     fn backoff_delay_grows_and_caps() {
         // retry_count=0 → exact base delay, no jitter (matches Go's early-return path).
-        assert_eq!(MutableRelayReservation::backoff_delay(0), RELAY_BACKOFF_BASE);
+        assert_eq!(
+            MutableRelayReservation::backoff_delay(0),
+            RELAY_BACKOFF_BASE
+        );
         // d0 is exact; d1 and d5 carry jitter but their ranges don't overlap.
         let d0 = MutableRelayReservation::backoff_delay(0); // 1s, no jitter
         let d1 = MutableRelayReservation::backoff_delay(1); // ~1.6s ± 20% → [1.28s, 1.92s]
