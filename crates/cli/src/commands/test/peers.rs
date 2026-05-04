@@ -330,6 +330,7 @@ pub async fn run(
     }
 
     tracing::info!("Keeping TCP node alive until keep-alive time is reached...");
+    #[allow(clippy::arithmetic_side_effects)]
     let keep_alive_deadline = tokio::time::Instant::now() + args.keep_alive;
     loop {
         let remaining = keep_alive_deadline.saturating_duration_since(tokio::time::Instant::now());
