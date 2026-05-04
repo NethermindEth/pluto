@@ -18,6 +18,7 @@ members = [
     "crates/testutil",
     "crates/tracing",
     "crates/peerinfo",
+    "crates/frost",
 ]
 resolver = "3"
 
@@ -69,6 +70,7 @@ pbkdf2 = "0.12.2"
 pin-project = "1"
 sha2 = "0.10.9"
 scrypt = "0.11.0"
+subtle = "2.6"
 unicode-normalization = "0.1.25"
 zeroize = "1.8.2"
 uuid = { version = "1.19", features = ["serde", "v4"] }
@@ -94,8 +96,8 @@ oas3-gen-support = "0.24"
 bon = "3.8"
 testcontainers = "0.27"
 test-case = "3.3"
-ethereum_ssz = { version = "0.10" }
-ethereum_ssz_derive = { version = "0.10" }
+ssz = { package = "ethereum_ssz", version = "0.10" }
+ssz_derive = { package = "ethereum_ssz_derive", version = "0.10" }
 tree_hash = "0.12"
 tree_hash_derive = "0.12"
 tar = "0.4"
@@ -123,6 +125,7 @@ pluto-testutil = { path = "crates/testutil" }
 pluto-tracing = { path = "crates/tracing" }
 pluto-p2p = { path = "crates/p2p" }
 pluto-peerinfo = { path = "crates/peerinfo" }
+pluto-frost = { path = "crates/frost" }
 
 [workspace.lints.rust]
 missing_docs = "deny"

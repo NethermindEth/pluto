@@ -11,11 +11,17 @@ pub mod dkgpb;
 /// Reliable broadcast protocol for DKG messages.
 pub mod bcast;
 
+/// Partial-signature verification and aggregation helpers.
+mod aggregate;
+
 /// General DKG IO operations.
 pub mod disk;
 
 /// Main DKG protocol implementation.
 pub mod dkg;
+
+/// Kryptology-compatible FROST DKG orchestration.
+mod frost;
 
 /// Partial-signature exchanger for DKG.
 pub mod exchanger;
@@ -23,5 +29,17 @@ pub mod exchanger;
 /// Node signature exchange over the lock hash.
 pub mod nodesigs;
 
+/// Lock publishing helpers.
+mod publish;
+
 /// Shares distributed to each node in the cluster.
 pub mod share;
+
+/// Step synchronization protocol for DKG peers.
+pub mod sync;
+
+/// Local DKG signing helpers.
+mod signing;
+
+/// Registration conversion and distributed-validator assembly helpers.
+mod validators;
