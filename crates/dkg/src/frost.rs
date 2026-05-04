@@ -13,10 +13,11 @@ use pluto_frost::{
     validate_num_of_signers,
 };
 use tokio_util::sync::CancellationToken;
+use tracing::debug;
 
 use crate::share::Share;
 
-type Round1Output = (BTreeMap<MsgKey, Round1Bcast>, BTreeMap<MsgKey, ShamirShare>);
+type Round1Output = (HashMap<MsgKey, Round1Bcast>, HashMap<MsgKey, ShamirShare>);
 
 /// Identifies the source and target nodes and validator index the message
 /// belongs to.
@@ -42,18 +43,18 @@ pub(crate) trait FTransport: Send + Sync {
     /// node.
     async fn round1(
         &self,
-        cancellation: CancellationToken,
-        bcast: BTreeMap<MsgKey, Round1Bcast>,
-        shares: BTreeMap<MsgKey, ShamirShare>,
+        cancellation: &CancellationToken,
+        bcast: HashMap<MsgKey, Round1Bcast>,
+        shares: HashMap<MsgKey, ShamirShare>,
     ) -> Result<Round1Output, FrostError>;
 
     /// Returns results of all round 2 communication: the received round 2
     /// broadcasts from all other nodes.
     async fn round2(
         &self,
-        cancellation: CancellationToken,
-        bcast: BTreeMap<MsgKey, Round2Bcast>,
-    ) -> Result<BTreeMap<MsgKey, Round2Bcast>, FrostError>;
+        cancellation: &CancellationToken,
+        bcast: HashMap<MsgKey, Round2Bcast>,
+    ) -> Result<HashMap<MsgKey, Round2Bcast>, FrostError>;
 }
 
 /// FROST DKG orchestration errors.
@@ -77,6 +78,9 @@ pub(crate) enum FrostError {
     /// Generated key package was incomplete.
     #[error("participant missing round state")]
     MissingRoundState,
+    /// Participant was called in the wrong DKG round.
+    #[error("invalid participant round: expected {expected}, got {current}")]
+    InvalidRound { expected: u8, current: u8 },
     /// Failed to convert a numeric value to the target representation.
     #[error(transparent)]
     IntConversion(#[from] std::num::TryFromIntError),
@@ -87,6 +91,7 @@ pub(crate) enum FrostError {
 
 struct DkgParticipant {
     id: u32,
+    round: u8,
     threshold: u16,
     max_signers: u16,
     other_ids: Vec<u32>,
@@ -116,6 +121,7 @@ impl DkgParticipant {
 
         Ok(Self {
             id,
+            round: 1,
             threshold,
             max_signers,
             other_ids,
@@ -126,6 +132,12 @@ impl DkgParticipant {
     }
 
     fn round1(&mut self) -> Result<(Round1Bcast, BTreeMap<u32, ShamirShare>), FrostError> {
+        if self.round != 1 {
+            return Err(FrostError::InvalidRound {
+                expected: 1,
+                current: self.round,
+            });
+        }
         let mut rng = rand::rngs::OsRng;
         let (cast, shares, secret) = kryptology::round1(
             self.id,
@@ -148,6 +160,7 @@ impl DkgParticipant {
                     .ok_or(FrostError::MissingRoundState)
             })
             .collect::<Result<_, _>>()?;
+        self.round = 2;
 
         Ok((cast, shares))
     }
@@ -157,6 +170,12 @@ impl DkgParticipant {
         bcasts: &BTreeMap<u32, Round1Bcast>,
         shares: &BTreeMap<u32, ShamirShare>,
     ) -> Result<Round2Bcast, FrostError> {
+        if self.round != 2 {
+            return Err(FrostError::InvalidRound {
+                expected: 2,
+                current: self.round,
+            });
+        }
         let secret = self
             .round1_secret
             .take()
@@ -176,6 +195,7 @@ impl DkgParticipant {
         let (cast, key_package, _public_key_package) =
             kryptology::round2(secret, &bcasts, &shares).map_err(FrostError::ExecRound2)?;
         self.key_package = Some(key_package);
+        self.round = 3;
 
         Ok(cast)
     }
@@ -192,16 +212,38 @@ pub(crate) async fn run_frost_parallel<T: FTransport>(
     share_idx: u32,
     dkg_ctx: &str,
 ) -> Result<Vec<Share>, FrostError> {
+    debug!(
+        num_validators,
+        num_nodes, threshold, share_idx, "Starting FROST DKG"
+    );
     let mut validators =
         new_frost_participants(num_validators, num_nodes, threshold, share_idx, dkg_ctx)?;
 
     let (cast_r1, p2p_r1) = round1(&mut validators)?;
-    let (cast_r1_result, p2p_r1_result) = tp.round1(cancellation.clone(), cast_r1, p2p_r1).await?;
+    debug!(
+        bcasts = cast_r1.len(),
+        p2p = p2p_r1.len(),
+        "Completed local FROST DKG round 1"
+    );
+    let (cast_r1_result, p2p_r1_result) = tp.round1(&cancellation, cast_r1, p2p_r1).await?;
+    debug!(
+        bcasts = cast_r1_result.len(),
+        p2p = p2p_r1_result.len(),
+        "Completed FROST DKG round 1 transport"
+    );
 
     let cast_r2 = round2(&mut validators, &cast_r1_result, &p2p_r1_result)?;
-    let cast_r2_result = tp.round2(cancellation, cast_r2).await?;
+    debug!(bcasts = cast_r2.len(), "Completed local FROST DKG round 2");
+    let cast_r2_result = tp.round2(&cancellation, cast_r2).await?;
+    debug!(
+        bcasts = cast_r2_result.len(),
+        "Completed FROST DKG round 2 transport"
+    );
 
-    make_shares(&validators, &cast_r2_result)
+    let shares = make_shares(&validators, &cast_r2_result)?;
+    debug!(shares = shares.len(), "Completed FROST DKG");
+
+    Ok(shares)
 }
 
 /// Returns multiple frost DKG participants (one for each parallel validator).
@@ -232,8 +274,8 @@ fn other_ids(num_nodes: u32, share_idx: u32) -> Vec<u32> {
 /// Executes round 1 for each validator and returns all round 1
 /// broadcast and p2p messages for all validators.
 fn round1(validators: &mut BTreeMap<u32, DkgParticipant>) -> Result<Round1Output, FrostError> {
-    let mut cast_results = BTreeMap::new();
-    let mut p2p_results = BTreeMap::new();
+    let mut cast_results = HashMap::new();
+    let mut p2p_results = HashMap::new();
 
     for (&v_idx, validator) in validators {
         let (cast, p2p) = validator.round1()?;
@@ -265,10 +307,10 @@ fn round1(validators: &mut BTreeMap<u32, DkgParticipant>) -> Result<Round1Output
 /// broadcast messages for all validators.
 fn round2(
     validators: &mut BTreeMap<u32, DkgParticipant>,
-    cast_r1: &BTreeMap<MsgKey, Round1Bcast>,
-    p2p_r1: &BTreeMap<MsgKey, ShamirShare>,
-) -> Result<BTreeMap<MsgKey, Round2Bcast>, FrostError> {
-    let mut cast_results = BTreeMap::new();
+    cast_r1: &HashMap<MsgKey, Round1Bcast>,
+    p2p_r1: &HashMap<MsgKey, ShamirShare>,
+) -> Result<HashMap<MsgKey, Round2Bcast>, FrostError> {
+    let mut cast_results = HashMap::new();
 
     for (&v_idx, validator) in validators {
         let (casts, shares) = get_round2_inputs(cast_r1, p2p_r1, v_idx);
@@ -288,8 +330,8 @@ fn round2(
 
 /// Returns the round 2 inputs of the `v_idx`th validator.
 fn get_round2_inputs(
-    cast_r1: &BTreeMap<MsgKey, Round1Bcast>,
-    p2p_r1: &BTreeMap<MsgKey, ShamirShare>,
+    cast_r1: &HashMap<MsgKey, Round1Bcast>,
+    p2p_r1: &HashMap<MsgKey, ShamirShare>,
     v_idx: u32,
 ) -> (BTreeMap<u32, Round1Bcast>, BTreeMap<u32, ShamirShare>) {
     let cast_map = cast_r1
@@ -310,7 +352,7 @@ fn get_round2_inputs(
 /// and round 2 results.
 fn make_shares(
     validators: &BTreeMap<u32, DkgParticipant>,
-    r2_result: &BTreeMap<MsgKey, Round2Bcast>,
+    r2_result: &HashMap<MsgKey, Round2Bcast>,
 ) -> Result<Vec<Share>, FrostError> {
     // Get set of public shares for each validator.
     let pub_shares = r2_result.iter().try_fold(
@@ -395,10 +437,10 @@ mod tests {
     #[derive(Default)]
     struct FrostMemTransportInner {
         round1: usize,
-        round1_bcast: BTreeMap<MsgKey, Round1Bcast>,
-        round1_shares: BTreeMap<u32, BTreeMap<MsgKey, ShamirShare>>,
+        round1_bcast: HashMap<MsgKey, Round1Bcast>,
+        round1_shares: HashMap<u32, HashMap<MsgKey, ShamirShare>>,
         round2: usize,
-        round2_bcast: BTreeMap<MsgKey, Round2Bcast>,
+        round2_bcast: HashMap<MsgKey, Round2Bcast>,
     }
 
     impl FrostMemTransport {
@@ -415,9 +457,9 @@ mod tests {
     impl FTransport for FrostMemTransport {
         async fn round1(
             &self,
-            cancellation: CancellationToken,
-            bcast: BTreeMap<MsgKey, Round1Bcast>,
-            shares: BTreeMap<MsgKey, ShamirShare>,
+            cancellation: &CancellationToken,
+            bcast: HashMap<MsgKey, Round1Bcast>,
+            shares: HashMap<MsgKey, ShamirShare>,
         ) -> Result<Round1Output, FrostError> {
             let source_id = bcast
                 .keys()
@@ -482,9 +524,9 @@ mod tests {
 
         async fn round2(
             &self,
-            cancellation: CancellationToken,
-            bcast: BTreeMap<MsgKey, Round2Bcast>,
-        ) -> Result<BTreeMap<MsgKey, Round2Bcast>, FrostError> {
+            cancellation: &CancellationToken,
+            bcast: HashMap<MsgKey, Round2Bcast>,
+        ) -> Result<HashMap<MsgKey, Round2Bcast>, FrostError> {
             {
                 let mut inner = self.inner.lock().await;
                 if inner.round2 == self.nodes {
@@ -629,10 +671,72 @@ mod tests {
         );
         assert_eq!(shares.len(), 4);
         assert!(shares.keys().all(|key| key.source_id == 2));
-        assert_eq!(
-            shares.keys().map(|key| key.target_id).collect::<Vec<_>>(),
-            vec![1, 3, 1, 3]
-        );
+        let mut share_keys = shares
+            .keys()
+            .map(|key| (key.val_idx, key.target_id))
+            .collect::<Vec<_>>();
+        share_keys.sort_unstable();
+        assert_eq!(share_keys, vec![(0, 1), (0, 3), (1, 1), (1, 3)]);
+    }
+
+    #[test]
+    fn participant_rejects_repeated_round1() {
+        let mut validator =
+            DkgParticipant::new(1, 2, "0", vec![2, 3]).expect("participant should build");
+
+        validator.round1().expect("round1 should run");
+        assert!(matches!(
+            validator.round1(),
+            Err(FrostError::InvalidRound {
+                expected: 1,
+                current: 2
+            })
+        ));
+    }
+
+    #[test]
+    fn participant_rejects_round2_before_round1() {
+        let mut validator =
+            DkgParticipant::new(1, 2, "0", vec![2, 3]).expect("participant should build");
+
+        assert!(matches!(
+            validator.round2(&BTreeMap::new(), &BTreeMap::new()),
+            Err(FrostError::InvalidRound {
+                expected: 2,
+                current: 1
+            })
+        ));
+    }
+
+    #[test]
+    fn participant_rejects_repeated_round2() {
+        let mut node1 = new_frost_participants(1, 3, 2, 1, "0").expect("participants should build");
+        let (mut casts, _) = round1(&mut node1).expect("round1 should run");
+        let mut shares = HashMap::new();
+        for share_idx in 2..=3 {
+            let mut validators =
+                new_frost_participants(1, 3, 2, share_idx, "0").expect("participants should build");
+            let (node_casts, node_shares) = round1(&mut validators).expect("round1 should run");
+            casts.extend(node_casts);
+            shares.extend(
+                node_shares
+                    .into_iter()
+                    .filter(|(key, _)| key.target_id == 1),
+            );
+        }
+        let (v0_casts, v0_shares) = get_round2_inputs(&casts, &shares, 0);
+        let validator = node1.get_mut(&0).expect("validator should exist");
+
+        validator
+            .round2(&v0_casts, &v0_shares)
+            .expect("round2 should run");
+        assert!(matches!(
+            validator.round2(&v0_casts, &v0_shares),
+            Err(FrostError::InvalidRound {
+                expected: 2,
+                current: 3
+            })
+        ));
     }
 
     #[test]
@@ -657,8 +761,8 @@ mod tests {
 
     #[test]
     fn get_round2_inputs_filters_by_validator_index() {
-        let mut casts = BTreeMap::new();
-        let mut shares = BTreeMap::new();
+        let mut casts = HashMap::new();
+        let mut shares = HashMap::new();
 
         for share_idx in 2..=3 {
             let mut validators =
