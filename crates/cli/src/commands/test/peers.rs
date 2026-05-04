@@ -189,7 +189,7 @@ pub async fn run(
         args.test_config.test_cases.as_deref(),
     );
 
-    if peer_tests.is_empty() && self_tests.is_empty() {
+    if peer_tests.is_empty() && self_tests.is_empty() && relay_tests.is_empty() {
         return Err(CliError::TestCaseNotSupported);
     }
 
