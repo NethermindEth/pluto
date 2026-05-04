@@ -2,9 +2,7 @@ use std::{path, time::Duration};
 
 use bon::Builder;
 use libp2p::PeerId;
-use pluto_cluster::version::{
-    support_node_signatures, support_partial_deposits, support_pregen_registrations,
-};
+use pluto_cluster::version::{support_node_signatures, support_partial_deposits};
 use pluto_eth2util::{
     deposit::{dedup_amounts, default_deposit_amounts},
     network::fork_version_to_network,
@@ -383,7 +381,7 @@ async fn run_ceremony(
     sync.next_step(ct.child_token()).await?; // step 2 → 3
 
     // ── Validator registrations ───────────────────────────────────────────────
-    let mut val_regs = crate::signing::sign_and_agg_validator_registrations(
+    let val_regs = crate::signing::sign_and_agg_validator_registrations(
         &exchanger,
         &shares,
         &fee_recipients,
@@ -395,10 +393,6 @@ async fn run_ceremony(
     sync.next_step(ct.child_token()).await?; // step 3 → 4
 
     // ── Lock hash ─────────────────────────────────────────────────────────────
-    if !support_pregen_registrations(&definition.version) {
-        val_regs.clear();
-    }
-
     let mut lock = crate::signing::sign_and_aggregate_lock_hash(
         ct.child_token(),
         &shares,

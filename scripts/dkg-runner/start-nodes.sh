@@ -36,21 +36,14 @@ start_node() {
 
     echo "[start-nodes] Starting ${label} node ${index} (bin: ${bin})"
 
-    # shellcheck disable=SC2094
+    # Use process substitution so that $! captures the binary's PID rather than
+    # tee's.  With `cmd > >(tee file) 2>&1 &`, the backgrounded job IS cmd and
+    # tee runs inside the substitution as a child of the shell, so $! is cmd's PID.
     "${bin}" dkg \
         --definition-file="${DEF_FILE}" \
         --data-dir="${data_dir}" \
         --p2p-relays="${RELAY_URL}" \
-        2>&1 | tee "${log_file}" &
-    # The PID of the pipeline element we care about is the first background job
-    # started (the binary itself); tee is a side-effect. On bash 4+ we use
-    # $BASHPID in a subshell trick, but the simpler approach captures the last
-    # backgrounded PID via $!.  Because we backgrounded a pipeline, $! refers
-    # to tee's PID on most shells.  We therefore capture the binary PID before
-    # the pipe by relying on process substitution indirection.
-    #
-    # Portable approach: wrap the binary in a subshell so $! is the subshell.
-    # The subshell PID == the group leader we kill later.
+        > >(tee "${log_file}") 2>&1 &
     echo "$!" >> "${PID_FILE}"
 }
 

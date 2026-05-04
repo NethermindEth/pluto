@@ -25,9 +25,6 @@ pub fn trim_0x_prefix(value: &str) -> &str {
 /// Returns `"0x"` for empty input, matching the go-eth2-client convention for
 /// execution-payload fields such as `extra_data`.
 pub fn encode_0x_hex(bytes: &[u8]) -> String {
-    if bytes.is_empty() {
-        return String::new();
-    }
     format!("0x{}", hex::encode(bytes))
 }
 

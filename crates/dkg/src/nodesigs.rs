@@ -152,11 +152,11 @@ impl NodeSigBcast {
 }
 
 /// Returns a copy of all signatures if every slot is filled, otherwise `None`.
+///
+/// Matches Charon's `allSigs()`: returns all N entries (NONE_DATA sentinels
+/// included) so that the caller always receives exactly `operators.len()` sigs.
 fn all_sigs(sigs: &[Option<Vec<u8>>]) -> Option<Vec<Vec<u8>>> {
-    sigs.iter()
-        .filter(|slot| slot.as_deref() != Some(&NONE_DATA))
-        .cloned()
-        .collect()
+    sigs.iter().cloned().collect()
 }
 
 /// Validates and stores an incoming node signature message.
@@ -276,16 +276,16 @@ mod tests {
     }
 
     #[test]
-    fn all_sigs_filters_none_data() {
+    fn all_sigs_preserves_none_data_entries() {
         let none_data = NONE_DATA.to_vec();
         let real_sig = vec![1u8, 2, 3];
         let result = all_sigs(&[
             Some(none_data.clone()),
             Some(real_sig.clone()),
-            Some(none_data),
+            Some(none_data.clone()),
         ])
         .unwrap();
-        assert_eq!(result, vec![real_sig]);
+        assert_eq!(result, vec![none_data.clone(), real_sig, none_data]);
     }
 
     #[test]

@@ -21,7 +21,7 @@ DONE_DIR="${WORK_DIR}/.done"
 mkdir -p "${DONE_DIR}"
 
 # Patterns that indicate a node finished successfully.
-COMPLETION_PATTERN='[Dd][Kk][Gg].*[Cc]omplete\|[Ss]hare.*[Cc]reated\|[Kk]eyshare\|[Cc]eremony.*[Cc]omplete\|[Kk]ey.*[Ss]hares.*[Ss]aved\|wrote.*keystore'
+COMPLETION_PATTERN='[Dd][Kk][Gg].*[Cc]omplete\|[Ss]hare.*[Cc]reated\|[Kk]eyshare\|[Kk]ey.*[Ss]hares.*[Ss]aved\|wrote.*keystore'
 
 # Patterns that indicate trouble (printed as warnings; we do not exit on them).
 ERROR_PATTERN='ERRO\|FATAL\|panic'

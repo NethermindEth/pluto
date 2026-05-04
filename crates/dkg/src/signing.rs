@@ -294,7 +294,13 @@ pub async fn sign_and_aggregate_lock_hash(
     deposit_datas: Vec<Vec<phase0::DepositData>>,
     val_regs: Vec<VersionedSignedValidatorRegistration>,
 ) -> Result<Lock> {
-    let validators = create_dist_validators(shares, &deposit_datas, &val_regs)?;
+    let mut validators = create_dist_validators(shares, &deposit_datas, &val_regs)?;
+
+    if !pluto_cluster::version::support_pregen_registrations(&definition.version) {
+        for dv in &mut validators {
+            dv.builder_registration = pluto_cluster::registration::BuilderRegistration::default();
+        }
+    }
 
     let mut lock = Lock {
         definition,
