@@ -1,0 +1,94 @@
+{
+  "scenario": "invalid-proof",
+  "threshold": 2,
+  "max_signers": 3,
+  "ctx": 0,
+  "participants": [
+    {
+      "id": 1,
+      "own_share": "36def1bba1e65144492c3e74a74749ff911be1a1d8abebd8276b735d31e80e87",
+      "round1_bcast": {
+        "commitments": [
+          "8bfdaf557e7a365d9c75cd0b1ee2d4ba7e6f4f100c99f324cc3d5b1c0bb07b4b15f32468f87abce40f1daf1524b90761",
+          "adb59012564d5e7a935ffc7cc22f4e68692edeb8039097e39fa3e252d56317ec234acc584b36a7818bd770c92f2a0d41"
+        ],
+        "wi": "21ebef1eda9e73251c7947ce127b161d00b6e03814c040e216361478f31d5385",
+        "ci": "4a716c6b8ea9bca97b16f3d3b6f66c74d463520659593e2ee6aa17b5a3e0f002"
+      },
+      "shares_sent": [
+        {
+          "to": 2,
+          "id": 2,
+          "value": "3547e9c1608c58b0fd18839ac657fd1fa3e921c55d5ce906bf03fa414235d32c"
+        },
+        {
+          "to": 3,
+          "id": 3,
+          "value": "33b0e1c71f32601db104c8c0e568b03fb6b661e8e20de635569c8125528397d1"
+        }
+      ],
+      "expected_round2": {
+        "kind": "success",
+        "verification_key": "971812af8f5b42b493625bcc4fa1e44acda41c94c6cbe9763674765365fa4bd8ca747c081c8e7c30a4acf089210d3b9a",
+        "vk_share": "b600b36660a6b68dea3d05c86028ff5056415b492a50e5188b73424d4b31e79dc3f8db3d185d5ea2f6c6367d4546c188",
+        "signing_share": "1e73c557eb8d575f0d45e760a34e456c3d10fac38a476a32af6162805a7391f5"
+      }
+    },
+    {
+      "id": 2,
+      "own_share": "2c395cc0763fbbbc7862a4983bdd875285f07816b7ed371e52ad95598cfcd16d",
+      "round1_bcast": {
+        "commitments": [
+          "83a588bc21634d57e260d6f39772f2ecfa7ffe6a2f7403cad88495ef831afef86da67d2b1b5cfa1945dfab4d8f647122",
+          "a01895c79ae4ecb6175b39a9050f3e796f326a7e816fca5525dd99338bb5639c0a161158996b868bb348d6d3222ae596"
+        ],
+        "wi": "726ac2fe13a7be09cadd2affa70f3c29d555b2e90db1f9734ae7acd71cf84f3b",
+        "ci": "66050fb2b10ebbaa84a07a45bac02142c495454e82b8541ab237ac82d904cc4c"
+      },
+      "shares_sent": [
+        {
+          "to": 1,
+          "id": 1,
+          "value": "31fa0036b6f62d76308ff64cc56c2103769089397bd308035687784b345d2924"
+        },
+        {
+          "to": 3,
+          "id": 3,
+          "value": "2678b94a35894a02c03552e3b24eeda1955066f3f40766394ed3b267e59c79b6"
+        }
+      ],
+      "expected_round2": {
+        "kind": "invalid_proof",
+        "culprit": 1
+      }
+    },
+    {
+      "id": 3,
+      "own_share": "13adcf75fcad7d4892795687ce8272920a6e7a57abdd04fcd5ba212c414accd1",
+      "round1_bcast": {
+        "commitments": [
+          "b457326e06db3e90e97bbce3d373687b0ac75d0c5d216a20f77c100d7b13d08bea2f5c071957291270cb8ce12d852c51",
+          "876205abfa05a57325946eae42fe461ca14272a2eb166590c96a6b208c8efe4c2ba4bb8fbc3633c8fcd3108e74d9e8d3"
+        ],
+        "wi": "3407279b3f7da5c153ade91e296a8824b8df875511bfbb80efa1d22fb255aca5",
+        "ci": "12a29d0aebf1d63ca8f9979c9f50fb91eef6cde0ad47d329f2a22b7ab16f3d25"
+      },
+      "shares_sent": [
+        {
+          "to": 1,
+          "id": 1,
+          "value": "29887ab8bc4e55ecc6c38aa7403cb26e892233eb35c6d256316e76d6f42e5a4b"
+        },
+        {
+          "to": 2,
+          "id": 2,
+          "value": "1e9b25175c7de99aac9e7097875f928049c8572170d1eba983944c019abc938e"
+        }
+      ],
+      "expected_round2": {
+        "kind": "invalid_proof",
+        "culprit": 1
+      }
+    }
+  ]
+}

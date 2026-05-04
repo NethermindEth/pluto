@@ -10,7 +10,7 @@ The easiest way to set up the development environment is using [Nix](https://nix
 nix develop
 ```
 
-This automatically provides all required dependencies (Rust toolchain, Protobuf, oas3-gen, cargo-deny) and configures git hooks.
+This automatically provides all required dependencies (Rust toolchain, Protobuf, oas3-gen, cargo-deny, cargo-machete) and configures git hooks.
 
 ### Manual Setup
 
@@ -20,6 +20,7 @@ If you prefer not to use Nix, install the following manually:
 * [Protobuf](https://protobuf.dev/installation/)
 * [Docker](https://www.docker.com/)
 * [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) - `cargo install cargo-deny@0.19.0`
+* [cargo-machete](https://github.com/bnjbvr/cargo-machete) - `cargo install cargo-machete@0.9.2`
 * [oas3-gen](https://github.com/eklipse2k8/oas3-gen) - `cargo install oas3-gen@0.24.0`
 
 Then install the pre-push git hook:
