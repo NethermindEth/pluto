@@ -1,0 +1,87 @@
+name: DKG runner integration
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "scripts/dkg-runner/**"
+      - ".github/workflows/dkg-runner.yml"
+  pull_request:
+    types: [synchronize, opened, reopened, ready_for_review]
+    paths:
+      - "scripts/dkg-runner/**"
+      - ".github/workflows/dkg-runner.yml"
+  workflow_dispatch:
+    inputs:
+      timeout:
+        description: "Per-ceremony TIMEOUT (seconds)"
+        type: string
+        default: "180"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CHARON_VERSION: v1.7.1
+  CHARON_URL: https://github.com/ObolNetwork/charon/releases/download/v1.7.1/charon-v1.7.1-linux-amd64.tar.gz
+
+jobs:
+  dkg-ceremony:
+    name: 4 Charon nodes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Cache charon binary
+        id: cache-charon
+        uses: actions/cache@v4
+        with:
+          path: bin/charon
+          key: charon-${{ env.CHARON_VERSION }}-linux-amd64
+
+      - name: Download and extract charon
+        if: steps.cache-charon.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          tmp=$(mktemp -d)
+          curl -fLsS "${CHARON_URL}" -o "${tmp}/charon.tar.gz"
+          tar -xzf "${tmp}/charon.tar.gz" -C "${tmp}"
+          bin_path=$(find "${tmp}" -type f -name charon -perm -u+x | head -1)
+          if [[ -z "${bin_path}" ]]; then
+            echo "::error::charon binary not found inside extracted tarball"
+            ls -R "${tmp}"
+            exit 1
+          fi
+          install -m 0755 "${bin_path}" bin/charon
+
+      - name: Verify charon
+        run: ./bin/charon version
+
+      - name: Run DKG ceremony (4 charon nodes)
+        env:
+          CI: "true"
+          NODES: "4"
+          THRESHOLD: "3"
+          PLUTO_NODES: "0"
+          CHARON_NODES: "4"
+          CHARON_BIN: ${{ github.workspace }}/bin/charon
+          TIMEOUT: ${{ inputs.timeout || '180' }}
+        run: ./scripts/dkg-runner/run.sh
+
+      - name: List collected outputs
+        if: success()
+        run: ls -la /tmp/dkg-run/output/ /tmp/dkg-run/output/node-*/ || true
+
+      - name: Upload work dir on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dkg-run-${{ github.run_id }}
+          path: /tmp/dkg-run
+          if-no-files-found: warn
+          retention-days: 7

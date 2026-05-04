@@ -1,73 +1,68 @@
 #!/usr/bin/env bash
-# monitor.sh — Polls node logs for DKG ceremony completion.
+# monitor.sh — Waits for cluster-lock.json to appear in every node's data dir.
 #
 # Usage: ./monitor.sh
 #
-# Exit codes:
-#   0 — all nodes reported completion within TIMEOUT seconds
-#   1 — timed out before all nodes completed
+# Completion is detected by the existence of the canonical DKG output
+# (cluster-lock.json) in each node's data directory — the artifact that
+# collect.sh ultimately copies out.  This is independent of log formatting
+# and survives differences between Charon and Pluto.
 #
-# Compatible with bash 3.2+ (macOS default shell).
-# Uses per-node sentinel files instead of associative arrays.
+# Exit codes:
+#   0 — every node produced cluster-lock.json before TIMEOUT.
+#   1 — timed out; the tail of each node log is dumped to stderr for CI debug.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=config.sh
 source "${SCRIPT_DIR}/config.sh"
+# shellcheck source=lib.sh
+source "${SCRIPT_DIR}/lib.sh"
+LOG_PREFIX="monitor"
 
-# Sentinel directory — one file per completed node.
-DONE_DIR="${WORK_DIR}/.done"
-mkdir -p "${DONE_DIR}"
+POLL_INTERVAL=2
+TAIL_LINES=30
 
-# Patterns that indicate a node finished successfully.
-COMPLETION_PATTERN='[Dd][Kk][Gg].*[Cc]omplete\|[Ss]hare.*[Cc]reated\|[Kk]eyshare\|[Kk]ey.*[Ss]hares.*[Ss]aved\|wrote.*keystore'
-
-# Patterns that indicate trouble (printed as warnings; we do not exit on them).
-ERROR_PATTERN='ERRO\|FATAL\|panic'
-
-POLL_INTERVAL=3  # seconds between scans
-
-echo "[monitor] Waiting for ${NODES} nodes to complete (timeout: ${TIMEOUT}s)"
+log_info "Waiting for ${NODES} nodes (timeout: ${TIMEOUT}s)"
+log_info "Completion = cluster-lock.json present in ${WORK_DIR}/node-*/"
 
 start_time="${SECONDS}"
+last_count=-1
 
 while true; do
     elapsed=$(( SECONDS - start_time ))
-
-    if (( elapsed >= TIMEOUT )); then
-        done_count=$(ls -1 "${DONE_DIR}" 2>/dev/null | wc -l | tr -d ' ')
-        echo "[monitor] TIMEOUT after ${elapsed}s — ${done_count}/${NODES} nodes completed." >&2
-        exit 1
-    fi
-
-    for i in $(seq 0 $(( NODES - 1 ))); do
-        sentinel="${DONE_DIR}/node-${i}"
-        node_dir="${WORK_DIR}/node-${i}"
-        log="${node_dir}/node.log"
-
-        # Already done — skip.
-        [[ -f "${sentinel}" ]] && continue
-        [[ -f "${log}" ]] || continue
-
-        if grep -q "${COMPLETION_PATTERN}" "${log}" 2>/dev/null; then
-            touch "${sentinel}"
-            done_count=$(ls -1 "${DONE_DIR}" 2>/dev/null | wc -l | tr -d ' ')
-            echo "[monitor] Node ${i} completed (${done_count}/${NODES})"
+    done_count=0
+    for (( i = 0; i < NODES; i++ )); do
+        if [[ -f "${WORK_DIR}/node-${i}/cluster-lock.json" ]]; then
+            done_count=$(( done_count + 1 ))
         fi
-
-        # Print error lines as warnings (non-fatal).
-        grep "${ERROR_PATTERN}" "${log}" 2>/dev/null | tail -3 | while IFS= read -r line; do
-            echo "[monitor] WARN [node-${i}]: ${line}"
-        done || true
     done
 
-    done_count=$(ls -1 "${DONE_DIR}" 2>/dev/null | wc -l | tr -d ' ')
     if (( done_count >= NODES )); then
-        echo "[monitor] All ${NODES} nodes completed successfully."
+        log_info "All ${NODES} nodes completed (${elapsed}s)"
         exit 0
     fi
 
-    echo "[monitor] ${done_count}/${NODES} nodes done (${elapsed}s elapsed)"
+    if (( elapsed >= TIMEOUT )); then
+        log_err "TIMEOUT after ${elapsed}s — ${done_count}/${NODES} nodes completed"
+        for (( i = 0; i < NODES; i++ )); do
+            log_path="${WORK_DIR}/node-${i}/node.log"
+            if [[ -f "${log_path}" ]]; then
+                printf '\n[monitor] === tail -n %d node-%d/node.log ===\n' \
+                    "${TAIL_LINES}" "${i}" >&2
+                tail -n "${TAIL_LINES}" "${log_path}" >&2 || true
+            else
+                printf '\n[monitor] === node-%d/node.log: missing ===\n' "${i}" >&2
+            fi
+        done
+        exit 1
+    fi
+
+    # Only print progress when the count changes — keeps CI logs tidy.
+    if (( done_count != last_count )); then
+        log_info "${done_count}/${NODES} nodes done (${elapsed}s elapsed)"
+        last_count="${done_count}"
+    fi
     sleep "${POLL_INTERVAL}"
 done

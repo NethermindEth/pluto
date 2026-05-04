@@ -1,49 +1,35 @@
 #!/usr/bin/env bash
-# reset.sh — Kills all running node processes and removes WORK_DIR.
+# reset.sh — Kills all running node process groups and removes WORK_DIR.
 #
 # Usage: ./reset.sh
 #
-# Reads PIDs from ${WORK_DIR}/pids and sends SIGTERM (then SIGKILL after a
-# short grace period) to each process group.  Finally removes WORK_DIR.
+# Reads PGIDs from ${WORK_DIR}/pids and signals the whole process group of each
+# node (SIGTERM, then SIGKILL after a short grace period).  Finally removes
+# WORK_DIR.  This is the explicit cleanup tool — run.sh does not call it on
+# failure, so partial outputs are preserved for debugging until you ask for
+# them to be wiped.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=config.sh
 source "${SCRIPT_DIR}/config.sh"
+# shellcheck source=lib.sh
+source "${SCRIPT_DIR}/lib.sh"
+LOG_PREFIX="reset"
 
 PID_FILE="${WORK_DIR}/pids"
-GRACE_PERIOD=5  # seconds before escalating to SIGKILL
+GRACE_PERIOD=5
 
 if [[ -f "${PID_FILE}" ]]; then
-    echo "[reset] Stopping node processes listed in ${PID_FILE}"
-    while IFS= read -r pid; do
-        [[ -z "${pid}" ]] && continue
-
-        if kill -0 "${pid}" 2>/dev/null; then
-            echo "[reset]   SIGTERM -> PID ${pid}"
-            kill -TERM "${pid}" 2>/dev/null || true
-        else
-            echo "[reset]   PID ${pid} is not running (skipping)"
-        fi
-    done < "${PID_FILE}"
-
-    # Wait for processes to exit gracefully.
-    sleep "${GRACE_PERIOD}"
-
-    # Escalate to SIGKILL for any survivors.
-    while IFS= read -r pid; do
-        [[ -z "${pid}" ]] && continue
-
-        if kill -0 "${pid}" 2>/dev/null; then
-            echo "[reset]   SIGKILL -> PID ${pid} (did not exit in time)"
-            kill -KILL "${pid}" 2>/dev/null || true
-        fi
-    done < "${PID_FILE}"
+    log_info "Stopping node process groups listed in ${PID_FILE}"
+    kill_pgids "${PID_FILE}" "${GRACE_PERIOD}"
 else
-    echo "[reset] No PID file found at ${PID_FILE} — nothing to kill"
+    log_info "No PID file at ${PID_FILE} — nothing to kill"
 fi
 
-echo "[reset] Removing work directory: ${WORK_DIR}"
-rm -rf "${WORK_DIR}"
-echo "[reset] Done."
+if [[ -d "${WORK_DIR}" ]]; then
+    log_info "Removing work directory: ${WORK_DIR}"
+    rm -rf "${WORK_DIR}"
+fi
+log_info "Done."

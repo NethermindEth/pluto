@@ -22,6 +22,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=config.sh
 source "${SCRIPT_DIR}/config.sh"
+# shellcheck source=lib.sh
+source "${SCRIPT_DIR}/lib.sh"
+LOG_PREFIX="run-node"
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
     grep '^#' "${BASH_SOURCE[0]}" | grep -v '#!/' | sed 's/^# \?//'
@@ -29,7 +32,7 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
 fi
 
 if [[ $# -ne 2 ]]; then
-    echo "[run-node] ERROR: expected exactly 2 arguments: <node-index> <pluto|charon>" >&2
+    log_err "expected exactly 2 arguments: <node-index> <pluto|charon>"
     exit 1
 fi
 
@@ -40,58 +43,54 @@ DATA_DIR="${WORK_DIR}/node-${NODE_INDEX}"
 LOG_FILE="${DATA_DIR}/node.log"
 
 if ! [[ "${NODE_INDEX}" =~ ^[0-9]+$ ]]; then
-    echo "[run-node] ERROR: node-index must be a non-negative integer" >&2
+    log_err "node-index must be a non-negative integer"
     exit 1
 fi
 
 if (( NODE_INDEX < 0 || NODE_INDEX >= NODES )); then
-    echo "[run-node] ERROR: node-index (${NODE_INDEX}) must be in range 0..$(( NODES - 1 ))" >&2
+    log_err "node-index (${NODE_INDEX}) must be in range 0..$(( NODES - 1 ))"
     exit 1
 fi
 
 if [[ ! -f "${DEF_FILE}" ]]; then
-    echo "[run-node] ERROR: cluster-definition.json not found at ${DEF_FILE}" >&2
+    log_err "cluster-definition.json not found at ${DEF_FILE}"
     if find "${WORK_DIR}" -maxdepth 1 -type d -name 'node-*' 2>/dev/null | grep -q .; then
-        echo "[run-node] setup appears incomplete or interrupted." >&2
-        echo "[run-node] setup.sh must finish all ENR generation and print 'Done. Definition file: ...' before run-node.sh can be used." >&2
+        log_err "setup appears incomplete or interrupted."
+        log_err "setup.sh must finish all ENR generation before run-node.sh can be used."
     else
-        echo "[run-node] Run ./scripts/dkg-runner/setup.sh first." >&2
+        log_err "Run ./scripts/dkg-runner/setup.sh first."
     fi
     exit 1
 fi
 
 if [[ ! -d "${DATA_DIR}" ]]; then
-    echo "[run-node] ERROR: node data directory not found at ${DATA_DIR}" >&2
-    echo "[run-node] Run ./scripts/dkg-runner/setup.sh first." >&2
+    log_err "node data directory not found at ${DATA_DIR}"
+    log_err "Run ./scripts/dkg-runner/setup.sh first."
     exit 1
 fi
 
 case "${NODE_KIND}" in
-    pluto)
-        BIN="${PLUTO_BIN}"
-        ;;
-    charon)
-        BIN="${CHARON_BIN}"
-        ;;
+    pluto)  BIN="${PLUTO_BIN}" ;;
+    charon) BIN="${CHARON_BIN}" ;;
     *)
-        echo "[run-node] ERROR: node kind must be 'pluto' or 'charon'" >&2
+        log_err "node kind must be 'pluto' or 'charon'"
         exit 1
         ;;
 esac
 
-mkdir -p "${DATA_DIR}"
+require_bin "${NODE_KIND}" "${BIN}" || exit 1
 
-echo "[run-node] =============================================="
-echo "[run-node] Starting single DKG node"
-echo "[run-node]   NODE_INDEX = ${NODE_INDEX}"
-echo "[run-node]   NODE_KIND  = ${NODE_KIND}"
-echo "[run-node]   BIN        = ${BIN}"
-echo "[run-node]   DEF_FILE   = ${DEF_FILE}"
-echo "[run-node]   DATA_DIR   = ${DATA_DIR}"
-echo "[run-node]   LOG_FILE   = ${LOG_FILE}"
-echo "[run-node] =============================================="
+log_info "=============================================="
+log_info "Starting single DKG node"
+log_info "  NODE_INDEX = ${NODE_INDEX}"
+log_info "  NODE_KIND  = ${NODE_KIND}"
+log_info "  BIN        = ${BIN}"
+log_info "  DEF_FILE   = ${DEF_FILE}"
+log_info "  DATA_DIR   = ${DATA_DIR}"
+log_info "  LOG_FILE   = ${LOG_FILE}"
+log_info "=============================================="
 
-exec "${BIN}" dkg \
+"${BIN}" dkg \
     --definition-file="${DEF_FILE}" \
     --data-dir="${DATA_DIR}" \
     --p2p-relays="${RELAY_URL}" \

@@ -9,8 +9,8 @@
 #   THRESHOLD=3          Signing threshold (min shares required to reconstruct).
 #   PLUTO_NODES=2        How many of the NODES slots use the Pluto binary.
 #   CHARON_NODES=2       How many of the NODES slots use the Charon binary.
-#   RELAY_URL=https://relay.obol.tech
-#                        Relay ENR endpoint used by charon create dkg.
+#   RELAY_URL=https://0.relay.obol.tech
+#                        Relay ENR endpoint used by the DKG nodes.
 #   TIMEOUT=120          Seconds to wait for all nodes before aborting.
 #   PLUTO_BIN=./target/debug/pluto
 #                        Path to the Pluto binary.
@@ -18,22 +18,30 @@
 #   WORK_DIR=/tmp/dkg-run
 #                        Scratch directory for the run (wiped on every call).
 #   KEEP_NODES=0         Leave nodes running after a successful ceremony when
-#                        set to 1/true/yes.
+#                        set to 1/true/yes/on.
 #   NETWORK=holesky      Ethereum network for the cluster definition.
 #   FEE_RECIPIENT=0xDeaD...
 #                        Fee recipient address passed to charon create dkg.
 #   WITHDRAWAL_ADDR=0xDeaD...
 #                        Withdrawal address passed to charon create dkg.
+#   CI=                  When truthy (1/true/yes/on), suppress per-node tee
+#                        to stdout; logs land only in WORK_DIR/node-*/node.log.
 #
 # Exit codes:
-#   0 — ceremony completed successfully; outputs collected under WORK_DIR/output
-#   1 — ceremony failed or timed out; WORK_DIR has been cleaned up
+#   0   — ceremony completed; outputs collected under WORK_DIR/output.
+#   1   — ceremony failed or timed out; WORK_DIR is preserved for debugging.
+#   130 — interrupted (SIGINT/SIGTERM); WORK_DIR is preserved.
+#
+# WORK_DIR is never deleted by run.sh.  Use ./reset.sh when you're done.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=config.sh
 source "${SCRIPT_DIR}/config.sh"
+# shellcheck source=lib.sh
+source "${SCRIPT_DIR}/lib.sh"
+LOG_PREFIX="run"
 
 # ── Argument handling ────────────────────────────────────────────────────────
 
@@ -45,102 +53,87 @@ fi
 # ── Validation ───────────────────────────────────────────────────────────────
 
 if (( PLUTO_NODES + CHARON_NODES != NODES )); then
-    echo "[run] ERROR: PLUTO_NODES (${PLUTO_NODES}) + CHARON_NODES (${CHARON_NODES}) must equal NODES (${NODES})" >&2
+    log_err "PLUTO_NODES (${PLUTO_NODES}) + CHARON_NODES (${CHARON_NODES}) must equal NODES (${NODES})"
     exit 1
 fi
 
 if (( THRESHOLD > NODES )); then
-    echo "[run] ERROR: THRESHOLD (${THRESHOLD}) cannot exceed NODES (${NODES})" >&2
+    log_err "THRESHOLD (${THRESHOLD}) cannot exceed NODES (${NODES})"
     exit 1
 fi
 
-# ── Cleanup handler ──────────────────────────────────────────────────────────
+# ── Cleanup helpers ──────────────────────────────────────────────────────────
 
-_cleanup() {
-    local exit_code=$?
-    echo ""
-    echo "[run] Caught signal or error — cleaning up..."
-    # reset.sh will kill processes and remove WORK_DIR.
-    "${SCRIPT_DIR}/reset.sh" || true
-    exit $(( exit_code == 0 ? 1 : exit_code ))
+PID_FILE="${WORK_DIR}/pids"
+
+_kill_nodes() {
+    kill_pgids "${PID_FILE}" 5
 }
 
-# Trap Ctrl-C (SIGINT), SIGTERM, and unexpected exits.
-trap '_cleanup' INT TERM
+_on_signal() {
+    log_warn "Caught signal — killing nodes (work dir preserved at ${WORK_DIR})"
+    _kill_nodes || true
+    exit 130
+}
+
+trap '_on_signal' INT TERM
 
 # ── Main flow ────────────────────────────────────────────────────────────────
 
-should_keep_nodes() {
-    case "${KEEP_NODES}" in
-        1|true|TRUE|yes|YES|on|ON) return 0 ;;
-        *) return 1 ;;
-    esac
-}
+log_info "=============================================="
+log_info "DKG runner starting"
+log_info "  NODES        = ${NODES}"
+log_info "  THRESHOLD    = ${THRESHOLD}"
+log_info "  PLUTO_NODES  = ${PLUTO_NODES}"
+log_info "  CHARON_NODES = ${CHARON_NODES}"
+log_info "  RELAY_URL    = ${RELAY_URL}"
+log_info "  NETWORK      = ${NETWORK}"
+log_info "  TIMEOUT      = ${TIMEOUT}s"
+log_info "  PLUTO_BIN    = ${PLUTO_BIN}"
+log_info "  CHARON_BIN   = ${CHARON_BIN}"
+log_info "  WORK_DIR     = ${WORK_DIR}"
+log_info "  KEEP_NODES   = ${KEEP_NODES}"
+log_info "  CI           = ${CI:-}"
+log_info "=============================================="
 
-echo "[run] =============================================="
-echo "[run] DKG runner starting"
-echo "[run]   NODES        = ${NODES}"
-echo "[run]   THRESHOLD    = ${THRESHOLD}"
-echo "[run]   PLUTO_NODES  = ${PLUTO_NODES}"
-echo "[run]   CHARON_NODES = ${CHARON_NODES}"
-echo "[run]   RELAY_URL    = ${RELAY_URL}"
-echo "[run]   NETWORK      = ${NETWORK}"
-echo "[run]   TIMEOUT      = ${TIMEOUT}s"
-echo "[run]   PLUTO_BIN    = ${PLUTO_BIN}"
-echo "[run]   CHARON_BIN   = ${CHARON_BIN}"
-echo "[run]   WORK_DIR     = ${WORK_DIR}"
-echo "[run]   KEEP_NODES   = ${KEEP_NODES}"
-echo "[run] =============================================="
-
-echo "[run] --- Phase 1: Setup ---"
+log_info "--- Phase 1: Setup ---"
 "${SCRIPT_DIR}/setup.sh"
 
-echo "[run] --- Phase 2: Start nodes ---"
+log_info "--- Phase 2: Start nodes ---"
 "${SCRIPT_DIR}/start-nodes.sh"
 
-echo "[run] --- Phase 3: Monitor ---"
+log_info "--- Phase 3: Monitor ---"
 monitor_exit=0
 "${SCRIPT_DIR}/monitor.sh" || monitor_exit=$?
 
 if (( monitor_exit != 0 )); then
-    echo "[run] ERROR: DKG ceremony did not complete within ${TIMEOUT}s." >&2
-    echo "[run] Collecting partial outputs before cleanup..."
+    log_err "DKG ceremony did not complete within ${TIMEOUT}s."
+    log_info "Killing nodes and collecting partial outputs..."
+    _kill_nodes || true
     "${SCRIPT_DIR}/collect.sh" || true
-    echo "[run] Calling reset to kill nodes and clean up."
-    "${SCRIPT_DIR}/reset.sh" || true
-    # Disarm the EXIT trap so we don't double-cleanup.
+    log_info "Work dir preserved at ${WORK_DIR}. Run ${SCRIPT_DIR}/reset.sh to remove it."
     trap - INT TERM
     exit 1
 fi
 
-if should_keep_nodes; then
-    echo "[run] --- Phase 4: Keep nodes running (ceremony complete) ---"
+if is_truthy "${KEEP_NODES}"; then
+    log_info "--- Phase 4: Keep nodes running (ceremony complete) ---"
 else
-    echo "[run] --- Phase 4: Kill nodes (ceremony complete) ---"
-    # Kill all nodes cleanly.  Nodes may already have exited on their own after
-    # completing the ceremony, so we suppress errors here.
-    PID_FILE="${WORK_DIR}/pids"
-    if [[ -f "${PID_FILE}" ]]; then
-        while IFS= read -r pid; do
-            [[ -z "${pid}" ]] && continue
-            if kill -0 "${pid}" 2>/dev/null; then
-                kill -TERM "${pid}" 2>/dev/null || true
-            fi
-        done < "${PID_FILE}"
-    fi
+    log_info "--- Phase 4: Stop nodes (ceremony complete) ---"
+    _kill_nodes || true
 fi
 
-echo "[run] --- Phase 5: Collect outputs ---"
+log_info "--- Phase 5: Collect outputs ---"
 "${SCRIPT_DIR}/collect.sh"
 
-echo "[run] =============================================="
-echo "[run] DKG ceremony completed successfully."
-echo "[run] Outputs available in: ${WORK_DIR}/output"
-if should_keep_nodes; then
-    echo "[run] Node processes were left running. Use ./scripts/dkg-runner/reset.sh to stop them."
+log_info "=============================================="
+log_info "DKG ceremony completed successfully."
+log_info "Outputs available in: ${WORK_DIR}/output"
+log_info "Run ${SCRIPT_DIR}/reset.sh to clean up."
+if is_truthy "${KEEP_NODES}"; then
+    log_info "Node processes were left running."
 fi
-echo "[run] =============================================="
+log_info "=============================================="
 
-# Disarm the trap before a clean exit.
 trap - INT TERM
 exit 0

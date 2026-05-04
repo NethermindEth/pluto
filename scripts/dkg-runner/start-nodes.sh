@@ -3,26 +3,44 @@
 #
 # Usage: ./start-nodes.sh
 #
-# Slots 0 .. PLUTO_NODES-1  are started with the Pluto binary.
+# Slots 0 .. PLUTO_NODES-1   are started with the Pluto binary.
 # Slots PLUTO_NODES .. NODES-1 are started with the Charon binary.
-# All PIDs are appended to ${WORK_DIR}/pids.
+# Each node runs in its own process group; PGIDs are appended to ${WORK_DIR}/pids
+# so reset.sh / run.sh can signal the whole tree on cleanup.
+#
+# Behaviour with CI=true: logs go to ${WORK_DIR}/node-N/node.log only (no tee
+# to stdout).  Without CI, output is also tee'd to the controlling terminal.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=config.sh
 source "${SCRIPT_DIR}/config.sh"
+# shellcheck source=lib.sh
+source "${SCRIPT_DIR}/lib.sh"
+LOG_PREFIX="start-nodes"
 
 DEF_FILE="${WORK_DIR}/cluster-definition.json"
 PID_FILE="${WORK_DIR}/pids"
 
+# ── Pre-flight ───────────────────────────────────────────────────────────────
+require_bin "charon" "${CHARON_BIN}" || exit 1
+if (( PLUTO_NODES > 0 )); then
+    require_bin "pluto" "${PLUTO_BIN}" || exit 1
+fi
+
 if [[ ! -f "${DEF_FILE}" ]]; then
-    echo "[start-nodes] ERROR: cluster-definition.json not found at ${DEF_FILE}" >&2
-    echo "[start-nodes] Run setup.sh first." >&2
+    log_err "cluster-definition.json not found at ${DEF_FILE}"
+    log_err "Run setup.sh first."
     exit 1
 fi
 
-# Truncate / create the PID file.
+# Enable job control so each backgrounded job runs in its own process group.
+# With monitor mode on, $! is the leader's PID and equals the new PGID, which
+# lets us signal the whole tree (including any descendants the binary spawns)
+# via `kill -- -PGID` in reset.sh / run.sh.
+set -m
+
 : > "${PID_FILE}"
 
 start_node() {
@@ -33,28 +51,33 @@ start_node() {
     local log_file="${data_dir}/node.log"
 
     mkdir -p "${data_dir}"
+    log_info "Starting ${label} node ${index} (bin: ${bin})"
 
-    echo "[start-nodes] Starting ${label} node ${index} (bin: ${bin})"
+    if is_ci; then
+        # Quiet path for CI: write to log file only.
+        "${bin}" dkg \
+            --definition-file="${DEF_FILE}" \
+            --data-dir="${data_dir}" \
+            --p2p-relays="${RELAY_URL}" \
+            > "${log_file}" 2>&1 &
+    else
+        # Interactive path: tee to log file and the terminal.
+        "${bin}" dkg \
+            --definition-file="${DEF_FILE}" \
+            --data-dir="${data_dir}" \
+            --p2p-relays="${RELAY_URL}" \
+            > >(tee "${log_file}") 2>&1 &
+    fi
 
-    # Use process substitution so that $! captures the binary's PID rather than
-    # tee's.  With `cmd > >(tee file) 2>&1 &`, the backgrounded job IS cmd and
-    # tee runs inside the substitution as a child of the shell, so $! is cmd's PID.
-    "${bin}" dkg \
-        --definition-file="${DEF_FILE}" \
-        --data-dir="${data_dir}" \
-        --p2p-relays="${RELAY_URL}" \
-        > >(tee "${log_file}") 2>&1 &
     echo "$!" >> "${PID_FILE}"
 }
 
-# Start Pluto nodes (slots 0 .. PLUTO_NODES-1)
 for (( i = 0; i < PLUTO_NODES; i++ )); do
     start_node "${i}" "${PLUTO_BIN}" "pluto"
 done
 
-# Start Charon nodes (slots PLUTO_NODES .. NODES-1)
 for (( i = PLUTO_NODES; i < NODES; i++ )); do
     start_node "${i}" "${CHARON_BIN}" "charon"
 done
 
-echo "[start-nodes] All ${NODES} nodes started. PIDs written to ${PID_FILE}"
+log_info "All ${NODES} nodes started. PGIDs written to ${PID_FILE}"
