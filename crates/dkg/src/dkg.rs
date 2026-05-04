@@ -2,10 +2,12 @@ use std::{num::TryFromIntError, path, time::Duration};
 
 use bon::Builder;
 use libp2p::PeerId;
-use pluto_cluster::version::{support_node_signatures, support_partial_deposits};
+use pluto_cluster::version::{
+    V1_6, V1_7, V1_8, V1_9, V1_10, support_node_signatures, support_partial_deposits,
+};
 use pluto_eth2util::{
-    deposit::{dedup_amounts, default_deposit_amounts},
-    network::fork_version_to_network,
+    deposit::{dedup_amounts, default_deposit_amounts, merge_deposit_data_sets},
+    network::{MAINNET, fork_version_to_network},
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -33,7 +35,7 @@ use pluto_eth2api::spec::phase0;
 use pluto_eth2util::keymanager::{self, KeymanagerError};
 use pluto_p2p::{config::P2PConfig, peer::Peer};
 use pluto_tracing::TracingConfig;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use url::Url;
 
 const DEFAULT_DATA_DIR: &str = ".charon";
@@ -109,6 +111,42 @@ pub enum DkgError {
     /// Integer overflow.
     #[error("integer overflow")]
     IntegerOverflow,
+
+    /// Cluster definition version not supported by this DKG implementation.
+    #[error("only v1.6.0 and newer cluster definition versions supported (got {0})")]
+    UnsupportedVersion(String),
+
+    /// DKG algorithm not supported.
+    #[error("unsupported dkg algorithm: {0}")]
+    UnsupportedDkgAlgorithm(String),
+
+    /// Test configuration was provided while running on mainnet.
+    #[error("cannot use test flags on mainnet")]
+    MainnetTestConfigForbidden,
+
+    /// AppendConfig deposit data length does not match the configured deposit
+    /// amounts.
+    #[error(
+        "deposit data length does not match deposit amounts length: deposit_data={deposit_data}, deposit_amounts={deposit_amounts}"
+    )]
+    DepositDataLengthMismatch {
+        /// Number of deposit data sets supplied via AppendConfig.
+        deposit_data: usize,
+        /// Number of deposit amounts resolved from the definition.
+        deposit_amounts: usize,
+    },
+
+    /// Failed to bundle the output directory as a tarball.
+    #[error("bundle output: {0}")]
+    BundleOutput(#[from] pluto_app::utils::UtilsError),
+
+    /// Failed to resolve network metadata from the fork version.
+    #[error("network: {0}")]
+    Network(#[from] pluto_eth2util::network::NetworkError),
+
+    /// Private-key lock service failed to start.
+    #[error("private key lock setup failed: {0}")]
+    PrivKeyLock(#[from] pluto_app::privkeylock::PrivKeyLockError),
 }
 
 /// Keymanager configuration accepted by the entrypoint.
@@ -186,6 +224,10 @@ pub struct Config {
     /// Whether to bundle the output directory as a tarball.
     #[builder(default)]
     pub zipped: bool,
+
+    /// Append-mode configuration. When set, the existing cluster lock and
+    /// secret shares are merged with the newly-generated validators.
+    pub append_config: Option<AppendConfig>,
 
     /// Test configuration, used for testing purposes.
     #[builder(default)]
@@ -293,6 +335,23 @@ pub enum BackendError {
     /// Bcast setup (registering frost handlers) failed.
     #[error("bcast setup failed: {0}")]
     BcastSetup(#[from] crate::bcast::Error),
+    /// Failed to rebuild existing shares from append config.
+    #[error("get existing shares: {0}")]
+    ExistingShares(String),
+    /// AppendConfig deposit data length does not match the configured deposit
+    /// amounts.
+    #[error(
+        "deposit data length does not match deposit amounts length: deposit_data={deposit_data}, deposit_amounts={deposit_amounts}"
+    )]
+    DepositDataLengthMismatch {
+        /// Number of deposit data sets supplied via AppendConfig.
+        deposit_data: usize,
+        /// Number of deposit amounts resolved from the definition.
+        deposit_amounts: usize,
+    },
+    /// Failed to bundle the output directory as a tarball.
+    #[error("bundle output: {0}")]
+    BundleOutput(#[source] pluto_app::utils::UtilsError),
 }
 
 impl From<BackendError> for DkgError {
@@ -309,9 +368,66 @@ pub async fn run(conf: Config, shutdown: CancellationToken) -> Result<(), DkgErr
         return Err(DkgError::ShutdownRequestedBeforeStartup);
     }
 
+    // Private-key lock: guards the p2p key file against concurrent charon
+    // processes for the duration of the DKG. Mirrors Go's `privkeylock` setup.
+    let lock_path = pluto_p2p::k1::key_path(&conf.data_dir).with_extension("lock");
+    let priv_lock =
+        std::sync::Arc::new(pluto_app::privkeylock::Service::new(&lock_path, "charon dkg").await?);
+    {
+        let svc = priv_lock.clone();
+        tokio::spawn(async move {
+            if let Err(e) = svc.run().await {
+                warn!(err = %e, "Error locking private key file");
+            }
+        });
+    }
+
+    let result = run_inner(conf, shutdown).await;
+    priv_lock.close().await;
+    result
+}
+
+async fn run_inner(conf: Config, shutdown: CancellationToken) -> Result<(), DkgError> {
     let eth1 = EthClient::new(&conf.execution_engine_addr).await?;
 
-    let definition = crate::disk::load_definition(&conf, &eth1).await?;
+    // Resolve definition and per-run validator inputs. In append mode the
+    // existing cluster lock provides the definition and the new addresses come
+    // from `AppendConfig.validator_addresses`; otherwise they come from the
+    // definition itself.
+    let (definition, new_validators, new_withdrawal_addrs, new_fee_recipient_addrs) =
+        if let Some(append) = conf.append_config.as_ref() {
+            let def = append.cluster_lock.definition.clone();
+            let withdrawal = append
+                .validator_addresses
+                .iter()
+                .map(|a| a.withdrawal_address.clone())
+                .collect();
+            let fee_recipient = append
+                .validator_addresses
+                .iter()
+                .map(|a| a.fee_recipient_address.clone())
+                .collect();
+            (def, append.add_validators, withdrawal, fee_recipient)
+        } else {
+            let def = crate::disk::load_definition(&conf, &eth1).await?;
+            let n = usize::try_from(def.num_validators)?;
+            let withdrawal = def.withdrawal_addresses();
+            let fee_recipient = def.fee_recipient_addresses();
+            (def, n, withdrawal, fee_recipient)
+        };
+
+    if !matches!(
+        definition.version.as_str(),
+        V1_6 | V1_7 | V1_8 | V1_9 | V1_10
+    ) {
+        return Err(DkgError::UnsupportedVersion(definition.version.clone()));
+    }
+
+    if !matches!(definition.dkg_algorithm.as_str(), "default" | "frost") {
+        return Err(DkgError::UnsupportedDkgAlgorithm(
+            definition.dkg_algorithm.clone(),
+        ));
+    }
 
     validate_keymanager_flags(&conf)?;
     verify_keymanager_connection(&conf).await?;
@@ -321,9 +437,36 @@ pub async fn run(conf: Config, shutdown: CancellationToken) -> Result<(), DkgErr
     }
     disk::check_writes(&conf.data_dir).await?;
 
-    run_ceremony(conf, definition, eth1, shutdown)
+    let network = fork_version_to_network(&definition.fork_version)?;
+
+    if network == MAINNET.name && conf.has_test_config() {
+        return Err(DkgError::MainnetTestConfigForbidden);
+    }
+
+    let inputs = CeremonyInputs {
+        new_validators,
+        new_withdrawal_addrs,
+        new_fee_recipient_addrs,
+        network,
+    };
+
+    run_ceremony(conf, definition, eth1, shutdown, inputs)
         .await
         .map_err(Into::into)
+}
+
+/// Per-run inputs computed in [`run_inner`] and forwarded to the ceremony.
+struct CeremonyInputs {
+    /// Number of validators generated in this DKG run
+    /// (`AppendConfig.add_validators` in append mode, otherwise
+    /// `definition.num_validators`).
+    new_validators: usize,
+    /// Withdrawal addresses for the validators generated in this run.
+    new_withdrawal_addrs: Vec<String>,
+    /// Fee recipient addresses for the validators generated in this run.
+    new_fee_recipient_addrs: Vec<String>,
+    /// Network name resolved from the cluster definition's fork version.
+    network: String,
 }
 
 async fn run_ceremony(
@@ -331,10 +474,16 @@ async fn run_ceremony(
     definition: pluto_cluster::definition::Definition,
     eth1: pluto_eth1wrap::EthClient,
     ct: CancellationToken,
+    inputs: CeremonyInputs,
 ) -> Result<(), BackendError> {
-    let network = fork_version_to_network(&definition.fork_version)?;
+    let CeremonyInputs {
+        new_validators,
+        new_withdrawal_addrs,
+        new_fee_recipient_addrs,
+        network,
+    } = inputs;
 
-    let num_validators = u32::try_from(definition.num_validators).map_err(|_| {
+    let num_validators = u32::try_from(new_validators).map_err(|_| {
         BackendError::Definition(pluto_cluster::definition::DefinitionError::FailedToConvertLength)
     })?;
     let num_nodes = u32::try_from(definition.operators.len()).map_err(|_| {
@@ -344,8 +493,6 @@ async fn run_ceremony(
         BackendError::Definition(pluto_cluster::definition::DefinitionError::FailedToConvertLength)
     })?;
     let fork_version = definition.fork_version.clone();
-    let withdrawal_addrs = definition.withdrawal_addresses();
-    let fee_recipients = definition.fee_recipient_addresses();
 
     // ── P2P node setup ────────────────────────────────────────────────────────
     info!("Setting up DKG P2P node");
@@ -408,13 +555,30 @@ async fn run_ceremony(
     debug!("FROST ceremony complete, {} shares", shares.len());
     sync.next_step(ct.child_token()).await?; // step 1 → 2
 
+    // ── Existing shares (append mode) ─────────────────────────────────────────
+    let existing_shares: Vec<Share> = match conf.append_config.as_ref() {
+        Some(append) if !append.unverified => get_existing_shares(Some(append))
+            .map_err(|e| BackendError::ExistingShares(e.to_string()))?,
+        _ => Vec::new(),
+    };
+
     // ── Deposit data ──────────────────────────────────────────────────────────
     let deposit_amounts = resolve_deposit_amounts(&definition);
 
-    let deposit_datas = crate::signing::sign_and_agg_deposit_data(
+    if let Some(append) = conf.append_config.as_ref()
+        && !append.deposit_data.is_empty()
+        && append.deposit_data.len() != deposit_amounts.len()
+    {
+        return Err(BackendError::DepositDataLengthMismatch {
+            deposit_data: append.deposit_data.len(),
+            deposit_amounts: deposit_amounts.len(),
+        });
+    }
+
+    let mut deposit_datas = crate::signing::sign_and_agg_deposit_data(
         &exchanger,
         &shares,
-        &withdrawal_addrs,
+        &new_withdrawal_addrs,
         &network,
         &node_idx,
         &deposit_amounts,
@@ -427,7 +591,7 @@ async fn run_ceremony(
     let val_regs = crate::signing::sign_and_agg_validator_registrations(
         &exchanger,
         &shares,
-        &fee_recipients,
+        &new_fee_recipient_addrs,
         definition.target_gas_limit,
         &node_idx,
         &fork_version,
@@ -437,13 +601,14 @@ async fn run_ceremony(
 
     // ── Lock hash ─────────────────────────────────────────────────────────────
     let mut lock = crate::signing::sign_and_aggregate_lock_hash(
+        &existing_shares,
         &shares,
         definition,
         &node_idx,
         &exchanger,
         deposit_datas.clone(),
         val_regs,
-        None
+        conf.append_config.as_ref(),
     )
     .await?;
     sync.next_step(ct.child_token()).await?; // step 4 → 5
@@ -463,14 +628,23 @@ async fn run_ceremony(
     sync.next_step(ct.child_token()).await?; // step 5 → 6
 
     // ── Verify + write outputs ────────────────────────────────────────────────
-    if !conf.no_verify {
+    let unverified_append = conf.append_config.as_ref().is_some_and(|a| a.unverified);
+    if !conf.no_verify && !unverified_append {
         lock.verify_signatures(&eth1).await?;
     }
 
     if conf.keymanager.address.is_empty() {
-        crate::disk::write_keys_to_disk(&conf, &shares, false).await?;
-        debug!("Wrote key shares to disk");
+        // KeymanagerAddr unset: write all (existing + new) shares to disk so
+        // operators see the combined key set after an append ceremony.
+        let all_shares: Vec<Share> = existing_shares
+            .iter()
+            .chain(shares.iter())
+            .cloned()
+            .collect();
+        crate::disk::write_keys_to_disk(&conf, &all_shares, false).await?;
+        debug!(total = all_shares.len(), "Wrote key shares to disk");
     } else {
+        // Keymanager: only the newly-generated shares are imported.
         crate::disk::write_to_keymanager(
             &conf.keymanager.address,
             &conf.keymanager.auth_token,
@@ -487,6 +661,12 @@ async fn run_ceremony(
     crate::disk::write_lock(&conf.data_dir, &lock).await?;
     debug!("Wrote cluster lock to disk");
 
+    if let Some(append) = conf.append_config.as_ref()
+        && !append.deposit_data.is_empty()
+    {
+        deposit_datas = merge_deposit_data_sets(deposit_datas, append.deposit_data.clone());
+    }
+
     for deposit_set in &deposit_datas {
         pluto_eth2util::deposit::write_deposit_data_file(deposit_set, &network, &conf.data_dir)
             .await?;
@@ -495,6 +675,11 @@ async fn run_ceremony(
 
     sync.next_step(ct.child_token()).await?; // step 6 → 7
     sync.stop(ct.child_token()).await?;
+
+    if conf.zipped {
+        pluto_app::utils::bundle_output(&conf.data_dir, "dkg.tar.gz")
+            .map_err(BackendError::BundleOutput)?;
+    }
 
     debug!(
         delay_secs = conf.shutdown_delay.as_secs_f64(),
@@ -538,12 +723,23 @@ impl SyncControl {
             });
         }
 
+        let total = clients.len();
+        let mut logged: HashSet<PeerId> = HashSet::with_capacity(total);
         loop {
             if ct.is_cancelled() {
                 return Err(BackendError::Cancelled);
             }
-            let connected = clients.iter().filter(|c| c.is_connected()).count();
-            if connected == clients.len() {
+            for client in &clients {
+                if client.is_connected() && logged.insert(client.peer_id()) {
+                    info!(
+                        peer = %client.peer_id(),
+                        "Connected to peer {} of {}",
+                        logged.len(),
+                        total
+                    );
+                }
+            }
+            if logged.len() == total {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -569,6 +765,7 @@ impl SyncControl {
         for client in &self.clients {
             client.set_step(self.step);
         }
+        debug!(step = self.step, "Waiting for peers to start next step");
         self.server.await_all_at_step(self.step, ct).await?;
         Ok(())
     }
@@ -832,9 +1029,11 @@ mod tests {
     #[tokio::test]
     async fn run_rejects_mismatched_keymanager_flags() {
         let (lock, ..) = pluto_cluster::test_cluster::new_for_test(1, 3, 4, 0);
+        let tempdir = tempfile::tempdir().expect("tempdir");
 
         let err = run(
             Config::builder()
+                .data_dir(tempdir.path().to_path_buf())
                 .test_config(TestConfig::builder().def(lock.definition.clone()).build())
                 .keymanager(
                     KeymanagerConfig::builder()

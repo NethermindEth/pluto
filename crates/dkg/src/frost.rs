@@ -236,20 +236,24 @@ pub(crate) async fn run_frost_parallel<T: FTransport>(
         p2p = p2p_r1.len(),
         "Completed local FROST DKG round 1"
     );
+    debug!("Sending round 1 messages");
     let (cast_r1_result, p2p_r1_result) = tp.round1(&cancellation, cast_r1, p2p_r1).await?;
     debug!(
         bcasts = cast_r1_result.len(),
         p2p = p2p_r1_result.len(),
         "Completed FROST DKG round 1 transport"
     );
+    debug!("Received round 1 results");
 
     let cast_r2 = round2(&mut validators, &cast_r1_result, &p2p_r1_result)?;
     debug!(bcasts = cast_r2.len(), "Completed local FROST DKG round 2");
+    debug!("Sending round 2 messages");
     let cast_r2_result = tp.round2(&cancellation, cast_r2).await?;
     debug!(
         bcasts = cast_r2_result.len(),
         "Completed FROST DKG round 2 transport"
     );
+    debug!("Received round 2 results");
 
     let shares = make_shares(&validators, &cast_r2_result)?;
     debug!(shares = shares.len(), "Completed FROST DKG");

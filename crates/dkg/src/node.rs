@@ -115,6 +115,8 @@ pub async fn setup_node(
     let peers = definition.peers()?;
     verify_p2p_key(&peers, &key)?;
 
+    crate::dkg::log_peer_summary(local_peer_id, &peers, &definition.operators);
+
     let peer_ids: Vec<PeerId> = definition.peer_ids()?;
 
     let def_hash = definition.definition_hash.clone();
