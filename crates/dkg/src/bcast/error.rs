@@ -155,6 +155,10 @@ pub enum Error {
     #[error("missing protobuf field: {0}")]
     MissingField(&'static str),
 
+    /// A typed broadcast message failed protocol-specific validation.
+    #[error("invalid message: {0}")]
+    InvalidMessage(&'static str),
+
     /// Protobuf encoding failed.
     #[error("protobuf encode failed: {0}")]
     Encode(#[from] prost::EncodeError),

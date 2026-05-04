@@ -42,7 +42,7 @@ pub(crate) trait FTransport: Send + Sync {
     /// broadcasts from all other nodes and the round 1 P2P sends to this
     /// node.
     async fn round1(
-        &self,
+        &mut self,
         cancellation: &CancellationToken,
         bcast: HashMap<MsgKey, Round1Bcast>,
         shares: HashMap<MsgKey, ShamirShare>,
@@ -51,7 +51,7 @@ pub(crate) trait FTransport: Send + Sync {
     /// Returns results of all round 2 communication: the received round 2
     /// broadcasts from all other nodes.
     async fn round2(
-        &self,
+        &mut self,
         cancellation: &CancellationToken,
         bcast: HashMap<MsgKey, Round2Bcast>,
     ) -> Result<HashMap<MsgKey, Round2Bcast>, FrostError>;
@@ -69,6 +69,15 @@ pub(crate) enum FrostError {
     /// Failed during local round 2 execution.
     #[error("exec round 2: {0}")]
     ExecRound2(#[source] pluto_frost::kryptology::KryptologyError),
+    /// Reliable broadcast failed.
+    #[error("bcast: {0}")]
+    Bcast(#[from] crate::bcast::Error),
+    /// Direct FROST P2P send failed.
+    #[error("frost p2p send: {0}")]
+    FrostP2P(#[from] crate::frostp2p::FrostP2PError),
+    /// A FROST protobuf message failed validation.
+    #[error("{0}")]
+    InvalidMessage(&'static str),
     /// Failed to convert public key bytes.
     #[error("public key conversion: {0}")]
     PublicKey(#[from] pluto_crypto::tblsconv::ConvError),
@@ -211,7 +220,7 @@ impl DkgParticipant {
 /// rounds) and returns a list of shares (one for each distributed validator).
 pub(crate) async fn run_frost_parallel<T: FTransport>(
     cancellation: CancellationToken,
-    tp: &T,
+    tp: &mut T,
     num_validators: u32,
     num_nodes: u32,
     threshold: u32,
@@ -460,9 +469,9 @@ mod tests {
     }
 
     #[async_trait]
-    impl FTransport for FrostMemTransport {
+    impl FTransport for Arc<FrostMemTransport> {
         async fn round1(
-            &self,
+            &mut self,
             cancellation: &CancellationToken,
             bcast: HashMap<MsgKey, Round1Bcast>,
             shares: HashMap<MsgKey, ShamirShare>,
@@ -529,7 +538,7 @@ mod tests {
         }
 
         async fn round2(
-            &self,
+            &mut self,
             cancellation: &CancellationToken,
             bcast: HashMap<MsgKey, Round2Bcast>,
         ) -> Result<HashMap<MsgKey, Round2Bcast>, FrostError> {
@@ -607,12 +616,12 @@ mod tests {
 
         let mut tasks = Vec::new();
         for i in 0..nodes {
-            let tp = Arc::clone(&tp);
+            let mut tp = Arc::clone(&tp);
             let cancellation = cancellation.clone();
             tasks.push(tokio::spawn(async move {
                 run_frost_parallel(
                     cancellation,
-                    tp.as_ref(),
+                    &mut tp,
                     vals,
                     nodes,
                     threshold,
@@ -645,11 +654,11 @@ mod tests {
         let tp = Arc::new(FrostMemTransport::new(2));
 
         let task = {
-            let tp = Arc::clone(&tp);
+            let mut tp = Arc::clone(&tp);
             let cancellation = cancellation.clone();
-            tokio::spawn(async move {
-                run_frost_parallel(cancellation, tp.as_ref(), 1, 2, 2, 1, "0").await
-            })
+            tokio::spawn(
+                async move { run_frost_parallel(cancellation, &mut tp, 1, 2, 2, 1, "0").await },
+            )
         };
 
         tokio::task::yield_now().await;
@@ -845,10 +854,10 @@ mod tests {
         let mut tasks = Vec::new();
 
         for share_idx in 1..=3 {
-            let tp = Arc::clone(&tp);
+            let mut tp = Arc::clone(&tp);
             let cancellation = cancellation.clone();
             tasks.push(tokio::spawn(async move {
-                run_frost_parallel(cancellation, tp.as_ref(), 3, 3, 3, share_idx, "0").await
+                run_frost_parallel(cancellation, &mut tp, 3, 3, 3, share_idx, "0").await
             }));
         }
 
