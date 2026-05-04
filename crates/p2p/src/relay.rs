@@ -43,6 +43,8 @@ const RELAY_BACKOFF_BASE: Duration = Duration::from_secs(1);
 /// Maximum backoff delay between reconnect attempts. Matches Charon's
 /// `DefaultConfig.MaxDelay`.
 const RELAY_BACKOFF_MAX: Duration = Duration::from_secs(120);
+/// Jitter factor applied to backoff delays. Matches Charon's `DefaultConfig.Jitter`.
+const RELAY_BACKOFF_JITTER: f64 = 0.2;
 
 /// Mutable relay reservation behaviour.
 ///
@@ -194,15 +196,27 @@ impl MutableRelayReservation {
 
     /// Returns the exponential backoff delay for a given retry count.
     ///
-    /// Mirrors Charon's `DefaultConfig`: base=1s, multiplier=1.6, max=120s.
+    /// Mirrors Charon's `DefaultConfig`: base=1s, multiplier=1.6, jitter=0.2,
+    /// max=120s. retry_count=0 returns the base delay with no jitter, matching
+    /// Go's early-return path. For retry_count > 0, ±20% jitter is applied
+    /// after capping so nodes don't retry in lockstep.
     fn backoff_delay(retry_count: u32) -> Duration {
+        if retry_count == 0 {
+            return RELAY_BACKOFF_BASE;
+        }
         let mut delay = RELAY_BACKOFF_BASE.as_secs_f64();
         let max = RELAY_BACKOFF_MAX.as_secs_f64();
         for _ in 0..retry_count {
             delay *= 1.6;
             if delay >= max {
-                return RELAY_BACKOFF_MAX;
+                delay = max;
+                break;
             }
+        }
+        let rand_val = rand::random::<f64>();
+        delay *= 1.0 + RELAY_BACKOFF_JITTER * (rand_val * 2.0 - 1.0);
+        if delay < 0.0 {
+            return Duration::ZERO;
         }
         Duration::from_secs_f64(delay)
     }
@@ -565,19 +579,18 @@ mod tests {
 
     #[test]
     fn backoff_delay_grows_and_caps() {
-        // retry_count=0 → base delay
-        assert_eq!(
-            MutableRelayReservation::backoff_delay(0),
-            RELAY_BACKOFF_BASE
-        );
-        // Delay grows with each retry.
-        let d0 = MutableRelayReservation::backoff_delay(0);
-        let d1 = MutableRelayReservation::backoff_delay(1);
-        let d5 = MutableRelayReservation::backoff_delay(5);
+        // retry_count=0 → exact base delay, no jitter (matches Go's early-return path).
+        assert_eq!(MutableRelayReservation::backoff_delay(0), RELAY_BACKOFF_BASE);
+        // d0 is exact; d1 and d5 carry jitter but their ranges don't overlap.
+        let d0 = MutableRelayReservation::backoff_delay(0); // 1s, no jitter
+        let d1 = MutableRelayReservation::backoff_delay(1); // ~1.6s ± 20% → [1.28s, 1.92s]
+        let d5 = MutableRelayReservation::backoff_delay(5); // ~10.5s ± 20% → [8.4s, 12.6s]
         assert!(d1 > d0);
         assert!(d5 > d1);
-        // Delay is capped at RELAY_BACKOFF_MAX.
+        // At max retries the delay stays within the jitter range of RELAY_BACKOFF_MAX.
         let d_large = MutableRelayReservation::backoff_delay(u32::MAX);
-        assert_eq!(d_large, RELAY_BACKOFF_MAX);
+        let max_secs = RELAY_BACKOFF_MAX.as_secs_f64();
+        assert!(d_large >= Duration::from_secs_f64(max_secs * (1.0 - RELAY_BACKOFF_JITTER)));
+        assert!(d_large <= Duration::from_secs_f64(max_secs * (1.0 + RELAY_BACKOFF_JITTER)));
     }
 }
