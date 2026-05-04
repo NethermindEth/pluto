@@ -351,7 +351,7 @@ async fn run_ceremony(
     // ── FROST DKG ceremony ────────────────────────────────────────────────────
     let dkg_ctx = format!("0x{}", hex::encode(&definition.definition_hash));
     let shares = crate::frost::run_frost_parallel(
-        &ct,
+        ct.clone(),
         &mut frost_tp,
         num_validators,
         num_nodes,

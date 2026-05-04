@@ -1,651 +1,907 @@
-//! FROST DKG orchestration and P2P transport.
-//!
-//! [`run_frost_parallel`] runs `num_validators` FROST DKG ceremonies in
-//! parallel, sharing the two broadcast rounds.  It is the Rust equivalent of
-//! Charon's `runFrostParallel` + `frostP2P` (charon/dkg/frost.go:50,
-//! charon/dkg/frostp2p.go:40).
+#![allow(dead_code)]
 
 use std::collections::{BTreeMap, HashMap};
 
-use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
+use async_trait::async_trait;
+use pluto_crypto::{
+    tblsconv::{privkey_from_bytes, pubkey_from_bytes},
+    types::PublicKey,
+};
 use pluto_frost::{
-    G1Affine,
-    kryptology::{self, Round1Bcast, Round1Secret, Round2Bcast, ShamirShare, scalar_to_be},
+    G1Affine, G1Projective, KeyPackage,
+    kryptology::{self, Round1Bcast, Round1Secret, Round2Bcast, ShamirShare},
+    validate_num_of_signers,
 };
-use pluto_p2p::peer::Peer;
-use prost::bytes::Bytes;
-use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::debug;
 
-use crate::{
-    bcast::Component as BcastComponent,
-    dkgpb::v1::frost::{
-        FrostMsgKey, FrostRound1Cast, FrostRound1Casts, FrostRound1P2p, FrostRound1ShamirShare,
-        FrostRound2Cast, FrostRound2Casts,
-    },
-    frostp2p::FrostP2PHandle,
-    share::Share,
-};
+use crate::share::Share;
 
-/// bcast message ID for FROST round-1 broadcast.  Must match Charon.
-pub const ROUND1_CAST_ID: &str = "/charon/dkg/frost/2.0.0/round1/cast";
-/// bcast message ID for FROST round-2 broadcast.  Must match Charon.
-pub const ROUND2_CAST_ID: &str = "/charon/dkg/frost/2.0.0/round2/cast";
+type Round1Output = (HashMap<MsgKey, Round1Bcast>, HashMap<MsgKey, ShamirShare>);
 
-/// Identifies source, target, and validator for a FROST wire message.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct MsgKey {
-    /// Distributed-validator index (0-indexed).
-    pub val_idx: u32,
-    /// Sending participant share index (1-indexed).
-    pub source_id: u32,
-    /// Receiving participant share index (1-indexed); 0 = broadcast.
-    pub target_id: u32,
+/// Identifies the source and target nodes and validator index the message
+/// belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct MsgKey {
+    /// Identifies the distributed validator (Ith parallel participant) the
+    /// message belongs to. It is 0-indexed.
+    pub(crate) val_idx: u32,
+    /// Identifies the source node/participant ID of the message.
+    /// It is 1-indexed and equivalent to `cluster.NodeIdx.ShareIdx`.
+    pub(crate) source_id: u32,
+    /// Identifies the target node/participant ID of the message.
+    /// It is 1-indexed and equivalent to `cluster.NodeIdx.ShareIdx`.
+    /// The zero value indicates outgoing broadcast messages.
+    pub(crate) target_id: u32,
 }
 
-/// Errors from the FROST ceremony.
+/// Abstracts the transport of frost DKG messages.
+#[async_trait]
+pub(crate) trait FTransport: Send + Sync {
+    /// Returns results of all round 1 communication: the received round 1
+    /// broadcasts from all other nodes and the round 1 P2P sends to this
+    /// node.
+    async fn round1(
+        &self,
+        cancellation: &CancellationToken,
+        bcast: HashMap<MsgKey, Round1Bcast>,
+        shares: HashMap<MsgKey, ShamirShare>,
+    ) -> Result<Round1Output, FrostError>;
+
+    /// Returns results of all round 2 communication: the received round 2
+    /// broadcasts from all other nodes.
+    async fn round2(
+        &self,
+        cancellation: &CancellationToken,
+        bcast: HashMap<MsgKey, Round2Bcast>,
+    ) -> Result<HashMap<MsgKey, Round2Bcast>, FrostError>;
+}
+
+/// FROST DKG orchestration errors.
 #[derive(Debug, thiserror::Error)]
-pub enum FrostError {
-    /// Kryptology FROST DKG algorithm failed.
-    #[error("kryptology DKG error: {0:?}")]
-    Kryptology(pluto_frost::kryptology::KryptologyError),
-    /// Broadcast component error.
-    #[error("bcast error: {0}")]
-    Bcast(#[from] crate::bcast::Error),
-    /// DKG was cancelled externally.
-    #[error("DKG cancelled")]
+pub(crate) enum FrostError {
+    /// Failed to construct a participant.
+    #[error("new participant: {0}")]
+    NewParticipant(#[source] pluto_frost::kryptology::KryptologyError),
+    /// Failed during local round 1 execution.
+    #[error("exec round 1: {0}")]
+    ExecRound1(#[source] pluto_frost::kryptology::KryptologyError),
+    /// Failed during local round 2 execution.
+    #[error("exec round 2: {0}")]
+    ExecRound2(#[source] pluto_frost::kryptology::KryptologyError),
+    /// Failed to convert public key bytes.
+    #[error("public key conversion: {0}")]
+    PublicKey(#[from] pluto_crypto::tblsconv::ConvError),
+    /// Failed to decode a compressed G1 public key point.
+    #[error("invalid compressed G1 public key point")]
+    InvalidPublicKeyPoint,
+    /// Generated key package was incomplete.
+    #[error("participant missing round state")]
+    MissingRoundState,
+    /// Participant was called in the wrong DKG round.
+    #[error("invalid participant round: expected {expected}, got {current}")]
+    InvalidRound { expected: u8, current: u8 },
+    /// Failed to convert a numeric value to the target representation.
+    #[error(transparent)]
+    IntConversion(#[from] std::num::TryFromIntError),
+    /// Cancellation was requested while waiting for transport data.
+    #[error("frost dkg cancelled")]
     Cancelled,
-    /// Proto message could not be decoded.
-    #[error("proto decode error: {0}")]
-    ProtoDecode(String),
-    /// A protobuf message key field was absent.
-    #[error("missing message key")]
-    MissingKey,
-    /// A numeric value was out of its valid range.
-    #[error("value out of range")]
-    Overflow,
-    /// Neither secret-share byte encoding matched the FROST verifying share.
-    #[error("failed to encode secret share for BLST signing")]
-    SecretShareEncoding,
 }
 
-impl From<pluto_frost::kryptology::KryptologyError> for FrostError {
-    fn from(e: pluto_frost::kryptology::KryptologyError) -> Self {
-        FrostError::Kryptology(e)
+struct DkgParticipant {
+    id: u32,
+    round: u8,
+    threshold: u16,
+    max_signers: u16,
+    other_ids: Vec<u32>,
+    ctx: u8,
+    round1_secret: Option<Round1Secret>,
+    key_package: Option<KeyPackage>,
+}
+
+impl DkgParticipant {
+    fn new(
+        id: u32,
+        threshold: u32,
+        dkg_ctx: &str,
+        other_ids: Vec<u32>,
+    ) -> Result<Self, FrostError> {
+        let threshold = u16::try_from(threshold)?;
+        let max_signers = u16::try_from(
+            other_ids
+                .len()
+                .checked_add(1)
+                .ok_or(kryptology::KryptologyError::InvalidSignerCount)
+                .map_err(FrostError::NewParticipant)?,
+        )
+        .map_err(|_| FrostError::NewParticipant(kryptology::KryptologyError::InvalidSignerCount))?;
+        validate_participant_inputs(id, threshold, max_signers)
+            .map_err(FrostError::NewParticipant)?;
+
+        Ok(Self {
+            id,
+            round: 1,
+            threshold,
+            max_signers,
+            other_ids,
+            ctx: dkg_context_byte(dkg_ctx),
+            round1_secret: None,
+            key_package: None,
+        })
     }
-}
 
-// ── FrostP2P transport ──────────────────────────────────────────────────────
-
-/// P2P transport for FROST rounds: channels and bcast handles.
-///
-/// Created via [`new_frost_p2p`] which also registers bcast callbacks.
-pub struct FrostP2P {
-    bcast_comp: BcastComponent,
-    frost_handle: FrostP2PHandle,
-    round1_casts_tx: mpsc::UnboundedSender<FrostRound1Casts>,
-    round1_casts_rx: mpsc::UnboundedReceiver<FrostRound1Casts>,
-    round2_casts_tx: mpsc::UnboundedSender<FrostRound2Casts>,
-    round2_casts_rx: mpsc::UnboundedReceiver<FrostRound2Casts>,
-    /// share_idx (1-indexed) → PeerId (excludes self).
-    peers_by_share_idx: HashMap<u32, libp2p::PeerId>,
-    num_peers: usize,
-}
-
-/// Creates a [`FrostP2P`] and registers its bcast callbacks.
-///
-/// `peers` is in definition order (0-indexed), so share_idx = i + 1.
-pub async fn new_frost_p2p(
-    bcast_comp: BcastComponent,
-    frost_handle: FrostP2PHandle,
-    peers: &[Peer],
-    local_share_idx: u32,
-) -> Result<FrostP2P, FrostError> {
-    let (round1_casts_tx, round1_casts_rx) = mpsc::unbounded_channel();
-    let (round2_casts_tx, round2_casts_rx) = mpsc::unbounded_channel();
-
-    let mut peers_by_share_idx: HashMap<u32, libp2p::PeerId> = HashMap::new();
-    for (i, peer) in peers.iter().enumerate() {
-        let share_idx = u32::try_from(i.checked_add(1).ok_or(FrostError::Overflow)?)
-            .map_err(|_| FrostError::Overflow)?;
-        if share_idx != local_share_idx {
-            peers_by_share_idx.insert(share_idx, peer.id);
+    fn round1(&mut self) -> Result<(Round1Bcast, BTreeMap<u32, ShamirShare>), FrostError> {
+        if self.round != 1 {
+            return Err(FrostError::InvalidRound {
+                expected: 1,
+                current: self.round,
+            });
         }
+        if self.round1_secret.is_some() || self.key_package.is_some() {
+            return Err(FrostError::MissingRoundState);
+        }
+        let mut rng = rand::rngs::OsRng;
+        let (cast, shares, secret) = kryptology::round1(
+            self.id,
+            self.threshold,
+            self.max_signers,
+            self.ctx,
+            &mut rng,
+        )
+        .map_err(FrostError::ExecRound1)?;
+        self.round1_secret = Some(secret);
+
+        let shares = self
+            .other_ids
+            .iter()
+            .map(|id| {
+                shares
+                    .get(id)
+                    .cloned()
+                    .map(|share| (*id, share))
+                    .ok_or(FrostError::MissingRoundState)
+            })
+            .collect::<Result<_, _>>()?;
+        self.round = 2;
+
+        Ok((cast, shares))
     }
 
-    // Register round-1 cast callback.
-    {
-        let tx = round1_casts_tx.clone();
-        bcast_comp
-            .register_message::<FrostRound1Casts>(
-                ROUND1_CAST_ID,
-                Box::new(|_peer_id, _msg| Ok(())),
-                Box::new(move |peer_id, _msg_id, msg| {
-                    let tx = tx.clone();
-                    Box::pin(async move {
-                        debug!(%peer_id, "Frost: received round1 cast");
-                        let _ = tx.send(msg);
-                        Ok(())
-                    })
-                }),
-            )
-            .await?;
-    }
-
-    // Register round-2 cast callback.
-    {
-        let tx = round2_casts_tx.clone();
-        bcast_comp
-            .register_message::<FrostRound2Casts>(
-                ROUND2_CAST_ID,
-                Box::new(|_peer_id, _msg| Ok(())),
-                Box::new(move |peer_id, _msg_id, msg| {
-                    let tx = tx.clone();
-                    Box::pin(async move {
-                        debug!(%peer_id, "Frost: received round2 cast");
-                        let _ = tx.send(msg);
-                        Ok(())
-                    })
-                }),
-            )
-            .await?;
-    }
-
-    Ok(FrostP2P {
-        bcast_comp,
-        frost_handle,
-        round1_casts_tx,
-        round1_casts_rx,
-        round2_casts_tx,
-        round2_casts_rx,
-        peers_by_share_idx,
-        num_peers: peers.len(),
-    })
-}
-
-impl FrostP2P {
-    /// Broadcasts own round-1 casts, sends P2P Shamir shares, and waits for
-    /// all peers' casts and shares.
-    pub async fn round1(
+    fn round2(
         &mut self,
-        ct: &CancellationToken,
-        cast_r1: &HashMap<MsgKey, Round1Bcast>,
-        p2p_r1: &HashMap<MsgKey, ShamirShare>,
-    ) -> Result<(HashMap<MsgKey, Round1Bcast>, HashMap<MsgKey, ShamirShare>), FrostError> {
-        let casts_msg = build_round1_casts(cast_r1);
-        self.bcast_comp
-            .broadcast(ROUND1_CAST_ID, &casts_msg)
-            .await?;
-        let _ = self.round1_casts_tx.send(casts_msg); // self-inject
-
-        // Group Shamir shares by target peer and send directly.
-        let mut p2p_by_target: HashMap<u32, Vec<FrostRound1ShamirShare>> = HashMap::new();
-        for (key, share) in p2p_r1 {
-            p2p_by_target
-                .entry(key.target_id)
-                .or_default()
-                .push(shamir_share_to_proto(*key, share));
+        bcasts: &BTreeMap<u32, Round1Bcast>,
+        shares: &BTreeMap<u32, ShamirShare>,
+    ) -> Result<Round2Bcast, FrostError> {
+        if self.round != 2 {
+            return Err(FrostError::InvalidRound {
+                expected: 2,
+                current: self.round,
+            });
         }
-        for (target_share_idx, share_protos) in &p2p_by_target {
-            let peer_id = self
-                .peers_by_share_idx
-                .get(target_share_idx)
-                .copied()
-                .ok_or(FrostError::Overflow)?;
-            self.frost_handle.send(
-                peer_id,
-                &FrostRound1P2p {
-                    shares: share_protos.clone(),
-                },
-            );
+        if self.round1_secret.is_none() || self.key_package.is_some() {
+            return Err(FrostError::MissingRoundState);
         }
+        let secret = self
+            .round1_secret
+            .take()
+            .ok_or(FrostError::MissingRoundState)?;
+        // get_round2_inputs keeps this node's broadcast. Strip it here to
+        // match Charon's participant behavior; kryptology::round2 rejects self IDs.
+        let bcasts = bcasts
+            .iter()
+            .filter(|(id, _)| **id != self.id)
+            .map(|(id, bcast)| (*id, bcast.clone()))
+            .collect();
+        let shares = shares
+            .iter()
+            .filter(|(id, _)| **id != self.id)
+            .map(|(id, share)| (*id, share.clone()))
+            .collect();
+        let (cast, key_package, _public_key_package) =
+            kryptology::round2(secret, &bcasts, &shares).map_err(FrostError::ExecRound2)?;
+        self.key_package = Some(key_package);
+        self.round = 3;
 
-        // Collect from peers until we have all round-1 data.
-        let num_peers = self.num_peers;
-        let mut cast_msgs: Vec<FrostRound1Casts> = Vec::with_capacity(num_peers);
-        let mut p2p_msgs: Vec<FrostRound1P2p> = Vec::with_capacity(num_peers.saturating_sub(1));
-
-        loop {
-            if cast_msgs.len() == num_peers && p2p_msgs.len() == num_peers.saturating_sub(1) {
-                break;
-            }
-            tokio::select! {
-                _ = ct.cancelled() => return Err(FrostError::Cancelled),
-                Some(msg) = self.round1_casts_rx.recv() => {
-                    if cast_msgs.len() < num_peers {
-                        cast_msgs.push(msg);
-                    } else {
-                        warn!("Frost: discarding extra round1 cast");
-                    }
-                }
-                Some((_peer_id, msg)) = self.frost_handle.inbound_rx.recv() => {
-                    if p2p_msgs.len() < num_peers.saturating_sub(1) {
-                        p2p_msgs.push(msg);
-                    } else {
-                        warn!("Frost: discarding extra round1 p2p");
-                    }
-                }
-            }
-        }
-
-        make_round1_response(cast_msgs, p2p_msgs)
-    }
-
-    /// Broadcasts own round-2 casts and waits for all peers' casts.
-    pub async fn round2(
-        &mut self,
-        ct: &CancellationToken,
-        cast_r2: &HashMap<MsgKey, Round2Bcast>,
-    ) -> Result<HashMap<MsgKey, Round2Bcast>, FrostError> {
-        let casts_msg = build_round2_casts(cast_r2);
-        self.bcast_comp
-            .broadcast(ROUND2_CAST_ID, &casts_msg)
-            .await?;
-        let _ = self.round2_casts_tx.send(casts_msg); // self-inject
-
-        let num_peers = self.num_peers;
-        let mut cast_msgs: Vec<FrostRound2Casts> = Vec::with_capacity(num_peers);
-        loop {
-            if cast_msgs.len() == num_peers {
-                break;
-            }
-            tokio::select! {
-                _ = ct.cancelled() => return Err(FrostError::Cancelled),
-                Some(msg) = self.round2_casts_rx.recv() => {
-                    cast_msgs.push(msg);
-                }
-            }
-        }
-
-        make_round2_response(cast_msgs)
+        Ok(cast)
     }
 }
 
-// ── run_frost_parallel ──────────────────────────────────────────────────────
-
-/// Runs `num_validators` FROST DKG ceremonies in parallel and returns one
-/// [`Share`] per distributed validator.
-///
-/// Reference: charon/dkg/frost.go:50 `runFrostParallel`.
-pub async fn run_frost_parallel(
-    ct: &CancellationToken,
-    tp: &mut FrostP2P,
+/// Runs `num_validators` Frost DKG processes in parallel (sharing transport
+/// rounds) and returns a list of shares (one for each distributed validator).
+pub(crate) async fn run_frost_parallel<T: FTransport>(
+    cancellation: CancellationToken,
+    tp: &T,
     num_validators: u32,
     num_nodes: u32,
     threshold: u32,
     share_idx: u32,
     dkg_ctx: &str,
 ) -> Result<Vec<Share>, FrostError> {
-    let ctx_byte = kryptology_context_byte(dkg_ctx);
-    let threshold_u16 = u16::try_from(threshold).map_err(|_| FrostError::Overflow)?;
-    let max_signers_u16 = u16::try_from(num_nodes).map_err(|_| FrostError::Overflow)?;
-    let mut rng = rand::rngs::OsRng;
+    debug!(
+        num_validators,
+        num_nodes, threshold, share_idx, "Starting FROST DKG"
+    );
+    let mut validators =
+        new_frost_participants(num_validators, num_nodes, threshold, share_idx, dkg_ctx)?;
 
-    // ── Round 1 ──────────────────────────────────────────────────────────────
+    let (cast_r1, p2p_r1) = round1(&mut validators)?;
+    debug!(
+        bcasts = cast_r1.len(),
+        p2p = p2p_r1.len(),
+        "Completed local FROST DKG round 1"
+    );
+    let (cast_r1_result, p2p_r1_result) = tp.round1(&cancellation, cast_r1, p2p_r1).await?;
+    debug!(
+        bcasts = cast_r1_result.len(),
+        p2p = p2p_r1_result.len(),
+        "Completed FROST DKG round 1 transport"
+    );
 
-    let mut r1_bcasts: HashMap<MsgKey, Round1Bcast> = HashMap::new();
-    let mut r1_p2p: HashMap<MsgKey, ShamirShare> = HashMap::new();
-    let mut r1_secrets: Vec<Option<Round1Secret>> = (0..num_validators).map(|_| None).collect();
+    let cast_r2 = round2(&mut validators, &cast_r1_result, &p2p_r1_result)?;
+    debug!(bcasts = cast_r2.len(), "Completed local FROST DKG round 2");
+    let cast_r2_result = tp.round2(&cancellation, cast_r2).await?;
+    debug!(
+        bcasts = cast_r2_result.len(),
+        "Completed FROST DKG round 2 transport"
+    );
+
+    let shares = make_shares(&validators, &cast_r2_result)?;
+    debug!(shares = shares.len(), "Completed FROST DKG");
+
+    Ok(shares)
+}
+
+/// Returns multiple frost DKG participants (one for each parallel validator).
+fn new_frost_participants(
+    num_validators: u32,
+    num_nodes: u32,
+    threshold: u32,
+    share_idx: u32,
+    dkg_ctx: &str,
+) -> Result<BTreeMap<u32, DkgParticipant>, FrostError> {
+    let other_ids = other_ids(num_nodes, share_idx);
+    let mut participants = BTreeMap::new();
 
     for v_idx in 0..num_validators {
-        let (bcast, shares, secret) = kryptology::round1(
-            share_idx,
-            threshold_u16,
-            max_signers_u16,
-            ctx_byte,
-            &mut rng,
-        )?;
+        participants.insert(
+            v_idx,
+            DkgParticipant::new(share_idx, threshold, dkg_ctx, other_ids.clone())?,
+        );
+    }
 
-        r1_bcasts.insert(
+    Ok(participants)
+}
+
+fn other_ids(num_nodes: u32, share_idx: u32) -> Vec<u32> {
+    (1..=num_nodes).filter(|id| *id != share_idx).collect()
+}
+
+/// Executes round 1 for each validator and returns all round 1
+/// broadcast and p2p messages for all validators.
+fn round1(validators: &mut BTreeMap<u32, DkgParticipant>) -> Result<Round1Output, FrostError> {
+    let mut cast_results = HashMap::new();
+    let mut p2p_results = HashMap::new();
+
+    for (&v_idx, validator) in validators {
+        let (cast, p2p) = validator.round1()?;
+        cast_results.insert(
             MsgKey {
                 val_idx: v_idx,
-                source_id: share_idx,
-                target_id: 0,
+                source_id: validator.id,
+                target_id: 0, // Broadcast
             },
-            bcast,
+            cast,
         );
 
-        for (target_id, shamir) in shares {
-            r1_p2p.insert(
+        for (target_id, shamir_share) in p2p {
+            p2p_results.insert(
                 MsgKey {
                     val_idx: v_idx,
-                    source_id: share_idx,
+                    source_id: validator.id,
                     target_id,
                 },
-                shamir,
+                shamir_share,
             );
         }
-        r1_secrets[v_idx as usize] = Some(secret);
     }
 
-    debug!("Frost: sending round 1");
-    let (r1_casts_result, r1_p2p_result) = tp.round1(ct, &r1_bcasts, &r1_p2p).await?;
-    debug!("Frost: round 1 complete");
+    Ok((cast_results, p2p_results))
+}
 
-    // ── Round 2 ──────────────────────────────────────────────────────────────
+/// Executes round 2 for each validator and returns all round 2
+/// broadcast messages for all validators.
+fn round2(
+    validators: &mut BTreeMap<u32, DkgParticipant>,
+    cast_r1: &HashMap<MsgKey, Round1Bcast>,
+    p2p_r1: &HashMap<MsgKey, ShamirShare>,
+) -> Result<HashMap<MsgKey, Round2Bcast>, FrostError> {
+    let mut cast_results = HashMap::new();
 
-    let mut r2_bcasts: HashMap<MsgKey, Round2Bcast> = HashMap::new();
-    // val_idx → (KeyPackage, round2_bcast) for building Shares after collecting.
-    let mut key_packages: HashMap<u32, pluto_frost::KeyPackage> = HashMap::new();
-
-    for v_idx in 0..num_validators {
-        let secret = r1_secrets[v_idx as usize]
-            .take()
-            .expect("secret populated above");
-
-        let mut recv_bcasts: BTreeMap<u32, Round1Bcast> = BTreeMap::new();
-        let mut recv_shares: BTreeMap<u32, ShamirShare> = BTreeMap::new();
-
-        for (key, bcast) in &r1_casts_result {
-            if key.val_idx == v_idx && key.source_id != share_idx {
-                recv_bcasts.insert(key.source_id, bcast.clone());
-            }
-        }
-        for (key, s) in &r1_p2p_result {
-            if key.val_idx == v_idx {
-                recv_shares.insert(key.source_id, s.clone());
-            }
-        }
-
-        let (r2_bcast, key_pkg, _pub_pkg) = kryptology::round2(secret, &recv_bcasts, &recv_shares)?;
-
-        r2_bcasts.insert(
+    for (&v_idx, validator) in validators {
+        let (casts, shares) = get_round2_inputs(cast_r1, p2p_r1, v_idx);
+        let cast_r2 = validator.round2(&casts, &shares)?;
+        cast_results.insert(
             MsgKey {
                 val_idx: v_idx,
-                source_id: share_idx,
-                target_id: 0,
+                source_id: validator.id,
+                target_id: 0, // Broadcast
             },
-            r2_bcast,
+            cast_r2,
         );
-        key_packages.insert(v_idx, key_pkg);
     }
 
-    debug!("Frost: sending round 2");
-    let r2_result = tp.round2(ct, &r2_bcasts).await?;
-    debug!("Frost: round 2 complete");
+    Ok(cast_results)
+}
 
-    // ── Build Shares ──────────────────────────────────────────────────────────
+/// Returns the round 2 inputs of the `v_idx`th validator.
+fn get_round2_inputs(
+    cast_r1: &HashMap<MsgKey, Round1Bcast>,
+    p2p_r1: &HashMap<MsgKey, ShamirShare>,
+    v_idx: u32,
+) -> (BTreeMap<u32, Round1Bcast>, BTreeMap<u32, ShamirShare>) {
+    let cast_map = cast_r1
+        .iter()
+        .filter(|(key, _)| key.val_idx == v_idx)
+        .map(|(key, cast)| (key.source_id, cast.clone()))
+        .collect();
+    let share_map = p2p_r1
+        .iter()
+        .filter(|(key, _)| key.val_idx == v_idx)
+        .map(|(key, share)| (key.source_id, share.clone()))
+        .collect();
 
-    // Collect public shares per validator: source_id → vk_share_bytes.
-    let mut pub_shares_by_val: HashMap<u32, HashMap<u64, pluto_crypto::types::PublicKey>> =
-        HashMap::new();
-    for (key, r2_bcast) in &r2_result {
-        let entry = pub_shares_by_val.entry(key.val_idx).or_default();
-        let vk_bytes: pluto_crypto::types::PublicKey = r2_bcast.vk_share;
-        entry.insert(u64::from(key.source_id), vk_bytes);
-    }
+    (cast_map, share_map)
+}
 
-    let mut shares = Vec::with_capacity(num_validators as usize);
-    for v_idx in 0..num_validators {
-        let key_pkg = key_packages
-            .remove(&v_idx)
-            .expect("key_package populated above");
+/// Returns a slice of shares (one for each validator) from the DKG participants
+/// and round 2 results.
+fn make_shares(
+    validators: &BTreeMap<u32, DkgParticipant>,
+    r2_result: &HashMap<MsgKey, Round2Bcast>,
+) -> Result<Vec<Share>, FrostError> {
+    // Get set of public shares for each validator.
+    let pub_shares = r2_result.iter().try_fold(
+        BTreeMap::<u32, HashMap<u64, PublicKey>>::new(),
+        |mut pub_shares, (key, result)| {
+            let pub_share = point_to_pubkey(result.vk_share)?;
+            pub_shares
+                .entry(key.val_idx)
+                .or_default()
+                .insert(u64::from(key.source_id), pub_share);
+            Ok::<_, FrostError>(pub_shares)
+        },
+    )?;
 
-        // Group verification key (compressed G1, 48 bytes).
-        let pub_key: pluto_crypto::types::PublicKey =
-            G1Affine::from(key_pkg.verifying_key().to_element()).to_compressed();
-
-        let secret_share = encode_secret_share(&key_pkg)?;
-
-        let public_shares = pub_shares_by_val.remove(&v_idx).unwrap_or_default();
+    // Construct DKG result shares.
+    let mut shares = Vec::with_capacity(validators.len());
+    for (&v_idx, validator) in validators {
+        let key_package = validator
+            .key_package
+            .as_ref()
+            .ok_or(FrostError::MissingRoundState)?;
+        let pub_key = key_package.verifying_key().to_element();
+        let secret_share = key_package.signing_share().to_scalar();
 
         shares.push(Share {
-            pub_key,
-            secret_share,
-            public_shares,
+            pub_key: point_to_pubkey(G1Affine::from(pub_key).to_compressed())?,
+            secret_share: privkey_from_bytes(&kryptology::scalar_to_be(&secret_share))?,
+            public_shares: pub_shares.get(&v_idx).cloned().unwrap_or_default(),
         });
     }
 
     Ok(shares)
 }
 
-fn encode_secret_share(
-    key_pkg: &pluto_frost::KeyPackage,
-) -> Result<pluto_crypto::types::PrivateKey, FrostError> {
-    let scalar = key_pkg.signing_share().to_scalar();
-    let expected_pubshare: pluto_crypto::types::PublicKey =
-        G1Affine::from(key_pkg.verifying_share().to_element()).to_compressed();
-
-    let candidates = [scalar_to_be(&scalar), scalar.to_bytes()];
-    for candidate in candidates {
-        if BlstImpl
-            .secret_to_public_key(&candidate)
-            .is_ok_and(|pubshare| pubshare == expected_pubshare)
-        {
-            return Ok(candidate);
-        }
-    }
-
-    Err(FrostError::SecretShareEncoding)
+fn point_to_pubkey(point: [u8; 48]) -> Result<PublicKey, FrostError> {
+    // `pubkey_from_bytes` only checks length; transport bytes still need G1
+    // validation.
+    G1Projective::from_compressed(&point).ok_or(FrostError::InvalidPublicKeyPoint)?;
+    Ok(pubkey_from_bytes(&point)?)
 }
 
-fn kryptology_context_byte(dkg_ctx: &str) -> u8 {
-    // Match Obol kryptology's `strconv.Atoi(ctx)` + `byte(ctxV)` behavior.
-    // Invalid decimal strings (such as "0x<definition-hash>") become 0.
+fn validate_participant_inputs(
+    id: u32,
+    threshold: u16,
+    max_signers: u16,
+) -> Result<(), pluto_frost::kryptology::KryptologyError> {
+    if max_signers > u16::from(u8::MAX) {
+        return Err(kryptology::KryptologyError::InvalidSignerCount);
+    }
+    validate_num_of_signers(threshold, max_signers)?;
+    if id == 0 || id > u32::from(max_signers) {
+        return Err(kryptology::KryptologyError::InvalidParticipantId(id));
+    }
+
+    Ok(())
+}
+
+fn dkg_context_byte(dkg_ctx: &str) -> u8 {
+    // Match Charon's strconv.Atoi(ctx) with ignored errors. Production passes a
+    // hex definition hash ("0x..."), so this intentionally becomes 0.
     dkg_ctx
-        .parse::<i64>()
-        .ok()
-        .and_then(|value| u8::try_from(value.rem_euclid(256)).ok())
-        .unwrap_or(0)
-}
-
-// ── Proto conversion helpers ────────────────────────────────────────────────
-
-fn key_to_proto(key: MsgKey) -> FrostMsgKey {
-    FrostMsgKey {
-        val_idx: key.val_idx,
-        source_id: key.source_id,
-        target_id: key.target_id,
-    }
-}
-
-fn key_from_proto(k: Option<&FrostMsgKey>) -> Result<MsgKey, FrostError> {
-    let k = k.ok_or(FrostError::MissingKey)?;
-    Ok(MsgKey {
-        val_idx: k.val_idx,
-        source_id: k.source_id,
-        target_id: k.target_id,
-    })
-}
-
-fn round1_cast_to_proto(key: MsgKey, cast: &Round1Bcast) -> FrostRound1Cast {
-    FrostRound1Cast {
-        key: Some(key_to_proto(key)),
-        wi: Bytes::copy_from_slice(&cast.wi),
-        ci: Bytes::copy_from_slice(&cast.ci),
-        commitments: cast
-            .commitments
-            .iter()
-            .map(|c| Bytes::copy_from_slice(c))
-            .collect(),
-    }
-}
-
-fn round1_cast_from_proto(cast: &FrostRound1Cast) -> Result<(MsgKey, Round1Bcast), FrostError> {
-    let key = key_from_proto(cast.key.as_ref())?;
-    let wi: [u8; 32] = cast
-        .wi
-        .as_ref()
-        .try_into()
-        .map_err(|_| FrostError::ProtoDecode("wi length".into()))?;
-    let ci: [u8; 32] = cast
-        .ci
-        .as_ref()
-        .try_into()
-        .map_err(|_| FrostError::ProtoDecode("ci length".into()))?;
-    let commitments: Result<Vec<[u8; 48]>, _> = cast
-        .commitments
-        .iter()
-        .map(|c| <[u8; 48]>::try_from(c.as_ref()))
-        .collect();
-    let commitments =
-        commitments.map_err(|_| FrostError::ProtoDecode("commitment length".into()))?;
-    Ok((
-        key,
-        Round1Bcast {
-            wi,
-            ci,
-            commitments,
-        },
-    ))
-}
-
-fn shamir_share_to_proto(key: MsgKey, share: &ShamirShare) -> FrostRound1ShamirShare {
-    FrostRound1ShamirShare {
-        key: Some(key_to_proto(key)),
-        id: share.id,
-        value: Bytes::copy_from_slice(&share.value),
-    }
-}
-
-fn shamir_share_from_proto(
-    share: &FrostRound1ShamirShare,
-) -> Result<(MsgKey, ShamirShare), FrostError> {
-    let key = key_from_proto(share.key.as_ref())?;
-    let value: [u8; 32] = share
-        .value
-        .as_ref()
-        .try_into()
-        .map_err(|_| FrostError::ProtoDecode("shamir value length".into()))?;
-    Ok((
-        key,
-        ShamirShare {
-            id: share.id,
-            value,
-        },
-    ))
-}
-
-fn round2_cast_to_proto(key: MsgKey, cast: &Round2Bcast) -> FrostRound2Cast {
-    FrostRound2Cast {
-        key: Some(key_to_proto(key)),
-        verification_key: Bytes::copy_from_slice(&cast.verification_key),
-        vk_share: Bytes::copy_from_slice(&cast.vk_share),
-    }
-}
-
-fn round2_cast_from_proto(cast: &FrostRound2Cast) -> Result<(MsgKey, Round2Bcast), FrostError> {
-    let key = key_from_proto(cast.key.as_ref())?;
-    let verification_key: [u8; 48] = cast
-        .verification_key
-        .as_ref()
-        .try_into()
-        .map_err(|_| FrostError::ProtoDecode("verification_key length".into()))?;
-    let vk_share: [u8; 48] = cast
-        .vk_share
-        .as_ref()
-        .try_into()
-        .map_err(|_| FrostError::ProtoDecode("vk_share length".into()))?;
-    Ok((
-        key,
-        Round2Bcast {
-            verification_key,
-            vk_share,
-        },
-    ))
-}
-
-fn build_round1_casts(cast_r1: &HashMap<MsgKey, Round1Bcast>) -> FrostRound1Casts {
-    FrostRound1Casts {
-        casts: cast_r1
-            .iter()
-            .map(|(&key, cast)| round1_cast_to_proto(key, cast))
-            .collect(),
-    }
-}
-
-fn build_round2_casts(cast_r2: &HashMap<MsgKey, Round2Bcast>) -> FrostRound2Casts {
-    FrostRound2Casts {
-        casts: cast_r2
-            .iter()
-            .map(|(&key, cast)| round2_cast_to_proto(key, cast))
-            .collect(),
-    }
-}
-
-/// Maps keyed by [`MsgKey`] returned from round-1 collection.
-type Round1Response = (HashMap<MsgKey, Round1Bcast>, HashMap<MsgKey, ShamirShare>);
-
-fn make_round1_response(
-    cast_msgs: Vec<FrostRound1Casts>,
-    p2p_msgs: Vec<FrostRound1P2p>,
-) -> Result<Round1Response, FrostError> {
-    let mut cast_map = HashMap::new();
-    let mut p2p_map = HashMap::new();
-
-    for msg in &cast_msgs {
-        for cast in &msg.casts {
-            let (key, bcast) = round1_cast_from_proto(cast)?;
-            cast_map.insert(key, bcast);
-        }
-    }
-    for msg in &p2p_msgs {
-        for share in &msg.shares {
-            let (key, shamir) = shamir_share_from_proto(share)?;
-            p2p_map.insert(key, shamir);
-        }
-    }
-
-    Ok((cast_map, p2p_map))
-}
-
-fn make_round2_response(
-    cast_msgs: Vec<FrostRound2Casts>,
-) -> Result<HashMap<MsgKey, Round2Bcast>, FrostError> {
-    let mut cast_map = HashMap::new();
-    for msg in &cast_msgs {
-        for cast in &msg.casts {
-            let (key, bcast) = round2_cast_from_proto(cast)?;
-            cast_map.insert(key, bcast);
-        }
-    }
-    Ok(cast_map)
+        .parse::<isize>()
+        .map(|value| value.to_le_bytes()[0])
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_secret_share, kryptology_context_byte};
-    use std::collections::BTreeMap;
+    use std::sync::Arc;
 
-    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
-    use pluto_frost::{G1Affine, kryptology};
+    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::Index};
+    use tokio::sync::{Mutex, Notify};
 
-    #[test]
-    fn kryptology_context_byte_matches_go_atoi_semantics() {
-        assert_eq!(kryptology_context_byte("0xdeadbeef"), 0);
-        assert_eq!(kryptology_context_byte("48"), 48);
-        assert_eq!(kryptology_context_byte("-1"), 255);
+    use super::*;
+
+    struct FrostMemTransport {
+        nodes: usize,
+        inner: Mutex<FrostMemTransportInner>,
+        notify: Notify,
+    }
+
+    #[derive(Default)]
+    struct FrostMemTransportInner {
+        round1: usize,
+        round1_bcast: HashMap<MsgKey, Round1Bcast>,
+        round1_shares: HashMap<u32, HashMap<MsgKey, ShamirShare>>,
+        round2: usize,
+        round2_bcast: HashMap<MsgKey, Round2Bcast>,
+    }
+
+    impl FrostMemTransport {
+        fn new(nodes: usize) -> Self {
+            Self {
+                nodes,
+                inner: Mutex::new(FrostMemTransportInner::default()),
+                notify: Notify::new(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl FTransport for FrostMemTransport {
+        async fn round1(
+            &self,
+            cancellation: &CancellationToken,
+            bcast: HashMap<MsgKey, Round1Bcast>,
+            shares: HashMap<MsgKey, ShamirShare>,
+        ) -> Result<Round1Output, FrostError> {
+            let source_id = bcast
+                .keys()
+                .next()
+                .map(|key| key.source_id)
+                .ok_or(FrostError::MissingRoundState)?;
+            debug_assert!(bcast.keys().all(|key| key.source_id == source_id));
+
+            {
+                let mut inner = self.inner.lock().await;
+                if inner.round1 == self.nodes {
+                    inner.round1 = 0;
+                    inner.round1_bcast.clear();
+                    inner.round1_shares.clear();
+                }
+                for (key, round1_bcast) in bcast {
+                    inner.round1_bcast.insert(
+                        MsgKey {
+                            val_idx: key.val_idx,
+                            source_id: key.source_id,
+                            target_id: 0,
+                        },
+                        round1_bcast,
+                    );
+                }
+                for (key, share) in shares {
+                    inner
+                        .round1_shares
+                        .entry(key.target_id)
+                        .or_default()
+                        .insert(key, share);
+                }
+                inner.round1 = inner
+                    .round1
+                    .checked_add(1)
+                    .expect("test round counter should not overflow");
+            }
+            self.notify.notify_waiters();
+
+            loop {
+                let notified = self.notify.notified();
+                {
+                    let inner = self.inner.lock().await;
+                    if inner.round1 == self.nodes {
+                        return Ok((
+                            inner.round1_bcast.clone(),
+                            inner
+                                .round1_shares
+                                .get(&source_id)
+                                .cloned()
+                                .unwrap_or_default(),
+                        ));
+                    }
+                }
+
+                tokio::select! {
+                    _ = cancellation.cancelled() => return Err(FrostError::Cancelled),
+                    _ = notified => {}
+                }
+            }
+        }
+
+        async fn round2(
+            &self,
+            cancellation: &CancellationToken,
+            bcast: HashMap<MsgKey, Round2Bcast>,
+        ) -> Result<HashMap<MsgKey, Round2Bcast>, FrostError> {
+            {
+                let mut inner = self.inner.lock().await;
+                if inner.round2 == self.nodes {
+                    inner.round2 = 0;
+                    inner.round2_bcast.clear();
+                }
+                for (key, round2_bcast) in bcast {
+                    inner.round2_bcast.insert(
+                        MsgKey {
+                            val_idx: key.val_idx,
+                            source_id: key.source_id,
+                            target_id: 0,
+                        },
+                        round2_bcast,
+                    );
+                }
+                inner.round2 = inner
+                    .round2
+                    .checked_add(1)
+                    .expect("test round counter should not overflow");
+            }
+            self.notify.notify_waiters();
+
+            loop {
+                let notified = self.notify.notified();
+                {
+                    let inner = self.inner.lock().await;
+                    if inner.round2 == self.nodes {
+                        return Ok(inner.round2_bcast.clone());
+                    }
+                }
+
+                tokio::select! {
+                    _ = cancellation.cancelled() => return Err(FrostError::Cancelled),
+                    _ = notified => {}
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn frost_dkg() {
+        const NODES: u32 = 3;
+        const THRESHOLD: u32 = 3;
+        const VALS: u32 = 2;
+
+        let node_shares = run_mem_dkg(NODES, THRESHOLD, VALS).await;
+        verify_returned_shares(
+            &node_shares,
+            usize::try_from(THRESHOLD).expect("threshold should fit"),
+        );
+    }
+
+    #[tokio::test]
+    async fn frost_dkg_partial_quorum() {
+        const NODES: u32 = 3;
+        const THRESHOLD: u32 = 2;
+        const VALS: u32 = 2;
+
+        let node_shares = run_mem_dkg(NODES, THRESHOLD, VALS).await;
+        verify_returned_shares(
+            &node_shares,
+            usize::try_from(THRESHOLD).expect("threshold should fit"),
+        );
+    }
+
+    async fn run_mem_dkg(nodes: u32, threshold: u32, vals: u32) -> Vec<Vec<Share>> {
+        let cancellation = CancellationToken::new();
+        let tp = Arc::new(FrostMemTransport::new(
+            usize::try_from(nodes).expect("nodes should fit"),
+        ));
+
+        let mut tasks = Vec::new();
+        for i in 0..nodes {
+            let tp = Arc::clone(&tp);
+            let cancellation = cancellation.clone();
+            tasks.push(tokio::spawn(async move {
+                run_frost_parallel(
+                    cancellation,
+                    tp.as_ref(),
+                    vals,
+                    nodes,
+                    threshold,
+                    i.checked_add(1).expect("share index should not overflow"),
+                    "0",
+                )
+                .await
+            }));
+        }
+
+        let mut node_shares = Vec::new();
+        for task in tasks {
+            let shares = task
+                .await
+                .expect("task should not panic")
+                .expect("DKG should run");
+            assert_eq!(
+                shares.len(),
+                usize::try_from(vals).expect("vals should fit")
+            );
+            node_shares.push(shares);
+        }
+
+        node_shares
+    }
+
+    #[tokio::test]
+    async fn transport_returns_cancelled_while_waiting() {
+        let cancellation = CancellationToken::new();
+        let tp = Arc::new(FrostMemTransport::new(2));
+
+        let task = {
+            let tp = Arc::clone(&tp);
+            let cancellation = cancellation.clone();
+            tokio::spawn(async move {
+                run_frost_parallel(cancellation, tp.as_ref(), 1, 2, 2, 1, "0").await
+            })
+        };
+
+        tokio::task::yield_now().await;
+        cancellation.cancel();
+
+        let err = task
+            .await
+            .expect("task should not panic")
+            .expect_err("DKG should be cancelled");
+        assert!(matches!(err, FrostError::Cancelled));
     }
 
     #[test]
-    fn secret_share_encoding_matches_verifying_share() {
-        let (_bcast_1, shares_1, secret_1) =
-            kryptology::round1(1, 3, 4, 0, &mut rand::rngs::OsRng).expect("round1");
-        let (bcast_2, shares_2, _secret_2) =
-            kryptology::round1(2, 3, 4, 0, &mut rand::rngs::OsRng).expect("round1");
-        let (bcast_3, shares_3, _secret_3) =
-            kryptology::round1(3, 3, 4, 0, &mut rand::rngs::OsRng).expect("round1");
-        let (bcast_4, shares_4, _secret_4) =
-            kryptology::round1(4, 3, 4, 0, &mut rand::rngs::OsRng).expect("round1");
+    fn round1_emits_expected_msg_key_layout() {
+        let mut validators =
+            new_frost_participants(2, 3, 3, 2, "0").expect("participants should build");
 
-        let received_bcasts = BTreeMap::from([(2, bcast_2), (3, bcast_3), (4, bcast_4)]);
-        let received_shares = BTreeMap::from([
-            (2, shares_2.get(&1).expect("share").clone()),
-            (3, shares_3.get(&1).expect("share").clone()),
-            (4, shares_4.get(&1).expect("share").clone()),
-        ]);
-        let (_round2_bcast, key_pkg, _pub_pkg) =
-            kryptology::round2(secret_1, &received_bcasts, &received_shares).expect("round2");
+        let (casts, shares) = round1(&mut validators).expect("round1 should run");
 
-        let secret_share = encode_secret_share(&key_pkg).expect("secret share encoding");
-        let pubshare = BlstImpl
-            .secret_to_public_key(&secret_share)
-            .expect("public share");
-        let expected_pubshare =
-            G1Affine::from(key_pkg.verifying_share().to_element()).to_compressed();
+        assert_eq!(casts.len(), 2);
+        assert!(
+            casts
+                .keys()
+                .all(|key| key.source_id == 2 && key.target_id == 0)
+        );
+        assert_eq!(shares.len(), 4);
+        assert!(shares.keys().all(|key| key.source_id == 2));
+        let mut share_keys = shares
+            .keys()
+            .map(|key| (key.val_idx, key.target_id))
+            .collect::<Vec<_>>();
+        share_keys.sort_unstable();
+        assert_eq!(share_keys, vec![(0, 1), (0, 3), (1, 1), (1, 3)]);
+    }
 
-        assert_eq!(pubshare, expected_pubshare);
-        drop(shares_1);
+    #[test]
+    fn participant_rejects_repeated_round1() {
+        let mut validator =
+            DkgParticipant::new(1, 2, "0", vec![2, 3]).expect("participant should build");
+
+        validator.round1().expect("round1 should run");
+        assert!(matches!(
+            validator.round1(),
+            Err(FrostError::InvalidRound {
+                expected: 1,
+                current: 2
+            })
+        ));
+    }
+
+    #[test]
+    fn participant_rejects_round1_with_existing_secret() {
+        let mut source =
+            DkgParticipant::new(1, 2, "0", vec![2, 3]).expect("participant should build");
+        let (_, _, secret) = kryptology::round1(1, 2, 3, 0, &mut rand::rngs::OsRng)
+            .expect("round1 should produce a secret");
+        source.round1_secret = Some(secret);
+
+        assert!(matches!(
+            source.round1(),
+            Err(FrostError::MissingRoundState)
+        ));
+    }
+
+    #[test]
+    fn participant_rejects_round2_before_round1() {
+        let mut validator =
+            DkgParticipant::new(1, 2, "0", vec![2, 3]).expect("participant should build");
+
+        assert!(matches!(
+            validator.round2(&BTreeMap::new(), &BTreeMap::new()),
+            Err(FrostError::InvalidRound {
+                expected: 2,
+                current: 1
+            })
+        ));
+    }
+
+    #[test]
+    fn participant_rejects_round2_with_existing_key_package() {
+        let mut node1 = new_frost_participants(1, 3, 2, 1, "0").expect("participants should build");
+        let (mut casts, _) = round1(&mut node1).expect("round1 should run");
+        let mut shares = HashMap::new();
+        for share_idx in 2..=3 {
+            let mut validators =
+                new_frost_participants(1, 3, 2, share_idx, "0").expect("participants should build");
+            let (node_casts, node_shares) = round1(&mut validators).expect("round1 should run");
+            casts.extend(node_casts);
+            shares.extend(
+                node_shares
+                    .into_iter()
+                    .filter(|(key, _)| key.target_id == 1),
+            );
+        }
+        let (v0_casts, v0_shares) = get_round2_inputs(&casts, &shares, 0);
+        let validator = node1.get_mut(&0).expect("validator should exist");
+        validator
+            .round2(&v0_casts, &v0_shares)
+            .expect("round2 should run");
+        validator.round = 2;
+        let (_, _, secret) = kryptology::round1(1, 2, 3, 0, &mut rand::rngs::OsRng)
+            .expect("round1 should produce a secret");
+        validator.round1_secret = Some(secret);
+
+        assert!(matches!(
+            validator.round2(&v0_casts, &v0_shares),
+            Err(FrostError::MissingRoundState)
+        ));
+    }
+
+    #[test]
+    fn participant_rejects_repeated_round2() {
+        let mut node1 = new_frost_participants(1, 3, 2, 1, "0").expect("participants should build");
+        let (mut casts, _) = round1(&mut node1).expect("round1 should run");
+        let mut shares = HashMap::new();
+        for share_idx in 2..=3 {
+            let mut validators =
+                new_frost_participants(1, 3, 2, share_idx, "0").expect("participants should build");
+            let (node_casts, node_shares) = round1(&mut validators).expect("round1 should run");
+            casts.extend(node_casts);
+            shares.extend(
+                node_shares
+                    .into_iter()
+                    .filter(|(key, _)| key.target_id == 1),
+            );
+        }
+        let (v0_casts, v0_shares) = get_round2_inputs(&casts, &shares, 0);
+        let validator = node1.get_mut(&0).expect("validator should exist");
+
+        validator
+            .round2(&v0_casts, &v0_shares)
+            .expect("round2 should run");
+        assert!(matches!(
+            validator.round2(&v0_casts, &v0_shares),
+            Err(FrostError::InvalidRound {
+                expected: 2,
+                current: 3
+            })
+        ));
+    }
+
+    #[test]
+    fn dkg_context_byte_defaults_invalid_context_to_zero() {
+        assert_eq!(dkg_context_byte("test context"), 0);
+        assert_eq!(dkg_context_byte("0x1234"), 0);
+        assert_eq!(dkg_context_byte("0"), 0);
+        assert_eq!(dkg_context_byte("1"), 1);
+        assert_eq!(dkg_context_byte("257"), 1);
+        assert_eq!(dkg_context_byte("-1"), 255);
+    }
+
+    #[test]
+    fn point_to_pubkey_rejects_invalid_compressed_point() {
+        let invalid_but_correct_length = [42u8; 48];
+
+        assert!(matches!(
+            point_to_pubkey(invalid_but_correct_length),
+            Err(FrostError::InvalidPublicKeyPoint)
+        ));
+    }
+
+    #[test]
+    fn get_round2_inputs_filters_by_validator_index() {
+        let mut casts = HashMap::new();
+        let mut shares = HashMap::new();
+
+        for share_idx in 2..=3 {
+            let mut validators =
+                new_frost_participants(2, 3, 3, share_idx, "0").expect("participants should build");
+            let (node_casts, node_shares) = round1(&mut validators).expect("round1 should run");
+            casts.extend(node_casts);
+            shares.extend(
+                node_shares
+                    .into_iter()
+                    .filter(|(key, _)| key.target_id == 1),
+            );
+        }
+
+        let (v0_casts, v0_shares) = get_round2_inputs(&casts, &shares, 0);
+        let (v1_casts, v1_shares) = get_round2_inputs(&casts, &shares, 1);
+
+        assert_eq!(v0_casts.keys().copied().collect::<Vec<_>>(), vec![2, 3]);
+        assert_eq!(v0_shares.keys().copied().collect::<Vec<_>>(), vec![2, 3]);
+        assert_eq!(v1_casts.keys().copied().collect::<Vec<_>>(), vec![2, 3]);
+        assert_eq!(v1_shares.keys().copied().collect::<Vec<_>>(), vec![2, 3]);
+        assert_ne!(v0_casts, v1_casts);
+    }
+
+    #[tokio::test]
+    async fn make_shares_sorts_by_validator_index_and_maps_public_shares() {
+        let cancellation = CancellationToken::new();
+        let tp = Arc::new(FrostMemTransport::new(3));
+        let mut tasks = Vec::new();
+
+        for share_idx in 1..=3 {
+            let tp = Arc::clone(&tp);
+            let cancellation = cancellation.clone();
+            tasks.push(tokio::spawn(async move {
+                run_frost_parallel(cancellation, tp.as_ref(), 3, 3, 3, share_idx, "0").await
+            }));
+        }
+
+        let mut node_shares = Vec::new();
+        for task in tasks {
+            node_shares.push(
+                task.await
+                    .expect("task should not panic")
+                    .expect("DKG should run"),
+            );
+        }
+
+        assert_eq!(node_shares.len(), 3);
+        for shares in node_shares {
+            assert_eq!(shares.len(), 3);
+            for share in shares {
+                let mut share_ids = share.public_shares.keys().copied().collect::<Vec<_>>();
+                share_ids.sort_unstable();
+                assert_eq!(share_ids, vec![1, 2, 3]);
+            }
+        }
+    }
+
+    fn verify_returned_shares(node_shares: &[Vec<Share>], threshold: usize) {
+        let msg = b"frost dkg parity test";
+        let validator_count = node_shares
+            .first()
+            .expect("there should be node shares")
+            .len();
+
+        for val_idx in 0..validator_count {
+            let pub_key = node_shares[0][val_idx].pub_key;
+            let mut partials = HashMap::new();
+            for (node_idx, shares) in node_shares.iter().take(threshold).enumerate() {
+                assert_eq!(shares[val_idx].pub_key, pub_key);
+                let share_id = Index::try_from(
+                    node_idx
+                        .checked_add(1)
+                        .expect("node index should not overflow"),
+                )
+                .expect("node index should fit in Index");
+                let sig = BlstImpl
+                    .sign(&shares[val_idx].secret_share, msg)
+                    .expect("partial signature should succeed");
+                partials.insert(share_id, sig);
+            }
+
+            let sig = BlstImpl
+                .threshold_aggregate(&partials)
+                .expect("threshold aggregation should succeed");
+            BlstImpl
+                .verify(&pub_key, msg, &sig)
+                .expect("aggregated signature should verify");
+        }
     }
 }
