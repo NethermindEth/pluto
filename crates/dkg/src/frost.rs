@@ -138,6 +138,9 @@ impl DkgParticipant {
                 current: self.round,
             });
         }
+        if self.round1_secret.is_some() || self.key_package.is_some() {
+            return Err(FrostError::MissingRoundState);
+        }
         let mut rng = rand::rngs::OsRng;
         let (cast, shares, secret) = kryptology::round1(
             self.id,
@@ -175,6 +178,9 @@ impl DkgParticipant {
                 expected: 2,
                 current: self.round,
             });
+        }
+        if self.round1_secret.is_none() || self.key_package.is_some() {
+            return Err(FrostError::MissingRoundState);
         }
         let secret = self
             .round1_secret
@@ -695,6 +701,20 @@ mod tests {
     }
 
     #[test]
+    fn participant_rejects_round1_with_existing_secret() {
+        let mut source =
+            DkgParticipant::new(1, 2, "0", vec![2, 3]).expect("participant should build");
+        let (_, _, secret) = kryptology::round1(1, 2, 3, 0, &mut rand::rngs::OsRng)
+            .expect("round1 should produce a secret");
+        source.round1_secret = Some(secret);
+
+        assert!(matches!(
+            source.round1(),
+            Err(FrostError::MissingRoundState)
+        ));
+    }
+
+    #[test]
     fn participant_rejects_round2_before_round1() {
         let mut validator =
             DkgParticipant::new(1, 2, "0", vec![2, 3]).expect("participant should build");
@@ -705,6 +725,38 @@ mod tests {
                 expected: 2,
                 current: 1
             })
+        ));
+    }
+
+    #[test]
+    fn participant_rejects_round2_with_existing_key_package() {
+        let mut node1 = new_frost_participants(1, 3, 2, 1, "0").expect("participants should build");
+        let (mut casts, _) = round1(&mut node1).expect("round1 should run");
+        let mut shares = HashMap::new();
+        for share_idx in 2..=3 {
+            let mut validators =
+                new_frost_participants(1, 3, 2, share_idx, "0").expect("participants should build");
+            let (node_casts, node_shares) = round1(&mut validators).expect("round1 should run");
+            casts.extend(node_casts);
+            shares.extend(
+                node_shares
+                    .into_iter()
+                    .filter(|(key, _)| key.target_id == 1),
+            );
+        }
+        let (v0_casts, v0_shares) = get_round2_inputs(&casts, &shares, 0);
+        let validator = node1.get_mut(&0).expect("validator should exist");
+        validator
+            .round2(&v0_casts, &v0_shares)
+            .expect("round2 should run");
+        validator.round = 2;
+        let (_, _, secret) = kryptology::round1(1, 2, 3, 0, &mut rand::rngs::OsRng)
+            .expect("round1 should produce a secret");
+        validator.round1_secret = Some(secret);
+
+        assert!(matches!(
+            validator.round2(&v0_casts, &v0_shares),
+            Err(FrostError::MissingRoundState)
         ));
     }
 
