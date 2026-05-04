@@ -44,6 +44,18 @@ jobs:
             id: 4-charon
             pluto_nodes: 0
             charon_nodes: 4
+          - name: 2 Pluto + 2 Charon nodes
+            id: 2-pluto-2-charon
+            pluto_nodes: 2
+            charon_nodes: 2
+          - name: 1 Pluto + 3 Charon nodes
+            id: 1-pluto-3-charon
+            pluto_nodes: 1
+            charon_nodes: 3
+          - name: 4 Pluto
+            id: 4-pluto
+            pluto_nodes: 4
+            charon_nodes: 0
 
     steps:
       - name: Checkout
