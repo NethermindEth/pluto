@@ -7,8 +7,9 @@
 use std::collections::HashMap;
 
 use pluto_cluster::{
-    definition::{Definition, NodeIdx},
+    definition::{Creator, Definition, DefinitionError, NodeIdx},
     lock::Lock,
+    operator::Operator,
 };
 use pluto_core::{
     signeddata::VersionedSignedValidatorRegistration,
@@ -17,11 +18,11 @@ use pluto_core::{
 use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, tblsconv::pubkey_to_eth2};
 use pluto_eth2api::{spec::phase0, v1, versioned};
 use pluto_eth2util::{deposit, network, registration};
-use tokio_util::sync::CancellationToken;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::{
     aggregate::{agg_deposit_data, agg_lock_hash_sig, agg_validator_registrations},
+    dkg::AppendConfig,
     exchanger::{Exchanger, SIG_DEPOSIT_DATA, SIG_LOCK, SIG_VALIDATOR_REG},
     share::Share,
     validators::create_dist_validators,
@@ -95,6 +96,10 @@ pub enum SigningError {
     /// Lock hash computation failed.
     #[error(transparent)]
     Lock(#[from] pluto_cluster::lock::LockError),
+
+    /// Cluster definition update failed.
+    #[error(transparent)]
+    Definition(#[from] DefinitionError),
 
     /// Integer overflow in deposit-amount slot calculation.
     #[error("overflow in deposit amount slot index")]
@@ -210,9 +215,8 @@ pub fn sign_validator_registrations(
     Ok((set, msgs))
 }
 
-// ── Async orchestration ──────────────────────────────────────────────────────
-
 /// Signs, exchanges, and aggregates deposit data for each deposit amount.
+#[allow(dead_code, reason = "will be used in dkg later ")]
 pub async fn sign_and_agg_deposit_data(
     exchanger: &Exchanger,
     shares: &[Share],
@@ -247,6 +251,7 @@ pub async fn sign_and_agg_deposit_data(
 }
 
 /// Signs, exchanges, and aggregates validator registrations.
+#[allow(dead_code, reason = "will be used in dkg later ")]
 pub async fn sign_and_agg_validator_registrations(
     exchanger: &Exchanger,
     shares: &[Share],
@@ -284,17 +289,48 @@ pub async fn sign_and_agg_validator_registrations(
 }
 
 /// Signs, exchanges, and aggregates lock-hash partial signatures; builds the
-/// cluster lock.
+/// cluster lock. When `append_config` is `Some`, the new validators are merged
+/// into the existing lock and the definition is re-hashed; signing happens over
+/// the union of `existing_shares` and `new_shares` unless the append is
+/// unverified, in which case signing is skipped.
+#[allow(dead_code, reason = "will be used in dkg later ")]
+#[allow(clippy::too_many_arguments, reason = "mirrors Go signAndAggLockHash")]
 pub async fn sign_and_aggregate_lock_hash(
-    _ct: CancellationToken,
-    shares: &[Share],
-    definition: Definition,
+    existing_shares: &[Share],
+    new_shares: &[Share],
+    mut definition: Definition,
     node_idx: &NodeIdx,
     exchanger: &Exchanger,
     deposit_datas: Vec<Vec<phase0::DepositData>>,
     val_regs: Vec<VersionedSignedValidatorRegistration>,
+    append_config: Option<&AppendConfig>,
 ) -> Result<Lock> {
-    let mut validators = create_dist_validators(shares, &deposit_datas, &val_regs)?;
+    let mut validators = create_dist_validators(new_shares, &deposit_datas, &val_regs)?;
+
+    if let Some(append) = append_config {
+        let mut merged = append.cluster_lock.distributed_validators.clone();
+        merged.append(&mut validators);
+        validators = merged;
+
+        definition
+            .validator_addresses
+            .extend(append.validator_addresses.iter().cloned());
+        definition.num_validators = u64::try_from(validators.len())?;
+
+        // Creator and operator signatures no longer cover the updated
+        // definition; reset them so the lock can be re-signed downstream.
+        if !append.unverified {
+            definition.creator = Creator::default();
+            for operator in &mut definition.operators {
+                *operator = Operator {
+                    enr: std::mem::take(&mut operator.enr),
+                    ..Operator::default()
+                };
+            }
+        }
+
+        definition.set_definition_hashes()?;
+    }
 
     if !pluto_cluster::version::support_pregen_registrations(&definition.version) {
         for dv in &mut validators {
@@ -311,11 +347,22 @@ pub async fn sign_and_aggregate_lock_hash(
     };
     lock.set_lock_hash()?;
 
+    if append_config.is_some_and(|a| a.unverified) {
+        info!("The new cluster-lock file will not be signed due to --unverified flag");
+        return Ok(lock);
+    }
+
+    let all_shares: Vec<Share> = existing_shares
+        .iter()
+        .chain(new_shares.iter())
+        .cloned()
+        .collect();
+
     let share_idx = u64::try_from(node_idx.share_idx)?;
-    let lock_hash_sig_set = sign_lock_hash(share_idx, shares, &lock.lock_hash)?;
+    let lock_hash_sig_set = sign_lock_hash(share_idx, &all_shares, &lock.lock_hash)?;
     let peer_sigs = exchanger.exchange(SIG_LOCK, lock_hash_sig_set).await?;
 
-    let shares_map: HashMap<PubKey, Share> = shares
+    let shares_map: HashMap<PubKey, Share> = all_shares
         .iter()
         .map(|s| {
             PubKey::try_from(s.pub_key.as_slice())
