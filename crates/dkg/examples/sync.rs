@@ -752,6 +752,7 @@ async fn main() -> Result<()> {
             }
         }
     }
+
     cancellation.cancel();
     Ok(())
 }
