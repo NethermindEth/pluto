@@ -65,7 +65,7 @@ jobs:
 
       - name: Cache cargo registry and target
         if: matrix.pluto_nodes > 0
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Update apt package list
         if: matrix.pluto_nodes > 0
@@ -73,7 +73,7 @@ jobs:
 
       - name: Install protobuf
         if: matrix.pluto_nodes > 0
-        uses: awalsh128/cache-apt-pkgs-action@v1.6.0
+        uses: awalsh128/cache-apt-pkgs-action@acb598e5ddbc6f68a970c5da0688d2f3a9f04d05 # v1.6.0
         with:
           packages: protobuf-compiler=3.21.12*
           version: 3.21.12
