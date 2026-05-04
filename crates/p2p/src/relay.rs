@@ -12,6 +12,7 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     convert::Infallible,
+    pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
     time::Duration,
@@ -31,11 +32,20 @@ use libp2p::{
         ToSwarm, dial_opts::DialOpts, dummy,
     },
 };
-use tokio::time::{Instant, Interval};
+use tokio::time::{Instant, Interval, Sleep, sleep_until};
 
-const RELAY_ROUTER_INTERVAL: Duration = Duration::from_secs(5);
-const RELAY_ROUTER_INITIAL_DELAY: Duration = Duration::from_secs(1);
+const RELAY_ROUTER_INTERVAL: Duration = Duration::from_secs(60);
+const RELAY_ROUTER_INITIAL_DELAY: Duration = Duration::from_secs(10);
 const RELAY_READY_DELAY: Duration = Duration::from_secs(2);
+/// Initial backoff delay before the first reconnect attempt. Matches Charon's
+/// `DefaultConfig.BaseDelay`.
+const RELAY_BACKOFF_BASE: Duration = Duration::from_secs(1);
+/// Maximum backoff delay between reconnect attempts. Matches Charon's
+/// `DefaultConfig.MaxDelay`.
+const RELAY_BACKOFF_MAX: Duration = Duration::from_secs(120);
+/// Jitter factor applied to backoff delays. Matches Charon's
+/// `DefaultConfig.Jitter`.
+const RELAY_BACKOFF_JITTER: f64 = 0.2;
 
 /// Mutable relay reservation behaviour.
 ///
@@ -56,6 +66,15 @@ pub struct MutableRelayReservation {
     subscription_events: Arc<Mutex<VecDeque<Peer>>>,
     /// All known relay peers, keyed by peer ID, used to re-dial on disconnect
     relay_peers: HashMap<PeerId, Peer>,
+    /// Relay peers with an established connection, used to skip redundant dials
+    connected_relays: HashSet<PeerId>,
+    /// Scheduled re-dial attempts: (retry_at, peer). Sorted lazily; min is
+    /// found on use.
+    retry_queue: Vec<(Instant, Peer)>,
+    /// Per-relay retry count, used to compute exponential backoff delay.
+    retry_counts: HashMap<PeerId, u32>,
+    /// Pinned sleep future that fires at the earliest scheduled retry time.
+    next_retry: Option<Pin<Box<Sleep>>>,
 }
 
 impl MutableRelayReservation {
@@ -71,7 +90,10 @@ impl MutableRelayReservation {
         let mut pending_relays = HashSet::new();
         let mut pending_circuit_addrs = HashMap::new();
         let mut relay_peers = HashMap::new();
+        let connected_relays = HashSet::new();
         let subscription_events = Arc::new(Mutex::new(VecDeque::new()));
+        let retry_queue = Vec::new();
+        let retry_counts = HashMap::new();
 
         // Subscribe to relay peer updates and process initial peers
         for mutable_peer in &mutable_peers {
@@ -94,6 +116,7 @@ impl MutableRelayReservation {
                     &mut pending_relays,
                     &mut pending_circuit_addrs,
                     &mut relay_peers,
+                    &connected_relays,
                     &peer,
                 );
             }
@@ -105,20 +128,30 @@ impl MutableRelayReservation {
             pending_circuit_addrs,
             subscription_events,
             relay_peers,
+            connected_relays,
+            retry_queue,
+            retry_counts,
+            next_retry: None,
         }
     }
 
     /// Queues dial events for a relay peer.
     ///
-    /// Does nothing if a connection to this relay is already pending.
+    /// Does nothing if a connection to this relay is already pending or
+    /// established.
     fn queue_relay_dial(
         events: &mut VecDeque<ToSwarm<Infallible, Infallible>>,
         pending_relays: &mut HashSet<PeerId>,
         pending_circuit_addrs: &mut HashMap<PeerId, Vec<Multiaddr>>,
         relay_peers: &mut HashMap<PeerId, Peer>,
+        connected_relays: &HashSet<PeerId>,
         peer: &Peer,
     ) {
-        if pending_relays.contains(&peer.id) {
+        // Always update stored peer data so reconnects use fresh addresses,
+        // even if a dial is already in flight.
+        relay_peers.insert(peer.id, peer.clone());
+
+        if pending_relays.contains(&peer.id) || connected_relays.contains(&peer.id) {
             return;
         }
 
@@ -126,8 +159,9 @@ impl MutableRelayReservation {
         relay_peers.insert(peer.id, peer.clone());
 
         let mut circuit_addrs = Vec::new();
+        let mut relay_addrs = Vec::new();
         for addr in &peer.addresses {
-            // Strip any trailing /p2p/... before re-adding (matches Go peer.SplitAddr)
+            // Strip any trailing /p2p/... before re-adding
             let transport: Multiaddr = addr
                 .iter()
                 .filter(|p| !matches!(p, MaProtocol::P2p(_)))
@@ -142,8 +176,17 @@ impl MutableRelayReservation {
             // /ip4/.../tcp/.../p2p/<relay-id> — direct dial to relay server
             let mut relay_addr = transport;
             relay_addr.push(MaProtocol::P2p(peer.id));
+            relay_addrs.push(relay_addr);
+        }
+
+        pending_circuit_addrs.insert(peer.id, circuit_addrs);
+
+        if !relay_addrs.is_empty() {
             events.push_back(ToSwarm::Dial {
-                opts: DialOpts::unknown_peer_id().address(relay_addr).build(),
+                opts: DialOpts::peer_id(peer.id)
+                    .condition(libp2p::swarm::dial_opts::PeerCondition::DisconnectedAndNotDialing)
+                    .addresses(relay_addrs)
+                    .build(),
             });
         }
 
@@ -153,6 +196,61 @@ impl MutableRelayReservation {
             relay_peer_id = %peer.id,
             "Queued relay dial, will listen on circuit after connection establishes"
         );
+    }
+
+    /// Returns the exponential backoff delay for a given retry count.
+    ///
+    /// Mirrors Charon's `DefaultConfig`: base=1s, multiplier=1.6, jitter=0.2,
+    /// max=120s. retry_count=0 returns the base delay with no jitter, matching
+    /// Go's early-return path. For retry_count > 0, ±20% jitter is applied
+    /// after capping so nodes don't retry in lockstep.
+    fn backoff_delay(retry_count: u32) -> Duration {
+        if retry_count == 0 {
+            return RELAY_BACKOFF_BASE;
+        }
+        let mut delay = RELAY_BACKOFF_BASE.as_secs_f64();
+        let max = RELAY_BACKOFF_MAX.as_secs_f64();
+        for _ in 0..retry_count {
+            delay *= 1.6;
+            if delay >= max {
+                delay = max;
+                break;
+            }
+        }
+        let rand_val = rand::random::<f64>();
+        delay *= 1.0 + RELAY_BACKOFF_JITTER * (rand_val * 2.0 - 1.0);
+        if delay < 0.0 {
+            return Duration::ZERO;
+        }
+        Duration::from_secs_f64(delay)
+    }
+
+    /// Schedules a re-dial for `peer` after an exponential backoff delay, then
+    /// arms `next_retry` to fire at the earliest scheduled time.
+    fn schedule_retry(&mut self, peer: Peer) {
+        let count = *self.retry_counts.get(&peer.id).unwrap_or(&0);
+        let delay = Self::backoff_delay(count);
+        self.retry_counts.insert(peer.id, count.saturating_add(1));
+        let retry_at = Instant::now()
+            .checked_add(delay)
+            .unwrap_or_else(Instant::now);
+        tracing::debug!(
+            relay_peer_id = %peer.id,
+            ?delay,
+            "Scheduling relay re-dial with backoff"
+        );
+        self.retry_queue.retain(|(_, p)| p.id != peer.id);
+        self.retry_queue.push((retry_at, peer));
+        let earliest = self
+            .retry_queue
+            .iter()
+            .min_by_key(|(t, _)| t)
+            .map(|(t, _)| *t)
+            .expect("retry_queue is non-empty after push");
+        match self.next_retry.as_mut() {
+            Some(sleep) => sleep.as_mut().reset(earliest),
+            None => self.next_retry = Some(Box::pin(sleep_until(earliest))),
+        }
     }
 
     /// Processes pending subscription events.
@@ -176,8 +274,58 @@ impl MutableRelayReservation {
                 &mut self.pending_relays,
                 &mut self.pending_circuit_addrs,
                 &mut self.relay_peers,
+                &self.connected_relays,
                 &peer,
             );
+        }
+    }
+
+    /// Fires any scheduled re-dials whose backoff delay has elapsed and re-arms
+    /// the sleep timer.
+    fn poll_pending_redials(&mut self, cx: &mut Context<'_>) {
+        let retry_due = self
+            .next_retry
+            .as_mut()
+            .is_some_and(|sleep| sleep.as_mut().poll(cx).is_ready());
+        if !retry_due {
+            return;
+        }
+
+        self.next_retry = None;
+        let now = Instant::now();
+        let mut remaining = Vec::new();
+        let mut due = Vec::new();
+        for item in self.retry_queue.drain(..) {
+            if item.0 <= now {
+                due.push(item);
+            } else {
+                remaining.push(item);
+            }
+        }
+        self.retry_queue = remaining;
+
+        for (_, peer) in due {
+            Self::queue_relay_dial(
+                &mut self.events,
+                &mut self.pending_relays,
+                &mut self.pending_circuit_addrs,
+                &mut self.relay_peers,
+                &self.connected_relays,
+                &peer,
+            );
+        }
+
+        // Arm the sleep for the next pending retry, if any.
+        if let Some(earliest) = self
+            .retry_queue
+            .iter()
+            .min_by_key(|(t, _)| t)
+            .map(|(t, _)| *t)
+        {
+            let mut sleep = Box::pin(sleep_until(earliest));
+            // Poll once to register the waker before returning Pending.
+            let _ = sleep.as_mut().poll(cx);
+            self.next_retry = Some(sleep);
         }
     }
 }
@@ -215,6 +363,12 @@ impl NetworkBehaviour for MutableRelayReservation {
                     "Relay connection established, listening on circuit addresses"
                 );
 
+                // Successful connection: reset backoff state.
+                self.retry_counts.remove(&conn.peer_id);
+                self.retry_queue.retain(|(_, p)| p.id != conn.peer_id);
+
+                self.connected_relays.insert(conn.peer_id);
+
                 if let Some(circuit_addrs) = self.pending_circuit_addrs.remove(&conn.peer_id) {
                     for circuit_addr in circuit_addrs {
                         self.events.push_back(ToSwarm::ListenOn {
@@ -223,19 +377,23 @@ impl NetworkBehaviour for MutableRelayReservation {
                     }
                 }
             }
-            FromSwarm::ConnectionClosed(conn) => {
+            FromSwarm::ConnectionClosed(conn) if conn.remaining_established == 0 => {
                 if let Some(peer) = self.relay_peers.get(&conn.peer_id).cloned() {
                     tracing::debug!(
                         relay_peer_id = %conn.peer_id,
-                        "Relay connection closed, re-dialing"
+                        "Relay connection closed, scheduling re-dial with backoff"
                     );
-                    Self::queue_relay_dial(
-                        &mut self.events,
-                        &mut self.pending_relays,
-                        &mut self.pending_circuit_addrs,
-                        &mut self.relay_peers,
-                        &peer,
-                    );
+                    self.pending_relays.remove(&conn.peer_id);
+                    self.connected_relays.remove(&conn.peer_id);
+                    self.schedule_retry(peer);
+                }
+            }
+            FromSwarm::DialFailure(ev) => {
+                if let Some(peer_id) = ev.peer_id
+                    && let Some(peer) = self.relay_peers.get(&peer_id).cloned()
+                {
+                    self.pending_relays.remove(&peer_id);
+                    self.schedule_retry(peer);
                 }
             }
             _ => {}
@@ -253,14 +411,22 @@ impl NetworkBehaviour for MutableRelayReservation {
 
     fn poll(
         &mut self,
-        _cx: &mut Context<'_>,
+        cx: &mut Context<'_>,
     ) -> std::task::Poll<ToSwarm<Self::ToSwarm, THandlerInEvent<Self>>> {
+        if let Some(event) = self.events.pop_front() {
+            return Poll::Ready(event);
+        }
+
         // Process any pending subscription updates first
         self.process_subscription_events();
+
+        // Fire any scheduled re-dials whose backoff delay has elapsed.
+        self.poll_pending_redials(cx);
 
         if let Some(event) = self.events.pop_front() {
             return Poll::Ready(event);
         }
+
         Poll::Pending
     }
 }
@@ -378,7 +544,7 @@ impl NetworkBehaviour for RelayRouter {
                     tracing::debug!(relay_peer_id = %relay_peer.id, "Relay router marked relay connected");
                 }
             }
-            FromSwarm::ConnectionClosed(conn) => {
+            FromSwarm::ConnectionClosed(conn) if conn.remaining_established == 0 => {
                 self.connected_relays.remove(&conn.peer_id);
             }
             _ => {}
@@ -404,6 +570,34 @@ impl NetworkBehaviour for RelayRouter {
         if self.interval.poll_tick(cx).is_ready() {
             self.run_relay_router();
         }
+        if let Some(event) = self.events.pop_front() {
+            return Poll::Ready(event);
+        }
         Poll::Pending
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backoff_delay_grows_and_caps() {
+        // retry_count=0 → exact base delay, no jitter (matches Go's early-return path).
+        assert_eq!(
+            MutableRelayReservation::backoff_delay(0),
+            RELAY_BACKOFF_BASE
+        );
+        // d0 is exact; d1 and d5 carry jitter but their ranges don't overlap.
+        let d0 = MutableRelayReservation::backoff_delay(0); // 1s, no jitter
+        let d1 = MutableRelayReservation::backoff_delay(1); // ~1.6s ± 20% → [1.28s, 1.92s]
+        let d5 = MutableRelayReservation::backoff_delay(5); // ~10.5s ± 20% → [8.4s, 12.6s]
+        assert!(d1 > d0);
+        assert!(d5 > d1);
+        // At max retries the delay stays within the jitter range of RELAY_BACKOFF_MAX.
+        let d_large = MutableRelayReservation::backoff_delay(u32::MAX);
+        let max_secs = RELAY_BACKOFF_MAX.as_secs_f64();
+        assert!(d_large >= Duration::from_secs_f64(max_secs * (1.0 - RELAY_BACKOFF_JITTER)));
+        assert!(d_large <= Duration::from_secs_f64(max_secs * (1.0 + RELAY_BACKOFF_JITTER)));
     }
 }

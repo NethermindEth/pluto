@@ -1,5 +1,5 @@
 use crate::version::ZERO_NONCE;
-use pluto_ssz::serde_utils::Hex0x;
+use pluto_ssz::serde_utils::HexBytes;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
@@ -13,10 +13,10 @@ pub struct Operator {
     /// The ENR of the operator
     pub enr: String,
     /// The config signature of the operator
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     pub config_signature: Vec<u8>,
     /// The ENR signature of the operator
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     pub enr_signature: Vec<u8>,
 }
 
@@ -33,10 +33,10 @@ pub struct OperatorV1X1 {
     /// The nonce of the operator (always 0)
     nonce: u64,
     /// The config signature of the operator
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     pub config_signature: Vec<u8>,
     /// The ENR signature of the operator
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     pub enr_signature: Vec<u8>,
 }
 
@@ -51,10 +51,10 @@ pub struct OperatorV1X2OrLater {
     /// The ENR of the operator
     enr: String,
     /// The config signature of the operator
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     config_signature: Vec<u8>,
     /// The ENR signature of the operator
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     enr_signature: Vec<u8>,
 }
 

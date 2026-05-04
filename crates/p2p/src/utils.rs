@@ -110,7 +110,7 @@ pub(crate) fn multi_addrs_via_relay(
     let mut addrs = vec![];
 
     for addr in &relay_peer.addresses {
-        // Strip any trailing /p2p/... before re-adding (matches Go peer.SplitAddr)
+        // Strip any trailing /p2p/... before re-adding
         let transport: Multiaddr = addr
             .iter()
             .filter(|p| !matches!(p, MaProtocol::P2p(_)))
