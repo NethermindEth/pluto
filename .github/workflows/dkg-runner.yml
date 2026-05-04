@@ -22,6 +22,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   CHARON_VERSION: v1.7.1
   CHARON_URL: https://github.com/ObolNetwork/charon/releases/download/v1.7.1/charon-v1.7.1-linux-amd64.tar.gz
