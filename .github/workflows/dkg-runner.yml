@@ -16,7 +16,7 @@ on:
       timeout:
         description: "Per-ceremony TIMEOUT (seconds)"
         type: string
-        default: "180"
+        default: "120"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -28,9 +28,18 @@ env:
 
 jobs:
   dkg-ceremony:
-    name: 4 Charon nodes
+    name: ${{ matrix.name }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: 4 Charon nodes
+            id: 4-charon
+            pluto_nodes: 0
+            charon_nodes: 4
 
     steps:
       - name: Checkout
@@ -43,45 +52,58 @@ jobs:
           path: bin/charon
           key: charon-${{ env.CHARON_VERSION }}-linux-amd64
 
-      - name: Download and extract charon
+      - name: Install charon
         if: steps.cache-charon.outputs.cache-hit != 'true'
-        run: |
-          set -euo pipefail
-          mkdir -p bin
-          tmp=$(mktemp -d)
-          curl -fLsS "${CHARON_URL}" -o "${tmp}/charon.tar.gz"
-          tar -xzf "${tmp}/charon.tar.gz" -C "${tmp}"
-          bin_path=$(find "${tmp}" -type f -name charon -perm -u+x | head -1)
-          if [[ -z "${bin_path}" ]]; then
-            echo "::error::charon binary not found inside extracted tarball"
-            ls -R "${tmp}"
-            exit 1
-          fi
-          install -m 0755 "${bin_path}" bin/charon
+        run: ./scripts/dkg-runner/ci/install-charon.sh bin
 
       - name: Verify charon
         run: ./bin/charon version
 
-      - name: Run DKG ceremony (4 charon nodes)
+      - name: Cache cargo registry and target
+        if: matrix.pluto_nodes > 0
+        uses: Swatinem/rust-cache@v2
+
+      - name: Update apt package list
+        if: matrix.pluto_nodes > 0
+        run: sudo apt-get update
+
+      - name: Install protobuf
+        if: matrix.pluto_nodes > 0
+        uses: awalsh128/cache-apt-pkgs-action@v1.6.0
+        with:
+          packages: protobuf-compiler=3.21.12*
+          version: 3.21.12
+
+      - name: Install oas3-gen
+        if: matrix.pluto_nodes > 0
+        run: cargo install oas3-gen@0.24.0
+
+      - name: Build pluto
+        if: matrix.pluto_nodes > 0
+        run: cargo build -p pluto-cli
+
+      - name: Run DKG ceremony
         env:
           CI: "true"
           NODES: "4"
           THRESHOLD: "3"
-          PLUTO_NODES: "0"
-          CHARON_NODES: "4"
+          PLUTO_NODES: ${{ matrix.pluto_nodes }}
+          CHARON_NODES: ${{ matrix.charon_nodes }}
           CHARON_BIN: ${{ github.workspace }}/bin/charon
-          TIMEOUT: ${{ inputs.timeout || '180' }}
+          PLUTO_BIN: ${{ github.workspace }}/target/debug/pluto
+          TIMEOUT: ${{ inputs.timeout || '120' }}
         run: ./scripts/dkg-runner/run.sh
 
-      - name: List collected outputs
-        if: success()
-        run: ls -la /tmp/dkg-run/output/ /tmp/dkg-run/output/node-*/ || true
+      - name: Verify ceremony outputs
+        env:
+          NODES: "4"
+        run: ./scripts/dkg-runner/ci/verify-output.sh
 
       - name: Upload work dir on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: dkg-run-${{ github.run_id }}
+          name: dkg-run-${{ github.run_id }}-${{ matrix.id }}
           path: /tmp/dkg-run
           if-no-files-found: warn
           retention-days: 7
