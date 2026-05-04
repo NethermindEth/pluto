@@ -11,6 +11,7 @@ hex.workspace = true
 k256.workspace = true
 serde.workspace = true
 serde_with.workspace = true
+ssz.workspace = true
 thiserror.workspace = true
 tree_hash.workspace = true
 

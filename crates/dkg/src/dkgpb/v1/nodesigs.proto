@@ -1,6 +1,8 @@
 syntax = "proto3";
 
-package nodesigs;
+package dkg.dkgpb.v1;
+
+option go_package = "github.com/obolnetwork/charon/dkg/dkgpb/v1";
 
 message MsgNodeSig {
   bytes signature = 1;

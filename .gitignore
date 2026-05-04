@@ -24,5 +24,8 @@ lcov.info
 coverage.json
 
 .charon*
+.omx
 
 .peerinfo*
+
+test-infra/sszfixtures/sszfixtures

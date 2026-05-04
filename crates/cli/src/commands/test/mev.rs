@@ -17,19 +17,9 @@ use super::{
 use crate::{
     commands::test::TestCaseName,
     duration::Duration as CliDuration,
-    error::{CliError, Result},
+    error::{CliError, MevTestError, Result},
 };
 use clap::Args;
-
-/// MEV-specific errors.
-#[derive(Debug, thiserror::Error)]
-enum MevError {
-    /// Relay returned non-200 for the header request.
-    #[error("status code not 200 OK")]
-    StatusCodeNot200,
-    #[error(transparent)]
-    Cli(#[from] CliError),
-}
 
 /// Thresholds for MEV ping measure test.
 const THRESHOLD_MEV_MEASURE_AVG: Duration = Duration::from_millis(40);
@@ -114,14 +104,10 @@ pub async fn run(
 
     // Validate flag combinations.
     if args.load_test && args.beacon_node_endpoint.is_none() {
-        return Err(CliError::Other(
-            "beacon-node-endpoint required when load-test enabled".to_string(),
-        ));
+        return Err(MevTestError::BeaconNodeEndpointRequired.into());
     }
     if !args.load_test && args.beacon_node_endpoint.is_some() {
-        return Err(CliError::Other(
-            "beacon-node-endpoint only supported when load-test enabled".to_string(),
-        ));
+        return Err(MevTestError::BeaconNodeEndpointNotAllowed.into());
     }
 
     info!("Starting MEV relays test");
@@ -255,7 +241,7 @@ async fn mev_ping_test(target: &str, _conf: &TestMevArgs) -> TestResult {
     };
 
     if resp.status().as_u16() > 399 {
-        return test_res.fail(CliError::Other(http_status_error(resp.status())));
+        return test_res.fail(MevTestError::HttpStatus(resp.status().as_u16()));
     }
 
     test_res.ok()
@@ -291,7 +277,7 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
     let beacon_endpoint = match &conf.beacon_node_endpoint {
         Some(ep) => ep.as_str(),
         None => {
-            return test_res.fail(CliError::Other("beacon-node-endpoint required".to_string()));
+            return test_res.fail(MevTestError::BeaconNodeEndpointRequired);
         }
     };
 
@@ -302,15 +288,19 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
 
     let latest_block_ts_unix: i64 = match latest_block.body.execution_payload.timestamp.parse() {
         Ok(v) => v,
-        Err(e) => return test_res.fail(CliError::Other(format!("parse timestamp: {e}"))),
+        Err(e) => return test_res.fail(MevTestError::ParseTimestamp(e.to_string())),
     };
 
-    let latest_block_ts = std::time::UNIX_EPOCH
+    let latest_block_ts = match std::time::UNIX_EPOCH
         .checked_add(Duration::from_secs(latest_block_ts_unix.unsigned_abs()))
-        .unwrap_or(std::time::UNIX_EPOCH);
-    let next_block_ts = latest_block_ts
-        .checked_add(SLOT_TIME)
-        .unwrap_or(latest_block_ts);
+    {
+        Some(ts) => ts,
+        None => return test_res.fail(MevTestError::TimestampOverflow),
+    };
+    let next_block_ts = match latest_block_ts.checked_add(SLOT_TIME) {
+        Some(ts) => ts,
+        None => return test_res.fail(MevTestError::NextBlockTimestampOverflow),
+    };
 
     if let Ok(remaining) = next_block_ts.duration_since(std::time::SystemTime::now()) {
         tokio::time::sleep(remaining).await;
@@ -318,12 +308,18 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
 
     let latest_slot: i64 = match latest_block.slot.parse() {
         Ok(v) => v,
-        Err(e) => return test_res.fail(CliError::Other(format!("parse slot: {e}"))),
+        Err(e) => return test_res.fail(MevTestError::ParseSlot(e.to_string())),
     };
 
     let mut next_slot = latest_slot.saturating_add(1);
-    let slots_in_epoch_i64 = i64::try_from(SLOTS_IN_EPOCH.get()).unwrap_or(i64::MAX);
-    let epoch = next_slot.checked_div(slots_in_epoch_i64).unwrap_or(0);
+    let slots_in_epoch_i64 = match i64::try_from(SLOTS_IN_EPOCH.get()) {
+        Ok(v) => v,
+        Err(e) => return test_res.fail(MevTestError::SlotsInEpochConversion(e.to_string())),
+    };
+    let epoch = match next_slot.checked_div(slots_in_epoch_i64) {
+        Some(v) => v,
+        None => return test_res.fail(MevTestError::EpochCalculationOverflow),
+    };
 
     let mut proposer_duties = match fetch_proposers_for_epoch(beacon_endpoint, epoch).await {
         Ok(d) => d,
@@ -358,12 +354,17 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
         };
 
         all_blocks_rtt.push(rtt);
-        if all_blocks_rtt.len() == usize::try_from(conf.number_of_payloads).unwrap_or(usize::MAX) {
+        if all_blocks_rtt.len() == conf.number_of_payloads as usize {
             break;
         }
 
         let elapsed = start_iteration.elapsed();
-        let elapsed_nanos = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
+        let elapsed_nanos = match u64::try_from(elapsed.as_nanos()) {
+            Ok(v) => v,
+            Err(e) => {
+                return test_res.fail(MevTestError::ElapsedNanosConversion(e.to_string()));
+            }
+        };
         let slot_nanos = u64::try_from(SLOT_TIME.as_nanos()).unwrap_or(1);
         let remainder_nanos = elapsed_nanos.checked_rem(slot_nanos).unwrap_or(0);
         let slot_remainder = SLOT_TIME
@@ -381,7 +382,7 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
 
         let latest_slot_parsed: i64 = match latest_block.slot.parse() {
             Ok(v) => v,
-            Err(e) => return test_res.fail(CliError::Other(format!("parse slot: {e}"))),
+            Err(e) => return test_res.fail(MevTestError::ParseSlot(e.to_string())),
         };
 
         next_slot = latest_slot_parsed.saturating_add(1);
@@ -397,7 +398,10 @@ async fn mev_create_block_test(target: &str, conf: &TestMevArgs) -> TestResult {
     }
 
     let total_rtt: Duration = all_blocks_rtt.iter().sum();
-    let count = u32::try_from(all_blocks_rtt.len().max(1)).unwrap_or(u32::MAX);
+    let count = match u32::try_from(all_blocks_rtt.len().max(1)) {
+        Ok(v) => v,
+        Err(e) => return test_res.fail(MevTestError::BlockCountConversion(e.to_string())),
+    };
     let average_rtt = total_rtt.checked_div(count).unwrap_or_default();
 
     evaluate_rtt(
@@ -487,28 +491,23 @@ async fn get_block_header(
     next_slot: i64,
     block_hash: &str,
     validator_pub_key: &str,
-) -> std::result::Result<(BuilderBidResponse, Duration), MevError> {
+) -> Result<(BuilderBidResponse, Duration)> {
     let url =
         format!("{target}/eth/v1/builder/header/{next_slot}/{block_hash}/{validator_pub_key}");
 
     let start = Instant::now();
 
-    let resp = reqwest::Client::new()
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| MevError::Cli(e.into()))?;
+    let resp = reqwest::Client::new().get(&url).send().await?;
 
     let rtt = start.elapsed();
 
     if resp.status() != StatusCode::OK {
-        return Err(MevError::StatusCodeNot200);
+        return Err(MevTestError::StatusCodeNot200.into());
     }
 
-    let body = resp.bytes().await.map_err(|e| MevError::Cli(e.into()))?;
+    let body = resp.bytes().await?;
 
-    let bid: BuilderBidResponse =
-        serde_json::from_slice(&body).map_err(|e| MevError::Cli(e.into()))?;
+    let bid: BuilderBidResponse = serde_json::from_slice(&body)?;
 
     Ok((bid, rtt))
 }
@@ -526,15 +525,18 @@ async fn create_mev_block(
 
     loop {
         let start_iteration = Instant::now();
-        let slots_in_epoch_i64 = i64::try_from(SLOTS_IN_EPOCH.get()).unwrap_or(i64::MAX);
-        let epoch = next_slot.checked_div(slots_in_epoch_i64).unwrap_or(0);
+        let slots_in_epoch_i64 = i64::try_from(SLOTS_IN_EPOCH.get())
+            .map_err(|e| MevTestError::SlotsInEpochConversion(e.to_string()))?;
+        let epoch = next_slot
+            .checked_div(slots_in_epoch_i64)
+            .ok_or(MevTestError::EpochCalculationOverflow)?;
 
         let pk = if let Some(pk) = get_validator_pk_for_slot(proposer_duties, next_slot) {
             pk
         } else {
             *proposer_duties = fetch_proposers_for_epoch(beacon_endpoint, epoch).await?;
             get_validator_pk_for_slot(proposer_duties, next_slot)
-                .ok_or_else(|| CliError::Other("slot not found".to_string()))?
+                .ok_or(MevTestError::SlotNotFound)?
         };
 
         match get_block_header(
@@ -557,7 +559,7 @@ async fn create_mev_block(
                 break;
             }
 
-            Err(MevError::StatusCodeNot200) => {
+            Err(CliError::MevTest(MevTestError::StatusCodeNot200)) => {
                 let elapsed = start_iteration.elapsed();
                 if let Some(sleep_dur) = SLOT_TIME.checked_sub(elapsed)
                     && let Some(sleep_dur) = sleep_dur.checked_sub(Duration::from_secs(1))
@@ -577,16 +579,13 @@ async fn create_mev_block(
 
                 continue;
             }
-            Err(MevError::Cli(e)) => return Err(e),
+            Err(e) => return Err(e),
         }
     }
 
     let payload = build_blinded_block_payload(&builder_bid)?;
-    let payload_json = serde_json::to_vec(&payload).map_err(|e| {
-        CliError::Other(format!(
-            "signed blinded beacon block json payload marshal: {e}"
-        ))
-    })?;
+    let payload_json =
+        serde_json::to_vec(&payload).map_err(|e| MevTestError::PayloadMarshal(e.to_string()))?;
 
     let rtt_submit_block = request_rtt(
         format!("{target}/eth/v1/builder/blinded_blocks"),
@@ -669,11 +668,7 @@ fn extract_execution_payload_header(
     data.get("message")
         .and_then(|m| m.get("header"))
         .cloned()
-        .ok_or_else(|| {
-            CliError::Other(format!(
-                "not supported version or missing header: {version}"
-            ))
-        })
+        .ok_or_else(|| MevTestError::UnsupportedVersionOrMissingHeader(version.to_string()).into())
 }
 
 fn format_mev_relay_name(url_string: &str) -> String {
@@ -693,13 +688,237 @@ fn format_mev_relay_name(url_string: &str) -> String {
     format!("{scheme}://{hash_short}@{host}")
 }
 
-fn http_status_error(status: StatusCode) -> String {
-    format!("status code {}", status.as_u16())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration as StdDuration;
+    use tokio_util::sync::CancellationToken;
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+    fn refused_addr() -> String {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        drop(l);
+        format!("http://{addr}")
+    }
+
+    fn default_test_config() -> TestConfigArgs {
+        TestConfigArgs {
+            output_json: String::new(),
+            quiet: false,
+            test_cases: None,
+            timeout: StdDuration::from_secs(60),
+            publish: false,
+            publish_addr: String::new(),
+            publish_private_key_file: std::path::PathBuf::new(),
+        }
+    }
+
+    fn default_mev_args(endpoints: Vec<String>) -> TestMevArgs {
+        TestMevArgs {
+            test_config: default_test_config(),
+            endpoints,
+            beacon_node_endpoint: None,
+            load_test: false,
+            number_of_payloads: 1,
+        }
+    }
+
+    async fn start_healthy_mocked_mev_node() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn assert_verdict(
+        results: &std::collections::HashMap<String, Vec<TestResult>>,
+        target: &str,
+        expected: &[(&str, TestVerdict)],
+    ) {
+        let target_results = results.get(target).expect("missing target in results");
+        assert_eq!(
+            target_results.len(),
+            expected.len(),
+            "result count mismatch for {target}"
+        );
+        let by_name: std::collections::HashMap<&str, TestVerdict> = target_results
+            .iter()
+            .map(|r| (r.name.as_str(), r.verdict))
+            .collect();
+        for (name, verdict) in expected {
+            let actual = by_name
+                .get(name)
+                .unwrap_or_else(|| panic!("missing result for {name}"));
+            assert_eq!(*actual, *verdict, "verdict mismatch for {name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn mev_default_scenario() {
+        let server = start_healthy_mocked_mev_node().await;
+        let url = server.uri();
+        let args = default_mev_args(vec![url.clone()]);
+
+        let mut buf = Vec::new();
+        let res = run(args, &mut buf, CancellationToken::new()).await.unwrap();
+
+        let target_results = res.targets.get(&url).expect("missing target");
+        let by_name: std::collections::HashMap<&str, TestVerdict> = target_results
+            .iter()
+            .map(|r| (r.name.as_str(), r.verdict))
+            .collect();
+
+        assert_eq!(by_name["Ping"], TestVerdict::Ok, "Ping should be Ok");
+        assert_eq!(
+            by_name["CreateBlock"],
+            TestVerdict::Skip,
+            "CreateBlock should be Skip"
+        );
+        assert!(
+            matches!(
+                by_name["PingMeasure"],
+                TestVerdict::Good | TestVerdict::Poor
+            ),
+            "PingMeasure should be Good or Poor, got {:?}",
+            by_name.get("PingMeasure")
+        );
+    }
+
+    #[tokio::test]
+    async fn mev_connection_refused() {
+        let endpoint1 = refused_addr();
+        let endpoint2 = refused_addr();
+        let args = default_mev_args(vec![endpoint1.clone(), endpoint2.clone()]);
+
+        let mut buf = Vec::new();
+        let res = run(args, &mut buf, CancellationToken::new()).await.unwrap();
+
+        for endpoint in [&endpoint1, &endpoint2] {
+            let target_results = res.targets.get(endpoint).expect("missing target");
+            for r in target_results {
+                if r.name == "CreateBlock" {
+                    assert_eq!(
+                        r.verdict,
+                        TestVerdict::Skip,
+                        "expected skip for CreateBlock"
+                    );
+                } else {
+                    assert_eq!(r.verdict, TestVerdict::Fail, "expected fail for {}", r.name);
+                    assert!(
+                        r.error.message().is_some(),
+                        "expected error message for {}",
+                        r.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn mev_timeout() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_delay(StdDuration::from_millis(500)))
+            .mount(&server)
+            .await;
+
+        let url = server.uri();
+        let mut args = default_mev_args(vec![url.clone()]);
+        args.test_config.timeout = StdDuration::from_millis(10);
+
+        let mut buf = Vec::new();
+        let res = run(args, &mut buf, CancellationToken::new()).await.unwrap();
+
+        let target_results = res.targets.get(&url).expect("missing target");
+        assert!(!target_results.is_empty());
+        for r in target_results {
+            let expected = if r.name == "CreateBlock" {
+                TestVerdict::Skip
+            } else {
+                TestVerdict::Fail
+            };
+            assert_eq!(r.verdict, expected, "verdict mismatch for {}", r.name);
+        }
+    }
+
+    #[tokio::test]
+    async fn mev_quiet() {
+        let dir = tempfile::tempdir().unwrap();
+        let json_path = dir.path().join("output.json");
+
+        let endpoint1 = refused_addr();
+        let endpoint2 = refused_addr();
+        let mut args = default_mev_args(vec![endpoint1, endpoint2]);
+        args.test_config.quiet = true;
+        args.test_config.output_json = json_path.to_str().unwrap().to_string();
+
+        let mut buf = Vec::new();
+        run(args, &mut buf, CancellationToken::new()).await.unwrap();
+
+        assert!(buf.is_empty(), "expected no output on quiet mode");
+    }
+
+    #[tokio::test]
+    async fn mev_unsupported_test() {
+        let mut args = default_mev_args(vec![refused_addr()]);
+        args.test_config.test_cases = Some(vec!["notSupportedTest".to_string()]);
+
+        let mut buf = Vec::new();
+        let err = run(args, &mut buf, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("test case not supported"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mev_custom_test_cases() {
+        let endpoint1 = refused_addr();
+        let endpoint2 = refused_addr();
+        let mut args = default_mev_args(vec![endpoint1.clone(), endpoint2.clone()]);
+        args.test_config.test_cases = Some(vec!["Ping".to_string()]);
+
+        let mut buf = Vec::new();
+        let res = run(args, &mut buf, CancellationToken::new()).await.unwrap();
+
+        for endpoint in [&endpoint1, &endpoint2] {
+            let target_results = res.targets.get(endpoint).expect("missing target");
+            assert_eq!(target_results.len(), 1);
+            assert_eq!(target_results[0].name, "Ping");
+            assert_eq!(target_results[0].verdict, TestVerdict::Fail);
+        }
+    }
+
+    #[tokio::test]
+    async fn mev_write_to_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("mev-test-output.json");
+
+        let endpoint1 = refused_addr();
+        let endpoint2 = refused_addr();
+        let mut args = default_mev_args(vec![endpoint1, endpoint2]);
+        args.test_config.output_json = file_path.to_str().unwrap().to_string();
+
+        let mut buf = Vec::new();
+        let res = run(args, &mut buf, CancellationToken::new()).await.unwrap();
+
+        assert!(file_path.exists(), "output file should exist");
+
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        let written: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert!(
+            written.get("mev").is_some(),
+            "expected mev key in output JSON"
+        );
+
+        assert_eq!(res.category_name, Some(TestCategory::Mev));
+        assert!(res.score.is_some());
+    }
 
     #[test]
     fn format_mev_relay_name_works() {

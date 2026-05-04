@@ -554,13 +554,6 @@ pub async fn run(
     writer: &mut dyn Write,
     ct: CancellationToken,
 ) -> Result<TestCategoryResult> {
-    pluto_tracing::init(
-        &pluto_tracing::TracingConfig::builder()
-            .with_default_console()
-            .build(),
-    )
-    .expect("Failed to initialize tracing");
-
     must_output_to_file_on_quiet(args.test_config.quiet, &args.test_config.output_json)?;
 
     tracing::info!("Starting hardware performance and network connectivity test");

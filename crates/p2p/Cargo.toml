@@ -7,7 +7,6 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-axum.workspace = true
 chrono.workspace = true
 either.workspace = true
 futures.workspace = true
@@ -24,7 +23,6 @@ rand.workspace = true
 tempfile.workspace = true
 pluto-tracing.workspace = true
 tracing.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 pluto-core.workspace = true
 backon.workspace = true
