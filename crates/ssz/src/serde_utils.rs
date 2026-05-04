@@ -28,10 +28,11 @@ pub fn encode_0x_hex(bytes: &[u8]) -> String {
     format!("0x{}", hex::encode(bytes))
 }
 
-/// Encodes bytes as lowercase `0x`-prefixed hex, or an empty string for empty input.
+/// Encodes bytes as lowercase `0x`-prefixed hex, or an empty string for empty
+/// input.
 ///
-/// Matches Charon's `to0xHex` convention used throughout cluster/definition JSON:
-/// empty byte slices serialise as `""` rather than `"0x"`.
+/// Matches Charon's `to0xHex` convention used throughout cluster/definition
+/// JSON: empty byte slices serialise as `""` rather than `"0x"`.
 pub fn encode_hex_or_empty(bytes: &[u8]) -> String {
     if bytes.is_empty() {
         return String::new();
@@ -44,14 +45,15 @@ pub fn decode_0x_hex<E: DeError>(s: &str) -> Result<Vec<u8>, E> {
     hex::decode(trim_0x_prefix(s)).map_err(E::custom)
 }
 
-/// Serde adapter for byte-like values encoded as `0x`-prefixed lowercase hex strings.
+/// Serde adapter for byte-like values encoded as `0x`-prefixed lowercase hex
+/// strings.
 ///
 /// Serialises empty input as `"0x"`, matching the go-eth2-client convention for
-/// execution-payload fields. Use [`HexBytes`] for cluster/definition fields that
-/// follow Charon's `to0xHex` convention (empty → `""`).
+/// execution-payload fields. Use [`HexBytes`] for cluster/definition fields
+/// that follow Charon's `to0xHex` convention (empty → `""`).
 ///
-/// Deserialization accepts both prefixed (`0x...`) and unprefixed (`...`) values,
-/// as well as `""` for empty.
+/// Deserialization accepts both prefixed (`0x...`) and unprefixed (`...`)
+/// values, as well as `""` for empty.
 pub struct Hex0x;
 
 impl<T> SerializeAs<T> for Hex0x
@@ -85,11 +87,13 @@ where
     }
 }
 
-/// Serde adapter for cluster/definition byte fields following Charon's `to0xHex` convention.
+/// Serde adapter for cluster/definition byte fields following Charon's
+/// `to0xHex` convention.
 ///
-/// Serialises empty input as `""` and non-empty input as `"0x{hex}"`. This matches
-/// the Charon JSON format for unsigned operator signatures and similar optional fields.
-/// Use [`Hex0x`] for eth2 execution-payload fields that expect `"0x"` for empty.
+/// Serialises empty input as `""` and non-empty input as `"0x{hex}"`. This
+/// matches the Charon JSON format for unsigned operator signatures and similar
+/// optional fields. Use [`Hex0x`] for eth2 execution-payload fields that expect
+/// `"0x"` for empty.
 ///
 /// Deserialization accepts both `""` and `"0x"` for empty bytes.
 pub struct HexBytes;

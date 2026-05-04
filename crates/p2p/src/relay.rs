@@ -37,9 +37,11 @@ use tokio::time::{Instant, Interval, Sleep, sleep_until};
 const RELAY_ROUTER_INTERVAL: Duration = Duration::from_secs(60);
 const RELAY_ROUTER_INITIAL_DELAY: Duration = Duration::from_secs(10);
 const RELAY_READY_DELAY: Duration = Duration::from_secs(2);
-/// Initial backoff delay before the first reconnect attempt. Matches Charon's `DefaultConfig.BaseDelay`.
+/// Initial backoff delay before the first reconnect attempt. Matches Charon's
+/// `DefaultConfig.BaseDelay`.
 const RELAY_BACKOFF_BASE: Duration = Duration::from_secs(1);
-/// Maximum backoff delay between reconnect attempts. Matches Charon's `DefaultConfig.MaxDelay`.
+/// Maximum backoff delay between reconnect attempts. Matches Charon's
+/// `DefaultConfig.MaxDelay`.
 const RELAY_BACKOFF_MAX: Duration = Duration::from_secs(120);
 
 /// Mutable relay reservation behaviour.
@@ -63,7 +65,8 @@ pub struct MutableRelayReservation {
     relay_peers: HashMap<PeerId, Peer>,
     /// Relay peers with an established connection, used to skip redundant dials
     connected_relays: HashSet<PeerId>,
-    /// Scheduled re-dial attempts: (retry_at, peer). Sorted lazily; min is found on use.
+    /// Scheduled re-dial attempts: (retry_at, peer). Sorted lazily; min is
+    /// found on use.
     retry_queue: Vec<(Instant, Peer)>,
     /// Per-relay retry count, used to compute exponential backoff delay.
     retry_counts: HashMap<PeerId, u32>,
@@ -353,41 +356,41 @@ impl NetworkBehaviour for MutableRelayReservation {
             .is_some_and(|sleep| sleep.as_mut().poll(cx).is_ready());
         if retry_due {
             self.next_retry = None;
-                let now = Instant::now();
-                let mut remaining = Vec::new();
-                let mut due = Vec::new();
-                for item in self.retry_queue.drain(..) {
-                    if item.0 <= now {
-                        due.push(item);
-                    } else {
-                        remaining.push(item);
-                    }
+            let now = Instant::now();
+            let mut remaining = Vec::new();
+            let mut due = Vec::new();
+            for item in self.retry_queue.drain(..) {
+                if item.0 <= now {
+                    due.push(item);
+                } else {
+                    remaining.push(item);
                 }
-                self.retry_queue = remaining;
+            }
+            self.retry_queue = remaining;
 
-                for (_, peer) in due {
-                    Self::queue_relay_dial(
-                        &mut self.events,
-                        &mut self.pending_relays,
-                        &mut self.pending_circuit_addrs,
-                        &mut self.relay_peers,
-                        &self.connected_relays,
-                        &peer,
-                    );
-                }
+            for (_, peer) in due {
+                Self::queue_relay_dial(
+                    &mut self.events,
+                    &mut self.pending_relays,
+                    &mut self.pending_circuit_addrs,
+                    &mut self.relay_peers,
+                    &self.connected_relays,
+                    &peer,
+                );
+            }
 
-                // Arm the sleep for the next pending retry, if any.
-                if let Some(earliest) = self
-                    .retry_queue
-                    .iter()
-                    .min_by_key(|(t, _)| t)
-                    .map(|(t, _)| *t)
-                {
-                    let mut sleep = Box::pin(sleep_until(earliest));
-                    // Poll once to register the waker before returning Pending.
-                    let _ = sleep.as_mut().poll(cx);
-                    self.next_retry = Some(sleep);
-                }
+            // Arm the sleep for the next pending retry, if any.
+            if let Some(earliest) = self
+                .retry_queue
+                .iter()
+                .min_by_key(|(t, _)| t)
+                .map(|(t, _)| *t)
+            {
+                let mut sleep = Box::pin(sleep_until(earliest));
+                // Poll once to register the waker before returning Pending.
+                let _ = sleep.as_mut().poll(cx);
+                self.next_retry = Some(sleep);
+            }
         }
 
         if let Some(event) = self.events.pop_front() {
