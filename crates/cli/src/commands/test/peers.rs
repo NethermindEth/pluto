@@ -127,7 +127,7 @@ pub struct TestPeersArgs {
     pub direct_connection_timeout: Duration,
 
     /// TCP addresses for libp2p (host:port).
-    #[arg(long = "p2p-tcp-addrs", value_delimiter = ',')]
+    #[arg(long = "p2p-tcp-address", value_delimiter = ',')]
     pub p2p_tcp_addrs: Vec<String>,
 
     /// Relay server URLs.
@@ -218,7 +218,9 @@ pub async fn run(
     // Build ENR hash (sorted all-ENRs including self) for relay routing.
     let self_enr = Record::from_key(&private_key)?;
     let mut all_enrs = enr_strings.clone();
-    all_enrs.push(self_enr.to_string());
+    if !all_enrs.contains(&self_enr.to_string()) {
+        all_enrs.push(self_enr.to_string());
+    }
     all_enrs.sort();
     let enr_hash = hex::encode(Sha256::digest(all_enrs.join(",").as_bytes()));
 
@@ -247,7 +249,7 @@ pub async fn run(
         p2p_cfg,
         private_key,
         NodeType::TCP,
-        false,
+        true,
         p2p_context,
         |builder, _keypair, relay_client| {
             builder.with_gater(gater).with_inner(TestBehaviour {
@@ -269,7 +271,7 @@ pub async fn run(
 
     let self_cancel = cancel.clone();
     let only_self_tests = peer_tests.is_empty();
-    let (peer_results, self_results) = tokio::join!(
+    let ((peer_results, mut node), self_results) = tokio::join!(
         run_peer_event_loop(
             node,
             &cluster_peers,
@@ -328,9 +330,17 @@ pub async fn run(
     }
 
     tracing::info!("Keeping TCP node alive until keep-alive time is reached...");
-    tokio::select! {
-        _ = tokio::time::sleep(args.keep_alive) => {}
-        _ = ct.cancelled() => {}
+    let keep_alive_deadline = tokio::time::Instant::now() + args.keep_alive;
+    loop {
+        let remaining = keep_alive_deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        tokio::select! {
+            _ = node.select_next_some() => {}
+            _ = tokio::time::sleep(remaining) => { break; }
+            _ = ct.cancelled() => { break; }
+        }
     }
 
     Ok(res)
@@ -480,7 +490,7 @@ async fn libp2p_tcp_port_open_test(addrs: &[String]) -> TestResult {
     let result = TestResult::new("Libp2pTCPPortOpen");
 
     if addrs.is_empty() {
-        return result.fail(CliError::Other("no --p2p-tcp-addrs configured".to_string()));
+        return result.fail(CliError::Other("no --p2p-tcp-address configured".to_string()));
     }
 
     // rust-libp2p multistream-select V1: the listener waits for the dialer to send
@@ -586,7 +596,7 @@ async fn run_peer_event_loop(
     enr_strings: &[String],
     args: &TestPeersArgs,
     ct: CancellationToken,
-) -> HashMap<String, Vec<TestResult>> {
+) -> (HashMap<String, Vec<TestResult>>, Node<TestBehaviour>) {
     let target_peers: Vec<(&Peer, &str)> = cluster_peers
         .iter()
         .zip(enr_strings.iter().map(String::as_str))
@@ -594,7 +604,7 @@ async fn run_peer_event_loop(
         .collect();
 
     if queued_tests.is_empty() && target_peers.is_empty() {
-        return HashMap::new();
+        return (HashMap::new(), node);
     }
 
     let mut states: HashMap<PeerId, PeerState> = target_peers
@@ -683,7 +693,7 @@ async fn run_peer_event_loop(
         let test_results = build_peer_results(state, queued_tests, needs_load, args);
         results.insert(target_name, test_results);
     }
-    results
+    (results, node)
 }
 
 fn dial_peers_via_relay(
