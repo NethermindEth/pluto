@@ -115,7 +115,6 @@ pub fn decode_sync_committee_message(
 }
 
 /// Encodes an `altair::ContributionAndProof` to SSZ binary.
-#[cfg(test)]
 pub fn encode_contribution_and_proof(
     cap: &altair::ContributionAndProof,
 ) -> Result<Vec<u8>, SszCodecError> {
