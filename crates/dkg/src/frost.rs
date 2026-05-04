@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use async_trait::async_trait;
+use libp2p::PeerId;
 use pluto_crypto::{
     tblsconv::{privkey_from_bytes, pubkey_from_bytes},
     types::PublicKey,
@@ -12,10 +13,11 @@ use pluto_frost::{
     kryptology::{self, Round1Bcast, Round1Secret, Round2Bcast, ShamirShare},
     validate_num_of_signers,
 };
+use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use crate::share::Share;
+use crate::{bcast, dkgpb::v1::frost as pb, share::Share};
 
 type Round1Output = (HashMap<MsgKey, Round1Bcast>, HashMap<MsgKey, ShamirShare>);
 
@@ -87,6 +89,9 @@ pub(crate) enum FrostError {
     /// Cancellation was requested while waiting for transport data.
     #[error("frost dkg cancelled")]
     Cancelled,
+    /// A bcast transport operation failed.
+    #[error("bcast transport: {0}")]
+    BcastTransport(String),
 }
 
 struct DkgParticipant {
@@ -414,6 +419,329 @@ fn validate_participant_inputs(
     }
 
     Ok(())
+}
+
+const ROUND1_CAST_MSG_ID: &str = "/charon/dkg/frost/2.0.0/round1/cast";
+const ROUND2_CAST_MSG_ID: &str = "/charon/dkg/frost/2.0.0/round2/cast";
+
+pub(crate) struct FrostP2P {
+    bcast_comp: bcast::Component,
+    frost_p2p: Mutex<crate::frostp2p::FrostP2PHandle>,
+    inbound_p2p_rx: Mutex<mpsc::UnboundedReceiver<(PeerId, pb::FrostRound1P2p)>>,
+    peers_by_share_idx: HashMap<u32, PeerId>,
+    num_peers: usize,
+    round1_cast_rx: Mutex<mpsc::UnboundedReceiver<pb::FrostRound1Casts>>,
+    round1_cast_tx: mpsc::UnboundedSender<pb::FrostRound1Casts>,
+    round2_cast_rx: Mutex<mpsc::UnboundedReceiver<pb::FrostRound2Casts>>,
+    round2_cast_tx: mpsc::UnboundedSender<pb::FrostRound2Casts>,
+}
+
+pub(crate) async fn new_frost_p2p(
+    bcast_comp: bcast::Component,
+    mut frost_p2p: crate::frostp2p::FrostP2PHandle,
+    peers: &[pluto_p2p::peer::Peer],
+    _share_idx: u32,
+) -> Result<FrostP2P, crate::bcast::Error> {
+    let (round1_cast_tx, round1_cast_rx) = mpsc::unbounded_channel();
+    let (round2_cast_tx, round2_cast_rx) = mpsc::unbounded_channel();
+    let num_peers = peers.len();
+    let peers_by_share_idx: HashMap<u32, PeerId> = peers
+        .iter()
+        .map(|p| {
+            (
+                u32::try_from(p.share_idx()).expect("share_idx fits u32"),
+                p.id,
+            )
+        })
+        .collect();
+
+    let r1_tx = round1_cast_tx.clone();
+    bcast_comp
+        .register_message::<pb::FrostRound1Casts>(
+            ROUND1_CAST_MSG_ID,
+            Box::new(|_peer_id, _msg| Ok(())),
+            Box::new(move |_peer_id, _msg_id, msg| {
+                let tx = r1_tx.clone();
+                Box::pin(async move {
+                    tx.send(msg).map_err(|_| bcast::Error::BehaviourClosed)?;
+                    Ok(())
+                })
+            }),
+        )
+        .await?;
+
+    let r2_tx = round2_cast_tx.clone();
+    bcast_comp
+        .register_message::<pb::FrostRound2Casts>(
+            ROUND2_CAST_MSG_ID,
+            Box::new(|_peer_id, _msg| Ok(())),
+            Box::new(move |_peer_id, _msg_id, msg| {
+                let tx = r2_tx.clone();
+                Box::pin(async move {
+                    tx.send(msg).map_err(|_| bcast::Error::BehaviourClosed)?;
+                    Ok(())
+                })
+            }),
+        )
+        .await?;
+
+    let (dummy_tx, dummy_rx) = mpsc::unbounded_channel();
+    let inbound_p2p_rx = std::mem::replace(&mut frost_p2p.inbound_rx, dummy_rx);
+    drop(dummy_tx);
+
+    Ok(FrostP2P {
+        bcast_comp,
+        frost_p2p: Mutex::new(frost_p2p),
+        inbound_p2p_rx: Mutex::new(inbound_p2p_rx),
+        peers_by_share_idx,
+        num_peers,
+        round1_cast_rx: Mutex::new(round1_cast_rx),
+        round1_cast_tx,
+        round2_cast_rx: Mutex::new(round2_cast_rx),
+        round2_cast_tx,
+    })
+}
+
+fn key_to_proto(key: &MsgKey) -> pb::FrostMsgKey {
+    pb::FrostMsgKey {
+        val_idx: key.val_idx,
+        source_id: key.source_id,
+        target_id: key.target_id,
+    }
+}
+
+fn key_from_proto(key: Option<pb::FrostMsgKey>) -> Result<MsgKey, FrostError> {
+    let k = key.ok_or_else(|| FrostError::BcastTransport("missing frost msg key".into()))?;
+    Ok(MsgKey {
+        val_idx: k.val_idx,
+        source_id: k.source_id,
+        target_id: k.target_id,
+    })
+}
+
+fn round1_cast_to_proto(key: &MsgKey, cast: &Round1Bcast) -> pb::FrostRound1Cast {
+    pb::FrostRound1Cast {
+        key: Some(key_to_proto(key)),
+        wi: cast.wi.to_vec().into(),
+        ci: cast.ci.to_vec().into(),
+        commitments: cast.commitments.iter().map(|c| c.to_vec().into()).collect(),
+    }
+}
+
+fn round1_cast_from_proto(cast: pb::FrostRound1Cast) -> Result<(MsgKey, Round1Bcast), FrostError> {
+    let key = key_from_proto(cast.key)?;
+    let wi: [u8; 32] = cast
+        .wi
+        .as_ref()
+        .try_into()
+        .map_err(|_| FrostError::BcastTransport("invalid wi length".into()))?;
+    let ci: [u8; 32] = cast
+        .ci
+        .as_ref()
+        .try_into()
+        .map_err(|_| FrostError::BcastTransport("invalid ci length".into()))?;
+    let commitments = cast
+        .commitments
+        .iter()
+        .map(|c| {
+            c.as_ref()
+                .try_into()
+                .map_err(|_| FrostError::BcastTransport("invalid commitment length".into()))
+        })
+        .collect::<Result<Vec<[u8; 48]>, FrostError>>()?;
+    Ok((
+        key,
+        Round1Bcast {
+            wi,
+            ci,
+            commitments,
+        },
+    ))
+}
+
+fn shamir_share_to_proto(key: &MsgKey, share: &ShamirShare) -> pb::FrostRound1ShamirShare {
+    pb::FrostRound1ShamirShare {
+        key: Some(key_to_proto(key)),
+        id: share.id,
+        value: share.value.to_vec().into(),
+    }
+}
+
+fn shamir_share_from_proto(
+    share: pb::FrostRound1ShamirShare,
+) -> Result<(MsgKey, ShamirShare), FrostError> {
+    let key = key_from_proto(share.key)?;
+    let value: [u8; 32] = share
+        .value
+        .as_ref()
+        .try_into()
+        .map_err(|_| FrostError::BcastTransport("invalid shamir share value length".into()))?;
+    Ok((
+        key,
+        ShamirShare {
+            id: share.id,
+            value,
+        },
+    ))
+}
+
+fn round2_cast_to_proto(key: &MsgKey, cast: &Round2Bcast) -> pb::FrostRound2Cast {
+    pb::FrostRound2Cast {
+        key: Some(key_to_proto(key)),
+        verification_key: cast.verification_key.to_vec().into(),
+        vk_share: cast.vk_share.to_vec().into(),
+    }
+}
+
+fn round2_cast_from_proto(cast: pb::FrostRound2Cast) -> Result<(MsgKey, Round2Bcast), FrostError> {
+    let key = key_from_proto(cast.key)?;
+    let verification_key: [u8; 48] = cast
+        .verification_key
+        .as_ref()
+        .try_into()
+        .map_err(|_| FrostError::BcastTransport("invalid verification key length".into()))?;
+    let vk_share: [u8; 48] = cast
+        .vk_share
+        .as_ref()
+        .try_into()
+        .map_err(|_| FrostError::BcastTransport("invalid vk_share length".into()))?;
+    Ok((
+        key,
+        Round2Bcast {
+            verification_key,
+            vk_share,
+        },
+    ))
+}
+
+#[async_trait]
+impl FTransport for FrostP2P {
+    async fn round1(
+        &self,
+        cancellation: &CancellationToken,
+        bcast: HashMap<MsgKey, Round1Bcast>,
+        shares: HashMap<MsgKey, ShamirShare>,
+    ) -> Result<Round1Output, FrostError> {
+        let casts_proto = pb::FrostRound1Casts {
+            casts: bcast
+                .iter()
+                .map(|(k, v)| round1_cast_to_proto(k, v))
+                .collect(),
+        };
+        self.bcast_comp
+            .broadcast(ROUND1_CAST_MSG_ID, &casts_proto)
+            .await
+            .map_err(|e| FrostError::BcastTransport(e.to_string()))?;
+        self.round1_cast_tx
+            .send(casts_proto)
+            .map_err(|_| FrostError::BcastTransport("round1 cast self-delivery failed".into()))?;
+
+        let mut p2p_msgs: HashMap<PeerId, pb::FrostRound1P2p> = HashMap::new();
+        for (key, share) in &shares {
+            let peer_id = *self.peers_by_share_idx.get(&key.target_id).ok_or_else(|| {
+                FrostError::BcastTransport(format!("unknown target share idx {}", key.target_id))
+            })?;
+            p2p_msgs
+                .entry(peer_id)
+                .or_default()
+                .shares
+                .push(shamir_share_to_proto(key, share));
+        }
+        {
+            let handle = self.frost_p2p.lock().await;
+            for (peer_id, msg) in &p2p_msgs {
+                handle.send(*peer_id, msg);
+            }
+        }
+
+        let mut cast_rx = self.round1_cast_rx.lock().await;
+        let mut p2p_rx = self.inbound_p2p_rx.lock().await;
+        let mut received_casts: Vec<pb::FrostRound1Casts> = Vec::with_capacity(self.num_peers);
+        let mut received_p2p: Vec<pb::FrostRound1P2p> =
+            Vec::with_capacity(self.num_peers.saturating_sub(1));
+
+        loop {
+            let need_casts = received_casts.len() < self.num_peers;
+            let need_p2p = self.num_peers > 1 && received_p2p.len() < self.num_peers - 1;
+            if !need_casts && !need_p2p {
+                break;
+            }
+            tokio::select! {
+                _ = cancellation.cancelled() => return Err(FrostError::Cancelled),
+                msg = cast_rx.recv(), if need_casts => {
+                    let msg = msg.ok_or_else(|| FrostError::BcastTransport("round1 cast channel closed".into()))?;
+                    received_casts.push(msg);
+                }
+                msg = p2p_rx.recv(), if need_p2p => {
+                    let (_, msg) = msg.ok_or_else(|| FrostError::BcastTransport("p2p channel closed".into()))?;
+                    received_p2p.push(msg);
+                }
+            }
+        }
+
+        let mut cast_result = HashMap::new();
+        let mut p2p_result = HashMap::new();
+        for casts_msg in received_casts {
+            for cast in casts_msg.casts {
+                let (key, cast_data) = round1_cast_from_proto(cast)?;
+                cast_result.insert(key, cast_data);
+            }
+        }
+        for p2p_msg in received_p2p {
+            for share in p2p_msg.shares {
+                let (key, share_data) = shamir_share_from_proto(share)?;
+                p2p_result.insert(key, share_data);
+            }
+        }
+
+        Ok((cast_result, p2p_result))
+    }
+
+    async fn round2(
+        &self,
+        cancellation: &CancellationToken,
+        bcast: HashMap<MsgKey, Round2Bcast>,
+    ) -> Result<HashMap<MsgKey, Round2Bcast>, FrostError> {
+        let casts_proto = pb::FrostRound2Casts {
+            casts: bcast
+                .iter()
+                .map(|(k, v)| round2_cast_to_proto(k, v))
+                .collect(),
+        };
+        self.bcast_comp
+            .broadcast(ROUND2_CAST_MSG_ID, &casts_proto)
+            .await
+            .map_err(|e| FrostError::BcastTransport(e.to_string()))?;
+        self.round2_cast_tx
+            .send(casts_proto)
+            .map_err(|_| FrostError::BcastTransport("round2 cast self-delivery failed".into()))?;
+
+        let mut cast_rx = self.round2_cast_rx.lock().await;
+        let mut received_casts: Vec<pb::FrostRound2Casts> = Vec::with_capacity(self.num_peers);
+
+        loop {
+            if received_casts.len() == self.num_peers {
+                break;
+            }
+            tokio::select! {
+                _ = cancellation.cancelled() => return Err(FrostError::Cancelled),
+                msg = cast_rx.recv() => {
+                    let msg = msg.ok_or_else(|| FrostError::BcastTransport("round2 cast channel closed".into()))?;
+                    received_casts.push(msg);
+                }
+            }
+        }
+
+        let mut cast_result = HashMap::new();
+        for casts_msg in received_casts {
+            for cast in casts_msg.casts {
+                let (key, cast_data) = round2_cast_from_proto(cast)?;
+                cast_result.insert(key, cast_data);
+            }
+        }
+
+        Ok(cast_result)
+    }
 }
 
 fn dkg_context_byte(dkg_ctx: &str) -> u8 {

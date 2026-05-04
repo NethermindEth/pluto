@@ -214,6 +214,7 @@ fn resolve_deposit_amounts(definition: &pluto_cluster::definition::Definition) -
 
 /// Errors that can arise in the DKG backend (beyond preflight).
 #[derive(Debug, thiserror::Error)]
+#[allow(private_interfaces)]
 pub enum BackendError {
     /// P2P node setup failed.
     #[error("node setup failed: {0}")]
@@ -248,6 +249,9 @@ pub enum BackendError {
     /// DKG was cancelled externally.
     #[error("DKG cancelled")]
     Cancelled,
+    /// Bcast setup (registering frost handlers) failed.
+    #[error("bcast setup failed: {0}")]
+    BcastSetup(#[from] crate::bcast::Error),
 }
 
 impl From<BackendError> for DkgError {
@@ -325,7 +329,7 @@ async fn run_ceremony(
     let share_idx = u32::try_from(node_idx.share_idx).map_err(|_| {
         BackendError::Definition(pluto_cluster::definition::DefinitionError::FailedToConvertLength)
     })?;
-    let mut frost_tp = crate::frost::new_frost_p2p(
+    let frost_tp = crate::frost::new_frost_p2p(
         handles.bcast_comp.clone(),
         handles.frost_p2p,
         &peers,
@@ -352,7 +356,7 @@ async fn run_ceremony(
     let dkg_ctx = format!("0x{}", hex::encode(&definition.definition_hash));
     let shares = crate::frost::run_frost_parallel(
         ct.clone(),
-        &mut frost_tp,
+        &frost_tp,
         num_validators,
         num_nodes,
         threshold,
