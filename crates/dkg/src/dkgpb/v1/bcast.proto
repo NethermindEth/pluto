@@ -4,6 +4,8 @@ package dkg.dkgpb.v1;
 
 import "google/protobuf/any.proto";
 
+option go_package = "github.com/obolnetwork/charon/dkg/dkgpb/v1";
+
 message BCastSigRequest {
   reserved 2;
   string id   = 1;

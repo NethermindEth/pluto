@@ -4,6 +4,8 @@ package dkg.dkgpb.v1;
 
 import "google/protobuf/timestamp.proto";
 
+option go_package = "github.com/obolnetwork/charon/dkg/dkgpb/v1";
+
 message MsgSync {
  google.protobuf.Timestamp timestamp = 1;
  bytes hash_signature = 2;
