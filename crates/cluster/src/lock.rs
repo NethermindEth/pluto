@@ -4,7 +4,7 @@ use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, tblsconv};
 use pluto_eth1wrap::EthClient;
 use pluto_eth2api::spec::phase0::{VERSION_LEN, Version};
 use pluto_eth2util::registration;
-use pluto_ssz::{Hasher, serde_utils::Hex0x};
+use pluto_ssz::{Hasher, serde_utils::HexBytes};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
@@ -486,14 +486,14 @@ pub struct LockV1x2to5 {
     pub distributed_validators: Vec<DistValidatorV1x2to5>,
 
     /// LockHash uniquely identifies a cluster lock.
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     pub lock_hash: Vec<u8>,
 
     /// BLS aggregate signature of the lock hash
     /// signed by all the private key shares of all the distributed
     /// validators. It acts as an attestation by all the distributed
     /// validators of the charon cluster they are part of.
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     pub signature_aggregate: Vec<u8>,
 }
 
@@ -541,14 +541,14 @@ pub struct LockV1x6 {
     pub distributed_validators: Vec<DistValidatorV1x6>,
 
     /// Lock hash uniquely identifies a cluster lock.
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     pub lock_hash: Vec<u8>,
 
     /// BLS aggregate signature of the lock hash
     /// signed by all the private key shares of all the distributed
     /// validators. It acts as an attestation by all the distributed
     /// validators of the charon cluster they are part of.
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     pub signature_aggregate: Vec<u8>,
 }
 
@@ -596,19 +596,19 @@ pub struct LockV1x7 {
     pub distributed_validators: Vec<DistValidatorV1x7>,
 
     /// Lock hash uniquely identifies a cluster lock.
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     pub lock_hash: Vec<u8>,
 
     /// BLS aggregate signature of the lock hash
     /// signed by all the private key shares of all the distributed
     /// validators. It acts as an attestation by all the distributed
     /// validators of the charon cluster they are part of.
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     pub signature_aggregate: Vec<u8>,
 
     /// Signatures of the lock hash for each operator
     /// defined in the Definition.
-    #[serde_as(as = "Vec<Hex0x>")]
+    #[serde_as(as = "Vec<HexBytes>")]
     pub node_signatures: Vec<Vec<u8>>,
 }
 
@@ -657,19 +657,19 @@ pub struct LockV1x8orLater {
     pub distributed_validators: Vec<DistValidatorV1x8orLater>,
 
     /// Lock hash uniquely identifies a cluster lock.
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     pub lock_hash: Vec<u8>,
 
     /// BLS aggregate signature of the lock hash
     /// signed by all the private key shares of all the distributed
     /// validators. It acts as an attestation by all the distributed
     /// validators of the charon cluster they are part of.
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     pub signature_aggregate: Vec<u8>,
 
     /// Signatures of the lock hash for each operator
     /// defined in the Definition.
-    #[serde_as(as = "Vec<Hex0x>")]
+    #[serde_as(as = "Vec<HexBytes>")]
     pub node_signatures: Vec<Vec<u8>>,
 }
 

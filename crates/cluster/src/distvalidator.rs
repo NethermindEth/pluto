@@ -7,7 +7,7 @@ use pluto_eth2api::{
     v1,
     versioned::VersionedSignedValidatorRegistration,
 };
-use pluto_ssz::serde_utils::Hex0x;
+use pluto_ssz::serde_utils::HexBytes;
 use serde::{Deserialize, Serialize};
 
 use crate::{definition::ADDRESS_LEN, deposit::DepositData, registration::BuilderRegistration};
@@ -22,14 +22,14 @@ use serde_with::{
 pub struct DistValidator {
     /// Distributed validator group public key.
     #[serde(rename = "distributed_public_key")]
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     pub pub_key: Vec<u8>,
 
     /// Public shares are the public keys corresponding to each node's secret
     /// key share. It can be used to verify a partial signature created by
     /// any node in the cluster.
     #[serde(rename = "public_shares")]
-    #[serde_as(as = "Vec<Hex0x>")]
+    #[serde_as(as = "Vec<HexBytes>")]
     pub pub_shares: Vec<Vec<u8>>,
 
     /// Partial deposit data is the list of partial deposit data.
@@ -139,7 +139,7 @@ impl DistValidator {
 pub struct DistValidatorV1x0or1 {
     /// Distributed validator group public key.
     #[serde(rename = "distributed_public_key")]
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     pub pub_key: Vec<u8>,
 
     /// Public shares are the public keys corresponding to each node's secret
@@ -151,7 +151,7 @@ pub struct DistValidatorV1x0or1 {
 
     /// Fee recipient address for the validator.
     #[serde(default)]
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     pub fee_recipient_address: Vec<u8>,
 }
 
@@ -182,19 +182,19 @@ impl From<DistValidatorV1x0or1> for DistValidator {
 pub struct DistValidatorV1x2to5 {
     /// Distributed validator group public key.
     #[serde(rename = "distributed_public_key")]
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     pub pub_key: Vec<u8>,
 
     /// Public shares are the public keys corresponding to each node's secret
     /// key share. It can be used to verify a partial signature created by
     /// any node in the cluster.
     #[serde(rename = "public_shares")]
-    #[serde_as(as = "Vec<Hex0x>")]
+    #[serde_as(as = "Vec<HexBytes>")]
     pub pub_shares: Vec<Vec<u8>>,
 
     /// Fee recipient address for the validator.
     #[serde(default)]
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     pub fee_recipient_address: Vec<u8>,
 }
 
@@ -225,14 +225,14 @@ impl From<DistValidatorV1x2to5> for DistValidator {
 pub struct DistValidatorV1x6 {
     /// Distributed validator group public key.
     #[serde(rename = "distributed_public_key")]
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     pub pub_key: Vec<u8>,
 
     /// Public shares are the public keys corresponding to each node's secret
     /// key share. It can be used to verify a partial signature created by
     /// any node in the cluster.
     #[serde(rename = "public_shares")]
-    #[serde_as(as = "Vec<Hex0x>")]
+    #[serde_as(as = "Vec<HexBytes>")]
     pub pub_shares: Vec<Vec<u8>>,
 
     /// Deposit data defines the deposit data to activate a validator.
@@ -271,14 +271,14 @@ impl From<DistValidatorV1x6> for DistValidator {
 pub struct DistValidatorV1x7 {
     /// Distributed validator group public key.
     #[serde(rename = "distributed_public_key")]
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     pub pub_key: Vec<u8>,
 
     /// Public shares are the public keys corresponding to each node's secret
     /// key share. It can be used to verify a partial signature created by
     /// any node in the cluster.
     #[serde(rename = "public_shares")]
-    #[serde_as(as = "Vec<Hex0x>")]
+    #[serde_as(as = "Vec<HexBytes>")]
     pub pub_shares: Vec<Vec<u8>>,
 
     /// Deposit data defines the deposit data to activate a validator.
@@ -321,14 +321,14 @@ impl From<DistValidatorV1x7> for DistValidator {
 pub struct DistValidatorV1x8orLater {
     /// Distributed validator group public key.
     #[serde(rename = "distributed_public_key")]
-    #[serde_as(as = "Hex0x")]
+    #[serde_as(as = "HexBytes")]
     pub pub_key: Vec<u8>,
 
     /// Public shares are the public keys corresponding to each node's secret
     /// key share. It can be used to verify a partial signature created by
     /// any node in the cluster.
     #[serde(rename = "public_shares")]
-    #[serde_as(as = "Vec<Hex0x>")]
+    #[serde_as(as = "Vec<HexBytes>")]
     pub pub_shares: Vec<Vec<u8>>,
 
     /// Deposit data defines the deposit data to activate a validator.
