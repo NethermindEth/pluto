@@ -1,19 +1,35 @@
-use std::{path, time::Duration};
+use std::{num::TryFromIntError, path, time::Duration};
 
 use bon::Builder;
 use libp2p::PeerId;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+use crate::disk;
 pub use crate::{
     aggregate::{AggregateError, agg_deposit_data, agg_lock_hash_sig, agg_validator_registrations},
     publish::{PublishError, write_lock_to_api},
+    share::Share,
     signing::{SigningError, sign_deposit_msgs, sign_lock_hash, sign_validator_registrations},
     validators::{
         ValidatorsError, builder_registration_from_eth2, create_dist_validators,
         set_registration_signature,
     },
 };
+use pluto_cluster::{
+    definition::{Definition, ValidatorAddresses},
+    distvalidator::DistValidatorError,
+    lock::Lock,
+    operator::Operator,
+};
+use pluto_crypto::types::PrivateKey;
+use pluto_eth1wrap::{EthClient, EthClientError};
+use pluto_eth2api::spec::phase0;
+use pluto_eth2util::keymanager::{self, KeymanagerError};
+use pluto_p2p::{config::P2PConfig, peer::Peer};
+use pluto_tracing::TracingConfig;
+use std::collections::HashMap;
+use url::Url;
 
 const DEFAULT_DATA_DIR: &str = ".charon";
 const DEFAULT_DEFINITION_FILE: &str = ".charon/cluster-definition.json";
@@ -52,7 +68,7 @@ pub enum DkgError {
 
     /// Failed to build the ETH1 client.
     #[error("ETH1 client setup failed: {0}")]
-    Eth1Client(#[from] pluto_eth1wrap::EthClientError),
+    Eth1Client(#[from] EthClientError),
 
     /// Disk or definition preflight failed.
     #[error("DKG preflight failed: {0}")]
@@ -60,11 +76,11 @@ pub enum DkgError {
 
     /// Failed to verify keymanager connectivity.
     #[error("verify keymanager address: {0}")]
-    Keymanager(#[from] pluto_eth2util::keymanager::KeymanagerError),
+    Keymanager(#[from] KeymanagerError),
 
     /// Failed to decode distributed validator data from the existing lock.
     #[error("existing shares lock decode failed: {0}")]
-    DistValidator(#[from] pluto_cluster::distvalidator::DistValidatorError),
+    DistValidator(#[from] DistValidatorError),
 
     /// There are more secret shares than distributed validators in the lock.
     #[error(
@@ -76,6 +92,26 @@ pub enum DkgError {
         /// Number of distributed validators present in the lock.
         validators: usize,
     },
+
+    /// `AppendConfig::validator_addresses` length does not match
+    /// `AppendConfig::add_validators`.
+    #[error(
+        "append config invalid: got {validator_addresses} validator addresses for {add_validators} new validators"
+    )]
+    AppendConfigAddressCountMismatch {
+        /// Number of validator addresses provided.
+        validator_addresses: usize,
+        /// Number of validators to add.
+        add_validators: usize,
+    },
+
+    /// Failed to convert share index to u64.
+    #[error("failed to convert share index to u64: {0}")]
+    ShareIndexConversion(#[from] TryFromIntError),
+
+    /// Integer overflow.
+    #[error("integer overflow")]
+    IntegerOverflow,
 }
 
 /// Keymanager configuration accepted by the entrypoint.
@@ -124,7 +160,7 @@ pub struct Config {
 
     /// P2P entrypoint configuration.
     #[builder(default = default_p2p_config())]
-    pub p2p: pluto_p2p::config::P2PConfig,
+    pub p2p: P2PConfig,
 
     /// Shared tracing configuration for the DKG entrypoint.
     #[builder(default = default_tracing_config())]
@@ -172,18 +208,52 @@ impl Config {
 #[derive(Debug, Clone, Default, Builder)]
 pub struct TestConfig {
     /// Provides the cluster definition explicitly, skips loading from disk.
-    pub def: Option<pluto_cluster::definition::Definition>,
+    pub def: Option<Definition>,
 }
 
-fn default_p2p_config() -> pluto_p2p::config::P2PConfig {
-    pluto_p2p::config::P2PConfig {
+/// Configuration used to merge the outcome of two DKG ceremonies.
+#[derive(Debug, Clone)]
+pub struct AppendConfig {
+    /// Cluster lock of the existing cluster.
+    pub cluster_lock: Lock,
+    /// Private key shares of the existing cluster.
+    pub secret_shares: Vec<PrivateKey>,
+    /// Number of validators to add to the existing cluster.
+    pub add_validators: usize,
+    /// Set when the source validator keys are not available; signs nothing and
+    /// preserves existing creator/operator signatures.
+    pub unverified: bool,
+    /// Validator addresses for the newly added validators. The caller is
+    /// responsible for ensuring the length matches
+    /// [`AppendConfig::add_validators`]; use [`AppendConfig::validate`].
+    pub validator_addresses: Vec<ValidatorAddresses>,
+    /// Deposit data from the existing cluster, indexed by deposit-amount slot.
+    pub deposit_data: Vec<Vec<phase0::DepositData>>,
+}
+
+impl AppendConfig {
+    /// Checks invariants that the public fields cannot enforce on construction.
+    pub fn validate(&self) -> Result<(), DkgError> {
+        if self.validator_addresses.len() != self.add_validators {
+            return Err(DkgError::AppendConfigAddressCountMismatch {
+                validator_addresses: self.validator_addresses.len(),
+                add_validators: self.add_validators,
+            });
+        }
+
+        Ok(())
+    }
+}
+
+fn default_p2p_config() -> P2PConfig {
+    P2PConfig {
         relays: pluto_p2p::config::default_relay_multiaddrs(),
         ..Default::default()
     }
 }
 
-fn default_tracing_config() -> pluto_tracing::TracingConfig {
-    pluto_tracing::TracingConfig::builder()
+fn default_tracing_config() -> TracingConfig {
+    TracingConfig::builder()
         .with_default_console()
         .override_env_filter("info")
         .build()
@@ -195,17 +265,17 @@ pub async fn run(conf: Config, shutdown: CancellationToken) -> Result<(), DkgErr
         return Err(DkgError::ShutdownRequestedBeforeStartup);
     }
 
-    let eth1 = pluto_eth1wrap::EthClient::new(&conf.execution_engine_addr).await?;
+    let eth1 = EthClient::new(&conf.execution_engine_addr).await?;
 
-    let _definition = crate::disk::load_definition(&conf, &eth1).await?;
+    let _definition = disk::load_definition(&conf, &eth1).await?;
 
     validate_keymanager_flags(&conf)?;
     verify_keymanager_connection(&conf).await?;
 
     if !conf.has_test_config() {
-        crate::disk::check_clear_data_dir(&conf.data_dir).await?;
+        disk::check_clear_data_dir(&conf.data_dir).await?;
     }
-    crate::disk::check_writes(&conf.data_dir).await?;
+    disk::check_writes(&conf.data_dir).await?;
 
     unimplemented!("DKG ceremony backend is not implemented yet");
 }
@@ -226,7 +296,7 @@ fn validate_keymanager_flags(conf: &Config) -> Result<(), DkgError> {
         return Ok(());
     }
 
-    let parsed = url::Url::parse(addr).map_err(|source| DkgError::InvalidKeymanagerAddress {
+    let parsed = Url::parse(addr).map_err(|source| DkgError::InvalidKeymanagerAddress {
         addr: addr.to_string(),
         source,
     })?;
@@ -239,11 +309,7 @@ fn validate_keymanager_flags(conf: &Config) -> Result<(), DkgError> {
 }
 
 /// Logs peer summary with peer names and operator addresses.
-pub fn log_peer_summary(
-    current_peer: PeerId,
-    peers: &[pluto_p2p::peer::Peer],
-    operators: &[pluto_cluster::operator::Operator],
-) {
+pub fn log_peer_summary(current_peer: PeerId, peers: &[Peer], operators: &[Operator]) {
     for (idx, peer) in peers.iter().enumerate() {
         let address = operators
             .get(idx)
@@ -262,11 +328,16 @@ pub fn log_peer_summary(
     }
 }
 
-/// Rebuilds existing shares from a cluster lock plus the local secret shares.
-pub fn get_existing_shares(
-    lock: &pluto_cluster::lock::Lock,
-    secret_shares: &[pluto_crypto::types::PrivateKey],
-) -> Result<Vec<crate::share::Share>, DkgError> {
+/// Rebuilds existing shares from an [`AppendConfig`]. Returns an empty vector
+/// when no append config is provided.
+pub fn get_existing_shares(append_config: Option<&AppendConfig>) -> Result<Vec<Share>, DkgError> {
+    let Some(append_config) = append_config else {
+        return Ok(Vec::new());
+    };
+
+    let lock = &append_config.cluster_lock;
+    let secret_shares = &append_config.secret_shares;
+
     if secret_shares.len() > lock.distributed_validators.len() {
         return Err(DkgError::ExistingSharesCountMismatch {
             secret_shares: secret_shares.len(),
@@ -280,17 +351,15 @@ pub fn get_existing_shares(
         let validator = &lock.distributed_validators[idx];
         let pub_key = validator.public_key()?;
 
-        let mut public_shares =
-            std::collections::HashMap::with_capacity(validator.pub_shares.len());
+        let mut public_shares = HashMap::with_capacity(validator.pub_shares.len());
         for share_idx in 0..validator.pub_shares.len() {
-            let share_id = u64::try_from(share_idx)
-                .expect("share index should fit in u64")
+            let share_id = u64::try_from(share_idx)?
                 .checked_add(1)
-                .expect("share index should not overflow");
+                .ok_or(DkgError::IntegerOverflow)?;
             public_shares.insert(share_id, validator.public_share(share_idx)?);
         }
 
-        shares.push(crate::share::Share {
+        shares.push(Share {
             pub_key,
             secret_share: *secret_share,
             public_shares,
@@ -307,7 +376,7 @@ async fn verify_keymanager_connection(conf: &Config) -> Result<(), DkgError> {
         return Ok(());
     }
 
-    let client = pluto_eth2util::keymanager::Client::new(addr, &conf.keymanager.auth_token)?;
+    let client = keymanager::Client::new(addr, &conf.keymanager.auth_token)?;
     client.verify_connection().await?;
 
     Ok(())
@@ -340,12 +409,33 @@ mod tests {
         assert!(config.test_config.def.is_none());
     }
 
+    fn append_config_with_secret_shares(
+        lock: pluto_cluster::lock::Lock,
+        secret_shares: Vec<pluto_crypto::types::PrivateKey>,
+    ) -> AppendConfig {
+        AppendConfig {
+            cluster_lock: lock,
+            secret_shares,
+            add_validators: 0,
+            unverified: false,
+            validator_addresses: Vec::new(),
+            deposit_data: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn get_existing_shares_returns_empty_for_no_append_config() {
+        let shares = get_existing_shares(None).unwrap();
+        assert!(shares.is_empty());
+    }
+
     #[test]
     fn get_existing_shares_rebuilds_share_shape_from_lock() {
         let (lock, _, dv_shares) = pluto_cluster::test_cluster::new_for_test(2, 3, 4, 1);
         let secret_shares = dv_shares.iter().map(|shares| shares[0]).collect::<Vec<_>>();
+        let append_config = append_config_with_secret_shares(lock.clone(), secret_shares.clone());
 
-        let shares = get_existing_shares(&lock, &secret_shares).unwrap();
+        let shares = get_existing_shares(Some(&append_config)).unwrap();
 
         assert_eq!(shares.len(), secret_shares.len());
 
@@ -370,8 +460,9 @@ mod tests {
         let (lock, _, dv_shares) = pluto_cluster::test_cluster::new_for_test(2, 3, 4, 1);
         let mut secret_shares = dv_shares.iter().map(|shares| shares[0]).collect::<Vec<_>>();
         secret_shares.push([0x55; 32]);
+        let append_config = append_config_with_secret_shares(lock, secret_shares);
 
-        let err = get_existing_shares(&lock, &secret_shares).unwrap_err();
+        let err = get_existing_shares(Some(&append_config)).unwrap_err();
 
         assert!(matches!(
             err,
