@@ -21,7 +21,7 @@ use pluto_p2p::{
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
     peer::{peer_id_from_key, verify_p2p_key},
-    relay::{MutableRelayReservation, RelayRouter},
+    relay::RelayBehaviour,
 };
 use pluto_parsigex::{Behaviour as ParsexBehaviour, Config as ParsexConfig};
 use pluto_peerinfo::{
@@ -30,7 +30,7 @@ use pluto_peerinfo::{
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::{
     bcast::{self, Component as BcastComponent},
@@ -88,8 +88,7 @@ pub enum NodeSetupError {
 #[derive(NetworkBehaviour)]
 struct DkgBehaviour {
     relay: relay::client::Behaviour,
-    relay_reservation: MutableRelayReservation,
-    relay_router: RelayRouter,
+    relay_router: RelayBehaviour,
     bcast: bcast::Behaviour,
     sync: sync::Behaviour,
     parsigex: ParsexBehaviour,
@@ -123,7 +122,10 @@ pub async fn setup_node(
     let def_hash_hex = hex::encode(&def_hash);
 
     let relay_strs: Vec<String> = conf.p2p.relays.iter().map(multiaddr_to_relay_str).collect();
-    let relays = bootnode::new_relays(ct.child_token(), &relay_strs, &def_hash_hex).await?;
+    let bootnode::Relays {
+        peers: relays,
+        tasks: relay_tasks,
+    } = bootnode::new_relays(ct.child_token(), &relay_strs, &def_hash_hex).await?;
 
     let known_peers = peer_ids.clone();
     let conn_gater = ConnGater::new(
@@ -199,8 +201,7 @@ pub async fn setup_node(
 
             builder.with_gater(conn_gater).with_inner(DkgBehaviour {
                 relay: relay_client,
-                relay_reservation: MutableRelayReservation::new(relays.clone()),
-                relay_router: RelayRouter::new(relays.clone(), p2p_ctx, local_id),
+                relay_router: RelayBehaviour::new(relays.clone(), p2p_ctx, local_id),
                 bcast: bcast_beh,
                 sync: sync_beh,
                 parsigex: parsigex_beh,
@@ -218,8 +219,10 @@ pub async fn setup_node(
 
     let node_idx = definition.node_idx(&local_peer_id)?;
 
-    // Spawn the swarm event loop.
-    let swarm_task = tokio::spawn(run_swarm(node, ct));
+    // Spawn the swarm event loop. `relay_tasks` (the bootnode HTTP resolvers)
+    // is moved into the loop so it lives for the swarm's lifetime — dropping
+    // the [`JoinSet`] aborts the resolvers on cancellation.
+    let swarm_task = tokio::spawn(run_swarm(node, ct, relay_tasks));
 
     info!(
         peer_id = %local_peer_id,
@@ -240,7 +243,11 @@ pub async fn setup_node(
 
 // ── Swarm event loop ────────────────────────────────────────────────────────
 
-async fn run_swarm(mut node: Node<DkgBehaviour>, ct: CancellationToken) {
+async fn run_swarm(
+    mut node: Node<DkgBehaviour>,
+    ct: CancellationToken,
+    _relay_tasks: tokio::task::JoinSet<()>,
+) {
     loop {
         tokio::select! {
             _ = ct.cancelled() => {
@@ -248,12 +255,14 @@ async fn run_swarm(mut node: Node<DkgBehaviour>, ct: CancellationToken) {
                 break;
             }
             event = node.select_next_some() => {
+                if let SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(
+                    DkgBehaviourEvent::Relay(ref relay_event),
+                )) = event
+                    && let Some(inner) = node.behaviour_mut().inner.as_mut()
+                {
+                    inner.relay_router.on_relay_client_event(relay_event);
+                }
                 match event {
-                    SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(
-                        DkgBehaviourEvent::Relay(relay::client::Event::ReservationReqAccepted { relay_peer_id, .. })
-                    )) => {
-                        debug!(%relay_peer_id, "Relay reservation accepted");
-                    }
                     SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                         debug!(%peer_id, "Connection established");
                     }
@@ -264,7 +273,10 @@ async fn run_swarm(mut node: Node<DkgBehaviour>, ct: CancellationToken) {
                         debug!(%peer_id, "Connection closed");
                     }
                     SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                        warn!(peer_id = ?peer_id, err = %error, "Outgoing connection error");
+                        // Already logged once by `Node::handle_event`, which
+                        // also classifies relay-circuit-only failures as
+                        // expected/transient. Avoid double-warning here.
+                        debug!(peer_id = ?peer_id, err = %error, "Outgoing connection error");
                     }
                     _ => {}
                 }

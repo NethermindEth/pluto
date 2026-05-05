@@ -65,7 +65,7 @@ use pluto_p2p::{
     gater, k1,
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
-    relay::{MutableRelayReservation, RelayRouter},
+    relay::RelayBehaviour,
 };
 use pluto_tracing::TracingConfig;
 use prost::Name;
@@ -78,8 +78,7 @@ const DEMO_MSG_ID: &str = "demo.tick";
 #[derive(NetworkBehaviour)]
 struct ExampleBehaviour {
     relay: relay::client::Behaviour,
-    relay_reservation: MutableRelayReservation,
-    relay_router: RelayRouter,
+    relay_router: RelayBehaviour,
     bcast: bcast::Behaviour,
 }
 
@@ -538,12 +537,15 @@ async fn main() -> Result<()> {
 
     let cancellation = CancellationToken::new();
     let lock_hash_hex = hex::encode(&lock.lock_hash);
-    let relays = bootnode::new_relays(cancellation.child_token(), &args.relays, &lock_hash_hex)
+    let bootnode::Relays {
+        peers: relays,
+        tasks: _relay_tasks,
+    } = bootnode::new_relays(cancellation.child_token(), &args.relays, &lock_hash_hex)
         .await
         .context("failed to resolve relays")?;
     let relay_peer_ids = relays
         .iter()
-        .filter_map(|relay| relay.peer().ok().flatten().map(|peer| peer.id))
+        .filter_map(|relay| relay.current().map(|peer| peer.id))
         .collect::<HashSet<_>>();
 
     let known_peers = merge_known_peers(&cluster_peers, &args.known_peers)?;
@@ -581,8 +583,7 @@ async fn main() -> Result<()> {
 
             builder.with_gater(conn_gater).with_inner(ExampleBehaviour {
                 relay: relay_client,
-                relay_reservation: MutableRelayReservation::new(relays.clone()),
-                relay_router: RelayRouter::new(relays.clone(), p2p_context, local_peer_id),
+                relay_router: RelayBehaviour::new(relays.clone(), p2p_context, local_peer_id),
                 bcast: bcast_behaviour,
             })
         },
@@ -608,6 +609,13 @@ async fn main() -> Result<()> {
     loop {
         tokio::select! {
             event = node.select_next_some() => {
+                if let SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(
+                    ExampleBehaviourEvent::Relay(ref relay_event),
+                )) = event
+                    && let Some(inner) = node.behaviour_mut().inner.as_mut()
+                {
+                    inner.relay_router.on_relay_client_event(relay_event);
+                }
                 match event {
                     SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(
                         ExampleBehaviourEvent::Relay(relay_event),

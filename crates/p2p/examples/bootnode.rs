@@ -43,7 +43,7 @@ use pluto_p2p::{
     gater, k1,
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
-    relay::{MutableRelayReservation, RelayRouter},
+    relay::RelayBehaviour,
 };
 use pluto_tracing::TracingConfig;
 use tokio::{fs, signal};
@@ -53,8 +53,7 @@ use tracing::info;
 #[derive(NetworkBehaviour)]
 pub struct ExampleBehaviour {
     pub relay: relay::client::Behaviour,
-    pub relay_reservation: MutableRelayReservation,
-    pub relay_router: RelayRouter,
+    pub relay_router: RelayBehaviour,
     pub identify: identify::Behaviour,
     pub ping: ping::Behaviour,
 }
@@ -111,8 +110,10 @@ pub async fn main() -> Result<()> {
 
     let lock_hash_str = hex::encode(&lock.lock_hash);
 
-    let relays: Vec<pluto_p2p::peer::MutablePeer> =
-        bootnode::new_relays(ct.child_token(), &args.relays, &lock_hash_str).await?;
+    let bootnode::Relays {
+        peers: relays,
+        tasks: _relay_tasks,
+    } = bootnode::new_relays(ct.child_token(), &args.relays, &lock_hash_str).await?;
     let mut known_peers: Vec<PeerId> = args
         .known_peers
         .iter()
@@ -155,8 +156,7 @@ pub async fn main() -> Result<()> {
 
             builder.with_gater(conn_gater).with_inner(ExampleBehaviour {
                 relay: relay_client,
-                relay_reservation: MutableRelayReservation::new(relays.clone()),
-                relay_router: RelayRouter::new(relays.clone(), p2p_context, local_peer_id),
+                relay_router: RelayBehaviour::new(relays.clone(), p2p_context, local_peer_id),
                 identify: identify::Behaviour::new(identify_config),
                 ping: ping::Behaviour::new(ping::Config::new()),
             })
@@ -166,7 +166,7 @@ pub async fn main() -> Result<()> {
     // Track relay peer IDs for logging
     let relay_peer_ids: std::collections::HashSet<PeerId> = relays
         .iter()
-        .filter_map(|r| r.peer().ok().flatten().map(|p| p.id))
+        .filter_map(|r| r.current().map(|p| p.id))
         .collect();
 
     loop {
@@ -182,6 +182,14 @@ pub async fn main() -> Result<()> {
                         "UNKNOWN"
                     }
                 };
+
+                if let SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(
+                    ExampleBehaviourEvent::Relay(ref relay_event),
+                )) = event
+                    && let Some(inner) = node.behaviour_mut().inner.as_mut()
+                {
+                    inner.relay_router.on_relay_client_event(relay_event);
+                }
 
                 match event {
                     // Relay client events

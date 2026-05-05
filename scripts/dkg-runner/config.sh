@@ -9,7 +9,7 @@
 : "${THRESHOLD:=3}"
 : "${PLUTO_NODES:=2}"
 : "${CHARON_NODES:=2}"
-: "${RELAY_URL:=https://0.relay.obol.tech}"
+: "${RELAY_URL:=https://1.relay.obol.tech}"
 : "${TIMEOUT:=120}"
 : "${PLUTO_BIN:=./target/debug/pluto}"
 : "${CHARON_BIN:=charon}"

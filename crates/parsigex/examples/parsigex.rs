@@ -83,7 +83,7 @@ use pluto_p2p::{
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
     peer::peer_id_from_key,
-    relay::{MutableRelayReservation, RelayRouter},
+    relay::RelayBehaviour,
 };
 use pluto_parsigex::{self as parsigex, DutyGater, Event, Handle, Verifier};
 use pluto_tracing::TracingConfig;
@@ -95,8 +95,7 @@ use tracing::{info, warn};
 #[behaviour(to_swarm = "CombinedBehaviourEvent")]
 struct CombinedBehaviour {
     relay: relay::client::Behaviour,
-    relay_reservation: MutableRelayReservation,
-    relay_router: RelayRouter,
+    relay_router: RelayBehaviour,
     parsigex: parsigex::Behaviour,
 }
 
@@ -104,6 +103,7 @@ struct CombinedBehaviour {
 enum CombinedBehaviourEvent {
     ParSigEx(Event),
     Relay(relay::client::Event),
+    RelayRouter(pluto_p2p::relay::RelayEvent),
 }
 
 impl From<Event> for CombinedBehaviourEvent {
@@ -115,6 +115,12 @@ impl From<Event> for CombinedBehaviourEvent {
 impl From<relay::client::Event> for CombinedBehaviourEvent {
     fn from(event: relay::client::Event) -> Self {
         Self::Relay(event)
+    }
+}
+
+impl From<pluto_p2p::relay::RelayEvent> for CombinedBehaviourEvent {
+    fn from(event: pluto_p2p::relay::RelayEvent) -> Self {
+        Self::RelayRouter(event)
     }
 }
 
@@ -225,7 +231,10 @@ async fn main() -> Result<()> {
 
     let cancel = CancellationToken::new();
     let lock_hash_hex = hex::encode(&lock.lock_hash);
-    let relays = bootnode::new_relays(cancel.child_token(), &args.relays, &lock_hash_hex)
+    let bootnode::Relays {
+        peers: relays,
+        tasks: _relay_tasks,
+    } = bootnode::new_relays(cancel.child_token(), &args.relays, &lock_hash_hex)
         .await
         .context("failed to resolve relays")?;
 
@@ -259,7 +268,7 @@ async fn main() -> Result<()> {
 
     let relay_peer_ids: HashSet<_> = relays
         .iter()
-        .filter_map(|relay| relay.peer().ok().flatten().map(|peer| peer.id))
+        .filter_map(|relay| relay.current().map(|peer| peer.id))
         .collect();
 
     let mut parsigex_handle: Option<Handle> = None;
@@ -287,8 +296,7 @@ async fn main() -> Result<()> {
                 .with_inner(CombinedBehaviour {
                     parsigex,
                     relay: relay_client,
-                    relay_reservation: MutableRelayReservation::new(relays.clone()),
-                    relay_router: RelayRouter::new(relays.clone(), p2p_context, local_peer_id),
+                    relay_router: RelayBehaviour::new(relays.clone(), p2p_context, local_peer_id),
                 })
         },
     )?;
@@ -345,6 +353,14 @@ async fn main() -> Result<()> {
                         "UNKNOWN"
                     }
                 };
+
+                if let SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(
+                    CombinedBehaviourEvent::Relay(ref relay_event),
+                )) = event
+                    && let Some(inner) = node.behaviour_mut().inner.as_mut()
+                {
+                    inner.relay_router.on_relay_client_event(relay_event);
+                }
 
                 match event {
                     SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(
@@ -555,6 +571,11 @@ async fn main() -> Result<()> {
                         } else {
                             warn!(request_id, "partial signature broadcast finished with failures");
                         }
+                    }
+                    SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(
+                        CombinedBehaviourEvent::RelayRouter(relay_router_event),
+                    )) => {
+                        info!(?relay_router_event, "relay router event");
                     }
                     _ => {}
                 }

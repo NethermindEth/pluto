@@ -19,6 +19,7 @@ pluto-k1util.workspace = true
 vise.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+tokio-stream.workspace = true
 rand.workspace = true
 tempfile.workspace = true
 pluto-tracing.workspace = true

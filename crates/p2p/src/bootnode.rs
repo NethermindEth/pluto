@@ -5,12 +5,12 @@ use std::time::Duration;
 use backon::{ExponentialBuilder, Retryable};
 use libp2p::Multiaddr;
 use pluto_eth2util::enr::Record;
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::peer::{
-    AddrInfo, MutablePeer, MutablePeerError, Peer, PeerError, addr_infos_from_p2p_addrs,
-    peer_id_from_key,
+    AddrInfo, MutablePeer, Peer, PeerError, addr_infos_from_p2p_addrs, peer_id_from_key,
 };
 
 /// Backoff configuration constants matching Go's expbackoff.FastConfig.
@@ -23,9 +23,6 @@ const RELAY_POLL_INTERVAL: Duration = Duration::from_secs(120); // 2 minutes
 
 /// Timeout for resolving at least one bootnode ENR.
 const BOOTNODE_RESOLVE_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Interval for checking bootnode resolution status.
-const BOOTNODE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Bootnode error.
 #[derive(Debug, thiserror::Error)]
@@ -81,26 +78,40 @@ pub enum BootnodeError {
     /// ENR does not have TCP nor UDP port.
     #[error("enr does not have TCP nor UDP port")]
     EnrNoPort,
-
-    /// Mutable peer error.
-    #[error("mutable peer error: {0}")]
-    MutablePeerError(#[from] MutablePeerError),
 }
 
 /// Result type for bootnode operations.
 pub type Result<T> = std::result::Result<T, BootnodeError>;
 
+/// Resolved relays and the background tasks that keep them up to date.
+///
+/// Returned by [`new_relays`]. Dropping the [`Relays`] aborts the resolver
+/// tasks (via [`JoinSet::drop`]), so callers can implement clean shutdown by
+/// simply dropping this struct or by awaiting its completion.
+pub struct Relays {
+    /// One [`MutablePeer`] per provided relay endpoint.
+    pub peers: Vec<MutablePeer>,
+    /// Background HTTP resolver tasks, one per HTTP(S) endpoint.
+    ///
+    /// Static multiaddr endpoints do not spawn a task.
+    pub tasks: JoinSet<()>,
+}
+
 /// Returns the libp2p relays from the provided addresses.
 ///
-/// For HTTP(S) URLs, spawns a background task to continuously resolve relay
-/// addresses. For multiaddrs, parses directly and creates a MutablePeer.
-/// Waits up to 1 minute for at least one ENR to resolve.
+/// For HTTP(S) URLs, spawns a background task that polls the URL and pushes
+/// new addresses through the [`MutablePeer`]'s watch channel. For static
+/// multiaddrs, parses once and creates a `MutablePeer` with that initial
+/// value. Waits up to [`BOOTNODE_RESOLVE_TIMEOUT`] for at least one relay to
+/// be initialised; static relays are initialised synchronously and HTTP relays
+/// notify via the watch channel as soon as they resolve.
 pub async fn new_relays(
     cancel: CancellationToken,
     relays: &[String],
     lock_hash_hex: &str,
-) -> Result<Vec<MutablePeer>> {
-    let mut resp = Vec::new();
+) -> Result<Relays> {
+    let mut peers = Vec::with_capacity(relays.len());
+    let mut tasks = JoinSet::new();
 
     for relay_addr in relays {
         if relay_addr.starts_with("http") {
@@ -108,17 +119,15 @@ pub async fn new_relays(
                 warn!(addr = %relay_addr, "Relay URL does not use https protocol");
             }
 
-            let mutable = MutablePeer::default();
+            let mutable = MutablePeer::empty();
             let url = relay_addr.clone();
             let hash = lock_hash_hex.to_string();
-            let mutable_clone = mutable.clone();
-            let cancel_clone = cancel.child_token();
-
-            tokio::spawn(async move {
-                resolve_relay(cancel_clone, url, hash, mutable_clone).await;
+            let resolver_peer = mutable.clone();
+            let resolver_cancel = cancel.child_token();
+            tasks.spawn(async move {
+                resolve_relay(resolver_cancel, url, hash, resolver_peer).await;
             });
-
-            resp.push(mutable);
+            peers.push(mutable);
             continue;
         }
 
@@ -129,38 +138,28 @@ pub async fn new_relays(
         let info = addr_info_from_p2p_addr(&addr)
             .map_err(|_| BootnodeError::PeerFromMultiaddr(relay_addr.clone()))?;
 
-        resp.push(MutablePeer::new(Peer::new_relay_peer(&info)));
+        peers.push(MutablePeer::new(Peer::new_relay_peer(&info)));
     }
 
-    if resp.is_empty() {
-        return Ok(resp);
+    if peers.is_empty() {
+        return Ok(Relays { peers, tasks });
     }
 
-    let resp = tokio::time::timeout(BOOTNODE_RESOLVE_TIMEOUT, async {
-        loop {
-            if cancel.is_cancelled() {
-                return Err(BootnodeError::TimeoutResolvingBootnodeEnr);
-            }
+    // Subscribe up front so the wait does not borrow `peers`. Cloning the
+    // [`MutablePeer`] just clones the underlying `watch::Sender`, which is
+    // cheap and shares state.
+    let watchers: Vec<MutablePeer> = peers.clone();
+    let any_initialised = async move {
+        futures::future::select_all(watchers.iter().map(|p| Box::pin(p.wait_initialized()))).await;
+    };
 
-            let mut resolved = false;
-            for node in &resp {
-                if let Ok(Some(_)) = node.peer() {
-                    resolved = true;
-                    break;
-                }
-            }
-
-            if resolved {
-                return Ok(resp);
-            }
-
-            tokio::time::sleep(BOOTNODE_CHECK_INTERVAL).await;
+    tokio::select! {
+        () = any_initialised => Ok(Relays { peers, tasks }),
+        () = cancel.cancelled() => Err(BootnodeError::TimeoutResolvingBootnodeEnr),
+        () = tokio::time::sleep(BOOTNODE_RESOLVE_TIMEOUT) => {
+            Err(BootnodeError::TimeoutResolvingBootnodeEnr)
         }
-    })
-    .await
-    .map_err(|_| BootnodeError::TimeoutResolvingBootnodeEnr)??;
-
-    Ok(resp)
+    }
 }
 
 /// Continuously resolves relay multiaddrs from an HTTP URL and updates the
@@ -213,9 +212,7 @@ async fn resolve_relay(
                         addrs = ?peer.addresses,
                         "Resolved new relay"
                     );
-                    if let Err(e) = mutable.set(peer) {
-                        tracing::error!(err = %e, "Failed to set mutable peer");
-                    }
+                    mutable.set(peer);
                 }
                 Err(e) => {
                     tracing::error!(err = %e, addrs = ?addrs, "Failed resolving relay ID from addresses");

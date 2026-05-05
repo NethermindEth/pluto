@@ -2,14 +2,12 @@
 //!
 //! Peer-related types and utilities.
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::collections::HashMap;
 
 use k256::{PublicKey as K256PublicKey, SecretKey};
 use libp2p::{Multiaddr, PeerId, identity::PublicKey as Libp2pPublicKey, multiaddr::Protocol};
 use pluto_eth2util::enr::Record;
+use tokio::sync::watch;
 
 use crate::name::peer_name;
 
@@ -124,52 +122,22 @@ impl Peer {
     }
 }
 
-/// Mutable peer error.
-#[derive(Debug, thiserror::Error)]
-pub enum MutablePeerError {
-    /// Failed to lock the mutable peer.
-    #[error("Failed to lock the mutable peer")]
-    PoisonError,
-}
-
-/// MutablePeer is a mutable peer that can be updated.
+/// A peer whose value (addresses, etc.) can be updated over time.
+///
+/// Backed by a [`tokio::sync::watch`] channel so consumers can either borrow
+/// the latest value synchronously via [`MutablePeer::current`] or `await`
+/// updates via [`MutablePeer::subscribe`] / [`MutablePeer::wait_initialized`].
+///
+/// Cloning a `MutablePeer` clones the underlying sender — all clones see the
+/// same value and any clone can `set` a new one.
 #[derive(Debug, Clone)]
 pub struct MutablePeer {
-    /// Inner state of the mutable peer.
-    inner: Arc<Mutex<MutablePeerInner>>,
+    tx: watch::Sender<Option<Peer>>,
 }
-
-/// Subscriber is a function that is called when the peer is updated.
-pub type Subscriber = Box<dyn Fn(&Peer) + Send + Sync + 'static>;
-
-/// MutablePeerInner is the inner state of a MutablePeer.
-pub struct MutablePeerInner {
-    /// Peer.
-    peer: Option<Peer>,
-
-    /// Subscribers.
-    subs: Vec<Subscriber>,
-}
-
-impl std::fmt::Debug for MutablePeerInner {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MutablePeerInner")
-            .field("peer", &self.peer)
-            .field("subs", &format!("[{} subscribers]", self.subs.len()))
-            .finish()
-    }
-}
-
-type MutablePeerResult<T> = std::result::Result<T, MutablePeerError>;
 
 impl Default for MutablePeer {
     fn default() -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(MutablePeerInner {
-                peer: None,
-                subs: Vec::new(),
-            })),
-        }
+        Self::empty()
     }
 }
 
@@ -177,41 +145,62 @@ impl MutablePeer {
     /// Creates a new mutable peer with an initial value.
     pub fn new(peer: Peer) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(MutablePeerInner {
-                peer: Some(peer),
-                subs: Vec::new(),
-            })),
+            tx: watch::Sender::new(Some(peer)),
         }
     }
 
-    /// Updates the mutable peer and calls all subscribers.
-    pub fn set(&self, peer: Peer) -> MutablePeerResult<()> {
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| MutablePeerError::PoisonError)?;
-        inner.peer = Some(peer.clone());
-        inner.subs.iter().for_each(|sub| sub(&peer.clone()));
-        Ok(())
+    /// Creates a new mutable peer with no initial value.
+    ///
+    /// [`MutablePeer::current`] returns `None` until [`MutablePeer::set`] is
+    /// called.
+    pub fn empty() -> Self {
+        Self {
+            tx: watch::Sender::new(None),
+        }
     }
 
-    /// Returns the current peer or None if not available.
-    pub fn peer(&self) -> MutablePeerResult<Option<Peer>> {
-        let inner = self
-            .inner
-            .lock()
-            .map_err(|_| MutablePeerError::PoisonError)?;
-        Ok(inner.peer.clone())
+    /// Updates the peer value, notifying all subscribers.
+    ///
+    /// Subscribers that have not yet observed previous updates will only see
+    /// the latest value (watch-channel semantics).
+    pub fn set(&self, peer: Peer) {
+        // The send only fails if there are no receivers; we still want the
+        // sender to retain the new value so future subscribers can observe it.
+        // `send_replace` keeps the value either way.
+        let _ = self.tx.send_replace(Some(peer));
     }
 
-    /// Registers a function that is called when the peer is updated.
-    pub fn subscribe(&self, sub: Subscriber) -> MutablePeerResult<()> {
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| MutablePeerError::PoisonError)?;
-        inner.subs.push(sub);
-        Ok(())
+    /// Returns the current peer value, or `None` if not yet initialised.
+    pub fn current(&self) -> Option<Peer> {
+        self.tx.borrow().clone()
+    }
+
+    /// Subscribes to updates of this peer.
+    ///
+    /// The returned [`watch::Receiver`] can be polled or awaited via
+    /// [`watch::Receiver::changed`]. Wrapping the receiver in
+    /// [`tokio_stream::wrappers::WatchStream`] turns it into a stream of
+    /// values, which is what the relay behaviour does internally.
+    pub fn subscribe(&self) -> watch::Receiver<Option<Peer>> {
+        self.tx.subscribe()
+    }
+
+    /// Awaits until the peer has been initialised, returning its value.
+    ///
+    /// Returns immediately if the peer already has a value.
+    pub async fn wait_initialized(&self) -> Peer {
+        let mut rx = self.subscribe();
+        loop {
+            if let Some(peer) = rx.borrow_and_update().clone() {
+                return peer;
+            }
+            // The sender outlives the receiver here (it's Self), so `changed`
+            // can only return Err if Self is dropped, which can't happen
+            // while `&self` is borrowed.
+            if rx.changed().await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        }
     }
 }
 

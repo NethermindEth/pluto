@@ -95,11 +95,12 @@ use futures::{Stream, StreamExt, stream::FusedStream};
 use libp2p::{
     Multiaddr, PeerId, Swarm, SwarmBuilder, autonat, identify,
     identity::Keypair,
+    multiaddr::Protocol as MaProtocol,
     noise, ping, relay,
-    swarm::{NetworkBehaviour, SwarmEvent},
+    swarm::{DialError, NetworkBehaviour, SwarmEvent},
     tcp, yamux,
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     behaviours::pluto::{PlutoBehaviour, PlutoBehaviourBuilder, PlutoBehaviourEvent},
@@ -586,6 +587,15 @@ impl<B: NetworkBehaviour> Node<B> {
         self.swarm.local_peer_id()
     }
 
+    /// Returns a mutable reference to the inner [`PlutoBehaviour`].
+    ///
+    /// Useful for forwarding events between sibling behaviours from the
+    /// swarm event loop (for example, feeding `relay::client::Event` into
+    /// [`crate::relay::RelayBehaviour::on_relay_client_event`]).
+    pub fn behaviour_mut(&mut self) -> &mut PlutoBehaviour<B> {
+        self.swarm.behaviour_mut()
+    }
+
     /// Handles a swarm event to update metrics and logging.
     fn handle_event(&mut self, event: &SwarmEvent<PlutoBehaviourEvent<B>>) {
         match event {
@@ -631,12 +641,26 @@ impl<B: NetworkBehaviour> Node<B> {
                 info!(status = ?new, "NAT status changed");
             }
 
-            // Connection errors
+            // Connection errors. Failures of relay-circuit dials are
+            // expected during startup (peers haven't all reserved yet) and
+            // would otherwise dominate the log; classify them as transient
+            // and emit at debug level.
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                if let Some(peer) = peer_id {
-                    warn!(peer = %peer_name(peer), %error, "outgoing connection failed");
-                } else {
-                    warn!(%error, "outgoing connection failed");
+                let transient = is_transient_dial_error(error);
+                let target = peer_id.as_ref().map(peer_name);
+                match (transient, target) {
+                    (true, Some(peer)) => {
+                        debug!(peer = %peer, %error, "outgoing connection failed (transient)");
+                    }
+                    (true, None) => {
+                        debug!(%error, "outgoing connection failed (transient)");
+                    }
+                    (false, Some(peer)) => {
+                        warn!(peer = %peer, %error, "outgoing connection failed");
+                    }
+                    (false, None) => {
+                        warn!(%error, "outgoing connection failed");
+                    }
                 }
             }
             SwarmEvent::IncomingConnectionError { error, .. } => {
@@ -682,5 +706,24 @@ impl<B: NetworkBehaviour> Stream for Node<B> {
 impl<B: NetworkBehaviour> FusedStream for Node<B> {
     fn is_terminated(&self) -> bool {
         false
+    }
+}
+
+/// Returns `true` for [`DialError`]s that are part of normal relay-circuit
+/// startup churn and should not be logged at warn level.
+///
+/// Currently classifies as transient:
+/// - `Transport` errors where every attempted address was a `/p2p-circuit`
+///   address. These typically end in "Relay has no reservation for destination"
+///   until the target peer has reserved its own circuit.
+/// - `DialPeerConditionFalse`: the swarm declined to dial because we are
+///   already connected or dialling — not a failure.
+pub(crate) fn is_transient_dial_error(error: &DialError) -> bool {
+    match error {
+        DialError::DialPeerConditionFalse(_) => true,
+        DialError::Transport(attempts) if !attempts.is_empty() => attempts
+            .iter()
+            .all(|(addr, _)| addr.iter().any(|p| matches!(p, MaProtocol::P2pCircuit))),
+        _ => false,
     }
 }
