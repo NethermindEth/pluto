@@ -536,8 +536,17 @@ impl AsRef<[u8; SIG_LEN]> for Signature {
     }
 }
 
-/// Signed data type
-pub trait SignedData: Any + DynClone + DynEq + StdDebug + Send + Sync {
+/// Signed data type.
+///
+/// All implementors must also implement [`Marshal`](crate::marshal::Marshal),
+/// which is enforced at compile time via the `SignedData: Marshal` supertrait
+/// bound. The only legal way to add a new `SignedData` type is to register it
+/// through [`register_signed_data_codecs!`](crate::register_signed_data_codecs)
+/// in `signeddata.rs`, which wires the codec, dispatch entry, and tests in
+/// one place.
+pub trait SignedData:
+    Any + DynClone + DynEq + StdDebug + Send + Sync + crate::marshal::Marshal
+{
     /// signature returns the signed duty data's signature.
     fn signature(&self) -> Result<Signature, SignedDataError>;
 
@@ -1018,6 +1027,16 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     struct MockSignedData;
+
+    impl crate::marshal::Marshal for MockSignedData {
+        fn marshal(&self) -> Result<Vec<u8>, crate::marshal::MarshalError> {
+            serde_json::to_vec(self).map_err(crate::marshal::MarshalError::from)
+        }
+
+        fn unmarshal(bytes: &[u8]) -> Result<Self, crate::marshal::MarshalError> {
+            serde_json::from_slice(bytes).map_err(crate::marshal::MarshalError::from)
+        }
+    }
 
     impl SignedData for MockSignedData {
         fn signature(&self) -> Result<Signature, SignedDataError> {

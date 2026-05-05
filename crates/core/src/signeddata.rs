@@ -1115,6 +1115,407 @@ impl SignedSyncContributionAndProof {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Codec adapters — bridge wrapper types to their SSZ form.
+// Non-versioned types delegate directly to the upstream `ssz` crate's
+// `Encode`/`Decode` traits. Versioned types go through `ssz_codec` helpers
+// that own the Charon-specific framing (version + offset header).
+// One short adapter per `SignedData` type lets `register_signed_data_codecs!`
+// receive a `(enc_fn, dec_fn)` pair with uniform signatures.
+// ---------------------------------------------------------------------------
+
+use crate::{marshal::MarshalError, ssz_codec};
+use ssz::{Decode, Encode};
+
+fn enc_attestation(value: &Attestation) -> Result<Vec<u8>, MarshalError> {
+    Ok(value.0.as_ssz_bytes())
+}
+
+fn dec_attestation(bytes: &[u8]) -> Result<Attestation, MarshalError> {
+    Ok(Attestation::new(phase0::Attestation::from_ssz_bytes(
+        bytes,
+    )?))
+}
+
+fn enc_versioned_attestation(value: &VersionedAttestation) -> Result<Vec<u8>, MarshalError> {
+    Ok(ssz_codec::encode_versioned_attestation(&value.0)?)
+}
+
+fn dec_versioned_attestation(bytes: &[u8]) -> Result<VersionedAttestation, MarshalError> {
+    let inner = ssz_codec::decode_versioned_attestation(bytes)?;
+    Ok(VersionedAttestation::new(inner)?)
+}
+
+fn enc_signed_aggregate_and_proof(
+    value: &SignedAggregateAndProof,
+) -> Result<Vec<u8>, MarshalError> {
+    Ok(value.0.as_ssz_bytes())
+}
+
+fn dec_signed_aggregate_and_proof(bytes: &[u8]) -> Result<SignedAggregateAndProof, MarshalError> {
+    Ok(SignedAggregateAndProof::new(
+        phase0::SignedAggregateAndProof::from_ssz_bytes(bytes)?,
+    ))
+}
+
+fn enc_versioned_signed_aggregate_and_proof(
+    value: &VersionedSignedAggregateAndProof,
+) -> Result<Vec<u8>, MarshalError> {
+    Ok(ssz_codec::encode_versioned_signed_aggregate_and_proof(
+        &value.0,
+    )?)
+}
+
+fn dec_versioned_signed_aggregate_and_proof(
+    bytes: &[u8],
+) -> Result<VersionedSignedAggregateAndProof, MarshalError> {
+    Ok(VersionedSignedAggregateAndProof::new(
+        ssz_codec::decode_versioned_signed_aggregate_and_proof(bytes)?,
+    ))
+}
+
+fn enc_signed_sync_message(value: &SignedSyncMessage) -> Result<Vec<u8>, MarshalError> {
+    Ok(value.0.as_ssz_bytes())
+}
+
+fn dec_signed_sync_message(bytes: &[u8]) -> Result<SignedSyncMessage, MarshalError> {
+    Ok(SignedSyncMessage::new(
+        altair::SyncCommitteeMessage::from_ssz_bytes(bytes)?,
+    ))
+}
+
+fn enc_sync_contribution_and_proof(
+    value: &SyncContributionAndProof,
+) -> Result<Vec<u8>, MarshalError> {
+    Ok(value.0.as_ssz_bytes())
+}
+
+fn dec_sync_contribution_and_proof(bytes: &[u8]) -> Result<SyncContributionAndProof, MarshalError> {
+    Ok(SyncContributionAndProof::new(
+        altair::ContributionAndProof::from_ssz_bytes(bytes)?,
+    ))
+}
+
+fn enc_signed_sync_contribution_and_proof(
+    value: &SignedSyncContributionAndProof,
+) -> Result<Vec<u8>, MarshalError> {
+    Ok(value.0.as_ssz_bytes())
+}
+
+fn dec_signed_sync_contribution_and_proof(
+    bytes: &[u8],
+) -> Result<SignedSyncContributionAndProof, MarshalError> {
+    Ok(SignedSyncContributionAndProof::new(
+        altair::SignedContributionAndProof::from_ssz_bytes(bytes)?,
+    ))
+}
+
+fn enc_versioned_signed_proposal(value: &VersionedSignedProposal) -> Result<Vec<u8>, MarshalError> {
+    Ok(ssz_codec::encode_versioned_signed_proposal(&value.0)?)
+}
+
+fn dec_versioned_signed_proposal(bytes: &[u8]) -> Result<VersionedSignedProposal, MarshalError> {
+    let inner = ssz_codec::decode_versioned_signed_proposal(bytes)?;
+    Ok(VersionedSignedProposal::new(inner)?)
+}
+
+// ---------------------------------------------------------------------------
+// Single source of truth for `SignedData` ↔ bytes wiring. Adding a new
+// `SignedData` type means *adding a row here* — Marshal impl, dispatch entry,
+// and round-trip / json-fallback / duty-dispatch tests are all generated.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+use crate::signeddata::codec_samples as samples;
+
+crate::register_signed_data_codecs! {
+    // Attester duty: SSZ-capable, two priorities (non-versioned first, then
+    // the versioned wrapper as a fallback decoder).
+    Attestation {
+        duty: Attester, priority: 0,
+        codec: ssz_then_json(enc_attestation, dec_attestation),
+        sample: samples::sample_attestation,
+    },
+    VersionedAttestation {
+        duty: Attester, priority: 1,
+        codec: ssz_then_json(enc_versioned_attestation, dec_versioned_attestation),
+        sample: samples::sample_versioned_attestation,
+    },
+
+    // Aggregator duty: SSZ-capable, non-versioned first then versioned.
+    SignedAggregateAndProof {
+        duty: Aggregator, priority: 0,
+        codec: ssz_then_json(enc_signed_aggregate_and_proof, dec_signed_aggregate_and_proof),
+        sample: samples::sample_signed_aggregate_and_proof,
+    },
+    VersionedSignedAggregateAndProof {
+        duty: Aggregator, priority: 1,
+        codec: ssz_then_json(
+            enc_versioned_signed_aggregate_and_proof,
+            dec_versioned_signed_aggregate_and_proof,
+        ),
+        sample: samples::sample_versioned_signed_aggregate_and_proof,
+    },
+
+    // SyncMessage: SSZ-capable.
+    SignedSyncMessage {
+        duty: SyncMessage,
+        codec: ssz_then_json(enc_signed_sync_message, dec_signed_sync_message),
+        sample: samples::sample_signed_sync_message,
+    },
+
+    // SyncContribution: SSZ-capable.
+    SignedSyncContributionAndProof {
+        duty: SyncContribution,
+        codec: ssz_then_json(
+            enc_signed_sync_contribution_and_proof,
+            dec_signed_sync_contribution_and_proof,
+        ),
+        sample: samples::sample_signed_sync_contribution_and_proof,
+    },
+
+    // SyncContributionAndProof is `SignedData` but never reached through the
+    // duty-dispatch table — it is only ever serialized, since the
+    // SyncContribution duty decodes into `SignedSyncContributionAndProof`. We
+    // still register it so the Marshal contract is enforced and the round-trip
+    // test runs.
+    SyncContributionAndProof {
+        codec: ssz_then_json(enc_sync_contribution_and_proof, dec_sync_contribution_and_proof),
+        sample: samples::sample_sync_contribution_and_proof,
+    },
+
+    // Proposer duty: SSZ-capable.
+    VersionedSignedProposal {
+        duty: Proposer,
+        codec: ssz_then_json(enc_versioned_signed_proposal, dec_versioned_signed_proposal),
+        sample: samples::sample_versioned_signed_proposal,
+    },
+
+    // JSON-only types.
+    VersionedSignedValidatorRegistration {
+        duty: BuilderRegistration,
+        codec: json,
+        sample: samples::sample_versioned_signed_validator_registration,
+    },
+    SignedVoluntaryExit {
+        duty: Exit,
+        codec: json,
+        sample: samples::sample_signed_voluntary_exit,
+    },
+    SignedRandao {
+        duty: Randao,
+        codec: json,
+        sample: samples::sample_signed_randao,
+    },
+    Signature {
+        duty: Signature,
+        codec: json,
+        sample: samples::sample_signature,
+    },
+    BeaconCommitteeSelection {
+        duty: PrepareAggregator,
+        codec: json,
+        sample: samples::sample_beacon_committee_selection,
+    },
+    SyncCommitteeSelection {
+        duty: PrepareSyncContribution,
+        codec: json,
+        sample: samples::sample_sync_committee_selection,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// Sample fixtures — small, deterministic, sufficient to drive the
+// macro-generated round-trip tests. Larger fixtures (Go-byte-fixture goldens,
+// per-fork variants) live in `mod tests`.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+pub(crate) mod codec_samples {
+    use super::*;
+    use pluto_eth2api::spec::{altair, phase0};
+    use pluto_ssz::{BitList, BitVector};
+
+    fn attestation_data() -> phase0::AttestationData {
+        phase0::AttestationData {
+            slot: 1,
+            index: 2,
+            beacon_block_root: [0x11; 32],
+            source: phase0::Checkpoint {
+                epoch: 3,
+                root: [0x22; 32],
+            },
+            target: phase0::Checkpoint {
+                epoch: 4,
+                root: [0x33; 32],
+            },
+        }
+    }
+
+    fn phase0_attestation() -> phase0::Attestation {
+        phase0::Attestation {
+            aggregation_bits: BitList::with_bits(8, &[0, 2]),
+            data: attestation_data(),
+            signature: [0x44; 96],
+        }
+    }
+
+    fn phase0_signed_aggregate_and_proof() -> phase0::SignedAggregateAndProof {
+        phase0::SignedAggregateAndProof {
+            message: phase0::AggregateAndProof {
+                aggregator_index: 9,
+                aggregate: phase0_attestation(),
+                selection_proof: [0x55; 96],
+            },
+            signature: [0x66; 96],
+        }
+    }
+
+    pub(crate) fn sample_attestation() -> Attestation {
+        Attestation::new(phase0_attestation())
+    }
+
+    pub(crate) fn sample_versioned_attestation() -> VersionedAttestation {
+        VersionedAttestation::new(versioned::VersionedAttestation {
+            version: versioned::DataVersion::Deneb,
+            validator_index: Some(7),
+            attestation: Some(versioned::AttestationPayload::Deneb(phase0_attestation())),
+        })
+        .expect("valid versioned attestation sample")
+    }
+
+    pub(crate) fn sample_signed_aggregate_and_proof() -> SignedAggregateAndProof {
+        SignedAggregateAndProof::new(phase0_signed_aggregate_and_proof())
+    }
+
+    pub(crate) fn sample_versioned_signed_aggregate_and_proof() -> VersionedSignedAggregateAndProof
+    {
+        VersionedSignedAggregateAndProof::new(versioned::VersionedSignedAggregateAndProof {
+            version: versioned::DataVersion::Phase0,
+            aggregate_and_proof: versioned::SignedAggregateAndProofPayload::Phase0(
+                phase0_signed_aggregate_and_proof(),
+            ),
+        })
+    }
+
+    pub(crate) fn sample_signed_sync_message() -> SignedSyncMessage {
+        SignedSyncMessage::new(altair::SyncCommitteeMessage {
+            slot: 100,
+            beacon_block_root: [0x77; 32],
+            validator_index: 50,
+            signature: [0x88; 96],
+        })
+    }
+
+    fn altair_contribution_and_proof() -> altair::ContributionAndProof {
+        altair::ContributionAndProof {
+            aggregator_index: 11,
+            contribution: altair::SyncCommitteeContribution {
+                slot: 200,
+                beacon_block_root: [0xaa; 32],
+                subcommittee_index: 2,
+                aggregation_bits: BitVector::with_bits(&[0, 5]),
+                signature: [0xbb; 96],
+            },
+            selection_proof: [0xcc; 96],
+        }
+    }
+
+    pub(crate) fn sample_sync_contribution_and_proof() -> SyncContributionAndProof {
+        SyncContributionAndProof::new(altair_contribution_and_proof())
+    }
+
+    pub(crate) fn sample_signed_sync_contribution_and_proof() -> SignedSyncContributionAndProof {
+        SignedSyncContributionAndProof::new(altair::SignedContributionAndProof {
+            message: altair_contribution_and_proof(),
+            signature: [0xdd; 96],
+        })
+    }
+
+    pub(crate) fn sample_versioned_signed_proposal() -> VersionedSignedProposal {
+        VersionedSignedProposal::new(versioned::VersionedSignedProposal {
+            version: versioned::DataVersion::Phase0,
+            blinded: false,
+            block: versioned::SignedProposalBlock::Phase0(phase0::SignedBeaconBlock {
+                message: phase0::BeaconBlock {
+                    slot: 1,
+                    proposer_index: 2,
+                    parent_root: [0x11; 32],
+                    state_root: [0x22; 32],
+                    body: phase0::BeaconBlockBody {
+                        randao_reveal: [0x33; 96],
+                        eth1_data: phase0::ETH1Data {
+                            deposit_root: [0x44; 32],
+                            deposit_count: 0,
+                            block_hash: [0x55; 32],
+                        },
+                        graffiti: [0x66; 32],
+                        proposer_slashings: vec![].into(),
+                        attester_slashings: vec![].into(),
+                        attestations: vec![].into(),
+                        deposits: vec![].into(),
+                        voluntary_exits: vec![].into(),
+                    },
+                },
+                signature: [0x77; 96],
+            }),
+        })
+        .expect("valid versioned signed proposal sample")
+    }
+
+    pub(crate) fn sample_versioned_signed_validator_registration()
+    -> VersionedSignedValidatorRegistration {
+        VersionedSignedValidatorRegistration::new(versioned::VersionedSignedValidatorRegistration {
+            version: versioned::BuilderVersion::V1,
+            v1: Some(v1::SignedValidatorRegistration {
+                message: v1::ValidatorRegistration {
+                    fee_recipient: [0xee; 20],
+                    gas_limit: 30_000_000,
+                    timestamp: 1_700_000_000,
+                    pubkey: [0xab; 48],
+                },
+                signature: [0xcd; 96],
+            }),
+        })
+        .expect("valid validator registration sample")
+    }
+
+    pub(crate) fn sample_signed_voluntary_exit() -> SignedVoluntaryExit {
+        SignedVoluntaryExit::new(phase0::SignedVoluntaryExit {
+            message: phase0::VoluntaryExit {
+                epoch: 42,
+                validator_index: 7,
+            },
+            signature: [0xa1; 96],
+        })
+    }
+
+    pub(crate) fn sample_signed_randao() -> SignedRandao {
+        SignedRandao::new(10, [0x99; 96])
+    }
+
+    pub(crate) fn sample_signature() -> Signature {
+        Signature::new([0x42; 96])
+    }
+
+    pub(crate) fn sample_beacon_committee_selection() -> BeaconCommitteeSelection {
+        BeaconCommitteeSelection::new(v1::BeaconCommitteeSelection {
+            slot: 100,
+            validator_index: 5,
+            selection_proof: [0xb1; 96],
+        })
+    }
+
+    pub(crate) fn sample_sync_committee_selection() -> SyncCommitteeSelection {
+        SyncCommitteeSelection::new(v1::SyncCommitteeSelection {
+            slot: 100,
+            validator_index: 5,
+            subcommittee_index: 3,
+            selection_proof: [0xc1; 96],
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

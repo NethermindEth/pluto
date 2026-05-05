@@ -2,7 +2,10 @@
 //! `marshal`/`unmarshal` behaviour.
 //!
 //! Charon serializes SSZ-capable types using SSZ binary encoding with custom
-//! headers for versioned types. JSON-only types are handled elsewhere (see
+//! headers for versioned types. Non-versioned SSZ types are framed by the
+//! upstream `ssz` crate's [`Encode`]/[`Decode`] traits and don't need
+//! Charon-specific helpers — adapters in `signeddata.rs` call those traits
+//! directly. JSON-only types are handled elsewhere (see
 //! [`parsigex_codec`](super::parsigex_codec)).
 
 use pluto_eth2api::{
@@ -70,80 +73,6 @@ fn require(bytes: &[u8], need: usize) -> Result<(), SszCodecError> {
 }
 
 // ===========================================================================
-// Non-versioned SSZ-capable types
-// ===========================================================================
-
-// Using ethereum_ssz derived Encode/Decode: just delegate to `as_ssz_bytes`
-// and `from_ssz_bytes`.
-
-/// Encodes a `phase0::Attestation` to SSZ binary.
-pub fn encode_phase0_attestation(att: &phase0::Attestation) -> Result<Vec<u8>, SszCodecError> {
-    Ok(att.as_ssz_bytes())
-}
-
-/// Decodes a `phase0::Attestation` from SSZ binary.
-pub fn decode_phase0_attestation(bytes: &[u8]) -> Result<phase0::Attestation, SszCodecError> {
-    Ok(phase0::Attestation::from_ssz_bytes(bytes)?)
-}
-
-/// Encodes a `phase0::SignedAggregateAndProof` to SSZ binary.
-pub fn encode_phase0_signed_aggregate_and_proof(
-    sap: &phase0::SignedAggregateAndProof,
-) -> Result<Vec<u8>, SszCodecError> {
-    Ok(sap.as_ssz_bytes())
-}
-
-/// Decodes a `phase0::SignedAggregateAndProof` from SSZ binary.
-pub fn decode_phase0_signed_aggregate_and_proof(
-    bytes: &[u8],
-) -> Result<phase0::SignedAggregateAndProof, SszCodecError> {
-    Ok(phase0::SignedAggregateAndProof::from_ssz_bytes(bytes)?)
-}
-
-/// Encodes an `altair::SyncCommitteeMessage` to SSZ binary.
-pub fn encode_sync_committee_message(
-    msg: &altair::SyncCommitteeMessage,
-) -> Result<Vec<u8>, SszCodecError> {
-    Ok(msg.as_ssz_bytes())
-}
-
-/// Decodes an `altair::SyncCommitteeMessage` from SSZ binary.
-pub fn decode_sync_committee_message(
-    bytes: &[u8],
-) -> Result<altair::SyncCommitteeMessage, SszCodecError> {
-    Ok(altair::SyncCommitteeMessage::from_ssz_bytes(bytes)?)
-}
-
-/// Encodes an `altair::ContributionAndProof` to SSZ binary.
-pub fn encode_contribution_and_proof(
-    cap: &altair::ContributionAndProof,
-) -> Result<Vec<u8>, SszCodecError> {
-    Ok(cap.as_ssz_bytes())
-}
-
-/// Decodes an `altair::ContributionAndProof` from SSZ binary.
-#[cfg(test)]
-pub fn decode_contribution_and_proof(
-    bytes: &[u8],
-) -> Result<altair::ContributionAndProof, SszCodecError> {
-    Ok(altair::ContributionAndProof::from_ssz_bytes(bytes)?)
-}
-
-/// Encodes an `altair::SignedContributionAndProof` to SSZ binary.
-pub fn encode_signed_contribution_and_proof(
-    scp: &altair::SignedContributionAndProof,
-) -> Result<Vec<u8>, SszCodecError> {
-    Ok(scp.as_ssz_bytes())
-}
-
-/// Decodes an `altair::SignedContributionAndProof` from SSZ binary.
-pub fn decode_signed_contribution_and_proof(
-    bytes: &[u8],
-) -> Result<altair::SignedContributionAndProof, SszCodecError> {
-    Ok(altair::SignedContributionAndProof::from_ssz_bytes(bytes)?)
-}
-
-// ===========================================================================
 // Versioned type helpers
 // ===========================================================================
 
@@ -159,6 +88,10 @@ fn decode_version(bytes: &[u8]) -> Result<DataVersion, SszCodecError> {
     DataVersion::from_legacy_u64(raw).map_err(|_| SszCodecError::UnknownVersion(raw))
 }
 
+fn unknown_version_decoded() -> SszCodecError {
+    SszCodecError::Decode("data version is Unknown".to_string())
+}
+
 // ---------------------------------------------------------------------------
 // VersionedAttestation
 // Two header formats (Charon added validator_index in a later version):
@@ -172,11 +105,15 @@ const VERSIONED_ATTESTATION_VAL_IDX_HEADER: u32 = 20;
 /// Encodes a `VersionedAttestation` to SSZ binary with Charon versioned
 /// header. Uses the 20-byte header when `validator_index` is set, otherwise
 /// falls back to the legacy 12-byte header.
-pub fn encode_versioned_attestation(
+pub(crate) fn encode_versioned_attestation(
     va: &versioned::VersionedAttestation,
 ) -> Result<Vec<u8>, SszCodecError> {
     let version = encode_version(va.version)?;
-    let inner = encode_attestation_payload(va.attestation.as_ref())?;
+    let attestation = va
+        .attestation
+        .as_ref()
+        .ok_or_else(|| SszCodecError::Decode("missing attestation payload".to_string()))?;
+    let inner = encode_attestation_payload(attestation);
 
     if let Some(val_idx) = va.validator_index {
         let mut buf =
@@ -198,7 +135,7 @@ pub fn encode_versioned_attestation(
 /// Decodes a `VersionedAttestation` from SSZ binary with Charon versioned
 /// header. Tries the 20-byte validator_index format first, falling back to the
 /// legacy 12-byte format when the offset field doesn't match.
-pub fn decode_versioned_attestation(
+pub(crate) fn decode_versioned_attestation(
     bytes: &[u8],
 ) -> Result<versioned::VersionedAttestation, SszCodecError> {
     match try_decode_versioned_attestation_with_val_idx(bytes) {
@@ -252,23 +189,14 @@ fn decode_versioned_attestation_no_val_idx(
     })
 }
 
-fn encode_attestation_payload(
-    attestation: Option<&AttestationPayload>,
-) -> Result<Vec<u8>, SszCodecError> {
+fn encode_attestation_payload(attestation: &AttestationPayload) -> Vec<u8> {
     match attestation {
-        Some(
-            AttestationPayload::Phase0(att)
-            | AttestationPayload::Altair(att)
-            | AttestationPayload::Bellatrix(att)
-            | AttestationPayload::Capella(att)
-            | AttestationPayload::Deneb(att),
-        ) => Ok(att.as_ssz_bytes()),
-        Some(AttestationPayload::Electra(att) | AttestationPayload::Fulu(att)) => {
-            Ok(att.as_ssz_bytes())
-        }
-        None => Err(SszCodecError::Decode(
-            "missing attestation payload".to_string(),
-        )),
+        AttestationPayload::Phase0(att)
+        | AttestationPayload::Altair(att)
+        | AttestationPayload::Bellatrix(att)
+        | AttestationPayload::Capella(att)
+        | AttestationPayload::Deneb(att) => att.as_ssz_bytes(),
+        AttestationPayload::Electra(att) | AttestationPayload::Fulu(att) => att.as_ssz_bytes(),
     }
 }
 
@@ -298,7 +226,7 @@ fn decode_attestation_payload(
         DataVersion::Fulu => Ok(AttestationPayload::Fulu(
             electra::Attestation::from_ssz_bytes(inner)?,
         )),
-        DataVersion::Unknown => Err(SszCodecError::UnknownVersion(u64::MAX)),
+        DataVersion::Unknown => Err(unknown_version_decoded()),
     }
 }
 
@@ -311,7 +239,7 @@ const VERSIONED_SIGNED_AGGREGATE_HEADER: u32 = 12;
 
 /// Encodes a `VersionedSignedAggregateAndProof` to SSZ binary with Charon
 /// versioned header.
-pub fn encode_versioned_signed_aggregate_and_proof(
+pub(crate) fn encode_versioned_signed_aggregate_and_proof(
     va: &versioned::VersionedSignedAggregateAndProof,
 ) -> Result<Vec<u8>, SszCodecError> {
     let version = encode_version(va.version)?;
@@ -335,7 +263,7 @@ pub fn encode_versioned_signed_aggregate_and_proof(
 
 /// Decodes a `VersionedSignedAggregateAndProof` from SSZ binary with Charon
 /// versioned header.
-pub fn decode_versioned_signed_aggregate_and_proof(
+pub(crate) fn decode_versioned_signed_aggregate_and_proof(
     bytes: &[u8],
 ) -> Result<versioned::VersionedSignedAggregateAndProof, SszCodecError> {
     require(bytes, VERSIONED_SIGNED_AGGREGATE_HEADER as usize)?;
@@ -371,7 +299,7 @@ pub fn decode_versioned_signed_aggregate_and_proof(
         DataVersion::Fulu => SignedAggregateAndProofPayload::Fulu(
             electra::SignedAggregateAndProof::from_ssz_bytes(inner)?,
         ),
-        DataVersion::Unknown => return Err(SszCodecError::UnknownVersion(u64::MAX)),
+        DataVersion::Unknown => return Err(unknown_version_decoded()),
     };
 
     Ok(versioned::VersionedSignedAggregateAndProof {
@@ -389,7 +317,7 @@ const VERSIONED_SIGNED_PROPOSAL_HEADER: u32 = 13;
 
 /// Encodes a `VersionedSignedProposal` to SSZ binary with Charon versioned
 /// header.
-pub fn encode_versioned_signed_proposal(
+pub(crate) fn encode_versioned_signed_proposal(
     vp: &versioned::VersionedSignedProposal,
 ) -> Result<Vec<u8>, SszCodecError> {
     let version = encode_version(vp.version)?;
@@ -406,7 +334,7 @@ pub fn encode_versioned_signed_proposal(
 
 /// Decodes a `VersionedSignedProposal` from SSZ binary with Charon versioned
 /// header.
-pub fn decode_versioned_signed_proposal(
+pub(crate) fn decode_versioned_signed_proposal(
     bytes: &[u8],
 ) -> Result<versioned::VersionedSignedProposal, SszCodecError> {
     require(bytes, VERSIONED_SIGNED_PROPOSAL_HEADER as usize)?;
@@ -491,7 +419,7 @@ fn decode_proposal_block(
         (DataVersion::Fulu, true) => SignedProposalBlock::FuluBlinded(
             electra::SignedBlindedBeaconBlock::from_ssz_bytes(bytes)?,
         ),
-        (DataVersion::Unknown, _) => return Err(SszCodecError::UnknownVersion(u64::MAX)),
+        (DataVersion::Unknown, _) => return Err(unknown_version_decoded()),
     })
 }
 
@@ -518,102 +446,6 @@ mod tests {
                 root: [0xcc; 32],
             },
         }
-    }
-
-    #[test]
-    fn roundtrip_phase0_attestation() {
-        let att = phase0::Attestation {
-            aggregation_bits: BitList::with_bits(16, &[0, 3, 7]),
-            data: sample_attestation_data(),
-            signature: [0x11; 96],
-        };
-        let encoded = encode_phase0_attestation(&att).unwrap();
-        let decoded = decode_phase0_attestation(&encoded).unwrap();
-        assert_eq!(att, decoded);
-    }
-
-    #[test]
-    fn roundtrip_electra_attestation() {
-        let att = electra::Attestation {
-            aggregation_bits: BitList::with_bits(32, &[1, 5, 10]),
-            data: sample_attestation_data(),
-            signature: [0x22; 96],
-            committee_bits: BitVector::with_bits(&[0, 3]),
-        };
-        let encoded = att.as_ssz_bytes();
-        let decoded = electra::Attestation::from_ssz_bytes(&encoded).unwrap();
-        assert_eq!(att, decoded);
-    }
-
-    #[test]
-    fn roundtrip_phase0_signed_aggregate_and_proof() {
-        let sap = phase0::SignedAggregateAndProof {
-            message: phase0::AggregateAndProof {
-                aggregator_index: 99,
-                aggregate: phase0::Attestation {
-                    aggregation_bits: BitList::with_bits(8, &[2, 4]),
-                    data: sample_attestation_data(),
-                    signature: [0x33; 96],
-                },
-                selection_proof: [0x44; 96],
-            },
-            signature: [0x55; 96],
-        };
-        let encoded = encode_phase0_signed_aggregate_and_proof(&sap).unwrap();
-        let decoded = decode_phase0_signed_aggregate_and_proof(&encoded).unwrap();
-        assert_eq!(sap, decoded);
-    }
-
-    #[test]
-    fn roundtrip_sync_committee_message() {
-        let msg = altair::SyncCommitteeMessage {
-            slot: 100,
-            beacon_block_root: [0xdd; 32],
-            validator_index: 50,
-            signature: [0xee; 96],
-        };
-        let encoded = encode_sync_committee_message(&msg).unwrap();
-        let decoded = decode_sync_committee_message(&encoded).unwrap();
-        assert_eq!(msg, decoded);
-    }
-
-    #[test]
-    fn roundtrip_contribution_and_proof() {
-        let cap = altair::ContributionAndProof {
-            aggregator_index: 33,
-            contribution: altair::SyncCommitteeContribution {
-                slot: 200,
-                beacon_block_root: [0xab; 32],
-                subcommittee_index: 2,
-                aggregation_bits: BitVector::with_bits(&[0, 5]),
-                signature: [0xcd; 96],
-            },
-            selection_proof: [0xef; 96],
-        };
-        let encoded = encode_contribution_and_proof(&cap).unwrap();
-        let decoded = decode_contribution_and_proof(&encoded).unwrap();
-        assert_eq!(cap, decoded);
-    }
-
-    #[test]
-    fn roundtrip_signed_contribution_and_proof() {
-        let scp = altair::SignedContributionAndProof {
-            message: altair::ContributionAndProof {
-                aggregator_index: 33,
-                contribution: altair::SyncCommitteeContribution {
-                    slot: 200,
-                    beacon_block_root: [0xab; 32],
-                    subcommittee_index: 2,
-                    aggregation_bits: BitVector::with_bits(&[0, 5]),
-                    signature: [0xcd; 96],
-                },
-                selection_proof: [0xef; 96],
-            },
-            signature: [0xfa; 96],
-        };
-        let encoded = encode_signed_contribution_and_proof(&scp).unwrap();
-        let decoded = decode_signed_contribution_and_proof(&encoded).unwrap();
-        assert_eq!(scp, decoded);
     }
 
     #[test]
@@ -745,7 +577,8 @@ mod tests {
         let go_bytes = read_go_fixture("attestation_phase0");
 
         // Decode Go SSZ bytes -> Rust type.
-        let decoded = decode_phase0_attestation(&go_bytes).expect("decode Go attestation fixture");
+        let decoded =
+            phase0::Attestation::from_ssz_bytes(&go_bytes).expect("decode Go attestation fixture");
 
         // Verify fields match expected values.
         assert_eq!(decoded.data.slot, 42);
@@ -756,7 +589,7 @@ mod tests {
         assert_eq!(decoded.signature, [0x11; 96]);
 
         // Re-encode and verify byte-for-byte match.
-        let rust_bytes = encode_phase0_attestation(&decoded).unwrap();
+        let rust_bytes = decoded.as_ssz_bytes();
         assert_eq!(
             rust_bytes, go_bytes,
             "Rust SSZ output must match Go SSZ output"
@@ -767,7 +600,7 @@ mod tests {
     fn go_fixture_signed_aggregate_and_proof() {
         let go_bytes = read_go_fixture("signed_aggregate_and_proof");
 
-        let decoded = decode_phase0_signed_aggregate_and_proof(&go_bytes)
+        let decoded = phase0::SignedAggregateAndProof::from_ssz_bytes(&go_bytes)
             .expect("decode Go signed_aggregate_and_proof fixture");
 
         assert_eq!(decoded.message.aggregator_index, 99);
@@ -775,7 +608,7 @@ mod tests {
         assert_eq!(decoded.message.selection_proof, [0x44; 96]);
         assert_eq!(decoded.message.aggregate.signature, [0x33; 96]);
 
-        let rust_bytes = encode_phase0_signed_aggregate_and_proof(&decoded).unwrap();
+        let rust_bytes = decoded.as_ssz_bytes();
         assert_eq!(
             rust_bytes, go_bytes,
             "Rust SSZ output must match Go SSZ output"

@@ -26,13 +26,17 @@ pub mod deadline;
 /// parsigdb
 pub mod parsigdb;
 
-mod parsigex_codec;
+/// `Marshal` trait + `register_signed_data_codecs!` table.
+pub mod marshal;
+
+pub(crate) mod parsigex_codec;
 // SSZ codec operates on compile-time-constant byte sizes and offsets.
 // Arithmetic is bounded and casts from `usize` to `u32` are safe because all
 // sizes are well below `u32::MAX`.
 #[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)]
 pub(crate) mod ssz_codec;
 
+pub use marshal::{Marshal, MarshalError};
 pub use parsigex_codec::ParSigExCodecError;
 
 /// Test utilities.
