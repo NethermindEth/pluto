@@ -222,49 +222,19 @@ pub async fn run(
     let relay_results = run_relay_http_tests(&relay_urls, &relay_tests, ct.child_token()).await;
 
     // Build ENR hash (sorted all-ENRs including self) for relay routing.
-    let self_enr = Record::from_key(&private_key)?;
-    let mut all_enrs = enr_strings.clone();
-    if !all_enrs.contains(&self_enr.to_string()) {
-        all_enrs.push(self_enr.to_string());
-    }
-    all_enrs.sort();
-    let enr_hash = hex::encode(Sha256::digest(all_enrs.join(",").as_bytes()));
+    let enr_hash = build_enr_hash(&private_key, &enr_strings)?;
 
     let cancel = ct.child_token();
-    let relay_peers = new_relays(cancel.clone(), &relay_urls, &enr_hash)
-        .await
-        .map_err(|e| CliError::Other(format!("failed to resolve relays: {e}")))?;
-
-    let mut all_peer_ids: Vec<PeerId> = cluster_peers.iter().map(|p| p.id).collect();
-    all_peer_ids.push(self_peer_id);
-
-    let p2p_context = P2PContext::new(all_peer_ids.clone());
-    let gater = ConnGater::new_conn_gater(all_peer_ids, relay_peers.clone());
-
-    let p2p_cfg = P2PConfig {
-        relays: vec![],
-        external_ip: None,
-        external_host: None,
-        tcp_addrs: args.p2p_tcp_addrs.clone(),
-        udp_addrs: vec![],
-        disable_reuse_port: false,
-    };
-
-    let relay_peers_for_reservation = relay_peers.clone();
-    let node: Node<TestBehaviour> = Node::new(
-        p2p_cfg,
+    let (node, relay_peers) = setup_p2p(
+        cancel.clone(),
         private_key,
-        NodeType::TCP,
-        true,
-        p2p_context,
-        |builder, _keypair, relay_client| {
-            builder.with_gater(gater).with_inner(TestBehaviour {
-                relay: relay_client,
-                reservation: MutableRelayReservation::new(relay_peers_for_reservation),
-            })
-        },
+        args.p2p_tcp_addrs.clone(),
+        &relay_urls,
+        &cluster_peers,
+        self_peer_id,
+        &enr_hash,
     )
-    .map_err(|e| CliError::Other(format!("failed to create P2P node: {e}")))?;
+    .await?;
 
     let tcp_addrs = args.p2p_tcp_addrs.clone();
     let self_tests_clone = self_tests.clone();
@@ -317,46 +287,11 @@ pub async fn run(
     res.execution_time = Some(CliDuration::new(elapsed));
     res.score = Some(score);
 
-    if !args.test_config.quiet {
-        write_result_to_writer(&res, writer)?;
-    }
-
-    if !args.test_config.output_json.is_empty() {
-        write_result_to_file(&res, args.test_config.output_json.as_ref()).await?;
-    }
-
-    if args.test_config.publish {
-        let all = AllCategoriesResult {
-            peers: Some(res.clone()),
-            ..Default::default()
-        };
-        publish_result_to_obol_api(
-            all,
-            &args.test_config.publish_addr,
-            &args.test_config.publish_private_key_file,
-        )
-        .await?;
-    }
-
-    tracing::info!("Keeping TCP node alive until keep-alive time is reached...");
-    #[allow(clippy::arithmetic_side_effects)]
-    let keep_alive_deadline = tokio::time::Instant::now() + args.keep_alive;
-    loop {
-        let remaining = keep_alive_deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-        tokio::select! {
-            _ = node.select_next_some() => {}
-            _ = tokio::time::sleep(remaining) => { break; }
-            _ = ct.cancelled() => { break; }
-        }
-    }
+    write_and_publish_results(&res, writer, &args).await?;
+    keep_node_alive(&mut node, args.keep_alive, ct).await;
 
     Ok(res)
 }
-
-// ── ENR helpers ──────────────────────────────────────────────────────────────
 
 async fn fetch_enrs(args: &TestPeersArgs) -> Result<Vec<String>> {
     if let Some(enrs) = &args.enrs
@@ -410,9 +345,6 @@ fn format_enr(enr: &str) -> String {
 fn peer_target_name(peer: &Peer, enr_str: &str) -> String {
     format!("peer {} {}", peer.name, format_enr(enr_str))
 }
-
-// ── Relay HTTP tests
-// ──────────────────────────────────────────────────────────
 
 async fn run_relay_http_tests(
     relay_urls: &[String],
@@ -497,7 +429,10 @@ async fn run_self_tests(
 }
 
 async fn libp2p_tcp_port_open_test(addrs: &[String]) -> TestResult {
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    // rust-libp2p multistream-select V1: the listener waits for the dialer to send
+    // the header first, then echoes it back. Wire format: varint(len) + message,
+    // so "/multistream/1.0.0\n" (19 bytes) is sent as 0x13 + 19 bytes = 20 bytes.
+    const MULTISTREAM_HEADER: &[u8] = b"\x13/multistream/1.0.0\n";
 
     let result = TestResult::new("Libp2pTCPPortOpen");
 
@@ -507,79 +442,79 @@ async fn libp2p_tcp_port_open_test(addrs: &[String]) -> TestResult {
         ));
     }
 
-    // rust-libp2p multistream-select V1: the listener waits for the dialer to send
-    // the header first, then echoes it back. Wire format: varint(len) + message,
-    // so "/multistream/1.0.0\n" (19 bytes) is sent as 0x13 + 19 bytes = 20 bytes.
-    const MULTISTREAM_HEADER: &[u8] = b"\x13/multistream/1.0.0\n";
-
     for addr in addrs {
         let connect_addr = addr.replace("0.0.0.0", "127.0.0.1");
         // Retry to tolerate slow libp2p stack startup: the TCP port may be bound
         // before the event loop is ready to complete the multistream handshake.
-        let err = 'retry: {
-            for attempt in 0..5 {
-                tracing::debug!(attempt, addr = connect_addr, "libp2p TCP self-test attempt");
-                match tokio::net::TcpStream::connect(connect_addr.as_str()).await {
-                    Ok(mut stream) => {
-                        tracing::debug!(
-                            attempt,
-                            addr = connect_addr,
-                            "TCP connected, sending multistream header"
-                        );
-                        if let Err(e) = stream.write_all(MULTISTREAM_HEADER).await {
-                            tracing::debug!(attempt, addr = connect_addr, err = %e, "write error");
-                            break 'retry Some(CliError::from(e));
-                        }
-                        let mut buf = [0u8; 20];
-                        match tokio::time::timeout(
-                            Duration::from_millis(500),
-                            stream.read_exact(&mut buf),
-                        )
-                        .await
-                        {
-                            Ok(Ok(_)) => {
-                                tracing::debug!(attempt, addr = connect_addr, raw = ?buf, "received echo");
-                                if buf
-                                    .windows(b"/multistream/1.0.0".len())
-                                    .any(|w| w == b"/multistream/1.0.0")
-                                {
-                                    break 'retry None;
-                                }
-                                break 'retry Some(CliError::Other(format!(
-                                    "multistream header not found in: {:?}",
-                                    buf
-                                )));
-                            }
-                            Ok(Err(e)) => {
-                                tracing::debug!(attempt, addr = connect_addr, err = %e, "read error");
-                                break 'retry Some(CliError::from(e));
-                            }
-                            Err(_) => {
-                                tracing::debug!(
-                                    attempt,
-                                    addr = connect_addr,
-                                    "read timeout, retrying"
-                                );
-                                tokio::time::sleep(Duration::from_millis(200)).await;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::debug!(attempt, addr = connect_addr, err = %e, "TCP connect failed");
-                        break 'retry Some(CliError::from(e));
+
+        for attempt in 0..5 {
+            tracing::debug!(attempt, addr = connect_addr, "libp2p TCP self-test attempt");
+            match try_multistream_handshake(attempt, &connect_addr, MULTISTREAM_HEADER).await {
+                Ok(true) => break,
+                Ok(false) => {
+                    if attempt == 4 {
+                        return result.fail(CliError::Other(
+                            "timeout reading multistream header".to_string(),
+                        ));
                     }
                 }
+                Err(e) => return result.fail(e),
             }
-            Some(CliError::Other(
-                "timeout reading multistream header".to_string(),
-            ))
-        };
-        if let Some(e) = err {
-            return result.fail(e);
         }
     }
 
     result.ok()
+}
+
+/// Attempts a single multistream handshake on `addr`.
+///
+/// Returns `Ok(true)` on success, `Ok(false)` when the read timed out and the
+/// caller should retry, or `Err` on a non-recoverable failure.
+async fn try_multistream_handshake(attempt: usize, addr: &str, header: &[u8]) -> Result<bool> {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let mut stream = match tokio::net::TcpStream::connect(addr).await {
+        Ok(s) => {
+            tracing::debug!(attempt, addr, "TCP connected, sending multistream header");
+            s
+        }
+        Err(e) => {
+            tracing::debug!(attempt, addr, err = %e, "TCP connect failed");
+            return Err(CliError::from(e));
+        }
+    };
+
+    if let Err(e) = stream.write_all(header).await {
+        tracing::debug!(attempt, addr, err = %e, "write error");
+        return Err(CliError::from(e));
+    }
+
+    let mut buf = [0u8; 20];
+    match tokio::time::timeout(Duration::from_millis(500), stream.read_exact(&mut buf)).await {
+        Ok(Ok(_)) => {
+            tracing::debug!(attempt, addr, raw = ?buf, "received echo");
+            if buf
+                .windows(b"/multistream/1.0.0".len())
+                .any(|w| w == b"/multistream/1.0.0")
+            {
+                Ok(true)
+            } else {
+                Err(CliError::Other(format!(
+                    "multistream header not found in: {:?}",
+                    buf
+                )))
+            }
+        }
+        Ok(Err(e)) => {
+            tracing::debug!(attempt, addr, err = %e, "read error");
+            Err(CliError::from(e))
+        }
+        Err(_) => {
+            tracing::debug!(attempt, addr, "read timeout, retrying");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            Ok(false)
+        }
+    }
 }
 
 /// Per-peer state tracked during the event loop.
@@ -916,4 +851,111 @@ fn build_peer_results(
             }
         })
         .collect()
+}
+
+fn build_enr_hash(private_key: &k256::SecretKey, enr_strings: &[String]) -> Result<String> {
+    let self_enr = Record::from_key(private_key)?;
+    let mut all_enrs = enr_strings.to_vec();
+    if !all_enrs.contains(&self_enr.to_string()) {
+        all_enrs.push(self_enr.to_string());
+    }
+    all_enrs.sort();
+    Ok(hex::encode(Sha256::digest(all_enrs.join(",").as_bytes())))
+}
+
+async fn write_and_publish_results(
+    res: &TestCategoryResult,
+    writer: &mut dyn Write,
+    args: &TestPeersArgs,
+) -> Result<()> {
+    if !args.test_config.quiet {
+        write_result_to_writer(res, writer)?;
+    }
+
+    if !args.test_config.output_json.is_empty() {
+        write_result_to_file(res, args.test_config.output_json.as_ref()).await?;
+    }
+
+    if args.test_config.publish {
+        let all = AllCategoriesResult {
+            peers: Some(res.clone()),
+            ..Default::default()
+        };
+        publish_result_to_obol_api(
+            all,
+            &args.test_config.publish_addr,
+            &args.test_config.publish_private_key_file,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn keep_node_alive(
+    node: &mut Node<TestBehaviour>,
+    keep_alive: Duration,
+    ct: CancellationToken,
+) {
+    tracing::info!("Keeping TCP node alive until keep-alive time is reached...");
+    #[allow(clippy::arithmetic_side_effects)]
+    let deadline = tokio::time::Instant::now() + keep_alive;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        tokio::select! {
+            _ = node.select_next_some() => {}
+            _ = tokio::time::sleep(remaining) => { break; }
+            _ = ct.cancelled() => { break; }
+        }
+    }
+}
+
+async fn setup_p2p(
+    cancel: CancellationToken,
+    private_key: k256::SecretKey,
+    tcp_addrs: Vec<String>,
+    relay_urls: &[String],
+    cluster_peers: &[Peer],
+    self_peer_id: PeerId,
+    enr_hash: &str,
+) -> Result<(Node<TestBehaviour>, Vec<MutablePeer>)> {
+    let relay_peers = new_relays(cancel.clone(), relay_urls, enr_hash)
+        .await
+        .map_err(|e| CliError::Other(format!("failed to resolve relays: {e}")))?;
+
+    let mut all_peer_ids: Vec<PeerId> = cluster_peers.iter().map(|p| p.id).collect();
+    all_peer_ids.push(self_peer_id);
+
+    let p2p_context = P2PContext::new(all_peer_ids.clone());
+    let gater = ConnGater::new_conn_gater(all_peer_ids, relay_peers.clone());
+
+    let p2p_cfg = P2PConfig {
+        relays: vec![],
+        external_ip: None,
+        external_host: None,
+        tcp_addrs,
+        udp_addrs: vec![],
+        disable_reuse_port: false,
+    };
+
+    let relay_peers_for_reservation = relay_peers.clone();
+    let node: Node<TestBehaviour> = Node::new(
+        p2p_cfg,
+        private_key,
+        NodeType::TCP,
+        true,
+        p2p_context,
+        |builder, _keypair, relay_client| {
+            builder.with_gater(gater).with_inner(TestBehaviour {
+                relay: relay_client,
+                reservation: MutableRelayReservation::new(relay_peers_for_reservation),
+            })
+        },
+    )
+    .map_err(|e| CliError::Other(format!("failed to create P2P node: {e}")))?;
+
+    Ok((node, relay_peers))
 }
