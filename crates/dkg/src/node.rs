@@ -39,7 +39,6 @@ pub(crate) struct DkgBehaviour {
 
 type Result<T> = std::result::Result<T, DkgError>;
 
-#[allow(dead_code)]
 pub(crate) struct Handlers {
     pub(crate) bcast: bcast::Component,
     pub(crate) sync: Vec<sync::Client>,
@@ -50,7 +49,7 @@ pub(crate) struct Handlers {
 
 pub(crate) async fn setup_p2p(
     key: k256::SecretKey,
-    conf: Config,
+    conf: &Config,
     peers: &[Peer],
     def_hash: Vec<u8>,
     sig_types: Arc<HashSet<SigType>>,
@@ -60,10 +59,9 @@ pub(crate) async fn setup_p2p(
     let peer_ids = peers.iter().map(|peer| peer.id).collect::<Vec<_>>();
     let local_peer_id = peer_id_from_key(key.public_key())?;
 
-    verify_p2p_key(&peers, &key)?;
+    verify_p2p_key(peers, &key)?;
 
-    let relay_addrs =
-        relay_addrs_for_resolution(&conf.p2p.relays);
+    let relay_addrs = relay_addrs_for_resolution(&conf.p2p.relays);
     let relays = bootnode::new_relays(ct, &relay_addrs, &hex::encode(&def_hash)).await?;
 
     let conn_gater = gater::ConnGater::new_conn_gater(peer_ids.clone(), relays.clone());
@@ -113,13 +111,17 @@ pub(crate) async fn setup_p2p(
     let peerinfo_comp = peerinfo::Behaviour::new(local_peer_id, peerinfo_config);
 
     let mut share_idx_by_peer = HashMap::new();
-    let mut local_share_idx = 0;
-    for (idx, peer) in peer_ids.iter().enumerate() {
-        share_idx_by_peer.insert(*peer, idx as u32);
-        if *peer == local_peer_id {
-            local_share_idx = idx as u32;
+    let mut local_share_idx = None;
+    for peer in peers {
+        let share_idx = u32::try_from(peer.share_idx())?;
+        share_idx_by_peer.insert(peer.id, share_idx);
+        if peer.id == local_peer_id {
+            local_share_idx = Some(share_idx);
         }
     }
+    let local_share_idx = local_share_idx.ok_or(DkgError::LocalPeerNotInDefinition {
+        peer_id: local_peer_id,
+    })?;
 
     let (frost_p2p_comp, frost_p2p_handle) = frostp2p::FrostP2PBehaviour::new(
         p2p_context.clone(),
@@ -130,7 +132,7 @@ pub(crate) async fn setup_p2p(
     );
 
     let node = Node::new(
-        conf.p2p,
+        conf.p2p.clone(),
         key,
         NodeType::TCP,
         false,
@@ -161,5 +163,48 @@ pub(crate) async fn setup_p2p(
 }
 
 fn relay_addrs_for_resolution(relays: &[Multiaddr]) -> Vec<String> {
-    relays.iter().map(|relay| relay.to_string()).collect()
+    relays.iter().map(relay_addr_for_resolution).collect()
+}
+
+fn relay_addr_for_resolution(relay: &Multiaddr) -> String {
+    let mut scheme = None;
+    let mut host = None;
+    let mut port = None;
+
+    for protocol in relay.iter() {
+        match protocol {
+            Protocol::Http => scheme = Some("http"),
+            Protocol::Https => scheme = Some("https"),
+            Protocol::Dns(name)
+            | Protocol::Dns4(name)
+            | Protocol::Dns6(name)
+            | Protocol::Dnsaddr(name)
+                if host.is_none() =>
+            {
+                host = Some(name.to_string());
+            }
+            Protocol::Ip4(ip) if host.is_none() => {
+                host = Some(ip.to_string());
+            }
+            Protocol::Ip6(ip) if host.is_none() => {
+                host = Some(format!("[{ip}]"));
+            }
+            Protocol::Tcp(tcp_port) => port = Some(tcp_port),
+            _ => {}
+        }
+    }
+
+    if let (Some(scheme), Some(host)) = (scheme, host) {
+        let default_port = match scheme {
+            "https" => 443,
+            _ => 80,
+        };
+
+        return match port {
+            Some(port) if port != default_port => format!("{scheme}://{host}:{port}"),
+            _ => format!("{scheme}://{host}"),
+        };
+    }
+
+    relay.to_string()
 }

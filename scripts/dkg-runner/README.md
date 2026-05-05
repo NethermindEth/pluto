@@ -60,6 +60,7 @@ All variables are optional. Set them in the environment before calling any scrip
 | `FEE_RECIPIENT` | `0xDeaDBeef…` | Fee recipient address for the cluster |
 | `WITHDRAWAL_ADDR` | `0xDeaDBeef…` | Withdrawal address for the cluster |
 | `TIMEOUT` | `120` | Seconds to wait before declaring the ceremony failed |
+| `SHUTDOWN_DELAY` | `1s` | Graceful shutdown delay passed to each node via `--shutdown-delay` |
 | `PLUTO_BIN` | `./target/debug/pluto` | Path to the Pluto binary (only required when `PLUTO_NODES > 0`) |
 | `CHARON_BIN` | `charon` | Path to the Charon binary |
 | `WORK_DIR` | `/tmp/dkg-run` | Scratch directory — wiped at the start of every run |

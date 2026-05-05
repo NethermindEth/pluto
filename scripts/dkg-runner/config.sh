@@ -11,6 +11,7 @@
 : "${CHARON_NODES:=2}"
 : "${RELAY_URL:=https://0.relay.obol.tech}"
 : "${TIMEOUT:=120}"
+: "${SHUTDOWN_DELAY:=1s}"
 : "${PLUTO_BIN:=./target/debug/pluto}"
 : "${CHARON_BIN:=charon}"
 : "${WORK_DIR:=/tmp/dkg-run}"

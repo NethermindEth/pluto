@@ -1,16 +1,17 @@
-use std::{collections::HashMap, num::TryFromIntError, path, time::Duration};
+use std::{collections::HashMap, ffi::OsStr, num::TryFromIntError, path, time::Duration};
 
 use bon::Builder;
-use libp2p::PeerId;
-use pluto_app::privkeylock;
+use futures::StreamExt;
+use libp2p::{PeerId, swarm::SwarmEvent};
+use pluto_app::{privkeylock, utils::UtilsError};
 use pluto_core::version;
 use tokio::select;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
-use crate::disk;
 pub use crate::{
     aggregate::{AggregateError, agg_deposit_data, agg_lock_hash_sig, agg_validator_registrations},
+    exchanger::{Exchanger, SIG_DEPOSIT_DATA, SIG_LOCK, SIG_VALIDATOR_REG},
     publish::{PublishError, write_lock_to_api},
     share::Share,
     signing::{SigningError, sign_deposit_msgs, sign_lock_hash, sign_validator_registrations},
@@ -19,10 +20,11 @@ pub use crate::{
         set_registration_signature,
     },
 };
+use crate::{disk, frost, frostp2p, nodesigs};
 use pluto_cluster::{
     definition::{Definition, DefinitionError, ValidatorAddresses},
     distvalidator::DistValidatorError,
-    lock::Lock,
+    lock::{Lock, LockError},
     operator::Operator,
     version::versions::*,
 };
@@ -32,7 +34,8 @@ use pluto_eth2api::spec::phase0;
 use pluto_eth2util as eth2util;
 use pluto_eth2util::keymanager::{self, KeymanagerError};
 use pluto_p2p::{
-    bootnode::BootnodeError, config::P2PConfig, k1::key_path, p2p::P2PError, peer::Peer,
+    behaviours::pluto::PlutoBehaviourEvent, bootnode::BootnodeError, config::P2PConfig,
+    k1::key_path, p2p::P2PError, peer::Peer,
 };
 use pluto_tracing::TracingConfig;
 use url::Url;
@@ -41,7 +44,7 @@ const DEFAULT_DATA_DIR: &str = ".charon";
 const DEFAULT_DEFINITION_FILE: &str = ".charon/cluster-definition.json";
 const DEFAULT_PUBLISH_ADDRESS: &str = "https://api.obol.tech/v1";
 const DEFAULT_PUBLISH_TIMEOUT: Duration = Duration::from_secs(30);
-const DEFAULT_SHUTDOWN_DELAY: Duration = Duration::from_secs(1);
+const DEFAULT_SHUTDOWN_DELAY: Duration = Duration::from_secs(3);
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Entry-point DKG error.
@@ -119,6 +122,10 @@ pub enum DkgError {
     #[error("integer overflow")]
     IntegerOverflow,
 
+    /// Test-only configuration is not allowed on mainnet.
+    #[error("cannot use test flags on mainnet")]
+    TestConfigOnMainnet,
+
     /// Failed to create private key lock service.
     #[error("failed to create private key lock service: {0}")]
     PrivKeyLock(#[from] privkeylock::PrivKeyLockError),
@@ -142,6 +149,13 @@ pub enum DkgError {
     #[error("peer error: {0}")]
     PeerError(#[from] pluto_p2p::peer::PeerError),
 
+    /// The local P2P key did not match the definition peer set.
+    #[error("private key not matching definition file: peer not in definition: {peer_id}")]
+    LocalPeerNotInDefinition {
+        /// Local peer ID derived from the P2P private key.
+        peer_id: PeerId,
+    },
+
     /// Definition error.
     #[error("definition error: {0}")]
     Definition(#[from] DefinitionError),
@@ -158,9 +172,57 @@ pub enum DkgError {
     #[error("p2p error: {0}")]
     P2P(#[from] P2PError),
 
-    /// The DKG ceremony backend has not been ported yet.
-    #[error("DKG ceremony backend is not implemented yet")]
-    CeremonyBackendUnimplemented,
+    /// FROST DKG setup or execution failed.
+    #[error("frost error: {0}")]
+    Frost(String),
+
+    /// DKG signing or aggregation failed.
+    #[error("dkg signing error: {0}")]
+    Signing(#[from] SigningError),
+
+    /// K1 node-signature exchange failed.
+    #[error("k1 lock hash signature exchange: {0}")]
+    NodeSignatures(#[from] nodesigs::Error),
+
+    /// Cluster lock verification failed.
+    #[error("invalid lock file signatures: {0}")]
+    LockVerification(#[source] LockError),
+
+    /// Deposit-data file write failed.
+    #[error("deposit data error: {0}")]
+    Deposit(#[from] pluto_eth2util::deposit::DepositError),
+
+    /// Output archive creation failed.
+    #[error("bundle output: {0}")]
+    BundleOutput(#[from] UtilsError),
+
+    /// Background task failed.
+    #[error("background task failed: {0}")]
+    Join(#[from] tokio::task::JoinError),
+
+    /// The configured deposit data does not match deposit amounts.
+    #[error(
+        "deposit data length does not match deposit amounts length: deposit_data={deposit_data}, deposit_amounts={deposit_amounts}"
+    )]
+    DepositDataLengthMismatch {
+        /// Deposit-data set count.
+        deposit_data: usize,
+        /// Deposit amount count.
+        deposit_amounts: usize,
+    },
+
+    /// The configured DKG algorithm is not supported.
+    #[error("unsupported dkg algorithm: {algorithm}")]
+    UnsupportedDkgAlgorithm {
+        /// Algorithm name from the cluster definition.
+        algorithm: String,
+    },
+}
+
+impl From<frost::FrostError> for DkgError {
+    fn from(error: frost::FrostError) -> Self {
+        Self::Frost(error.to_string())
+    }
 }
 
 /// Keymanager configuration accepted by the entrypoint.
@@ -250,9 +312,7 @@ pub struct Config {
 impl Config {
     /// Returns `true` if any test-only configuration is active.
     pub fn has_test_config(&self) -> bool {
-        // TODO: Extend this when more test-only hooks are added to TestConfig,
-        // so preflight skips stay aligned with the full test configuration.
-        self.test_config.def.is_some()
+        self.test_config.def.is_some() || self.test_config.p2p_key.is_some()
     }
 }
 
@@ -314,32 +374,71 @@ fn default_tracing_config() -> TracingConfig {
         .build()
 }
 
-/// Runs the DKG entrypoint until the unported backend boundary.
+/// Runs the DKG entrypoint.
 pub async fn run(conf: Config, ct: CancellationToken) -> Result<(), DkgError> {
     if ct.is_cancelled() {
         return Err(DkgError::ShutdownRequestedBeforeStartup);
     }
 
-    {
-        // Setup privarte key locking.
-        let lock_svc =
-            privkeylock::Service::new(key_path(&conf.data_dir).join(".lock"), "charon dkg").await?;
+    let (lock_ct, lock_task) = start_private_key_lock(&conf).await?;
+    let result = run_inner(conf, ct).await;
 
-        let ct = ct.clone();
+    lock_ct.cancel();
+    let _ = lock_task.await;
 
-        // Start it async
-        tokio::spawn(async move {
-            select! {
-                _ = ct.cancelled() => {
-                    lock_svc.close().await;
-                }
-                result = lock_svc.run() => {
-                    if let Err(err) = result {
-                        error!(?err, "Error running private key lock service");
-                    }
-                }
+    result
+}
+
+async fn start_private_key_lock(
+    conf: &Config,
+) -> Result<(CancellationToken, tokio::task::JoinHandle<()>), DkgError> {
+    let lock_svc = std::sync::Arc::new(
+        privkeylock::Service::new(private_key_lock_path(&conf.data_dir), "charon dkg").await?,
+    );
+    let lock_ct = CancellationToken::new();
+    let task_ct = lock_ct.clone();
+    let task = tokio::spawn(async move {
+        let run_svc = lock_svc.clone();
+        let mut run_task = tokio::spawn(async move { run_svc.run().await });
+
+        select! {
+            _ = task_ct.cancelled() => {
+                lock_svc.close().await;
+                log_private_key_lock_result(run_task.await);
             }
-        });
+            result = &mut run_task => log_private_key_lock_result(result),
+        }
+    });
+
+    Ok((lock_ct, task))
+}
+
+fn log_private_key_lock_result(
+    result: std::result::Result<
+        std::result::Result<(), privkeylock::PrivKeyLockError>,
+        tokio::task::JoinError,
+    >,
+) {
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => error!(?err, "Error running private key lock service"),
+        Err(err) => error!(?err, "Private key lock service task failed"),
+    }
+}
+
+fn private_key_lock_path(data_dir: &path::Path) -> path::PathBuf {
+    let mut lock_path = key_path(data_dir);
+    let file_name = lock_path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or("charon-enr-private-key");
+    lock_path.set_file_name(format!("{file_name}.lock"));
+    lock_path
+}
+
+async fn run_inner(conf: Config, ct: CancellationToken) -> Result<(), DkgError> {
+    if let Some(append) = &conf.append_config {
+        append.validate()?;
     }
 
     version::log_info("Charon DKG starting");
@@ -348,10 +447,10 @@ pub async fn run(conf: Config, ct: CancellationToken) -> Result<(), DkgError> {
 
     let (
         def,
-        _total_validators,
-        _new_validators,
-        _new_withdrawal_addresses,
-        _new_fee_recipient_addresses,
+        total_validators,
+        new_validators,
+        new_withdrawal_addresses,
+        new_fee_recipient_addresses,
     ) = if let Some(append) = &conf.append_config {
         let def = append.cluster_lock.definition.clone();
         let new_validators = u64::try_from(append.add_validators)?;
@@ -412,11 +511,14 @@ pub async fn run(conf: Config, ct: CancellationToken) -> Result<(), DkgError> {
 
     disk::check_writes(&conf.data_dir).await?;
 
-    let _network = eth2util::network::fork_version_to_network(&def.fork_version)?;
+    let network = eth2util::network::fork_version_to_network(&def.fork_version)?;
+    if network == eth2util::network::MAINNET.name && conf.has_test_config() {
+        return Err(DkgError::TestConfigOnMainnet);
+    }
 
     let peers = def.peers()?;
 
-    let _def_hash = hex::encode(&def.definition_hash);
+    let def_hash = pluto_cluster::helpers::to_0x_hex(&def.definition_hash);
 
     let key = if let Some(key) = conf.test_config.p2p_key.clone() {
         key
@@ -430,9 +532,462 @@ pub async fn run(conf: Config, ct: CancellationToken) -> Result<(), DkgError> {
 
     log_peer_summary(peer_id, &peers, &def.operators);
 
-    let _setup_p2p = crate::node::setup_p2p;
+    let sig_types = vec![SIG_LOCK, SIG_DEPOSIT_DATA, SIG_VALIDATOR_REG];
+    let sig_type_set = std::sync::Arc::new(sig_types.iter().copied().collect());
+    let num_validators = u32::try_from(new_validators)?;
+    let (node, mut handlers) = crate::node::setup_p2p(
+        key.clone(),
+        &conf,
+        &peers,
+        def.definition_hash.clone(),
+        sig_type_set,
+        num_validators,
+        ct.child_token(),
+    )
+    .await?;
 
-    Err(DkgError::CeremonyBackendUnimplemented)
+    let node_idx = def.node_idx(node.local_peer_id()).map_err(|source| {
+        DkgError::LocalPeerNotInDefinition {
+            peer_id: match source {
+                DefinitionError::PeerNotFound { peer_id } => peer_id,
+                _ => *node.local_peer_id(),
+            },
+        }
+    })?;
+
+    let peer_ids = def.peer_ids()?;
+    let exchanger = Exchanger::new(
+        ct.child_token(),
+        handlers.parsigex.clone(),
+        peer_ids,
+        sig_types,
+    )
+    .await;
+
+    let peer_share_indices = peers
+        .iter()
+        .map(|peer| Ok((peer.id, u32::try_from(peer.share_idx())?)))
+        .collect::<Result<HashMap<_, _>, DkgError>>()?;
+    let local_share_idx = u32::try_from(node_idx.share_idx)?;
+    let threshold = usize::try_from(def.threshold)?;
+    let mut frost_transport = frostp2p::new_frost_p2p(
+        handlers.bcast.clone(),
+        &mut handlers.frost_p2p,
+        &peer_share_indices,
+        local_share_idx,
+        threshold,
+        num_validators,
+    )
+    .await?;
+    let node_sig_caster = nodesigs::NodeSigBcast::new(
+        peers.clone(),
+        node_idx.peer_idx,
+        handlers.bcast.clone(),
+        ct.child_token(),
+    )
+    .await?;
+
+    let sync_clients = handlers.sync.clone();
+    let sync_server = handlers.sync_server.clone();
+    let frost_handle = handlers.frost_p2p;
+    let network_ct = ct.child_token();
+    let network_task = tokio::spawn(drive_dkg_network(node, frost_handle, network_ct.clone()));
+
+    let result = run_ceremony(
+        &conf,
+        &eth1,
+        ct.child_token(),
+        def,
+        total_validators,
+        new_validators,
+        new_withdrawal_addresses,
+        new_fee_recipient_addresses,
+        network,
+        def_hash,
+        key,
+        node_idx,
+        peers,
+        exchanger,
+        &mut frost_transport,
+        node_sig_caster,
+        sync_server,
+        sync_clients,
+    )
+    .await;
+
+    network_ct.cancel();
+    let _ = network_task.await;
+
+    result
+}
+
+#[allow(clippy::too_many_arguments, reason = "mirrors the Go DKG run flow")]
+async fn run_ceremony<T: frost::FTransport>(
+    conf: &Config,
+    eth1: &EthClient,
+    ct: CancellationToken,
+    def: Definition,
+    total_validators: u64,
+    new_validators: u64,
+    new_withdrawal_addresses: Vec<String>,
+    new_fee_recipient_addresses: Vec<String>,
+    network: String,
+    def_hash: String,
+    key: k256::SecretKey,
+    node_idx: pluto_cluster::definition::NodeIdx,
+    peers: Vec<Peer>,
+    exchanger: Exchanger,
+    frost_transport: &mut T,
+    node_sig_caster: nodesigs::NodeSigBcast,
+    sync_server: crate::sync::Server,
+    sync_clients: Vec<crate::sync::Client>,
+) -> Result<(), DkgError> {
+    info!("Waiting to connect to all peers...");
+
+    let mut sync_runtime = start_sync_protocol(sync_server, sync_clients, ct.child_token()).await?;
+
+    info!("All peers connected, starting DKG ceremony");
+
+    let num_validators = u32::try_from(new_validators)?;
+    let threshold = u32::try_from(def.threshold)?;
+    let share_idx = u32::try_from(node_idx.share_idx)?;
+
+    let shares = match def.dkg_algorithm.as_str() {
+        "default" | "frost" => {
+            let num_nodes = u32::try_from(peers.len())?;
+            frost::run_frost_parallel(
+                ct.child_token(),
+                frost_transport,
+                num_validators,
+                num_nodes,
+                threshold,
+                share_idx,
+                &def_hash,
+            )
+            .await?
+        }
+        algorithm => {
+            return Err(DkgError::UnsupportedDkgAlgorithm {
+                algorithm: algorithm.to_string(),
+            });
+        }
+    };
+
+    // DKG was step 1, advance to step 2.
+    sync_runtime.next_step().await?;
+
+    let append_config = conf.append_config.as_ref();
+    let existing_shares = if append_config.is_some_and(|append| !append.unverified) {
+        get_existing_shares(append_config)?
+    } else {
+        Vec::new()
+    };
+
+    if append_config.is_some() {
+        debug!(
+            total = total_validators,
+            added = new_validators,
+            "Validator keys summary"
+        );
+    }
+
+    let deposit_amounts = deposit_amounts_for_definition(&def);
+    if let Some(append) = append_config
+        && !append.deposit_data.is_empty()
+        && append.deposit_data.len() != deposit_amounts.len()
+    {
+        return Err(DkgError::DepositDataLengthMismatch {
+            deposit_data: append.deposit_data.len(),
+            deposit_amounts: deposit_amounts.len(),
+        });
+    }
+
+    let mut deposit_datas = crate::signing::sign_and_agg_deposit_data(
+        &exchanger,
+        &shares,
+        &new_withdrawal_addresses,
+        &network,
+        &node_idx,
+        &deposit_amounts,
+        def.compounding,
+    )
+    .await?;
+
+    // Deposit data was step 2, advance to step 3.
+    sync_runtime.next_step().await?;
+
+    let val_regs = crate::signing::sign_and_agg_validator_registrations(
+        &exchanger,
+        &shares,
+        &new_fee_recipient_addresses,
+        def.target_gas_limit,
+        &node_idx,
+        &def.fork_version,
+    )
+    .await?;
+
+    // Pre-regs was step 3, advance to step 4.
+    sync_runtime.next_step().await?;
+
+    let mut lock = crate::signing::sign_and_aggregate_lock_hash(
+        &existing_shares,
+        &shares,
+        def,
+        &node_idx,
+        &exchanger,
+        deposit_datas.clone(),
+        val_regs,
+        append_config,
+    )
+    .await?;
+
+    // Lock hash aggregate was step 4, advance to step 5.
+    sync_runtime.next_step().await?;
+
+    lock.node_signatures = node_sig_caster
+        .exchange(Some(&key), &lock.lock_hash, ct.child_token())
+        .await?;
+
+    if !pluto_cluster::version::support_node_signatures(&lock.version) {
+        lock.node_signatures.clear();
+    }
+
+    // Node signatures was step 5, advance to step 6.
+    sync_runtime.next_step().await?;
+
+    if !conf.no_verify && append_config.is_none_or(|append| !append.unverified) {
+        lock.verify_signatures(eth1)
+            .await
+            .map_err(DkgError::LockVerification)?;
+    }
+
+    if conf.keymanager.address.is_empty() {
+        let all_shares = existing_shares
+            .iter()
+            .chain(shares.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        disk::write_keys_to_disk(conf, &all_shares, false).await?;
+        debug!(total = all_shares.len(), "Saved keyshares to disk");
+    } else {
+        disk::write_to_keymanager(
+            &conf.keymanager.address,
+            &conf.keymanager.auth_token,
+            &shares,
+        )
+        .await?;
+        debug!(
+            keymanager_address = conf.keymanager.address,
+            total = shares.len(),
+            "Imported keyshares to keymanager"
+        );
+    }
+
+    let mut dashboard_url = None;
+    if conf.publish.enabled {
+        match write_lock_to_api(&conf.publish.address, &lock, conf.publish.timeout).await {
+            Ok(url) => dashboard_url = Some(url),
+            Err(error) => warn!(%error, "Couldn't publish lock file to Obol API"),
+        }
+    }
+
+    disk::write_lock(&conf.data_dir, &lock).await?;
+    debug!("Saved lock file to disk");
+
+    if let Some(append) = append_config
+        && !append.deposit_data.is_empty()
+    {
+        deposit_datas = pluto_eth2util::deposit::merge_deposit_data_sets(
+            deposit_datas,
+            append.deposit_data.clone(),
+        );
+        debug!(
+            amounts = deposit_datas.len(),
+            validators = deposit_datas.first().map_or(0, Vec::len),
+            "Merged deposit data files"
+        );
+    }
+
+    for deposit_data in &deposit_datas {
+        pluto_eth2util::deposit::write_deposit_data_file(deposit_data, &network, &conf.data_dir)
+            .await?;
+        debug!("Saved deposit data file(s) to disk");
+    }
+
+    // Signature verification and disk key write was step 6, advance to step 7.
+    sync_runtime.next_step().await?;
+
+    sync_runtime.shutdown().await?;
+
+    if conf.zipped {
+        let data_dir = conf.data_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            pluto_app::utils::bundle_output(data_dir, "dkg.tar.gz")
+        })
+        .await??;
+    }
+
+    debug!(
+        seconds = conf.shutdown_delay.as_secs(),
+        "Graceful shutdown delay"
+    );
+    tokio::time::sleep(conf.shutdown_delay).await;
+
+    info!("Successfully completed DKG ceremony");
+    if let Some(url) = dashboard_url {
+        info!("You can find your newly-created cluster dashboard here: {url}");
+    }
+
+    Ok(())
+}
+
+fn deposit_amounts_for_definition(def: &Definition) -> Vec<phase0::Gwei> {
+    if def.deposit_amounts.is_empty() {
+        if support_partial_deposits(&def.version) {
+            pluto_eth2util::deposit::default_deposit_amounts(def.compounding)
+        } else {
+            vec![pluto_eth2util::deposit::DEFAULT_DEPOSIT_AMOUNT]
+        }
+    } else {
+        pluto_eth2util::deposit::dedup_amounts(&def.deposit_amounts)
+    }
+}
+
+fn support_partial_deposits(version: &str) -> bool {
+    !matches!(
+        version,
+        V1_0 | V1_1 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7
+    )
+}
+
+struct SyncRuntime {
+    server: crate::sync::Server,
+    clients: Vec<crate::sync::Client>,
+    step: i64,
+    cancellation: CancellationToken,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl SyncRuntime {
+    async fn next_step(&mut self) -> Result<(), DkgError> {
+        self.step = self.step.checked_add(1).ok_or(DkgError::IntegerOverflow)?;
+        for client in &self.clients {
+            client.set_step(self.step);
+        }
+
+        debug!(step = self.step, "Waiting for peers to start next step");
+        self.server
+            .await_all_at_step(self.step, self.cancellation.child_token())
+            .await?;
+
+        Ok(())
+    }
+
+    async fn shutdown(mut self) -> Result<(), DkgError> {
+        for client in &self.clients {
+            client.shutdown(self.cancellation.child_token()).await?;
+        }
+
+        self.server
+            .await_all_shutdown(self.cancellation.child_token())
+            .await?;
+        self.cancellation.cancel();
+
+        for task in self.tasks.drain(..) {
+            let _ = task.await;
+        }
+
+        Ok(())
+    }
+}
+
+impl Drop for SyncRuntime {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+    }
+}
+
+async fn start_sync_protocol(
+    server: crate::sync::Server,
+    clients: Vec<crate::sync::Client>,
+    cancellation: CancellationToken,
+) -> Result<SyncRuntime, DkgError> {
+    server.start();
+
+    let mut tasks = Vec::with_capacity(clients.len());
+    for client in &clients {
+        let client = client.clone();
+        let client_ct = cancellation.child_token();
+        let cancel_on_error = cancellation.clone();
+        tasks.push(tokio::spawn(async move {
+            if let Err(error) = client.run(client_ct).await
+                && !matches!(error, crate::sync::Error::Canceled)
+            {
+                error!(%error, "Sync failed to peer");
+                cancel_on_error.cancel();
+            }
+        }));
+    }
+
+    let mut ticker = tokio::time::interval(Duration::from_millis(250));
+    loop {
+        if let Some(error) = server.err().await {
+            return Err(DkgError::Sync(error));
+        }
+
+        let connected_count = clients
+            .iter()
+            .filter(|client| client.is_connected())
+            .count();
+        if connected_count == clients.len() {
+            break;
+        }
+
+        tokio::select! {
+            _ = cancellation.cancelled() => return Err(crate::sync::Error::Canceled.into()),
+            _ = ticker.tick() => {}
+        }
+    }
+
+    for client in &clients {
+        client.disable_reconnect();
+    }
+
+    server
+        .await_all_connected(cancellation.child_token())
+        .await?;
+
+    let mut runtime = SyncRuntime {
+        server,
+        clients,
+        step: 0,
+        cancellation,
+        tasks,
+    };
+    runtime.next_step().await?;
+
+    Ok(runtime)
+}
+
+async fn drive_dkg_network(
+    mut node: pluto_p2p::p2p::Node<crate::node::DkgBehaviour>,
+    frost_handle: frostp2p::FrostP2PHandle,
+    cancellation: CancellationToken,
+) {
+    loop {
+        tokio::select! {
+            _ = cancellation.cancelled() => break,
+            event = node.select_next_some() => {
+                if let SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(
+                    crate::node::DkgBehaviourEvent::Bcast(event),
+                )) = event
+                    && let Err(error) = frost_handle.handle_bcast_event(event)
+                {
+                    debug!(%error, "Failed to forward bcast event to FROST transport");
+                }
+            }
+        }
+    }
 }
 
 fn validate_keymanager_flags(conf: &Config) -> Result<(), DkgError> {
@@ -630,10 +1185,12 @@ mod tests {
 
     #[tokio::test]
     async fn run_rejects_mismatched_keymanager_flags() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
         let (lock, ..) = pluto_cluster::test_cluster::new_for_test(1, 3, 4, 0);
 
         let err = run(
             Config::builder()
+                .data_dir(tempdir.path().to_path_buf())
                 .test_config(TestConfig::builder().def(lock.definition.clone()).build())
                 .keymanager(
                     KeymanagerConfig::builder()
@@ -696,36 +1253,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_executes_preflight_before_reaching_backend_boundary() {
+    async fn run_reaches_p2p_key_verification_after_preflight() {
         let tempdir = tempfile::tempdir().expect("tempdir");
-        let definition_path = tempdir.path().join("cluster-definition.json");
-        let private_key_path = tempdir.path().join("charon-enr-private-key");
+        let (lock, ..) = pluto_cluster::test_cluster::new_for_test(1, 3, 4, 1);
+        let mismatched_key = pluto_testutil::random::generate_insecure_k1_key(99);
 
-        tokio::fs::write(&private_key_path, b"dummy")
-            .await
-            .expect("private key");
-
-        let (lock, ..) = pluto_cluster::test_cluster::new_for_test(1, 3, 4, 0);
-        let definition = serde_json::to_string(&lock.definition).expect("definition json");
-        tokio::fs::write(&definition_path, definition)
-            .await
-            .expect("definition file");
-
-        let join_err = tokio::spawn(async move {
-            run(
-                Config::builder()
-                    .data_dir(tempdir.path().to_path_buf())
-                    .def_file(definition_path.to_string_lossy().into_owned())
-                    .no_verify(true)
-                    .build(),
-                CancellationToken::new(),
-            )
-            .await
-        })
+        let err = run(
+            Config::builder()
+                .data_dir(tempdir.path().to_path_buf())
+                .p2p(P2PConfig::default())
+                .shutdown_delay(Duration::ZERO)
+                .test_config(
+                    TestConfig::builder()
+                        .def(lock.definition.clone())
+                        .p2p_key(mismatched_key)
+                        .build(),
+                )
+                .build(),
+            CancellationToken::new(),
+        )
         .await
-        .expect_err("backend handoff should panic until implemented");
+        .expect_err("mismatched P2P key should fail before networking");
 
-        assert!(join_err.is_panic());
+        assert!(matches!(
+            err,
+            DkgError::PeerError(pluto_p2p::peer::PeerError::UnknownPublicKey)
+        ));
     }
 
     #[tokio::test]

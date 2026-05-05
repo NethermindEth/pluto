@@ -59,6 +59,7 @@ start_node() {
             --definition-file="${DEF_FILE}" \
             --data-dir="${data_dir}" \
             --p2p-relays="${RELAY_URL}" \
+            --shutdown-delay="${SHUTDOWN_DELAY}" \
             > "${log_file}" 2>&1 &
     else
         # Interactive path: tee to log file and the terminal.
@@ -66,6 +67,7 @@ start_node() {
             --definition-file="${DEF_FILE}" \
             --data-dir="${data_dir}" \
             --p2p-relays="${RELAY_URL}" \
+            --shutdown-delay="${SHUTDOWN_DELAY}" \
             > >(tee "${log_file}") 2>&1 &
     fi
 
