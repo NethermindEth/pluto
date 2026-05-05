@@ -294,8 +294,33 @@ impl FrostP2PSender {
 /// User-facing handle for the FROST direct-P2P behaviour.
 pub(crate) struct FrostP2PHandle {
     /// Receives `(sender_peer_id, message)` for inbound round-1 P2P messages.
-    pub inbound_rx: mpsc::UnboundedReceiver<(PeerId, FrostRound1P2p)>,
+    inbound_rx: Option<mpsc::UnboundedReceiver<(PeerId, FrostRound1P2p)>>,
     sender: FrostP2PSender,
+    bcast_event_tx: mpsc::UnboundedSender<bcast::Event>,
+    bcast_event_rx: Option<mpsc::UnboundedReceiver<bcast::Event>>,
+}
+
+impl FrostP2PHandle {
+    /// Forwards bcast completion events into the FROST round state machine.
+    pub(crate) fn handle_bcast_event(&self, event: bcast::Event) -> Result<(), FrostError> {
+        self.bcast_event_tx
+            .send(event)
+            .map_err(|_| FrostError::InvalidMessage("frost bcast event channel closed"))
+    }
+
+    fn take_inbound_rx(
+        &mut self,
+    ) -> Result<mpsc::UnboundedReceiver<(PeerId, FrostRound1P2p)>, FrostError> {
+        self.inbound_rx.take().ok_or(FrostError::InvalidMessage(
+            "frost p2p inbound receiver already taken",
+        ))
+    }
+
+    fn take_bcast_event_rx(&mut self) -> Result<mpsc::UnboundedReceiver<bcast::Event>, FrostError> {
+        self.bcast_event_rx.take().ok_or(FrostError::InvalidMessage(
+            "frost bcast event receiver already taken",
+        ))
+    }
 }
 
 /// libp2p behaviour for FROST round-1 direct P2P.
@@ -314,6 +339,7 @@ impl FrostP2PBehaviour {
     pub(crate) fn new() -> (Self, FrostP2PHandle) {
         let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (bcast_event_tx, bcast_event_rx) = mpsc::unbounded_channel();
         let sender = FrostP2PSender { cmd_tx };
         (
             Self {
@@ -325,7 +351,12 @@ impl FrostP2PBehaviour {
                 connections: HashMap::new(),
                 next_op_id: 0,
             },
-            FrostP2PHandle { inbound_rx, sender },
+            FrostP2PHandle {
+                inbound_rx: Some(inbound_rx),
+                sender,
+                bcast_event_tx,
+                bcast_event_rx: Some(bcast_event_rx),
+            },
         )
     }
 
@@ -487,6 +518,7 @@ impl NetworkBehaviour for FrostP2PBehaviour {
 pub(crate) struct FrostP2P {
     bcast_comp: bcast::Component,
     frost_sender: FrostP2PSender,
+    bcast_event_rx: mpsc::UnboundedReceiver<bcast::Event>,
     round1_casts_tx: mpsc::UnboundedSender<FrostRound1Casts>,
     round1_casts_rx: mpsc::UnboundedReceiver<FrostRound1Casts>,
     round1_p2p_rx: mpsc::UnboundedReceiver<(PeerId, FrostRound1P2p)>,
@@ -502,7 +534,7 @@ pub(crate) struct FrostP2P {
 /// Creates a FROST P2P transport and registers its bcast callbacks.
 pub(crate) async fn new_frost_p2p(
     bcast_comp: bcast::Component,
-    frost_handle: FrostP2PHandle,
+    frost_handle: &mut FrostP2PHandle,
     peers: &HashMap<PeerId, u32>,
     local_share_idx: u32,
     threshold: usize,
@@ -510,6 +542,8 @@ pub(crate) async fn new_frost_p2p(
 ) -> Result<FrostP2P, FrostError> {
     let (round1_casts_tx, round1_casts_rx) = mpsc::unbounded_channel();
     let (round2_casts_tx, round2_casts_rx) = mpsc::unbounded_channel();
+    let round1_p2p_rx = frost_handle.take_inbound_rx()?;
+    let bcast_event_rx = frost_handle.take_bcast_event_rx()?;
 
     let mut peers_by_share_idx = HashMap::new();
     let mut share_idx_by_peer = HashMap::new();
@@ -536,10 +570,11 @@ pub(crate) async fn new_frost_p2p(
 
     Ok(FrostP2P {
         bcast_comp,
-        frost_sender: frost_handle.sender,
+        frost_sender: frost_handle.sender.clone(),
+        bcast_event_rx,
         round1_casts_tx,
         round1_casts_rx,
-        round1_p2p_rx: frost_handle.inbound_rx,
+        round1_p2p_rx,
         round2_casts_tx,
         round2_casts_rx,
         peers_by_share_idx,
@@ -680,6 +715,8 @@ impl FTransport for FrostP2P {
         self.bcast_comp
             .broadcast(ROUND1_CAST_ID, &casts_msg)
             .await?;
+        self.wait_for_bcast_completion(ROUND1_CAST_ID, cancellation)
+            .await?;
         let _ = self.round1_casts_tx.send(casts_msg);
 
         let p2p_msgs = self.build_round1_p2p_by_peer(&shares)?;
@@ -743,6 +780,8 @@ impl FTransport for FrostP2P {
         self.bcast_comp
             .broadcast(ROUND2_CAST_ID, &casts_msg)
             .await?;
+        self.wait_for_bcast_completion(ROUND2_CAST_ID, cancellation)
+            .await?;
         let _ = self.round2_casts_tx.send(casts_msg);
 
         let mut cast_msgs = Vec::with_capacity(self.num_peers);
@@ -762,6 +801,25 @@ impl FTransport for FrostP2P {
 }
 
 impl FrostP2P {
+    async fn wait_for_bcast_completion(
+        &mut self,
+        expected_msg_id: &'static str,
+        cancellation: &CancellationToken,
+    ) -> Result<(), FrostError> {
+        loop {
+            tokio::select! {
+                _ = cancellation.cancelled() => return Err(FrostError::Cancelled),
+                event = self.bcast_event_rx.recv() => {
+                    match event.ok_or(FrostError::InvalidMessage("frost bcast event channel closed"))? {
+                        bcast::Event::BroadcastCompleted { msg_id } if msg_id == expected_msg_id => return Ok(()),
+                        bcast::Event::BroadcastFailed { msg_id, error } if msg_id == expected_msg_id => return Err(error.into()),
+                        event => debug!(?event, expected_msg_id, "ignoring unrelated bcast event"),
+                    }
+                }
+            }
+        }
+    }
+
     fn build_round1_p2p_by_peer(
         &self,
         shares: &HashMap<MsgKey, ShamirShare>,
@@ -1074,5 +1132,87 @@ mod tests {
             round2_cast_from_proto(&cast),
             Err(FrostError::InvalidMessage("decode verification key scalar"))
         ));
+    }
+
+    #[tokio::test]
+    async fn bcast_event_handler_forwards_event() {
+        let (handler, mut event_rx) = frost_p2p_handle_for_test();
+
+        handler
+            .handle_bcast_event(bcast::Event::BroadcastCompleted {
+                msg_id: ROUND1_CAST_ID.to_string(),
+            })
+            .unwrap();
+
+        assert!(matches!(
+            event_rx.recv().await.unwrap(),
+            bcast::Event::BroadcastCompleted { msg_id } if msg_id == ROUND1_CAST_ID
+        ));
+    }
+
+    #[tokio::test]
+    async fn wait_for_bcast_completion_observes_failure() {
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let mut transport = frost_p2p_for_bcast_event_test(event_rx);
+
+        event_tx
+            .send(bcast::Event::BroadcastFailed {
+                msg_id: ROUND2_CAST_ID.to_string(),
+                error: bcast::Error::BehaviourClosed,
+            })
+            .unwrap();
+
+        assert!(matches!(
+            transport
+                .wait_for_bcast_completion(ROUND2_CAST_ID, &CancellationToken::new())
+                .await,
+            Err(FrostError::Bcast(bcast::Error::BehaviourClosed))
+        ));
+    }
+
+    fn frost_p2p_handle_for_test() -> (FrostP2PHandle, mpsc::UnboundedReceiver<bcast::Event>) {
+        let (_inbound_tx, inbound_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
+        let (bcast_event_tx, bcast_event_rx) = mpsc::unbounded_channel();
+        (
+            FrostP2PHandle {
+                inbound_rx: Some(inbound_rx),
+                sender: FrostP2PSender { cmd_tx },
+                bcast_event_tx,
+                bcast_event_rx: None,
+            },
+            bcast_event_rx,
+        )
+    }
+
+    fn frost_p2p_for_bcast_event_test(
+        bcast_event_rx: mpsc::UnboundedReceiver<bcast::Event>,
+    ) -> FrostP2P {
+        let (round1_casts_tx, round1_casts_rx) = mpsc::unbounded_channel();
+        let (_round1_p2p_tx, round1_p2p_rx) = mpsc::unbounded_channel();
+        let (round2_casts_tx, round2_casts_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
+        let (bcast_behaviour, bcast_comp) = bcast::Behaviour::new(
+            Vec::new(),
+            pluto_p2p::p2p_context::P2PContext::default(),
+            pluto_testutil::random::generate_insecure_k1_key(1),
+        );
+        drop(bcast_behaviour);
+
+        FrostP2P {
+            bcast_comp,
+            frost_sender: FrostP2PSender { cmd_tx },
+            bcast_event_rx,
+            round1_casts_tx,
+            round1_casts_rx,
+            round1_p2p_rx,
+            round2_casts_tx,
+            round2_casts_rx,
+            peers_by_share_idx: HashMap::new(),
+            share_idx_by_peer: HashMap::new(),
+            local_share_idx: 1,
+            num_validators: 0,
+            num_peers: 0,
+        }
     }
 }
