@@ -9,6 +9,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use either::Either;
 use futures::{AsyncWriteExt, FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use libp2p::{
     Multiaddr, PeerId,
@@ -18,6 +19,7 @@ use libp2p::{
         NetworkBehaviour, NotifyHandler, Stream, StreamProtocol, StreamUpgradeError,
         SubstreamProtocol, THandler, THandlerInEvent, THandlerOutEvent, ToSwarm,
         dial_opts::{DialOpts, PeerCondition},
+        dummy,
         handler::{
             ConnectionEvent, DialUpgradeError, FullyNegotiatedInbound, FullyNegotiatedOutbound,
         },
@@ -354,6 +356,7 @@ impl FrostP2PHandle {
 
 /// libp2p behaviour for FROST round-1 direct P2P.
 pub(crate) struct FrostP2PBehaviour {
+    peers: HashSet<PeerId>,
     p2p_context: P2PContext,
     inbound_tx: mpsc::UnboundedSender<(PeerId, FrostRound1P2p)>,
     cmd_rx: mpsc::UnboundedReceiver<SendCommand>,
@@ -365,13 +368,17 @@ pub(crate) struct FrostP2PBehaviour {
 
 impl FrostP2PBehaviour {
     /// Creates a new FROST P2P behaviour and handle.
-    pub(crate) fn new(p2p_context: P2PContext) -> (Self, FrostP2PHandle) {
+    pub(crate) fn new(
+        p2p_context: P2PContext,
+        peers: impl IntoIterator<Item = PeerId>,
+    ) -> (Self, FrostP2PHandle) {
         let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (bcast_event_tx, bcast_event_rx) = mpsc::unbounded_channel();
         let sender = FrostP2PSender::new(cmd_tx);
         (
             Self {
+                peers: peers.into_iter().collect(),
                 p2p_context,
                 inbound_tx,
                 cmd_rx,
@@ -387,6 +394,14 @@ impl FrostP2PBehaviour {
                 bcast_event_rx: Some(bcast_event_rx),
             },
         )
+    }
+
+    fn connection_handler_for_peer(&self, peer_id: PeerId) -> THandler<Self> {
+        if self.peers.contains(&peer_id) {
+            Either::Left(FrostP2PHandler::new())
+        } else {
+            Either::Right(dummy::ConnectionHandler)
+        }
     }
 
     fn next_op_id(&mut self) -> u64 {
@@ -515,28 +530,28 @@ impl FrostP2PBehaviour {
 }
 
 impl NetworkBehaviour for FrostP2PBehaviour {
-    type ConnectionHandler = FrostP2PHandler;
+    type ConnectionHandler = Either<FrostP2PHandler, dummy::ConnectionHandler>;
     type ToSwarm = ();
 
     fn handle_established_inbound_connection(
         &mut self,
         _connection_id: ConnectionId,
-        _peer: PeerId,
+        peer: PeerId,
         _local_addr: &Multiaddr,
         _remote_addr: &Multiaddr,
     ) -> Result<THandler<Self>, ConnectionDenied> {
-        Ok(FrostP2PHandler::new())
+        Ok(self.connection_handler_for_peer(peer))
     }
 
     fn handle_established_outbound_connection(
         &mut self,
         _connection_id: ConnectionId,
-        _peer: PeerId,
+        peer: PeerId,
         _addr: &Multiaddr,
         _role_override: libp2p::core::Endpoint,
         _port_use: libp2p::core::transport::PortUse,
     ) -> Result<THandler<Self>, ConnectionDenied> {
-        Ok(FrostP2PHandler::new())
+        Ok(self.connection_handler_for_peer(peer))
     }
 
     fn on_swarm_event(&mut self, event: FromSwarm) {
@@ -569,6 +584,10 @@ impl NetworkBehaviour for FrostP2PBehaviour {
         _connection_id: ConnectionId,
         event: THandlerOutEvent<Self>,
     ) {
+        let event = match event {
+            Either::Left(event) => event,
+            Either::Right(unreachable) => match unreachable {},
+        };
         match event {
             OutEvent::Received(msg) => {
                 let _ = self.inbound_tx.send((peer_id, msg));
@@ -587,7 +606,7 @@ impl NetworkBehaviour for FrostP2PBehaviour {
         self.drain_commands(cx);
 
         if let Some(event) = self.pending_events.pop_front() {
-            return Poll::Ready(event);
+            return Poll::Ready(event.map_in(Either::Left));
         }
 
         Poll::Pending
@@ -1227,7 +1246,8 @@ mod tests {
     #[test]
     fn cancel_all_removes_behaviour_pending_sends() {
         let peer_id = PeerId::random();
-        let (mut behaviour, _handle) = FrostP2PBehaviour::new(P2PContext::new([peer_id]));
+        let (mut behaviour, _handle) =
+            FrostP2PBehaviour::new(P2PContext::new([peer_id]), [peer_id]);
         let (result_tx, _result_rx) = oneshot::channel();
 
         behaviour.result_by_op.insert(7, (peer_id, result_tx));
@@ -1245,6 +1265,23 @@ mod tests {
                 }
             )
         }));
+    }
+
+    #[test]
+    fn behaviour_uses_dummy_handler_for_unknown_peer() {
+        let known_peer = PeerId::random();
+        let unknown_peer = PeerId::random();
+        let (behaviour, _handle) =
+            FrostP2PBehaviour::new(P2PContext::new([known_peer]), [known_peer]);
+
+        assert!(matches!(
+            behaviour.connection_handler_for_peer(known_peer),
+            Either::Left(_)
+        ));
+        assert!(matches!(
+            behaviour.connection_handler_for_peer(unknown_peer),
+            Either::Right(_)
+        ));
     }
 
     #[tokio::test]
