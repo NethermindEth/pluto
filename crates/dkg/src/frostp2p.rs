@@ -99,6 +99,11 @@ pub(crate) enum OutEvent {
 type ActiveFuture = BoxFuture<'static, Option<OutEvent>>;
 type Round1Response = (HashMap<MsgKey, Round1Bcast>, HashMap<MsgKey, ShamirShare>);
 
+struct PeerShareIndices {
+    peers_by_share_idx: HashMap<u32, PeerId>,
+    share_idx_by_peer: HashMap<PeerId, u32>,
+}
+
 /// Connection handler for the FROST round-1 direct P2P protocol.
 pub(crate) struct FrostP2PHandler {
     pending_open: VecDeque<(u64, FrostRound1P2p)>,
@@ -639,21 +644,16 @@ pub(crate) async fn new_frost_p2p(
     threshold: usize,
     num_validators: u32,
 ) -> Result<FrostP2P, FrostError> {
+    let peer_share_indices = validate_peer_share_indices(peers, local_share_idx)?;
+
     let (round1_casts_tx, round1_casts_rx) = mpsc::unbounded_channel();
     let (round2_casts_tx, round2_casts_rx) = mpsc::unbounded_channel();
     let round1_p2p_rx = frost_handle.take_inbound_rx()?;
     let bcast_event_rx = frost_handle.take_bcast_event_rx()?;
 
-    let mut peers_by_share_idx = HashMap::new();
-    let mut share_idx_by_peer = HashMap::new();
-    for (&peer_id, &share_idx) in peers {
-        share_idx_by_peer.insert(peer_id, share_idx);
-        peers_by_share_idx.insert(share_idx, peer_id);
-    }
-
     register_round1_bcast(
         &bcast_comp,
-        share_idx_by_peer.clone(),
+        peer_share_indices.share_idx_by_peer.clone(),
         round1_casts_tx.clone(),
         threshold,
         num_validators,
@@ -661,7 +661,7 @@ pub(crate) async fn new_frost_p2p(
     .await?;
     register_round2_bcast(
         &bcast_comp,
-        share_idx_by_peer.clone(),
+        peer_share_indices.share_idx_by_peer.clone(),
         round2_casts_tx.clone(),
         num_validators,
     )
@@ -676,11 +676,49 @@ pub(crate) async fn new_frost_p2p(
         round1_p2p_rx,
         round2_casts_tx,
         round2_casts_rx,
-        peers_by_share_idx,
-        share_idx_by_peer,
+        peers_by_share_idx: peer_share_indices.peers_by_share_idx,
+        share_idx_by_peer: peer_share_indices.share_idx_by_peer,
         local_share_idx,
         num_validators,
         num_peers: peers.len(),
+    })
+}
+
+fn validate_peer_share_indices(
+    peers: &HashMap<PeerId, u32>,
+    local_share_idx: u32,
+) -> Result<PeerShareIndices, FrostError> {
+    let mut peers_by_share_idx = HashMap::new();
+    let mut share_idx_by_peer = HashMap::new();
+
+    for (&peer_id, &share_idx) in peers {
+        if share_idx == 0 {
+            return Err(FrostError::InvalidMessage(
+                "frost peer share index cannot be zero",
+            ));
+        }
+        if peers_by_share_idx.insert(share_idx, peer_id).is_some() {
+            return Err(FrostError::InvalidMessage(
+                "duplicate frost peer share index",
+            ));
+        }
+        share_idx_by_peer.insert(peer_id, share_idx);
+    }
+
+    if !peers_by_share_idx.contains_key(&local_share_idx) {
+        return Err(FrostError::InvalidMessage(
+            "local frost share index missing from peer map",
+        ));
+    }
+    if peers.len() != peers_by_share_idx.len() {
+        return Err(FrostError::InvalidMessage(
+            "frost peer count does not match unique share indexes",
+        ));
+    }
+
+    Ok(PeerShareIndices {
+        peers_by_share_idx,
+        share_idx_by_peer,
     })
 }
 
@@ -1284,6 +1322,31 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn peer_share_index_validation_rejects_invalid_maps() {
+        let peer_a = PeerId::random();
+        let peer_b = PeerId::random();
+
+        assert!(matches!(
+            validate_peer_share_indices(&HashMap::from([(peer_a, 0)]), 1),
+            Err(FrostError::InvalidMessage(
+                "frost peer share index cannot be zero"
+            ))
+        ));
+        assert!(matches!(
+            validate_peer_share_indices(&HashMap::from([(peer_a, 1), (peer_b, 1)]), 1),
+            Err(FrostError::InvalidMessage(
+                "duplicate frost peer share index"
+            ))
+        ));
+        assert!(matches!(
+            validate_peer_share_indices(&HashMap::from([(peer_a, 1)]), 2),
+            Err(FrostError::InvalidMessage(
+                "local frost share index missing from peer map"
+            ))
+        ));
+    }
+
     #[tokio::test]
     async fn sender_emits_cancel_all_command_on_cancellation() {
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
@@ -1298,10 +1361,8 @@ mod tests {
                 .await
         });
 
-        assert!(matches!(
-            cmd_rx.recv().await.unwrap(),
-            SendCommand::Send { .. }
-        ));
+        let send_command = cmd_rx.recv().await.unwrap();
+        assert!(matches!(send_command, SendCommand::Send { .. }));
 
         cancellation.cancel();
 
@@ -1310,6 +1371,7 @@ mod tests {
             cmd_rx.recv().await.unwrap(),
             SendCommand::CancelAll
         ));
+        drop(send_command);
     }
 
     #[tokio::test]
