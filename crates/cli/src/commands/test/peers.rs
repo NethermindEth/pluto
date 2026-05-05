@@ -1024,3 +1024,307 @@ async fn setup_p2p(
 
     Ok((node, relay_peers))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pluto_cluster::test_cluster;
+    use std::{io::Write, time::Duration as StdDuration};
+    use tempfile::NamedTempFile;
+    use tokio_util::sync::CancellationToken;
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path as wm_path},
+    };
+
+    fn default_test_config() -> TestConfigArgs {
+        TestConfigArgs {
+            output_json: String::new(),
+            quiet: false,
+            test_cases: None,
+            timeout: StdDuration::from_secs(60),
+            publish: false,
+            publish_addr: String::new(),
+            publish_private_key_file: std::path::PathBuf::new(),
+        }
+    }
+
+    fn no_source_peers_args() -> TestPeersArgs {
+        TestPeersArgs {
+            test_config: default_test_config(),
+            enrs: None,
+            lock_file: String::new(),
+            definition_file: String::new(),
+            private_key_file: std::path::PathBuf::new(),
+            keep_alive: StdDuration::ZERO,
+            load_test_duration: StdDuration::from_secs(1),
+            direct_connection_timeout: StdDuration::from_secs(1),
+            p2p_tcp_addrs: vec![],
+            p2p_relays: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn run_no_source_flag_returns_error() {
+        let args = no_source_peers_args();
+        let mut output = Vec::new();
+        let err = run(args, &mut output, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--enrs, --lock-file or --definition-file must be specified")
+        );
+    }
+
+    #[tokio::test]
+    async fn run_conflicting_flags_enrs_and_lock_returns_error() {
+        let mut args = no_source_peers_args();
+        args.enrs = Some(vec!["enr:test".into()]);
+        args.lock_file = "foo.json".into();
+        let mut output = Vec::new();
+        let err = run(args, &mut output, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("only one of --enrs, --lock-file or --definition-file may be specified")
+        );
+    }
+
+    #[tokio::test]
+    async fn run_conflicting_flags_enrs_and_definition_returns_error() {
+        let mut args = no_source_peers_args();
+        args.enrs = Some(vec!["enr:test".into()]);
+        args.definition_file = "foo.json".into();
+        let mut output = Vec::new();
+        let err = run(args, &mut output, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("only one of --enrs, --lock-file or --definition-file may be specified")
+        );
+    }
+
+    #[tokio::test]
+    async fn run_conflicting_flags_lock_and_definition_returns_error() {
+        let mut args = no_source_peers_args();
+        args.lock_file = "foo.json".into();
+        args.definition_file = "bar.json".into();
+        let mut output = Vec::new();
+        let err = run(args, &mut output, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("only one of --enrs, --lock-file or --definition-file may be specified")
+        );
+    }
+
+    #[tokio::test]
+    async fn run_quiet_without_output_json_returns_error() {
+        let mut args = no_source_peers_args();
+        args.enrs = Some(vec!["enr:test".into()]);
+        args.test_config.quiet = true;
+        let mut output = Vec::new();
+        let err = run(args, &mut output, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("on --quiet, an --output-json is required")
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_enrs_from_lock_valid() {
+        let (lock, ..) = test_cluster::new_for_test(1, 2, 3, 42);
+        let json = serde_json::to_string(&lock).unwrap();
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(json.as_bytes()).unwrap();
+
+        let path = file.path().to_str().unwrap();
+        let enrs = fetch_enrs_from_lock(path).await.unwrap();
+
+        let expected: Vec<String> = lock
+            .definition
+            .operators
+            .iter()
+            .map(|op| op.enr.clone())
+            .filter(|e| !e.is_empty())
+            .collect();
+        assert_eq!(enrs, expected);
+        assert!(!enrs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fetch_enrs_from_lock_empty_enrs() {
+        let (mut lock, ..) = test_cluster::new_for_test(1, 2, 3, 42);
+        lock.definition.operators.clear();
+        let json = serde_json::to_string(&lock).unwrap();
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(json.as_bytes()).unwrap();
+
+        let path = file.path().to_str().unwrap();
+        let err = fetch_enrs_from_lock(path).await.unwrap_err();
+        assert!(err.to_string().contains("no peers found in lock file"));
+    }
+
+    #[tokio::test]
+    async fn fetch_enrs_from_lock_invalid_json() {
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(b"not json").unwrap();
+
+        let path = file.path().to_str().unwrap();
+        let err = fetch_enrs_from_lock(path).await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_enrs_from_lock_file_not_found() {
+        let err = fetch_enrs_from_lock("/nonexistent/path/lock.json").await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_enrs_from_definition_local_valid() {
+        let (lock, ..) = test_cluster::new_for_test(1, 2, 3, 42);
+        let json = serde_json::to_string(&lock.definition).unwrap();
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(json.as_bytes()).unwrap();
+
+        let path = file.path().to_str().unwrap();
+        let enrs = fetch_enrs_from_definition(path).await.unwrap();
+
+        let expected: Vec<String> = lock
+            .definition
+            .operators
+            .iter()
+            .map(|op| op.enr.clone())
+            .filter(|e| !e.is_empty())
+            .collect();
+        assert_eq!(enrs, expected);
+        assert!(!enrs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fetch_enrs_from_definition_local_empty_enrs() {
+        let (lock, ..) = test_cluster::new_for_test(1, 2, 3, 42);
+        let mut def = lock.definition;
+        def.operators.clear();
+        let json = serde_json::to_string(&def).unwrap();
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(json.as_bytes()).unwrap();
+
+        let path = file.path().to_str().unwrap();
+        let err = fetch_enrs_from_definition(path).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("no peers found in definition file")
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_enrs_from_definition_local_invalid_json() {
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(b"garbage").unwrap();
+
+        let path = file.path().to_str().unwrap();
+        let err = fetch_enrs_from_definition(path).await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_enrs_from_definition_local_file_not_found() {
+        let err = fetch_enrs_from_definition("/nonexistent/path/def.json").await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_enrs_from_definition_http_valid() {
+        let (lock, ..) = test_cluster::new_for_test(1, 2, 3, 42);
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/def"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&lock.definition))
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/def", server.uri());
+        let enrs = fetch_enrs_from_definition(&url).await.unwrap();
+
+        let expected: Vec<String> = lock
+            .definition
+            .operators
+            .iter()
+            .map(|op| op.enr.clone())
+            .filter(|e| !e.is_empty())
+            .collect();
+        assert_eq!(enrs, expected);
+    }
+
+    #[tokio::test]
+    async fn fetch_enrs_from_definition_http_error_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/error"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/error", server.uri());
+        let err = fetch_enrs_from_definition(&url).await.unwrap_err();
+        assert!(err.to_string().contains("failed to fetch definition"));
+    }
+
+    #[tokio::test]
+    async fn fetch_enrs_uses_enrs_when_set() {
+        let mut args = no_source_peers_args();
+        args.enrs = Some(vec!["enr:test1".to_string(), "enr:test2".to_string()]);
+        let enrs = fetch_enrs(&args).await.unwrap();
+        assert_eq!(enrs, vec!["enr:test1", "enr:test2"]);
+    }
+
+    #[tokio::test]
+    async fn fetch_enrs_uses_definition_file_when_set() {
+        let (lock, ..) = test_cluster::new_for_test(1, 2, 3, 42);
+        let json = serde_json::to_string(&lock.definition).unwrap();
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(json.as_bytes()).unwrap();
+
+        let mut args = no_source_peers_args();
+        args.definition_file = file.path().to_str().unwrap().to_string();
+        let enrs = fetch_enrs(&args).await.unwrap();
+
+        let expected: Vec<String> = lock
+            .definition
+            .operators
+            .iter()
+            .map(|op| op.enr.clone())
+            .filter(|e| !e.is_empty())
+            .collect();
+        assert_eq!(enrs, expected);
+    }
+
+    #[tokio::test]
+    async fn fetch_enrs_uses_lock_file_when_set() {
+        let (lock, ..) = test_cluster::new_for_test(1, 2, 3, 42);
+        let json = serde_json::to_string(&lock).unwrap();
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(json.as_bytes()).unwrap();
+
+        let mut args = no_source_peers_args();
+        args.lock_file = file.path().to_str().unwrap().to_string();
+        let enrs = fetch_enrs(&args).await.unwrap();
+
+        let expected: Vec<String> = lock
+            .definition
+            .operators
+            .iter()
+            .map(|op| op.enr.clone())
+            .filter(|e| !e.is_empty())
+            .collect();
+        assert_eq!(enrs, expected);
+    }
+}
