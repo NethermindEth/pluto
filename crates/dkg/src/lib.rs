@@ -24,7 +24,7 @@ pub mod dkg;
 mod frost;
 
 /// FROST DKG P2P transport.
-pub mod frostp2p;
+mod frostp2p;
 
 /// Partial-signature exchanger for DKG.
 pub mod exchanger;

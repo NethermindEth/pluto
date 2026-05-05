@@ -710,11 +710,6 @@ fn validate_peer_share_indices(
             "local frost share index missing from peer map",
         ));
     }
-    if peers.len() != peers_by_share_idx.len() {
-        return Err(FrostError::InvalidMessage(
-            "frost peer count does not match unique share indexes",
-        ));
-    }
 
     Ok(PeerShareIndices {
         peers_by_share_idx,
@@ -926,6 +921,9 @@ impl FTransport for FrostP2P {
                 msg = self.round2_casts_rx.recv() => {
                     let msg = msg.ok_or(FrostError::InvalidMessage("round 2 casts channel closed"))?;
                     cast_msgs.push(msg);
+                    if cast_msgs.len() > self.num_peers {
+                        return Err(FrostError::InvalidMessage("too many round 2 casts messages"));
+                    }
                 }
             }
         }
@@ -1093,7 +1091,7 @@ fn round2_cast_to_proto(key: MsgKey, cast: &Round2Bcast) -> FrostRound2Cast {
 
 fn round2_cast_from_proto(cast: &FrostRound2Cast) -> Result<(MsgKey, Round2Bcast), FrostError> {
     let verification_key = bytes_to_g1("decode verification key scalar", &cast.verification_key)?;
-    let vk_share = bytes_to_g1("decode c1 scalar", &cast.vk_share)?;
+    let vk_share = bytes_to_g1("decode vk share", &cast.vk_share)?;
     let key = key_from_proto(cast.key.as_ref())?;
     Ok((
         key,
