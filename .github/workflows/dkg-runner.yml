@@ -44,7 +44,14 @@ jobs:
             id: 4-charon
             pluto_nodes: 0
             charon_nodes: 4
-
+          - name: 2 Charon + 2 Pluto nodes
+            id: 2-charon-2-pluto
+            pluto_nodes: 2
+            charon_nodes: 2
+          - name: 4 Pluto nodes
+            id: 4-pluto
+            pluto_nodes: 4
+            charon_nodes: 0
     steps:
       - name: Checkout
         uses: actions/checkout@v6
