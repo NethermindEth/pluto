@@ -17,7 +17,7 @@ use libp2p::{
         ConnectionDenied, ConnectionHandler, ConnectionHandlerEvent, ConnectionId, FromSwarm,
         NetworkBehaviour, NotifyHandler, Stream, StreamProtocol, StreamUpgradeError,
         SubstreamProtocol, THandler, THandlerInEvent, THandlerOutEvent, ToSwarm,
-        dial_opts::DialOpts,
+        dial_opts::{DialOpts, PeerCondition},
         handler::{
             ConnectionEvent, DialUpgradeError, FullyNegotiatedInbound, FullyNegotiatedOutbound,
         },
@@ -27,6 +27,7 @@ use pluto_frost::{
     G1Projective,
     kryptology::{self, Round1Bcast, Round2Bcast, ShamirShare},
 };
+use pluto_p2p::p2p_context::P2PContext;
 use prost::bytes::Bytes;
 use tokio::{
     sync::{mpsc, oneshot},
@@ -325,30 +326,30 @@ impl FrostP2PHandle {
 
 /// libp2p behaviour for FROST round-1 direct P2P.
 pub(crate) struct FrostP2PBehaviour {
+    p2p_context: P2PContext,
     inbound_tx: mpsc::UnboundedSender<(PeerId, FrostRound1P2p)>,
     cmd_rx: mpsc::UnboundedReceiver<SendCommand>,
     pending_events: VecDeque<ToSwarm<(), InEvent>>,
     pending_by_peer: HashMap<PeerId, VecDeque<(u64, FrostRound1P2p)>>,
     result_by_op: HashMap<u64, (PeerId, oneshot::Sender<Result<(), FrostP2PError>>)>,
-    connections: HashMap<PeerId, ConnectionId>,
     next_op_id: u64,
 }
 
 impl FrostP2PBehaviour {
     /// Creates a new FROST P2P behaviour and handle.
-    pub(crate) fn new() -> (Self, FrostP2PHandle) {
+    pub(crate) fn new(p2p_context: P2PContext) -> (Self, FrostP2PHandle) {
         let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (bcast_event_tx, bcast_event_rx) = mpsc::unbounded_channel();
         let sender = FrostP2PSender { cmd_tx };
         (
             Self {
+                p2p_context,
                 inbound_tx,
                 cmd_rx,
                 pending_events: VecDeque::new(),
                 pending_by_peer: HashMap::new(),
                 result_by_op: HashMap::new(),
-                connections: HashMap::new(),
                 next_op_id: 0,
             },
             FrostP2PHandle {
@@ -366,6 +367,14 @@ impl FrostP2PBehaviour {
         current
     }
 
+    fn is_connected(&self, peer_id: &PeerId) -> bool {
+        !self
+            .p2p_context
+            .peer_store_lock()
+            .connections_to_peer(peer_id)
+            .is_empty()
+    }
+
     fn drain_commands(&mut self, cx: &mut Context<'_>) {
         while let Poll::Ready(Some(command)) = self.cmd_rx.poll_recv(cx) {
             let op_id = self.next_op_id();
@@ -376,10 +385,10 @@ impl FrostP2PBehaviour {
     }
 
     fn enqueue_send(&mut self, peer_id: PeerId, op_id: u64, msg: FrostRound1P2p) {
-        if let Some(connection_id) = self.connections.get(&peer_id).copied() {
+        if self.is_connected(&peer_id) {
             self.pending_events.push_back(ToSwarm::NotifyHandler {
                 peer_id,
-                handler: NotifyHandler::One(connection_id),
+                handler: NotifyHandler::Any,
                 event: InEvent::Send { op_id, msg },
             });
             return;
@@ -390,11 +399,13 @@ impl FrostP2PBehaviour {
             .or_default()
             .push_back((op_id, msg));
         self.pending_events.push_back(ToSwarm::Dial {
-            opts: DialOpts::peer_id(peer_id).build(),
+            opts: DialOpts::peer_id(peer_id)
+                .condition(PeerCondition::DisconnectedAndNotDialing)
+                .build(),
         });
     }
 
-    fn flush_pending_for_peer(&mut self, peer_id: PeerId, connection_id: ConnectionId) {
+    fn flush_pending_for_peer(&mut self, peer_id: PeerId) {
         let Some(mut pending) = self.pending_by_peer.remove(&peer_id) else {
             return;
         };
@@ -402,7 +413,7 @@ impl FrostP2PBehaviour {
         while let Some((op_id, msg)) = pending.pop_front() {
             self.pending_events.push_back(ToSwarm::NotifyHandler {
                 peer_id,
-                handler: NotifyHandler::One(connection_id),
+                handler: NotifyHandler::Any,
                 event: InEvent::Send { op_id, msg },
             });
         }
@@ -465,18 +476,21 @@ impl NetworkBehaviour for FrostP2PBehaviour {
     fn on_swarm_event(&mut self, event: FromSwarm) {
         match event {
             FromSwarm::ConnectionEstablished(event) => {
-                self.connections.insert(event.peer_id, event.connection_id);
-                self.flush_pending_for_peer(event.peer_id, event.connection_id);
+                self.flush_pending_for_peer(event.peer_id);
             }
-            FromSwarm::ConnectionClosed(event)
-                if self.connections.get(&event.peer_id) == Some(&event.connection_id) =>
-            {
-                self.connections.remove(&event.peer_id);
+            FromSwarm::ConnectionClosed(event) if !self.is_connected(&event.peer_id) => {
+                // PlutoBehaviour runs conn_logger before inner behaviours, so the
+                // shared peer store already reflects this close. Multiple live
+                // connections per peer are valid; only fail sends when none remain.
                 self.fail_peer_sends(event.peer_id);
             }
             FromSwarm::DialFailure(event) => {
                 if let Some(peer_id) = event.peer_id {
-                    self.fail_peer_sends(peer_id);
+                    if self.is_connected(&peer_id) {
+                        self.flush_pending_for_peer(peer_id);
+                    } else {
+                        self.fail_peer_sends(peer_id);
+                    }
                 }
             }
             _ => {}
