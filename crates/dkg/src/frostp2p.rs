@@ -1040,6 +1040,16 @@ fn validate_round1_p2p(
     let source_id = *share_idx_by_peer
         .get(&peer_id)
         .ok_or(FrostError::InvalidMessage("invalid round 1 p2p source ID"))?;
+    // A direct round-1 P2P message contains this peer's share for every validator.
+    if msg.shares.len()
+        != usize::try_from(num_validators)
+            .map_err(|_| FrostError::InvalidMessage("invalid number of validators"))?
+    {
+        return Err(FrostError::InvalidMessage(
+            "invalid round 1 p2p shares count",
+        ));
+    }
+    let mut seen_validators = HashSet::with_capacity(msg.shares.len());
     for share in &msg.shares {
         let key = share
             .key
@@ -1054,6 +1064,11 @@ fn validate_round1_p2p(
         if key.val_idx >= num_validators {
             return Err(FrostError::InvalidMessage(
                 "invalid round 1 p2p validator index",
+            ));
+        }
+        if !seen_validators.insert(key.val_idx) {
+            return Err(FrostError::InvalidMessage(
+                "duplicate round 1 p2p validator index",
             ));
         }
     }
@@ -1453,6 +1468,62 @@ mod tests {
         assert_eq!(queued_peer_id, peer_id);
         assert_eq!(queued_msg, msg);
         assert!(inbound_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn validate_round1_p2p_requires_all_validator_shares_once() {
+        let peer_id = PeerId::random();
+        let share_idx_by_peer = HashMap::from([(peer_id, 1)]);
+        let share = |val_idx| FrostRound1ShamirShare {
+            key: Some(key_to_proto(MsgKey {
+                val_idx,
+                source_id: 1,
+                target_id: 2,
+            })),
+            id: 1,
+            value: Bytes::from_static(&[7]),
+        };
+
+        assert!(
+            validate_round1_p2p(
+                peer_id,
+                &share_idx_by_peer,
+                2,
+                &FrostRound1P2p {
+                    shares: vec![share(0), share(1)]
+                },
+                2,
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            validate_round1_p2p(
+                peer_id,
+                &share_idx_by_peer,
+                2,
+                &FrostRound1P2p {
+                    shares: vec![share(0)]
+                },
+                2,
+            ),
+            Err(FrostError::InvalidMessage(
+                "invalid round 1 p2p shares count"
+            ))
+        ));
+        assert!(matches!(
+            validate_round1_p2p(
+                peer_id,
+                &share_idx_by_peer,
+                2,
+                &FrostRound1P2p {
+                    shares: vec![share(0), share(0)]
+                },
+                2,
+            ),
+            Err(FrostError::InvalidMessage(
+                "duplicate round 1 p2p validator index"
+            ))
+        ));
     }
 
     #[test]
