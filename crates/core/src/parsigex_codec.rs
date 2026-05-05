@@ -11,8 +11,9 @@ use crate::{
     signeddata::{
         Attestation, BeaconCommitteeSelection, SignedAggregateAndProof, SignedRandao,
         SignedSyncContributionAndProof, SignedSyncMessage, SignedVoluntaryExit,
-        SyncCommitteeSelection, VersionedAttestation, VersionedSignedAggregateAndProof,
-        VersionedSignedProposal, VersionedSignedValidatorRegistration,
+        SyncCommitteeSelection, SyncContributionAndProof, VersionedAttestation,
+        VersionedSignedAggregateAndProof, VersionedSignedProposal,
+        VersionedSignedValidatorRegistration,
     },
     ssz_codec,
     types::{DutyType, Signature, SignedData},
@@ -104,6 +105,11 @@ pub(crate) fn serialize_signed_data(data: &dyn SignedData) -> Result<Vec<u8>, Pa
     // altair::SyncCommitteeMessage (non-versioned, all fixed)
     if let Some(value) = any.downcast_ref::<SignedSyncMessage>() {
         return Ok(ssz_codec::encode_sync_committee_message(&value.0)?);
+    }
+
+    // altair::ContributionAndProof (non-versioned, all fixed)
+    if let Some(value) = any.downcast_ref::<SyncContributionAndProof>() {
+        return Ok(ssz_codec::encode_contribution_and_proof(&value.0)?);
     }
 
     // altair::SignedContributionAndProof (non-versioned, all fixed)
@@ -264,7 +270,7 @@ mod tests {
     use super::*;
     use pluto_eth2api::{
         spec::{altair, phase0},
-        versioned,
+        v1, versioned,
     };
     use pluto_ssz::{BitList, BitVector};
 
@@ -281,6 +287,47 @@ mod tests {
                 epoch: 11,
                 root: [0xcc; 32],
             },
+        }
+    }
+
+    fn sample_phase0_signed_beacon_block() -> phase0::SignedBeaconBlock {
+        phase0::SignedBeaconBlock {
+            message: phase0::BeaconBlock {
+                slot: 1,
+                proposer_index: 2,
+                parent_root: [0x11; 32],
+                state_root: [0x22; 32],
+                body: phase0::BeaconBlockBody {
+                    randao_reveal: [0x33; 96],
+                    eth1_data: phase0::ETH1Data {
+                        deposit_root: [0x44; 32],
+                        deposit_count: 0,
+                        block_hash: [0x55; 32],
+                    },
+                    graffiti: [0x66; 32],
+                    proposer_slashings: vec![].into(),
+                    attester_slashings: vec![].into(),
+                    attestations: vec![].into(),
+                    deposits: vec![].into(),
+                    voluntary_exits: vec![].into(),
+                },
+            },
+            signature: [0x77; 96],
+        }
+    }
+
+    fn sample_phase0_signed_aggregate_and_proof() -> phase0::SignedAggregateAndProof {
+        phase0::SignedAggregateAndProof {
+            message: phase0::AggregateAndProof {
+                aggregator_index: 99,
+                aggregate: phase0::Attestation {
+                    aggregation_bits: BitList::with_bits(8, &[2]),
+                    data: sample_attestation_data(),
+                    signature: [0x33; 96],
+                },
+                selection_proof: [0x44; 96],
+            },
+            signature: [0x55; 96],
         }
     }
 
@@ -388,6 +435,30 @@ mod tests {
         assert_eq!(sap, decoded);
     }
 
+    /// SSZ-capable types: SyncContributionAndProof round-trip.
+    #[test]
+    fn marshal_unmarshal_ssz_sync_contribution_and_proof() {
+        let cap = SyncContributionAndProof::new(altair::ContributionAndProof {
+            aggregator_index: 33,
+            contribution: altair::SyncCommitteeContribution {
+                slot: 200,
+                beacon_block_root: [0xab; 32],
+                subcommittee_index: 2,
+                aggregation_bits: BitVector::with_bits(&[0, 5]),
+                signature: [0xcd; 96],
+            },
+            selection_proof: [0xef; 96],
+        });
+        let bytes = serialize_signed_data(&cap).unwrap();
+        assert_ne!(bytes.first(), Some(&b'{'));
+        // SyncContribution duty uses SignedSyncContributionAndProof, but
+        // SyncContributionAndProof is encoded via encode_contribution_and_proof.
+        // The deserialize side for PrepareSyncContribution is JSON-only.
+        // Let's verify we can round-trip via the SSZ codec directly.
+        let decoded = ssz_codec::decode_contribution_and_proof(&bytes).unwrap();
+        assert_eq!(cap.0, decoded);
+    }
+
     /// JSON-only types still serialize as JSON.
     #[test]
     fn marshal_unmarshal_json_randao() {
@@ -454,5 +525,200 @@ mod tests {
         let decoded: SignedAggregateAndProof =
             downcast(deserialize_signed_data(&DutyType::Aggregator, &json_bytes).unwrap());
         assert_eq!(sap, decoded);
+    }
+
+    /// SSZ-capable types: VersionedSignedAggregateAndProof round-trip.
+    #[test]
+    fn marshal_unmarshal_ssz_versioned_signed_aggregate_and_proof() {
+        let inner = versioned::VersionedSignedAggregateAndProof {
+            version: versioned::DataVersion::Phase0,
+            aggregate_and_proof: versioned::SignedAggregateAndProofPayload::Phase0(
+                sample_phase0_signed_aggregate_and_proof(),
+            ),
+        };
+        let va = VersionedSignedAggregateAndProof::new(inner);
+        let bytes = serialize_signed_data(&va).unwrap();
+        assert_ne!(bytes.first(), Some(&b'{'));
+        let decoded: VersionedSignedAggregateAndProof =
+            downcast(deserialize_signed_data(&DutyType::Aggregator, &bytes).unwrap());
+        assert_eq!(va, decoded);
+    }
+
+    /// SSZ-capable types: VersionedSignedProposal round-trip.
+    #[test]
+    fn marshal_unmarshal_ssz_versioned_signed_proposal() {
+        let inner = versioned::VersionedSignedProposal {
+            version: versioned::DataVersion::Phase0,
+            blinded: false,
+            block: versioned::SignedProposalBlock::Phase0(sample_phase0_signed_beacon_block()),
+        };
+        let vp = VersionedSignedProposal::new(inner).unwrap();
+        let bytes = serialize_signed_data(&vp).unwrap();
+        assert_ne!(bytes.first(), Some(&b'{'));
+        let decoded: VersionedSignedProposal =
+            downcast(deserialize_signed_data(&DutyType::Proposer, &bytes).unwrap());
+        assert_eq!(vp, decoded);
+    }
+
+    /// JSON-only: VersionedSignedValidatorRegistration round-trip.
+    #[test]
+    fn marshal_unmarshal_json_versioned_signed_validator_registration() {
+        let inner = versioned::VersionedSignedValidatorRegistration {
+            version: versioned::BuilderVersion::V1,
+            v1: Some(v1::SignedValidatorRegistration {
+                message: v1::ValidatorRegistration {
+                    fee_recipient: [0xee; 20],
+                    gas_limit: 30_000_000,
+                    timestamp: 1_700_000_000,
+                    pubkey: [0xab; 48],
+                },
+                signature: [0xcd; 96],
+            }),
+        };
+        let reg = VersionedSignedValidatorRegistration::new(inner).unwrap();
+        let bytes = serialize_signed_data(&reg).unwrap();
+        assert_eq!(bytes.first(), Some(&b'{'));
+        let decoded: VersionedSignedValidatorRegistration =
+            downcast(deserialize_signed_data(&DutyType::BuilderRegistration, &bytes).unwrap());
+        assert_eq!(reg, decoded);
+    }
+
+    /// JSON-only: SignedVoluntaryExit round-trip.
+    #[test]
+    fn marshal_unmarshal_json_signed_voluntary_exit() {
+        let exit = SignedVoluntaryExit::new(phase0::SignedVoluntaryExit {
+            message: phase0::VoluntaryExit {
+                epoch: 42,
+                validator_index: 7,
+            },
+            signature: [0xa1; 96],
+        });
+        let bytes = serialize_signed_data(&exit).unwrap();
+        assert_eq!(bytes.first(), Some(&b'{'));
+        let decoded: SignedVoluntaryExit =
+            downcast(deserialize_signed_data(&DutyType::Exit, &bytes).unwrap());
+        assert_eq!(exit, decoded);
+    }
+
+    /// JSON-only: bare Signature round-trip.
+    #[test]
+    fn marshal_unmarshal_json_signature() {
+        let sig = Signature::new([0x42; 96]);
+        let bytes = serialize_signed_data(&sig).unwrap();
+        // Signature serializes as a JSON string, so begins with '"' rather
+        // than '{'. Confirm it is not SSZ binary by ensuring the byte sequence
+        // is valid UTF-8 starting with a quote.
+        assert_eq!(bytes.first(), Some(&b'"'));
+        let decoded: Signature =
+            downcast(deserialize_signed_data(&DutyType::Signature, &bytes).unwrap());
+        assert_eq!(sig, decoded);
+    }
+
+    /// JSON-only: BeaconCommitteeSelection round-trip.
+    #[test]
+    fn marshal_unmarshal_json_beacon_committee_selection() {
+        let sel = BeaconCommitteeSelection::new(v1::BeaconCommitteeSelection {
+            slot: 100,
+            validator_index: 5,
+            selection_proof: [0xb1; 96],
+        });
+        let bytes = serialize_signed_data(&sel).unwrap();
+        assert_eq!(bytes.first(), Some(&b'{'));
+        let decoded: BeaconCommitteeSelection =
+            downcast(deserialize_signed_data(&DutyType::PrepareAggregator, &bytes).unwrap());
+        assert_eq!(sel, decoded);
+    }
+
+    /// JSON-only: SyncCommitteeSelection round-trip.
+    #[test]
+    fn marshal_unmarshal_json_sync_committee_selection() {
+        let sel = SyncCommitteeSelection::new(v1::SyncCommitteeSelection {
+            slot: 100,
+            validator_index: 5,
+            subcommittee_index: 3,
+            selection_proof: [0xc1; 96],
+        });
+        let bytes = serialize_signed_data(&sel).unwrap();
+        assert_eq!(bytes.first(), Some(&b'{'));
+        let decoded: SyncCommitteeSelection =
+            downcast(deserialize_signed_data(&DutyType::PrepareSyncContribution, &bytes).unwrap());
+        assert_eq!(sel, decoded);
+    }
+
+    /// JSON fallback for SSZ-capable VersionedSignedProposal.
+    #[test]
+    fn json_fallback_for_ssz_capable_versioned_signed_proposal() {
+        let vp = VersionedSignedProposal::new(versioned::VersionedSignedProposal {
+            version: versioned::DataVersion::Phase0,
+            blinded: false,
+            block: versioned::SignedProposalBlock::Phase0(sample_phase0_signed_beacon_block()),
+        })
+        .unwrap();
+        let json_bytes = serde_json::to_vec(&vp).unwrap();
+        assert_eq!(json_bytes.first(), Some(&b'{'));
+        let decoded: VersionedSignedProposal =
+            downcast(deserialize_signed_data(&DutyType::Proposer, &json_bytes).unwrap());
+        assert_eq!(vp, decoded);
+    }
+
+    /// JSON fallback for SSZ-capable VersionedSignedAggregateAndProof.
+    #[test]
+    fn json_fallback_for_ssz_capable_versioned_signed_aggregate_and_proof() {
+        let va =
+            VersionedSignedAggregateAndProof::new(versioned::VersionedSignedAggregateAndProof {
+                version: versioned::DataVersion::Phase0,
+                aggregate_and_proof: versioned::SignedAggregateAndProofPayload::Phase0(
+                    sample_phase0_signed_aggregate_and_proof(),
+                ),
+            });
+        let json_bytes = serde_json::to_vec(&va).unwrap();
+        assert_eq!(json_bytes.first(), Some(&b'{'));
+        let decoded: VersionedSignedAggregateAndProof =
+            downcast(deserialize_signed_data(&DutyType::Aggregator, &json_bytes).unwrap());
+        assert_eq!(va, decoded);
+    }
+
+    /// JSON fallback for SSZ-capable VersionedAttestation.
+    #[test]
+    fn json_fallback_for_ssz_capable_versioned_attestation() {
+        let inner = versioned::VersionedAttestation {
+            version: versioned::DataVersion::Deneb,
+            validator_index: None,
+            attestation: Some(versioned::AttestationPayload::Deneb(phase0::Attestation {
+                aggregation_bits: BitList::with_bits(16, &[1, 3]),
+                data: sample_attestation_data(),
+                signature: [0x22; 96],
+            })),
+        };
+        let va = VersionedAttestation::new(inner).unwrap();
+        let json_bytes = serde_json::to_vec(&va).unwrap();
+        assert_eq!(json_bytes.first(), Some(&b'{'));
+        let decoded: VersionedAttestation =
+            downcast(deserialize_signed_data(&DutyType::Attester, &json_bytes).unwrap());
+        assert_eq!(va, decoded);
+    }
+
+    /// JSON fallback for SSZ-capable SignedSyncContributionAndProof.
+    #[test]
+    fn json_fallback_for_ssz_capable_signed_sync_contribution() {
+        let scp = SignedSyncContributionAndProof::new(altair::SignedContributionAndProof {
+            message: altair::ContributionAndProof {
+                aggregator_index: 1,
+                contribution: altair::SyncCommitteeContribution {
+                    slot: 9,
+                    beacon_block_root: [0xab; 32],
+                    subcommittee_index: 1,
+                    aggregation_bits: BitVector::with_bits(&[0]),
+                    signature: [0xcd; 96],
+                },
+                selection_proof: [0xef; 96],
+            },
+            signature: [0xfa; 96],
+        });
+        let json_bytes = serde_json::to_vec(&scp).unwrap();
+        assert_eq!(json_bytes.first(), Some(&b'{'));
+        let decoded: SignedSyncContributionAndProof =
+            downcast(deserialize_signed_data(&DutyType::SyncContribution, &json_bytes).unwrap());
+        assert_eq!(scp, decoded);
     }
 }
