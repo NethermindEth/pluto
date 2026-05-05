@@ -90,6 +90,9 @@ pub(crate) enum FrostP2PError {
     /// The peer was disconnected before the send completed.
     #[error("peer is not connected: {0}")]
     PeerNotConnected(PeerId),
+    /// The peer is outside this FROST transport's configured peer set.
+    #[error("unknown frost p2p peer: {0}")]
+    UnknownPeer(PeerId),
     /// The send result channel closed.
     #[error("send result channel closed")]
     ResultClosed,
@@ -468,6 +471,11 @@ impl FrostP2PBehaviour {
     }
 
     fn enqueue_send(&mut self, peer_id: PeerId, op_id: u64, msg: FrostRound1P2p) {
+        if !self.peers.contains(&peer_id) {
+            self.complete_send(op_id, Err(FrostP2PError::UnknownPeer(peer_id)));
+            return;
+        }
+
         if self.is_connected(&peer_id) {
             self.pending_events.push_back(ToSwarm::NotifyHandler {
                 peer_id,
@@ -1376,6 +1384,34 @@ mod tests {
         assert!(matches!(
             behaviour.connection_handler_for_peer(unknown_peer),
             Either::Right(_)
+        ));
+    }
+
+    #[test]
+    fn enqueue_send_fails_unknown_peer_without_leaking_state() {
+        let known_peer = PeerId::random();
+        let unknown_peer = PeerId::random();
+        let (mut behaviour, _handle) = FrostP2PBehaviour::new(
+            P2PContext::new([known_peer, unknown_peer]),
+            [known_peer],
+            HashMap::from([(known_peer, 1)]),
+            1,
+            1,
+        );
+        let (result_tx, result_rx) = oneshot::channel();
+
+        behaviour.result_by_op.insert(7, (unknown_peer, result_tx));
+        behaviour.enqueue_send(unknown_peer, 7, FrostRound1P2p::default());
+
+        assert!(behaviour.result_by_op.is_empty());
+        assert!(behaviour.pending_by_peer.is_empty());
+        assert!(behaviour.pending_events.is_empty());
+        assert!(matches!(
+            result_rx
+                .now_or_never()
+                .expect("send result should be ready")
+                .expect("send result channel should be open"),
+            Err(FrostP2PError::UnknownPeer(peer)) if peer == unknown_peer
         ));
     }
 
