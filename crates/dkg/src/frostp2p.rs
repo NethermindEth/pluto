@@ -1,4 +1,16 @@
 //! FROST DKG P2P transport.
+//!
+//! This module is split across two integration surfaces:
+//!
+//! - [`FrostP2PBehaviour`] owns the direct round-1 P2P libp2p protocol.
+//! - [`FrostP2P`] implements the FROST transport by combining direct P2P with
+//!   reliable broadcast through [`bcast::Component`].
+//!
+//! The outer DKG network behaviour must install both `bcast::Behaviour` and
+//! [`FrostP2PBehaviour`]. It must also forward every [`bcast::Event`] emitted by
+//! `bcast::Behaviour` into [`FrostP2PHandle::handle_bcast_event`]. Without that
+//! event bridge, [`FrostP2P`] cannot observe broadcast completion and
+//! `round1`/`round2` will wait until cancellation.
 
 #![allow(dead_code)]
 
@@ -338,6 +350,10 @@ pub(crate) struct FrostP2PHandle {
 
 impl FrostP2PHandle {
     /// Forwards bcast completion events into the FROST round state machine.
+    ///
+    /// The outer DKG network behaviour must call this for every event emitted
+    /// by `bcast::Behaviour`; `FrostP2P::round1` and `FrostP2P::round2` block on
+    /// these forwarded events after starting their broadcasts.
     pub(crate) fn handle_bcast_event(&self, event: bcast::Event) -> Result<(), FrostError> {
         self.bcast_event_tx
             .send(event)
@@ -671,6 +687,11 @@ pub(crate) struct FrostP2P {
 }
 
 /// Creates a FROST P2P transport and registers its bcast callbacks.
+///
+/// The `frost_handle` must come from the [`FrostP2PBehaviour`] installed in the
+/// same outer network behaviour that owns `bcast_comp`. The outer behaviour
+/// must keep using that handle to forward [`bcast::Event`] values through
+/// [`FrostP2PHandle::handle_bcast_event`].
 pub(crate) async fn new_frost_p2p(
     bcast_comp: bcast::Component,
     frost_handle: &mut FrostP2PHandle,
@@ -1384,7 +1405,7 @@ mod tests {
         behaviour.on_connection_handler_event(
             peer_id,
             ConnectionId::new_unchecked(1),
-            Either::Left(OutEvent::Received(msg)),
+            Either::Left(OutEvent::Received(msg.clone())),
         );
 
         let (queued_peer_id, queued_msg) = inbound_rx.try_recv().unwrap();
