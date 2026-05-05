@@ -57,8 +57,14 @@ pub async fn write_fixed_size_delimited<S: AsyncWrite + Unpin>(
     let len = i64::try_from(payload.len())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "payload length overflow"))?;
 
-    stream.write_all(&len.to_le_bytes()).await?;
-    stream.write_all(payload).await?;
+    // Charon's `readSizedProto` uses a single `reader.Read(buf)` for the
+    // payload (not `io.ReadFull`), so it requires the length prefix and payload
+    // to arrive in one libp2p chunk. Coalesce them into one `write_all` to
+    // avoid splitting across yamux frames.
+    let mut buf = Vec::with_capacity(8usize.saturating_add(payload.len()));
+    buf.extend_from_slice(&len.to_le_bytes());
+    buf.extend_from_slice(payload);
+    stream.write_all(&buf).await?;
     stream.flush().await
 }
 
