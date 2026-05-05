@@ -84,6 +84,7 @@ pub(crate) enum FrostP2PError {
 #[derive(Debug)]
 pub(crate) enum InEvent {
     Send { op_id: u64, msg: FrostRound1P2p },
+    CancelPending,
 }
 
 #[derive(Debug)]
@@ -161,8 +162,10 @@ impl ConnectionHandler for FrostP2PHandler {
     }
 
     fn on_behaviour_event(&mut self, event: Self::FromBehaviour) {
-        let InEvent::Send { op_id, msg } = event;
-        self.pending_open.push_back((op_id, msg));
+        match event {
+            InEvent::Send { op_id, msg } => self.pending_open.push_back((op_id, msg)),
+            InEvent::CancelPending => self.pending_open.clear(),
+        }
     }
 
     fn poll(
@@ -264,11 +267,16 @@ async fn write_outbound_message(
     })
 }
 
+type SendResultTx = oneshot::Sender<Result<(), FrostP2PError>>;
+
 #[derive(Debug)]
-struct SendCommand {
-    peer_id: PeerId,
-    msg: FrostRound1P2p,
-    result_tx: oneshot::Sender<Result<(), FrostP2PError>>,
+enum SendCommand {
+    Send {
+        peer_id: PeerId,
+        msg: FrostRound1P2p,
+        result_tx: SendResultTx,
+    },
+    CancelAll,
 }
 
 /// User-facing FROST direct-P2P sender.
@@ -278,17 +286,37 @@ pub(crate) struct FrostP2PSender {
 }
 
 impl FrostP2PSender {
+    fn new(cmd_tx: mpsc::UnboundedSender<SendCommand>) -> Self {
+        Self { cmd_tx }
+    }
+
     /// Sends a round-1 P2P message to `peer_id` and waits for stream delivery.
-    pub async fn send(&self, peer_id: PeerId, msg: &FrostRound1P2p) -> Result<(), FrostP2PError> {
+    pub async fn send(
+        &self,
+        peer_id: PeerId,
+        msg: &FrostRound1P2p,
+        cancellation: &CancellationToken,
+    ) -> Result<(), FrostError> {
+        if cancellation.is_cancelled() {
+            return Err(FrostError::Cancelled);
+        }
+
         let (result_tx, result_rx) = oneshot::channel();
         self.cmd_tx
-            .send(SendCommand {
+            .send(SendCommand::Send {
                 peer_id,
                 msg: msg.clone(),
                 result_tx,
             })
             .map_err(|_| FrostP2PError::BehaviourClosed)?;
-        result_rx.await.map_err(|_| FrostP2PError::ResultClosed)?
+
+        tokio::select! {
+            _ = cancellation.cancelled() => {
+                let _ = self.cmd_tx.send(SendCommand::CancelAll);
+                Err(FrostError::Cancelled)
+            }
+            result = result_rx => Ok(result.map_err(|_| FrostP2PError::ResultClosed)??),
+        }
     }
 }
 
@@ -331,7 +359,7 @@ pub(crate) struct FrostP2PBehaviour {
     cmd_rx: mpsc::UnboundedReceiver<SendCommand>,
     pending_events: VecDeque<ToSwarm<(), InEvent>>,
     pending_by_peer: HashMap<PeerId, VecDeque<(u64, FrostRound1P2p)>>,
-    result_by_op: HashMap<u64, (PeerId, oneshot::Sender<Result<(), FrostP2PError>>)>,
+    result_by_op: HashMap<u64, (PeerId, SendResultTx)>,
     next_op_id: u64,
 }
 
@@ -341,7 +369,7 @@ impl FrostP2PBehaviour {
         let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (bcast_event_tx, bcast_event_rx) = mpsc::unbounded_channel();
-        let sender = FrostP2PSender { cmd_tx };
+        let sender = FrostP2PSender::new(cmd_tx);
         (
             Self {
                 p2p_context,
@@ -377,10 +405,18 @@ impl FrostP2PBehaviour {
 
     fn drain_commands(&mut self, cx: &mut Context<'_>) {
         while let Poll::Ready(Some(command)) = self.cmd_rx.poll_recv(cx) {
-            let op_id = self.next_op_id();
-            self.result_by_op
-                .insert(op_id, (command.peer_id, command.result_tx));
-            self.enqueue_send(command.peer_id, op_id, command.msg);
+            match command {
+                SendCommand::Send {
+                    peer_id,
+                    msg,
+                    result_tx,
+                } => {
+                    let op_id = self.next_op_id();
+                    self.result_by_op.insert(op_id, (peer_id, result_tx));
+                    self.enqueue_send(peer_id, op_id, msg);
+                }
+                SendCommand::CancelAll => self.cancel_all_sends(),
+            }
         }
     }
 
@@ -422,6 +458,36 @@ impl FrostP2PBehaviour {
     fn complete_send(&mut self, op_id: u64, result: Result<(), FrostP2PError>) {
         if let Some((_peer_id, result_tx)) = self.result_by_op.remove(&op_id) {
             let _ = result_tx.send(result);
+        }
+    }
+
+    fn cancel_all_sends(&mut self) {
+        let peers = self
+            .result_by_op
+            .values()
+            .map(|(peer_id, _)| *peer_id)
+            .collect::<HashSet<_>>();
+        self.result_by_op.clear();
+        self.pending_by_peer.clear();
+        self.pending_events.retain(|event| {
+            !matches!(
+                event,
+                ToSwarm::NotifyHandler {
+                    event: InEvent::Send { .. },
+                    ..
+                }
+            )
+        });
+
+        for peer_id in peers {
+            // This can only cancel handler-local queued opens. If the handler has
+            // already started writing, stale completion is ignored because all
+            // result waiters were removed above.
+            self.pending_events.push_back(ToSwarm::NotifyHandler {
+                peer_id,
+                handler: NotifyHandler::Any,
+                event: InEvent::CancelPending,
+            });
         }
     }
 
@@ -735,10 +801,7 @@ impl FTransport for FrostP2P {
 
         let p2p_msgs = self.build_round1_p2p_by_peer(&shares)?;
         for (peer_id, msg) in p2p_msgs {
-            tokio::select! {
-                _ = cancellation.cancelled() => return Err(FrostError::Cancelled),
-                result = self.frost_sender.send(peer_id, &msg) => result?,
-            }
+            self.frost_sender.send(peer_id, &msg, cancellation).await?;
         }
 
         let mut cast_msgs = Vec::with_capacity(self.num_peers);
@@ -1148,6 +1211,70 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn cancel_all_removes_handler_pending_open() {
+        let mut handler = FrostP2PHandler::new();
+
+        handler.on_behaviour_event(InEvent::Send {
+            op_id: 7,
+            msg: FrostRound1P2p::default(),
+        });
+        handler.on_behaviour_event(InEvent::CancelPending);
+
+        assert!(handler.pending_open.is_empty());
+    }
+
+    #[test]
+    fn cancel_all_removes_behaviour_pending_sends() {
+        let peer_id = PeerId::random();
+        let (mut behaviour, _handle) = FrostP2PBehaviour::new(P2PContext::new([peer_id]));
+        let (result_tx, _result_rx) = oneshot::channel();
+
+        behaviour.result_by_op.insert(7, (peer_id, result_tx));
+        behaviour.enqueue_send(peer_id, 7, FrostRound1P2p::default());
+        behaviour.cancel_all_sends();
+
+        assert!(behaviour.result_by_op.is_empty());
+        assert!(behaviour.pending_by_peer.is_empty());
+        assert!(behaviour.pending_events.iter().all(|event| {
+            !matches!(
+                event,
+                ToSwarm::NotifyHandler {
+                    event: InEvent::Send { op_id: 7, .. },
+                    ..
+                }
+            )
+        }));
+    }
+
+    #[tokio::test]
+    async fn sender_emits_cancel_all_command_on_cancellation() {
+        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
+        let sender = FrostP2PSender::new(cmd_tx);
+        let cancellation = CancellationToken::new();
+        let task_cancellation = cancellation.clone();
+        let peer_id = PeerId::random();
+
+        let task = tokio::spawn(async move {
+            sender
+                .send(peer_id, &FrostRound1P2p::default(), &task_cancellation)
+                .await
+        });
+
+        assert!(matches!(
+            cmd_rx.recv().await.unwrap(),
+            SendCommand::Send { .. }
+        ));
+
+        cancellation.cancel();
+
+        assert!(matches!(task.await.unwrap(), Err(FrostError::Cancelled)));
+        assert!(matches!(
+            cmd_rx.recv().await.unwrap(),
+            SendCommand::CancelAll
+        ));
+    }
+
     #[tokio::test]
     async fn bcast_event_handler_forwards_event() {
         let (handler, mut event_rx) = frost_p2p_handle_for_test();
@@ -1191,7 +1318,7 @@ mod tests {
         (
             FrostP2PHandle {
                 inbound_rx: Some(inbound_rx),
-                sender: FrostP2PSender { cmd_tx },
+                sender: FrostP2PSender::new(cmd_tx),
                 bcast_event_tx,
                 bcast_event_rx: None,
             },
@@ -1215,7 +1342,7 @@ mod tests {
 
         FrostP2P {
             bcast_comp,
-            frost_sender: FrostP2PSender { cmd_tx },
+            frost_sender: FrostP2PSender::new(cmd_tx),
             bcast_event_rx,
             round1_casts_tx,
             round1_casts_rx,
