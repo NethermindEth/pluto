@@ -7,9 +7,9 @@
 //!   reliable broadcast through [`bcast::Component`].
 //!
 //! The outer DKG network behaviour must install both `bcast::Behaviour` and
-//! [`FrostP2PBehaviour`]. It must also forward every [`bcast::Event`] emitted by
-//! `bcast::Behaviour` into [`FrostP2PHandle::handle_bcast_event`]. Without that
-//! event bridge, [`FrostP2P`] cannot observe broadcast completion and
+//! [`FrostP2PBehaviour`]. It must also forward every [`bcast::Event`] emitted
+//! by `bcast::Behaviour` into [`FrostP2PHandle::handle_bcast_event`]. Without
+//! that event bridge, [`FrostP2P`] cannot observe broadcast completion and
 //! `round1`/`round2` will wait until cancellation.
 
 #![allow(dead_code)]
@@ -352,8 +352,8 @@ impl FrostP2PHandle {
     /// Forwards bcast completion events into the FROST round state machine.
     ///
     /// The outer DKG network behaviour must call this for every event emitted
-    /// by `bcast::Behaviour`; `FrostP2P::round1` and `FrostP2P::round2` block on
-    /// these forwarded events after starting their broadcasts.
+    /// by `bcast::Behaviour`; `FrostP2P::round1` and `FrostP2P::round2` block
+    /// on these forwarded events after starting their broadcasts.
     pub(crate) fn handle_bcast_event(&self, event: bcast::Event) -> Result<(), FrostError> {
         self.bcast_event_tx
             .send(event)
