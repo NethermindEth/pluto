@@ -170,9 +170,14 @@ pub async fn run(
 
     must_output_to_file_on_quiet(args.test_config.quiet, &args.test_config.output_json)?;
 
-    let _ = pluto_tracing::init(&pluto_tracing::TracingConfig::default());
-
     tracing::info!("Starting pluto peers and relays test");
+
+    let timeout_ct = ct.clone();
+    let timeout = args.test_config.timeout;
+    tokio::spawn(async move {
+        tokio::time::sleep(timeout).await;
+        timeout_ct.cancel();
+    });
 
     let start_time = tokio::time::Instant::now();
 
@@ -194,6 +199,7 @@ pub async fn run(
     }
 
     let enr_strings = fetch_enrs(&args).await?;
+    tracing::debug!("enr_strings: {:?}", enr_strings);
     let cluster_peers = parse_peers(&enr_strings)?;
 
     let private_key = load_key(&args.private_key_file)
@@ -283,7 +289,10 @@ pub async fn run(
             cancel.clone(),
         ),
         async move {
-            let result = self_task.await.unwrap_or_default();
+            let result = self_task.await.unwrap_or_else(|e| {
+                tracing::error!(err = %e, "self-test task panicked");
+                HashMap::new()
+            });
             if only_self_tests {
                 self_cancel.cancel();
             }
@@ -356,15 +365,15 @@ async fn fetch_enrs(args: &TestPeersArgs) -> Result<Vec<String>> {
         return Ok(enrs.clone());
     }
     if !args.lock_file.is_empty() {
-        return fetch_enrs_from_lock(&args.lock_file);
+        return fetch_enrs_from_lock(&args.lock_file).await;
     }
     Err(CliError::Other(
         "--enrs or --lock-file must be specified".to_string(),
     ))
 }
 
-fn fetch_enrs_from_lock(path: &str) -> Result<Vec<String>> {
-    let content = std::fs::read_to_string(path)?;
+async fn fetch_enrs_from_lock(path: &str) -> Result<Vec<String>> {
+    let content = tokio::fs::read_to_string(path).await?;
     let lock: Lock = serde_json::from_str(&content)?;
     let enrs: Vec<String> = lock
         .definition
@@ -427,8 +436,8 @@ async fn run_relay_http_tests(
             }
 
             let result = match test.name {
-                "PingRelay" => relay_ping_test(url).await,
-                "PingMeasureRelay" => relay_ping_measure_test(url).await,
+                "PingRelay" => relay_ping_test(url, &ct).await,
+                "PingMeasureRelay" => relay_ping_measure_test(url, &ct).await,
                 _ => TestResult::new(test.name)
                     .fail(CliError::Other("unsupported relay test".to_string())),
             };
@@ -441,26 +450,28 @@ async fn run_relay_http_tests(
     results
 }
 
-async fn relay_ping_test(url: &str) -> TestResult {
+async fn relay_ping_test(url: &str, ct: &CancellationToken) -> TestResult {
     let result = TestResult::new("PingRelay");
     let client = reqwest::Client::new();
-    match client.get(url).send().await {
-        Ok(resp) if resp.status().as_u16() <= 399 => result.ok(),
-        Ok(resp) => result.fail(CliError::Other(format!("HTTP status {}", resp.status()))),
-        Err(e) => result.fail(e),
+    tokio::select! {
+        res = client.get(url).send() => match res {
+            Ok(resp) if resp.status().is_success() => result.ok(),
+            Ok(resp) => result.fail(CliError::Other(format!("HTTP status {}", resp.status()))),
+            Err(e) => result.fail(e),
+        },
+        _ = ct.cancelled() => result.fail(CliError::TimeoutInterrupted),
     }
 }
 
-async fn relay_ping_measure_test(url: &str) -> TestResult {
+async fn relay_ping_measure_test(url: &str, ct: &CancellationToken) -> TestResult {
     let result = TestResult::new("PingMeasureRelay");
-    match super::request_rtt(url, Method::GET, None, reqwest::StatusCode::OK).await {
-        Ok(rtt) => evaluate_rtt(
-            rtt,
-            result,
-            THRESHOLD_RELAY_MEASURE_AVG,
-            THRESHOLD_RELAY_MEASURE_POOR,
-        ),
-        Err(e) => result.fail(e),
+    let rtt_fut = super::request_rtt(url, Method::GET, None, reqwest::StatusCode::OK);
+    tokio::select! {
+        res = rtt_fut => match res {
+            Ok(rtt) => evaluate_rtt(rtt, result, THRESHOLD_RELAY_MEASURE_AVG, THRESHOLD_RELAY_MEASURE_POOR),
+            Err(e) => result.fail(e),
+        },
+        _ = ct.cancelled() => result.fail(CliError::TimeoutInterrupted),
     }
 }
 
@@ -587,6 +598,8 @@ struct PeerState {
     /// Whether we have already attempted a direct dial using identify
     /// addresses.
     direct_dial_attempted: bool,
+    /// Whether we received an identify response from this peer.
+    identify_received: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -615,7 +628,6 @@ async fn run_peer_event_loop(
         .map(|(p, _)| (p.id, PeerState::default()))
         .collect();
 
-    let needs_load = queued_tests.iter().any(|t| t.name == "PingLoad");
     let needs_direct = queued_tests.iter().any(|t| t.name == "DirectConn");
 
     let deadline = tokio::time::Instant::now()
@@ -693,7 +705,7 @@ async fn run_peer_event_loop(
     for (peer, enr_str) in &target_peers {
         let state = &states[&peer.id];
         let target_name = peer_target_name(peer, enr_str);
-        let test_results = build_peer_results(state, queued_tests, needs_load, args);
+        let test_results = build_peer_results(state, queued_tests, args);
         results.insert(target_name, test_results);
     }
     (results, node)
@@ -769,17 +781,16 @@ fn handle_swarm_event(
             info,
             ..
         })) => {
-            if needs_direct
-                && let Some(state) = states.get_mut(&peer_id)
-                && !state.direct_dial_attempted
-                && !state.direct_connected
-            {
-                state.direct_dial_attempted = true;
-                for addr in &info.listen_addrs {
-                    if !is_relay_addr(addr) {
-                        let mut direct_addr = addr.clone();
-                        direct_addr.push(Protocol::P2p(peer_id));
-                        let _ = node.dial(direct_addr);
+            if let Some(state) = states.get_mut(&peer_id) {
+                state.identify_received = true;
+                if needs_direct && !state.direct_dial_attempted && !state.direct_connected {
+                    state.direct_dial_attempted = true;
+                    for addr in &info.listen_addrs {
+                        if !is_relay_addr(addr) {
+                            let mut direct_addr = addr.clone();
+                            direct_addr.push(Protocol::P2p(peer_id));
+                            let _ = node.dial(direct_addr);
+                        }
                     }
                 }
             }
@@ -839,7 +850,6 @@ fn peer_is_done(state: &PeerState, queued_tests: &[TestCaseName], args: &TestPee
 fn build_peer_results(
     state: &PeerState,
     queued_tests: &[TestCaseName],
-    has_load_test: bool,
     args: &TestPeersArgs,
 ) -> Vec<TestResult> {
     queued_tests
@@ -891,7 +901,7 @@ fn build_peer_results(
                     r.fail(CliError::Other(
                         "no relay connection established".to_string(),
                     ))
-                } else if has_load_test && !state.direct_dial_attempted {
+                } else if state.identify_received && !state.direct_dial_attempted {
                     r.fail(CliError::Other(
                         "no direct addresses available from identify".to_string(),
                     ))
