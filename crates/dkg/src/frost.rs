@@ -78,6 +78,15 @@ pub(crate) enum FrostError {
     /// A FROST protobuf message failed validation.
     #[error("{0}")]
     InvalidMessage(&'static str),
+    /// FROST transport configuration is invalid.
+    #[error("frost config: {0}")]
+    ConfigError(&'static str),
+    /// FROST transport internal state is invalid.
+    #[error("frost internal state: {0}")]
+    InternalState(&'static str),
+    /// FROST transport channel closed unexpectedly.
+    #[error("frost channel closed: {0}")]
+    ChannelClosed(&'static str),
     /// Failed to convert public key bytes.
     #[error("public key conversion: {0}")]
     PublicKey(#[from] pluto_crypto::tblsconv::ConvError),

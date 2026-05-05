@@ -357,17 +357,17 @@ impl FrostP2PHandle {
     pub(crate) fn handle_bcast_event(&self, event: bcast::Event) -> Result<(), FrostError> {
         self.bcast_event_tx
             .send(event)
-            .map_err(|_| FrostError::InvalidMessage("frost bcast event channel closed"))
+            .map_err(|_| FrostError::ChannelClosed("frost bcast event channel"))
     }
 
     fn take_inbound_rx(&mut self) -> Result<mpsc::Receiver<(PeerId, FrostRound1P2p)>, FrostError> {
-        self.inbound_rx.take().ok_or(FrostError::InvalidMessage(
+        self.inbound_rx.take().ok_or(FrostError::InternalState(
             "frost p2p inbound receiver already taken",
         ))
     }
 
     fn take_bcast_event_rx(&mut self) -> Result<mpsc::UnboundedReceiver<bcast::Event>, FrostError> {
-        self.bcast_event_rx.take().ok_or(FrostError::InvalidMessage(
+        self.bcast_event_rx.take().ok_or(FrostError::InternalState(
             "frost bcast event receiver already taken",
         ))
     }
@@ -749,20 +749,18 @@ fn validate_peer_share_indices(
 
     for (&peer_id, &share_idx) in peers {
         if share_idx == 0 {
-            return Err(FrostError::InvalidMessage(
+            return Err(FrostError::ConfigError(
                 "frost peer share index cannot be zero",
             ));
         }
         if peers_by_share_idx.insert(share_idx, peer_id).is_some() {
-            return Err(FrostError::InvalidMessage(
-                "duplicate frost peer share index",
-            ));
+            return Err(FrostError::ConfigError("duplicate frost peer share index"));
         }
         share_idx_by_peer.insert(peer_id, share_idx);
     }
 
     if !peers_by_share_idx.contains_key(&local_share_idx) {
-        return Err(FrostError::InvalidMessage(
+        return Err(FrostError::ConfigError(
             "local frost share index missing from peer map",
         ));
     }
@@ -925,14 +923,14 @@ impl FTransport for FrostP2P {
             tokio::select! {
                 _ = cancellation.cancelled() => return Err(FrostError::Cancelled),
                 msg = self.round1_casts_rx.recv() => {
-                    let msg = msg.ok_or(FrostError::InvalidMessage("round 1 casts channel closed"))?;
+                    let msg = msg.ok_or(FrostError::ChannelClosed("round 1 casts channel"))?;
                     cast_msgs.push(msg);
                     if cast_msgs.len() > self.num_peers {
                         return Err(FrostError::InvalidMessage("too many round 1 casts messages"));
                     }
                 }
                 msg = self.round1_p2p_rx.recv() => {
-                    let (_peer_id, msg) = msg.ok_or(FrostError::InvalidMessage("round 1 p2p channel closed"))?;
+                    let (_peer_id, msg) = msg.ok_or(FrostError::ChannelClosed("round 1 p2p channel"))?;
                     p2p_msgs.push(msg);
                     if p2p_msgs.len() > self.num_peers.saturating_sub(1) {
                         return Err(FrostError::InvalidMessage("too many round 1 p2p messages"));
@@ -963,7 +961,7 @@ impl FTransport for FrostP2P {
             tokio::select! {
                 _ = cancellation.cancelled() => return Err(FrostError::Cancelled),
                 msg = self.round2_casts_rx.recv() => {
-                    let msg = msg.ok_or(FrostError::InvalidMessage("round 2 casts channel closed"))?;
+                    let msg = msg.ok_or(FrostError::ChannelClosed("round 2 casts channel"))?;
                     cast_msgs.push(msg);
                     if cast_msgs.len() > self.num_peers {
                         return Err(FrostError::InvalidMessage("too many round 2 casts messages"));
@@ -986,7 +984,7 @@ impl FrostP2P {
             tokio::select! {
                 _ = cancellation.cancelled() => return Err(FrostError::Cancelled),
                 event = self.bcast_event_rx.recv() => {
-                    match event.ok_or(FrostError::InvalidMessage("frost bcast event channel closed"))? {
+                    match event.ok_or(FrostError::ChannelClosed("frost bcast event channel"))? {
                         bcast::Event::BroadcastCompleted { msg_id } if msg_id == expected_msg_id => return Ok(()),
                         bcast::Event::BroadcastFailed { msg_id, error } if msg_id == expected_msg_id => return Err(error.into()),
                         event => debug!(?event, expected_msg_id, "ignoring unrelated bcast event"),
@@ -1004,14 +1002,14 @@ impl FrostP2P {
 
         for (key, share) in shares {
             if key.target_id == self.local_share_idx {
-                return Err(FrostError::InvalidMessage(
+                return Err(FrostError::InternalState(
                     "bug: unexpected p2p message to self",
                 ));
             }
             let peer_id = *self
                 .peers_by_share_idx
                 .get(&key.target_id)
-                .ok_or(FrostError::InvalidMessage("unknown target"))?;
+                .ok_or(FrostError::ConfigError("unknown target"))?;
             p2p_msgs
                 .entry(peer_id)
                 .or_default()
@@ -1421,19 +1419,17 @@ mod tests {
 
         assert!(matches!(
             validate_peer_share_indices(&HashMap::from([(peer_a, 0)]), 1),
-            Err(FrostError::InvalidMessage(
+            Err(FrostError::ConfigError(
                 "frost peer share index cannot be zero"
             ))
         ));
         assert!(matches!(
             validate_peer_share_indices(&HashMap::from([(peer_a, 1), (peer_b, 1)]), 1),
-            Err(FrostError::InvalidMessage(
-                "duplicate frost peer share index"
-            ))
+            Err(FrostError::ConfigError("duplicate frost peer share index"))
         ));
         assert!(matches!(
             validate_peer_share_indices(&HashMap::from([(peer_a, 1)]), 2),
-            Err(FrostError::InvalidMessage(
+            Err(FrostError::ConfigError(
                 "local frost share index missing from peer map"
             ))
         ));
