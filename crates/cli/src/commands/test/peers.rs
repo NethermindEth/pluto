@@ -15,7 +15,7 @@ use libp2p::{
     ping, relay,
     swarm::{NetworkBehaviour, SwarmEvent},
 };
-use pluto_cluster::lock::Lock;
+use pluto_cluster::{definition::Definition, lock::Lock};
 use pluto_eth2util::enr::Record;
 use pluto_k1util::load as load_key;
 use pluto_p2p::{
@@ -89,6 +89,10 @@ pub struct TestPeersArgs {
     /// Path to cluster lock file.
     #[arg(long = "lock-file", default_value = "")]
     pub lock_file: String,
+
+    /// Path to cluster definition file or an HTTP URL.
+    #[arg(long = "definition-file", default_value = "")]
+    pub definition_file: String,
 
     /// Path to charon ENR private key file.
     #[arg(
@@ -165,9 +169,19 @@ pub async fn run(
     ct: CancellationToken,
 ) -> Result<TestCategoryResult> {
     let enrs_empty = args.enrs.as_ref().is_none_or(Vec::is_empty);
-    if enrs_empty && args.lock_file.is_empty() {
+    let lock_empty = args.lock_file.is_empty();
+    let def_empty = args.definition_file.is_empty();
+
+    if enrs_empty && lock_empty && def_empty {
         return Err(CliError::Other(
-            "--enrs or --lock-file must be specified".to_string(),
+            "--enrs, --lock-file or --definition-file must be specified".to_string(),
+        ));
+    }
+
+    let conflicts = [!enrs_empty, !lock_empty, !def_empty];
+    if conflicts.iter().filter(|&&v| v).count() > 1 {
+        return Err(CliError::Other(
+            "only one of --enrs, --lock-file or --definition-file may be specified".to_string(),
         ));
     }
 
@@ -304,11 +318,14 @@ async fn fetch_enrs(args: &TestPeersArgs) -> Result<Vec<String>> {
     {
         return Ok(enrs.clone());
     }
+    if !args.definition_file.is_empty() {
+        return fetch_enrs_from_definition(&args.definition_file).await;
+    }
     if !args.lock_file.is_empty() {
         return fetch_enrs_from_lock(&args.lock_file).await;
     }
     Err(CliError::Other(
-        "--enrs or --lock-file must be specified".to_string(),
+        "--enrs, --lock-file or --definition-file must be specified".to_string(),
     ))
 }
 
@@ -324,6 +341,31 @@ async fn fetch_enrs_from_lock(path: &str) -> Result<Vec<String>> {
         .collect();
     if enrs.is_empty() {
         return Err(CliError::Other("no peers found in lock file".to_string()));
+    }
+    Ok(enrs)
+}
+
+async fn fetch_enrs_from_definition(path: &str) -> Result<Vec<String>> {
+    let definition: Definition = if path.starts_with("http://") || path.starts_with("https://") {
+        pluto_cluster::helpers::fetch_definition(path)
+            .await
+            .map_err(|e| CliError::Other(format!("failed to fetch definition: {e}")))?
+    } else {
+        let content = tokio::fs::read_to_string(path).await?;
+        serde_json::from_str(&content)?
+    };
+
+    let enrs: Vec<String> = definition
+        .operators
+        .iter()
+        .map(|op| op.enr.clone())
+        .filter(|e| !e.is_empty())
+        .collect();
+
+    if enrs.is_empty() {
+        return Err(CliError::Other(
+            "no peers found in definition file".to_string(),
+        ));
     }
     Ok(enrs)
 }
