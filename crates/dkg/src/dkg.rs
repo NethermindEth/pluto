@@ -5,9 +5,9 @@ use libp2p::PeerId;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+use crate::disk;
 pub use crate::{
     aggregate::{AggregateError, agg_deposit_data, agg_lock_hash_sig, agg_validator_registrations},
-    disk,
     publish::{PublishError, write_lock_to_api},
     share::Share,
     signing::{SigningError, sign_deposit_msgs, sign_lock_hash, sign_validator_registrations},
@@ -91,6 +91,18 @@ pub enum DkgError {
         secret_shares: usize,
         /// Number of distributed validators present in the lock.
         validators: usize,
+    },
+
+    /// `AppendConfig::validator_addresses` length does not match
+    /// `AppendConfig::add_validators`.
+    #[error(
+        "append config invalid: got {validator_addresses} validator addresses for {add_validators} new validators"
+    )]
+    AppendConfigAddressCountMismatch {
+        /// Number of validator addresses provided.
+        validator_addresses: usize,
+        /// Number of validators to add.
+        add_validators: usize,
     },
 
     /// Failed to convert share index to u64.
@@ -211,11 +223,26 @@ pub struct AppendConfig {
     /// Set when the source validator keys are not available; signs nothing and
     /// preserves existing creator/operator signatures.
     pub unverified: bool,
-    /// Validator addresses for the newly added validators. Length must match
-    /// [`AppendConfig::add_validators`].
+    /// Validator addresses for the newly added validators. The caller is
+    /// responsible for ensuring the length matches
+    /// [`AppendConfig::add_validators`]; use [`AppendConfig::validate`].
     pub validator_addresses: Vec<ValidatorAddresses>,
     /// Deposit data from the existing cluster, indexed by deposit-amount slot.
     pub deposit_data: Vec<Vec<phase0::DepositData>>,
+}
+
+impl AppendConfig {
+    /// Checks invariants that the public fields cannot enforce on construction.
+    pub fn validate(&self) -> Result<(), DkgError> {
+        if self.validator_addresses.len() != self.add_validators {
+            return Err(DkgError::AppendConfigAddressCountMismatch {
+                validator_addresses: self.validator_addresses.len(),
+                add_validators: self.add_validators,
+            });
+        }
+
+        Ok(())
+    }
 }
 
 fn default_p2p_config() -> P2PConfig {

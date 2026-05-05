@@ -217,13 +217,13 @@ pub fn sign_validator_registrations(
 
 /// Signs, exchanges, and aggregates deposit data for each deposit amount.
 #[allow(dead_code, reason = "will be used in dkg later ")]
-pub async fn sign_and_agg_deposit_data(
+pub(crate) async fn sign_and_agg_deposit_data(
     exchanger: &Exchanger,
     shares: &[Share],
     withdrawal_addresses: &[String],
     network: &str,
     node_idx: &NodeIdx,
-    deposit_amounts: &[u64],
+    deposit_amounts: &[phase0::Gwei],
     compounding: bool,
 ) -> Result<Vec<Vec<phase0::DepositData>>> {
     let share_idx = u64::try_from(node_idx.share_idx)?;
@@ -252,7 +252,7 @@ pub async fn sign_and_agg_deposit_data(
 
 /// Signs, exchanges, and aggregates validator registrations.
 #[allow(dead_code, reason = "will be used in dkg later ")]
-pub async fn sign_and_agg_validator_registrations(
+pub(crate) async fn sign_and_agg_validator_registrations(
     exchanger: &Exchanger,
     shares: &[Share],
     fee_recipients: &[String],
@@ -295,7 +295,7 @@ pub async fn sign_and_agg_validator_registrations(
 /// unverified, in which case signing is skipped.
 #[allow(dead_code, reason = "will be used in dkg later ")]
 #[allow(clippy::too_many_arguments, reason = "mirrors Go signAndAggLockHash")]
-pub async fn sign_and_aggregate_lock_hash(
+pub(crate) async fn sign_and_aggregate_lock_hash(
     existing_shares: &[Share],
     new_shares: &[Share],
     mut definition: Definition,
