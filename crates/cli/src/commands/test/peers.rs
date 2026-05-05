@@ -76,12 +76,6 @@ const THRESHOLD_LOAD_POOR: Duration = Duration::from_millis(240);
 const THRESHOLD_RELAY_MEASURE_AVG: Duration = Duration::from_millis(50);
 const THRESHOLD_RELAY_MEASURE_POOR: Duration = Duration::from_millis(240);
 
-const DEFAULT_RELAY_URLS: &[&str] = &[
-    "https://0.relay.obol.tech",
-    "https://1.relay.obol.tech",
-    "https://2.relay.obol.dev",
-];
-
 /// Arguments for the peers test command.
 #[derive(Args, Clone, Debug)]
 pub struct TestPeersArgs {
@@ -131,8 +125,16 @@ pub struct TestPeersArgs {
     #[arg(long = "p2p-tcp-address", value_delimiter = ',')]
     pub p2p_tcp_addrs: Vec<String>,
 
-    /// Relay server URLs.
-    #[arg(long = "p2p-relays", value_delimiter = ',')]
+    /// Relay server URLs [default: https://0.relay.obol.tech, https://2.relay.obol.dev, https://1.relay.obol.tech]
+    #[arg(
+        long = "p2p-relays",
+        value_delimiter = ',',
+        default_values = &[
+            "https://0.relay.obol.tech",
+            "https://2.relay.obol.dev",
+            "https://1.relay.obol.tech"
+        ]
+    )]
     pub p2p_relays: Vec<String>,
 }
 
@@ -217,11 +219,7 @@ pub async fn run(
         tracing::info!(name = %self_peer.name, "Self p2p name resolved");
     }
 
-    let relay_urls: Vec<String> = if args.p2p_relays.is_empty() {
-        DEFAULT_RELAY_URLS.iter().map(|s| s.to_string()).collect()
-    } else {
-        args.p2p_relays.clone()
-    };
+    let relay_urls = args.p2p_relays.clone();
 
     // Relay HTTP tests run independently of the libp2p node.
     let relay_results = run_relay_http_tests(&relay_urls, &relay_tests, ct.child_token()).await;
@@ -290,15 +288,14 @@ fn run_self_tests_in_new_thread(
     only_self_tests: bool,
 ) -> JoinHandle<HashMap<String, Vec<TestResult>>> {
     // Self tests run concurrently with peer tests; give the node a moment to bind.
-    let res = tokio::spawn(async move {
+    tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(500)).await;
         let res = run_self_tests(&tcp_addrs, &self_tests).await;
         if only_self_tests {
             cancel.cancel();
         }
         res
-    });
-    res
+    })
 }
 
 async fn fetch_enrs(args: &TestPeersArgs) -> Result<Vec<String>> {
