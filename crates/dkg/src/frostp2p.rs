@@ -807,9 +807,12 @@ async fn register_round1_bcast(
                         }
                     }
 
-                    let source_id = *share_idx_by_peer
-                        .get(&peer_id)
-                        .ok_or(bcast::Error::InvalidPeerIndex(peer_id))?;
+                    let source_id =
+                        *share_idx_by_peer
+                            .get(&peer_id)
+                            .ok_or(bcast::Error::InvalidMessage(
+                                "invalid round 1 cast source ID",
+                            ))?;
                     for cast in &msg.casts {
                         let key = cast.key.as_ref().ok_or(bcast::Error::MissingField("key"))?;
                         if key.source_id != source_id {
@@ -868,9 +871,12 @@ async fn register_round2_bcast(
                         }
                     }
 
-                    let source_id = *share_idx_by_peer
-                        .get(&peer_id)
-                        .ok_or(bcast::Error::InvalidPeerIndex(peer_id))?;
+                    let source_id =
+                        *share_idx_by_peer
+                            .get(&peer_id)
+                            .ok_or(bcast::Error::InvalidMessage(
+                                "invalid round 2 cast source ID",
+                            ))?;
                     for cast in &msg.casts {
                         let key = cast.key.as_ref().ok_or(bcast::Error::MissingField("key"))?;
                         if key.source_id != source_id {
