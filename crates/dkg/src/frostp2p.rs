@@ -516,14 +516,15 @@ impl FrostP2PBehaviour {
             .collect::<HashSet<_>>();
         self.result_by_op.clear();
         self.pending_by_peer.clear();
-        self.pending_events.retain(|event| {
-            !matches!(
-                event,
-                ToSwarm::NotifyHandler {
-                    event: InEvent::Send { .. },
-                    ..
-                }
-            )
+        self.pending_events.retain(|event| match event {
+            ToSwarm::NotifyHandler {
+                event: InEvent::Send { .. },
+                ..
+            } => false,
+            ToSwarm::Dial { opts } => opts
+                .get_peer_id()
+                .is_none_or(|peer_id| !peers.contains(&peer_id)),
+            _ => true,
         });
 
         for peer_id in peers {
@@ -1346,6 +1347,12 @@ mod tests {
                     event: InEvent::Send { op_id: 7, .. },
                     ..
                 }
+            )
+        }));
+        assert!(behaviour.pending_events.iter().all(|event| {
+            !matches!(
+                event,
+                ToSwarm::Dial { opts } if opts.get_peer_id() == Some(peer_id)
             )
         }));
     }
