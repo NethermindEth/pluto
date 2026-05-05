@@ -31,6 +31,7 @@ use pluto_p2p::{
 };
 use reqwest::Method;
 use sha2::{Digest, Sha256};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use super::{
@@ -212,6 +213,10 @@ pub async fn run(
     let self_peer_id = peer_id_from_key(private_key.public_key())
         .map_err(|e| CliError::Other(format!("failed to derive peer ID: {e}")))?;
 
+    if let Some(self_peer) = cluster_peers.iter().find(|p| p.id == self_peer_id) {
+        tracing::info!(name = %self_peer.name, "Self p2p name resolved");
+    }
+
     let relay_urls: Vec<String> = if args.p2p_relays.is_empty() {
         DEFAULT_RELAY_URLS.iter().map(|s| s.to_string()).collect()
     } else {
@@ -239,12 +244,6 @@ pub async fn run(
     let tcp_addrs = args.p2p_tcp_addrs.clone();
     let self_tests_clone = self_tests.clone();
 
-    // Self tests run concurrently with peer tests; give the node a moment to bind.
-    let self_task = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        run_self_tests(&tcp_addrs, &self_tests_clone).await
-    });
-
     let self_cancel = cancel.clone();
     let only_self_tests = peer_tests.is_empty();
     let ((peer_results, mut node), self_results) = tokio::join!(
@@ -258,18 +257,9 @@ pub async fn run(
             &args,
             cancel.clone(),
         ),
-        async move {
-            let result = self_task.await.unwrap_or_else(|e| {
-                tracing::error!(err = %e, "self-test task panicked");
-                HashMap::new()
-            });
-            if only_self_tests {
-                self_cancel.cancel();
-            }
-            result
-        },
+        run_self_tests_in_new_thread(self_cancel, tcp_addrs, self_tests_clone, only_self_tests,),
     );
-
+    let self_results = self_results.expect("self-test task should not panic");
     let mut all_targets: HashMap<String, Vec<TestResult>> = HashMap::new();
     all_targets.extend(relay_results);
     all_targets.extend(self_results);
@@ -291,6 +281,24 @@ pub async fn run(
     keep_node_alive(&mut node, args.keep_alive, ct).await;
 
     Ok(res)
+}
+
+fn run_self_tests_in_new_thread(
+    cancel: CancellationToken,
+    tcp_addrs: Vec<String>,
+    self_tests: Vec<TestCaseName>,
+    only_self_tests: bool,
+) -> JoinHandle<HashMap<String, Vec<TestResult>>> {
+    // Self tests run concurrently with peer tests; give the node a moment to bind.
+    let res = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let res = run_self_tests(&tcp_addrs, &self_tests).await;
+        if only_self_tests {
+            cancel.cancel();
+        }
+        res
+    });
+    res
 }
 
 async fn fetch_enrs(args: &TestPeersArgs) -> Result<Vec<String>> {
@@ -600,7 +608,7 @@ async fn run_peer_event_loop(
                     dialed_via_relay = true;
                     dial_peers_via_relay(&target_peers, relay_peers, &mut node);
                 }
-                handle_swarm_event(event, &mut states, &mut node, needs_direct);
+                handle_swarm_event(event, &mut states, &mut node, needs_direct, &target_peers, args.direct_connection_timeout);
             }
             _ = retry.tick() => {
                 if dialed_via_relay && !queued_tests.is_empty() {
@@ -640,7 +648,13 @@ async fn run_peer_event_loop(
     for (peer, enr_str) in &target_peers {
         let state = &states[&peer.id];
         let target_name = peer_target_name(peer, enr_str);
+        if queued_tests.iter().any(|t| t.name == "PingLoad") {
+            tracing::info!(duration = ?args.load_test_duration, target = %target_name, "Running ping load tests...");
+        }
         let test_results = build_peer_results(state, queued_tests, args);
+        if queued_tests.iter().any(|t| t.name == "PingLoad") {
+            tracing::info!(target = %target_name, "Ping load tests finished");
+        }
         results.insert(target_name, test_results);
     }
     (results, node)
@@ -669,6 +683,8 @@ fn handle_swarm_event(
     states: &mut HashMap<PeerId, PeerState>,
     node: &mut Node<TestBehaviour>,
     needs_direct: bool,
+    target_peers: &[(&Peer, &str)],
+    direct_connection_timeout: Duration,
 ) {
     match event {
         SwarmEvent::ConnectionEstablished {
@@ -684,6 +700,11 @@ fn handle_swarm_event(
                 }
 
                 if !is_relay {
+                    if let Some((peer, enr_str)) =
+                        target_peers.iter().find(|(p, _)| p.id == peer_id)
+                    {
+                        tracing::info!(target = %peer_target_name(peer, enr_str), "Direct connection established");
+                    }
                     state.direct_connected = true;
                 }
             }
@@ -720,6 +741,11 @@ fn handle_swarm_event(
                 state.identify_received = true;
                 if needs_direct && !state.direct_dial_attempted && !state.direct_connected {
                     state.direct_dial_attempted = true;
+                    if let Some((peer, enr_str)) =
+                        target_peers.iter().find(|(p, _)| p.id == peer_id)
+                    {
+                        tracing::info!(timeout = ?direct_connection_timeout, target = %peer_target_name(peer, enr_str), "Trying to establish direct connection...");
+                    }
                     for addr in &info.listen_addrs {
                         if !is_relay_addr(addr) {
                             let mut direct_addr = addr.clone();
@@ -814,7 +840,7 @@ fn build_peer_results(
                     state
                         .ping_rtts
                         .iter()
-                        .filter(|(t, _)| t.duration_since(ct) < args.load_test_duration)
+                        .filter(|(t, _)| t.saturating_duration_since(ct) < args.load_test_duration)
                         .map(|(_, rtt)| *rtt)
                         .collect()
                 } else {
