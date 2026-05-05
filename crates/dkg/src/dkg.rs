@@ -1,9 +1,12 @@
-use std::{num::TryFromIntError, path, time::Duration};
+use std::{collections::HashMap, num::TryFromIntError, path, time::Duration};
 
 use bon::Builder;
 use libp2p::PeerId;
+use pluto_app::privkeylock;
+use pluto_core::version;
+use tokio::select;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::disk;
 pub use crate::{
@@ -17,18 +20,21 @@ pub use crate::{
     },
 };
 use pluto_cluster::{
-    definition::{Definition, ValidatorAddresses},
+    definition::{Definition, DefinitionError, ValidatorAddresses},
     distvalidator::DistValidatorError,
     lock::Lock,
     operator::Operator,
+    version::versions::*,
 };
 use pluto_crypto::types::PrivateKey;
 use pluto_eth1wrap::{EthClient, EthClientError};
 use pluto_eth2api::spec::phase0;
+use pluto_eth2util as eth2util;
 use pluto_eth2util::keymanager::{self, KeymanagerError};
-use pluto_p2p::{config::P2PConfig, peer::Peer};
+use pluto_p2p::{
+    bootnode::BootnodeError, config::P2PConfig, k1::key_path, p2p::P2PError, peer::Peer,
+};
 use pluto_tracing::TracingConfig;
-use std::collections::HashMap;
 use url::Url;
 
 const DEFAULT_DATA_DIR: &str = ".charon";
@@ -112,6 +118,49 @@ pub enum DkgError {
     /// Integer overflow.
     #[error("integer overflow")]
     IntegerOverflow,
+
+    /// Failed to create private key lock service.
+    #[error("failed to create private key lock service: {0}")]
+    PrivKeyLock(#[from] privkeylock::PrivKeyLockError),
+
+    /// Unsupported definition version.
+    #[error("only v1.6.0 and newer cluster definition versions supported, got: {version}")]
+    UnsupportedDefinitionVersion {
+        /// The unsupported version.
+        version: String,
+    },
+
+    /// Failed to convert fork version to network.
+    #[error("failed to convert fork version to network: {0}")]
+    ForkVersionToNetwork(#[from] eth2util::network::NetworkError),
+
+    /// Failed to load private key.
+    #[error("failed to load private key: {0}")]
+    KeyLoadError(#[from] pluto_p2p::k1::K1Error),
+
+    /// Peer error.
+    #[error("peer error: {0}")]
+    PeerError(#[from] pluto_p2p::peer::PeerError),
+
+    /// Definition error.
+    #[error("definition error: {0}")]
+    Definition(#[from] DefinitionError),
+
+    /// Bootnode or relay resolution error.
+    #[error("bootnode error: {0}")]
+    Bootnode(#[from] BootnodeError),
+
+    /// Sync protocol error.
+    #[error("sync error: {0}")]
+    Sync(#[from] crate::sync::Error),
+
+    /// P2P node setup error.
+    #[error("p2p error: {0}")]
+    P2P(#[from] P2PError),
+
+    /// The DKG ceremony backend has not been ported yet.
+    #[error("DKG ceremony backend is not implemented yet")]
+    CeremonyBackendUnimplemented,
 }
 
 /// Keymanager configuration accepted by the entrypoint.
@@ -186,6 +235,9 @@ pub struct Config {
     #[builder(default)]
     pub execution_engine_addr: String,
 
+    /// Append configuration.
+    pub append_config: Option<AppendConfig>,
+
     /// Whether to bundle the output directory as a tarball.
     #[builder(default)]
     pub zipped: bool,
@@ -209,6 +261,9 @@ impl Config {
 pub struct TestConfig {
     /// Provides the cluster definition explicitly, skips loading from disk.
     pub def: Option<Definition>,
+
+    /// Provides the P2P private key explicitly, skips loading from disk.
+    pub p2p_key: Option<k256::SecretKey>,
 }
 
 /// Configuration used to merge the outcome of two DKG ceremonies.
@@ -260,24 +315,124 @@ fn default_tracing_config() -> TracingConfig {
 }
 
 /// Runs the DKG entrypoint until the unported backend boundary.
-pub async fn run(conf: Config, shutdown: CancellationToken) -> Result<(), DkgError> {
-    if shutdown.is_cancelled() {
+pub async fn run(conf: Config, ct: CancellationToken) -> Result<(), DkgError> {
+    if ct.is_cancelled() {
         return Err(DkgError::ShutdownRequestedBeforeStartup);
     }
 
+    {
+        // Setup privarte key locking.
+        let lock_svc =
+            privkeylock::Service::new(key_path(&conf.data_dir).join(".lock"), "charon dkg").await?;
+
+        let ct = ct.clone();
+
+        // Start it async
+        tokio::spawn(async move {
+            select! {
+                _ = ct.cancelled() => {
+                    lock_svc.close().await;
+                }
+                result = lock_svc.run() => {
+                    if let Err(err) = result {
+                        error!(?err, "Error running private key lock service");
+                    }
+                }
+            }
+        });
+    }
+
+    version::log_info("Charon DKG starting");
+
     let eth1 = EthClient::new(&conf.execution_engine_addr).await?;
 
-    let _definition = disk::load_definition(&conf, &eth1).await?;
+    let (
+        def,
+        _total_validators,
+        _new_validators,
+        _new_withdrawal_addresses,
+        _new_fee_recipient_addresses,
+    ) = if let Some(append) = &conf.append_config {
+        let def = append.cluster_lock.definition.clone();
+        let new_validators = u64::try_from(append.add_validators)?;
+        let total_validators = def
+            .num_validators
+            .checked_add(new_validators)
+            .ok_or(DkgError::IntegerOverflow)?;
+        let new_withdrawal_addresses = append
+            .validator_addresses
+            .iter()
+            .map(|addr| addr.withdrawal_address.clone())
+            .collect::<Vec<_>>();
+        let new_fee_recipient_addresses = append
+            .validator_addresses
+            .iter()
+            .map(|addr| addr.fee_recipient_address.clone())
+            .collect::<Vec<_>>();
+
+        (
+            def,
+            total_validators,
+            new_validators,
+            new_withdrawal_addresses,
+            new_fee_recipient_addresses,
+        )
+    } else {
+        let def = disk::load_definition(&conf, &eth1).await?;
+
+        let total_validators = def.num_validators;
+        let new_validators = def.num_validators;
+        let new_withdrawal_addresses = def.withdrawal_addresses();
+        let new_fee_recipient_addresses = def.fee_recipient_addresses();
+
+        (
+            def,
+            total_validators,
+            new_validators,
+            new_withdrawal_addresses,
+            new_fee_recipient_addresses,
+        )
+    };
+
+    // This DKG only supports a few specific config versions.
+    if !matches!(def.version.as_str(), V1_6 | V1_7 | V1_8 | V1_9 | V1_10) {
+        return Err(DkgError::UnsupportedDefinitionVersion {
+            version: def.version.clone(),
+        });
+    }
 
     validate_keymanager_flags(&conf)?;
+
+    // Check if keymanager address is reachable.
     verify_keymanager_connection(&conf).await?;
 
     if !conf.has_test_config() {
         disk::check_clear_data_dir(&conf.data_dir).await?;
     }
+
     disk::check_writes(&conf.data_dir).await?;
 
-    unimplemented!("DKG ceremony backend is not implemented yet");
+    let _network = eth2util::network::fork_version_to_network(&def.fork_version)?;
+
+    let peers = def.peers()?;
+
+    let _def_hash = hex::encode(&def.definition_hash);
+
+    let key = if let Some(key) = conf.test_config.p2p_key.clone() {
+        key
+    } else {
+        pluto_p2p::k1::load_priv_key(&conf.data_dir)?
+    };
+
+    let peer_id = pluto_p2p::peer::peer_id_from_key(key.public_key())?;
+
+    info!("Starting local P2P networking peer");
+
+    log_peer_summary(peer_id, &peers, &def.operators);
+
+    let _setup_p2p = crate::node::setup_p2p;
+
+    Err(DkgError::CeremonyBackendUnimplemented)
 }
 
 fn validate_keymanager_flags(conf: &Config) -> Result<(), DkgError> {
