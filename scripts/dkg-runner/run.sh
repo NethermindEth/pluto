@@ -120,6 +120,8 @@ if is_truthy "${KEEP_NODES}"; then
     log_info "--- Phase 4: Keep nodes running (ceremony complete) ---"
 else
     log_info "--- Phase 4: Stop nodes (ceremony complete) ---"
+    log_info "Waiting 10s for nodes to flush final logs..."
+    sleep 10
     _kill_nodes || true
 fi
 

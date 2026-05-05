@@ -223,7 +223,7 @@ impl ConnectionHandler for Handler {
                     self.inbound = None;
                 }
                 Poll::Ready(Err(error)) => {
-                    warn!(peer = %self.peer_id, err = %error, "Error serving inbound sync stream");
+                    warn!(peer = %self.peer_id, err = %error, "Error serving sync protocol");
                     self.inbound = None;
                 }
             }
@@ -467,12 +467,8 @@ async fn handle_inbound_stream(
             } else {
                 let (inserted, count) = server.set_connected(peer_id).await;
                 if inserted {
-                    info!(
-                        peer = %peer_id,
-                        connected = count,
-                        expected = server.expected_peer_count(),
-                        "Connected to peer"
-                    );
+                    let expected = server.expected_peer_count();
+                    info!(peer = %peer_id, "Connected to peer {count} of {expected}");
                 }
             }
 

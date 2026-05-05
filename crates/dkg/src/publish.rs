@@ -27,7 +27,7 @@ pub async fn write_lock_to_api(
     )?;
 
     client.publish_lock(lock.clone()).await?;
-    debug!(addr = publish_addr, "Published lock file");
+    debug!(addr = publish_addr, "Published lock file to api");
 
     Ok(client.launchpad_url_for_lock(lock)?)
 }

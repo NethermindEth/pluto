@@ -421,8 +421,8 @@ fn log_private_key_lock_result(
 ) {
     match result {
         Ok(Ok(())) => {}
-        Ok(Err(err)) => error!(?err, "Error running private key lock service"),
-        Err(err) => error!(?err, "Private key lock service task failed"),
+        Ok(Err(err)) => error!(?err, "Error locking private key file"),
+        Err(err) => error!(?err, "Error locking private key file"),
     }
 }
 
@@ -833,7 +833,7 @@ async fn run_ceremony<T: frost::FTransport>(
     );
     tokio::time::sleep(conf.shutdown_delay).await;
 
-    info!("Successfully completed DKG ceremony");
+    info!("Successfully completed DKG ceremony 🎉");
     if let Some(url) = dashboard_url {
         info!("You can find your newly-created cluster dashboard here: {url}");
     }

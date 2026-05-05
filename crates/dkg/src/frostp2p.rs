@@ -634,7 +634,7 @@ impl NetworkBehaviour for FrostP2PBehaviour {
                     return;
                 }
                 if !self.accepted_round1_p2p.insert(peer_id) {
-                    debug!(%peer_id, "ignoring duplicate round 1 p2p message");
+                    debug!(%peer_id, "Ignoring duplicate round 2 message");
                     return;
                 }
                 match self.inbound_tx.try_send((peer_id, msg)) {
@@ -794,7 +794,7 @@ async fn register_round1_bcast(
                             .lock()
                             .map_err(|_| bcast::Error::InvalidMessage("dedup mutex poisoned"))?;
                         if !dedup.insert(peer_id) {
-                            debug!(%peer_id, "ignoring duplicate round 1 message");
+                            debug!(%peer_id, "Ignoring duplicate round 1 message");
                             return Ok(());
                         }
                     }
@@ -855,7 +855,7 @@ async fn register_round2_bcast(
                             .lock()
                             .map_err(|_| bcast::Error::InvalidMessage("dedup mutex poisoned"))?;
                         if !dedup.insert(peer_id) {
-                            debug!(%peer_id, "ignoring duplicate round 2 message");
+                            debug!(%peer_id, "Ignoring duplicate round 2 message");
                             return Ok(());
                         }
                     }

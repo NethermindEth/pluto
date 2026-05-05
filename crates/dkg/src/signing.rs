@@ -262,8 +262,8 @@ pub(crate) async fn sign_and_agg_validator_registrations(
 ) -> Result<Vec<VersionedSignedValidatorRegistration>> {
     let effective_gas_limit = if gas_limit == 0 {
         warn!(
-            default = registration::DEFAULT_GAS_LIMIT,
-            "gas_limit not set, using default"
+            default_gas_limit = registration::DEFAULT_GAS_LIMIT,
+            "custom target gas limit not supported, setting to default"
         );
         registration::DEFAULT_GAS_LIMIT
     } else {
