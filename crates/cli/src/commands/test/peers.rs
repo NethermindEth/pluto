@@ -145,6 +145,26 @@ pub struct TestPeersArgs {
         ]
     )]
     pub p2p_relays: Vec<String>,
+
+    /// The IP address advertised by libp2p. This may be used to advertise an
+    /// external IP.
+    #[arg(long = "p2p-external-ip", default_value = "")]
+    pub p2p_external_ip: String,
+
+    /// The DNS hostname advertised by libp2p. This may be used to advertise an
+    /// external DNS.
+    #[arg(long = "p2p-external-hostname", default_value = "")]
+    pub p2p_external_hostname: String,
+
+    /// Comma-separated list of listening UDP addresses (ip and port) for libP2P
+    /// traffic. Empty default doesn't bind to local port therefore only
+    /// supports outgoing connections.
+    #[arg(long = "p2p-udp-address", value_delimiter = ',')]
+    pub p2p_udp_addrs: Vec<String>,
+
+    /// Disables TCP port reuse for outgoing libp2p connections.
+    #[arg(long = "p2p-disable-reuseport")]
+    pub p2p_disable_reuseport: bool,
 }
 
 pub(super) fn supported_peer_test_cases() -> Vec<TestCaseName> {
@@ -246,11 +266,19 @@ pub async fn run(
     // Build ENR hash (sorted all-ENRs including self) for relay routing.
     let enr_hash = build_enr_hash(&private_key, &enr_strings)?;
 
+    let external_ip = (!args.p2p_external_ip.is_empty()).then(|| args.p2p_external_ip.clone());
+    let external_host =
+        (!args.p2p_external_hostname.is_empty()).then(|| args.p2p_external_hostname.clone());
+
     let cancel = ct.child_token();
     let (node, relay_peers) = setup_p2p(
         cancel.clone(),
         private_key,
         args.p2p_tcp_addrs.clone(),
+        args.p2p_udp_addrs.clone(),
+        external_ip,
+        external_host,
+        args.p2p_disable_reuseport,
         &relay_urls,
         &cluster_peers,
         self_peer_id,
@@ -987,6 +1015,10 @@ async fn setup_p2p(
     cancel: CancellationToken,
     private_key: k256::SecretKey,
     tcp_addrs: Vec<String>,
+    udp_addrs: Vec<String>,
+    external_ip: Option<String>,
+    external_host: Option<String>,
+    disable_reuse_port: bool,
     relay_urls: &[String],
     cluster_peers: &[Peer],
     self_peer_id: PeerId,
@@ -1004,11 +1036,11 @@ async fn setup_p2p(
 
     let p2p_cfg = P2PConfig {
         relays: vec![],
-        external_ip: None,
-        external_host: None,
+        external_ip,
+        external_host,
         tcp_addrs,
-        udp_addrs: vec![],
-        disable_reuse_port: false,
+        udp_addrs,
+        disable_reuse_port,
     };
 
     let relay_peers_for_reservation = relay_peers.clone();
@@ -1066,6 +1098,10 @@ mod tests {
             direct_connection_timeout: StdDuration::from_secs(1),
             p2p_tcp_addrs: vec![],
             p2p_relays: vec![],
+            p2p_external_ip: String::new(),
+            p2p_external_hostname: String::new(),
+            p2p_udp_addrs: vec![],
+            p2p_disable_reuseport: false,
         }
     }
 
