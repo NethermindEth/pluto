@@ -1016,6 +1016,9 @@ impl FrostP2P {
                     match event.ok_or(FrostError::ChannelClosed("frost bcast event channel"))? {
                         bcast::Event::BroadcastCompleted { msg_id } if msg_id == expected_msg_id => return Ok(()),
                         bcast::Event::BroadcastFailed { msg_id, error } if msg_id == expected_msg_id => return Err(error.into()),
+                        bcast::Event::BroadcastFailed { msg_id, error } => {
+                            warn!(msg_id, expected_msg_id, %error, "ignoring unrelated failed bcast event")
+                        }
                         event => debug!(?event, expected_msg_id, "ignoring unrelated bcast event"),
                     }
                 }
