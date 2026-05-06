@@ -1,4 +1,7 @@
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use anyhow::Context as _;
 use futures::StreamExt as _;
@@ -66,6 +69,128 @@ struct RunningNode {
     dial_tx: mpsc::UnboundedSender<Vec<Multiaddr>>,
     stop_tx: oneshot::Sender<()>,
     join: tokio::task::JoinHandle<anyhow::Result<()>>,
+}
+
+#[derive(Default)]
+struct FrostEventCounts {
+    direct_sent: usize,
+    direct_received: usize,
+    round1_started: usize,
+    round1_bcast_started: usize,
+    round1_bcast_completed: usize,
+    round1_direct_started: usize,
+    round1_completed: usize,
+    round2_started: usize,
+    round2_bcast_started: usize,
+    round2_bcast_completed: usize,
+    round2_completed: usize,
+    protocol_completed: usize,
+}
+
+impl FrostEventCounts {
+    fn bump(count: &mut usize, label: &'static str) {
+        *count = count.checked_add(1).expect(label);
+    }
+
+    fn is_complete(&self, expected_direct_events: usize) -> bool {
+        self.direct_sent >= expected_direct_events
+            && self.direct_received >= expected_direct_events
+            && self.round1_started >= NODES
+            && self.round1_bcast_started >= NODES
+            && self.round1_bcast_completed >= NODES
+            && self.round1_direct_started >= NODES
+            && self.round1_completed >= NODES
+            && self.round2_started >= NODES
+            && self.round2_bcast_started >= NODES
+            && self.round2_bcast_completed >= NODES
+            && self.round2_completed >= NODES
+            && self.protocol_completed >= NODES
+    }
+
+    fn record(
+        &mut self,
+        node_index: usize,
+        event: FrostP2PEvent,
+        expected_peer_count: usize,
+    ) -> anyhow::Result<()> {
+        match event {
+            FrostP2PEvent::RoundStarted { round: 1 } => {
+                Self::bump(&mut self.round1_started, "round 1 started count overflow");
+            }
+            FrostP2PEvent::RoundStarted { round: 2 } => {
+                Self::bump(&mut self.round2_started, "round 2 started count overflow");
+            }
+            FrostP2PEvent::BroadcastStarted { round: 1 } => {
+                Self::bump(
+                    &mut self.round1_bcast_started,
+                    "round 1 broadcast started count overflow",
+                );
+            }
+            FrostP2PEvent::BroadcastStarted { round: 2 } => {
+                Self::bump(
+                    &mut self.round2_bcast_started,
+                    "round 2 broadcast started count overflow",
+                );
+            }
+            FrostP2PEvent::BroadcastCompleted { round: 1 } => {
+                Self::bump(
+                    &mut self.round1_bcast_completed,
+                    "round 1 broadcast completed count overflow",
+                );
+            }
+            FrostP2PEvent::BroadcastCompleted { round: 2 } => {
+                Self::bump(
+                    &mut self.round2_bcast_completed,
+                    "round 2 broadcast completed count overflow",
+                );
+            }
+            FrostP2PEvent::DirectSendStarted { peer_count } => {
+                assert_eq!(peer_count, expected_peer_count);
+                Self::bump(
+                    &mut self.round1_direct_started,
+                    "round 1 direct started count overflow",
+                );
+            }
+            FrostP2PEvent::DirectSent { .. } => {
+                Self::bump(&mut self.direct_sent, "direct sent count overflow");
+            }
+            FrostP2PEvent::DirectReceived { .. } => {
+                Self::bump(&mut self.direct_received, "direct received count overflow");
+            }
+            FrostP2PEvent::RoundCompleted { round: 1 } => {
+                Self::bump(
+                    &mut self.round1_completed,
+                    "round 1 completed count overflow",
+                );
+            }
+            FrostP2PEvent::RoundCompleted { round: 2 } => {
+                Self::bump(
+                    &mut self.round2_completed,
+                    "round 2 completed count overflow",
+                );
+            }
+            FrostP2PEvent::ProtocolCompleted => {
+                Self::bump(
+                    &mut self.protocol_completed,
+                    "protocol completed count overflow",
+                );
+            }
+            FrostP2PEvent::DirectSendFailed { peer_id, error } => {
+                anyhow::bail!("unexpected FROST P2P failure for {peer_id}: {error}");
+            }
+            FrostP2PEvent::BroadcastFailed { round, error } => {
+                anyhow::bail!("unexpected FROST round {round} broadcast failure: {error}");
+            }
+            FrostP2PEvent::RoundStarted { round }
+            | FrostP2PEvent::BroadcastStarted { round }
+            | FrostP2PEvent::BroadcastCompleted { round }
+            | FrostP2PEvent::RoundCompleted { round } => {
+                anyhow::bail!("unexpected FROST round event from node {node_index}: {round}");
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -280,7 +405,7 @@ async fn wait_for_connections(
     expected_peers: &[PeerId],
 ) -> anyhow::Result<()> {
     tokio::time::timeout(TEST_TIMEOUT, async {
-        let mut seen = vec![HashMap::<PeerId, ()>::new(); NODES];
+        let mut seen = vec![HashSet::<PeerId>::new(); NODES];
         while seen
             .iter()
             .any(|peers| peers.len() < NODES.saturating_sub(1))
@@ -290,7 +415,7 @@ async fn wait_for_connections(
                 .await
                 .context("connection event channel closed")?;
             if index < NODES && expected_peers.contains(&peer_id) {
-                seen[index].insert(peer_id, ());
+                seen[index].insert(peer_id);
             }
         }
 
@@ -360,111 +485,15 @@ async fn wait_for_frost_p2p_events(
         .context("expected FROST event count overflow")?;
 
     tokio::time::timeout(TEST_TIMEOUT, async {
-        let mut direct_sent = 0usize;
-        let mut direct_received = 0usize;
-        let mut round1_started = 0usize;
-        let mut round1_bcast_started = 0usize;
-        let mut round1_bcast_completed = 0usize;
-        let mut round1_direct_started = 0usize;
-        let mut round1_completed = 0usize;
-        let mut round2_started = 0usize;
-        let mut round2_bcast_started = 0usize;
-        let mut round2_bcast_completed = 0usize;
-        let mut round2_completed = 0usize;
-        let mut protocol_completed = 0usize;
+        let mut counts = FrostEventCounts::default();
+        let expected_peer_count = NODES.saturating_sub(1);
 
-        while direct_sent < expected_direct_events
-            || direct_received < expected_direct_events
-            || round1_started < NODES
-            || round1_bcast_started < NODES
-            || round1_bcast_completed < NODES
-            || round1_direct_started < NODES
-            || round1_completed < NODES
-            || round2_started < NODES
-            || round2_bcast_started < NODES
-            || round2_bcast_completed < NODES
-            || round2_completed < NODES
-            || protocol_completed < NODES
-        {
+        while !counts.is_complete(expected_direct_events) {
             let (node_index, event) = frost_event_rx
                 .recv()
                 .await
                 .context("frost p2p event channel closed")?;
-            match event {
-                FrostP2PEvent::RoundStarted { round: 1 } => {
-                    round1_started = round1_started
-                        .checked_add(1)
-                        .expect("round 1 started event count should not overflow");
-                }
-                FrostP2PEvent::RoundStarted { round: 2 } => {
-                    round2_started = round2_started
-                        .checked_add(1)
-                        .expect("round 2 started event count should not overflow");
-                }
-                FrostP2PEvent::BroadcastStarted { round: 1 } => {
-                    round1_bcast_started = round1_bcast_started
-                        .checked_add(1)
-                        .expect("round 1 broadcast started event count should not overflow");
-                }
-                FrostP2PEvent::BroadcastStarted { round: 2 } => {
-                    round2_bcast_started = round2_bcast_started
-                        .checked_add(1)
-                        .expect("round 2 broadcast started event count should not overflow");
-                }
-                FrostP2PEvent::BroadcastCompleted { round: 1 } => {
-                    round1_bcast_completed = round1_bcast_completed
-                        .checked_add(1)
-                        .expect("round 1 broadcast completed event count should not overflow");
-                }
-                FrostP2PEvent::BroadcastCompleted { round: 2 } => {
-                    round2_bcast_completed = round2_bcast_completed
-                        .checked_add(1)
-                        .expect("round 2 broadcast completed event count should not overflow");
-                }
-                FrostP2PEvent::DirectSendStarted { peer_count } => {
-                    assert_eq!(peer_count, NODES.saturating_sub(1));
-                    round1_direct_started = round1_direct_started
-                        .checked_add(1)
-                        .expect("round 1 direct started event count should not overflow");
-                }
-                FrostP2PEvent::DirectSent { .. } => {
-                    direct_sent = direct_sent
-                        .checked_add(1)
-                        .expect("direct sent event count should not overflow");
-                }
-                FrostP2PEvent::DirectReceived { .. } => {
-                    direct_received = direct_received
-                        .checked_add(1)
-                        .expect("direct received event count should not overflow");
-                }
-                FrostP2PEvent::RoundCompleted { round: 1 } => {
-                    round1_completed = round1_completed
-                        .checked_add(1)
-                        .expect("round 1 completed event count should not overflow");
-                }
-                FrostP2PEvent::RoundCompleted { round: 2 } => {
-                    round2_completed = round2_completed
-                        .checked_add(1)
-                        .expect("round 2 completed event count should not overflow");
-                }
-                FrostP2PEvent::ProtocolCompleted => {
-                    protocol_completed = protocol_completed
-                        .checked_add(1)
-                        .expect("protocol completed event count should not overflow");
-                }
-                FrostP2PEvent::DirectSendFailed { peer_id, error } => {
-                    anyhow::bail!("unexpected FROST P2P failure for {peer_id}: {error}");
-                }
-                FrostP2PEvent::BroadcastFailed { round, error } => {
-                    anyhow::bail!("unexpected FROST round {round} broadcast failure: {error}");
-                }
-                FrostP2PEvent::RoundStarted { round }
-                | FrostP2PEvent::BroadcastStarted { round }
-                | FrostP2PEvent::BroadcastCompleted { round }
-                | FrostP2PEvent::RoundCompleted { round } => {
-                    anyhow::bail!("unexpected FROST round event from node {node_index}: {round}");
-                }
-            }
+            counts.record(node_index, event, expected_peer_count)?;
         }
 
         anyhow::Ok(())

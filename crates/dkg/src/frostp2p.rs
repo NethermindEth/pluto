@@ -102,6 +102,7 @@
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    sync::{Arc, Mutex},
     task::{Context, Poll},
     time::Duration,
 };
@@ -453,6 +454,12 @@ pub(crate) struct FrostP2PSender {
 impl FrostP2PSender {
     fn new(cmd_tx: mpsc::UnboundedSender<SendCommand>) -> Self {
         Self { cmd_tx }
+    }
+
+    fn emit_event(&self, event: FrostP2PEvent) {
+        if self.cmd_tx.send(SendCommand::EmitEvent(event)).is_err() {
+            debug!("frost p2p behaviour dropped before observation event");
+        }
     }
 
     /// Sends a round-1 P2P message to `peer_id` and waits for stream delivery.
@@ -866,7 +873,6 @@ impl NetworkBehaviour for FrostP2PBehaviour {
 pub(crate) struct FrostP2P {
     bcast_comp: bcast::Component,
     frost_sender: FrostP2PSender,
-    behaviour_cmd_tx: mpsc::UnboundedSender<SendCommand>,
     bcast_event_rx: mpsc::UnboundedReceiver<bcast::Event>,
     round1_casts_tx: mpsc::UnboundedSender<FrostRound1Casts>,
     round1_casts_rx: mpsc::UnboundedReceiver<FrostRound1Casts>,
@@ -874,9 +880,7 @@ pub(crate) struct FrostP2P {
     round2_casts_tx: mpsc::UnboundedSender<FrostRound2Casts>,
     round2_casts_rx: mpsc::UnboundedReceiver<FrostRound2Casts>,
     peers_by_share_idx: HashMap<u32, PeerId>,
-    share_idx_by_peer: HashMap<PeerId, u32>,
     local_share_idx: u32,
-    num_validators: u32,
     num_peers: usize,
 }
 
@@ -920,7 +924,6 @@ pub(crate) async fn new_frost_p2p(
     Ok(FrostP2P {
         bcast_comp,
         frost_sender: frost_handle.sender.clone(),
-        behaviour_cmd_tx: frost_handle.sender.cmd_tx.clone(),
         bcast_event_rx,
         round1_casts_tx,
         round1_casts_rx,
@@ -928,9 +931,7 @@ pub(crate) async fn new_frost_p2p(
         round2_casts_tx,
         round2_casts_rx,
         peers_by_share_idx: peer_share_indices.peers_by_share_idx,
-        share_idx_by_peer: peer_share_indices.share_idx_by_peer,
         local_share_idx,
-        num_validators,
         num_peers: peers.len(),
     })
 }
@@ -973,7 +974,8 @@ async fn register_round1_bcast(
     threshold: usize,
     num_validators: u32,
 ) -> Result<(), FrostError> {
-    let dedup = std::sync::Arc::new(std::sync::Mutex::new(HashSet::<PeerId>::new()));
+    let dedup = Arc::new(Mutex::new(HashSet::<PeerId>::new()));
+    let share_idx_by_peer = Arc::new(share_idx_by_peer);
     bcast_comp
         .register_message::<FrostRound1Casts>(
             ROUND1_CAST_ID,
@@ -1015,7 +1017,8 @@ async fn register_round2_bcast(
     tx: mpsc::UnboundedSender<FrostRound2Casts>,
     num_validators: u32,
 ) -> Result<(), FrostError> {
-    let dedup = std::sync::Arc::new(std::sync::Mutex::new(HashSet::<PeerId>::new()));
+    let dedup = Arc::new(Mutex::new(HashSet::<PeerId>::new()));
+    let share_idx_by_peer = Arc::new(share_idx_by_peer);
     bcast_comp
         .register_message::<FrostRound2Casts>(
             ROUND2_CAST_ID,
@@ -1228,13 +1231,7 @@ impl FTransport for FrostP2P {
 
 impl FrostP2P {
     fn emit_event(&self, event: FrostP2PEvent) {
-        if self
-            .behaviour_cmd_tx
-            .send(SendCommand::EmitEvent(event))
-            .is_err()
-        {
-            debug!("frost p2p behaviour dropped before observation event");
-        }
+        self.frost_sender.emit_event(event);
     }
 
     async fn wait_for_bcast_completion(
@@ -2122,8 +2119,7 @@ mod tests {
 
         FrostP2P {
             bcast_comp,
-            frost_sender: FrostP2PSender::new(cmd_tx.clone()),
-            behaviour_cmd_tx: cmd_tx,
+            frost_sender: FrostP2PSender::new(cmd_tx),
             bcast_event_rx,
             round1_casts_tx,
             round1_casts_rx,
@@ -2131,9 +2127,7 @@ mod tests {
             round2_casts_tx,
             round2_casts_rx,
             peers_by_share_idx: HashMap::new(),
-            share_idx_by_peer: HashMap::new(),
             local_share_idx: 1,
-            num_validators: 0,
             num_peers: 0,
         }
     }
