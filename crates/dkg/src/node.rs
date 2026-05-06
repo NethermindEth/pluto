@@ -107,7 +107,8 @@ pub(crate) async fn setup_p2p(
         git_hash,
         false,
         "",
-    )).with_peers(peer_ids.clone());
+    ))
+    .with_peers(peer_ids.clone());
     let peerinfo_comp = peerinfo::Behaviour::new(local_peer_id, peerinfo_config);
 
     let mut share_idx_by_peer = HashMap::new();

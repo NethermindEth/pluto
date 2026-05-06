@@ -378,7 +378,9 @@ pub async fn run(conf: Config, ct: CancellationToken) -> Result<(), DkgError> {
     let result = run_inner(conf, ct).await;
 
     lock_ct.cancel();
-    let _ = lock_task.await.unwrap_or_else(|err| error!(?err, "Error joining private key lock task"));
+    let _ = lock_task
+        .await
+        .unwrap_or_else(|err| error!(?err, "Error joining private key lock task"));
 
     result
 }
@@ -540,12 +542,14 @@ async fn run_inner(conf: Config, ct: CancellationToken) -> Result<(), DkgError> 
     )
     .await?;
 
-    let node_idx = def.node_idx(node.local_peer_id()).map_err(|source| {
-        match source {
-            DefinitionError::PeerNotFound { peer_id } => DkgError::LocalPeerNotInDefinition { peer_id },
+    let node_idx = def
+        .node_idx(node.local_peer_id())
+        .map_err(|source| match source {
+            DefinitionError::PeerNotFound { peer_id } => {
+                DkgError::LocalPeerNotInDefinition { peer_id }
+            }
             other => DkgError::Definition(other),
-        }
-    })?;
+        })?;
 
     let peer_ids = def.peer_ids()?;
     let exchanger = Exchanger::new(

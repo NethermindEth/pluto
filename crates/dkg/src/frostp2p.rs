@@ -11,9 +11,6 @@
 //! by `bcast::Behaviour` into [`FrostP2PHandle::handle_bcast_event`]. Without
 //! that event bridge, [`FrostP2P`] cannot observe broadcast completion and
 //! `round1`/`round2` will wait until cancellation.
-
-#![allow(dead_code)]
-
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     task::{Context, Poll},
@@ -681,9 +678,7 @@ pub(crate) struct FrostP2P {
     round2_casts_tx: mpsc::UnboundedSender<FrostRound2Casts>,
     round2_casts_rx: mpsc::UnboundedReceiver<FrostRound2Casts>,
     peers_by_share_idx: HashMap<u32, PeerId>,
-    share_idx_by_peer: HashMap<PeerId, u32>,
     local_share_idx: u32,
-    num_validators: u32,
     num_peers: usize,
 }
 
@@ -734,9 +729,7 @@ pub(crate) async fn new_frost_p2p(
         round2_casts_tx,
         round2_casts_rx,
         peers_by_share_idx: peer_share_indices.peers_by_share_idx,
-        share_idx_by_peer: peer_share_indices.share_idx_by_peer,
         local_share_idx,
-        num_validators,
         num_peers: peers.len(),
     })
 }
