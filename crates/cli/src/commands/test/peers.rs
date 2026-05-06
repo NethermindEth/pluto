@@ -757,7 +757,9 @@ fn dial_peers_via_relay(
                 circuit_addr.push(Protocol::P2p(relay_peer.id));
                 circuit_addr.push(Protocol::P2pCircuit);
                 circuit_addr.push(Protocol::P2p(peer.id));
-                let _ = node.dial(circuit_addr);
+                if let Err(e) = node.dial(circuit_addr.clone()) {
+                    tracing::warn!(?e, %circuit_addr, "relay dial attempt failed");
+                }
             }
         }
     }
@@ -835,7 +837,9 @@ fn handle_swarm_event(
                         if !is_relay_addr(addr) {
                             let mut direct_addr = addr.clone();
                             direct_addr.push(Protocol::P2p(peer_id));
-                            let _ = node.dial(direct_addr);
+                            if let Err(e) = node.dial(direct_addr.clone()) {
+                                tracing::debug!(?e, %direct_addr, "direct dial attempt failed");
+                            }
                         }
                     }
                 }
