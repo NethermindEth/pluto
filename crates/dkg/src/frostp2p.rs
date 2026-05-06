@@ -101,7 +101,7 @@ pub(crate) enum FrostP2PError {
 #[derive(Debug)]
 pub(crate) enum InEvent {
     Send { op_id: u64, msg: FrostRound1P2p },
-    CancelPending,
+    CancelAllPending,
 }
 
 #[derive(Debug)]
@@ -186,7 +186,7 @@ impl ConnectionHandler for FrostP2PHandler {
     fn on_behaviour_event(&mut self, event: Self::FromBehaviour) {
         match event {
             InEvent::Send { op_id, msg } => self.pending_open.push_back((op_id, msg)),
-            InEvent::CancelPending => self.pending_open.clear(),
+            InEvent::CancelAllPending => self.pending_open.clear(),
         }
     }
 
@@ -543,7 +543,7 @@ impl FrostP2PBehaviour {
             self.pending_events.push_back(ToSwarm::NotifyHandler {
                 peer_id,
                 handler: NotifyHandler::Any,
-                event: InEvent::CancelPending,
+                event: InEvent::CancelAllPending,
             });
         }
     }
@@ -1363,7 +1363,7 @@ mod tests {
             op_id: 7,
             msg: FrostRound1P2p::default(),
         });
-        handler.on_behaviour_event(InEvent::CancelPending);
+        handler.on_behaviour_event(InEvent::CancelAllPending);
 
         assert!(handler.pending_open.is_empty());
     }
