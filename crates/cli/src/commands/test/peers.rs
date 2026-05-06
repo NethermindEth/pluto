@@ -36,8 +36,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     AllCategoriesResult, TestCaseName, TestCategory, TestCategoryResult, TestConfigArgs,
-    TestResult, calculate_score, evaluate_highest_rtt, evaluate_rtt, must_output_to_file_on_quiet,
-    publish_result_to_obol_api, write_result_to_file, write_result_to_writer,
+    TestResult, TestResultError, calculate_score, evaluate_highest_rtt, evaluate_rtt,
+    must_output_to_file_on_quiet, publish_result_to_obol_api, write_result_to_file,
+    write_result_to_writer,
 };
 use crate::{
     duration::Duration as CliDuration,
@@ -244,15 +245,11 @@ pub async fn run(
     tracing::debug!("enr_strings: {:?}", enr_strings);
     let cluster_peers = parse_peers(&enr_strings)?;
 
-    let private_key = load_key(&args.private_key_file)
-        .map_err(|e| CliError::Other(format!("failed to load private key: {e}")))?;
+    let private_key = load_key(&args.private_key_file)?;
 
-    verify_p2p_key(&cluster_peers, &private_key).map_err(|e| {
-        CliError::Other(format!("private key does not match any cluster peer: {e}"))
-    })?;
+    verify_p2p_key(&cluster_peers, &private_key)?;
 
-    let self_peer_id = peer_id_from_key(private_key.public_key())
-        .map_err(|e| CliError::Other(format!("failed to derive peer ID: {e}")))?;
+    let self_peer_id = peer_id_from_key(private_key.public_key())?;
 
     if let Some(self_peer) = cluster_peers.iter().find(|p| p.id == self_peer_id) {
         tracing::info!(name = %self_peer.name, "Self p2p name resolved");
@@ -380,9 +377,7 @@ async fn fetch_enrs_from_lock(path: impl AsRef<std::path::Path>) -> Result<Vec<S
 
 async fn fetch_enrs_from_definition(path: &str) -> Result<Vec<String>> {
     let definition: Definition = if path.starts_with("http://") || path.starts_with("https://") {
-        pluto_cluster::helpers::fetch_definition(path)
-            .await
-            .map_err(|e| CliError::Other(format!("failed to fetch definition: {e}")))?
+        pluto_cluster::helpers::fetch_definition(path).await?
     } else {
         let content = tokio::fs::read_to_string(path).await?;
         serde_json::from_str(&content)?
@@ -409,8 +404,7 @@ fn parse_peers(enr_strings: &[String]) -> Result<Vec<Peer>> {
         .enumerate()
         .map(|(i, s)| {
             let record = Record::try_from(s.as_str())?;
-            Peer::from_enr(&record, i)
-                .map_err(|e| CliError::Other(format!("failed to parse peer from ENR: {e}")))
+            Ok(Peer::from_enr(&record, i)?)
         })
         .collect()
 }
@@ -451,7 +445,7 @@ async fn run_relay_http_tests(
                 "PingRelay" => relay_ping_test(url, &ct).await,
                 "PingMeasureRelay" => relay_ping_measure_test(url, &ct).await,
                 _ => TestResult::new(test.name)
-                    .fail(CliError::Other("unsupported relay test".to_string())),
+                    .fail(TestResultError::from_string("unsupported relay test")),
             };
             target_results.push(result);
         }
@@ -468,7 +462,7 @@ async fn relay_ping_test(url: &str, ct: &CancellationToken) -> TestResult {
     tokio::select! {
         res = client.get(url).send() => match res {
             Ok(resp) if resp.status().is_success() => result.ok(),
-            Ok(resp) => result.fail(CliError::Other(format!("HTTP status {}", resp.status()))),
+            Ok(resp) => result.fail(TestResultError::from_string(format!("HTTP status {}", resp.status()))),
             Err(e) => result.fail(e),
         },
         _ = ct.cancelled() => result.fail(CliError::TimeoutInterrupted),
@@ -500,7 +494,7 @@ async fn run_self_tests(
         let result = match test.name {
             "Libp2pTCPPortOpen" => libp2p_tcp_port_open_test(tcp_addrs).await,
             _ => TestResult::new(test.name)
-                .fail(CliError::Other("unsupported self test".to_string())),
+                .fail(TestResultError::from_string("unsupported self test")),
         };
         results.push(result);
     }
@@ -517,8 +511,8 @@ async fn libp2p_tcp_port_open_test(addrs: &[String]) -> TestResult {
     let result = TestResult::new("Libp2pTCPPortOpen");
 
     if addrs.is_empty() {
-        return result.fail(CliError::Other(
-            "no --p2p-tcp-address configured".to_string(),
+        return result.fail(TestResultError::from_string(
+            "no --p2p-tcp-address configured",
         ));
     }
 
@@ -533,8 +527,8 @@ async fn libp2p_tcp_port_open_test(addrs: &[String]) -> TestResult {
                 Ok(true) => break,
                 Ok(false) => {
                     if attempt == 4 {
-                        return result.fail(CliError::Other(
-                            "timeout reading multistream header".to_string(),
+                        return result.fail(TestResultError::from_string(
+                            "timeout reading multistream header",
                         ));
                     }
                 }
@@ -893,7 +887,7 @@ fn build_peer_results(
                 if state.connected {
                     r.ok()
                 } else if let Some(ref err) = state.connection_error {
-                    r.fail(CliError::Other(err.clone()))
+                    r.fail(TestResultError::from_string(err))
                 } else {
                     r.fail(CliError::TimeoutInterrupted)
                 }
@@ -903,7 +897,7 @@ fn build_peer_results(
                 if let Some(&(_, rtt)) = state.ping_rtts.first() {
                     evaluate_rtt(rtt, r, THRESHOLD_MEASURE_AVG, THRESHOLD_MEASURE_POOR)
                 } else {
-                    r.fail(CliError::Other("no ping result received".to_string()))
+                    r.fail(TestResultError::from_string("no ping result received"))
                 }
             }
             "PingLoad" => {
@@ -919,8 +913,8 @@ fn build_peer_results(
                     vec![]
                 };
                 if load_rtts.is_empty() {
-                    r.fail(CliError::Other(
-                        "no ping results during load test".to_string(),
+                    r.fail(TestResultError::from_string(
+                        "no ping results during load test",
                     ))
                 } else {
                     evaluate_highest_rtt(load_rtts, r, THRESHOLD_LOAD_AVG, THRESHOLD_LOAD_POOR)
@@ -931,21 +925,21 @@ fn build_peer_results(
                 if state.direct_connected {
                     r.ok()
                 } else if !state.connected {
-                    r.fail(CliError::Other(
-                        "no relay connection established".to_string(),
+                    r.fail(TestResultError::from_string(
+                        "no relay connection established",
                     ))
                 } else if state.identify_received && !state.direct_dial_attempted {
-                    r.fail(CliError::Other(
-                        "no direct addresses available from identify".to_string(),
+                    r.fail(TestResultError::from_string(
+                        "no direct addresses available from identify",
                     ))
                 } else {
-                    r.fail(CliError::Other(
-                        "direct connection not established within timeout".to_string(),
+                    r.fail(TestResultError::from_string(
+                        "direct connection not established within timeout",
                     ))
                 }
             }
             name => {
-                TestResult::new(name).fail(CliError::Other("unsupported test case".to_string()))
+                TestResult::new(name).fail(TestResultError::from_string("unsupported test case"))
             }
         })
         .collect()
@@ -1020,9 +1014,7 @@ async fn setup_p2p(
     self_peer_id: PeerId,
     enr_hash: &str,
 ) -> Result<(Node<TestBehaviour>, Vec<MutablePeer>)> {
-    let relay_peers = new_relays(cancel.clone(), relay_urls, enr_hash)
-        .await
-        .map_err(|e| CliError::Other(format!("failed to resolve relays: {e}")))?;
+    let relay_peers = new_relays(cancel.clone(), relay_urls, enr_hash).await?;
 
     let mut all_peer_ids: Vec<PeerId> = cluster_peers.iter().map(|p| p.id).collect();
     all_peer_ids.push(self_peer_id);
@@ -1043,8 +1035,7 @@ async fn setup_p2p(
                 reservation: MutableRelayReservation::new(relay_peers_for_reservation),
             })
         },
-    )
-    .map_err(|e| CliError::Other(format!("failed to create P2P node: {e}")))?;
+    )?;
 
     Ok((node, relay_peers))
 }
