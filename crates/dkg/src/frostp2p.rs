@@ -1,6 +1,88 @@
 //! FROST DKG P2P transport.
 //!
-//! This module is split across two integration surfaces:
+//! This module provides the network transport used by `frost.rs`. The local
+//! FROST code creates cryptographic round messages; this module moves those
+//! messages between cluster nodes over libp2p.
+//!
+//! Round 1 has a public broadcast path and a private direct-P2P path:
+//!
+//! ```text
+//! ROUND 1
+//! =======
+//!
+//! Public broadcast, same data to everyone:
+//!
+//!   node1 === Round1Bcast(commitments/proof) ===> node1,node2,node3,node4
+//!   node2 === Round1Bcast(commitments/proof) ===> node1,node2,node3,node4
+//!   node3 === Round1Bcast(commitments/proof) ===> node1,node2,node3,node4
+//!   node4 === Round1Bcast(commitments/proof) ===> node1,node2,node3,node4
+//!
+//! Private direct P2P, different data per target:
+//!
+//!              +-- ShamirShare(for share_idx 2) --> node2
+//!   node1 -----+-- ShamirShare(for share_idx 3) --> node3
+//!              +-- ShamirShare(for share_idx 4) --> node4
+//!
+//!              +-- ShamirShare(for share_idx 1) --> node1
+//!   node2 -----+-- ShamirShare(for share_idx 3) --> node3
+//!              +-- ShamirShare(for share_idx 4) --> node4
+//!
+//!   ... same pattern for node3 and node4.
+//!
+//! Each direct message contains the private shares for that target node across
+//! all validators in the DKG run. The shares cannot be broadcast because they
+//! are secret, and node X does not send the same share to every peer.
+//! ```
+//!
+//! Round 2 is broadcast-only. After round 1, each node has public commitments
+//! from all nodes and private shares sent specifically to itself. It verifies
+//! those private shares and broadcasts public verification material:
+//!
+//! ```text
+//! ROUND 2
+//! =======
+//!
+//!   node1 === Round2Bcast(public verification shares) ===> node1,node2,node3,node4
+//!   node2 === Round2Bcast(public verification shares) ===> node1,node2,node3,node4
+//!   node3 === Round2Bcast(public verification shares) ===> node1,node2,node3,node4
+//!   node4 === Round2Bcast(public verification shares) ===> node1,node2,node3,node4
+//!
+//! No direct P2P is needed in round 2 because there is no new per-target secret.
+//! ```
+//!
+//! End-to-end this module bridges the async FROST transport API to libp2p's
+//! event-driven swarm:
+//!
+//! ```text
+//! run_frost_parallel
+//!        |
+//!        v
+//!   FrostP2P::round1
+//!        |-----------------------> bcast::Component
+//!        |                              |
+//!        |                              v
+//!        |                       bcast::Behaviour
+//!        |                              |
+//!        |                              v
+//!        |                    FrostP2PHandle::handle_bcast_event
+//!        |
+//!        +-----------------------> FrostP2PSender
+//!                                       |
+//!                                       v
+//!                                FrostP2PBehaviour
+//!                                       |
+//!                                       v
+//!                                FrostP2PHandler
+//!                                       |
+//!                                       v
+//!                              direct libp2p streams
+//!
+//!   FrostP2P::round2
+//!        |
+//!        +-----------------------> bcast::Component
+//! ```
+//!
+//! The module is split across two integration surfaces:
 //!
 //! - [`FrostP2PBehaviour`] owns the direct round-1 P2P libp2p protocol.
 //! - [`FrostP2P`] implements the FROST transport by combining direct P2P with
