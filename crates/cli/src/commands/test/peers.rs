@@ -258,24 +258,28 @@ pub async fn run(
         tracing::info!(name = %self_peer.name, "Self p2p name resolved");
     }
 
-    let relay_urls = args.p2p_relays.clone();
-
     // Relay HTTP tests run independently of the libp2p node.
-    let relay_results = run_relay_http_tests(&relay_urls, &relay_tests, ct.child_token()).await;
+    let relay_results =
+        run_relay_http_tests(&args.p2p_relays, &relay_tests, ct.child_token()).await;
 
     // Build ENR hash (sorted all-ENRs including self) for relay routing.
     let enr_hash = build_enr_hash(&private_key, &enr_strings)?;
+
+    let p2p_cfg = P2PConfig {
+        relays: vec![],
+        external_ip: args.p2p_external_ip.clone(),
+        external_host: args.p2p_external_hostname.clone(),
+        tcp_addrs: args.p2p_tcp_addrs.clone(),
+        udp_addrs: args.p2p_udp_addrs.clone(),
+        disable_reuse_port: args.p2p_disable_reuseport,
+    };
 
     let cancel = ct.child_token();
     let (node, relay_peers) = setup_p2p(
         cancel.clone(),
         private_key,
-        args.p2p_tcp_addrs.clone(),
-        args.p2p_udp_addrs.clone(),
-        args.p2p_external_ip.clone(),
-        args.p2p_external_hostname.clone(),
-        args.p2p_disable_reuseport,
-        &relay_urls,
+        p2p_cfg,
+        &args.p2p_relays,
         &cluster_peers,
         self_peer_id,
         &enr_hash,
@@ -1007,15 +1011,10 @@ async fn keep_node_alive(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn setup_p2p(
     cancel: CancellationToken,
     private_key: k256::SecretKey,
-    tcp_addrs: Vec<String>,
-    udp_addrs: Vec<String>,
-    external_ip: Option<String>,
-    external_host: Option<String>,
-    disable_reuse_port: bool,
+    p2p_cfg: P2PConfig,
     relay_urls: &[String],
     cluster_peers: &[Peer],
     self_peer_id: PeerId,
@@ -1030,15 +1029,6 @@ async fn setup_p2p(
 
     let p2p_context = P2PContext::new(all_peer_ids.clone());
     let gater = ConnGater::new_conn_gater(all_peer_ids, relay_peers.clone());
-
-    let p2p_cfg = P2PConfig {
-        relays: vec![],
-        external_ip,
-        external_host,
-        tcp_addrs,
-        udp_addrs,
-        disable_reuse_port,
-    };
 
     let relay_peers_for_reservation = relay_peers.clone();
     let node: Node<TestBehaviour> = Node::new(
