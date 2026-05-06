@@ -48,7 +48,7 @@ use tokio::{
     time::timeout,
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use crate::{
     bcast,
@@ -919,7 +919,12 @@ impl FTransport for FrostP2P {
             .await?;
         self.wait_for_bcast_completion(ROUND1_CAST_ID, cancellation)
             .await?;
-        let _ = self.round1_casts_tx.send(casts_msg);
+        if let Err(error) = self.round1_casts_tx.send(casts_msg) {
+            error!(%error, "frost round 1 casts receiver dropped before self-delivery");
+            return Err(FrostError::InternalState(
+                "frost round 1 casts receiver dropped before self-delivery",
+            ));
+        }
 
         let p2p_msgs = self.build_round1_p2p_by_peer(&shares)?;
         for (peer_id, msg) in p2p_msgs {
@@ -970,7 +975,12 @@ impl FTransport for FrostP2P {
             .await?;
         self.wait_for_bcast_completion(ROUND2_CAST_ID, cancellation)
             .await?;
-        let _ = self.round2_casts_tx.send(casts_msg);
+        if let Err(error) = self.round2_casts_tx.send(casts_msg) {
+            error!(%error, "frost round 2 casts receiver dropped before self-delivery");
+            return Err(FrostError::InternalState(
+                "frost round 2 casts receiver dropped before self-delivery",
+            ));
+        }
 
         let mut cast_msgs = Vec::with_capacity(self.num_peers);
 
