@@ -8,7 +8,7 @@ use std::{
 };
 
 use clap::Args;
-use futures::StreamExt as _;
+use futures::{StreamExt as _, stream::FuturesUnordered};
 use libp2p::{
     Multiaddr, PeerId, identify,
     multiaddr::Protocol,
@@ -255,10 +255,6 @@ pub async fn run(
         tracing::info!(name = %self_peer.name, "Self p2p name resolved");
     }
 
-    // Relay HTTP tests run independently of the libp2p node.
-    let relay_results =
-        run_relay_http_tests(&args.p2p_relays, &relay_tests, ct.child_token()).await;
-
     // Build ENR hash (sorted all-ENRs including self) for relay routing.
     let enr_hash = build_enr_hash(&private_key, &enr_strings)?;
 
@@ -288,7 +284,7 @@ pub async fn run(
 
     let self_cancel = cancel.clone();
     let only_self_tests = peer_tests.is_empty();
-    let ((peer_results, mut node), self_results) = tokio::join!(
+    let ((peer_results, mut node), self_results, relay_results) = tokio::join!(
         run_peer_event_loop(
             node,
             &cluster_peers,
@@ -300,6 +296,7 @@ pub async fn run(
             cancel.clone(),
         ),
         run_self_tests_in_new_thread(self_cancel, tcp_addrs, self_tests_clone, only_self_tests,),
+        run_relay_http_tests(&args.p2p_relays, &relay_tests, ct.child_token()),
     );
     let self_results = self_results.expect("self-test task should not panic");
     let mut all_targets: HashMap<String, Vec<TestResult>> = HashMap::new();
@@ -429,30 +426,39 @@ async fn run_relay_http_tests(
         return HashMap::new();
     }
 
+    let mut futs: FuturesUnordered<_> = relay_urls
+        .iter()
+        .map(|url| {
+            let url = url.clone();
+            let ct = ct.clone();
+            let queued = queued.to_vec();
+            tokio::spawn(async move {
+                let key = format!("relay {url}");
+                let mut target_results = Vec::new();
+                for test in &queued {
+                    if ct.is_cancelled() {
+                        target_results
+                            .push(TestResult::new(test.name).fail(CliError::TimeoutInterrupted));
+                        continue;
+                    }
+                    let result = match test.name {
+                        "PingRelay" => relay_ping_test(&url, &ct).await,
+                        "PingMeasureRelay" => relay_ping_measure_test(&url, &ct).await,
+                        _ => TestResult::new(test.name)
+                            .fail(TestResultError::from_string("unsupported relay test")),
+                    };
+                    target_results.push(result);
+                }
+                (key, target_results)
+            })
+        })
+        .collect();
+
     let mut results = HashMap::new();
-
-    for url in relay_urls {
-        let key = format!("relay {url}");
-        let mut target_results = Vec::new();
-
-        for test in queued {
-            if ct.is_cancelled() {
-                target_results.push(TestResult::new(test.name).fail(CliError::TimeoutInterrupted));
-                continue;
-            }
-
-            let result = match test.name {
-                "PingRelay" => relay_ping_test(url, &ct).await,
-                "PingMeasureRelay" => relay_ping_measure_test(url, &ct).await,
-                _ => TestResult::new(test.name)
-                    .fail(TestResultError::from_string("unsupported relay test")),
-            };
-            target_results.push(result);
-        }
-
+    while let Some(res) = futs.next().await {
+        let (key, target_results) = res.expect("relay test task should not panic");
         results.insert(key, target_results);
     }
-
     results
 }
 
