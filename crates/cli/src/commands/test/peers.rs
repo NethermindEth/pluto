@@ -8,7 +8,7 @@ use std::{
 };
 
 use clap::Args;
-use futures::{StreamExt as _, stream::FuturesUnordered};
+use futures::{StreamExt as _, future::join_all, stream::FuturesUnordered};
 use libp2p::{
     Multiaddr, PeerId, identify,
     multiaddr::Protocol,
@@ -528,25 +528,32 @@ async fn libp2p_tcp_port_open_test(addrs: &[String]) -> TestResult {
         ));
     }
 
-    for addr in addrs {
+    // Retry to tolerate slow libp2p stack startup: the TCP port may be bound
+    // before the event loop is ready to complete the multistream handshake.
+    let outcomes = join_all(addrs.iter().map(|addr| {
         let connect_addr = addr.replace("0.0.0.0", "127.0.0.1");
-        // Retry to tolerate slow libp2p stack startup: the TCP port may be bound
-        // before the event loop is ready to complete the multistream handshake.
-
-        for attempt in 0..5 {
-            tracing::debug!(attempt, addr = connect_addr, "libp2p TCP self-test attempt");
-            match try_multistream_handshake(attempt, &connect_addr, MULTISTREAM_HEADER).await {
-                Ok(true) => break,
-                Ok(false) => {
-                    if attempt == 4 {
-                        return result.fail(TestResultError::from_string(
-                            "timeout reading multistream header",
-                        ));
+        async move {
+            for attempt in 0..5 {
+                tracing::debug!(attempt, addr = connect_addr, "libp2p TCP self-test attempt");
+                match try_multistream_handshake(attempt, &connect_addr, MULTISTREAM_HEADER).await {
+                    Ok(true) => return Ok(()),
+                    Ok(false) => {
+                        if attempt == 4 {
+                            return Err(TestResultError::from_string(
+                                "timeout reading multistream header",
+                            ));
+                        }
                     }
+                    Err(e) => return Err(e.into()),
                 }
-                Err(e) => return result.fail(e),
             }
+            Ok(())
         }
+    }))
+    .await;
+
+    if let Some(e) = outcomes.into_iter().find_map(|r| r.err()) {
+        return result.fail(e);
     }
 
     result.ok()
