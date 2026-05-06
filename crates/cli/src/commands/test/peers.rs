@@ -406,11 +406,17 @@ fn parse_peers(enr_strings: &[String]) -> Result<Vec<Peer>> {
         .collect()
 }
 
+// enr must be ASCII-only
 fn format_enr(enr: &str) -> String {
     if enr.len() <= 17 {
         return enr.to_string();
     }
-    format!("{}...{}", &enr[..13], &enr[enr.len().saturating_sub(4)..])
+    let bytes = enr.as_bytes();
+    format!(
+        "{}...{}",
+        std::str::from_utf8(&bytes[..13]).expect("ENR must be ASCII"),
+        std::str::from_utf8(&bytes[enr.len().saturating_sub(4)..]).expect("ENR must be ASCII"),
+    )
 }
 
 fn peer_target_name(peer: &Peer, enr_str: &str) -> String {
