@@ -1294,7 +1294,7 @@ mod tests {
 
         let url = format!("{}/error", server.uri());
         let err = fetch_enrs_from_definition(&url).await.unwrap_err();
-        assert!(err.to_string().contains("failed to fetch definition"));
+        assert!(err.to_string().contains("Fetch definition error"));
     }
 
     #[tokio::test]
