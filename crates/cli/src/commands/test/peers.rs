@@ -88,12 +88,12 @@ pub struct TestPeersArgs {
 
     /// The path to the cluster lock file defining the distributed validator
     /// cluster.
-    #[arg(long = "lock-file", default_value = "")]
-    pub lock_file: String,
+    #[arg(long = "lock-file")]
+    pub lock_file: Option<PathBuf>,
 
     /// The path to the cluster definition file or an HTTP URL.
-    #[arg(long = "definition-file", default_value = "")]
-    pub definition_file: String,
+    #[arg(long = "definition-file")]
+    pub definition_file: Option<String>,
 
     /// The path to the charon enr private key file.
     #[arg(
@@ -148,13 +148,13 @@ pub struct TestPeersArgs {
 
     /// The IP address advertised by libp2p. This may be used to advertise an
     /// external IP.
-    #[arg(long = "p2p-external-ip", default_value = "")]
-    pub p2p_external_ip: String,
+    #[arg(long = "p2p-external-ip")]
+    pub p2p_external_ip: Option<String>,
 
     /// The DNS hostname advertised by libp2p. This may be used to advertise an
     /// external DNS.
-    #[arg(long = "p2p-external-hostname", default_value = "")]
-    pub p2p_external_hostname: String,
+    #[arg(long = "p2p-external-hostname")]
+    pub p2p_external_hostname: Option<String>,
 
     /// Comma-separated list of listening UDP addresses (ip and port) for libP2P
     /// traffic. Empty default doesn't bind to local port therefore only
@@ -194,8 +194,8 @@ pub async fn run(
     ct: CancellationToken,
 ) -> Result<TestCategoryResult> {
     let enrs_empty = args.enrs.as_ref().is_none_or(Vec::is_empty);
-    let lock_empty = args.lock_file.is_empty();
-    let def_empty = args.definition_file.is_empty();
+    let lock_empty = args.lock_file.is_none();
+    let def_empty = args.definition_file.is_none();
 
     if enrs_empty && lock_empty && def_empty {
         return Err(CliError::Other(
@@ -266,18 +266,14 @@ pub async fn run(
     // Build ENR hash (sorted all-ENRs including self) for relay routing.
     let enr_hash = build_enr_hash(&private_key, &enr_strings)?;
 
-    let external_ip = (!args.p2p_external_ip.is_empty()).then(|| args.p2p_external_ip.clone());
-    let external_host =
-        (!args.p2p_external_hostname.is_empty()).then(|| args.p2p_external_hostname.clone());
-
     let cancel = ct.child_token();
     let (node, relay_peers) = setup_p2p(
         cancel.clone(),
         private_key,
         args.p2p_tcp_addrs.clone(),
         args.p2p_udp_addrs.clone(),
-        external_ip,
-        external_host,
+        args.p2p_external_ip.clone(),
+        args.p2p_external_hostname.clone(),
         args.p2p_disable_reuseport,
         &relay_urls,
         &cluster_peers,
@@ -351,18 +347,18 @@ async fn fetch_enrs(args: &TestPeersArgs) -> Result<Vec<String>> {
     {
         return Ok(enrs.clone());
     }
-    if !args.definition_file.is_empty() {
-        return fetch_enrs_from_definition(&args.definition_file).await;
+    if let Some(path) = &args.definition_file {
+        return fetch_enrs_from_definition(path).await;
     }
-    if !args.lock_file.is_empty() {
-        return fetch_enrs_from_lock(&args.lock_file).await;
+    if let Some(path) = &args.lock_file {
+        return fetch_enrs_from_lock(path).await;
     }
     Err(CliError::Other(
         "--enrs, --lock-file or --definition-file must be specified".to_string(),
     ))
 }
 
-async fn fetch_enrs_from_lock(path: &str) -> Result<Vec<String>> {
+async fn fetch_enrs_from_lock(path: impl AsRef<std::path::Path>) -> Result<Vec<String>> {
     let content = tokio::fs::read_to_string(path).await?;
     let lock: Lock = serde_json::from_str(&content)?;
     let enrs: Vec<String> = lock
@@ -1091,16 +1087,16 @@ mod tests {
         TestPeersArgs {
             test_config: default_test_config(),
             enrs: None,
-            lock_file: String::new(),
-            definition_file: String::new(),
+            lock_file: None,
+            definition_file: None,
             private_key_file: std::path::PathBuf::new(),
             keep_alive: StdDuration::ZERO,
             load_test_duration: StdDuration::from_secs(1),
             direct_connection_timeout: StdDuration::from_secs(1),
             p2p_tcp_addrs: vec![],
             p2p_relays: vec![],
-            p2p_external_ip: String::new(),
-            p2p_external_hostname: String::new(),
+            p2p_external_ip: None,
+            p2p_external_hostname: None,
             p2p_udp_addrs: vec![],
             p2p_disable_reuseport: false,
         }
@@ -1123,7 +1119,7 @@ mod tests {
     async fn run_conflicting_flags_enrs_and_lock_returns_error() {
         let mut args = no_source_peers_args();
         args.enrs = Some(vec!["enr:test".into()]);
-        args.lock_file = "foo.json".into();
+        args.lock_file = Some("foo.json".into());
         let mut output = Vec::new();
         let err = run(args, &mut output, CancellationToken::new())
             .await
@@ -1138,7 +1134,7 @@ mod tests {
     async fn run_conflicting_flags_enrs_and_definition_returns_error() {
         let mut args = no_source_peers_args();
         args.enrs = Some(vec!["enr:test".into()]);
-        args.definition_file = "foo.json".into();
+        args.definition_file = Some("foo.json".into());
         let mut output = Vec::new();
         let err = run(args, &mut output, CancellationToken::new())
             .await
@@ -1152,8 +1148,8 @@ mod tests {
     #[tokio::test]
     async fn run_conflicting_flags_lock_and_definition_returns_error() {
         let mut args = no_source_peers_args();
-        args.lock_file = "foo.json".into();
-        args.definition_file = "bar.json".into();
+        args.lock_file = Some("foo.json".into());
+        args.definition_file = Some("bar.json".into());
         let mut output = Vec::new();
         let err = run(args, &mut output, CancellationToken::new())
             .await
@@ -1336,7 +1332,7 @@ mod tests {
         file.write_all(json.as_bytes()).unwrap();
 
         let mut args = no_source_peers_args();
-        args.definition_file = file.path().to_str().unwrap().to_string();
+        args.definition_file = Some(file.path().to_str().unwrap().to_string());
         let enrs = fetch_enrs(&args).await.unwrap();
 
         let expected: Vec<String> = lock
@@ -1357,7 +1353,7 @@ mod tests {
         file.write_all(json.as_bytes()).unwrap();
 
         let mut args = no_source_peers_args();
-        args.lock_file = file.path().to_str().unwrap().to_string();
+        args.lock_file = Some(file.path().to_owned());
         let enrs = fetch_enrs(&args).await.unwrap();
 
         let expected: Vec<String> = lock
