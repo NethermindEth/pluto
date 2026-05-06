@@ -917,7 +917,10 @@ fn build_peer_results(
             }
             "PingMeasure" => {
                 let r = TestResult::new("PingMeasure");
-                if let Some(&(_, rtt)) = state.ping_rtts.first() {
+                // Use the most recent ping rather than the first: we cannot issue
+                // an on-demand ping (pings are driven by the libp2p keepalive schedule),
+                // so .last() is the closest approximation to a fresh measurement.
+                if let Some(&(_, rtt)) = state.ping_rtts.last() {
                     evaluate_rtt(rtt, r, THRESHOLD_MEASURE_AVG, THRESHOLD_MEASURE_POOR)
                 } else {
                     r.fail(TestResultError::from_string("no ping result received"))
