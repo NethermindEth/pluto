@@ -82,26 +82,28 @@ pub struct TestPeersArgs {
     #[command(flatten)]
     pub test_config: TestConfigArgs,
 
-    /// Comma-separated list of each peer ENR address.
+    /// [REQUIRED] Comma-separated list of each peer ENR address.
     #[arg(long = "enrs", value_delimiter = ',')]
     pub enrs: Option<Vec<String>>,
 
-    /// Path to cluster lock file.
+    /// The path to the cluster lock file defining the distributed validator
+    /// cluster.
     #[arg(long = "lock-file", default_value = "")]
     pub lock_file: String,
 
-    /// Path to cluster definition file or an HTTP URL.
+    /// The path to the cluster definition file or an HTTP URL.
     #[arg(long = "definition-file", default_value = "")]
     pub definition_file: String,
 
-    /// Path to charon ENR private key file.
+    /// The path to the charon enr private key file.
     #[arg(
         long = "private-key-file",
         default_value = ".charon/charon-enr-private-key"
     )]
     pub private_key_file: PathBuf,
 
-    /// Time to keep TCP node alive after test completion.
+    /// Time to keep TCP node alive after test completion, so connection is open
+    /// for other peers to test on their end.
     #[arg(
         long = "keep-alive",
         default_value = "30m",
@@ -109,7 +111,8 @@ pub struct TestPeersArgs {
     )]
     pub keep_alive: Duration,
 
-    /// Time to keep running the load tests.
+    /// Time to keep running the load tests in seconds. For each second a new
+    /// continuous ping instance is spawned.
     #[arg(
         long = "load-test-duration",
         default_value = "30s",
@@ -117,7 +120,7 @@ pub struct TestPeersArgs {
     )]
     pub load_test_duration: Duration,
 
-    /// Time to keep trying to establish a direct connection to a peer.
+    /// Time to keep trying to establish direct connection to peer.
     #[arg(
         long = "direct-connection-timeout",
         default_value = "2m",
@@ -125,11 +128,13 @@ pub struct TestPeersArgs {
     )]
     pub direct_connection_timeout: Duration,
 
-    /// TCP addresses for libp2p (host:port).
+    /// Comma-separated list of listening TCP addresses (ip and port) for libP2P
+    /// traffic. Empty default doesn't bind to local port therefore only
+    /// supports outgoing connections.
     #[arg(long = "p2p-tcp-address", value_delimiter = ',')]
     pub p2p_tcp_addrs: Vec<String>,
 
-    /// Relay server URLs [default: https://0.relay.obol.tech, https://2.relay.obol.dev, https://1.relay.obol.tech]
+    /// Comma-separated list of libp2p relay URLs or multiaddrs.
     #[arg(
         long = "p2p-relays",
         value_delimiter = ',',
