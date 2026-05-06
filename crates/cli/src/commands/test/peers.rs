@@ -1011,6 +1011,7 @@ async fn keep_node_alive(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn setup_p2p(
     cancel: CancellationToken,
     private_key: k256::SecretKey,
