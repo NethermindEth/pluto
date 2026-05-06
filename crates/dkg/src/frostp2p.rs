@@ -80,7 +80,7 @@ const G1_COMPRESSED_LEN: usize = 48;
 
 /// FROST direct-P2P delivery errors.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum FrostP2PError {
+pub enum FrostP2PError {
     /// The behaviour task is no longer running.
     #[error("frost p2p behaviour is no longer running")]
     BehaviourClosed,
@@ -634,7 +634,7 @@ impl NetworkBehaviour for FrostP2PBehaviour {
                     return;
                 }
                 if !self.accepted_round1_p2p.insert(peer_id) {
-                    debug!(%peer_id, "Ignoring duplicate round 2 message");
+                    debug!(%peer_id, "ignoring duplicate round 1 p2p message");
                     return;
                 }
                 match self.inbound_tx.try_send((peer_id, msg)) {

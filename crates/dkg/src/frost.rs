@@ -59,7 +59,7 @@ pub(crate) trait FTransport: Send + Sync {
 
 /// FROST DKG orchestration errors.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum FrostError {
+pub enum FrostError {
     /// Failed to construct a participant.
     #[error("new participant: {0}")]
     NewParticipant(#[source] pluto_frost::kryptology::KryptologyError),

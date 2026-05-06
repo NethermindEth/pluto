@@ -44,7 +44,7 @@ const DEFAULT_DATA_DIR: &str = ".charon";
 const DEFAULT_DEFINITION_FILE: &str = ".charon/cluster-definition.json";
 const DEFAULT_PUBLISH_ADDRESS: &str = "https://api.obol.tech/v1";
 const DEFAULT_PUBLISH_TIMEOUT: Duration = Duration::from_secs(30);
-const DEFAULT_SHUTDOWN_DELAY: Duration = Duration::from_secs(3);
+const DEFAULT_SHUTDOWN_DELAY: Duration = Duration::from_secs(1);
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Entry-point DKG error.
@@ -174,7 +174,7 @@ pub enum DkgError {
 
     /// FROST DKG setup or execution failed.
     #[error("frost error: {0}")]
-    Frost(String),
+    Frost(#[from] frost::FrostError),
 
     /// DKG signing or aggregation failed.
     #[error("dkg signing error: {0}")]
@@ -217,12 +217,6 @@ pub enum DkgError {
         /// Algorithm name from the cluster definition.
         algorithm: String,
     },
-}
-
-impl From<frost::FrostError> for DkgError {
-    fn from(error: frost::FrostError) -> Self {
-        Self::Frost(error.to_string())
-    }
 }
 
 /// Keymanager configuration accepted by the entrypoint.
@@ -384,7 +378,7 @@ pub async fn run(conf: Config, ct: CancellationToken) -> Result<(), DkgError> {
     let result = run_inner(conf, ct).await;
 
     lock_ct.cancel();
-    let _ = lock_task.await;
+    let _ = lock_task.await.unwrap_or_else(|err| error!(?err, "Error joining private key lock task"));
 
     result
 }
@@ -547,11 +541,9 @@ async fn run_inner(conf: Config, ct: CancellationToken) -> Result<(), DkgError> 
     .await?;
 
     let node_idx = def.node_idx(node.local_peer_id()).map_err(|source| {
-        DkgError::LocalPeerNotInDefinition {
-            peer_id: match source {
-                DefinitionError::PeerNotFound { peer_id } => peer_id,
-                _ => *node.local_peer_id(),
-            },
+        match source {
+            DefinitionError::PeerNotFound { peer_id } => DkgError::LocalPeerNotInDefinition { peer_id },
+            other => DkgError::Definition(other),
         }
     })?;
 
@@ -843,7 +835,7 @@ async fn run_ceremony<T: frost::FTransport>(
 
 fn deposit_amounts_for_definition(def: &Definition) -> Vec<phase0::Gwei> {
     if def.deposit_amounts.is_empty() {
-        if support_partial_deposits(&def.version) {
+        if pluto_cluster::definition::Definition::support_partial_deposits(&def.version) {
             pluto_eth2util::deposit::default_deposit_amounts(def.compounding)
         } else {
             vec![pluto_eth2util::deposit::DEFAULT_DEPOSIT_AMOUNT]
@@ -851,13 +843,6 @@ fn deposit_amounts_for_definition(def: &Definition) -> Vec<phase0::Gwei> {
     } else {
         pluto_eth2util::deposit::dedup_amounts(&def.deposit_amounts)
     }
-}
-
-fn support_partial_deposits(version: &str) -> bool {
-    !matches!(
-        version,
-        V1_0 | V1_1 | V1_2 | V1_3 | V1_4 | V1_5 | V1_6 | V1_7
-    )
 }
 
 struct SyncRuntime {
