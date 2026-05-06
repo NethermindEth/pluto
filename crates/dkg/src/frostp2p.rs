@@ -333,6 +333,7 @@ impl FrostP2PSender {
             .map_err(|_| FrostP2PError::BehaviourClosed)?;
 
         tokio::select! {
+            biased;
             _ = cancellation.cancelled() => {
                 let _ = self.cmd_tx.send(SendCommand::CancelAll);
                 Err(FrostError::Cancelled)
@@ -936,6 +937,7 @@ impl FTransport for FrostP2P {
             }
 
             tokio::select! {
+                biased;
                 _ = cancellation.cancelled() => return Err(FrostError::Cancelled),
                 msg = self.round1_casts_rx.recv() => {
                     let msg = msg.ok_or(FrostError::ChannelClosed("round 1 casts channel"))?;
@@ -974,6 +976,7 @@ impl FTransport for FrostP2P {
 
         while cast_msgs.len() != self.num_peers {
             tokio::select! {
+                biased;
                 _ = cancellation.cancelled() => return Err(FrostError::Cancelled),
                 msg = self.round2_casts_rx.recv() => {
                     let msg = msg.ok_or(FrostError::ChannelClosed("round 2 casts channel"))?;
@@ -997,6 +1000,7 @@ impl FrostP2P {
     ) -> Result<(), FrostError> {
         loop {
             tokio::select! {
+                biased;
                 _ = cancellation.cancelled() => return Err(FrostError::Cancelled),
                 event = self.bcast_event_rx.recv() => {
                     match event.ok_or(FrostError::ChannelClosed("frost bcast event channel"))? {
