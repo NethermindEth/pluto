@@ -808,35 +808,13 @@ async fn register_round1_bcast(
                         }
                     }
 
-                    let source_id =
-                        *share_idx_by_peer
-                            .get(&peer_id)
-                            .ok_or(bcast::Error::InvalidMessage(
-                                "invalid round 1 cast source ID",
-                            ))?;
-                    for cast in &msg.casts {
-                        let key = cast.key.as_ref().ok_or(bcast::Error::MissingField("key"))?;
-                        if key.source_id != source_id {
-                            return Err(bcast::Error::InvalidMessage(
-                                "invalid round 1 cast source ID",
-                            ));
-                        }
-                        if key.target_id != 0 {
-                            return Err(bcast::Error::InvalidMessage(
-                                "invalid round 1 cast target ID",
-                            ));
-                        }
-                        if key.val_idx >= num_validators {
-                            return Err(bcast::Error::InvalidMessage(
-                                "invalid round 1 cast validator index",
-                            ));
-                        }
-                        if cast.commitments.len() != threshold {
-                            return Err(bcast::Error::InvalidMessage(
-                                "invalid amount of commitments in round 1",
-                            ));
-                        }
-                    }
+                    validate_round1_casts(
+                        peer_id,
+                        &share_idx_by_peer,
+                        threshold,
+                        num_validators,
+                        &msg,
+                    )?;
                     tx.send(msg).map_err(|_| bcast::Error::BehaviourClosed)?;
                     Ok(())
                 })
@@ -872,36 +850,85 @@ async fn register_round2_bcast(
                         }
                     }
 
-                    let source_id =
-                        *share_idx_by_peer
-                            .get(&peer_id)
-                            .ok_or(bcast::Error::InvalidMessage(
-                                "invalid round 2 cast source ID",
-                            ))?;
-                    for cast in &msg.casts {
-                        let key = cast.key.as_ref().ok_or(bcast::Error::MissingField("key"))?;
-                        if key.source_id != source_id {
-                            return Err(bcast::Error::InvalidMessage(
-                                "invalid round 2 cast source ID",
-                            ));
-                        }
-                        if key.target_id != 0 {
-                            return Err(bcast::Error::InvalidMessage(
-                                "invalid round 2 cast target ID",
-                            ));
-                        }
-                        if key.val_idx >= num_validators {
-                            return Err(bcast::Error::InvalidMessage(
-                                "invalid round 2 cast validator index",
-                            ));
-                        }
-                    }
+                    validate_round2_casts(peer_id, &share_idx_by_peer, num_validators, &msg)?;
                     tx.send(msg).map_err(|_| bcast::Error::BehaviourClosed)?;
                     Ok(())
                 })
             }),
         )
         .await?;
+    Ok(())
+}
+
+fn validate_round1_casts(
+    peer_id: PeerId,
+    share_idx_by_peer: &HashMap<PeerId, u32>,
+    threshold: usize,
+    num_validators: u32,
+    msg: &FrostRound1Casts,
+) -> Result<(), bcast::Error> {
+    let source_id = *share_idx_by_peer
+        .get(&peer_id)
+        .ok_or(bcast::Error::InvalidMessage(
+            "invalid round 1 cast source ID",
+        ))?;
+    for cast in &msg.casts {
+        let key = cast.key.as_ref().ok_or(bcast::Error::MissingField("key"))?;
+        if key.source_id != source_id {
+            return Err(bcast::Error::InvalidMessage(
+                "invalid round 1 cast source ID",
+            ));
+        }
+        if key.target_id != 0 {
+            return Err(bcast::Error::InvalidMessage(
+                "invalid round 1 cast target ID",
+            ));
+        }
+        if key.val_idx >= num_validators {
+            return Err(bcast::Error::InvalidMessage(
+                "invalid round 1 cast validator index",
+            ));
+        }
+        if cast.commitments.len() != threshold {
+            return Err(bcast::Error::InvalidMessage(
+                "invalid amount of commitments in round 1",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_round2_casts(
+    peer_id: PeerId,
+    share_idx_by_peer: &HashMap<PeerId, u32>,
+    num_validators: u32,
+    msg: &FrostRound2Casts,
+) -> Result<(), bcast::Error> {
+    let source_id = *share_idx_by_peer
+        .get(&peer_id)
+        .ok_or(bcast::Error::InvalidMessage(
+            "invalid round 2 cast source ID",
+        ))?;
+    for cast in &msg.casts {
+        let key = cast.key.as_ref().ok_or(bcast::Error::MissingField("key"))?;
+        if key.source_id != source_id {
+            return Err(bcast::Error::InvalidMessage(
+                "invalid round 2 cast source ID",
+            ));
+        }
+        if key.target_id != 0 {
+            return Err(bcast::Error::InvalidMessage(
+                "invalid round 2 cast target ID",
+            ));
+        }
+        if key.val_idx >= num_validators {
+            return Err(bcast::Error::InvalidMessage(
+                "invalid round 2 cast validator index",
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -1356,6 +1383,202 @@ mod tests {
     }
 
     #[test]
+    fn validate_round1_casts_rejects_invalid_fields() {
+        let peer_id = PeerId::random();
+        let share_idx_by_peer = HashMap::from([(peer_id, 1)]);
+        let cast = |key: MsgKey, commitments| FrostRound1Casts {
+            casts: vec![FrostRound1Cast {
+                key: Some(key_to_proto(key)),
+                wi: Bytes::new(),
+                ci: Bytes::new(),
+                commitments,
+            }],
+        };
+
+        assert!(
+            validate_round1_casts(
+                peer_id,
+                &share_idx_by_peer,
+                1,
+                2,
+                &cast(
+                    MsgKey {
+                        val_idx: 0,
+                        source_id: 1,
+                        target_id: 0,
+                    },
+                    vec![Bytes::new()],
+                ),
+            )
+            .is_ok()
+        );
+        assert_invalid_bcast_message(
+            validate_round1_casts(
+                peer_id,
+                &share_idx_by_peer,
+                1,
+                2,
+                &cast(
+                    MsgKey {
+                        val_idx: 0,
+                        source_id: 2,
+                        target_id: 0,
+                    },
+                    vec![Bytes::new()],
+                ),
+            ),
+            "invalid round 1 cast source ID",
+        );
+        assert_invalid_bcast_message(
+            validate_round1_casts(
+                PeerId::random(),
+                &share_idx_by_peer,
+                1,
+                2,
+                &cast(
+                    MsgKey {
+                        val_idx: 0,
+                        source_id: 1,
+                        target_id: 0,
+                    },
+                    vec![Bytes::new()],
+                ),
+            ),
+            "invalid round 1 cast source ID",
+        );
+        assert_invalid_bcast_message(
+            validate_round1_casts(
+                peer_id,
+                &share_idx_by_peer,
+                1,
+                2,
+                &cast(
+                    MsgKey {
+                        val_idx: 0,
+                        source_id: 1,
+                        target_id: 1,
+                    },
+                    vec![Bytes::new()],
+                ),
+            ),
+            "invalid round 1 cast target ID",
+        );
+        assert_invalid_bcast_message(
+            validate_round1_casts(
+                peer_id,
+                &share_idx_by_peer,
+                1,
+                2,
+                &cast(
+                    MsgKey {
+                        val_idx: 2,
+                        source_id: 1,
+                        target_id: 0,
+                    },
+                    vec![Bytes::new()],
+                ),
+            ),
+            "invalid round 1 cast validator index",
+        );
+        assert_invalid_bcast_message(
+            validate_round1_casts(
+                peer_id,
+                &share_idx_by_peer,
+                1,
+                2,
+                &cast(
+                    MsgKey {
+                        val_idx: 0,
+                        source_id: 1,
+                        target_id: 0,
+                    },
+                    vec![],
+                ),
+            ),
+            "invalid amount of commitments in round 1",
+        );
+    }
+
+    #[test]
+    fn validate_round2_casts_rejects_invalid_fields() {
+        let peer_id = PeerId::random();
+        let share_idx_by_peer = HashMap::from([(peer_id, 1)]);
+        let cast = |key: MsgKey| FrostRound2Casts {
+            casts: vec![FrostRound2Cast {
+                key: Some(key_to_proto(key)),
+                verification_key: Bytes::new(),
+                vk_share: Bytes::new(),
+            }],
+        };
+
+        assert!(
+            validate_round2_casts(
+                peer_id,
+                &share_idx_by_peer,
+                2,
+                &cast(MsgKey {
+                    val_idx: 0,
+                    source_id: 1,
+                    target_id: 0,
+                }),
+            )
+            .is_ok()
+        );
+        assert_invalid_bcast_message(
+            validate_round2_casts(
+                peer_id,
+                &share_idx_by_peer,
+                2,
+                &cast(MsgKey {
+                    val_idx: 0,
+                    source_id: 2,
+                    target_id: 0,
+                }),
+            ),
+            "invalid round 2 cast source ID",
+        );
+        assert_invalid_bcast_message(
+            validate_round2_casts(
+                PeerId::random(),
+                &share_idx_by_peer,
+                2,
+                &cast(MsgKey {
+                    val_idx: 0,
+                    source_id: 1,
+                    target_id: 0,
+                }),
+            ),
+            "invalid round 2 cast source ID",
+        );
+        assert_invalid_bcast_message(
+            validate_round2_casts(
+                peer_id,
+                &share_idx_by_peer,
+                2,
+                &cast(MsgKey {
+                    val_idx: 0,
+                    source_id: 1,
+                    target_id: 1,
+                }),
+            ),
+            "invalid round 2 cast target ID",
+        );
+        assert_invalid_bcast_message(
+            validate_round2_casts(
+                peer_id,
+                &share_idx_by_peer,
+                2,
+                &cast(MsgKey {
+                    val_idx: 2,
+                    source_id: 1,
+                    target_id: 0,
+                }),
+            ),
+            "invalid round 2 cast validator index",
+        );
+    }
+
+    #[test]
     fn cancel_all_removes_handler_pending_open() {
         let mut handler = FrostP2PHandler::new();
 
@@ -1679,5 +1902,12 @@ mod tests {
             num_validators: 0,
             num_peers: 0,
         }
+    }
+
+    fn assert_invalid_bcast_message<T>(result: Result<T, bcast::Error>, expected: &'static str) {
+        assert!(matches!(
+            result,
+            Err(bcast::Error::InvalidMessage(message)) if message == expected
+        ));
     }
 }
