@@ -61,7 +61,7 @@ where
     );
 }
 
-pub struct FnDecider<T>
+pub struct DeciderFn<T>
 where
     T: QbftTypes,
 {
@@ -69,23 +69,22 @@ where
     _marker: PhantomData<fn() -> T>,
 }
 
-impl<T> FnDecider<T>
+impl<T> DeciderFn<T>
 where
     T: QbftTypes,
 {
-    pub fn new(
-        decide: Box<
-            dyn Fn(&CancellationToken, &T::Instance, &T::Value, &Vec<Msg<T>>) + Send + Sync,
-        >,
-    ) -> Self {
+    pub fn new<F>(decide: F) -> Self
+    where
+        F: Fn(&CancellationToken, &T::Instance, &T::Value, &Vec<Msg<T>>) + Send + Sync + 'static,
+    {
         Self {
-            decide,
+            decide: Box::new(decide),
             _marker: PhantomData,
         }
     }
 }
 
-impl<T> Decider<T> for FnDecider<T>
+impl<T> Decider<T> for DeciderFn<T>
 where
     T: QbftTypes,
 {

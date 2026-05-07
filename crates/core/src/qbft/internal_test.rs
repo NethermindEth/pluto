@@ -65,9 +65,9 @@ fn test_qbft(test: Test) {
         },
         decide: {
             let result_chan_tx = result_chan_tx.clone();
-            Box::new(FnDecider::new(Box::new(move |_, _, _, q_commit| {
+            Box::new(DeciderFn::new(move |_, _, _, q_commit| {
                 result_chan_tx.send(q_commit.clone()).expect(WRITE_CHAN_ERR);
-            })))
+            }))
         },
         compare: Box::new(|_, _, _, _, return_err, _| {
             return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
@@ -696,7 +696,7 @@ fn noop_definition() -> Definition<I64Qbft> {
     Definition {
         is_leader: Box::new(|_, _, _| false),
         new_timer: Box::new(|_| (mpmc::never(), Box::new(|| {}))),
-        decide: Box::new(FnDecider::new(Box::new(|_, _, _, _| {}))),
+        decide: Box::new(DeciderFn::new(|_, _, _, _| {})),
         compare: Box::new(|_, _, _, _, _, _| {}),
         nodes: 0,
         fifo_limit: 0,
