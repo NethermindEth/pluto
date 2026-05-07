@@ -343,6 +343,55 @@ impl TimerFactory for TimerFactoryFn {
     }
 }
 
+pub struct CompareRequest<'a, T>
+where
+    T: QbftTypes,
+{
+    pub ct: &'a CancellationToken,
+    pub qcommit: &'a Msg<T>,
+    pub input_value_source_ch: &'a mpmc::Receiver<T::Compare>,
+    pub input_value_source: &'a T::Compare,
+    pub return_err: &'a mpmc::Sender<Result<()>>,
+    pub return_value: &'a mpmc::Sender<T::Compare>,
+}
+
+pub trait Comparator<T>: Send + Sync
+where
+    T: QbftTypes,
+{
+    fn compare(&self, request: CompareRequest<'_, T>);
+}
+
+pub struct ComparatorFn<T>
+where
+    T: QbftTypes,
+{
+    compare: Box<dyn Fn(CompareRequest<'_, T>) + Send + Sync>,
+}
+
+impl<T> ComparatorFn<T>
+where
+    T: QbftTypes,
+{
+    pub fn new<F>(compare: F) -> Self
+    where
+        F: Fn(CompareRequest<'_, T>) + Send + Sync + 'static,
+    {
+        Self {
+            compare: Box::new(compare),
+        }
+    }
+}
+
+impl<T> Comparator<T> for ComparatorFn<T>
+where
+    T: QbftTypes,
+{
+    fn compare(&self, request: CompareRequest<'_, T>) {
+        (self.compare)(request);
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum QbftError {
     #[error("Timeout")]
@@ -393,17 +442,7 @@ where
     /// Called when leader proposes value and we compare it with our local
     /// value. It's an opt-in feature that should instantly return `None` on
     /// `return_err` channel if it is not turned on.
-    pub compare: Box<
-        dyn Fn(
-                /* ct */ &CancellationToken,
-                /* qcommit */ &Msg<T>,
-                /* input_value_source_ch */ &mpmc::Receiver<T::Compare>,
-                /* input_value_source */ &T::Compare,
-                /* return_err */ &mpmc::Sender<Result<()>>,
-                /* return_value */ &mpmc::Sender<T::Compare>,
-            ) + Send
-            + Sync,
-    >,
+    pub compare: Box<dyn Comparator<T>>,
 
     /// Called when consensus has been reached on a value.
     pub decide: Box<dyn Decider<T>>,
@@ -879,14 +918,14 @@ where
         let compare = &d.compare;
 
         s.spawn(move || {
-            (compare)(
+            compare.compare(CompareRequest {
                 ct,
-                msg,
+                qcommit: msg,
                 input_value_source_ch,
-                &input_value_source,
-                &compare_err_tx,
-                &compare_value_tx,
-            );
+                input_value_source: &input_value_source,
+                return_err: &compare_err_tx,
+                return_value: &compare_value_tx,
+            });
         });
 
         loop {

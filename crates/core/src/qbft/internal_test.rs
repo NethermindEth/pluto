@@ -69,9 +69,9 @@ fn test_qbft(test: Test) {
                 result_chan_tx.send(q_commit.clone()).expect(WRITE_CHAN_ERR);
             }))
         },
-        compare: Box::new(|_, _, _, _, return_err, _| {
-            return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
-        }),
+        compare: Box::new(ComparatorFn::new(|request| {
+            request.return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
+        })),
         nodes: N as i64,
         fifo_limit: FIFO_LIMIT as i64,
         logger: Box::new(QbftLoggerFn::new(
@@ -707,7 +707,7 @@ fn noop_definition() -> Definition<I64Qbft> {
             (mpmc::never(), Box::new(TimerStopperFn::new(|| {})))
         })),
         decide: Box::new(DeciderFn::new(|_, _, _, _| {})),
-        compare: Box::new(|_, _, _, _, _, _| {}),
+        compare: Box::new(ComparatorFn::new(|_| {})),
         nodes: 0,
         fifo_limit: 0,
         logger: Box::new(QbftLoggerFn::new(
@@ -771,9 +771,9 @@ fn duplicate_pre_prepare_rules() {
         |_, _, _, _, _, _| {},
         |_, _, _| {},
     ));
-    def.compare = Box::new(|_, _, _, _, return_err, _| {
-        _ = return_err.send(Ok(()));
-    });
+    def.compare = Box::new(ComparatorFn::new(|request| {
+        _ = request.return_err.send(Ok(()));
+    }));
 
     let (r_chan_tx, r_chan_rx) = mpmc::bounded::<Msg<I64Qbft>>(2);
     r_chan_tx.send(new_preprepare(1)).expect(WRITE_CHAN_ERR);
