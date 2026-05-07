@@ -4,6 +4,59 @@
 #![allow(clippy::all)]
 #![allow(rustdoc::all)]
 
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BCastSigRequest {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "3")]
+    pub message: ::core::option::Option<::prost_types::Any>,
+}
+impl ::prost::Name for BCastSigRequest {
+    const NAME: &'static str = "BCastSigRequest";
+    const PACKAGE: &'static str = "dkg.dkgpb.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "dkg.dkgpb.v1.BCastSigRequest".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/dkg.dkgpb.v1.BCastSigRequest".into()
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BCastSigResponse {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub signature: ::prost::bytes::Bytes,
+}
+impl ::prost::Name for BCastSigResponse {
+    const NAME: &'static str = "BCastSigResponse";
+    const PACKAGE: &'static str = "dkg.dkgpb.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "dkg.dkgpb.v1.BCastSigResponse".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/dkg.dkgpb.v1.BCastSigResponse".into()
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BCastMessage {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub message: ::core::option::Option<::prost_types::Any>,
+    #[prost(bytes = "bytes", repeated, tag = "3")]
+    pub signatures: ::prost::alloc::vec::Vec<::prost::bytes::Bytes>,
+}
+impl ::prost::Name for BCastMessage {
+    const NAME: &'static str = "BCastMessage";
+    const PACKAGE: &'static str = "dkg.dkgpb.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "dkg.dkgpb.v1.BCastMessage".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/dkg.dkgpb.v1.BCastMessage".into()
+    }
+}
 /// dkg.msgKey
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FrostMsgKey {
@@ -189,58 +242,5 @@ impl ::prost::Name for MsgSyncResponse {
     }
     fn type_url() -> ::prost::alloc::string::String {
         "type.googleapis.com/dkg.dkgpb.v1.MsgSyncResponse".into()
-    }
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct BCastSigRequest {
-    #[prost(string, tag = "1")]
-    pub id: ::prost::alloc::string::String,
-    #[prost(message, optional, tag = "3")]
-    pub message: ::core::option::Option<::prost_types::Any>,
-}
-impl ::prost::Name for BCastSigRequest {
-    const NAME: &'static str = "BCastSigRequest";
-    const PACKAGE: &'static str = "dkg.dkgpb.v1";
-    fn full_name() -> ::prost::alloc::string::String {
-        "dkg.dkgpb.v1.BCastSigRequest".into()
-    }
-    fn type_url() -> ::prost::alloc::string::String {
-        "type.googleapis.com/dkg.dkgpb.v1.BCastSigRequest".into()
-    }
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct BCastSigResponse {
-    #[prost(string, tag = "1")]
-    pub id: ::prost::alloc::string::String,
-    #[prost(bytes = "bytes", tag = "2")]
-    pub signature: ::prost::bytes::Bytes,
-}
-impl ::prost::Name for BCastSigResponse {
-    const NAME: &'static str = "BCastSigResponse";
-    const PACKAGE: &'static str = "dkg.dkgpb.v1";
-    fn full_name() -> ::prost::alloc::string::String {
-        "dkg.dkgpb.v1.BCastSigResponse".into()
-    }
-    fn type_url() -> ::prost::alloc::string::String {
-        "type.googleapis.com/dkg.dkgpb.v1.BCastSigResponse".into()
-    }
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct BCastMessage {
-    #[prost(string, tag = "1")]
-    pub id: ::prost::alloc::string::String,
-    #[prost(message, optional, tag = "2")]
-    pub message: ::core::option::Option<::prost_types::Any>,
-    #[prost(bytes = "bytes", repeated, tag = "3")]
-    pub signatures: ::prost::alloc::vec::Vec<::prost::bytes::Bytes>,
-}
-impl ::prost::Name for BCastMessage {
-    const NAME: &'static str = "BCastMessage";
-    const PACKAGE: &'static str = "dkg.dkgpb.v1";
-    fn full_name() -> ::prost::alloc::string::String {
-        "dkg.dkgpb.v1.BCastMessage".into()
-    }
-    fn type_url() -> ::prost::alloc::string::String {
-        "type.googleapis.com/dkg.dkgpb.v1.BCastMessage".into()
     }
 }

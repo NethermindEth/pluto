@@ -6,11 +6,15 @@ use std::{fs, io::Result, path::PathBuf};
 
 /// Compiles the protobuf files in the given directory.
 pub fn compile_protos(proto_dir: &str) -> Result<()> {
-    let proto_files: Vec<PathBuf> = fs::read_dir(proto_dir)?
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "proto"))
-        .collect();
+    let proto_files: Vec<PathBuf> = {
+        let mut files: Vec<PathBuf> = fs::read_dir(proto_dir)?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "proto"))
+            .collect();
+        files.sort();
+        files
+    };
 
     if proto_files.is_empty() {
         println!("cargo:warning=No .proto files found in {}", proto_dir);
