@@ -5,46 +5,6 @@
 #![allow(rustdoc::all)]
 
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct MsgSync {
-    #[prost(message, optional, tag = "1")]
-    pub timestamp: ::core::option::Option<::prost_types::Timestamp>,
-    #[prost(bytes = "bytes", tag = "2")]
-    pub hash_signature: ::prost::bytes::Bytes,
-    #[prost(bool, tag = "3")]
-    pub shutdown: bool,
-    #[prost(string, tag = "4")]
-    pub version: ::prost::alloc::string::String,
-    #[prost(int64, tag = "5")]
-    pub step: i64,
-}
-impl ::prost::Name for MsgSync {
-    const NAME: &'static str = "MsgSync";
-    const PACKAGE: &'static str = "dkg.dkgpb.v1";
-    fn full_name() -> ::prost::alloc::string::String {
-        "dkg.dkgpb.v1.MsgSync".into()
-    }
-    fn type_url() -> ::prost::alloc::string::String {
-        "type.googleapis.com/dkg.dkgpb.v1.MsgSync".into()
-    }
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct MsgSyncResponse {
-    #[prost(message, optional, tag = "1")]
-    pub sync_timestamp: ::core::option::Option<::prost_types::Timestamp>,
-    #[prost(string, tag = "2")]
-    pub error: ::prost::alloc::string::String,
-}
-impl ::prost::Name for MsgSyncResponse {
-    const NAME: &'static str = "MsgSyncResponse";
-    const PACKAGE: &'static str = "dkg.dkgpb.v1";
-    fn full_name() -> ::prost::alloc::string::String {
-        "dkg.dkgpb.v1.MsgSyncResponse".into()
-    }
-    fn type_url() -> ::prost::alloc::string::String {
-        "type.googleapis.com/dkg.dkgpb.v1.MsgSyncResponse".into()
-    }
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BCastSigRequest {
     #[prost(string, tag = "1")]
     pub id: ::prost::alloc::string::String,
@@ -95,23 +55,6 @@ impl ::prost::Name for BCastMessage {
     }
     fn type_url() -> ::prost::alloc::string::String {
         "type.googleapis.com/dkg.dkgpb.v1.BCastMessage".into()
-    }
-}
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct MsgNodeSig {
-    #[prost(bytes = "bytes", tag = "1")]
-    pub signature: ::prost::bytes::Bytes,
-    #[prost(uint32, tag = "2")]
-    pub peer_index: u32,
-}
-impl ::prost::Name for MsgNodeSig {
-    const NAME: &'static str = "MsgNodeSig";
-    const PACKAGE: &'static str = "dkg.dkgpb.v1";
-    fn full_name() -> ::prost::alloc::string::String {
-        "dkg.dkgpb.v1.MsgNodeSig".into()
-    }
-    fn type_url() -> ::prost::alloc::string::String {
-        "type.googleapis.com/dkg.dkgpb.v1.MsgNodeSig".into()
     }
 }
 /// dkg.msgKey
@@ -242,5 +185,62 @@ impl ::prost::Name for FrostRound2Cast {
     }
     fn type_url() -> ::prost::alloc::string::String {
         "type.googleapis.com/dkg.dkgpb.v1.FrostRound2Cast".into()
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MsgNodeSig {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub signature: ::prost::bytes::Bytes,
+    #[prost(uint32, tag = "2")]
+    pub peer_index: u32,
+}
+impl ::prost::Name for MsgNodeSig {
+    const NAME: &'static str = "MsgNodeSig";
+    const PACKAGE: &'static str = "dkg.dkgpb.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "dkg.dkgpb.v1.MsgNodeSig".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/dkg.dkgpb.v1.MsgNodeSig".into()
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MsgSync {
+    #[prost(message, optional, tag = "1")]
+    pub timestamp: ::core::option::Option<::prost_types::Timestamp>,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub hash_signature: ::prost::bytes::Bytes,
+    #[prost(bool, tag = "3")]
+    pub shutdown: bool,
+    #[prost(string, tag = "4")]
+    pub version: ::prost::alloc::string::String,
+    #[prost(int64, tag = "5")]
+    pub step: i64,
+}
+impl ::prost::Name for MsgSync {
+    const NAME: &'static str = "MsgSync";
+    const PACKAGE: &'static str = "dkg.dkgpb.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "dkg.dkgpb.v1.MsgSync".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/dkg.dkgpb.v1.MsgSync".into()
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MsgSyncResponse {
+    #[prost(message, optional, tag = "1")]
+    pub sync_timestamp: ::core::option::Option<::prost_types::Timestamp>,
+    #[prost(string, tag = "2")]
+    pub error: ::prost::alloc::string::String,
+}
+impl ::prost::Name for MsgSyncResponse {
+    const NAME: &'static str = "MsgSyncResponse";
+    const PACKAGE: &'static str = "dkg.dkgpb.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "dkg.dkgpb.v1.MsgSyncResponse".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "type.googleapis.com/dkg.dkgpb.v1.MsgSyncResponse".into()
     }
 }
