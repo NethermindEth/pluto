@@ -378,7 +378,7 @@ pub async fn run(conf: Config, ct: CancellationToken) -> Result<(), DkgError> {
     let result = run_inner(conf, ct).await;
 
     lock_ct.cancel();
-    let _ = lock_task
+    lock_task
         .await
         .unwrap_or_else(|err| error!(?err, "Error joining private key lock task"));
 
