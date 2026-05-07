@@ -121,47 +121,52 @@ fn test_qbft(test: Test) {
                 broadcast: {
                     let clock = clock.clone();
 
-                    Box::new(BroadcasterFn::new(
-                        move |_, type_, instance, source, round, value, pr, pv, justification| {
-                            if round > MAX_ROUND as i64 {
-                                return Err(QbftError::MaxRoundReached);
-                            }
+                    Box::new(BroadcasterFn::new(move |request| {
+                        if request.round > MAX_ROUND as i64 {
+                            return Err(QbftError::MaxRoundReached);
+                        }
 
-                            if type_ == MSG_COMMIT && round <= test.commits_after.into() {
-                                println!(
-                                    "{:?} {} dropping commit for round {}",
-                                    clock.elapsed(),
-                                    source,
-                                    round
-                                );
-                                return Ok(());
-                            }
-
-                            println!("{:?} {} => {}@{}", clock.elapsed(), source, type_, round);
-
-                            let msg = new_msg(
-                                type_,
-                                *instance,
-                                source,
-                                round,
-                                *value,
-                                *value,
-                                pr,
-                                *pv,
-                                justification,
+                        if request.type_ == MSG_COMMIT && request.round <= test.commits_after.into()
+                        {
+                            println!(
+                                "{:?} {} dropping commit for round {}",
+                                clock.elapsed(),
+                                request.source,
+                                request.round
                             );
-                            sender.send(msg.clone()).expect(WRITE_CHAN_ERR);
+                            return Ok(());
+                        }
 
-                            bcast(
-                                broadcast_tx.clone(),
-                                msg.clone(),
-                                test.bcast_jitter_ms,
-                                clock.clone(),
-                            ); // TODO: Add clock
+                        println!(
+                            "{:?} {} => {}@{}",
+                            clock.elapsed(),
+                            request.source,
+                            request.type_,
+                            request.round
+                        );
 
-                            Ok(())
-                        },
-                    ))
+                        let msg = new_msg(
+                            request.type_,
+                            *request.instance,
+                            request.source,
+                            request.round,
+                            *request.value,
+                            *request.value,
+                            request.prepared_round,
+                            *request.prepared_value,
+                            request.justification,
+                        );
+                        sender.send(msg.clone()).expect(WRITE_CHAN_ERR);
+
+                        bcast(
+                            broadcast_tx.clone(),
+                            msg.clone(),
+                            test.bcast_jitter_ms,
+                            clock.clone(),
+                        ); // TODO: Add clock
+
+                        Ok(())
+                    }))
                 },
                 receive: receiver.clone(),
             };
@@ -713,7 +718,7 @@ fn noop_definition() -> Definition<I64Qbft> {
 
 fn noop_transport() -> Transport<I64Qbft> {
     Transport {
-        broadcast: Box::new(BroadcasterFn::new(|_, _, _, _, _, _, _, _, _| Ok(()))),
+        broadcast: Box::new(BroadcasterFn::new(|_| Ok(()))),
         receive: mpmc::never(),
     }
 }

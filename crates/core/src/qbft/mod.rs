@@ -231,40 +231,29 @@ where
     }
 }
 
+pub struct BroadcastRequest<'a, T>
+where
+    T: QbftTypes,
+{
+    pub ct: &'a CancellationToken,
+    pub type_: MessageType,
+    pub instance: &'a T::Instance,
+    pub source: i64,
+    pub round: i64,
+    pub value: &'a T::Value,
+    pub prepared_round: i64,
+    pub prepared_value: &'a T::Value,
+    pub justification: Option<&'a Vec<Msg<T>>>,
+}
+
 pub trait Broadcaster<T>: Send + Sync
 where
     T: QbftTypes,
 {
-    #[allow(clippy::too_many_arguments)]
-    fn broadcast(
-        &self,
-        ct: &CancellationToken,
-        type_: MessageType,
-        instance: &T::Instance,
-        source: i64,
-        round: i64,
-        value: &T::Value,
-        pr: i64,
-        pv: &T::Value,
-        justification: Option<&Vec<Msg<T>>>,
-    ) -> Result<()>;
+    fn broadcast(&self, request: BroadcastRequest<'_, T>) -> Result<()>;
 }
 
-type BroadcastFn<T> = Box<
-    dyn Fn(
-            &CancellationToken,
-            MessageType,
-            &<T as QbftTypes>::Instance,
-            i64,
-            i64,
-            &<T as QbftTypes>::Value,
-            i64,
-            &<T as QbftTypes>::Value,
-            Option<&Vec<Msg<T>>>,
-        ) -> Result<()>
-        + Send
-        + Sync,
->;
+type BroadcastFn<T> = Box<dyn Fn(BroadcastRequest<'_, T>) -> Result<()> + Send + Sync>;
 
 pub struct BroadcasterFn<T>
 where
@@ -280,20 +269,7 @@ where
 {
     pub fn new<F>(broadcast: F) -> Self
     where
-        F: Fn(
-                &CancellationToken,
-                MessageType,
-                &T::Instance,
-                i64,
-                i64,
-                &T::Value,
-                i64,
-                &T::Value,
-                Option<&Vec<Msg<T>>>,
-            ) -> Result<()>
-            + Send
-            + Sync
-            + 'static,
+        F: Fn(BroadcastRequest<'_, T>) -> Result<()> + Send + Sync + 'static,
     {
         Self {
             broadcast: Box::new(broadcast),
@@ -306,29 +282,8 @@ impl<T> Broadcaster<T> for BroadcasterFn<T>
 where
     T: QbftTypes,
 {
-    fn broadcast(
-        &self,
-        ct: &CancellationToken,
-        type_: MessageType,
-        instance: &T::Instance,
-        source: i64,
-        round: i64,
-        value: &T::Value,
-        pr: i64,
-        pv: &T::Value,
-        justification: Option<&Vec<Msg<T>>>,
-    ) -> Result<()> {
-        (self.broadcast)(
-            ct,
-            type_,
-            instance,
-            source,
-            round,
-            value,
-            pr,
-            pv,
-            justification,
-        )
+    fn broadcast(&self, request: BroadcastRequest<'_, T>) -> Result<()> {
+        (self.broadcast)(request)
     }
 }
 
@@ -573,31 +528,31 @@ where
     // Broadcasts a non-ROUND-CHANGE message for current round.
     let broadcast_msg =
         |type_: MessageType, value: &T::Value, justification: Option<&Vec<Msg<T>>>| {
-            t.broadcast.broadcast(
+            t.broadcast.broadcast(BroadcastRequest {
                 ct,
                 type_,
                 instance,
-                process,
-                round.get(),
+                source: process,
+                round: round.get(),
                 value,
-                0,
-                &Default::default(),
+                prepared_round: 0,
+                prepared_value: &Default::default(),
                 justification,
-            )
+            })
         };
     // Broadcasts a ROUND-CHANGE message with current state.
     let broadcast_round_change = || {
-        t.broadcast.broadcast(
+        t.broadcast.broadcast(BroadcastRequest {
             ct,
-            MSG_ROUND_CHANGE,
+            type_: MSG_ROUND_CHANGE,
             instance,
-            process,
-            round.get(),
-            &Default::default(),
-            prepared_round.get(),
-            &prepared_value.borrow(),
-            prepared_justification.borrow().as_ref(),
-        )
+            source: process,
+            round: round.get(),
+            value: &Default::default(),
+            prepared_round: prepared_round.get(),
+            prepared_value: &prepared_value.borrow(),
+            justification: prepared_justification.borrow().as_ref(),
+        })
     };
 
     // Broadcasts a PRE-PREPARE message with current state
