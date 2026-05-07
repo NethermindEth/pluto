@@ -576,7 +576,7 @@ async fn run_inner(conf: Config, ct: CancellationToken) -> Result<(), DkgError> 
         &peer_share_indices,
         local_share_idx,
         threshold,
-        num_validators,
+        usize::try_from(num_validators)?,
     )
     .await?;
     let node_sig_caster = nodesigs::NodeSigBcast::new(

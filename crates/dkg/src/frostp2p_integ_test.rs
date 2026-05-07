@@ -261,7 +261,7 @@ async fn build_local_nodes(
             peer_ids.iter().copied(),
             peer_share_indices.clone(),
             local_share_idx,
-            u32::try_from(NUM_VALIDATORS).expect("NUM_VALIDATORS should fit u32"),
+            NUM_VALIDATORS,
         );
         let transport = new_frost_p2p(
             bcast_comp,
@@ -269,7 +269,7 @@ async fn build_local_nodes(
             peer_share_indices,
             local_share_idx,
             THRESHOLD,
-            u32::try_from(NUM_VALIDATORS).expect("NUM_VALIDATORS should fit u32"),
+            NUM_VALIDATORS,
         )
         .await?;
         let behaviour = TestBehaviour { bcast, frost };

@@ -75,15 +75,69 @@ pub(crate) enum FrostError {
     /// Direct FROST P2P send failed.
     #[error("frost p2p send: {0}")]
     FrostP2P(#[from] crate::frostp2p::FrostP2PError),
-    /// A FROST protobuf message failed validation.
-    #[error("{0}")]
-    InvalidMessage(&'static str),
+    /// Too many round-1 broadcast messages were collected.
+    #[error("too many round 1 casts messages")]
+    TooManyRound1CastsMessages,
+    /// Too many round-1 direct P2P messages were collected.
+    #[error("too many round 1 p2p messages")]
+    TooManyRound1P2PMessages,
+    /// Too many round-2 broadcast messages were collected.
+    #[error("too many round 2 casts messages")]
+    TooManyRound2CastsMessages,
+    /// A FROST message key was missing.
+    #[error("frost msg key cannot be nil")]
+    MissingMsgKey,
+    /// A round-1 P2P message source ID was invalid.
+    #[error("invalid round 1 p2p source ID")]
+    InvalidRound1P2PSourceId,
+    /// A round-1 P2P message target ID was invalid.
+    #[error("invalid round 1 p2p target ID")]
+    InvalidRound1P2PTargetId,
+    /// A round-1 P2P message validator index was invalid.
+    #[error("invalid round 1 p2p validator index")]
+    InvalidRound1P2PValidatorIndex,
+    /// A round-1 P2P message did not contain exactly one share per validator.
+    #[error("invalid round 1 p2p shares count")]
+    InvalidRound1P2PSharesCount,
+    /// A round-1 P2P message repeated a validator index.
+    #[error("duplicate round 1 p2p validator index")]
+    DuplicateRound1P2PValidatorIndex,
+    /// Failed to decode the round-1 Wi scalar.
+    #[error("decode wi scalar")]
+    DecodeWiScalar,
+    /// Failed to decode the round-1 C_i scalar.
+    #[error("decode c1 scalar")]
+    DecodeC1Scalar,
+    /// Failed to decode a round-1 commitment point.
+    #[error("decode commitment")]
+    DecodeCommitment,
+    /// Failed to decode a round-1 Shamir share scalar.
+    #[error("decode shamir scalar")]
+    DecodeShamirScalar,
+    /// Failed to decode a round-2 verification key point.
+    #[error("decode verification key scalar")]
+    DecodeVerificationKeyScalar,
+    /// Failed to decode a round-2 verification key share point.
+    #[error("decode vk share")]
+    DecodeVkShare,
     /// FROST transport configuration is invalid.
     #[error("frost config: {0}")]
     ConfigError(&'static str),
-    /// FROST transport internal state is invalid.
-    #[error("frost internal state: {0}")]
-    InternalState(&'static str),
+    /// The FROST P2P inbound receiver was already taken.
+    #[error("frost p2p inbound receiver already taken")]
+    P2PInboundReceiverAlreadyTaken,
+    /// The FROST broadcast event receiver was already taken.
+    #[error("frost bcast event receiver already taken")]
+    BcastEventReceiverAlreadyTaken,
+    /// The round-1 casts receiver was dropped before local self-delivery.
+    #[error("frost round 1 casts receiver dropped before self-delivery")]
+    Round1CastsReceiverDropped,
+    /// The round-2 casts receiver was dropped before local self-delivery.
+    #[error("frost round 2 casts receiver dropped before self-delivery")]
+    Round2CastsReceiverDropped,
+    /// Round-1 P2P construction attempted to send a private share to self.
+    #[error("unexpected p2p message to self")]
+    UnexpectedP2PMessageToSelf,
     /// FROST transport channel closed unexpectedly.
     #[error("frost channel closed: {0}")]
     ChannelClosed(&'static str),
@@ -236,26 +290,38 @@ pub(crate) async fn run_frost_parallel<T: FTransport>(
     share_idx: u32,
     dkg_ctx: &str,
 ) -> Result<Vec<Share>, FrostError> {
+    debug!(
+        num_validators,
+        num_nodes, threshold, share_idx, "Starting FROST DKG"
+    );
     let mut validators =
         new_frost_participants(num_validators, num_nodes, threshold, share_idx, dkg_ctx)?;
 
     let (cast_r1, p2p_r1) = round1(&mut validators)?;
-
-    debug!("Sending round 1 messages");
-
+    debug!(
+        bcasts = cast_r1.len(),
+        p2p = p2p_r1.len(),
+        "Completed local FROST DKG round 1"
+    );
     let (cast_r1_result, p2p_r1_result) = tp.round1(&cancellation, cast_r1, p2p_r1).await?;
-
-    debug!("Received round 1 results");
+    debug!(
+        bcasts = cast_r1_result.len(),
+        p2p = p2p_r1_result.len(),
+        "Completed FROST DKG round 1 transport"
+    );
 
     let cast_r2 = round2(&mut validators, &cast_r1_result, &p2p_r1_result)?;
-
-    debug!("Sending round 2 messages");
-
+    debug!(bcasts = cast_r2.len(), "Completed local FROST DKG round 2");
     let cast_r2_result = tp.round2(&cancellation, cast_r2).await?;
+    debug!(
+        bcasts = cast_r2_result.len(),
+        "Completed FROST DKG round 2 transport"
+    );
 
-    debug!("Received round 2 results");
+    let shares = make_shares(&validators, &cast_r2_result)?;
+    debug!(shares = shares.len(), "Completed FROST DKG");
 
-    make_shares(&validators, &cast_r2_result)
+    Ok(shares)
 }
 
 /// Returns multiple frost DKG participants (one for each parallel validator).

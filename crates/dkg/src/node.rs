@@ -128,7 +128,7 @@ pub(crate) async fn setup_p2p(
         peer_ids.clone(),
         share_idx_by_peer,
         local_share_idx,
-        num_validators,
+        usize::try_from(num_validators)?,
     );
 
     let node = Node::new(
