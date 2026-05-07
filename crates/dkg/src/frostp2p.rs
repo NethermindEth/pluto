@@ -89,10 +89,11 @@
 //!   reliable broadcast through [`bcast::Component`].
 //!
 //! The outer DKG network behaviour must install both `bcast::Behaviour` and
-//! [`FrostP2PBehaviour`]. It must also forward every [`bcast::Event`] emitted
-//! by `bcast::Behaviour` into [`FrostP2PHandle::handle_bcast_event`]. Without
-//! that event bridge, [`FrostP2P`] cannot observe broadcast completion and
-//! `round1`/`round2` will wait until cancellation.
+//! [`FrostP2PBehaviour`]. It must also forward FROST broadcast completion
+//! events emitted by `bcast::Behaviour` into
+//! [`FrostP2PHandle::handle_bcast_event`]. Without that event bridge,
+//! [`FrostP2P`] cannot observe broadcast completion and `round1`/`round2` will
+//! wait until cancellation.
 //!
 //! FROST observation events are emitted through [`FrostP2PBehaviour`] as swarm
 //! events. Transport-level code forwards round and broadcast milestones back to
@@ -498,12 +499,21 @@ pub(crate) struct FrostP2PHandle {
 }
 
 impl FrostP2PHandle {
-    /// Forwards bcast completion events into the FROST round state machine.
+    /// Forwards FROST bcast completion events into the round state machine.
     ///
-    /// The outer DKG network behaviour must call this for every event emitted
-    /// by `bcast::Behaviour`; `FrostP2P::round1` and `FrostP2P::round2` block
-    /// on these forwarded events after starting their broadcasts.
+    /// The outer DKG network behaviour should route only events for FROST
+    /// message IDs here. Events for other bcast users are ignored defensively,
+    /// since this handle cannot re-deliver them to their owner.
     pub(crate) fn handle_bcast_event(&self, event: bcast::Event) -> Result<(), FrostError> {
+        let msg_id = match &event {
+            bcast::Event::BroadcastCompleted { msg_id }
+            | bcast::Event::BroadcastFailed { msg_id, .. } => msg_id.as_str(),
+        };
+        if !is_frost_bcast_msg_id(msg_id) {
+            debug!(msg_id, "ignoring non-FROST bcast event");
+            return Ok(());
+        }
+
         self.bcast_event_tx
             .send(event)
             .map_err(|_| FrostError::ChannelClosed("frost bcast event channel"))
@@ -1308,6 +1318,10 @@ fn round_for_msg_id(msg_id: &'static str) -> u8 {
         ROUND2_CAST_ID => 2,
         _ => 0,
     }
+}
+
+fn is_frost_bcast_msg_id(msg_id: &str) -> bool {
+    matches!(msg_id, ROUND1_CAST_ID | ROUND2_CAST_ID)
 }
 
 fn validate_round1_p2p(
@@ -2189,6 +2203,13 @@ mod tests {
     #[tokio::test]
     async fn bcast_event_handler_forwards_event() {
         let (handler, mut event_rx) = frost_p2p_handle_for_test();
+
+        handler
+            .handle_bcast_event(bcast::Event::BroadcastCompleted {
+                msg_id: "other".to_string(),
+            })
+            .unwrap();
+        assert!(event_rx.try_recv().is_err());
 
         handler
             .handle_bcast_event(bcast::Event::BroadcastCompleted {
