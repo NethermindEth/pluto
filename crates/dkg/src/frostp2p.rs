@@ -528,7 +528,7 @@ pub(crate) struct FrostP2PBehaviour {
     p2p_context: P2PContext,
     share_idx_by_peer: HashMap<PeerId, u32>,
     local_share_idx: u32,
-    num_validators: u32,
+    num_validators: usize,
     inbound_tx: mpsc::Sender<(PeerId, FrostRound1P2p)>,
     accepted_round1_p2p: HashSet<PeerId>,
     cmd_rx: mpsc::UnboundedReceiver<SendCommand>,
@@ -545,7 +545,7 @@ impl FrostP2PBehaviour {
         peers: impl IntoIterator<Item = PeerId>,
         share_idx_by_peer: HashMap<PeerId, u32>,
         local_share_idx: u32,
-        num_validators: u32,
+        num_validators: usize,
     ) -> (Self, FrostP2PHandle) {
         let peers = peers.into_iter().collect::<HashSet<_>>();
         let num_peers = peers.len();
@@ -891,7 +891,7 @@ pub(crate) async fn new_frost_p2p(
     peers: &HashMap<PeerId, u32>,
     local_share_idx: u32,
     threshold: usize,
-    num_validators: u32,
+    num_validators: usize,
 ) -> Result<FrostP2P, FrostError> {
     let peer_share_indices = validate_peer_share_indices(peers, local_share_idx)?;
 
@@ -967,7 +967,7 @@ async fn register_round1_bcast(
     share_idx_by_peer: HashMap<PeerId, u32>,
     tx: mpsc::UnboundedSender<FrostRound1Casts>,
     threshold: usize,
-    num_validators: u32,
+    num_validators: usize,
 ) -> Result<(), FrostError> {
     let dedup = Arc::new(Mutex::new(HashSet::<PeerId>::new()));
     let share_idx_by_peer = Arc::new(share_idx_by_peer);
@@ -1008,7 +1008,7 @@ async fn register_round2_bcast(
     bcast_comp: &bcast::Component,
     share_idx_by_peer: HashMap<PeerId, u32>,
     tx: mpsc::UnboundedSender<FrostRound2Casts>,
-    num_validators: u32,
+    num_validators: usize,
 ) -> Result<(), FrostError> {
     let dedup = Arc::new(Mutex::new(HashSet::<PeerId>::new()));
     let share_idx_by_peer = Arc::new(share_idx_by_peer);
@@ -1043,12 +1043,20 @@ fn validate_round1_casts(
     peer_id: PeerId,
     share_idx_by_peer: &HashMap<PeerId, u32>,
     threshold: usize,
-    num_validators: u32,
+    num_validators: usize,
     msg: &FrostRound1Casts,
 ) -> Result<(), bcast::Error> {
     let source_id = *share_idx_by_peer
         .get(&peer_id)
         .ok_or(bcast::Error::InvalidPeerIndex(peer_id))?;
+    // Stricter than Charon: reject malformed batches before point decoding.
+    if msg.casts.len() != num_validators {
+        return Err(bcast::Error::InvalidSignatureCount {
+            expected: num_validators,
+            actual: msg.casts.len(),
+        });
+    }
+    let mut seen_validators = HashSet::with_capacity(msg.casts.len());
     for cast in &msg.casts {
         let Some(key) = cast.key.as_ref() else {
             return Err(bcast::Error::MissingField("key"));
@@ -1059,7 +1067,12 @@ fn validate_round1_casts(
         if key.target_id != 0 {
             return Err(bcast::Error::InvalidPeerIndex(peer_id));
         }
-        if key.val_idx >= num_validators {
+        let val_idx =
+            usize::try_from(key.val_idx).map_err(|_| bcast::Error::InvalidPeerIndex(peer_id))?;
+        if val_idx >= num_validators {
+            return Err(bcast::Error::InvalidPeerIndex(peer_id));
+        }
+        if !seen_validators.insert(key.val_idx) {
             return Err(bcast::Error::InvalidPeerIndex(peer_id));
         }
         if cast.commitments.len() != threshold {
@@ -1076,12 +1089,20 @@ fn validate_round1_casts(
 fn validate_round2_casts(
     peer_id: PeerId,
     share_idx_by_peer: &HashMap<PeerId, u32>,
-    num_validators: u32,
+    num_validators: usize,
     msg: &FrostRound2Casts,
 ) -> Result<(), bcast::Error> {
     let source_id = *share_idx_by_peer
         .get(&peer_id)
         .ok_or(bcast::Error::InvalidPeerIndex(peer_id))?;
+    // Stricter than Charon: reject malformed batches before point decoding.
+    if msg.casts.len() != num_validators {
+        return Err(bcast::Error::InvalidSignatureCount {
+            expected: num_validators,
+            actual: msg.casts.len(),
+        });
+    }
+    let mut seen_validators = HashSet::with_capacity(msg.casts.len());
     for cast in &msg.casts {
         let Some(key) = cast.key.as_ref() else {
             return Err(bcast::Error::MissingField("key"));
@@ -1092,7 +1113,12 @@ fn validate_round2_casts(
         if key.target_id != 0 {
             return Err(bcast::Error::InvalidPeerIndex(peer_id));
         }
-        if key.val_idx >= num_validators {
+        let val_idx =
+            usize::try_from(key.val_idx).map_err(|_| bcast::Error::InvalidPeerIndex(peer_id))?;
+        if val_idx >= num_validators {
+            return Err(bcast::Error::InvalidPeerIndex(peer_id));
+        }
+        if !seen_validators.insert(key.val_idx) {
             return Err(bcast::Error::InvalidPeerIndex(peer_id));
         }
     }
@@ -1283,15 +1309,13 @@ fn validate_round1_p2p(
     share_idx_by_peer: &HashMap<PeerId, u32>,
     local_share_idx: u32,
     msg: &FrostRound1P2p,
-    num_validators: u32,
+    num_validators: usize,
 ) -> Result<(), FrostError> {
     let source_id = *share_idx_by_peer
         .get(&peer_id)
         .ok_or(FrostError::InvalidRound1P2PSourceId)?;
     // A direct round-1 P2P message contains this peer's share for every validator.
-    if msg.shares.len()
-        != usize::try_from(num_validators).map_err(|_| FrostError::InvalidNumberOfValidators)?
-    {
+    if msg.shares.len() != num_validators {
         return Err(FrostError::InvalidRound1P2PSharesCount);
     }
     let mut seen_validators = HashSet::with_capacity(msg.shares.len());
@@ -1303,7 +1327,9 @@ fn validate_round1_p2p(
         if key.target_id != local_share_idx {
             return Err(FrostError::InvalidRound1P2PTargetId);
         }
-        if key.val_idx >= num_validators {
+        let val_idx =
+            usize::try_from(key.val_idx).map_err(|_| FrostError::InvalidRound1P2PValidatorIndex)?;
+        if val_idx >= num_validators {
             return Err(FrostError::InvalidRound1P2PValidatorIndex);
         }
         if !seen_validators.insert(key.val_idx) {
@@ -1591,7 +1617,7 @@ mod tests {
                 peer_id,
                 &share_idx_by_peer,
                 1,
-                2,
+                1,
                 &cast(
                     MsgKey {
                         val_idx: 0,
@@ -1608,7 +1634,7 @@ mod tests {
                 peer_id,
                 &share_idx_by_peer,
                 1,
-                2,
+                1,
                 &cast(
                     MsgKey {
                         val_idx: 0,
@@ -1626,7 +1652,7 @@ mod tests {
                 unknown_peer,
                 &share_idx_by_peer,
                 1,
-                2,
+                1,
                 &cast(
                     MsgKey {
                         val_idx: 0,
@@ -1643,7 +1669,7 @@ mod tests {
                 peer_id,
                 &share_idx_by_peer,
                 1,
-                2,
+                1,
                 &cast(
                     MsgKey {
                         val_idx: 0,
@@ -1660,10 +1686,10 @@ mod tests {
                 peer_id,
                 &share_idx_by_peer,
                 1,
-                2,
+                1,
                 &cast(
                     MsgKey {
-                        val_idx: 2,
+                        val_idx: 1,
                         source_id: 1,
                         target_id: 0,
                     },
@@ -1677,7 +1703,7 @@ mod tests {
                 peer_id,
                 &share_idx_by_peer,
                 1,
-                2,
+                1,
                 &cast(
                     MsgKey {
                         val_idx: 0,
@@ -1689,6 +1715,57 @@ mod tests {
             ),
             1,
             0,
+        );
+        assert_invalid_signature_count(
+            validate_round1_casts(
+                peer_id,
+                &share_idx_by_peer,
+                1,
+                2,
+                &cast(
+                    MsgKey {
+                        val_idx: 0,
+                        source_id: 1,
+                        target_id: 0,
+                    },
+                    vec![Bytes::new()],
+                ),
+            ),
+            2,
+            1,
+        );
+        assert_invalid_peer_index(
+            validate_round1_casts(
+                peer_id,
+                &share_idx_by_peer,
+                1,
+                2,
+                &FrostRound1Casts {
+                    casts: vec![
+                        FrostRound1Cast {
+                            key: Some(key_to_proto(MsgKey {
+                                val_idx: 0,
+                                source_id: 1,
+                                target_id: 0,
+                            })),
+                            wi: Bytes::new(),
+                            ci: Bytes::new(),
+                            commitments: vec![Bytes::new()],
+                        },
+                        FrostRound1Cast {
+                            key: Some(key_to_proto(MsgKey {
+                                val_idx: 0,
+                                source_id: 1,
+                                target_id: 0,
+                            })),
+                            wi: Bytes::new(),
+                            ci: Bytes::new(),
+                            commitments: vec![Bytes::new()],
+                        },
+                    ],
+                },
+            ),
+            peer_id,
         );
     }
 
@@ -1708,7 +1785,7 @@ mod tests {
             validate_round2_casts(
                 peer_id,
                 &share_idx_by_peer,
-                2,
+                1,
                 &cast(MsgKey {
                     val_idx: 0,
                     source_id: 1,
@@ -1721,7 +1798,7 @@ mod tests {
             validate_round2_casts(
                 peer_id,
                 &share_idx_by_peer,
-                2,
+                1,
                 &cast(MsgKey {
                     val_idx: 0,
                     source_id: 2,
@@ -1735,7 +1812,7 @@ mod tests {
             validate_round2_casts(
                 unknown_peer,
                 &share_idx_by_peer,
-                2,
+                1,
                 &cast(MsgKey {
                     val_idx: 0,
                     source_id: 1,
@@ -1748,7 +1825,7 @@ mod tests {
             validate_round2_casts(
                 peer_id,
                 &share_idx_by_peer,
-                2,
+                1,
                 &cast(MsgKey {
                     val_idx: 0,
                     source_id: 1,
@@ -1761,12 +1838,56 @@ mod tests {
             validate_round2_casts(
                 peer_id,
                 &share_idx_by_peer,
-                2,
+                1,
                 &cast(MsgKey {
-                    val_idx: 2,
+                    val_idx: 1,
                     source_id: 1,
                     target_id: 0,
                 }),
+            ),
+            peer_id,
+        );
+        assert_invalid_signature_count(
+            validate_round2_casts(
+                peer_id,
+                &share_idx_by_peer,
+                2,
+                &cast(MsgKey {
+                    val_idx: 0,
+                    source_id: 1,
+                    target_id: 0,
+                }),
+            ),
+            2,
+            1,
+        );
+        assert_invalid_peer_index(
+            validate_round2_casts(
+                peer_id,
+                &share_idx_by_peer,
+                2,
+                &FrostRound2Casts {
+                    casts: vec![
+                        FrostRound2Cast {
+                            key: Some(key_to_proto(MsgKey {
+                                val_idx: 0,
+                                source_id: 1,
+                                target_id: 0,
+                            })),
+                            verification_key: Bytes::new(),
+                            vk_share: Bytes::new(),
+                        },
+                        FrostRound2Cast {
+                            key: Some(key_to_proto(MsgKey {
+                                val_idx: 0,
+                                source_id: 1,
+                                target_id: 0,
+                            })),
+                            verification_key: Bytes::new(),
+                            vk_share: Bytes::new(),
+                        },
+                    ],
+                },
             ),
             peer_id,
         );

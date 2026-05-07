@@ -84,9 +84,6 @@ pub(crate) enum FrostError {
     /// Too many round-2 broadcast messages were collected.
     #[error("too many round 2 casts messages")]
     TooManyRound2CastsMessages,
-    /// The number of validators cannot be represented locally.
-    #[error("invalid number of validators")]
-    InvalidNumberOfValidators,
     /// A FROST message key was missing.
     #[error("frost msg key cannot be nil")]
     MissingMsgKey,
