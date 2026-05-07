@@ -971,10 +971,19 @@ async fn register_round1_bcast(
 ) -> Result<(), FrostError> {
     let dedup = Arc::new(Mutex::new(HashSet::<PeerId>::new()));
     let share_idx_by_peer = Arc::new(share_idx_by_peer);
+    let check_share_idx_by_peer = share_idx_by_peer.clone();
     bcast_comp
         .register_message::<FrostRound1Casts>(
             ROUND1_CAST_ID,
-            Box::new(|_, _| Ok(())),
+            Box::new(move |peer_id, msg| {
+                validate_round1_casts(
+                    peer_id,
+                    &check_share_idx_by_peer,
+                    threshold,
+                    num_validators,
+                    msg,
+                )
+            }),
             Box::new(move |peer_id, _, msg| {
                 let tx = tx.clone();
                 let dedup = dedup.clone();
@@ -1012,10 +1021,13 @@ async fn register_round2_bcast(
 ) -> Result<(), FrostError> {
     let dedup = Arc::new(Mutex::new(HashSet::<PeerId>::new()));
     let share_idx_by_peer = Arc::new(share_idx_by_peer);
+    let check_share_idx_by_peer = share_idx_by_peer.clone();
     bcast_comp
         .register_message::<FrostRound2Casts>(
             ROUND2_CAST_ID,
-            Box::new(|_, _| Ok(())),
+            Box::new(move |peer_id, msg| {
+                validate_round2_casts(peer_id, &check_share_idx_by_peer, num_validators, msg)
+            }),
             Box::new(move |peer_id, _, msg| {
                 let tx = tx.clone();
                 let dedup = dedup.clone();
@@ -1514,9 +1526,8 @@ fn bytes_to_array<const N: usize>(
 
 #[cfg(test)]
 mod tests {
-    use prost::Name;
-
     use super::*;
+    use prost::Name;
 
     #[test]
     fn constants_match_reference() {
@@ -1891,6 +1902,47 @@ mod tests {
             ),
             peer_id,
         );
+    }
+
+    #[test]
+    fn bcast_check_rejects_invalid_round_casts_before_signing() {
+        let peer_id = PeerId::random();
+        let share_idx_by_peer = Arc::new(HashMap::from([(peer_id, 1)]));
+        let round1_check_share_idx_by_peer = share_idx_by_peer.clone();
+        let round1_check: bcast::CheckFn<FrostRound1Casts> = Box::new(move |peer_id, msg| {
+            validate_round1_casts(peer_id, &round1_check_share_idx_by_peer, 1, 2, msg)
+        });
+        let round2_check_share_idx_by_peer = share_idx_by_peer.clone();
+        let round2_check: bcast::CheckFn<FrostRound2Casts> = Box::new(move |peer_id, msg| {
+            validate_round2_casts(peer_id, &round2_check_share_idx_by_peer, 2, msg)
+        });
+
+        let invalid_round1 = FrostRound1Casts {
+            casts: vec![FrostRound1Cast {
+                key: Some(key_to_proto(MsgKey {
+                    val_idx: 0,
+                    source_id: 1,
+                    target_id: 0,
+                })),
+                wi: Bytes::new(),
+                ci: Bytes::new(),
+                commitments: vec![Bytes::new()],
+            }],
+        };
+        let invalid_round2 = FrostRound2Casts {
+            casts: vec![FrostRound2Cast {
+                key: Some(key_to_proto(MsgKey {
+                    val_idx: 0,
+                    source_id: 1,
+                    target_id: 0,
+                })),
+                verification_key: Bytes::new(),
+                vk_share: Bytes::new(),
+            }],
+        };
+
+        assert_invalid_signature_count(round1_check(peer_id, &invalid_round1), 2, 1);
+        assert_invalid_signature_count(round2_check(peer_id, &invalid_round2), 2, 1);
     }
 
     #[test]
