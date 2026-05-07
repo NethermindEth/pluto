@@ -39,15 +39,10 @@ fn test_qbft(test: Test) {
     let clock = FakeClock::new(start_time);
 
     let cts = CancellationTokenSource::new();
-    let mut receives = HashMap::<
-        i64,
-        (
-            mpmc::Sender<Msg<i64, i64, i64>>,
-            mpmc::Receiver<Msg<i64, i64, i64>>,
-        ),
-    >::new();
-    let (broadcast_tx, broadcast_rx) = mpmc::unbounded::<Msg<i64, i64, i64>>();
-    let (result_chan_tx, result_chan_rx) = mpmc::bounded::<Vec<Msg<i64, i64, i64>>>(N);
+    let mut receives =
+        HashMap::<i64, (mpmc::Sender<Msg<I64Qbft>>, mpmc::Receiver<Msg<I64Qbft>>)>::new();
+    let (broadcast_tx, broadcast_rx) = mpmc::unbounded::<Msg<I64Qbft>>();
+    let (result_chan_tx, result_chan_rx) = mpmc::bounded::<Vec<Msg<I64Qbft>>>(N);
     let (run_chan_tx, run_chan_rx) = mpmc::bounded::<Result<()>>(N);
 
     let is_leader = Box::new(make_is_leader(N as i64));
@@ -115,7 +110,7 @@ fn test_qbft(test: Test) {
 
     thread::scope(|s| {
         for i in 1..=N as i64 {
-            let (sender, receiver) = mpmc::bounded::<Msg<i64, i64, i64>>(1000);
+            let (sender, receiver) = mpmc::bounded::<Msg<I64Qbft>>(1000);
             let broadcast_tx = broadcast_tx.clone();
             receives.insert(i, (sender.clone(), receiver.clone()));
 
@@ -226,7 +221,7 @@ fn test_qbft(test: Test) {
             });
         }
 
-        let mut results = HashMap::<i64, Msg<i64, i64, i64>>::new();
+        let mut results = HashMap::<i64, Msg<I64Qbft>>::new();
         let mut count = 0;
         let mut decided = false;
         let mut done = 0;
@@ -331,8 +326,8 @@ fn new_msg(
     value_source: i64,
     pr: i64,
     pv: i64,
-    justify: Option<&Vec<Msg<i64, i64, i64>>>,
-) -> Msg<i64, i64, i64> {
+    justify: Option<&Vec<Msg<I64Qbft>>>,
+) -> Msg<I64Qbft> {
     let msgs = match justify {
         None => vec![],
         Some(justify) => justify
@@ -365,8 +360,8 @@ fn new_msg(
 // Delays the message broadcast by between 1x and 2x jitter_ms and drops
 // messages.
 fn bcast(
-    broadcast: mpmc::Sender<Msg<i64, i64, i64>>,
-    msg: Msg<i64, i64, i64>,
+    broadcast: mpmc::Sender<Msg<I64Qbft>>,
+    msg: Msg<I64Qbft>,
     jitter_ms: i32,
     clock: FakeClock,
 ) {
@@ -406,7 +401,7 @@ struct TestMsg {
     justify: Option<Vec<TestMsg>>,
 }
 
-impl SomeMsg<i64, i64, i64> for TestMsg {
+impl SomeMsg<I64Qbft> for TestMsg {
     fn type_(&self) -> MessageType {
         self.msg_type
     }
@@ -439,12 +434,12 @@ impl SomeMsg<i64, i64, i64> for TestMsg {
         self.pv
     }
 
-    fn justification(&self) -> Vec<Msg<i64, i64, i64>> {
+    fn justification(&self) -> Vec<Msg<I64Qbft>> {
         match self.justify {
             None => vec![],
             Some(ref j) => j
                 .iter()
-                .map(|j| Arc::new(j.clone()) as Msg<i64, i64, i64>)
+                .map(|j| Arc::new(j.clone()) as Msg<I64Qbft>)
                 .collect(),
         }
     }
@@ -697,7 +692,7 @@ fn drop_30_percent_const() {
     });
 }
 
-fn noop_definition() -> Definition<i64, i64, i64> {
+fn noop_definition() -> Definition<I64Qbft> {
     Definition {
         is_leader: Box::new(|_, _, _| false),
         new_timer: Box::new(|_| (mpmc::never(), Box::new(|| {}))),
@@ -711,7 +706,7 @@ fn noop_definition() -> Definition<i64, i64, i64> {
     }
 }
 
-fn noop_transport() -> Transport<i64, i64, i64> {
+fn noop_transport() -> Transport<I64Qbft> {
     Transport {
         broadcast: Box::new(|_, _, _, _, _, _, _, _, _| Ok(())),
         receive: mpmc::never(),
@@ -727,7 +722,7 @@ fn duplicate_pre_prepare_rules() {
     const NO_LEADER: i64 = 1;
     const LEADER: i64 = 2;
 
-    let new_preprepare = |round: i64| -> Msg<i64, i64, i64> {
+    let new_preprepare = |round: i64| -> Msg<I64Qbft> {
         new_msg(
             MSG_PRE_PREPARE,
             0,
@@ -764,7 +759,7 @@ fn duplicate_pre_prepare_rules() {
         _ = return_err.send(Ok(()));
     });
 
-    let (r_chan_tx, r_chan_rx) = mpmc::bounded::<Msg<i64, i64, i64>>(2);
+    let (r_chan_tx, r_chan_rx) = mpmc::bounded::<Msg<I64Qbft>>(2);
     r_chan_tx.send(new_preprepare(1)).expect(WRITE_CHAN_ERR);
     r_chan_tx.send(new_preprepare(2)).expect(WRITE_CHAN_ERR);
 
