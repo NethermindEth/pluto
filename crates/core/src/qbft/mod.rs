@@ -28,6 +28,7 @@ use std::{
     collections::{HashMap, HashSet},
     fmt::{self, Display},
     hash::Hash,
+    marker::PhantomData,
     sync, thread, time,
 };
 
@@ -45,6 +46,58 @@ impl QbftTypes for I64Qbft {
     type Compare = i64;
     type Instance = i64;
     type Value = i64;
+}
+
+pub trait Decider<T>: Send + Sync
+where
+    T: QbftTypes,
+{
+    fn decide(
+        &self,
+        ct: &CancellationToken,
+        instance: &T::Instance,
+        value: &T::Value,
+        qcommit: &Vec<Msg<T>>,
+    );
+}
+
+pub struct FnDecider<T>
+where
+    T: QbftTypes,
+{
+    decide: Box<dyn Fn(&CancellationToken, &T::Instance, &T::Value, &Vec<Msg<T>>) + Send + Sync>,
+    _marker: PhantomData<fn() -> T>,
+}
+
+impl<T> FnDecider<T>
+where
+    T: QbftTypes,
+{
+    pub fn new(
+        decide: Box<
+            dyn Fn(&CancellationToken, &T::Instance, &T::Value, &Vec<Msg<T>>) + Send + Sync,
+        >,
+    ) -> Self {
+        Self {
+            decide,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T> Decider<T> for FnDecider<T>
+where
+    T: QbftTypes,
+{
+    fn decide(
+        &self,
+        ct: &CancellationToken,
+        instance: &T::Instance,
+        value: &T::Value,
+        qcommit: &Vec<Msg<T>>,
+    ) {
+        (self.decide)(ct, instance, value, qcommit);
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -136,15 +189,7 @@ where
     >,
 
     /// Called when consensus has been reached on a value.
-    pub decide: Box<
-        dyn Fn(
-                /* ct */ &CancellationToken,
-                /* instance */ &T::Instance,
-                /* value */ &T::Value,
-                /* qcommit */ &Vec<Msg<T>>,
-            ) + Send
-            + Sync,
-    >,
+    pub decide: Box<dyn Decider<T>>,
 
     /// Allows debug logging of triggered upon rules on message receipt.
     /// It includes the rule that triggered it and all received round messages.
@@ -549,7 +594,7 @@ where
 
                         let justification = q_commit.as_ref()
                             .expect("Rules `UPON_QUORUM_COMMITS` and `UPON_JUSTIFIED_DECIDED` always include a justification");
-                        (d.decide)(ct, instance, &msg.value(), justification);
+                        d.decide.decide(ct, instance, &msg.value(), justification);
                     }
                     UPON_F_PLUS1_ROUND_CHANGES => {
                         // Algorithm 3:5
