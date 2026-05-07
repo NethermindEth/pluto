@@ -287,13 +287,37 @@ where
     }
 }
 
+pub trait TimerStopper: Send + Sync {
+    fn stop(&self);
+}
+
+pub struct TimerStopperFn {
+    stop: Box<dyn Fn() + Send + Sync>,
+}
+
+impl TimerStopperFn {
+    pub fn new<F>(stop: F) -> Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        Self {
+            stop: Box::new(stop),
+        }
+    }
+}
+
+impl TimerStopper for TimerStopperFn {
+    fn stop(&self) {
+        (self.stop)();
+    }
+}
+
 pub trait TimerFactory: Send + Sync {
-    fn new_timer(&self, round: i64)
-    -> (mpmc::Receiver<time::Instant>, Box<dyn Fn() + Send + Sync>);
+    fn new_timer(&self, round: i64) -> (mpmc::Receiver<time::Instant>, Box<dyn TimerStopper>);
 }
 
 type NewTimerFn =
-    Box<dyn Fn(i64) -> (mpmc::Receiver<time::Instant>, Box<dyn Fn() + Send + Sync>) + Send + Sync>;
+    Box<dyn Fn(i64) -> (mpmc::Receiver<time::Instant>, Box<dyn TimerStopper>) + Send + Sync>;
 
 pub struct TimerFactoryFn {
     new_timer: NewTimerFn,
@@ -302,7 +326,7 @@ pub struct TimerFactoryFn {
 impl TimerFactoryFn {
     pub fn new<F>(new_timer: F) -> Self
     where
-        F: Fn(i64) -> (mpmc::Receiver<time::Instant>, Box<dyn Fn() + Send + Sync>)
+        F: Fn(i64) -> (mpmc::Receiver<time::Instant>, Box<dyn TimerStopper>)
             + Send
             + Sync
             + 'static,
@@ -314,10 +338,7 @@ impl TimerFactoryFn {
 }
 
 impl TimerFactory for TimerFactoryFn {
-    fn new_timer(
-        &self,
-        round: i64,
-    ) -> (mpmc::Receiver<time::Instant>, Box<dyn Fn() + Send + Sync>) {
+    fn new_timer(&self, round: i64) -> (mpmc::Receiver<time::Instant>, Box<dyn TimerStopper>) {
         (self.new_timer)(round)
     }
 }
@@ -552,7 +573,7 @@ where
     let buffer: RefCell<HashMap<i64, Vec<Msg<T>>>> = RefCell::new(HashMap::new());
     let dedup_rules: RefCell<HashMap<DedupKey, bool>> = RefCell::new(HashMap::new());
     let mut timer_chan: mpmc::Receiver<time::Instant>;
-    let mut stop_timer: Box<dyn Fn()>;
+    let mut stop_timer: Box<dyn TimerStopper>;
 
     // === Helpers ==
 
@@ -706,7 +727,7 @@ where
                     UPON_JUSTIFIED_PRE_PREPARE => {
                         change_round(msg.round(), rule);
 
-                        stop_timer();
+                        stop_timer.stop();
                         (timer_chan, stop_timer) = d.new_timer.new_timer(round.get());
 
                         let compare_result = compare(
@@ -734,7 +755,7 @@ where
                                         // this happens, we trigger round change.
                                         // Algorithm 3:1
                                         change_round(round.get() + 1, UPON_ROUND_TIMEOUT);
-                                        stop_timer();
+                                        stop_timer.stop();
 
                                         (timer_chan, stop_timer) = d.new_timer.new_timer(round.get());
 
@@ -758,7 +779,7 @@ where
                         // Algorithm 2:8
                         change_round(msg.round(), rule);
                         q_commit = justification;
-                        stop_timer();
+                        stop_timer.stop();
 
                         timer_chan = mpmc::never();
 
@@ -779,7 +800,7 @@ where
                             rule,
                         );
 
-                        stop_timer();
+                        stop_timer.stop();
                         (timer_chan, stop_timer) = d.new_timer.new_timer(round.get());
 
                         broadcast_round_change()?;
@@ -809,7 +830,7 @@ where
                 result?;
 
                 change_round(round.get() + 1, UPON_ROUND_TIMEOUT);
-                stop_timer();
+                stop_timer.stop();
 
                 (timer_chan, stop_timer) = d.new_timer.new_timer(round.get());
 

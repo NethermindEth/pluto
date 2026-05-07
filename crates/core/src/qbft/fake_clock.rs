@@ -1,3 +1,4 @@
+use super::{TimerStopper, TimerStopperFn};
 use crossbeam::channel as mpmc;
 use std::{
     collections::HashMap,
@@ -33,10 +34,7 @@ impl FakeClock {
     pub fn new_timer(
         &self,
         duration: Duration,
-    ) -> (
-        mpmc::Receiver<Instant>,
-        Box<dyn Fn() + Send + Sync + 'static>,
-    ) {
+    ) -> (mpmc::Receiver<Instant>, Box<dyn TimerStopper>) {
         let (tx, rx) = mpmc::bounded::<Instant>(1);
 
         let client_id = {
@@ -51,10 +49,10 @@ impl FakeClock {
         };
 
         let inner = Arc::clone(&self.inner);
-        let cancel = Box::new(move || {
+        let cancel = Box::new(TimerStopperFn::new(move || {
             let mut inner = inner.lock().unwrap();
             inner.clients.remove(&client_id);
-        });
+        }));
 
         (rx, cancel)
     }

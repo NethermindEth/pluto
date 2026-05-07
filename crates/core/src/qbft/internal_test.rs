@@ -203,7 +203,7 @@ fn test_qbft(test: Test) {
                         _ = delay_ch.recv();
                         _ = v_chan_tx.send(i);
 
-                        cancel();
+                        cancel.stop();
                     });
                 } else if decide_round != 1 {
                     s.spawn(move || {
@@ -703,7 +703,9 @@ fn drop_30_percent_const() {
 fn noop_definition() -> Definition<I64Qbft> {
     Definition {
         is_leader: Box::new(LeaderSelectorFn::new(|_, _, _| false)),
-        new_timer: Box::new(TimerFactoryFn::new(|_| (mpmc::never(), Box::new(|| {})))),
+        new_timer: Box::new(TimerFactoryFn::new(|_| {
+            (mpmc::never(), Box::new(TimerStopperFn::new(|| {})))
+        })),
         decide: Box::new(DeciderFn::new(|_, _, _, _| {})),
         compare: Box::new(|_, _, _, _, _, _| {}),
         nodes: 0,
