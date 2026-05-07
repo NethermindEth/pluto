@@ -21,7 +21,7 @@ use pluto_k1util::load as load_key;
 use pluto_p2p::{
     behaviours::pluto::PlutoBehaviourEvent,
     bootnode::new_relays,
-    config::P2PConfig,
+    config::{DEFAULT_RELAYS, P2PConfig},
     gater::ConnGater,
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
@@ -139,11 +139,7 @@ pub struct TestPeersArgs {
     #[arg(
         long = "p2p-relays",
         value_delimiter = ',',
-        default_values = &[
-            "https://0.relay.obol.tech",
-            "https://2.relay.obol.dev",
-            "https://1.relay.obol.tech"
-        ]
+        default_values = DEFAULT_RELAYS
     )]
     pub p2p_relays: Vec<String>,
 
@@ -215,11 +211,11 @@ pub async fn run(
 
     tracing::info!("Starting pluto peers and relays test");
 
-    let timeout_ct = ct.clone();
-    let timeout = args.test_config.timeout;
+    let timeout_ct = ct.child_token();
+    let timeout_cancel = timeout_ct.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(timeout).await;
-        timeout_ct.cancel();
+        tokio::time::sleep(args.test_config.timeout).await;
+        timeout_cancel.cancel();
     });
 
     let start_time = tokio::time::Instant::now();
@@ -267,9 +263,8 @@ pub async fn run(
         disable_reuse_port: args.p2p_disable_reuseport,
     };
 
-    let cancel = ct.child_token();
     let (node, relay_peers) = setup_p2p(
-        cancel.clone(),
+        timeout_ct.clone(),
         private_key,
         p2p_cfg,
         &args.p2p_relays,
@@ -282,7 +277,6 @@ pub async fn run(
     let tcp_addrs = args.p2p_tcp_addrs.clone();
     let self_tests_clone = self_tests.clone();
 
-    let self_cancel = cancel.clone();
     let only_self_tests = peer_tests.is_empty();
     let ((peer_results, mut node), self_results, relay_results) = tokio::join!(
         run_peer_event_loop(
@@ -293,10 +287,15 @@ pub async fn run(
             &relay_peers,
             &enr_strings,
             &args,
-            cancel.clone(),
+            timeout_ct.clone(),
         ),
-        run_self_tests_in_new_thread(self_cancel, tcp_addrs, self_tests_clone, only_self_tests,),
-        run_relay_http_tests(&args.p2p_relays, &relay_tests, ct.child_token()),
+        run_self_tests_in_new_task(
+            timeout_ct.clone(),
+            tcp_addrs,
+            self_tests_clone,
+            only_self_tests,
+        ),
+        run_relay_http_tests(&args.p2p_relays, &relay_tests, timeout_ct.clone()),
     );
     let self_results = self_results.expect("self-test task should not panic");
     let mut all_targets: HashMap<String, Vec<TestResult>> = HashMap::new();
@@ -322,7 +321,7 @@ pub async fn run(
     Ok(res)
 }
 
-fn run_self_tests_in_new_thread(
+fn run_self_tests_in_new_task(
     cancel: CancellationToken,
     tcp_addrs: Vec<String>,
     self_tests: Vec<TestCaseName>,
@@ -647,7 +646,7 @@ async fn run_peer_event_loop(
         .filter(|(p, _)| p.id != self_peer_id)
         .collect();
 
-    if queued_tests.is_empty() && target_peers.is_empty() {
+    if queued_tests.is_empty() {
         return (HashMap::new(), node);
     }
 
@@ -927,6 +926,8 @@ fn build_peer_results(
                 }
             }
             "PingLoad" => {
+                // Gap vs charon: charon issues on-demand pings during load; libp2p drives
+                // pings on its own keepalive schedule so we can only filter existing RTTs.
                 let r = TestResult::new("PingLoad");
                 let load_rtts: Vec<Duration> = if let Some(ct) = state.connect_time {
                     state
@@ -1048,7 +1049,6 @@ async fn setup_p2p(
     let p2p_context = P2PContext::new(all_peer_ids.clone());
     let gater = ConnGater::new_conn_gater(all_peer_ids, relay_peers.clone());
 
-    let relay_peers_for_reservation = relay_peers.clone();
     let node: Node<TestBehaviour> = Node::new(
         p2p_cfg,
         private_key,
@@ -1058,7 +1058,7 @@ async fn setup_p2p(
         |builder, _keypair, relay_client| {
             builder.with_gater(gater).with_inner(TestBehaviour {
                 relay: relay_client,
-                reservation: MutableRelayReservation::new(relay_peers_for_reservation),
+                reservation: MutableRelayReservation::new(relay_peers.clone()),
             })
         },
     )?;
