@@ -515,15 +515,15 @@ impl FrostP2PHandle {
     }
 
     fn take_inbound_rx(&mut self) -> Result<mpsc::Receiver<(PeerId, FrostRound1P2p)>, FrostError> {
-        self.inbound_rx.take().ok_or(FrostError::InternalState(
-            "frost p2p inbound receiver already taken",
-        ))
+        self.inbound_rx
+            .take()
+            .ok_or(FrostError::P2PInboundReceiverAlreadyTaken)
     }
 
     fn take_bcast_event_rx(&mut self) -> Result<mpsc::UnboundedReceiver<bcast::Event>, FrostError> {
-        self.bcast_event_rx.take().ok_or(FrostError::InternalState(
-            "frost bcast event receiver already taken",
-        ))
+        self.bcast_event_rx
+            .take()
+            .ok_or(FrostError::BcastEventReceiverAlreadyTaken)
     }
 }
 
@@ -986,9 +986,7 @@ async fn register_round1_bcast(
                 let share_idx_by_peer = share_idx_by_peer.clone();
                 Box::pin(async move {
                     {
-                        let mut dedup = dedup
-                            .lock()
-                            .map_err(|_| bcast::Error::InvalidMessage("dedup mutex poisoned"))?;
+                        let mut dedup = dedup.lock().map_err(|_| bcast::Error::BehaviourClosed)?;
                         if !dedup.insert(peer_id) {
                             debug!(%peer_id, "ignoring duplicate round 1 message");
                             return Ok(());
@@ -1029,9 +1027,7 @@ async fn register_round2_bcast(
                 let share_idx_by_peer = share_idx_by_peer.clone();
                 Box::pin(async move {
                     {
-                        let mut dedup = dedup
-                            .lock()
-                            .map_err(|_| bcast::Error::InvalidMessage("dedup mutex poisoned"))?;
+                        let mut dedup = dedup.lock().map_err(|_| bcast::Error::BehaviourClosed)?;
                         if !dedup.insert(peer_id) {
                             debug!(%peer_id, "ignoring duplicate round 2 message");
                             return Ok(());
@@ -1057,30 +1053,25 @@ fn validate_round1_casts(
 ) -> Result<(), bcast::Error> {
     let source_id = *share_idx_by_peer
         .get(&peer_id)
-        .ok_or(bcast::Error::InvalidMessage(
-            "invalid round 1 cast source ID",
-        ))?;
+        .ok_or(bcast::Error::InvalidPeerIndex(peer_id))?;
     for cast in &msg.casts {
-        let key = cast.key.as_ref().ok_or(bcast::Error::MissingField("key"))?;
+        let Some(key) = cast.key.as_ref() else {
+            return Err(bcast::Error::MissingField("key"));
+        };
         if key.source_id != source_id {
-            return Err(bcast::Error::InvalidMessage(
-                "invalid round 1 cast source ID",
-            ));
+            return Err(bcast::Error::InvalidPeerIndex(peer_id));
         }
         if key.target_id != 0 {
-            return Err(bcast::Error::InvalidMessage(
-                "invalid round 1 cast target ID",
-            ));
+            return Err(bcast::Error::InvalidPeerIndex(peer_id));
         }
         if key.val_idx >= num_validators {
-            return Err(bcast::Error::InvalidMessage(
-                "invalid round 1 cast validator index",
-            ));
+            return Err(bcast::Error::InvalidPeerIndex(peer_id));
         }
         if cast.commitments.len() != threshold {
-            return Err(bcast::Error::InvalidMessage(
-                "invalid amount of commitments in round 1",
-            ));
+            return Err(bcast::Error::InvalidSignatureCount {
+                expected: threshold,
+                actual: cast.commitments.len(),
+            });
         }
     }
 
@@ -1095,25 +1086,19 @@ fn validate_round2_casts(
 ) -> Result<(), bcast::Error> {
     let source_id = *share_idx_by_peer
         .get(&peer_id)
-        .ok_or(bcast::Error::InvalidMessage(
-            "invalid round 2 cast source ID",
-        ))?;
+        .ok_or(bcast::Error::InvalidPeerIndex(peer_id))?;
     for cast in &msg.casts {
-        let key = cast.key.as_ref().ok_or(bcast::Error::MissingField("key"))?;
+        let Some(key) = cast.key.as_ref() else {
+            return Err(bcast::Error::MissingField("key"));
+        };
         if key.source_id != source_id {
-            return Err(bcast::Error::InvalidMessage(
-                "invalid round 2 cast source ID",
-            ));
+            return Err(bcast::Error::InvalidPeerIndex(peer_id));
         }
         if key.target_id != 0 {
-            return Err(bcast::Error::InvalidMessage(
-                "invalid round 2 cast target ID",
-            ));
+            return Err(bcast::Error::InvalidPeerIndex(peer_id));
         }
         if key.val_idx >= num_validators {
-            return Err(bcast::Error::InvalidMessage(
-                "invalid round 2 cast validator index",
-            ));
+            return Err(bcast::Error::InvalidPeerIndex(peer_id));
         }
     }
 
@@ -1138,9 +1123,7 @@ impl FTransport for FrostP2P {
             .await?;
         if let Err(error) = self.round1_casts_tx.send(casts_msg) {
             error!(%error, "frost round 1 casts receiver dropped before self-delivery");
-            return Err(FrostError::InternalState(
-                "frost round 1 casts receiver dropped before self-delivery",
-            ));
+            return Err(FrostError::Round1CastsReceiverDropped);
         }
 
         let p2p_msgs = self.build_round1_p2p_by_peer(&shares)?;
@@ -1168,14 +1151,14 @@ impl FTransport for FrostP2P {
                     let msg = msg.ok_or(FrostError::ChannelClosed("round 1 casts channel"))?;
                     cast_msgs.push(msg);
                     if cast_msgs.len() > self.num_peers {
-                        return Err(FrostError::InvalidMessage("too many round 1 casts messages"));
+                        return Err(FrostError::TooManyRound1CastsMessages);
                     }
                 }
                 msg = self.round1_p2p_rx.recv() => {
                     let (_peer_id, msg) = msg.ok_or(FrostError::ChannelClosed("round 1 p2p channel"))?;
                     p2p_msgs.push(msg);
                     if p2p_msgs.len() > self.num_peers.saturating_sub(1) {
-                        return Err(FrostError::InvalidMessage("too many round 1 p2p messages"));
+                        return Err(FrostError::TooManyRound1P2PMessages);
                     }
                 }
             }
@@ -1201,9 +1184,7 @@ impl FTransport for FrostP2P {
             .await?;
         if let Err(error) = self.round2_casts_tx.send(casts_msg) {
             error!(%error, "frost round 2 casts receiver dropped before self-delivery");
-            return Err(FrostError::InternalState(
-                "frost round 2 casts receiver dropped before self-delivery",
-            ));
+            return Err(FrostError::Round2CastsReceiverDropped);
         }
 
         let mut cast_msgs = Vec::with_capacity(self.num_peers);
@@ -1216,7 +1197,7 @@ impl FTransport for FrostP2P {
                     let msg = msg.ok_or(FrostError::ChannelClosed("round 2 casts channel"))?;
                     cast_msgs.push(msg);
                     if cast_msgs.len() > self.num_peers {
-                        return Err(FrostError::InvalidMessage("too many round 2 casts messages"));
+                        return Err(FrostError::TooManyRound2CastsMessages);
                     }
                 }
             }
@@ -1272,13 +1253,12 @@ impl FrostP2P {
         &self,
         shares: &HashMap<MsgKey, ShamirShare>,
     ) -> Result<HashMap<PeerId, FrostRound1P2p>, FrostError> {
-        let mut p2p_msgs = HashMap::<PeerId, FrostRound1P2p>::new();
+        let mut p2p_msgs =
+            HashMap::<PeerId, FrostRound1P2p>::with_capacity(self.num_peers.saturating_sub(1));
 
         for (key, share) in shares {
             if key.target_id == self.local_share_idx {
-                return Err(FrostError::InternalState(
-                    "bug: unexpected p2p message to self",
-                ));
+                return Err(FrostError::UnexpectedP2PMessageToSelf);
             }
             let peer_id = *self
                 .peers_by_share_idx
@@ -1312,37 +1292,27 @@ fn validate_round1_p2p(
 ) -> Result<(), FrostError> {
     let source_id = *share_idx_by_peer
         .get(&peer_id)
-        .ok_or(FrostError::InvalidMessage("invalid round 1 p2p source ID"))?;
+        .ok_or(FrostError::InvalidRound1P2PSourceId)?;
     // A direct round-1 P2P message contains this peer's share for every validator.
     if msg.shares.len()
-        != usize::try_from(num_validators)
-            .map_err(|_| FrostError::InvalidMessage("invalid number of validators"))?
+        != usize::try_from(num_validators).map_err(|_| FrostError::InvalidNumberOfValidators)?
     {
-        return Err(FrostError::InvalidMessage(
-            "invalid round 1 p2p shares count",
-        ));
+        return Err(FrostError::InvalidRound1P2PSharesCount);
     }
     let mut seen_validators = HashSet::with_capacity(msg.shares.len());
     for share in &msg.shares {
-        let key = share
-            .key
-            .as_ref()
-            .ok_or(FrostError::InvalidMessage("frost msg key cannot be nil"))?;
+        let key = share.key.as_ref().ok_or(FrostError::MissingMsgKey)?;
         if key.source_id != source_id {
-            return Err(FrostError::InvalidMessage("invalid round 1 p2p source ID"));
+            return Err(FrostError::InvalidRound1P2PSourceId);
         }
         if key.target_id != local_share_idx {
-            return Err(FrostError::InvalidMessage("invalid round 1 p2p target ID"));
+            return Err(FrostError::InvalidRound1P2PTargetId);
         }
         if key.val_idx >= num_validators {
-            return Err(FrostError::InvalidMessage(
-                "invalid round 1 p2p validator index",
-            ));
+            return Err(FrostError::InvalidRound1P2PValidatorIndex);
         }
         if !seen_validators.insert(key.val_idx) {
-            return Err(FrostError::InvalidMessage(
-                "duplicate round 1 p2p validator index",
-            ));
+            return Err(FrostError::DuplicateRound1P2PValidatorIndex);
         }
     }
 
@@ -1358,7 +1328,7 @@ fn key_to_proto(key: MsgKey) -> FrostMsgKey {
 }
 
 fn key_from_proto(key: Option<&FrostMsgKey>) -> Result<MsgKey, FrostError> {
-    let key = key.ok_or(FrostError::InvalidMessage("frost msg key cannot be nil"))?;
+    let key = key.ok_or(FrostError::MissingMsgKey)?;
     Ok(MsgKey {
         val_idx: key.val_idx,
         source_id: key.source_id,
@@ -1380,12 +1350,12 @@ fn round1_cast_to_proto(key: MsgKey, cast: &Round1Bcast) -> FrostRound1Cast {
 }
 
 fn round1_cast_from_proto(cast: &FrostRound1Cast) -> Result<(MsgKey, Round1Bcast), FrostError> {
-    let wi = bytes_to_scalar("decode wi scalar", &cast.wi)?;
-    let ci = bytes_to_scalar("decode c1 scalar", &cast.ci)?;
+    let wi = bytes_to_scalar(|| FrostError::DecodeWiScalar, &cast.wi)?;
+    let ci = bytes_to_scalar(|| FrostError::DecodeC1Scalar, &cast.ci)?;
     let commitments = cast
         .commitments
         .iter()
-        .map(|commitment| bytes_to_g1("decode commitment", commitment))
+        .map(|commitment| bytes_to_g1(|| FrostError::DecodeCommitment, commitment))
         .collect::<Result<Vec<_>, _>>()?;
     let key = key_from_proto(cast.key.as_ref())?;
     Ok((
@@ -1410,7 +1380,7 @@ fn shamir_share_from_proto(
     share: &FrostRound1ShamirShare,
 ) -> Result<(MsgKey, ShamirShare), FrostError> {
     let key = key_from_proto(share.key.as_ref())?;
-    let value = bytes_to_scalar("decode shamir scalar", &share.value)?;
+    let value = bytes_to_scalar(|| FrostError::DecodeShamirScalar, &share.value)?;
     Ok((
         key,
         ShamirShare {
@@ -1429,8 +1399,11 @@ fn round2_cast_to_proto(key: MsgKey, cast: &Round2Bcast) -> FrostRound2Cast {
 }
 
 fn round2_cast_from_proto(cast: &FrostRound2Cast) -> Result<(MsgKey, Round2Bcast), FrostError> {
-    let verification_key = bytes_to_g1("decode verification key scalar", &cast.verification_key)?;
-    let vk_share = bytes_to_g1("decode vk share", &cast.vk_share)?;
+    let verification_key = bytes_to_g1(
+        || FrostError::DecodeVerificationKeyScalar,
+        &cast.verification_key,
+    )?;
+    let vk_share = bytes_to_g1(|| FrostError::DecodeVkShare, &cast.vk_share)?;
     let key = key_from_proto(cast.key.as_ref())?;
     Ok((
         key,
@@ -1496,26 +1469,23 @@ fn make_round2_response(
     Ok(cast_map)
 }
 
-fn bytes_to_scalar(context: &'static str, bytes: &Bytes) -> Result<[u8; 32], FrostError> {
+fn bytes_to_scalar(context: fn() -> FrostError, bytes: &Bytes) -> Result<[u8; 32], FrostError> {
     let scalar = bytes_to_array::<SCALAR_LEN>(context, bytes)?;
-    kryptology::scalar_from_be(&scalar).map_err(|_| FrostError::InvalidMessage(context))?;
+    kryptology::scalar_from_be(&scalar).map_err(|_| context())?;
     Ok(scalar)
 }
 
-fn bytes_to_g1(context: &'static str, bytes: &Bytes) -> Result<[u8; 48], FrostError> {
+fn bytes_to_g1(context: fn() -> FrostError, bytes: &Bytes) -> Result<[u8; 48], FrostError> {
     let point = bytes_to_array::<G1_COMPRESSED_LEN>(context, bytes)?;
-    G1Projective::from_compressed(&point).ok_or(FrostError::InvalidMessage(context))?;
+    G1Projective::from_compressed(&point).ok_or_else(context)?;
     Ok(point)
 }
 
 fn bytes_to_array<const N: usize>(
-    context: &'static str,
+    context: fn() -> FrostError,
     bytes: &Bytes,
 ) -> Result<[u8; N], FrostError> {
-    bytes
-        .as_ref()
-        .try_into()
-        .map_err(|_| FrostError::InvalidMessage(context))
+    bytes.as_ref().try_into().map_err(|_| context())
 }
 
 #[cfg(test)]
@@ -1564,7 +1534,7 @@ mod tests {
     fn missing_key_is_rejected() {
         assert!(matches!(
             key_from_proto(None),
-            Err(FrostError::InvalidMessage("frost msg key cannot be nil"))
+            Err(FrostError::MissingMsgKey)
         ));
     }
 
@@ -1583,7 +1553,7 @@ mod tests {
 
         assert!(matches!(
             round1_cast_from_proto(&cast),
-            Err(FrostError::InvalidMessage("decode wi scalar"))
+            Err(FrostError::DecodeWiScalar)
         ));
     }
 
@@ -1601,7 +1571,7 @@ mod tests {
 
         assert!(matches!(
             round2_cast_from_proto(&cast),
-            Err(FrostError::InvalidMessage("decode verification key scalar"))
+            Err(FrostError::DecodeVerificationKeyScalar)
         ));
     }
 
@@ -1635,7 +1605,7 @@ mod tests {
             )
             .is_ok()
         );
-        assert_invalid_bcast_message(
+        assert_invalid_peer_index(
             validate_round1_casts(
                 peer_id,
                 &share_idx_by_peer,
@@ -1650,11 +1620,12 @@ mod tests {
                     vec![Bytes::new()],
                 ),
             ),
-            "invalid round 1 cast source ID",
+            peer_id,
         );
-        assert_invalid_bcast_message(
+        let unknown_peer = PeerId::random();
+        assert_invalid_peer_index(
             validate_round1_casts(
-                PeerId::random(),
+                unknown_peer,
                 &share_idx_by_peer,
                 1,
                 2,
@@ -1667,9 +1638,9 @@ mod tests {
                     vec![Bytes::new()],
                 ),
             ),
-            "invalid round 1 cast source ID",
+            unknown_peer,
         );
-        assert_invalid_bcast_message(
+        assert_invalid_peer_index(
             validate_round1_casts(
                 peer_id,
                 &share_idx_by_peer,
@@ -1684,9 +1655,9 @@ mod tests {
                     vec![Bytes::new()],
                 ),
             ),
-            "invalid round 1 cast target ID",
+            peer_id,
         );
-        assert_invalid_bcast_message(
+        assert_invalid_peer_index(
             validate_round1_casts(
                 peer_id,
                 &share_idx_by_peer,
@@ -1701,9 +1672,9 @@ mod tests {
                     vec![Bytes::new()],
                 ),
             ),
-            "invalid round 1 cast validator index",
+            peer_id,
         );
-        assert_invalid_bcast_message(
+        assert_invalid_signature_count(
             validate_round1_casts(
                 peer_id,
                 &share_idx_by_peer,
@@ -1718,7 +1689,8 @@ mod tests {
                     vec![],
                 ),
             ),
-            "invalid amount of commitments in round 1",
+            1,
+            0,
         );
     }
 
@@ -1747,7 +1719,7 @@ mod tests {
             )
             .is_ok()
         );
-        assert_invalid_bcast_message(
+        assert_invalid_peer_index(
             validate_round2_casts(
                 peer_id,
                 &share_idx_by_peer,
@@ -1758,11 +1730,12 @@ mod tests {
                     target_id: 0,
                 }),
             ),
-            "invalid round 2 cast source ID",
+            peer_id,
         );
-        assert_invalid_bcast_message(
+        let unknown_peer = PeerId::random();
+        assert_invalid_peer_index(
             validate_round2_casts(
-                PeerId::random(),
+                unknown_peer,
                 &share_idx_by_peer,
                 2,
                 &cast(MsgKey {
@@ -1771,9 +1744,9 @@ mod tests {
                     target_id: 0,
                 }),
             ),
-            "invalid round 2 cast source ID",
+            unknown_peer,
         );
-        assert_invalid_bcast_message(
+        assert_invalid_peer_index(
             validate_round2_casts(
                 peer_id,
                 &share_idx_by_peer,
@@ -1784,9 +1757,9 @@ mod tests {
                     target_id: 1,
                 }),
             ),
-            "invalid round 2 cast target ID",
+            peer_id,
         );
-        assert_invalid_bcast_message(
+        assert_invalid_peer_index(
             validate_round2_casts(
                 peer_id,
                 &share_idx_by_peer,
@@ -1797,7 +1770,7 @@ mod tests {
                     target_id: 0,
                 }),
             ),
-            "invalid round 2 cast validator index",
+            peer_id,
         );
     }
 
@@ -1982,9 +1955,7 @@ mod tests {
                 },
                 2,
             ),
-            Err(FrostError::InvalidMessage(
-                "invalid round 1 p2p shares count"
-            ))
+            Err(FrostError::InvalidRound1P2PSharesCount)
         ));
         assert!(matches!(
             validate_round1_p2p(
@@ -1996,9 +1967,7 @@ mod tests {
                 },
                 2,
             ),
-            Err(FrostError::InvalidMessage(
-                "duplicate round 1 p2p validator index"
-            ))
+            Err(FrostError::DuplicateRound1P2PValidatorIndex)
         ));
     }
 
@@ -2132,10 +2101,24 @@ mod tests {
         }
     }
 
-    fn assert_invalid_bcast_message<T>(result: Result<T, bcast::Error>, expected: &'static str) {
+    fn assert_invalid_peer_index<T>(result: Result<T, bcast::Error>, expected: PeerId) {
         assert!(matches!(
             result,
-            Err(bcast::Error::InvalidMessage(message)) if message == expected
+            Err(bcast::Error::InvalidPeerIndex(peer_id)) if peer_id == expected
+        ));
+    }
+
+    fn assert_invalid_signature_count<T>(
+        result: Result<T, bcast::Error>,
+        expected: usize,
+        actual: usize,
+    ) {
+        assert!(matches!(
+            result,
+            Err(bcast::Error::InvalidSignatureCount {
+                expected: got_expected,
+                actual: got_actual,
+            }) if got_expected == expected && got_actual == actual
         ));
     }
 }
