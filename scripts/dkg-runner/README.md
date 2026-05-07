@@ -60,7 +60,8 @@ All variables are optional. Set them in the environment before calling any scrip
 | `FEE_RECIPIENT` | `0xDeaDBeef…` | Fee recipient address for the cluster |
 | `WITHDRAWAL_ADDR` | `0xDeaDBeef…` | Withdrawal address for the cluster |
 | `TIMEOUT` | `120` | Seconds to wait before declaring the ceremony failed |
-| `SHUTDOWN_DELAY` | `1s` | Graceful shutdown delay passed to each node via `--shutdown-delay` |
+| `SHUTDOWN_DELAY` | `30s` | Graceful shutdown delay passed to each node via `--shutdown-delay` |
+| `NODE_EXIT_TIMEOUT` | `90` | Seconds to wait for node processes to exit cleanly after artifacts appear |
 | `PLUTO_BIN` | `./target/debug/pluto` | Path to the Pluto binary (only required when `PLUTO_NODES > 0`) |
 | `CHARON_BIN` | `charon` | Path to the Charon binary |
 | `WORK_DIR` | `/tmp/dkg-run` | Scratch directory — wiped at the start of every run |
@@ -76,7 +77,7 @@ All variables are optional. Set them in the environment before calling any scrip
 | 1 | `setup.sh` | Wipes `WORK_DIR`, creates `node-0/`…`node-N/` data dirs, generates a p2p key + ENR for each node (`pluto create enr` / `charon create enr`), then runs `charon create dkg --operator-enrs=…` |
 | 2 | `start-nodes.sh` | Starts Pluto nodes (slots 0…PLUTO_NODES-1) and Charon nodes (remaining slots) as background processes, each in its own process group; logs to `node-N/node.log` |
 | 3 | `monitor.sh` | Waits for `cluster-lock.json` to appear in every node's data dir; exits 0 on completion, 1 on timeout (with the tail of each `node.log` dumped to stderr) |
-| 4 | *(inline)* | Sends SIGTERM to each node's process group unless `KEEP_NODES` is enabled |
+| 4 | `wait-node-exits.sh` | Waits for each node process to exit with status `0` unless `KEEP_NODES` is enabled |
 | 5 | `collect.sh` | Copies keystores and `cluster-lock.json` to `WORK_DIR/output/`; prints a summary |
 
 On success, outputs are under `$WORK_DIR/output/`. On failure or timeout, partial outputs are still collected and `WORK_DIR` is preserved for inspection. `run.sh` never deletes `WORK_DIR`; use `./scripts/dkg-runner/reset.sh` when you're done.
@@ -94,6 +95,7 @@ Ctrl-C at any point kills all node process groups cleanly via the SIGINT trap; `
 | `start-nodes.sh` | Launches node processes in the background (each in its own process group) |
 | `run-node.sh` | Runs a single node in the foreground: `run-node.sh <index> <pluto\|charon>` |
 | `monitor.sh` | Waits for ceremony completion or timeout |
+| `wait-node-exits.sh` | Waits for all node processes to report clean exit codes |
 | `collect.sh` | Gathers keystores and lock file into `output/` |
 | `reset.sh` | Kills all nodes and removes `WORK_DIR` (the explicit cleanup tool) |
 | `config.sh` | Shared env-var defaults sourced by every script |

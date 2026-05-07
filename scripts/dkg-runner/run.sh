@@ -12,6 +12,7 @@
 #   RELAY_URL=https://0.relay.obol.tech
 #                        Relay ENR endpoint used by the DKG nodes.
 #   TIMEOUT=120          Seconds to wait for all nodes before aborting.
+#   NODE_EXIT_TIMEOUT=90 Seconds to wait for nodes to exit after completion.
 #   PLUTO_BIN=./target/debug/pluto
 #                        Path to the Pluto binary.
 #   CHARON_BIN=charon    Path to the Charon binary.
@@ -89,6 +90,7 @@ log_info "  CHARON_NODES = ${CHARON_NODES}"
 log_info "  RELAY_URL    = ${RELAY_URL}"
 log_info "  NETWORK      = ${NETWORK}"
 log_info "  TIMEOUT      = ${TIMEOUT}s"
+log_info "  NODE_EXIT_TIMEOUT = ${NODE_EXIT_TIMEOUT}s"
 log_info "  PLUTO_BIN    = ${PLUTO_BIN}"
 log_info "  CHARON_BIN   = ${CHARON_BIN}"
 log_info "  WORK_DIR     = ${WORK_DIR}"
@@ -119,10 +121,17 @@ fi
 if is_truthy "${KEEP_NODES}"; then
     log_info "--- Phase 4: Keep nodes running (ceremony complete) ---"
 else
-    log_info "--- Phase 4: Stop nodes (ceremony complete) ---"
-    log_info "Waiting 10s for nodes to flush final logs..."
-    sleep 10
-    _kill_nodes || true
+    log_info "--- Phase 4: Wait for clean node exits ---"
+    wait_exit=0
+    "${SCRIPT_DIR}/wait-node-exits.sh" || wait_exit=$?
+    if (( wait_exit != 0 )); then
+        log_err "One or more nodes exited unsuccessfully after producing artifacts."
+        _kill_nodes || true
+        "${SCRIPT_DIR}/collect.sh" || true
+        log_info "Work dir preserved at ${WORK_DIR}. Run ${SCRIPT_DIR}/reset.sh to remove it."
+        trap - INT TERM
+        exit 1
+    fi
 fi
 
 log_info "--- Phase 5: Collect outputs ---"
