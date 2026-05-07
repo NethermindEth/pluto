@@ -154,9 +154,6 @@ pub(crate) const ROUND2_CAST_ID: &str = "/charon/dkg/frost/2.0.0/round2/cast";
 pub(crate) const ROUND1_P2P_PROTOCOL: StreamProtocol =
     StreamProtocol::new("/charon/dkg/frost/2.0.0/round1/p2p");
 
-/// Maximum FROST P2P protobuf message size. Charon's default libp2p
-/// delimited-reader limit is 128 MiB.
-pub(crate) const MAX_MESSAGE_SIZE: usize = pluto_p2p::proto::MAX_MESSAGE_SIZE;
 /// Charon's default direct-P2P inbound read timeout.
 pub(crate) const RECEIVE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Charon's default direct-P2P send timeout.
@@ -385,7 +382,7 @@ async fn read_inbound_message(stream: &mut Stream) -> Option<FrostRound1P2p> {
         RECEIVE_TIMEOUT,
         pluto_p2p::proto::read_protobuf_with_max_size::<FrostRound1P2p, _>(
             stream,
-            MAX_MESSAGE_SIZE,
+            pluto_p2p::proto::MAX_MESSAGE_SIZE,
         ),
     )
     .await;
@@ -1502,7 +1499,7 @@ mod tests {
             "/charon/dkg/frost/2.0.0/round1/p2p"
         );
         assert_eq!(ROUND2_CAST_ID, "/charon/dkg/frost/2.0.0/round2/cast");
-        assert_eq!(MAX_MESSAGE_SIZE, 128 << 20);
+        assert_eq!(pluto_p2p::proto::MAX_MESSAGE_SIZE, 128 << 20);
         assert_eq!(RECEIVE_TIMEOUT, Duration::from_secs(5));
         assert_eq!(SEND_TIMEOUT, Duration::from_secs(7));
     }
