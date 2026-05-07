@@ -23,6 +23,12 @@ pub mod dkg;
 /// Kryptology-compatible FROST DKG orchestration.
 mod frost;
 
+/// FROST DKG P2P transport.
+mod frostp2p;
+
+#[cfg(test)]
+mod frostp2p_integ_test;
+
 /// Partial-signature exchanger for DKG.
 pub mod exchanger;
 

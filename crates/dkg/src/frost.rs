@@ -42,7 +42,7 @@ pub(crate) trait FTransport: Send + Sync {
     /// broadcasts from all other nodes and the round 1 P2P sends to this
     /// node.
     async fn round1(
-        &self,
+        &mut self,
         cancellation: &CancellationToken,
         bcast: HashMap<MsgKey, Round1Bcast>,
         shares: HashMap<MsgKey, ShamirShare>,
@@ -51,7 +51,7 @@ pub(crate) trait FTransport: Send + Sync {
     /// Returns results of all round 2 communication: the received round 2
     /// broadcasts from all other nodes.
     async fn round2(
-        &self,
+        &mut self,
         cancellation: &CancellationToken,
         bcast: HashMap<MsgKey, Round2Bcast>,
     ) -> Result<HashMap<MsgKey, Round2Bcast>, FrostError>;
@@ -69,6 +69,78 @@ pub(crate) enum FrostError {
     /// Failed during local round 2 execution.
     #[error("exec round 2: {0}")]
     ExecRound2(#[source] pluto_frost::kryptology::KryptologyError),
+    /// Reliable broadcast failed.
+    #[error("bcast: {0}")]
+    Bcast(#[from] crate::bcast::Error),
+    /// Direct FROST P2P send failed.
+    #[error("frost p2p send: {0}")]
+    FrostP2P(#[from] crate::frostp2p::FrostP2PError),
+    /// Too many round-1 broadcast messages were collected.
+    #[error("too many round 1 casts messages")]
+    TooManyRound1CastsMessages,
+    /// Too many round-1 direct P2P messages were collected.
+    #[error("too many round 1 p2p messages")]
+    TooManyRound1P2PMessages,
+    /// Too many round-2 broadcast messages were collected.
+    #[error("too many round 2 casts messages")]
+    TooManyRound2CastsMessages,
+    /// A FROST message key was missing.
+    #[error("frost msg key cannot be nil")]
+    MissingMsgKey,
+    /// A round-1 P2P message source ID was invalid.
+    #[error("invalid round 1 p2p source ID")]
+    InvalidRound1P2PSourceId,
+    /// A round-1 P2P message target ID was invalid.
+    #[error("invalid round 1 p2p target ID")]
+    InvalidRound1P2PTargetId,
+    /// A round-1 P2P message validator index was invalid.
+    #[error("invalid round 1 p2p validator index")]
+    InvalidRound1P2PValidatorIndex,
+    /// A round-1 P2P message did not contain exactly one share per validator.
+    #[error("invalid round 1 p2p shares count")]
+    InvalidRound1P2PSharesCount,
+    /// A round-1 P2P message repeated a validator index.
+    #[error("duplicate round 1 p2p validator index")]
+    DuplicateRound1P2PValidatorIndex,
+    /// Failed to decode the round-1 Wi scalar.
+    #[error("decode wi scalar")]
+    DecodeWiScalar,
+    /// Failed to decode the round-1 C_i scalar.
+    #[error("decode c1 scalar")]
+    DecodeC1Scalar,
+    /// Failed to decode a round-1 commitment point.
+    #[error("decode commitment")]
+    DecodeCommitment,
+    /// Failed to decode a round-1 Shamir share scalar.
+    #[error("decode shamir scalar")]
+    DecodeShamirScalar,
+    /// Failed to decode a round-2 verification key point.
+    #[error("decode verification key scalar")]
+    DecodeVerificationKeyScalar,
+    /// Failed to decode a round-2 verification key share point.
+    #[error("decode vk share")]
+    DecodeVkShare,
+    /// FROST transport configuration is invalid.
+    #[error("frost config: {0}")]
+    ConfigError(&'static str),
+    /// The FROST P2P inbound receiver was already taken.
+    #[error("frost p2p inbound receiver already taken")]
+    P2PInboundReceiverAlreadyTaken,
+    /// The FROST broadcast event receiver was already taken.
+    #[error("frost bcast event receiver already taken")]
+    BcastEventReceiverAlreadyTaken,
+    /// The round-1 casts receiver was dropped before local self-delivery.
+    #[error("frost round 1 casts receiver dropped before self-delivery")]
+    Round1CastsReceiverDropped,
+    /// The round-2 casts receiver was dropped before local self-delivery.
+    #[error("frost round 2 casts receiver dropped before self-delivery")]
+    Round2CastsReceiverDropped,
+    /// Round-1 P2P construction attempted to send a private share to self.
+    #[error("unexpected p2p message to self")]
+    UnexpectedP2PMessageToSelf,
+    /// FROST transport channel closed unexpectedly.
+    #[error("frost channel closed: {0}")]
+    ChannelClosed(&'static str),
     /// Failed to convert public key bytes.
     #[error("public key conversion: {0}")]
     PublicKey(#[from] pluto_crypto::tblsconv::ConvError),
@@ -211,7 +283,7 @@ impl DkgParticipant {
 /// rounds) and returns a list of shares (one for each distributed validator).
 pub(crate) async fn run_frost_parallel<T: FTransport>(
     cancellation: CancellationToken,
-    tp: &T,
+    tp: &mut T,
     num_validators: u32,
     num_nodes: u32,
     threshold: u32,
@@ -460,9 +532,9 @@ mod tests {
     }
 
     #[async_trait]
-    impl FTransport for FrostMemTransport {
+    impl FTransport for Arc<FrostMemTransport> {
         async fn round1(
-            &self,
+            &mut self,
             cancellation: &CancellationToken,
             bcast: HashMap<MsgKey, Round1Bcast>,
             shares: HashMap<MsgKey, ShamirShare>,
@@ -529,7 +601,7 @@ mod tests {
         }
 
         async fn round2(
-            &self,
+            &mut self,
             cancellation: &CancellationToken,
             bcast: HashMap<MsgKey, Round2Bcast>,
         ) -> Result<HashMap<MsgKey, Round2Bcast>, FrostError> {
@@ -607,12 +679,12 @@ mod tests {
 
         let mut tasks = Vec::new();
         for i in 0..nodes {
-            let tp = Arc::clone(&tp);
+            let mut tp = Arc::clone(&tp);
             let cancellation = cancellation.clone();
             tasks.push(tokio::spawn(async move {
                 run_frost_parallel(
                     cancellation,
-                    tp.as_ref(),
+                    &mut tp,
                     vals,
                     nodes,
                     threshold,
@@ -645,11 +717,11 @@ mod tests {
         let tp = Arc::new(FrostMemTransport::new(2));
 
         let task = {
-            let tp = Arc::clone(&tp);
+            let mut tp = Arc::clone(&tp);
             let cancellation = cancellation.clone();
-            tokio::spawn(async move {
-                run_frost_parallel(cancellation, tp.as_ref(), 1, 2, 2, 1, "0").await
-            })
+            tokio::spawn(
+                async move { run_frost_parallel(cancellation, &mut tp, 1, 2, 2, 1, "0").await },
+            )
         };
 
         tokio::task::yield_now().await;
@@ -845,10 +917,10 @@ mod tests {
         let mut tasks = Vec::new();
 
         for share_idx in 1..=3 {
-            let tp = Arc::clone(&tp);
+            let mut tp = Arc::clone(&tp);
             let cancellation = cancellation.clone();
             tasks.push(tokio::spawn(async move {
-                run_frost_parallel(cancellation, tp.as_ref(), 3, 3, 3, share_idx, "0").await
+                run_frost_parallel(cancellation, &mut tp, 3, 3, 3, share_idx, "0").await
             }));
         }
 
