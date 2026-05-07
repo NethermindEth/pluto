@@ -76,6 +76,7 @@ const THRESHOLD_LOAD_AVG: Duration = Duration::from_millis(50);
 const THRESHOLD_LOAD_POOR: Duration = Duration::from_millis(240);
 const THRESHOLD_RELAY_MEASURE_AVG: Duration = Duration::from_millis(50);
 const THRESHOLD_RELAY_MEASURE_POOR: Duration = Duration::from_millis(240);
+const SELF_TEST_NODE_BIND_DELAY: Duration = Duration::from_millis(500);
 
 /// Arguments for the peers test command.
 #[derive(Args, Clone, Debug)]
@@ -329,7 +330,7 @@ fn run_self_tests_in_new_task(
 ) -> JoinHandle<HashMap<String, Vec<TestResult>>> {
     // Self tests run concurrently with peer tests; give the node a moment to bind.
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(SELF_TEST_NODE_BIND_DELAY).await;
         let res = run_self_tests(&tcp_addrs, &self_tests).await;
         if only_self_tests {
             cancel.cancel();
