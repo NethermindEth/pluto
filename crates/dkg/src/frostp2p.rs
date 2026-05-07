@@ -98,6 +98,10 @@
 //! FROST observation events are emitted through [`FrostP2PBehaviour`] as swarm
 //! events. Transport-level code forwards round and broadcast milestones back to
 //! the behaviour through the same command channel used for direct sends.
+//!
+//! These transport objects are single-use for one DKG run. Dedup state is
+//! intentionally not reset; create a fresh [`FrostP2PBehaviour`],
+//! [`FrostP2PHandle`], and [`FrostP2P`] for each DKG.
 
 #![allow(dead_code)]
 
@@ -542,6 +546,7 @@ pub(crate) struct FrostP2PBehaviour {
     local_share_idx: u32,
     num_validators: usize,
     inbound_tx: mpsc::UnboundedSender<(PeerId, FrostRound1P2p)>,
+    /// Direct P2P dedup for this DKG run; create a fresh behaviour per DKG.
     accepted_round1_p2p: HashSet<PeerId>,
     cmd_rx: mpsc::UnboundedReceiver<SendCommand>,
     pending_events: VecDeque<ToSwarm<FrostP2PEvent, InEvent>>,
@@ -973,6 +978,7 @@ async fn register_round1_bcast(
     threshold: usize,
     num_validators: usize,
 ) -> Result<(), FrostError> {
+    // Bcast dedup for this DKG run; create a fresh `FrostP2P` per DKG.
     let dedup = Arc::new(Mutex::new(HashSet::<PeerId>::new()));
     let share_idx_by_peer = Arc::new(share_idx_by_peer);
     let check_share_idx_by_peer = share_idx_by_peer.clone();
@@ -1023,6 +1029,7 @@ async fn register_round2_bcast(
     tx: mpsc::UnboundedSender<FrostRound2Casts>,
     num_validators: usize,
 ) -> Result<(), FrostError> {
+    // Bcast dedup for this DKG run; create a fresh `FrostP2P` per DKG.
     let dedup = Arc::new(Mutex::new(HashSet::<PeerId>::new()));
     let share_idx_by_peer = Arc::new(share_idx_by_peer);
     let check_share_idx_by_peer = share_idx_by_peer.clone();
