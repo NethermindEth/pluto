@@ -491,7 +491,7 @@ impl FrostP2PSender {
 /// User-facing handle for the FROST direct-P2P behaviour.
 pub(crate) struct FrostP2PHandle {
     /// Receives `(sender_peer_id, message)` for inbound round-1 P2P messages.
-    inbound_rx: Option<mpsc::Receiver<(PeerId, FrostRound1P2p)>>,
+    inbound_rx: Option<mpsc::UnboundedReceiver<(PeerId, FrostRound1P2p)>>,
     sender: FrostP2PSender,
     bcast_event_tx: mpsc::UnboundedSender<bcast::Event>,
     bcast_event_rx: Option<mpsc::UnboundedReceiver<bcast::Event>>,
@@ -509,7 +509,9 @@ impl FrostP2PHandle {
             .map_err(|_| FrostError::ChannelClosed("frost bcast event channel"))
     }
 
-    fn take_inbound_rx(&mut self) -> Result<mpsc::Receiver<(PeerId, FrostRound1P2p)>, FrostError> {
+    fn take_inbound_rx(
+        &mut self,
+    ) -> Result<mpsc::UnboundedReceiver<(PeerId, FrostRound1P2p)>, FrostError> {
         self.inbound_rx
             .take()
             .ok_or(FrostError::P2PInboundReceiverAlreadyTaken)
@@ -529,7 +531,7 @@ pub(crate) struct FrostP2PBehaviour {
     share_idx_by_peer: HashMap<PeerId, u32>,
     local_share_idx: u32,
     num_validators: usize,
-    inbound_tx: mpsc::Sender<(PeerId, FrostRound1P2p)>,
+    inbound_tx: mpsc::UnboundedSender<(PeerId, FrostRound1P2p)>,
     accepted_round1_p2p: HashSet<PeerId>,
     cmd_rx: mpsc::UnboundedReceiver<SendCommand>,
     pending_events: VecDeque<ToSwarm<FrostP2PEvent, InEvent>>,
@@ -549,7 +551,7 @@ impl FrostP2PBehaviour {
     ) -> (Self, FrostP2PHandle) {
         let peers = peers.into_iter().collect::<HashSet<_>>();
         let num_peers = peers.len();
-        let (inbound_tx, inbound_rx) = mpsc::channel(peers.len().max(1));
+        let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (bcast_event_tx, bcast_event_rx) = mpsc::unbounded_channel();
         let sender = FrostP2PSender::new(cmd_tx);
@@ -819,21 +821,13 @@ impl NetworkBehaviour for FrostP2PBehaviour {
                     debug!(%peer_id, "ignoring duplicate round 1 p2p message");
                     return;
                 }
-                match self.inbound_tx.try_send((peer_id, msg)) {
-                    Ok(()) => {
-                        self.pending_events.push_back(ToSwarm::GenerateEvent(
-                            FrostP2PEvent::DirectReceived { peer_id },
-                        ));
-                    }
-                    Err(mpsc::error::TrySendError::Full((peer_id, _))) => {
-                        self.accepted_round1_p2p.remove(&peer_id);
-                        warn!(%peer_id, "dropping round 1 p2p message because inbound queue is full");
-                    }
-                    Err(mpsc::error::TrySendError::Closed((peer_id, _))) => {
-                        self.accepted_round1_p2p.remove(&peer_id);
-                        warn!(%peer_id, "dropping round 1 p2p message because inbound queue is closed");
-                    }
+                if let Err(error) = self.inbound_tx.send((peer_id, msg)) {
+                    warn!(%peer_id, %error, "dropping round 1 p2p message because inbound receiver is closed");
+                    return;
                 }
+                self.pending_events.push_back(ToSwarm::GenerateEvent(
+                    FrostP2PEvent::DirectReceived { peer_id },
+                ));
             }
             OutEvent::Sent { op_id } => {
                 if let Some(event) = self.complete_send(op_id, Ok(())) {
@@ -871,7 +865,7 @@ pub(crate) struct FrostP2P {
     bcast_event_rx: mpsc::UnboundedReceiver<bcast::Event>,
     round1_casts_tx: mpsc::UnboundedSender<FrostRound1Casts>,
     round1_casts_rx: mpsc::UnboundedReceiver<FrostRound1Casts>,
-    round1_p2p_rx: mpsc::Receiver<(PeerId, FrostRound1P2p)>,
+    round1_p2p_rx: mpsc::UnboundedReceiver<(PeerId, FrostRound1P2p)>,
     round2_casts_tx: mpsc::UnboundedSender<FrostRound2Casts>,
     round2_casts_rx: mpsc::UnboundedReceiver<FrostRound2Casts>,
     peers_by_share_idx: HashMap<u32, PeerId>,
@@ -2229,7 +2223,7 @@ mod tests {
     }
 
     fn frost_p2p_handle_for_test() -> (FrostP2PHandle, mpsc::UnboundedReceiver<bcast::Event>) {
-        let (_inbound_tx, inbound_rx) = mpsc::channel(1);
+        let (_inbound_tx, inbound_rx) = mpsc::unbounded_channel();
         let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
         let (bcast_event_tx, bcast_event_rx) = mpsc::unbounded_channel();
         (
@@ -2247,7 +2241,7 @@ mod tests {
         bcast_event_rx: mpsc::UnboundedReceiver<bcast::Event>,
     ) -> FrostP2P {
         let (round1_casts_tx, round1_casts_rx) = mpsc::unbounded_channel();
-        let (_round1_p2p_tx, round1_p2p_rx) = mpsc::channel(1);
+        let (_round1_p2p_tx, round1_p2p_rx) = mpsc::unbounded_channel();
         let (round2_casts_tx, round2_casts_rx) = mpsc::unbounded_channel();
         let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
         let (bcast_behaviour, bcast_comp) = bcast::Behaviour::new(
