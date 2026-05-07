@@ -33,6 +33,20 @@ use std::{
 
 type Result<T> = std::result::Result<T, QbftError>;
 
+pub trait QbftTypes {
+    type Instance;
+    type Value: PartialEq;
+    type Compare;
+}
+
+pub struct I64Qbft;
+
+impl QbftTypes for I64Qbft {
+    type Compare = i64;
+    type Instance = i64;
+    type Value = i64;
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum QbftError {
     #[error("Timeout")]
