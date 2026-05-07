@@ -124,6 +124,7 @@ use libp2p::{
         },
     },
 };
+use pluto_crypto::types::{G1_COMPRESSED_LENGTH, SCALAR_LENGTH};
 use pluto_frost::{
     G1Projective,
     kryptology::{self, Round1Bcast, Round2Bcast, ShamirShare},
@@ -158,9 +159,6 @@ pub(crate) const ROUND1_P2P_PROTOCOL: StreamProtocol =
 pub(crate) const RECEIVE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Charon's default direct-P2P send timeout.
 pub(crate) const SEND_TIMEOUT: Duration = Duration::from_secs(7);
-
-const SCALAR_LEN: usize = 32;
-const G1_COMPRESSED_LEN: usize = 48;
 
 /// FROST direct-P2P delivery errors.
 #[derive(Debug, thiserror::Error)]
@@ -1467,13 +1465,16 @@ fn make_round2_response(
 }
 
 fn bytes_to_scalar(context: fn() -> FrostError, bytes: &Bytes) -> Result<[u8; 32], FrostError> {
-    let scalar = bytes_to_array::<SCALAR_LEN>(context, bytes)?;
+    let scalar = bytes_to_array::<SCALAR_LENGTH>(context, bytes)?;
     kryptology::scalar_from_be(&scalar).map_err(|_| context())?;
     Ok(scalar)
 }
 
-fn bytes_to_g1(context: fn() -> FrostError, bytes: &Bytes) -> Result<[u8; 48], FrostError> {
-    let point = bytes_to_array::<G1_COMPRESSED_LEN>(context, bytes)?;
+fn bytes_to_g1(
+    context: fn() -> FrostError,
+    bytes: &Bytes,
+) -> Result<[u8; G1_COMPRESSED_LENGTH], FrostError> {
+    let point = bytes_to_array::<G1_COMPRESSED_LENGTH>(context, bytes)?;
     G1Projective::from_compressed(&point).ok_or_else(context)?;
     Ok(point)
 }
