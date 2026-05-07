@@ -993,6 +993,13 @@ async fn register_round1_bcast(
                 let dedup = dedup.clone();
                 let share_idx_by_peer = share_idx_by_peer.clone();
                 Box::pin(async move {
+                    validate_round1_casts(
+                        peer_id,
+                        &share_idx_by_peer,
+                        threshold,
+                        num_validators,
+                        &msg,
+                    )?;
                     {
                         let mut dedup = dedup.lock().map_err(|_| bcast::Error::BehaviourClosed)?;
                         if !dedup.insert(peer_id) {
@@ -1001,13 +1008,6 @@ async fn register_round1_bcast(
                         }
                     }
 
-                    validate_round1_casts(
-                        peer_id,
-                        &share_idx_by_peer,
-                        threshold,
-                        num_validators,
-                        &msg,
-                    )?;
                     tx.send(msg).map_err(|_| bcast::Error::BehaviourClosed)?;
                     Ok(())
                 })
@@ -1037,6 +1037,7 @@ async fn register_round2_bcast(
                 let dedup = dedup.clone();
                 let share_idx_by_peer = share_idx_by_peer.clone();
                 Box::pin(async move {
+                    validate_round2_casts(peer_id, &share_idx_by_peer, num_validators, &msg)?;
                     {
                         let mut dedup = dedup.lock().map_err(|_| bcast::Error::BehaviourClosed)?;
                         if !dedup.insert(peer_id) {
@@ -1045,7 +1046,6 @@ async fn register_round2_bcast(
                         }
                     }
 
-                    validate_round2_casts(peer_id, &share_idx_by_peer, num_validators, &msg)?;
                     tx.send(msg).map_err(|_| bcast::Error::BehaviourClosed)?;
                     Ok(())
                 })
@@ -1334,7 +1334,8 @@ fn validate_round1_p2p(
     let source_id = *share_idx_by_peer
         .get(&peer_id)
         .ok_or(FrostError::InvalidRound1P2PSourceId)?;
-    // A direct round-1 P2P message contains this peer's share for every validator.
+    // Stricter than Charon's handler: valid senders emit exactly one share per
+    // validator, so reject malformed batches before later map overwrites.
     if msg.shares.len() != num_validators {
         return Err(FrostError::InvalidRound1P2PSharesCount);
     }
