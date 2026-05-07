@@ -231,6 +231,107 @@ where
     }
 }
 
+pub trait Broadcaster<T>: Send + Sync
+where
+    T: QbftTypes,
+{
+    #[allow(clippy::too_many_arguments)]
+    fn broadcast(
+        &self,
+        ct: &CancellationToken,
+        type_: MessageType,
+        instance: &T::Instance,
+        source: i64,
+        round: i64,
+        value: &T::Value,
+        pr: i64,
+        pv: &T::Value,
+        justification: Option<&Vec<Msg<T>>>,
+    ) -> Result<()>;
+}
+
+type BroadcastFn<T> = Box<
+    dyn Fn(
+            &CancellationToken,
+            MessageType,
+            &<T as QbftTypes>::Instance,
+            i64,
+            i64,
+            &<T as QbftTypes>::Value,
+            i64,
+            &<T as QbftTypes>::Value,
+            Option<&Vec<Msg<T>>>,
+        ) -> Result<()>
+        + Send
+        + Sync,
+>;
+
+pub struct BroadcasterFn<T>
+where
+    T: QbftTypes,
+{
+    broadcast: BroadcastFn<T>,
+    _marker: PhantomData<fn() -> T>,
+}
+
+impl<T> BroadcasterFn<T>
+where
+    T: QbftTypes,
+{
+    pub fn new<F>(broadcast: F) -> Self
+    where
+        F: Fn(
+                &CancellationToken,
+                MessageType,
+                &T::Instance,
+                i64,
+                i64,
+                &T::Value,
+                i64,
+                &T::Value,
+                Option<&Vec<Msg<T>>>,
+            ) -> Result<()>
+            + Send
+            + Sync
+            + 'static,
+    {
+        Self {
+            broadcast: Box::new(broadcast),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T> Broadcaster<T> for BroadcasterFn<T>
+where
+    T: QbftTypes,
+{
+    fn broadcast(
+        &self,
+        ct: &CancellationToken,
+        type_: MessageType,
+        instance: &T::Instance,
+        source: i64,
+        round: i64,
+        value: &T::Value,
+        pr: i64,
+        pv: &T::Value,
+        justification: Option<&Vec<Msg<T>>>,
+    ) -> Result<()> {
+        (self.broadcast)(
+            ct,
+            type_,
+            instance,
+            source,
+            round,
+            value,
+            pr,
+            pv,
+            justification,
+        )
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum QbftError {
     #[error("Timeout")]
@@ -258,21 +359,7 @@ where
     /// processes in the system (including this process).
     ///
     /// Note that an error exits the algorithm.
-    pub broadcast: Box<
-        dyn Fn(
-                /* ct */ &CancellationToken,
-                /* type_ */ MessageType,
-                /* instance */ &T::Instance,
-                /* source */ i64,
-                /* round */ i64,
-                /* value */ &T::Value,
-                /* pr */ i64,
-                /* pv */ &T::Value,
-                /* justification */ Option<&Vec<Msg<T>>>,
-            ) -> Result<()>
-            + Send
-            + Sync,
-    >,
+    pub broadcast: Box<dyn Broadcaster<T>>,
 
     /// Receive returns a stream of messages received
     /// from other processes in the system (including this process).
@@ -486,7 +573,7 @@ where
     // Broadcasts a non-ROUND-CHANGE message for current round.
     let broadcast_msg =
         |type_: MessageType, value: &T::Value, justification: Option<&Vec<Msg<T>>>| {
-            (t.broadcast)(
+            t.broadcast.broadcast(
                 ct,
                 type_,
                 instance,
@@ -500,7 +587,7 @@ where
         };
     // Broadcasts a ROUND-CHANGE message with current state.
     let broadcast_round_change = || {
-        (t.broadcast)(
+        t.broadcast.broadcast(
             ct,
             MSG_ROUND_CHANGE,
             instance,

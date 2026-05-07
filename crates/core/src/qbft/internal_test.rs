@@ -121,7 +121,7 @@ fn test_qbft(test: Test) {
                 broadcast: {
                     let clock = clock.clone();
 
-                    Box::new(
+                    Box::new(BroadcasterFn::new(
                         move |_, type_, instance, source, round, value, pr, pv, justification| {
                             if round > MAX_ROUND as i64 {
                                 return Err(QbftError::MaxRoundReached);
@@ -161,7 +161,7 @@ fn test_qbft(test: Test) {
 
                             Ok(())
                         },
-                    )
+                    ))
                 },
                 receive: receiver.clone(),
             };
@@ -713,7 +713,7 @@ fn noop_definition() -> Definition<I64Qbft> {
 
 fn noop_transport() -> Transport<I64Qbft> {
     Transport {
-        broadcast: Box::new(|_, _, _, _, _, _, _, _, _| Ok(())),
+        broadcast: Box::new(BroadcasterFn::new(|_, _, _, _, _, _, _, _, _| Ok(()))),
         receive: mpmc::never(),
     }
 }
