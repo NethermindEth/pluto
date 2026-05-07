@@ -73,15 +73,69 @@ pub enum FrostError {
     /// Direct FROST P2P send failed.
     #[error("frost p2p send: {0}")]
     FrostP2P(#[from] crate::frostp2p::FrostP2PError),
-    /// A FROST protobuf message failed validation.
-    #[error("{0}")]
-    InvalidMessage(&'static str),
+    /// Too many round-1 broadcast messages were collected.
+    #[error("too many round 1 casts messages")]
+    TooManyRound1CastsMessages,
+    /// Too many round-1 direct P2P messages were collected.
+    #[error("too many round 1 p2p messages")]
+    TooManyRound1P2PMessages,
+    /// Too many round-2 broadcast messages were collected.
+    #[error("too many round 2 casts messages")]
+    TooManyRound2CastsMessages,
+    /// A FROST message key was missing.
+    #[error("frost msg key cannot be nil")]
+    MissingMsgKey,
+    /// A round-1 P2P message source ID was invalid.
+    #[error("invalid round 1 p2p source ID")]
+    InvalidRound1P2PSourceId,
+    /// A round-1 P2P message target ID was invalid.
+    #[error("invalid round 1 p2p target ID")]
+    InvalidRound1P2PTargetId,
+    /// A round-1 P2P message validator index was invalid.
+    #[error("invalid round 1 p2p validator index")]
+    InvalidRound1P2PValidatorIndex,
+    /// A round-1 P2P message did not contain exactly one share per validator.
+    #[error("invalid round 1 p2p shares count")]
+    InvalidRound1P2PSharesCount,
+    /// A round-1 P2P message repeated a validator index.
+    #[error("duplicate round 1 p2p validator index")]
+    DuplicateRound1P2PValidatorIndex,
+    /// Failed to decode the round-1 Wi scalar.
+    #[error("decode wi scalar")]
+    DecodeWiScalar,
+    /// Failed to decode the round-1 C_i scalar.
+    #[error("decode c1 scalar")]
+    DecodeC1Scalar,
+    /// Failed to decode a round-1 commitment point.
+    #[error("decode commitment")]
+    DecodeCommitment,
+    /// Failed to decode a round-1 Shamir share scalar.
+    #[error("decode shamir scalar")]
+    DecodeShamirScalar,
+    /// Failed to decode a round-2 verification key point.
+    #[error("decode verification key scalar")]
+    DecodeVerificationKeyScalar,
+    /// Failed to decode a round-2 verification key share point.
+    #[error("decode vk share")]
+    DecodeVkShare,
     /// FROST transport configuration is invalid.
     #[error("frost config: {0}")]
     ConfigError(&'static str),
-    /// FROST transport internal state is invalid.
-    #[error("frost internal state: {0}")]
-    InternalState(&'static str),
+    /// The FROST P2P inbound receiver was already taken.
+    #[error("frost p2p inbound receiver already taken")]
+    P2PInboundReceiverAlreadyTaken,
+    /// The FROST broadcast event receiver was already taken.
+    #[error("frost bcast event receiver already taken")]
+    BcastEventReceiverAlreadyTaken,
+    /// The round-1 casts receiver was dropped before local self-delivery.
+    #[error("frost round 1 casts receiver dropped before self-delivery")]
+    Round1CastsReceiverDropped,
+    /// The round-2 casts receiver was dropped before local self-delivery.
+    #[error("frost round 2 casts receiver dropped before self-delivery")]
+    Round2CastsReceiverDropped,
+    /// Round-1 P2P construction attempted to send a private share to self.
+    #[error("unexpected p2p message to self")]
+    UnexpectedP2PMessageToSelf,
     /// FROST transport channel closed unexpectedly.
     #[error("frost channel closed: {0}")]
     ChannelClosed(&'static str),
