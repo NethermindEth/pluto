@@ -973,10 +973,10 @@ fn build_peer_results(
 }
 
 fn build_enr_hash(private_key: &k256::SecretKey, enr_strings: &[String]) -> Result<String> {
-    let self_enr = Record::from_key(private_key)?;
+    let self_enr = Record::from_key(private_key)?.to_string();
     let mut all_enrs = enr_strings.to_vec();
-    if !all_enrs.contains(&self_enr.to_string()) {
-        all_enrs.push(self_enr.to_string());
+    if !all_enrs.contains(&self_enr) {
+        all_enrs.push(self_enr);
     }
     all_enrs.sort();
     Ok(hex::encode(Sha256::digest(all_enrs.join(",").as_bytes())))
