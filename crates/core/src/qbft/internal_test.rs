@@ -45,10 +45,10 @@ fn test_qbft(test: Test) {
     let (result_chan_tx, result_chan_rx) = mpmc::bounded::<Vec<Msg<I64Qbft>>>(N);
     let (run_chan_tx, run_chan_rx) = mpmc::bounded::<Result<()>>(N);
 
-    let is_leader = Box::new(make_is_leader(N as i64));
+    let is_leader = make_is_leader(N as i64);
 
     let defs = Arc::new(Definition {
-        is_leader: is_leader.clone(),
+        is_leader: Box::new(LeaderSelectorFn::new(make_is_leader(N as i64))),
         new_timer: {
             let clock = clock.clone();
 
@@ -694,7 +694,7 @@ fn drop_30_percent_const() {
 
 fn noop_definition() -> Definition<I64Qbft> {
     Definition {
-        is_leader: Box::new(|_, _, _| false),
+        is_leader: Box::new(LeaderSelectorFn::new(|_, _, _| false)),
         new_timer: Box::new(|_| (mpmc::never(), Box::new(|| {}))),
         decide: Box::new(DeciderFn::new(|_, _, _, _| {})),
         compare: Box::new(|_, _, _, _, _, _| {}),
@@ -738,7 +738,7 @@ fn duplicate_pre_prepare_rules() {
     };
 
     let mut def = noop_definition();
-    def.is_leader = Box::new(|_, _, process| process == LEADER);
+    def.is_leader = Box::new(LeaderSelectorFn::new(|_, _, process| process == LEADER));
     def.log_upon_rule = Box::new(move |_, _, round, msg, upon_rule| {
         println!("UponRule: rule={} round={} ", upon_rule, msg.round());
 

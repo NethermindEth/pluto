@@ -99,6 +99,45 @@ where
     }
 }
 
+pub trait LeaderSelector<T>: Send + Sync
+where
+    T: QbftTypes,
+{
+    fn is_leader(&self, instance: &T::Instance, round: i64, process: i64) -> bool;
+}
+
+pub struct LeaderSelectorFn<T>
+where
+    T: QbftTypes,
+{
+    is_leader: Box<dyn Fn(&T::Instance, i64, i64) -> bool + Send + Sync>,
+    _marker: PhantomData<fn() -> T>,
+}
+
+impl<T> LeaderSelectorFn<T>
+where
+    T: QbftTypes,
+{
+    pub fn new<F>(is_leader: F) -> Self
+    where
+        F: Fn(&T::Instance, i64, i64) -> bool + Send + Sync + 'static,
+    {
+        Self {
+            is_leader: Box::new(is_leader),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T> LeaderSelector<T> for LeaderSelectorFn<T>
+where
+    T: QbftTypes,
+{
+    fn is_leader(&self, instance: &T::Instance, round: i64, process: i64) -> bool {
+        (self.is_leader)(instance, round, process)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum QbftError {
     #[error("Timeout")]
@@ -155,15 +194,7 @@ where
     T: QbftTypes,
 {
     /// A deterministic leader election function.
-    pub is_leader: Box<
-        dyn Fn(
-                /* instance */ &T::Instance,
-                /* round */ i64,
-                /* process */ i64,
-            ) -> bool
-            + Send
-            + Sync,
-    >,
+    pub is_leader: Box<dyn LeaderSelector<T>>,
 
     /// Returns a new timer channel and stop function for the round
     pub new_timer: Box<
@@ -472,7 +503,7 @@ where
 
     // Algorithm 1:11
     {
-        if (d.is_leader)(instance, round.get(), process) {
+        if d.is_leader.is_leader(instance, round.get(), process) {
             // Note round==1 at this point.
             broadcast_own_pre_prepare(vec![])?; // Empty justification since round==1
         }
@@ -823,7 +854,7 @@ where
                 return (UPON_UNJUST_QUORUM_ROUND_CHANGES, None);
             };
 
-            if !(d.is_leader)(instance, msg.round(), process) {
+            if !d.is_leader.is_leader(instance, msg.round(), process) {
                 return (UPON_NOTHING, None);
             }
 
@@ -975,7 +1006,7 @@ where
         panic!("bug: not a preprepare message");
     }
 
-    if !(d.is_leader)(instance, msg.round(), msg.source()) {
+    if !d.is_leader.is_leader(instance, msg.round(), msg.source()) {
         return false;
     }
 
