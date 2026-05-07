@@ -74,38 +74,41 @@ fn test_qbft(test: Test) {
         }),
         nodes: N as i64,
         fifo_limit: FIFO_LIMIT as i64,
-        log_round_change: {
-            let clock = clock.clone();
+        logger: Box::new(QbftLoggerFn::new(
+            {
+                let clock = clock.clone();
 
-            Box::new(move |_, process, round, new_round, upon_rule, _| {
-                println!(
-                    "{:?} - {}@{} change to {} ~= {}",
-                    clock.elapsed(),
-                    process,
-                    round,
-                    new_round,
-                    upon_rule,
-                );
-            })
-        },
-        log_unjust: Box::new(|_, _, msg| {
-            println!("Unjust: {:?}", msg);
-        }),
-        log_upon_rule: {
-            let clock = clock.clone();
-            Box::new(move |_, process, round, msg, upon_rule| {
-                println!(
-                    "{:?} {} => {}@{} -> {}@{} ~= {}",
-                    clock.elapsed(),
-                    msg.source(),
-                    msg.type_(),
-                    msg.round(),
-                    process,
-                    round,
-                    upon_rule,
-                );
-            })
-        },
+                move |_, process, round, msg, upon_rule| {
+                    println!(
+                        "{:?} {} => {}@{} -> {}@{} ~= {}",
+                        clock.elapsed(),
+                        msg.source(),
+                        msg.type_(),
+                        msg.round(),
+                        process,
+                        round,
+                        upon_rule,
+                    );
+                }
+            },
+            {
+                let clock = clock.clone();
+
+                move |_, process, round, new_round, upon_rule, _| {
+                    println!(
+                        "{:?} - {}@{} change to {} ~= {}",
+                        clock.elapsed(),
+                        process,
+                        round,
+                        new_round,
+                        upon_rule,
+                    );
+                }
+            },
+            |_, _, msg| {
+                println!("Unjust: {:?}", msg);
+            },
+        )),
     });
 
     thread::scope(|s| {
@@ -700,9 +703,11 @@ fn noop_definition() -> Definition<I64Qbft> {
         compare: Box::new(|_, _, _, _, _, _| {}),
         nodes: 0,
         fifo_limit: 0,
-        log_round_change: Box::new(|_, _, _, _, _, _| {}),
-        log_unjust: Box::new(|_, _, _| {}),
-        log_upon_rule: Box::new(|_, _, _, _, _| {}),
+        logger: Box::new(QbftLoggerFn::new(
+            |_, _, _, _, _| {},
+            |_, _, _, _, _, _| {},
+            |_, _, _| {},
+        )),
     }
 }
 
@@ -739,22 +744,26 @@ fn duplicate_pre_prepare_rules() {
 
     let mut def = noop_definition();
     def.is_leader = Box::new(LeaderSelectorFn::new(|_, _, process| process == LEADER));
-    def.log_upon_rule = Box::new(move |_, _, round, msg, upon_rule| {
-        println!("UponRule: rule={} round={} ", upon_rule, msg.round());
+    def.logger = Box::new(QbftLoggerFn::new(
+        move |_, _, round, msg, upon_rule| {
+            println!("UponRule: rule={} round={} ", upon_rule, msg.round());
 
-        assert!(upon_rule == UPON_JUSTIFIED_PRE_PREPARE);
+            assert!(upon_rule == UPON_JUSTIFIED_PRE_PREPARE);
 
-        if msg.round() == 1 {
-            return;
-        }
+            if msg.round() == 1 {
+                return;
+            }
 
-        if msg.round() == 2 {
-            cts.cancel();
-            return;
-        }
+            if msg.round() == 2 {
+                cts.cancel();
+                return;
+            }
 
-        panic!("unexpected round {}", round);
-    });
+            panic!("unexpected round {}", round);
+        },
+        |_, _, _, _, _, _| {},
+        |_, _, _| {},
+    ));
     def.compare = Box::new(|_, _, _, _, return_err, _| {
         _ = return_err.send(Ok(()));
     });

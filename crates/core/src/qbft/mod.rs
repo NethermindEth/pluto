@@ -138,6 +138,99 @@ where
     }
 }
 
+pub trait QbftLogger<T>: Send + Sync
+where
+    T: QbftTypes,
+{
+    fn log_upon_rule(
+        &self,
+        instance: &T::Instance,
+        process: i64,
+        round: i64,
+        msg: &Msg<T>,
+        upon_rule: UponRule,
+    );
+
+    fn log_round_change(
+        &self,
+        instance: &T::Instance,
+        process: i64,
+        round: i64,
+        new_round: i64,
+        upon_rule: UponRule,
+        msgs: &Vec<Msg<T>>,
+    );
+
+    fn log_unjust(&self, instance: &T::Instance, process: i64, msg: Msg<T>);
+}
+
+type LogUponRuleFn<T> =
+    Box<dyn Fn(&<T as QbftTypes>::Instance, i64, i64, &Msg<T>, UponRule) + Send + Sync>;
+type LogRoundChangeFn<T> =
+    Box<dyn Fn(&<T as QbftTypes>::Instance, i64, i64, i64, UponRule, &Vec<Msg<T>>) + Send + Sync>;
+type LogUnjustFn<T> = Box<dyn Fn(&<T as QbftTypes>::Instance, i64, Msg<T>) + Send + Sync>;
+
+pub struct QbftLoggerFn<T>
+where
+    T: QbftTypes,
+{
+    log_upon_rule: LogUponRuleFn<T>,
+    log_round_change: LogRoundChangeFn<T>,
+    log_unjust: LogUnjustFn<T>,
+    _marker: PhantomData<fn() -> T>,
+}
+
+impl<T> QbftLoggerFn<T>
+where
+    T: QbftTypes,
+{
+    pub fn new<F1, F2, F3>(log_upon_rule: F1, log_round_change: F2, log_unjust: F3) -> Self
+    where
+        F1: Fn(&T::Instance, i64, i64, &Msg<T>, UponRule) + Send + Sync + 'static,
+        F2: Fn(&T::Instance, i64, i64, i64, UponRule, &Vec<Msg<T>>) + Send + Sync + 'static,
+        F3: Fn(&T::Instance, i64, Msg<T>) + Send + Sync + 'static,
+    {
+        Self {
+            log_upon_rule: Box::new(log_upon_rule),
+            log_round_change: Box::new(log_round_change),
+            log_unjust: Box::new(log_unjust),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T> QbftLogger<T> for QbftLoggerFn<T>
+where
+    T: QbftTypes,
+{
+    fn log_upon_rule(
+        &self,
+        instance: &T::Instance,
+        process: i64,
+        round: i64,
+        msg: &Msg<T>,
+        upon_rule: UponRule,
+    ) {
+        (self.log_upon_rule)(instance, process, round, msg, upon_rule);
+    }
+
+    fn log_round_change(
+        &self,
+        instance: &T::Instance,
+        process: i64,
+        round: i64,
+        new_round: i64,
+        upon_rule: UponRule,
+        msgs: &Vec<Msg<T>>,
+    ) {
+        (self.log_round_change)(instance, process, round, new_round, upon_rule, msgs);
+    }
+
+    fn log_unjust(&self, instance: &T::Instance, process: i64, msg: Msg<T>) {
+        (self.log_unjust)(instance, process, msg);
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum QbftError {
     #[error("Timeout")]
@@ -221,34 +314,8 @@ where
     /// Called when consensus has been reached on a value.
     pub decide: Box<dyn Decider<T>>,
 
-    /// Allows debug logging of triggered upon rules on message receipt.
-    /// It includes the rule that triggered it and all received round messages.
-    pub log_upon_rule: Box<
-        dyn Fn(
-                /* instance */ &T::Instance,
-                /* process */ i64,
-                /* round */ i64,
-                /* msg */ &Msg<T>,
-                /* upon_rule */ UponRule,
-            ) + Send
-            + Sync,
-    >,
-    /// Allows debug logging of round changes.
-    pub log_round_change: Box<
-        dyn Fn(
-                /* instance */ &T::Instance,
-                /* process */ i64,
-                /* round */ i64,
-                /* new_round */ i64,
-                /* upon_rule */ UponRule,
-                /* msgs */ &Vec<Msg<T>>,
-            ) + Send
-            + Sync,
-    >,
-
-    /// Allows debug logging of unjust messages.
-    pub log_unjust:
-        Box<dyn Fn(/* instance */ &T::Instance, /* process */ i64, /* msg */ Msg<T>) + Send + Sync>,
+    /// Allows debug logging of QBFT events.
+    pub logger: Box<dyn QbftLogger<T>>,
 
     /// Total number of nodes/processes participating in consensus.
     pub nodes: i64,
@@ -487,7 +554,7 @@ where
             return;
         }
 
-        (d.log_round_change)(
+        d.logger.log_round_change(
             instance,
             process,
             round.get(),
@@ -546,7 +613,7 @@ where
 
                 // Drop unjust messages
                 if !is_justified(d, instance, &msg, compare_failure_round) {
-                    (d.log_unjust)(instance, process, msg);
+                    d.logger.log_unjust(instance, process, msg);
                     continue;
                 }
 
@@ -559,7 +626,7 @@ where
                     continue;
                 }
 
-                (d.log_upon_rule)(instance, process, round.get(), &msg, rule);
+                d.logger.log_upon_rule(instance, process, round.get(), &msg, rule);
 
                 match rule {
                     // Algorithm 2:1
