@@ -287,6 +287,41 @@ where
     }
 }
 
+pub trait TimerFactory: Send + Sync {
+    fn new_timer(&self, round: i64)
+    -> (mpmc::Receiver<time::Instant>, Box<dyn Fn() + Send + Sync>);
+}
+
+type NewTimerFn =
+    Box<dyn Fn(i64) -> (mpmc::Receiver<time::Instant>, Box<dyn Fn() + Send + Sync>) + Send + Sync>;
+
+pub struct TimerFactoryFn {
+    new_timer: NewTimerFn,
+}
+
+impl TimerFactoryFn {
+    pub fn new<F>(new_timer: F) -> Self
+    where
+        F: Fn(i64) -> (mpmc::Receiver<time::Instant>, Box<dyn Fn() + Send + Sync>)
+            + Send
+            + Sync
+            + 'static,
+    {
+        Self {
+            new_timer: Box::new(new_timer),
+        }
+    }
+}
+
+impl TimerFactory for TimerFactoryFn {
+    fn new_timer(
+        &self,
+        round: i64,
+    ) -> (mpmc::Receiver<time::Instant>, Box<dyn Fn() + Send + Sync>) {
+        (self.new_timer)(round)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum QbftError {
     #[error("Timeout")]
@@ -332,11 +367,7 @@ where
     pub is_leader: Box<dyn LeaderSelector<T>>,
 
     /// Returns a new timer channel and stop function for the round
-    pub new_timer: Box<
-        dyn Fn(/* round */ i64) -> (mpmc::Receiver<time::Instant>, Box<dyn Fn() + Send + Sync>)
-            + Send
-            + Sync,
-    >,
+    pub new_timer: Box<dyn TimerFactory>,
 
     /// Called when leader proposes value and we compare it with our local
     /// value. It's an opt-in feature that should instantly return `None` on
@@ -617,7 +648,7 @@ where
             broadcast_own_pre_prepare(vec![])?; // Empty justification since round==1
         }
 
-        (timer_chan, stop_timer) = (d.new_timer)(round.get());
+        (timer_chan, stop_timer) = d.new_timer.new_timer(round.get());
     }
 
     while !ct.is_canceled() {
@@ -676,7 +707,7 @@ where
                         change_round(msg.round(), rule);
 
                         stop_timer();
-                        (timer_chan, stop_timer) = (d.new_timer)(round.get());
+                        (timer_chan, stop_timer) = d.new_timer.new_timer(round.get());
 
                         let compare_result = compare(
                             ct,
@@ -705,7 +736,7 @@ where
                                         change_round(round.get() + 1, UPON_ROUND_TIMEOUT);
                                         stop_timer();
 
-                                        (timer_chan, stop_timer) = (d.new_timer)(round.get());
+                                        (timer_chan, stop_timer) = d.new_timer.new_timer(round.get());
 
                                         broadcast_round_change()?;
                                     }
@@ -749,7 +780,7 @@ where
                         );
 
                         stop_timer();
-                        (timer_chan, stop_timer) = (d.new_timer)(round.get());
+                        (timer_chan, stop_timer) = d.new_timer.new_timer(round.get());
 
                         broadcast_round_change()?;
                     }
@@ -780,7 +811,7 @@ where
                 change_round(round.get() + 1, UPON_ROUND_TIMEOUT);
                 stop_timer();
 
-                (timer_chan, stop_timer) = (d.new_timer)(round.get());
+                (timer_chan, stop_timer) = d.new_timer.new_timer(round.get());
 
                 broadcast_round_change()?;
             }

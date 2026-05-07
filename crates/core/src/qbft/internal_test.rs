@@ -49,10 +49,10 @@ fn test_qbft(test: Test) {
 
     let defs = Arc::new(Definition {
         is_leader: Box::new(LeaderSelectorFn::new(make_is_leader(N as i64))),
-        new_timer: {
+        new_timer: Box::new(TimerFactoryFn::new({
             let clock = clock.clone();
 
-            Box::new(move |round| {
+            move |round| {
                 let d: Duration = if test.const_period {
                     Duration::from_secs(1)
                 } else {
@@ -61,8 +61,8 @@ fn test_qbft(test: Test) {
                 };
 
                 clock.new_timer(d)
-            })
-        },
+            }
+        })),
         decide: {
             let result_chan_tx = result_chan_tx.clone();
             Box::new(DeciderFn::new(move |_, _, _, q_commit| {
@@ -703,7 +703,7 @@ fn drop_30_percent_const() {
 fn noop_definition() -> Definition<I64Qbft> {
     Definition {
         is_leader: Box::new(LeaderSelectorFn::new(|_, _, _| false)),
-        new_timer: Box::new(|_| (mpmc::never(), Box::new(|| {}))),
+        new_timer: Box::new(TimerFactoryFn::new(|_| (mpmc::never(), Box::new(|| {})))),
         decide: Box::new(DeciderFn::new(|_, _, _, _| {})),
         compare: Box::new(|_, _, _, _, _, _| {}),
         nodes: 0,
