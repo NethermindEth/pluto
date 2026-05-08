@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # setup.sh — Initialises WORK_DIR, generates per-node keys/ENRs, then creates
-#             the cluster-definition.json via `charon create dkg`.
+#             the cluster-definition.json via `pluto create dkg`.
 #
 # Usage: ./setup.sh
 #
@@ -17,11 +17,11 @@ source "${SCRIPT_DIR}/lib.sh"
 LOG_PREFIX="setup"
 
 # ── Pre-flight ───────────────────────────────────────────────────────────────
-# charon is always required (used for `create dkg`).
-# pluto is required only when at least one slot uses it.
-require_bin "charon" "${CHARON_BIN}" || exit 1
-if (( PLUTO_NODES > 0 )); then
-    require_bin "pluto" "${PLUTO_BIN}" || exit 1
+# pluto is always required (used for `create dkg`).
+# charon is required only when at least one slot uses it.
+require_bin "pluto" "${PLUTO_BIN}" || exit 1
+if (( CHARON_NODES > 0 )); then
+    require_bin "charon" "${CHARON_BIN}" || exit 1
 fi
 
 # ── Wipe & recreate WORK_DIR ─────────────────────────────────────────────────
@@ -57,12 +57,12 @@ done
 enr_list=$(IFS=','; printf '%s' "${enrs[*]}")
 log_info "Collected ${#enrs[@]} ENRs"
 
-# `charon create dkg --output-dir=DIR` writes cluster-definition.json directly
+# `pluto create dkg --output-dir=DIR` writes cluster-definition.json directly
 # into DIR (not into DIR/.charon/).
-CHARON_DEF_FILE="${WORK_DIR}/cluster-definition.json"
+DEF_FILE="${WORK_DIR}/cluster-definition.json"
 
-log_info "Running: ${CHARON_BIN} create dkg"
-"${CHARON_BIN}" create dkg \
+log_info "Running: ${PLUTO_BIN} create dkg"
+"${PLUTO_BIN}" create dkg \
     --operator-enrs="${enr_list}" \
     --threshold="${THRESHOLD}" \
     --fee-recipient-addresses="${FEE_RECIPIENT}" \
@@ -71,11 +71,11 @@ log_info "Running: ${CHARON_BIN} create dkg"
     --name=test-dkg \
     --output-dir="${WORK_DIR}"
 
-if [[ ! -f "${CHARON_DEF_FILE}" ]]; then
-    log_err "cluster-definition.json not found at ${CHARON_DEF_FILE}"
+if [[ ! -f "${DEF_FILE}" ]]; then
+    log_err "cluster-definition.json not found at ${DEF_FILE}"
     log_err "Files in ${WORK_DIR}:"
     ls -la "${WORK_DIR}" >&2
     exit 1
 fi
 
-log_info "Done. Definition file: ${CHARON_DEF_FILE}"
+log_info "Done. Definition file: ${DEF_FILE}"

@@ -27,9 +27,9 @@
 #                        First local port used by runtime smoke verification.
 #   NETWORK=holesky      Ethereum network for the cluster definition.
 #   FEE_RECIPIENT=0xDeaD...
-#                        Fee recipient address passed to charon create dkg.
+#                        Fee recipient address passed to pluto create dkg.
 #   WITHDRAWAL_ADDR=0xDeaD...
-#                        Withdrawal address passed to charon create dkg.
+#                        Withdrawal address passed to pluto create dkg.
 #   CI=                  When truthy (1/true/yes/on), suppress per-node tee
 #                        to stdout; logs land only in WORK_DIR/node-*/node.log.
 #
