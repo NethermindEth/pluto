@@ -1054,7 +1054,7 @@ async fn setup_p2p(
         p2p_cfg,
         private_key,
         NodeType::TCP,
-        true,
+        false,
         p2p_context,
         |builder, _keypair, relay_client| {
             builder.with_gater(gater).with_inner(TestBehaviour {
