@@ -28,11 +28,25 @@ node_exit_code() {
     cat "${exit_file}"
 }
 
+# Pluto and Charon both emit this line right after the ceremony finishes,
+# before their final shutdown/teardown. Treat it as authoritative — by this
+# point monitor.sh has already verified the artifacts on disk.
+SUCCESS_LINE="Successfully completed DKG ceremony"
+PID_FILE="${WORK_DIR}/pids"
+
+node_logged_success() {
+    local index="${1}"
+    local log_file="${WORK_DIR}/node-${index}/node.log"
+    [[ -f "${log_file}" ]] || return 1
+    grep -qF "${SUCCESS_LINE}" "${log_file}"
+}
+
 log_info "Waiting for ${NODES} node exit codes (timeout: ${NODE_EXIT_TIMEOUT}s)"
 
 start_time=$(date +%s)
 while true; do
     done_count=0
+    success_count=0
     for (( i = 0; i < NODES; i++ )); do
         if [[ -f "${WORK_DIR}/node-${i}/exit-code" ]]; then
             done_count=$(( done_count + 1 ))
@@ -43,10 +57,22 @@ while true; do
                 exit 1
             fi
         fi
+        if node_logged_success "${i}"; then
+            success_count=$(( success_count + 1 ))
+        fi
     done
 
     if (( done_count == NODES )); then
         break
+    fi
+
+    # Short-circuit: every node logged success but some are still running
+    # (e.g. blocked on SHUTDOWN_DELAY). Kill survivors and treat as success.
+    if (( success_count == NODES )); then
+        log_info "All ${NODES} nodes logged success; stopping survivors."
+        kill_pgids "${PID_FILE}" 5
+        log_info "All ${NODES} nodes stopped after success log line."
+        exit 0
     fi
 
     elapsed=$(( $(date +%s) - start_time ))
