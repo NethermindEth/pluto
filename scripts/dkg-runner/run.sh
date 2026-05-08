@@ -20,6 +20,11 @@
 #                        Scratch directory for the run (wiped on every call).
 #   KEEP_NODES=0         Leave nodes running after a successful ceremony when
 #                        set to 1/true/yes/on.
+#   RUN_SMOKE_VERIFY=0   Smoke-start generated node dirs with charon run after
+#                        successful output collection.
+#   SMOKE_SECONDS=8      Seconds smoke-started nodes must stay alive.
+#   SMOKE_PORT_BASE=39000
+#                        First local port used by runtime smoke verification.
 #   NETWORK=holesky      Ethereum network for the cluster definition.
 #   FEE_RECIPIENT=0xDeaD...
 #                        Fee recipient address passed to charon create dkg.
@@ -63,6 +68,16 @@ if (( THRESHOLD > NODES )); then
     exit 1
 fi
 
+if ! command -v jq >/dev/null 2>&1; then
+    log_err "jq is required for semantic output verification"
+    exit 1
+fi
+
+if is_truthy "${RUN_SMOKE_VERIFY}" && ! command -v curl >/dev/null 2>&1; then
+    log_err "curl is required for runtime smoke verification"
+    exit 1
+fi
+
 # ── Cleanup helpers ──────────────────────────────────────────────────────────
 
 PID_FILE="${WORK_DIR}/pids"
@@ -95,6 +110,8 @@ log_info "  PLUTO_BIN    = ${PLUTO_BIN}"
 log_info "  CHARON_BIN   = ${CHARON_BIN}"
 log_info "  WORK_DIR     = ${WORK_DIR}"
 log_info "  KEEP_NODES   = ${KEEP_NODES}"
+log_info "  RUN_SMOKE_VERIFY = ${RUN_SMOKE_VERIFY}"
+log_info "  SMOKE_PORT_BASE = ${SMOKE_PORT_BASE}"
 log_info "  CI           = ${CI:-}"
 log_info "=============================================="
 
@@ -136,6 +153,14 @@ fi
 
 log_info "--- Phase 5: Collect outputs ---"
 "${SCRIPT_DIR}/collect.sh"
+
+log_info "--- Phase 6: Verify semantic outputs ---"
+"${SCRIPT_DIR}/ci/verify-output-semantic.sh"
+
+if is_truthy "${RUN_SMOKE_VERIFY}"; then
+    log_info "--- Phase 7: Smoke-start runtime outputs ---"
+    "${SCRIPT_DIR}/ci/verify-run-smoke.sh"
+fi
 
 log_info "=============================================="
 log_info "DKG ceremony completed successfully."
