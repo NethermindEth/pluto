@@ -49,24 +49,40 @@ start_node() {
     local label="${3}"
     local data_dir="${WORK_DIR}/node-${index}"
     local log_file="${data_dir}/node.log"
+    local exit_file="${data_dir}/exit-code"
 
     mkdir -p "${data_dir}"
+    rm -f "${exit_file}"
     log_info "Starting ${label} node ${index} (bin: ${bin})"
 
     if is_ci; then
         # Quiet path for CI: write to log file only.
-        "${bin}" dkg \
-            --definition-file="${DEF_FILE}" \
-            --data-dir="${data_dir}" \
-            --p2p-relays="${RELAY_URL}" \
-            > "${log_file}" 2>&1 &
+        (
+            set +e
+            "${bin}" dkg \
+                --definition-file="${DEF_FILE}" \
+                --data-dir="${data_dir}" \
+                --p2p-relays="${RELAY_URL}" \
+                --shutdown-delay="${SHUTDOWN_DELAY}" \
+                > "${log_file}" 2>&1
+            status=$?
+            echo "${status}" > "${exit_file}"
+            exit "${status}"
+        ) &
     else
         # Interactive path: tee to log file and the terminal.
-        "${bin}" dkg \
-            --definition-file="${DEF_FILE}" \
-            --data-dir="${data_dir}" \
-            --p2p-relays="${RELAY_URL}" \
-            > >(tee "${log_file}") 2>&1 &
+        (
+            set +e
+            "${bin}" dkg \
+                --definition-file="${DEF_FILE}" \
+                --data-dir="${data_dir}" \
+                --p2p-relays="${RELAY_URL}" \
+                --shutdown-delay="${SHUTDOWN_DELAY}" \
+                > >(tee "${log_file}") 2>&1
+            status=$?
+            echo "${status}" > "${exit_file}"
+            exit "${status}"
+        ) &
     fi
 
     echo "$!" >> "${PID_FILE}"
