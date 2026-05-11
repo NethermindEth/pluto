@@ -58,7 +58,7 @@ services:
         condition: service_completed_successfully
 
   create-dkg:
-    image: ${CHARON_IMAGE:-obolnetwork/charon:latest}
+    image: docker:cli
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -67,7 +67,9 @@ services:
         ENR1=$$(cat /cluster/node-1/enr.txt)
         ENR2=$$(cat /cluster/node-2/enr.txt)
         ENR3=$$(cat /cluster/node-3/enr.txt)
-        charon create dkg \
+        docker run --rm -v pluto-mixed-dkg-test_cluster-data:/cluster \
+          ${PLUTO_IMAGE:-obolnetwork/charon:latest} \
+          create dkg \
           --operator-enrs="$$ENR0,$$ENR1,$$ENR2,$$ENR3" \
           --threshold=3 \
           --fee-recipient-addresses=0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF \
@@ -76,6 +78,7 @@ services:
           --name=test-dkg \
           --output-dir=/cluster
     volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
       - cluster-data:/cluster
     depends_on:
       setup-enr:
