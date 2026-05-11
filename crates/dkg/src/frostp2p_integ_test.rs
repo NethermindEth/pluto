@@ -24,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     bcast,
     frost::run_frost_parallel,
-    frostp2p::{FrostP2P, FrostP2PBehaviour, FrostP2PEvent, FrostP2PHandle, new_frost_p2p},
+    frostp2p::{FrostP2P, FrostP2PBehaviour, FrostP2PEvent, new_frost_p2p},
     share::Share,
 };
 
@@ -42,13 +42,13 @@ struct TestBehaviour {
 
 #[derive(Debug)]
 enum TestBehaviourEvent {
-    Bcast(bcast::Event),
+    Bcast,
     Frost(FrostP2PEvent),
 }
 
 impl From<bcast::Event> for TestBehaviourEvent {
-    fn from(event: bcast::Event) -> Self {
-        Self::Bcast(event)
+    fn from(_event: bcast::Event) -> Self {
+        Self::Bcast
     }
 }
 
@@ -60,7 +60,6 @@ impl From<FrostP2PEvent> for TestBehaviourEvent {
 
 struct LocalNode {
     transport: FrostP2P,
-    frost_handle: FrostP2PHandle,
     node: Node<TestBehaviour>,
 }
 
@@ -283,11 +282,7 @@ async fn build_local_nodes(
             move |builder, _keypair| builder.with_inner(behaviour),
         )?;
 
-        nodes.push(LocalNode {
-            transport,
-            frost_handle,
-            node,
-        });
+        nodes.push(LocalNode { transport, node });
     }
 
     Ok(nodes)
@@ -303,7 +298,6 @@ fn spawn_nodes(
 
     for (index, local) in nodes.into_iter().enumerate() {
         let transport = local.transport;
-        let frost_handle = local.frost_handle;
         let mut node = local.node;
         let conn_tx = conn_tx.clone();
         let listen_tx = listen_tx.clone();
@@ -329,11 +323,6 @@ fn spawn_nodes(
                             }
                             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                                 let _ = conn_tx.send((index, peer_id));
-                            }
-                            SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(
-                                TestBehaviourEvent::Bcast(event),
-                            )) => {
-                                frost_handle.handle_bcast_event(event)?;
                             }
                             SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(
                                 TestBehaviourEvent::Frost(event),

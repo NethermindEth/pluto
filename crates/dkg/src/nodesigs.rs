@@ -99,8 +99,8 @@ impl NodeSigBcast {
 
     /// Exchanges K1 signatures over the lock hash with all peers.
     ///
-    /// Signs `lock_hash` with `key`, broadcasts the signature to all peers, and
-    /// polls until every peer's signature has been received and verified.
+    /// Signs `lock_hash` with `key`, waits for reliable-broadcast completion,
+    /// then polls until every peer's signature has been received and verified.
     /// Returns all collected signatures ordered by peer index.
     pub async fn exchange(
         self,
@@ -129,7 +129,10 @@ impl NodeSigBcast {
 
         tracing::debug!("Exchanging node signatures");
 
-        self.bcast.broadcast(NODE_SIG_MSG_ID, &bcast_data).await?;
+        tokio::select! {
+            () = token.cancelled() => return Err(Error::Cancelled),
+            result = self.bcast.broadcast_and_wait(NODE_SIG_MSG_ID, &bcast_data) => result?,
+        }
 
         {
             let mut sigs = self.sigs.lock().unwrap_or_else(|e| e.into_inner());
@@ -430,6 +433,53 @@ mod tests {
 
         let guard = sigs.lock().unwrap();
         assert_eq!(guard[1], Some(NONE_DATA.to_vec()));
+    }
+
+    #[tokio::test]
+    async fn exchange_observes_bcast_failure_on_peer_unreachable() -> anyhow::Result<()> {
+        let (key0, peer0) = make_peer(0, 0);
+        let (_, peer1) = make_peer(1, 1);
+        let peer_ids = vec![peer0.id, peer1.id];
+        let p2p_context = P2PContext::new(peer_ids.clone());
+        let (behaviour, component) = Behaviour::new(peer_ids, p2p_context.clone(), key0.clone());
+        let nsig =
+            NodeSigBcast::new(vec![peer0, peer1], 0, component, CancellationToken::new()).await?;
+
+        let mut node = Node::new_server(
+            P2PConfig::default(),
+            key0.clone(),
+            NodeType::TCP,
+            false,
+            p2p_context,
+            None,
+            move |builder, _| builder.with_inner(behaviour),
+        )?;
+        let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
+        let node_task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut stop_rx => break,
+                    _ = node.select_next_some() => {}
+                }
+            }
+        });
+
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            nsig.exchange(Some(&key0), [42u8; 32], CancellationToken::new()),
+        )
+        .await
+        .context("exchange should observe bcast failure")?
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::Broadcast(bcast::Error::BroadcastFailed(_))
+        ));
+
+        let _ = stop_tx.send(());
+        node_task.await?;
+
+        Ok(())
     }
 
     struct TestNode {

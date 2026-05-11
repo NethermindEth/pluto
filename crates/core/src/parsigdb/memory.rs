@@ -1,4 +1,4 @@
-use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
+use std::{collections::HashMap, error::Error as StdError, future::Future, pin::Pin, sync::Arc};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -133,6 +133,22 @@ pub enum MemDBError {
     /// Signed data error.
     #[error("signed data error: {0}")]
     SignedDataError(#[from] SignedDataError),
+
+    /// Internal subscriber error.
+    #[error("internal subscriber: {0}")]
+    InternalSubscriber(#[from] InternalSubscriberError),
+}
+
+/// Internal subscriber error.
+#[derive(Debug, thiserror::Error)]
+pub enum InternalSubscriberError {
+    /// Partial-signature broadcast failed.
+    #[error("parsigex broadcast failed")]
+    ParsigexBroadcast {
+        /// Broadcast source error.
+        #[source]
+        source: Box<dyn StdError + Send + Sync>,
+    },
 }
 
 type Result<T> = std::result::Result<T, MemDBError>;
