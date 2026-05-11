@@ -120,6 +120,7 @@ services:
       - --definition-file=/cluster/cluster-definition.json
       - --data-dir=/cluster/node-0
       - "--p2p-relays=${RELAY_URL:-http://relay:3640}"
+      - --p2p-tcp-address=0.0.0.0:3610
     depends_on:
       relay:
         condition: service_started
@@ -136,6 +137,7 @@ services:
       - --definition-file=/cluster/cluster-definition.json
       - --data-dir=/cluster/node-1
       - "--p2p-relays=${RELAY_URL:-http://relay:3640}"
+      - --p2p-tcp-address=0.0.0.0:3610
     depends_on:
       relay:
         condition: service_started
@@ -152,6 +154,7 @@ services:
       - --definition-file=/cluster/cluster-definition.json
       - --data-dir=/cluster/node-2
       - "--p2p-relays=${RELAY_URL:-http://relay:3640}"
+      - --p2p-tcp-address=0.0.0.0:3610
     depends_on:
       relay:
         condition: service_started
@@ -168,6 +171,7 @@ services:
       - --definition-file=/cluster/cluster-definition.json
       - --data-dir=/cluster/node-3
       - "--p2p-relays=${RELAY_URL:-http://relay:3640}"
+      - --p2p-tcp-address=0.0.0.0:3610
     depends_on:
       relay:
         condition: service_started
