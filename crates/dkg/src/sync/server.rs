@@ -197,7 +197,12 @@ impl Server {
 
     pub(crate) async fn clear_connected(&self, peer_id: PeerId) {
         let removed = self
-            .mutate_state(|state| state.connected.remove(&peer_id))
+            .mutate_state(|state| {
+                if state.shutdown.contains(&peer_id) {
+                    return false;
+                }
+                state.connected.remove(&peer_id)
+            })
             .await;
         if removed {
             self.inner.notify.notify_waiters();
@@ -206,6 +211,7 @@ impl Server {
 
     pub(crate) async fn set_shutdown(&self, peer_id: PeerId) {
         self.mutate_state(|state| {
+            state.connected.insert(peer_id);
             state.shutdown.insert(peer_id);
         })
         .await;
@@ -288,5 +294,23 @@ mod tests {
         server.set_err(Error::PeerStepAhead).await;
 
         assert!(matches!(server.err().await, Some(Error::PeerStepBehind)));
+    }
+
+    #[tokio::test]
+    async fn clear_connected_keeps_shutdown_peer_connected() {
+        let server = test_server();
+        let peer_id = PeerId::random();
+
+        let (inserted, count) = server.set_connected(peer_id).await;
+        assert!(inserted);
+        assert_eq!(count, 1);
+
+        server.clear_connected(peer_id).await;
+        server.set_shutdown(peer_id).await;
+        server.clear_connected(peer_id).await;
+
+        let state = server.inner.state.read().await;
+        assert!(state.connected.contains(&peer_id));
+        assert!(state.shutdown.contains(&peer_id));
     }
 }

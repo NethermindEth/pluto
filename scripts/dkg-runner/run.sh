@@ -13,6 +13,7 @@
 #                        Relay ENR endpoint used by the DKG nodes.
 #   TIMEOUT=120          Seconds to wait for all nodes before aborting.
 #   NODE_EXIT_TIMEOUT=90 Seconds to wait for nodes to exit after completion.
+#   SHUTDOWN_DELAY=30s  Graceful shutdown delay passed to each DKG node.
 #   PLUTO_BIN=./target/debug/pluto
 #                        Path to the Pluto binary.
 #   CHARON_BIN=charon    Path to the Charon binary.
@@ -106,6 +107,7 @@ log_info "  RELAY_URL    = ${RELAY_URL}"
 log_info "  NETWORK      = ${NETWORK}"
 log_info "  TIMEOUT      = ${TIMEOUT}s"
 log_info "  NODE_EXIT_TIMEOUT = ${NODE_EXIT_TIMEOUT}s"
+log_info "  SHUTDOWN_DELAY    = ${SHUTDOWN_DELAY}"
 log_info "  PLUTO_BIN    = ${PLUTO_BIN}"
 log_info "  CHARON_BIN   = ${CHARON_BIN}"
 log_info "  WORK_DIR     = ${WORK_DIR}"
