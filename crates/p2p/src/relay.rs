@@ -64,6 +64,11 @@ pub struct RelayManager {
 
     /// Connection states for each relay.
     connection_states: HashMap<PeerId, RelayConnectionState>,
+
+    /// Latest known transport addresses for each relay. Persists across the
+    /// connection lifecycle so we can redial after `ConnectionClosed` without
+    /// waiting for another `MutablePeer` update.
+    relay_addrs: HashMap<PeerId, Vec<Multiaddr>>,
 }
 
 pub enum RelayManagerEvent {
@@ -171,12 +176,58 @@ impl RelayManager {
             events: VecDeque::new(),
             relay_subs,
             dial_states: HashMap::new(),
+            connection_states: HashMap::new(),
+            relay_addrs: HashMap::new(),
         }
     }
 
+    /// Builds circuit listen addresses for a relay from its transport
+    /// addresses: `/ip4/.../tcp/.../p2p/<relay-id>/p2p-circuit`.
+    fn circuit_addrs(relay_id: PeerId, addrs: &[Multiaddr]) -> Vec<Multiaddr> {
+        addrs
+            .iter()
+            .map(|addr| {
+                let mut circuit: Multiaddr = addr
+                    .iter()
+                    .filter(|p| !matches!(p, MaProtocol::P2p(_)))
+                    .collect();
+                circuit.push(MaProtocol::P2p(relay_id));
+                circuit.push(MaProtocol::P2pCircuit);
+                circuit
+            })
+            .collect()
+    }
+
+    /// Extracts the relay peer id from a circuit listen address of the form
+    /// `/.../p2p/<relay-id>/p2p-circuit`. Returns `None` if the address is not
+    /// a relay circuit address.
+    fn relay_id_from_circuit_addr(addr: &Multiaddr) -> Option<PeerId> {
+        let mut iter = addr.iter().peekable();
+        let mut last_p2p: Option<PeerId> = None;
+        while let Some(proto) = iter.next() {
+            match proto {
+                MaProtocol::P2p(id) => last_p2p = Some(id),
+                MaProtocol::P2pCircuit => return last_p2p,
+                _ => {}
+            }
+        }
+        None
+    }
+
     pub fn queue_relay_update(&mut self, relay: Peer) {
-        self.dial_states
-            .insert(relay.id, RelayDialState::new(RelayDialType::Relay, relay.id, relay.addresses));
+        self.relay_addrs.insert(relay.id, relay.addresses.clone());
+
+        // If we're already connected (or actively reserving), don't restart
+        // the dial cycle — the address store has been refreshed and the next
+        // disconnect will pick it up.
+        if self.connection_states.contains_key(&relay.id) {
+            return;
+        }
+
+        self.dial_states.insert(
+            relay.id,
+            RelayDialState::new(RelayDialType::Relay, relay.id, relay.addresses),
+        );
     }
 
     pub fn process_relay_dials(&mut self, cx: &mut Context<'_>) {
@@ -217,20 +268,61 @@ impl NetworkBehaviour for RelayManager {
     fn on_swarm_event(&mut self, event: FromSwarm) {
         match event {
             FromSwarm::ConnectionEstablished(conn) => {
-                if let Some(_) = self.dial_states.get_mut(&conn.peer_id) {
-                    self.events.push_back(ToSwarm::GenerateEvent(RelayManagerEvent::Dialed(conn.peer_id)));
-                    self.dial_states.remove(&conn.peer_id);
-                    self.connection_states.insert(conn.peer_id, RelayConnectionState::Established);
-                    
+                let Some(dial_state) = self.dial_states.remove(&conn.peer_id) else {
+                    return;
+                };
+
+                self.events
+                    .push_back(ToSwarm::GenerateEvent(RelayManagerEvent::Dialed(
+                        conn.peer_id,
+                    )));
+                self.connection_states
+                    .insert(conn.peer_id, RelayConnectionState::Established);
+
+                for circuit_addr in Self::circuit_addrs(conn.peer_id, &dial_state.addrs) {
+                    tracing::debug!(
+                        relay_peer_id = %conn.peer_id,
+                        %circuit_addr,
+                        "Requesting circuit listener on relay"
+                    );
                     self.events.push_back(ToSwarm::ListenOn {
                         opts: libp2p::swarm::ListenOpts::new(circuit_addr),
                     });
                 }
             }
-            FromSwarm::ConnectionClosed(conn) if conn.remaining_established == 0 => {}
-            FromSwarm::DialFailure(ev) => {}
-            FromSwarm::NewListenAddr(addr) => {
-                
+            FromSwarm::NewListenAddr(ev) => {
+                if let Some(relay_id) = Self::relay_id_from_circuit_addr(ev.addr)
+                    && let Some(state) = self.connection_states.get_mut(&relay_id)
+                {
+                    tracing::info!(
+                        relay_peer_id = %relay_id,
+                        listen_addr = %ev.addr,
+                        "Relay reservation confirmed"
+                    );
+                    *state = RelayConnectionState::Reserved;
+                }
+            }
+            FromSwarm::ConnectionClosed(conn) if conn.remaining_established == 0 => {
+                if self.connection_states.remove(&conn.peer_id).is_none() {
+                    return;
+                }
+
+                let Some(addrs) = self.relay_addrs.get(&conn.peer_id).cloned() else {
+                    tracing::warn!(
+                        relay_peer_id = %conn.peer_id,
+                        "Relay closed but addresses no longer tracked; cannot redial"
+                    );
+                    return;
+                };
+
+                tracing::debug!(
+                    relay_peer_id = %conn.peer_id,
+                    "Relay connection closed, queuing re-dial with backoff"
+                );
+                self.dial_states.insert(
+                    conn.peer_id,
+                    RelayDialState::new(RelayDialType::Relay, conn.peer_id, addrs),
+                );
             }
             _ => {}
         }
@@ -249,9 +341,6 @@ impl NetworkBehaviour for RelayManager {
         &mut self,
         cx: &mut Context<'_>,
     ) -> std::task::Poll<ToSwarm<Self::ToSwarm, THandlerInEvent<Self>>> {
-        // Drain all ready relay updates into a local buffer first to avoid
-        // holding a mutable borrow on `self.relays` while calling
-        // `queue_relay_update` (which takes `&mut self`).
         let mut updates: Vec<Peer> = Vec::new();
         for stream in &mut self.relay_subs {
             while let Poll::Ready(Some(Some(peer))) = stream.poll_next_unpin(cx) {
