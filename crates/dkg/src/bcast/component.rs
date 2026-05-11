@@ -6,7 +6,7 @@ use futures::future::BoxFuture;
 use libp2p::PeerId;
 use prost::{Message, Name};
 use prost_types::Any;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{RwLock, mpsc, oneshot};
 
 use super::error::{Error, Result};
 
@@ -22,6 +22,7 @@ pub type CallbackFn<M> =
     Box<dyn Fn(PeerId, String, M) -> BoxFuture<'static, Result<()>> + Send + Sync + 'static>;
 
 pub(crate) type Registry = Arc<RwLock<HashMap<String, Arc<dyn RegisteredMessage>>>>;
+pub(crate) type BroadcastResultTx = oneshot::Sender<Result<()>>;
 
 /// Broadcast command sent from the user-facing component into the swarm-owned
 /// behaviour.
@@ -31,6 +32,8 @@ pub(crate) struct BroadcastCommand {
     pub(crate) msg_id: String,
     /// Wrapped protobuf message.
     pub(crate) any_msg: Any,
+    /// Receives terminal broadcast result when requested by the caller.
+    pub(crate) completion_tx: Option<BroadcastResultTx>,
 }
 
 /// Type-erased entry stored per registered message ID.
@@ -88,7 +91,10 @@ impl Component {
         }
     }
 
-    /// Registers a typed message ID with its validator and callback.
+    /// Registers a typed message ID before it is sent or received.
+    ///
+    /// `check` runs before this node signs an inbound signature request, and
+    /// `callback` runs after a fully signed broadcast message is validated.
     pub async fn register_message<M>(
         &self,
         msg_id: impl Into<String>,
@@ -110,10 +116,40 @@ impl Component {
         Ok(())
     }
 
-    /// Enqueues the provided message for broadcast to all configured peers.
+    /// Enqueues `msg` for reliable broadcast and returns after enqueue.
     ///
-    /// Completion is reported asynchronously through [`super::Event`].
+    /// Use this when the caller consumes [`super::Event`] separately or does
+    /// not need to wait for terminal status. Use [`Self::broadcast_and_wait`]
+    /// when the next protocol step depends on broadcast completion.
     pub async fn broadcast<M>(&self, msg_id: &str, msg: &M) -> Result<()>
+    where
+        M: Message + Name + Default + Clone + Send + Sync + 'static,
+    {
+        self.enqueue(msg_id, msg, None).await
+    }
+
+    /// Broadcasts `msg` and waits until the behaviour reports success or
+    /// failure.
+    ///
+    /// Use this for protocol steps that must not continue after enqueue only.
+    /// To make waiting cancellable, wrap this call in `tokio::select!`;
+    /// dropping the returned future leaves the broadcast running and only
+    /// drops this caller's completion notification.
+    pub async fn broadcast_and_wait<M>(&self, msg_id: &str, msg: &M) -> Result<()>
+    where
+        M: Message + Name + Default + Clone + Send + Sync + 'static,
+    {
+        let (completion_tx, completion_rx) = oneshot::channel();
+        self.enqueue(msg_id, msg, Some(completion_tx)).await?;
+        completion_rx.await.map_err(|_| Error::BehaviourClosed)?
+    }
+
+    async fn enqueue<M>(
+        &self,
+        msg_id: &str,
+        msg: &M,
+        completion_tx: Option<BroadcastResultTx>,
+    ) -> Result<()>
     where
         M: Message + Name + Default + Clone + Send + Sync + 'static,
     {
@@ -126,6 +162,7 @@ impl Component {
             .send(BroadcastCommand {
                 msg_id: msg_id.to_string(),
                 any_msg,
+                completion_tx,
             })
             .map_err(|_| Error::BehaviourClosed)?;
 

@@ -124,9 +124,6 @@ pub enum FrostError {
     /// The FROST P2P inbound receiver was already taken.
     #[error("frost p2p inbound receiver already taken")]
     P2PInboundReceiverAlreadyTaken,
-    /// The FROST broadcast event receiver was already taken.
-    #[error("frost bcast event receiver already taken")]
-    BcastEventReceiverAlreadyTaken,
     /// The round-1 casts receiver was dropped before local self-delivery.
     #[error("frost round 1 casts receiver dropped before self-delivery")]
     Round1CastsReceiverDropped,

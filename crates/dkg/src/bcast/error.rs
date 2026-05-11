@@ -88,6 +88,10 @@ pub enum Error {
     #[error("bcast behaviour is no longer running")]
     BehaviourClosed,
 
+    /// The broadcast operation failed after being accepted by the behaviour.
+    #[error("broadcast failed: {0}")]
+    BroadcastFailed(String),
+
     /// The outbound operation failed.
     #[error("outbound operation to {peer} failed: {failure}")]
     OutboundFailure {

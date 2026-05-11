@@ -28,7 +28,7 @@
 //!   │
 //!   ├─► store_set(slot, set) ──► entries[(slot,pk)] ──► threshold? ──► sig_type_data[slot][pk]
 //!   │                                                                        │
-//!   ├─► handle.broadcast(duty, set) ──► parsigex swarm                 notify.notify_waiters()
+//!   ├─► handle.broadcast_and_wait(duty, set) ──► parsigex swarm        notify.notify_waiters()
 //!   │                                         │                              │
 //!   │                              subscriber(duty, set)                     │
 //!   │                                   │                                    │
@@ -50,7 +50,9 @@ use tracing::warn;
 
 use pluto_core::{
     deadline::Deadliner,
-    parsigdb::memory::{MemDB, internal_subscriber, threshold_subscriber},
+    parsigdb::memory::{
+        InternalSubscriberError, MemDB, MemDBError, internal_subscriber, threshold_subscriber,
+    },
     types::{Duty, DutyType, ParSignedData, ParSignedDataSet, PubKey, SlotNumber},
 };
 use pluto_parsigex::{Handle, ReceivedSub, received_subscriber};
@@ -150,8 +152,8 @@ impl Deadliner for NoopDeadliner {
 impl Exchanger {
     /// Creates a new exchanger and wires up the three core subscriptions:
     ///
-    /// 1. `sigdb.subscribe_internal` → `handle.broadcast` (send own sigs to
-    ///    peers)
+    /// 1. `sigdb.subscribe_internal` → `handle.broadcast_and_wait` (send own
+    ///    sigs to peers)
     /// 2. `sigdb.subscribe_threshold` → `push_psigs` (accumulate and notify)
     /// 3. `handle.subscribe` → `sigdb.store_external` (store received peer
     ///    sigs)
@@ -197,9 +199,13 @@ impl Exchanger {
             let sub = internal_subscriber(move |duty, set| {
                 let handle = handle_clone.clone();
                 async move {
-                    if let Err(e) = handle.broadcast(duty, set).await {
-                        warn!(error = %e, "Failed to broadcast partial signatures during DKG");
-                    }
+                    let sig_type = duty.slot.inner();
+                    handle.broadcast_and_wait(duty, set).await.map_err(|e| {
+                        warn!(sig_type, error = %e, "Failed to broadcast parsigex data during DKG");
+                        MemDBError::InternalSubscriber(InternalSubscriberError::ParsigexBroadcast {
+                            source: Box::new(e),
+                        })
+                    })?;
                     Ok(())
                 }
             });
@@ -319,7 +325,9 @@ async fn push_psigs(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, net::TcpListener, sync::Arc, time::Duration};
+    use std::{
+        collections::HashMap, error::Error as _, net::TcpListener, sync::Arc, time::Duration,
+    };
 
     use anyhow::Context as _;
     use futures::StreamExt as _;
@@ -361,6 +369,105 @@ mod tests {
         })
         .await
         .context("timed out waiting for libp2p connections")?
+    }
+
+    fn test_par_signed_data_set(share_idx: u64) -> ParSignedDataSet {
+        let mut pk_bytes = [0u8; 48];
+        rand::thread_rng().fill_bytes(&mut pk_bytes);
+        let mut sig_bytes = [0u8; 96];
+        rand::thread_rng().fill_bytes(&mut sig_bytes);
+
+        let mut set = ParSignedDataSet::new();
+        set.insert(
+            PubKey::from(pk_bytes),
+            Signature::new_partial(Signature::new(sig_bytes), share_idx),
+        );
+        set
+    }
+
+    fn parsigex_handle(peer_ids: &[libp2p::PeerId]) -> (ParsexBehaviour, pluto_parsigex::Handle) {
+        let p2p_context = P2PContext::new(peer_ids.to_vec());
+        let verifier: pluto_parsigex::Verifier =
+            Arc::new(|_duty, _pk, _psig| Box::pin(async { Ok(()) }));
+        let duty_gater: pluto_parsigex::DutyGater =
+            Arc::new(|duty: &pluto_core::types::Duty| duty.duty_type == DutyType::Signature);
+
+        ParsexBehaviour::new(ParsexConfig::new(
+            peer_ids[0],
+            p2p_context,
+            verifier,
+            duty_gater,
+        ))
+    }
+
+    #[tokio::test]
+    async fn exchange_returns_enqueue_failure() -> anyhow::Result<()> {
+        let keys: Vec<_> = (0..2).map(generate_insecure_k1_key).collect();
+        let peer_ids: Vec<_> = keys
+            .iter()
+            .map(|k| peer_id_from_key(k.public_key()))
+            .collect::<Result<_, _>>()?;
+        let (behaviour, handle) = parsigex_handle(&peer_ids);
+        drop(behaviour);
+
+        let ex = Exchanger::new(CancellationToken::new(), handle, peer_ids, vec![SIG_LOCK]).await;
+        let err = ex
+            .exchange(SIG_LOCK, test_par_signed_data_set(1))
+            .await
+            .expect_err("exchange should fail when broadcast cannot be enqueued");
+
+        assert!(matches!(err, super::ExchangerError::SigDB(_)));
+        let mut source = err.source();
+        let mut found = false;
+        while let Some(error) = source {
+            found |= error.to_string().contains("parsigex handle closed");
+            source = error.source();
+        }
+        assert!(found);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn exchange_returns_broadcast_failure() -> anyhow::Result<()> {
+        let keys: Vec<_> = (0..2).map(generate_insecure_k1_key).collect();
+        let peer_ids: Vec<_> = keys
+            .iter()
+            .map(|k| peer_id_from_key(k.public_key()))
+            .collect::<Result<_, _>>()?;
+        let (behaviour, handle) = parsigex_handle(&peer_ids);
+        let p2p_context = P2PContext::new(peer_ids.clone());
+        let mut node = Node::new_server(
+            P2PConfig::default(),
+            keys[0].clone(),
+            NodeType::TCP,
+            false,
+            p2p_context,
+            None,
+            move |builder, _key| builder.with_inner(behaviour),
+        )?;
+        let network_task = tokio::spawn(async move {
+            loop {
+                let _ = node.select_next_some().await;
+            }
+        });
+        let ex = Arc::new(
+            Exchanger::new(CancellationToken::new(), handle, peer_ids, vec![SIG_LOCK]).await,
+        );
+
+        let exchange = {
+            let ex = ex.clone();
+            tokio::spawn(async move { ex.exchange(SIG_LOCK, test_par_signed_data_set(1)).await })
+        };
+
+        let err = tokio::time::timeout(Duration::from_secs(1), exchange)
+            .await
+            .context("exchange did not observe broadcast failure")??
+            .expect_err("exchange should return parsigex broadcast failure");
+
+        assert!(matches!(err, super::ExchangerError::SigDB(_)));
+        assert!(err.to_string().contains("parsigex broadcast"));
+        network_task.abort();
+        Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread")]

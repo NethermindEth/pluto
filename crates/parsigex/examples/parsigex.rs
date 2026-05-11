@@ -56,11 +56,7 @@
 //! `--relays` also accepts raw libp2p multiaddrs
 //! (`/ip4/IP/tcp/PORT/p2p/PEER_ID`) and multiple comma-separated values.
 
-use std::{
-    collections::{HashMap, HashSet},
-    path::PathBuf,
-    time::Duration,
-};
+use std::{collections::HashSet, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
@@ -305,7 +301,6 @@ async fn main() -> Result<()> {
     );
 
     let mut ticker = tokio::time::interval(Duration::from_secs(args.broadcast_every));
-    let mut pending_broadcasts: HashMap<u64, (Duty, u64)> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -318,22 +313,25 @@ async fn main() -> Result<()> {
                 let mut slot = handle_slot.lock().await;
                 let duty = Duty::new(SlotNumber::new(*slot), DutyType::Randao);
                 let data_set = make_sample_set(*slot, args.share_idx);
+                let handle = parsigex_handle.clone();
+                let share_idx = args.share_idx;
+                *slot = slot.saturating_add(1);
 
-                match parsigex_handle.broadcast(duty.clone(), data_set.clone()).await {
-                    Ok(request_id) => {
-                        pending_broadcasts.insert(request_id, (duty.clone(), args.share_idx));
-                        info!(
-                            request_id,
-                            duty = %duty,
-                            share_idx = args.share_idx,
-                            "queued sample partial signature set for broadcast"
-                        );
-                        *slot = slot.saturating_add(1);
+                tokio::spawn(async move {
+                    match handle.broadcast_and_wait(duty.clone(), data_set).await {
+                        Ok(request_id) => {
+                            info!(
+                                request_id,
+                                duty = %duty,
+                                share_idx,
+                                "broadcasted sample partial signature set"
+                            );
+                        }
+                        Err(error) => {
+                            warn!(%error, duty = %duty, share_idx, "broadcast failed");
+                        }
                     }
-                    Err(error) => {
-                        warn!(%error, "broadcast failed");
-                    }
-                }
+                });
             }
             event = node.select_next_some() => {
                 let peer_type = |peer_id: &libp2p::PeerId| {
@@ -503,58 +501,26 @@ async fn main() -> Result<()> {
                             error,
                         }),
                     )) => {
-                        match pending_broadcasts.get(&request_id) {
-                            Some((duty, share_idx)) => {
-                                warn!(
-                                    request_id,
-                                    duty = %duty,
-                                    share_idx,
-                                    peer = ?peer,
-                                    error = %error,
-                                    "sample partial signature broadcast failed"
-                                );
-                            }
-                            None => {
-                                warn!(
-                                    request_id,
-                                    peer = ?peer,
-                                    error = %error,
-                                    "partial signature broadcast failed"
-                                );
-                            }
-                        }
+                        warn!(
+                            request_id,
+                            peer = ?peer,
+                            error = %error,
+                            "partial signature broadcast failed"
+                        );
                     }
                     SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(
                         CombinedBehaviourEvent::ParSigEx(Event::BroadcastComplete {
                             request_id,
                         }),
                     )) => {
-                        if let Some((duty, share_idx)) = pending_broadcasts.remove(&request_id) {
-                            info!(
-                                request_id,
-                                duty = %duty,
-                                share_idx,
-                                "broadcasted sample partial signature set"
-                            );
-                        } else {
-                            info!(request_id, "partial signature broadcast completed");
-                        }
+                        info!(request_id, "partial signature broadcast completed");
                     }
                     SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(
                         CombinedBehaviourEvent::ParSigEx(Event::BroadcastFailed {
                             request_id,
                         }),
                     )) => {
-                        if let Some((duty, share_idx)) = pending_broadcasts.remove(&request_id) {
-                            warn!(
-                                request_id,
-                                duty = %duty,
-                                share_idx,
-                                "sample partial signature broadcast finished with failures"
-                            );
-                        } else {
-                            warn!(request_id, "partial signature broadcast finished with failures");
-                        }
+                        warn!(request_id, "partial signature broadcast finished with failures");
                     }
                     _ => {}
                 }
