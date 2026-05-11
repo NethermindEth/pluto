@@ -19,7 +19,7 @@ use pluto_eth2util::enr::{Record, RecordError};
 use pluto_p2p::peer::{Peer, PeerError};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{
-    DefaultOnNull, DisplayFromStr, PickFirst,
+    DefaultOnNull, DeserializeAs, DisplayFromStr, PickFirst, Same, SerializeAs,
     base64::{Base64, Standard},
     serde_as,
 };
@@ -93,6 +93,31 @@ pub struct Definition {
     /// Definition hash uniquely identifies a cluster definition including
     /// operator ENRs and signatures.
     pub definition_hash: Vec<u8>,
+}
+
+struct DepositAmountsSerde;
+
+impl SerializeAs<Vec<u64>> for DepositAmountsSerde {
+    fn serialize_as<S>(source: &Vec<u64>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if source.is_empty() {
+            serializer.serialize_none()
+        } else {
+            source.serialize(serializer)
+        }
+    }
+}
+
+impl<'de> DeserializeAs<'de, Vec<u64>> for DepositAmountsSerde {
+    fn deserialize_as<D>(deserializer: D) -> Result<Vec<u64>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        type Inner = DefaultOnNull<Vec<PickFirst<(DisplayFromStr, Same)>>>;
+        Inner::deserialize_as(deserializer)
+    }
 }
 
 impl Serialize for Definition {
@@ -1292,7 +1317,7 @@ pub struct DefinitionV1x8 {
     pub fork_version: Vec<u8>,
     /// DepositAmounts specifies partial deposit amounts that sum up to at least
     /// 32ETH.
-    #[serde_as(as = "DefaultOnNull<Vec<PickFirst<(DisplayFromStr, _)>>>")]
+    #[serde_as(as = "DepositAmountsSerde")]
     pub deposit_amounts: Vec<u64>,
     /// ConfigHash uniquely identifies a cluster definition excluding operator
     /// ENRs and signatures.
@@ -1396,7 +1421,7 @@ pub struct DefinitionV1x9 {
     pub fork_version: Vec<u8>,
     /// DepositAmounts specifies partial deposit amounts that sum up to at least
     /// 32ETH.
-    #[serde_as(as = "DefaultOnNull<Vec<PickFirst<(DisplayFromStr, _)>>>")]
+    #[serde_as(as = "DepositAmountsSerde")]
     pub deposit_amounts: Vec<u64>,
     /// ConsensusProtocol is the consensus protocol name preferred by the
     /// cluster, e.g. "abft".
@@ -1505,7 +1530,7 @@ pub struct DefinitionV1x10 {
     pub fork_version: Vec<u8>,
     /// Partial deposit amounts that sum up to at least
     /// 32ETH.
-    #[serde_as(as = "DefaultOnNull<Vec<PickFirst<(DisplayFromStr, _)>>>")]
+    #[serde_as(as = "DepositAmountsSerde")]
     pub deposit_amounts: Vec<u64>,
     /// Consensus protocol name preferred by the
     /// cluster, e.g. "abft".
@@ -1854,6 +1879,43 @@ mod tests {
         let definition = serde_json::from_str::<Definition>(json_str).unwrap();
 
         assert!(definition.verify_hashes().is_ok());
+    }
+
+    #[test]
+    fn definition_empty_deposit_amounts_serialize_as_null() {
+        let mut definition = Definition {
+            version: V1_10.to_string(),
+            ..Default::default()
+        };
+
+        let value = serde_json::to_value(&definition).unwrap();
+        assert_eq!(value["deposit_amounts"], serde_json::Value::Null);
+
+        definition.deposit_amounts = vec![16_000_000_000, 16_000_000_000];
+        let value = serde_json::to_value(&definition).unwrap();
+        assert_eq!(
+            value["deposit_amounts"],
+            serde_json::json!([16_000_000_000u64, 16_000_000_000u64])
+        );
+
+        let mut value = serde_json::to_value(&definition).unwrap();
+        value["deposit_amounts"] = serde_json::Value::Null;
+        let definition = serde_json::from_value::<Definition>(value).unwrap();
+        assert!(definition.deposit_amounts.is_empty());
+    }
+
+    #[test]
+    fn definition_deposit_amounts_deserialize_string_array() {
+        let mut value = serde_json::to_value(Definition {
+            version: V1_10.to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+        value["deposit_amounts"] = serde_json::json!(["16000000000", "16000000000"]);
+
+        let definition = serde_json::from_value::<Definition>(value).unwrap();
+
+        assert_eq!(definition.deposit_amounts, vec![16_000_000_000; 2]);
     }
 
     #[test]

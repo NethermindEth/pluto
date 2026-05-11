@@ -97,7 +97,9 @@ pub(crate) async fn setup_p2p(
 
             sig_types.contains(&duty.slot.inner())
         }),
-    );
+    )
+    .with_timeout(conf.timeout);
+
     let (parsigex_comp, parsigex_handle) = parsigex::Behaviour::new(parsigex_config);
 
     let (git_hash, _) = version::git_commit();

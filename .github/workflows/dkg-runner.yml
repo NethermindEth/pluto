@@ -99,12 +99,9 @@ jobs:
           CHARON_BIN: ${{ github.workspace }}/bin/charon
           PLUTO_BIN: ${{ github.workspace }}/target/debug/pluto
           TIMEOUT: ${{ inputs.timeout || '120' }}
+          RUN_SMOKE_VERIFY: "1"
+          SMOKE_SECONDS: "3"
         run: ./scripts/dkg-runner/run.sh
-
-      - name: Verify ceremony outputs
-        env:
-          NODES: "4"
-        run: ./scripts/dkg-runner/ci/verify-output.sh
 
       - name: Upload work dir on failure
         if: failure()

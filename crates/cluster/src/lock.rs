@@ -928,6 +928,18 @@ mod tests {
     }
 
     #[test]
+    fn serialize_lock_empty_deposit_amounts_as_null() {
+        let (lock, ..) = crate::test_cluster::new_for_test(1, 2, 3, 1);
+
+        assert!(lock.definition.deposit_amounts.is_empty());
+        let value = serde_json::to_value(&lock).unwrap();
+        assert_eq!(
+            value["cluster_definition"]["deposit_amounts"],
+            serde_json::Value::Null
+        );
+    }
+
+    #[test]
     fn cluster_lock_v1_10_0() {
         let json_str = include_str!("testdata/cluster_lock_v1_10_0.json");
         let _ = serde_json::from_str::<LockV1x8orLater>(json_str).unwrap();

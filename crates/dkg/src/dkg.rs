@@ -612,7 +612,7 @@ async fn run_inner(conf: Config, ct: CancellationToken) -> Result<(), DkgError> 
     .await;
 
     network_ct.cancel();
-    let _ = network_task.await;
+    network_task.await?;
 
     result
 }
@@ -883,7 +883,7 @@ impl SyncRuntime {
         self.cancellation.cancel();
 
         for task in self.tasks.drain(..) {
-            let _ = task.await;
+            task.await?;
         }
 
         Ok(())
