@@ -967,4 +967,25 @@ mod tests {
         // Verify no 0-indexed key exists
         assert!(!shares.contains_key(&0), "Should not contain key 0");
     }
+
+    #[test]
+    fn scalar_from_u64_upper_limbs_are_zero() {
+        // blst_scalar_from_uint64 reads 4 consecutive u64s (4 × 8 = 32 bytes);
+        // passing &val instead of &[val, 0, 0, 0] reads 3 extra u64s from the
+        // stack. The scalar is stored little-endian: the value occupies the first
+        // u64 (bytes 0–7) and the remaining three limbs (bytes 8–31) must be zero.
+        for val in [0u64, 1, 2, 3, 4, 255, u32::MAX as u64] {
+            let scalar = scalar_from_u64(val);
+            let expected = val.to_le_bytes();
+            assert_eq!(
+                &scalar.b[..8],
+                &expected,
+                "lower 8 bytes should encode {val}"
+            );
+            assert!(
+                scalar.b[8..].iter().all(|&b| b == 0),
+                "upper 24 bytes must be zero for val={val}"
+            );
+        }
+    }
 }
