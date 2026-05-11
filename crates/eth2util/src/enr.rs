@@ -130,6 +130,12 @@ pub fn with_udp_impl(udp: u16) -> OptionFn {
 }
 
 impl Record {
+    /// Creates a new record containing only the node's identity (key, no
+    /// addresses).
+    pub fn from_key(secret_key: &SecretKey) -> Result<Self, RecordError> {
+        Self::new(secret_key, vec![])
+    }
+
     /// Creates a new record.
     pub fn new(secret_key: &SecretKey, opts: Vec<OptionFn>) -> Result<Self, RecordError> {
         let mut kvs: HashMap<String, Vec<u8>> = HashMap::new();
