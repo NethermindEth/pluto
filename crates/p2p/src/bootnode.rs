@@ -9,8 +9,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::peer::{
-    AddrInfo, MutablePeer, MutablePeerError, Peer, PeerError, addr_infos_from_p2p_addrs,
-    peer_id_from_key,
+    AddrInfo, MutablePeer, Peer, PeerError, addr_infos_from_p2p_addrs, peer_id_from_key,
 };
 
 /// Backoff configuration constants matching Go's expbackoff.FastConfig.
@@ -144,7 +143,7 @@ pub async fn new_relays(
 
             let mut resolved = false;
             for node in &resp {
-                if let Ok(Some(_)) = node.peer() {
+                if let Some(_) = node.peer() {
                     resolved = true;
                     break;
                 }
@@ -213,9 +212,7 @@ async fn resolve_relay(
                         addrs = ?peer.addresses,
                         "Resolved new relay"
                     );
-                    if let Err(e) = mutable.set(peer) {
-                        tracing::error!(err = %e, "Failed to set mutable peer");
-                    }
+                    mutable.set(peer);
                 }
                 Err(e) => {
                     tracing::error!(err = %e, addrs = ?addrs, "Failed resolving relay ID from addresses");
