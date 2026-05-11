@@ -2,7 +2,7 @@ use std::{collections::HashMap, ffi::OsStr, num::TryFromIntError, path, time::Du
 
 use bon::Builder;
 use futures::StreamExt;
-use libp2p::{PeerId, swarm::SwarmEvent};
+use libp2p::PeerId;
 use pluto_app::{privkeylock, utils::UtilsError};
 use pluto_core::version;
 use tokio::select;
@@ -34,8 +34,7 @@ use pluto_eth2api::spec::phase0;
 use pluto_eth2util as eth2util;
 use pluto_eth2util::keymanager::{self, KeymanagerError};
 use pluto_p2p::{
-    behaviours::pluto::PlutoBehaviourEvent, bootnode::BootnodeError, config::P2PConfig,
-    k1::key_path, p2p::P2PError, peer::Peer,
+    bootnode::BootnodeError, config::P2PConfig, k1::key_path, p2p::P2PError, peer::Peer,
 };
 use pluto_tracing::TracingConfig;
 use url::Url;
@@ -585,9 +584,8 @@ async fn run_inner(conf: Config, ct: CancellationToken) -> Result<(), DkgError> 
 
     let sync_clients = handlers.sync.clone();
     let sync_server = handlers.sync_server.clone();
-    let frost_handle = handlers.frost_p2p;
     let network_ct = ct.child_token();
-    let network_task = tokio::spawn(drive_dkg_network(node, frost_handle, network_ct.clone()));
+    let network_task = tokio::spawn(drive_dkg_network(node, network_ct.clone()));
 
     let result = run_ceremony(
         &conf,
@@ -960,21 +958,12 @@ async fn start_sync_protocol(
 
 async fn drive_dkg_network(
     mut node: pluto_p2p::p2p::Node<crate::node::DkgBehaviour>,
-    frost_handle: frostp2p::FrostP2PHandle,
     cancellation: CancellationToken,
 ) {
     loop {
         tokio::select! {
             _ = cancellation.cancelled() => break,
-            event = node.select_next_some() => {
-                if let SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(
-                    crate::node::DkgBehaviourEvent::Bcast(event),
-                )) = event
-                    && let Err(error) = frost_handle.handle_bcast_event(event)
-                {
-                    debug!(%error, "Failed to forward bcast event to FROST transport");
-                }
-            }
+            _ = node.select_next_some() => {}
         }
     }
 }
