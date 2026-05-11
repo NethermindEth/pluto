@@ -71,12 +71,96 @@ pub struct RelayManager {
 }
 
 /// Events emitted by [`RelayManager`] to the swarm.
+///
+/// Mirrors the relay lifecycle (`Dialing → Established → Reserved`) plus the
+/// outcomes of routing known cluster peers through reserved circuits. Consumers
+/// can observe the full progression of a reservation, or pick out just the
+/// events they care about (e.g. `RelayReserved` for "circuits are usable now").
 #[derive(Debug)]
 pub enum RelayManagerEvent {
-    /// Dialed relay successfully.
-    Dialed(PeerId),
-    /// Dialed relay failed.
-    DialFailed(PeerId, String),
+    /// Transport connection to a relay is up. A circuit listener has been
+    /// requested but the reservation is not yet confirmed.
+    RelayConnected(PeerId),
+    /// Relay accepted the reservation; circuits through this relay are now
+    /// usable for routing cluster peers.
+    RelayReserved(PeerId),
+    /// Circuit listener for this relay expired; the relay has been demoted to
+    /// `Established`. libp2p's circuit client typically refreshes the
+    /// reservation shortly, which will re-emit `RelayReserved`.
+    RelayReservationLost(PeerId),
+    /// Last transport connection to the relay closed. A re-dial campaign with
+    /// exponential backoff has been queued.
+    RelayDisconnected(PeerId),
+    /// A cluster peer has been reached through one of the reserved relay
+    /// circuits. From here libp2p owns the connection; this event exists for
+    /// telemetry only.
+    PeerRoutedConnected(PeerId),
+    /// A dial attempt failed. The underlying [`RelayDialState`] self-rearms
+    /// with exponential backoff, so consumers don't need to take any action.
+    DialFailed {
+        /// Target peer id (a relay server, or a routed cluster peer).
+        peer_id: PeerId,
+        /// Whether this dial was targeting a relay or a routed peer.
+        target: RelayDialType,
+        /// Number of attempts so far (including this one).
+        retry_count: u32,
+        /// Categorised dial error.
+        error: RelayDialError,
+    },
+}
+
+/// Categorised dial error surfaced via [`RelayManagerEvent::DialFailed`].
+///
+/// Translated from libp2p's [`DialError`] so consumers can match on variants
+/// without depending on libp2p's swarm types directly. Free-form details are
+/// preserved as strings on the variants where they carry diagnostic value.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum RelayDialError {
+    /// Attempted to dial our own peer id.
+    #[error("local peer id")]
+    LocalPeerId,
+    /// No transport addresses were available for the target.
+    #[error("no addresses")]
+    NoAddresses,
+    /// Dial was skipped because of a peer condition (already
+    /// connected/dialing).
+    #[error("dial skipped: peer condition not met")]
+    Skipped,
+    /// Pending connection attempt was aborted (e.g. swarm shutdown, or a newer
+    /// dial superseded it).
+    #[error("aborted")]
+    Aborted,
+    /// Connected, but the remote reported a peer id different from the
+    /// expected one.
+    #[error("wrong peer id")]
+    WrongPeerId,
+    /// Connection was denied by a behaviour or upgrade step.
+    #[error("denied: {0}")]
+    Denied(String),
+    /// All transport attempts failed; details preserved as `addr: err`,
+    /// joined by `; `.
+    #[error("transport: {0}")]
+    Transport(String),
+}
+
+impl From<&DialError> for RelayDialError {
+    fn from(err: &DialError) -> Self {
+        match err {
+            DialError::LocalPeerId { .. } => Self::LocalPeerId,
+            DialError::NoAddresses => Self::NoAddresses,
+            DialError::DialPeerConditionFalse(_) => Self::Skipped,
+            DialError::Aborted => Self::Aborted,
+            DialError::WrongPeerId { .. } => Self::WrongPeerId,
+            DialError::Denied { cause } => Self::Denied(cause.to_string()),
+            DialError::Transport(errors) => Self::Transport(
+                errors
+                    .iter()
+                    .map(|(addr, e)| format!("{addr}: {e}"))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            ),
+        }
+    }
 }
 
 /// Whether a [`RelayDialState`] is targeting a relay server or a cluster peer
@@ -392,7 +476,9 @@ impl RelayManager {
         match dial_state.ty {
             RelayDialType::Relay => {
                 self.events
-                    .push_back(ToSwarm::GenerateEvent(RelayManagerEvent::Dialed(peer_id)));
+                    .push_back(ToSwarm::GenerateEvent(RelayManagerEvent::RelayConnected(
+                        peer_id,
+                    )));
                 self.set_relay_state(peer_id, RelayConnectionState::Established);
 
                 for circuit_addr in Self::circuit_addrs(peer_id, &dial_state.addrs) {
@@ -411,6 +497,9 @@ impl RelayManager {
                     peer_id = %peer_id,
                     "Routed peer connection established"
                 );
+                self.events.push_back(ToSwarm::GenerateEvent(
+                    RelayManagerEvent::PeerRoutedConnected(peer_id),
+                ));
             }
         }
     }
@@ -443,6 +532,10 @@ impl RelayManager {
                     "Relay reservation confirmed; routing known peers via this relay"
                 );
                 self.set_relay_state(relay_id, RelayConnectionState::Reserved);
+                self.events
+                    .push_back(ToSwarm::GenerateEvent(RelayManagerEvent::RelayReserved(
+                        relay_id,
+                    )));
                 self.route_known_peers();
             }
         }
@@ -467,6 +560,9 @@ impl RelayManager {
                 "Relay circuit listener expired; demoting to Established"
             );
             self.set_relay_state(relay_id, RelayConnectionState::Established);
+            self.events.push_back(ToSwarm::GenerateEvent(
+                RelayManagerEvent::RelayReservationLost(relay_id),
+            ));
         }
     }
 
@@ -476,6 +572,9 @@ impl RelayManager {
     /// Anything else is ignored.
     fn on_connection_closed(&mut self, peer_id: PeerId) {
         if self.connection_states.contains_key(&peer_id) {
+            self.events.push_back(ToSwarm::GenerateEvent(
+                RelayManagerEvent::RelayDisconnected(peer_id),
+            ));
             self.redial_relay(peer_id);
         } else if self.p2p_context.is_known_peer(&peer_id) {
             self.reroute_peer(peer_id);
@@ -490,18 +589,22 @@ impl RelayManager {
         let Some(state) = self.dial_states.get(&peer_id) else {
             return;
         };
+        let target = state.ty;
+        let retry_count = state.retry_count;
         tracing::debug!(
             peer_id = %peer_id,
-            dial_type = ?state.ty,
-            retry_count = state.retry_count,
+            dial_type = ?target,
+            retry_count,
             %error,
             "Dial failed, will retry with backoff"
         );
         self.events
-            .push_back(ToSwarm::GenerateEvent(RelayManagerEvent::DialFailed(
+            .push_back(ToSwarm::GenerateEvent(RelayManagerEvent::DialFailed {
                 peer_id,
-                error.to_string(),
-            )));
+                target,
+                retry_count,
+                error: RelayDialError::from(error),
+            }));
     }
 
     /// Schedules a re-dial for a relay whose last connection just dropped.
