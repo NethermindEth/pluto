@@ -4,8 +4,8 @@ Shell scripts for running a complete DKG ceremony with a configurable mix of Plu
 
 ## Prerequisites
 
-- Pluto binary built (used for `create dkg`, and for any Pluto nodes in the ceremony): `cargo build -p pluto-cli`
-- `charon` binary on your `$PATH` (only required if `CHARON_NODES > 0`)
+- Pluto binary built (used for `create dkg` and for any Pluto nodes in the ceremony): `cargo build -p pluto-cli`
+- `charon` binary on your `$PATH` and `curl` installed (required when `RUN_SMOKE_VERIFY` is enabled; this is the default)
 - Relay server reachable (default: `https://0.relay.obol.tech`)
 
 ## Quick start
@@ -64,6 +64,9 @@ All variables are optional. Set them in the environment before calling any scrip
 | `NODE_EXIT_TIMEOUT` | `90` | Seconds to wait for node processes to exit cleanly after artifacts appear |
 | `PLUTO_BIN` | `./target/debug/pluto` | Path to the Pluto binary (only required when `PLUTO_NODES > 0`) |
 | `CHARON_BIN` | `charon` | Path to the Charon binary |
+| `RUN_SMOKE_VERIFY` | `1` | Smoke-start the collected node dirs with `charon run` after output collection |
+| `SMOKE_SECONDS` | `8` | Seconds the smoke-started nodes must stay alive |
+| `SMOKE_PORT_BASE` | `39000` | First local port used by smoke verification |
 | `WORK_DIR` | `/tmp/dkg-run` | Scratch directory — wiped at the start of every run |
 | `KEEP_NODES` | `0` | Leave node processes running after a successful ceremony when set to `1`/`true`/`yes`/`on` |
 | `CI` | _(unset)_ | When truthy, suppresses per-node tee to stdout; logs go to `WORK_DIR/node-*/node.log` only |
@@ -76,9 +79,11 @@ All variables are optional. Set them in the environment before calling any scrip
 |-------|--------|--------|
 | 1 | `setup.sh` | Wipes `WORK_DIR`, creates `node-0/`…`node-N/` data dirs, generates a p2p key + ENR for each node (`pluto create enr` / `charon create enr`), then runs `pluto create dkg --operator-enrs=…` |
 | 2 | `start-nodes.sh` | Starts Pluto nodes (slots 0…PLUTO_NODES-1) and Charon nodes (remaining slots) as background processes, each in its own process group; logs to `node-N/node.log` |
-| 3 | `monitor.sh` | Waits for `cluster-lock.json` to appear in every node's data dir; exits 0 on completion, 1 on timeout (with the tail of each `node.log` dumped to stderr) |
+| 3 | `monitor.sh` | Waits for `cluster-lock.json` and at least one keystore to appear in every node's data dir; exits 0 on completion, 1 on timeout (with the tail of each `node.log` dumped to stderr) |
 | 4 | `wait-node-exits.sh` | Waits for each node process to exit with status `0` unless `KEEP_NODES` is enabled |
 | 5 | `collect.sh` | Copies keystores and `cluster-lock.json` to `WORK_DIR/output/`; prints a summary |
+| 6 | `ci/verify-output-semantic.sh` | Validates the collected output is internally consistent across nodes |
+| 7 | `ci/verify-run-smoke.sh` | Starts the collected node dirs with `charon run` and checks they stay up through the smoke window |
 
 On success, outputs are under `$WORK_DIR/output/`. On failure or timeout, partial outputs are still collected and `WORK_DIR` is preserved for inspection. `run.sh` never deletes `WORK_DIR`; use `./scripts/dkg-runner/reset.sh` when you're done.
 
@@ -97,6 +102,10 @@ Ctrl-C at any point kills all node process groups cleanly via the SIGINT trap; `
 | `monitor.sh` | Waits for ceremony completion or timeout |
 | `wait-node-exits.sh` | Waits for all node processes to report clean exit codes |
 | `collect.sh` | Gathers keystores and lock file into `output/` |
+| `ci/verify-output-semantic.sh` | Checks that the collected outputs match the ceremony config and share consistent contents |
+| `ci/verify-run-smoke.sh` | Smoke-starts the collected node dirs with `charon run` |
+| `ci/verify-output.sh` | Legacy file-presence check for `cluster-lock.json` and keystores |
+| `ci/install-charon.sh` | Downloads and installs a Charon release binary |
 | `reset.sh` | Kills all nodes and removes `WORK_DIR` (the explicit cleanup tool) |
 | `config.sh` | Shared env-var defaults sourced by every script |
 | `lib.sh` | Shared helpers (logging, binary checks, process-group kill) |
@@ -110,6 +119,8 @@ Each script is independently runnable if you need to step through phases manuall
 ./scripts/dkg-runner/run-node.sh 0 pluto
 ./scripts/dkg-runner/monitor.sh
 ./scripts/dkg-runner/collect.sh
+./scripts/dkg-runner/ci/verify-output-semantic.sh
+./scripts/dkg-runner/ci/verify-run-smoke.sh
 ./scripts/dkg-runner/reset.sh
 ```
 
@@ -136,8 +147,8 @@ A typical GitHub Actions step:
 - name: Run DKG ceremony
   env:
     CI: "true"
-    PLUTO_NODES: 0
-    CHARON_NODES: 4
+    PLUTO_NODES: 2
+    CHARON_NODES: 2
     TIMEOUT: 180
   run: ./scripts/dkg-runner/run.sh
 
@@ -158,3 +169,5 @@ A typical GitHub Actions step:
 **Ceremony times out** — increase `TIMEOUT`, check relay connectivity, and read the per-node log tails that `monitor.sh` prints to stderr on timeout. Full logs remain at `$WORK_DIR/node-*/node.log`.
 
 **Pluto binary not found** — build first with `cargo build -p pluto-cli`, or set `PLUTO_BIN` to the correct path. `PLUTO_BIN` is always required because setup uses `pluto create dkg`.
+
+**Smoke verification fails immediately** — install `charon` and `curl`, or set `RUN_SMOKE_VERIFY=0` if you only want the ceremony run and output collection.
