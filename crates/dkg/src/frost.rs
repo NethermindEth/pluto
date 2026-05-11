@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::{BTreeMap, HashMap};
 
 use async_trait::async_trait;
@@ -59,7 +57,7 @@ pub(crate) trait FTransport: Send + Sync {
 
 /// FROST DKG orchestration errors.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum FrostError {
+pub enum FrostError {
     /// Failed to construct a participant.
     #[error("new participant: {0}")]
     NewParticipant(#[source] pluto_frost::kryptology::KryptologyError),
@@ -290,38 +288,26 @@ pub(crate) async fn run_frost_parallel<T: FTransport>(
     share_idx: u32,
     dkg_ctx: &str,
 ) -> Result<Vec<Share>, FrostError> {
-    debug!(
-        num_validators,
-        num_nodes, threshold, share_idx, "Starting FROST DKG"
-    );
     let mut validators =
         new_frost_participants(num_validators, num_nodes, threshold, share_idx, dkg_ctx)?;
 
     let (cast_r1, p2p_r1) = round1(&mut validators)?;
-    debug!(
-        bcasts = cast_r1.len(),
-        p2p = p2p_r1.len(),
-        "Completed local FROST DKG round 1"
-    );
+
+    debug!("Sending round 1 messages");
+
     let (cast_r1_result, p2p_r1_result) = tp.round1(&cancellation, cast_r1, p2p_r1).await?;
-    debug!(
-        bcasts = cast_r1_result.len(),
-        p2p = p2p_r1_result.len(),
-        "Completed FROST DKG round 1 transport"
-    );
+
+    debug!("Received round 1 results");
 
     let cast_r2 = round2(&mut validators, &cast_r1_result, &p2p_r1_result)?;
-    debug!(bcasts = cast_r2.len(), "Completed local FROST DKG round 2");
+
+    debug!("Sending round 2 messages");
+
     let cast_r2_result = tp.round2(&cancellation, cast_r2).await?;
-    debug!(
-        bcasts = cast_r2_result.len(),
-        "Completed FROST DKG round 2 transport"
-    );
 
-    let shares = make_shares(&validators, &cast_r2_result)?;
-    debug!(shares = shares.len(), "Completed FROST DKG");
+    debug!("Received round 2 results");
 
-    Ok(shares)
+    make_shares(&validators, &cast_r2_result)
 }
 
 /// Returns multiple frost DKG participants (one for each parallel validator).

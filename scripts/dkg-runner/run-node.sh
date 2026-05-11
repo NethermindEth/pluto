@@ -94,4 +94,5 @@ log_info "=============================================="
     --definition-file="${DEF_FILE}" \
     --data-dir="${DATA_DIR}" \
     --p2p-relays="${RELAY_URL}" \
+    --shutdown-delay="${SHUTDOWN_DELAY}" \
     2>&1 | tee "${LOG_FILE}"

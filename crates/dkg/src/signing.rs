@@ -216,7 +216,6 @@ pub fn sign_validator_registrations(
 }
 
 /// Signs, exchanges, and aggregates deposit data for each deposit amount.
-#[allow(dead_code, reason = "will be used in dkg later ")]
 pub(crate) async fn sign_and_agg_deposit_data(
     exchanger: &Exchanger,
     shares: &[Share],
@@ -262,8 +261,8 @@ pub(crate) async fn sign_and_agg_validator_registrations(
 ) -> Result<Vec<VersionedSignedValidatorRegistration>> {
     let effective_gas_limit = if gas_limit == 0 {
         warn!(
-            default = registration::DEFAULT_GAS_LIMIT,
-            "gas_limit not set, using default"
+            default_gas_limit = registration::DEFAULT_GAS_LIMIT,
+            "custom target gas limit not supported, setting to default"
         );
         registration::DEFAULT_GAS_LIMIT
     } else {
@@ -293,7 +292,6 @@ pub(crate) async fn sign_and_agg_validator_registrations(
 /// into the existing lock and the definition is re-hashed; signing happens over
 /// the union of `existing_shares` and `new_shares` unless the append is
 /// unverified, in which case signing is skipped.
-#[allow(dead_code, reason = "will be used in dkg later ")]
 #[allow(clippy::too_many_arguments, reason = "mirrors Go signAndAggLockHash")]
 pub(crate) async fn sign_and_aggregate_lock_hash(
     existing_shares: &[Share],

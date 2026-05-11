@@ -25,7 +25,17 @@ POLL_INTERVAL=2
 TAIL_LINES=30
 
 log_info "Waiting for ${NODES} nodes (timeout: ${TIMEOUT}s)"
-log_info "Completion = cluster-lock.json present in ${WORK_DIR}/node-*/"
+log_info "Completion = cluster-lock.json AND keystore-*.json present in ${WORK_DIR}/node-*/"
+
+# A node is done when both cluster-lock.json and at least one keystore are
+# present. Pluto writes keystores under validator_keys/, Charon writes them
+# flat in the data dir — accept either layout.
+node_done() {
+    local node_dir="${1}"
+    [[ -f "${node_dir}/cluster-lock.json" ]] || return 1
+    compgen -G "${node_dir}/validator_keys/keystore-*.json" > /dev/null 2>&1 \
+        || compgen -G "${node_dir}/keystore-*.json" > /dev/null 2>&1
+}
 
 start_time="${SECONDS}"
 last_count=-1
@@ -34,7 +44,7 @@ while true; do
     elapsed=$(( SECONDS - start_time ))
     done_count=0
     for (( i = 0; i < NODES; i++ )); do
-        if [[ -f "${WORK_DIR}/node-${i}/cluster-lock.json" ]]; then
+        if node_done "${WORK_DIR}/node-${i}"; then
             done_count=$(( done_count + 1 ))
         fi
     done

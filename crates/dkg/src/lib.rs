@@ -49,3 +49,6 @@ mod signing;
 
 /// Registration conversion and distributed-validator assembly helpers.
 mod validators;
+
+/// P2P node setup.
+mod node;

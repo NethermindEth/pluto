@@ -252,7 +252,6 @@ impl MutableRelayReservation {
 
     /// Processes pending subscription events.
     fn process_subscription_events(&mut self) {
-        tracing::debug!("Processing subscription events");
         let peers = {
             let Ok(mut queue) = self.subscription_events.lock() else {
                 tracing::warn!("Failed to lock subscription events queue");

@@ -103,8 +103,6 @@
 //! intentionally not reset; create a fresh [`FrostP2PBehaviour`],
 //! [`FrostP2PHandle`], and [`FrostP2P`] for each DKG.
 
-#![allow(dead_code)]
-
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::{Arc, Mutex},
@@ -167,7 +165,7 @@ pub(crate) const SEND_TIMEOUT: Duration = Duration::from_secs(7);
 
 /// FROST direct-P2P delivery errors.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum FrostP2PError {
+pub enum FrostP2PError {
     /// The behaviour task is no longer running.
     #[error("frost p2p behaviour is no longer running")]
     BehaviourClosed,
@@ -200,6 +198,7 @@ pub(crate) enum OutEvent {
 
 /// Event emitted while the FROST P2P transport progresses through its rounds.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(crate) enum FrostP2PEvent {
     /// A FROST transport round started.
     RoundStarted {

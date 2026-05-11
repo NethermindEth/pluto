@@ -5640,6 +5640,7 @@ dependencies = [
  "pluto-k1util",
  "pluto-p2p",
  "pluto-parsigex",
+ "pluto-peerinfo",
  "pluto-testutil",
  "pluto-tracing",
  "prost 0.14.3",

@@ -32,12 +32,31 @@ async fn run() -> std::result::Result<(), CliError> {
     let matches = cmd.get_matches();
     let cli = Cli::from_arg_matches(&matches)?;
 
-    // Top level cancellation token for graceful shutdown on Ctrl+C
+    // Top level cancellation token for graceful shutdown on Ctrl+C / SIGTERM.
     let ct = CancellationToken::new();
     tokio::spawn({
         let ct = ct.clone();
         async move {
-            let _ = tokio::signal::ctrl_c().await;
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{SignalKind, signal};
+                let mut sigterm = match signal(SignalKind::terminate()) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        let _ = tokio::signal::ctrl_c().await;
+                        ct.cancel();
+                        return;
+                    }
+                };
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = sigterm.recv() => {}
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = tokio::signal::ctrl_c().await;
+            }
             ct.cancel();
         }
     });
