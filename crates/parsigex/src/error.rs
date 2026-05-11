@@ -28,6 +28,19 @@ pub enum Failure {
     Codec(String),
 }
 
+impl Clone for Failure {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Timeout => Self::Timeout,
+            Self::InvalidPayload => Self::InvalidPayload,
+            Self::InvalidDuty => Self::InvalidDuty,
+            Self::InvalidPartialSignature(error) => Self::InvalidPartialSignature(error.clone()),
+            Self::Io(error) => Self::Io(std::io::Error::new(error.kind(), error.to_string())),
+            Self::Codec(error) => Self::Codec(error.clone()),
+        }
+    }
+}
+
 /// Error type for signature verification callbacks.
 #[derive(Debug, thiserror::Error)]
 pub enum VerifyError {
@@ -54,6 +67,15 @@ pub enum Error {
     /// Handle channel closed.
     #[error("parsigex handle closed")]
     Closed,
+    /// Broadcast failed after being accepted by the behaviour.
+    #[error("parsigex broadcast {request_id} failed: {error}")]
+    BroadcastFailed {
+        /// Request identifier.
+        request_id: u64,
+        /// Failure reason.
+        #[source]
+        error: Failure,
+    },
     /// Duty type error.
     #[error(transparent)]
     DutyTypeError(#[from] DutyTypeError),

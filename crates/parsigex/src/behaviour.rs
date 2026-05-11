@@ -20,7 +20,7 @@ use libp2p::{
         THandlerInEvent, THandlerOutEvent, ToSwarm, dummy,
     },
 };
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{RwLock, mpsc, oneshot};
 
 use pluto_core::types::{Duty, ParSignedData, ParSignedDataSet, PubKey};
 use pluto_p2p::p2p_context::P2PContext;
@@ -107,7 +107,8 @@ pub enum Event {
 #[derive(Debug)]
 struct PendingBroadcast {
     pending_peers: HashSet<PeerId>,
-    failed: bool,
+    failure: Option<Failure>,
+    result_tx: Option<oneshot::Sender<Result<u64>>>,
 }
 
 #[derive(Debug)]
@@ -115,6 +116,7 @@ struct BroadcastRequest {
     request_id: u64,
     duty: Duty,
     data_set: ParSignedDataSet,
+    result_tx: Option<oneshot::Sender<Result<u64>>>,
 }
 
 /// Shared subscriber list between [`Handle`] and [`Behaviour`].
@@ -140,14 +142,32 @@ impl std::fmt::Debug for Handle {
 }
 
 impl Handle {
-    /// Broadcasts a partial signature set to all peers except self.
+    /// Enqueues a partial signature set for broadcast to all peers except self.
     pub async fn broadcast(&self, duty: Duty, data_set: ParSignedDataSet) -> Result<u64> {
+        self.enqueue(duty, data_set, None).await
+    }
+
+    /// Broadcasts a partial signature set and waits until the behaviour reports
+    /// terminal success or failure.
+    pub async fn broadcast_and_wait(&self, duty: Duty, data_set: ParSignedDataSet) -> Result<u64> {
+        let (result_tx, result_rx) = oneshot::channel();
+        self.enqueue(duty, data_set, Some(result_tx)).await?;
+        result_rx.await.map_err(|_| Error::Closed)?
+    }
+
+    async fn enqueue(
+        &self,
+        duty: Duty,
+        data_set: ParSignedDataSet,
+        result_tx: Option<oneshot::Sender<Result<u64>>>,
+    ) -> Result<u64> {
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         self.tx
             .send(BroadcastRequest {
                 request_id,
                 duty,
                 data_set,
+                result_tx,
             })
             .map_err(|_| Error::Closed)?;
         Ok(request_id)
@@ -242,11 +262,14 @@ impl Behaviour {
             request_id,
             duty,
             data_set,
+            result_tx,
         } = req;
         let message = match encode_message(&duty, &data_set) {
             Ok(message) => message,
             Err(err) => {
-                self.emit_broadcast_error(request_id, None, Failure::Codec(err.to_string()));
+                let error = err.to_string();
+                self.emit_broadcast_error(request_id, None, Failure::Codec(error.clone()));
+                self.finish_broadcast_failure(result_tx, request_id, Failure::Codec(error));
                 return;
             }
         };
@@ -259,6 +282,7 @@ impl Behaviour {
             .copied()
             .collect();
         let mut pending_peers = HashSet::new();
+        let mut failure = None;
         for peer in peers {
             if peer == self.config.peer_id {
                 continue;
@@ -271,13 +295,13 @@ impl Behaviour {
                 .connections_to_peer(&peer)
                 .is_empty()
             {
-                self.emit_broadcast_error(
-                    request_id,
-                    Some(peer),
-                    Failure::Io(std::io::Error::other(format!(
-                        "peer {peer} is not connected"
-                    ))),
-                );
+                let error = Failure::Io(std::io::Error::other(format!(
+                    "peer {peer} is not connected"
+                )));
+                if failure.is_none() {
+                    failure = Some(error.clone());
+                }
+                self.emit_broadcast_error(request_id, Some(peer), error);
                 continue;
             }
 
@@ -297,6 +321,13 @@ impl Behaviour {
                 .push_back(ToSwarm::GenerateEvent(Event::BroadcastFailed {
                     request_id,
                 }));
+            self.finish_broadcast_failure(
+                result_tx,
+                request_id,
+                failure.unwrap_or_else(|| {
+                    Failure::Io(std::io::Error::other("no peers available for broadcast"))
+                }),
+            );
             return;
         }
 
@@ -304,35 +335,65 @@ impl Behaviour {
             request_id,
             PendingBroadcast {
                 pending_peers,
-                failed: false,
+                failure,
+                result_tx,
             },
         );
     }
 
-    fn finish_broadcast_result(&mut self, request_id: u64, peer_id: PeerId, failed: bool) {
+    fn finish_broadcast_result(
+        &mut self,
+        request_id: u64,
+        peer_id: PeerId,
+        failure: Option<Failure>,
+    ) {
         let Some(entry) = self.pending_broadcasts.get_mut(&request_id) else {
             return;
         };
 
-        entry.failed |= failed;
+        if entry.failure.is_none() {
+            entry.failure = failure;
+        }
         entry.pending_peers.remove(&peer_id);
         if entry.pending_peers.is_empty() {
-            let failed = self
-                .pending_broadcasts
-                .remove(&request_id)
-                .map(|entry| entry.failed)
-                .unwrap_or(failed);
-            if failed {
+            let Some(entry) = self.pending_broadcasts.remove(&request_id) else {
+                return;
+            };
+            if let Some(error) = entry.failure {
                 self.pending_events
                     .push_back(ToSwarm::GenerateEvent(Event::BroadcastFailed {
                         request_id,
                     }));
+                self.finish_broadcast_failure(entry.result_tx, request_id, error);
             } else {
                 self.pending_events
                     .push_back(ToSwarm::GenerateEvent(Event::BroadcastComplete {
                         request_id,
                     }));
+                self.finish_broadcast_request(entry.result_tx, Ok(request_id));
             }
+        }
+    }
+
+    fn finish_broadcast_failure(
+        &self,
+        result_tx: Option<oneshot::Sender<Result<u64>>>,
+        request_id: u64,
+        error: Failure,
+    ) {
+        let Some(result_tx) = result_tx else {
+            return;
+        };
+        let _ = result_tx.send(Err(Error::BroadcastFailed { request_id, error }));
+    }
+
+    fn finish_broadcast_request(
+        &self,
+        result_tx: Option<oneshot::Sender<Result<u64>>>,
+        result: Result<u64>,
+    ) {
+        if let Some(result_tx) = result_tx {
+            let _ = result_tx.send(result);
         }
     }
 
@@ -371,10 +432,10 @@ impl Behaviour {
                     }));
             }
             FromHandler::OutboundSuccess { request_id } => {
-                self.finish_broadcast_result(request_id, peer_id, false);
+                self.finish_broadcast_result(request_id, peer_id, None);
             }
             FromHandler::OutboundError { request_id, error } => {
-                self.finish_broadcast_result(request_id, peer_id, true);
+                self.finish_broadcast_result(request_id, peer_id, Some(error.clone()));
                 self.emit_broadcast_error(request_id, Some(peer_id), error);
             }
         }
@@ -433,12 +494,9 @@ impl NetworkBehaviour for Behaviour {
                 .map(|(id, _)| *id)
                 .collect();
             for request_id in affected {
-                self.emit_broadcast_error(
-                    request_id,
-                    Some(peer_id),
-                    Failure::Io(std::io::Error::other("connection closed")),
-                );
-                self.finish_broadcast_result(request_id, peer_id, true);
+                let error = Failure::Io(std::io::Error::other("connection closed"));
+                self.emit_broadcast_error(request_id, Some(peer_id), error.clone());
+                self.finish_broadcast_result(request_id, peer_id, Some(error));
             }
         }
     }
