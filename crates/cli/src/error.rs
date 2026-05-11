@@ -70,6 +70,22 @@ pub enum CliError {
     #[error("test case not supported")]
     TestCaseNotSupported,
 
+    /// Peer error.
+    #[error("Peer error: {0}")]
+    PeerError(#[from] pluto_p2p::peer::PeerError),
+
+    /// Bootnode error.
+    #[error("Bootnode error: {0}")]
+    BootnodeError(#[from] pluto_p2p::bootnode::BootnodeError),
+
+    /// P2P node error.
+    #[error("P2P node error: {0}")]
+    P2PNodeError(#[from] pluto_p2p::p2p::P2PError),
+
+    /// Fetch definition error.
+    #[error("Fetch definition error: {0}")]
+    FetchDefinitionError(#[from] pluto_cluster::helpers::FetchError),
+
     /// Relay P2P error.
     #[error("Relay P2P error: {0}")]
     RelayP2PError(#[from] pluto_relay_server::error::RelayP2PError),

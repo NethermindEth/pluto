@@ -91,7 +91,7 @@ async fn run() -> std::result::Result<(), CliError> {
                 pluto_tracing::init(&pluto_tracing::TracingConfig::default())
                     .expect("Failed to initialize tracing");
                 match args.command {
-                    TestCommands::Peers(args) => commands::test::peers::run(args, &mut stdout)
+                    TestCommands::Peers(args) => commands::test::peers::run(args, &mut stdout, ct)
                         .await
                         .map(|_| ()),
                     TestCommands::Beacon(args) => {
