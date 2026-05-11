@@ -436,7 +436,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exchange_observes_bcast_failure() -> anyhow::Result<()> {
+    async fn exchange_observes_bcast_failure_on_peer_unreachable() -> anyhow::Result<()> {
         let (key0, peer0) = make_peer(0, 0);
         let (_, peer1) = make_peer(1, 1);
         let peer_ids = vec![peer0.id, peer1.id];
