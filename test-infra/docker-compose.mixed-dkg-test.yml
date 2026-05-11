@@ -115,6 +115,8 @@ services:
 
   node0:
     image: ${NODE0_IMAGE:-nethermindeth/pluto:main}
+    environment:
+      - CHARON_LOG_LEVEL=${LOG_LEVEL:-info}
     command:
       - dkg
       - --definition-file=/cluster/cluster-definition.json
@@ -132,6 +134,8 @@ services:
 
   node1:
     image: ${NODE1_IMAGE:-nethermindeth/pluto:main}
+    environment:
+      - CHARON_LOG_LEVEL=${LOG_LEVEL:-info}
     command:
       - dkg
       - --definition-file=/cluster/cluster-definition.json
@@ -149,6 +153,8 @@ services:
 
   node2:
     image: ${NODE2_IMAGE:-obolnetwork/charon:latest}
+    environment:
+      - CHARON_LOG_LEVEL=${LOG_LEVEL:-info}
     command:
       - dkg
       - --definition-file=/cluster/cluster-definition.json
@@ -166,6 +172,8 @@ services:
 
   node3:
     image: ${NODE3_IMAGE:-obolnetwork/charon:latest}
+    environment:
+      - CHARON_LOG_LEVEL=${LOG_LEVEL:-info}
     command:
       - dkg
       - --definition-file=/cluster/cluster-definition.json
