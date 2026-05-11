@@ -393,6 +393,7 @@ fn compute_lagrange_coefficients(indices: &[Index]) -> Result<Vec<blst::blst_sca
 /// Convert u64 to blst scalar
 fn scalar_from_u64(val: u64) -> blst::blst_scalar {
     let mut scalar = blst::blst_scalar::default();
+    let limbs: [u64; 4] = [val, 0, 0, 0];
     unsafe {
         blst::blst_scalar_from_uint64(&mut scalar, limbs.as_ptr());
     }
