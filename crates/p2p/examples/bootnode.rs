@@ -43,7 +43,7 @@ use pluto_p2p::{
     gater, k1,
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
-    relay::{MutableRelayReservation, RelayRouter},
+    relay::RelayManager,
 };
 use pluto_tracing::TracingConfig;
 use tokio::{fs, signal};
@@ -53,8 +53,7 @@ use tracing::info;
 #[derive(NetworkBehaviour)]
 pub struct ExampleBehaviour {
     pub relay: relay::client::Behaviour,
-    pub relay_reservation: MutableRelayReservation,
-    pub relay_router: RelayRouter,
+    pub relay_manager: RelayManager,
     pub identify: identify::Behaviour,
     pub ping: ping::Behaviour,
 }
@@ -147,7 +146,6 @@ pub async fn main() -> Result<()> {
         P2PContext::new(known_peers.clone()),
         |builder, keypair, relay_client| {
             let p2p_context = builder.p2p_context();
-            let local_peer_id = keypair.public().to_peer_id();
 
             // Create identify config
             let identify_config =
@@ -155,8 +153,7 @@ pub async fn main() -> Result<()> {
 
             builder.with_gater(conn_gater).with_inner(ExampleBehaviour {
                 relay: relay_client,
-                relay_reservation: MutableRelayReservation::new(relays.clone()),
-                relay_router: RelayRouter::new(relays.clone(), p2p_context, local_peer_id),
+                relay_manager: RelayManager::new(relays.clone(), p2p_context),
                 identify: identify::Behaviour::new(identify_config),
                 ping: ping::Behaviour::new(ping::Config::new()),
             })
@@ -166,7 +163,7 @@ pub async fn main() -> Result<()> {
     // Track relay peer IDs for logging
     let relay_peer_ids: std::collections::HashSet<PeerId> = relays
         .iter()
-        .filter_map(|r| r.peer().ok().flatten().map(|p| p.id))
+        .filter_map(|r| r.peer().map(|p| p.id))
         .collect();
 
     loop {

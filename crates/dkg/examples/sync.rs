@@ -65,7 +65,7 @@ use pluto_p2p::{
     gater, k1,
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
-    relay::{MutableRelayReservation, RelayRouter},
+    relay::RelayManager,
 };
 use pluto_tracing::TracingConfig;
 use tokio::{fs, signal, task::JoinHandle};
@@ -75,8 +75,7 @@ use tracing::{debug, error, info};
 #[derive(NetworkBehaviour)]
 struct ExampleBehaviour {
     relay: relay::client::Behaviour,
-    relay_reservation: MutableRelayReservation,
-    relay_router: RelayRouter,
+    relay_manager: RelayManager,
     sync: sync::Behaviour,
 }
 
@@ -556,7 +555,7 @@ async fn main() -> Result<()> {
     .context("failed to resolve relays")?;
     let relay_peer_ids = relays
         .iter()
-        .filter_map(|relay| relay.peer().ok().flatten().map(|peer| peer.id))
+        .filter_map(|relay| relay.peer().map(|peer| peer.id))
         .collect::<HashSet<_>>();
 
     let known_peers = merge_known_peers(&cluster_peers, &args.known_peers)?;
@@ -588,9 +587,8 @@ async fn main() -> Result<()> {
         NodeType::QUIC,
         args.filter_private_addrs,
         p2p_context,
-        |builder, keypair, relay_client| {
+        |builder, _, relay_client| {
             let p2p_context = builder.p2p_context();
-            let local_peer_id = keypair.public().to_peer_id();
 
             let (sync_behaviour, server, clients) = sync::new(
                 cluster_peers.clone(),
@@ -604,8 +602,7 @@ async fn main() -> Result<()> {
 
             builder.with_gater(conn_gater).with_inner(ExampleBehaviour {
                 relay: relay_client,
-                relay_reservation: MutableRelayReservation::new(relays.clone()),
-                relay_router: RelayRouter::new(relays.clone(), p2p_context, local_peer_id),
+                relay_manager: RelayManager::new(relays.clone(), p2p_context),
                 sync: sync_behaviour,
             })
         },

@@ -80,10 +80,6 @@ pub enum BootnodeError {
     /// ENR does not have TCP nor UDP port.
     #[error("enr does not have TCP nor UDP port")]
     EnrNoPort,
-
-    /// Mutable peer error.
-    #[error("mutable peer error: {0}")]
-    MutablePeerError(#[from] MutablePeerError),
 }
 
 /// Result type for bootnode operations.
@@ -141,13 +137,7 @@ pub async fn new_relays(
                 return Err(BootnodeError::TimeoutResolvingBootnodeEnr);
             }
 
-            let mut resolved = false;
-            for node in &resp {
-                if let Some(_) = node.peer() {
-                    resolved = true;
-                    break;
-                }
-            }
+            let resolved = resp.iter().any(|node| node.peer().is_some());
 
             if resolved {
                 return Ok(resp);

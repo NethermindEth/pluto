@@ -79,7 +79,7 @@ use pluto_p2p::{
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
     peer::peer_id_from_key,
-    relay::{MutableRelayReservation, RelayRouter},
+    relay::{RelayManager, RelayManagerEvent},
 };
 use pluto_parsigex::{self as parsigex, DutyGater, Event, Handle, Verifier};
 use pluto_tracing::TracingConfig;
@@ -91,8 +91,7 @@ use tracing::{info, warn};
 #[behaviour(to_swarm = "CombinedBehaviourEvent")]
 struct CombinedBehaviour {
     relay: relay::client::Behaviour,
-    relay_reservation: MutableRelayReservation,
-    relay_router: RelayRouter,
+    relay_manager: RelayManager,
     parsigex: parsigex::Behaviour,
 }
 
@@ -100,6 +99,7 @@ struct CombinedBehaviour {
 enum CombinedBehaviourEvent {
     ParSigEx(Event),
     Relay(relay::client::Event),
+    RelayManager(#[allow(dead_code)] RelayManagerEvent),
 }
 
 impl From<Event> for CombinedBehaviourEvent {
@@ -111,6 +111,12 @@ impl From<Event> for CombinedBehaviourEvent {
 impl From<relay::client::Event> for CombinedBehaviourEvent {
     fn from(event: relay::client::Event) -> Self {
         Self::Relay(event)
+    }
+}
+
+impl From<RelayManagerEvent> for CombinedBehaviourEvent {
+    fn from(event: RelayManagerEvent) -> Self {
+        Self::RelayManager(event)
     }
 }
 
@@ -255,7 +261,7 @@ async fn main() -> Result<()> {
 
     let relay_peer_ids: HashSet<_> = relays
         .iter()
-        .filter_map(|relay| relay.peer().ok().flatten().map(|peer| peer.id))
+        .filter_map(|relay| relay.peer().map(|peer| peer.id))
         .collect();
 
     let mut parsigex_handle: Option<Handle> = None;
@@ -283,8 +289,7 @@ async fn main() -> Result<()> {
                 .with_inner(CombinedBehaviour {
                     parsigex,
                     relay: relay_client,
-                    relay_reservation: MutableRelayReservation::new(relays.clone()),
-                    relay_router: RelayRouter::new(relays.clone(), p2p_context, local_peer_id),
+                    relay_manager: RelayManager::new(relays.clone(), p2p_context),
                 })
         },
     )?;

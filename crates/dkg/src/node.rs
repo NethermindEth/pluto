@@ -19,7 +19,7 @@ use pluto_p2p::{
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
     peer::{Peer, peer_id_from_key, verify_p2p_key},
-    relay::{MutableRelayReservation, RelayRouter},
+    relay::RelayManager,
 };
 use pluto_parsigex as parsigex;
 use pluto_peerinfo::{self as peerinfo, LocalPeerInfo};
@@ -28,8 +28,7 @@ use tokio_util::sync::CancellationToken;
 #[derive(NetworkBehaviour)]
 pub(crate) struct DkgBehaviour {
     pub(crate) relay: relay::client::Behaviour,
-    pub(crate) relay_reservation: MutableRelayReservation,
-    pub(crate) relay_router: RelayRouter,
+    pub(crate) relay_manager: RelayManager,
     pub(crate) bcast: bcast::Behaviour,
     pub(crate) sync: sync::Behaviour,
     pub(crate) parsigex: parsigex::Behaviour,
@@ -69,8 +68,7 @@ pub(crate) async fn setup_p2p(
     let p2p_context = P2PContext::new(peer_ids.clone());
     p2p_context.set_local_peer_id(local_peer_id);
 
-    let relay_reservation = MutableRelayReservation::new(relays.clone());
-    let relay_router = RelayRouter::new(relays, p2p_context.clone(), local_peer_id);
+    let relay_manager = RelayManager::new(relays, p2p_context.clone());
 
     let (bcast_comp, bcast_comp_handle) =
         bcast::Behaviour::new(peer_ids.clone(), p2p_context.clone(), key.clone());
@@ -143,8 +141,7 @@ pub(crate) async fn setup_p2p(
         |builder, _, relay_client| {
             builder.with_gater(conn_gater).with_inner(DkgBehaviour {
                 relay: relay_client,
-                relay_reservation,
-                relay_router,
+                relay_manager,
                 bcast: bcast_comp,
                 sync: sync_comp,
                 parsigex: parsigex_comp,

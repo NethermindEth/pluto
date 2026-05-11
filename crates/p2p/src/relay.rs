@@ -10,10 +10,9 @@
 //! relays, even if they are not directly connected to the node.
 
 use std::{
-    collections::{HashMap, HashSet, VecDeque, hash_map::Entry},
+    collections::{HashMap, HashSet, VecDeque},
     convert::Infallible,
     pin::Pin,
-    sync::{Arc, Mutex},
     task::{Context, Poll},
     time::Duration,
 };
@@ -21,7 +20,6 @@ use std::{
 use crate::{
     p2p_context::P2PContext,
     peer::{MutablePeer, Peer},
-    utils,
 };
 use futures::stream::StreamExt;
 use libp2p::{
@@ -33,12 +31,9 @@ use libp2p::{
         THandlerInEvent, ToSwarm, dial_opts::DialOpts, dummy,
     },
 };
-use tokio::time::{Instant, Interval, Sleep, sleep_until};
+use tokio::time::{Instant, Sleep, sleep_until};
 use tokio_stream::wrappers::WatchStream;
 
-const RELAY_ROUTER_INTERVAL: Duration = Duration::from_secs(60);
-const RELAY_ROUTER_INITIAL_DELAY: Duration = Duration::from_secs(10);
-const RELAY_READY_DELAY: Duration = Duration::from_secs(2);
 /// Initial backoff delay before the first reconnect attempt. Matches Charon's
 /// `DefaultConfig.BaseDelay`.
 const RELAY_BACKOFF_BASE: Duration = Duration::from_secs(1);
@@ -75,6 +70,8 @@ pub struct RelayManager {
     p2p_context: P2PContext,
 }
 
+/// Events emitted by [`RelayManager`] to the swarm.
+#[derive(Debug)]
 pub enum RelayManagerEvent {
     /// Dialed relay successfully.
     Dialed(PeerId),
@@ -82,6 +79,8 @@ pub enum RelayManagerEvent {
     DialFailed(PeerId, String),
 }
 
+/// Whether a [`RelayDialState`] is targeting a relay server or a cluster peer
+/// reached through reserved relay circuits.
 #[derive(Debug, Clone, Copy)]
 pub enum RelayDialType {
     /// Dial a known cluster peer via reserved relay circuits.
@@ -90,10 +89,16 @@ pub enum RelayDialType {
     Relay,
 }
 
+/// State of an in-flight dial campaign, polled to produce a `ToSwarm::Dial`
+/// event each time its backoff elapses.
 pub struct RelayDialState {
+    /// Kind of target this campaign is dialing.
     pub ty: RelayDialType,
+    /// Target peer id for the dial.
     pub peer_id: PeerId,
+    /// Transport (for `Relay`) or circuit (for `Peer`) addresses to try.
     pub addrs: Vec<Multiaddr>,
+    /// Number of dial attempts so far, used to compute the next backoff.
     pub retry_count: u32,
     /// Sleeps until the next dial is due. Boxed-and-pinned so the struct stays
     /// `Unpin` and can be stored in a `HashMap`; the inner `Sleep` is `!Unpin`.
@@ -125,8 +130,11 @@ impl RelayDialState {
 ///   it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelayConnectionState {
+    /// Dial campaign in flight; no transport connection to the relay yet.
     Dialing,
+    /// Transport connection up; reservation not yet confirmed.
     Established,
+    /// Reservation confirmed; circuits through this relay are usable.
     Reserved,
 }
 
@@ -141,7 +149,10 @@ impl Future for RelayDialState {
 
         let next_delay = backoff_delay(self.retry_count);
         self.retry_count = self.retry_count.saturating_add(1);
-        self.sleep.as_mut().reset(Instant::now() + next_delay);
+        let next_deadline = Instant::now()
+            .checked_add(next_delay)
+            .unwrap_or_else(Instant::now);
+        self.sleep.as_mut().reset(next_deadline);
 
         let opts = DialOpts::peer_id(self.peer_id)
             .condition(libp2p::swarm::dial_opts::PeerCondition::DisconnectedAndNotDialing)
@@ -230,9 +241,8 @@ impl RelayManager {
     /// `/.../p2p/<relay-id>/p2p-circuit`. Returns `None` if the address is not
     /// a relay circuit address.
     fn relay_id_from_circuit_addr(addr: &Multiaddr) -> Option<PeerId> {
-        let mut iter = addr.iter().peekable();
         let mut last_p2p: Option<PeerId> = None;
-        while let Some(proto) = iter.next() {
+        for proto in addr.iter() {
             match proto {
                 MaProtocol::P2p(id) => last_p2p = Some(id),
                 MaProtocol::P2pCircuit => return last_p2p,
@@ -242,6 +252,9 @@ impl RelayManager {
         None
     }
 
+    /// Applies a relay address update from a [`MutablePeer`]: refreshes
+    /// tracked addresses and, if this is the first time we've seen this
+    /// relay, kicks off a new dial campaign.
     pub fn queue_relay_update(&mut self, relay: Peer) {
         self.relay_addrs.insert(relay.id, relay.addresses.clone());
 
@@ -279,6 +292,9 @@ impl RelayManager {
         }
     }
 
+    /// Polls every active dial state once, queuing a `ToSwarm::Dial` event for
+    /// any whose backoff has elapsed. Wakers for the remaining (pending) ones
+    /// are registered via the underlying `Sleep` futures.
     pub fn process_relay_dials(&mut self, cx: &mut Context<'_>) {
         for (_, state) in self.dial_states.iter_mut() {
             let state = Pin::new(state);
@@ -432,6 +448,28 @@ impl RelayManager {
         }
     }
 
+    /// Reacts to a circuit listen address expiring. If the relay was in
+    /// `Reserved`, demote it to `Established` so we stop routing peers through
+    /// it. libp2p's circuit-client will normally refresh the reservation and
+    /// emit `NewListenAddr` again, which promotes us back. If the transport
+    /// connection also drops, `on_connection_closed` will handle the redial.
+    fn on_expired_listen_addr(&mut self, addr: &Multiaddr) {
+        let Some(relay_id) = Self::relay_id_from_circuit_addr(addr) else {
+            return;
+        };
+        let Some(state) = self.connection_states.get(&relay_id).copied() else {
+            return;
+        };
+        if matches!(state, RelayConnectionState::Reserved) {
+            tracing::info!(
+                relay_peer_id = %relay_id,
+                listen_addr = %addr,
+                "Relay circuit listener expired; demoting to Established"
+            );
+            self.set_relay_state(relay_id, RelayConnectionState::Established);
+        }
+    }
+
     /// Reacts to the last connection to `peer_id` closing. Either it's one of
     /// our relays (queue a fresh re-dial cycle) or a known cluster peer
     /// (arm a fresh routing dial through the current reserved relays).
@@ -487,22 +525,18 @@ impl RelayManager {
         self.set_relay_state(relay_id, RelayConnectionState::Dialing);
     }
 
-    /// Arms a fresh dial campaign for a known cluster peer whose last
-    /// connection just dropped, routing through all currently reserved
-    /// relays. No-op if no relay is currently reserved.
+    /// Arms a dial campaign for a known cluster peer whose last connection
+    /// just dropped, routing through all currently reserved relays. Delegates
+    /// to [`Self::upsert_peer_dial`] so that an existing dial state with the
+    /// same circuit addrs survives — its backoff schedule is preserved across
+    /// rapid disconnect/reconnect cycles when the route hasn't changed. No-op
+    /// if no relay is currently reserved.
     fn reroute_peer(&mut self, peer_id: PeerId) {
-        let addrs = self.peer_circuit_addrs(&peer_id);
-        if addrs.is_empty() {
-            return;
-        }
         tracing::debug!(
             peer_id = %peer_id,
-            "Peer connection closed, queuing re-route via reserved relays"
+            "Peer connection closed, re-routing via reserved relays"
         );
-        self.dial_states.insert(
-            peer_id,
-            RelayDialState::new(RelayDialType::Peer, peer_id, addrs),
-        );
+        self.upsert_peer_dial(peer_id);
     }
 }
 
@@ -538,6 +572,9 @@ impl NetworkBehaviour for RelayManager {
             }
             FromSwarm::NewListenAddr(ev) => {
                 self.on_new_listen_addr(ev.addr);
+            }
+            FromSwarm::ExpiredListenAddr(ev) => {
+                self.on_expired_listen_addr(ev.addr);
             }
             FromSwarm::ConnectionClosed(conn) if conn.remaining_established == 0 => {
                 self.on_connection_closed(conn.peer_id);
