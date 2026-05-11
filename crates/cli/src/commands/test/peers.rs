@@ -78,6 +78,11 @@ const THRESHOLD_RELAY_MEASURE_AVG: Duration = Duration::from_millis(50);
 const THRESHOLD_RELAY_MEASURE_POOR: Duration = Duration::from_millis(240);
 const SELF_TEST_NODE_BIND_DELAY: Duration = Duration::from_millis(500);
 
+// rust-libp2p multistream-select V1: the listener waits for the dialer to send
+// the header first, then echoes it back. Wire format: varint(len) + message,
+// so "/multistream/1.0.0\n" (19 bytes) is sent as 0x13 + 19 bytes = 20 bytes.
+const MULTISTREAM_HEADER: &[u8] = b"\x13/multistream/1.0.0\n";
+
 /// Arguments for the peers test command.
 #[derive(Args, Clone, Debug)]
 pub struct TestPeersArgs {
@@ -515,11 +520,6 @@ async fn run_self_tests(
 }
 
 async fn libp2p_tcp_port_open_test(addrs: &[String]) -> TestResult {
-    // rust-libp2p multistream-select V1: the listener waits for the dialer to send
-    // the header first, then echoes it back. Wire format: varint(len) + message,
-    // so "/multistream/1.0.0\n" (19 bytes) is sent as 0x13 + 19 bytes = 20 bytes.
-    const MULTISTREAM_HEADER: &[u8] = b"\x13/multistream/1.0.0\n";
-
     let result = TestResult::new("Libp2pTCPPortOpen");
 
     if addrs.is_empty() {
@@ -582,7 +582,7 @@ async fn try_multistream_handshake(attempt: usize, addr: &str, header: &[u8]) ->
         return Err(CliError::from(e));
     }
 
-    let mut buf = [0u8; 20];
+    let mut buf = [0u8; MULTISTREAM_HEADER.len()];
     match tokio::time::timeout(Duration::from_millis(500), stream.read_exact(&mut buf)).await {
         Ok(Ok(_)) => {
             tracing::debug!(attempt, addr, raw = ?buf, "received echo");
