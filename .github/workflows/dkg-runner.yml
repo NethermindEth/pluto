@@ -4,11 +4,17 @@ on:
   push:
     branches: ["main"]
     paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
       - "scripts/dkg-runner/**"
       - ".github/workflows/dkg-runner.yml"
   pull_request:
     types: [synchronize, opened, reopened, ready_for_review]
     paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
       - "scripts/dkg-runner/**"
       - ".github/workflows/dkg-runner.yml"
   workflow_dispatch:
