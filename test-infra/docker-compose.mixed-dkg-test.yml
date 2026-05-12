@@ -47,7 +47,7 @@ services:
         set -e
         for node in node-0 node-1 node-2 node-3; do
           docker run --rm -v pluto-mixed-dkg-test_cluster-data:/cluster \
-            ${PLUTO_IMAGE:-nethermindeth/pluto:main} \
+            ${SETUP_IMAGE:-nethermindeth/pluto:main} \
             create enr --data-dir=/cluster/$$node  2>&1 | grep '^enr:' | head -1 > /cluster/$$node/enr.txt
         done
     volumes:
@@ -68,7 +68,7 @@ services:
         ENR2=$$(cat /cluster/node-2/enr.txt)
         ENR3=$$(cat /cluster/node-3/enr.txt)
         docker run --rm -v pluto-mixed-dkg-test_cluster-data:/cluster \
-          ${PLUTO_IMAGE:-obolnetwork/charon:latest} \
+          ${SETUP_IMAGE:-nethermindeth/pluto:main} \
           create dkg \
           --operator-enrs="$$ENR0,$$ENR1,$$ENR2,$$ENR3" \
           --threshold=3 \
@@ -94,7 +94,7 @@ services:
         condition: service_completed_successfully
 
   relay:
-    image: ${PLUTO_IMAGE:-nethermindeth/pluto:main}
+    image: ${RELAY_IMAGE:-nethermindeth/pluto:main}
     command:
       - relay
       - --http-address=0.0.0.0:3640
