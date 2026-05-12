@@ -44,12 +44,14 @@ chrono.workspace = true
 sysinfo.workspace = true
 quick-xml.workspace = true
 futures.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 test-case.workspace = true
 backon.workspace = true
 wiremock.workspace = true
+pluto-cluster = { workspace = true, features = ["test-cluster"] }
 
 [lints]
 workspace = true
