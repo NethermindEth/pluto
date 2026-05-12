@@ -28,7 +28,7 @@ name: pluto-mixed-dkg-test
 
 services:
   init:
-    image: busybox
+    image: docker:cli
     command: >-
       sh -c "mkdir -p /cluster/node-0 /cluster/node-1 /cluster/node-2 /cluster/node-3 /cluster/relay
       && chmod -R 777 /cluster"
@@ -47,7 +47,7 @@ services:
             create enr --data-dir=/cluster/$$node  2>&1 | grep '^enr:' | head -1 > /cluster/$$node/enr.txt
         done
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock # Docker-outside-of-Docker (DooD)
       - cluster-data:/cluster
     depends_on:
       init:
@@ -74,14 +74,14 @@ services:
           --name=test-dkg \
           --output-dir=/cluster
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock # Docker-outside-of-Docker (DooD)
       - cluster-data:/cluster
     depends_on:
       setup-enr:
         condition: service_completed_successfully
 
   fix-perms:
-    image: busybox
+    image: docker:cli
     command: chmod -R a+rX /cluster
     volumes:
       - cluster-data:/cluster
@@ -148,7 +148,7 @@ services:
       - nodes_net
 
   node2:
-    image: ${NODE2_IMAGE:-obolnetwork/charon:latest}
+    image: ${NODE2_IMAGE:-obolnetwork/charon:v1.7.1}
     environment:
       - CHARON_LOG_LEVEL=${LOG_LEVEL:-info}
     command:
@@ -167,7 +167,7 @@ services:
       - nodes_net
 
   node3:
-    image: ${NODE3_IMAGE:-obolnetwork/charon:latest}
+    image: ${NODE3_IMAGE:-obolnetwork/charon:v1.7.1}
     environment:
       - CHARON_LOG_LEVEL=${LOG_LEVEL:-info}
     command:
