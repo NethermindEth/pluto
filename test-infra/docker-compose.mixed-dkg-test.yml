@@ -5,7 +5,7 @@
 #
 # Override per-node images to mix implementations:
 #
-#   NODE0_IMAGE=obolnetwork/charon:latest NODE1_IMAGE=obolnetwork/charon:latest \
+#   NODE0_IMAGE=obolnetwork/charon:v1.7.1 NODE1_IMAGE=obolnetwork/charon:v1.7.1 \
 #     docker compose -f docker-compose.mixed-dkg-test.yml up
 #
 # Use the external Obol relay instead of the internal one:

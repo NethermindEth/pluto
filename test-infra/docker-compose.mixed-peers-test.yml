@@ -3,7 +3,7 @@
 # Each node's image is independently configurable via NODE{N}_IMAGE env vars.
 # Default is Pluto for all nodes. Override per-node to mix implementations:
 #
-#   NODE2_IMAGE=obolnetwork/charon:latest NODE3_IMAGE=obolnetwork/charon:latest \
+#   NODE2_IMAGE=obolnetwork/charon:v1.7.1 NODE3_IMAGE=obolnetwork/charon:v1.7.1 \
 #     docker compose -f docker-compose.mixed-peers-test.yml up
 #
 # Network topology — relay bridges isolated node networks; nodes share
@@ -15,7 +15,7 @@
 #         ── node3_net ── node3 ──┘
 #
 # Override relay or image tag:
-#   PLUTO_IMAGE=nethermindeth/pluto:1.7.1 docker compose -f docker-compose.mixed-peers-test.yml up
+#   RELAY_IMAGE=nethermindeth/pluto:main docker compose -f docker-compose.mixed-peers-test.yml up
 #
 # Reset cluster data and start fresh:
 #   docker compose -f docker-compose.mixed-peers-test.yml down -v
@@ -24,7 +24,7 @@ name: pluto-mixed-peers-test
 
 services:
   setup:
-    image: ${PLUTO_IMAGE:-nethermindeth/pluto:main}
+    image: ${SETUP_IMAGE:-nethermindeth/pluto:main}
     command:
       - create
       - cluster
@@ -48,7 +48,7 @@ services:
         condition: service_completed_successfully
 
   relay:
-    image: ${PLUTO_IMAGE:-nethermindeth/pluto:main}
+    image: ${RELAY_IMAGE:-nethermindeth/pluto:main}
     command:
       - relay
       - --http-address=0.0.0.0:3640
