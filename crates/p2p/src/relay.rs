@@ -583,7 +583,16 @@ impl RelayManager {
 
     /// Reacts to a dial failure by logging and emitting a `DialFailed` event.
     /// The underlying [`RelayDialState`] self-rearms with exponential backoff
-    /// on the next swarm poll, so no state change is needed here.
+    /// on the next swarm poll, so by default no state change is needed here.
+    ///
+    /// One special case: `DialError::DialPeerConditionFalse` means libp2p
+    /// refused the dial because we're already connected to (or dialing) the
+    /// target. Retrying would just be re-rejected — most visibly when
+    /// [`Self::route_known_peers`] arms circuit-dials for cluster peers we
+    /// already have a direct connection to. In that case we drop the dial
+    /// state and rely on [`Self::on_connection_closed`] to re-arm it via
+    /// [`Self::redial_relay`] / [`Self::reroute_peer`] once the existing
+    /// connection actually closes.
     fn on_dial_failure(&mut self, peer_id: Option<PeerId>, error: &DialError) {
         let Some(peer_id) = peer_id else { return };
         let Some(state) = self.dial_states.get(&peer_id) else {
@@ -591,13 +600,27 @@ impl RelayManager {
         };
         let target = state.ty;
         let retry_count = state.retry_count;
-        tracing::debug!(
-            peer_id = %peer_id,
-            dial_type = ?target,
-            retry_count,
-            %error,
-            "Dial failed, will retry with backoff"
-        );
+        let skipped = matches!(error, DialError::DialPeerConditionFalse(_));
+
+        if skipped {
+            tracing::debug!(
+                peer_id = %peer_id,
+                dial_type = ?target,
+                retry_count,
+                %error,
+                "Dial skipped (already connected or dialing); dropping dial state"
+            );
+            self.dial_states.remove(&peer_id);
+        } else {
+            tracing::debug!(
+                peer_id = %peer_id,
+                dial_type = ?target,
+                retry_count,
+                %error,
+                "Dial failed, will retry with backoff"
+            );
+        }
+
         self.events
             .push_back(ToSwarm::GenerateEvent(RelayManagerEvent::DialFailed {
                 peer_id,
@@ -719,5 +742,220 @@ impl NetworkBehaviour for RelayManager {
         }
 
         Poll::Pending
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+
+    fn addr(s: &str) -> Multiaddr {
+        Multiaddr::from_str(s).expect("valid multiaddr")
+    }
+
+    fn manager() -> RelayManager {
+        RelayManager::new(Vec::new(), P2PContext::new(Vec::<PeerId>::new()))
+    }
+
+    // ---- circuit_addrs -------------------------------------------------
+
+    #[test]
+    fn circuit_addrs_strips_existing_p2p_and_appends_relay_suffix() {
+        let relay = PeerId::random();
+        let transport = addr(&format!("/ip4/127.0.0.1/tcp/9000/p2p/{relay}"));
+
+        let out = RelayManager::circuit_addrs(relay, &[transport]);
+
+        let expected = addr(&format!("/ip4/127.0.0.1/tcp/9000/p2p/{relay}/p2p-circuit"));
+        assert_eq!(out, vec![expected]);
+    }
+
+    #[test]
+    fn circuit_addrs_handles_addr_without_existing_p2p_component() {
+        let relay = PeerId::random();
+        let transport = addr("/ip4/10.0.0.1/udp/9000/quic-v1");
+
+        let out = RelayManager::circuit_addrs(relay, &[transport]);
+
+        let expected = addr(&format!(
+            "/ip4/10.0.0.1/udp/9000/quic-v1/p2p/{relay}/p2p-circuit"
+        ));
+        assert_eq!(out, vec![expected]);
+    }
+
+    #[test]
+    fn circuit_addrs_preserves_input_order_for_multiple_addrs() {
+        let relay = PeerId::random();
+        let other = PeerId::random();
+        let inputs = vec![
+            addr(&format!("/ip4/127.0.0.1/tcp/9000/p2p/{other}")),
+            addr("/ip4/10.0.0.1/udp/9000/quic-v1"),
+        ];
+
+        let out = RelayManager::circuit_addrs(relay, &inputs);
+
+        assert_eq!(
+            out,
+            vec![
+                addr(&format!("/ip4/127.0.0.1/tcp/9000/p2p/{relay}/p2p-circuit")),
+                addr(&format!(
+                    "/ip4/10.0.0.1/udp/9000/quic-v1/p2p/{relay}/p2p-circuit"
+                )),
+            ]
+        );
+    }
+
+    #[test]
+    fn circuit_addrs_empty_input_yields_empty_output() {
+        let relay = PeerId::random();
+        let out = RelayManager::circuit_addrs(relay, &[]);
+        assert!(out.is_empty());
+    }
+
+    // ---- relay_id_from_circuit_addr -----------------------------------
+
+    #[test]
+    fn relay_id_from_circuit_addr_extracts_last_p2p_before_circuit() {
+        let relay = PeerId::random();
+        let circuit = addr(&format!("/ip4/127.0.0.1/tcp/9000/p2p/{relay}/p2p-circuit"));
+
+        assert_eq!(
+            RelayManager::relay_id_from_circuit_addr(&circuit),
+            Some(relay)
+        );
+    }
+
+    #[test]
+    fn relay_id_from_circuit_addr_ignores_target_p2p_after_circuit() {
+        // Full circuit-dial form `/.../p2p/<relay>/p2p-circuit/p2p/<target>`
+        // must return the relay id (before `/p2p-circuit`), not the target.
+        let relay = PeerId::random();
+        let target = PeerId::random();
+        let circuit = addr(&format!(
+            "/ip4/127.0.0.1/tcp/9000/p2p/{relay}/p2p-circuit/p2p/{target}"
+        ));
+
+        assert_eq!(
+            RelayManager::relay_id_from_circuit_addr(&circuit),
+            Some(relay)
+        );
+    }
+
+    #[test]
+    fn relay_id_from_circuit_addr_returns_none_when_no_circuit_component() {
+        let peer = PeerId::random();
+        let plain = addr(&format!("/ip4/127.0.0.1/tcp/9000/p2p/{peer}"));
+
+        assert_eq!(RelayManager::relay_id_from_circuit_addr(&plain), None);
+    }
+
+    #[test]
+    fn relay_id_from_circuit_addr_returns_none_when_circuit_has_no_preceding_p2p() {
+        let bare = addr("/ip4/127.0.0.1/tcp/9000/p2p-circuit");
+        assert_eq!(RelayManager::relay_id_from_circuit_addr(&bare), None);
+    }
+
+    // ---- peer_circuit_addrs -------------------------------------------
+
+    #[test]
+    fn peer_circuit_addrs_returns_empty_when_no_relays_reserved() {
+        let mgr = manager();
+        let target = PeerId::random();
+        assert!(mgr.peer_circuit_addrs(&target).is_empty());
+    }
+
+    #[test]
+    fn peer_circuit_addrs_ignores_relays_in_dialing_or_established() {
+        let mut mgr = manager();
+        let target = PeerId::random();
+        let dialing = PeerId::random();
+        let established = PeerId::random();
+
+        mgr.connection_states
+            .insert(dialing, RelayConnectionState::Dialing);
+        mgr.relay_addrs
+            .insert(dialing, vec![addr("/ip4/10.0.0.1/tcp/9000")]);
+        mgr.connection_states
+            .insert(established, RelayConnectionState::Established);
+        mgr.relay_addrs
+            .insert(established, vec![addr("/ip4/10.0.0.2/tcp/9000")]);
+
+        assert!(mgr.peer_circuit_addrs(&target).is_empty());
+    }
+
+    #[test]
+    fn peer_circuit_addrs_skips_reserved_relay_without_tracked_addrs() {
+        let mut mgr = manager();
+        let target = PeerId::random();
+        let relay = PeerId::random();
+
+        mgr.connection_states
+            .insert(relay, RelayConnectionState::Reserved);
+        // No entry in relay_addrs: the relay is reserved but we have no
+        // transport addrs to build a circuit through it.
+
+        assert!(mgr.peer_circuit_addrs(&target).is_empty());
+    }
+
+    #[test]
+    fn peer_circuit_addrs_builds_one_circuit_per_reserved_relay_addr() {
+        let mut mgr = manager();
+        let target = PeerId::random();
+        let relay = PeerId::random();
+
+        let relay_addrs = vec![
+            // With and without trailing /p2p/<relay> — both should produce the
+            // same canonical circuit form.
+            addr(&format!("/ip4/10.0.0.1/tcp/9000/p2p/{relay}")),
+            addr("/ip4/10.0.0.1/udp/9000/quic-v1"),
+        ];
+        mgr.connection_states
+            .insert(relay, RelayConnectionState::Reserved);
+        mgr.relay_addrs.insert(relay, relay_addrs);
+
+        let out = mgr.peer_circuit_addrs(&target);
+
+        let expected = vec![
+            addr(&format!(
+                "/ip4/10.0.0.1/tcp/9000/p2p/{relay}/p2p-circuit/p2p/{target}"
+            )),
+            addr(&format!(
+                "/ip4/10.0.0.1/udp/9000/quic-v1/p2p/{relay}/p2p-circuit/p2p/{target}"
+            )),
+        ];
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn peer_circuit_addrs_aggregates_across_multiple_reserved_relays() {
+        let mut mgr = manager();
+        let target = PeerId::random();
+        let relay_a = PeerId::random();
+        let relay_b = PeerId::random();
+
+        mgr.connection_states
+            .insert(relay_a, RelayConnectionState::Reserved);
+        mgr.relay_addrs
+            .insert(relay_a, vec![addr("/ip4/10.0.0.1/tcp/9000")]);
+        mgr.connection_states
+            .insert(relay_b, RelayConnectionState::Reserved);
+        mgr.relay_addrs
+            .insert(relay_b, vec![addr("/ip4/10.0.0.2/tcp/9000")]);
+
+        let out: HashSet<Multiaddr> = mgr.peer_circuit_addrs(&target).into_iter().collect();
+
+        let expected: HashSet<Multiaddr> = [
+            addr(&format!(
+                "/ip4/10.0.0.1/tcp/9000/p2p/{relay_a}/p2p-circuit/p2p/{target}"
+            )),
+            addr(&format!(
+                "/ip4/10.0.0.2/tcp/9000/p2p/{relay_b}/p2p-circuit/p2p/{target}"
+            )),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(out, expected);
     }
 }
