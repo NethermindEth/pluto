@@ -1,6 +1,4 @@
 //! DutyDB — in-memory store for unsigned duty data.
-//!
-//! Equivalent to charon's `core/dutydb` package.
 
 pub mod memory;
 

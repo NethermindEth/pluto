@@ -289,24 +289,8 @@ impl MemDB {
     /// Blocks until a proposal for the given slot is available, then returns
     /// it.
     pub async fn await_proposal(&self, slot: u64) -> Result<VersionedProposal> {
-        loop {
-            let notified = self.pro_notify.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-
-            {
-                let state = self.state.lock().await;
-                if let Some(p) = state.pro_duties.get(&slot) {
-                    return Ok(p.clone());
-                }
-            }
-
-            tokio::select! {
-                biased;
-                _ = self.cancel.cancelled() => return Err(Error::Shutdown),
-                _ = &mut notified => {}
-            }
-        }
+        self.await_data(&self.pro_notify, |s| s.pro_duties.get(&slot))
+            .await
     }
 
     /// Blocks until attestation data for the given slot and committee index is
@@ -317,24 +301,8 @@ impl MemDB {
         comm_idx: u64,
     ) -> Result<phase0::AttestationData> {
         let key = AttKey { slot, comm_idx };
-        loop {
-            let notified = self.att_notify.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-
-            {
-                let state = self.state.lock().await;
-                if let Some(data) = state.att_duties.get(&key) {
-                    return Ok(data.clone());
-                }
-            }
-
-            tokio::select! {
-                biased;
-                _ = self.cancel.cancelled() => return Err(Error::Shutdown),
-                _ = &mut notified => {}
-            }
-        }
+        self.await_data(&self.att_notify, |s| s.att_duties.get(&key))
+            .await
     }
 
     /// Blocks until an aggregated attestation for the given slot and
@@ -348,24 +316,8 @@ impl MemDB {
             slot,
             root: attestation_root,
         };
-        loop {
-            let notified = self.agg_notify.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-
-            {
-                let state = self.state.lock().await;
-                if let Some(agg) = state.agg_duties.get(&key) {
-                    return Ok(agg.0.clone());
-                }
-            }
-
-            tokio::select! {
-                biased;
-                _ = self.cancel.cancelled() => return Err(Error::Shutdown),
-                _ = &mut notified => {}
-            }
-        }
+        self.await_data(&self.agg_notify, |s| s.agg_duties.get(&key).map(|a| &a.0))
+            .await
     }
 
     /// Blocks until a sync contribution for the given slot, subcommittee index,
@@ -381,15 +333,27 @@ impl MemDB {
             subcomm_idx,
             root: beacon_block_root,
         };
+        self.await_data(&self.contrib_notify, |s| s.contrib_duties.get(&key))
+            .await
+    }
+
+    async fn await_data<V>(
+        &self,
+        notify: &Notify,
+        lookup: impl for<'s> Fn(&'s State) -> Option<&'s V>,
+    ) -> Result<V>
+    where
+        V: Clone,
+    {
         loop {
-            let notified = self.contrib_notify.notified();
+            let notified = notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
 
             {
                 let state = self.state.lock().await;
-                if let Some(c) = state.contrib_duties.get(&key) {
-                    return Ok(c.clone());
+                if let Some(v) = lookup(&state) {
+                    return Ok(v.clone());
                 }
             }
 
