@@ -24,7 +24,7 @@
 # Reset cluster data and start fresh:
 #   docker compose -f docker-compose.mixed-dkg-test.yml down -v
 
-name: pluto-mixed-dkg-test
+name: pluto-charon-dkg-test
 
 services:
   init:
@@ -42,7 +42,7 @@ services:
       - |
         set -e
         for node in node-0 node-1 node-2 node-3; do
-          docker run --rm -v pluto-mixed-dkg-test_cluster-data:/cluster \
+          docker run --rm -v ${COMPOSE_PROJECT_NAME}_cluster-data:/cluster \
             ${SETUP_IMAGE:-nethermindeth/pluto:main} \
             create enr --data-dir=/cluster/$$node  2>&1 | grep '^enr:' | head -1 > /cluster/$$node/enr.txt
         done
@@ -63,7 +63,7 @@ services:
         ENR1=$$(cat /cluster/node-1/enr.txt)
         ENR2=$$(cat /cluster/node-2/enr.txt)
         ENR3=$$(cat /cluster/node-3/enr.txt)
-        docker run --rm -v pluto-mixed-dkg-test_cluster-data:/cluster \
+        docker run --rm -v ${COMPOSE_PROJECT_NAME}_cluster-data:/cluster \
           ${SETUP_IMAGE:-nethermindeth/pluto:main} \
           create dkg \
           --operator-enrs="$$ENR0,$$ENR1,$$ENR2,$$ENR3" \
