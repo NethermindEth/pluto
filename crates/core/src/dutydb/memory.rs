@@ -8,7 +8,7 @@ use pluto_eth2api::{
     spec::{altair, phase0},
     versioned,
 };
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Notify, RwLock};
 use tokio_util::sync::CancellationToken;
 use tree_hash::TreeHash;
 
@@ -174,7 +174,7 @@ struct State {
 /// Equivalent to charon's `MemDB`. Stores unsigned duty data and answers
 /// blocking `await_*` queries when the relevant data becomes available.
 pub struct MemDB {
-    state: Mutex<State>,
+    state: RwLock<State>,
     att_notify: Notify,
     pro_notify: Notify,
     agg_notify: Notify,
@@ -188,7 +188,7 @@ impl MemDB {
     pub fn new(deadliner: Arc<dyn Deadliner>, cancel: CancellationToken) -> Self {
         let deadliner_rx = deadliner.c();
         Self {
-            state: Mutex::new(State {
+            state: RwLock::new(State {
                 att_duties: HashMap::new(),
                 att_pub_keys: HashMap::new(),
                 att_keys_by_slot: HashMap::new(),
@@ -217,7 +217,7 @@ impl MemDB {
     /// Stores unsigned duty data for the given duty, waking any pending
     /// waiters.
     pub async fn store(&self, duty: Duty, unsigned_set: UnsignedDataSet) -> Result<()> {
-        let mut state = self.state.lock().await;
+        let mut state = self.state.write().await;
 
         if !self.deadliner.add(duty.clone()).await {
             return Err(Error::ExpiredDuty);
@@ -351,7 +351,7 @@ impl MemDB {
             notified.as_mut().enable();
 
             {
-                let state = self.state.lock().await;
+                let state = self.state.read().await;
                 if let Some(v) = lookup(&state) {
                     return Ok(v.clone());
                 }
@@ -373,7 +373,7 @@ impl MemDB {
         comm_idx: u64,
         val_idx: u64,
     ) -> Result<PubKey> {
-        let state = self.state.lock().await;
+        let state = self.state.read().await;
         state
             .att_pub_keys
             .get(&PkKey {
