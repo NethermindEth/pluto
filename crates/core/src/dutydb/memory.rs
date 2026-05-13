@@ -4,7 +4,10 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use pluto_eth2api::{spec::phase0, versioned};
+use pluto_eth2api::{
+    spec::{altair, phase0},
+    versioned,
+};
 use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 use tree_hash::TreeHash;
@@ -166,18 +169,16 @@ struct State {
     deadliner_rx: Option<tokio::sync::mpsc::Receiver<Duty>>,
 }
 
-use pluto_eth2api::spec::altair;
-
 /// In-memory DutyDB.
 ///
 /// Equivalent to charon's `MemDB`. Stores unsigned duty data and answers
 /// blocking `await_*` queries when the relevant data becomes available.
 pub struct MemDB {
     state: Mutex<State>,
-    att_notify: Arc<Notify>,
-    pro_notify: Arc<Notify>,
-    agg_notify: Arc<Notify>,
-    contrib_notify: Arc<Notify>,
+    att_notify: Notify,
+    pro_notify: Notify,
+    agg_notify: Notify,
+    contrib_notify: Notify,
     cancel: CancellationToken,
     deadliner: Arc<dyn Deadliner>,
 }
@@ -198,10 +199,10 @@ impl MemDB {
                 contrib_keys_by_slot: HashMap::new(),
                 deadliner_rx,
             }),
-            att_notify: Arc::new(Notify::new()),
-            pro_notify: Arc::new(Notify::new()),
-            agg_notify: Arc::new(Notify::new()),
-            contrib_notify: Arc::new(Notify::new()),
+            att_notify: Notify::new(),
+            pro_notify: Notify::new(),
+            agg_notify: Notify::new(),
+            contrib_notify: Notify::new(),
             cancel,
             deadliner,
         }
@@ -517,19 +518,17 @@ fn store_agg_attestation(state: &mut State, agg: &VersionedAggregatedAttestation
         if existing_data.tree_hash_root().0 != root {
             return Err(Error::ClashingDataRoot);
         }
-        // Update with provided value (same root, potentially updated aggregation bits).
-        state.agg_duties.insert(key, agg.clone());
     } else {
-        state.agg_duties.insert(key, agg.clone());
         state.agg_keys_by_slot.entry(slot).or_default().push(key);
     }
+    state.agg_duties.insert(key, agg.clone());
 
     Ok(())
 }
 
 fn store_sync_contribution(state: &mut State, contrib: &SyncContribution) -> Result<()> {
     let inner = &contrib.0;
-    let existing_root = inner.tree_hash_root().0;
+    let contrib_root = inner.tree_hash_root().0;
 
     let key = ContribKey {
         slot: inner.slot,
@@ -538,7 +537,7 @@ fn store_sync_contribution(state: &mut State, contrib: &SyncContribution) -> Res
     };
 
     if let Some(existing) = state.contrib_duties.get(&key) {
-        if existing.tree_hash_root().0 != existing_root {
+        if existing.tree_hash_root().0 != contrib_root {
             return Err(Error::ClashingSyncContributions);
         }
     } else {
