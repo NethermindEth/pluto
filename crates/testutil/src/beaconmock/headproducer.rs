@@ -141,7 +141,11 @@ fn spawn_slot_ticker(
     let mut height = initial_height.wrapping_add(1);
     let mut next_tick = initial_tick
         .checked_add(slot_duration)
-        .unwrap_or_else(|| SystemTime::now() + slot_duration);
+        .unwrap_or_else(|| {
+            SystemTime::now()
+                .checked_add(slot_duration)
+                .unwrap_or(SystemTime::now())
+        });
 
     tokio::spawn(async move {
         loop {
