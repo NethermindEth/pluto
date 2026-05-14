@@ -513,8 +513,9 @@ impl State {
         let slot = att_data.slot;
 
         let key = AggKey { slot, root };
-        // Unlike Go (memory.go:458-460) which keys by {slot,root} making ClashingDataRoot
-        // unreachable, we detect a real clash by checking for a different root at the same slot.
+        // Unlike Go (memory.go:458-460) which keys by {slot,root} making
+        // ClashingDataRoot unreachable, we detect a real clash by checking for
+        // a different root at the same slot.
         if let Some(existing_keys) = self.agg_keys_by_slot.get(&slot) {
             if existing_keys.iter().any(|k| k.root != root) {
                 return Err(Error::ClashingDataRoot);
