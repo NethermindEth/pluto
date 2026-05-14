@@ -520,9 +520,9 @@ impl State {
                 return Err(Error::ClashingDataRoot);
             }
         } else {
+            self.agg_duties.insert(key, agg.clone());
             self.agg_keys_by_slot.entry(slot).or_default().push(key);
         }
-        self.agg_duties.insert(key, agg.clone());
 
         Ok(())
     }
