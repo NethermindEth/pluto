@@ -858,8 +858,9 @@ pub(crate) mod tests {
                 .unwrap();
         }
 
-        for handle in handles {
-            handle.await.unwrap().unwrap();
+        for (handle, &slot) in handles.into_iter().zip(slots.iter()) {
+            let proposal = handle.await.unwrap().unwrap();
+            assert_eq!(proposal.slot(), slot);
         }
     }
 
