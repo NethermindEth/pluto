@@ -42,13 +42,17 @@ const TOPIC_HEAD: &str = "head";
 const TOPIC_BLOCK: &str = "block";
 
 /// Deterministic head event derived from a slot.
+///
+/// Charon's Go reference has a typo in `headproducer.go` that renders
+/// `PreviousDutyDependentRoot` from `currentHead.CurrentDutyDependentRoot`,
+/// so only one dependent root is meaningful. We mirror that and keep a single
+/// `duty_dependent_root` field rather than carrying two identical values.
 #[derive(Clone, Debug)]
 struct HeadEvent {
     slot: Slot,
     block: Root,
     state: Root,
-    current_duty_dependent_root: Root,
-    previous_duty_dependent_root: Root,
+    duty_dependent_root: Root,
 }
 
 /// Owns the slot ticker driving the head producer. Drop to stop the ticker.
@@ -205,14 +209,19 @@ fn update_head(state: &SharedState, slot: Slot) {
     state.set_current_head(pseudo_random_head_event(slot));
 }
 
+// Charon's `pseudoRandomHeadEvent` seeds Go's `math/rand` LCG with the slot
+// number and draws four roots. We deliberately use ChaCha-based `StdRng`
+// instead — the byte sequences differ from Charon, but Pluto does not assert
+// on any specific head/state/dependent root value and ChaCha is portable and
+// well-tested. The head event JSON shape and seeding-per-slot determinism are
+// preserved.
 fn pseudo_random_head_event(slot: Slot) -> HeadEvent {
     let mut rng = StdRng::seed_from_u64(slot);
     HeadEvent {
         slot,
         block: random_root(&mut rng),
         state: random_root(&mut rng),
-        current_duty_dependent_root: random_root(&mut rng),
-        previous_duty_dependent_root: random_root(&mut rng),
+        duty_dependent_root: random_root(&mut rng),
     }
 }
 
@@ -314,8 +323,9 @@ fn head_event_json(head: &HeadEvent) -> Value {
         "block": hex_0x(head.block),
         "state": hex_0x(head.state),
         "epoch_transition": false,
-        "current_duty_dependent_root": hex_0x(head.current_duty_dependent_root),
-        "previous_duty_dependent_root": hex_0x(head.previous_duty_dependent_root),
+        // Charon renders the same value for both fields; see HeadEvent docs.
+        "current_duty_dependent_root": hex_0x(head.duty_dependent_root),
+        "previous_duty_dependent_root": hex_0x(head.duty_dependent_root),
         "execution_optimistic": false,
     })
 }
