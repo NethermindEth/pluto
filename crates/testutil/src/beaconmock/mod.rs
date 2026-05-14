@@ -193,3 +193,176 @@ impl BeaconMock {
         Arc::clone(&self.state)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{TimeZone, Timelike, Utc};
+    use serde_json::json;
+
+    async fn get_json(url: &str) -> Value {
+        let resp = reqwest::get(url).await.expect("send");
+        assert_eq!(resp.status(), 200, "GET {url} returned {}", resp.status());
+        resp.json().await.expect("json")
+    }
+
+    async fn post_json(url: &str, body: &Value) -> Value {
+        let resp = reqwest::Client::new()
+            .post(url)
+            .json(body)
+            .send()
+            .await
+            .expect("send");
+        assert_eq!(resp.status(), 200, "POST {url} returned {}", resp.status());
+        resp.json().await.expect("json")
+    }
+
+    /// Mirrors Go's `TestDeterministicAttesterDuties`: validator set A,
+    /// deterministic factor 1, epoch 1, ask for validator index 2.
+    #[tokio::test]
+    async fn deterministic_attester_duties() {
+        let mock = BeaconMock::builder()
+            .validator_set(ValidatorSet::validator_set_a())
+            .deterministic_attester_duties(1)
+            .build()
+            .await
+            .expect("build mock");
+
+        let url = format!("{}/eth/v1/validator/duties/attester/1", mock.uri());
+        let body = post_json(&url, &json!(["2"])).await;
+        let data = body["data"].as_array().expect("data array");
+        assert_eq!(data.len(), 1);
+        let duty = &data[0];
+        assert_eq!(duty["validator_index"], "2");
+        assert_eq!(duty["committee_index"], "2");
+        assert_eq!(duty["committee_length"], "1");
+        assert_eq!(duty["committees_at_slot"], "16");
+        assert_eq!(duty["validator_committee_index"], "0");
+        // slot = slots_per_epoch * epoch + (position*factor)%slots_per_epoch
+        //      = 16*1 + (0*1)%16 = 16
+        assert_eq!(duty["slot"], "16");
+    }
+
+    /// Mirrors Go's `TestDeterministicProposerDuties`: validator set A,
+    /// deterministic factor 1, epoch 1. Go's mock ignores the indices filter
+    /// and assigns all active validators round-robin, one per slot.
+    #[tokio::test]
+    async fn deterministic_proposer_duties() {
+        let mock = BeaconMock::builder()
+            .validator_set(ValidatorSet::validator_set_a())
+            .deterministic_proposer_duties(1)
+            .build()
+            .await
+            .expect("build mock");
+
+        let url = format!("{}/eth/v1/validator/duties/proposer/1", mock.uri());
+        let body = get_json(&url).await;
+        let data = body["data"].as_array().expect("data array");
+        // Validator set A has 3 validators, factor=1, slots_per_epoch=16 — all
+        // three get distinct offsets 0,1,2 and corresponding slots 16,17,18.
+        assert_eq!(data.len(), 3);
+        for (i, duty) in data.iter().enumerate() {
+            let want_index = (i + 1).to_string();
+            let want_slot = (16 + i).to_string();
+            assert_eq!(duty["validator_index"], want_index);
+            assert_eq!(duty["slot"], want_slot);
+        }
+    }
+
+    /// Mirrors Go's `TestStatic`: default mock serves genesis/spec/deposit
+    /// contract/syncing/version with the expected baseline values.
+    #[tokio::test]
+    async fn static_endpoints() {
+        let mock = BeaconMock::builder().build().await.expect("build mock");
+        let base = mock.uri();
+
+        let genesis = get_json(&format!("{base}/eth/v1/beacon/genesis")).await;
+        let expected = Utc.with_ymd_and_hms(2022, 3, 1, 0, 0, 0).unwrap();
+        assert_eq!(
+            genesis["data"]["genesis_time"],
+            expected.timestamp().to_string()
+        );
+
+        let spec = get_json(&format!("{base}/eth/v1/config/spec")).await;
+        assert_eq!(spec["data"]["ALTAIR_FORK_EPOCH"], "0");
+        assert_eq!(spec["data"]["DENEB_FORK_EPOCH"], "0");
+        assert_eq!(spec["data"]["ELECTRA_FORK_EPOCH"], "2048");
+        assert_eq!(spec["data"]["SLOTS_PER_EPOCH"], "16");
+
+        let deposit = get_json(&format!("{base}/eth/v1/config/deposit_contract")).await;
+        assert_eq!(deposit["data"]["chain_id"], "17000");
+
+        let syncing = get_json(&format!("{base}/eth/v1/node/syncing")).await;
+        assert_eq!(syncing["data"]["is_syncing"], false);
+
+        let version = get_json(&format!("{base}/eth/v1/node/version")).await;
+        assert_eq!(version["data"]["version"], "charon/static_beacon_mock");
+    }
+
+    /// Mirrors Go's `TestGenesisTimeOverride`: builder-provided genesis time
+    /// flows through to the `/eth/v1/beacon/genesis` endpoint.
+    #[tokio::test]
+    async fn genesis_time_override() {
+        let t0 = Utc::now().with_nanosecond(0).expect("truncate nanoseconds");
+        let mock = BeaconMock::builder()
+            .genesis_time(t0)
+            .build()
+            .await
+            .expect("build mock");
+
+        let body = get_json(&format!("{}/eth/v1/beacon/genesis", mock.uri())).await;
+        assert_eq!(
+            body["data"]["genesis_time"],
+            t0.timestamp().to_string(),
+            "genesis_time override should be served verbatim"
+        );
+    }
+
+    /// Mirrors Go's `TestSlotsPerEpochOverride`: builder-set slots_per_epoch
+    /// is reflected in the spec endpoint.
+    #[tokio::test]
+    async fn slots_per_epoch_override() {
+        let mock = BeaconMock::builder()
+            .slots_per_epoch(5)
+            .build()
+            .await
+            .expect("build mock");
+
+        let body = get_json(&format!("{}/eth/v1/config/spec", mock.uri())).await;
+        assert_eq!(body["data"]["SLOTS_PER_EPOCH"], "5");
+    }
+
+    /// Mirrors Go's `TestSlotsDurationOverride`: builder-set slot_duration is
+    /// reflected as SECONDS_PER_SLOT in the spec endpoint.
+    #[tokio::test]
+    async fn slot_duration_override() {
+        let mock = BeaconMock::builder()
+            .slot_duration(Duration::from_secs(1))
+            .build()
+            .await
+            .expect("build mock");
+
+        let body = get_json(&format!("{}/eth/v1/config/spec", mock.uri())).await;
+        assert_eq!(body["data"]["SECONDS_PER_SLOT"], "1");
+    }
+
+    /// Mirrors Go's `TestDefaultOverrides`: with no builder options, the spec
+    /// reports the Charon-simnet defaults and genesis time matches the
+    /// 2022-03-01 baseline.
+    #[tokio::test]
+    async fn default_overrides() {
+        let mock = BeaconMock::builder().build().await.expect("build mock");
+        let base = mock.uri();
+
+        let spec = get_json(&format!("{base}/eth/v1/config/spec")).await;
+        assert_eq!(spec["data"]["CONFIG_NAME"], "charon-simnet");
+        assert_eq!(spec["data"]["SLOTS_PER_EPOCH"], "16");
+
+        let genesis = get_json(&format!("{base}/eth/v1/beacon/genesis")).await;
+        let expected = Utc.with_ymd_and_hms(2022, 3, 1, 0, 0, 0).unwrap();
+        assert_eq!(
+            genesis["data"]["genesis_time"],
+            expected.timestamp().to_string()
+        );
+    }
+}
