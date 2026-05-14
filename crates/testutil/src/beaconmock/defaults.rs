@@ -1,295 +1,25 @@
-//! Beacon node API mocks for tests.
-//!
-//! `BeaconMock` owns the backing `wiremock::MockServer`, so keep the mock alive
-//! for as long as clients use `BeaconMock::client()`.
+//! Default spec/genesis and mount logic for the beacon mock HTTP handlers.
 
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
-    time::Duration,
-};
+use std::{collections::BTreeMap, sync::Arc};
 
-use bon::bon;
 use chrono::{DateTime, TimeZone, Utc};
-use pluto_eth2api::{
-    EthBeaconNodeApiClient, ValidatorResponseValidator, ValidatorStatus,
-    spec::phase0::{BLSPubKey, Epoch, Root, ValidatorIndex},
-};
+use pluto_eth2api::spec::phase0::{Epoch, ValidatorIndex};
 use serde_json::{Value, json};
 use wiremock::{
     Mock, MockServer, Request, ResponseTemplate,
     matchers::{method, path, path_regex},
 };
 
-const ZERO_ROOT: &str = "0x0000000000000000000000000000000000000000000000000000000000000000";
-const DEFAULT_GENESIS_VALIDATORS_ROOT: &str =
+use super::state::{MockState, read_lock};
+
+pub(crate) const ZERO_ROOT: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000000";
+pub(crate) const DEFAULT_GENESIS_VALIDATORS_ROOT: &str =
     "0x9143aa7c615a7f7115e2b6aac319c03529df8242ae705fba9df39b79c59fa8b1";
-const DEFAULT_GENESIS_FORK_VERSION: &str = "0x01017000";
-const DEFAULT_WITHDRAWAL_CREDENTIALS: &str =
-    "0x3132333435363738393031323334353637383930313233343536373839303132";
-const DEFAULT_MOCK_PRIORITY: u8 = 255;
+pub(crate) const DEFAULT_GENESIS_FORK_VERSION: &str = "0x01017000";
+pub(crate) const DEFAULT_MOCK_PRIORITY: u8 = 255;
 
-/// Errors returned while configuring `BeaconMock`.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    /// The generated beacon API client could not be created for the mock URL.
-    #[error("create beacon node api client: {0}")]
-    Client(#[source] anyhow::Error),
-}
-
-/// Result type for beacon mock setup.
-pub type Result<T> = std::result::Result<T, Error>;
-
-/// Minimal validator representation used by the beacon mock.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Validator {
-    /// Validator index in the beacon registry.
-    pub index: ValidatorIndex,
-    /// Current balance in gwei.
-    pub balance: u64,
-    /// Current validator status.
-    pub status: ValidatorStatus,
-    /// Validator details returned by the beacon API.
-    pub validator: ValidatorResponseValidator,
-}
-
-impl Validator {
-    /// Creates an active validator with the provided index and public key.
-    #[must_use]
-    pub fn active(index: ValidatorIndex, pubkey: BLSPubKey) -> Self {
-        let pubkey = hex_0x(pubkey);
-
-        Self {
-            index,
-            balance: index,
-            status: ValidatorStatus::ActiveOngoing,
-            validator: ValidatorResponseValidator {
-                activation_eligibility_epoch: index.to_string(),
-                activation_epoch: index.checked_add(1).unwrap_or(index).to_string(),
-                effective_balance: index.to_string(),
-                exit_epoch: u64::MAX.to_string(),
-                pubkey,
-                slashed: false,
-                withdrawable_epoch: u64::MAX.to_string(),
-                withdrawal_credentials: DEFAULT_WITHDRAWAL_CREDENTIALS.to_string(),
-            },
-        }
-    }
-}
-
-/// Validator set used to seed validator and duty endpoints.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct ValidatorSet(BTreeMap<ValidatorIndex, Validator>);
-
-impl ValidatorSet {
-    /// Returns the small deterministic validator set from Charon's Go
-    /// beaconmock.
-    #[must_use]
-    pub fn validator_set_a() -> Self {
-        [
-            (
-                1,
-                "0x914cff835a769156ba43ad50b931083c2dadd94e8359ce394bc7a3e06424d0214922ddf15f81640530b9c25c0bc0d490",
-            ),
-            (
-                2,
-                "0x8dae41352b69f2b3a1c0b05330c1bf65f03730c520273028864b11fcb94d8ce8f26d64f979a0ee3025467f45fd2241ea",
-            ),
-            (
-                3,
-                "0x8ee91545183c8c2db86633626f5074fd8ef93c4c9b7a2879ad1768f600c5b5906c3af20d47de42c3b032956fa8db1a76",
-            ),
-        ]
-        .into_iter()
-        .filter_map(|(index, pubkey)| {
-            parse_pubkey(pubkey).map(|pubkey| (index, Validator::active(index, pubkey)))
-        })
-        .collect()
-    }
-
-    /// Inserts or replaces a validator.
-    pub fn insert(&mut self, validator: Validator) {
-        self.0.insert(validator.index, validator);
-    }
-
-    /// Returns all validators in index order.
-    #[must_use]
-    pub fn validators(&self) -> Vec<Validator> {
-        self.0.values().cloned().collect()
-    }
-
-    /// Returns the validator for an index.
-    #[must_use]
-    pub fn by_index(&self, index: ValidatorIndex) -> Option<Validator> {
-        self.0.get(&index).cloned()
-    }
-
-    /// Returns true if the set contains no validators.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
-impl FromIterator<(ValidatorIndex, Validator)> for ValidatorSet {
-    fn from_iter<T: IntoIterator<Item = (ValidatorIndex, Validator)>>(iter: T) -> Self {
-        Self(iter.into_iter().collect())
-    }
-}
-
-/// Shared mock state used by mounted HTTP handlers.
-#[derive(Debug)]
-pub struct MockState {
-    spec: RwLock<Value>,
-    genesis: RwLock<Value>,
-    validator_set: RwLock<ValidatorSet>,
-    deterministic_attester_duties: RwLock<Option<u64>>,
-    deterministic_proposer_duties: RwLock<Option<u64>>,
-}
-
-impl MockState {
-    fn new(spec: Value, genesis: Value, validator_set: ValidatorSet) -> Self {
-        Self {
-            spec: RwLock::new(spec),
-            genesis: RwLock::new(genesis),
-            validator_set: RwLock::new(validator_set),
-            deterministic_attester_duties: RwLock::new(None),
-            deterministic_proposer_duties: RwLock::new(None),
-        }
-    }
-
-    /// Returns a clone of the spec map served by `/eth/v1/config/spec`.
-    #[must_use]
-    pub fn spec(&self) -> Value {
-        read_lock(&self.spec).clone()
-    }
-
-    /// Replaces one spec key.
-    pub fn set_spec_field(&self, key: impl Into<String>, value: impl Into<Value>) {
-        let key = key.into();
-        let value = value.into();
-        if let Some(spec) = write_lock(&self.spec).as_object_mut() {
-            spec.insert(key, value);
-        }
-    }
-
-    /// Returns a clone of the genesis data served by `/eth/v1/beacon/genesis`.
-    #[must_use]
-    pub fn genesis(&self) -> Value {
-        read_lock(&self.genesis).clone()
-    }
-
-    /// Replaces one genesis field.
-    pub fn set_genesis_field(&self, key: impl Into<String>, value: impl Into<Value>) {
-        let key = key.into();
-        let value = value.into();
-        if let Some(genesis) = write_lock(&self.genesis).as_object_mut() {
-            genesis.insert(key, value);
-        }
-    }
-
-    /// Replaces the validator set served by validator-related endpoints.
-    pub fn set_validator_set(&self, validator_set: ValidatorSet) {
-        *write_lock(&self.validator_set) = validator_set;
-    }
-}
-
-/// Wire-level beacon node mock with a generated client pre-dialed to the
-/// server.
-#[derive(Debug)]
-pub struct BeaconMock {
-    server: MockServer,
-    client: EthBeaconNodeApiClient,
-    state: Arc<MockState>,
-}
-
-#[bon]
-impl BeaconMock {
-    /// Builds a beacon mock with Charon-compatible defaults, overriding any
-    /// provided fields.
-    #[builder]
-    pub async fn new(
-        validator_set: Option<ValidatorSet>,
-        slot_duration: Option<Duration>,
-        slots_per_epoch: Option<u64>,
-        genesis_time: Option<DateTime<Utc>>,
-        genesis_validators_root: Option<Root>,
-        spec: Option<Value>,
-        deterministic_attester_duties: Option<u64>,
-        deterministic_proposer_duties: Option<u64>,
-    ) -> Result<Self> {
-        let mut spec = spec.unwrap_or_else(default_spec);
-        let mut genesis = default_genesis();
-        let validator_set = validator_set.unwrap_or_default();
-
-        if let Some(slot_duration) = slot_duration {
-            set_object_field(
-                &mut spec,
-                "SECONDS_PER_SLOT",
-                slot_duration.as_secs().to_string(),
-            );
-        }
-
-        if let Some(slots_per_epoch) = slots_per_epoch {
-            set_object_field(&mut spec, "SLOTS_PER_EPOCH", slots_per_epoch.to_string());
-        }
-
-        if let Some(genesis_time) = genesis_time {
-            let timestamp = genesis_time.timestamp().to_string();
-            set_object_field(&mut genesis, "genesis_time", timestamp.clone());
-            set_object_field(&mut spec, "MIN_GENESIS_TIME", timestamp);
-        }
-
-        if let Some(genesis_validators_root) = genesis_validators_root {
-            set_object_field(
-                &mut genesis,
-                "genesis_validators_root",
-                hex_0x(genesis_validators_root),
-            );
-        }
-
-        let state = Arc::new(MockState::new(spec, genesis, validator_set));
-        *write_lock(&state.deterministic_attester_duties) = deterministic_attester_duties;
-        *write_lock(&state.deterministic_proposer_duties) = deterministic_proposer_duties;
-
-        let server = MockServer::start().await;
-        mount_defaults(&server, Arc::clone(&state)).await;
-
-        let client = EthBeaconNodeApiClient::with_base_url(server.uri()).map_err(Error::Client)?;
-
-        Ok(Self {
-            server,
-            client,
-            state,
-        })
-    }
-
-    /// Returns the generated beacon node API client connected to this mock.
-    #[must_use]
-    pub fn client(&self) -> &EthBeaconNodeApiClient {
-        &self.client
-    }
-
-    /// Returns the backing mock server for mounting test-specific endpoints.
-    #[must_use]
-    pub fn server(&self) -> &MockServer {
-        &self.server
-    }
-
-    /// Returns the mock server base URI.
-    #[must_use]
-    pub fn uri(&self) -> String {
-        self.server.uri()
-    }
-
-    /// Returns shared state used by the mounted HTTP handlers.
-    #[must_use]
-    pub fn state(&self) -> Arc<MockState> {
-        Arc::clone(&self.state)
-    }
-}
-
-async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
+pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
     Mock::given(method("GET"))
         .and(path("/up"))
         .respond_with(ResponseTemplate::new(200))
@@ -440,14 +170,18 @@ async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
     .await;
 }
 
-async fn mount_json<F>(server: &MockServer, http_method: &'static str, endpoint: &'static str, f: F)
-where
+pub(crate) async fn mount_json<F>(
+    server: &MockServer,
+    http_method: &'static str,
+    endpoint: &'static str,
+    f: F,
+) where
     F: Send + Sync + 'static + Fn(&Request) -> Value,
 {
     mount_json_with_status(server, http_method, endpoint, 200, f).await;
 }
 
-async fn mount_json_with_status<F>(
+pub(crate) async fn mount_json_with_status<F>(
     server: &MockServer,
     http_method: &'static str,
     endpoint: &'static str,
@@ -472,7 +206,7 @@ async fn mount_json_with_status<F>(
         .await;
 }
 
-async fn mount_status(
+pub(crate) async fn mount_status(
     server: &MockServer,
     http_method: &'static str,
     endpoint: &'static str,
@@ -630,7 +364,7 @@ fn slots_per_epoch(state: &MockState) -> u64 {
         .unwrap_or(16)
 }
 
-fn default_spec() -> Value {
+pub(crate) fn default_spec() -> Value {
     json!({
         "CONFIG_NAME": "charon-simnet",
         "SLOTS_PER_EPOCH": "16",
@@ -668,7 +402,7 @@ fn default_spec() -> Value {
     })
 }
 
-fn default_genesis() -> Value {
+pub(crate) fn default_genesis() -> Value {
     json!({
         "genesis_time": default_genesis_time().timestamp().to_string(),
         "genesis_validators_root": DEFAULT_GENESIS_VALIDATORS_ROOT,
@@ -676,39 +410,9 @@ fn default_genesis() -> Value {
     })
 }
 
-fn default_genesis_time() -> DateTime<Utc> {
+pub(crate) fn default_genesis_time() -> DateTime<Utc> {
     match Utc.with_ymd_and_hms(2022, 3, 1, 0, 0, 0).single() {
         Some(time) => time,
         None => Utc::now(),
-    }
-}
-
-fn set_object_field(target: &mut Value, key: &'static str, value: impl Into<Value>) {
-    if let Some(target) = target.as_object_mut() {
-        target.insert(key.to_string(), value.into());
-    }
-}
-
-fn hex_0x(bytes: impl AsRef<[u8]>) -> String {
-    format!("0x{}", hex::encode(bytes.as_ref()))
-}
-
-fn parse_pubkey(pubkey: &str) -> Option<BLSPubKey> {
-    let pubkey = pubkey.strip_prefix("0x").unwrap_or(pubkey);
-    let bytes = hex::decode(pubkey).ok()?;
-    bytes.try_into().ok()
-}
-
-fn read_lock<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
-    match lock.read() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
-
-fn write_lock<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
-    match lock.write() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
     }
 }
