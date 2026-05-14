@@ -513,9 +513,10 @@ impl State {
         let slot = att_data.slot;
 
         let key = AggKey { slot, root };
-        if let Some(existing) = self.agg_duties.get(&key) {
-            let existing_data = existing.data().ok_or(Error::InvalidAggregatedAttestation)?;
-            if existing_data.tree_hash_root().0 != root {
+        // Unlike Go (memory.go:458-460) which keys by {slot,root} making ClashingDataRoot
+        // unreachable, we detect a real clash by checking for a different root at the same slot.
+        if let Some(existing_keys) = self.agg_keys_by_slot.get(&slot) {
+            if existing_keys.iter().any(|k| k.root != root) {
                 return Err(Error::ClashingDataRoot);
             }
         } else {
@@ -528,7 +529,6 @@ impl State {
 
     fn store_sync_contribution(&mut self, contrib: &SyncContribution) -> Result<()> {
         let inner = &contrib.0;
-        let contrib_root = inner.tree_hash_root().0;
 
         let key = ContribKey {
             slot: inner.slot,
@@ -537,7 +537,7 @@ impl State {
         };
 
         if let Some(existing) = self.contrib_duties.get(&key) {
-            if existing.tree_hash_root().0 != contrib_root {
+            if existing.tree_hash_root().0 != inner.tree_hash_root().0 {
                 return Err(Error::ClashingSyncContributions);
             }
         } else {
