@@ -217,6 +217,10 @@ impl MemDB {
     /// Stores unsigned duty data for the given duty, waking any pending
     /// waiters.
     pub async fn store(&self, duty: Duty, unsigned_set: UnsignedDataSet) -> Result<()> {
+        if duty.duty_type == DutyType::BuilderProposer {
+            return Err(Error::DeprecatedDutyBuilderProposer);
+        }
+
         if !self.deadliner.add(duty.clone()).await {
             return Err(Error::ExpiredDuty);
         }
@@ -235,7 +239,6 @@ impl MemDB {
                 }
                 self.pro_notify.notify_waiters();
             }
-            DutyType::BuilderProposer => return Err(Error::DeprecatedDutyBuilderProposer),
             DutyType::Attester => {
                 for (pubkey, data) in &unsigned_set {
                     let att = match data {
