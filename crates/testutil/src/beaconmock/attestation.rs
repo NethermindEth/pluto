@@ -78,7 +78,9 @@ fn slot_hash_root(num: u64) -> Root {
 }
 
 fn build_attestation_data(epoch: Epoch, slot: Slot, committee_index: u64) -> AttestationData {
-    let previous_epoch = epoch.saturating_sub(1);
+    // Match Go: at epoch 0, previous_epoch wraps to u64::MAX (see
+    // charon/testutil/beaconmock/attestation.go `newAttestationData`).
+    let previous_epoch = epoch.wrapping_sub(1);
     AttestationData {
         slot,
         index: committee_index,

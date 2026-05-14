@@ -200,6 +200,12 @@ mod tests {
     use chrono::{TimeZone, Timelike, Utc};
     use serde_json::json;
 
+    const ATTESTER_DUTIES_GOLDEN: &str =
+        include_str!("testdata/TestDeterministicAttesterDuties.golden");
+    const PROPOSER_DUTIES_GOLDEN: &str =
+        include_str!("testdata/TestDeterministicProposerDuties.golden");
+    const ATTESTATION_STORE_GOLDEN: &str = include_str!("testdata/TestAttestationStore.golden");
+
     async fn get_json(url: &str) -> Value {
         let resp = reqwest::get(url).await.expect("send");
         assert_eq!(resp.status(), 200, "GET {url} returned {}", resp.status());
@@ -217,8 +223,17 @@ mod tests {
         resp.json().await.expect("json")
     }
 
+    /// Asserts that `actual` equals the JSON in `golden`. Mirrors Go's
+    /// `testutil.RequireGoldenJSON`; the goldens themselves are byte-for-byte
+    /// copies of `charon/testutil/beaconmock/testdata/*.golden`.
+    fn assert_golden_json(actual: &Value, golden: &str) {
+        let expected: Value = serde_json::from_str(golden).expect("parse golden");
+        assert_eq!(actual, &expected, "actual JSON does not match golden");
+    }
+
     /// Mirrors Go's `TestDeterministicAttesterDuties`: validator set A,
-    /// deterministic factor 1, epoch 1, ask for validator index 2.
+    /// deterministic factor 1, epoch 1, ask for validator index 2 — response
+    /// must match the shared golden fixture.
     #[tokio::test]
     async fn deterministic_attester_duties() {
         let mock = BeaconMock::builder()
@@ -230,22 +245,13 @@ mod tests {
 
         let url = format!("{}/eth/v1/validator/duties/attester/1", mock.uri());
         let body = post_json(&url, &json!(["2"])).await;
-        let data = body["data"].as_array().expect("data array");
-        assert_eq!(data.len(), 1);
-        let duty = &data[0];
-        assert_eq!(duty["validator_index"], "2");
-        assert_eq!(duty["committee_index"], "2");
-        assert_eq!(duty["committee_length"], "1");
-        assert_eq!(duty["committees_at_slot"], "16");
-        assert_eq!(duty["validator_committee_index"], "0");
-        // slot = slots_per_epoch * epoch + (position*factor)%slots_per_epoch
-        //      = 16*1 + (0*1)%16 = 16
-        assert_eq!(duty["slot"], "16");
+        assert_golden_json(&body["data"], ATTESTER_DUTIES_GOLDEN);
     }
 
     /// Mirrors Go's `TestDeterministicProposerDuties`: validator set A,
     /// deterministic factor 1, epoch 1. Go's mock ignores the indices filter
-    /// and assigns all active validators round-robin, one per slot.
+    /// and assigns all active validators round-robin — response must match
+    /// the shared golden fixture.
     #[tokio::test]
     async fn deterministic_proposer_duties() {
         let mock = BeaconMock::builder()
@@ -257,16 +263,22 @@ mod tests {
 
         let url = format!("{}/eth/v1/validator/duties/proposer/1", mock.uri());
         let body = get_json(&url).await;
-        let data = body["data"].as_array().expect("data array");
-        // Validator set A has 3 validators, factor=1, slots_per_epoch=16 — all
-        // three get distinct offsets 0,1,2 and corresponding slots 16,17,18.
-        assert_eq!(data.len(), 3);
-        for (i, duty) in data.iter().enumerate() {
-            let want_index = (i + 1).to_string();
-            let want_slot = (16 + i).to_string();
-            assert_eq!(duty["validator_index"], want_index);
-            assert_eq!(duty["slot"], want_slot);
-        }
+        assert_golden_json(&body["data"], PROPOSER_DUTIES_GOLDEN);
+    }
+
+    /// Mirrors Go's `TestAttestationStore` golden assertion on
+    /// `AttestationData` for slot=1, committee_index=2. Encodes the
+    /// `previous_epoch = epoch - 1` wraparound at epoch 0 (source.epoch =
+    /// u64::MAX) that the Go reference also produces.
+    #[tokio::test]
+    async fn attestation_data_matches_golden() {
+        let mock = BeaconMock::builder().build().await.expect("build mock");
+        let url = format!(
+            "{}/eth/v1/validator/attestation_data?slot=1&committee_index=2",
+            mock.uri()
+        );
+        let body = get_json(&url).await;
+        assert_golden_json(&body["data"], ATTESTATION_STORE_GOLDEN);
     }
 
     /// Mirrors Go's `TestStatic`: default mock serves genesis/spec/deposit
