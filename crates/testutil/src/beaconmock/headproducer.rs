@@ -36,7 +36,7 @@ use wiremock::{
     matchers::{method, path, path_regex},
 };
 
-use super::defaults::DEFAULT_MOCK_PRIORITY;
+use super::{defaults::DEFAULT_MOCK_PRIORITY, state::hex_0x};
 
 const TOPIC_HEAD: &str = "head";
 const TOPIC_BLOCK: &str = "block";
@@ -338,10 +338,6 @@ fn block_event_json(head: &HeadEvent) -> Value {
         "block": hex_0x(head.block),
         "execution_optimistic": false,
     })
-}
-
-fn hex_0x(bytes: impl AsRef<[u8]>) -> String {
-    format!("0x{}", hex::encode(bytes.as_ref()))
 }
 
 fn error_response(status: u16, message: String) -> ResponseTemplate {
