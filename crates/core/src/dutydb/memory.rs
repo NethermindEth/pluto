@@ -217,11 +217,11 @@ impl MemDB {
     /// Stores unsigned duty data for the given duty, waking any pending
     /// waiters.
     pub async fn store(&self, duty: Duty, unsigned_set: UnsignedDataSet) -> Result<()> {
-        let mut state = self.state.write().await;
-
         if !self.deadliner.add(duty.clone()).await {
             return Err(Error::ExpiredDuty);
         }
+
+        let mut state = self.state.write().await;
 
         match duty.duty_type {
             DutyType::Proposer => {
