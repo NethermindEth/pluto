@@ -125,7 +125,7 @@ pub type UnsignedDataSet = HashMap<PubKey, UnsignedDutyData>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct AttKey {
     slot: u64,
-    comm_idx: u64,
+    committee_idx: u64,
 }
 
 /// Lookup key for public-key-by-attestation: (slot, committee index, validator
@@ -133,8 +133,8 @@ struct AttKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct PkKey {
     slot: u64,
-    comm_idx: u64,
-    val_idx: u64,
+    committee_idx: u64,
+    validator_idx: u64,
 }
 
 /// Lookup key for aggregated attestations: (slot, attestation data root).
@@ -300,7 +300,10 @@ impl MemDB {
         slot: u64,
         comm_idx: u64,
     ) -> Result<phase0::AttestationData> {
-        let key = AttKey { slot, comm_idx };
+        let key = AttKey {
+            slot,
+            committee_idx: comm_idx,
+        };
         self.await_data(&self.att_notify, |s| s.att_duties.get(&key))
             .await
     }
@@ -378,8 +381,8 @@ impl MemDB {
             .att_pub_keys
             .get(&PkKey {
                 slot,
-                comm_idx,
-                val_idx,
+                committee_idx: comm_idx,
+                validator_idx: val_idx,
             })
             .copied()
             .ok_or(Error::PubKeyNotFound)
@@ -407,8 +410,8 @@ fn store_attestation(state: &mut State, pubkey: PubKey, att: &AttestationData) -
     // Store pubkey mapping for PubKeyByAttestation (actual committee index).
     let pk_key = PkKey {
         slot,
-        comm_idx,
-        val_idx,
+        committee_idx: comm_idx,
+        validator_idx: val_idx,
     };
     if let Some(&existing) = state.att_pub_keys.get(&pk_key) {
         if existing != pubkey {
@@ -424,7 +427,10 @@ fn store_attestation(state: &mut State, pubkey: PubKey, att: &AttestationData) -
     }
 
     // Store attestation data for AwaitAttestation (actual committee index).
-    let att_key = AttKey { slot, comm_idx };
+    let att_key = AttKey {
+        slot,
+        committee_idx: comm_idx,
+    };
     if let Some(existing) = state.att_duties.get(&att_key) {
         if existing.source != att.data.source
             || existing.target != att.data.target
@@ -440,8 +446,8 @@ fn store_attestation(state: &mut State, pubkey: PubKey, att: &AttestationData) -
     // See: https://ethereum.github.io/beacon-APIs/#/Validator/produceAttestationData
     let pk_key0 = PkKey {
         slot,
-        comm_idx: 0,
-        val_idx,
+        committee_idx: 0,
+        validator_idx: val_idx,
     };
     if let Some(&existing) = state.att_pub_keys.get(&pk_key0) {
         if existing != pubkey {
@@ -456,7 +462,10 @@ fn store_attestation(state: &mut State, pubkey: PubKey, att: &AttestationData) -
             .push(pk_key0);
     }
 
-    let att_key0 = AttKey { slot, comm_idx: 0 };
+    let att_key0 = AttKey {
+        slot,
+        committee_idx: 0,
+    };
     if let Some(existing) = state.att_duties.get(&att_key0) {
         if existing.source != att.data.source {
             return Err(Error::ClashingAttestationDataCommIdx0Source);
@@ -529,7 +538,7 @@ fn delete_duty(state: &mut State, duty: Duty) -> Result<()> {
                     state.att_pub_keys.remove(&key);
                     state.att_duties.remove(&AttKey {
                         slot: key.slot,
-                        comm_idx: key.comm_idx,
+                        committee_idx: key.committee_idx,
                     });
                 }
             }
