@@ -1,6 +1,6 @@
 use crossbeam::channel as mpmc;
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
@@ -15,7 +15,7 @@ struct FakeClockInner {
     start: Instant,
     now: Instant,
     last_id: usize,
-    clients: HashMap<usize, (mpmc::Sender<Instant>, Instant)>,
+    clients: BTreeMap<usize, (mpmc::Sender<Instant>, Instant)>,
 }
 
 impl FakeClock {
@@ -98,56 +98,82 @@ impl FakeClock {
     }
 }
 
-impl Drop for FakeClock {
-    fn drop(&mut self) {
-        self.cancel();
-    }
-}
-
 #[test]
 fn multiple_threads_timers() {
     let clock = FakeClock::new(Instant::now());
+    let (done_tx, done_rx) = mpmc::bounded(2);
 
-    let start = Instant::now();
     thread::scope(|s| {
         let c1 = clock.clone();
         let (ch_1, _) = c1.new_timer(Duration::from_secs(5));
+        let done_tx_1 = done_tx.clone();
         s.spawn(move || {
-            let _ = ch_1.recv();
+            done_tx_1.send(ch_1.recv().is_ok()).unwrap();
         });
 
         let c2 = clock.clone();
         let (ch_2, _) = c2.new_timer(Duration::from_secs(5));
+        let done_tx_2 = done_tx.clone();
         s.spawn(move || {
-            let _ = ch_2.recv();
+            done_tx_2.send(ch_2.recv().is_ok()).unwrap();
         });
 
+        clock.advance(Duration::from_secs(4));
+        assert!(done_rx.try_recv().is_err());
         clock.advance(Duration::from_secs(6));
     });
 
-    println!("start={:?}, clock={:?}", start.elapsed(), clock.elapsed());
+    assert_eq!(vec![true, true], done_rx.try_iter().collect::<Vec<_>>());
+    assert_eq!(Duration::from_secs(10), clock.elapsed());
 }
 
 #[test]
 fn multiple_threads_cancellation() {
     let clock = FakeClock::new(Instant::now());
+    let (done_tx, done_rx) = mpmc::bounded(2);
 
-    let start = Instant::now();
     thread::scope(|s| {
         let c1 = clock.clone();
         let (ch_1, _) = c1.new_timer(Duration::from_secs(5));
+        let done_tx_1 = done_tx.clone();
         s.spawn(move || {
-            let _ = ch_1.recv();
+            done_tx_1.send(ch_1.recv().is_err()).unwrap();
         });
 
         let c2 = clock.clone();
         let (ch_2, _) = c2.new_timer(Duration::from_secs(5));
+        let done_tx_2 = done_tx.clone();
         s.spawn(move || {
-            let _ = ch_2.recv();
+            done_tx_2.send(ch_2.recv().is_err()).unwrap();
         });
 
         clock.cancel();
     });
 
-    println!("start={:?}, clock={:?}", start.elapsed(), clock.elapsed());
+    assert_eq!(vec![true, true], done_rx.try_iter().collect::<Vec<_>>());
+    assert_eq!(Duration::ZERO, clock.elapsed());
+}
+
+#[test]
+fn cancel_one_timer_only() {
+    let clock = FakeClock::new(Instant::now());
+    let (ch_1, cancel_1) = clock.new_timer(Duration::from_secs(5));
+    let (ch_2, _) = clock.new_timer(Duration::from_secs(5));
+
+    cancel_1();
+    clock.advance(Duration::from_secs(5));
+
+    assert!(ch_1.try_recv().is_err());
+    assert!(ch_2.try_recv().is_ok());
+}
+
+#[test]
+fn expired_timer_delivers_once() {
+    let clock = FakeClock::new(Instant::now());
+    let (ch, _) = clock.new_timer(Duration::from_secs(5));
+
+    clock.advance(Duration::from_secs(5));
+    assert!(ch.try_recv().is_ok());
+    clock.advance(Duration::from_secs(5));
+    assert!(ch.try_recv().is_err());
 }
