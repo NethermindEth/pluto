@@ -266,6 +266,52 @@ mod tests {
         assert_golden_json(&body["data"], PROPOSER_DUTIES_GOLDEN);
     }
 
+    /// Mirrors Charon's `WithDeterministicProposerDuties`, which iterates over
+    /// `mock.ActiveValidators(ctx)` — proposer duties must skip non-active
+    /// validators in the set.
+    #[tokio::test]
+    async fn proposer_duties_skip_inactive_validators() {
+        use pluto_eth2api::{ValidatorResponseValidator, ValidatorStatus};
+
+        let mut set = ValidatorSet::validator_set_a();
+        set.insert(Validator {
+            index: 4,
+            balance: 4,
+            status: ValidatorStatus::WithdrawalDone,
+            validator: ValidatorResponseValidator {
+                activation_eligibility_epoch: "4".into(),
+                activation_epoch: "5".into(),
+                effective_balance: "4".into(),
+                exit_epoch: "0".into(),
+                pubkey: format!("0x{}", "01".repeat(48)),
+                slashed: false,
+                withdrawable_epoch: "0".into(),
+                withdrawal_credentials: format!("0x{}", "00".repeat(32)),
+            },
+        });
+
+        let mock = BeaconMock::builder()
+            .validator_set(set)
+            .deterministic_proposer_duties(1)
+            .build()
+            .await
+            .expect("build mock");
+
+        let url = format!("{}/eth/v1/validator/duties/proposer/1", mock.uri());
+        let body = get_json(&url).await;
+        let indices: Vec<&str> = body["data"]
+            .as_array()
+            .expect("duties array")
+            .iter()
+            .filter_map(|duty| duty["validator_index"].as_str())
+            .collect();
+        assert_eq!(
+            indices,
+            ["1", "2", "3"],
+            "inactive validator (index 4) must be skipped"
+        );
+    }
+
     /// Mirrors Go's `TestAttestationStore` golden assertion on
     /// `AttestationData` for slot=1, committee_index=2. Encodes the
     /// `previous_epoch = epoch - 1` wraparound at epoch 0 (source.epoch =

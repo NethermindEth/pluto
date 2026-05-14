@@ -299,7 +299,14 @@ fn proposer_duties_response(state: &MockState, request: &Request) -> Value {
 
     let epoch = epoch_from_path(request.url.path());
     let slots_per_epoch = slots_per_epoch(state);
-    let validators = read_lock(&state.validator_set).validators();
+    // Mirrors Charon's `WithDeterministicProposerDuties`, which iterates over
+    // `mock.ActiveValidators(ctx)` — only validators with an Active* status
+    // are eligible to propose.
+    let validators: Vec<_> = read_lock(&state.validator_set)
+        .validators()
+        .into_iter()
+        .filter(|validator| validator.status.is_active())
+        .collect();
     let mut assigned_slots = BTreeMap::new();
     let mut data = Vec::new();
 
