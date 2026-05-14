@@ -11,6 +11,8 @@ use pluto_eth2api::{
 };
 use serde_json::Value;
 
+use super::attestation::AttestationStore;
+
 pub(crate) const DEFAULT_WITHDRAWAL_CREDENTIALS: &str =
     "0x3132333435363738393031323334353637383930313233343536373839303132";
 
@@ -98,6 +100,32 @@ impl ValidatorSet {
         self.0.get(&index).cloned()
     }
 
+    /// Returns the first validator matching the given BLS public key.
+    ///
+    /// Mirrors `ValidatorSet.ByPublicKey` from Charon's Go beaconmock: a linear
+    /// scan over the set returning a clone of the matching validator.
+    #[must_use]
+    pub fn by_public_key(&self, pubkey: &BLSPubKey) -> Option<Validator> {
+        let needle = hex_0x(pubkey);
+        self.0
+            .values()
+            .find(|validator| validator.validator.pubkey == needle)
+            .cloned()
+    }
+
+    /// Returns the BLS public keys of all validators in index order.
+    ///
+    /// Validators whose stored hex pubkey fails to parse back into a
+    /// `BLSPubKey` are silently skipped; all validators inserted via
+    /// `Validator::active` round-trip cleanly.
+    #[must_use]
+    pub fn public_keys(&self) -> Vec<BLSPubKey> {
+        self.0
+            .values()
+            .filter_map(|validator| parse_pubkey(&validator.validator.pubkey))
+            .collect()
+    }
+
     /// Returns true if the set contains no validators.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -119,6 +147,8 @@ pub struct MockState {
     pub(crate) validator_set: RwLock<ValidatorSet>,
     pub(crate) deterministic_attester_duties: RwLock<Option<u64>>,
     pub(crate) deterministic_proposer_duties: RwLock<Option<u64>>,
+    pub(crate) deterministic_sync_comm_duties: RwLock<Option<(u64, u64)>>,
+    pub(crate) attestation_store: AttestationStore,
 }
 
 impl MockState {
@@ -129,6 +159,8 @@ impl MockState {
             validator_set: RwLock::new(validator_set),
             deterministic_attester_duties: RwLock::new(None),
             deterministic_proposer_duties: RwLock::new(None),
+            deterministic_sync_comm_duties: RwLock::new(None),
+            attestation_store: AttestationStore::default(),
         }
     }
 
@@ -195,5 +227,46 @@ pub(crate) fn write_lock<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
 pub(crate) fn set_object_field(target: &mut Value, key: &'static str, value: impl Into<Value>) {
     if let Some(target) = target.as_object_mut() {
         target.insert(key.to_string(), value.into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validator_set_a_has_three_validators() {
+        let set = ValidatorSet::validator_set_a();
+        assert_eq!(set.validators().len(), 3);
+    }
+
+    #[test]
+    fn by_public_key_hit_returns_validator() {
+        let set = ValidatorSet::validator_set_a();
+        let pubkey = parse_pubkey(
+            "0x914cff835a769156ba43ad50b931083c2dadd94e8359ce394bc7a3e06424d0214922ddf15f81640530b9c25c0bc0d490",
+        )
+        .expect("static pubkey parses");
+
+        let validator = set.by_public_key(&pubkey).expect("validator by pubkey");
+        assert_eq!(validator.index, 1);
+    }
+
+    #[test]
+    fn by_public_key_miss_returns_none() {
+        let set = ValidatorSet::validator_set_a();
+        let unknown: BLSPubKey = [0u8; 48];
+        assert!(set.by_public_key(&unknown).is_none());
+    }
+
+    #[test]
+    fn public_keys_returns_all_validator_pubkeys() {
+        let set = ValidatorSet::validator_set_a();
+        let pubkeys = set.public_keys();
+        assert_eq!(pubkeys.len(), 3);
+        // Every emitted pubkey must round-trip back to a validator in the set.
+        for pubkey in pubkeys {
+            assert!(set.by_public_key(&pubkey).is_some());
+        }
     }
 }

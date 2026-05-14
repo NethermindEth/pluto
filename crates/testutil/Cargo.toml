@@ -17,7 +17,12 @@ rand.workspace = true
 hex.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
+tree_hash.workspace = true
 wiremock.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true
 
 [lints]
 workspace = true

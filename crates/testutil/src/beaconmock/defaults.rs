@@ -168,6 +168,17 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
         },
     )
     .await;
+
+    mount_json(server, "GET", r"^/eth/v2/beacon/blocks/[^/]+$", |_| {
+        bellatrix_signed_block_response()
+    })
+    .await;
+
+    mount_json(server, "POST", r"^/eth/v1/validator/duties/sync/[0-9]+$", {
+        let state = Arc::clone(&state);
+        move |request| sync_committee_duties_response(&state, request)
+    })
+    .await;
 }
 
 pub(crate) async fn mount_json<F>(
@@ -329,10 +340,108 @@ fn proposer_duties_response(state: &MockState, request: &Request) -> Value {
     duties_response(data)
 }
 
+fn bellatrix_signed_block_response() -> Value {
+    use crate::random::{random_eth2_signature, random_root, random_slot, random_v_idx};
+
+    let zero_sig = format!("0x{}", "00".repeat(96));
+    let zero_bytes32 = format!("0x{}", "00".repeat(32));
+    let zero_bytes20 = format!("0x{}", "00".repeat(20));
+    let zero_logs_bloom = format!("0x{}", "00".repeat(256));
+    let sync_committee_bits = format!("0x{}", "00".repeat(64));
+
+    let body = json!({
+        "randao_reveal": random_eth2_signature(),
+        "eth1_data": {
+            "deposit_root": random_root(),
+            "deposit_count": "0",
+            "block_hash": zero_bytes32,
+        },
+        "graffiti": zero_bytes32,
+        "proposer_slashings": [],
+        "attester_slashings": [],
+        "attestations": [],
+        "deposits": [],
+        "voluntary_exits": [],
+        "sync_aggregate": {
+            "sync_committee_bits": sync_committee_bits,
+            "sync_committee_signature": zero_sig,
+        },
+        "execution_payload": {
+            "parent_hash": zero_bytes32,
+            "fee_recipient": zero_bytes20,
+            "state_root": zero_bytes32,
+            "receipts_root": zero_bytes32,
+            "logs_bloom": zero_logs_bloom,
+            "prev_randao": zero_bytes32,
+            "block_number": "0",
+            "gas_limit": "0",
+            "gas_used": "0",
+            "timestamp": "0",
+            "extra_data": "0x",
+            "base_fee_per_gas": "0",
+            "block_hash": zero_bytes32,
+            "transactions": [],
+        }
+    });
+
+    json!({
+        "version": "bellatrix",
+        "data": {
+            "message": {
+                "slot": random_slot().to_string(),
+                "proposer_index": random_v_idx().to_string(),
+                "parent_root": random_root(),
+                "state_root": random_root(),
+                "body": body,
+            },
+            "signature": random_eth2_signature(),
+        }
+    })
+}
+
 fn duties_response(data: Vec<Value>) -> Value {
     json!({
         "data": data,
         "dependent_root": ZERO_ROOT,
+        "execution_optimistic": false
+    })
+}
+
+fn sync_committee_duties_response(state: &MockState, request: &Request) -> Value {
+    let Some((n, k)) = *read_lock(&state.deterministic_sync_comm_duties) else {
+        return sync_duties_response(Vec::new());
+    };
+
+    let epoch = epoch_from_path(request.url.path());
+    let Some(remainder) = epoch.checked_rem(k) else {
+        return sync_duties_response(Vec::new());
+    };
+    if remainder >= n {
+        return sync_duties_response(Vec::new());
+    }
+
+    let indices = indices_from_body(request);
+    let validator_set = read_lock(&state.validator_set).clone();
+
+    let data = indices
+        .into_iter()
+        .enumerate()
+        .filter_map(|(position, index)| {
+            let validator = validator_set.by_index(index)?;
+            Some(json!({
+                "pubkey": validator.validator.pubkey,
+                "validator_index": index.to_string(),
+                "validator_sync_committee_indices": [position.to_string()],
+            }))
+        })
+        .collect();
+
+    sync_duties_response(data)
+}
+
+fn sync_duties_response(data: Vec<Value>) -> Value {
+    json!({
+        "data": data,
         "execution_optimistic": false
     })
 }
@@ -365,41 +474,109 @@ fn slots_per_epoch(state: &MockState) -> u64 {
 }
 
 pub(crate) fn default_spec() -> Value {
-    json!({
-        "CONFIG_NAME": "charon-simnet",
-        "SLOTS_PER_EPOCH": "16",
-        "SECONDS_PER_SLOT": "12",
-        "MIN_GENESIS_TIME": default_genesis_time().timestamp().to_string(),
-        "GENESIS_FORK_VERSION": DEFAULT_GENESIS_FORK_VERSION,
-        "ALTAIR_FORK_VERSION": "0x20000910",
-        "ALTAIR_FORK_EPOCH": "0",
-        "BELLATRIX_FORK_VERSION": "0x30000910",
-        "BELLATRIX_FORK_EPOCH": "0",
-        "CAPELLA_FORK_VERSION": "0x40000910",
-        "CAPELLA_FORK_EPOCH": "0",
-        "DENEB_FORK_VERSION": "0x50000910",
-        "DENEB_FORK_EPOCH": "0",
-        "ELECTRA_FORK_VERSION": "0x60000910",
-        "ELECTRA_FORK_EPOCH": "2048",
-        "FULU_FORK_VERSION": "0x70000910",
-        "FULU_FORK_EPOCH": u64::MAX.to_string(),
-        "DOMAIN_BEACON_PROPOSER": "0x00000000",
-        "DOMAIN_BEACON_ATTESTER": "0x01000000",
-        "DOMAIN_RANDAO": "0x02000000",
-        "DOMAIN_DEPOSIT": "0x03000000",
-        "DOMAIN_VOLUNTARY_EXIT": "0x04000000",
-        "DOMAIN_SELECTION_PROOF": "0x05000000",
-        "DOMAIN_AGGREGATE_AND_PROOF": "0x06000000",
-        "DOMAIN_SYNC_COMMITTEE": "0x07000000",
-        "DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF": "0x08000000",
-        "DOMAIN_CONTRIBUTION_AND_PROOF": "0x09000000",
-        "DOMAIN_APPLICATION_BUILDER": "0x00000001",
-        "TARGET_AGGREGATORS_PER_COMMITTEE": "16",
-        "SYNC_COMMITTEE_SIZE": "512",
-        "SYNC_COMMITTEE_SUBNET_COUNT": "4",
-        "TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE": "16",
-        "EPOCHS_PER_SYNC_COMMITTEE_PERIOD": "256"
-    })
+    // Build via discrete (key, value) entries to avoid blowing the `json!` macro
+    // recursion limit; mainnet specs contain ~100 keys.
+    let entries: &[(&str, &str)] = &[
+        ("CONFIG_NAME", "charon-simnet"),
+        ("PRESET_BASE", "mainnet"),
+        ("SLOTS_PER_EPOCH", "16"),
+        ("SECONDS_PER_SLOT", "12"),
+        ("GENESIS_DELAY", "300"),
+        ("GENESIS_FORK_VERSION", DEFAULT_GENESIS_FORK_VERSION),
+        ("ALTAIR_FORK_VERSION", "0x20000910"),
+        ("ALTAIR_FORK_EPOCH", "0"),
+        ("BELLATRIX_FORK_VERSION", "0x30000910"),
+        ("BELLATRIX_FORK_EPOCH", "0"),
+        ("CAPELLA_FORK_VERSION", "0x40000910"),
+        ("CAPELLA_FORK_EPOCH", "0"),
+        ("DENEB_FORK_VERSION", "0x50000910"),
+        ("DENEB_FORK_EPOCH", "0"),
+        ("ELECTRA_FORK_VERSION", "0x60000910"),
+        ("ELECTRA_FORK_EPOCH", "2048"),
+        ("FULU_FORK_VERSION", "0x70000910"),
+        ("DOMAIN_BEACON_PROPOSER", "0x00000000"),
+        ("DOMAIN_BEACON_ATTESTER", "0x01000000"),
+        ("DOMAIN_RANDAO", "0x02000000"),
+        ("DOMAIN_DEPOSIT", "0x03000000"),
+        ("DOMAIN_VOLUNTARY_EXIT", "0x04000000"),
+        ("DOMAIN_SELECTION_PROOF", "0x05000000"),
+        ("DOMAIN_AGGREGATE_AND_PROOF", "0x06000000"),
+        ("DOMAIN_SYNC_COMMITTEE", "0x07000000"),
+        ("DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF", "0x08000000"),
+        ("DOMAIN_CONTRIBUTION_AND_PROOF", "0x09000000"),
+        ("DOMAIN_APPLICATION_BUILDER", "0x00000001"),
+        ("TARGET_AGGREGATORS_PER_COMMITTEE", "16"),
+        ("SYNC_COMMITTEE_SIZE", "512"),
+        ("SYNC_COMMITTEE_SUBNET_COUNT", "4"),
+        ("TARGET_AGGREGATORS_PER_SYNC_SUBCOMMITTEE", "16"),
+        ("EPOCHS_PER_SYNC_COMMITTEE_PERIOD", "256"),
+        // Committee / shuffling shape.
+        ("MAX_VALIDATORS_PER_COMMITTEE", "2048"),
+        ("MAX_COMMITTEES_PER_SLOT", "64"),
+        ("TARGET_COMMITTEE_SIZE", "128"),
+        ("SHUFFLE_ROUND_COUNT", "90"),
+        ("SHARD_COMMITTEE_PERIOD", "256"),
+        // Historical state limits.
+        ("EPOCHS_PER_HISTORICAL_VECTOR", "65536"),
+        ("EPOCHS_PER_SLASHINGS_VECTOR", "8192"),
+        ("SLOTS_PER_HISTORICAL_ROOT", "8192"),
+        ("HISTORICAL_ROOTS_LIMIT", "16777216"),
+        ("VALIDATOR_REGISTRY_LIMIT", "1099511627776"),
+        // Churn / activation queue.
+        ("MIN_PER_EPOCH_CHURN_LIMIT", "4"),
+        ("CHURN_LIMIT_QUOTIENT", "65536"),
+        ("MAX_PER_EPOCH_ACTIVATION_CHURN_LIMIT", "8"),
+        // Balances.
+        ("MAX_EFFECTIVE_BALANCE", "32000000000"),
+        ("MAX_EFFECTIVE_BALANCE_ELECTRA", "2048000000000"),
+        ("MIN_ACTIVATION_BALANCE", "32000000000"),
+        ("EFFECTIVE_BALANCE_INCREMENT", "1000000000"),
+        ("EJECTION_BALANCE", "28000000000"),
+        ("MIN_DEPOSIT_AMOUNT", "1000000000"),
+        // Attestation / fork-choice timing.
+        ("MIN_ATTESTATION_INCLUSION_DELAY", "1"),
+        ("MIN_SEED_LOOKAHEAD", "1"),
+        ("MAX_SEED_LOOKAHEAD", "4"),
+        ("ATTESTATION_PROPAGATION_SLOT_RANGE", "32"),
+        ("ATTESTATION_SUBNET_COUNT", "64"),
+        ("MIN_VALIDATOR_WITHDRAWABILITY_DELAY", "256"),
+        ("PROPOSER_SCORE_BOOST", "40"),
+        // Block body operation limits.
+        ("MAX_ATTESTATIONS", "128"),
+        ("MAX_ATTESTATIONS_ELECTRA", "8"),
+        ("MAX_ATTESTER_SLASHINGS", "2"),
+        ("MAX_PROPOSER_SLASHINGS", "16"),
+        ("MAX_VOLUNTARY_EXITS", "16"),
+        ("MAX_DEPOSITS", "16"),
+        ("MAX_BLS_TO_EXECUTION_CHANGES", "16"),
+        ("MAX_WITHDRAWALS_PER_PAYLOAD", "16"),
+        // Deposit / chain identity.
+        ("DEPOSIT_CHAIN_ID", "17000"),
+        ("DEPOSIT_NETWORK_ID", "17000"),
+        (
+            "DEPOSIT_CONTRACT_ADDRESS",
+            "0x4242424242424242424242424242424242424242",
+        ),
+        // Inactivity leak parameters.
+        ("INACTIVITY_SCORE_BIAS", "4"),
+        ("INACTIVITY_SCORE_RECOVERY_RATE", "16"),
+    ];
+
+    let mut spec = serde_json::Map::new();
+    for (key, value) in entries {
+        spec.insert((*key).to_string(), Value::String((*value).to_string()));
+    }
+    // Fields that require non-`&'static str` values.
+    spec.insert(
+        "MIN_GENESIS_TIME".to_string(),
+        Value::String(default_genesis_time().timestamp().to_string()),
+    );
+    spec.insert(
+        "FULU_FORK_EPOCH".to_string(),
+        Value::String(u64::MAX.to_string()),
+    );
+
+    Value::Object(spec)
 }
 
 pub(crate) fn default_genesis() -> Value {
@@ -414,5 +591,70 @@ pub(crate) fn default_genesis_time() -> DateTime<Utc> {
     match Utc.with_ymd_and_hms(2022, 3, 1, 0, 0, 0).single() {
         Some(time) => time,
         None => Utc::now(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::beaconmock::BeaconMock;
+
+    #[test]
+    fn default_spec_contains_load_bearing_keys() {
+        let spec = default_spec();
+        for key in [
+            "MAX_VALIDATORS_PER_COMMITTEE",
+            "EPOCHS_PER_HISTORICAL_VECTOR",
+            "MIN_PER_EPOCH_CHURN_LIMIT",
+            "MAX_EFFECTIVE_BALANCE",
+            "MAX_EFFECTIVE_BALANCE_ELECTRA",
+            "DEPOSIT_CHAIN_ID",
+            "PRESET_BASE",
+            "MAX_COMMITTEES_PER_SLOT",
+        ] {
+            assert!(
+                spec.get(key).is_some(),
+                "default_spec is missing load-bearing key {key}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn bellatrix_signed_block_endpoint_returns_versioned_block() {
+        let mock = BeaconMock::builder()
+            .build()
+            .await
+            .expect("build beacon mock");
+
+        let base = mock.uri();
+        let http = reqwest::Client::new();
+
+        // The `block_id` segment is opaque to the mock; "head" exercises the
+        // path_regex match.
+        let resp = http
+            .get(format!("{base}/eth/v2/beacon/blocks/head"))
+            .send()
+            .await
+            .expect("blocks request");
+        assert_eq!(resp.status(), 200, "blocks endpoint should succeed");
+
+        let body: Value = resp.json().await.expect("blocks json");
+        assert_eq!(
+            body.get("version").and_then(Value::as_str),
+            Some("bellatrix"),
+            "version field should be bellatrix"
+        );
+        assert!(
+            body.get("data").and_then(Value::as_object).is_some(),
+            "data field should be a JSON object"
+        );
+
+        // Same endpoint should also match a numeric block_id.
+        let resp = http
+            .get(format!("{base}/eth/v2/beacon/blocks/123"))
+            .send()
+            .await
+            .expect("blocks request (numeric)");
+        assert_eq!(resp.status(), 200);
     }
 }

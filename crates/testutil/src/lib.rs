@@ -4,6 +4,10 @@
 //! validator node. This crate provides test helpers, mock objects, and testing
 //! utilities for unit tests, integration tests, and development.
 
+// Raised so the large `json!` literals in `beaconmock::defaults::default_spec`
+// expand without hitting the default macro recursion limit.
+#![recursion_limit = "256"]
+
 /// Random utilities.
 pub mod random;
 
