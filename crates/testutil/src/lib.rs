@@ -7,6 +7,10 @@
 /// Random utilities.
 pub mod random;
 
+/// Beacon node API mock utilities.
+pub mod beaconmock;
+
+pub use beaconmock::{BeaconMock, MockState, Validator, ValidatorSet};
 pub use random::{
     random_deneb_versioned_attestation, random_eth2_signature, random_eth2_signature_bytes,
     random_root, random_root_bytes, random_slot, random_v_idx,

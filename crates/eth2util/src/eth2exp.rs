@@ -117,22 +117,19 @@ fn hash_modulo(sig: &BLSSignature, modulo: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pluto_testutil::BeaconMock;
     use serde_json::json;
     use test_case::test_case;
-    use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
 
-    async fn mock_client(spec_fields: serde_json::Value) -> (MockServer, EthBeaconNodeApiClient) {
-        let server = MockServer::start().await;
-        Mock::given(matchers::method("GET"))
-            .and(matchers::path("/eth/v1/config/spec"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": spec_fields })))
-            .mount(&server)
-            .await;
-        let client = EthBeaconNodeApiClient::with_base_url(server.uri()).unwrap();
-        (server, client)
+    async fn mock_client(spec_fields: serde_json::Value) -> BeaconMock {
+        BeaconMock::builder()
+            .spec(spec_fields)
+            .build()
+            .await
+            .unwrap()
     }
 
-    async fn default_client() -> (MockServer, EthBeaconNodeApiClient) {
+    async fn default_client() -> BeaconMock {
         mock_client(json!({
             "TARGET_AGGREGATORS_PER_COMMITTEE": "16",
             "SYNC_COMMITTEE_SIZE": "512",
@@ -154,11 +151,12 @@ mod tests {
 
     #[tokio::test]
     async fn is_att_aggregator() {
-        let (_server, client) = default_client().await;
+        let mock = default_client().await;
+        let client = mock.client();
         // comm_len=3, TARGET_AGGREGATORS_PER_COMMITTEE=16 → modulo=max(3/16,1)=1 →
         // always true
         assert!(
-            super::is_att_aggregator(&client, 3, decode_sig(ATT_SIG_HEX))
+            super::is_att_aggregator(client, 3, decode_sig(ATT_SIG_HEX))
                 .await
                 .unwrap()
         );
@@ -166,10 +164,11 @@ mod tests {
 
     #[tokio::test]
     async fn is_not_att_aggregator() {
-        let (_server, client) = default_client().await;
+        let mock = default_client().await;
+        let client = mock.client();
         // comm_len=64, TARGET_AGGREGATORS_PER_COMMITTEE=16 → modulo=4 → false
         assert!(
-            !super::is_att_aggregator(&client, 64, decode_sig(ATT_SIG_HEX))
+            !super::is_att_aggregator(client, 64, decode_sig(ATT_SIG_HEX))
                 .await
                 .unwrap()
         );
@@ -187,8 +186,9 @@ mod tests {
     #[test_case("99e60f20dde4d4872b048d703f1943071c20213d504012e7e520c229da87661803b9f139b9a0c5be31de3cef6821c080125aed38ebaf51ba9a2e9d21d7fbf2903577983109d097a8599610a92c0305408d97c1fd4b0b2d1743fb4eedf5443f99", true ; "aggregator_3")]
     #[tokio::test]
     async fn is_sync_comm_aggregator(sig_hex: &str, expected: bool) {
-        let (_server, client) = default_client().await;
-        let result = super::is_sync_comm_aggregator(&client, decode_sig(sig_hex))
+        let mock = default_client().await;
+        let client = mock.client();
+        let result = super::is_sync_comm_aggregator(client, decode_sig(sig_hex))
             .await
             .unwrap();
         assert_eq!(result, expected);
