@@ -295,7 +295,10 @@ fn random_validator_status(rng: &mut impl Rng) -> &'static str {
         "withdrawal_possible",
         "withdrawal_done",
     ];
-    STATUSES.choose(rng).copied().unwrap_or("active_ongoing")
+    STATUSES
+        .choose(rng)
+        .copied()
+        .expect("STATUSES is a non-empty constant slice")
 }
 
 fn random_beacon_block(slot: u64) -> Value {

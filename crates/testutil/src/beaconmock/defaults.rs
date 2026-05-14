@@ -552,10 +552,9 @@ pub(crate) fn default_genesis() -> Value {
 }
 
 pub(crate) fn default_genesis_time() -> DateTime<Utc> {
-    match Utc.with_ymd_and_hms(2022, 3, 1, 0, 0, 0).single() {
-        Some(time) => time,
-        None => Utc::now(),
-    }
+    Utc.with_ymd_and_hms(2022, 3, 1, 0, 0, 0)
+        .single()
+        .expect("2022-03-01T00:00:00Z is an unambiguous UTC instant")
 }
 
 #[cfg(test)]
