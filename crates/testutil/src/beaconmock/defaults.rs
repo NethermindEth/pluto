@@ -10,7 +10,7 @@ use wiremock::{
     matchers::{method, path, path_regex},
 };
 
-use super::state::{MockState, read_lock};
+use super::state::{MockState, last_path_segment_u64, read_lock};
 
 pub(crate) const ZERO_ROOT: &str =
     "0x0000000000000000000000000000000000000000000000000000000000000000";
@@ -465,10 +465,7 @@ fn indices_from_body(request: &Request) -> Vec<ValidatorIndex> {
 }
 
 fn epoch_from_path(path: &str) -> Epoch {
-    path.rsplit('/')
-        .next()
-        .and_then(|epoch| epoch.parse::<Epoch>().ok())
-        .unwrap_or_default()
+    last_path_segment_u64(path)
 }
 
 fn slots_per_epoch(state: &MockState) -> u64 {

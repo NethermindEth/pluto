@@ -17,6 +17,7 @@ use wiremock::{
     matchers::{method, path, path_regex},
 };
 
+use super::state::last_path_segment_u64;
 use crate::random::{
     random_bit_list, random_eth2_signature, random_phase0_attestation, random_root,
 };
@@ -351,17 +352,11 @@ fn random_beacon_block_body() -> Value {
 }
 
 fn slot_from_path(path: &str) -> u64 {
-    path.rsplit('/')
-        .next()
-        .and_then(|slot| slot.parse::<u64>().ok())
-        .unwrap_or_default()
+    last_path_segment_u64(path)
 }
 
 fn epoch_from_path(path: &str) -> u64 {
-    path.rsplit('/')
-        .next()
-        .and_then(|epoch| epoch.parse::<u64>().ok())
-        .unwrap_or_default()
+    last_path_segment_u64(path)
 }
 
 #[cfg(test)]

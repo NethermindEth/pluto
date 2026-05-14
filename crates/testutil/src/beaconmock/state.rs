@@ -207,6 +207,16 @@ pub(crate) fn hex_0x(bytes: impl AsRef<[u8]>) -> String {
     format!("0x{}", hex::encode(bytes.as_ref()))
 }
 
+/// Parses the trailing `/{u64}` segment of a request path (e.g. the `epoch`
+/// in `/eth/v1/validator/duties/attester/3` or the `slot` in
+/// `/eth/v2/beacon/blocks/5`), returning `0` on missing or non-numeric input.
+pub(crate) fn last_path_segment_u64(path: &str) -> u64 {
+    path.rsplit('/')
+        .next()
+        .and_then(|seg| seg.parse::<u64>().ok())
+        .unwrap_or_default()
+}
+
 pub(crate) fn parse_pubkey(pubkey: &str) -> Option<BLSPubKey> {
     let pubkey = pubkey.strip_prefix("0x").unwrap_or(pubkey);
     let bytes = hex::decode(pubkey).ok()?;
