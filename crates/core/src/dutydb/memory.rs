@@ -228,12 +228,10 @@ impl MemDB {
                 if unsigned_set.len() > 1 {
                     return Err(Error::UnexpectedProposerSetLength);
                 }
-                for data in unsigned_set.values() {
-                    let proposal = match data {
-                        UnsignedDutyData::Proposal(p) => p.as_ref(),
-                        _ => return Err(Error::InvalidVersionedProposal),
-                    };
-                    store_proposal(&mut state, proposal)?;
+                match unsigned_set.values().next() {
+                    None => {}
+                    Some(UnsignedDutyData::Proposal(p)) => state.store_proposal(p)?,
+                    Some(_) => return Err(Error::InvalidVersionedProposal),
                 }
                 self.pro_notify.notify_waiters();
             }
@@ -244,7 +242,7 @@ impl MemDB {
                         UnsignedDutyData::Attestation(a) => a,
                         _ => return Err(Error::InvalidAttestationData),
                     };
-                    store_attestation(&mut state, *pubkey, att)?;
+                    state.store_attestation(*pubkey, att)?;
                 }
                 self.att_notify.notify_waiters();
             }
@@ -254,7 +252,7 @@ impl MemDB {
                         UnsignedDutyData::AggAttestation(a) => a,
                         _ => return Err(Error::InvalidAggregatedAttestation),
                     };
-                    store_agg_attestation(&mut state, agg)?;
+                    state.store_agg_attestation(agg)?;
                 }
                 self.agg_notify.notify_waiters();
             }
@@ -264,7 +262,7 @@ impl MemDB {
                         UnsignedDutyData::SyncContribution(c) => c,
                         _ => return Err(Error::InvalidSyncContribution),
                     };
-                    store_sync_contribution(&mut state, contrib)?;
+                    state.store_sync_contribution(contrib)?;
                 }
                 self.contrib_notify.notify_waiters();
             }
@@ -280,7 +278,7 @@ impl MemDB {
                 },
                 None => break,
             };
-            delete_duty(&mut state, expired)?;
+            state.delete_duty(expired)?;
         }
 
         Ok(())
@@ -389,177 +387,206 @@ impl MemDB {
     }
 }
 
-fn store_proposal(state: &mut State, proposal: &VersionedProposal) -> Result<()> {
-    let slot = proposal.slot();
-    if let Some(existing) = state.pro_duties.get(&slot) {
-        if existing.root() != proposal.root() {
-            return Err(Error::ClashingBlocks);
+impl State {
+    fn store_proposal(&mut self, proposal: &VersionedProposal) -> Result<()> {
+        let slot = proposal.slot();
+        if let Some(existing) = self.pro_duties.get(&slot) {
+            if existing.root() != proposal.root() {
+                return Err(Error::ClashingBlocks);
+            }
+        } else {
+            self.pro_duties.insert(slot, proposal.clone());
         }
-    } else {
-        state.pro_duties.insert(slot, proposal.clone());
-    }
-    Ok(())
-}
-
-fn store_attestation(state: &mut State, pubkey: PubKey, att: &AttestationData) -> Result<()> {
-    let slot = att.data.slot;
-    let duty_slot = att.duty.slot;
-    let comm_idx = att.duty.committee_index;
-    let val_idx = att.duty.validator_index;
-
-    // Store pubkey mapping for PubKeyByAttestation (actual committee index).
-    let pk_key = PkKey {
-        slot,
-        committee_idx: comm_idx,
-        validator_idx: val_idx,
-    };
-    if let Some(&existing) = state.att_pub_keys.get(&pk_key) {
-        if existing != pubkey {
-            return Err(Error::ClashingPublicKey);
-        }
-    } else {
-        state.att_pub_keys.insert(pk_key, pubkey);
-        state
-            .att_keys_by_slot
-            .entry(duty_slot)
-            .or_default()
-            .push(pk_key);
+        Ok(())
     }
 
-    // Store attestation data for AwaitAttestation (actual committee index).
-    let att_key = AttKey {
-        slot,
-        committee_idx: comm_idx,
-    };
-    if let Some(existing) = state.att_duties.get(&att_key) {
-        if existing.source != att.data.source
-            || existing.target != att.data.target
-            || existing.beacon_block_root != att.data.beacon_block_root
-        {
-            return Err(Error::ClashingAttestationData);
-        }
-    } else {
-        state.att_duties.insert(att_key, att.data.clone());
+    fn store_attestation(&mut self, pubkey: PubKey, att: &AttestationData) -> Result<()> {
+        let slot = att.data.slot;
+        let duty_slot = att.duty.slot;
+        let comm_idx = att.duty.committee_index;
+        let val_idx = att.duty.validator_index;
+
+        self.store_att_pubkey(slot, duty_slot, comm_idx, val_idx, pubkey)?;
+        self.store_att_data(slot, comm_idx, &att.data)?;
+        self.store_att_compat_commidx0(slot, duty_slot, val_idx, pubkey, &att.data)?;
+
+        Ok(())
     }
 
-    // Also store with commIdx=0 for post-Electra VC compatibility.
-    // See: https://ethereum.github.io/beacon-APIs/#/Validator/produceAttestationData
-    let pk_key0 = PkKey {
-        slot,
-        committee_idx: 0,
-        validator_idx: val_idx,
-    };
-    if let Some(&existing) = state.att_pub_keys.get(&pk_key0) {
-        if existing != pubkey {
-            return Err(Error::ClashingPublicKey);
+    fn store_att_pubkey(
+        &mut self,
+        slot: u64,
+        duty_slot: u64,
+        comm_idx: u64,
+        val_idx: u64,
+        pubkey: PubKey,
+    ) -> Result<()> {
+        let pk_key = PkKey {
+            slot,
+            committee_idx: comm_idx,
+            validator_idx: val_idx,
+        };
+        if let Some(&existing) = self.att_pub_keys.get(&pk_key) {
+            if existing != pubkey {
+                return Err(Error::ClashingPublicKey);
+            }
+        } else {
+            self.att_pub_keys.insert(pk_key, pubkey);
+            self.att_keys_by_slot
+                .entry(duty_slot)
+                .or_default()
+                .push(pk_key);
         }
-    } else {
-        state.att_pub_keys.insert(pk_key0, pubkey);
-        state
-            .att_keys_by_slot
-            .entry(duty_slot)
-            .or_default()
-            .push(pk_key0);
+        Ok(())
     }
 
-    let att_key0 = AttKey {
-        slot,
-        committee_idx: 0,
-    };
-    if let Some(existing) = state.att_duties.get(&att_key0) {
-        if existing.source != att.data.source {
-            return Err(Error::ClashingAttestationDataCommIdx0Source);
+    fn store_att_data(
+        &mut self,
+        slot: u64,
+        comm_idx: u64,
+        data: &phase0::AttestationData,
+    ) -> Result<()> {
+        let att_key = AttKey {
+            slot,
+            committee_idx: comm_idx,
+        };
+        if let Some(existing) = self.att_duties.get(&att_key) {
+            if existing.source != data.source
+                || existing.target != data.target
+                || existing.beacon_block_root != data.beacon_block_root
+            {
+                return Err(Error::ClashingAttestationData);
+            }
+        } else {
+            self.att_duties.insert(att_key, data.clone());
         }
-        if existing.target != att.data.target {
-            return Err(Error::ClashingAttestationDataCommIdx0Target);
-        }
-    } else {
-        state.att_duties.insert(att_key0, att.data.clone());
+        Ok(())
     }
 
-    Ok(())
-}
-
-fn store_agg_attestation(state: &mut State, agg: &VersionedAggregatedAttestation) -> Result<()> {
-    let att_data = agg.data().ok_or(Error::InvalidAggregatedAttestation)?;
-    let root = att_data.tree_hash_root().0;
-    let slot = att_data.slot;
-
-    let key = AggKey { slot, root };
-    if let Some(existing) = state.agg_duties.get(&key) {
-        let existing_data = existing.data().ok_or(Error::InvalidAggregatedAttestation)?;
-        if existing_data.tree_hash_root().0 != root {
-            return Err(Error::ClashingDataRoot);
+    // Store pubkey and attestation data with commIdx=0 for post-Electra VC
+    // compatibility. See: https://ethereum.github.io/beacon-APIs/#/Validator/produceAttestationData
+    fn store_att_compat_commidx0(
+        &mut self,
+        slot: u64,
+        duty_slot: u64,
+        val_idx: u64,
+        pubkey: PubKey,
+        data: &phase0::AttestationData,
+    ) -> Result<()> {
+        let pk_key0 = PkKey {
+            slot,
+            committee_idx: 0,
+            validator_idx: val_idx,
+        };
+        if let Some(&existing) = self.att_pub_keys.get(&pk_key0) {
+            if existing != pubkey {
+                return Err(Error::ClashingPublicKey);
+            }
+        } else {
+            self.att_pub_keys.insert(pk_key0, pubkey);
+            self.att_keys_by_slot
+                .entry(duty_slot)
+                .or_default()
+                .push(pk_key0);
         }
-    } else {
-        state.agg_keys_by_slot.entry(slot).or_default().push(key);
+
+        let att_key0 = AttKey {
+            slot,
+            committee_idx: 0,
+        };
+        if let Some(existing) = self.att_duties.get(&att_key0) {
+            if existing.source != data.source {
+                return Err(Error::ClashingAttestationDataCommIdx0Source);
+            }
+            if existing.target != data.target {
+                return Err(Error::ClashingAttestationDataCommIdx0Target);
+            }
+        } else {
+            self.att_duties.insert(att_key0, data.clone());
+        }
+        Ok(())
     }
-    state.agg_duties.insert(key, agg.clone());
 
-    Ok(())
-}
+    fn store_agg_attestation(&mut self, agg: &VersionedAggregatedAttestation) -> Result<()> {
+        let att_data = agg.data().ok_or(Error::InvalidAggregatedAttestation)?;
+        let root = att_data.tree_hash_root().0;
+        let slot = att_data.slot;
 
-fn store_sync_contribution(state: &mut State, contrib: &SyncContribution) -> Result<()> {
-    let inner = &contrib.0;
-    let contrib_root = inner.tree_hash_root().0;
-
-    let key = ContribKey {
-        slot: inner.slot,
-        subcomm_idx: inner.subcommittee_index,
-        root: inner.beacon_block_root,
-    };
-
-    if let Some(existing) = state.contrib_duties.get(&key) {
-        if existing.tree_hash_root().0 != contrib_root {
-            return Err(Error::ClashingSyncContributions);
+        let key = AggKey { slot, root };
+        if let Some(existing) = self.agg_duties.get(&key) {
+            let existing_data = existing.data().ok_or(Error::InvalidAggregatedAttestation)?;
+            if existing_data.tree_hash_root().0 != root {
+                return Err(Error::ClashingDataRoot);
+            }
+        } else {
+            self.agg_keys_by_slot.entry(slot).or_default().push(key);
         }
-    } else {
-        state.contrib_duties.insert(key, inner.clone());
-        state
-            .contrib_keys_by_slot
-            .entry(inner.slot)
-            .or_default()
-            .push(key);
+        self.agg_duties.insert(key, agg.clone());
+
+        Ok(())
     }
 
-    Ok(())
-}
+    fn store_sync_contribution(&mut self, contrib: &SyncContribution) -> Result<()> {
+        let inner = &contrib.0;
+        let contrib_root = inner.tree_hash_root().0;
 
-fn delete_duty(state: &mut State, duty: Duty) -> Result<()> {
-    let slot = duty.slot.inner();
-    match duty.duty_type {
-        DutyType::Proposer => {
-            state.pro_duties.remove(&slot);
+        let key = ContribKey {
+            slot: inner.slot,
+            subcomm_idx: inner.subcommittee_index,
+            root: inner.beacon_block_root,
+        };
+
+        if let Some(existing) = self.contrib_duties.get(&key) {
+            if existing.tree_hash_root().0 != contrib_root {
+                return Err(Error::ClashingSyncContributions);
+            }
+        } else {
+            self.contrib_duties.insert(key, inner.clone());
+            self.contrib_keys_by_slot
+                .entry(inner.slot)
+                .or_default()
+                .push(key);
         }
-        DutyType::BuilderProposer => return Err(Error::DeprecatedDutyBuilderProposer),
-        DutyType::Attester => {
-            if let Some(keys) = state.att_keys_by_slot.remove(&slot) {
-                for key in keys {
-                    state.att_pub_keys.remove(&key);
-                    state.att_duties.remove(&AttKey {
-                        slot: key.slot,
-                        committee_idx: key.committee_idx,
-                    });
+
+        Ok(())
+    }
+
+    fn delete_duty(&mut self, duty: Duty) -> Result<()> {
+        let slot = duty.slot.inner();
+        match duty.duty_type {
+            DutyType::Proposer => {
+                self.pro_duties.remove(&slot);
+            }
+            DutyType::BuilderProposer => return Err(Error::DeprecatedDutyBuilderProposer),
+            DutyType::Attester => {
+                if let Some(keys) = self.att_keys_by_slot.remove(&slot) {
+                    for key in keys {
+                        self.att_pub_keys.remove(&key);
+                        self.att_duties.remove(&AttKey {
+                            slot: key.slot,
+                            committee_idx: key.committee_idx,
+                        });
+                    }
                 }
             }
-        }
-        DutyType::Aggregator => {
-            if let Some(keys) = state.agg_keys_by_slot.remove(&slot) {
-                for key in keys {
-                    state.agg_duties.remove(&key);
+            DutyType::Aggregator => {
+                if let Some(keys) = self.agg_keys_by_slot.remove(&slot) {
+                    for key in keys {
+                        self.agg_duties.remove(&key);
+                    }
                 }
             }
-        }
-        DutyType::SyncContribution => {
-            if let Some(keys) = state.contrib_keys_by_slot.remove(&slot) {
-                for key in keys {
-                    state.contrib_duties.remove(&key);
+            DutyType::SyncContribution => {
+                if let Some(keys) = self.contrib_keys_by_slot.remove(&slot) {
+                    for key in keys {
+                        self.contrib_duties.remove(&key);
+                    }
                 }
             }
+            _ => return Err(Error::UnknownDutyType),
         }
-        _ => return Err(Error::UnknownDutyType),
+        Ok(())
     }
-    Ok(())
 }
 
 #[cfg(test)]
