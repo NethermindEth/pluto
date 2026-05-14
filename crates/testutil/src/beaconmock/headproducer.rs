@@ -7,16 +7,19 @@
 //! `/eth/v1/beacon/blocks/{block_id}/root`.
 //!
 //! Note on SSE: wiremock buffers a response body before sending, so events
-//! cannot be streamed continuously. Each request to `/eth/v1/events` waits up
-//! to ~one slot for the producer to have a current head and then returns a
-//! single, well-formed SSE record (`event: <topic>\ndata: <json>\n\n`).
-//! Subscribers should poll the endpoint to keep receiving events.
+//! cannot be streamed continuously. Each request to `/eth/v1/events` returns
+//! a single, well-formed SSE record (`event: <topic>\ndata: <json>\n\n`) for
+//! the current head. Subscribers should poll the endpoint to keep receiving
+//! events.
 //!
 //! The block-root endpoint matches Charon: it answers with the current head's
 //! block root when `block_id` is `head` or matches the current head's slot,
 //! and 400 otherwise.
 //!
-//! The ticker is shut down when the returned [`HeadProducer`] is dropped.
+//! [`HeadProducer::spawn`] synchronously publishes the initial head before
+//! returning, so handlers never observe a `None` current head once the
+//! producer is constructed. The ticker is shut down when the returned
+//! [`HeadProducer`] is dropped.
 
 use std::{
     sync::{Arc, RwLock},
@@ -27,7 +30,7 @@ use chrono::{DateTime, Utc};
 use pluto_eth2api::spec::phase0::{Root, Slot};
 use rand::{RngCore, SeedableRng, rngs::StdRng};
 use serde_json::{Value, json};
-use tokio::sync::{Notify, watch};
+use tokio_util::sync::CancellationToken;
 use wiremock::{
     Mock, MockServer, Request, ResponseTemplate,
     matchers::{method, path, path_regex},
@@ -51,52 +54,59 @@ struct HeadEvent {
 /// Owns the slot ticker driving the head producer. Drop to stop the ticker.
 #[derive(Debug)]
 pub(crate) struct HeadProducer {
-    shutdown: Arc<Notify>,
+    cancel: CancellationToken,
 }
 
 impl HeadProducer {
     /// Spawns the slot ticker and mounts SSE/block-root handlers on `server`.
+    ///
+    /// The initial head is published synchronously before returning, so the
+    /// mounted handlers can always observe a non-`None` current head.
     pub(crate) async fn spawn(
         server: &MockServer,
         genesis_time: DateTime<Utc>,
         slot_duration: Duration,
     ) -> Self {
         let state = Arc::new(SharedState::new());
-        let shutdown = Arc::new(Notify::new());
+        let cancel = CancellationToken::new();
 
-        mount_events(server, Arc::clone(&state), slot_duration).await;
+        mount_events(server, Arc::clone(&state)).await;
         mount_block_root(server, Arc::clone(&state)).await;
+
+        let genesis = system_time_from(genesis_time);
+        let slot_duration = normalize_slot_duration(slot_duration);
+        let (initial_height, initial_tick) = initial_slot(genesis, slot_duration);
+
+        // Publish the initial head before handing control back to the caller
+        // so the mounted handlers never see a None current head.
+        update_head(&state, initial_height);
 
         spawn_slot_ticker(
             Arc::clone(&state),
-            Arc::clone(&shutdown),
-            genesis_time,
+            cancel.clone(),
+            initial_height,
+            initial_tick,
             slot_duration,
         );
 
-        Self { shutdown }
+        Self { cancel }
     }
 }
 
 impl Drop for HeadProducer {
     fn drop(&mut self) {
-        self.shutdown.notify_waiters();
+        self.cancel.cancel();
     }
 }
 
 struct SharedState {
     current_head: RwLock<Option<HeadEvent>>,
-    head_tx: watch::Sender<u64>,
-    head_rx: watch::Receiver<u64>,
 }
 
 impl SharedState {
     fn new() -> Self {
-        let (head_tx, head_rx) = watch::channel(0u64);
         Self {
             current_head: RwLock::new(None),
-            head_tx,
-            head_rx,
         }
     }
 
@@ -105,9 +115,6 @@ impl SharedState {
             Ok(mut guard) => *guard = Some(event),
             Err(poisoned) => *poisoned.into_inner() = Some(event),
         }
-        // Bump the generation counter so listeners wake up.
-        let next = self.head_tx.borrow().wrapping_add(1);
-        let _ = self.head_tx.send(next);
     }
 
     fn current_head(&self) -> Option<HeadEvent> {
@@ -116,33 +123,33 @@ impl SharedState {
             Err(poisoned) => poisoned.into_inner().clone(),
         }
     }
-
-    fn subscribe(&self) -> watch::Receiver<u64> {
-        self.head_rx.clone()
-    }
 }
 
 fn spawn_slot_ticker(
     state: Arc<SharedState>,
-    shutdown: Arc<Notify>,
-    genesis_time: DateTime<Utc>,
+    cancel: CancellationToken,
+    initial_height: Slot,
+    initial_tick: SystemTime,
     slot_duration: Duration,
 ) {
-    // Mirror Go's startSlotTicker: compute current slot from chain age, then
-    // tick once per slot until shutdown.
-    let genesis = system_time_from(genesis_time);
-    let slot_duration = if slot_duration.is_zero() {
-        Duration::from_millis(1)
-    } else {
-        slot_duration
-    };
+    // The initial head was already published by `HeadProducer::spawn`. Start
+    // the ticker at the next scheduled slot so it advances from there.
+    let mut height = initial_height.wrapping_add(1);
+    let mut next_tick = initial_tick
+        .checked_add(slot_duration)
+        .unwrap_or_else(|| SystemTime::now() + slot_duration);
 
     tokio::spawn(async move {
-        let (mut height, mut next_tick) = initial_slot(genesis, slot_duration);
-        let shutdown_fut = shutdown.notified();
-        tokio::pin!(shutdown_fut);
-
         loop {
+            let delay = next_tick
+                .duration_since(SystemTime::now())
+                .unwrap_or_default();
+
+            tokio::select! {
+                () = cancel.cancelled() => return,
+                () = tokio::time::sleep(delay) => {}
+            }
+
             update_head(&state, height);
 
             height = height.wrapping_add(1);
@@ -151,16 +158,16 @@ fn spawn_slot_ticker(
                     .checked_add(slot_duration)
                     .unwrap_or(SystemTime::now())
             });
-            let delay = next_tick
-                .duration_since(SystemTime::now())
-                .unwrap_or_default();
-
-            tokio::select! {
-                _ = &mut shutdown_fut => return,
-                _ = tokio::time::sleep(delay) => {}
-            }
         }
     });
+}
+
+fn normalize_slot_duration(slot_duration: Duration) -> Duration {
+    if slot_duration.is_zero() {
+        Duration::from_millis(1)
+    } else {
+        slot_duration
+    }
 }
 
 fn initial_slot(genesis: SystemTime, slot_duration: Duration) -> (Slot, SystemTime) {
@@ -215,11 +222,7 @@ fn random_root(rng: &mut StdRng) -> Root {
     root
 }
 
-async fn mount_events(server: &MockServer, state: Arc<SharedState>, slot_duration: Duration) {
-    let wait_budget = slot_duration
-        .saturating_mul(2)
-        .max(Duration::from_millis(50));
-
+async fn mount_events(server: &MockServer, state: Arc<SharedState>) {
     Mock::given(method("GET"))
         .and(path("/eth/v1/events"))
         .respond_with(move |request: &Request| {
@@ -228,9 +231,8 @@ async fn mount_events(server: &MockServer, state: Arc<SharedState>, slot_duratio
                 return error_response(500, format!("unknown topic: {invalid}"));
             }
 
-            // Wait synchronously (bounded) until at least one head is produced
-            // so the buffered SSE body is non-empty.
-            wait_for_first_head(&state, wait_budget);
+            // `HeadProducer::spawn` publishes the initial head before
+            // returning, so the current head is always set here.
             let Some(head) = state.current_head() else {
                 return error_response(500, "head producer not ready".into());
             };
@@ -257,6 +259,8 @@ async fn mount_block_root(server: &MockServer, state: Arc<SharedState>) {
     Mock::given(method("GET"))
         .and(path_regex(r"^/eth/v1/beacon/blocks/[^/]+/root$"))
         .respond_with(move |request: &Request| {
+            // `HeadProducer::spawn` publishes the initial head before
+            // returning, so the current head is always set here.
             let Some(head) = state.current_head() else {
                 return error_response(500, "head producer not ready".into());
             };
@@ -293,26 +297,6 @@ fn extract_block_id(path: &str) -> String {
     let mut parts = path.rsplit('/');
     let _ = parts.next(); // "root"
     parts.next().unwrap_or_default().to_string()
-}
-
-fn wait_for_first_head(state: &SharedState, budget: Duration) {
-    if state.current_head().is_some() {
-        return;
-    }
-
-    // Drive a short blocking wait without blocking the runtime worker for long:
-    // poll the shared state with small sleeps until the budget elapses.
-    let start = std::time::Instant::now();
-    let mut rx = state.subscribe();
-    while start.elapsed() < budget {
-        if rx.has_changed().unwrap_or(false) {
-            let _ = rx.borrow_and_update();
-        }
-        if state.current_head().is_some() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
 }
 
 fn push_sse_event(body: &mut String, topic: &str, data: &Value) {
@@ -373,31 +357,10 @@ mod tests {
             .expect("beacon mock");
 
         let url = format!("{}/eth/v1/events?topics=head", mock.uri());
-        let client = reqwest::Client::new();
+        let resp = reqwest::get(&url).await.expect("send");
+        assert_eq!(resp.status().as_u16(), 200);
 
-        // Poll the endpoint with a short timeout — the responder buffers a
-        // single SSE event per request, so the test reads the body once a
-        // head event has been produced.
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        let body = loop {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "no head event in time"
-            );
-            let resp = client
-                .get(&url)
-                .timeout(Duration::from_secs(1))
-                .send()
-                .await
-                .expect("send");
-            assert_eq!(resp.status().as_u16(), 200);
-            let text = resp.text().await.expect("body");
-            if text.contains("event: head") {
-                break text;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        };
-
+        let body = resp.text().await.expect("body");
         assert!(body.contains("event: head"));
         assert!(body.contains("\"slot\""));
         assert!(body.contains("\"block\""));
@@ -428,9 +391,6 @@ mod tests {
             .await
             .expect("beacon mock");
 
-        // Wait for the ticker to publish at least one head.
-        tokio::time::sleep(Duration::from_millis(150)).await;
-
         let url = format!("{}/eth/v1/beacon/blocks/head/root", mock.uri());
         let resp = reqwest::get(&url).await.expect("send");
         assert_eq!(resp.status().as_u16(), 200);
@@ -447,8 +407,6 @@ mod tests {
             .build()
             .await
             .expect("beacon mock");
-
-        tokio::time::sleep(Duration::from_millis(150)).await;
 
         let url = format!("{}/eth/v1/beacon/blocks/999999/root", mock.uri());
         let resp = reqwest::get(&url).await.expect("send");
