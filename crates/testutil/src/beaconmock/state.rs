@@ -31,6 +31,9 @@ pub struct Validator {
 
 impl Validator {
     /// Creates an active validator with the provided index and public key.
+    ///
+    /// Mirrors Charon's `ValidatorSetA`: `exit_epoch` and `withdrawable_epoch`
+    /// are the Go zero value (`"0"`), not `FAR_FUTURE_EPOCH`.
     #[must_use]
     pub fn active(index: ValidatorIndex, pubkey: BLSPubKey) -> Self {
         let pubkey = hex_0x(pubkey);
@@ -43,10 +46,10 @@ impl Validator {
                 activation_eligibility_epoch: index.to_string(),
                 activation_epoch: index.checked_add(1).unwrap_or(index).to_string(),
                 effective_balance: index.to_string(),
-                exit_epoch: u64::MAX.to_string(),
+                exit_epoch: "0".to_string(),
                 pubkey,
                 slashed: false,
-                withdrawable_epoch: u64::MAX.to_string(),
+                withdrawable_epoch: "0".to_string(),
                 withdrawal_credentials: DEFAULT_WITHDRAWAL_CREDENTIALS.to_string(),
             },
         }
