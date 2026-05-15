@@ -231,11 +231,11 @@ impl MemDB {
             return Err(Error::DeprecatedDutyBuilderProposer);
         }
 
+        let mut state = self.state.write().await;
+
         if !self.deadliner.add(duty.clone()).await {
             return Err(Error::ExpiredDuty);
         }
-
-        let mut state = self.state.write().await;
 
         match duty.duty_type {
             DutyType::Proposer => {
