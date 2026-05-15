@@ -449,10 +449,13 @@ impl RelayManager {
     /// schedule is reset so the new route is tried immediately. If the address
     /// set is unchanged, the existing dial state is left alone — its backoff
     /// schedule survives so we don't hammer peers that have been unreachable
-    /// just because re-routing was re-evaluated.
+    /// just because re-routing was re-evaluated. If no reserved relay can
+    /// currently reach `target`, any pre-existing dial state is removed so we
+    /// don't keep firing `Dial` events at circuits through unreserved relays.
     fn upsert_peer_dial(&mut self, target: PeerId) {
         let addrs = self.peer_circuit_addrs(&target);
         if addrs.is_empty() {
+            self.dial_states.remove(&target);
             return;
         }
 
@@ -466,6 +469,22 @@ impl RelayManager {
             target,
             RelayDialState::new(RelayDialType::ClusterPeer, target, addrs),
         );
+    }
+
+    /// Re-evaluates every active cluster-peer dial state against the current
+    /// set of reserved relays. Called when a relay leaves `Reserved` so that
+    /// peer dial campaigns stop self-rearming through circuits that no longer
+    /// exist.
+    fn refresh_peer_dials(&mut self) {
+        let peer_targets: Vec<PeerId> = self
+            .dial_states
+            .iter()
+            .filter(|(_, s)| matches!(s.ty, RelayDialType::ClusterPeer))
+            .map(|(id, _)| *id)
+            .collect();
+        for target in peer_targets {
+            self.upsert_peer_dial(target);
+        }
     }
 
     /// Reacts to a new transport connection on a peer we previously dialed.
@@ -567,6 +586,10 @@ impl RelayManager {
             self.events.push_back(ToSwarm::GenerateEvent(
                 RelayManagerEvent::RelayReservationLost(relay_id),
             ));
+            // The reserved-relay set just shrank: drop or refresh any peer
+            // dial campaigns routed through this relay so they don't keep
+            // self-rearming through dead circuits.
+            self.refresh_peer_dials();
         }
     }
 
@@ -574,12 +597,26 @@ impl RelayManager {
     /// our relays (queue a fresh re-dial cycle) or a known cluster peer
     /// (arm a fresh routing dial through the current reserved relays).
     /// Anything else is ignored.
+    ///
+    /// If the relay was previously in `Reserved`, `RelayReservationLost` is
+    /// emitted before `RelayDisconnected` so subscribers see the reservation
+    /// tear down explicitly, and the peer routing campaigns through this
+    /// relay are refreshed to drop now-dead circuits.
     fn on_connection_closed(&mut self, peer_id: PeerId) {
-        if self.connection_states.contains_key(&peer_id) {
+        if let Some(prev_state) = self.connection_states.get(&peer_id).copied() {
+            let was_reserved = matches!(prev_state, RelayConnectionState::Reserved);
+            if was_reserved {
+                self.events.push_back(ToSwarm::GenerateEvent(
+                    RelayManagerEvent::RelayReservationLost(peer_id),
+                ));
+            }
             self.events.push_back(ToSwarm::GenerateEvent(
                 RelayManagerEvent::RelayDisconnected(peer_id),
             ));
             self.redial_relay(peer_id);
+            if was_reserved {
+                self.refresh_peer_dials();
+            }
         } else if self.p2p_context.is_known_peer(&peer_id) {
             self.reroute_peer(peer_id);
         }
@@ -591,12 +628,20 @@ impl RelayManager {
     ///
     /// One special case: `DialError::DialPeerConditionFalse` means libp2p
     /// refused the dial because we're already connected to (or dialing) the
-    /// target. Retrying would just be re-rejected — most visibly when
-    /// [`Self::route_known_peers`] arms circuit-dials for cluster peers we
-    /// already have a direct connection to. In that case we drop the dial
-    /// state and rely on [`Self::on_connection_closed`] to re-arm it via
-    /// [`Self::redial_relay`] / [`Self::reroute_peer`] once the existing
-    /// connection actually closes.
+    /// target. Behaviour depends on the dial type:
+    ///
+    /// - [`RelayDialType::ClusterPeer`]: libp2p owns the existing direct
+    ///   connection. Drop the dial state and rely on
+    ///   [`Self::on_connection_closed`] → [`Self::reroute_peer`] to re-arm
+    ///   the dial once the existing connection actually closes.
+    /// - [`RelayDialType::RelayServer`]: dropping the dial state here would
+    ///   wedge `connection_states` in `Dialing` forever — no
+    ///   `on_connection_closed` will fire if libp2p already has the
+    ///   transport connection, and `queue_relay_update` short-circuits while
+    ///   `connection_states` has an entry. Instead leave the campaign armed;
+    ///   backoff retries are cheap (libp2p re-rejects with the same error)
+    ///   and `on_connection_established` will tear the dial state down once
+    ///   libp2p surfaces the connection.
     fn on_dial_failure(&mut self, peer_id: Option<PeerId>, error: &DialError) {
         let Some(peer_id) = peer_id else { return };
         let Some(state) = self.dial_states.get(&peer_id) else {
@@ -607,14 +652,27 @@ impl RelayManager {
         let skipped = matches!(error, DialError::DialPeerConditionFalse(_));
 
         if skipped {
-            tracing::debug!(
-                peer_id = %peer_id,
-                dial_type = ?target,
-                retry_count,
-                %error,
-                "Dial skipped (already connected or dialing); dropping dial state"
-            );
-            self.dial_states.remove(&peer_id);
+            match target {
+                RelayDialType::ClusterPeer => {
+                    tracing::debug!(
+                        peer_id = %peer_id,
+                        dial_type = ?target,
+                        retry_count,
+                        %error,
+                        "Dial skipped (already connected or dialing); dropping dial state"
+                    );
+                    self.dial_states.remove(&peer_id);
+                }
+                RelayDialType::RelayServer => {
+                    tracing::debug!(
+                        peer_id = %peer_id,
+                        dial_type = ?target,
+                        retry_count,
+                        %error,
+                        "Dial skipped for relay; keeping campaign armed for backoff retry"
+                    );
+                }
+            }
         } else {
             tracing::debug!(
                 peer_id = %peer_id,
