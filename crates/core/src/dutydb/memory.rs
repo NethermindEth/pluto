@@ -460,8 +460,18 @@ impl State {
         Ok(())
     }
 
-    // Store pubkey and attestation data with commIdx=0 for post-Electra VC
-    // compatibility. See: https://ethereum.github.io/beacon-APIs/#/Validator/produceAttestationData
+    // Post-Electra, committee index 0 is the protocol default and well-behaved
+    // VCs request attestation data with commIdx=0. However, some VCs still
+    // request with the actual committee index, so Charon stores both: the real
+    // index (handled by the caller) and a hardcoded-0 entry here. Once all VCs
+    // are fixed this function can be removed.
+    //
+    // The clash check compares only source and target (not the full data)
+    // because a slow beacon node may return stale heads mid-loop, causing
+    // different validators to see different beacon block roots. Source/target
+    // mismatches are still a real error.
+    //
+    // See: https://ethereum.github.io/beacon-APIs/#/Validator/produceAttestationData
     fn store_att_compat_commidx0(
         &mut self,
         slot: u64,
