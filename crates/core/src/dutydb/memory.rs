@@ -149,7 +149,6 @@ struct PkKey {
 /// Lookup key for aggregated attestations: (slot, attestation data root).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct AggKey {
-    slot: u64,
     root: phase0::Root,
 }
 
@@ -317,11 +316,9 @@ impl MemDB {
     /// attestation root is available.
     pub async fn await_agg_attestation(
         &self,
-        slot: u64,
         attestation_root: phase0::Root,
     ) -> Result<versioned::VersionedAttestation> {
         let key = AggKey {
-            slot,
             root: attestation_root,
         };
         self.await_data(&self.agg_notify, |s| s.agg_duties.get(&key).map(|a| &a.0))
@@ -528,14 +525,12 @@ impl State {
         let root = att_data.tree_hash_root().0;
         let slot = att_data.slot;
 
-        let key = AggKey { slot, root };
-        // Unlike Go (memory.go:458-460) which keys by {slot,root} making
-        // ClashingDataRoot unreachable, we detect a real clash by checking for
-        // a different root at the same slot.
-        if let Some(existing_keys) = self.agg_keys_by_slot.get(&slot) {
-            if existing_keys.iter().any(|k| k.root != root) {
-                return Err(Error::ClashingDataRoot);
-            }
+        // Unlike Go implementation, we key by root only, slot field is redundant.
+        let key = AggKey { root };
+        if self.agg_duties.contains_key(&key) {
+            // we don't check existingDataRoot != providedDataRoot because these values
+            // comes from the same source and the error was unreachable
+            self.agg_duties.insert(key, agg.clone());
         } else {
             self.agg_duties.insert(key, agg.clone());
             self.agg_keys_by_slot.entry(slot).or_default().push(key);
@@ -971,7 +966,7 @@ pub(crate) mod tests {
         let root = att_data.tree_hash_root().0;
 
         let db_clone = Arc::clone(&db);
-        let waiter = tokio::spawn(async move { db_clone.await_agg_attestation(SLOT, root).await });
+        let waiter = tokio::spawn(async move { db_clone.await_agg_attestation(root).await });
 
         let mut set = UnsignedDataSet::new();
         set.insert(random_core_pub_key(), UnsignedDutyData::AggAttestation(agg));
