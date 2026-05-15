@@ -1,13 +1,14 @@
-//! Relay reservation functionality and relay router.
+//! Relay reservation and cluster-peer routing.
 //!
-//! This behaviour is responsible for resolving relays that are being passed by
-//! a mutable peer.
+//! [`RelayManager`] is a libp2p [`NetworkBehaviour`] with three responsibilities:
 //!
-//! Mutable peer is used for updating the relay addresses in the background by
-//! fetching the enr servers.
-//!
-//! Relay router is responsible for routing *all* known peers through the
-//! relays, even if they are not directly connected to the node.
+//! 1. Subscribe to [`MutablePeer`] watch channels to receive relay address
+//!    updates as they're discovered.
+//! 2. Manage each relay's reservation lifecycle (`Dialing → Established →
+//!    Reserved`) and redial with exponential backoff when transport connections
+//!    drop.
+//! 3. Route known cluster peers through reserved relay circuits so peer-to-peer
+//!    traffic can traverse NATs that would otherwise block direct dials.
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -44,7 +45,9 @@ const RELAY_BACKOFF_MAX: Duration = Duration::from_secs(120);
 /// `DefaultConfig.Jitter`.
 const RELAY_BACKOFF_JITTER: f64 = 0.2;
 
-/// Mutable relay reservation behaviour.
+/// Libp2p [`NetworkBehaviour`] that reserves circuits on a configured set of
+/// relays and routes known cluster peers through them. See the module-level
+/// docs for the full responsibility breakdown.
 pub struct RelayManager {
     /// Events to emit to the swarm
     events: VecDeque<ToSwarm<RelayManagerEvent, Infallible>>,
@@ -168,22 +171,23 @@ impl From<&DialError> for RelayDialError {
 #[derive(Debug, Clone, Copy)]
 pub enum RelayDialType {
     /// Dial a known cluster peer via reserved relay circuits.
-    Peer,
+    ClusterPeer,
     /// Dial a relay server directly.
-    Relay,
+    RelayServer,
 }
 
 /// State of an in-flight dial campaign, polled to produce a `ToSwarm::Dial`
 /// event each time its backoff elapses.
-pub struct RelayDialState {
+struct RelayDialState {
     /// Kind of target this campaign is dialing.
-    pub ty: RelayDialType,
+    ty: RelayDialType,
     /// Target peer id for the dial.
-    pub peer_id: PeerId,
-    /// Transport (for `Relay`) or circuit (for `Peer`) addresses to try.
-    pub addrs: Vec<Multiaddr>,
+    peer_id: PeerId,
+    /// Transport (for `RelayServer`) or circuit (for `ClusterPeer`) addresses
+    /// to try.
+    addrs: Vec<Multiaddr>,
     /// Number of dial attempts so far, used to compute the next backoff.
-    pub retry_count: u32,
+    retry_count: u32,
     /// Sleeps until the next dial is due. Boxed-and-pinned so the struct stays
     /// `Unpin` and can be stored in a `HashMap`; the inner `Sleep` is `!Unpin`.
     sleep: Pin<Box<Sleep>>,
@@ -191,7 +195,7 @@ pub struct RelayDialState {
 
 impl RelayDialState {
     /// Creates a fresh dial state armed to fire after the base backoff.
-    pub fn new(ty: RelayDialType, peer_id: PeerId, addrs: Vec<Multiaddr>) -> Self {
+    fn new(ty: RelayDialType, peer_id: PeerId, addrs: Vec<Multiaddr>) -> Self {
         Self {
             ty,
             peer_id,
@@ -339,7 +343,7 @@ impl RelayManager {
     /// Applies a relay address update from a [`MutablePeer`]: refreshes
     /// tracked addresses and, if this is the first time we've seen this
     /// relay, kicks off a new dial campaign.
-    pub fn queue_relay_update(&mut self, relay: Peer) {
+    fn queue_relay_update(&mut self, relay: Peer) {
         self.relay_addrs.insert(relay.id, relay.addresses.clone());
 
         // In-flight dial campaign: refresh its address list without resetting
@@ -358,7 +362,7 @@ impl RelayManager {
         // First time we see this relay: start the dial campaign.
         self.dial_states.insert(
             relay.id,
-            RelayDialState::new(RelayDialType::Relay, relay.id, relay.addresses),
+            RelayDialState::new(RelayDialType::RelayServer, relay.id, relay.addresses),
         );
         self.set_relay_state(relay.id, RelayConnectionState::Dialing);
     }
@@ -379,7 +383,7 @@ impl RelayManager {
     /// Polls every active dial state once, queuing a `ToSwarm::Dial` event for
     /// any whose backoff has elapsed. Wakers for the remaining (pending) ones
     /// are registered via the underlying `Sleep` futures.
-    pub fn process_relay_dials(&mut self, cx: &mut Context<'_>) {
+    fn process_relay_dials(&mut self, cx: &mut Context<'_>) {
         for (_, state) in self.dial_states.iter_mut() {
             let state = Pin::new(state);
             if let Poll::Ready(event) = state.poll(cx) {
@@ -460,7 +464,7 @@ impl RelayManager {
 
         self.dial_states.insert(
             target,
-            RelayDialState::new(RelayDialType::Peer, target, addrs),
+            RelayDialState::new(RelayDialType::ClusterPeer, target, addrs),
         );
     }
 
@@ -474,7 +478,7 @@ impl RelayManager {
         };
 
         match dial_state.ty {
-            RelayDialType::Relay => {
+            RelayDialType::RelayServer => {
                 self.events
                     .push_back(ToSwarm::GenerateEvent(RelayManagerEvent::RelayConnected(
                         peer_id,
@@ -492,7 +496,7 @@ impl RelayManager {
                     });
                 }
             }
-            RelayDialType::Peer => {
+            RelayDialType::ClusterPeer => {
                 tracing::debug!(
                     peer_id = %peer_id,
                     "Routed peer connection established"
@@ -646,7 +650,7 @@ impl RelayManager {
         );
         self.dial_states.insert(
             relay_id,
-            RelayDialState::new(RelayDialType::Relay, relay_id, addrs),
+            RelayDialState::new(RelayDialType::RelayServer, relay_id, addrs),
         );
         self.set_relay_state(relay_id, RelayConnectionState::Dialing);
     }
