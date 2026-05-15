@@ -7,6 +7,8 @@
 
 pub mod attest;
 pub mod capture;
+pub mod clock;
+pub mod component;
 pub mod error;
 pub mod meta;
 pub mod propose;
@@ -16,6 +18,8 @@ pub mod validators;
 
 pub use attest::{AttesterDuty, BeaconCommitteeSelection, SlotAttester};
 pub use capture::{EndpointMatch, SubmissionCapture};
+pub use clock::{Clock, FakeClock, SystemClock};
+pub use component::Component;
 pub use error::{Error, Result, SignError};
 pub use meta::{MetaEpoch, MetaSlot, SpecMeta};
 pub use propose::{VersionedValidatorRegistration, propose_block, register};
