@@ -366,6 +366,11 @@ impl MemDB {
             .await
     }
 
+    // A single Notify per duty type wakes all waiters on every store, not only
+    // those whose key matches. The number of concurrent waiters per duty type
+    // is small (one per validator), so the extra wakeups are cheap. A keyed
+    // notify (HashMap<Key, Sender>) would avoid them but adds complexity that
+    // isn't worth it here.
     async fn await_data<V>(
         &self,
         notify: &Notify,
