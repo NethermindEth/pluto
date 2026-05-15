@@ -218,8 +218,8 @@ impl MemDB {
         }
     }
 
-    /// Shuts down the DB, causing all pending `await_*` calls to return an
-    /// error.
+    /// Shuts down the DB, signalling all current and future `await_*` calls to
+    /// return `Error::Shutdown` on their next poll.
     pub fn shutdown(&self) {
         self.cancel.cancel();
     }
@@ -387,6 +387,12 @@ impl MemDB {
             })
             .copied()
             .ok_or(Error::PubKeyNotFound)
+    }
+}
+
+impl Drop for MemDB {
+    fn drop(&mut self) {
+        self.cancel.cancel();
     }
 }
 
