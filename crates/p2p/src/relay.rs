@@ -45,6 +45,14 @@ const RELAY_BACKOFF_MAX: Duration = Duration::from_secs(120);
 /// `DefaultConfig.Jitter`.
 const RELAY_BACKOFF_JITTER: f64 = 0.2;
 
+/// How long a relay may stay in `Established` (transport connected, no
+/// reservation yet) before the watchdog force-closes the transport so a fresh
+/// dial campaign can recover. Mirrors Charon's "no relay connection,
+/// reconnecting" path (`charon/p2p/relay.go:73-92`).
+const ESTABLISHED_STUCK_THRESHOLD: Duration = Duration::from_secs(60);
+/// How often the watchdog re-evaluates stuck-in-Established relays.
+const ESTABLISHED_WATCHDOG_TICK: Duration = Duration::from_secs(15);
+
 /// Libp2p [`NetworkBehaviour`] that reserves circuits on a configured set of
 /// relays and routes known cluster peers through them. See the module-level
 /// docs for the full responsibility breakdown.
@@ -67,6 +75,19 @@ pub struct RelayManager {
     /// connection lifecycle so we can redial after `ConnectionClosed` without
     /// waiting for another `MutablePeer` update.
     relay_addrs: HashMap<PeerId, Vec<Multiaddr>>,
+
+    /// Tracks when each relay last entered `Established` without having since
+    /// reached `Reserved`. The watchdog uses this to identify relays whose
+    /// reservation never confirmed (or whose refresh was denied so libp2p's
+    /// relay client silently gave up) and force-close them so we redial fresh.
+    established_at: HashMap<PeerId, Instant>,
+
+    /// Watchdog tick. Fires every `ESTABLISHED_WATCHDOG_TICK`; on fire we walk
+    /// `established_at` and emit `ToSwarm::CloseConnection` for any relay
+    /// stuck beyond `ESTABLISHED_STUCK_THRESHOLD`. Lazily initialised on the
+    /// first `poll` so `RelayManager::new` can be called outside a Tokio
+    /// runtime (e.g. in unit tests that exercise pure helpers).
+    watchdog: Option<Pin<Box<Sleep>>>,
 
     /// Shared P2P context used to enumerate known cluster peers when routing
     /// them through reserved relays.
@@ -304,6 +325,8 @@ impl RelayManager {
             dial_states: HashMap::new(),
             connection_states: HashMap::new(),
             relay_addrs: HashMap::new(),
+            established_at: HashMap::new(),
+            watchdog: None,
             p2p_context,
         }
     }
@@ -367,7 +390,8 @@ impl RelayManager {
         self.set_relay_state(relay.id, RelayConnectionState::Dialing);
     }
 
-    /// Updates the connection state for a relay, logging the transition.
+    /// Updates the connection state for a relay, logging the transition and
+    /// maintaining the `established_at` watchdog timestamp.
     fn set_relay_state(&mut self, relay_id: PeerId, next: RelayConnectionState) {
         let prev = self.connection_states.insert(relay_id, next);
         if prev != Some(next) {
@@ -377,6 +401,20 @@ impl RelayManager {
                 ?next,
                 "Relay connection state transition"
             );
+        }
+        match next {
+            // Entering or refreshing the no-reservation-yet state: start (or
+            // restart, on demote from Reserved) the stuck-Established timer.
+            RelayConnectionState::Established => {
+                if prev != Some(RelayConnectionState::Established) {
+                    self.established_at.insert(relay_id, Instant::now());
+                }
+            }
+            // Promoted to Reserved or back to Dialing: the relay isn't stuck
+            // in Established anymore, so clear its watchdog timestamp.
+            RelayConnectionState::Reserved | RelayConnectionState::Dialing => {
+                self.established_at.remove(&relay_id);
+            }
         }
     }
 
@@ -388,6 +426,70 @@ impl RelayManager {
             if let Poll::Ready(Some(event)) = state.poll_next_unpin(cx) {
                 self.events.push_back(event);
             }
+        }
+    }
+
+    /// Watchdog for relays stuck in `Established`.
+    ///
+    /// Libp2p's relay client owns reservation refresh; if a relay denies a
+    /// refresh (overloaded, quota exhausted, version mismatch), the client
+    /// typically gives up silently — no further `NewListenAddr` is emitted
+    /// and the transport stays up, so `on_connection_closed` never fires.
+    /// Without intervention the relay would stay in `Established` forever.
+    ///
+    /// On each tick, any relay that has been `Established` for longer than
+    /// [`ESTABLISHED_STUCK_THRESHOLD`] gets a `ToSwarm::CloseConnection`; the
+    /// resulting `FromSwarm::ConnectionClosed` drives `on_connection_closed`
+    /// → `redial_relay`, mirroring Charon's "no relay connection,
+    /// reconnecting" recovery path (`charon/p2p/relay.go:73-92`).
+    fn process_established_watchdog(&mut self, cx: &mut Context<'_>) {
+        let watchdog = self.watchdog.get_or_insert_with(|| {
+            let deadline = Instant::now()
+                .checked_add(ESTABLISHED_WATCHDOG_TICK)
+                .unwrap_or_else(Instant::now);
+            Box::pin(sleep_until(deadline))
+        });
+        if watchdog.as_mut().poll(cx).is_pending() {
+            return;
+        }
+
+        let now = Instant::now();
+        let stuck: Vec<PeerId> = self
+            .established_at
+            .iter()
+            .filter(|(id, since)| {
+                now.saturating_duration_since(**since) >= ESTABLISHED_STUCK_THRESHOLD
+                    && matches!(
+                        self.connection_states.get(id),
+                        Some(RelayConnectionState::Established)
+                    )
+            })
+            .map(|(id, _)| *id)
+            .collect();
+
+        for relay_id in stuck {
+            tracing::warn!(
+                relay_peer_id = %relay_id,
+                threshold = ?ESTABLISHED_STUCK_THRESHOLD,
+                "Relay stuck in Established without reservation; force-closing for redial"
+            );
+            // Clear the timestamp so we don't re-fire CloseConnection on the
+            // next tick while ConnectionClosed is in flight; on_connection_closed
+            // will eventually transition us back to Dialing.
+            self.established_at.remove(&relay_id);
+            self.events.push_back(ToSwarm::CloseConnection {
+                peer_id: relay_id,
+                connection: libp2p::swarm::CloseConnection::All,
+            });
+        }
+
+        let next_deadline = now
+            .checked_add(ESTABLISHED_WATCHDOG_TICK)
+            .unwrap_or_else(Instant::now);
+        // Watchdog is Some by construction inside this function — we just
+        // initialised or polled it above.
+        if let Some(watchdog) = self.watchdog.as_mut() {
+            watchdog.as_mut().reset(next_deadline);
         }
     }
 
@@ -797,6 +899,7 @@ impl NetworkBehaviour for RelayManager {
         }
 
         self.process_relay_dials(cx);
+        self.process_established_watchdog(cx);
 
         if let Some(event) = self.events.pop_front() {
             return Poll::Ready(event);
