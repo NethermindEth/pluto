@@ -10,6 +10,7 @@ use pluto_eth2api::{
 };
 use tokio::sync::{Notify, RwLock};
 use tokio_util::sync::CancellationToken;
+use tracing::{info, warn};
 use tree_hash::TreeHash;
 
 use crate::{
@@ -45,28 +46,44 @@ pub enum Error {
 
     /// Two validators share the same `(slot, commIdx, valIdx)` with different
     /// public keys.
-    #[error(
-        "clashing public key: two validators share the same (slot, commIdx, valIdx) with different keys"
-    )]
-    ClashingPublicKey,
+    #[error("clashing public key: slot={slot} comm_idx={comm_idx} val_idx={val_idx}")]
+    ClashingPublicKey {
+        /// Slot of the attestation duty.
+        slot: u64,
+        /// Committee index.
+        comm_idx: u64,
+        /// Validator index.
+        val_idx: u64,
+    },
 
     /// Two different attestation data objects for the same `(slot, commIdx)`.
-    #[error("clashing attestation data: two different data objects for the same (slot, commIdx)")]
-    ClashingAttestationData,
+    #[error("clashing attestation data: slot={slot} comm_idx={comm_idx}")]
+    ClashingAttestationData {
+        /// Slot of the attestation duty.
+        slot: u64,
+        /// Committee index.
+        comm_idx: u64,
+    },
 
     /// Mismatched source checkpoint in the hardcoded `commIdx=0` compatibility
     /// entry.
-    #[error(
-        "clashing attestation data with hardcoded commidx=0 source: mismatched source checkpoint"
-    )]
-    ClashingAttestationDataCommIdx0Source,
+    #[error("clashing attestation data commidx=0 source: slot={slot} val_idx={val_idx}")]
+    ClashingAttestationDataCommIdx0Source {
+        /// Slot of the attestation duty.
+        slot: u64,
+        /// Validator index.
+        val_idx: u64,
+    },
 
     /// Mismatched target checkpoint in the hardcoded `commIdx=0` compatibility
     /// entry.
-    #[error(
-        "clashing attestation data with hardcoded commidx=0 target: mismatched target checkpoint"
-    )]
-    ClashingAttestationDataCommIdx0Target,
+    #[error("clashing attestation data commidx=0 target: slot={slot} val_idx={val_idx}")]
+    ClashingAttestationDataCommIdx0Target {
+        /// Slot of the attestation duty.
+        slot: u64,
+        /// Validator index.
+        val_idx: u64,
+    },
 
     /// Two different aggregated attestations for the same slot and attestation
     /// data root.
@@ -75,14 +92,20 @@ pub enum Error {
 
     /// Two different sync contributions for the same `(slot, subcommIdx,
     /// root)`.
-    #[error(
-        "clashing sync contributions: two different contributions for the same (slot, subcommIdx, root)"
-    )]
-    ClashingSyncContributions,
+    #[error("clashing sync contributions: slot={slot} subcomm_idx={subcomm_idx}")]
+    ClashingSyncContributions {
+        /// Slot of the sync contribution duty.
+        slot: u64,
+        /// Subcommittee index.
+        subcomm_idx: u64,
+    },
 
     /// Two different blocks for the same slot.
-    #[error("clashing blocks: two different blocks for the same slot")]
-    ClashingBlocks,
+    #[error("clashing blocks: slot={slot}")]
+    ClashingBlocks {
+        /// Slot of the proposer duty.
+        slot: u64,
+    },
 
     /// No public key found for the given `(slot, commIdx, valIdx)`.
     #[error("pubkey not found for the given (slot, commIdx, valIdx)")]
@@ -221,6 +244,7 @@ impl MemDB {
     /// Shuts down the DB, signalling all current and future `await_*` calls to
     /// return `Error::Shutdown` on their next poll.
     pub fn shutdown(&self) {
+        info!("dutydb: shutting down");
         self.cancel.cancel();
     }
 
@@ -401,7 +425,8 @@ impl State {
         let slot = proposal.slot();
         if let Some(existing) = self.pro_duties.get(&slot) {
             if existing.root() != proposal.root() {
-                return Err(Error::ClashingBlocks);
+                warn!(slot, "dutydb: clashing blocks");
+                return Err(Error::ClashingBlocks { slot });
             }
         } else {
             self.pro_duties.insert(slot, proposal.clone());
@@ -437,7 +462,12 @@ impl State {
         };
         if let Some(&existing) = self.att_pub_keys.get(&pk_key) {
             if existing != pubkey {
-                return Err(Error::ClashingPublicKey);
+                warn!(slot, comm_idx, val_idx, "dutydb: clashing public key");
+                return Err(Error::ClashingPublicKey {
+                    slot,
+                    comm_idx,
+                    val_idx,
+                });
             }
         } else {
             self.att_pub_keys.insert(pk_key, pubkey);
@@ -464,7 +494,8 @@ impl State {
                 || existing.target != data.target
                 || existing.beacon_block_root != data.beacon_block_root
             {
-                return Err(Error::ClashingAttestationData);
+                warn!(slot, comm_idx, "dutydb: clashing attestation data");
+                return Err(Error::ClashingAttestationData { slot, comm_idx });
             }
         } else {
             self.att_duties.insert(att_key, data.clone());
@@ -499,7 +530,12 @@ impl State {
         };
         if let Some(&existing) = self.att_pub_keys.get(&pk_key0) {
             if existing != pubkey {
-                return Err(Error::ClashingPublicKey);
+                warn!(slot, val_idx, "dutydb: clashing public key at commidx=0");
+                return Err(Error::ClashingPublicKey {
+                    slot,
+                    comm_idx: 0,
+                    val_idx,
+                });
             }
         } else {
             self.att_pub_keys.insert(pk_key0, pubkey);
@@ -515,10 +551,18 @@ impl State {
         };
         if let Some(existing) = self.att_duties.get(&att_key0) {
             if existing.source != data.source {
-                return Err(Error::ClashingAttestationDataCommIdx0Source);
+                warn!(
+                    slot,
+                    val_idx, "dutydb: clashing attestation data commidx=0 source"
+                );
+                return Err(Error::ClashingAttestationDataCommIdx0Source { slot, val_idx });
             }
             if existing.target != data.target {
-                return Err(Error::ClashingAttestationDataCommIdx0Target);
+                warn!(
+                    slot,
+                    val_idx, "dutydb: clashing attestation data commidx=0 target"
+                );
+                return Err(Error::ClashingAttestationDataCommIdx0Target { slot, val_idx });
             }
         } else {
             self.att_duties.insert(att_key0, data.clone());
@@ -554,7 +598,15 @@ impl State {
 
         if let Some(existing) = self.contrib_duties.get(&key) {
             if existing.tree_hash_root().0 != inner.tree_hash_root().0 {
-                return Err(Error::ClashingSyncContributions);
+                warn!(
+                    slot = inner.slot,
+                    subcomm_idx = inner.subcommittee_index,
+                    "dutydb: clashing sync contributions"
+                );
+                return Err(Error::ClashingSyncContributions {
+                    slot: inner.slot,
+                    subcomm_idx: inner.subcommittee_index,
+                });
             }
         } else {
             self.contrib_duties.insert(key, inner.clone());
@@ -569,6 +621,7 @@ impl State {
 
     fn delete_duty(&mut self, duty: Duty) -> Result<()> {
         let slot = duty.slot.inner();
+        info!(slot, duty_type = %duty.duty_type, "dutydb: deleting expired duty");
         match duty.duty_type {
             DutyType::Proposer => {
                 self.pro_duties.remove(&slot);
@@ -1020,7 +1073,7 @@ pub(crate) mod tests {
         );
         let err = db.store(duty, set2).await.unwrap_err();
         assert!(
-            matches!(err, Error::ClashingPublicKey),
+            matches!(err, Error::ClashingPublicKey { .. }),
             "expected ClashingPublicKey, got: {err}"
         );
     }
@@ -1047,7 +1100,7 @@ pub(crate) mod tests {
         set2.insert(random_core_pub_key(), UnsignedDutyData::Attestation(att_b));
         let err = db.store(duty, set2).await.unwrap_err();
         assert!(
-            matches!(err, Error::ClashingAttestationData),
+            matches!(err, Error::ClashingAttestationData { .. }),
             "expected ClashingAttestationData, got: {err}"
         );
     }
@@ -1079,7 +1132,7 @@ pub(crate) mod tests {
         set2.insert(random_core_pub_key(), UnsignedDutyData::Attestation(att_b));
         let err = db.store(duty, set2).await.unwrap_err();
         assert!(
-            matches!(err, Error::ClashingAttestationDataCommIdx0Source),
+            matches!(err, Error::ClashingAttestationDataCommIdx0Source { .. }),
             "expected ClashingAttestationDataCommIdx0Source, got: {err}"
         );
     }
@@ -1118,7 +1171,7 @@ pub(crate) mod tests {
         set2.insert(random_core_pub_key(), UnsignedDutyData::Attestation(att_b));
         let err = db.store(duty, set2).await.unwrap_err();
         assert!(
-            matches!(err, Error::ClashingAttestationDataCommIdx0Target),
+            matches!(err, Error::ClashingAttestationDataCommIdx0Target { .. }),
             "expected ClashingAttestationDataCommIdx0Target, got: {err}"
         );
     }
