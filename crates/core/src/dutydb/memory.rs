@@ -787,8 +787,6 @@ pub(crate) mod tests {
             },
         };
         VersionedProposal {
-            version: versioned::DataVersion::Phase0,
-            blinded: false,
             block: ProposalBlock::Phase0(block),
         }
     }

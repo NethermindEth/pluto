@@ -1210,6 +1210,31 @@ pub enum ProposalBlock {
 }
 
 impl ProposalBlock {
+    /// Returns the fork version of this block.
+    pub fn version(&self) -> versioned::DataVersion {
+        match self {
+            Self::Phase0(_) => versioned::DataVersion::Phase0,
+            Self::Altair(_) => versioned::DataVersion::Altair,
+            Self::Bellatrix(_) | Self::BellatrixBlinded(_) => versioned::DataVersion::Bellatrix,
+            Self::Capella(_) | Self::CapellaBlinded(_) => versioned::DataVersion::Capella,
+            Self::Deneb { .. } | Self::DenebBlinded(_) => versioned::DataVersion::Deneb,
+            Self::Electra { .. } | Self::ElectraBlinded(_) => versioned::DataVersion::Electra,
+            Self::Fulu { .. } | Self::FuluBlinded(_) => versioned::DataVersion::Fulu,
+        }
+    }
+
+    /// Returns true if this is a blinded block.
+    pub fn is_blinded(&self) -> bool {
+        matches!(
+            self,
+            Self::BellatrixBlinded(_)
+                | Self::CapellaBlinded(_)
+                | Self::DenebBlinded(_)
+                | Self::ElectraBlinded(_)
+                | Self::FuluBlinded(_)
+        )
+    }
+
     /// Returns the slot of this block.
     pub fn slot(&self) -> phase0::Slot {
         match self {
@@ -1250,15 +1275,22 @@ impl ProposalBlock {
 /// Unsigned versioned proposal across all supported forks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionedProposal {
-    /// Fork version.
-    pub version: versioned::DataVersion,
-    /// True if this is a blinded proposal.
-    pub blinded: bool,
     /// Unsigned block payload.
     pub block: ProposalBlock,
 }
 
 impl VersionedProposal {
+    /// Returns the fork version, derived from the block variant.
+    pub fn version(&self) -> versioned::DataVersion {
+        self.block.version()
+    }
+
+    /// Returns true if this is a blinded proposal, derived from the block
+    /// variant.
+    pub fn is_blinded(&self) -> bool {
+        self.block.is_blinded()
+    }
+
     /// Returns the slot of the proposal block.
     pub fn slot(&self) -> phase0::Slot {
         self.block.slot()
