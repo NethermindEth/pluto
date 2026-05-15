@@ -1228,26 +1228,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mem_db_clashing_blocks() {
-        const SLOT: u64 = 123;
-        let db = make_db();
-        let pubkey = random_core_pub_key();
-        let duty = Duty::new(SlotNumber::new(SLOT), DutyType::Proposer);
-
-        let block1 = phase0_proposal(SLOT, 1);
-        let block2 = phase0_proposal(SLOT, 2);
-
-        let mut set1 = UnsignedDataSet::new();
-        set1.insert(pubkey, UnsignedDutyData::Proposal(Box::new(block1)));
-        db.store(duty.clone(), set1).await.unwrap();
-
-        let mut set2 = UnsignedDataSet::new();
-        set2.insert(pubkey, UnsignedDutyData::Proposal(Box::new(block2)));
-        let err = db.store(duty, set2).await.unwrap_err();
-        assert!(err.to_string().contains("clashing blocks"), "got: {err}");
-    }
-
-    #[tokio::test]
     async fn mem_db_clash_proposer() {
         const SLOT: u64 = 123;
         let db = make_db();
@@ -1310,5 +1290,184 @@ mod tests {
 
         // Should no longer be findable.
         assert!(db.pub_key_by_attestation(SLOT, 0, 0).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn agg_attestation_two_roots_same_slot() {
+        const SLOT: u64 = 300;
+        let db = make_db();
+
+        // Two aggregations at the same slot but different committee indices
+        // produce different tree-hash roots and must coexist.
+        let agg_a = agg_attestation_fixture(SLOT, 1, 0);
+        let agg_b = agg_attestation_fixture(SLOT, 2, 0);
+        let root_a = agg_a.data().unwrap().tree_hash_root().0;
+        let root_b = agg_b.data().unwrap().tree_hash_root().0;
+        assert_ne!(root_a, root_b);
+
+        let duty = Duty::new(SlotNumber::new(SLOT), DutyType::Aggregator);
+        let mut set = UnsignedDataSet::new();
+        set.insert(
+            random_core_pub_key(),
+            UnsignedDutyData::AggAttestation(agg_a),
+        );
+        set.insert(
+            random_core_pub_key(),
+            UnsignedDutyData::AggAttestation(agg_b),
+        );
+        db.store(duty, set).await.unwrap();
+
+        let att_a = db.await_agg_attestation(root_a).await.unwrap();
+        assert_eq!(att_a.attestation.unwrap().data().slot, SLOT);
+
+        let att_b = db.await_agg_attestation(root_b).await.unwrap();
+        assert_eq!(att_b.attestation.unwrap().data().slot, SLOT);
+    }
+
+    #[tokio::test]
+    async fn concurrent_attestation_waiters() {
+        const SLOT: u64 = 400;
+        const COMM_IDX: u64 = 5;
+        const N: usize = 100;
+
+        let db = Arc::new(make_db());
+        let handles: Vec<_> = (0..N)
+            .map(|_| {
+                let db = Arc::clone(&db);
+                tokio::spawn(async move { db.await_attestation(SLOT, COMM_IDX).await })
+            })
+            .collect();
+
+        tokio::task::yield_now().await;
+
+        let att = att_data(SLOT, COMM_IDX, 0);
+        let mut set = UnsignedDataSet::new();
+        set.insert(random_core_pub_key(), UnsignedDutyData::Attestation(att));
+        db.store(Duty::new(SlotNumber::new(SLOT), DutyType::Attester), set)
+            .await
+            .unwrap();
+
+        for handle in handles {
+            let data = handle.await.unwrap().unwrap();
+            assert_eq!(data.slot, SLOT);
+            assert_eq!(data.index, COMM_IDX);
+        }
+    }
+
+    #[tokio::test]
+    async fn await_attestation_before_store() {
+        const SLOT: u64 = 500;
+        const COMM_IDX: u64 = 2;
+
+        let db = Arc::new(make_db());
+        let handles: Vec<_> = (0..3)
+            .map(|_| {
+                let db = Arc::clone(&db);
+                tokio::spawn(async move { db.await_attestation(SLOT, COMM_IDX).await })
+            })
+            .collect();
+
+        tokio::task::yield_now().await;
+
+        let att = att_data(SLOT, COMM_IDX, 0);
+        let mut set = UnsignedDataSet::new();
+        set.insert(random_core_pub_key(), UnsignedDutyData::Attestation(att));
+        db.store(Duty::new(SlotNumber::new(SLOT), DutyType::Attester), set)
+            .await
+            .unwrap();
+
+        for handle in handles {
+            handle.await.unwrap().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn await_before_shutdown() {
+        let db = Arc::new(make_db());
+
+        let db_clone = Arc::clone(&db);
+        let waiter = tokio::spawn(async move { db_clone.await_attestation(9999, 0).await });
+
+        tokio::task::yield_now().await;
+        db.shutdown();
+
+        let err = waiter.await.unwrap().unwrap_err();
+        assert!(
+            err.to_string().contains("shutdown"),
+            "expected shutdown error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_wakes_await_attestation() {
+        let db = make_db();
+        db.shutdown();
+
+        let err = db.await_attestation(0, 0).await.unwrap_err();
+        assert!(err.to_string().contains("shutdown"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn shutdown_wakes_await_agg_attestation() {
+        let db = make_db();
+        db.shutdown();
+
+        let err = db.await_agg_attestation([0u8; 32]).await.unwrap_err();
+        assert!(err.to_string().contains("shutdown"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn invalid_unsigned_type_proposer() {
+        let db = make_db();
+        let duty = Duty::new(SlotNumber::new(1), DutyType::Proposer);
+        let mut set = UnsignedDataSet::new();
+        set.insert(
+            random_core_pub_key(),
+            UnsignedDutyData::Attestation(att_data(1, 0, 0)),
+        );
+        let err = db.store(duty, set).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidVersionedProposal), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn invalid_unsigned_type_attester() {
+        let db = make_db();
+        let duty = Duty::new(SlotNumber::new(1), DutyType::Attester);
+        let mut set = UnsignedDataSet::new();
+        set.insert(
+            random_core_pub_key(),
+            UnsignedDutyData::Proposal(Box::new(phase0_proposal(1, 0))),
+        );
+        let err = db.store(duty, set).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidAttestationData), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn invalid_unsigned_type_aggregator() {
+        let db = make_db();
+        let duty = Duty::new(SlotNumber::new(1), DutyType::Aggregator);
+        let mut set = UnsignedDataSet::new();
+        set.insert(
+            random_core_pub_key(),
+            UnsignedDutyData::Attestation(att_data(1, 0, 0)),
+        );
+        let err = db.store(duty, set).await.unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidAggregatedAttestation),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_unsigned_type_sync_contribution() {
+        let db = make_db();
+        let duty = Duty::new(SlotNumber::new(1), DutyType::SyncContribution);
+        let mut set = UnsignedDataSet::new();
+        set.insert(
+            random_core_pub_key(),
+            UnsignedDutyData::Attestation(att_data(1, 0, 0)),
+        );
+        let err = db.store(duty, set).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidSyncContribution), "got: {err}");
     }
 }
