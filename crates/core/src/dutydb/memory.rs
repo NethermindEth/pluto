@@ -23,81 +23,90 @@ use crate::{
 /// Error type for DutyDB operations.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// Duty has already expired; data not stored.
-    #[error("not storing unsigned data for expired duty")]
+    /// Duty has already expired; unsigned data will not be stored.
+    #[error("duty expired: unsigned data will not be stored")]
     ExpiredDuty,
 
     /// Proposer data set must contain at most one entry.
-    #[error("unexpected proposer data set length")]
+    #[error("proposer data set must contain at most one entry")]
     UnexpectedProposerSetLength,
 
-    /// DutyBuilderProposer is no longer supported.
-    #[error("deprecated duty DutyBuilderProposer")]
+    /// `DutyBuilderProposer` is deprecated and no longer supported.
+    #[error("DutyBuilderProposer is deprecated and no longer supported")]
     DeprecatedDutyBuilderProposer,
 
-    /// Duty type is not stored by DutyDB.
-    #[error("unsupported duty type")]
+    /// Duty type is not stored by `DutyDB`.
+    #[error("unsupported duty type: not stored by DutyDB")]
     UnsupportedDutyType,
 
     /// DB was shut down before the query could be answered.
-    #[error("dutydb shutdown")]
+    #[error("dutydb shutdown: query could not be answered")]
     Shutdown,
 
-    /// Two validators mapped to the same (slot, commIdx, valIdx) with different
+    /// Two validators share the same `(slot, commIdx, valIdx)` with different
     /// public keys.
-    #[error("clashing public key")]
+    #[error(
+        "clashing public key: two validators share the same (slot, commIdx, valIdx) with different keys"
+    )]
     ClashingPublicKey,
 
-    /// Two different attestation data objects for the same (slot, commIdx).
-    #[error("clashing attestation data")]
+    /// Two different attestation data objects for the same `(slot, commIdx)`.
+    #[error("clashing attestation data: two different data objects for the same (slot, commIdx)")]
     ClashingAttestationData,
 
-    /// Mismatched source checkpoint when storing commIdx=0 compatibility entry.
-    #[error("clashing attestation data with hardcoded commidx=0 source")]
+    /// Mismatched source checkpoint in the hardcoded `commIdx=0` compatibility
+    /// entry.
+    #[error(
+        "clashing attestation data with hardcoded commidx=0 source: mismatched source checkpoint"
+    )]
     ClashingAttestationDataCommIdx0Source,
 
-    /// Mismatched target checkpoint when storing commIdx=0 compatibility entry.
-    #[error("clashing attestation data with hardcoded commidx=0 target")]
+    /// Mismatched target checkpoint in the hardcoded `commIdx=0` compatibility
+    /// entry.
+    #[error(
+        "clashing attestation data with hardcoded commidx=0 target: mismatched target checkpoint"
+    )]
     ClashingAttestationDataCommIdx0Target,
 
-    /// Two different aggregated attestations for the same slot+root key.
-    #[error("clashing data root")]
+    /// Two different aggregated attestations for the same slot and attestation
+    /// data root.
+    #[error("clashing data root: two different aggregated attestations for the same slot and root")]
     ClashingDataRoot,
 
-    /// Two different sync contributions for the same (slot, subcommIdx, root).
-    #[error("clashing sync contributions")]
+    /// Two different sync contributions for the same `(slot, subcommIdx,
+    /// root)`.
+    #[error(
+        "clashing sync contributions: two different contributions for the same (slot, subcommIdx, root)"
+    )]
     ClashingSyncContributions,
 
     /// Two different blocks for the same slot.
-    #[error("clashing blocks")]
+    #[error("clashing blocks: two different blocks for the same slot")]
     ClashingBlocks,
 
-    /// No public key found for the given (slot, commIdx, valIdx).
-    #[error("pubkey not found")]
+    /// No public key found for the given `(slot, commIdx, valIdx)`.
+    #[error("pubkey not found for the given (slot, commIdx, valIdx)")]
     PubKeyNotFound,
 
-    /// Duty type is not handled by deleteDutyUnsafe.
-    #[error("unknown duty type")]
+    /// Duty type is not handled by the delete path.
+    #[error("unknown duty type: not handled by delete")]
     UnknownDutyType,
 
-    /// The unsigned data provided does not match the expected type for
-    /// DutyProposer.
-    #[error("invalid versioned proposal")]
+    /// Unsigned data does not match the expected type for `DutyProposer`.
+    #[error("invalid versioned proposal: unsigned data does not match DutyProposer")]
     InvalidVersionedProposal,
 
-    /// The unsigned data provided does not match the expected type for
-    /// DutyAttester.
-    #[error("invalid unsigned attestation data")]
+    /// Unsigned data does not match the expected type for `DutyAttester`.
+    #[error("invalid unsigned attestation data: does not match DutyAttester")]
     InvalidAttestationData,
 
-    /// The unsigned data provided does not match the expected type for
-    /// DutyAggregator.
-    #[error("invalid unsigned aggregated attestation")]
+    /// Unsigned data does not match the expected type for `DutyAggregator`.
+    #[error("invalid unsigned aggregated attestation: does not match DutyAggregator")]
     InvalidAggregatedAttestation,
 
-    /// The unsigned data provided does not match the expected type for
-    /// DutySyncContribution.
-    #[error("invalid unsigned sync committee contribution")]
+    /// Unsigned data does not match the expected type for
+    /// `DutySyncContribution`.
+    #[error("invalid unsigned sync committee contribution: does not match DutySyncContribution")]
     InvalidSyncContribution,
 }
 
