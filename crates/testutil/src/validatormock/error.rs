@@ -5,7 +5,7 @@
 //! add new variants as their failure modes appear.
 
 use pluto_eth2api::EthBeaconNodeApiClientError;
-use pluto_eth2util::{helpers::HelperError, signing::SigningError};
+use pluto_eth2util::{eth2exp::Eth2ExpError, helpers::HelperError, signing::SigningError};
 
 /// Result alias used by the validator mock.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -24,6 +24,21 @@ pub enum Error {
     /// Helper utility (slot/epoch arithmetic against the spec) failure.
     #[error(transparent)]
     Helper(#[from] HelperError),
+
+    /// Aggregator-selection helper failure.
+    #[error(transparent)]
+    Eth2Exp(#[from] Eth2ExpError),
+
+    /// HTTP error from raw POST submissions (attestation /
+    /// aggregate-and-proof).
+    #[error("submit {endpoint}: {source}")]
+    Submit {
+        /// Path of the failed POST.
+        endpoint: &'static str,
+        /// Underlying HTTP error.
+        #[source]
+        source: reqwest::Error,
+    },
 
     /// Local signer could not produce a signature for the requested pubkey.
     #[error(transparent)]
