@@ -621,7 +621,8 @@ pub(crate) mod tests {
         }
 
         fn c(&self) -> Option<tokio::sync::mpsc::Receiver<Duty>> {
-            None
+            let (_, rx) = tokio::sync::mpsc::channel(1);
+            Some(rx)
         }
     }
 
@@ -918,6 +919,222 @@ pub(crate) mod tests {
         assert!(err.to_string().contains("shutdown"));
     }
 
+    fn agg_attestation_fixture(
+        slot: u64,
+        comm_idx: u64,
+        val_idx: u64,
+    ) -> VersionedAggregatedAttestation {
+        let data = phase0::AttestationData {
+            slot,
+            index: comm_idx,
+            beacon_block_root: [0u8; 32],
+            source: phase0::Checkpoint {
+                epoch: 0,
+                root: [0u8; 32],
+            },
+            target: phase0::Checkpoint {
+                epoch: 0,
+                root: [0u8; 32],
+            },
+        };
+        let att = phase0::Attestation {
+            aggregation_bits: phase0::BitList::<2048>::default(),
+            data,
+            signature: [0u8; 96],
+        };
+        VersionedAggregatedAttestation(versioned::VersionedAttestation {
+            version: versioned::DataVersion::Phase0,
+            validator_index: Some(val_idx),
+            attestation: Some(versioned::AttestationPayload::Phase0(att)),
+        })
+    }
+
+    #[tokio::test]
+    async fn mem_db_aggregator() {
+        let db = Arc::new(make_db());
+
+        const SLOT: u64 = 200;
+        const COMM_IDX: u64 = 3;
+        const V_IDX: u64 = 7;
+
+        let agg = agg_attestation_fixture(SLOT, COMM_IDX, V_IDX);
+        let att_data = agg.data().unwrap().clone();
+        let root = att_data.tree_hash_root().0;
+
+        let db_clone = Arc::clone(&db);
+        let waiter = tokio::spawn(async move { db_clone.await_agg_attestation(SLOT, root).await });
+
+        let mut set = UnsignedDataSet::new();
+        set.insert(random_core_pub_key(), UnsignedDutyData::AggAttestation(agg));
+        db.store(Duty::new(SlotNumber::new(SLOT), DutyType::Aggregator), set)
+            .await
+            .unwrap();
+
+        let versioned_att = waiter.await.unwrap().unwrap();
+        let resolved_data = versioned_att.attestation.unwrap();
+        assert_eq!(resolved_data.data().slot, SLOT);
+        assert_eq!(resolved_data.data().index, COMM_IDX);
+
+        // Idempotent re-store.
+        let agg2 = agg_attestation_fixture(SLOT, COMM_IDX, V_IDX);
+        let mut set2 = UnsignedDataSet::new();
+        set2.insert(
+            random_core_pub_key(),
+            UnsignedDutyData::AggAttestation(agg2),
+        );
+        db.store(Duty::new(SlotNumber::new(SLOT), DutyType::Aggregator), set2)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn clashing_public_key() {
+        const SLOT: u64 = 50;
+        const COMM_IDX: u64 = 1;
+        const V_IDX: u64 = 5;
+
+        let db = make_db();
+        let pk_a = random_core_pub_key();
+        let pk_b = random_core_pub_key();
+        let duty = Duty::new(SlotNumber::new(SLOT), DutyType::Attester);
+
+        let mut set1 = UnsignedDataSet::new();
+        set1.insert(
+            pk_a,
+            UnsignedDutyData::Attestation(att_data(SLOT, COMM_IDX, V_IDX)),
+        );
+        db.store(duty.clone(), set1).await.unwrap();
+
+        let mut set2 = UnsignedDataSet::new();
+        set2.insert(
+            pk_b,
+            UnsignedDutyData::Attestation(att_data(SLOT, COMM_IDX, V_IDX)),
+        );
+        let err = db.store(duty, set2).await.unwrap_err();
+        assert!(
+            matches!(err, Error::ClashingPublicKey),
+            "expected ClashingPublicKey, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn clashing_attestation_data() {
+        const SLOT: u64 = 51;
+        const COMM_IDX: u64 = 2;
+
+        let db = make_db();
+        let duty = Duty::new(SlotNumber::new(SLOT), DutyType::Attester);
+
+        let mut att_a = att_data(SLOT, COMM_IDX, 1);
+        att_a.data.beacon_block_root = [0xaa; 32];
+
+        let mut att_b = att_data(SLOT, COMM_IDX, 2);
+        att_b.data.beacon_block_root = [0xbb; 32];
+
+        let mut set1 = UnsignedDataSet::new();
+        set1.insert(random_core_pub_key(), UnsignedDutyData::Attestation(att_a));
+        db.store(duty.clone(), set1).await.unwrap();
+
+        let mut set2 = UnsignedDataSet::new();
+        set2.insert(random_core_pub_key(), UnsignedDutyData::Attestation(att_b));
+        let err = db.store(duty, set2).await.unwrap_err();
+        assert!(
+            matches!(err, Error::ClashingAttestationData),
+            "expected ClashingAttestationData, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn clashing_attestation_data_commidx0_source() {
+        const SLOT: u64 = 52;
+
+        let db = make_db();
+        let duty = Duty::new(SlotNumber::new(SLOT), DutyType::Attester);
+
+        let mut att_a = att_data(SLOT, 1, 10);
+        att_a.data.source = phase0::Checkpoint {
+            epoch: 1,
+            root: [0xaa; 32],
+        };
+
+        let mut att_b = att_data(SLOT, 2, 11);
+        att_b.data.source = phase0::Checkpoint {
+            epoch: 2,
+            root: [0xbb; 32],
+        };
+
+        let mut set1 = UnsignedDataSet::new();
+        set1.insert(random_core_pub_key(), UnsignedDutyData::Attestation(att_a));
+        db.store(duty.clone(), set1).await.unwrap();
+
+        let mut set2 = UnsignedDataSet::new();
+        set2.insert(random_core_pub_key(), UnsignedDutyData::Attestation(att_b));
+        let err = db.store(duty, set2).await.unwrap_err();
+        assert!(
+            matches!(err, Error::ClashingAttestationDataCommIdx0Source),
+            "expected ClashingAttestationDataCommIdx0Source, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn clashing_attestation_data_commidx0_target() {
+        const SLOT: u64 = 53;
+
+        let db = make_db();
+        let duty = Duty::new(SlotNumber::new(SLOT), DutyType::Attester);
+
+        let source = phase0::Checkpoint {
+            epoch: 1,
+            root: [0x11; 32],
+        };
+
+        let mut att_a = att_data(SLOT, 1, 10);
+        att_a.data.source = source.clone();
+        att_a.data.target = phase0::Checkpoint {
+            epoch: 2,
+            root: [0xaa; 32],
+        };
+
+        let mut att_b = att_data(SLOT, 2, 11);
+        att_b.data.source = source;
+        att_b.data.target = phase0::Checkpoint {
+            epoch: 3,
+            root: [0xbb; 32],
+        };
+
+        let mut set1 = UnsignedDataSet::new();
+        set1.insert(random_core_pub_key(), UnsignedDutyData::Attestation(att_a));
+        db.store(duty.clone(), set1).await.unwrap();
+
+        let mut set2 = UnsignedDataSet::new();
+        set2.insert(random_core_pub_key(), UnsignedDutyData::Attestation(att_b));
+        let err = db.store(duty, set2).await.unwrap_err();
+        assert!(
+            matches!(err, Error::ClashingAttestationDataCommIdx0Target),
+            "expected ClashingAttestationDataCommIdx0Target, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_wakes_waiting_await() {
+        let db = Arc::new(make_db());
+
+        let db_clone = Arc::clone(&db);
+        let waiter = tokio::spawn(async move { db_clone.await_proposal(9999).await });
+
+        // Yield to give the waiter task a chance to park in select!.
+        tokio::task::yield_now().await;
+
+        db.shutdown();
+
+        let err = waiter.await.unwrap().unwrap_err();
+        println!("{err}");
+        assert!(
+            err.to_string().contains("shutdown"),
+            "expected shutdown error, got: {err}"
+        );
+    }
+
     #[tokio::test]
     async fn clashing_sync_contributions() {
         const SLOT: u64 = 123;
@@ -929,9 +1146,9 @@ pub(crate) mod tests {
         let duty = Duty::new(SlotNumber::new(SLOT), DutyType::SyncContribution);
 
         let contrib1 = sync_contribution_fixture(SLOT, SUBCOMM_IDX, root);
+        // Differ by aggregation_bits, which affects the SSZ tree-hash root.
         let mut contrib2 = sync_contribution_fixture(SLOT, SUBCOMM_IDX, root);
-        // Make them differ by changing the signature.
-        contrib2.0.signature = [1u8; 96];
+        contrib2.0.aggregation_bits = pluto_ssz::BitVector::with_bits(&[0]);
 
         let mut set1 = UnsignedDataSet::new();
         set1.insert(pubkey, UnsignedDutyData::SyncContribution(contrib1));
