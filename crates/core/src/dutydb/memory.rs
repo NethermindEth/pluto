@@ -166,7 +166,7 @@ struct State {
     contrib_duties: HashMap<ContribKey, altair::SyncCommitteeContribution>,
     contrib_keys_by_slot: HashMap<u64, Vec<ContribKey>>,
 
-    deadliner_rx: Option<tokio::sync::mpsc::Receiver<Duty>>,
+    deadliner_rx: tokio::sync::mpsc::Receiver<Duty>,
 }
 
 /// In-memory DutyDB.
@@ -186,7 +186,9 @@ pub struct MemDB {
 impl MemDB {
     /// Creates a new in-memory DutyDB.
     pub fn new(deadliner: Arc<dyn Deadliner>, cancel: CancellationToken) -> Self {
-        let deadliner_rx = deadliner.c();
+        let deadliner_rx = deadliner
+            .c()
+            .expect("Deadliner::c() must be called only once");
         Self {
             state: RwLock::new(State {
                 att_duties: HashMap::new(),
@@ -273,14 +275,7 @@ impl MemDB {
         }
 
         // Drain all expired duties that the deadliner has sent.
-        loop {
-            let expired = match state.deadliner_rx {
-                Some(ref mut rx) => match rx.try_recv() {
-                    Ok(d) => d,
-                    Err(_) => break,
-                },
-                None => break,
-            };
+        while let Ok(expired) = state.deadliner_rx.try_recv() {
             state.delete_duty(expired)?;
         }
 
