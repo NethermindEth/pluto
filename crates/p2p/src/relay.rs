@@ -1,6 +1,7 @@
 //! Relay reservation and cluster-peer routing.
 //!
-//! [`RelayManager`] is a libp2p [`NetworkBehaviour`] with three responsibilities:
+//! [`RelayManager`] is a libp2p [`NetworkBehaviour`] with three
+//! responsibilities:
 //!
 //! 1. Subscribe to [`MutablePeer`] watch channels to receive relay address
 //!    updates as they're discovered.
@@ -733,16 +734,16 @@ impl RelayManager {
     ///
     /// - [`RelayDialType::ClusterPeer`]: libp2p owns the existing direct
     ///   connection. Drop the dial state and rely on
-    ///   [`Self::on_connection_closed`] → [`Self::reroute_peer`] to re-arm
-    ///   the dial once the existing connection actually closes.
+    ///   [`Self::on_connection_closed`] → [`Self::reroute_peer`] to re-arm the
+    ///   dial once the existing connection actually closes.
     /// - [`RelayDialType::RelayServer`]: dropping the dial state here would
     ///   wedge `connection_states` in `Dialing` forever — no
-    ///   `on_connection_closed` will fire if libp2p already has the
-    ///   transport connection, and `queue_relay_update` short-circuits while
+    ///   `on_connection_closed` will fire if libp2p already has the transport
+    ///   connection, and `queue_relay_update` short-circuits while
     ///   `connection_states` has an entry. Instead leave the campaign armed;
-    ///   backoff retries are cheap (libp2p re-rejects with the same error)
-    ///   and `on_connection_established` will tear the dial state down once
-    ///   libp2p surfaces the connection.
+    ///   backoff retries are cheap (libp2p re-rejects with the same error) and
+    ///   `on_connection_established` will tear the dial state down once libp2p
+    ///   surfaces the connection.
     fn on_dial_failure(&mut self, peer_id: Option<PeerId>, error: &DialError) {
         let Some(peer_id) = peer_id else { return };
         let Some(state) = self.dial_states.get(&peer_id) else {
@@ -1121,5 +1122,473 @@ mod tests {
         .into_iter()
         .collect();
         assert_eq!(out, expected);
+    }
+
+    // ---- backoff_delay ------------------------------------------------
+
+    #[test]
+    fn backoff_delay_retry_zero_returns_base_exactly() {
+        // Charon's early-return path: retry == 0 returns base with no jitter.
+        assert_eq!(backoff_delay(0), RELAY_BACKOFF_BASE);
+    }
+
+    #[test]
+    fn backoff_delay_caps_at_max_with_jitter_bound() {
+        // 1.6^n grows past max well before retry == 50; we should be capped at
+        // max ± 20% jitter and never wander outside that envelope.
+        let max = RELAY_BACKOFF_MAX.as_secs_f64();
+        let lower = max * (1.0 - RELAY_BACKOFF_JITTER);
+        let upper = max * (1.0 + RELAY_BACKOFF_JITTER);
+        for _ in 0..32 {
+            let d = backoff_delay(50).as_secs_f64();
+            assert!(
+                d >= lower && d <= upper,
+                "delay {d}s outside jitter envelope [{lower}, {upper}]"
+            );
+        }
+    }
+
+    #[test]
+    fn backoff_delay_grows_then_plateaus() {
+        // Averaging out jitter, retry=1 should be larger than base and
+        // retry=10 should already be at the cap.
+        let mut sum_1 = 0.0;
+        let mut sum_10 = 0.0;
+        let samples = 64;
+        for _ in 0..samples {
+            sum_1 += backoff_delay(1).as_secs_f64();
+            sum_10 += backoff_delay(10).as_secs_f64();
+        }
+        let avg_1 = sum_1 / f64::from(samples);
+        let avg_10 = sum_10 / f64::from(samples);
+        assert!(avg_1 > RELAY_BACKOFF_BASE.as_secs_f64());
+        assert!(avg_10 >= RELAY_BACKOFF_MAX.as_secs_f64() * (1.0 - RELAY_BACKOFF_JITTER));
+    }
+
+    // ---- queue_relay_update -------------------------------------------
+
+    fn relay_peer(id: PeerId, addrs: Vec<Multiaddr>) -> Peer {
+        Peer {
+            id,
+            addresses: addrs,
+            index: 0,
+            name: crate::name::peer_name(&id),
+        }
+    }
+
+    #[tokio::test]
+    async fn queue_relay_update_first_seen_starts_dial_campaign() {
+        let mut mgr = manager();
+        let relay_id = PeerId::random();
+        let addrs = vec![addr("/ip4/10.0.0.1/tcp/9000")];
+
+        mgr.queue_relay_update(relay_peer(relay_id, addrs.clone()));
+
+        assert!(mgr.dial_states.contains_key(&relay_id));
+        assert_eq!(
+            mgr.connection_states.get(&relay_id),
+            Some(&RelayConnectionState::Dialing)
+        );
+        assert_eq!(mgr.relay_addrs.get(&relay_id), Some(&addrs));
+    }
+
+    #[tokio::test]
+    async fn queue_relay_update_refreshes_inflight_addrs_without_resetting_backoff() {
+        let mut mgr = manager();
+        let relay_id = PeerId::random();
+
+        mgr.queue_relay_update(relay_peer(relay_id, vec![addr("/ip4/10.0.0.1/tcp/9000")]));
+        // Pretend the dial state has already retried a few times.
+        mgr.dial_states.get_mut(&relay_id).unwrap().retry_count = 7;
+
+        let new_addrs = vec![
+            addr("/ip4/10.0.0.1/tcp/9000"),
+            addr("/ip4/10.0.0.2/tcp/9000"),
+        ];
+        mgr.queue_relay_update(relay_peer(relay_id, new_addrs.clone()));
+
+        let state = mgr.dial_states.get(&relay_id).unwrap();
+        assert_eq!(state.addrs, new_addrs);
+        assert_eq!(
+            state.retry_count, 7,
+            "backoff schedule must survive refresh"
+        );
+        assert_eq!(mgr.relay_addrs.get(&relay_id), Some(&new_addrs));
+    }
+
+    #[tokio::test]
+    async fn queue_relay_update_no_op_when_relay_already_connected() {
+        let mut mgr = manager();
+        let relay_id = PeerId::random();
+        mgr.connection_states
+            .insert(relay_id, RelayConnectionState::Reserved);
+
+        let new_addrs = vec![addr("/ip4/10.0.0.99/tcp/9000")];
+        mgr.queue_relay_update(relay_peer(relay_id, new_addrs.clone()));
+
+        assert!(
+            !mgr.dial_states.contains_key(&relay_id),
+            "no dial campaign while connected"
+        );
+        // Connection state untouched.
+        assert_eq!(
+            mgr.connection_states.get(&relay_id),
+            Some(&RelayConnectionState::Reserved)
+        );
+        // relay_addrs still gets refreshed so we have the latest list ready
+        // for redial after a disconnect.
+        assert_eq!(mgr.relay_addrs.get(&relay_id), Some(&new_addrs));
+    }
+
+    // ---- state machine: on_connection_established ----------------------
+
+    #[tokio::test]
+    async fn on_connection_established_relay_promotes_to_established_and_queues_listen() {
+        let mut mgr = manager();
+        let relay_id = PeerId::random();
+        let relay_addrs = vec![addr("/ip4/10.0.0.1/tcp/9000")];
+
+        mgr.queue_relay_update(relay_peer(relay_id, relay_addrs.clone()));
+        mgr.events.clear();
+        mgr.on_connection_established(relay_id);
+
+        assert!(!mgr.dial_states.contains_key(&relay_id));
+        assert_eq!(
+            mgr.connection_states.get(&relay_id),
+            Some(&RelayConnectionState::Established)
+        );
+        let listen_count = mgr
+            .events
+            .iter()
+            .filter(|e| matches!(e, ToSwarm::ListenOn { .. }))
+            .count();
+        assert_eq!(listen_count, relay_addrs.len());
+        let relay_connected = mgr.events.iter().any(|e| {
+            matches!(
+                e,
+                ToSwarm::GenerateEvent(RelayManagerEvent::RelayConnected(id)) if *id == relay_id
+            )
+        });
+        assert!(relay_connected, "RelayConnected event must be emitted");
+    }
+
+    #[tokio::test]
+    async fn on_connection_established_cluster_peer_drops_dial_state() {
+        let mut mgr = manager();
+        let target = PeerId::random();
+        // Seed a peer-routing dial state (skipping upsert which requires
+        // reserved relays).
+        mgr.dial_states.insert(
+            target,
+            RelayDialState::new(
+                RelayDialType::ClusterPeer,
+                target,
+                vec![addr("/ip4/10.0.0.1/tcp/9000/p2p-circuit")],
+            ),
+        );
+
+        mgr.on_connection_established(target);
+
+        assert!(!mgr.dial_states.contains_key(&target));
+        let routed = mgr.events.iter().any(|e| {
+            matches!(
+                e,
+                ToSwarm::GenerateEvent(RelayManagerEvent::PeerRoutedConnected(id)) if *id == target
+            )
+        });
+        assert!(routed, "PeerRoutedConnected event must be emitted");
+    }
+
+    // ---- state machine: on_new_listen_addr -----------------------------
+
+    #[tokio::test]
+    async fn on_new_listen_addr_promotes_established_to_reserved() {
+        let mut mgr = manager();
+        let relay_id = PeerId::random();
+        mgr.connection_states
+            .insert(relay_id, RelayConnectionState::Established);
+        mgr.relay_addrs
+            .insert(relay_id, vec![addr("/ip4/10.0.0.1/tcp/9000")]);
+
+        let circuit = addr(&format!(
+            "/ip4/10.0.0.1/tcp/9000/p2p/{relay_id}/p2p-circuit"
+        ));
+        mgr.on_new_listen_addr(&circuit);
+
+        assert_eq!(
+            mgr.connection_states.get(&relay_id),
+            Some(&RelayConnectionState::Reserved)
+        );
+        let reserved = mgr.events.iter().any(|e| {
+            matches!(
+                e,
+                ToSwarm::GenerateEvent(RelayManagerEvent::RelayReserved(id)) if *id == relay_id
+            )
+        });
+        assert!(reserved);
+    }
+
+    // ---- state machine: on_expired_listen_addr -------------------------
+
+    #[tokio::test]
+    async fn on_expired_listen_addr_demotes_reserved_and_emits_reservation_lost() {
+        let mut mgr = manager();
+        let relay_id = PeerId::random();
+        mgr.connection_states
+            .insert(relay_id, RelayConnectionState::Reserved);
+        mgr.relay_addrs
+            .insert(relay_id, vec![addr("/ip4/10.0.0.1/tcp/9000")]);
+
+        let circuit = addr(&format!(
+            "/ip4/10.0.0.1/tcp/9000/p2p/{relay_id}/p2p-circuit"
+        ));
+        mgr.on_expired_listen_addr(&circuit);
+
+        assert_eq!(
+            mgr.connection_states.get(&relay_id),
+            Some(&RelayConnectionState::Established)
+        );
+        let lost = mgr.events.iter().any(|e| {
+            matches!(
+                e,
+                ToSwarm::GenerateEvent(RelayManagerEvent::RelayReservationLost(id))
+                    if *id == relay_id
+            )
+        });
+        assert!(lost, "RelayReservationLost must be emitted on demote");
+    }
+
+    #[tokio::test]
+    async fn on_expired_listen_addr_drops_peer_dials_with_no_route_left() {
+        let mut mgr = manager();
+        let relay_id = PeerId::random();
+        let target = PeerId::random();
+
+        // Single reserved relay supporting a peer-routing dial.
+        mgr.connection_states
+            .insert(relay_id, RelayConnectionState::Reserved);
+        mgr.relay_addrs
+            .insert(relay_id, vec![addr("/ip4/10.0.0.1/tcp/9000")]);
+        mgr.dial_states.insert(
+            target,
+            RelayDialState::new(
+                RelayDialType::ClusterPeer,
+                target,
+                vec![addr(&format!(
+                    "/ip4/10.0.0.1/tcp/9000/p2p/{relay_id}/p2p-circuit/p2p/{target}"
+                ))],
+            ),
+        );
+
+        let circuit = addr(&format!(
+            "/ip4/10.0.0.1/tcp/9000/p2p/{relay_id}/p2p-circuit"
+        ));
+        mgr.on_expired_listen_addr(&circuit);
+
+        assert!(
+            !mgr.dial_states.contains_key(&target),
+            "peer dial state must be dropped once no reserved relay can route to it"
+        );
+    }
+
+    // ---- state machine: on_connection_closed ---------------------------
+
+    #[tokio::test]
+    async fn on_connection_closed_reserved_relay_emits_lost_before_disconnected() {
+        let mut mgr = manager();
+        let relay_id = PeerId::random();
+        mgr.connection_states
+            .insert(relay_id, RelayConnectionState::Reserved);
+        mgr.relay_addrs
+            .insert(relay_id, vec![addr("/ip4/10.0.0.1/tcp/9000")]);
+
+        mgr.on_connection_closed(relay_id);
+
+        let lost_idx = mgr.events.iter().position(|e| {
+            matches!(
+                e,
+                ToSwarm::GenerateEvent(RelayManagerEvent::RelayReservationLost(id))
+                    if *id == relay_id
+            )
+        });
+        let disc_idx = mgr.events.iter().position(|e| {
+            matches!(
+                e,
+                ToSwarm::GenerateEvent(RelayManagerEvent::RelayDisconnected(id)) if *id == relay_id
+            )
+        });
+        let lost = lost_idx.expect("RelayReservationLost must fire when prev state was Reserved");
+        let disc = disc_idx.expect("RelayDisconnected must fire on relay close");
+        assert!(lost < disc, "ReservationLost must precede Disconnected");
+        assert_eq!(
+            mgr.connection_states.get(&relay_id),
+            Some(&RelayConnectionState::Dialing),
+            "redial campaign must arm"
+        );
+        assert!(mgr.dial_states.contains_key(&relay_id));
+    }
+
+    #[tokio::test]
+    async fn on_connection_closed_established_relay_skips_reservation_lost() {
+        let mut mgr = manager();
+        let relay_id = PeerId::random();
+        mgr.connection_states
+            .insert(relay_id, RelayConnectionState::Established);
+        mgr.relay_addrs
+            .insert(relay_id, vec![addr("/ip4/10.0.0.1/tcp/9000")]);
+
+        mgr.on_connection_closed(relay_id);
+
+        let lost = mgr.events.iter().any(|e| {
+            matches!(
+                e,
+                ToSwarm::GenerateEvent(RelayManagerEvent::RelayReservationLost(_))
+            )
+        });
+        assert!(
+            !lost,
+            "no ReservationLost event when prev state wasn't Reserved"
+        );
+    }
+
+    // ---- on_dial_failure: Skipped path --------------------------------
+
+    fn skipped_dial_error() -> DialError {
+        DialError::DialPeerConditionFalse(
+            libp2p::swarm::dial_opts::PeerCondition::DisconnectedAndNotDialing,
+        )
+    }
+
+    #[tokio::test]
+    async fn on_dial_failure_skipped_cluster_peer_drops_dial_state() {
+        let mut mgr = manager();
+        let target = PeerId::random();
+        mgr.dial_states.insert(
+            target,
+            RelayDialState::new(
+                RelayDialType::ClusterPeer,
+                target,
+                vec![addr("/ip4/10.0.0.1/tcp/9000")],
+            ),
+        );
+
+        mgr.on_dial_failure(Some(target), &skipped_dial_error());
+
+        assert!(
+            !mgr.dial_states.contains_key(&target),
+            "cluster-peer dial state must be dropped on Skipped"
+        );
+    }
+
+    #[tokio::test]
+    async fn on_dial_failure_skipped_relay_keeps_dial_state() {
+        // Regression for the wedge bug: keep the campaign armed so backoff
+        // continues to retry until libp2p surfaces the connection state.
+        let mut mgr = manager();
+        let relay_id = PeerId::random();
+        mgr.connection_states
+            .insert(relay_id, RelayConnectionState::Dialing);
+        mgr.dial_states.insert(
+            relay_id,
+            RelayDialState::new(
+                RelayDialType::RelayServer,
+                relay_id,
+                vec![addr("/ip4/10.0.0.1/tcp/9000")],
+            ),
+        );
+
+        mgr.on_dial_failure(Some(relay_id), &skipped_dial_error());
+
+        assert!(
+            mgr.dial_states.contains_key(&relay_id),
+            "relay dial state must survive Skipped so backoff can retry"
+        );
+        assert_eq!(
+            mgr.connection_states.get(&relay_id),
+            Some(&RelayConnectionState::Dialing),
+            "connection state must still be Dialing"
+        );
+    }
+
+    // ---- upsert_peer_dial ---------------------------------------------
+
+    #[tokio::test]
+    async fn upsert_peer_dial_preserves_backoff_when_addrs_unchanged() {
+        let mut mgr = manager();
+        let target = PeerId::random();
+        let relay = PeerId::random();
+        mgr.connection_states
+            .insert(relay, RelayConnectionState::Reserved);
+        mgr.relay_addrs
+            .insert(relay, vec![addr("/ip4/10.0.0.1/tcp/9000")]);
+
+        mgr.upsert_peer_dial(target);
+        let inserted_count = mgr.dial_states.get(&target).map(|s| s.retry_count);
+        // Pretend the dial has retried.
+        if let Some(s) = mgr.dial_states.get_mut(&target) {
+            s.retry_count = 5;
+        }
+        mgr.upsert_peer_dial(target);
+        let after = mgr.dial_states.get(&target).map(|s| s.retry_count);
+        assert_eq!(inserted_count, Some(0));
+        assert_eq!(
+            after,
+            Some(5),
+            "addr-set unchanged: existing dial state (and its backoff) must be preserved"
+        );
+    }
+
+    #[tokio::test]
+    async fn upsert_peer_dial_resets_backoff_when_addrs_change() {
+        let mut mgr = manager();
+        let target = PeerId::random();
+        let relay_a = PeerId::random();
+        let relay_b = PeerId::random();
+        mgr.connection_states
+            .insert(relay_a, RelayConnectionState::Reserved);
+        mgr.relay_addrs
+            .insert(relay_a, vec![addr("/ip4/10.0.0.1/tcp/9000")]);
+
+        mgr.upsert_peer_dial(target);
+        if let Some(s) = mgr.dial_states.get_mut(&target) {
+            s.retry_count = 5;
+        }
+
+        // Reserve a second relay → new circuit addr → addr-set changes.
+        mgr.connection_states
+            .insert(relay_b, RelayConnectionState::Reserved);
+        mgr.relay_addrs
+            .insert(relay_b, vec![addr("/ip4/10.0.0.2/tcp/9000")]);
+        mgr.upsert_peer_dial(target);
+
+        assert_eq!(
+            mgr.dial_states.get(&target).map(|s| s.retry_count),
+            Some(0),
+            "addr-set changed: dial state (and backoff) must be replaced"
+        );
+    }
+
+    #[tokio::test]
+    async fn upsert_peer_dial_drops_stale_state_when_no_route_left() {
+        let mut mgr = manager();
+        let target = PeerId::random();
+        let relay = PeerId::random();
+        mgr.connection_states
+            .insert(relay, RelayConnectionState::Reserved);
+        mgr.relay_addrs
+            .insert(relay, vec![addr("/ip4/10.0.0.1/tcp/9000")]);
+
+        mgr.upsert_peer_dial(target);
+        assert!(mgr.dial_states.contains_key(&target));
+
+        // Demote the only reserved relay → no circuit addrs left.
+        mgr.connection_states
+            .insert(relay, RelayConnectionState::Established);
+        mgr.upsert_peer_dial(target);
+
+        assert!(
+            !mgr.dial_states.contains_key(&target),
+            "no reserved relay can reach target: stale dial state must be dropped"
+        );
     }
 }

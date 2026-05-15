@@ -334,4 +334,58 @@ mod tests {
         let result = addr_infos_from_p2p_addrs(&[]).unwrap();
         assert_eq!(result.len(), 0);
     }
+
+    // ---- MutablePeer --------------------------------------------------
+
+    fn sample_peer(name_suffix: &str) -> Peer {
+        let p2p_key = generate_insecure_k1_key(1);
+        let record = Record::new(&p2p_key, vec![]).unwrap();
+        let mut peer = Peer::from_enr(&record, 0).unwrap();
+        peer.name = format!("peer-{name_suffix}");
+        peer
+    }
+
+    #[test]
+    fn mutable_peer_default_yields_none_until_set() {
+        let mp = MutablePeer::default();
+        assert!(mp.peer().is_none());
+
+        let mut rx = mp.subscribe();
+        // Watch receivers are "changed" on creation, so an immediate
+        // borrow_and_update reads the current value (None) without blocking.
+        let _ = rx.borrow_and_update();
+        assert!(rx.borrow().is_none());
+
+        let peer = sample_peer("first");
+        mp.set(peer.clone());
+        assert!(matches!(mp.peer(), Some(p) if p.id == peer.id));
+    }
+
+    #[tokio::test]
+    async fn mutable_peer_late_subscriber_sees_current_value_immediately() {
+        let initial = sample_peer("initial");
+        let mp = MutablePeer::new(initial.clone());
+
+        let mut rx = mp.subscribe();
+        // Subscribers obtained after construction should observe the seed
+        // value on first read — this is the property RelayManager relies on
+        // for picking up initial relay addresses without a bootstrap pass.
+        let current = rx.borrow_and_update().clone();
+        assert!(matches!(current, Some(p) if p.id == initial.id));
+    }
+
+    #[tokio::test]
+    async fn mutable_peer_set_notifies_live_subscribers() {
+        let mp = MutablePeer::default();
+        let mut rx = mp.subscribe();
+        // Drain the initial "changed" marker.
+        let _ = rx.borrow_and_update();
+
+        let updated = sample_peer("updated");
+        mp.set(updated.clone());
+
+        rx.changed().await.expect("set() must notify subscribers");
+        let observed = rx.borrow_and_update().clone();
+        assert!(matches!(observed, Some(p) if p.id == updated.id));
+    }
 }
