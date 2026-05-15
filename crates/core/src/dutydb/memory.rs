@@ -352,7 +352,6 @@ impl MemDB {
         loop {
             let notified = notify.notified();
             tokio::pin!(notified);
-            notified.as_mut().enable();
 
             {
                 let state = self.state.read().await;
