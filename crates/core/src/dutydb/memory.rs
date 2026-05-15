@@ -527,17 +527,12 @@ impl State {
 
         // Unlike Go implementation, we key by root only, slot field is redundant.
         let key = AggKey { root };
-        match self.agg_duties.entry(key) {
-            std::collections::hash_map::Entry::Occupied(mut e) => {
-                // we don't check existingDataRoot != providedDataRoot because these values
-                // comes from the same source and the error was unreachable
-                e.insert(agg.clone());
-            }
-            std::collections::hash_map::Entry::Vacant(e) => {
-                e.insert(agg.clone());
-                self.agg_keys_by_slot.entry(slot).or_default().push(key);
-            }
+        if !self.agg_duties.contains_key(&key) {
+            self.agg_keys_by_slot.entry(slot).or_default().push(key);
         }
+        // we don't check existingDataRoot != providedDataRoot because these values
+        // comes from the same source and the error was unreachable
+        self.agg_duties.insert(key, agg.clone()); // unconditional overwrite
 
         Ok(())
     }
