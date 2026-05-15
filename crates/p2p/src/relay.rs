@@ -22,7 +22,7 @@ use crate::{
     p2p_context::P2PContext,
     peer::{MutablePeer, Peer},
 };
-use futures::stream::StreamExt;
+use futures::{Stream, stream::StreamExt};
 use libp2p::{
     Multiaddr, PeerId,
     core::{Endpoint, transport::PortUse},
@@ -226,13 +226,13 @@ pub enum RelayConnectionState {
     Reserved,
 }
 
-impl Future for RelayDialState {
-    type Output = ToSwarm<RelayManagerEvent, Infallible>;
+impl Stream for RelayDialState {
+    type Item = ToSwarm<RelayManagerEvent, Infallible>;
 
-    /// Drives the dial schedule. Returns `Ready` with a `Dial` event when the
-    /// next attempt is due, then self-rearms with an exponential backoff so
-    /// the future can keep being polled to produce subsequent retries.
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    /// Drives the dial schedule. Yields a `Dial` event when the next attempt
+    /// is due, then self-rearms with an exponential backoff so subsequent
+    /// `poll_next` calls produce later retries. The stream never terminates.
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         std::task::ready!(self.sleep.as_mut().poll(cx));
 
         let next_delay = backoff_delay(self.retry_count);
@@ -247,7 +247,7 @@ impl Future for RelayDialState {
             .addresses(self.addrs.clone())
             .build();
 
-        Poll::Ready(ToSwarm::Dial { opts })
+        Poll::Ready(Some(ToSwarm::Dial { opts }))
     }
 }
 
@@ -384,9 +384,8 @@ impl RelayManager {
     /// any whose backoff has elapsed. Wakers for the remaining (pending) ones
     /// are registered via the underlying `Sleep` futures.
     fn process_relay_dials(&mut self, cx: &mut Context<'_>) {
-        for (_, state) in self.dial_states.iter_mut() {
-            let state = Pin::new(state);
-            if let Poll::Ready(event) = state.poll(cx) {
+        for state in self.dial_states.values_mut() {
+            if let Poll::Ready(Some(event)) = state.poll_next_unpin(cx) {
                 self.events.push_back(event);
             }
         }
