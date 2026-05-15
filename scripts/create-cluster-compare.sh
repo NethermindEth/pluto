@@ -3,11 +3,10 @@
 # matrix of CLI argument combinations.
 #
 # The generated lock contains fresh validator keys, threshold shares, ENRs, and
-# signatures, so Charon and Pluto cannot produce byte-identical lock files until
-# both commands expose deterministic entropy inputs. By default this script
-# compares the deterministic lock surface and also verifies that each command
-# writes the exact same lock to every node directory. Use --exact to additionally
-# require Charon and Pluto canonical JSON lock equality.
+# signatures derived from independent CSPRNGs in each binary, so Charon and Pluto
+# cannot produce byte-identical lock files. This script compares the
+# deterministic lock surface (cluster definition, counts, deposit amounts, etc.)
+# and verifies that each command writes the same lock to every node directory.
 
 set -euo pipefail
 
@@ -18,11 +17,9 @@ if [[ -z "${PLUTO_BIN:-}" ]]; then
 fi
 
 if [[ -z "${CHARON_BIN:-}" ]]; then
-    if [[ -x "${ROOT_DIR}/../charon/charon" ]]; then
-        CHARON_BIN="${ROOT_DIR}/../charon/charon"
-    else
-        CHARON_BIN="charon"
-    fi
+    printf '[create-cluster-compare] ERROR: %s\n' \
+        "CHARON_BIN must be set to the path of a built charon binary" >&2
+    exit 1
 fi
 
 : "${WORK_DIR:=/tmp/create-cluster-compare}"
@@ -31,22 +28,17 @@ fi
 FEE_RECIPIENT_ADDRESS="0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF"
 WITHDRAWAL_ADDRESS="0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF"
 
-EXACT=0
 CASE_FILTER=""
 
 usage() {
     cat <<'USAGE'
-Usage: scripts/create-cluster-compare.sh [--case NAME] [--exact] [--keep-work]
+Usage: scripts/create-cluster-compare.sh [--case NAME] [--keep-work]
 
 Environment:
   PLUTO_BIN     Path to pluto binary. Defaults to ./target/debug/pluto.
-  CHARON_BIN    Path to charon binary. Defaults to ../charon/charon, then PATH.
+  CHARON_BIN    Path to charon binary. Required.
   WORK_DIR      Scratch/output directory. Defaults to /tmp/create-cluster-compare.
   KEEP_WORK     Keep scratch directory when set to 1/true/yes/on.
-
-Modes:
-  default       Compare deterministic lock semantics and per-node lock equality.
-  --exact       Also require Charon and Pluto canonical JSON lock equality.
 
 Cases:
   basic
@@ -63,10 +55,6 @@ while (($#)); do
         --case)
             CASE_FILTER="${2:?--case requires a name}"
             shift 2
-            ;;
-        --exact)
-            EXACT=1
-            shift
             ;;
         --keep-work)
             KEEP_WORK=1
@@ -218,10 +206,6 @@ lock_path() {
     printf '%s/node0/cluster-lock.json' "${dir}"
 }
 
-canonical_json() {
-    jq -S . "$1"
-}
-
 canonical_summary() {
     jq -S '
       def validators: (.distributed_validators // .validators // []);
@@ -341,19 +325,6 @@ run_case() {
         printf '%s\n' "---- ${name} semantic diff ----" >&2
         cat "${case_dir}/summary.diff" >&2
         fail "${name}: Charon and Pluto semantic lock summaries differ"
-    fi
-
-    if (( EXACT )); then
-        canonical_json "$(lock_path "${charon_dir}")" >"${case_dir}/charon.lock.canonical.json"
-        canonical_json "$(lock_path "${pluto_dir}")" >"${case_dir}/pluto.lock.canonical.json"
-
-        if compare_files "${case_dir}/charon.lock.canonical.json" "${case_dir}/pluto.lock.canonical.json" "${case_dir}/exact.diff"; then
-            log "${name}: exact canonical lock JSON matches"
-        else
-            printf '%s\n' "---- ${name} exact diff ----" >&2
-            cat "${case_dir}/exact.diff" >&2
-            fail "${name}: exact canonical lock JSON differs"
-        fi
     fi
 }
 
