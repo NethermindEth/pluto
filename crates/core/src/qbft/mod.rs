@@ -637,8 +637,9 @@ where
     let input_value_source_ch = input_value_source_ch.clone();
     let mut compare_parent_cancelled = false;
 
-    // Detached by design, matching Charon's goroutine behavior: if a caller-provided
-    // compare callback ignores cancellation and never reports, it may outlive this call.
+    // Detached by design, matching Charon's goroutine behavior: if a
+    // caller-provided compare callback ignores cancellation and never reports,
+    // it may outlive this call.
     thread::spawn(move || {
         (compare)(
             &compare_ct,
