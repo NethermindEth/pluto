@@ -1281,7 +1281,7 @@ fn duplicate_pre_prepare_rules() {
         input_value_source_ch,
     );
 
-    assert!(res.is_ok());
+    assert!(matches!(res, Err(QbftError::ContextCanceled)));
 }
 
 #[test]
@@ -1309,7 +1309,7 @@ fn idle_run_returns_when_cancelled() {
         done_rx
             .recv_timeout(Duration::from_millis(100))
             .expect("idle run must unblock on cancellation"),
-        Ok(())
+        Err(QbftError::ContextCanceled)
     ));
 }
 

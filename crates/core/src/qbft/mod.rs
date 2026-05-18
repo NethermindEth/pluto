@@ -57,6 +57,9 @@ pub enum QbftError {
     #[error("bug: expected only comparison or timeout error")]
     UnexpectedCompareError,
 
+    #[error("context canceled")]
+    ContextCanceled,
+
     #[error("Maximum round reached")]
     MaxRoundReached,
 
@@ -590,13 +593,11 @@ where
 
             default(RUN_CANCELLATION_POLL_INTERVAL) => {
                 if ct.is_canceled() {
-                    break;
+                    return Err(QbftError::ContextCanceled);
                 }
             }
         }
     }
-
-    Ok(())
 }
 
 /// The callback may cache the local input source and return success/failure.
