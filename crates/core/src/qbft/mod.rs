@@ -33,7 +33,7 @@ use std::{
 
 type Result<T> = std::result::Result<T, QbftError>;
 
-const RUN_CANCELLATION_POLL_INTERVAL: time::Duration = time::Duration::from_millis(1);
+const CANCELLATION_POLL_INTERVAL: time::Duration = time::Duration::from_millis(1);
 
 type CompareFn<I, V, C> = dyn Fn(
         /* ct */ &CancellationToken,
@@ -591,7 +591,7 @@ where
                 broadcast_round_change()?;
             }
 
-            default(RUN_CANCELLATION_POLL_INTERVAL) => {
+            default(CANCELLATION_POLL_INTERVAL) => {
                 if ct.is_canceled() {
                     return Err(QbftError::ContextCanceled);
                 }
@@ -637,6 +637,8 @@ where
     let input_value_source_ch = input_value_source_ch.clone();
     let mut compare_parent_cancelled = false;
 
+    // Detached by design, matching Charon's goroutine behavior: if a caller-provided
+    // compare callback ignores cancellation and never reports, it may outlive this call.
     thread::spawn(move || {
         (compare)(
             &compare_ct,
@@ -686,7 +688,7 @@ where
                 return (result, Err(QbftError::TimeoutError));
             }
 
-            default(RUN_CANCELLATION_POLL_INTERVAL) => {
+            default(CANCELLATION_POLL_INTERVAL) => {
                 if !compare_parent_cancelled && ct.is_canceled() {
                     compare_cts.cancel();
                     compare_parent_cancelled = true;

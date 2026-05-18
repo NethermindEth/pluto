@@ -123,7 +123,9 @@ fn multiple_threads_timers() {
         clock.advance(Duration::from_secs(6));
     });
 
-    assert_eq!(vec![true, true], done_rx.try_iter().collect::<Vec<_>>());
+    let done = done_rx.try_iter().collect::<Vec<_>>();
+    assert_eq!(2, done.len());
+    assert!(done.into_iter().all(|done| done));
     assert_eq!(Duration::from_secs(10), clock.elapsed());
 }
 
@@ -150,7 +152,9 @@ fn multiple_threads_cancellation() {
         clock.cancel();
     });
 
-    assert_eq!(vec![true, true], done_rx.try_iter().collect::<Vec<_>>());
+    let done = done_rx.try_iter().collect::<Vec<_>>();
+    assert_eq!(2, done.len());
+    assert!(done.into_iter().all(|done| done));
     assert_eq!(Duration::ZERO, clock.elapsed());
 }
 
