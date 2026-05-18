@@ -519,6 +519,7 @@ where
 
                                         broadcast_round_change()?;
                                     }
+                                    QbftError::ContextCanceled => return Err(QbftError::ContextCanceled),
                                     _ => return Err(QbftError::UnexpectedCompareError),
                                 }
                             }
@@ -639,7 +640,6 @@ where
     let compare_ct = compare_cts.token().clone();
     let msg = msg.clone();
     let input_value_source_ch = input_value_source_ch.clone();
-    let mut compare_parent_cancelled = false;
 
     // Detached by design, matching Charon's goroutine behavior: if a
     // caller-provided compare callback ignores cancellation and never reports,
@@ -656,6 +656,11 @@ where
     });
 
     loop {
+        if ct.is_canceled() {
+            compare_cts.cancel();
+            return (result, Err(QbftError::ContextCanceled));
+        }
+
         mpmc::select! {
             recv(compare_err_rx) -> msg => {
                 let err = match msg {
@@ -671,6 +676,10 @@ where
                 }
 
                 compare_cts.cancel();
+                if ct.is_canceled() {
+                    return (result, Err(QbftError::ContextCanceled));
+                }
+
                 return match err {
                     Ok(()) => (result, Ok(())),
                     Err(_) => (result, Err(QbftError::CompareError)),
@@ -694,9 +703,9 @@ where
             }
 
             default(CANCELLATION_POLL_INTERVAL) => {
-                if !compare_parent_cancelled && ct.is_canceled() {
+                if ct.is_canceled() {
                     compare_cts.cancel();
-                    compare_parent_cancelled = true;
+                    return (result, Err(QbftError::ContextCanceled));
                 }
             }
         }

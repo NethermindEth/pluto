@@ -1610,7 +1610,7 @@ fn compare_parent_cancel_cancels_callback_token() {
             thread::sleep(Duration::from_millis(1));
         }
         token_cancelled_tx.send(()).expect(WRITE_CHAN_ERR);
-        return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
+        let _ = return_err.send(Ok(()));
     });
 
     let (result_tx, result_rx) = mpmc::bounded(1);
@@ -1624,7 +1624,7 @@ fn compare_parent_cancel_cancels_callback_token() {
     cts.cancel();
 
     match result_rx.recv_timeout(Duration::from_millis(100)) {
-        Ok(result) => assert!(matches!(result, (0, Ok(())))),
+        Ok(result) => assert!(matches!(result, (0, Err(QbftError::ContextCanceled)))),
         Err(err) => {
             let _ = timer_tx.send(time::Instant::now());
             panic!("compare callback token must be canceled by parent token: {err}");
@@ -1633,6 +1633,72 @@ fn compare_parent_cancel_cancels_callback_token() {
     token_cancelled_rx
         .recv_timeout(Duration::from_millis(100))
         .expect("callback token must be canceled by parent token");
+}
+
+#[test]
+fn run_parent_cancel_during_compare_does_not_prepare() {
+    const LEADER: i64 = 1;
+    const PROCESS: i64 = 2;
+
+    let cts = CancellationTokenSource::new();
+    let token = cts.token().clone();
+    let msg = new_msg(MSG_PRE_PREPARE, 0, LEADER, 1, 7, 11, 0, 0, None);
+    let (receive_tx, receive_rx) = mpmc::bounded(1);
+    receive_tx.send(msg).expect(WRITE_CHAN_ERR);
+
+    let (compare_started_tx, compare_started_rx) = mpmc::bounded(1);
+    let (compare_cancelled_tx, compare_cancelled_rx) = mpmc::bounded(1);
+    let mut def = noop_definition();
+    def.nodes = 4;
+    def.fifo_limit = 100;
+    def.is_leader = Box::new(|_, _, process| process == LEADER);
+    def.compare = Arc::new(move |ct, _, _, _, return_err, _| {
+        compare_started_tx.send(()).expect(WRITE_CHAN_ERR);
+        while !ct.is_canceled() {
+            thread::sleep(Duration::from_millis(1));
+        }
+        compare_cancelled_tx.send(()).expect(WRITE_CHAN_ERR);
+        let _ = return_err.send(Ok(()));
+    });
+
+    let (broadcast_tx, broadcast_rx) = mpmc::bounded(1);
+    let transport = Transport {
+        broadcast: Box::new(move |_, type_, _, _, _, _, _, _, _| {
+            broadcast_tx.send(type_).expect(WRITE_CHAN_ERR);
+            Ok(())
+        }),
+        receive: receive_rx,
+    };
+    let (_input_tx, input_rx) = mpmc::bounded::<i64>(1);
+    let (_source_tx, source_rx) = mpmc::bounded::<i64>(1);
+    let (done_tx, done_rx) = mpmc::bounded(1);
+
+    thread::spawn(move || {
+        done_tx
+            .send(qbft::run(
+                &token, &def, &transport, &0, PROCESS, input_rx, source_rx,
+            ))
+            .expect(WRITE_CHAN_ERR);
+    });
+
+    compare_started_rx
+        .recv_timeout(Duration::from_millis(100))
+        .expect("compare must start");
+    cts.cancel();
+
+    assert!(matches!(
+        done_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("run must return parent cancellation from compare"),
+        Err(QbftError::ContextCanceled)
+    ));
+    compare_cancelled_rx
+        .recv_timeout(Duration::from_millis(100))
+        .expect("compare callback token must be canceled");
+    assert!(
+        broadcast_rx.try_iter().all(|type_| type_ != MSG_PREPARE),
+        "parent cancellation during compare must not broadcast PREPARE"
+    );
 }
 
 fn buffer_by_source(msgs: &[Msg<i64, i64, i64>]) -> HashMap<i64, Vec<Msg<i64, i64, i64>>> {
