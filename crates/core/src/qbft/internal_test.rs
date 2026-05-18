@@ -2013,6 +2013,17 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
             }
             recv(result_chan_rx) -> res => {
                 let q_commit = res.expect(READ_CHAN_ERR);
+                if test.should_halt {
+                    cts.cancel();
+                    clock.cancel();
+                    panic!(
+                        "halt case unexpectedly decided: q_commit={:?} elapsed={:?}\n{}",
+                        q_commit,
+                        clock.elapsed(),
+                        trace.dump()
+                    );
+                }
+
                 for commit in q_commit.clone() {
                     for previous in results.values() {
                         if previous.value() != commit.value() {

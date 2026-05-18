@@ -299,8 +299,11 @@ struct DedupKey {
     round: i64,
 }
 
-/// Executes one QBFT consensus instance until it decides, errors, or is
-/// cancelled.
+/// Executes one QBFT consensus instance until it errors or is cancelled.
+///
+/// Decisions are reported via `Definition::decide`. After deciding, `run`
+/// remains active so it can answer later `ROUND_CHANGE` messages with `DECIDED`
+/// catch-up messages.
 ///
 /// `I` identifies the consensus instance, `V` is the comparable proposed value,
 /// and `C` is the application value used by `Definition::compare` to compare a
