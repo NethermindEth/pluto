@@ -15,6 +15,7 @@ const REQUIRED_ENDPOINTS: &[&str] = &[
     "/eth/v1/config/fork_schedule",
     "/eth/v1/node/version",
     "/eth/v1/config/spec",
+    "/eth/v2/beacon/blocks/0",
 ];
 
 /// Spec keys the mock relies on. Real beacon clients read more, but these are
@@ -52,9 +53,11 @@ fn main() {
         let entry = endpoints
             .get(*required)
             .unwrap_or_else(|| panic!("{} missing required endpoint {required}", path.display()));
-        if entry.get("data").is_none() {
+        // Each entry is either a beacon-node response body (with `data`) or an
+        // error envelope (`code` + `message`, e.g. 404 for blocks/0).
+        if entry.get("data").is_none() && entry.get("code").is_none() {
             panic!(
-                "{} endpoint {required} missing `data` field",
+                "{} endpoint {required} must contain either `data` or an error envelope",
                 path.display()
             );
         }

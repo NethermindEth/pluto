@@ -18,7 +18,10 @@ use wiremock::{
     matchers::{method, path},
 };
 
-use super::state::{MockState, hex_0x, read_lock, write_lock};
+use super::{
+    defaults::{error_response, slots_per_epoch},
+    state::{MockState, hex_0x, read_lock, write_lock},
+};
 
 /// Priority used by attestation routes; lower than the default fallback so
 /// these handlers override the static 400 mounted in `defaults.rs`.
@@ -103,7 +106,7 @@ fn build_attestation_data(epoch: Epoch, slot: Slot, committee_index: u64) -> Att
 /// `aggregate_attestation` route; unknown roots fall through to the default
 /// 400 response.
 pub(crate) async fn mount(server: &MockServer, state: Arc<MockState>) {
-    mount_json_with_priority(
+    mount_response_with_priority(
         server,
         "GET",
         "/eth/v1/validator/attestation_data",
@@ -127,7 +130,7 @@ pub(crate) async fn mount(server: &MockServer, state: Arc<MockState>) {
         .await;
 }
 
-fn attestation_data_response(state: &MockState, request: &Request) -> Value {
+fn attestation_data_response(state: &MockState, request: &Request) -> ResponseTemplate {
     let slot = query_value(request, "slot")
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(0);
@@ -135,19 +138,17 @@ fn attestation_data_response(state: &MockState, request: &Request) -> Value {
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(0);
 
-    let slots_per_epoch = read_lock(&state.spec)
-        .get("SLOTS_PER_EPOCH")
-        .and_then(Value::as_str)
-        .and_then(|value| value.parse().ok())
-        .filter(|slots| *slots > 0)
-        .unwrap_or(16);
+    let slots_per_epoch = match slots_per_epoch(state) {
+        Ok(value) => value,
+        Err(message) => return error_response(500, message),
+    };
 
     let (data, _root) =
         state
             .attestation_store
             .new_attestation_data(slot, committee_index, slots_per_epoch);
 
-    json!({ "data": attestation_data_json(&data) })
+    ResponseTemplate::new(200).set_body_json(json!({ "data": attestation_data_json(&data) }))
 }
 
 fn aggregate_attestation_response(state: &MockState, request: &Request) -> ResponseTemplate {
@@ -231,18 +232,18 @@ impl wiremock::Match for QueryParamPresent {
     }
 }
 
-async fn mount_json_with_priority<F>(
+async fn mount_response_with_priority<F>(
     server: &MockServer,
     http_method: &'static str,
     endpoint: &'static str,
     priority: u8,
     f: F,
 ) where
-    F: Send + Sync + 'static + Fn(&Request) -> Value,
+    F: Send + Sync + 'static + Fn(&Request) -> ResponseTemplate,
 {
     Mock::given(method(http_method))
         .and(path(endpoint))
-        .respond_with(move |request: &Request| ResponseTemplate::new(200).set_body_json(f(request)))
+        .respond_with(move |request: &Request| f(request))
         .with_priority(priority)
         .mount(server)
         .await;

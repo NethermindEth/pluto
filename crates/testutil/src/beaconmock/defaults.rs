@@ -147,7 +147,7 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
     })
     .await;
 
-    mount_json(
+    mount_response(
         server,
         "POST",
         r"^/eth/v1/validator/duties/attester/[0-9]+$",
@@ -158,7 +158,7 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
     )
     .await;
 
-    mount_json(
+    mount_response(
         server,
         "GET",
         r"^/eth/v1/validator/duties/proposer/[0-9]+$",
@@ -190,6 +190,31 @@ pub(crate) async fn mount_json<F>(
     F: Send + Sync + 'static + Fn(&Request) -> Value,
 {
     mount_json_with_status(server, http_method, endpoint, 200, f).await;
+}
+
+/// Mounts a handler that returns a `ResponseTemplate` directly, used by
+/// handlers that need to vary the HTTP status (e.g. 500 on spec lookup
+/// failure, matching Charon's `SlotsPerEpochFunc` error propagation).
+pub(crate) async fn mount_response<F>(
+    server: &MockServer,
+    http_method: &'static str,
+    endpoint: &'static str,
+    f: F,
+) where
+    F: Send + Sync + 'static + Fn(&Request) -> ResponseTemplate,
+{
+    let route = Mock::given(method(http_method));
+    let route = if endpoint.starts_with('^') {
+        route.and(path_regex(endpoint))
+    } else {
+        route.and(path(endpoint))
+    };
+
+    route
+        .respond_with(move |request: &Request| f(request))
+        .with_priority(DEFAULT_MOCK_PRIORITY)
+        .mount(server)
+        .await;
 }
 
 pub(crate) async fn mount_json_with_status<F>(
@@ -252,9 +277,9 @@ fn validators_response(state: &MockState) -> Value {
     })
 }
 
-fn attester_duties_response(state: &MockState, request: &Request) -> Value {
+fn attester_duties_response(state: &MockState, request: &Request) -> ResponseTemplate {
     let Some(factor) = *read_lock(&state.deterministic_attester_duties) else {
-        return duties_response(Vec::new());
+        return ResponseTemplate::new(200).set_body_json(duties_response(Vec::new()));
     };
 
     let epoch = epoch_from_path(request.url.path());
@@ -262,7 +287,10 @@ fn attester_duties_response(state: &MockState, request: &Request) -> Value {
     indices.sort_unstable();
 
     let validator_set = read_lock(&state.validator_set).clone();
-    let slots_per_epoch = slots_per_epoch(state);
+    let slots_per_epoch = match slots_per_epoch(state) {
+        Ok(value) => value,
+        Err(message) => return error_response(500, message),
+    };
     let committee_length = factor.max(1);
     let validator_committee_index = committee_length.saturating_sub(1);
 
@@ -289,16 +317,19 @@ fn attester_duties_response(state: &MockState, request: &Request) -> Value {
         })
         .collect();
 
-    duties_response(data)
+    ResponseTemplate::new(200).set_body_json(duties_response(data))
 }
 
-fn proposer_duties_response(state: &MockState, request: &Request) -> Value {
+fn proposer_duties_response(state: &MockState, request: &Request) -> ResponseTemplate {
     let Some(factor) = *read_lock(&state.deterministic_proposer_duties) else {
-        return duties_response(Vec::new());
+        return ResponseTemplate::new(200).set_body_json(duties_response(Vec::new()));
     };
 
     let epoch = epoch_from_path(request.url.path());
-    let slots_per_epoch = slots_per_epoch(state);
+    let slots_per_epoch = match slots_per_epoch(state) {
+        Ok(value) => value,
+        Err(message) => return error_response(500, message),
+    };
     // Mirrors Charon's `WithDeterministicProposerDuties`, which iterates over
     // `mock.ActiveValidators(ctx)` — only validators with an Active* status
     // are eligible to propose.
@@ -344,7 +375,7 @@ fn proposer_duties_response(state: &MockState, request: &Request) -> Value {
         }
     }
 
-    duties_response(data)
+    ResponseTemplate::new(200).set_body_json(duties_response(data))
 }
 
 fn bellatrix_signed_block_response() -> Value {
@@ -468,13 +499,24 @@ fn epoch_from_path(path: &str) -> Epoch {
     last_path_segment_u64(path)
 }
 
-fn slots_per_epoch(state: &MockState) -> u64 {
+/// Reads `SLOTS_PER_EPOCH` from the spec, mirroring Charon's
+/// `SlotsPerEpochFunc` (testutil/beaconmock/options.go) which surfaces an
+/// error when the key is missing or not a positive integer instead of
+/// silently defaulting.
+pub(crate) fn slots_per_epoch(state: &MockState) -> Result<u64, &'static str> {
     read_lock(&state.spec)
         .get("SLOTS_PER_EPOCH")
         .and_then(Value::as_str)
         .and_then(|value| value.parse().ok())
         .filter(|slots| *slots > 0)
-        .unwrap_or(16)
+        .ok_or("failed to lookup or invalid SLOTS_PER_EPOCH from spec")
+}
+
+pub(crate) fn error_response(status: u16, message: &str) -> ResponseTemplate {
+    ResponseTemplate::new(status).set_body_json(json!({
+        "code": status,
+        "message": message,
+    }))
 }
 
 /// Embedded beacon-node snapshot used as the baseline for default responses.
