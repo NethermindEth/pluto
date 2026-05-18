@@ -233,11 +233,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize tracing with optional Loki support
     let tracing_config = build_tracing_config(&args);
-    let loki_task = pluto_tracing::init(&tracing_config)?;
-
-    // Spawn Loki background task if configured
-    if let Some(task) = loki_task {
-        tokio::spawn(task);
+    if let Some(loki) = pluto_tracing::init(&tracing_config)? {
+        tokio::spawn(loki.task);
         tracing::info!("Loki logging enabled");
     }
 

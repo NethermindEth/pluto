@@ -4,9 +4,13 @@ use crate::{
 };
 use libp2p::multiaddr::Protocol;
 use pluto_p2p::k1;
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf, time::Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
+
+/// Grace period given to the Loki background task to flush buffered logs
+/// once `BackgroundTaskController::shutdown` has been signalled.
+const LOKI_FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Arguments for the relay command.
 #[derive(clap::Args, Clone)]
@@ -297,8 +301,12 @@ pub async fn run(
     config: pluto_relay_server::config::Config,
     ct: CancellationToken,
 ) -> Result<(), CliError> {
-    let loki_task = match pluto_tracing::init(&config.log_config) {
-        Ok(Some(task)) => Some(tokio::spawn(task)),
+    let loki_shutdown = match pluto_tracing::init(&config.log_config) {
+        Ok(Some(loki)) => {
+            let controller = loki.controller;
+            let handle = tokio::spawn(loki.task);
+            Some((controller, handle))
+        }
         Ok(None) => None,
         // In tests, the global tracing subscriber is shared across runs in the
         // same process, so reinitializing fails. In production this would mean
@@ -335,17 +343,25 @@ pub async fn run(
         e => e,
     }?;
 
-    let result = pluto_relay_server::p2p::run_relay_p2p_node(&config, key, ct)
+    let result: Result<(), CliError> = pluto_relay_server::p2p::run_relay_p2p_node(&config, key, ct)
         .await
         .map(|_| ())
         .map_err(Into::into);
 
-    // Give the Loki worker a short window to flush buffered logs before the
-    // runtime aborts it. The task holds a `Layer` clone through the global
-    // subscriber and never completes on its own, so the wait is bounded.
-    if let Some(handle) = loki_task {
+    if let Err(err) = &result {
+        // Surface the shutdown reason through the subscriber so it reaches
+        // Loki before we close the worker; `main` only `eprintln!`s the
+        // returned error and that path bypasses the tracing subscriber.
+        error!(error = %err, "relay exited with error");
+    }
+
+    // Drain the Loki worker: signal it to quit, give it a bounded window to
+    // flush pending events, then abort as a hard fallback in case the Loki
+    // endpoint is unreachable.
+    if let Some((controller, handle)) = loki_shutdown {
+        controller.shutdown().await;
         let abort_handle = handle.abort_handle();
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), handle).await;
+        let _ = tokio::time::timeout(LOKI_FLUSH_TIMEOUT, handle).await;
         abort_handle.abort();
     }
 

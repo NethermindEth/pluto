@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use tracing_loki::{BackgroundTask, url::Url};
+use tracing_loki::{BackgroundTask, BackgroundTaskController, url::Url};
 use tracing_subscriber::{
     EnvFilter, Registry, layer::SubscriberExt as _, util::SubscriberInitExt as _,
 };
@@ -25,8 +25,16 @@ pub enum Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
+/// Loki background task plus the controller used to signal graceful shutdown.
+pub struct LokiInit {
+    /// Handle used to tell the background task to drain its queue and exit.
+    pub controller: BackgroundTaskController,
+    /// Future that ships buffered events to Loki; must be spawned to run.
+    pub task: BackgroundTask,
+}
+
 /// Initializes the tracing subscriber.
-pub fn init(config: &TracingConfig) -> Result<Option<BackgroundTask>> {
+pub fn init(config: &TracingConfig) -> Result<Option<LokiInit>> {
     let env_filter = if let Some(override_env_filter) = config.override_env_filter.as_ref() {
         EnvFilter::from_str(override_env_filter).unwrap_or_else(|_| default_env_filter())
     } else {
@@ -49,16 +57,23 @@ pub fn init(config: &TracingConfig) -> Result<Option<BackgroundTask>> {
         .with(MetricsLayer);
 
     if let Some(loki_config) = &config.loki {
-        let (loki_layer, background_worker) = tracing_loki::layer(
-            Url::parse(&loki_config.loki_url)?,
-            loki_config.labels.clone(),
-            loki_config.extra_fields.clone(),
-        )?;
+        // Match the path-stripping behaviour of `tracing_loki::layer` so the
+        // builder API keeps the same effective Loki endpoint.
+        let loki_url = Url::parse(&loki_config.loki_url)?.join("/")?;
+
+        let mut builder = tracing_loki::builder();
+        for (key, value) in loki_config.labels.clone() {
+            builder = builder.label(key, value)?;
+        }
+        for (key, value) in loki_config.extra_fields.clone() {
+            builder = builder.extra_field(key, value)?;
+        }
+        let (loki_layer, controller, task) = builder.build_controller_url(loki_url)?;
 
         let registry = registry.with(loki_layer);
         registry.try_init()?;
 
-        Ok(Some(background_worker))
+        Ok(Some(LokiInit { controller, task }))
     } else {
         registry.try_init()?;
         Ok(None)
