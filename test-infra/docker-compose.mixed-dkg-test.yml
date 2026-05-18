@@ -1,0 +1,201 @@
+# Mixed Pluto/Charon DKG ceremony test.
+#
+# Runs a full DKG ceremony with 4 nodes: 2 Pluto (node0, node1) and 2 Charon
+# (node2, node3) by default. Each node image is independently configurable.
+#
+# Override per-node images to mix implementations:
+#
+#   NODE0_IMAGE=obolnetwork/charon:v1.7.1 NODE1_IMAGE=obolnetwork/charon:v1.7.1 \
+#     docker compose -f docker-compose.mixed-dkg-test.yml up
+#
+# Use the external Obol relay instead of the internal one:
+#
+#   RELAY_URL=https://0.relay.obol.tech \
+#     docker compose -f docker-compose.mixed-dkg-test.yml up
+#
+# Network topology — relay bridges isolated node networks; nodes share
+# nodes_net for direct connections:
+#
+#   relay ── node0_net ── node0 ──┐
+#         ── node1_net ── node1 ──┤ nodes_net
+#         ── node2_net ── node2 ──┤ (direct connections)
+#         ── node3_net ── node3 ──┘
+#
+# Reset cluster data and start fresh:
+#   docker compose -f docker-compose.mixed-dkg-test.yml down -v
+
+name: pluto-charon-dkg-test
+
+services:
+  init:
+    image: docker:cli
+    command: >-
+      sh -c "mkdir -p /cluster/node-0 /cluster/node-1 /cluster/node-2 /cluster/node-3 /cluster/relay
+      && chmod -R 777 /cluster"
+    volumes:
+      - cluster-data:/cluster
+
+  setup-enr:
+    image: docker:cli
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        for node in node-0 node-1 node-2 node-3; do
+          docker run --rm -v ${COMPOSE_PROJECT_NAME}_cluster-data:/cluster \
+            ${SETUP_IMAGE:-nethermindeth/pluto:main} \
+            create enr --data-dir=/cluster/$$node  2>&1 | grep '^enr:' | head -1 > /cluster/$$node/enr.txt
+        done
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock # Docker-outside-of-Docker (DooD)
+      - cluster-data:/cluster
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  create-dkg:
+    image: docker:cli
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        ENR0=$$(cat /cluster/node-0/enr.txt)
+        ENR1=$$(cat /cluster/node-1/enr.txt)
+        ENR2=$$(cat /cluster/node-2/enr.txt)
+        ENR3=$$(cat /cluster/node-3/enr.txt)
+        docker run --rm -v ${COMPOSE_PROJECT_NAME}_cluster-data:/cluster \
+          ${SETUP_IMAGE:-nethermindeth/pluto:main} \
+          create dkg \
+          --operator-enrs="$$ENR0,$$ENR1,$$ENR2,$$ENR3" \
+          --threshold=3 \
+          --fee-recipient-addresses=0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF \
+          --withdrawal-addresses=0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF \
+          --network=holesky \
+          --name=test-dkg \
+          --output-dir=/cluster
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock # Docker-outside-of-Docker (DooD)
+      - cluster-data:/cluster
+    depends_on:
+      setup-enr:
+        condition: service_completed_successfully
+
+  fix-perms:
+    image: docker:cli
+    command: chmod -R a+rX /cluster
+    volumes:
+      - cluster-data:/cluster
+    depends_on:
+      create-dkg:
+        condition: service_completed_successfully
+
+  relay:
+    image: ${RELAY_IMAGE:-nethermindeth/pluto:main}
+    command:
+      - relay
+      - --http-address=0.0.0.0:3640
+      - --p2p-tcp-address=0.0.0.0:3610
+      - --p2p-udp-address=0.0.0.0:3630
+      - --p2p-advertise-private-addresses
+      - --data-dir=/cluster/relay
+    depends_on:
+      fix-perms:
+        condition: service_completed_successfully
+    volumes:
+      - cluster-data:/cluster
+    networks:
+      - node0_net
+      - node1_net
+      - node2_net
+      - node3_net
+
+  node0:
+    image: ${NODE0_IMAGE:-nethermindeth/pluto:main}
+    environment:
+      - CHARON_LOG_LEVEL=${LOG_LEVEL:-info}
+    command:
+      - dkg
+      - --definition-file=/cluster/cluster-definition.json
+      - --data-dir=/cluster/node-0
+      - "--p2p-relays=${RELAY_URL:-http://relay:3640}"
+      - --p2p-tcp-address=0.0.0.0:3610
+    depends_on:
+      relay:
+        condition: service_started
+    volumes:
+      - cluster-data:/cluster
+    networks:
+      - node0_net
+      - nodes_net
+
+  node1:
+    image: ${NODE1_IMAGE:-nethermindeth/pluto:main}
+    environment:
+      - CHARON_LOG_LEVEL=${LOG_LEVEL:-info}
+    command:
+      - dkg
+      - --definition-file=/cluster/cluster-definition.json
+      - --data-dir=/cluster/node-1
+      - "--p2p-relays=${RELAY_URL:-http://relay:3640}"
+      - --p2p-tcp-address=0.0.0.0:3610
+    depends_on:
+      relay:
+        condition: service_started
+    volumes:
+      - cluster-data:/cluster
+    networks:
+      - node1_net
+      - nodes_net
+
+  node2:
+    image: ${NODE2_IMAGE:-obolnetwork/charon:v1.7.1}
+    environment:
+      - CHARON_LOG_LEVEL=${LOG_LEVEL:-info}
+    command:
+      - dkg
+      - --definition-file=/cluster/cluster-definition.json
+      - --data-dir=/cluster/node-2
+      - "--p2p-relays=${RELAY_URL:-http://relay:3640}"
+      - --p2p-tcp-address=0.0.0.0:3610
+    depends_on:
+      relay:
+        condition: service_started
+    volumes:
+      - cluster-data:/cluster
+    networks:
+      - node2_net
+      - nodes_net
+
+  node3:
+    image: ${NODE3_IMAGE:-obolnetwork/charon:v1.7.1}
+    environment:
+      - CHARON_LOG_LEVEL=${LOG_LEVEL:-info}
+    command:
+      - dkg
+      - --definition-file=/cluster/cluster-definition.json
+      - --data-dir=/cluster/node-3
+      - "--p2p-relays=${RELAY_URL:-http://relay:3640}"
+      - --p2p-tcp-address=0.0.0.0:3610
+    depends_on:
+      relay:
+        condition: service_started
+    volumes:
+      - cluster-data:/cluster
+    networks:
+      - node3_net
+      - nodes_net
+
+networks:
+  node0_net:
+    driver: bridge
+  node1_net:
+    driver: bridge
+  node2_net:
+    driver: bridge
+  node3_net:
+    driver: bridge
+  nodes_net:
+    driver: bridge
+
+volumes:
+  cluster-data:
