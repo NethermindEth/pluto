@@ -1248,12 +1248,14 @@ fn duplicate_pre_prepare_rules() {
             0,
             0,
             0,
-            // Justification not required since nodes and quorum both 0.
+            // Round 2 is accepted after round 1 records a compare failure.
             None,
         )
     };
 
     let mut def = noop_definition();
+    def.nodes = 4;
+    def.fifo_limit = 100;
     def.is_leader = Box::new(|_, _, process| process == LEADER);
     def.log_upon_rule = Box::new(move |_, _, round, msg, upon_rule| {
         println!("UponRule: rule={} round={} ", upon_rule, msg.round());
@@ -1271,8 +1273,13 @@ fn duplicate_pre_prepare_rules() {
 
         panic!("unexpected round {}", round);
     });
-    def.compare = Arc::new(|_, _, _, _, return_err, _| {
-        return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
+    def.compare = Arc::new(|_, msg, _, _, return_err, _| {
+        let result = if msg.round() == 1 {
+            Err(QbftError::CompareError)
+        } else {
+            Ok(())
+        };
+        return_err.send(result).expect(WRITE_CHAN_ERR);
     });
 
     let (r_chan_tx, r_chan_rx) = mpmc::bounded::<Msg<i64, i64, i64>>(2);
@@ -1304,7 +1311,9 @@ fn duplicate_pre_prepare_rules() {
 fn idle_run_returns_when_cancelled() {
     let cts = CancellationTokenSource::new();
     let token = cts.token().clone();
-    let def = noop_definition();
+    let mut def = noop_definition();
+    def.nodes = 4;
+    def.fifo_limit = 100;
     let transport = noop_transport();
     let (_input_tx, input_rx) = mpmc::bounded::<i64>(1);
     let (_source_tx, source_rx) = mpmc::bounded::<i64>(1);
@@ -1326,6 +1335,41 @@ fn idle_run_returns_when_cancelled() {
             .recv_timeout(Duration::from_millis(100))
             .expect("idle run must unblock on cancellation"),
         Err(QbftError::ContextCanceled)
+    ));
+}
+
+#[test]
+fn invalid_definition_rejected() {
+    let cts = CancellationTokenSource::new();
+    let transport = noop_transport();
+    let (_input_tx, input_rx) = mpmc::bounded::<i64>(1);
+    let (_source_tx, source_rx) = mpmc::bounded::<i64>(1);
+
+    let mut def = noop_definition();
+    def.nodes = 0;
+    def.fifo_limit = 1;
+    assert!(matches!(
+        qbft::run(
+            cts.token(),
+            &def,
+            &transport,
+            &0,
+            1,
+            input_rx.clone(),
+            source_rx.clone(),
+        ),
+        Err(QbftError::InvalidDefinition(
+            "nodes must be greater than zero"
+        ))
+    ));
+
+    def.nodes = 4;
+    def.fifo_limit = 0;
+    assert!(matches!(
+        qbft::run(cts.token(), &def, &transport, &0, 1, input_rx, source_rx),
+        Err(QbftError::InvalidDefinition(
+            "fifo_limit must be greater than zero"
+        ))
     ));
 }
 

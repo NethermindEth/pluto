@@ -66,6 +66,9 @@ pub enum QbftError {
     #[error("Zero input value not supported")]
     ZeroInputValue,
 
+    #[error("Invalid definition: {0}")]
+    InvalidDefinition(&'static str),
+
     #[error("Failed to read from channel: {0}")]
     ChannelError(#[from] mpmc::RecvError),
 }
@@ -316,6 +319,8 @@ where
     V: PartialEq + Eq + Hash + Default + 'static,
     C: Clone + Send + Sync + Default + 'static,
 {
+    validate_definition(d)?;
+
     // === State ===
     let round: Cell<i64> = Cell::new(1);
     let input_value: RefCell<V> = RefCell::new(Default::default());
@@ -603,6 +608,25 @@ where
             }
         }
     }
+}
+
+fn validate_definition<I, V, C>(d: &Definition<I, V, C>) -> Result<()>
+where
+    V: PartialEq,
+{
+    if d.nodes <= 0 {
+        return Err(QbftError::InvalidDefinition(
+            "nodes must be greater than zero",
+        ));
+    }
+
+    if d.fifo_limit <= 0 {
+        return Err(QbftError::InvalidDefinition(
+            "fifo_limit must be greater than zero",
+        ));
+    }
+
+    Ok(())
 }
 
 /// The callback may cache the local input source and return success/failure.
