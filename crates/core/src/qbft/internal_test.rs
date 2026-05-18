@@ -605,7 +605,11 @@ fn seed_from_label(label: &str) -> u64 {
 
 /// Construct a leader election function.
 fn make_is_leader(n: i64) -> impl Fn(&i64, i64, i64) -> bool + Clone {
-    move |instance: &i64, round: i64, process: i64| -> bool { (instance + round) % n == process }
+    move |instance: &i64, round: i64, process: i64| -> bool {
+        // Go's helper uses 0-indexed process IDs. These Rust tests use 1..=n,
+        // so translate the same modulo schedule into the local process range.
+        ((instance + round - 1).rem_euclid(n)) + 1 == process
+    }
 }
 
 /// Returns a new message to be broadcast.
@@ -998,7 +1002,11 @@ fn stagger_start_const() {
 fn very_delayed_value_exp() {
     test_qbft(Test {
         instance: 3,
-        value_delay: HashMap::from([(1, Duration::from_secs(5)), (2, Duration::from_secs(10))]),
+        value_delay: HashMap::from([
+            (1, Duration::from_secs(5)),
+            (2, Duration::from_secs(10)),
+            (4, Duration::from_secs(5)),
+        ]),
         decide_round: 4,
         ..Default::default()
     });
