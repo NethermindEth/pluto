@@ -289,12 +289,12 @@ pub async fn run(
     let loki_task = match pluto_tracing::init(&config.log_config) {
         Ok(Some(task)) => Some(tokio::spawn(task)),
         Ok(None) => None,
-        Err(pluto_tracing::init::Error::InitError(_)) => {
-            // A global tracing subscriber is already installed (e.g. when
-            // running multiple tests in the same process). Continue with the
-            // existing subscriber instead of failing.
-            None
-        }
+        // In tests, the global tracing subscriber is shared across runs in the
+        // same process, so reinitializing fails. In production this would mean
+        // the relay silently uses an unrelated subscriber and Loki forwarding
+        // is dropped — fail loudly instead.
+        #[cfg(test)]
+        Err(pluto_tracing::init::Error::InitError(_)) => None,
         Err(err) => return Err(err.into()),
     };
 
