@@ -52,6 +52,7 @@ test-case.workspace = true
 backon.workspace = true
 wiremock.workspace = true
 pluto-cluster = { workspace = true, features = ["test-cluster"] }
+pluto-testutil.workspace = true
 
 [lints]
 workspace = true

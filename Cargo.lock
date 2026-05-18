@@ -5458,6 +5458,7 @@ dependencies = [
  "pluto-eth2api",
  "pluto-k1util",
  "pluto-ssz",
+ "pluto-testutil",
  "prost 0.14.3",
  "prost-types 0.14.3",
  "regex",
@@ -5506,6 +5507,7 @@ dependencies = [
  "pluto-p2p",
  "pluto-relay-server",
  "pluto-ssz",
+ "pluto-testutil",
  "pluto-tracing",
  "quick-xml",
  "rand 0.8.6",
@@ -5898,11 +5900,21 @@ dependencies = [
 name = "pluto-testutil"
 version = "1.7.1"
 dependencies = [
+ "anyhow",
+ "bon",
+ "chrono",
  "hex",
  "k256",
  "pluto-crypto",
  "pluto-eth2api",
  "rand 0.8.6",
+ "reqwest 0.13.3",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tree_hash",
+ "wiremock",
 ]
 
 [[package]]

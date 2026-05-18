@@ -2131,6 +2131,7 @@ async fn req_submit_sync_committee_contribution(target: &str) -> CliResult<StdDu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pluto_testutil::BeaconMock;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{method, path},
@@ -2161,29 +2162,22 @@ mod tests {
         }
     }
 
-    async fn start_healthy_mocked_beacon_node() -> MockServer {
-        let server = MockServer::start().await;
+    async fn start_healthy_mocked_beacon_node() -> BeaconMock {
+        let mock = BeaconMock::builder()
+            .build()
+            .await
+            .expect("should create beacon mock");
 
         Mock::given(method("GET"))
             .and(path("/eth/v1/node/health"))
             .respond_with(ResponseTemplate::new(200))
-            .mount(&server)
-            .await;
-
-        Mock::given(method("GET"))
-            .and(path("/eth/v1/node/syncing"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(
-                    r#"{"data":{"head_slot":"0","sync_distance":"0","is_optimistic":false,"is_syncing":false}}"#,
-                ),
-            )
-            .mount(&server)
+            .mount(mock.server())
             .await;
 
         Mock::given(method("GET"))
             .and(path("/eth/v1/node/peers"))
             .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"meta":{"count":500}}"#))
-            .mount(&server)
+            .mount(mock.server())
             .await;
 
         Mock::given(method("GET"))
@@ -2191,10 +2185,10 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_string(
                 r#"{"data":{"version":"BeaconNodeProvider/v1.0.0/linux_x86_64"}}"#,
             ))
-            .mount(&server)
+            .mount(mock.server())
             .await;
 
-        server
+        mock
     }
 
     fn expected_results_for_healthy_node() -> Vec<(&'static str, TestVerdict)> {
