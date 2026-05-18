@@ -913,6 +913,13 @@ where
     let pr = msg.prepared_round();
     let pv = msg.prepared_value();
 
+    // The IBFT paper requires ROUND-CHANGE prepared_round to be lower than the
+    // target round. Go core currently omits this check, but valid Charon traffic
+    // already satisfies it.
+    if !valid_round_change_prepared_round(msg) {
+        return false;
+    }
+
     if prepares.is_empty() {
         return pr == 0 && pv == Default::default();
     }
@@ -944,6 +951,14 @@ where
     }
 
     true
+}
+
+fn valid_round_change_prepared_round<I, V, C>(msg: &Msg<I, V, C>) -> bool
+where
+    V: PartialEq,
+{
+    let pr = msg.prepared_round();
+    pr >= 0 && pr < msg.round()
 }
 
 /// Returns true if the decided message is justified by quorum COMMIT messages
@@ -1018,6 +1033,11 @@ where
     if (qrc.len() as i64) < d.quorum() {
         return None;
     }
+
+    if qrc.iter().any(|rc| !valid_round_change_prepared_round(rc)) {
+        return None;
+    }
+
     // No need to calculate J1 or J2 for all possible combinations,
     // since justification should only contain one.
 
@@ -1111,7 +1131,10 @@ where
         return Some(qrc);
     }
 
-    let round_changes = filter_round_change(all, round);
+    let round_changes = filter_round_change(all, round)
+        .into_iter()
+        .filter(valid_round_change_prepared_round)
+        .collect::<Vec<_>>();
 
     for prepares in get_prepare_quorums(d, all) {
         // See if we have quorum ROUND-CHANGE with HIGHEST_PREPARED(qrc) ==
@@ -1259,7 +1282,10 @@ where
     let null_pr = Default::default();
     let null_pv = Some(&Default::default());
 
-    let justification = filter_msgs(all, MSG_ROUND_CHANGE, round, None, Some(null_pr), null_pv);
+    let justification = filter_msgs(all, MSG_ROUND_CHANGE, round, None, Some(null_pr), null_pv)
+        .into_iter()
+        .filter(valid_round_change_prepared_round)
+        .collect::<Vec<_>>();
 
     (
         justification.clone(),

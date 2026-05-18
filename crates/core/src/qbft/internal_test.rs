@@ -1493,6 +1493,31 @@ fn justified_qrc_j1_and_j2() {
     ];
     assert_eq!(Some(7), contains_justified_qrc(&def, &j2, 2));
     assert!(get_justified_qrc(&def, &j2, 2).unwrap().len() >= 6);
+
+    let invalid_pr = vec![
+        new_msg(MSG_ROUND_CHANGE, 0, 1, 2, 0, 0, 2, 7, None),
+        new_msg(MSG_ROUND_CHANGE, 0, 2, 2, 0, 0, 2, 7, None),
+        new_msg(MSG_ROUND_CHANGE, 0, 3, 2, 0, 0, 2, 7, None),
+        new_msg(MSG_PREPARE, 0, 1, 2, 7, 0, 0, 0, None),
+        new_msg(MSG_PREPARE, 0, 2, 2, 7, 0, 0, 0, None),
+        new_msg(MSG_PREPARE, 0, 3, 2, 7, 0, 0, 0, None),
+    ];
+    assert_eq!(None, contains_justified_qrc(&def, &invalid_pr, 2));
+    assert!(get_justified_qrc(&def, &invalid_pr, 2).is_none());
+}
+
+#[test]
+fn round_change_prepared_round_must_be_before_round() {
+    let mut def = noop_definition();
+    def.nodes = 4;
+    let prepares = vec![
+        new_msg(MSG_PREPARE, 0, 1, 2, 7, 0, 0, 0, None),
+        new_msg(MSG_PREPARE, 0, 2, 2, 7, 0, 0, 0, None),
+        new_msg(MSG_PREPARE, 0, 3, 2, 7, 0, 0, 0, None),
+    ];
+    let invalid = new_msg(MSG_ROUND_CHANGE, 0, 1, 2, 0, 0, 2, 7, Some(&prepares));
+
+    assert!(!is_justified_round_change(&def, &invalid));
 }
 
 #[test]
