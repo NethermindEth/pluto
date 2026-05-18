@@ -1,5 +1,5 @@
 use crate::{
-    commands::common::{ConsoleColor, LICENSE, parse_relay_addr},
+    commands::common::{ConsoleColor, LICENSE, build_console_tracing_config, parse_relay_addr},
     error::CliError,
 };
 use libp2p::multiaddr::Protocol;
@@ -64,39 +64,32 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
             }
         };
 
-        let log_config = {
-            let mut builder = pluto_tracing::TracingConfig::builder().with_default_console();
-
-            builder = match &self.log.color {
-                ConsoleColor::Auto => builder.console_with_ansi(std::env::var("NO_COLOR").is_err()),
-                ConsoleColor::Force => builder.console_with_ansi(true),
-                ConsoleColor::Disable => builder.console_with_ansi(false),
-            };
-
-            if let Some((loki_url, rest)) = self.loki.loki_addresses.split_first() {
-                if !rest.is_empty() {
-                    // Charon fans logs out to every entry in `loki-addresses`,
-                    // but `pluto_tracing::TracingConfig` only supports a single
-                    // Loki layer today. Warn so operators relying on multiple
-                    // sinks are not silently downgraded to one.
-                    tracing::warn!(
-                        extra_count = rest.len(),
-                        "Multiple --loki-addresses provided; only the first is used"
-                    );
-                }
-
-                let mut labels = HashMap::new();
-                labels.insert("service".to_string(), self.loki.loki_service.clone());
-
-                builder = builder.loki(pluto_tracing::LokiConfig {
-                    loki_url: loki_url.clone(),
-                    labels,
-                    extra_fields: HashMap::new(),
-                });
+        let loki_config = self.loki.loki_addresses.split_first().map(|(loki_url, rest)| {
+            if !rest.is_empty() {
+                // Charon fans logs out to every entry in `loki-addresses`, but
+                // `pluto_tracing::TracingConfig` only supports a single Loki
+                // layer today. Warn so operators relying on multiple sinks are
+                // not silently downgraded to one.
+                tracing::warn!(
+                    extra_count = rest.len(),
+                    "Multiple --loki-addresses provided; only the first is used"
+                );
             }
 
-            builder.override_env_filter(self.log.level.clone()).build()
-        };
+            let labels = HashMap::from([(
+                "service".to_string(),
+                self.loki.loki_service.clone(),
+            )]);
+
+            pluto_tracing::LokiConfig {
+                loki_url: loki_url.clone(),
+                labels,
+                extra_fields: HashMap::new(),
+            }
+        });
+
+        let log_config =
+            build_console_tracing_config(self.log.level.clone(), &self.log.color, loki_config);
 
         let builder = pluto_relay_server::config::Config::builder()
             .data_dir(self.data_dir.data_dir)
