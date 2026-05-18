@@ -635,6 +635,7 @@ where
     let compare_ct = compare_cts.token().clone();
     let msg = msg.clone();
     let input_value_source_ch = input_value_source_ch.clone();
+    let mut compare_parent_cancelled = false;
 
     thread::spawn(move || {
         (compare)(
@@ -686,8 +687,9 @@ where
             }
 
             default(RUN_CANCELLATION_POLL_INTERVAL) => {
-                if ct.is_canceled() {
+                if !compare_parent_cancelled && ct.is_canceled() {
                     compare_cts.cancel();
+                    compare_parent_cancelled = true;
                 }
             }
         }
