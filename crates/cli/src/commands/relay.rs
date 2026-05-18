@@ -64,29 +64,31 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
             }
         };
 
-        let loki_config = self.loki.loki_addresses.split_first().map(|(loki_url, rest)| {
-            if !rest.is_empty() {
-                // Charon fans logs out to every entry in `loki-addresses`, but
-                // `pluto_tracing::TracingConfig` only supports a single Loki
-                // layer today. Warn so operators relying on multiple sinks are
-                // not silently downgraded to one.
-                tracing::warn!(
-                    extra_count = rest.len(),
-                    "Multiple --loki-addresses provided; only the first is used"
-                );
-            }
+        let loki_config = self
+            .loki
+            .loki_addresses
+            .split_first()
+            .map(|(loki_url, rest)| {
+                if !rest.is_empty() {
+                    // Charon fans logs out to every entry in `loki-addresses`, but
+                    // `pluto_tracing::TracingConfig` only supports a single Loki
+                    // layer today. Warn so operators relying on multiple sinks are
+                    // not silently downgraded to one.
+                    tracing::warn!(
+                        extra_count = rest.len(),
+                        "Multiple --loki-addresses provided; only the first is used"
+                    );
+                }
 
-            let labels = HashMap::from([(
-                "service".to_string(),
-                self.loki.loki_service.clone(),
-            )]);
+                let labels =
+                    HashMap::from([("service".to_string(), self.loki.loki_service.clone())]);
 
-            pluto_tracing::LokiConfig {
-                loki_url: loki_url.clone(),
-                labels,
-                extra_fields: HashMap::new(),
-            }
-        });
+                pluto_tracing::LokiConfig {
+                    loki_url: loki_url.clone(),
+                    labels,
+                    extra_fields: HashMap::new(),
+                }
+            });
 
         let log_config =
             build_console_tracing_config(self.log.level.clone(), &self.log.color, loki_config);
@@ -336,10 +338,11 @@ pub async fn run(
         e => e,
     }?;
 
-    let result: Result<(), CliError> = pluto_relay_server::p2p::run_relay_p2p_node(&config, key, ct)
-        .await
-        .map(|_| ())
-        .map_err(Into::into);
+    let result: Result<(), CliError> =
+        pluto_relay_server::p2p::run_relay_p2p_node(&config, key, ct)
+            .await
+            .map(|_| ())
+            .map_err(Into::into);
 
     if let Err(err) = &result {
         // Surface the shutdown reason through the subscriber so it reaches
