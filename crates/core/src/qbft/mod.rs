@@ -20,7 +20,7 @@
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::arithmetic_side_effects)]
 
-use cancellation::CancellationToken;
+use cancellation::{CancellationToken, CancellationTokenSource};
 use crossbeam::channel as mpmc;
 use std::{
     any,
@@ -33,6 +33,19 @@ use std::{
 
 type Result<T> = std::result::Result<T, QbftError>;
 
+const RUN_CANCELLATION_POLL_INTERVAL: time::Duration = time::Duration::from_millis(1);
+
+type CompareFn<I, V, C> = dyn Fn(
+        /* ct */ &CancellationToken,
+        /* qcommit */ &Msg<I, V, C>,
+        /* input_value_source_ch */ &mpmc::Receiver<C>,
+        /* input_value_source */ &C,
+        /* return_err */ &mpmc::Sender<Result<()>>,
+        /* return_value */ &mpmc::Sender<C>,
+    ) + Send
+    + Sync
+    + 'static;
+
 #[derive(Debug, thiserror::Error)]
 pub enum QbftError {
     #[error("Timeout")]
@@ -40,6 +53,9 @@ pub enum QbftError {
 
     #[error("Compare leader value with local value failed")]
     CompareError,
+
+    #[error("bug: expected only comparison or timeout error")]
+    UnexpectedCompareError,
 
     #[error("Maximum round reached")]
     MaxRoundReached,
@@ -99,20 +115,10 @@ where
             + Sync,
     >,
 
-    /// Called when leader proposes value and we compare it with our local
-    /// value. It's an opt-in feature that should instantly return `None` on
-    /// `return_err` channel if it is not turned on.
-    pub compare: Box<
-        dyn Fn(
-                /* ct */ &CancellationToken,
-                /* qcommit */ &Msg<I, V, C>,
-                /* input_value_source_ch */ &mpmc::Receiver<C>,
-                /* input_value_source */ &C,
-                /* return_err */ &mpmc::Sender<Result<()>>,
-                /* return_value */ &mpmc::Sender<C>,
-            ) + Send
-            + Sync,
-    >,
+    /// Charon parity hook called when the leader proposes a value. The core
+    /// algorithm only runs this callback and reacts to its result; any
+    /// value-source comparison policy belongs to the caller.
+    pub compare: sync::Arc<CompareFn<I, V, C>>,
 
     /// Called when consensus has been reached on a value.
     pub decide: Box<
@@ -194,12 +200,14 @@ pub const MSG_DECIDED: MessageType = MessageType(5);
 const MSG_SENTINEL: MessageType = MessageType(6); // intentionally not public
 
 impl MessageType {
+    /// Returns true when the message type is one of the known QBFT wire types.
     pub fn valid(&self) -> bool {
         self.0 > MSG_UNKNOWN.0 && self.0 < MSG_SENTINEL.0
     }
 }
 
 impl Display for MessageType {
+    /// Formats the message type using the stable wire/debug label.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self.0 {
             0 => "unknown",
@@ -260,6 +268,7 @@ pub const UPON_JUSTIFIED_DECIDED: UponRule = UponRule(7);
 pub const UPON_ROUND_TIMEOUT: UponRule = UponRule(8); // This is not triggered by a message, but by a timer.
 
 impl Display for UponRule {
+    /// Formats the upon-rule using the stable debug label.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self.0 {
             0 => "nothing",
@@ -284,11 +293,12 @@ struct DedupKey {
     round: i64,
 }
 
-/// Executes the consensus algorithm until the context is closed.
-/// The generic type `I` is the instance of consensus and can be anything.
-/// The generic type `V` is the arbitrary data value being proposed; it only
-/// requires an Equal method. The generic type `C` is the compare value, used to
-/// compare leader's proposed value with local value and can be anything.
+/// Executes one QBFT consensus instance until it decides, errors, or is
+/// cancelled.
+///
+/// `I` identifies the consensus instance, `V` is the comparable proposed value,
+/// and `C` is the application value used by `Definition::compare` to compare a
+/// leader proposal with the local input source.
 pub fn run<I, V, C>(
     ct: &CancellationToken,
     d: &Definition<I, V, C>,
@@ -299,8 +309,9 @@ pub fn run<I, V, C>(
     input_value_source_ch: mpmc::Receiver<C>,
 ) -> Result<()>
 where
-    V: PartialEq + Eq + Hash + Default,
-    C: Clone + Send + Sync + Default,
+    I: Send + Sync + 'static,
+    V: PartialEq + Eq + Hash + Default + 'static,
+    C: Clone + Send + Sync + Default + 'static,
 {
     // === State ===
     let round: Cell<i64> = Cell::new(1);
@@ -414,7 +425,7 @@ where
         (timer_chan, stop_timer) = (d.new_timer)(round.get());
     }
 
-    while !ct.is_canceled() {
+    loop {
         mpmc::select! {
             recv(input_value_ch) -> result => {
                 let iv = result?;
@@ -472,7 +483,7 @@ where
                         stop_timer();
                         (timer_chan, stop_timer) = (d.new_timer)(round.get());
 
-                        let compare_result = compare(
+                        let (new_input_value_source, compare_result) = compare(
                             ct,
                             d,
                             &msg,
@@ -480,12 +491,10 @@ where
                             input_value_source.clone(),
                             &timer_chan,
                         );
+                        input_value_source = new_input_value_source;
 
                         match compare_result {
-                            Ok(v) => {
-                                input_value_source = v;
-                                broadcast_msg(MSG_PREPARE, &msg.value(), None)?;
-                            }
+                            Ok(()) => broadcast_msg(MSG_PREPARE, &msg.value(), None)?,
                             Err(qbft_err) => {
                                 match qbft_err {
                                     QbftError::CompareError => {
@@ -503,7 +512,7 @@ where
 
                                         broadcast_round_change()?;
                                     }
-                                    _ => panic!("bug: expected only {} or {} error", QbftError::CompareError, QbftError::TimeoutError)
+                                    _ => return Err(QbftError::UnexpectedCompareError),
                                 }
                             }
                         }
@@ -579,7 +588,7 @@ where
                 broadcast_round_change()?;
             }
 
-            default => {
+            default(RUN_CANCELLATION_POLL_INTERVAL) => {
                 if ct.is_canceled() {
                     break;
                 }
@@ -590,6 +599,9 @@ where
     Ok(())
 }
 
+/// The callback may cache the local input source and return success/failure.
+/// This helper only preserves that callback result and lets the round timer win
+/// if the callback blocks.
 fn compare<I, V, C>(
     ct: &CancellationToken,
     d: &Definition<I, V, C>,
@@ -597,13 +609,14 @@ fn compare<I, V, C>(
     input_value_source_ch: &mpmc::Receiver<C>,
     input_value_source: C,
     timer_chan: &mpmc::Receiver<time::Instant>,
-) -> Result<C>
+) -> (C, Result<()>)
 where
-    V: PartialEq,
-    C: Clone + Send + Sync,
+    I: Send + Sync + 'static,
+    V: PartialEq + 'static,
+    C: Clone + Send + Sync + 'static,
 {
     let (compare_err_tx, compare_err_rx) = mpmc::bounded::<Result<()>>(1);
-    let (compare_value_tx, compare_value_rx) = mpmc::bounded::<C>(1);
+    let (compare_value_tx, mut compare_value_rx) = mpmc::bounded::<C>(1);
 
     // d.Compare has 2 roles:
     // 1. Read from the `input_value_source_ch` (if `input_value_source` is empty).
@@ -615,46 +628,69 @@ where
     // If comparison or any other unexpected error occurs, the error is returned on
     // `compare_err` channel.
 
-    thread::scope(|s| {
-        let mut result = input_value_source.clone();
-        let compare = &d.compare;
+    let mut result = input_value_source.clone();
+    let compare = d.compare.clone();
+    let compare_cts = sync::Arc::new(CancellationTokenSource::new());
+    let compare_ct = compare_cts.token().clone();
+    let msg = msg.clone();
+    let input_value_source_ch = input_value_source_ch.clone();
 
-        s.spawn(move || {
-            (compare)(
-                ct,
-                msg,
-                input_value_source_ch,
-                &input_value_source,
-                &compare_err_tx,
-                &compare_value_tx,
-            );
-        });
+    thread::spawn(move || {
+        (compare)(
+            &compare_ct,
+            &msg,
+            &input_value_source_ch,
+            &input_value_source,
+            &compare_err_tx,
+            &compare_value_tx,
+        );
+    });
 
-        loop {
-            mpmc::select! {
-                recv(compare_err_rx) -> msg => {
-                    let err = msg?;
+    loop {
+        mpmc::select! {
+            recv(compare_err_rx) -> msg => {
+                let err = match msg {
+                    Ok(err) => err,
+                    Err(err) => {
+                        compare_cts.cancel();
+                        return (result, Err(QbftError::ChannelError(err)));
+                    }
+                };
 
-                    return match err {
-                        Ok(_) => Ok(result),
-                        Err(_) => Err(QbftError::CompareError),
-                    };
-                },
-
-                recv(compare_value_rx) -> msg => {
-                    let value = msg?;
-
+                while let Ok(value) = compare_value_rx.try_recv() {
                     result = value;
-                },
+                }
 
-                recv(timer_chan) -> msg => {
-                    msg?;
+                compare_cts.cancel();
+                return match err {
+                    Ok(()) => (result, Ok(())),
+                    Err(_) => (result, Err(QbftError::CompareError)),
+                };
+            },
 
-                    return Err(QbftError::TimeoutError);
+            recv(compare_value_rx) -> msg => {
+                match msg {
+                    Ok(value) => result = value,
+                    Err(_) => compare_value_rx = mpmc::never(),
+                }
+            },
+
+            recv(timer_chan) -> msg => {
+                compare_cts.cancel();
+                if let Err(err) = msg {
+                    return (result, Err(QbftError::ChannelError(err)));
+                }
+
+                return (result, Err(QbftError::TimeoutError));
+            }
+
+            default(RUN_CANCELLATION_POLL_INTERVAL) => {
+                if ct.is_canceled() {
+                    compare_cts.cancel();
                 }
             }
         }
-    })
+    }
 }
 
 /// Returns all messages from the provided round.
@@ -1122,6 +1158,7 @@ where
     value: V,
 }
 
+/// Returns all unique-source PREPARE quorums grouped by identical round and value.
 fn get_prepare_quorums<I, V, C>(
     d: &Definition<I, V, C>,
     all: &Vec<Msg<I, V, C>>,

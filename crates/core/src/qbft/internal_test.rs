@@ -12,6 +12,7 @@ use std::{
 
 const WRITE_CHAN_ERR: &str = "Failed to write to channel";
 const READ_CHAN_ERR: &str = "Failed to read from channel";
+// Fixed seed for deterministic chain-split duplicate-message simulation.
 const CHAIN_SPLIT_SEED: u64 = 0x4348_4149_4e53_504c;
 
 type RunOutcome = std::thread::Result<Result<()>>;
@@ -66,6 +67,9 @@ fn test_qbft(test: Test) {
     let clock = FakeClock::new(start_time);
 
     let cts = CancellationTokenSource::new();
+    // Keep peer iteration deterministic. These fake-clock tests assert exact
+    // rounds, and broadcast fanout order affects which node observes quorums
+    // first when tests run in parallel.
     let mut receives = BTreeMap::<
         i64,
         (
@@ -102,11 +106,8 @@ fn test_qbft(test: Test) {
                 result_chan_tx.send(q_commit.clone()).expect(WRITE_CHAN_ERR);
             })
         },
-        compare: Box::new(|_, _, _, input_value_source, return_err, return_value| {
-            return_value
-                .send(*input_value_source)
-                .expect(WRITE_CHAN_ERR);
-            send_compare_result(return_err, return_value, Ok(()));
+        compare: Arc::new(|_, _, _, _, return_err, _| {
+            return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
         }),
         nodes: N as i64,
         fifo_limit: FIFO_LIMIT as i64,
@@ -329,6 +330,10 @@ fn test_qbft(test: Test) {
                 &clock,
             );
 
+            if decided {
+                next_fuzz_at = None;
+            }
+
             while let Some(next) = next_fuzz_at {
                 if clock.elapsed() < next {
                     break;
@@ -467,6 +472,7 @@ fn test_qbft(test: Test) {
 
                     // Trigger shutdown
                     decided = true;
+                    next_fuzz_at = None;
 
                     clock.cancel();
                     cts.cancel();
@@ -565,21 +571,6 @@ fn format_run_outcome(outcome: &RunOutcome) -> String {
 
 fn outcome_is_error(outcome: &RunOutcome, expected: fn(&QbftError) -> bool) -> bool {
     matches!(outcome, Ok(Err(err)) if expected(err))
-}
-
-fn send_compare_result<C: Send + 'static>(
-    return_err: &mpmc::Sender<Result<()>>,
-    return_value: &mpmc::Sender<C>,
-    result: Result<()>,
-) {
-    // Keep the auxiliary compare channels alive until the result is consumed.
-    // Go channels do not close when the callback returns; Rust senders do.
-    let keepalive = return_value.clone();
-    thread::spawn(move || {
-        thread::sleep(Duration::from_millis(50));
-        drop(keepalive);
-    });
-    return_err.send(result).expect(WRITE_CHAN_ERR);
 }
 
 fn test_seed(test: &Test) -> u64 {
@@ -1131,7 +1122,7 @@ fn noop_definition() -> Definition<i64, i64, i64> {
         is_leader: Box::new(|_, _, _| false),
         new_timer: Box::new(|_| (mpmc::never(), Box::new(|| {}))),
         decide: Box::new(|_, _, _, _| {}),
-        compare: Box::new(|_, _, _, _, _, _| {}),
+        compare: Arc::new(|_, _, _, _, _, _| {}),
         nodes: 0,
         fifo_limit: 0,
         log_round_change: Box::new(|_, _, _, _, _, _| {}),
@@ -1253,11 +1244,8 @@ fn duplicate_pre_prepare_rules() {
 
         panic!("unexpected round {}", round);
     });
-    def.compare = Box::new(|_, _, _, input_value_source, return_err, return_value| {
-        return_value
-            .send(*input_value_source)
-            .expect(WRITE_CHAN_ERR);
-        send_compare_result(return_err, return_value, Ok(()));
+    def.compare = Arc::new(|_, _, _, _, return_err, _| {
+        return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
     });
 
     let (r_chan_tx, r_chan_rx) = mpmc::bounded::<Msg<i64, i64, i64>>(2);
@@ -1283,6 +1271,35 @@ fn duplicate_pre_prepare_rules() {
     );
 
     assert!(res.is_ok());
+}
+
+#[test]
+fn idle_run_returns_when_cancelled() {
+    let cts = CancellationTokenSource::new();
+    let token = cts.token().clone();
+    let def = noop_definition();
+    let transport = noop_transport();
+    let (_input_tx, input_rx) = mpmc::bounded::<i64>(1);
+    let (_source_tx, source_rx) = mpmc::bounded::<i64>(1);
+    let (done_tx, done_rx) = mpmc::bounded(1);
+
+    thread::spawn(move || {
+        done_tx
+            .send(qbft::run(
+                &token, &def, &transport, &0, 1, input_rx, source_rx,
+            ))
+            .expect(WRITE_CHAN_ERR);
+    });
+
+    thread::sleep(Duration::from_millis(10));
+    cts.cancel();
+
+    assert!(matches!(
+        done_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("idle run must unblock on cancellation"),
+        Ok(())
+    ));
 }
 
 #[test]
@@ -1379,33 +1396,42 @@ fn compare_success_error_cached_value_source_and_timeout() {
     let (_vs_tx, vs_rx) = mpmc::bounded::<i64>(1);
     let timer = mpmc::never();
     let mut def = noop_definition();
-    def.compare = Box::new(|_, _, _, input_value_source, return_err, return_value| {
-        return_value
-            .send(*input_value_source)
-            .expect(WRITE_CHAN_ERR);
-        send_compare_result(return_err, return_value, Ok(()));
+    def.compare = Arc::new(|_, _, _, _, return_err, _| {
+        return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
     });
     assert!(matches!(
         compare(cts.token(), &def, &msg, &vs_rx, 0, &timer),
-        Ok(0)
+        (0, Ok(()))
     ));
 
     let mut def = noop_definition();
-    def.compare = Box::new(|_, _, _, input_value_source, return_err, return_value| {
-        return_value
-            .send(*input_value_source)
+    def.compare = Arc::new(|_, _, _, _, return_err, _| {
+        let return_err = return_err.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(10));
+            return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
+        });
+    });
+    assert!(matches!(
+        compare(cts.token(), &def, &msg, &vs_rx, 41, &timer),
+        (41, Ok(()))
+    ));
+
+    let mut def = noop_definition();
+    def.compare = Arc::new(|_, _, _, _, return_err, _| {
+        return_err
+            .send(Err(QbftError::CompareError))
             .expect(WRITE_CHAN_ERR);
-        send_compare_result(return_err, return_value, Err(QbftError::CompareError));
     });
     assert!(matches!(
         compare(cts.token(), &def, &msg, &vs_rx, 0, &timer),
-        Err(QbftError::CompareError)
+        (0, Err(QbftError::CompareError))
     ));
 
     let (vs_tx, vs_rx) = mpmc::bounded::<i64>(1);
     vs_tx.send(42).expect(WRITE_CHAN_ERR);
     let mut def = noop_definition();
-    def.compare = Box::new(
+    def.compare = Arc::new(
         |_, _, input_value_source_ch, input_value_source, return_err, return_value| {
             let cached = if *input_value_source == 0 {
                 let value = input_value_source_ch.recv().expect(READ_CHAN_ERR);
@@ -1415,25 +1441,119 @@ fn compare_success_error_cached_value_source_and_timeout() {
                 *input_value_source
             };
             assert_eq!(42, cached);
-            send_compare_result(return_err, return_value, Ok(()));
+            return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
         },
     );
     assert!(matches!(
         compare(cts.token(), &def, &msg, &vs_rx, 0, &timer),
-        Ok(42)
+        (42, Ok(()))
+    ));
+
+    let (vs_tx, vs_rx) = mpmc::bounded::<i64>(1);
+    vs_tx.send(43).expect(WRITE_CHAN_ERR);
+    let mut def = noop_definition();
+    def.compare = Arc::new(
+        |_, _, input_value_source_ch, input_value_source, return_err, return_value| {
+            let cached = if *input_value_source == 0 {
+                let value = input_value_source_ch.recv().expect(READ_CHAN_ERR);
+                return_value.send(value).expect(WRITE_CHAN_ERR);
+                value
+            } else {
+                *input_value_source
+            };
+            assert_eq!(43, cached);
+            return_err
+                .send(Err(QbftError::CompareError))
+                .expect(WRITE_CHAN_ERR);
+        },
+    );
+    assert!(matches!(
+        compare(cts.token(), &def, &msg, &vs_rx, 0, &timer),
+        (43, Err(QbftError::CompareError))
     ));
 
     let (timer_tx, timer_rx) = mpmc::bounded(1);
     timer_tx.send(time::Instant::now()).expect(WRITE_CHAN_ERR);
     let mut def = noop_definition();
-    def.compare = Box::new(|_, _, _, _, return_err, _| {
+    def.compare = Arc::new(|_, _, _, _, return_err, _| {
         thread::sleep(Duration::from_millis(20));
         let _ = return_err.send(Ok(()));
     });
     assert!(matches!(
-        compare(cts.token(), &def, &msg, &vs_rx, 0, &timer_rx),
-        Err(QbftError::TimeoutError)
+        compare(cts.token(), &def, &msg, &vs_rx, 44, &timer_rx),
+        (44, Err(QbftError::TimeoutError))
     ));
+}
+
+#[test]
+fn compare_timeout_does_not_wait_for_blocked_callback() {
+    let cts = CancellationTokenSource::new();
+    let msg = new_msg(MSG_PRE_PREPARE, 0, 1, 1, 7, 11, 0, 0, None);
+    let (_vs_tx, vs_rx) = mpmc::bounded::<i64>(1);
+    let (timer_tx, timer_rx) = mpmc::bounded(1);
+    timer_tx.send(time::Instant::now()).expect(WRITE_CHAN_ERR);
+
+    let mut def = noop_definition();
+    def.compare = Arc::new(|ct, _, _, _, return_err, _| {
+        while !ct.is_canceled() {
+            thread::sleep(Duration::from_millis(1));
+        }
+        let _ = return_err.send(Ok(()));
+    });
+
+    let (result_tx, result_rx) = mpmc::bounded(1);
+    thread::spawn(move || {
+        result_tx
+            .send(compare(cts.token(), &def, &msg, &vs_rx, 0, &timer_rx))
+            .expect(WRITE_CHAN_ERR);
+    });
+
+    assert!(matches!(
+        result_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("compare must return on timer without waiting for blocked callback"),
+        (0, Err(QbftError::TimeoutError))
+    ));
+}
+
+#[test]
+fn compare_parent_cancel_cancels_callback_token() {
+    let cts = CancellationTokenSource::new();
+    let token = cts.token().clone();
+    let msg = new_msg(MSG_PRE_PREPARE, 0, 1, 1, 7, 11, 0, 0, None);
+    let (_vs_tx, vs_rx) = mpmc::bounded::<i64>(1);
+    let (timer_tx, timer_rx) = mpmc::bounded(1);
+    let (token_cancelled_tx, token_cancelled_rx) = mpmc::bounded(1);
+
+    let mut def = noop_definition();
+    def.compare = Arc::new(move |ct, _, _, _, return_err, _| {
+        while !ct.is_canceled() {
+            thread::sleep(Duration::from_millis(1));
+        }
+        token_cancelled_tx.send(()).expect(WRITE_CHAN_ERR);
+        return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
+    });
+
+    let (result_tx, result_rx) = mpmc::bounded(1);
+    thread::spawn(move || {
+        result_tx
+            .send(compare(&token, &def, &msg, &vs_rx, 0, &timer_rx))
+            .expect(WRITE_CHAN_ERR);
+    });
+
+    thread::sleep(Duration::from_millis(10));
+    cts.cancel();
+
+    match result_rx.recv_timeout(Duration::from_millis(100)) {
+        Ok(result) => assert!(matches!(result, (0, Ok(())))),
+        Err(err) => {
+            let _ = timer_tx.send(time::Instant::now());
+            panic!("compare callback token must be canceled by parent token: {err}");
+        }
+    }
+    token_cancelled_rx
+        .recv_timeout(Duration::from_millis(100))
+        .expect("callback token must be canceled by parent token");
 }
 
 fn buffer_by_source(msgs: &[Msg<i64, i64, i64>]) -> HashMap<i64, Vec<Msg<i64, i64, i64>>> {
@@ -1503,6 +1623,9 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
     let clock = FakeClock::new(time::Instant::now());
     let cts = CancellationTokenSource::new();
     let trace = Trace::new();
+    // Keep peer iteration deterministic. These fake-clock tests assert exact
+    // rounds, and broadcast fanout order affects which node observes quorums
+    // first when tests run in parallel.
     let mut receives = BTreeMap::<
         i64,
         (
@@ -1529,7 +1652,7 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
                 result_chan_tx.send(q_commit.clone()).expect(WRITE_CHAN_ERR);
             })
         },
-        compare: Box::new(
+        compare: Arc::new(
             |_, qcommit, input_value_source_ch, input_value_source, return_err, return_value| {
                 let leader_value_source = qcommit.value_source().expect("value source");
                 let local = if *input_value_source == 0 {
@@ -1541,13 +1664,13 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
                 };
 
                 if leader_value_source != local {
-                    return_value.send(local).expect(WRITE_CHAN_ERR);
-                    send_compare_result(return_err, return_value, Err(QbftError::CompareError));
+                    return_err
+                        .send(Err(QbftError::CompareError))
+                        .expect(WRITE_CHAN_ERR);
                     return;
                 }
 
-                return_value.send(local).expect(WRITE_CHAN_ERR);
-                send_compare_result(return_err, return_value, Ok(()));
+                return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
             },
         ),
         nodes: N as i64,
@@ -1637,11 +1760,9 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
             let value_source = test.value_source[&i];
             s.spawn(move || {
                 let (v_tx, v_rx) = mpmc::bounded::<i64>(1);
-                let (vs_tx, vs_rx) = mpmc::unbounded::<i64>();
+                let (vs_tx, vs_rx) = mpmc::bounded::<i64>(1);
                 v_tx.send(value_source).expect(WRITE_CHAN_ERR);
-                for _ in 0..=MAX_ROUND {
-                    vs_tx.send(value_source).expect(WRITE_CHAN_ERR);
-                }
+                vs_tx.send(value_source).expect(WRITE_CHAN_ERR);
                 let run_result = panic::catch_unwind(AssertUnwindSafe(|| {
                     qbft::run(&token, &defs, &transport, &instance, i, v_rx, vs_rx)
                 }));
@@ -1756,7 +1877,11 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
                 };
                 clock.advance(tick);
                 let limit = if test.should_halt {
-                    Duration::from_secs(600)
+                    let max_round = u32::try_from(MAX_ROUND).expect("MAX_ROUND fits u32");
+                    let seconds = 1_u64
+                        .checked_shl(max_round.checked_add(1).expect("MAX_ROUND permits timeout limit"))
+                        .expect("MAX_ROUND permits timeout limit");
+                    Duration::from_secs(seconds)
                 } else {
                     Duration::from_secs(60)
                 };

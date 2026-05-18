@@ -1,6 +1,6 @@
 use crossbeam::channel as mpmc;
 use std::{
-    collections::BTreeMap,
+    collections::HashMap,
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
@@ -15,7 +15,7 @@ struct FakeClockInner {
     start: Instant,
     now: Instant,
     last_id: usize,
-    clients: BTreeMap<usize, (mpmc::Sender<Instant>, Instant)>,
+    clients: HashMap<usize, (mpmc::Sender<Instant>, Instant)>,
 }
 
 impl FakeClock {
