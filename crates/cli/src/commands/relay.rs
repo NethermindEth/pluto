@@ -1,10 +1,10 @@
 use crate::{
-    commands::common::{ConsoleColor, LICENSE, build_console_tracing_config, parse_relay_addr},
+    commands::common::{ConsoleColor, LICENSE, parse_relay_addr},
     error::CliError,
 };
 use libp2p::multiaddr::Protocol;
 use pluto_p2p::k1;
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
@@ -60,7 +60,28 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
             }
         };
 
-        let log_config = build_console_tracing_config(self.log.level.clone(), &self.log.color);
+        let log_config = {
+            let mut builder = pluto_tracing::TracingConfig::builder().with_default_console();
+
+            builder = match &self.log.color {
+                ConsoleColor::Auto => builder.console_with_ansi(std::env::var("NO_COLOR").is_err()),
+                ConsoleColor::Force => builder.console_with_ansi(true),
+                ConsoleColor::Disable => builder.console_with_ansi(false),
+            };
+
+            if let Some(loki_url) = self.loki.loki_addresses.first() {
+                let mut labels = HashMap::new();
+                labels.insert("service".to_string(), self.loki.loki_service.clone());
+
+                builder = builder.loki(pluto_tracing::LokiConfig {
+                    loki_url: loki_url.clone(),
+                    labels,
+                    extra_fields: HashMap::new(),
+                });
+            }
+
+            builder.override_env_filter(self.log.level.clone()).build()
+        };
 
         let builder = pluto_relay_server::config::Config::builder()
             .data_dir(self.data_dir.data_dir)
@@ -265,6 +286,18 @@ pub async fn run(
     config: pluto_relay_server::config::Config,
     ct: CancellationToken,
 ) -> Result<(), CliError> {
+    let loki_task = match pluto_tracing::init(&config.log_config) {
+        Ok(Some(task)) => Some(tokio::spawn(task)),
+        Ok(None) => None,
+        Err(pluto_tracing::init::Error::InitError(_)) => {
+            // A global tracing subscriber is already installed (e.g. when
+            // running multiple tests in the same process). Continue with the
+            // existing subscriber instead of failing.
+            None
+        }
+        Err(err) => return Err(err.into()),
+    };
+
     info!("{LICENSE}");
     info!(config = ?config);
 
@@ -291,10 +324,21 @@ pub async fn run(
         e => e,
     }?;
 
-    pluto_relay_server::p2p::run_relay_p2p_node(&config, key, ct)
+    let result = pluto_relay_server::p2p::run_relay_p2p_node(&config, key, ct)
         .await
         .map(|_| ())
-        .map_err(Into::into)
+        .map_err(Into::into);
+
+    // Give the Loki worker a short window to flush buffered logs before the
+    // runtime aborts it. The task holds a `Layer` clone through the global
+    // subscriber and never completes on its own, so the wait is bounded.
+    if let Some(handle) = loki_task {
+        let abort_handle = handle.abort_handle();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), handle).await;
+        abort_handle.abort();
+    }
+
+    result
 }
 
 #[cfg(test)]
