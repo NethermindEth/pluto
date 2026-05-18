@@ -429,6 +429,10 @@ where
     }
 
     loop {
+        if ct.is_canceled() {
+            return Err(QbftError::ContextCanceled);
+        }
+
         mpmc::select! {
             recv(input_value_ch) -> result => {
                 let iv = result?;

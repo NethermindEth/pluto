@@ -1330,6 +1330,58 @@ fn idle_run_returns_when_cancelled() {
 }
 
 #[test]
+fn run_cancels_under_hot_receive_stream() {
+    let cts = CancellationTokenSource::new();
+    let token = cts.token().clone();
+    let mut def = noop_definition();
+    def.nodes = 4;
+    def.fifo_limit = 100;
+
+    let (receive_tx, receive_rx) = mpmc::bounded::<Msg<i64, i64, i64>>(1024);
+    let transport = Transport {
+        receive: receive_rx,
+        ..noop_transport()
+    };
+    let (_input_tx, input_rx) = mpmc::bounded::<i64>(1);
+    let (_source_tx, source_rx) = mpmc::bounded::<i64>(1);
+    let (done_tx, done_rx) = mpmc::bounded(1);
+
+    let sender_cts = CancellationTokenSource::new();
+    let sender_token = sender_cts.token().clone();
+    let sender = thread::spawn(move || {
+        let msg = new_msg(MSG_PREPARE, 0, 1, 2, 1, 0, 0, 0, None);
+        while !sender_token.is_canceled() {
+            match receive_tx.try_send(msg.clone()) {
+                Ok(()) => {}
+                Err(mpmc::TrySendError::Full(_)) => thread::yield_now(),
+                Err(mpmc::TrySendError::Disconnected(_)) => break,
+            }
+        }
+    });
+
+    thread::spawn(move || {
+        done_tx
+            .send(qbft::run(
+                &token, &def, &transport, &0, 1, input_rx, source_rx,
+            ))
+            .expect(WRITE_CHAN_ERR);
+    });
+
+    thread::sleep(Duration::from_millis(10));
+    cts.cancel();
+
+    assert!(matches!(
+        done_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("run must unblock on cancellation even with a hot receive stream"),
+        Err(QbftError::ContextCanceled)
+    ));
+
+    sender_cts.cancel();
+    sender.join().expect("sender thread must exit");
+}
+
+#[test]
 fn classify_rules() {
     let mut def = noop_definition();
     def.nodes = 4;
