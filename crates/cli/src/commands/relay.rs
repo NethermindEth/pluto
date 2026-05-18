@@ -312,6 +312,37 @@ pub async fn run(
         Err(err) => return Err(err.into()),
     };
 
+    // Run the relay in an inner scope so every early `?` / `return Err(..)` is
+    // captured into `result` and the Loki cleanup below always runs.
+    let result = serve_relay(&config, ct).await;
+
+    if let Err(err) = &result {
+        // Surface the shutdown reason through the subscriber so it reaches
+        // Loki before we close the worker; `main` only `eprintln!`s the
+        // returned error and that path bypasses the tracing subscriber.
+        error!(error = %err, "relay exited with error");
+    }
+
+    // Drain the Loki worker under a single budget so a hung Loki endpoint
+    // (e.g. `controller.shutdown` blocked on a full mpsc) cannot wedge
+    // process exit. After the budget elapses we hard-abort the worker.
+    if let Some((controller, handle)) = loki_shutdown {
+        let abort_handle = handle.abort_handle();
+        let _ = tokio::time::timeout(LOKI_FLUSH_TIMEOUT, async {
+            controller.shutdown().await;
+            let _ = handle.await;
+        })
+        .await;
+        abort_handle.abort();
+    }
+
+    result
+}
+
+async fn serve_relay(
+    config: &pluto_relay_server::config::Config,
+    ct: CancellationToken,
+) -> Result<(), CliError> {
     info!("{LICENSE}");
     info!(config = ?config);
 
@@ -338,30 +369,10 @@ pub async fn run(
         e => e,
     }?;
 
-    let result: Result<(), CliError> =
-        pluto_relay_server::p2p::run_relay_p2p_node(&config, key, ct)
-            .await
-            .map(|_| ())
-            .map_err(Into::into);
-
-    if let Err(err) = &result {
-        // Surface the shutdown reason through the subscriber so it reaches
-        // Loki before we close the worker; `main` only `eprintln!`s the
-        // returned error and that path bypasses the tracing subscriber.
-        error!(error = %err, "relay exited with error");
-    }
-
-    // Drain the Loki worker: signal it to quit, give it a bounded window to
-    // flush pending events, then abort as a hard fallback in case the Loki
-    // endpoint is unreachable.
-    if let Some((controller, handle)) = loki_shutdown {
-        controller.shutdown().await;
-        let abort_handle = handle.abort_handle();
-        let _ = tokio::time::timeout(LOKI_FLUSH_TIMEOUT, handle).await;
-        abort_handle.abort();
-    }
-
-    result
+    pluto_relay_server::p2p::run_relay_p2p_node(config, key, ct)
+        .await
+        .map(|_| ())
+        .map_err(Into::into)
 }
 
 #[cfg(test)]
