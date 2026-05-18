@@ -12,8 +12,8 @@ use std::{
 
 const WRITE_CHAN_ERR: &str = "Failed to write to channel";
 const READ_CHAN_ERR: &str = "Failed to read from channel";
-// Fixed seed for deterministic chain-split duplicate-message simulation.
-const CHAIN_SPLIT_SEED: u64 = 0x4348_4149_4e53_504c;
+const TEST_SEED_LABEL: &str = "qbft-test";
+const CHAIN_SPLIT_SEED_LABEL: &str = "chain-split";
 const TEST_STREAM_DROP: u64 = 1;
 const TEST_STREAM_DUPLICATE: u64 = 2;
 const TEST_STREAM_JITTER: u64 = 3;
@@ -583,7 +583,7 @@ fn outcome_is_error(outcome: &RunOutcome, expected: fn(&QbftError) -> bool) -> b
 }
 
 fn test_seed(test: &Test) -> u64 {
-    let mut seed = 0x5142_4654_5445_5354_u64;
+    let mut seed = seed_from_label(TEST_SEED_LABEL);
     seed ^= test.instance as u64;
     seed ^= u64::from(test.const_period) << 8;
     seed ^= (test.bcast_jitter_ms as u64) << 16;
@@ -593,6 +593,14 @@ fn test_seed(test: &Test) -> u64 {
     seed ^= u64::from(test.random_round) << 56;
     seed ^= u64::from(test.fuzz) << 57;
     seed
+}
+
+fn seed_from_label(label: &str) -> u64 {
+    // Small rolling-hash multiplier; only separates deterministic test labels,
+    // not used for cryptographic randomness or protocol behavior.
+    label.bytes().fold(0_u64, |seed, byte| {
+        seed.wrapping_mul(131).wrapping_add(u64::from(byte))
+    })
 }
 
 /// Construct a leader election function.
@@ -1797,8 +1805,12 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
                         continue;
                     }
                     out_tx.send(msg.clone()).expect(WRITE_CHAN_ERR);
-                    if deterministic_unit(CHAIN_SPLIT_SEED, &msg, *target, TEST_STREAM_DUPLICATE)
-                        < 0.1
+                    if deterministic_unit(
+                        seed_from_label(CHAIN_SPLIT_SEED_LABEL),
+                        &msg,
+                        *target,
+                        TEST_STREAM_DUPLICATE,
+                    ) < 0.1
                     {
                         out_tx.send(msg.clone()).expect(WRITE_CHAN_ERR);
                     }
