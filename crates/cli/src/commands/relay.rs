@@ -69,7 +69,18 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
                 ConsoleColor::Disable => builder.console_with_ansi(false),
             };
 
-            if let Some(loki_url) = self.loki.loki_addresses.first() {
+            if let Some((loki_url, rest)) = self.loki.loki_addresses.split_first() {
+                if !rest.is_empty() {
+                    // Charon fans logs out to every entry in `loki-addresses`,
+                    // but `pluto_tracing::TracingConfig` only supports a single
+                    // Loki layer today. Warn so operators relying on multiple
+                    // sinks are not silently downgraded to one.
+                    tracing::warn!(
+                        extra_count = rest.len(),
+                        "Multiple --loki-addresses provided; only the first is used"
+                    );
+                }
+
                 let mut labels = HashMap::new();
                 labels.insert("service".to_string(), self.loki.loki_service.clone());
 
