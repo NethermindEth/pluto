@@ -308,7 +308,7 @@ pub async fn run(
         // the relay silently uses an unrelated subscriber and Loki forwarding
         // is dropped — fail loudly instead.
         #[cfg(test)]
-        Err(pluto_tracing::init::Error::InitError(_)) => None,
+        Err(pluto_tracing::init::Error::Init(_)) => None,
         Err(err) => return Err(err.into()),
     };
 

@@ -13,20 +13,27 @@ use crate::{config::TracingConfig, layers::metrics::MetricsLayer};
 pub enum Error {
     /// Failed to initialize tracing subscriber.
     #[error("failed to initialize tracing subscriber: {0}")]
-    InitError(#[from] tracing_subscriber::util::TryInitError),
+    Init(#[from] tracing_subscriber::util::TryInitError),
 
     /// Failed to parse Loki URL.
     #[error("failed to parse Loki URL: {0}")]
-    ParseError(#[from] tracing_loki::url::ParseError),
+    Parse(#[from] tracing_loki::url::ParseError),
 
     /// Failed to create Loki layer.
     #[error("failed to create Loki layer: {0}")]
-    CreateLayerError(#[from] tracing_loki::Error),
+    CreateLayer(#[from] tracing_loki::Error),
 }
 
 type Result<T> = std::result::Result<T, Error>;
 
 /// Loki background task plus the controller used to signal graceful shutdown.
+///
+/// For long-lived services, hold onto `controller` and call
+/// `controller.shutdown().await` followed by awaiting the spawned `task`
+/// before exit so buffered events are drained. Short-lived programs (e.g.
+/// examples, one-shot CLI subcommands) may drop the controller; any logs
+/// not yet posted to Loki at process exit will be lost.
+#[must_use = "the background `task` must be spawned for events to reach Loki"]
 pub struct LokiInit {
     /// Handle used to tell the background task to drain its queue and exit.
     pub controller: BackgroundTaskController,
