@@ -14,6 +14,15 @@ const WRITE_CHAN_ERR: &str = "Failed to write to channel";
 const READ_CHAN_ERR: &str = "Failed to read from channel";
 // Fixed seed for deterministic chain-split duplicate-message simulation.
 const CHAIN_SPLIT_SEED: u64 = 0x4348_4149_4e53_504c;
+const TEST_STREAM_DROP: u64 = 1;
+const TEST_STREAM_DUPLICATE: u64 = 2;
+const TEST_STREAM_JITTER: u64 = 3;
+const TEST_STREAM_DELAY_ORDER: u64 = 4;
+const TEST_STREAM_MSG_TYPE: u64 = 10;
+const TEST_STREAM_MSG_ROUND: u64 = 11;
+const TEST_STREAM_MSG_VALUE: u64 = 12;
+const TEST_STREAM_MSG_PREPARED_ROUND: u64 = 13;
+const TEST_STREAM_MSG_PREPARED_VALUE: u64 = 14;
 
 type RunOutcome = std::thread::Result<Result<()>>;
 type TestMsgRef = Msg<i64, i64, i64>;
@@ -650,7 +659,8 @@ fn bcast(
         return;
     }
 
-    let delta_ms = (f64::from(jitter_ms) * deterministic_unit(seed, &msg, 0, 3)) as i32;
+    let delta_ms =
+        (f64::from(jitter_ms) * deterministic_unit(seed, &msg, 0, TEST_STREAM_JITTER)) as i32;
     let delay = Duration::from_millis((jitter_ms + delta_ms) as u64);
     trace.push(format!(
         "{:?} {} => {}@{} (bcast delay {:?})",
@@ -660,7 +670,7 @@ fn bcast(
         msg.round(),
         delay
     ));
-    let key = deterministic_msg_u64(seed, &msg, 0, 4);
+    let key = deterministic_msg_u64(seed, &msg, 0, TEST_STREAM_DELAY_ORDER);
     broadcast
         .send(BroadcastEvent::Delayed(PendingBroadcast {
             deliver_at: clock.elapsed() + delay,
@@ -706,7 +716,7 @@ fn fanout_broadcast(
         }
 
         if let Some(p) = drop_prob.get(&msg.source()) {
-            if deterministic_unit(seed, &msg, *target, 1) < *p {
+            if deterministic_unit(seed, &msg, *target, TEST_STREAM_DROP) < *p {
                 trace.push(format!(
                     "{:?} {} => {}@{} => {} (dropped)",
                     clock.elapsed(),
@@ -722,7 +732,7 @@ fn fanout_broadcast(
         out_tx.send(msg.clone()).expect(WRITE_CHAN_ERR);
         broadcasts += 1;
 
-        if deterministic_unit(seed, &msg, *target, 2) < 0.1 {
+        if deterministic_unit(seed, &msg, *target, TEST_STREAM_DUPLICATE) < 0.1 {
             out_tx.send(msg.clone()).expect(WRITE_CHAN_ERR);
             broadcasts += 1;
             trace.push(format!(
@@ -748,25 +758,26 @@ fn random_msg(instance: i64, peer_idx: i64, seed: u64, counter: u64) -> Msg<i64,
         MSG_DECIDED,
     ];
     new_msg(
-        message_types[deterministic_range(seed, counter, 10, message_types.len())],
+        message_types
+            [deterministic_range(seed, counter, TEST_STREAM_MSG_TYPE, message_types.len())],
         instance,
         peer_idx,
-        deterministic_i64(seed, counter, 11, 10),
-        deterministic_i64(seed, counter, 12, 10),
+        deterministic_i64(seed, counter, TEST_STREAM_MSG_ROUND, 10),
+        deterministic_i64(seed, counter, TEST_STREAM_MSG_VALUE, 10),
         0,
-        deterministic_i64(seed, counter, 13, 10),
-        deterministic_i64(seed, counter, 14, 10),
+        deterministic_i64(seed, counter, TEST_STREAM_MSG_PREPARED_ROUND, 10),
+        deterministic_i64(seed, counter, TEST_STREAM_MSG_PREPARED_VALUE, 10),
         None,
     )
 }
 
-fn deterministic_unit(seed: u64, msg: &Msg<i64, i64, i64>, target: i64, salt: u64) -> f64 {
-    let value = deterministic_msg_u64(seed, msg, target, salt) >> 11;
+fn deterministic_unit(seed: u64, msg: &Msg<i64, i64, i64>, target: i64, stream_id: u64) -> f64 {
+    let value = deterministic_msg_u64(seed, msg, target, stream_id) >> 11;
     value as f64 / ((1_u64 << 53) as f64)
 }
 
-fn deterministic_msg_u64(seed: u64, msg: &Msg<i64, i64, i64>, target: i64, salt: u64) -> u64 {
-    let mut value = splitmix64(seed ^ salt);
+fn deterministic_msg_u64(seed: u64, msg: &Msg<i64, i64, i64>, target: i64, stream_id: u64) -> u64 {
+    let mut value = splitmix64(seed ^ stream_id);
     value = splitmix64(value ^ i64_to_u64(msg.type_().0));
     value = splitmix64(value ^ i64_to_u64(msg.instance()));
     value = splitmix64(value ^ i64_to_u64(msg.source()));
@@ -778,14 +789,14 @@ fn deterministic_msg_u64(seed: u64, msg: &Msg<i64, i64, i64>, target: i64, salt:
     splitmix64(value ^ i64_to_u64(target))
 }
 
-fn deterministic_range(seed: u64, counter: u64, salt: u64, upper: usize) -> usize {
+fn deterministic_range(seed: u64, counter: u64, stream_id: u64, upper: usize) -> usize {
     let upper = u64::try_from(upper).expect("upper fits in u64");
-    usize::try_from(splitmix64(seed ^ counter ^ salt) % upper).expect("range fits in usize")
+    usize::try_from(splitmix64(seed ^ counter ^ stream_id) % upper).expect("range fits in usize")
 }
 
-fn deterministic_i64(seed: u64, counter: u64, salt: u64, upper: i64) -> i64 {
+fn deterministic_i64(seed: u64, counter: u64, stream_id: u64, upper: i64) -> i64 {
     let upper = u64::try_from(upper).expect("upper is positive");
-    i64::try_from(splitmix64(seed ^ counter ^ salt) % upper).expect("range fits in i64")
+    i64::try_from(splitmix64(seed ^ counter ^ stream_id) % upper).expect("range fits in i64")
 }
 
 fn splitmix64(mut value: u64) -> u64 {
@@ -1786,7 +1797,9 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
                         continue;
                     }
                     out_tx.send(msg.clone()).expect(WRITE_CHAN_ERR);
-                    if deterministic_unit(CHAIN_SPLIT_SEED, &msg, *target, 1) < 0.1 {
+                    if deterministic_unit(CHAIN_SPLIT_SEED, &msg, *target, TEST_STREAM_DUPLICATE)
+                        < 0.1
+                    {
                         out_tx.send(msg.clone()).expect(WRITE_CHAN_ERR);
                     }
                 }

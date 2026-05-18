@@ -1158,7 +1158,8 @@ where
     value: V,
 }
 
-/// Returns all unique-source PREPARE quorums grouped by identical round and value.
+/// Returns all unique-source PREPARE quorums grouped by identical round and
+/// value.
 fn get_prepare_quorums<I, V, C>(
     d: &Definition<I, V, C>,
     all: &Vec<Msg<I, V, C>>,
