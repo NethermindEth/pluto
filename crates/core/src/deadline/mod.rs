@@ -52,8 +52,10 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::sync::{mpsc, oneshot};
-use tokio::time::{sleep, timeout};
+use tokio::{
+    sync::{mpsc, oneshot},
+    time::{sleep, timeout},
+};
 use tokio_util::sync::CancellationToken;
 
 /// A safe far-future duration (~10 years) for timeout calculations.
@@ -213,7 +215,10 @@ pub async fn new_duty_deadline_func(client: &EthBeaconNodeApiClient) -> Result<D
 ///
 /// Returns a tuple of (duty, deadline). If no duties are available,
 /// returns a sentinel far-future date (9999-01-01).
-fn get_curr_duty(duties: &HashSet<Duty>, deadline_func: &DeadlineFunc) -> (Duty, DateTime<Utc>) {
+fn get_curr_duty(
+    duties: &HashSet<Duty>,
+    calculator: &dyn DeadlineCalculator,
+) -> (Duty, DateTime<Utc>) {
     let mut curr_duty = Duty::new(SlotNumber::new(0), DutyType::Unknown);
 
     // Use far-future sentinel date (9999-01-01) matching Go implementation
@@ -221,7 +226,7 @@ fn get_curr_duty(duties: &HashSet<Duty>, deadline_func: &DeadlineFunc) -> (Duty,
     let mut curr_deadline = DateTime::<Utc>::MAX_UTC;
 
     for duty in duties.iter() {
-        match deadline_func(duty.clone()) {
+        match calculator.deadline(duty) {
             Ok(Some(duty_deadline)) => {
                 // Update if this duty has an earlier deadline
                 if duty_deadline < curr_deadline {
@@ -294,12 +299,12 @@ impl DeadlinerImpl {
     async fn run_task(
         cancel_token: CancellationToken,
         label: String,
-        deadline_func: DeadlineFunc,
+        calculator: Arc<dyn DeadlineCalculator>,
         mut input_rx: mpsc::Receiver<DeadlineInput>,
         output_tx: mpsc::Sender<Duty>,
     ) {
         let mut duties: HashSet<Duty> = HashSet::new();
-        let (mut curr_duty, mut curr_deadline) = get_curr_duty(&duties, &deadline_func);
+        let (mut curr_duty, mut curr_deadline) = get_curr_duty(&duties, &*calculator);
 
         // Create initial timer
         let now: DateTime<Utc> = Utc::now();
@@ -311,8 +316,8 @@ impl DeadlinerImpl {
                 .to_std()
                 .unwrap_or(FAR_FUTURE_DURATION)
         };
-        let sleep = sleep(initial_duration);
-        tokio::pin!(sleep);
+        let sleep_fut = sleep(initial_duration);
+        tokio::pin!(sleep_fut);
 
         loop {
             tokio::select! {
@@ -324,7 +329,7 @@ impl DeadlinerImpl {
 
                 Some(input) = input_rx.recv() => {
                     let duty = input.duty;
-                    match deadline_func(duty.clone()) {
+                    match calculator.deadline(&duty) {
                         Ok(Some(deadline)) => {
                             let now = Utc::now();
                             let expired = deadline < now;
@@ -341,7 +346,7 @@ impl DeadlinerImpl {
 
                             // Update timer if this deadline is earlier
                             if deadline < curr_deadline {
-                                let (new_duty, new_deadline) = get_curr_duty(&duties, &deadline_func);
+                                let (new_duty, new_deadline) = get_curr_duty(&duties, &*calculator);
                                 curr_duty = new_duty;
                                 curr_deadline = new_deadline;
 
@@ -349,7 +354,7 @@ impl DeadlinerImpl {
                                     .signed_duration_since(Utc::now())
                                     .to_std()
                                     .unwrap_or(FAR_FUTURE_DURATION);
-                                sleep.set(sleep(duration));
+                                sleep_fut.set(sleep(duration));
                             }
                         }
                         Err(err) => {
@@ -368,7 +373,7 @@ impl DeadlinerImpl {
                     }
                 }
 
-                _ = &mut sleep => {
+                _ = &mut sleep_fut => {
                     // Deadline expired - send duty to output channel
                     match output_tx.try_send(curr_duty.clone()) {
                         Ok(()) => {}
@@ -388,7 +393,7 @@ impl DeadlinerImpl {
                     duties.remove(&curr_duty);
 
                     // Update to next duty
-                    let (new_duty, new_deadline) = get_curr_duty(&duties, &deadline_func);
+                    let (new_duty, new_deadline) = get_curr_duty(&duties, &*calculator);
                     curr_duty = new_duty;
                     curr_deadline = new_deadline;
 
@@ -396,7 +401,7 @@ impl DeadlinerImpl {
                         .signed_duration_since(Utc::now())
                         .to_std()
                         .unwrap_or(FAR_FUTURE_DURATION);
-                    sleep.set(sleep(duration));
+                    sleep_fut.set(sleep(duration));
                 }
             }
         }
@@ -413,7 +418,8 @@ impl DeadlinerImpl {
 ///
 /// * `cancel_token` - Token to cancel the background task
 /// * `label` - Label for logging purposes
-/// * `deadline_func` - Function that calculates deadlines for duties
+/// * `calculator` - Computes per-duty deadlines (e.g.
+///   [`DutyDeadlineCalculator`])
 ///
 /// # Returns
 ///
@@ -421,7 +427,7 @@ impl DeadlinerImpl {
 pub fn new_deadliner(
     cancel_token: CancellationToken,
     label: impl Into<String>,
-    deadline_func: DeadlineFunc,
+    calculator: Arc<dyn DeadlineCalculator>,
 ) -> Arc<dyn Deadliner> {
     const OUTPUT_BUFFER: usize = 256;
     const INPUT_BUFFER: usize = 256;
@@ -436,11 +442,10 @@ pub fn new_deadliner(
         output_rx: Mutex::new(Some(output_rx)),
     });
 
-    // Spawn background task
     tokio::spawn(DeadlinerImpl::run_task(
         cancel_token,
         label,
-        deadline_func,
+        calculator,
         input_rx,
         output_tx,
     ));
