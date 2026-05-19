@@ -55,9 +55,6 @@ use std::{
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-/// Fraction of slot duration to use as a margin for network delays.
-const MARGIN_FACTOR: i32 = 12;
-
 /// A safe far-future duration (~10 years) for timeout calculations.
 /// Using Duration::MAX can cause panics when computing Instant::now() +
 /// duration, so we use a large but representable value instead.
@@ -69,59 +66,6 @@ const FAR_FUTURE_DURATION: Duration = Duration::from_secs(3600 * 24 * 365 * 10);
 /// Returns `Ok(Some(deadline))` if the duty expires at the given time.
 /// Returns `Ok(None)` if the duty never expires.
 pub type DeadlineFunc = Arc<dyn Fn(Duty) -> Result<Option<DateTime<Utc>>> + Send + Sync>;
-
-impl DutyDeadlineCalculator {
-    /// Network-delay margin added to every deadline: `slot_duration /
-    /// MARGIN_FACTOR`.
-    fn margin(&self) -> Result<chrono::Duration> {
-        self.slot_duration
-            .checked_div(MARGIN_FACTOR)
-            .ok_or(DeadlineError::ArithmeticOverflow)
-    }
-
-    /// Duty-type-specific offset from slot start.
-    fn duty_duration(&self, duty_type: &DutyType) -> Result<chrono::Duration> {
-        match duty_type {
-            // slot_duration / 3
-            DutyType::Proposer | DutyType::Randao => self
-                .slot_duration
-                .checked_div(3)
-                .ok_or(DeadlineError::ArithmeticOverflow),
-            // 2 * slot_duration / 3
-            DutyType::SyncMessage => self
-                .slot_duration
-                .checked_mul(2)
-                .and_then(|s| s.checked_div(3))
-                .ok_or(DeadlineError::ArithmeticOverflow),
-            // 2 * slot_duration. Attestations/aggregations are still accepted
-            // after 2 slots, but rewards are heavily diminished.
-            DutyType::Attester | DutyType::Aggregator | DutyType::PrepareAggregator => self
-                .slot_duration
-                .checked_mul(2)
-                .ok_or(DeadlineError::ArithmeticOverflow),
-            _ => Ok(self.slot_duration),
-        }
-    }
-}
-
-impl DeadlineCalculator for DutyDeadlineCalculator {
-    fn deadline(&self, duty: &Duty) -> Result<Option<DateTime<Utc>>> {
-        if matches!(
-            duty.duty_type,
-            DutyType::Exit | DutyType::BuilderRegistration
-        ) {
-            return Ok(None);
-        }
-        let start = self.slot_start(duty.slot)?;
-        let duration = self.duty_duration(&duty.duty_type)?;
-        let margin = self.margin()?;
-        let deadline = start
-            .checked_add_signed(duration)
-            .and_then(|t| t.checked_add_signed(margin))
-            .ok_or(DeadlineError::DateTimeCalculation)?;
-        Ok(Some(deadline))
-    }
-}
 
 /// Error types for deadline operations.
 #[derive(Debug, thiserror::Error)]
@@ -219,9 +163,10 @@ pub async fn new_duty_deadline_func(client: &EthBeaconNodeApiClient) -> Result<D
             .checked_add_signed(slot_offset)
             .ok_or(DeadlineError::DateTimeCalculation)?;
 
-        // Calculate margin: slot_duration / MARGIN_FACTOR
+        // Calculate margin: slot_duration / 12 (this whole fn is scheduled
+        // for removal — see new DutyDeadlineCalculator in deadline::calculator)
         let margin = slot_duration
-            .checked_div(MARGIN_FACTOR)
+            .checked_div(12)
             .ok_or(DeadlineError::ArithmeticOverflow)?;
 
         // Calculate duty-specific duration

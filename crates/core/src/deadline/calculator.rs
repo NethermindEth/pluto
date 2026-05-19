@@ -3,9 +3,19 @@
 use chrono::{DateTime, Utc};
 use pluto_eth2api::EthBeaconNodeApiClient;
 
-use crate::types::{Duty, SlotNumber};
+use crate::types::{Duty, DutyType, SlotNumber};
 
 use super::{DeadlineError, Result, to_chrono_duration};
+
+/// Fraction of slot duration to use as a margin for network delays.
+const MARGIN_FACTOR: i32 = 12;
+/// Block proposal must complete within 1/3 of a slot (denominator).
+const PROPOSAL_SLOT_FRACTION: i64 = 3;
+/// SyncMessage must complete within 2/3 of a slot (numerator over
+/// `PROPOSAL_SLOT_FRACTION`).
+const SYNC_MESSAGE_PHASES: i64 = 2;
+/// Attestation/aggregation deadline = N slots after slot start.
+const ATTESTATION_DEADLINE_SLOTS: i64 = 2;
 
 /// Beacon-node-derived deadline calculator.
 ///
@@ -13,8 +23,8 @@ use super::{DeadlineError, Result, to_chrono_duration};
 /// computes per-duty deadlines from them. Construction is async because it
 /// hits the beacon node; the calculator itself is pure once built.
 pub struct DutyDeadlineCalculator {
-    pub(super) genesis_time: DateTime<Utc>,
-    pub(super) slot_duration: chrono::Duration,
+    genesis_time: DateTime<Utc>,
+    slot_duration: chrono::Duration,
 }
 
 impl DutyDeadlineCalculator {
@@ -36,9 +46,32 @@ impl DutyDeadlineCalculator {
 
     /// Wall-clock start of the given slot: `genesis_time + slot *
     /// slot_duration`.
-    pub(super) fn slot_start(&self, slot: SlotNumber) -> Result<DateTime<Utc>> {
+    fn slot_start(&self, slot: SlotNumber) -> Result<DateTime<Utc>> {
         let offset = Seconds::from(self.slot_duration).checked_mul_slot(slot)?;
         offset.add_to(self.genesis_time)
+    }
+
+    /// Network-delay margin added to every deadline: `slot_duration /
+    /// MARGIN_FACTOR`.
+    fn margin(&self) -> Result<Seconds> {
+        Seconds::from(self.slot_duration).checked_div(MARGIN_FACTOR.into())
+    }
+
+    /// Duty-type-specific offset from slot start.
+    fn duty_duration(&self, duty_type: &DutyType) -> Result<Seconds> {
+        let secs = Seconds::from(self.slot_duration);
+        match duty_type {
+            DutyType::Proposer | DutyType::Randao => secs.checked_div(PROPOSAL_SLOT_FRACTION),
+            DutyType::SyncMessage => secs
+                .checked_mul(SYNC_MESSAGE_PHASES)?
+                .checked_div(PROPOSAL_SLOT_FRACTION),
+            // Attestations/aggregations are still accepted after the deadline,
+            // but rewards are heavily diminished.
+            DutyType::Attester | DutyType::Aggregator | DutyType::PrepareAggregator => {
+                secs.checked_mul(ATTESTATION_DEADLINE_SLOTS)
+            }
+            _ => Ok(secs),
+        }
     }
 }
 
@@ -51,6 +84,23 @@ pub trait DeadlineCalculator: Send + Sync + 'static {
     /// Computes the deadline for the given duty. See trait docs for return
     /// semantics.
     fn deadline(&self, duty: &Duty) -> Result<Option<DateTime<Utc>>>;
+}
+
+impl DeadlineCalculator for DutyDeadlineCalculator {
+    fn deadline(&self, duty: &Duty) -> Result<Option<DateTime<Utc>>> {
+        if matches!(
+            duty.duty_type,
+            DutyType::Exit | DutyType::BuilderRegistration
+        ) {
+            return Ok(None);
+        }
+        let start = self.slot_start(duty.slot)?;
+        let offset = self
+            .duty_duration(&duty.duty_type)?
+            .checked_add(self.margin()?)?;
+        let deadline = offset.add_to(start)?;
+        Ok(Some(deadline))
+    }
 }
 
 /// Whole seconds, stored in chrono's native `i64` width with checked
@@ -71,6 +121,33 @@ impl Seconds {
         let mul = i64::try_from(slot.inner()).map_err(|_| DeadlineError::ArithmeticOverflow)?;
         self.0
             .checked_mul(mul)
+            .map(Self)
+            .ok_or(DeadlineError::ArithmeticOverflow)
+    }
+
+    /// Multiplies by `by`, returning `DeadlineError::ArithmeticOverflow` on
+    /// overflow.
+    fn checked_mul(self, by: i64) -> Result<Self> {
+        self.0
+            .checked_mul(by)
+            .map(Self)
+            .ok_or(DeadlineError::ArithmeticOverflow)
+    }
+
+    /// Divides by `by`, returning `DeadlineError::ArithmeticOverflow` on
+    /// overflow or division by zero.
+    fn checked_div(self, by: i64) -> Result<Self> {
+        self.0
+            .checked_div(by)
+            .map(Self)
+            .ok_or(DeadlineError::ArithmeticOverflow)
+    }
+
+    /// Adds two `Seconds`, returning `DeadlineError::ArithmeticOverflow` on
+    /// overflow.
+    fn checked_add(self, other: Self) -> Result<Self> {
+        self.0
+            .checked_add(other.0)
             .map(Self)
             .ok_or(DeadlineError::ArithmeticOverflow)
     }
