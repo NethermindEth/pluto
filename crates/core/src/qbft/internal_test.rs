@@ -9,6 +9,7 @@ use std::{
     thread,
     time::Duration,
 };
+use test_case::test_case;
 
 const WRITE_CHAN_ERR: &str = "Failed to write to channel";
 const READ_CHAN_ERR: &str = "Failed to read from channel";
@@ -899,92 +900,66 @@ impl SomeMsg<i64, i64, i64> for TestMsg {
     }
 }
 
-#[test]
-fn happy_0() {
+#[test_case(0 ; "happy_0")]
+#[test_case(1 ; "happy_1")]
+fn happy(instance: i64) {
     test_qbft(Test {
-        instance: 0,
+        instance,
         decide_round: 1,
         ..Default::default()
     });
 }
 
-#[test]
-fn happy_1() {
-    test_qbft(Test {
-        instance: 1,
-        decide_round: 1,
-        ..Default::default()
-    });
-}
-
-#[test]
-fn prepare_round_1_decide_round_2() {
+#[test_case(1, None, 2, 1, false ; "prepare_round_1_decide_round_2")]
+#[test_case(2, Some(2), 3, 2, true ; "prepare_round_2_decide_round_3")]
+fn prepare_round(
+    commits_after: i32,
+    value_delay_secs: Option<u64>,
+    decide_round: i32,
+    prepared_val: i32,
+    const_period: bool,
+) {
     test_qbft(Test {
         instance: 0,
-        commits_after: 1,
-        decide_round: 2,
-        prepared_val: 1,
+        commits_after,
+        value_delay: value_delay_secs
+            .map(|secs| HashMap::from([(1, Duration::from_secs(secs))]))
+            .unwrap_or_default(),
+        decide_round,
+        prepared_val,
+        const_period,
         ..Default::default()
     });
 }
 
-#[test]
-fn prepare_round_2_decide_round_3() {
-    test_qbft(Test {
-        instance: 0,
-        commits_after: 2,
-        value_delay: HashMap::from([(1, Duration::from_secs(2))]),
-        decide_round: 3,
-        prepared_val: 2,
-        const_period: true,
-        ..Default::default()
-    });
-}
-
-#[test]
-fn leader_late_exp() {
+#[test_case(false ; "leader_late_exp")]
+#[test_case(true ; "leader_down_const")]
+fn delayed_leader_start(const_period: bool) {
     test_qbft(Test {
         instance: 0,
         start_delay: HashMap::from([(1, Duration::from_secs(2))]),
         decide_round: 2,
+        const_period,
         ..Default::default()
     });
 }
 
-#[test]
-fn leader_down_const() {
+#[test_case(3, false, 4, false ; "very_late_exp")]
+#[test_case(1, true, 0, true ; "very_late_const")]
+fn very_late_start(instance: i64, const_period: bool, decide_round: i32, random_round: bool) {
     test_qbft(Test {
-        instance: 0,
-        start_delay: HashMap::from([(1, Duration::from_secs(2))]),
-        const_period: true,
-        decide_round: 2,
-        ..Default::default()
-    });
-}
-
-#[test]
-fn very_late_exp() {
-    test_qbft(Test {
-        instance: 3,
+        instance,
         start_delay: HashMap::from([(1, Duration::from_secs(5)), (2, Duration::from_secs(10))]),
-        decide_round: 4,
+        decide_round,
+        const_period,
+        random_round,
         ..Default::default()
     });
 }
 
-#[test]
-fn very_late_const() {
-    test_qbft(Test {
-        instance: 1,
-        start_delay: HashMap::from([(1, Duration::from_secs(5)), (2, Duration::from_secs(10))]),
-        const_period: true,
-        random_round: true,
-        ..Default::default()
-    });
-}
-
-#[test]
-fn stagger_start_exp() {
+#[test_case(false ; "stagger_start_exp")]
+#[test_case(true ; "stagger_start_const")]
+fn stagger_start(const_period: bool) {
     test_qbft(Test {
         instance: 0,
         start_delay: HashMap::from([
@@ -993,54 +968,40 @@ fn stagger_start_exp() {
             (3, Duration::from_secs(2)),
             (4, Duration::from_secs(3)),
         ]),
+        const_period,
         random_round: true, // Takes 1 or 2 rounds.
         ..Default::default()
     });
 }
 
-#[test]
-fn stagger_start_const() {
+#[test_case(3, true, false, 4, false ; "very_delayed_value_exp")]
+#[test_case(1, false, true, 0, true ; "very_delayed_value_const")]
+fn very_delayed_value(
+    instance: i64,
+    include_process_4: bool,
+    const_period: bool,
+    decide_round: i32,
+    random_round: bool,
+) {
+    let mut value_delay =
+        HashMap::from([(1, Duration::from_secs(5)), (2, Duration::from_secs(10))]);
+    if include_process_4 {
+        value_delay.insert(4, Duration::from_secs(5));
+    }
+
     test_qbft(Test {
-        instance: 0,
-        start_delay: HashMap::from([
-            (1, Duration::from_secs(0)),
-            (2, Duration::from_secs(1)),
-            (3, Duration::from_secs(2)),
-            (4, Duration::from_secs(3)),
-        ]),
-        const_period: true,
-        random_round: true, // Takes 1 or 2 rounds.
+        instance,
+        value_delay,
+        const_period,
+        decide_round,
+        random_round,
         ..Default::default()
     });
 }
 
-#[test]
-fn very_delayed_value_exp() {
-    test_qbft(Test {
-        instance: 3,
-        value_delay: HashMap::from([
-            (1, Duration::from_secs(5)),
-            (2, Duration::from_secs(10)),
-            (4, Duration::from_secs(5)),
-        ]),
-        decide_round: 4,
-        ..Default::default()
-    });
-}
-
-#[test]
-fn very_delayed_value_const() {
-    test_qbft(Test {
-        instance: 1,
-        value_delay: HashMap::from([(1, Duration::from_secs(5)), (2, Duration::from_secs(10))]),
-        const_period: true,
-        random_round: true,
-        ..Default::default()
-    });
-}
-
-#[test]
-fn stagger_delayed_value_exp() {
+#[test_case(false ; "stagger_delayed_value_exp")]
+#[test_case(true ; "stagger_delayed_value_const")]
+fn stagger_delayed_value(const_period: bool) {
     test_qbft(Test {
         instance: 0,
         value_delay: HashMap::from([
@@ -1049,22 +1010,7 @@ fn stagger_delayed_value_exp() {
             (3, Duration::from_secs(2)),
             (4, Duration::from_secs(3)),
         ]),
-        random_round: true,
-        ..Default::default()
-    });
-}
-
-#[test]
-fn stagger_delayed_value_const() {
-    test_qbft(Test {
-        instance: 0,
-        value_delay: HashMap::from([
-            (1, Duration::from_secs(0)),
-            (2, Duration::from_secs(1)),
-            (3, Duration::from_secs(2)),
-            (4, Duration::from_secs(3)),
-        ]),
-        const_period: true,
+        const_period,
         random_round: true,
         ..Default::default()
     });
@@ -1082,80 +1028,53 @@ fn round1_leader_no_value_round2_leader_offline() {
     });
 }
 
-#[test]
-fn jitter_500ms_exp() {
+#[test_case(500, false ; "jitter_500ms_exp")]
+#[test_case(200, true ; "jitter_200ms_const")]
+fn jitter(bcast_jitter_ms: i32, const_period: bool) {
     test_qbft(Test {
         instance: 3,
-        bcast_jitter_ms: 500,
+        bcast_jitter_ms,
+        const_period,
         random_round: true,
         ..Default::default()
     });
 }
 
-#[test]
-fn jitter_200ms_const() {
-    test_qbft(Test {
-        instance: 3,
-        bcast_jitter_ms: 200, // 0.2-0.4s network delay * 3msgs/round == 0.6-1.2s delay per 1s round
-        const_period: true,
-        random_round: true,
-        ..Default::default()
-    });
-}
-
-#[test]
-fn drop_10_percent_const() {
+#[test_case(0.1 ; "drop_10_percent_const")]
+#[test_case(0.3 ; "drop_30_percent_const")]
+fn dropped_messages(drop_probability: f64) {
     test_qbft(Test {
         instance: 1,
-        drop_prob: HashMap::from([(1, 0.1), (2, 0.1), (3, 0.1), (4, 0.1)]),
+        drop_prob: HashMap::from([
+            (1, drop_probability),
+            (2, drop_probability),
+            (3, drop_probability),
+            (4, drop_probability),
+        ]),
         const_period: true,
         random_round: true,
         ..Default::default()
     });
 }
 
-#[test]
-fn drop_30_percent_const() {
-    test_qbft(Test {
-        instance: 1,
-        drop_prob: HashMap::from([(1, 0.3), (2, 0.3), (3, 0.3), (4, 0.3)]),
-        const_period: true,
-        random_round: true,
-        ..Default::default()
-    });
-}
-
-#[test]
-fn fuzz() {
+#[test_case(None, 1, false ; "fuzz")]
+#[test_case(Some(2), 0, true ; "fuzz_with_late_leader")]
+#[test_case(Some(10), 0, true ; "fuzz_with_very_late_leader")]
+fn fuzzed(start_delay_secs: Option<u64>, decide_round: i32, random_round: bool) {
     test_qbft(Test {
         instance: 1,
         fuzz: true,
+        start_delay: start_delay_secs
+            .map(|secs| {
+                HashMap::from([
+                    (1, Duration::from_secs(secs)),
+                    (2, Duration::from_secs(secs)),
+                ])
+            })
+            .unwrap_or_default(),
         const_period: true,
-        decide_round: 1,
-        ..Default::default()
-    });
-}
-
-#[test]
-fn fuzz_with_late_leader() {
-    test_qbft(Test {
-        instance: 1,
-        fuzz: true,
-        start_delay: HashMap::from([(1, Duration::from_secs(2)), (2, Duration::from_secs(2))]),
-        const_period: true,
-        random_round: true,
-        ..Default::default()
-    });
-}
-
-#[test]
-fn fuzz_with_very_late_leader() {
-    test_qbft(Test {
-        instance: 1,
-        fuzz: true,
-        start_delay: HashMap::from([(1, Duration::from_secs(10)), (2, Duration::from_secs(10))]),
-        const_period: true,
-        random_round: true,
+        decide_round,
+        random_round,
         ..Default::default()
     });
 }
@@ -1181,41 +1100,35 @@ fn noop_transport() -> Transport<i64, i64, i64> {
     }
 }
 
-#[test]
-fn formulas() {
-    let expected = [
-        (1, 1, 0),
-        (2, 2, 0),
-        (3, 2, 0),
-        (4, 3, 1),
-        (5, 4, 1),
-        (6, 4, 1),
-        (7, 5, 2),
-        (8, 6, 2),
-        (9, 6, 2),
-        (10, 7, 3),
-        (11, 8, 3),
-        (12, 8, 3),
-        (13, 9, 4),
-        (14, 10, 4),
-        (15, 10, 4),
-        (16, 11, 5),
-        (17, 12, 5),
-        (18, 12, 5),
-        (19, 13, 6),
-        (20, 14, 6),
-        (21, 14, 6),
-        (22, 15, 7),
-    ];
-
-    for (n, q, f) in expected {
-        let d = Definition::<i64, i64, i64> {
-            nodes: n,
-            ..noop_definition()
-        };
-        assert_eq!(q, d.quorum(), "Quorum given N={n}");
-        assert_eq!(f, d.faulty(), "Faulty given N={n}");
-    }
+#[test_case(1, 1, 0 ; "n1")]
+#[test_case(2, 2, 0 ; "n2")]
+#[test_case(3, 2, 0 ; "n3")]
+#[test_case(4, 3, 1 ; "n4")]
+#[test_case(5, 4, 1 ; "n5")]
+#[test_case(6, 4, 1 ; "n6")]
+#[test_case(7, 5, 2 ; "n7")]
+#[test_case(8, 6, 2 ; "n8")]
+#[test_case(9, 6, 2 ; "n9")]
+#[test_case(10, 7, 3 ; "n10")]
+#[test_case(11, 8, 3 ; "n11")]
+#[test_case(12, 8, 3 ; "n12")]
+#[test_case(13, 9, 4 ; "n13")]
+#[test_case(14, 10, 4 ; "n14")]
+#[test_case(15, 10, 4 ; "n15")]
+#[test_case(16, 11, 5 ; "n16")]
+#[test_case(17, 12, 5 ; "n17")]
+#[test_case(18, 12, 5 ; "n18")]
+#[test_case(19, 13, 6 ; "n19")]
+#[test_case(20, 14, 6 ; "n20")]
+#[test_case(21, 14, 6 ; "n21")]
+#[test_case(22, 15, 7 ; "n22")]
+fn formulas(n: i64, q: i64, f: i64) {
+    let d = Definition::<i64, i64, i64> {
+        nodes: n,
+        ..noop_definition()
+    };
+    assert_eq!(q, d.quorum(), "Quorum given N={n}");
+    assert_eq!(f, d.faulty(), "Faulty given N={n}");
 }
 
 #[test]
@@ -1354,35 +1267,27 @@ fn idle_run_returns_when_cancelled() {
     ));
 }
 
-#[test]
-fn invalid_definition_rejected() {
+#[test_case(0, 1, true ; "invalid_nodes")]
+#[test_case(4, 0, false ; "invalid_fifo_limit")]
+fn invalid_definition_rejected(nodes: i64, fifo_limit: i64, invalid_nodes: bool) {
     let cts = CancellationTokenSource::new();
     let transport = noop_transport();
     let (_input_tx, input_rx) = mpmc::bounded::<i64>(1);
     let (_source_tx, source_rx) = mpmc::bounded::<i64>(1);
 
     let mut def = noop_definition();
-    def.nodes = 0;
-    def.fifo_limit = 1;
-    assert!(matches!(
-        qbft::run(
-            cts.token(),
-            &def,
-            &transport,
-            &0,
-            1,
-            input_rx.clone(),
-            source_rx.clone(),
-        ),
-        Err(QbftError::InvalidNodes { nodes: 0 })
-    ));
+    def.nodes = nodes;
+    def.fifo_limit = fifo_limit;
 
-    def.nodes = 4;
-    def.fifo_limit = 0;
-    assert!(matches!(
-        qbft::run(cts.token(), &def, &transport, &0, 1, input_rx, source_rx),
-        Err(QbftError::InvalidFifoLimit { fifo_limit: 0 })
-    ));
+    let result = qbft::run(cts.token(), &def, &transport, &0, 1, input_rx, source_rx);
+    if invalid_nodes {
+        assert!(matches!(result, Err(QbftError::InvalidNodes { nodes: 0 })));
+    } else {
+        assert!(matches!(
+            result,
+            Err(QbftError::InvalidFifoLimit { fifo_limit: 0 })
+        ));
+    }
 }
 
 #[test]
@@ -1518,24 +1423,20 @@ fn justified_qrc_j1_and_j2() {
     assert!(get_justified_qrc(&def, &invalid_pr, 2).is_none());
 }
 
-#[test]
-fn valid_round_change_prepared_round_boundaries() {
-    let cases = [
-        ("negative", 2, -1, false),
-        ("null at round one", 1, 0, true),
-        ("previous round", 2, 1, true),
-        ("current round", 2, 2, false),
-        ("future round", 2, 3, false),
-    ];
-
-    for (name, round, prepared_round, expected) in cases {
-        let msg = new_msg(MSG_ROUND_CHANGE, 0, 1, round, 0, 0, prepared_round, 7, None);
-        assert_eq!(expected, valid_round_change_prepared_round(&msg), "{name}");
-    }
+#[test_case(2, -1, false ; "negative")]
+#[test_case(1, 0, true ; "null_at_round_one")]
+#[test_case(2, 1, true ; "previous_round")]
+#[test_case(2, 2, false ; "current_round")]
+#[test_case(2, 3, false ; "future_round")]
+fn valid_round_change_prepared_round_boundaries(round: i64, prepared_round: i64, expected: bool) {
+    let msg = new_msg(MSG_ROUND_CHANGE, 0, 1, round, 0, 0, prepared_round, 7, None);
+    assert_eq!(expected, valid_round_change_prepared_round(&msg));
 }
 
-#[test]
-fn invalid_round_change_prepared_rounds_are_filtered_from_call_sites() {
+#[test_case(-1 ; "negative")]
+#[test_case(2 ; "current_round")]
+#[test_case(3 ; "future_round")]
+fn invalid_round_change_prepared_rounds_are_filtered_from_call_sites(invalid_pr: i64) {
     let mut def = noop_definition();
     def.nodes = 4;
     let target_round = 2;
@@ -1544,61 +1445,49 @@ fn invalid_round_change_prepared_rounds_are_filtered_from_call_sites() {
     let prepares = new_prepare_quorum(valid_prepared_round, value);
     let valid_round_changes = new_round_change_quorum(target_round, valid_prepared_round, value);
 
-    for (name, invalid_pr) in [
-        ("negative", -1),
-        ("current round", target_round),
-        ("future round", target_round + 1),
-    ] {
-        let invalid_prepares = new_prepare_quorum(invalid_pr, value);
-        let invalid_round_change = new_msg(
-            MSG_ROUND_CHANGE,
-            0,
-            1,
-            target_round,
-            0,
-            0,
-            invalid_pr,
-            value,
-            Some(&invalid_prepares),
-        );
-        assert!(
-            !is_justified_round_change(&def, &invalid_round_change),
-            "is_justified_round_change must reject {name} prepared_round"
-        );
+    let invalid_prepares = new_prepare_quorum(invalid_pr, value);
+    let invalid_round_change = new_msg(
+        MSG_ROUND_CHANGE,
+        0,
+        1,
+        target_round,
+        0,
+        0,
+        invalid_pr,
+        value,
+        Some(&invalid_prepares),
+    );
+    assert!(!is_justified_round_change(&def, &invalid_round_change));
 
-        let mut only_invalid = new_round_change_quorum(target_round, invalid_pr, value);
-        only_invalid.extend(invalid_prepares);
-        assert_eq!(
-            None,
-            contains_justified_qrc(&def, &only_invalid, target_round),
-            "contains_justified_qrc must not count {name} prepared_round"
-        );
-        assert!(
-            get_justified_qrc(&def, &only_invalid, target_round).is_none(),
-            "get_justified_qrc must not count {name} prepared_round"
-        );
+    let mut only_invalid = new_round_change_quorum(target_round, invalid_pr, value);
+    only_invalid.extend(invalid_prepares);
+    assert_eq!(
+        None,
+        contains_justified_qrc(&def, &only_invalid, target_round)
+    );
+    assert!(get_justified_qrc(&def, &only_invalid, target_round).is_none());
 
-        let mut with_invalid_extra = valid_round_changes.clone();
-        with_invalid_extra.push(new_round_change(4, target_round, invalid_pr, value));
-        with_invalid_extra.extend(prepares.clone());
-        assert_eq!(
-            Some(value),
-            contains_justified_qrc(&def, &with_invalid_extra, target_round),
-            "contains_justified_qrc must ignore extra {name} prepared_round"
-        );
-        let qrc = get_justified_qrc(&def, &with_invalid_extra, target_round)
-            .expect("valid quorum must remain after filtering invalid prepared_round");
-        assert!(
-            qrc.iter()
-                .filter(|msg| msg.type_() == MSG_ROUND_CHANGE)
-                .all(valid_round_change_prepared_round),
-            "get_justified_qrc must filter extra {name} prepared_round"
-        );
-    }
+    let mut with_invalid_extra = valid_round_changes.clone();
+    with_invalid_extra.push(new_round_change(4, target_round, invalid_pr, value));
+    with_invalid_extra.extend(prepares.clone());
+    assert_eq!(
+        Some(value),
+        contains_justified_qrc(&def, &with_invalid_extra, target_round)
+    );
+    let qrc = get_justified_qrc(&def, &with_invalid_extra, target_round)
+        .expect("valid quorum must remain after filtering invalid prepared_round");
+    assert!(
+        qrc.iter()
+            .filter(|msg| msg.type_() == MSG_ROUND_CHANGE)
+            .all(valid_round_change_prepared_round)
+    );
 }
 
-#[test]
-fn quorum_null_prepared_filters_invalid_prepared_rounds() {
+#[test_case(1, -1 ; "negative")]
+#[test_case(1, 1 ; "current_round")]
+#[test_case(1, 2 ; "future_round")]
+#[test_case(0, 0 ; "zero_round")]
+fn quorum_null_prepared_filters_invalid_prepared_rounds(round: i64, invalid_pr: i64) {
     let mut def = noop_definition();
     def.nodes = 4;
 
@@ -1607,23 +1496,10 @@ fn quorum_null_prepared_filters_invalid_prepared_rounds() {
     assert!(ok);
     assert_eq!(3, qrc.len());
 
-    for (name, round, invalid_pr) in [
-        ("negative", 1, -1),
-        ("current round", 1, 1),
-        ("future round", 1, 2),
-        ("zero round", 0, 0),
-    ] {
-        let invalid = new_round_change_quorum(round, invalid_pr, 0);
-        let (qrc, ok) = quorum_null_prepared(&def, &invalid, round);
-        assert!(
-            !ok,
-            "quorum_null_prepared must reject {name} prepared_round"
-        );
-        assert!(
-            qrc.is_empty(),
-            "quorum_null_prepared must filter {name} prepared_round"
-        );
-    }
+    let invalid = new_round_change_quorum(round, invalid_pr, 0);
+    let (qrc, ok) = quorum_null_prepared(&def, &invalid, round);
+    assert!(!ok);
+    assert!(qrc.is_empty());
 }
 
 #[test]
@@ -1936,43 +1812,24 @@ struct ChainSplitTest {
     should_halt: bool,
 }
 
-#[test]
-fn chain_split_same_value() {
+#[test_case(1, 1, 1, 1, 1, 1, false ; "same_value")]
+#[test_case(1, 3, 1, 1, 1, 1, false ; "non_leader_peer_has_different_value")]
+#[test_case(3, 1, 1, 1, 2, 1, false ; "first_leader_has_different_value_second_leader_succeeds")]
+#[test_case(1, 1, 3, 3, 0, 0, true ; "zz_no_consensus_halt")]
+fn chain_split(
+    value_1: i64,
+    value_2: i64,
+    value_3: i64,
+    value_4: i64,
+    decide_round: i32,
+    prepared_val: i32,
+    should_halt: bool,
+) {
     test_qbft_chain_split(ChainSplitTest {
-        decide_round: 1,
-        value_source: HashMap::from([(1, 1), (2, 1), (3, 1), (4, 1)]),
-        prepared_val: 1,
-        should_halt: false,
-    });
-}
-
-#[test]
-fn chain_split_non_leader_peer_has_different_value() {
-    test_qbft_chain_split(ChainSplitTest {
-        decide_round: 1,
-        value_source: HashMap::from([(1, 1), (2, 3), (3, 1), (4, 1)]),
-        prepared_val: 1,
-        should_halt: false,
-    });
-}
-
-#[test]
-fn chain_split_first_leader_has_different_value_second_leader_succeeds() {
-    test_qbft_chain_split(ChainSplitTest {
-        decide_round: 2,
-        value_source: HashMap::from([(1, 3), (2, 1), (3, 1), (4, 1)]),
-        prepared_val: 1,
-        should_halt: false,
-    });
-}
-
-#[test]
-fn zz_chain_split_no_consensus_halt() {
-    test_qbft_chain_split(ChainSplitTest {
-        decide_round: 0,
-        value_source: HashMap::from([(1, 1), (2, 1), (3, 3), (4, 3)]),
-        prepared_val: 0,
-        should_halt: true,
+        decide_round,
+        value_source: HashMap::from([(1, value_1), (2, value_2), (3, value_3), (4, value_4)]),
+        prepared_val,
+        should_halt,
     });
 }
 
