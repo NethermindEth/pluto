@@ -26,13 +26,12 @@
     {
       devShells.default = pkgs.mkShell {
         buildInputs = with pkgs; [
+          bashInteractive
           cargo-deny
           cargo-llvm-cov
           cargo-machete
           protobuf
           oas3-gen
-
-          bashInteractive
         ];
 
         shellHook = ''
