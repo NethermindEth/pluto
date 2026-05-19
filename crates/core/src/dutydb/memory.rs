@@ -197,14 +197,14 @@ struct ContribKey {
 }
 
 struct State {
-    att_duties: HashMap<AttKey, phase0::AttestationData>,
-    att_pub_keys: HashMap<PkKey, PubKey>,
-    att_keys_by_slot: HashMap<u64, Vec<PkKey>>,
+    attestation_duties: HashMap<AttKey, phase0::AttestationData>,
+    attestation_pub_keys: HashMap<PkKey, PubKey>,
+    attestation_keys_by_slot: HashMap<u64, Vec<PkKey>>,
 
-    pro_duties: HashMap<u64, VersionedProposal>,
+    proposer_duties: HashMap<u64, VersionedProposal>,
 
-    agg_duties: HashMap<AggKey, VersionedAggregatedAttestation>,
-    agg_keys_by_slot: HashMap<u64, Vec<AggKey>>,
+    aggregation_duties: HashMap<AggKey, VersionedAggregatedAttestation>,
+    aggregation_keys_by_slot: HashMap<u64, Vec<AggKey>>,
 
     contrib_duties: HashMap<ContribKey, altair::SyncCommitteeContribution>,
     contrib_keys_by_slot: HashMap<u64, Vec<ContribKey>>,
@@ -218,9 +218,9 @@ struct State {
 /// blocking `await_*` queries when the relevant data becomes available.
 pub struct MemDB {
     state: RwLock<State>,
-    att_notify: Notify,
-    pro_notify: Notify,
-    agg_notify: Notify,
+    attestation_notify: Notify,
+    proposer_notify: Notify,
+    aggregation_notify: Notify,
     contrib_notify: Notify,
     cancel: CancellationToken,
     deadliner: Arc<dyn Deadliner>,
@@ -237,19 +237,19 @@ impl MemDB {
         );
         Self {
             state: RwLock::new(State {
-                att_duties: HashMap::new(),
-                att_pub_keys: HashMap::new(),
-                att_keys_by_slot: HashMap::new(),
-                pro_duties: HashMap::new(),
-                agg_duties: HashMap::new(),
-                agg_keys_by_slot: HashMap::new(),
+                attestation_duties: HashMap::new(),
+                attestation_pub_keys: HashMap::new(),
+                attestation_keys_by_slot: HashMap::new(),
+                proposer_duties: HashMap::new(),
+                aggregation_duties: HashMap::new(),
+                aggregation_keys_by_slot: HashMap::new(),
                 contrib_duties: HashMap::new(),
                 contrib_keys_by_slot: HashMap::new(),
                 deadliner_rx,
             }),
-            att_notify: Notify::new(),
-            pro_notify: Notify::new(),
-            agg_notify: Notify::new(),
+            attestation_notify: Notify::new(),
+            proposer_notify: Notify::new(),
+            aggregation_notify: Notify::new(),
             contrib_notify: Notify::new(),
             cancel,
             deadliner,
@@ -286,7 +286,7 @@ impl MemDB {
                     Some(UnsignedDutyData::Proposal(p)) => state.store_proposal(p)?,
                     Some(_) => return Err(Error::InvalidVersionedProposal),
                 }
-                self.pro_notify.notify_waiters();
+                self.proposer_notify.notify_waiters();
             }
             DutyType::Attester => {
                 for (pubkey, data) in &unsigned_set {
@@ -296,7 +296,7 @@ impl MemDB {
                     };
                     state.store_attestation(*pubkey, att)?;
                 }
-                self.att_notify.notify_waiters();
+                self.attestation_notify.notify_waiters();
             }
             DutyType::Aggregator => {
                 for data in unsigned_set.values() {
@@ -306,7 +306,7 @@ impl MemDB {
                     };
                     state.store_agg_attestation(agg)?;
                 }
-                self.agg_notify.notify_waiters();
+                self.aggregation_notify.notify_waiters();
             }
             DutyType::SyncContribution => {
                 for data in unsigned_set.values() {
@@ -332,7 +332,7 @@ impl MemDB {
     /// Blocks until a proposal for the given slot is available, then returns
     /// it.
     pub async fn await_proposal(&self, slot: u64) -> Result<VersionedProposal> {
-        self.await_data(&self.pro_notify, |s| s.pro_duties.get(&slot))
+        self.await_data(&self.proposer_notify, |s| s.proposer_duties.get(&slot))
             .await
     }
 
@@ -347,7 +347,7 @@ impl MemDB {
             slot,
             committee_index,
         };
-        self.await_data(&self.att_notify, |s| s.att_duties.get(&key))
+        self.await_data(&self.attestation_notify, |s| s.attestation_duties.get(&key))
             .await
     }
 
@@ -360,8 +360,10 @@ impl MemDB {
         let key = AggKey {
             root: attestation_root,
         };
-        self.await_data(&self.agg_notify, |s| s.agg_duties.get(&key).map(|a| &a.0))
-            .await
+        self.await_data(&self.aggregation_notify, |s| {
+            s.aggregation_duties.get(&key).map(|a| &a.0)
+        })
+        .await
     }
 
     /// Blocks until a sync contribution for the given slot, subcommittee index,
@@ -423,7 +425,7 @@ impl MemDB {
     ) -> Result<PubKey> {
         let state = self.state.read().await;
         state
-            .att_pub_keys
+            .attestation_pub_keys
             .get(&PkKey {
                 slot,
                 committee_index,
@@ -447,13 +449,13 @@ impl Drop for MemDB {
 impl State {
     fn store_proposal(&mut self, proposal: &VersionedProposal) -> Result<()> {
         let slot = proposal.slot();
-        if let Some(existing) = self.pro_duties.get(&slot) {
+        if let Some(existing) = self.proposer_duties.get(&slot) {
             if existing.root() != proposal.root() {
                 warn!(slot, "dutydb: clashing blocks");
                 return Err(Error::ClashingBlocks { slot });
             }
         } else {
-            self.pro_duties.insert(slot, proposal.clone());
+            self.proposer_duties.insert(slot, proposal.clone());
         }
         Ok(())
     }
@@ -484,7 +486,7 @@ impl State {
             committee_index,
             validator_index,
         };
-        if let Some(&existing) = self.att_pub_keys.get(&pk_key) {
+        if let Some(&existing) = self.attestation_pub_keys.get(&pk_key) {
             if existing != pubkey {
                 warn!(
                     slot,
@@ -497,8 +499,8 @@ impl State {
                 });
             }
         } else {
-            self.att_pub_keys.insert(pk_key, pubkey);
-            self.att_keys_by_slot
+            self.attestation_pub_keys.insert(pk_key, pubkey);
+            self.attestation_keys_by_slot
                 .entry(duty_slot)
                 .or_default()
                 .push(pk_key);
@@ -516,7 +518,7 @@ impl State {
             slot,
             committee_index,
         };
-        if let Some(existing) = self.att_duties.get(&att_key) {
+        if let Some(existing) = self.attestation_duties.get(&att_key) {
             if existing.source != data.source
                 || existing.target != data.target
                 || existing.beacon_block_root != data.beacon_block_root
@@ -528,7 +530,7 @@ impl State {
                 });
             }
         } else {
-            self.att_duties.insert(att_key, data.clone());
+            self.attestation_duties.insert(att_key, data.clone());
         }
         Ok(())
     }
@@ -558,7 +560,7 @@ impl State {
             committee_index: 0,
             validator_index,
         };
-        if let Some(&existing) = self.att_pub_keys.get(&pk_key0) {
+        if let Some(&existing) = self.attestation_pub_keys.get(&pk_key0) {
             if existing != pubkey {
                 warn!(
                     slot,
@@ -571,8 +573,8 @@ impl State {
                 });
             }
         } else {
-            self.att_pub_keys.insert(pk_key0, pubkey);
-            self.att_keys_by_slot
+            self.attestation_pub_keys.insert(pk_key0, pubkey);
+            self.attestation_keys_by_slot
                 .entry(duty_slot)
                 .or_default()
                 .push(pk_key0);
@@ -582,7 +584,7 @@ impl State {
             slot,
             committee_index: 0,
         };
-        if let Some(existing) = self.att_duties.get(&att_key0) {
+        if let Some(existing) = self.attestation_duties.get(&att_key0) {
             if existing.source != data.source {
                 warn!(
                     slot,
@@ -604,7 +606,7 @@ impl State {
                 });
             }
         } else {
-            self.att_duties.insert(att_key0, data.clone());
+            self.attestation_duties.insert(att_key0, data.clone());
         }
         Ok(())
     }
@@ -616,12 +618,15 @@ impl State {
 
         // Unlike Go implementation, we key by root only, slot field is redundant.
         let key = AggKey { root };
-        if !self.agg_duties.contains_key(&key) {
-            self.agg_keys_by_slot.entry(slot).or_default().push(key);
+        if !self.aggregation_duties.contains_key(&key) {
+            self.aggregation_keys_by_slot
+                .entry(slot)
+                .or_default()
+                .push(key);
         }
         // we don't check existingDataRoot != providedDataRoot because these values
         // come from the same source and the error was unreachable
-        self.agg_duties.insert(key, agg.clone()); // unconditional overwrite
+        self.aggregation_duties.insert(key, agg.clone()); // unconditional overwrite
 
         Ok(())
     }
@@ -663,14 +668,14 @@ impl State {
         info!(slot, duty_type = %duty.duty_type, "dutydb: deleting expired duty");
         match duty.duty_type {
             DutyType::Proposer => {
-                self.pro_duties.remove(&slot);
+                self.proposer_duties.remove(&slot);
             }
             DutyType::BuilderProposer => return Err(Error::DeprecatedDutyBuilderProposer),
             DutyType::Attester => {
-                if let Some(keys) = self.att_keys_by_slot.remove(&slot) {
+                if let Some(keys) = self.attestation_keys_by_slot.remove(&slot) {
                     for key in keys {
-                        self.att_pub_keys.remove(&key);
-                        self.att_duties.remove(&AttKey {
+                        self.attestation_pub_keys.remove(&key);
+                        self.attestation_duties.remove(&AttKey {
                             slot: key.slot,
                             committee_index: key.committee_index,
                         });
@@ -678,9 +683,9 @@ impl State {
                 }
             }
             DutyType::Aggregator => {
-                if let Some(keys) = self.agg_keys_by_slot.remove(&slot) {
+                if let Some(keys) = self.aggregation_keys_by_slot.remove(&slot) {
                     for key in keys {
-                        self.agg_duties.remove(&key);
+                        self.aggregation_duties.remove(&key);
                     }
                 }
             }
@@ -1045,8 +1050,7 @@ mod tests {
         const V_IDX: u64 = 7;
 
         let agg = agg_attestation_fixture(SLOT, COMM_IDX, V_IDX);
-        let att_data = agg.data().unwrap().clone();
-        let root = att_data.tree_hash_root().0;
+        let root = agg.data().unwrap().tree_hash_root().0;
 
         let db_clone = Arc::clone(&db);
         let waiter = tokio::spawn(async move { db_clone.await_agg_attestation(root).await });
