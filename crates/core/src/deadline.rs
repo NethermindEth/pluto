@@ -66,6 +66,45 @@ const FAR_FUTURE_DURATION: Duration = Duration::from_secs(3600 * 24 * 365 * 10);
 /// Returns `Ok(None)` if the duty never expires.
 pub type DeadlineFunc = Arc<dyn Fn(Duty) -> Result<Option<DateTime<Utc>>> + Send + Sync>;
 
+/// Computes deadlines for duties.
+///
+/// `Ok(Some(deadline))` — duty expires at the given wall-clock time.
+/// `Ok(None)`           — duty never expires (e.g. Exit, BuilderRegistration).
+/// `Err(_)`             — arithmetic or conversion failure.
+pub trait DeadlineCalculator: Send + Sync + 'static {
+    /// Computes the deadline for the given duty. See trait docs for return
+    /// semantics.
+    fn deadline(&self, duty: &Duty) -> Result<Option<DateTime<Utc>>>;
+}
+
+/// Beacon-node-derived deadline calculator.
+///
+/// Caches genesis time and slot duration fetched from the beacon node, and
+/// computes per-duty deadlines from them. Construction is async because it
+/// hits the beacon node; the calculator itself is pure once built.
+pub struct DutyDeadlineCalculator {
+    genesis_time: DateTime<Utc>,
+    slot_duration: chrono::Duration,
+}
+
+impl DutyDeadlineCalculator {
+    /// Fetches genesis time and slot duration from the beacon node.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if fetching genesis time or slots config fails.
+    pub async fn from_client(client: &EthBeaconNodeApiClient) -> Result<Self> {
+        let genesis_time = client.fetch_genesis_time().await?;
+        let slots_config = client.fetch_slots_config().await?;
+        let (slot_duration, _slots_per_epoch) = slots_config;
+        let slot_duration = to_chrono_duration(slot_duration)?;
+        Ok(Self {
+            genesis_time,
+            slot_duration,
+        })
+    }
+}
+
 /// Error types for deadline operations.
 #[derive(Debug, thiserror::Error)]
 pub enum DeadlineError {
