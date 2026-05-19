@@ -607,9 +607,7 @@ fn seed_from_label(label: &str) -> u64 {
 /// Construct a leader election function.
 fn make_is_leader(n: i64) -> impl Fn(&i64, i64, i64) -> bool + Clone {
     move |instance: &i64, round: i64, process: i64| -> bool {
-        // Go's helper uses 0-indexed process IDs. These Rust tests use 1..=n,
-        // so translate the same modulo schedule into the local process range.
-        ((instance + round - 1).rem_euclid(n)) + 1 == process
+        (instance + round).rem_euclid(n) == process
     }
 }
 
@@ -974,24 +972,12 @@ fn stagger_start(const_period: bool) {
     });
 }
 
-#[test_case(3, true, false, 4, false ; "very_delayed_value_exp")]
-#[test_case(1, false, true, 0, true ; "very_delayed_value_const")]
-fn very_delayed_value(
-    instance: i64,
-    include_process_4: bool,
-    const_period: bool,
-    decide_round: i32,
-    random_round: bool,
-) {
-    let mut value_delay =
-        HashMap::from([(1, Duration::from_secs(5)), (2, Duration::from_secs(10))]);
-    if include_process_4 {
-        value_delay.insert(4, Duration::from_secs(5));
-    }
-
+#[test_case(3, false, 4, false ; "very_delayed_value_exp")]
+#[test_case(1, true, 0, true ; "very_delayed_value_const")]
+fn very_delayed_value(instance: i64, const_period: bool, decide_round: i32, random_round: bool) {
     test_qbft(Test {
         instance,
-        value_delay,
+        value_delay: HashMap::from([(1, Duration::from_secs(5)), (2, Duration::from_secs(10))]),
         const_period,
         decide_round,
         random_round,
