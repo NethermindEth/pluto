@@ -53,6 +53,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
 
 /// A safe far-future duration (~10 years) for timeout calculations.
@@ -310,7 +311,7 @@ impl DeadlinerImpl {
                 .to_std()
                 .unwrap_or(FAR_FUTURE_DURATION)
         };
-        let sleep = tokio::time::sleep(initial_duration);
+        let sleep = sleep(initial_duration);
         tokio::pin!(sleep);
 
         loop {
@@ -348,7 +349,7 @@ impl DeadlinerImpl {
                                     .signed_duration_since(Utc::now())
                                     .to_std()
                                     .unwrap_or(FAR_FUTURE_DURATION);
-                                sleep.set(tokio::time::sleep(duration));
+                                sleep.set(sleep(duration));
                             }
                         }
                         Err(err) => {
@@ -395,7 +396,7 @@ impl DeadlinerImpl {
                         .signed_duration_since(Utc::now())
                         .to_std()
                         .unwrap_or(FAR_FUTURE_DURATION);
-                    sleep.set(tokio::time::sleep(duration));
+                    sleep.set(sleep(duration));
                 }
             }
         }
@@ -607,7 +608,7 @@ mod tests {
         // Timeout must exceed the longest non-expired deadline (~1s for slot 2).
         let mut actual_duties = Vec::new();
         for _ in 0..non_expired_len {
-            let duty = tokio::time::timeout(Duration::from_secs(5), output_rx.recv())
+            let duty = timeout(Duration::from_secs(5), output_rx.recv())
                 .await
                 .expect("should receive within timeout")
                 .expect("should receive duty");
