@@ -33,7 +33,10 @@ use std::{
 
 type Result<T> = std::result::Result<T, QbftError>;
 
-const CANCELLATION_POLL_INTERVAL: time::Duration = time::Duration::from_millis(1);
+// The `cancellation` crate is callback-based, not channel-based, so it cannot
+// be used directly in `crossbeam::select!`. Keep polling coarse: QBFT shutdown
+// does not need sub-millisecond latency, and idle instances should stay cheap.
+const CANCELLATION_POLL_INTERVAL: time::Duration = time::Duration::from_millis(50);
 
 type CompareFn<I, V, C> = dyn Fn(
         /* ct */ &CancellationToken,
