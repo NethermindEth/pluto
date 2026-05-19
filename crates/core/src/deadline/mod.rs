@@ -157,14 +157,14 @@ struct DeadlineInput {
 }
 
 /// Implementation of the Deadliner trait.
-struct DeadlinerImpl {
+struct DeadlinerLink {
     cancel_token: CancellationToken,
     input_tx: mpsc::Sender<DeadlineInput>,
     output_rx: Mutex<Option<mpsc::Receiver<Duty>>>,
 }
 
 #[async_trait]
-impl Deadliner for DeadlinerImpl {
+impl Deadliner for DeadlinerLink {
     async fn add(&self, duty: Duty) -> bool {
         // Check if shut down
         if self.cancel_token.is_cancelled() {
@@ -191,10 +191,10 @@ impl Deadliner for DeadlinerImpl {
     }
 }
 
-impl DeadlinerImpl {
+impl DeadlinerLink {
     /// Background task that manages duty deadlines.
     ///
-    /// This is an associated function (not a method) because the DeadlinerImpl
+    /// This is an associated function (not a method) because the DeadlinerLink
     /// is immediately wrapped in Arc<dyn Deadliner>, preventing mutable access.
     async fn run_task(
         cancel_token: CancellationToken,
@@ -336,13 +336,13 @@ pub fn new_deadliner(
     let (input_tx, input_rx) = mpsc::channel(INPUT_BUFFER);
     let (output_tx, output_rx) = mpsc::channel(OUTPUT_BUFFER);
 
-    let impl_instance: Arc<dyn Deadliner> = Arc::new(DeadlinerImpl {
+    let link: Arc<dyn Deadliner> = Arc::new(DeadlinerLink {
         cancel_token: cancel_token.clone(),
         input_tx,
         output_rx: Mutex::new(Some(output_rx)),
     });
 
-    tokio::spawn(DeadlinerImpl::run_task(
+    tokio::spawn(DeadlinerLink::run_task(
         cancel_token,
         label,
         calculator,
@@ -350,7 +350,7 @@ pub fn new_deadliner(
         output_tx,
     ));
 
-    impl_instance
+    link
 }
 
 #[cfg(test)]
