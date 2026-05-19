@@ -46,58 +46,59 @@ pub enum Error {
 
     /// Two validators share the same `(slot, commIdx, valIdx)` with different
     /// public keys.
-    #[error("clashing public key: slot={slot} comm_idx={comm_idx} val_idx={val_idx}")]
+    #[error(
+        "clashing public key: slot={slot} committee_index={committee_index} validator_index={validator_index}"
+    )]
     ClashingPublicKey {
         /// Slot of the attestation duty.
         slot: u64,
         /// Committee index.
-        comm_idx: u64,
+        committee_index: u64,
         /// Validator index.
-        val_idx: u64,
+        validator_index: u64,
     },
 
     /// Two different attestation data objects for the same `(slot, commIdx)`.
-    #[error("clashing attestation data: slot={slot} comm_idx={comm_idx}")]
+    #[error("clashing attestation data: slot={slot} committee_index={committee_index}")]
     ClashingAttestationData {
         /// Slot of the attestation duty.
         slot: u64,
         /// Committee index.
-        comm_idx: u64,
+        committee_index: u64,
     },
 
     /// Mismatched source checkpoint in the hardcoded `commIdx=0` compatibility
     /// entry.
-    #[error("clashing attestation data commidx=0 source: slot={slot} val_idx={val_idx}")]
+    #[error(
+        "clashing attestation data commidx=0 source: slot={slot} validator_index={validator_index}"
+    )]
     ClashingAttestationDataCommIdx0Source {
         /// Slot of the attestation duty.
         slot: u64,
         /// Validator index.
-        val_idx: u64,
+        validator_index: u64,
     },
 
     /// Mismatched target checkpoint in the hardcoded `commIdx=0` compatibility
     /// entry.
-    #[error("clashing attestation data commidx=0 target: slot={slot} val_idx={val_idx}")]
+    #[error(
+        "clashing attestation data commidx=0 target: slot={slot} validator_index={validator_index}"
+    )]
     ClashingAttestationDataCommIdx0Target {
         /// Slot of the attestation duty.
         slot: u64,
         /// Validator index.
-        val_idx: u64,
+        validator_index: u64,
     },
-
-    /// Two different aggregated attestations for the same slot and attestation
-    /// data root.
-    #[error("clashing data root: two different aggregated attestations for the same slot and root")]
-    ClashingDataRoot,
 
     /// Two different sync contributions for the same `(slot, subcommIdx,
     /// root)`.
-    #[error("clashing sync contributions: slot={slot} subcomm_idx={subcomm_idx}")]
+    #[error("clashing sync contributions: slot={slot} subcommittee_index={subcommittee_index}")]
     ClashingSyncContributions {
         /// Slot of the sync contribution duty.
         slot: u64,
         /// Subcommittee index.
-        subcomm_idx: u64,
+        subcommittee_index: u64,
     },
 
     /// Two different blocks for the same slot.
@@ -108,8 +109,17 @@ pub enum Error {
     },
 
     /// No public key found for the given `(slot, commIdx, valIdx)`.
-    #[error("pubkey not found for the given (slot, commIdx, valIdx)")]
-    PubKeyNotFound,
+    #[error(
+        "pubkey not found for the given (slot={slot}, commIdx={committee_index}, valIdx={validator_index})"
+    )]
+    PubKeyNotFound {
+        /// Slot of the attestation duty.
+        slot: u64,
+        /// Committee index of the attestation duty.
+        committee_index: u64,
+        /// Validator index of the attestation duty.
+        validator_index: u64,
+    },
 
     /// Duty type is not handled by the delete path.
     #[error("unknown duty type: not handled by delete")]
@@ -157,7 +167,7 @@ pub type UnsignedDataSet = HashMap<PubKey, UnsignedDutyData>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct AttKey {
     slot: u64,
-    committee_idx: u64,
+    committee_index: u64,
 }
 
 /// Lookup key for public-key-by-attestation: (slot, committee index, validator
@@ -165,8 +175,8 @@ struct AttKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct PkKey {
     slot: u64,
-    committee_idx: u64,
-    validator_idx: u64,
+    committee_index: u64,
+    validator_index: u64,
 }
 
 /// Lookup key for aggregated attestations: (slot, attestation data root).
@@ -180,7 +190,7 @@ struct AggKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct ContribKey {
     slot: u64,
-    subcomm_idx: u64,
+    subcommittee_index: u64,
     root: phase0::Root,
 }
 
@@ -326,11 +336,11 @@ impl MemDB {
     pub async fn await_attestation(
         &self,
         slot: u64,
-        comm_idx: u64,
+        committee_index: u64,
     ) -> Result<phase0::AttestationData> {
         let key = AttKey {
             slot,
-            committee_idx: comm_idx,
+            committee_index,
         };
         self.await_data(&self.att_notify, |s| s.att_duties.get(&key))
             .await
@@ -354,12 +364,12 @@ impl MemDB {
     pub async fn await_sync_contribution(
         &self,
         slot: u64,
-        subcomm_idx: u64,
+        subcommittee_index: u64,
         beacon_block_root: phase0::Root,
     ) -> Result<altair::SyncCommitteeContribution> {
         let key = ContribKey {
             slot,
-            subcomm_idx,
+            subcommittee_index,
             root: beacon_block_root,
         };
         self.await_data(&self.contrib_notify, |s| s.contrib_duties.get(&key))
@@ -403,19 +413,23 @@ impl MemDB {
     pub async fn pub_key_by_attestation(
         &self,
         slot: u64,
-        comm_idx: u64,
-        val_idx: u64,
+        committee_index: u64,
+        validator_index: u64,
     ) -> Result<PubKey> {
         let state = self.state.read().await;
         state
             .att_pub_keys
             .get(&PkKey {
                 slot,
-                committee_idx: comm_idx,
-                validator_idx: val_idx,
+                committee_index,
+                validator_index,
             })
             .copied()
-            .ok_or(Error::PubKeyNotFound)
+            .ok_or(Error::PubKeyNotFound {
+                slot,
+                committee_index,
+                validator_index,
+            })
     }
 }
 
@@ -442,12 +456,12 @@ impl State {
     fn store_attestation(&mut self, pubkey: PubKey, att: &AttestationData) -> Result<()> {
         let slot = att.data.slot;
         let duty_slot = att.duty.slot;
-        let comm_idx = att.duty.committee_index;
-        let val_idx = att.duty.validator_index;
+        let committee_index = att.duty.committee_index;
+        let validator_index = att.duty.validator_index;
 
-        self.store_att_pubkey(slot, duty_slot, comm_idx, val_idx, pubkey)?;
-        self.store_att_data(slot, comm_idx, &att.data)?;
-        self.store_att_compat_commidx0(slot, duty_slot, val_idx, pubkey, &att.data)?;
+        self.store_att_pubkey(slot, duty_slot, committee_index, validator_index, pubkey)?;
+        self.store_att_data(slot, committee_index, &att.data)?;
+        self.store_att_compat_commidx0(slot, duty_slot, validator_index, pubkey, &att.data)?;
 
         Ok(())
     }
@@ -456,22 +470,25 @@ impl State {
         &mut self,
         slot: u64,
         duty_slot: u64,
-        comm_idx: u64,
-        val_idx: u64,
+        committee_index: u64,
+        validator_index: u64,
         pubkey: PubKey,
     ) -> Result<()> {
         let pk_key = PkKey {
             slot,
-            committee_idx: comm_idx,
-            validator_idx: val_idx,
+            committee_index,
+            validator_index,
         };
         if let Some(&existing) = self.att_pub_keys.get(&pk_key) {
             if existing != pubkey {
-                warn!(slot, comm_idx, val_idx, "dutydb: clashing public key");
+                warn!(
+                    slot,
+                    committee_index, validator_index, "dutydb: clashing public key"
+                );
                 return Err(Error::ClashingPublicKey {
                     slot,
-                    comm_idx,
-                    val_idx,
+                    committee_index,
+                    validator_index,
                 });
             }
         } else {
@@ -487,20 +504,23 @@ impl State {
     fn store_att_data(
         &mut self,
         slot: u64,
-        comm_idx: u64,
+        committee_index: u64,
         data: &phase0::AttestationData,
     ) -> Result<()> {
         let att_key = AttKey {
             slot,
-            committee_idx: comm_idx,
+            committee_index,
         };
         if let Some(existing) = self.att_duties.get(&att_key) {
             if existing.source != data.source
                 || existing.target != data.target
                 || existing.beacon_block_root != data.beacon_block_root
             {
-                warn!(slot, comm_idx, "dutydb: clashing attestation data");
-                return Err(Error::ClashingAttestationData { slot, comm_idx });
+                warn!(slot, committee_index, "dutydb: clashing attestation data");
+                return Err(Error::ClashingAttestationData {
+                    slot,
+                    committee_index,
+                });
             }
         } else {
             self.att_duties.insert(att_key, data.clone());
@@ -524,22 +544,25 @@ impl State {
         &mut self,
         slot: u64,
         duty_slot: u64,
-        val_idx: u64,
+        validator_index: u64,
         pubkey: PubKey,
         data: &phase0::AttestationData,
     ) -> Result<()> {
         let pk_key0 = PkKey {
             slot,
-            committee_idx: 0,
-            validator_idx: val_idx,
+            committee_index: 0,
+            validator_index,
         };
         if let Some(&existing) = self.att_pub_keys.get(&pk_key0) {
             if existing != pubkey {
-                warn!(slot, val_idx, "dutydb: clashing public key at commidx=0");
+                warn!(
+                    slot,
+                    validator_index, "dutydb: clashing public key at commidx=0"
+                );
                 return Err(Error::ClashingPublicKey {
                     slot,
-                    comm_idx: 0,
-                    val_idx,
+                    committee_index: 0,
+                    validator_index,
                 });
             }
         } else {
@@ -552,22 +575,28 @@ impl State {
 
         let att_key0 = AttKey {
             slot,
-            committee_idx: 0,
+            committee_index: 0,
         };
         if let Some(existing) = self.att_duties.get(&att_key0) {
             if existing.source != data.source {
                 warn!(
                     slot,
-                    val_idx, "dutydb: clashing attestation data commidx=0 source"
+                    validator_index, "dutydb: clashing attestation data commidx=0 source"
                 );
-                return Err(Error::ClashingAttestationDataCommIdx0Source { slot, val_idx });
+                return Err(Error::ClashingAttestationDataCommIdx0Source {
+                    slot,
+                    validator_index,
+                });
             }
             if existing.target != data.target {
                 warn!(
                     slot,
-                    val_idx, "dutydb: clashing attestation data commidx=0 target"
+                    validator_index, "dutydb: clashing attestation data commidx=0 target"
                 );
-                return Err(Error::ClashingAttestationDataCommIdx0Target { slot, val_idx });
+                return Err(Error::ClashingAttestationDataCommIdx0Target {
+                    slot,
+                    validator_index,
+                });
             }
         } else {
             self.att_duties.insert(att_key0, data.clone());
@@ -597,7 +626,7 @@ impl State {
 
         let key = ContribKey {
             slot: inner.slot,
-            subcomm_idx: inner.subcommittee_index,
+            subcommittee_index: inner.subcommittee_index,
             root: inner.beacon_block_root,
         };
 
@@ -605,12 +634,12 @@ impl State {
             if existing.tree_hash_root().0 != inner.tree_hash_root().0 {
                 warn!(
                     slot = inner.slot,
-                    subcomm_idx = inner.subcommittee_index,
+                    subcommittee_index = inner.subcommittee_index,
                     "dutydb: clashing sync contributions"
                 );
                 return Err(Error::ClashingSyncContributions {
                     slot: inner.slot,
-                    subcomm_idx: inner.subcommittee_index,
+                    subcommittee_index: inner.subcommittee_index,
                 });
             }
         } else {
@@ -638,7 +667,7 @@ impl State {
                         self.att_pub_keys.remove(&key);
                         self.att_duties.remove(&AttKey {
                             slot: key.slot,
-                            committee_idx: key.committee_idx,
+                            committee_index: key.committee_index,
                         });
                     }
                 }
@@ -742,11 +771,11 @@ mod tests {
         MemDB::new(deadliner, CancellationToken::new())
     }
 
-    fn att_data(slot: u64, comm_idx: u64, val_idx: u64) -> AttestationData {
+    fn att_data(slot: u64, committee_index: u64, validator_index: u64) -> AttestationData {
         AttestationData {
             data: phase0::AttestationData {
                 slot,
-                index: comm_idx,
+                index: committee_index,
                 beacon_block_root: [0u8; 32],
                 source: phase0::Checkpoint {
                     epoch: 0,
@@ -759,11 +788,11 @@ mod tests {
             },
             duty: AttesterDuty {
                 slot,
-                validator_index: val_idx,
-                committee_index: comm_idx,
+                validator_index,
+                committee_index,
                 committee_length: 8,
                 committees_at_slot: 1,
-                validator_committee_index: val_idx,
+                validator_committee_index: validator_index,
             },
         }
     }
@@ -798,13 +827,13 @@ mod tests {
 
     fn sync_contribution_fixture(
         slot: u64,
-        subcomm_idx: u64,
+        subcommittee_index: u64,
         root: phase0::Root,
     ) -> SyncContribution {
         SyncContribution(altair::SyncCommitteeContribution {
             slot,
             beacon_block_root: root,
-            subcommittee_index: subcomm_idx,
+            subcommittee_index,
             aggregation_bits: pluto_ssz::BitVector::default(),
             signature: [0u8; 96],
         })
@@ -943,10 +972,10 @@ mod tests {
 
         for i in 0..3u8 {
             let slot = u64::from(i).saturating_add(100);
-            let subcomm_idx = u64::from(i);
+            let subcommittee_index = u64::from(i);
             let root = random_root(i);
 
-            let contrib = sync_contribution_fixture(slot, subcomm_idx, root);
+            let contrib = sync_contribution_fixture(slot, subcommittee_index, root);
 
             let mut set = UnsignedDataSet::new();
             set.insert(
@@ -962,11 +991,11 @@ mod tests {
             .unwrap();
 
             let resp = db
-                .await_sync_contribution(slot, subcomm_idx, root)
+                .await_sync_contribution(slot, subcommittee_index, root)
                 .await
                 .unwrap();
             assert_eq!(resp.slot, slot);
-            assert_eq!(resp.subcommittee_index, subcomm_idx);
+            assert_eq!(resp.subcommittee_index, subcommittee_index);
             assert_eq!(resp.beacon_block_root, root);
         }
     }
@@ -985,12 +1014,12 @@ mod tests {
 
     fn agg_attestation_fixture(
         slot: u64,
-        comm_idx: u64,
-        val_idx: u64,
+        committee_index: u64,
+        validator_index: u64,
     ) -> VersionedAggregatedAttestation {
         let data = phase0::AttestationData {
             slot,
-            index: comm_idx,
+            index: committee_index,
             beacon_block_root: [0u8; 32],
             source: phase0::Checkpoint {
                 epoch: 0,
@@ -1008,7 +1037,7 @@ mod tests {
         };
         VersionedAggregatedAttestation(versioned::VersionedAttestation {
             version: versioned::DataVersion::Phase0,
-            validator_index: Some(val_idx),
+            validator_index: Some(validator_index),
             attestation: Some(versioned::AttestationPayload::Phase0(att)),
         })
     }
