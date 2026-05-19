@@ -654,6 +654,22 @@ fn new_msg(
     })
 }
 
+fn new_prepare_quorum(round: i64, value: i64) -> Vec<TestMsgRef> {
+    (1..=3)
+        .map(|source| new_msg(MSG_PREPARE, 0, source, round, value, 0, 0, 0, None))
+        .collect()
+}
+
+fn new_round_change(source: i64, round: i64, pr: i64, pv: i64) -> TestMsgRef {
+    new_msg(MSG_ROUND_CHANGE, 0, source, round, 0, 0, pr, pv, None)
+}
+
+fn new_round_change_quorum(round: i64, pr: i64, pv: i64) -> Vec<TestMsgRef> {
+    (1..=3)
+        .map(|source| new_round_change(source, round, pr, pv))
+        .collect()
+}
+
 // Delays the message broadcast by between 1x and 2x jitter_ms and drops
 // messages.
 fn bcast(
@@ -1503,17 +1519,111 @@ fn justified_qrc_j1_and_j2() {
 }
 
 #[test]
-fn round_change_prepared_round_must_be_before_round() {
+fn valid_round_change_prepared_round_boundaries() {
+    let cases = [
+        ("negative", 2, -1, false),
+        ("null at round one", 1, 0, true),
+        ("previous round", 2, 1, true),
+        ("current round", 2, 2, false),
+        ("future round", 2, 3, false),
+    ];
+
+    for (name, round, prepared_round, expected) in cases {
+        let msg = new_msg(MSG_ROUND_CHANGE, 0, 1, round, 0, 0, prepared_round, 7, None);
+        assert_eq!(expected, valid_round_change_prepared_round(&msg), "{name}");
+    }
+}
+
+#[test]
+fn invalid_round_change_prepared_rounds_are_filtered_from_call_sites() {
     let mut def = noop_definition();
     def.nodes = 4;
-    let prepares = vec![
-        new_msg(MSG_PREPARE, 0, 1, 2, 7, 0, 0, 0, None),
-        new_msg(MSG_PREPARE, 0, 2, 2, 7, 0, 0, 0, None),
-        new_msg(MSG_PREPARE, 0, 3, 2, 7, 0, 0, 0, None),
-    ];
-    let invalid = new_msg(MSG_ROUND_CHANGE, 0, 1, 2, 0, 0, 2, 7, Some(&prepares));
+    let target_round = 2;
+    let valid_prepared_round = 1;
+    let value = 7;
+    let prepares = new_prepare_quorum(valid_prepared_round, value);
+    let valid_round_changes = new_round_change_quorum(target_round, valid_prepared_round, value);
 
-    assert!(!is_justified_round_change(&def, &invalid));
+    for (name, invalid_pr) in [
+        ("negative", -1),
+        ("current round", target_round),
+        ("future round", target_round + 1),
+    ] {
+        let invalid_prepares = new_prepare_quorum(invalid_pr, value);
+        let invalid_round_change = new_msg(
+            MSG_ROUND_CHANGE,
+            0,
+            1,
+            target_round,
+            0,
+            0,
+            invalid_pr,
+            value,
+            Some(&invalid_prepares),
+        );
+        assert!(
+            !is_justified_round_change(&def, &invalid_round_change),
+            "is_justified_round_change must reject {name} prepared_round"
+        );
+
+        let mut only_invalid = new_round_change_quorum(target_round, invalid_pr, value);
+        only_invalid.extend(invalid_prepares);
+        assert_eq!(
+            None,
+            contains_justified_qrc(&def, &only_invalid, target_round),
+            "contains_justified_qrc must not count {name} prepared_round"
+        );
+        assert!(
+            get_justified_qrc(&def, &only_invalid, target_round).is_none(),
+            "get_justified_qrc must not count {name} prepared_round"
+        );
+
+        let mut with_invalid_extra = valid_round_changes.clone();
+        with_invalid_extra.push(new_round_change(4, target_round, invalid_pr, value));
+        with_invalid_extra.extend(prepares.clone());
+        assert_eq!(
+            Some(value),
+            contains_justified_qrc(&def, &with_invalid_extra, target_round),
+            "contains_justified_qrc must ignore extra {name} prepared_round"
+        );
+        let qrc = get_justified_qrc(&def, &with_invalid_extra, target_round)
+            .expect("valid quorum must remain after filtering invalid prepared_round");
+        assert!(
+            qrc.iter()
+                .filter(|msg| msg.type_() == MSG_ROUND_CHANGE)
+                .all(valid_round_change_prepared_round),
+            "get_justified_qrc must filter extra {name} prepared_round"
+        );
+    }
+}
+
+#[test]
+fn quorum_null_prepared_filters_invalid_prepared_rounds() {
+    let mut def = noop_definition();
+    def.nodes = 4;
+
+    let valid = new_round_change_quorum(1, 0, 0);
+    let (qrc, ok) = quorum_null_prepared(&def, &valid, 1);
+    assert!(ok);
+    assert_eq!(3, qrc.len());
+
+    for (name, round, invalid_pr) in [
+        ("negative", 1, -1),
+        ("current round", 1, 1),
+        ("future round", 1, 2),
+        ("zero round", 0, 0),
+    ] {
+        let invalid = new_round_change_quorum(round, invalid_pr, 0);
+        let (qrc, ok) = quorum_null_prepared(&def, &invalid, round);
+        assert!(
+            !ok,
+            "quorum_null_prepared must reject {name} prepared_round"
+        );
+        assert!(
+            qrc.is_empty(),
+            "quorum_null_prepared must filter {name} prepared_round"
+        );
+    }
 }
 
 #[test]

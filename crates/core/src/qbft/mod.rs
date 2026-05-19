@@ -1036,12 +1036,11 @@ fn contains_justified_qrc<I, V, C>(
 where
     V: Eq + Hash + Default,
 {
-    let qrc = filter_round_change(justification, round);
+    let qrc = filter_round_change(justification, round)
+        .into_iter()
+        .filter(valid_round_change_prepared_round)
+        .collect::<Vec<_>>();
     if (qrc.len() as i64) < d.quorum() {
-        return None;
-    }
-
-    if qrc.iter().any(|rc| !valid_round_change_prepared_round(rc)) {
         return None;
     }
 
