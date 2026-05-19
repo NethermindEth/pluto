@@ -1708,10 +1708,12 @@ fn compare_parent_cancel_cancels_callback_token() {
     let msg = new_msg(MSG_PRE_PREPARE, 0, 1, 1, 7, 11, 0, 0, None);
     let (_vs_tx, vs_rx) = mpmc::bounded::<i64>(1);
     let (timer_tx, timer_rx) = mpmc::bounded(1);
+    let (compare_started_tx, compare_started_rx) = mpmc::bounded(1);
     let (token_cancelled_tx, token_cancelled_rx) = mpmc::bounded(1);
 
     let mut def = noop_definition();
     def.compare = Arc::new(move |ct, _, _, _, return_err, _| {
+        compare_started_tx.send(()).expect(WRITE_CHAN_ERR);
         while !ct.is_canceled() {
             thread::sleep(Duration::from_millis(1));
         }
@@ -1726,7 +1728,9 @@ fn compare_parent_cancel_cancels_callback_token() {
             .expect(WRITE_CHAN_ERR);
     });
 
-    thread::sleep(Duration::from_millis(10));
+    compare_started_rx
+        .recv_timeout(Duration::from_millis(100))
+        .expect("compare must start");
     cts.cancel();
 
     match result_rx.recv_timeout(Duration::from_millis(100)) {
