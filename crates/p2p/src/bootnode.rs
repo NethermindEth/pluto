@@ -9,8 +9,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::peer::{
-    AddrInfo, MutablePeer, MutablePeerError, Peer, PeerError, addr_infos_from_p2p_addrs,
-    peer_id_from_key,
+    AddrInfo, MutablePeer, Peer, PeerError, addr_infos_from_p2p_addrs, peer_id_from_key,
 };
 
 /// Backoff configuration constants matching Go's expbackoff.FastConfig.
@@ -81,10 +80,6 @@ pub enum BootnodeError {
     /// ENR does not have TCP nor UDP port.
     #[error("enr does not have TCP nor UDP port")]
     EnrNoPort,
-
-    /// Mutable peer error.
-    #[error("mutable peer error: {0}")]
-    MutablePeerError(#[from] MutablePeerError),
 }
 
 /// Result type for bootnode operations.
@@ -142,13 +137,7 @@ pub async fn new_relays(
                 return Err(BootnodeError::TimeoutResolvingBootnodeEnr);
             }
 
-            let mut resolved = false;
-            for node in &resp {
-                if let Ok(Some(_)) = node.peer() {
-                    resolved = true;
-                    break;
-                }
-            }
+            let resolved = resp.iter().any(|node| node.peer().is_some());
 
             if resolved {
                 return Ok(resp);
@@ -213,9 +202,7 @@ async fn resolve_relay(
                         addrs = ?peer.addresses,
                         "Resolved new relay"
                     );
-                    if let Err(e) = mutable.set(peer) {
-                        tracing::error!(err = %e, "Failed to set mutable peer");
-                    }
+                    mutable.set(peer);
                 }
                 Err(e) => {
                     tracing::error!(err = %e, addrs = ?addrs, "Failed resolving relay ID from addresses");

@@ -449,52 +449,22 @@ mod tests {
 
     use super::*;
     use crate::types::SlotNumber;
-    use wiremock::{
-        Mock, MockServer, ResponseTemplate,
-        matchers::{method, path},
-    };
+    use pluto_testutil::BeaconMock;
 
     /// Creates a mock beacon node API server and returns the client.
     async fn create_mock_beacon_client(
         genesis_time: DateTime<Utc>,
         slot_duration_secs: u64,
         slots_per_epoch: u64,
-    ) -> (MockServer, EthBeaconNodeApiClient) {
-        let mock_server = MockServer::start().await;
-
-        // Mock /eth/v1/beacon/genesis
-        let genesis_response = serde_json::json!({
-            "data": {
-                "genesis_time": genesis_time.timestamp().to_string(),
-                "genesis_validators_root": "0x0000000000000000000000000000000000000000000000000000000000000000",
-                "genesis_fork_version": "0x00000000"
-            }
-        });
-
-        Mock::given(method("GET"))
-            .and(path("/eth/v1/beacon/genesis"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(genesis_response))
-            .mount(&mock_server)
-            .await;
-
-        // Mock /eth/v1/config/spec
-        let spec_response = serde_json::json!({
-            "data": {
-                "SECONDS_PER_SLOT": slot_duration_secs.to_string(),
-                "SLOTS_PER_EPOCH": slots_per_epoch.to_string()
-            }
-        });
-
-        Mock::given(method("GET"))
-            .and(path("/eth/v1/config/spec"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(spec_response))
-            .mount(&mock_server)
-            .await;
-
-        let client = EthBeaconNodeApiClient::with_base_url(mock_server.uri())
-            .expect("Failed to create client");
-
-        (mock_server, client)
+    ) -> BeaconMock {
+        BeaconMock::builder()
+            .genesis_time(genesis_time)
+            .genesis_validators_root([0; 32])
+            .slot_duration(Duration::from_secs(slot_duration_secs))
+            .slots_per_epoch(slots_per_epoch)
+            .build()
+            .await
+            .expect("should create beacon mock")
     }
 
     /// Helper function to create expired duties, non-expired duties, and
@@ -660,10 +630,11 @@ mod tests {
         let slot_duration_secs = 12;
         let slots_per_epoch = 32;
 
-        let (_mock_server, client) =
+        let mock =
             create_mock_beacon_client(genesis_time, slot_duration_secs, slots_per_epoch).await;
+        let client = mock.client();
 
-        let deadline_func = new_duty_deadline_func(&client)
+        let deadline_func = new_duty_deadline_func(client)
             .await
             .expect("should create deadline func");
 
@@ -688,8 +659,9 @@ mod tests {
         let slot_duration_secs = 12;
         let slots_per_epoch = 32;
 
-        let (_mock_server, client) =
+        let mock =
             create_mock_beacon_client(genesis_time, slot_duration_secs, slots_per_epoch).await;
+        let client = mock.client();
 
         let slot_duration = Duration::from_secs(slot_duration_secs);
         let margin = slot_duration
@@ -712,7 +684,7 @@ mod tests {
                 .expect("slot start should not overflow")
         };
 
-        let deadline_func = new_duty_deadline_func(&client)
+        let deadline_func = new_duty_deadline_func(client)
             .await
             .expect("should create deadline func");
 

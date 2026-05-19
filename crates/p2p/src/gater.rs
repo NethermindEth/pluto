@@ -115,7 +115,7 @@ impl ConnGater {
 
         // Check if peer is a relay
         for relay in &self.config.relays {
-            if let Ok(Some(peer)) = relay.peer()
+            if let Some(peer) = relay.peer()
                 && peer.id == *peer_id
             {
                 return true;
