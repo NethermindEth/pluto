@@ -455,8 +455,9 @@ pub fn new_deadliner(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{calculator::Millis, *};
     use crate::types::SlotNumber;
+    use anyhow::{Context, Result, bail};
     use pluto_testutil::BeaconMock;
 
     /// Creates a mock beacon node API server and returns the client.
@@ -510,65 +511,58 @@ mod tests {
         }
     }
 
+    /// Test calculator: voluntary exits expire 1h from `start_time`, listed
+    /// `expired` duties expired 1h ago, everything else expires at
+    /// `start_time + slot * 500ms` (500ms per slot gives enough headroom for
+    /// scheduling jitter, test completes within ~1–2s).
+    struct TestCalculator {
+        start_time: DateTime<Utc>,
+        expired: HashSet<Duty>,
+    }
+
+    impl DeadlineCalculator for TestCalculator {
+        fn deadline(&self, duty: &Duty) -> Result<Option<DateTime<Utc>>, DeadlineError> {
+            let one_hour =
+                chrono::Duration::try_hours(1).ok_or(DeadlineError::DurationConversion)?;
+            if duty.duty_type == DutyType::Exit {
+                self.start_time
+                    .checked_add_signed(one_hour)
+                    .ok_or(DeadlineError::DateTimeCalculation)
+                    .map(Some)
+            } else if self.expired.contains(duty) {
+                self.start_time
+                    .checked_sub_signed(one_hour)
+                    .ok_or(DeadlineError::DateTimeCalculation)
+                    .map(Some)
+            } else {
+                Millis::new(500)
+                    .checked_mul_slot(duty.slot)?
+                    .add_to(self.start_time)
+                    .map(Some)
+            }
+        }
+    }
+
     #[tokio::test]
-    async fn deadliner() {
+    async fn deadliner() -> Result<()> {
         let (expired_duties, non_expired_duties, voluntary_exits) = setup_data();
 
         // Use real time with generous durations to avoid flakiness on loaded CI.
-        // Previous 10ms-per-slot margins caused races: wall-clock time elapsed
-        // between capturing start_time and the background task processing add()
-        // could exceed the deadline, making "non-expired" duties appear expired.
         let start_time = Utc::now();
-
-        // Create a deadline function provider
         let expired_set: HashSet<_> = expired_duties.iter().cloned().collect();
-        let deadline_func: DeadlineFunc = {
-            Arc::new(move |duty: Duty| {
-                if duty.duty_type == DutyType::Exit {
-                    // Voluntary exits expire after 1 hour (far in the future)
-                    let deadline = start_time
-                        .checked_add_signed(chrono::Duration::try_hours(1).unwrap())
-                        .ok_or(DeadlineError::DateTimeCalculation)?;
-                    return Ok(Some(deadline));
-                }
-
-                if expired_set.contains(&duty) {
-                    // Expired duties have deadline 1 hour in the past
-                    let deadline = start_time
-                        .checked_sub_signed(chrono::Duration::try_hours(1).unwrap())
-                        .ok_or(DeadlineError::DateTimeCalculation)?;
-                    return Ok(Some(deadline));
-                }
-
-                // Non-expired duties expire after duty.slot * 500 milliseconds from now.
-                // 500ms per slot provides enough headroom for task scheduling jitter
-                // while keeping the test fast (completes within ~1-2s).
-                let deadline = start_time
-                    .checked_add_signed(
-                        chrono::Duration::try_milliseconds(
-                            i64::try_from(duty.slot.inner())
-                                .unwrap()
-                                .checked_mul(500)
-                                .unwrap(),
-                        )
-                        .unwrap(),
-                    )
-                    .ok_or(DeadlineError::DateTimeCalculation)?;
-                Ok(Some(deadline))
-            })
+        let calculator = TestCalculator {
+            start_time,
+            expired: expired_set,
         };
 
         let cancel_token = CancellationToken::new();
-        let deadliner = new_deadliner(cancel_token.clone(), "test", deadline_func);
+        let deadliner = new_deadliner(cancel_token.clone(), "test", Arc::new(calculator));
 
-        // Get the output receiver
-        let mut output_rx = deadliner.c().expect("should get receiver");
+        let mut output_rx = deadliner.c().context("output receiver already taken")?;
 
-        // Separate channels for expired and non-expired results
         let (expired_tx, mut expired_rx) = mpsc::channel(100);
         let (non_expired_tx, mut non_expired_rx) = mpsc::channel(100);
 
-        // Add all duties
         let expired_len = expired_duties.len();
         let non_expired_len = non_expired_duties.len();
         let voluntary_exits_len = voluntary_exits.len();
@@ -589,23 +583,28 @@ mod tests {
             non_expired_tx,
         ));
 
-        // Wait for all handlers to complete
         let (result_expired, result_non_expired, result_voluntary_exits) = tokio::join!(
             handler_expired,
             handler_non_expired,
             handler_voluntary_exits
         );
-        result_expired.unwrap();
-        result_non_expired.unwrap();
-        result_voluntary_exits.unwrap();
+        result_expired?;
+        result_non_expired?;
+        result_voluntary_exits?;
 
         for _ in 0..expired_len {
-            let result = expired_rx.recv().await.expect("should receive result");
+            let result = expired_rx.recv().await.context("expected expired ack")?;
             assert!(!result, "expired duties should return false");
         }
 
-        for _ in 0..(non_expired_len.checked_add(voluntary_exits_len).unwrap()) {
-            let result = non_expired_rx.recv().await.expect("should receive result");
+        let added_count = non_expired_len
+            .checked_add(voluntary_exits_len)
+            .context("added_count overflow")?;
+        for _ in 0..added_count {
+            let result = non_expired_rx
+                .recv()
+                .await
+                .context("expected non-expired ack")?;
             assert!(result, "non-expired duties should return true");
         }
 
@@ -615,12 +614,11 @@ mod tests {
         for _ in 0..non_expired_len {
             let duty = timeout(Duration::from_secs(5), output_rx.recv())
                 .await
-                .expect("should receive within timeout")
-                .expect("should receive duty");
+                .context("timeout waiting for expired duty")?
+                .context("output channel closed before duty arrived")?;
             actual_duties.push(duty);
         }
 
-        // Sort both for comparison
         actual_duties.sort_by_key(|d| d.slot.inner());
         let mut expected_duties = non_expired_duties;
         expected_duties.sort_by_key(|d| d.slot.inner());
@@ -628,13 +626,15 @@ mod tests {
         assert_eq!(expected_duties, actual_duties);
 
         cancel_token.cancel();
+        Ok(())
     }
 
     #[test_case::test_case(DutyType::Exit ; "exit")]
     #[test_case::test_case(DutyType::BuilderRegistration ; "builder_registration")]
     #[tokio::test]
-    async fn never_expire_duties(duty_type: DutyType) {
-        let genesis_time = DateTime::from_timestamp(1606824023, 0).unwrap();
+    async fn never_expire_duties(duty_type: DutyType) -> Result<()> {
+        let genesis_time =
+            DateTime::from_timestamp(1606824023, 0).context("invalid genesis timestamp")?;
         let slot_duration_secs = 12;
         let slots_per_epoch = 32;
 
@@ -642,14 +642,13 @@ mod tests {
             create_mock_beacon_client(genesis_time, slot_duration_secs, slots_per_epoch).await;
         let client = mock.client();
 
-        let deadline_func = new_duty_deadline_func(client)
-            .await
-            .expect("should create deadline func");
+        let calculator = DutyDeadlineCalculator::from_client(client).await?;
 
         let duty = Duty::new(SlotNumber::new(100), duty_type);
-        let result = deadline_func(duty).expect("should compute deadline");
+        let result = calculator.deadline(&duty)?;
 
         assert_eq!(result, None, "duty should never expire");
+        Ok(())
     }
 
     #[test_case::test_case(DutyType::Proposer ; "proposer")]
@@ -662,8 +661,9 @@ mod tests {
     #[test_case::test_case(DutyType::InfoSync ; "info_sync")]
     #[test_case::test_case(DutyType::PrepareSyncContribution ; "prepare_sync_contribution")]
     #[tokio::test]
-    async fn duty_deadline_durations(duty_type: DutyType) {
-        let genesis_time = DateTime::from_timestamp(1606824023, 0).unwrap();
+    async fn duty_deadline_durations(duty_type: DutyType) -> Result<()> {
+        let genesis_time =
+            DateTime::from_timestamp(1606824023, 0).context("invalid genesis timestamp")?;
         let slot_duration_secs = 12;
         let slots_per_epoch = 32;
 
@@ -672,9 +672,7 @@ mod tests {
         let client = mock.client();
 
         let slot_duration = Duration::from_secs(slot_duration_secs);
-        let margin = slot_duration
-            .checked_div(12)
-            .expect("margin calculation should not fail");
+        let margin = slot_duration.checked_div(12).context("margin overflow")?;
 
         // Use a fixed slot for deterministic testing
         let current_slot = 100u64;
@@ -682,70 +680,56 @@ mod tests {
         let slot_start = {
             let offset_secs = current_slot
                 .checked_mul(slot_duration.as_secs())
-                .expect("slot offset should not overflow");
-            let offset = chrono::Duration::try_seconds(
-                i64::try_from(offset_secs).expect("offset should fit in i64"),
-            )
-            .expect("offset should be valid duration");
+                .context("slot offset overflow")?;
+            let offset_i64 = i64::try_from(offset_secs).context("offset doesn't fit in i64")?;
+            let offset =
+                chrono::Duration::try_seconds(offset_i64).context("offset out of chrono range")?;
             genesis_time
                 .checked_add_signed(offset)
-                .expect("slot start should not overflow")
+                .context("slot_start overflow")?
         };
 
-        let deadline_func = new_duty_deadline_func(client)
-            .await
-            .expect("should create deadline func");
+        let calculator = DutyDeadlineCalculator::from_client(client).await?;
 
         let expected_duration = match duty_type {
-            DutyType::Proposer | DutyType::Randao => {
-                // slotDuration/3 + margin
-                slot_duration
-                    .checked_div(3)
-                    .and_then(|d| d.checked_add(margin))
-                    .expect("duration calculation should not fail")
-            }
+            DutyType::Proposer | DutyType::Randao => slot_duration
+                .checked_div(3)
+                .and_then(|d| d.checked_add(margin))
+                .context("proposer/randao duration overflow")?,
             DutyType::Attester | DutyType::Aggregator | DutyType::PrepareAggregator => {
-                // 2*slotDuration + margin
                 slot_duration
                     .checked_mul(2)
                     .and_then(|d| d.checked_add(margin))
-                    .expect("duration calculation should not fail")
+                    .context("attester duration overflow")?
             }
-            DutyType::SyncMessage => {
-                // 2*slotDuration/3 + margin
-                slot_duration
-                    .checked_mul(2)
-                    .and_then(|d| d.checked_div(3))
-                    .and_then(|d| d.checked_add(margin))
-                    .expect("duration calculation should not fail")
-            }
+            DutyType::SyncMessage => slot_duration
+                .checked_mul(2)
+                .and_then(|d| d.checked_div(3))
+                .and_then(|d| d.checked_add(margin))
+                .context("sync_message duration overflow")?,
             DutyType::SyncContribution | DutyType::InfoSync | DutyType::PrepareSyncContribution => {
-                // slotDuration + margin
                 slot_duration
                     .checked_add(margin)
-                    .expect("duration calculation should not fail")
+                    .context("default duration overflow")?
             }
-            _ => panic!("unexpected duty type: {duty_type:?}"),
+            _ => bail!("unexpected duty type: {duty_type:?}"),
         };
 
-        let duty = Duty::new(SlotNumber::new(current_slot), duty_type.clone());
+        let slot = SlotNumber::new(current_slot);
+        let duty = Duty::new(slot, duty_type.clone());
 
         let expected_deadline = slot_start
-            .checked_add_signed(to_chrono_duration(expected_duration).unwrap())
-            .expect("deadline calculation should not fail");
+            .checked_add_signed(to_chrono_duration(expected_duration)?)
+            .context("expected_deadline overflow")?;
 
-        let deadline_opt = deadline_func(duty.clone()).expect("should compute deadline");
-
-        assert!(
-            deadline_opt.is_some(),
-            "duty {duty_type:?} should have a deadline"
-        );
-
-        let deadline = deadline_opt.unwrap();
+        let deadline = calculator
+            .deadline(&duty)?
+            .context("duty should have a deadline")?;
 
         assert_eq!(
             deadline, expected_deadline,
             "duty {duty_type:?}: deadline mismatch"
         );
+        Ok(())
     }
 }

@@ -47,19 +47,19 @@ impl DutyDeadlineCalculator {
     /// Wall-clock start of the given slot: `genesis_time + slot *
     /// slot_duration`.
     fn slot_start(&self, slot: SlotNumber) -> Result<DateTime<Utc>> {
-        let offset = Seconds::from(self.slot_duration).checked_mul_slot(slot)?;
+        let offset = Millis::from(self.slot_duration).checked_mul_slot(slot)?;
         offset.add_to(self.genesis_time)
     }
 
     /// Network-delay margin added to every deadline: `slot_duration /
     /// MARGIN_FACTOR`.
-    fn margin(&self) -> Result<Seconds> {
-        Seconds::from(self.slot_duration).checked_div(MARGIN_FACTOR.into())
+    fn margin(&self) -> Result<Millis> {
+        Millis::from(self.slot_duration).checked_div(MARGIN_FACTOR.into())
     }
 
     /// Duty-type-specific offset from slot start.
-    fn duty_duration(&self, duty_type: &DutyType) -> Result<Seconds> {
-        let secs = Seconds::from(self.slot_duration);
+    fn duty_duration(&self, duty_type: &DutyType) -> Result<Millis> {
+        let secs = Millis::from(self.slot_duration);
         match duty_type {
             DutyType::Proposer | DutyType::Randao => secs.checked_div(PROPOSAL_SLOT_FRACTION),
             DutyType::SyncMessage => secs
@@ -101,21 +101,26 @@ impl DeadlineCalculator for DutyDeadlineCalculator {
     }
 }
 
-/// Whole seconds, stored in chrono's native `i64` width with checked
+/// Whole milliseconds, stored in chrono's native `i64` width with checked
 /// conversions. Lifts the `u64`/`i64` `try_from` juggling out of arithmetic
 /// call sites: every conversion either succeeds or returns `DeadlineError`.
-struct Seconds(i64);
+pub(crate) struct Millis(i64);
 
-impl From<chrono::Duration> for Seconds {
+impl From<chrono::Duration> for Millis {
     fn from(d: chrono::Duration) -> Self {
-        Self(d.num_seconds())
+        Self(d.num_milliseconds())
     }
 }
 
-impl Seconds {
+impl Millis {
+    /// Constructs from a raw `i64` count of milliseconds.
+    pub(crate) fn new(ms: i64) -> Self {
+        Self(ms)
+    }
+
     /// Multiplies by a `SlotNumber`, checked for overflow on both the
     /// `u64`→`i64` slot conversion and the `i64`×`i64` multiplication.
-    fn checked_mul_slot(self, slot: SlotNumber) -> Result<Self> {
+    pub(crate) fn checked_mul_slot(self, slot: SlotNumber) -> Result<Self> {
         let mul = i64::try_from(slot.inner()).map_err(|_| DeadlineError::ArithmeticOverflow)?;
         self.0
             .checked_mul(mul)
@@ -141,7 +146,7 @@ impl Seconds {
             .ok_or(DeadlineError::ArithmeticOverflow)
     }
 
-    /// Adds two `Seconds`, returning `DeadlineError::ArithmeticOverflow` on
+    /// Adds two `Millis`, returning `DeadlineError::ArithmeticOverflow` on
     /// overflow.
     fn checked_add(self, other: Self) -> Result<Self> {
         self.0
@@ -150,11 +155,11 @@ impl Seconds {
             .ok_or(DeadlineError::ArithmeticOverflow)
     }
 
-    /// Returns `base + self`, with both the `Seconds → chrono::Duration` and
+    /// Returns `base + self`, with both the `Millis → chrono::Duration` and
     /// the `DateTime` addition checked.
-    fn add_to(self, base: DateTime<Utc>) -> Result<DateTime<Utc>> {
+    pub(crate) fn add_to(self, base: DateTime<Utc>) -> Result<DateTime<Utc>> {
         let offset =
-            chrono::Duration::try_seconds(self.0).ok_or(DeadlineError::DurationConversion)?;
+            chrono::Duration::try_milliseconds(self.0).ok_or(DeadlineError::DurationConversion)?;
         base.checked_add_signed(offset)
             .ok_or(DeadlineError::DateTimeCalculation)
     }
