@@ -410,8 +410,7 @@ mod tests {
                     loop {
                         let response = relay_server_get(cfg.clone(), "/enr").await.unwrap();
                         let body = response.text().await.unwrap();
-                        let enr =
-                            pluto_eth2util::enr::Record::try_from(body.as_str()).unwrap();
+                        let enr = pluto_eth2util::enr::Record::try_from(body.as_str()).unwrap();
                         let ip = enr.ip().unwrap();
 
                         if !ip.is_loopback() {
