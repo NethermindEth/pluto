@@ -39,6 +39,10 @@
 //! # }
 //! ```
 
+mod calculator;
+
+pub use calculator::DeadlineCalculator;
+
 use crate::types::{Duty, DutyType, SlotNumber};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -66,17 +70,6 @@ const FAR_FUTURE_DURATION: Duration = Duration::from_secs(3600 * 24 * 365 * 10);
 /// Returns `Ok(None)` if the duty never expires.
 pub type DeadlineFunc = Arc<dyn Fn(Duty) -> Result<Option<DateTime<Utc>>> + Send + Sync>;
 
-/// Computes deadlines for duties.
-///
-/// `Ok(Some(deadline))` — duty expires at the given wall-clock time.
-/// `Ok(None)`           — duty never expires (e.g. Exit, BuilderRegistration).
-/// `Err(_)`             — arithmetic or conversion failure.
-pub trait DeadlineCalculator: Send + Sync + 'static {
-    /// Computes the deadline for the given duty. See trait docs for return
-    /// semantics.
-    fn deadline(&self, duty: &Duty) -> Result<Option<DateTime<Utc>>>;
-}
-
 /// Beacon-node-derived deadline calculator.
 ///
 /// Caches genesis time and slot duration fetched from the beacon node, and
@@ -102,6 +95,74 @@ impl DutyDeadlineCalculator {
             genesis_time,
             slot_duration,
         })
+    }
+
+    /// Wall-clock start of the given slot: `genesis_time + slot *
+    /// slot_duration`.
+    fn slot_start(&self, slot: SlotNumber) -> Result<DateTime<Utc>> {
+        let secs_per_slot = u64::try_from(self.slot_duration.num_seconds())
+            .map_err(|_| DeadlineError::ArithmeticOverflow)?;
+        let slot_secs = slot
+            .inner()
+            .checked_mul(secs_per_slot)
+            .ok_or(DeadlineError::ArithmeticOverflow)?;
+        let secs_i64 = i64::try_from(slot_secs).map_err(|_| DeadlineError::ArithmeticOverflow)?;
+        let offset =
+            chrono::Duration::try_seconds(secs_i64).ok_or(DeadlineError::DurationConversion)?;
+        self.genesis_time
+            .checked_add_signed(offset)
+            .ok_or(DeadlineError::DateTimeCalculation)
+    }
+
+    /// Network-delay margin added to every deadline: `slot_duration /
+    /// MARGIN_FACTOR`.
+    fn margin(&self) -> Result<chrono::Duration> {
+        self.slot_duration
+            .checked_div(MARGIN_FACTOR)
+            .ok_or(DeadlineError::ArithmeticOverflow)
+    }
+
+    /// Duty-type-specific offset from slot start.
+    fn duty_duration(&self, duty_type: &DutyType) -> Result<chrono::Duration> {
+        match duty_type {
+            // slot_duration / 3
+            DutyType::Proposer | DutyType::Randao => self
+                .slot_duration
+                .checked_div(3)
+                .ok_or(DeadlineError::ArithmeticOverflow),
+            // 2 * slot_duration / 3
+            DutyType::SyncMessage => self
+                .slot_duration
+                .checked_mul(2)
+                .and_then(|s| s.checked_div(3))
+                .ok_or(DeadlineError::ArithmeticOverflow),
+            // 2 * slot_duration. Attestations/aggregations are still accepted
+            // after 2 slots, but rewards are heavily diminished.
+            DutyType::Attester | DutyType::Aggregator | DutyType::PrepareAggregator => self
+                .slot_duration
+                .checked_mul(2)
+                .ok_or(DeadlineError::ArithmeticOverflow),
+            _ => Ok(self.slot_duration),
+        }
+    }
+}
+
+impl DeadlineCalculator for DutyDeadlineCalculator {
+    fn deadline(&self, duty: &Duty) -> Result<Option<DateTime<Utc>>> {
+        if matches!(
+            duty.duty_type,
+            DutyType::Exit | DutyType::BuilderRegistration
+        ) {
+            return Ok(None);
+        }
+        let start = self.slot_start(duty.slot)?;
+        let duration = self.duty_duration(&duty.duty_type)?;
+        let margin = self.margin()?;
+        let deadline = start
+            .checked_add_signed(duration)
+            .and_then(|t| t.checked_add_signed(margin))
+            .ok_or(DeadlineError::DateTimeCalculation)?;
+        Ok(Some(deadline))
     }
 }
 
