@@ -8,7 +8,7 @@
 //!
 //! ```no_run
 //! use pluto_core::{
-//!     deadline::{DutyDeadlineCalculator, new_deadliner},
+//!     deadline::{DeadlinerImpl, DutyDeadlineCalculator},
 //!     types::{Duty, SlotNumber},
 //! };
 //! use pluto_eth2api::EthBeaconNodeApiClient;
@@ -18,7 +18,7 @@
 //! # async fn example(client: &EthBeaconNodeApiClient) -> anyhow::Result<()> {
 //! let cancel_token = CancellationToken::new();
 //! let calculator = DutyDeadlineCalculator::from_client(client).await?;
-//! let deadliner = new_deadliner(cancel_token, "example", Arc::new(calculator));
+//! let deadliner = DeadlinerImpl::start(cancel_token, "example", calculator);
 //!
 //! let duty = Duty::new_attester_duty(SlotNumber::new(1));
 //! let added = deadliner.add(duty).await;
@@ -111,45 +111,6 @@ pub trait Deadliner: Send + Sync {
     fn c(&self) -> Option<mpsc::Receiver<Duty>>;
 }
 
-/// Gets the duty with the earliest deadline from the duties map.
-///
-/// Returns a tuple of (duty, deadline). If no duties are available,
-/// returns a sentinel far-future date (9999-01-01).
-fn get_curr_duty(
-    duties: &HashSet<Duty>,
-    calculator: &dyn DeadlineCalculator,
-) -> (Duty, DateTime<Utc>) {
-    let mut curr_duty = Duty::new(SlotNumber::new(0), DutyType::Unknown);
-
-    // Use far-future sentinel date (9999-01-01) matching Go implementation
-    // This timestamp is a known constant and will never fail
-    let mut curr_deadline = DateTime::<Utc>::MAX_UTC;
-
-    for duty in duties.iter() {
-        match calculator.deadline(duty) {
-            Ok(Some(duty_deadline)) => {
-                // Update if this duty has an earlier deadline
-                if duty_deadline < curr_deadline {
-                    curr_duty = duty.clone();
-                    curr_deadline = duty_deadline;
-                }
-            }
-            Err(err) => {
-                tracing::warn!(
-                    duty = %duty,
-                    error = %err,
-                    "Failed to compute deadline for duty"
-                );
-            }
-            Ok(None) => {
-                // Ignore duties that never expire
-            }
-        }
-    }
-
-    (curr_duty, curr_deadline)
-}
-
 /// Internal message type for adding duties to the deadliner.
 struct DeadlineInput {
     duty: Duty,
@@ -194,10 +155,10 @@ impl Deadliner for DeadlinerLink {
 /// Owned state of the background task that drives a [`DeadlinerLink`]'s
 /// duty timers. Held exclusively by the spawned task — that's why it lives
 /// outside the `Arc<dyn Deadliner>` and `run_task` can take `mut self`.
-struct DeadlinerImpl {
+pub struct DeadlinerImpl<C> {
     cancel_token: CancellationToken,
     label: String,
-    calculator: Arc<dyn DeadlineCalculator>,
+    calculator: C,
     input_rx: mpsc::Receiver<DeadlineInput>,
     output_tx: mpsc::Sender<Duty>,
 
@@ -206,7 +167,43 @@ struct DeadlinerImpl {
     curr_deadline: DateTime<Utc>,
 }
 
-impl DeadlinerImpl {
+impl<C: DeadlineCalculator> DeadlinerImpl<C> {
+    /// Builds the public-facing [`Deadliner`] handle and spawns the background
+    /// task that drives it. The background loop exits when `cancel_token` is
+    /// cancelled.
+    pub fn start(
+        cancel_token: CancellationToken,
+        label: impl Into<String>,
+        calculator: C,
+    ) -> Arc<dyn Deadliner> {
+        const OUTPUT_BUFFER: usize = 256;
+        const INPUT_BUFFER: usize = 256;
+
+        let label = label.into();
+        let (input_tx, input_rx) = mpsc::channel(INPUT_BUFFER);
+        let (output_tx, output_rx) = mpsc::channel(OUTPUT_BUFFER);
+
+        let task = Self {
+            cancel_token: cancel_token.clone(),
+            label,
+            calculator,
+            input_rx,
+            output_tx,
+            duties: HashSet::new(),
+            curr_duty: Duty::new(SlotNumber::new(0), DutyType::Unknown),
+            curr_deadline: DateTime::<Utc>::MAX_UTC,
+        };
+        tokio::spawn(task.run_task());
+
+        let link = DeadlinerLink {
+            cancel_token,
+            input_tx,
+            output_rx: Mutex::new(Some(output_rx)),
+        };
+
+        Arc::new(link)
+    }
+
     /// Background task that manages duty deadlines.
     async fn run_task(mut self) {
         let sleep_fut = sleep(self.remaining_duration());
@@ -250,11 +247,37 @@ impl DeadlinerImpl {
         }
     }
 
-    /// Recomputes `curr_duty`/`curr_deadline` from the current `duties` set.
+    /// Recomputes `curr_duty`/`curr_deadline` to the duty in `self.duties`
+    /// with the earliest deadline. If none of the tracked duties have a finite
+    /// deadline, resets to the sentinel (unknown duty, `MAX_UTC`).
     fn recompute_curr(&mut self) {
-        let (duty, deadline) = get_curr_duty(&self.duties, &*self.calculator);
-        self.curr_duty = duty;
-        self.curr_deadline = deadline;
+        let mut curr_duty = Duty::new(SlotNumber::new(0), DutyType::Unknown);
+        let mut curr_deadline = DateTime::<Utc>::MAX_UTC;
+
+        for duty in &self.duties {
+            match self.calculator.deadline(duty) {
+                Ok(Some(deadline)) => {
+                    if deadline < curr_deadline {
+                        curr_duty = duty.clone();
+                        curr_deadline = deadline;
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        label = %self.label,
+                        duty = %duty,
+                        error = %err,
+                        "Failed to compute deadline for duty"
+                    );
+                }
+                Ok(None) => {
+                    // Duties that never expire are not scheduled.
+                }
+            }
+        }
+
+        self.curr_duty = curr_duty;
+        self.curr_deadline = curr_deadline;
     }
 
     /// Handles a new duty arriving from `input_rx`. Returns `Some(timer)` if
@@ -317,55 +340,6 @@ impl DeadlinerImpl {
         self.recompute_curr();
         Some(self.remaining_duration())
     }
-}
-
-/// Creates a new Deadliner instance.
-///
-/// Starts a background task that manages duty deadlines and sends expired
-/// duties to a channel. The background task runs until the cancellation token
-/// is cancelled.
-///
-/// # Arguments
-///
-/// * `cancel_token` - Token to cancel the background task
-/// * `label` - Label for logging purposes
-/// * `calculator` - Computes per-duty deadlines (e.g.
-///   [`DutyDeadlineCalculator`])
-///
-/// # Returns
-///
-/// An Arc-wrapped Deadliner trait object
-pub fn new_deadliner(
-    cancel_token: CancellationToken,
-    label: impl Into<String>,
-    calculator: Arc<dyn DeadlineCalculator>,
-) -> Arc<dyn Deadliner> {
-    const OUTPUT_BUFFER: usize = 256;
-    const INPUT_BUFFER: usize = 256;
-
-    let label = label.into();
-    let (input_tx, input_rx) = mpsc::channel(INPUT_BUFFER);
-    let (output_tx, output_rx) = mpsc::channel(OUTPUT_BUFFER);
-
-    let link: Arc<dyn Deadliner> = Arc::new(DeadlinerLink {
-        cancel_token: cancel_token.clone(),
-        input_tx,
-        output_rx: Mutex::new(Some(output_rx)),
-    });
-
-    let task = DeadlinerImpl {
-        cancel_token,
-        label,
-        calculator,
-        input_rx,
-        output_tx,
-        duties: HashSet::new(),
-        curr_duty: Duty::new(SlotNumber::new(0), DutyType::Unknown),
-        curr_deadline: DateTime::<Utc>::MAX_UTC,
-    };
-    tokio::spawn(task.run_task());
-
-    link
 }
 
 #[cfg(test)]
@@ -472,7 +446,7 @@ mod tests {
         };
 
         let cancel_token = CancellationToken::new();
-        let deadliner = new_deadliner(cancel_token.clone(), "test", Arc::new(calculator));
+        let deadliner = DeadlinerImpl::start(cancel_token.clone(), "test", calculator);
 
         let mut output_rx = deadliner.c().context("output receiver already taken")?;
 
