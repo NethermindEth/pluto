@@ -44,8 +44,8 @@ pub enum Error {
     #[error("dutydb shutdown: query could not be answered")]
     Shutdown,
 
-    /// Two validators share the same `(slot, commIdx, valIdx)` with different
-    /// public keys.
+    /// Two validators share the same `(slot, committee_index, valIdx)` with
+    /// different public keys.
     #[error(
         "clashing public key: slot={slot} committee_index={committee_index} validator_index={validator_index}"
     )]
@@ -58,7 +58,8 @@ pub enum Error {
         validator_index: u64,
     },
 
-    /// Two different attestation data objects for the same `(slot, commIdx)`.
+    /// Two different attestation data objects for the same `(slot,
+    /// committee_index)`.
     #[error("clashing attestation data: slot={slot} committee_index={committee_index}")]
     ClashingAttestationData {
         /// Slot of the attestation duty.
@@ -67,10 +68,10 @@ pub enum Error {
         committee_index: u64,
     },
 
-    /// Mismatched source checkpoint in the hardcoded `commIdx=0` compatibility
-    /// entry.
+    /// Mismatched source checkpoint in the hardcoded `committee_index=0`
+    /// compatibility entry.
     #[error(
-        "clashing attestation data commidx=0 source: slot={slot} validator_index={validator_index}"
+        "clashing attestation data committee_index=0 source: slot={slot} validator_index={validator_index}"
     )]
     ClashingAttestationDataCommIdx0Source {
         /// Slot of the attestation duty.
@@ -79,10 +80,10 @@ pub enum Error {
         validator_index: u64,
     },
 
-    /// Mismatched target checkpoint in the hardcoded `commIdx=0` compatibility
-    /// entry.
+    /// Mismatched target checkpoint in the hardcoded `committee_index=0`
+    /// compatibility entry.
     #[error(
-        "clashing attestation data commidx=0 target: slot={slot} validator_index={validator_index}"
+        "clashing attestation data committee_index=0 target: slot={slot} validator_index={validator_index}"
     )]
     ClashingAttestationDataCommIdx0Target {
         /// Slot of the attestation duty.
@@ -91,8 +92,8 @@ pub enum Error {
         validator_index: u64,
     },
 
-    /// Two different sync contributions for the same `(slot, subcommIdx,
-    /// root)`.
+    /// Two different sync contributions for the same `(slot,
+    /// subcommittee_index, root)`.
     #[error("clashing sync contributions: slot={slot} subcommittee_index={subcommittee_index}")]
     ClashingSyncContributions {
         /// Slot of the sync contribution duty.
@@ -108,9 +109,10 @@ pub enum Error {
         slot: u64,
     },
 
-    /// No public key found for the given `(slot, commIdx, valIdx)`.
+    /// No public key found for the given `(slot, committee_index,
+    /// validator_index)`.
     #[error(
-        "pubkey not found for the given (slot={slot}, commIdx={committee_index}, valIdx={validator_index})"
+        "pubkey not found for the given (slot={slot}, committee_index={committee_index}, validator_index={validator_index})"
     )]
     PubKeyNotFound {
         /// Slot of the attestation duty.
@@ -529,7 +531,7 @@ impl State {
     }
 
     // Post-Electra, committee index 0 is the protocol default and well-behaved
-    // VCs request attestation data with commIdx=0. However, some VCs still
+    // VCs request attestation data with committee_index=0. However, some VCs still
     // request with the actual committee index, so Charon stores both: the real
     // index (handled by the caller) and a hardcoded-0 entry here. Once all VCs
     // are fixed this function can be removed.
@@ -557,7 +559,7 @@ impl State {
             if existing != pubkey {
                 warn!(
                     slot,
-                    validator_index, "dutydb: clashing public key at commidx=0"
+                    validator_index, "dutydb: clashing public key at committee_index=0"
                 );
                 return Err(Error::ClashingPublicKey {
                     slot,
@@ -581,7 +583,7 @@ impl State {
             if existing.source != data.source {
                 warn!(
                     slot,
-                    validator_index, "dutydb: clashing attestation data commidx=0 source"
+                    validator_index, "dutydb: clashing attestation data committee_index=0 source"
                 );
                 return Err(Error::ClashingAttestationDataCommIdx0Source {
                     slot,
@@ -591,7 +593,7 @@ impl State {
             if existing.target != data.target {
                 warn!(
                     slot,
-                    validator_index, "dutydb: clashing attestation data commidx=0 target"
+                    validator_index, "dutydb: clashing attestation data committee_index=0 target"
                 );
                 return Err(Error::ClashingAttestationDataCommIdx0Target {
                     slot,
@@ -615,7 +617,7 @@ impl State {
             self.agg_keys_by_slot.entry(slot).or_default().push(key);
         }
         // we don't check existingDataRoot != providedDataRoot because these values
-        // comes from the same source and the error was unreachable
+        // come from the same source and the error was unreachable
         self.agg_duties.insert(key, agg.clone()); // unconditional overwrite
 
         Ok(())
