@@ -1,6 +1,6 @@
 use crossbeam::channel as mpmc;
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
@@ -16,7 +16,7 @@ struct FakeClockInner {
     now: Instant,
     last_id: usize,
     cancelled: bool,
-    clients: HashMap<usize, (mpmc::Sender<Instant>, Instant)>,
+    clients: BTreeMap<usize, (mpmc::Sender<Instant>, Instant)>,
 }
 
 impl FakeClock {
@@ -75,7 +75,9 @@ impl FakeClock {
             inner.now += duration;
             let now = inner.now;
 
-            for (&id, (ch, deadline)) in inner.clients.iter() {
+            // Preserve timer creation order for equal deadlines. The QBFT
+            // fake-clock harness asserts exact rounds, so timer ordering matters.
+            for (&id, (ch, deadline)) in &inner.clients {
                 if *deadline <= now {
                     expired.push((id, ch.clone()));
                 }

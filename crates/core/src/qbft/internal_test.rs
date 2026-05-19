@@ -276,10 +276,11 @@ fn test_qbft(test: Test) {
                         .as_ref()
                         .expect("value sender kept until run returns")
                         .clone();
+                    let (delay_ch, cancel) = clock.new_timer(delay);
                     s.spawn(move || {
-                        let (delay_ch, cancel) = clock.new_timer(delay);
-                        _ = delay_ch.recv();
-                        _ = v_chan_tx_send.send(i);
+                        if delay_ch.recv().is_ok() {
+                            _ = v_chan_tx_send.send(i);
+                        }
 
                         cancel();
                     });
@@ -378,7 +379,6 @@ fn test_qbft(test: Test) {
                         }
                         BroadcastEvent::Delayed(delayed) => pending.push(delayed),
                     }
-                    clock.advance(Duration::from_millis(1));
                     if clock.elapsed() > Duration::from_secs(180) || real_start.elapsed() > Duration::from_secs(20) {
                         cts.cancel();
                         clock.cancel();
@@ -517,7 +517,9 @@ fn test_qbft(test: Test) {
                 }
 
                 default => {
-                    thread::sleep(time::Duration::from_micros(1));
+                    // Give worker threads a small scheduling window before
+                    // advancing fake time; these tests assert exact rounds.
+                    thread::sleep(Duration::from_micros(50));
                     clock.advance(Duration::from_millis(1));
                     if clock.elapsed() > Duration::from_secs(180) || real_start.elapsed() > Duration::from_secs(20) {
                         cts.cancel();
