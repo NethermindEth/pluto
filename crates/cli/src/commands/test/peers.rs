@@ -26,7 +26,7 @@ use pluto_p2p::{
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
     peer::{MutablePeer, Peer, peer_id_from_key, verify_p2p_key},
-    relay::MutableRelayReservation,
+    relay::RelayManager,
     utils::is_relay_addr,
 };
 use reqwest::Method;
@@ -45,22 +45,29 @@ use crate::{
     error::{CliError, Result},
 };
 
-/// Combined inner behaviour: relay client + relay reservation.
+/// Combined inner behaviour: relay client + relay reservation/routing.
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "TestBehaviourEvent")]
 struct TestBehaviour {
     relay: relay::client::Behaviour,
-    reservation: MutableRelayReservation,
+    relay_manager: RelayManager,
 }
 
 #[derive(Debug)]
 enum TestBehaviourEvent {
     Relay(relay::client::Event),
+    RelayManager(#[allow(dead_code)] pluto_p2p::relay::RelayManagerEvent),
 }
 
 impl From<relay::client::Event> for TestBehaviourEvent {
     fn from(e: relay::client::Event) -> Self {
         Self::Relay(e)
+    }
+}
+
+impl From<pluto_p2p::relay::RelayManagerEvent> for TestBehaviourEvent {
+    fn from(e: pluto_p2p::relay::RelayManagerEvent) -> Self {
+        Self::RelayManager(e)
     }
 }
 
@@ -751,7 +758,7 @@ fn dial_peers_via_relay(
     node: &mut Node<TestBehaviour>,
 ) {
     for (peer, _) in target_peers {
-        for relay_peer in relay_peers.iter().filter_map(|r| r.peer().ok().flatten()) {
+        for relay_peer in relay_peers.iter().filter_map(MutablePeer::peer) {
             for relay_addr in &relay_peer.addresses {
                 let mut circuit_addr = relay_addr.clone();
                 circuit_addr.push(Protocol::P2p(relay_peer.id));
@@ -1057,9 +1064,10 @@ async fn setup_p2p(
         false,
         p2p_context,
         |builder, _keypair, relay_client| {
+            let p2p_context = builder.p2p_context();
             builder.with_gater(gater).with_inner(TestBehaviour {
                 relay: relay_client,
-                reservation: MutableRelayReservation::new(relay_peers.clone()),
+                relay_manager: RelayManager::new(relay_peers.clone(), p2p_context),
             })
         },
     )?;

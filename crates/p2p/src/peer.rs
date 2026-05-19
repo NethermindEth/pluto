@@ -2,14 +2,12 @@
 //!
 //! Peer-related types and utilities.
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::collections::HashMap;
 
 use k256::{PublicKey as K256PublicKey, SecretKey};
 use libp2p::{Multiaddr, PeerId, identity::PublicKey as Libp2pPublicKey, multiaddr::Protocol};
 use pluto_eth2util::enr::Record;
+use tokio::sync::watch;
 
 use crate::name::peer_name;
 
@@ -124,94 +122,45 @@ impl Peer {
     }
 }
 
-/// Mutable peer error.
-#[derive(Debug, thiserror::Error)]
-pub enum MutablePeerError {
-    /// Failed to lock the mutable peer.
-    #[error("Failed to lock the mutable peer")]
-    PoisonError,
-}
-
 /// MutablePeer is a mutable peer that can be updated.
+///
+/// Wraps a `tokio::sync::watch` channel so the current peer can be read at any
+/// time and observers can subscribe to updates without holding callbacks.
 #[derive(Debug, Clone)]
 pub struct MutablePeer {
-    /// Inner state of the mutable peer.
-    inner: Arc<Mutex<MutablePeerInner>>,
+    tx: watch::Sender<Option<Peer>>,
 }
-
-/// Subscriber is a function that is called when the peer is updated.
-pub type Subscriber = Box<dyn Fn(&Peer) + Send + Sync + 'static>;
-
-/// MutablePeerInner is the inner state of a MutablePeer.
-pub struct MutablePeerInner {
-    /// Peer.
-    peer: Option<Peer>,
-
-    /// Subscribers.
-    subs: Vec<Subscriber>,
-}
-
-impl std::fmt::Debug for MutablePeerInner {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MutablePeerInner")
-            .field("peer", &self.peer)
-            .field("subs", &format!("[{} subscribers]", self.subs.len()))
-            .finish()
-    }
-}
-
-type MutablePeerResult<T> = std::result::Result<T, MutablePeerError>;
 
 impl Default for MutablePeer {
     fn default() -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(MutablePeerInner {
-                peer: None,
-                subs: Vec::new(),
-            })),
-        }
+        let (tx, _) = watch::channel(None);
+        Self { tx }
     }
 }
 
 impl MutablePeer {
     /// Creates a new mutable peer with an initial value.
     pub fn new(peer: Peer) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(MutablePeerInner {
-                peer: Some(peer),
-                subs: Vec::new(),
-            })),
-        }
+        let (tx, _) = watch::channel(Some(peer));
+        Self { tx }
     }
 
-    /// Updates the mutable peer and calls all subscribers.
-    pub fn set(&self, peer: Peer) -> MutablePeerResult<()> {
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| MutablePeerError::PoisonError)?;
-        inner.peer = Some(peer.clone());
-        inner.subs.iter().for_each(|sub| sub(&peer.clone()));
-        Ok(())
+    /// Updates the mutable peer, notifying any active subscribers.
+    pub fn set(&self, peer: Peer) {
+        self.tx.send_replace(Some(peer));
     }
 
-    /// Returns the current peer or None if not available.
-    pub fn peer(&self) -> MutablePeerResult<Option<Peer>> {
-        let inner = self
-            .inner
-            .lock()
-            .map_err(|_| MutablePeerError::PoisonError)?;
-        Ok(inner.peer.clone())
+    /// Returns the current peer or `None` if not available.
+    pub fn peer(&self) -> Option<Peer> {
+        self.tx.borrow().clone()
     }
 
-    /// Registers a function that is called when the peer is updated.
-    pub fn subscribe(&self, sub: Subscriber) -> MutablePeerResult<()> {
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| MutablePeerError::PoisonError)?;
-        inner.subs.push(sub);
-        Ok(())
+    /// Returns a receiver that observes peer updates.
+    ///
+    /// The receiver is initialized as "changed" so a consumer that immediately
+    /// reads it will see the current value (if any).
+    pub fn subscribe(&self) -> watch::Receiver<Option<Peer>> {
+        self.tx.subscribe()
     }
 }
 
@@ -384,5 +333,59 @@ mod tests {
         // Test edge case: empty input
         let result = addr_infos_from_p2p_addrs(&[]).unwrap();
         assert_eq!(result.len(), 0);
+    }
+
+    // ---- MutablePeer --------------------------------------------------
+
+    fn sample_peer(name_suffix: &str) -> Peer {
+        let p2p_key = generate_insecure_k1_key(1);
+        let record = Record::new(&p2p_key, vec![]).unwrap();
+        let mut peer = Peer::from_enr(&record, 0).unwrap();
+        peer.name = format!("peer-{name_suffix}");
+        peer
+    }
+
+    #[test]
+    fn mutable_peer_default_yields_none_until_set() {
+        let mp = MutablePeer::default();
+        assert!(mp.peer().is_none());
+
+        let mut rx = mp.subscribe();
+        // Watch receivers are "changed" on creation, so an immediate
+        // borrow_and_update reads the current value (None) without blocking.
+        let _ = rx.borrow_and_update();
+        assert!(rx.borrow().is_none());
+
+        let peer = sample_peer("first");
+        mp.set(peer.clone());
+        assert!(matches!(mp.peer(), Some(p) if p.id == peer.id));
+    }
+
+    #[tokio::test]
+    async fn mutable_peer_late_subscriber_sees_current_value_immediately() {
+        let initial = sample_peer("initial");
+        let mp = MutablePeer::new(initial.clone());
+
+        let mut rx = mp.subscribe();
+        // Subscribers obtained after construction should observe the seed
+        // value on first read — this is the property RelayManager relies on
+        // for picking up initial relay addresses without a bootstrap pass.
+        let current = rx.borrow_and_update().clone();
+        assert!(matches!(current, Some(p) if p.id == initial.id));
+    }
+
+    #[tokio::test]
+    async fn mutable_peer_set_notifies_live_subscribers() {
+        let mp = MutablePeer::default();
+        let mut rx = mp.subscribe();
+        // Drain the initial "changed" marker.
+        let _ = rx.borrow_and_update();
+
+        let updated = sample_peer("updated");
+        mp.set(updated.clone());
+
+        rx.changed().await.expect("set() must notify subscribers");
+        let observed = rx.borrow_and_update().clone();
+        assert!(matches!(observed, Some(p) if p.id == updated.id));
     }
 }

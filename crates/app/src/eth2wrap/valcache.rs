@@ -227,8 +227,9 @@ mod tests {
         BlindedBlock400Response, GetStateValidatorsResponseResponseDatum,
         ValidatorResponseValidator, ValidatorStatus,
     };
+    use pluto_testutil::BeaconMock;
     use wiremock::{
-        Mock, MockServer, ResponseTemplate,
+        Mock, ResponseTemplate,
         matchers::{method, path},
     };
 
@@ -267,17 +268,17 @@ mod tests {
             .collect::<HashMap<ValidatorIndex, PubKey>>();
 
         // Create a mock server that tracks request count
-        let mock_server = MockServer::start().await;
+        let mock = BeaconMock::builder()
+            .build()
+            .await
+            .expect("should create beacon mock");
         post_state_validators_success("head", datums.to_vec())
             .expect(2) // Should be called exactly twice (once before trim, once after)
-            .mount(&mock_server)
+            .mount(mock.server())
             .await;
 
-        let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock_server.uri())
-            .expect("Failed to create client");
-
         // Create a cache.
-        let cache = ValidatorCache::new(eth2_cl, pubkeys);
+        let cache = ValidatorCache::new(mock.client().clone(), pubkeys);
 
         // Check cache is populated.
         let (actual_active, actual_complete) =
@@ -310,15 +311,16 @@ mod tests {
     #[tokio::test]
     async fn get_by_head_fail_fetch() {
         // Create a mock server that returns a 404 error
-        let mock_server = MockServer::start().await;
+        let mock = BeaconMock::builder()
+            .build()
+            .await
+            .expect("should create beacon mock");
 
         post_state_validators_not_found("head")
             .expect(1)
-            .mount(&mock_server)
+            .mount(mock.server())
             .await;
-        let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock_server.uri())
-            .expect("Failed to create client");
-        let cache = ValidatorCache::new(eth2_cl, vec![test_pubkey(1)]);
+        let cache = ValidatorCache::new(mock.client().clone(), vec![test_pubkey(1)]);
 
         // Verify cache is initially empty
         {
@@ -344,7 +346,10 @@ mod tests {
         let pubkeys = vec![test_pubkey(0), test_pubkey(1)];
 
         // Set up mock server with different responses based on slot
-        let mock_server = MockServer::start().await;
+        let mock = BeaconMock::builder()
+            .build()
+            .await
+            .expect("should create beacon mock");
 
         post_state_validators_success(
             "1",
@@ -353,7 +358,7 @@ mod tests {
                 test_validator_datum(1, &pubkeys[1], ValidatorStatus::ActiveOngoing),
             ],
         )
-        .mount(&mock_server)
+        .mount(mock.server())
         .await;
 
         post_state_validators_success(
@@ -363,7 +368,7 @@ mod tests {
                 test_validator_datum(1, &pubkeys[1], ValidatorStatus::ActiveOngoing),
             ],
         )
-        .mount(&mock_server)
+        .mount(mock.server())
         .await;
 
         post_state_validators_success(
@@ -373,21 +378,18 @@ mod tests {
                 test_validator_datum(1, &pubkeys[1], ValidatorStatus::PendingQueued),
             ],
         )
-        .mount(&mock_server)
+        .mount(mock.server())
         .await;
 
         post_state_validators_not_found("3")
-            .mount(&mock_server)
+            .mount(mock.server())
             .await;
         post_state_validators_not_found("head")
-            .mount(&mock_server)
+            .mount(mock.server())
             .await;
 
-        let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock_server.uri())
-            .expect("Failed to create client");
-
         // Create a cache.
-        let cache = ValidatorCache::new(eth2_cl, pubkeys.clone());
+        let cache = ValidatorCache::new(mock.client().clone(), pubkeys.clone());
 
         // Test slot 1: 1 active validator (index 1), 2 complete, refreshed_by_slot=true
         let (active, complete, refreshed_by_slot) = cache
@@ -429,10 +431,13 @@ mod tests {
         let pubkeys = vec![test_pubkey(0), test_pubkey(1)];
 
         // Set up mock server: slot requests fail, but head succeeds
-        let mock_server = MockServer::start().await;
+        let mock = BeaconMock::builder()
+            .build()
+            .await
+            .expect("should create beacon mock");
 
         post_state_validators_not_found("1")
-            .mount(&mock_server)
+            .mount(mock.server())
             .await;
 
         post_state_validators_success(
@@ -442,13 +447,10 @@ mod tests {
                 test_validator_datum(1, &pubkeys[1], ValidatorStatus::ActiveOngoing),
             ],
         )
-        .mount(&mock_server)
+        .mount(mock.server())
         .await;
 
-        let eth2_cl = EthBeaconNodeApiClient::with_base_url(mock_server.uri())
-            .expect("Failed to create client");
-
-        let cache = ValidatorCache::new(eth2_cl, pubkeys);
+        let cache = ValidatorCache::new(mock.client().clone(), pubkeys);
 
         // Test slot 1: fails, falls back to head, returns 2 active, 2 complete,
         // refreshed_by_slot=false

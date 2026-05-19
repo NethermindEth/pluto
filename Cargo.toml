@@ -60,6 +60,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0" }
 thiserror = "2.0"
 tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = "0.7.11"
 libp2p = { version = "0.56", features = ["full", "secp256k1"] }
 url = "2.5"
