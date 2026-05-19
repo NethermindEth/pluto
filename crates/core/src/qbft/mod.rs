@@ -57,8 +57,8 @@ pub enum QbftError {
     #[error("Compare leader value with local value failed")]
     CompareError,
 
-    #[error("bug: expected only comparison or timeout error")]
-    UnexpectedCompareError,
+    #[error("bug: expected only comparison or timeout error, got {0}")]
+    UnexpectedCompareError(Box<QbftError>),
 
     #[error("context canceled")]
     ContextCanceled,
@@ -534,7 +534,11 @@ where
                                         broadcast_round_change()?;
                                     }
                                     QbftError::ContextCanceled => return Err(QbftError::ContextCanceled),
-                                    _ => return Err(QbftError::UnexpectedCompareError),
+                                    _ => {
+                                        return Err(QbftError::UnexpectedCompareError(Box::new(
+                                            qbft_err,
+                                        )));
+                                    }
                                 }
                             }
                         }
@@ -1288,6 +1292,8 @@ where
     let null_pr = Default::default();
     let null_pv = Some(&Default::default());
 
+    // Normal callers pass round >= 1, which makes pr=0 valid. Keep the explicit
+    // prepared-round filter so this helper remains safe for direct/future calls.
     let justification = filter_msgs(all, MSG_ROUND_CHANGE, round, None, Some(null_pr), null_pv)
         .into_iter()
         .filter(valid_round_change_prepared_round)

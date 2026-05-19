@@ -1815,7 +1815,7 @@ struct ChainSplitTest {
 #[test_case(1, 1, 1, 1, 1, 1, false ; "same_value")]
 #[test_case(1, 3, 1, 1, 1, 1, false ; "non_leader_peer_has_different_value")]
 #[test_case(3, 1, 1, 1, 2, 1, false ; "first_leader_has_different_value_second_leader_succeeds")]
-#[test_case(1, 1, 3, 3, 0, 0, true ; "zz_no_consensus_halt")]
+#[test_case(1, 1, 3, 3, 0, 0, true ; "no_consensus_halt")]
 fn chain_split(
     value_1: i64,
     value_2: i64,
