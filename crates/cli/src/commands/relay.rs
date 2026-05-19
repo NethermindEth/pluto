@@ -403,11 +403,26 @@ mod tests {
         with_relay_server(
             |args| args.p2p.external_host = Some("www.google.com".into()),
             async |cfg| {
-                let response = relay_server_get(cfg, "/enr").await.unwrap();
-                let body = response.text().await.unwrap();
-                let enr = pluto_eth2util::enr::Record::try_from(body.as_str()).unwrap();
+                // Resolution happens asynchronously on a tick, so poll until the
+                // ENR reflects a non-loopback IP (mirrors the Go test using
+                // `assert.Eventually`).
+                let deadline = time::Instant::now() + time::Duration::from_secs(10);
+                loop {
+                    let response = relay_server_get(cfg.clone(), "/enr").await.unwrap();
+                    let body = response.text().await.unwrap();
+                    let enr = pluto_eth2util::enr::Record::try_from(body.as_str()).unwrap();
+                    let ip = enr.ip().unwrap();
 
-                assert!(enr.ip().unwrap().is_loopback());
+                    if !ip.is_loopback() {
+                        break;
+                    }
+
+                    assert!(
+                        time::Instant::now() < deadline,
+                        "external host never resolved to non-loopback ip"
+                    );
+                    tokio::time::sleep(time::Duration::from_millis(200)).await;
+                }
             },
         )
         .await
