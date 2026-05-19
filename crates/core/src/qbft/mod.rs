@@ -38,13 +38,19 @@ type Result<T> = std::result::Result<T, QbftError>;
 // does not need sub-millisecond latency, and idle instances should stay cheap.
 const CANCELLATION_POLL_INTERVAL: time::Duration = time::Duration::from_millis(50);
 
-type CompareFn<I, V, C> = dyn Fn(
+pub trait QbftTypes: 'static {
+    type Instance: Send + Sync + 'static;
+    type Value: Eq + Hash + Default + 'static;
+    type Compare: Clone + Send + Sync + Default + 'static;
+}
+
+type CompareFn<T> = dyn Fn(
         /* ct */ &CancellationToken,
-        /* qcommit */ &Msg<I, V, C>,
-        /* input_value_source_ch */ &mpmc::Receiver<C>,
-        /* input_value_source */ &C,
+        /* qcommit */ &Msg<T>,
+        /* input_value_source_ch */ &mpmc::Receiver<<T as QbftTypes>::Compare>,
+        /* input_value_source */ &<T as QbftTypes>::Compare,
         /* return_err */ &mpmc::Sender<Result<()>>,
-        /* return_value */ &mpmc::Sender<C>,
+        /* return_value */ &mpmc::Sender<<T as QbftTypes>::Compare>,
     ) + Send
     + Sync
     + 'static;
@@ -80,10 +86,7 @@ pub enum QbftError {
 }
 
 /// Abstracts the transport layer between processes in the consensus system.
-pub struct Transport<I, V, C>
-where
-    V: PartialEq,
-{
+pub struct Transport<T: QbftTypes> {
     /// Broadcast sends a message with the provided fields to all other
     /// processes in the system (including this process).
     ///
@@ -92,13 +95,13 @@ where
         dyn Fn(
                 /* ct */ &CancellationToken,
                 /* type_ */ MessageType,
-                /* instance */ &I,
+                /* instance */ &T::Instance,
                 /* source */ i64,
                 /* round */ i64,
-                /* value */ &V,
+                /* value */ &T::Value,
                 /* pr */ i64,
-                /* pv */ &V,
-                /* justification */ Option<&Vec<Msg<I, V, C>>>,
+                /* pv */ &T::Value,
+                /* justification */ Option<&Vec<Msg<T>>>,
             ) -> Result<()>
             + Send
             + Sync,
@@ -106,19 +109,23 @@ where
 
     /// Receive returns a stream of messages received
     /// from other processes in the system (including this process).
-    pub receive: mpmc::Receiver<Msg<I, V, C>>,
+    pub receive: mpmc::Receiver<Msg<T>>,
 }
 
 /// Defines the consensus system parameters that are external to the qbft
 /// algorithm. This remains constant across multiple instances of consensus
 /// (calls to `run`).
-pub struct Definition<I, V, C>
-where
-    V: PartialEq,
-{
+pub struct Definition<T: QbftTypes> {
     /// A deterministic leader election function.
-    pub is_leader:
-        Box<dyn Fn(/* instance */ &I, /* round */ i64, /* process */ i64) -> bool + Send + Sync>,
+    pub is_leader: Box<
+        dyn Fn(
+                /* instance */ &T::Instance,
+                /* round */ i64,
+                /* process */ i64,
+            ) -> bool
+            + Send
+            + Sync,
+    >,
 
     /// Returns a new timer channel and stop function for the round
     pub new_timer: Box<
@@ -130,15 +137,15 @@ where
     /// Charon parity hook called when the leader proposes a value. The core
     /// algorithm only runs this callback and reacts to its result; any
     /// value-source comparison policy belongs to the caller.
-    pub compare: sync::Arc<CompareFn<I, V, C>>,
+    pub compare: sync::Arc<CompareFn<T>>,
 
     /// Called when consensus has been reached on a value.
     pub decide: Box<
         dyn Fn(
                 /* ct */ &CancellationToken,
-                /* instance */ &I,
-                /* value */ &V,
-                /* qcommit */ &Vec<Msg<I, V, C>>,
+                /* instance */ &T::Instance,
+                /* value */ &T::Value,
+                /* qcommit */ &Vec<Msg<T>>,
             ) + Send
             + Sync,
     >,
@@ -147,10 +154,10 @@ where
     /// It includes the rule that triggered it and all received round messages.
     pub log_upon_rule: Box<
         dyn Fn(
-                /* instance */ &I,
+                /* instance */ &T::Instance,
                 /* process */ i64,
                 /* round */ i64,
-                /* msg */ &Msg<I, V, C>,
+                /* msg */ &Msg<T>,
                 /* upon_rule */ UponRule,
             ) + Send
             + Sync,
@@ -158,19 +165,19 @@ where
     /// Allows debug logging of round changes.
     pub log_round_change: Box<
         dyn Fn(
-                /* instance */ &I,
+                /* instance */ &T::Instance,
                 /* process */ i64,
                 /* round */ i64,
                 /* new_round */ i64,
                 /* upon_rule */ UponRule,
-                /* msgs */ &Vec<Msg<I, V, C>>,
+                /* msgs */ &Vec<Msg<T>>,
             ) + Send
             + Sync,
     >,
 
     /// Allows debug logging of unjust messages.
     pub log_unjust:
-        Box<dyn Fn(/* instance */ &I, /* process */ i64, /* msg */ Msg<I, V, C>) + Send + Sync>,
+        Box<dyn Fn(/* instance */ &T::Instance, /* process */ i64, /* msg */ Msg<T>) + Send + Sync>,
 
     /// Total number of nodes/processes participating in consensus.
     pub nodes: i64,
@@ -179,10 +186,7 @@ where
     pub fifo_limit: i64,
 }
 
-impl<I, V, C> Definition<I, V, C>
-where
-    V: PartialEq,
-{
+impl<T: QbftTypes> Definition<T> {
     /// Quorum count for the system.
     /// See IBFT 2.0 paper for correct formula: <https://arxiv.org/pdf/1909.10194.pdf>
     pub fn quorum(&self) -> i64 {
@@ -235,35 +239,32 @@ impl Display for MessageType {
 }
 
 /// Defines the inter process messages.
-pub trait SomeMsg<I, V, C>: Send + Sync + fmt::Debug
-where
-    V: PartialEq,
-{
+pub trait SomeMsg<T: QbftTypes>: Send + Sync + fmt::Debug {
     /// Type of the message.
     fn type_(&self) -> MessageType;
     /// Consensus instance.
-    fn instance(&self) -> I;
+    fn instance(&self) -> T::Instance;
     /// Process that sent the message.
     fn source(&self) -> i64;
     /// The round the message pertains to.
     fn round(&self) -> i64;
     /// The value being proposed, usually a hash.
-    fn value(&self) -> V;
+    fn value(&self) -> T::Value;
     /// Usually the value that was hashed and is returned in `value`.
-    fn value_source(&self) -> Result<C>;
+    fn value_source(&self) -> Result<T::Compare>;
     /// The justified prepared round.
     fn prepared_round(&self) -> i64;
     /// The justified prepared value.
-    fn prepared_value(&self) -> V;
+    fn prepared_value(&self) -> T::Value;
     /// Set of messages that explicitly justifies this message.
-    fn justification(&self) -> Vec<Msg<I, V, C>>;
+    fn justification(&self) -> Vec<Msg<T>>;
 
     /// Cast as `Any` to allow downcasting.
     fn as_any(&self) -> &dyn any::Any;
 }
 
 /// Alias for any `Msg` implementation tracked by reference counting.
-pub type Msg<I, V, C> = sync::Arc<dyn SomeMsg<I, V, C>>;
+pub type Msg<T> = sync::Arc<dyn SomeMsg<T>>;
 
 /// Defines the event based rules that are triggered when messages are received.
 #[derive(PartialEq, Eq, Hash, Clone, Copy)]
@@ -311,36 +312,31 @@ struct DedupKey {
 /// remains active so it can answer later `ROUND_CHANGE` messages with `DECIDED`
 /// catch-up messages.
 ///
-/// `I` identifies the consensus instance, `V` is the comparable proposed value,
-/// and `C` is the application value used by `Definition::compare` to compare a
+/// `T::Instance` identifies the consensus instance, `T::Value` is the comparable proposed value,
+/// and `T::Compare` is the application value used by `Definition::compare` to compare a
 /// leader proposal with the local input source.
-pub fn run<I, V, C>(
+pub fn run<T: QbftTypes>(
     ct: &CancellationToken,
-    d: &Definition<I, V, C>,
-    t: &Transport<I, V, C>,
-    instance: &I,
+    d: &Definition<T>,
+    t: &Transport<T>,
+    instance: &T::Instance,
     process: i64,
-    mut input_value_ch: mpmc::Receiver<V>,
-    input_value_source_ch: mpmc::Receiver<C>,
-) -> Result<()>
-where
-    I: Send + Sync + 'static,
-    V: PartialEq + Eq + Hash + Default + 'static,
-    C: Clone + Send + Sync + Default + 'static,
-{
+    mut input_value_ch: mpmc::Receiver<T::Value>,
+    input_value_source_ch: mpmc::Receiver<T::Compare>,
+) -> Result<()> {
     validate_definition(d)?;
 
     // === State ===
     let round: Cell<i64> = Cell::new(1);
-    let input_value: RefCell<V> = RefCell::new(Default::default());
-    let mut input_value_source: C = Default::default();
-    let ppj_cache: RefCell<Option<Vec<Msg<I, V, C>>>> = RefCell::new(None); // Cached pre-prepare justification for the current round (`None` value is unset).
+    let input_value: RefCell<T::Value> = RefCell::new(Default::default());
+    let mut input_value_source: T::Compare = Default::default();
+    let ppj_cache: RefCell<Option<Vec<Msg<T>>>> = RefCell::new(None); // Cached pre-prepare justification for the current round (`None` value is unset).
     let prepared_round: Cell<i64> = Cell::new(0);
-    let prepared_value: RefCell<V> = RefCell::new(Default::default());
+    let prepared_value: RefCell<T::Value> = RefCell::new(Default::default());
     let mut compare_failure_round: i64 = 0;
-    let prepared_justification: RefCell<Option<Vec<Msg<I, V, C>>>> = RefCell::new(None);
-    let mut q_commit: Option<Vec<Msg<I, V, C>>> = None;
-    let buffer: RefCell<HashMap<i64, Vec<Msg<I, V, C>>>> = RefCell::new(HashMap::new());
+    let prepared_justification: RefCell<Option<Vec<Msg<T>>>> = RefCell::new(None);
+    let mut q_commit: Option<Vec<Msg<T>>> = None;
+    let buffer: RefCell<HashMap<i64, Vec<Msg<T>>>> = RefCell::new(HashMap::new());
     let dedup_rules: RefCell<HashMap<DedupKey, bool>> = RefCell::new(HashMap::new());
     let mut timer_chan: mpmc::Receiver<time::Instant>;
     let mut stop_timer: Box<dyn Fn()>;
@@ -349,7 +345,7 @@ where
 
     // Broadcasts a non-ROUND-CHANGE message for current round.
     let broadcast_msg =
-        |type_: MessageType, value: &V, justification: Option<&Vec<Msg<I, V, C>>>| {
+        |type_: MessageType, value: &T::Value, justification: Option<&Vec<Msg<T>>>| {
             (t.broadcast)(
                 ct,
                 type_,
@@ -380,7 +376,7 @@ where
     // Broadcasts a PRE-PREPARE message with current state
     // and our own input value if present, otherwise it caches the justification
     // to be used when the input value becomes available.
-    let broadcast_own_pre_prepare = |justification: Vec<Msg<I, V, C>>| {
+    let broadcast_own_pre_prepare = |justification: Vec<Msg<T>>| {
         if ppj_cache.borrow().is_some() {
             panic!("bug: justification cache must be none")
         }
@@ -395,7 +391,7 @@ where
     };
 
     // Adds a message to each process' FIFO queue
-    let buffer_msg = |msg: &Msg<I, V, C>| {
+    let buffer_msg = |msg: &Msg<T>| {
         let mut b = buffer.borrow_mut();
         let fifo = b.entry(msg.source()).or_default();
 
@@ -623,10 +619,7 @@ where
     }
 }
 
-fn validate_definition<I, V, C>(d: &Definition<I, V, C>) -> Result<()>
-where
-    V: PartialEq,
-{
+fn validate_definition<T: QbftTypes>(d: &Definition<T>) -> Result<()> {
     if d.nodes <= 0 {
         return Err(QbftError::InvalidNodes { nodes: d.nodes });
     }
@@ -643,21 +636,16 @@ where
 /// The callback may cache the local input source and return success/failure.
 /// This helper only preserves that callback result and lets the round timer win
 /// if the callback blocks.
-fn compare<I, V, C>(
+fn compare<T: QbftTypes>(
     ct: &CancellationToken,
-    d: &Definition<I, V, C>,
-    msg: &Msg<I, V, C>,
-    input_value_source_ch: &mpmc::Receiver<C>,
-    input_value_source: C,
+    d: &Definition<T>,
+    msg: &Msg<T>,
+    input_value_source_ch: &mpmc::Receiver<T::Compare>,
+    input_value_source: T::Compare,
     timer_chan: &mpmc::Receiver<time::Instant>,
-) -> (C, Result<()>)
-where
-    I: Send + Sync + 'static,
-    V: PartialEq + 'static,
-    C: Clone + Send + Sync + 'static,
-{
+) -> (T::Compare, Result<()>) {
     let (compare_err_tx, mut compare_err_rx) = mpmc::bounded::<Result<()>>(1);
-    let (compare_value_tx, mut compare_value_rx) = mpmc::bounded::<C>(1);
+    let (compare_value_tx, mut compare_value_rx) = mpmc::bounded::<T::Compare>(1);
 
     // d.Compare has 2 roles:
     // 1. Read from the `input_value_source_ch` (if `input_value_source` is empty).
@@ -748,13 +736,10 @@ where
 }
 
 /// Returns all messages from the provided round.
-fn extract_round_messages<I, V, C>(
-    buffer: &HashMap<i64, Vec<Msg<I, V, C>>>,
+fn extract_round_messages<T: QbftTypes>(
+    buffer: &HashMap<i64, Vec<Msg<T>>>,
     round: i64,
-) -> Vec<Msg<I, V, C>>
-where
-    V: PartialEq,
-{
+) -> Vec<Msg<T>> {
     let mut resp = vec![];
 
     for msgs in buffer.values() {
@@ -770,17 +755,14 @@ where
 
 /// Returns the rule triggered upon receipt of the last message and its
 /// justifications.
-fn classify<I, V, C>(
-    d: &Definition<I, V, C>,
-    instance: &I,
+fn classify<T: QbftTypes>(
+    d: &Definition<T>,
+    instance: &T::Instance,
     round: i64,
     process: i64,
-    buffer: &HashMap<i64, Vec<Msg<I, V, C>>>,
-    msg: &Msg<I, V, C>,
-) -> (UponRule, Option<Vec<Msg<I, V, C>>>)
-where
-    V: Eq + Hash + Default,
-{
+    buffer: &HashMap<i64, Vec<Msg<T>>>,
+    msg: &Msg<T>,
+) -> (UponRule, Option<Vec<Msg<T>>>) {
     match msg.type_() {
         MSG_DECIDED => (UPON_JUSTIFIED_DECIDED, Some(msg.justification())),
         MSG_PRE_PREPARE => {
@@ -861,10 +843,7 @@ where
 
 /// Implements algorithm 3:6 and returns the next minimum round from received
 /// round change messages.
-fn next_min_round<I, V, C>(d: &Definition<I, V, C>, frc: &Vec<Msg<I, V, C>>, round: i64) -> i64
-where
-    V: PartialEq,
-{
+fn next_min_round<T: QbftTypes>(d: &Definition<T>, frc: &Vec<Msg<T>>, round: i64) -> i64 {
     // Get all RoundChange messages with round (rj) higher than current round (ri)
     if (frc.len() as i64) < d.faulty() + 1 {
         panic!("bug: Frc too short");
@@ -889,15 +868,12 @@ where
 }
 
 /// Returns true if message is justified or if it does not need justification.
-fn is_justified<I, V, C>(
-    d: &Definition<I, V, C>,
-    instance: &I,
-    msg: &Msg<I, V, C>,
+fn is_justified<T: QbftTypes>(
+    d: &Definition<T>,
+    instance: &T::Instance,
+    msg: &Msg<T>,
     compare_failure_round: i64,
-) -> bool
-where
-    V: Eq + Hash + Default,
-{
+) -> bool {
     match msg.type_() {
         MSG_PRE_PREPARE => is_justified_pre_prepare(d, instance, msg, compare_failure_round),
         MSG_PREPARE => true,
@@ -910,10 +886,7 @@ where
 
 /// Returns true if the ROUND_CHANGE message's prepared round and value is
 /// justified.
-fn is_justified_round_change<I, V, C>(d: &Definition<I, V, C>, msg: &Msg<I, V, C>) -> bool
-where
-    V: PartialEq + Default,
-{
+fn is_justified_round_change<T: QbftTypes>(d: &Definition<T>, msg: &Msg<T>) -> bool {
     if msg.type_() != MSG_ROUND_CHANGE {
         panic!("bug: not a round change message");
     }
@@ -942,7 +915,7 @@ where
         return false;
     }
 
-    let mut uniq = uniq_source::<I, V, C>(vec![]);
+    let mut uniq = uniq_source::<T>(vec![]);
     for prepare in prepares {
         if !uniq(&prepare) {
             return false;
@@ -964,20 +937,14 @@ where
     true
 }
 
-fn valid_round_change_prepared_round<I, V, C>(msg: &Msg<I, V, C>) -> bool
-where
-    V: PartialEq,
-{
+fn valid_round_change_prepared_round<T: QbftTypes>(msg: &Msg<T>) -> bool {
     let pr = msg.prepared_round();
     pr >= 0 && pr < msg.round()
 }
 
 /// Returns true if the decided message is justified by quorum COMMIT messages
 /// of identical round and value.
-fn is_justified_decided<I, V, C>(d: &Definition<I, V, C>, msg: &Msg<I, V, C>) -> bool
-where
-    V: PartialEq,
-{
+fn is_justified_decided<T: QbftTypes>(d: &Definition<T>, msg: &Msg<T>) -> bool {
     if msg.type_() != MSG_DECIDED {
         panic!("bug: not a decided message");
     }
@@ -996,15 +963,12 @@ where
 }
 
 /// Returns true if the PRE-PREPARE message is justified.
-fn is_justified_pre_prepare<I, V, C>(
-    d: &Definition<I, V, C>,
-    instance: &I,
-    msg: &Msg<I, V, C>,
+fn is_justified_pre_prepare<T: QbftTypes>(
+    d: &Definition<T>,
+    instance: &T::Instance,
+    msg: &Msg<T>,
     compare_failure_round: i64,
-) -> bool
-where
-    V: Eq + Hash + Default,
-{
+) -> bool {
     if msg.type_() != MSG_PRE_PREPARE {
         panic!("bug: not a preprepare message");
     }
@@ -1032,14 +996,11 @@ where
 
 /// Implements algorithm 4:1 and returns true and pv if the messages contains a
 /// justified quorum ROUND_CHANGEs (Qrc).
-fn contains_justified_qrc<I, V, C>(
-    d: &Definition<I, V, C>,
-    justification: &Vec<Msg<I, V, C>>,
+fn contains_justified_qrc<T: QbftTypes>(
+    d: &Definition<T>,
+    justification: &Vec<Msg<T>>,
     round: i64,
-) -> Option<V>
-where
-    V: Eq + Hash + Default,
-{
+) -> Option<T::Value> {
     let qrc = filter_round_change(justification, round)
         .into_iter()
         .filter(valid_round_change_prepared_round)
@@ -1089,17 +1050,14 @@ where
 
 /// Extracts the single justified Pr and Pv from quorum PREPARES in list of
 /// messages. It expects only one possible combination.
-fn get_single_justified_pr_pv<I, V, C>(
-    d: &Definition<I, V, C>,
-    msgs: &Vec<Msg<I, V, C>>,
-) -> Option<(i64, V)>
-where
-    V: Eq + Hash + Default,
-{
+fn get_single_justified_pr_pv<T: QbftTypes>(
+    d: &Definition<T>,
+    msgs: &Vec<Msg<T>>,
+) -> Option<(i64, T::Value)> {
     let mut pr: i64 = 0;
-    let mut pv: V = Default::default();
+    let mut pv: T::Value = Default::default();
     let mut count: i64 = 0;
-    let mut uniq = uniq_source::<I, V, C>(vec![]);
+    let mut uniq = uniq_source::<T>(vec![]);
 
     for msg in msgs {
         if msg.type_() != MSG_PREPARE {
@@ -1128,14 +1086,11 @@ where
 }
 
 /// Implements algorithm 4:1 and returns a justified quorum ROUND_CHANGEs (Qrc)
-fn get_justified_qrc<I, V, C>(
-    d: &Definition<I, V, C>,
-    all: &Vec<Msg<I, V, C>>,
+fn get_justified_qrc<T: QbftTypes>(
+    d: &Definition<T>,
+    all: &Vec<Msg<T>>,
     round: i64,
-) -> Option<Vec<Msg<I, V, C>>>
-where
-    V: Eq + Hash + Default,
-{
+) -> Option<Vec<Msg<T>>> {
     if let (qrc, true) = quorum_null_prepared(d, all, round) {
         // Return any quorum null pv ROUND_CHANGE messages as Qrc.
         return Some(qrc);
@@ -1149,11 +1104,11 @@ where
     for prepares in get_prepare_quorums(d, all) {
         // See if we have quorum ROUND-CHANGE with HIGHEST_PREPARED(qrc) ==
         // prepares.Round.
-        let mut qrc: Vec<Msg<I, V, C>> = vec![];
+        let mut qrc: Vec<Msg<T>> = vec![];
         let mut has_highest_prepared = false;
         let pr = prepares[0].round();
         let pv = prepares[0].value();
-        let mut uniq = uniq_source::<I, V, C>(vec![]);
+        let mut uniq = uniq_source::<T>(vec![]);
 
         for rc in round_changes.iter() {
             if rc.prepared_round() > pr {
@@ -1183,15 +1138,12 @@ where
 /// Returns true and Faulty+1 ROUND-CHANGE messages (Frc) with the rounds higher
 /// than the provided round. It returns the highest round per process in order
 /// to jump furthest.
-fn get_fplus1_round_changes<I, V, C>(
-    d: &Definition<I, V, C>,
-    all: &Vec<Msg<I, V, C>>,
+fn get_fplus1_round_changes<T: QbftTypes>(
+    d: &Definition<T>,
+    all: &Vec<Msg<T>>,
     round: i64,
-) -> Option<Vec<Msg<I, V, C>>>
-where
-    V: PartialEq,
-{
-    let mut highest_by_source = HashMap::<i64, Msg<I, V, C>>::new();
+) -> Option<Vec<Msg<T>>> {
+    let mut highest_by_source = HashMap::<i64, Msg<T>>::new();
 
     for msg in all {
         if msg.type_() != MSG_ROUND_CHANGE {
@@ -1236,14 +1188,8 @@ where
 
 /// Returns all unique-source PREPARE quorums grouped by identical round and
 /// value.
-fn get_prepare_quorums<I, V, C>(
-    d: &Definition<I, V, C>,
-    all: &Vec<Msg<I, V, C>>,
-) -> Vec<Vec<Msg<I, V, C>>>
-where
-    V: Eq + Hash,
-{
-    let mut sets = HashMap::<PreparedKey<V>, HashMap<i64, Msg<I, V, C>>>::new();
+fn get_prepare_quorums<T: QbftTypes>(d: &Definition<T>, all: &Vec<Msg<T>>) -> Vec<Vec<Msg<T>>> {
+    let mut sets = HashMap::<PreparedKey<T::Value>, HashMap<i64, Msg<T>>>::new();
 
     for msg in all {
         if msg.type_() != MSG_PREPARE {
@@ -1281,14 +1227,11 @@ where
 /// Implements condition J1 and returns Qrc and true if a quorum
 /// of round changes messages (Qrc) for the round have null prepared round and
 /// value.
-fn quorum_null_prepared<I, V, C>(
-    d: &Definition<I, V, C>,
-    all: &Vec<Msg<I, V, C>>,
+fn quorum_null_prepared<T: QbftTypes>(
+    d: &Definition<T>,
+    all: &Vec<Msg<T>>,
     round: i64,
-) -> (Vec<Msg<I, V, C>>, bool)
-where
-    V: PartialEq + Default,
-{
+) -> (Vec<Msg<T>>, bool) {
     let null_pr = Default::default();
     let null_pv = Some(&Default::default());
 
@@ -1301,41 +1244,32 @@ where
 }
 
 /// Returns the messages matching the type and value.
-fn filter_by_round_and_value<I, V, C>(
-    msgs: &Vec<Msg<I, V, C>>,
+fn filter_by_round_and_value<T: QbftTypes>(
+    msgs: &Vec<Msg<T>>,
     message_type: MessageType,
     round: i64,
-    value: V,
-) -> Vec<Msg<I, V, C>>
-where
-    V: PartialEq,
-{
+    value: T::Value,
+) -> Vec<Msg<T>> {
     filter_msgs(msgs, message_type, round, Some(&value), None, None)
 }
 
 /// Returns all round change messages for the provided round.
-fn filter_round_change<I, V, C>(msgs: &Vec<Msg<I, V, C>>, round: i64) -> Vec<Msg<I, V, C>>
-where
-    V: PartialEq,
-{
-    filter_msgs::<I, V, C>(msgs, MSG_ROUND_CHANGE, round, None, None, None)
+fn filter_round_change<T: QbftTypes>(msgs: &Vec<Msg<T>>, round: i64) -> Vec<Msg<T>> {
+    filter_msgs::<T>(msgs, MSG_ROUND_CHANGE, round, None, None, None)
 }
 
 /// Returns one message per process matching the provided type and round and
 /// optional value, pr, pv.
-fn filter_msgs<I, V, C>(
-    msgs: &Vec<Msg<I, V, C>>,
+fn filter_msgs<T: QbftTypes>(
+    msgs: &Vec<Msg<T>>,
     message_type: MessageType,
     round: i64,
-    value: Option<&V>,
+    value: Option<&T::Value>,
     pr: Option<i64>,
-    pv: Option<&V>,
-) -> Vec<Msg<I, V, C>>
-where
-    V: PartialEq,
-{
+    pv: Option<&T::Value>,
+) -> Vec<Msg<T>> {
     let mut resp = Vec::new();
-    let mut uniq = uniq_source::<I, V, C>(vec![]);
+    let mut uniq = uniq_source::<T>(vec![]);
 
     for msg in msgs {
         if message_type != msg.type_() {
@@ -1374,11 +1308,8 @@ where
 
 /// Produce a vector containing all the buffered messages as well as all their
 /// justifications.
-fn flatten<I, V, C>(buffer: &HashMap<i64, Vec<Msg<I, V, C>>>) -> Vec<Msg<I, V, C>>
-where
-    V: PartialEq,
-{
-    let mut resp: Vec<Msg<I, V, C>> = Vec::new();
+fn flatten<T: QbftTypes>(buffer: &HashMap<i64, Vec<Msg<T>>>) -> Vec<Msg<T>> {
+    let mut resp: Vec<Msg<T>> = Vec::new();
 
     for msgs in buffer.values() {
         for msg in msgs {
@@ -1397,12 +1328,9 @@ where
 
 /// Construct a function that returns true if the message is from a unique
 /// source.
-fn uniq_source<I, V, C>(vec: Vec<Msg<I, V, C>>) -> Box<impl FnMut(&Msg<I, V, C>) -> bool>
-where
-    V: PartialEq,
-{
+fn uniq_source<T: QbftTypes>(vec: Vec<Msg<T>>) -> Box<impl FnMut(&Msg<T>) -> bool> {
     let mut s = vec.iter().map(|msg| msg.source()).collect::<HashSet<_>>();
-    Box::new(move |msg: &Msg<I, V, C>| {
+    Box::new(move |msg: &Msg<T>| {
         let source = msg.source();
         if s.contains(&source) {
             false

@@ -37,7 +37,15 @@ const TEST_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
 const TEST_STALL_TIMEOUT: Duration = Duration::from_secs(20);
 
 type RunOutcome = std::thread::Result<Result<()>>;
-type TestMsgRef = Msg<i64, i64, i64>;
+type TestMsgRef = Msg<TestQbft>;
+
+struct TestQbft;
+
+impl QbftTypes for TestQbft {
+    type Instance = i64;
+    type Value = i64;
+    type Compare = i64;
+}
 
 struct PendingCompareGuard {
     pending_compares: Arc<AtomicUsize>,
@@ -114,16 +122,11 @@ fn test_qbft(test: Test) {
     // Keep peer iteration deterministic. These fake-clock tests assert exact
     // rounds, and broadcast fanout order affects which node observes quorums
     // first when tests run in parallel.
-    let mut receives = BTreeMap::<
-        i64,
-        (
-            mpmc::Sender<Msg<i64, i64, i64>>,
-            mpmc::Receiver<Msg<i64, i64, i64>>,
-        ),
-    >::new();
+    let mut receives =
+        BTreeMap::<i64, (mpmc::Sender<Msg<TestQbft>>, mpmc::Receiver<Msg<TestQbft>>)>::new();
     let (broadcast_tx, broadcast_rx) = mpmc::unbounded::<BroadcastEvent>();
     let (unjust_tx, unjust_rx) = mpmc::unbounded::<String>();
-    let (result_chan_tx, result_chan_rx) = mpmc::bounded::<Vec<Msg<i64, i64, i64>>>(N);
+    let (result_chan_tx, result_chan_rx) = mpmc::bounded::<Vec<Msg<TestQbft>>>(N);
     let (run_chan_tx, run_chan_rx) = mpmc::bounded::<(i64, RunOutcome)>(N);
     let expected_initial_timers = N + test
         .value_delay
@@ -223,7 +226,7 @@ fn test_qbft(test: Test) {
 
     thread::scope(|s| {
         for i in 1..=N as i64 {
-            let (sender, receiver) = mpmc::bounded::<Msg<i64, i64, i64>>(1000);
+            let (sender, receiver) = mpmc::bounded::<Msg<TestQbft>>(1000);
             let broadcast_tx = broadcast_tx.clone();
             receives.insert(i, (sender.clone(), receiver.clone()));
 
@@ -403,7 +406,7 @@ fn test_qbft(test: Test) {
             }
         }
 
-        let mut results = BTreeMap::<i64, Msg<i64, i64, i64>>::new();
+        let mut results = BTreeMap::<i64, Msg<TestQbft>>::new();
         let mut count = 0;
         let mut decided = false;
         let mut done = 0;
@@ -739,8 +742,8 @@ fn new_msg(
     value_source: i64,
     pr: i64,
     pv: i64,
-    justify: Option<&Vec<Msg<i64, i64, i64>>>,
-) -> Msg<i64, i64, i64> {
+    justify: Option<&Vec<Msg<TestQbft>>>,
+) -> Msg<TestQbft> {
     let msgs = match justify {
         None => vec![],
         Some(justify) => justify
@@ -790,7 +793,7 @@ fn new_round_change_quorum(round: i64, pr: i64, pv: i64) -> Vec<TestMsgRef> {
 // messages.
 fn bcast(
     broadcast: mpmc::Sender<BroadcastEvent>,
-    msg: Msg<i64, i64, i64>,
+    msg: Msg<TestQbft>,
     jitter_ms: i32,
     clock: FakeClock,
     trace: Trace,
@@ -893,7 +896,7 @@ fn fanout_broadcast(
     broadcasts
 }
 
-fn random_msg(instance: i64, peer_idx: i64, seed: u64, counter: u64) -> Msg<i64, i64, i64> {
+fn random_msg(instance: i64, peer_idx: i64, seed: u64, counter: u64) -> Msg<TestQbft> {
     let message_types = [
         MSG_PRE_PREPARE,
         MSG_PREPARE,
@@ -915,12 +918,12 @@ fn random_msg(instance: i64, peer_idx: i64, seed: u64, counter: u64) -> Msg<i64,
     )
 }
 
-fn deterministic_unit(seed: u64, msg: &Msg<i64, i64, i64>, target: i64, stream_id: u64) -> f64 {
+fn deterministic_unit(seed: u64, msg: &Msg<TestQbft>, target: i64, stream_id: u64) -> f64 {
     let value = deterministic_msg_u64(seed, msg, target, stream_id) >> 11;
     value as f64 / ((1_u64 << 53) as f64)
 }
 
-fn deterministic_msg_u64(seed: u64, msg: &Msg<i64, i64, i64>, target: i64, stream_id: u64) -> u64 {
+fn deterministic_msg_u64(seed: u64, msg: &Msg<TestQbft>, target: i64, stream_id: u64) -> u64 {
     let mut value = splitmix64(seed ^ stream_id);
     value = splitmix64(value ^ i64_to_u64(msg.type_().0));
     value = splitmix64(value ^ i64_to_u64(msg.instance()));
@@ -967,7 +970,7 @@ struct TestMsg {
     justify: Option<Vec<TestMsg>>,
 }
 
-impl SomeMsg<i64, i64, i64> for TestMsg {
+impl SomeMsg<TestQbft> for TestMsg {
     fn type_(&self) -> MessageType {
         self.msg_type
     }
@@ -1000,12 +1003,12 @@ impl SomeMsg<i64, i64, i64> for TestMsg {
         self.pv
     }
 
-    fn justification(&self) -> Vec<Msg<i64, i64, i64>> {
+    fn justification(&self) -> Vec<Msg<TestQbft>> {
         match self.justify {
             None => vec![],
             Some(ref j) => j
                 .iter()
-                .map(|j| Arc::new(j.clone()) as Msg<i64, i64, i64>)
+                .map(|j| Arc::new(j.clone()) as Msg<TestQbft>)
                 .collect(),
         }
     }
@@ -1206,7 +1209,7 @@ fn fuzzed(start_delay_secs: Option<u64>, decide_round: i32, random_round: bool) 
     });
 }
 
-fn noop_definition() -> Definition<i64, i64, i64> {
+fn noop_definition() -> Definition<TestQbft> {
     Definition {
         is_leader: Box::new(|_, _, _| false),
         new_timer: Box::new(|_| (mpmc::never(), Box::new(|| {}))),
@@ -1220,7 +1223,7 @@ fn noop_definition() -> Definition<i64, i64, i64> {
     }
 }
 
-fn noop_transport() -> Transport<i64, i64, i64> {
+fn noop_transport() -> Transport<TestQbft> {
     Transport {
         broadcast: Box::new(|_, _, _, _, _, _, _, _, _| Ok(())),
         receive: mpmc::never(),
@@ -1252,7 +1255,7 @@ fn noop_transport() -> Transport<i64, i64, i64> {
 #[test_case(21, 14, 6 ; "n21")]
 #[test_case(22, 15, 7 ; "n22")]
 fn formulas(n: i64, q: i64, f: i64) {
-    let d = Definition::<i64, i64, i64> {
+    let d = Definition::<TestQbft> {
         nodes: n,
         ..noop_definition()
     };
@@ -1301,7 +1304,7 @@ fn duplicate_pre_prepare_rules() {
     const NO_LEADER: i64 = 1;
     const LEADER: i64 = 2;
 
-    let new_preprepare = |round: i64| -> Msg<i64, i64, i64> {
+    let new_preprepare = |round: i64| -> Msg<TestQbft> {
         new_msg(
             MSG_PRE_PREPARE,
             0,
@@ -1345,7 +1348,7 @@ fn duplicate_pre_prepare_rules() {
         return_err.send(result).expect(WRITE_CHAN_ERR);
     });
 
-    let (r_chan_tx, r_chan_rx) = mpmc::bounded::<Msg<i64, i64, i64>>(2);
+    let (r_chan_tx, r_chan_rx) = mpmc::bounded::<Msg<TestQbft>>(2);
     r_chan_tx.send(new_preprepare(1)).expect(WRITE_CHAN_ERR);
     r_chan_tx.send(new_preprepare(2)).expect(WRITE_CHAN_ERR);
 
@@ -1442,7 +1445,7 @@ fn run_cancels_under_hot_receive_stream() {
     def.nodes = 4;
     def.fifo_limit = 100;
 
-    let (receive_tx, receive_rx) = mpmc::bounded::<Msg<i64, i64, i64>>(1024);
+    let (receive_tx, receive_rx) = mpmc::bounded::<Msg<TestQbft>>(1024);
     let transport = Transport {
         receive: receive_rx,
         ..noop_transport()
@@ -1969,7 +1972,7 @@ fn run_parent_cancel_during_compare_does_not_prepare() {
     );
 }
 
-fn buffer_by_source(msgs: &[Msg<i64, i64, i64>]) -> HashMap<i64, Vec<Msg<i64, i64, i64>>> {
+fn buffer_by_source(msgs: &[Msg<TestQbft>]) -> HashMap<i64, Vec<Msg<TestQbft>>> {
     let mut buffer = HashMap::new();
     for msg in msgs {
         buffer
@@ -2026,15 +2029,10 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
     // Keep peer iteration deterministic. These fake-clock tests assert exact
     // rounds, and broadcast fanout order affects which node observes quorums
     // first when tests run in parallel.
-    let mut receives = BTreeMap::<
-        i64,
-        (
-            mpmc::Sender<Msg<i64, i64, i64>>,
-            mpmc::Receiver<Msg<i64, i64, i64>>,
-        ),
-    >::new();
-    let (broadcast_tx, broadcast_rx) = mpmc::unbounded::<Msg<i64, i64, i64>>();
-    let (result_chan_tx, result_chan_rx) = mpmc::bounded::<Vec<Msg<i64, i64, i64>>>(N);
+    let mut receives =
+        BTreeMap::<i64, (mpmc::Sender<Msg<TestQbft>>, mpmc::Receiver<Msg<TestQbft>>)>::new();
+    let (broadcast_tx, broadcast_rx) = mpmc::unbounded::<Msg<TestQbft>>();
+    let (result_chan_tx, result_chan_rx) = mpmc::bounded::<Vec<Msg<TestQbft>>>(N);
     let (run_chan_tx, run_chan_rx) = mpmc::bounded::<(i64, RunOutcome)>(N);
     let instance = 0;
 
@@ -2136,7 +2134,7 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
 
     thread::scope(|s| {
         for i in 1..=N as i64 {
-            let (sender, receiver) = mpmc::bounded::<Msg<i64, i64, i64>>(1000);
+            let (sender, receiver) = mpmc::bounded::<Msg<TestQbft>>(1000);
             receives.insert(i, (sender.clone(), receiver.clone()));
             let broadcast_tx = broadcast_tx.clone();
             let trace = trace.clone();
@@ -2208,7 +2206,7 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
             }
         }
 
-        let mut results = BTreeMap::<i64, Msg<i64, i64, i64>>::new();
+        let mut results = BTreeMap::<i64, Msg<TestQbft>>::new();
         let mut count = 0;
         let mut decided = false;
         let mut done = 0;
