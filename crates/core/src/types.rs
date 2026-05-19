@@ -69,6 +69,12 @@ impl DutyType {
     pub fn is_valid(&self) -> bool {
         !matches!(self, DutyType::Unknown | DutyType::DutySentinel(_))
     }
+
+    /// Returns true if duties of this type have no deadline (e.g. voluntary
+    /// exits, builder registrations).
+    pub fn never_expires(&self) -> bool {
+        matches!(self, DutyType::Exit | DutyType::BuilderRegistration)
+    }
 }
 
 /// Error type for duty type conversion.

@@ -88,18 +88,16 @@ pub trait DeadlineCalculator: Send + Sync + 'static {
 
 impl DeadlineCalculator for DutyDeadlineCalculator {
     fn deadline(&self, duty: &Duty) -> Result<Option<DateTime<Utc>>> {
-        if matches!(
-            duty.duty_type,
-            DutyType::Exit | DutyType::BuilderRegistration
-        ) {
-            return Ok(None);
+        if duty.duty_type.never_expires() {
+            Ok(None)
+        } else {
+            let start = self.slot_start(duty.slot)?;
+            let offset = self
+                .duty_duration(&duty.duty_type)?
+                .checked_add(self.margin()?)?;
+            let deadline = offset.add_to(start)?;
+            Ok(Some(deadline))
         }
-        let start = self.slot_start(duty.slot)?;
-        let offset = self
-            .duty_duration(&duty.duty_type)?
-            .checked_add(self.margin()?)?;
-        let deadline = offset.add_to(start)?;
-        Ok(Some(deadline))
     }
 }
 
