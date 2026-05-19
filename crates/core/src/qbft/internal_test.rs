@@ -1358,18 +1358,14 @@ fn invalid_definition_rejected() {
             input_rx.clone(),
             source_rx.clone(),
         ),
-        Err(QbftError::InvalidDefinition(
-            "nodes must be greater than zero"
-        ))
+        Err(QbftError::InvalidNodes { nodes: 0 })
     ));
 
     def.nodes = 4;
     def.fifo_limit = 0;
     assert!(matches!(
         qbft::run(cts.token(), &def, &transport, &0, 1, input_rx, source_rx),
-        Err(QbftError::InvalidDefinition(
-            "fifo_limit must be greater than zero"
-        ))
+        Err(QbftError::InvalidFifoLimit { fifo_limit: 0 })
     ));
 }
 

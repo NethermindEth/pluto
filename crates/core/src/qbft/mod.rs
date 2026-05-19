@@ -69,8 +69,11 @@ pub enum QbftError {
     #[error("Zero input value not supported")]
     ZeroInputValue,
 
-    #[error("Invalid definition: {0}")]
-    InvalidDefinition(&'static str),
+    #[error("invalid node count: must be greater than zero, got {nodes}")]
+    InvalidNodes { nodes: i64 },
+
+    #[error("invalid FIFO limit: must be greater than zero, got {fifo_limit}")]
+    InvalidFifoLimit { fifo_limit: i64 },
 
     #[error("Failed to read from channel: {0}")]
     ChannelError(#[from] mpmc::RecvError),
@@ -621,15 +624,13 @@ where
     V: PartialEq,
 {
     if d.nodes <= 0 {
-        return Err(QbftError::InvalidDefinition(
-            "nodes must be greater than zero",
-        ));
+        return Err(QbftError::InvalidNodes { nodes: d.nodes });
     }
 
     if d.fifo_limit <= 0 {
-        return Err(QbftError::InvalidDefinition(
-            "fifo_limit must be greater than zero",
-        ));
+        return Err(QbftError::InvalidFifoLimit {
+            fifo_limit: d.fifo_limit,
+        });
     }
 
     Ok(())
