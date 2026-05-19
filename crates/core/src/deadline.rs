@@ -38,6 +38,7 @@
 //! }
 //! # }
 //! ```
+
 use crate::types::{Duty, DutyType, SlotNumber};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -45,7 +46,9 @@ use pluto_eth2api::{EthBeaconNodeApiClient, EthBeaconNodeApiClientError};
 use std::{
     collections::HashSet,
     sync::{Arc, Mutex},
+    time::Duration,
 };
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 /// Fraction of slot duration to use as a margin for network delays.
@@ -54,8 +57,7 @@ const MARGIN_FACTOR: i32 = 12;
 /// A safe far-future duration (~10 years) for timeout calculations.
 /// Using Duration::MAX can cause panics when computing Instant::now() +
 /// duration, so we use a large but representable value instead.
-const FAR_FUTURE_DURATION: std::time::Duration =
-    std::time::Duration::from_secs(3600 * 24 * 365 * 10);
+const FAR_FUTURE_DURATION: Duration = Duration::from_secs(3600 * 24 * 365 * 10);
 
 /// Type alias for the deadline function.
 ///
@@ -88,7 +90,7 @@ pub enum DeadlineError {
 pub type Result<T> = std::result::Result<T, DeadlineError>;
 
 /// Converts a `std::time::Duration` to `chrono::Duration`.
-fn to_chrono_duration(duration: std::time::Duration) -> Result<chrono::Duration> {
+fn to_chrono_duration(duration: Duration) -> Result<chrono::Duration> {
     chrono::Duration::from_std(duration).map_err(|_| DeadlineError::DurationConversion)
 }
 
@@ -115,7 +117,7 @@ pub trait Deadliner: Send + Sync {
     ///
     /// This method may only be called once and returns `None` on subsequent
     /// calls. The returned channel should only be used by a single task.
-    fn c(&self) -> Option<tokio::sync::mpsc::Receiver<Duty>>;
+    fn c(&self) -> Option<mpsc::Receiver<Duty>>;
 }
 
 /// Creates a deadline function from the Ethereum 2.0 beacon node configuration.
@@ -243,14 +245,14 @@ fn get_curr_duty(duties: &HashSet<Duty>, deadline_func: &DeadlineFunc) -> (Duty,
 /// Internal message type for adding duties to the deadliner.
 struct DeadlineInput {
     duty: Duty,
-    response_tx: tokio::sync::oneshot::Sender<bool>,
+    response_tx: oneshot::Sender<bool>,
 }
 
 /// Implementation of the Deadliner trait.
 struct DeadlinerImpl {
     cancel_token: CancellationToken,
-    input_tx: tokio::sync::mpsc::Sender<DeadlineInput>,
-    output_rx: Mutex<Option<tokio::sync::mpsc::Receiver<Duty>>>,
+    input_tx: mpsc::Sender<DeadlineInput>,
+    output_rx: Mutex<Option<mpsc::Receiver<Duty>>>,
 }
 
 #[async_trait]
@@ -261,7 +263,7 @@ impl Deadliner for DeadlinerImpl {
             return false;
         }
 
-        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        let (response_tx, response_rx) = oneshot::channel();
         let input = DeadlineInput { duty, response_tx };
 
         // Send the duty to the background task
@@ -273,7 +275,7 @@ impl Deadliner for DeadlinerImpl {
         response_rx.await.unwrap_or(false)
     }
 
-    fn c(&self) -> Option<tokio::sync::mpsc::Receiver<Duty>> {
+    fn c(&self) -> Option<mpsc::Receiver<Duty>> {
         self.output_rx
             .lock()
             .ok()
@@ -290,8 +292,8 @@ impl DeadlinerImpl {
         cancel_token: CancellationToken,
         label: String,
         deadline_func: DeadlineFunc,
-        mut input_rx: tokio::sync::mpsc::Receiver<DeadlineInput>,
-        output_tx: tokio::sync::mpsc::Sender<Duty>,
+        mut input_rx: mpsc::Receiver<DeadlineInput>,
+        output_tx: mpsc::Sender<Duty>,
     ) {
         let mut duties: HashSet<Duty> = HashSet::new();
         let (mut curr_duty, mut curr_deadline) = get_curr_duty(&duties, &deadline_func);
@@ -299,7 +301,7 @@ impl DeadlinerImpl {
         // Create initial timer
         let now: DateTime<Utc> = Utc::now();
         let initial_duration = if curr_deadline < now {
-            std::time::Duration::ZERO
+            Duration::ZERO
         } else {
             curr_deadline
                 .signed_duration_since(now)
@@ -367,14 +369,14 @@ impl DeadlinerImpl {
                     // Deadline expired - send duty to output channel
                     match output_tx.try_send(curr_duty.clone()) {
                         Ok(()) => {}
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        Err(mpsc::error::TrySendError::Full(_)) => {
                             tracing::warn!(
                                 label = %label,
                                 duty = %curr_duty,
                                 "Deadliner output channel full"
                             );
                         }
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                        Err(mpsc::error::TrySendError::Closed(_)) => {
                             return;
                         }
                     }
@@ -422,8 +424,8 @@ pub fn new_deadliner(
     const INPUT_BUFFER: usize = 256;
 
     let label = label.into();
-    let (input_tx, input_rx) = tokio::sync::mpsc::channel(INPUT_BUFFER);
-    let (output_tx, output_rx) = tokio::sync::mpsc::channel(OUTPUT_BUFFER);
+    let (input_tx, input_rx) = mpsc::channel(INPUT_BUFFER);
+    let (output_tx, output_rx) = mpsc::channel(OUTPUT_BUFFER);
 
     let impl_instance: Arc<dyn Deadliner> = Arc::new(DeadlinerImpl {
         cancel_token: cancel_token.clone(),
@@ -445,8 +447,6 @@ pub fn new_deadliner(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
     use crate::types::SlotNumber;
     use pluto_testutil::BeaconMock;
@@ -494,7 +494,7 @@ mod tests {
     async fn add_duties(
         duties: Vec<Duty>,
         deadliner: Arc<dyn Deadliner>,
-        result_tx: tokio::sync::mpsc::Sender<bool>,
+        result_tx: mpsc::Sender<bool>,
     ) {
         for duty in duties {
             let added = deadliner.add(duty).await;
@@ -513,7 +513,7 @@ mod tests {
         let start_time = Utc::now();
 
         // Create a deadline function provider
-        let expired_set: std::collections::HashSet<_> = expired_duties.iter().cloned().collect();
+        let expired_set: HashSet<_> = expired_duties.iter().cloned().collect();
         let deadline_func: DeadlineFunc = {
             Arc::new(move |duty: Duty| {
                 if duty.duty_type == DutyType::Exit {
@@ -557,8 +557,8 @@ mod tests {
         let mut output_rx = deadliner.c().expect("should get receiver");
 
         // Separate channels for expired and non-expired results
-        let (expired_tx, mut expired_rx) = tokio::sync::mpsc::channel(100);
-        let (non_expired_tx, mut non_expired_rx) = tokio::sync::mpsc::channel(100);
+        let (expired_tx, mut expired_rx) = mpsc::channel(100);
+        let (non_expired_tx, mut non_expired_rx) = mpsc::channel(100);
 
         // Add all duties
         let expired_len = expired_duties.len();
@@ -605,7 +605,7 @@ mod tests {
         // Timeout must exceed the longest non-expired deadline (~1s for slot 2).
         let mut actual_duties = Vec::new();
         for _ in 0..non_expired_len {
-            let duty = tokio::time::timeout(std::time::Duration::from_secs(5), output_rx.recv())
+            let duty = tokio::time::timeout(Duration::from_secs(5), output_rx.recv())
                 .await
                 .expect("should receive within timeout")
                 .expect("should receive duty");
