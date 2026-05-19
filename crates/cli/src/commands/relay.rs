@@ -406,23 +406,23 @@ mod tests {
                 // Resolution happens asynchronously on a tick, so poll until the
                 // ENR reflects a non-loopback IP (mirrors the Go test using
                 // `assert.Eventually`).
-                let deadline = time::Instant::now() + time::Duration::from_secs(10);
-                loop {
-                    let response = relay_server_get(cfg.clone(), "/enr").await.unwrap();
-                    let body = response.text().await.unwrap();
-                    let enr = pluto_eth2util::enr::Record::try_from(body.as_str()).unwrap();
-                    let ip = enr.ip().unwrap();
+                tokio::time::timeout(time::Duration::from_secs(10), async {
+                    loop {
+                        let response = relay_server_get(cfg.clone(), "/enr").await.unwrap();
+                        let body = response.text().await.unwrap();
+                        let enr =
+                            pluto_eth2util::enr::Record::try_from(body.as_str()).unwrap();
+                        let ip = enr.ip().unwrap();
 
-                    if !ip.is_loopback() {
-                        break;
+                        if !ip.is_loopback() {
+                            break;
+                        }
+
+                        tokio::time::sleep(time::Duration::from_millis(200)).await;
                     }
-
-                    assert!(
-                        time::Instant::now() < deadline,
-                        "external host never resolved to non-loopback ip"
-                    );
-                    tokio::time::sleep(time::Duration::from_millis(200)).await;
-                }
+                })
+                .await
+                .expect("external host never resolved to non-loopback ip");
             },
         )
         .await
