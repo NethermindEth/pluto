@@ -92,7 +92,8 @@ impl FakeClock {
         inner.now - inner.start
     }
 
-    /// Explicit cleanup; dropping one clone must not cancel timers owned by other clones.
+    /// Explicit cleanup; dropping one clone must not cancel timers owned by
+    /// other clones.
     pub fn cancel(&self) {
         let mut inner = self.inner.lock().unwrap();
         inner.clients.clear();
