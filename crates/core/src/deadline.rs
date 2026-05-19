@@ -41,7 +41,7 @@
 
 mod calculator;
 
-pub use calculator::DeadlineCalculator;
+pub use calculator::{DeadlineCalculator, DutyDeadlineCalculator};
 
 use crate::types::{Duty, DutyType, SlotNumber};
 use async_trait::async_trait;
@@ -70,50 +70,7 @@ const FAR_FUTURE_DURATION: Duration = Duration::from_secs(3600 * 24 * 365 * 10);
 /// Returns `Ok(None)` if the duty never expires.
 pub type DeadlineFunc = Arc<dyn Fn(Duty) -> Result<Option<DateTime<Utc>>> + Send + Sync>;
 
-/// Beacon-node-derived deadline calculator.
-///
-/// Caches genesis time and slot duration fetched from the beacon node, and
-/// computes per-duty deadlines from them. Construction is async because it
-/// hits the beacon node; the calculator itself is pure once built.
-pub struct DutyDeadlineCalculator {
-    genesis_time: DateTime<Utc>,
-    slot_duration: chrono::Duration,
-}
-
 impl DutyDeadlineCalculator {
-    /// Fetches genesis time and slot duration from the beacon node.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if fetching genesis time or slots config fails.
-    pub async fn from_client(client: &EthBeaconNodeApiClient) -> Result<Self> {
-        let genesis_time = client.fetch_genesis_time().await?;
-        let slots_config = client.fetch_slots_config().await?;
-        let (slot_duration, _slots_per_epoch) = slots_config;
-        let slot_duration = to_chrono_duration(slot_duration)?;
-        Ok(Self {
-            genesis_time,
-            slot_duration,
-        })
-    }
-
-    /// Wall-clock start of the given slot: `genesis_time + slot *
-    /// slot_duration`.
-    fn slot_start(&self, slot: SlotNumber) -> Result<DateTime<Utc>> {
-        let secs_per_slot = u64::try_from(self.slot_duration.num_seconds())
-            .map_err(|_| DeadlineError::ArithmeticOverflow)?;
-        let slot_secs = slot
-            .inner()
-            .checked_mul(secs_per_slot)
-            .ok_or(DeadlineError::ArithmeticOverflow)?;
-        let secs_i64 = i64::try_from(slot_secs).map_err(|_| DeadlineError::ArithmeticOverflow)?;
-        let offset =
-            chrono::Duration::try_seconds(secs_i64).ok_or(DeadlineError::DurationConversion)?;
-        self.genesis_time
-            .checked_add_signed(offset)
-            .ok_or(DeadlineError::DateTimeCalculation)
-    }
-
     /// Network-delay margin added to every deadline: `slot_duration /
     /// MARGIN_FACTOR`.
     fn margin(&self) -> Result<chrono::Duration> {
