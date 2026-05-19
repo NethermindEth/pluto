@@ -1486,8 +1486,7 @@ fn invalid_round_change_prepared_rounds_are_filtered_from_call_sites(invalid_pr:
 #[test_case(1, -1 ; "negative")]
 #[test_case(1, 1 ; "current_round")]
 #[test_case(1, 2 ; "future_round")]
-#[test_case(0, 0 ; "zero_round")]
-fn quorum_null_prepared_filters_invalid_prepared_rounds(round: i64, invalid_pr: i64) {
+fn quorum_null_prepared_requires_null_prepared_rounds(round: i64, invalid_pr: i64) {
     let mut def = noop_definition();
     def.nodes = 4;
 

@@ -1292,12 +1292,7 @@ where
     let null_pr = Default::default();
     let null_pv = Some(&Default::default());
 
-    // Normal callers pass round >= 1, which makes pr=0 valid. Keep the explicit
-    // prepared-round filter so this helper remains safe for direct/future calls.
-    let justification = filter_msgs(all, MSG_ROUND_CHANGE, round, None, Some(null_pr), null_pv)
-        .into_iter()
-        .filter(valid_round_change_prepared_round)
-        .collect::<Vec<_>>();
+    let justification = filter_msgs(all, MSG_ROUND_CHANGE, round, None, Some(null_pr), null_pv);
 
     (
         justification.clone(),
