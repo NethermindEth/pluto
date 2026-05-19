@@ -114,6 +114,7 @@ impl From<chrono::Duration> for Millis {
 
 impl Millis {
     /// Constructs from a raw `i64` count of milliseconds.
+    #[cfg(test)]
     pub(crate) fn new(ms: i64) -> Self {
         Self(ms)
     }

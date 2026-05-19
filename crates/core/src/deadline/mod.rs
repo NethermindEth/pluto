@@ -7,35 +7,28 @@
 //! # Example
 //!
 //! ```no_run
-//! use chrono::{DateTime, Utc};
 //! use pluto_core::{
-//!     deadline::{DeadlineFunc, new_deadliner},
-//!     types::{Duty, DutyType, SlotNumber},
+//!     deadline::{DutyDeadlineCalculator, new_deadliner},
+//!     types::{Duty, SlotNumber},
 //! };
+//! use pluto_eth2api::EthBeaconNodeApiClient;
 //! use std::sync::Arc;
 //! use tokio_util::sync::CancellationToken;
 //!
-//! # async fn example() {
+//! # async fn example(client: &EthBeaconNodeApiClient) -> anyhow::Result<()> {
 //! let cancel_token = CancellationToken::new();
+//! let calculator = DutyDeadlineCalculator::from_client(client).await?;
+//! let deadliner = new_deadliner(cancel_token, "example", Arc::new(calculator));
 //!
-//! // Define a deadline function
-//! let deadline_func: DeadlineFunc = Arc::new(|_duty| {
-//!     let deadline = DateTime::from_timestamp(1000, 0).unwrap();
-//!     Ok(Some(deadline))
-//! });
-//!
-//! let deadliner = new_deadliner(cancel_token, "example", deadline_func);
-//!
-//! // Add a duty
 //! let duty = Duty::new_attester_duty(SlotNumber::new(1));
 //! let added = deadliner.add(duty).await;
 //!
-//! // Receive expired duties
 //! if let Some(mut rx) = deadliner.c() {
 //!     while let Some(expired_duty) = rx.recv().await {
 //!         println!("Duty expired: {}", expired_duty);
 //!     }
 //! }
+//! # Ok(())
 //! # }
 //! ```
 
@@ -46,7 +39,7 @@ pub use calculator::{DeadlineCalculator, DutyDeadlineCalculator};
 use crate::types::{Duty, DutyType, SlotNumber};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use pluto_eth2api::{EthBeaconNodeApiClient, EthBeaconNodeApiClientError};
+use pluto_eth2api::EthBeaconNodeApiClientError;
 use std::{
     collections::HashSet,
     sync::{Arc, Mutex},
@@ -54,7 +47,7 @@ use std::{
 };
 use tokio::{
     sync::{mpsc, oneshot},
-    time::{sleep, timeout},
+    time::sleep,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -62,13 +55,6 @@ use tokio_util::sync::CancellationToken;
 /// Using Duration::MAX can cause panics when computing Instant::now() +
 /// duration, so we use a large but representable value instead.
 const FAR_FUTURE_DURATION: Duration = Duration::from_secs(3600 * 24 * 365 * 10);
-
-/// Type alias for the deadline function.
-///
-/// Takes a duty and returns an optional deadline.
-/// Returns `Ok(Some(deadline))` if the duty expires at the given time.
-/// Returns `Ok(None)` if the duty never expires.
-pub type DeadlineFunc = Arc<dyn Fn(Duty) -> Result<Option<DateTime<Utc>>> + Send + Sync>;
 
 /// Error types for deadline operations.
 #[derive(Debug, thiserror::Error)]
@@ -122,93 +108,6 @@ pub trait Deadliner: Send + Sync {
     /// This method may only be called once and returns `None` on subsequent
     /// calls. The returned channel should only be used by a single task.
     fn c(&self) -> Option<mpsc::Receiver<Duty>>;
-}
-
-/// Creates a deadline function from the Ethereum 2.0 beacon node configuration.
-///
-/// Fetches genesis time and slot duration from the beacon node and returns
-/// a function that calculates deadlines for each duty type.
-///
-/// # Errors
-///
-/// Returns an error if fetching genesis time or slots config fails.
-pub async fn new_duty_deadline_func(client: &EthBeaconNodeApiClient) -> Result<DeadlineFunc> {
-    let genesis_time = client.fetch_genesis_time().await?;
-    let (slot_duration, _slots_per_epoch) = client.fetch_slots_config().await?;
-
-    // Convert std::time::Duration to chrono::Duration for slot_duration
-    let slot_duration = to_chrono_duration(slot_duration)?;
-
-    Ok(Arc::new(move |duty: Duty| {
-        // Exit and BuilderRegistration duties never expire
-        if matches!(
-            duty.duty_type,
-            DutyType::Exit | DutyType::BuilderRegistration
-        ) {
-            return Ok(None);
-        }
-
-        // Calculate slot start time
-        // start = genesis_time + (slot * slot_duration)
-        let slot_secs = duty
-            .slot
-            .inner()
-            .checked_mul(
-                u64::try_from(slot_duration.num_seconds())
-                    .map_err(|_| DeadlineError::ArithmeticOverflow)?,
-            )
-            .ok_or(DeadlineError::ArithmeticOverflow)?;
-        let secs_i64 = i64::try_from(slot_secs).map_err(|_| DeadlineError::ArithmeticOverflow)?;
-        let slot_offset =
-            chrono::Duration::try_seconds(secs_i64).ok_or(DeadlineError::DurationConversion)?;
-
-        let start: DateTime<Utc> = genesis_time
-            .checked_add_signed(slot_offset)
-            .ok_or(DeadlineError::DateTimeCalculation)?;
-
-        // Calculate margin: slot_duration / 12 (this whole fn is scheduled
-        // for removal — see new DutyDeadlineCalculator in deadline::calculator)
-        let margin = slot_duration
-            .checked_div(12)
-            .ok_or(DeadlineError::ArithmeticOverflow)?;
-
-        // Calculate duty-specific duration
-        let duration = match duty.duty_type {
-            DutyType::Proposer | DutyType::Randao => {
-                // duration = slot_duration / 3
-                slot_duration
-                    .checked_div(3)
-                    .ok_or(DeadlineError::ArithmeticOverflow)?
-            }
-            DutyType::SyncMessage => {
-                // duration = 2 * slot_duration / 3
-                slot_duration
-                    .checked_mul(2)
-                    .and_then(|s| s.checked_div(3))
-                    .ok_or(DeadlineError::ArithmeticOverflow)?
-            }
-            DutyType::Attester | DutyType::Aggregator | DutyType::PrepareAggregator => {
-                // duration = 2 * slot_duration
-                // Even though attestations and aggregations are acceptable after 2 slots,
-                // the rewards are heavily diminished.
-                slot_duration
-                    .checked_mul(2)
-                    .ok_or(DeadlineError::ArithmeticOverflow)?
-            }
-            _ => {
-                // Default: duration = slot_duration
-                slot_duration
-            }
-        };
-
-        // Calculate final deadline: start + duration + margin
-        let deadline = start
-            .checked_add_signed(duration)
-            .and_then(|t| t.checked_add_signed(margin))
-            .ok_or(DeadlineError::DateTimeCalculation)?;
-
-        Ok(Some(deadline))
-    }))
 }
 
 /// Gets the duty with the earliest deadline from the duties map.
@@ -459,6 +358,7 @@ mod tests {
     use crate::types::SlotNumber;
     use anyhow::{Context, Result, bail};
     use pluto_testutil::BeaconMock;
+    use tokio::time::timeout;
 
     /// Creates a mock beacon node API server and returns the client.
     async fn create_mock_beacon_client(
