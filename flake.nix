@@ -31,6 +31,8 @@
           cargo-machete
           protobuf
           oas3-gen
+
+          bashInteractive
         ];
 
         shellHook = ''
