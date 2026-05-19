@@ -1665,6 +1665,43 @@ fn compare_timeout_does_not_wait_for_blocked_callback() {
 }
 
 #[test]
+fn compare_callback_exit_without_status_waits_for_timer() {
+    let cts = CancellationTokenSource::new();
+    let msg = new_msg(MSG_PRE_PREPARE, 0, 1, 1, 7, 11, 0, 0, None);
+    let (_vs_tx, vs_rx) = mpmc::bounded::<i64>(1);
+    let (timer_tx, timer_rx) = mpmc::bounded(1);
+    let (callback_done_tx, callback_done_rx) = mpmc::bounded(1);
+
+    let mut def = noop_definition();
+    def.compare = Arc::new(move |_, _, _, _, _, _| {
+        callback_done_tx.send(()).expect(WRITE_CHAN_ERR);
+    });
+
+    let (result_tx, result_rx) = mpmc::bounded(1);
+    thread::spawn(move || {
+        result_tx
+            .send(compare(cts.token(), &def, &msg, &vs_rx, 0, &timer_rx))
+            .expect(WRITE_CHAN_ERR);
+    });
+
+    callback_done_rx
+        .recv_timeout(Duration::from_millis(100))
+        .expect("compare callback must exit");
+    assert!(
+        result_rx.try_recv().is_err(),
+        "compare must wait for timer/cancel if callback exits without status"
+    );
+
+    timer_tx.send(time::Instant::now()).expect(WRITE_CHAN_ERR);
+    assert!(matches!(
+        result_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("compare must return after timer fires"),
+        (0, Err(QbftError::TimeoutError))
+    ));
+}
+
+#[test]
 fn compare_parent_cancel_cancels_callback_token() {
     let cts = CancellationTokenSource::new();
     let token = cts.token().clone();

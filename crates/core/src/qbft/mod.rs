@@ -648,7 +648,7 @@ where
     V: PartialEq + 'static,
     C: Clone + Send + Sync + 'static,
 {
-    let (compare_err_tx, compare_err_rx) = mpmc::bounded::<Result<()>>(1);
+    let (compare_err_tx, mut compare_err_rx) = mpmc::bounded::<Result<()>>(1);
     let (compare_value_tx, mut compare_value_rx) = mpmc::bounded::<C>(1);
 
     // d.Compare has 2 roles:
@@ -692,9 +692,9 @@ where
             recv(compare_err_rx) -> msg => {
                 let err = match msg {
                     Ok(err) => err,
-                    Err(err) => {
-                        compare_cts.cancel();
-                        return (result, Err(QbftError::ChannelError(err)));
+                    Err(_) => {
+                        compare_err_rx = mpmc::never();
+                        continue;
                     }
                 };
 
