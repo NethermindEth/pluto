@@ -324,7 +324,9 @@ pub struct SignedBeaconBlock {
 ///
 /// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/beacon-chain.md#checkpoint>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Default, Encode, Decode, TreeHash, Serialize, Deserialize,
+)]
 pub struct Checkpoint {
     /// Epoch associated with the checkpoint.
     #[serde_as(as = "serde_with::DisplayFromStr")]

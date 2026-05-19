@@ -783,14 +783,8 @@ mod tests {
                 slot,
                 index: committee_index,
                 beacon_block_root: [0u8; 32],
-                source: phase0::Checkpoint {
-                    epoch: 0,
-                    root: [0u8; 32],
-                },
-                target: phase0::Checkpoint {
-                    epoch: 0,
-                    root: [0u8; 32],
-                },
+                source: phase0::Checkpoint::default(),
+                target: phase0::Checkpoint::default(),
             },
             duty: AttesterDuty {
                 slot,
@@ -1027,14 +1021,8 @@ mod tests {
             slot,
             index: committee_index,
             beacon_block_root: [0u8; 32],
-            source: phase0::Checkpoint {
-                epoch: 0,
-                root: [0u8; 32],
-            },
-            target: phase0::Checkpoint {
-                epoch: 0,
-                root: [0u8; 32],
-            },
+            source: phase0::Checkpoint::default(),
+            target: phase0::Checkpoint::default(),
         };
         let att = phase0::Attestation {
             aggregation_bits: phase0::BitList::<2048>::default(),
