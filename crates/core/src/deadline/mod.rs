@@ -33,6 +33,7 @@
 //! ```
 
 mod calculator;
+mod millis;
 
 pub use calculator::{DeadlineCalculator, DutyDeadlineCalculator};
 
@@ -354,7 +355,7 @@ pub fn new_deadliner(
 
 #[cfg(test)]
 mod tests {
-    use super::{calculator::Millis, *};
+    use super::{millis::Millis, *};
     use crate::types::SlotNumber;
     use anyhow::{Context, Result, bail};
     use pluto_testutil::BeaconMock;
