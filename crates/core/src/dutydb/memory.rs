@@ -699,9 +699,10 @@ impl State {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
+    use tokio::sync::mpsc::{Receiver, Sender, channel};
     use tokio_util::sync::CancellationToken;
 
     use super::*;
@@ -720,8 +721,8 @@ mod tests {
             true
         }
 
-        fn c(&self) -> Option<tokio::sync::mpsc::Receiver<Duty>> {
-            let (_, rx) = tokio::sync::mpsc::channel(1);
+        fn c(&self) -> Option<Receiver<Duty>> {
+            let (_, rx) = channel(1);
             Some(rx)
         }
     }
@@ -729,18 +730,18 @@ mod tests {
     /// Deadliner that collects duties and can flush them to a channel on
     /// demand.
     pub(crate) struct TestDeadliner {
-        added: std::sync::Mutex<Vec<Duty>>,
-        tx: tokio::sync::mpsc::Sender<Duty>,
-        rx: std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<Duty>>>,
+        added: Mutex<Vec<Duty>>,
+        tx: Sender<Duty>,
+        rx: Mutex<Option<Receiver<Duty>>>,
     }
 
     impl TestDeadliner {
         pub(crate) fn new() -> Arc<Self> {
-            let (tx, rx) = tokio::sync::mpsc::channel(64);
+            let (tx, rx) = channel(64);
             Arc::new(Self {
-                added: std::sync::Mutex::new(Vec::new()),
+                added: Mutex::new(Vec::new()),
                 tx,
-                rx: std::sync::Mutex::new(Some(rx)),
+                rx: Mutex::new(Some(rx)),
             })
         }
 
@@ -763,7 +764,7 @@ mod tests {
             true
         }
 
-        fn c(&self) -> Option<tokio::sync::mpsc::Receiver<Duty>> {
+        fn c(&self) -> Option<Receiver<Duty>> {
             self.rx.lock().unwrap().take()
         }
     }
