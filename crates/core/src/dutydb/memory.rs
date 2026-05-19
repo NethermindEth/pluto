@@ -228,6 +228,9 @@ pub struct MemDB {
 
 impl MemDB {
     /// Creates a new in-memory DutyDB.
+    /// cancel: cancellation token that shuts down the DB, it should be a child
+    /// token of the caller token to prevent further cancellation
+    /// propagation
     pub fn new(deadliner: Arc<dyn Deadliner>, cancel: CancellationToken) -> Self {
         let deadliner_rx = deadliner.c().expect(
             "Deadliner::c() returned None — the receiver was already consumed. Each MemDB must use a fresh Deadliner.",
