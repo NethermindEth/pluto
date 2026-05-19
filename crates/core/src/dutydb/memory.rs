@@ -179,7 +179,7 @@ struct PkKey {
     validator_index: u64,
 }
 
-/// Lookup key for aggregated attestations: (slot, attestation data root).
+/// Lookup key for aggregated attestations: attestation data root.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct AggKey {
     root: phase0::Root,
