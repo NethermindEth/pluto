@@ -191,120 +191,131 @@ impl Deadliner for DeadlinerLink {
     }
 }
 
-impl DeadlinerLink {
-    /// Background task that manages duty deadlines.
-    ///
-    /// This is an associated function (not a method) because the DeadlinerLink
-    /// is immediately wrapped in Arc<dyn Deadliner>, preventing mutable access.
-    async fn run_task(
-        cancel_token: CancellationToken,
-        label: String,
-        calculator: Arc<dyn DeadlineCalculator>,
-        mut input_rx: mpsc::Receiver<DeadlineInput>,
-        output_tx: mpsc::Sender<Duty>,
-    ) {
-        let mut duties: HashSet<Duty> = HashSet::new();
-        let (mut curr_duty, mut curr_deadline) = get_curr_duty(&duties, &*calculator);
+/// Owned state of the background task that drives a [`DeadlinerLink`]'s
+/// duty timers. Held exclusively by the spawned task — that's why it lives
+/// outside the `Arc<dyn Deadliner>` and `run_task` can take `mut self`.
+struct DeadlinerImpl {
+    cancel_token: CancellationToken,
+    label: String,
+    calculator: Arc<dyn DeadlineCalculator>,
+    input_rx: mpsc::Receiver<DeadlineInput>,
+    output_tx: mpsc::Sender<Duty>,
 
-        // Create initial timer
-        let now: DateTime<Utc> = Utc::now();
-        let initial_duration = if curr_deadline < now {
-            Duration::ZERO
-        } else {
-            curr_deadline
-                .signed_duration_since(now)
-                .to_std()
-                .unwrap_or(FAR_FUTURE_DURATION)
-        };
-        let sleep_fut = sleep(initial_duration);
+    duties: HashSet<Duty>,
+    curr_duty: Duty,
+    curr_deadline: DateTime<Utc>,
+}
+
+impl DeadlinerImpl {
+    /// Background task that manages duty deadlines.
+    async fn run_task(mut self) {
+        let sleep_fut = sleep(self.remaining_duration());
         tokio::pin!(sleep_fut);
 
         loop {
             tokio::select! {
                 biased;
 
-                _ = cancel_token.cancelled() => {
+                _ = self.cancel_token.cancelled() => {
                     return;
                 }
 
-                Some(input) = input_rx.recv() => {
-                    let duty = input.duty;
-                    match calculator.deadline(&duty) {
-                        Ok(Some(deadline)) => {
-                            let now = Utc::now();
-                            let expired = deadline < now;
-
-                            let _ = input.response_tx.send(!expired);
-
-                            // Ignore expired duties
-                            if expired {
-                                continue;
-                            }
-
-                            // Add duty to the map (idempotent)
-                            duties.insert(duty);
-
-                            // Update timer if this deadline is earlier
-                            if deadline < curr_deadline {
-                                let (new_duty, new_deadline) = get_curr_duty(&duties, &*calculator);
-                                curr_duty = new_duty;
-                                curr_deadline = new_deadline;
-
-                                let duration = curr_deadline
-                                    .signed_duration_since(Utc::now())
-                                    .to_std()
-                                    .unwrap_or(FAR_FUTURE_DURATION);
-                                sleep_fut.set(sleep(duration));
-                            }
-                        }
-                        Err(err) => {
-                            tracing::warn!(
-                                label = %label,
-                                duty = %duty,
-                                error = %err,
-                                "Failed to compute deadline for duty"
-                            );
-                            let _ = input.response_tx.send(false);
-                        }
-                        Ok(None) => {
-                            // Drop duties that never expire
-                            let _ = input.response_tx.send(false);
-                        }
+                Some(input) = self.input_rx.recv() => {
+                    if let Some(new_timer) = self.handle_input(input) {
+                        sleep_fut.set(sleep(new_timer));
                     }
                 }
 
                 _ = &mut sleep_fut => {
-                    // Deadline expired - send duty to output channel
-                    match output_tx.try_send(curr_duty.clone()) {
-                        Ok(()) => {}
-                        Err(mpsc::error::TrySendError::Full(_)) => {
-                            tracing::warn!(
-                                label = %label,
-                                duty = %curr_duty,
-                                "Deadliner output channel full"
-                            );
-                        }
-                        Err(mpsc::error::TrySendError::Closed(_)) => {
-                            return;
-                        }
+                    match self.handle_expired() {
+                        Some(new_timer) => sleep_fut.set(sleep(new_timer)),
+                        None => return,
                     }
-
-                    // Remove duty from map
-                    duties.remove(&curr_duty);
-
-                    // Update to next duty
-                    let (new_duty, new_deadline) = get_curr_duty(&duties, &*calculator);
-                    curr_duty = new_duty;
-                    curr_deadline = new_deadline;
-
-                    let duration = curr_deadline
-                        .signed_duration_since(Utc::now())
-                        .to_std()
-                        .unwrap_or(FAR_FUTURE_DURATION);
-                    sleep_fut.set(sleep(duration));
                 }
             }
         }
+    }
+
+    /// Time remaining until `self.curr_deadline`, clamped to zero if it's
+    /// already in the past or arithmetic overflows.
+    fn remaining_duration(&self) -> Duration {
+        let now = Utc::now();
+        if self.curr_deadline < now {
+            Duration::ZERO
+        } else {
+            self.curr_deadline
+                .signed_duration_since(now)
+                .to_std()
+                .unwrap_or(FAR_FUTURE_DURATION)
+        }
+    }
+
+    /// Recomputes `curr_duty`/`curr_deadline` from the current `duties` set.
+    fn recompute_curr(&mut self) {
+        let (duty, deadline) = get_curr_duty(&self.duties, &*self.calculator);
+        self.curr_duty = duty;
+        self.curr_deadline = deadline;
+    }
+
+    /// Handles a new duty arriving from `input_rx`. Returns `Some(timer)` if
+    /// the sleep timer should be reset to wake earlier, `None` otherwise.
+    fn handle_input(&mut self, input: DeadlineInput) -> Option<Duration> {
+        let duty = input.duty;
+        match self.calculator.deadline(&duty) {
+            Ok(Some(deadline)) => {
+                let expired = deadline < Utc::now();
+                let _ = input.response_tx.send(!expired);
+                if expired {
+                    return None;
+                }
+                self.duties.insert(duty);
+                if deadline < self.curr_deadline {
+                    self.recompute_curr();
+                    Some(self.remaining_duration())
+                } else {
+                    None
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    label = %self.label,
+                    duty = %duty,
+                    error = %err,
+                    "Failed to compute deadline for duty"
+                );
+                let _ = input.response_tx.send(false);
+                None
+            }
+            Ok(None) => {
+                // Drop duties that never expire
+                let _ = input.response_tx.send(false);
+                None
+            }
+        }
+    }
+
+    /// Handles the sleep timer firing: emits the expired duty, advances state,
+    /// and returns the next timer. Returns `None` if the output channel was
+    /// closed and the task should exit.
+    fn handle_expired(&mut self) -> Option<Duration> {
+        use mpsc::error::TrySendError::*;
+        let duty = self.curr_duty.clone();
+        match self.output_tx.try_send(duty) {
+            Ok(()) => {}
+            Err(Full(curr_duty)) => {
+                tracing::warn!(
+                    label = %self.label,
+                    duty = %curr_duty,
+                    "Deadliner output channel full"
+                );
+            }
+            Err(Closed(_)) => {
+                return None;
+            }
+        }
+        self.duties.remove(&self.curr_duty);
+        self.recompute_curr();
+        Some(self.remaining_duration())
     }
 }
 
@@ -342,13 +353,17 @@ pub fn new_deadliner(
         output_rx: Mutex::new(Some(output_rx)),
     });
 
-    tokio::spawn(DeadlinerLink::run_task(
+    let task = DeadlinerImpl {
         cancel_token,
         label,
         calculator,
         input_rx,
         output_tx,
-    ));
+        duties: HashSet::new(),
+        curr_duty: Duty::new(SlotNumber::new(0), DutyType::Unknown),
+        curr_deadline: DateTime::<Utc>::MAX_UTC,
+    };
+    tokio::spawn(task.run_task());
 
     link
 }
