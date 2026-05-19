@@ -15,6 +15,7 @@ struct FakeClockInner {
     start: Instant,
     now: Instant,
     last_id: usize,
+    cancelled: bool,
     clients: HashMap<usize, (mpmc::Sender<Instant>, Instant)>,
 }
 
@@ -25,6 +26,7 @@ impl FakeClock {
                 start: now,
                 now,
                 last_id: 1,
+                cancelled: false,
                 clients: Default::default(),
             })),
         }
@@ -41,6 +43,10 @@ impl FakeClock {
 
         let client_id = {
             let mut inner = self.inner.lock().unwrap();
+            if inner.cancelled {
+                return (rx, Box::new(|| {}));
+            }
+
             let id = inner.last_id;
             let deadline = inner.now + duration;
 
@@ -92,10 +98,11 @@ impl FakeClock {
         inner.now - inner.start
     }
 
-    /// Explicit cleanup; dropping one clone must not cancel timers owned by
-    /// other clones.
+    /// Explicit terminal cleanup; do not reintroduce `Drop`, since dropping one
+    /// clone must not cancel timers owned by other clones.
     pub fn cancel(&self) {
         let mut inner = self.inner.lock().unwrap();
+        inner.cancelled = true;
         inner.clients.clear();
     }
 }
@@ -158,6 +165,20 @@ fn multiple_threads_cancellation() {
     assert_eq!(2, done.len());
     assert!(done.into_iter().all(|done| done));
     assert_eq!(Duration::ZERO, clock.elapsed());
+}
+
+#[test]
+fn timer_created_after_cancel_is_closed() {
+    let clock = FakeClock::new(Instant::now());
+    clock.cancel();
+
+    let (ch, cancel) = clock.new_timer(Duration::from_secs(5));
+
+    assert!(matches!(
+        ch.try_recv(),
+        Err(mpmc::TryRecvError::Disconnected)
+    ));
+    cancel();
 }
 
 #[test]
