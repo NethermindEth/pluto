@@ -8,7 +8,7 @@
 //!
 //! ```no_run
 //! use pluto_core::{
-//!     deadline::{DeadlinerImpl, DutyDeadlineCalculator},
+//!     deadline::{DeadlinerTask, DutyDeadlineCalculator},
 //!     types::{Duty, SlotNumber},
 //! };
 //! use pluto_eth2api::EthBeaconNodeApiClient;
@@ -18,7 +18,7 @@
 //! # async fn example(client: &EthBeaconNodeApiClient) -> anyhow::Result<()> {
 //! let cancel_token = CancellationToken::new();
 //! let calculator = DutyDeadlineCalculator::from_client(client).await?;
-//! let deadliner = DeadlinerImpl::start(cancel_token, "example", calculator);
+//! let deadliner = DeadlinerTask::start(cancel_token, "example", calculator);
 //!
 //! let duty = Duty::new_attester_duty(SlotNumber::new(1));
 //! let added = deadliner.add(duty).await;
@@ -118,15 +118,17 @@ struct DeadlineInput {
     response_tx: oneshot::Sender<bool>,
 }
 
-/// Implementation of the Deadliner trait.
-struct DeadlinerLink {
+/// Public-facing handle: the `Arc<dyn Deadliner>` returned by
+/// [`DeadlinerTask::start`] wraps this. Holds the input channel, the
+/// take-once output receiver, and the cancellation token.
+struct DeadlinerHandle {
     cancel_token: CancellationToken,
     input_tx: mpsc::Sender<DeadlineInput>,
     output_rx: Mutex<Option<mpsc::Receiver<Duty>>>,
 }
 
 #[async_trait]
-impl Deadliner for DeadlinerLink {
+impl Deadliner for DeadlinerHandle {
     async fn add(&self, duty: Duty) -> bool {
         // Check if shut down
         if self.cancel_token.is_cancelled() {
@@ -153,10 +155,11 @@ impl Deadliner for DeadlinerLink {
     }
 }
 
-/// Owned state of the background task that drives a [`DeadlinerLink`]'s
+/// Owned state of the background task that drives a [`DeadlinerHandle`]'s
 /// duty timers. Held exclusively by the spawned task — that's why it lives
 /// outside the `Arc<dyn Deadliner>` and `run_task` can take `mut self`.
-pub struct DeadlinerImpl<C> {
+/// Constructed and spawned via [`DeadlinerTask::start`].
+pub struct DeadlinerTask<C> {
     cancel_token: CancellationToken,
     label: String,
     calculator: C,
@@ -168,7 +171,7 @@ pub struct DeadlinerImpl<C> {
     curr_deadline: DateTime<Utc>,
 }
 
-impl<C: DeadlineCalculator> DeadlinerImpl<C> {
+impl<C: DeadlineCalculator> DeadlinerTask<C> {
     /// Builds the public-facing [`Deadliner`] handle and spawns the background
     /// task that drives it. The background loop exits when `cancel_token` is
     /// cancelled.
@@ -201,7 +204,7 @@ impl<C: DeadlineCalculator> DeadlinerImpl<C> {
         };
         tokio::spawn(task.run_task());
 
-        let link = DeadlinerLink {
+        let link = DeadlinerHandle {
             cancel_token,
             input_tx,
             output_rx: Mutex::new(Some(output_rx)),
@@ -458,7 +461,7 @@ mod tests {
         };
 
         let cancel_token = CancellationToken::new();
-        let deadliner = DeadlinerImpl::start(cancel_token.clone(), "test", calculator);
+        let deadliner = DeadlinerTask::start(cancel_token.clone(), "test", calculator);
 
         let mut output_rx = deadliner.c().context("output receiver already taken")?;
 
@@ -542,7 +545,7 @@ mod tests {
         };
 
         let cancel_token = CancellationToken::new();
-        let deadliner = DeadlinerImpl::start(cancel_token.clone(), "order-test", calculator);
+        let deadliner = DeadlinerTask::start(cancel_token.clone(), "order-test", calculator);
 
         let mut output_rx = deadliner.c().context("output receiver already taken")?;
 
