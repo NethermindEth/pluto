@@ -23,13 +23,7 @@
 //! `*SubmitAggregateAttestationsOpts` serializations. All other beacon-node
 //! interactions use the generated client.
 
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-};
+use std::{collections::HashMap, sync::Arc};
 
 use pluto_eth2api::{
     EthBeaconNodeApiClient, EthBeaconNodeApiClientError, GetAggregatedAttestationV2Request,
@@ -49,54 +43,18 @@ use pluto_eth2util::{
 use pluto_ssz::{BitList, BitVector};
 use serde::Serialize;
 use serde_with::serde_as;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Mutex;
 use tree_hash::TreeHash;
 
-/// Committee index type alias, mirroring Go's `eth2p0.CommitteeIndex` (uint64).
-type CommitteeIndex = u64;
-
-/// One-shot async signal mirroring Go's `chan struct{}` + `close(ch)` idiom.
-///
-/// [`Self::close`] is idempotent (matches Go's behaviour, which panics only on
-/// the second `close`; we prefer silent re-close). [`Self::wait`] returns
-/// immediately once closed, otherwise blocks on a [`Notify`] until the next
-/// [`Self::close`] call. Using `notify_waiters` (not `notify_one`) ensures
-/// every pending waiter is woken when the signal fires.
-#[derive(Debug, Default)]
-struct CloseOnce {
-    closed: AtomicBool,
-    notify: Notify,
-}
-
-impl CloseOnce {
-    fn close(&self) {
-        // Mark first so a fresh waiter that arrives between the store and
-        // notify sees `closed == true` on its first poll.
-        if !self.closed.swap(true, Ordering::SeqCst) {
-            self.notify.notify_waiters();
-        }
-    }
-
-    async fn wait(&self) {
-        loop {
-            if self.closed.load(Ordering::SeqCst) {
-                return;
-            }
-            // Register interest before re-checking to avoid a missed wakeup.
-            let notified = self.notify.notified();
-            if self.closed.load(Ordering::SeqCst) {
-                return;
-            }
-            notified.await;
-        }
-    }
-}
-
 use super::{
+    close_once::CloseOnce,
     error::{Error, Result},
     sign::SignFunc,
     validators::ActiveValidators,
 };
+
+/// Committee index type alias, mirroring Go's `eth2p0.CommitteeIndex` (uint64).
+type CommitteeIndex = u64;
 
 /// Single-slot attester duty as returned by
 /// `/eth/v1/validator/duties/attester`.

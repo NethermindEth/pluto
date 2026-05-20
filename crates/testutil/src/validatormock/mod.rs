@@ -8,6 +8,7 @@
 pub mod attest;
 pub mod capture;
 pub mod clock;
+mod close_once;
 pub mod component;
 pub mod error;
 pub mod meta;

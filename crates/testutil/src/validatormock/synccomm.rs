@@ -12,9 +12,10 @@
 //!    at 2/3rd into the slot.
 //!
 //! The Go `chan struct{}` close-once readiness flags become
-//! `Arc<tokio::sync::OnceCell<()>>`; the per-slot maps lazily insert entries
-//! on both setter and getter paths so callers may await readiness before any
-//! producer has touched the slot, exactly like the Go version.
+//! `Arc<CloseOnce>` (a small `AtomicBool` + `tokio::sync::Notify` pair shared
+//! with [`super::attest`]); the per-slot maps lazily insert entries on both
+//! setter and getter paths so callers may await readiness before any producer
+//! has touched the slot, exactly like the Go version.
 
 use std::{
     collections::HashMap,
@@ -41,11 +42,11 @@ use pluto_eth2util::{
     helpers::epoch_from_slot,
     signing::{DomainName, get_data_root},
 };
-use tokio::sync::OnceCell;
 use tracing::info;
 use tree_hash::TreeHash;
 
 use super::{
+    close_once::CloseOnce,
     error::{Error, Result},
     sign::SignFunc,
     validators::{ActiveValidators, active_validators},
@@ -79,9 +80,9 @@ struct Mutable {
     vals: ActiveValidators,
     duties: Vec<SyncCommitteeDuty>,
     selections: HashMap<Slot, Vec<SyncCommitteeSelection>>,
-    selections_ok: HashMap<Slot, Arc<OnceCell<()>>>,
+    selections_ok: HashMap<Slot, Arc<CloseOnce>>,
     block_root: HashMap<Slot, Root>,
-    block_root_ok: HashMap<Slot, Arc<OnceCell<()>>>,
+    block_root_ok: HashMap<Slot, Arc<CloseOnce>>,
 }
 
 /// Stateful driver providing the sync-committee message and contribution
@@ -99,7 +100,7 @@ pub struct SyncCommMember {
 
     // Mutable state.
     mutable: Mutex<Mutable>,
-    duties_ok: Arc<OnceCell<()>>,
+    duties_ok: Arc<CloseOnce>,
 }
 
 impl SyncCommMember {
@@ -118,7 +119,7 @@ impl SyncCommMember {
             pubkeys,
             sign_func,
             mutable: Mutex::new(Mutable::default()),
-            duties_ok: Arc::new(OnceCell::new()),
+            duties_ok: Arc::new(CloseOnce::default()),
         }
     }
 
@@ -130,7 +131,7 @@ impl SyncCommMember {
 
     // -- mutable-state helpers (mirror the Go set*/get* methods). --
 
-    fn set_selections(&self, slot: Slot, selections: Vec<SyncCommitteeSelection>) -> Result<()> {
+    fn set_selections(&self, slot: Slot, selections: Vec<SyncCommitteeSelection>) {
         let cell = {
             let mut guard = lock(&self.mutable);
             guard.selections.insert(slot, selections);
@@ -138,12 +139,11 @@ impl SyncCommMember {
                 guard
                     .selections_ok
                     .entry(slot)
-                    .or_insert_with(|| Arc::new(OnceCell::new())),
+                    .or_insert_with(|| Arc::new(CloseOnce::default())),
             )
         };
 
-        cell.set(())
-            .map_err(|_| Error::Malformed(format!("selections already set for slot {slot}")))
+        cell.close();
     }
 
     fn get_selections(&self, slot: Slot) -> Vec<SyncCommitteeSelection> {
@@ -154,17 +154,17 @@ impl SyncCommMember {
             .unwrap_or_default()
     }
 
-    fn get_selections_ok(&self, slot: Slot) -> Arc<OnceCell<()>> {
+    fn get_selections_ok(&self, slot: Slot) -> Arc<CloseOnce> {
         let mut guard = lock(&self.mutable);
         Arc::clone(
             guard
                 .selections_ok
                 .entry(slot)
-                .or_insert_with(|| Arc::new(OnceCell::new())),
+                .or_insert_with(|| Arc::new(CloseOnce::default())),
         )
     }
 
-    fn set_block_root(&self, slot: Slot, block_root: Root) -> Result<()> {
+    fn set_block_root(&self, slot: Slot, block_root: Root) {
         let cell = {
             let mut guard = lock(&self.mutable);
             guard.block_root.insert(slot, block_root);
@@ -172,12 +172,11 @@ impl SyncCommMember {
                 guard
                     .block_root_ok
                     .entry(slot)
-                    .or_insert_with(|| Arc::new(OnceCell::new())),
+                    .or_insert_with(|| Arc::new(CloseOnce::default())),
             )
         };
 
-        cell.set(())
-            .map_err(|_| Error::Malformed(format!("block root already set for slot {slot}")))
+        cell.close();
     }
 
     fn get_block_root(&self, slot: Slot) -> Root {
@@ -188,25 +187,23 @@ impl SyncCommMember {
             .unwrap_or_default()
     }
 
-    fn get_block_root_ok(&self, slot: Slot) -> Arc<OnceCell<()>> {
+    fn get_block_root_ok(&self, slot: Slot) -> Arc<CloseOnce> {
         let mut guard = lock(&self.mutable);
         Arc::clone(
             guard
                 .block_root_ok
                 .entry(slot)
-                .or_insert_with(|| Arc::new(OnceCell::new())),
+                .or_insert_with(|| Arc::new(CloseOnce::default())),
         )
     }
 
-    fn set_duties(&self, vals: ActiveValidators, duties: Vec<SyncCommitteeDuty>) -> Result<()> {
+    fn set_duties(&self, vals: ActiveValidators, duties: Vec<SyncCommitteeDuty>) {
         {
             let mut guard = lock(&self.mutable);
             guard.vals = vals;
             guard.duties = duties;
         }
-        self.duties_ok
-            .set(())
-            .map_err(|_| Error::Malformed("duties already set".to_string()))
+        self.duties_ok.close();
     }
 
     fn get_duties(&self) -> Vec<SyncCommitteeDuty> {
@@ -224,7 +221,7 @@ impl SyncCommMember {
     pub async fn prepare_epoch(&self) -> Result<()> {
         let vals = active_validators(&self.eth2_cl).await?;
         let duties = prepare_sync_comm_duties(&self.eth2_cl, &vals, self.epoch).await?;
-        self.set_duties(vals, duties.clone())?;
+        self.set_duties(vals, duties.clone());
         subscribe_sync_comm_subnets(&self.eth2_cl, self.epoch, &duties).await?;
         Ok(())
     }
@@ -232,30 +229,33 @@ impl SyncCommMember {
     /// Computes aggregate selection proofs for `slot` and marks them ready for
     /// [`SyncCommMember::aggregate`] consumers.
     pub async fn prepare_slot(&self, slot: Slot) -> Result<()> {
-        wait_ready(&self.duties_ok).await;
+        self.duties_ok.wait().await;
 
         let selections =
             prepare_sync_selections(&self.eth2_cl, &self.sign_func, &self.get_duties(), slot)
                 .await?;
 
-        self.set_selections(slot, selections)
+        self.set_selections(slot, selections);
+        Ok(())
     }
 
     /// Submits sync-committee messages at 1/3rd into the slot and records the
     /// beacon block root that drove them. Mirrors Go's `Message`.
     pub async fn message(&self, slot: Slot) -> Result<()> {
-        wait_ready(&self.duties_ok).await;
+        self.duties_ok.wait().await;
 
         let duties = self.get_duties();
         if duties.is_empty() {
-            return self.set_block_root(slot, Root::default());
+            self.set_block_root(slot, Root::default());
+            return Ok(());
         }
 
         let block_root = fetch_head_block_root(&self.eth2_cl).await?;
 
         submit_sync_messages(&self.eth2_cl, slot, block_root, &self.sign_func, &duties).await?;
 
-        self.set_block_root(slot, block_root)
+        self.set_block_root(slot, block_root);
+        Ok(())
     }
 
     /// Submits aggregated contribution-and-proofs at 2/3rd into the slot.
@@ -263,9 +263,9 @@ impl SyncCommMember {
     /// ready. Returns `true` if contributions were submitted, `false` if there
     /// were no aggregator selections for this slot.
     pub async fn aggregate(&self, slot: Slot) -> Result<bool> {
-        wait_ready(&self.duties_ok).await;
-        wait_ready(&self.get_selections_ok(slot)).await;
-        wait_ready(&self.get_block_root_ok(slot)).await;
+        self.duties_ok.wait().await;
+        self.get_selections_ok(slot).wait().await;
+        self.get_block_root_ok(slot).wait().await;
 
         agg_contributions(
             &self.eth2_cl,
@@ -720,14 +720,6 @@ async fn agg_contributions(
         .map_err(EthBeaconNodeApiClientError::RequestError)?;
 
     Ok(true)
-}
-
-async fn wait_ready(cell: &OnceCell<()>) {
-    let _: &() = cell.get_or_init(noop_pending).await;
-}
-
-async fn noop_pending() -> () {
-    std::future::pending::<()>().await
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
