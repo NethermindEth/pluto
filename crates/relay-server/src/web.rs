@@ -329,13 +329,22 @@ async fn resolve_external_host_periodically(
 
 /// Resolves the external host to an IP address.
 async fn resolve_external_host(state: Arc<AppState>, external_host: &str) {
-    match tokio::net::lookup_host(external_host).await {
-        Ok(mut addrs) => {
-            if let Some(addr) = addrs.next()
-                && let IpAddr::V4(ipv4) = addr.ip()
-            {
+    // `tokio::net::lookup_host` requires a `host:port` input, but we only need
+    // the IP — use a dummy port of 0 so a bare hostname resolves correctly.
+    match tokio::net::lookup_host((external_host, 0)).await {
+        Ok(addrs) => {
+            let ipv4 = addrs
+                .filter_map(|a| match a.ip() {
+                    IpAddr::V4(v4) => Some(v4),
+                    IpAddr::V6(_) => None,
+                })
+                .next();
+
+            if let Some(ipv4) = ipv4 {
                 debug!("Resolved external host {external_host} to {ipv4}");
                 state.set_external_host_ip(Some(ipv4)).await;
+            } else {
+                warn!("External host {external_host} resolved with no IPv4 address");
             }
         }
         Err(e) => {
