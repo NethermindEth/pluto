@@ -262,6 +262,9 @@ impl Component {
 }
 
 impl Drop for Component {
+    /// Cancels the scheduler best-effort. Tasks are not awaited here — `Drop`
+    /// cannot `.await` — so callers that need clean drainage of in-flight
+    /// duty tasks MUST call [`Component::shutdown`] explicitly before drop.
     fn drop(&mut self) {
         self.cancel.cancel();
     }
@@ -272,14 +275,19 @@ async fn run_scheduler(
     cancel: CancellationToken,
     mut scheduled_rx: mpsc::Receiver<ScheduleTuple>,
 ) {
+    // Track per-duty tasks so `Component::shutdown` can drain them. Dropping
+    // the JoinHandle from a bare `tokio::spawn` would let a duty's HTTP
+    // request outlive `shutdown().await` and leak across test boundaries.
+    let mut duties: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
     loop {
         tokio::select! {
-            _ = cancel.cancelled() => return,
+            biased;
+            () = cancel.cancelled() => break,
             maybe = scheduled_rx.recv() => {
-                let Some(scheduled) = maybe else { return };
+                let Some(scheduled) = maybe else { break };
                 let inner_for_task = Arc::clone(&inner);
                 let cancel_for_task = cancel.clone();
-                tokio::spawn(async move {
+                duties.spawn(async move {
                     let start_time = scheduled.start_time;
                     let slot = scheduled.slot;
                     let duty_label = scheduled.duty_type.clone();
@@ -293,8 +301,17 @@ async fn run_scheduler(
                     }
                 });
             }
+            // Reap finished duties to keep the JoinSet bounded. Disabled when
+            // empty — `Some(_)` does not match `None`.
+            Some(_) = duties.join_next() => {}
         }
     }
+    // Drain in-flight duties before returning so callers awaiting
+    // `Component::shutdown` see all work settled. Each task observes
+    // `cancel.cancelled()` in its outer select; bodies already running run
+    // to completion (mirroring Go's `Run`, which lets the duty finish
+    // before returning from the loop).
+    while duties.join_next().await.is_some() {}
 }
 
 async fn run_duty_via_inner(inner: &Inner, duty: ScheduleTuple) -> Result<()> {
