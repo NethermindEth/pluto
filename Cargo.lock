@@ -5922,6 +5922,7 @@ name = "pluto-tracing"
 version = "1.7.1"
 dependencies = [
  "base64",
+ "percent-encoding",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

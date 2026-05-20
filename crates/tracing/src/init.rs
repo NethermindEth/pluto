@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use percent_encoding::percent_decode_str;
 use tracing_loki::{BackgroundTask, BackgroundTaskController, url::Url};
 use tracing_subscriber::{
     EnvFilter, Registry, layer::SubscriberExt as _, util::SubscriberInitExt as _,
@@ -101,8 +102,12 @@ fn extract_basic_auth(url: &Url) -> Option<String> {
     if url.username().is_empty() && url.password().is_none() {
         return None;
     }
-    let user = url.username();
-    let pass = url.password().unwrap_or("");
+    // `Url::username` / `Url::password` return the *percent-encoded* form as
+    // it appears in the URL. HTTP basic-auth expects the raw credentials, so
+    // decode before base64-encoding; otherwise a username/password containing
+    // `@`, `:`, `/`, etc. would authenticate with the literal `%xx` escapes.
+    let user = percent_decode_str(url.username()).decode_utf8_lossy();
+    let pass = percent_decode_str(url.password().unwrap_or("")).decode_utf8_lossy();
     Some(format!("Basic {}", BASE64.encode(format!("{user}:{pass}"))))
 }
 
@@ -138,6 +143,15 @@ mod tests {
         let header = extract_basic_auth(&url).expect("should extract");
         // Base64("token:") == "dG9rZW46"
         assert_eq!(header, "Basic dG9rZW46");
+    }
+
+    #[test]
+    fn basic_auth_decodes_percent_encoded_userinfo() {
+        // user = "bob@corp", pass = "p:/ss"
+        let url = Url::parse("https://bob%40corp:p%3A%2Fss@loki.example.com/push").unwrap();
+        let header = extract_basic_auth(&url).expect("should extract");
+        // Base64("bob@corp:p:/ss") == "Ym9iQGNvcnA6cDovc3M="
+        assert_eq!(header, "Basic Ym9iQGNvcnA6cDovc3M=");
     }
 
     #[test]
