@@ -22,6 +22,7 @@ use pluto_p2p::{
     manet::Manet,
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
+    utils::{external_tcp_multiaddrs, external_udp_multiaddrs},
 };
 
 /// Runs a relay P2P node.
@@ -69,12 +70,20 @@ pub async fn run_relay_p2p_node(
 
     let listeners = Arc::new(RwLock::new(Vec::new()));
 
+    // Compute external multiaddrs from external_ip / external_host config so
+    // they're advertised on `/` and folded into ENR responses on `/enr` even
+    // when libp2p only sees private listen addresses (e.g., K8s pods behind
+    // NodePort).
+    let mut external_addrs = external_tcp_multiaddrs(&config.p2p_config)?;
+    external_addrs.extend(external_udp_multiaddrs(&config.p2p_config)?);
+
     let enr_server_handle = tokio::spawn(enr_server(
         server_errors.clone(),
         config.clone(),
         key.clone(),
         *node.local_peer_id(),
         listeners.clone(),
+        external_addrs,
         ct.child_token(),
     ));
 

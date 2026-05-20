@@ -61,3 +61,47 @@ pub(crate) fn extract_ip_and_udp_port(addr: &Multiaddr) -> Option<(Ipv4Addr, u16
         _ => None,
     }
 }
+
+/// Extracts DNS hostname and TCP port from a `/dns(4|6)/<host>/tcp/<port>`
+/// multiaddr.
+pub(crate) fn extract_dns_and_tcp_port(addr: &Multiaddr) -> Option<(String, u16)> {
+    let mut host: Option<String> = None;
+    let mut port: Option<u16> = None;
+
+    for protocol in addr.iter() {
+        match protocol {
+            Protocol::Dns(h) | Protocol::Dns4(h) | Protocol::Dns6(h) => {
+                host = Some(h.into_owned());
+            }
+            Protocol::Tcp(p) => port = Some(p),
+            _ => {}
+        }
+    }
+
+    match (host, port) {
+        (Some(h), Some(p)) => Some((h, p)),
+        _ => None,
+    }
+}
+
+/// Extracts DNS hostname and UDP port from a
+/// `/dns(4|6)/<host>/udp/<port>/quic-v1` multiaddr.
+pub(crate) fn extract_dns_and_udp_port(addr: &Multiaddr) -> Option<(String, u16)> {
+    let mut host: Option<String> = None;
+    let mut port: Option<u16> = None;
+
+    for protocol in addr.iter() {
+        match protocol {
+            Protocol::Dns(h) | Protocol::Dns4(h) | Protocol::Dns6(h) => {
+                host = Some(h.into_owned());
+            }
+            Protocol::Udp(p) => port = Some(p),
+            _ => {}
+        }
+    }
+
+    match (host, port) {
+        (Some(h), Some(p)) => Some((h, p)),
+        _ => None,
+    }
+}

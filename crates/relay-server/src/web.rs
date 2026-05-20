@@ -36,8 +36,12 @@ pub struct AppState {
     secret_key: SecretKey,
     /// The peer ID of this node.
     peer_id: PeerId,
-    /// The addresses of this node.
+    /// The libp2p-discovered listen addresses of this node.
     addrs: Arc<RwLock<Vec<Multiaddr>>>,
+    /// External multiaddrs derived from `external_ip` / `external_host` config.
+    /// Fixed at startup. Includes `/ip4/<external_ip>/...` and
+    /// `/dns/<external_host>/...` variants for both TCP and UDP/QUIC.
+    external_addrs: Vec<Multiaddr>,
     /// The resolved external host IP (if configured).
     external_host_ip: Arc<RwLock<Option<Ipv4Addr>>>,
 }
@@ -49,14 +53,32 @@ impl AppState {
         secret_key: SecretKey,
         peer_id: PeerId,
         addrs: Arc<RwLock<Vec<Multiaddr>>>,
+        external_addrs: Vec<Multiaddr>,
     ) -> Self {
         Self {
             p2p_config,
             secret_key,
             peer_id,
             addrs,
+            external_addrs,
             external_host_ip: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Returns the union of configured external multiaddrs and the live
+    /// libp2p listen addresses, externals first, deduped while preserving
+    /// order. Mirrors Go charon's `filterAdvertisedAddrs(externalAddrs,
+    /// internalAddrs, …)` — listeners are already filtered for private
+    /// addresses at ingest time when `filter_private_addrs` is set.
+    async fn advertised_addrs(&self) -> Vec<Multiaddr> {
+        let listeners = self.addrs.read().await;
+        let mut union: Vec<Multiaddr> = self.external_addrs.clone();
+        for addr in listeners.iter() {
+            if !union.contains(addr) {
+                union.push(addr.clone());
+            }
+        }
+        union
     }
 
     /// Gets the external host IP if set.
@@ -72,13 +94,14 @@ impl AppState {
 }
 
 /// Starts the ENR HTTP server.
-#[instrument(skip(server_errors, config, secret_key, peer_id, addrs, ct))]
+#[instrument(skip(server_errors, config, secret_key, peer_id, addrs, external_addrs, ct))]
 pub async fn enr_server(
     server_errors: mpsc::Sender<RelayP2PError>,
     config: Config,
     secret_key: SecretKey,
     peer_id: PeerId,
     addrs: Arc<RwLock<Vec<Multiaddr>>>,
+    external_addrs: Vec<Multiaddr>,
     ct: CancellationToken,
 ) {
     let Some(http_addr) = config.http_addr.clone() else {
@@ -88,7 +111,13 @@ pub async fn enr_server(
 
     info!("Starting ENR server");
 
-    let state = AppState::new(config.p2p_config.clone(), secret_key, peer_id, addrs);
+    let state = AppState::new(
+        config.p2p_config.clone(),
+        secret_key,
+        peer_id,
+        addrs,
+        external_addrs,
+    );
     let state_arc = Arc::new(state);
 
     // Start external host resolver task if configured
@@ -174,11 +203,7 @@ pub async fn enr_handler(
 ) -> std::result::Result<String, HandlerError> {
     debug!("Getting ENR for node {}", state.peer_id);
 
-    let addrs = state.addrs.read().await;
-
-    // Sort addresses with public addresses first
-    let mut sorted_addrs: Vec<Multiaddr> = addrs.clone();
-    drop(addrs);
+    let mut sorted_addrs = state.advertised_addrs().await;
 
     if sorted_addrs.is_empty() {
         return Err(HandlerError {
@@ -199,18 +224,24 @@ pub async fn enr_handler(
     let mut udp_addr: Option<(Ipv4Addr, u16)> = None;
 
     for addr in &sorted_addrs {
-        if tcp_addr.is_none()
-            && utils::is_tcp_addr(addr)
-            && let Some((ip, port)) = utils::extract_ip_and_tcp_port(addr)
-        {
-            tcp_addr = Some((apply_ip_override(&state, ip).await, port));
+        if tcp_addr.is_none() && utils::is_tcp_addr(addr) {
+            if let Some((ip, port)) = utils::extract_ip_and_tcp_port(addr) {
+                tcp_addr = Some((apply_ip_override(&state, ip).await, port));
+            } else if let Some((_host, port)) = utils::extract_dns_and_tcp_port(addr)
+                && let Some(resolved) = state.get_external_host_ip().await
+            {
+                tcp_addr = Some((resolved, port));
+            }
         }
 
-        if udp_addr.is_none()
-            && utils::is_quic_addr(addr)
-            && let Some((ip, port)) = utils::extract_ip_and_udp_port(addr)
-        {
-            udp_addr = Some((apply_ip_override(&state, ip).await, port));
+        if udp_addr.is_none() && utils::is_quic_addr(addr) {
+            if let Some((ip, port)) = utils::extract_ip_and_udp_port(addr) {
+                udp_addr = Some((apply_ip_override(&state, ip).await, port));
+            } else if let Some((_host, port)) = utils::extract_dns_and_udp_port(addr)
+                && let Some(resolved) = state.get_external_host_ip().await
+            {
+                udp_addr = Some((resolved, port));
+            }
         }
 
         if tcp_addr.is_some() && udp_addr.is_some() {
@@ -290,7 +321,7 @@ pub async fn multiaddr_handler(
 ) -> std::result::Result<Json<Vec<String>>, HandlerError> {
     debug!("Getting multiaddrs for node {}", state.peer_id);
 
-    let addrs = state.addrs.read().await.clone();
+    let addrs = state.advertised_addrs().await;
 
     // Encapsulate peer ID into each address
     let full_addrs: Vec<String> = addrs
