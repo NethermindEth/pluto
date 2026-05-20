@@ -359,7 +359,17 @@ async fn run_duty_via_inner(inner: &Inner, duty: ScheduleTuple) -> Result<()> {
             .aggregate(duty.slot)
             .await
             .map(|_| ()),
-        DutyType::BuilderRegistration => Ok(()),
+        DutyType::BuilderRegistration => {
+            // Go's `runDuty` has no case for this duty type and falls through
+            // to the `default:` arm returning "unexpected duty"
+            // (charon/testutil/validatormock/component.go:305). Surface the
+            // same loud error here — the duty IS scheduled every epoch by
+            // `duty_start_times`, matching Go, and the mock has no
+            // registration submission path.
+            Err(Error::Malformed(
+                "unexpected duty: DutyBuilderRegistration".to_string(),
+            ))
+        }
         DutyType::BuilderProposer => Err(Error::UnsupportedVariant("DutyBuilderProposer")),
         _ => Err(Error::UnsupportedVariant("unexpected duty type")),
     }
