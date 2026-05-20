@@ -176,8 +176,13 @@ impl<C: DeadlineCalculator> DeadlinerImpl<C> {
         label: impl Into<String>,
         calculator: C,
     ) -> Arc<dyn Deadliner> {
-        const OUTPUT_BUFFER: usize = 256;
-        const INPUT_BUFFER: usize = 256;
+        // Matches Charon's `outputBuffer = 10` — big enough for all duty
+        // types expiring simultaneously while the consumer drains synchronously.
+        const OUTPUT_BUFFER: usize = 10;
+        // Charon uses an unbuffered input channel. tokio's `mpsc` requires
+        // capacity >= 1, so we use 1; the per-input `oneshot` ack already
+        // serializes writers, making this behaviorally equivalent.
+        const INPUT_BUFFER: usize = 1;
 
         let label = label.into();
         let (input_tx, input_rx) = mpsc::channel(INPUT_BUFFER);
