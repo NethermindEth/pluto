@@ -8,7 +8,7 @@ use crate::types::{Duty, DutyType, SlotNumber};
 use super::{Result, millis::Millis, to_chrono_duration};
 
 /// Fraction of slot duration to use as a margin for network delays.
-const MARGIN_FACTOR: i32 = 12;
+const MARGIN_FACTOR: i64 = 12;
 /// Block proposal must complete within 1/3 of a slot (denominator).
 const PROPOSAL_SLOT_FRACTION: i64 = 3;
 /// SyncMessage must complete within 2/3 of a slot (numerator over
@@ -54,7 +54,7 @@ impl DutyDeadlineCalculator {
     /// Network-delay margin added to every deadline: `slot_duration /
     /// MARGIN_FACTOR`.
     fn margin(&self) -> Result<Millis> {
-        Millis::from(self.slot_duration).checked_div(MARGIN_FACTOR.into())
+        Millis::from(self.slot_duration).checked_div(MARGIN_FACTOR)
     }
 
     /// Duty-type-specific offset from slot start.
@@ -175,9 +175,8 @@ mod tests {
         let slot_duration_ms = slot_duration_secs
             .checked_mul(1000)
             .context("ms overflow")?;
-        let margin_factor_i64 = i64::from(MARGIN_FACTOR);
         let expected_ms = slot_duration_ms
-            .checked_div(margin_factor_i64)
+            .checked_div(MARGIN_FACTOR)
             .context("margin div overflow")?;
         let expected = Millis::new(expected_ms);
         let margin_offset = margin.add_to(calc.genesis_time)?;
