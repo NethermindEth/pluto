@@ -1,11 +1,18 @@
-use crate::qbft::{self, fake_clock::FakeClock, *};
+use crate::qbft::{
+    self,
+    fake_clock::{FakeClock, TimerPriority},
+    *,
+};
 use cancellation::CancellationTokenSource;
 use crossbeam::channel as mpmc;
 use std::{
     collections::{BTreeMap, HashMap},
     fmt::Write as _,
     panic::{self, AssertUnwindSafe},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicIsize, AtomicUsize, Ordering},
+    },
     thread,
     time::Duration,
 };
@@ -24,9 +31,27 @@ const TEST_STREAM_MSG_ROUND: u64 = 11;
 const TEST_STREAM_MSG_VALUE: u64 = 12;
 const TEST_STREAM_MSG_PREPARED_ROUND: u64 = 13;
 const TEST_STREAM_MSG_PREPARED_VALUE: u64 = 14;
+const TEST_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
+// Wall-clock guard catches lack of harness progress. Fake time still controls
+// protocol progress, so slow-but-progressing parallel runs should not fail.
+const TEST_STALL_TIMEOUT: Duration = Duration::from_secs(20);
 
 type RunOutcome = std::thread::Result<Result<()>>;
 type TestMsgRef = Msg<i64, i64, i64>;
+
+struct PendingCompareGuard {
+    pending_compares: Arc<AtomicUsize>,
+}
+
+impl Drop for PendingCompareGuard {
+    fn drop(&mut self) {
+        self.pending_compares.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn complete_timer_action(pending_timer_actions: &AtomicIsize) {
+    pending_timer_actions.fetch_sub(1, Ordering::SeqCst);
+}
 
 struct PendingBroadcast {
     deliver_at: Duration,
@@ -65,6 +90,12 @@ struct Test {
     pub fuzz: bool,
 }
 
+// Main QBFT simulation harness:
+// 1. build one fake clock, four node transports, and QBFT callbacks;
+// 2. spawn one thread per node running `qbft::run`;
+// 3. route broadcasts through the in-memory network with optional drop/jitter/fuzz;
+// 4. advance fake time only after pending compare/timer work is drained;
+// 5. collect all decisions and assert same value plus expected round/value.
 fn test_qbft(test: Test) {
     const N: usize = 4;
     const MAX_ROUND: usize = 50;
@@ -77,6 +108,8 @@ fn test_qbft(test: Test) {
     let clock = FakeClock::new(start_time);
 
     let cts = CancellationTokenSource::new();
+    let pending_compares = Arc::new(AtomicUsize::new(0));
+    let pending_timer_actions = Arc::new(AtomicIsize::new(0));
     // Keep peer iteration deterministic. These fake-clock tests assert exact
     // rounds, and broadcast fanout order affects which node observes quorums
     // first when tests run in parallel.
@@ -91,6 +124,11 @@ fn test_qbft(test: Test) {
     let (unjust_tx, unjust_rx) = mpmc::unbounded::<String>();
     let (result_chan_tx, result_chan_rx) = mpmc::bounded::<Vec<Msg<i64, i64, i64>>>(N);
     let (run_chan_tx, run_chan_rx) = mpmc::bounded::<(i64, RunOutcome)>(N);
+    let expected_initial_timers = N + test
+        .value_delay
+        .keys()
+        .filter(|process| !test.start_delay.contains_key(process))
+        .count();
 
     let is_leader = Box::new(make_is_leader(N as i64));
 
@@ -116,16 +154,27 @@ fn test_qbft(test: Test) {
                 result_chan_tx.send(q_commit.clone()).expect(WRITE_CHAN_ERR);
             })
         },
-        compare: Arc::new(|_, _, _, _, return_err, _| {
-            return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
-        }),
+        compare: {
+            let pending_compares = pending_compares.clone();
+            Arc::new(move |_, _, _, _, return_err, _| {
+                let _guard = PendingCompareGuard {
+                    pending_compares: pending_compares.clone(),
+                };
+                return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
+            })
+        },
         nodes: N as i64,
         fifo_limit: FIFO_LIMIT as i64,
         log_round_change: {
             let clock = clock.clone();
             let trace = trace.clone();
+            let pending_timer_actions = pending_timer_actions.clone();
 
             Box::new(move |_, process, round, new_round, upon_rule, _| {
+                if upon_rule == UPON_ROUND_TIMEOUT {
+                    complete_timer_action(&pending_timer_actions);
+                }
+
                 trace.push(format!(
                     "{:?} - {}@{} change to {} ~= {}",
                     clock.elapsed(),
@@ -151,7 +200,12 @@ fn test_qbft(test: Test) {
         log_upon_rule: {
             let clock = clock.clone();
             let trace = trace.clone();
+            let pending_compares = pending_compares.clone();
             Box::new(move |_, process, round, msg, upon_rule| {
+                if upon_rule == UPON_JUSTIFIED_PRE_PREPARE {
+                    pending_compares.fetch_add(1, Ordering::SeqCst);
+                }
+
                 trace.push(format!(
                     "{:?} {} => {}@{} -> {}@{} ~= {}",
                     clock.elapsed(),
@@ -239,9 +293,11 @@ fn test_qbft(test: Test) {
             let run_chan_tx = run_chan_tx.clone();
             let defs = defs.clone();
             let is_leader = is_leader.clone();
+            let pending_timer_actions = pending_timer_actions.clone();
             let trace = trace.clone();
 
             s.spawn(move || {
+                let mut start_timer_fired = false;
                 if let Some(delay) = start_delay {
                     trace.push(format!(
                         "{:?} Node {} start delay {:?}",
@@ -249,14 +305,17 @@ fn test_qbft(test: Test) {
                         i,
                         delay
                     ));
-                    let (delay_ch, _) = clock.new_timer(delay);
-                    _ = delay_ch.recv();
-                    trace.push(format!(
-                        "{:?} Node {} starting {:?}",
-                        clock.elapsed(),
-                        i,
-                        delay
-                    ));
+                    let (delay_ch, _) =
+                        clock.new_timer_with_priority(delay, TimerPriority::StartDelay);
+                    if delay_ch.recv().is_ok() {
+                        start_timer_fired = true;
+                        trace.push(format!(
+                            "{:?} Node {} starting {:?}",
+                            clock.elapsed(),
+                            i,
+                            delay
+                        ));
+                    }
                 }
 
                 if start_delay.is_some() {
@@ -264,6 +323,9 @@ fn test_qbft(test: Test) {
                     while !receiver.is_empty() {
                         _ = receiver.recv().expect(READ_CHAN_ERR);
                     }
+                }
+                if start_timer_fired {
+                    complete_timer_action(&pending_timer_actions);
                 }
 
                 let (v_chan_tx, v_chan_rx) = mpmc::bounded::<i64>(1);
@@ -276,10 +338,13 @@ fn test_qbft(test: Test) {
                         .as_ref()
                         .expect("value sender kept until run returns")
                         .clone();
-                    let (delay_ch, cancel) = clock.new_timer(delay);
+                    let pending_timer_actions = pending_timer_actions.clone();
+                    let (delay_ch, cancel) =
+                        clock.new_timer_with_priority(delay, TimerPriority::InputValue);
                     s.spawn(move || {
                         if delay_ch.recv().is_ok() {
                             _ = v_chan_tx_send.send(i);
+                            complete_timer_action(&pending_timer_actions);
                         }
 
                         cancel();
@@ -322,6 +387,21 @@ fn test_qbft(test: Test) {
             });
         }
 
+        while clock.timer_count() < expected_initial_timers {
+            thread::yield_now();
+            if real_start.elapsed() > TEST_STALL_TIMEOUT {
+                cts.cancel();
+                clock.cancel();
+                panic!(
+                    "qbft test setup hang: timers={} expected={} seed={}\n{}",
+                    clock.timer_count(),
+                    expected_initial_timers,
+                    seed,
+                    trace.dump()
+                );
+            }
+        }
+
         let mut results = BTreeMap::<i64, Msg<i64, i64, i64>>::new();
         let mut count = 0;
         let mut decided = false;
@@ -330,9 +410,10 @@ fn test_qbft(test: Test) {
         let mut pending = Vec::<PendingBroadcast>::new();
         let mut next_fuzz_at = test.fuzz.then_some(Duration::from_millis(100));
         let mut fuzz_counter = 0_u64;
+        let mut last_progress = time::Instant::now();
 
         loop {
-            broadcasts += deliver_ready_broadcasts(
+            let delivered = deliver_ready_broadcasts(
                 &mut pending,
                 &receives,
                 &test.drop_prob,
@@ -340,6 +421,10 @@ fn test_qbft(test: Test) {
                 &trace,
                 &clock,
             );
+            broadcasts += delivered;
+            if delivered > 0 {
+                last_progress = time::Instant::now();
+            }
 
             if decided {
                 next_fuzz_at = None;
@@ -361,6 +446,7 @@ fn test_qbft(test: Test) {
                 ));
                 broadcasts +=
                     fanout_broadcast(&receives, &test.drop_prob, seed, &trace, &clock, msg);
+                last_progress = time::Instant::now();
                 next_fuzz_at = Some(next + Duration::from_millis(100));
             }
 
@@ -379,7 +465,8 @@ fn test_qbft(test: Test) {
                         }
                         BroadcastEvent::Delayed(delayed) => pending.push(delayed),
                     }
-                    if clock.elapsed() > Duration::from_secs(180) || real_start.elapsed() > Duration::from_secs(20) {
+                    last_progress = time::Instant::now();
+                    if clock.elapsed() > Duration::from_secs(180) {
                         cts.cancel();
                         clock.cancel();
                         panic!(
@@ -405,6 +492,7 @@ fn test_qbft(test: Test) {
 
                 recv(result_chan_rx) -> res => {
                     let q_commit = res.expect(READ_CHAN_ERR);
+                    last_progress = time::Instant::now();
 
                     for commit in q_commit.clone() {
                         for (_, previous) in results.iter() {
@@ -490,6 +578,7 @@ fn test_qbft(test: Test) {
 
                 recv(run_chan_rx) -> res => {
                     let (node, outcome) = res.expect(READ_CHAN_ERR);
+                    last_progress = time::Instant::now();
 
                     if !matches!(outcome, Ok(Ok(()))) {
                         if !decided {
@@ -517,11 +606,36 @@ fn test_qbft(test: Test) {
                 }
 
                 default => {
-                    // Give worker threads a small scheduling window before
-                    // advancing fake time; these tests assert exact rounds.
-                    thread::sleep(Duration::from_micros(50));
-                    clock.advance(Duration::from_millis(1));
-                    if clock.elapsed() > Duration::from_secs(180) || real_start.elapsed() > Duration::from_secs(20) {
+                    if pending_compares.load(Ordering::SeqCst) != 0
+                        || pending_timer_actions.load(Ordering::SeqCst) > 0
+                    {
+                        thread::yield_now();
+                        if last_progress.elapsed() > TEST_STALL_TIMEOUT {
+                            cts.cancel();
+                            clock.cancel();
+                            panic!(
+                                "qbft test hang: pending_compares={} pending_timer_actions={} decided={} done={} count={} elapsed={:?} real_elapsed={:?} broadcasts={} seed={}\n{}",
+                                pending_compares.load(Ordering::SeqCst),
+                                pending_timer_actions.load(Ordering::SeqCst),
+                                decided,
+                                done,
+                                count,
+                                clock.elapsed(),
+                                real_start.elapsed(),
+                                broadcasts,
+                                seed,
+                                trace.dump()
+                            );
+                        }
+                        continue;
+                    }
+
+                    // Matches the Go harness throttle; ordering correctness
+                    // comes from the pending-work barriers, not this duration.
+                    thread::sleep(Duration::from_micros(1));
+                    clock.advance_and_wait(Duration::from_millis(1), &pending_timer_actions);
+                    last_progress = time::Instant::now();
+                    if clock.elapsed() > Duration::from_secs(180) {
                         cts.cancel();
                         clock.cancel();
                         panic!(
@@ -900,6 +1014,8 @@ impl SomeMsg<i64, i64, i64> for TestMsg {
     }
 }
 
+// Tests the normal-case path with an available round-1 leader.
+// Expect all nodes to decide in round 1 on the leader value.
 #[test_case(0 ; "happy_0")]
 #[test_case(1 ; "happy_1")]
 fn happy(instance: i64) {
@@ -910,6 +1026,8 @@ fn happy(instance: i64) {
     });
 }
 
+// Tests prepared-value carryover when commits are suppressed in earlier rounds.
+// Expect later rounds to decide the highest prepared value, not a new leader value.
 #[test_case(1, None, 2, 1, false ; "prepare_round_1_decide_round_2")]
 #[test_case(2, Some(2), 3, 2, true ; "prepare_round_2_decide_round_3")]
 fn prepare_round(
@@ -932,6 +1050,8 @@ fn prepare_round(
     });
 }
 
+// Tests round change when the first leader starts late.
+// Expect the next live leader to drive consensus in round 2.
 #[test_case(false ; "leader_late_exp")]
 #[test_case(true ; "leader_down_const")]
 fn delayed_leader_start(const_period: bool) {
@@ -944,6 +1064,8 @@ fn delayed_leader_start(const_period: bool) {
     });
 }
 
+// Tests recovery when two nodes, including early leaders, start much later.
+// Expect consensus after enough round changes, with exact round only when deterministic.
 #[test_case(3, false, 4, false ; "very_late_exp")]
 #[test_case(1, true, 0, true ; "very_late_const")]
 fn very_late_start(instance: i64, const_period: bool, decide_round: i32, random_round: bool) {
@@ -957,6 +1079,8 @@ fn very_late_start(instance: i64, const_period: bool, decide_round: i32, random_
     });
 }
 
+// Tests staggered node startup and message buffering/draining.
+// Expect consensus once enough live nodes join, with round allowed to vary.
 #[test_case(false ; "stagger_start_exp")]
 #[test_case(true ; "stagger_start_const")]
 fn stagger_start(const_period: bool) {
@@ -974,6 +1098,8 @@ fn stagger_start(const_period: bool) {
     });
 }
 
+// Tests late input values on nodes that otherwise participate in the protocol.
+// Expect round changes until a valid leader value is available.
 #[test_case(3, false, 4, false ; "very_delayed_value_exp")]
 #[test_case(1, true, 0, true ; "very_delayed_value_const")]
 fn very_delayed_value(instance: i64, const_period: bool, decide_round: i32, random_round: bool) {
@@ -987,6 +1113,8 @@ fn very_delayed_value(instance: i64, const_period: bool, decide_round: i32, rand
     });
 }
 
+// Tests input values arriving at different fake times for all nodes.
+// Expect consensus once enough nodes can validate/propose values.
 #[test_case(false ; "stagger_delayed_value_exp")]
 #[test_case(true ; "stagger_delayed_value_const")]
 fn stagger_delayed_value(const_period: bool) {
@@ -1004,6 +1132,8 @@ fn stagger_delayed_value(const_period: bool) {
     });
 }
 
+// Tests a round-1 leader without input and a round-2 leader that is offline.
+// Expect consensus to skip both blocked leaders and decide in round 3.
 #[test]
 fn round1_leader_no_value_round2_leader_offline() {
     test_qbft(Test {
@@ -1016,6 +1146,8 @@ fn round1_leader_no_value_round2_leader_offline() {
     });
 }
 
+// Tests delayed broadcast delivery under fake network jitter.
+// Expect safety and eventual consensus despite delayed messages.
 #[test_case(500, false ; "jitter_500ms_exp")]
 #[test_case(200, true ; "jitter_200ms_const")]
 fn jitter(bcast_jitter_ms: i32, const_period: bool) {
@@ -1028,6 +1160,8 @@ fn jitter(bcast_jitter_ms: i32, const_period: bool) {
     });
 }
 
+// Tests deterministic message loss at 10% and 30%.
+// Expect eventual consensus without conflicting decisions.
 #[test_case(0.1 ; "drop_10_percent_const")]
 #[test_case(0.3 ; "drop_30_percent_const")]
 fn dropped_messages(drop_probability: f64) {
@@ -1045,6 +1179,8 @@ fn dropped_messages(drop_probability: f64) {
     });
 }
 
+// Tests bogus message injection during normal and delayed-leader scenarios.
+// Expect unjust fuzz traffic to be ignored and honest nodes to still decide.
 #[test_case(None, 1, false ; "fuzz")]
 #[test_case(Some(2), 0, true ; "fuzz_with_late_leader")]
 #[test_case(Some(10), 0, true ; "fuzz_with_very_late_leader")]
@@ -1088,6 +1224,8 @@ fn noop_transport() -> Transport<i64, i64, i64> {
     }
 }
 
+// Tests quorum/faulty formulas across node counts.
+// Expect quorum and tolerated-fault counts to match the Charon formula.
 #[test_case(1, 1, 0 ; "n1")]
 #[test_case(2, 2, 0 ; "n2")]
 #[test_case(3, 2, 0 ; "n3")]
@@ -1119,6 +1257,8 @@ fn formulas(n: i64, q: i64, f: i64) {
     assert_eq!(f, d.faulty(), "Faulty given N={n}");
 }
 
+// Tests PRE-PREPARE justification with mixed ROUND_CHANGE and PREPARE evidence.
+// Expect the proposal to be accepted when it carries a justified prepared value.
 #[test]
 fn is_justified_pre_prepare_mixed_round_change_prepare_fixture() {
     let preprepare = new_msg(
@@ -1147,6 +1287,8 @@ fn is_justified_pre_prepare_mixed_round_change_prepare_fixture() {
     assert!(is_justified_pre_prepare(&def, &1, &preprepare, 0));
 }
 
+// Tests duplicate PRE-PREPARE rule handling after compare failure.
+// Expect the next round proposal to trigger once and exit by cancellation.
 #[test]
 fn duplicate_pre_prepare_rules() {
     let cts = CancellationTokenSource::new();
@@ -1224,6 +1366,8 @@ fn duplicate_pre_prepare_rules() {
     assert!(matches!(res, Err(QbftError::ContextCanceled)));
 }
 
+// Tests idle cancellation while no inputs, timers, or messages are available.
+// Expect `run` to unblock and return `ContextCanceled`.
 #[test]
 fn idle_run_returns_when_cancelled() {
     let cts = CancellationTokenSource::new();
@@ -1235,8 +1379,10 @@ fn idle_run_returns_when_cancelled() {
     let (_input_tx, input_rx) = mpmc::bounded::<i64>(1);
     let (_source_tx, source_rx) = mpmc::bounded::<i64>(1);
     let (done_tx, done_rx) = mpmc::bounded(1);
+    let (started_tx, started_rx) = mpmc::bounded(1);
 
     thread::spawn(move || {
+        started_tx.send(()).expect(WRITE_CHAN_ERR);
         done_tx
             .send(qbft::run(
                 &token, &def, &transport, &0, 1, input_rx, source_rx,
@@ -1244,17 +1390,21 @@ fn idle_run_returns_when_cancelled() {
             .expect(WRITE_CHAN_ERR);
     });
 
-    thread::sleep(Duration::from_millis(10));
+    started_rx
+        .recv_timeout(TEST_WAIT_TIMEOUT)
+        .expect("run thread must start before cancellation");
     cts.cancel();
 
     assert!(matches!(
         done_rx
-            .recv_timeout(Duration::from_millis(100))
+            .recv_timeout(TEST_WAIT_TIMEOUT)
             .expect("idle run must unblock on cancellation"),
         Err(QbftError::ContextCanceled)
     ));
 }
 
+// Tests definition validation at the `run` boundary.
+// Expect invalid node count and FIFO limit to return typed errors.
 #[test_case(0, 1, true ; "invalid_nodes")]
 #[test_case(4, 0, false ; "invalid_fifo_limit")]
 fn invalid_definition_rejected(nodes: i64, fifo_limit: i64, invalid_nodes: bool) {
@@ -1278,6 +1428,8 @@ fn invalid_definition_rejected(nodes: i64, fifo_limit: i64, invalid_nodes: bool)
     }
 }
 
+// Tests cancellation under a continuously hot receive channel.
+// Expect cancellation to win even when incoming traffic is always ready.
 #[test]
 fn run_cancels_under_hot_receive_stream() {
     let cts = CancellationTokenSource::new();
@@ -1294,6 +1446,7 @@ fn run_cancels_under_hot_receive_stream() {
     let (_input_tx, input_rx) = mpmc::bounded::<i64>(1);
     let (_source_tx, source_rx) = mpmc::bounded::<i64>(1);
     let (done_tx, done_rx) = mpmc::bounded(1);
+    let (started_tx, started_rx) = mpmc::bounded(1);
 
     let sender_cts = CancellationTokenSource::new();
     let sender_token = sender_cts.token().clone();
@@ -1309,6 +1462,7 @@ fn run_cancels_under_hot_receive_stream() {
     });
 
     thread::spawn(move || {
+        started_tx.send(()).expect(WRITE_CHAN_ERR);
         done_tx
             .send(qbft::run(
                 &token, &def, &transport, &0, 1, input_rx, source_rx,
@@ -1316,12 +1470,14 @@ fn run_cancels_under_hot_receive_stream() {
             .expect(WRITE_CHAN_ERR);
     });
 
-    thread::sleep(Duration::from_millis(10));
+    started_rx
+        .recv_timeout(TEST_WAIT_TIMEOUT)
+        .expect("run thread must start before cancellation");
     cts.cancel();
 
     assert!(matches!(
         done_rx
-            .recv_timeout(Duration::from_millis(100))
+            .recv_timeout(TEST_WAIT_TIMEOUT)
             .expect("run must unblock on cancellation even with a hot receive stream"),
         Err(QbftError::ContextCanceled)
     ));
@@ -1330,6 +1486,8 @@ fn run_cancels_under_hot_receive_stream() {
     sender.join().expect("sender thread must exit");
 }
 
+// Tests message classification into QBFT upon-rules.
+// Expect each fixture to map to the rule required by the protocol transition.
 #[test]
 fn classify_rules() {
     let mut def = noop_definition();
@@ -1376,6 +1534,8 @@ fn classify_rules() {
     );
 }
 
+// Tests ROUND_CHANGE quorum justification forms J1 and J2.
+// Expect null-prepared and highest-prepared quorums to be accepted, invalid `pr` rejected.
 #[test]
 fn justified_qrc_j1_and_j2() {
     let mut def = noop_definition();
@@ -1411,6 +1571,8 @@ fn justified_qrc_j1_and_j2() {
     assert!(get_justified_qrc(&def, &invalid_pr, 2).is_none());
 }
 
+// Tests ROUND_CHANGE prepared-round bounds.
+// Expect only null prepared round or strictly previous prepared rounds to be valid.
 #[test_case(2, -1, false ; "negative")]
 #[test_case(1, 0, true ; "null_at_round_one")]
 #[test_case(2, 1, true ; "previous_round")]
@@ -1421,6 +1583,8 @@ fn valid_round_change_prepared_round_boundaries(round: i64, prepared_round: i64,
     assert_eq!(expected, valid_round_change_prepared_round(&msg));
 }
 
+// Tests invalid prepared rounds at every justification call site.
+// Expect invalid ROUND_CHANGE messages to be filtered while valid quorums survive.
 #[test_case(-1 ; "negative")]
 #[test_case(2 ; "current_round")]
 #[test_case(3 ; "future_round")]
@@ -1471,6 +1635,8 @@ fn invalid_round_change_prepared_rounds_are_filtered_from_call_sites(invalid_pr:
     );
 }
 
+// Tests null-prepared quorum filtering.
+// Expect only `prepared_round = 0` and `prepared_value = 0` messages to form J1.
 #[test_case(1, -1 ; "negative")]
 #[test_case(1, 1 ; "current_round")]
 #[test_case(1, 2 ; "future_round")]
@@ -1489,6 +1655,8 @@ fn quorum_null_prepared_requires_null_prepared_rounds(round: i64, invalid_pr: i6
     assert!(qrc.is_empty());
 }
 
+// Tests duplicate sender handling in quorum filters.
+// Expect at most one message per source to count toward a quorum.
 #[test]
 fn filter_msgs_keeps_one_per_source() {
     let msgs = vec![
@@ -1506,6 +1674,8 @@ fn filter_msgs_keeps_one_per_source() {
     );
 }
 
+// Tests compare outcomes: success, error, cached value source, and timeout.
+// Expect cached value sources to be preserved and timer expiry to return `TimeoutError`.
 #[test]
 fn compare_success_error_cached_value_source_and_timeout() {
     let cts = CancellationTokenSource::new();
@@ -1602,6 +1772,8 @@ fn compare_success_error_cached_value_source_and_timeout() {
     ));
 }
 
+// Tests compare timeout with a cooperative but blocked callback.
+// Expect `compare` to return timeout without joining the callback first.
 #[test]
 fn compare_timeout_does_not_wait_for_blocked_callback() {
     let cts = CancellationTokenSource::new();
@@ -1627,12 +1799,14 @@ fn compare_timeout_does_not_wait_for_blocked_callback() {
 
     assert!(matches!(
         result_rx
-            .recv_timeout(Duration::from_millis(100))
+            .recv_timeout(TEST_WAIT_TIMEOUT)
             .expect("compare must return on timer without waiting for blocked callback"),
         (0, Err(QbftError::TimeoutError))
     ));
 }
 
+// Tests a compare callback that exits without sending status.
+// Expect `compare` to wait for timer/cancel instead of treating disconnect as final.
 #[test]
 fn compare_callback_exit_without_status_waits_for_timer() {
     let cts = CancellationTokenSource::new();
@@ -1654,7 +1828,7 @@ fn compare_callback_exit_without_status_waits_for_timer() {
     });
 
     callback_done_rx
-        .recv_timeout(Duration::from_millis(100))
+        .recv_timeout(TEST_WAIT_TIMEOUT)
         .expect("compare callback must exit");
     assert!(
         result_rx.try_recv().is_err(),
@@ -1664,12 +1838,14 @@ fn compare_callback_exit_without_status_waits_for_timer() {
     timer_tx.send(time::Instant::now()).expect(WRITE_CHAN_ERR);
     assert!(matches!(
         result_rx
-            .recv_timeout(Duration::from_millis(100))
+            .recv_timeout(TEST_WAIT_TIMEOUT)
             .expect("compare must return after timer fires"),
         (0, Err(QbftError::TimeoutError))
     ));
 }
 
+// Tests parent cancellation propagation into the compare callback token.
+// Expect `compare` to return `ContextCanceled` and the callback token to be canceled.
 #[test]
 fn compare_parent_cancel_cancels_callback_token() {
     let cts = CancellationTokenSource::new();
@@ -1698,11 +1874,11 @@ fn compare_parent_cancel_cancels_callback_token() {
     });
 
     compare_started_rx
-        .recv_timeout(Duration::from_millis(100))
+        .recv_timeout(TEST_WAIT_TIMEOUT)
         .expect("compare must start");
     cts.cancel();
 
-    match result_rx.recv_timeout(Duration::from_millis(100)) {
+    match result_rx.recv_timeout(TEST_WAIT_TIMEOUT) {
         Ok(result) => assert!(matches!(result, (0, Err(QbftError::ContextCanceled)))),
         Err(err) => {
             let _ = timer_tx.send(time::Instant::now());
@@ -1710,10 +1886,12 @@ fn compare_parent_cancel_cancels_callback_token() {
         }
     }
     token_cancelled_rx
-        .recv_timeout(Duration::from_millis(100))
+        .recv_timeout(TEST_WAIT_TIMEOUT)
         .expect("callback token must be canceled by parent token");
 }
 
+// Tests parent cancellation while `run` is waiting inside compare.
+// Expect `run` to return cancellation without broadcasting PREPARE.
 #[test]
 fn run_parent_cancel_during_compare_does_not_prepare() {
     const LEADER: i64 = 1;
@@ -1761,18 +1939,18 @@ fn run_parent_cancel_during_compare_does_not_prepare() {
     });
 
     compare_started_rx
-        .recv_timeout(Duration::from_millis(100))
+        .recv_timeout(TEST_WAIT_TIMEOUT)
         .expect("compare must start");
     cts.cancel();
 
     assert!(matches!(
         done_rx
-            .recv_timeout(Duration::from_millis(100))
+            .recv_timeout(TEST_WAIT_TIMEOUT)
             .expect("run must return parent cancellation from compare"),
         Err(QbftError::ContextCanceled)
     ));
     compare_cancelled_rx
-        .recv_timeout(Duration::from_millis(100))
+        .recv_timeout(TEST_WAIT_TIMEOUT)
         .expect("compare callback token must be canceled");
     assert!(
         broadcast_rx.try_iter().all(|type_| type_ != MSG_PREPARE),
@@ -1799,6 +1977,8 @@ struct ChainSplitTest {
     should_halt: bool,
 }
 
+// Tests value-source disagreement across nodes.
+// Expect agreement when a quorum can compare equal values, or halt when no quorum can.
 #[test_case(1, 1, 1, 1, 1, 1, false ; "same_value")]
 #[test_case(1, 3, 1, 1, 1, 1, false ; "non_leader_peer_has_different_value")]
 #[test_case(3, 1, 1, 1, 2, 1, false ; "first_leader_has_different_value_second_leader_succeeds")]
@@ -1826,8 +2006,11 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
     const FIFO_LIMIT: i64 = 100;
 
     let clock = FakeClock::new(time::Instant::now());
+    let real_start = time::Instant::now();
     let cts = CancellationTokenSource::new();
     let trace = Trace::new();
+    let pending_compares = Arc::new(AtomicUsize::new(0));
+    let pending_timer_actions = Arc::new(AtomicIsize::new(0));
     // Keep peer iteration deterministic. These fake-clock tests assert exact
     // rounds, and broadcast fanout order affects which node observes quorums
     // first when tests run in parallel.
@@ -1857,33 +2040,49 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
                 result_chan_tx.send(q_commit.clone()).expect(WRITE_CHAN_ERR);
             })
         },
-        compare: Arc::new(
-            |_, qcommit, input_value_source_ch, input_value_source, return_err, return_value| {
-                let leader_value_source = qcommit.value_source().expect("value source");
-                let local = if *input_value_source == 0 {
-                    let value = input_value_source_ch.recv().expect(READ_CHAN_ERR);
-                    return_value.send(value).expect(WRITE_CHAN_ERR);
-                    value
-                } else {
-                    *input_value_source
-                };
+        compare: {
+            let pending_compares = pending_compares.clone();
+            Arc::new(
+                move |_,
+                      qcommit,
+                      input_value_source_ch,
+                      input_value_source,
+                      return_err,
+                      return_value| {
+                    let _guard = PendingCompareGuard {
+                        pending_compares: pending_compares.clone(),
+                    };
+                    let leader_value_source = qcommit.value_source().expect("value source");
+                    let local = if *input_value_source == 0 {
+                        let value = input_value_source_ch.recv().expect(READ_CHAN_ERR);
+                        return_value.send(value).expect(WRITE_CHAN_ERR);
+                        value
+                    } else {
+                        *input_value_source
+                    };
 
-                if leader_value_source != local {
-                    return_err
-                        .send(Err(QbftError::CompareError))
-                        .expect(WRITE_CHAN_ERR);
-                    return;
-                }
+                    if leader_value_source != local {
+                        return_err
+                            .send(Err(QbftError::CompareError))
+                            .expect(WRITE_CHAN_ERR);
+                        return;
+                    }
 
-                return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
-            },
-        ),
+                    return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
+                },
+            )
+        },
         nodes: N as i64,
         fifo_limit: FIFO_LIMIT,
         log_round_change: {
             let clock = clock.clone();
             let trace = trace.clone();
+            let pending_timer_actions = pending_timer_actions.clone();
             Box::new(move |_, process, round, new_round, upon_rule, _| {
+                if upon_rule == UPON_ROUND_TIMEOUT {
+                    complete_timer_action(&pending_timer_actions);
+                }
+
                 trace.push(format!(
                     "{:?} - {}@{} change to {} ~= {}",
                     clock.elapsed(),
@@ -1903,7 +2102,12 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
         log_upon_rule: {
             let clock = clock.clone();
             let trace = trace.clone();
+            let pending_compares = pending_compares.clone();
             Box::new(move |_, process, round, msg, upon_rule| {
+                if upon_rule == UPON_JUSTIFIED_PRE_PREPARE {
+                    pending_compares.fetch_add(1, Ordering::SeqCst);
+                }
+
                 trace.push(format!(
                     "{:?} {} => {}@{} -> {}@{} ~= {}",
                     clock.elapsed(),
@@ -1977,15 +2181,32 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
             });
         }
 
+        while clock.timer_count() < N {
+            thread::yield_now();
+            if real_start.elapsed() > TEST_STALL_TIMEOUT {
+                cts.cancel();
+                clock.cancel();
+                panic!(
+                    "chain split setup hang: timers={} expected={} elapsed={:?}\n{}",
+                    clock.timer_count(),
+                    N,
+                    clock.elapsed(),
+                    trace.dump()
+                );
+            }
+        }
+
         let mut results = BTreeMap::<i64, Msg<i64, i64, i64>>::new();
         let mut count = 0;
         let mut decided = false;
         let mut done = 0;
+        let mut last_progress = time::Instant::now();
 
         loop {
             mpmc::select! {
             recv(broadcast_rx) -> msg => {
                 let msg = msg.expect(READ_CHAN_ERR);
+                last_progress = time::Instant::now();
                 for (target, (out_tx, _)) in receives.iter() {
                     if *target == msg.source() {
                         continue;
@@ -2004,6 +2225,7 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
             }
             recv(result_chan_rx) -> res => {
                 let q_commit = res.expect(READ_CHAN_ERR);
+                last_progress = time::Instant::now();
                 if test.should_halt {
                     cts.cancel();
                     clock.cancel();
@@ -2066,6 +2288,7 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
             }
             recv(run_chan_rx) -> res => {
                 let (node, outcome) = res.expect(READ_CHAN_ERR);
+                last_progress = time::Instant::now();
                 let expected_halt = test.should_halt
                     && outcome_is_error(&outcome, |err| matches!(err, QbftError::MaxRoundReached));
                 if !(decided || expected_halt) {
@@ -2091,13 +2314,37 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
                 }
             }
             default => {
+                if pending_compares.load(Ordering::SeqCst) != 0
+                    || pending_timer_actions.load(Ordering::SeqCst) > 0
+                {
+                    thread::yield_now();
+                    if last_progress.elapsed() > TEST_STALL_TIMEOUT {
+                        cts.cancel();
+                        clock.cancel();
+                        panic!(
+                            "chain split hang: pending_compares={} pending_timer_actions={} decided={decided} done={done} count={count} elapsed={:?}\n{}",
+                            pending_compares.load(Ordering::SeqCst),
+                            pending_timer_actions.load(Ordering::SeqCst),
+                            clock.elapsed(),
+                            trace.dump()
+                        );
+                    }
+                    continue;
+                }
+
+                // Matches the Go harness throttle; ordering correctness comes
+                // from the pending-work barriers, not this duration.
                 thread::sleep(Duration::from_micros(1));
+                // The no-consensus halt case must reach round 11; using Go's
+                // 1ms tick here makes this Rust harness exceed its real-time
+                // guard, so only that halt path fast-forwards fake time.
                 let tick = if test.should_halt {
                     Duration::from_millis(100)
                 } else {
                     Duration::from_millis(1)
                 };
-                clock.advance(tick);
+                clock.advance_and_wait(tick, &pending_timer_actions);
+                last_progress = time::Instant::now();
                 let limit = if test.should_halt {
                     let max_round = u32::try_from(MAX_ROUND).expect("MAX_ROUND fits u32");
                     let seconds = 1_u64

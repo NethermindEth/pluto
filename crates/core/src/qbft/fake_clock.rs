@@ -1,7 +1,10 @@
 use crossbeam::channel as mpmc;
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicIsize, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -11,15 +14,25 @@ pub struct FakeClock {
     inner: Arc<Mutex<FakeClockInner>>,
 }
 
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+pub enum TimerPriority {
+    // Match the Go fake-clock harness at equal deadlines: delayed nodes start
+    // before protocol timers, while delayed input values arrive after them.
+    StartDelay,
+    Protocol,
+    InputValue,
+}
+
 struct FakeClockInner {
     start: Instant,
     now: Instant,
     last_id: usize,
     cancelled: bool,
-    clients: BTreeMap<usize, (mpmc::Sender<Instant>, Instant)>,
+    clients: BTreeMap<usize, (mpmc::Sender<Instant>, Instant, TimerPriority)>,
 }
 
 impl FakeClock {
+    /// Create a fake clock pinned to an initial instant.
     pub fn new(now: Instant) -> Self {
         Self {
             inner: Arc::new(Mutex::new(FakeClockInner {
@@ -32,6 +45,7 @@ impl FakeClock {
         }
     }
 
+    /// Register a protocol timer with the default protocol priority.
     pub fn new_timer(
         &self,
         duration: Duration,
@@ -39,7 +53,22 @@ impl FakeClock {
         mpmc::Receiver<Instant>,
         Box<dyn Fn() + Send + Sync + 'static>,
     ) {
-        let (tx, rx) = mpmc::bounded::<Instant>(1);
+        self.new_timer_with_priority(duration, TimerPriority::Protocol)
+    }
+
+    /// Register a timer with explicit same-deadline ordering priority.
+    pub fn new_timer_with_priority(
+        &self,
+        duration: Duration,
+        priority: TimerPriority,
+    ) -> (
+        mpmc::Receiver<Instant>,
+        Box<dyn Fn() + Send + Sync + 'static>,
+    ) {
+        // Synchronous expiry handoff: advancing fake time must wait until the
+        // timer owner observes the tick, otherwise exact-round QBFT tests race
+        // worker scheduling.
+        let (tx, rx) = mpmc::bounded::<Instant>(0);
 
         let client_id = {
             let mut inner = self.inner.lock().unwrap();
@@ -51,7 +80,7 @@ impl FakeClock {
             let deadline = inner.now + duration;
 
             inner.last_id += 1;
-            inner.clients.insert(id, (tx, deadline));
+            inner.clients.insert(id, (tx, deadline, priority));
 
             id
         };
@@ -65,7 +94,26 @@ impl FakeClock {
         (rx, cancel)
     }
 
-    pub fn advance(&self, duration: Duration) {
+    /// Advance fake time and deliver all timers expired by the new time.
+    pub fn advance(&self, duration: Duration) -> usize {
+        self.advance_inner(duration, None)
+    }
+
+    /// Advance fake time and wait for each delivered timer action to complete.
+    pub fn advance_and_wait(
+        &self,
+        duration: Duration,
+        pending_timer_actions: &AtomicIsize,
+    ) -> usize {
+        self.advance_inner(duration, Some(pending_timer_actions))
+    }
+
+    /// Shared advance path; optionally synchronizes timer delivery with the test harness.
+    fn advance_inner(
+        &self,
+        duration: Duration,
+        pending_timer_actions: Option<&AtomicIsize>,
+    ) -> usize {
         // Advance time and collect expired senders under lock, but perform sends
         // without holding lock.
         let mut expired = vec![];
@@ -75,29 +123,53 @@ impl FakeClock {
             inner.now += duration;
             let now = inner.now;
 
-            // Preserve timer creation order for equal deadlines. The QBFT
-            // fake-clock harness asserts exact rounds, so timer ordering matters.
-            for (&id, (ch, deadline)) in &inner.clients {
+            for (&id, (ch, deadline, priority)) in &inner.clients {
                 if *deadline <= now {
-                    expired.push((id, ch.clone()));
+                    expired.push((id, *deadline, *priority, ch.clone()));
                 }
             }
 
-            for (id, _) in expired.iter() {
+            for (id, _, _, _) in expired.iter() {
                 inner.clients.remove(id);
             }
 
             now
         };
 
-        for (_, ch) in expired {
-            let _ = ch.send(now);
+        // Equal-deadline order is part of the test harness contract: these
+        // tests assert exact rounds, and Go's fake-clock scheduling is stable.
+        expired.sort_by_key(|(id, deadline, priority, _)| (*deadline, *priority, *id));
+
+        let mut delivered = 0;
+        for (_, _, _, ch) in expired {
+            if let Some(pending_timer_actions) = pending_timer_actions {
+                pending_timer_actions.fetch_add(1, Ordering::SeqCst);
+            }
+
+            if ch.send(now).is_ok() {
+                delivered += 1;
+                if let Some(pending_timer_actions) = pending_timer_actions {
+                    while pending_timer_actions.load(Ordering::SeqCst) > 0 {
+                        thread::yield_now();
+                    }
+                }
+            } else if let Some(pending_timer_actions) = pending_timer_actions {
+                pending_timer_actions.fetch_sub(1, Ordering::SeqCst);
+            }
         }
+
+        delivered
     }
 
+    /// Return fake time elapsed since clock creation.
     pub fn elapsed(&self) -> Duration {
         let inner = self.inner.lock().unwrap();
         inner.now - inner.start
+    }
+
+    /// Return currently registered timers.
+    pub fn timer_count(&self) -> usize {
+        self.inner.lock().unwrap().clients.len()
     }
 
     /// Explicit terminal cleanup; do not reintroduce `Drop`, since dropping one
@@ -110,6 +182,7 @@ impl FakeClock {
 }
 
 #[test]
+/// Timers registered by different threads fire after fake time passes deadlines.
 fn multiple_threads_timers() {
     let clock = FakeClock::new(Instant::now());
     let (done_tx, done_rx) = mpmc::bounded(2);
@@ -141,6 +214,7 @@ fn multiple_threads_timers() {
 }
 
 #[test]
+/// Cancelling the clock closes outstanding timers without advancing fake time.
 fn multiple_threads_cancellation() {
     let clock = FakeClock::new(Instant::now());
     let (done_tx, done_rx) = mpmc::bounded(2);
@@ -170,6 +244,7 @@ fn multiple_threads_cancellation() {
 }
 
 #[test]
+/// A timer created after clock cancellation is immediately closed.
 fn timer_created_after_cancel_is_closed() {
     let clock = FakeClock::new(Instant::now());
     clock.cancel();
@@ -184,25 +259,42 @@ fn timer_created_after_cancel_is_closed() {
 }
 
 #[test]
+/// Cancelling one timer does not affect other timers with the same deadline.
 fn cancel_one_timer_only() {
     let clock = FakeClock::new(Instant::now());
     let (ch_1, cancel_1) = clock.new_timer(Duration::from_secs(5));
     let (ch_2, _) = clock.new_timer(Duration::from_secs(5));
+    let (done_tx, done_rx) = mpmc::bounded(1);
 
     cancel_1();
-    clock.advance(Duration::from_secs(5));
+    thread::scope(|s| {
+        s.spawn(move || {
+            done_tx.send(ch_2.recv().is_ok()).unwrap();
+        });
+
+        clock.advance(Duration::from_secs(5));
+    });
 
     assert!(ch_1.try_recv().is_err());
-    assert!(ch_2.try_recv().is_ok());
+    assert_eq!(Ok(true), done_rx.try_recv());
 }
 
 #[test]
+/// An expired timer is delivered once and removed from the clock.
 fn expired_timer_delivers_once() {
     let clock = FakeClock::new(Instant::now());
     let (ch, _) = clock.new_timer(Duration::from_secs(5));
+    let (done_tx, done_rx) = mpmc::bounded(1);
 
+    thread::scope(|s| {
+        s.spawn(move || {
+            done_tx.send(ch.recv().is_ok()).unwrap();
+        });
+
+        clock.advance(Duration::from_secs(5));
+    });
+
+    assert_eq!(Ok(true), done_rx.try_recv());
     clock.advance(Duration::from_secs(5));
-    assert!(ch.try_recv().is_ok());
-    clock.advance(Duration::from_secs(5));
-    assert!(ch.try_recv().is_err());
+    assert!(done_rx.try_recv().is_err());
 }
