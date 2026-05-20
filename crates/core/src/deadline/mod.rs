@@ -322,6 +322,12 @@ impl<C: DeadlineCalculator> DeadlinerImpl<C> {
     /// closed and the task should exit.
     fn handle_expired(&mut self) -> Option<Duration> {
         use mpsc::error::TrySendError::*;
+        // No real duties tracked: the sentinel `FAR_FUTURE_DURATION` timer
+        // fired. Just reschedule rather than emit the `(Unknown, slot 0)`
+        // sentinel duty to the consumer.
+        if self.duties.is_empty() {
+            return Some(self.remaining_duration());
+        }
         let duty = self.curr_duty.clone();
         match self.output_tx.try_send(duty) {
             Ok(()) => {}
