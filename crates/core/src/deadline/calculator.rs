@@ -5,7 +5,7 @@ use pluto_eth2api::EthBeaconNodeApiClient;
 
 use crate::types::{Duty, DutyType, SlotNumber};
 
-use super::{Result, millis::Millis, to_chrono_duration};
+use super::{Result, msecs::Msecs, to_chrono_duration};
 
 /// Fraction of slot duration to use as a margin for network delays.
 const MARGIN_FACTOR: i64 = 12;
@@ -47,19 +47,19 @@ impl DutyDeadlineCalculator {
     /// Wall-clock start of the given slot: `genesis_time + slot *
     /// slot_duration`.
     fn slot_start(&self, slot: SlotNumber) -> Result<DateTime<Utc>> {
-        let offset = Millis::from(self.slot_duration).checked_mul_slot(slot)?;
+        let offset = Msecs::from(self.slot_duration).checked_mul_slot(slot)?;
         offset.add_to(self.genesis_time)
     }
 
     /// Network-delay margin added to every deadline: `slot_duration /
     /// MARGIN_FACTOR`.
-    fn margin(&self) -> Result<Millis> {
-        Millis::from(self.slot_duration).checked_div(MARGIN_FACTOR)
+    fn margin(&self) -> Result<Msecs> {
+        Msecs::from(self.slot_duration).checked_div(MARGIN_FACTOR)
     }
 
     /// Duty-type-specific offset from slot start.
-    fn duty_duration(&self, duty_type: &DutyType) -> Result<Millis> {
-        let secs = Millis::from(self.slot_duration);
+    fn duty_duration(&self, duty_type: &DutyType) -> Result<Msecs> {
+        let secs = Msecs::from(self.slot_duration);
         match duty_type {
             DutyType::Proposer | DutyType::Randao => secs.checked_div(PROPOSAL_SLOT_FRACTION),
             DutyType::SyncMessage => secs
@@ -178,7 +178,7 @@ mod tests {
         let expected_ms = slot_duration_ms
             .checked_div(MARGIN_FACTOR)
             .context("margin div overflow")?;
-        let expected = Millis::new(expected_ms);
+        let expected = Msecs::new(expected_ms);
         let margin_offset = margin.add_to(calc.genesis_time)?;
         let expected_offset = expected.add_to(calc.genesis_time)?;
         ensure!(

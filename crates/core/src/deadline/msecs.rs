@@ -1,4 +1,4 @@
-//! `Millis` newtype: whole milliseconds in `i64` width with checked arithmetic.
+//! `Msecs` newtype: whole milliseconds in `i64` width with checked arithmetic.
 
 use chrono::{DateTime, Duration, Utc};
 
@@ -9,15 +9,15 @@ use super::{DeadlineError::*, Result};
 /// Whole milliseconds, stored in chrono's native `i64` width with checked
 /// conversions. Lifts the `u64`/`i64` `try_from` juggling out of arithmetic
 /// call sites: every conversion either succeeds or returns `DeadlineError`.
-pub(crate) struct Millis(i64);
+pub(crate) struct Msecs(i64);
 
-impl From<Duration> for Millis {
+impl From<Duration> for Msecs {
     fn from(d: Duration) -> Self {
         Self(d.num_milliseconds())
     }
 }
 
-impl Millis {
+impl Msecs {
     /// Constructs from a raw `i64` count of milliseconds.
     #[cfg(test)]
     pub(crate) fn new(ms: i64) -> Self {
@@ -43,8 +43,7 @@ impl Millis {
         self.0.checked_div(by).map(Self).ok_or(ArithmeticOverflow)
     }
 
-    /// Adds two `Millis`, returning `ArithmeticOverflow` on
-    /// overflow.
+    /// Adds two `Msecs`, returning `ArithmeticOverflow` on overflow.
     pub(crate) fn checked_add(self, other: Self) -> Result<Self> {
         self.0
             .checked_add(other.0)
@@ -52,7 +51,7 @@ impl Millis {
             .ok_or(ArithmeticOverflow)
     }
 
-    /// Returns `base + self`, with both the `Millis → Duration` and the
+    /// Returns `base + self`, with both the `Msecs → Duration` and the
     /// `DateTime` addition checked.
     pub(crate) fn add_to(self, base: DateTime<Utc>) -> Result<DateTime<Utc>> {
         let offset = Duration::try_milliseconds(self.0).ok_or(DurationConversion)?;

@@ -33,7 +33,7 @@
 //! ```
 
 mod calculator;
-mod millis;
+mod msecs;
 
 pub use calculator::{DeadlineCalculator, DutyDeadlineCalculator};
 
@@ -356,7 +356,7 @@ impl<C: DeadlineCalculator> DeadlinerImpl<C> {
 
 #[cfg(test)]
 mod tests {
-    use super::{millis::Millis, *};
+    use super::{msecs::Msecs, *};
     use crate::types::SlotNumber;
     use anyhow::{Context, Result, bail};
     use pluto_testutil::BeaconMock;
@@ -437,7 +437,7 @@ mod tests {
                     .ok_or(DeadlineError::DateTimeCalculation)
                     .map(Some)
             } else {
-                Millis::new(500)
+                Msecs::new(500)
                     .checked_mul_slot(duty.slot)?
                     .add_to(self.start_time)
                     .map(Some)
