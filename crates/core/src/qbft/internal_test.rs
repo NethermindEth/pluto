@@ -93,7 +93,8 @@ struct Test {
 // Main QBFT simulation harness:
 // 1. build one fake clock, four node transports, and QBFT callbacks;
 // 2. spawn one thread per node running `qbft::run`;
-// 3. route broadcasts through the in-memory network with optional drop/jitter/fuzz;
+// 3. route broadcasts through the in-memory network with optional
+//    drop/jitter/fuzz;
 // 4. advance fake time only after pending compare/timer work is drained;
 // 5. collect all decisions and assert same value plus expected round/value.
 fn test_qbft(test: Test) {
@@ -1027,7 +1028,8 @@ fn happy(instance: i64) {
 }
 
 // Tests prepared-value carryover when commits are suppressed in earlier rounds.
-// Expect later rounds to decide the highest prepared value, not a new leader value.
+// Expect later rounds to decide the highest prepared value, not a new leader
+// value.
 #[test_case(1, None, 2, 1, false ; "prepare_round_1_decide_round_2")]
 #[test_case(2, Some(2), 3, 2, true ; "prepare_round_2_decide_round_3")]
 fn prepare_round(
@@ -1065,7 +1067,8 @@ fn delayed_leader_start(const_period: bool) {
 }
 
 // Tests recovery when two nodes, including early leaders, start much later.
-// Expect consensus after enough round changes, with exact round only when deterministic.
+// Expect consensus after enough round changes, with exact round only when
+// deterministic.
 #[test_case(3, false, 4, false ; "very_late_exp")]
 #[test_case(1, true, 0, true ; "very_late_const")]
 fn very_late_start(instance: i64, const_period: bool, decide_round: i32, random_round: bool) {
@@ -1258,7 +1261,8 @@ fn formulas(n: i64, q: i64, f: i64) {
 }
 
 // Tests PRE-PREPARE justification with mixed ROUND_CHANGE and PREPARE evidence.
-// Expect the proposal to be accepted when it carries a justified prepared value.
+// Expect the proposal to be accepted when it carries a justified prepared
+// value.
 #[test]
 fn is_justified_pre_prepare_mixed_round_change_prepare_fixture() {
     let preprepare = new_msg(
@@ -1535,7 +1539,8 @@ fn classify_rules() {
 }
 
 // Tests ROUND_CHANGE quorum justification forms J1 and J2.
-// Expect null-prepared and highest-prepared quorums to be accepted, invalid `pr` rejected.
+// Expect null-prepared and highest-prepared quorums to be accepted, invalid
+// `pr` rejected.
 #[test]
 fn justified_qrc_j1_and_j2() {
     let mut def = noop_definition();
@@ -1572,7 +1577,8 @@ fn justified_qrc_j1_and_j2() {
 }
 
 // Tests ROUND_CHANGE prepared-round bounds.
-// Expect only null prepared round or strictly previous prepared rounds to be valid.
+// Expect only null prepared round or strictly previous prepared rounds to be
+// valid.
 #[test_case(2, -1, false ; "negative")]
 #[test_case(1, 0, true ; "null_at_round_one")]
 #[test_case(2, 1, true ; "previous_round")]
@@ -1584,7 +1590,8 @@ fn valid_round_change_prepared_round_boundaries(round: i64, prepared_round: i64,
 }
 
 // Tests invalid prepared rounds at every justification call site.
-// Expect invalid ROUND_CHANGE messages to be filtered while valid quorums survive.
+// Expect invalid ROUND_CHANGE messages to be filtered while valid quorums
+// survive.
 #[test_case(-1 ; "negative")]
 #[test_case(2 ; "current_round")]
 #[test_case(3 ; "future_round")]
@@ -1636,7 +1643,8 @@ fn invalid_round_change_prepared_rounds_are_filtered_from_call_sites(invalid_pr:
 }
 
 // Tests null-prepared quorum filtering.
-// Expect only `prepared_round = 0` and `prepared_value = 0` messages to form J1.
+// Expect only `prepared_round = 0` and `prepared_value = 0` messages to form
+// J1.
 #[test_case(1, -1 ; "negative")]
 #[test_case(1, 1 ; "current_round")]
 #[test_case(1, 2 ; "future_round")]
@@ -1675,7 +1683,8 @@ fn filter_msgs_keeps_one_per_source() {
 }
 
 // Tests compare outcomes: success, error, cached value source, and timeout.
-// Expect cached value sources to be preserved and timer expiry to return `TimeoutError`.
+// Expect cached value sources to be preserved and timer expiry to return
+// `TimeoutError`.
 #[test]
 fn compare_success_error_cached_value_source_and_timeout() {
     let cts = CancellationTokenSource::new();
@@ -1806,7 +1815,8 @@ fn compare_timeout_does_not_wait_for_blocked_callback() {
 }
 
 // Tests a compare callback that exits without sending status.
-// Expect `compare` to wait for timer/cancel instead of treating disconnect as final.
+// Expect `compare` to wait for timer/cancel instead of treating disconnect as
+// final.
 #[test]
 fn compare_callback_exit_without_status_waits_for_timer() {
     let cts = CancellationTokenSource::new();
@@ -1845,7 +1855,8 @@ fn compare_callback_exit_without_status_waits_for_timer() {
 }
 
 // Tests parent cancellation propagation into the compare callback token.
-// Expect `compare` to return `ContextCanceled` and the callback token to be canceled.
+// Expect `compare` to return `ContextCanceled` and the callback token to be
+// canceled.
 #[test]
 fn compare_parent_cancel_cancels_callback_token() {
     let cts = CancellationTokenSource::new();
@@ -1978,7 +1989,8 @@ struct ChainSplitTest {
 }
 
 // Tests value-source disagreement across nodes.
-// Expect agreement when a quorum can compare equal values, or halt when no quorum can.
+// Expect agreement when a quorum can compare equal values, or halt when no
+// quorum can.
 #[test_case(1, 1, 1, 1, 1, 1, false ; "same_value")]
 #[test_case(1, 3, 1, 1, 1, 1, false ; "non_leader_peer_has_different_value")]
 #[test_case(3, 1, 1, 1, 2, 1, false ; "first_leader_has_different_value_second_leader_succeeds")]

@@ -108,7 +108,8 @@ impl FakeClock {
         self.advance_inner(duration, Some(pending_timer_actions))
     }
 
-    /// Shared advance path; optionally synchronizes timer delivery with the test harness.
+    /// Shared advance path; optionally synchronizes timer delivery with the
+    /// test harness.
     fn advance_inner(
         &self,
         duration: Duration,
@@ -129,7 +130,7 @@ impl FakeClock {
                 }
             }
 
-            for (id, _, _, _) in expired.iter() {
+            for (id, ..) in expired.iter() {
                 inner.clients.remove(id);
             }
 
@@ -182,7 +183,8 @@ impl FakeClock {
 }
 
 #[test]
-/// Timers registered by different threads fire after fake time passes deadlines.
+/// Timers registered by different threads fire after fake time passes
+/// deadlines.
 fn multiple_threads_timers() {
     let clock = FakeClock::new(Instant::now());
     let (done_tx, done_rx) = mpmc::bounded(2);
