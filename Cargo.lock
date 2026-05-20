@@ -5581,6 +5581,7 @@ dependencies = [
  "libp2p",
  "pluto-build-proto",
  "pluto-cluster",
+ "pluto-crypto",
  "pluto-eth2api",
  "pluto-eth2util",
  "pluto-p2p",
