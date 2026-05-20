@@ -316,4 +316,81 @@ mod tests {
         assert_eq!(read, second);
         assert_ne!(read, first);
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn write_unblocks_many() {
+        const N: usize = 4;
+
+        let store = super::MemDB::new(TestDeadliner::never());
+        let duty = Duty::new_proposer_duty(SlotNumber::new(10));
+        let pub_key = PubKey::new([7u8; 48]);
+        let signed_data = MockSignedData::for_test(42);
+
+        let readers: Vec<_> = (0..N)
+            .map(|_| {
+                let store = store.clone();
+                let duty = duty.clone();
+                tokio::spawn(async move { store.wait_for(duty, pub_key).await })
+            })
+            .collect();
+
+        // Give readers a chance to reach `notified.await` before the store.
+        tokio::task::yield_now().await;
+        for reader in &readers {
+            assert!(
+                !reader.is_finished(),
+                "all readers should block until store"
+            );
+        }
+
+        // A single store unblocks all readers.
+        store
+            .store(duty, pub_key, signed_data.clone())
+            .await
+            .unwrap();
+
+        for reader in readers {
+            let read = reader.await.unwrap();
+            assert_eq!(read, signed_data);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unrelated_write_does_not_unblock() {
+        let store = super::MemDB::new(TestDeadliner::never());
+
+        let duty_a = Duty::new_proposer_duty(SlotNumber::new(10));
+        let data_a = MockSignedData::for_test(1);
+
+        let duty_b = Duty::new_attester_duty(SlotNumber::new(20));
+        let data_b = MockSignedData::for_test(2);
+
+        let pub_key = PubKey::new([7u8; 48]);
+
+        let reader = {
+            let store = store.clone();
+            let duty_a = duty_a.clone();
+            tokio::spawn(async move { store.wait_for(duty_a, pub_key).await })
+        };
+
+        tokio::task::yield_now().await;
+        assert!(!reader.is_finished(), "reader should block initially");
+
+        // Storing an unrelated key wakes readers, which block again since the store is
+        // unrelated.
+        store.store(duty_b, pub_key, data_b.clone()).await.unwrap();
+
+        tokio::task::yield_now().await;
+        assert!(
+            !reader.is_finished(),
+            "reader should re-block after unrelated store"
+        );
+
+        // Storing the actual key unblocks the reader.
+        store.store(duty_a, pub_key, data_a.clone()).await.unwrap();
+
+        let read = reader.await.unwrap();
+        assert_eq!(read, data_a);
+        assert_ne!(read, data_b);
+    }
 }
