@@ -101,7 +101,8 @@ pub trait Deadliner: Send + Sync {
     ///
     /// Returns `false` if:
     /// - The duty has already expired and cannot be scheduled
-    /// - The duty never expires (e.g., Exit, BuilderRegistration)
+    /// - The calculator reports the duty has no deadline (`Ok(None)`)
+    /// - The calculator failed to compute the deadline (`Err(_)`)
     async fn add(&self, duty: Duty) -> bool;
 
     /// Returns the channel for receiving deadlined duties.

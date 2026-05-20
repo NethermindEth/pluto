@@ -1,7 +1,4 @@
 //! `Millis` newtype: whole milliseconds in `i64` width with checked arithmetic.
-//!
-//! Lifts the `u64`/`i64` `try_from` juggling out of deadline arithmetic call
-//! sites — every conversion either succeeds or returns `DeadlineError`.
 
 use chrono::{DateTime, Duration, Utc};
 
@@ -40,8 +37,8 @@ impl Millis {
         self.0.checked_mul(by).map(Self).ok_or(ArithmeticOverflow)
     }
 
-    /// Divides by `by`, returning `ArithmeticOverflow` on
-    /// overflow or division by zero.
+    /// Divides by `by`, returning `ArithmeticOverflow` on division by zero
+    /// (or the `i64::MIN / -1` overflow corner case).
     pub(crate) fn checked_div(self, by: i64) -> Result<Self> {
         self.0.checked_div(by).map(Self).ok_or(ArithmeticOverflow)
     }
