@@ -185,6 +185,7 @@ pub async fn monitoring_server(bind_addr: SocketAddr, ct: CancellationToken) {
 }
 
 /// Error response for HTTP handlers.
+#[derive(Debug)]
 pub struct HandlerError {
     status: StatusCode,
     message: String,
@@ -381,5 +382,259 @@ async fn resolve_external_host(state: Arc<AppState>, external_host: &str) {
         Err(e) => {
             warn!("Failed to resolve external host {}: {}", external_host, e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::IntoResponse;
+    use libp2p::identity::Keypair;
+    use pluto_eth2util::enr::Record;
+    use rand::rngs::OsRng;
+
+    fn ma(s: &str) -> Multiaddr {
+        s.parse().expect("valid multiaddr")
+    }
+
+    fn test_state(
+        external_ip: Option<&str>,
+        external_host: Option<&str>,
+        external_addrs: Vec<Multiaddr>,
+        listeners: Vec<Multiaddr>,
+    ) -> (Arc<AppState>, PeerId) {
+        let secret_key = SecretKey::random(&mut OsRng);
+        let peer_id = Keypair::generate_secp256k1().public().to_peer_id();
+        let p2p_config = P2PConfig {
+            external_ip: external_ip.map(String::from),
+            external_host: external_host.map(String::from),
+            ..Default::default()
+        };
+        let state = AppState::new(
+            p2p_config,
+            secret_key,
+            peer_id,
+            Arc::new(RwLock::new(listeners)),
+            external_addrs,
+        );
+        (Arc::new(state), peer_id)
+    }
+
+    // ------ AppState::advertised_addrs ------
+
+    #[tokio::test]
+    async fn advertised_addrs_externals_only() {
+        let externals = vec![ma("/dns/example.com/tcp/3610")];
+        let (state, _) = test_state(None, Some("example.com"), externals.clone(), vec![]);
+        assert_eq!(state.advertised_addrs().await, externals);
+    }
+
+    #[tokio::test]
+    async fn advertised_addrs_listeners_only() {
+        let listeners = vec![ma("/ip4/127.0.0.1/tcp/3610")];
+        let (state, _) = test_state(None, None, vec![], listeners.clone());
+        assert_eq!(state.advertised_addrs().await, listeners);
+    }
+
+    #[tokio::test]
+    async fn advertised_addrs_externals_first_then_listeners() {
+        let externals = vec![ma("/ip4/1.2.3.4/tcp/3610"), ma("/dns/example.com/tcp/3610")];
+        let listeners = vec![ma("/ip4/127.0.0.1/tcp/3610")];
+        let (state, _) = test_state(
+            Some("1.2.3.4"),
+            Some("example.com"),
+            externals.clone(),
+            listeners.clone(),
+        );
+        let got = state.advertised_addrs().await;
+        // Externals first, in order, then listeners.
+        assert_eq!(got[0], externals[0]);
+        assert_eq!(got[1], externals[1]);
+        assert_eq!(got[2], listeners[0]);
+        assert_eq!(got.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn advertised_addrs_dedupes_listener_matching_external() {
+        let dup = ma("/ip4/1.2.3.4/tcp/3610");
+        let externals = vec![dup.clone()];
+        // A listener that's byte-equal to an existing external must not be
+        // emitted twice.
+        let listeners = vec![dup.clone(), ma("/ip4/10.0.0.1/tcp/3610")];
+        let (state, _) = test_state(Some("1.2.3.4"), None, externals, listeners);
+
+        let got = state.advertised_addrs().await;
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0], dup);
+        assert_eq!(got[1], ma("/ip4/10.0.0.1/tcp/3610"));
+    }
+
+    #[tokio::test]
+    async fn advertised_addrs_empty_when_nothing_configured() {
+        let (state, _) = test_state(None, None, vec![], vec![]);
+        assert!(state.advertised_addrs().await.is_empty());
+    }
+
+    // ------ multiaddr_handler ------
+
+    #[tokio::test]
+    async fn multiaddr_handler_returns_externals_with_peer_id() {
+        let externals = vec![
+            ma("/dns/example.com/tcp/3610"),
+            ma("/dns/example.com/udp/3610/quic-v1"),
+        ];
+        let (state, peer_id) = test_state(None, Some("example.com"), externals, vec![]);
+
+        let Json(addrs) = multiaddr_handler(State(state)).await.expect("ok");
+        let peer = peer_id.to_string();
+        assert_eq!(
+            addrs,
+            vec![
+                format!("/dns/example.com/tcp/3610/p2p/{peer}"),
+                format!("/dns/example.com/udp/3610/quic-v1/p2p/{peer}"),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn multiaddr_handler_empty_when_nothing_configured() {
+        let (state, _) = test_state(None, None, vec![], vec![]);
+        let Json(addrs) = multiaddr_handler(State(state)).await.expect("ok");
+        assert!(addrs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn multiaddr_handler_union_external_ip_only() {
+        let externals = vec![
+            ma("/ip4/1.2.3.4/tcp/3610"),
+            ma("/ip4/1.2.3.4/udp/3610/quic-v1"),
+        ];
+        let (state, peer_id) = test_state(Some("1.2.3.4"), None, externals, vec![]);
+
+        let Json(addrs) = multiaddr_handler(State(state)).await.expect("ok");
+        let peer = peer_id.to_string();
+        assert!(
+            addrs.contains(&format!("/ip4/1.2.3.4/tcp/3610/p2p/{peer}")),
+            "got {addrs:?}"
+        );
+        assert!(
+            addrs.contains(&format!("/ip4/1.2.3.4/udp/3610/quic-v1/p2p/{peer}")),
+            "got {addrs:?}"
+        );
+    }
+
+    // ------ enr_handler ------
+
+    fn parse_enr(s: &str) -> Record {
+        Record::try_from(s).expect("valid ENR string")
+    }
+
+    #[tokio::test]
+    async fn enr_handler_500_when_nothing_configured() {
+        let (state, _) = test_state(None, None, vec![], vec![]);
+        let err = enr_handler(State(state)).await.expect_err("should be 500");
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn enr_handler_uses_external_ip() {
+        let externals = vec![
+            ma("/ip4/1.2.3.4/tcp/3610"),
+            ma("/ip4/1.2.3.4/udp/3610/quic-v1"),
+        ];
+        let (state, _) = test_state(Some("1.2.3.4"), None, externals, vec![]);
+
+        let s = enr_handler(State(state)).await.expect("ok");
+        let record = parse_enr(&s);
+        assert_eq!(record.ip().unwrap(), Ipv4Addr::new(1, 2, 3, 4));
+        assert_eq!(record.tcp().unwrap(), 3610);
+        assert_eq!(record.udp().unwrap(), 3610);
+    }
+
+    #[tokio::test]
+    async fn enr_handler_external_ip_overrides_listener_ip() {
+        let externals = vec![ma("/ip4/1.2.3.4/tcp/3610")];
+        // Listener has a different IP — `apply_ip_override` must rewrite it.
+        let listeners = vec![ma("/ip4/127.0.0.1/udp/3610/quic-v1")];
+        let (state, _) = test_state(Some("1.2.3.4"), None, externals, listeners);
+
+        let s = enr_handler(State(state)).await.expect("ok");
+        let record = parse_enr(&s);
+        assert_eq!(record.ip().unwrap(), Ipv4Addr::new(1, 2, 3, 4));
+        assert_eq!(record.tcp().unwrap(), 3610);
+        assert_eq!(record.udp().unwrap(), 3610);
+    }
+
+    #[tokio::test]
+    async fn enr_handler_dns_fallback_uses_resolved_external_host() {
+        let externals = vec![
+            ma("/dns/example.com/tcp/3610"),
+            ma("/dns/example.com/udp/3610/quic-v1"),
+        ];
+        let (state, _) = test_state(None, Some("example.com"), externals, vec![]);
+
+        // Simulate the resolver loop populating the cache with a resolved IP.
+        state
+            .set_external_host_ip(Some(Ipv4Addr::new(5, 6, 7, 8)))
+            .await;
+
+        let s = enr_handler(State(state)).await.expect("ok");
+        let record = parse_enr(&s);
+        assert_eq!(record.ip().unwrap(), Ipv4Addr::new(5, 6, 7, 8));
+        assert_eq!(record.tcp().unwrap(), 3610);
+        assert_eq!(record.udp().unwrap(), 3610);
+    }
+
+    #[tokio::test]
+    async fn enr_handler_dns_only_without_resolved_ip_returns_500() {
+        let externals = vec![
+            ma("/dns/example.com/tcp/3610"),
+            ma("/dns/example.com/udp/3610/quic-v1"),
+        ];
+        // No listeners, resolver hasn't populated external_host_ip yet — both
+        // TCP and UDP scan attempts skip, so the handler bails out.
+        let (state, _) = test_state(None, Some("example.com"), externals, vec![]);
+
+        let err = enr_handler(State(state)).await.expect_err("should be 500");
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn enr_handler_external_ip_wins_over_external_host() {
+        // Both external_ip and external_host configured. The IP-form multiaddr
+        // sorts first (public IP), and apply_ip_override returns external_ip
+        // before any DNS fallback runs.
+        let externals = vec![
+            ma("/ip4/1.2.3.4/tcp/3610"),
+            ma("/ip4/1.2.3.4/udp/3610/quic-v1"),
+            ma("/dns/example.com/tcp/3610"),
+            ma("/dns/example.com/udp/3610/quic-v1"),
+        ];
+        let (state, _) = test_state(Some("1.2.3.4"), Some("example.com"), externals, vec![]);
+        state
+            .set_external_host_ip(Some(Ipv4Addr::new(9, 9, 9, 9)))
+            .await;
+
+        let s = enr_handler(State(state)).await.expect("ok");
+        let record = parse_enr(&s);
+        // external_ip beats the resolver-cached external_host IP.
+        assert_eq!(record.ip().unwrap(), Ipv4Addr::new(1, 2, 3, 4));
+    }
+
+    #[tokio::test]
+    async fn enr_handler_public_listener_used_when_no_externals() {
+        let listeners = vec![
+            ma("/ip4/8.8.8.8/tcp/3610"),
+            ma("/ip4/8.8.8.8/udp/3610/quic-v1"),
+        ];
+        let (state, _) = test_state(None, None, vec![], listeners);
+
+        let s = enr_handler(State(state)).await.expect("ok");
+        let record = parse_enr(&s);
+        assert_eq!(record.ip().unwrap(), Ipv4Addr::new(8, 8, 8, 8));
+        assert_eq!(record.tcp().unwrap(), 3610);
+        assert_eq!(record.udp().unwrap(), 3610);
     }
 }
