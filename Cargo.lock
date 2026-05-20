@@ -5897,6 +5897,8 @@ dependencies = [
  "pluto-p2p",
  "pluto-tracing",
  "rand 0.8.6",
+ "reqwest 0.13.3",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",

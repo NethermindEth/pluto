@@ -21,3 +21,6 @@ pub mod utils;
 pub use error::RelayP2PError;
 
 pub(crate) use error::Result;
+
+#[doc(hidden)]
+pub use web::enr_server;
