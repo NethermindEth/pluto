@@ -379,7 +379,7 @@ mod tests {
     }
 
     /// Helper function to create expired duties, non-expired duties, and
-    /// voluntary exits.
+    /// far-future duties (exit duties that `TestCalculator` schedules 1h out).
     fn setup_data() -> (Vec<Duty>, Vec<Duty>, Vec<Duty>) {
         let expired_duties = vec![
             Duty::new_attester_duty(SlotNumber::new(1)),
@@ -392,12 +392,12 @@ mod tests {
             Duty::new_attester_duty(SlotNumber::new(2)),
         ];
 
-        let voluntary_exits = vec![
+        let future_duties = vec![
             Duty::new_voluntary_exit_duty(SlotNumber::new(2)),
             Duty::new_voluntary_exit_duty(SlotNumber::new(4)),
         ];
 
-        (expired_duties, non_expired_duties, voluntary_exits)
+        (expired_duties, non_expired_duties, future_duties)
     }
 
     /// Helper function to add duties to the deadliner and send results to a
@@ -447,7 +447,7 @@ mod tests {
 
     #[tokio::test]
     async fn deadliner() -> Result<()> {
-        let (expired_duties, non_expired_duties, voluntary_exits) = setup_data();
+        let (expired_duties, non_expired_duties, future_duties) = setup_data();
 
         // Use real time with generous durations to avoid flakiness on loaded CI.
         let start_time = Utc::now();
@@ -467,7 +467,7 @@ mod tests {
 
         let expired_len = expired_duties.len();
         let non_expired_len = non_expired_duties.len();
-        let voluntary_exits_len = voluntary_exits.len();
+        let future_duties_len = future_duties.len();
 
         let handler_expired = tokio::spawn(add_duties(
             expired_duties,
@@ -479,20 +479,17 @@ mod tests {
             Arc::clone(&deadliner),
             non_expired_tx.clone(),
         ));
-        let handler_voluntary_exits = tokio::spawn(add_duties(
-            voluntary_exits,
+        let handler_future_duties = tokio::spawn(add_duties(
+            future_duties,
             Arc::clone(&deadliner),
             non_expired_tx,
         ));
 
-        let (result_expired, result_non_expired, result_voluntary_exits) = tokio::join!(
-            handler_expired,
-            handler_non_expired,
-            handler_voluntary_exits
-        );
+        let (result_expired, result_non_expired, result_future_duties) =
+            tokio::join!(handler_expired, handler_non_expired, handler_future_duties);
         result_expired?;
         result_non_expired?;
-        result_voluntary_exits?;
+        result_future_duties?;
 
         for _ in 0..expired_len {
             let result = expired_rx.recv().await.context("expected expired ack")?;
@@ -500,7 +497,7 @@ mod tests {
         }
 
         let added_count = non_expired_len
-            .checked_add(voluntary_exits_len)
+            .checked_add(future_duties_len)
             .context("added_count overflow")?;
         for _ in 0..added_count {
             let result = non_expired_rx
