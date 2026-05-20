@@ -528,6 +528,51 @@ mod tests {
         Ok(())
     }
 
+    /// Two duties with clearly different deadlines must arrive on the output
+    /// channel in deadline order — that's the actual contract of the
+    /// deadliner.
+    #[tokio::test]
+    async fn expired_duties_arrive_in_deadline_order() -> Result<()> {
+        use anyhow::ensure;
+
+        let start_time = Utc::now();
+        let calculator = TestCalculator {
+            start_time,
+            expired: HashSet::new(),
+        };
+
+        let cancel_token = CancellationToken::new();
+        let deadliner = DeadlinerImpl::start(cancel_token.clone(), "order-test", calculator);
+
+        let mut output_rx = deadliner.c().context("output receiver already taken")?;
+
+        // TestCalculator: deadline = start_time + slot * 500ms.
+        // Insert the later one first to make sure ordering is by deadline,
+        // not insertion order.
+        let later = Duty::new_attester_duty(SlotNumber::new(3));
+        let earlier = Duty::new_attester_duty(SlotNumber::new(1));
+
+        let added_later = deadliner.add(later.clone()).await;
+        ensure!(added_later, "later duty should be added");
+        let added_earlier = deadliner.add(earlier.clone()).await;
+        ensure!(added_earlier, "earlier duty should be added");
+
+        let first = timeout(Duration::from_secs(5), output_rx.recv())
+            .await
+            .context("timeout waiting for first duty")?
+            .context("output channel closed before first duty")?;
+        ensure!(first == earlier, "expected earlier duty first, got {first}");
+
+        let second = timeout(Duration::from_secs(5), output_rx.recv())
+            .await
+            .context("timeout waiting for second duty")?
+            .context("output channel closed before second duty")?;
+        ensure!(second == later, "expected later duty second, got {second}");
+
+        cancel_token.cancel();
+        Ok(())
+    }
+
     #[test_case::test_case(DutyType::Exit ; "exit")]
     #[test_case::test_case(DutyType::BuilderRegistration ; "builder_registration")]
     #[tokio::test]
