@@ -583,7 +583,7 @@ mod tests {
                 p2p_relay_log_level: "info".into(),
                 max_res_per_peer: 0,
                 max_conns: 0,
-                advertise_priv: false,
+                advertise_priv: true,
             },
             debug_monitoring: super::RelayDebugMonitoringArgs {
                 monitor_addr: None,
