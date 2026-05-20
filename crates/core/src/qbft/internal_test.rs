@@ -160,67 +160,69 @@ fn test_qbft(test: Test) {
         },
         compare: {
             let pending_compares = pending_compares.clone();
-            Arc::new(move |_, _, _, _, return_err, _| {
+            Arc::new(move |req| {
                 let _guard = PendingCompareGuard {
                     pending_compares: pending_compares.clone(),
                 };
-                return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
+                req.return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
             })
         },
         nodes: N as i64,
         fifo_limit: FIFO_LIMIT as i64,
-        log_round_change: {
-            let clock = clock.clone();
-            let trace = trace.clone();
-            let pending_timer_actions = pending_timer_actions.clone();
+        logger: QbftLogger {
+            round_change: {
+                let clock = clock.clone();
+                let trace = trace.clone();
+                let pending_timer_actions = pending_timer_actions.clone();
 
-            Box::new(move |_, process, round, new_round, upon_rule, _| {
-                if upon_rule == UPON_ROUND_TIMEOUT {
-                    complete_timer_action(&pending_timer_actions);
-                }
+                Box::new(move |_, process, round, new_round, upon_rule, _| {
+                    if upon_rule == UPON_ROUND_TIMEOUT {
+                        complete_timer_action(&pending_timer_actions);
+                    }
 
-                trace.push(format!(
-                    "{:?} - {}@{} change to {} ~= {}",
-                    clock.elapsed(),
-                    process,
-                    round,
-                    new_round,
-                    upon_rule,
-                ));
-            })
-        },
-        log_unjust: {
-            let trace = trace.clone();
-            let unjust_tx = unjust_tx.clone();
-            let fuzz = test.fuzz;
-            Box::new(move |_, process, msg| {
-                let line = format!("Unjust: process={} msg={:?}", process, msg);
-                trace.push(line.clone());
-                if !fuzz {
-                    unjust_tx.send(line).expect(WRITE_CHAN_ERR);
-                }
-            })
-        },
-        log_upon_rule: {
-            let clock = clock.clone();
-            let trace = trace.clone();
-            let pending_compares = pending_compares.clone();
-            Box::new(move |_, process, round, msg, upon_rule| {
-                if upon_rule == UPON_JUSTIFIED_PRE_PREPARE {
-                    pending_compares.fetch_add(1, Ordering::SeqCst);
-                }
+                    trace.push(format!(
+                        "{:?} - {}@{} change to {} ~= {}",
+                        clock.elapsed(),
+                        process,
+                        round,
+                        new_round,
+                        upon_rule,
+                    ));
+                })
+            },
+            unjust: {
+                let trace = trace.clone();
+                let unjust_tx = unjust_tx.clone();
+                let fuzz = test.fuzz;
+                Box::new(move |_, process, msg| {
+                    let line = format!("Unjust: process={} msg={:?}", process, msg);
+                    trace.push(line.clone());
+                    if !fuzz {
+                        unjust_tx.send(line).expect(WRITE_CHAN_ERR);
+                    }
+                })
+            },
+            upon_rule: {
+                let clock = clock.clone();
+                let trace = trace.clone();
+                let pending_compares = pending_compares.clone();
+                Box::new(move |_, process, round, msg, upon_rule| {
+                    if upon_rule == UPON_JUSTIFIED_PRE_PREPARE {
+                        pending_compares.fetch_add(1, Ordering::SeqCst);
+                    }
 
-                trace.push(format!(
-                    "{:?} {} => {}@{} -> {}@{} ~= {}",
-                    clock.elapsed(),
-                    msg.source(),
-                    msg.type_(),
-                    msg.round(),
-                    process,
-                    round,
-                    upon_rule,
-                ));
-            })
+                    trace.push(format!(
+                        "{:?} {} => {}@{} -> {}@{} ~= {}",
+                        clock.elapsed(),
+                        msg.source(),
+                        msg.type_(),
+                        msg.round(),
+                        process,
+                        round,
+                        upon_rule,
+                    ));
+                })
+            },
         },
     });
 
@@ -235,55 +237,53 @@ fn test_qbft(test: Test) {
                     let clock = clock.clone();
                     let trace = trace.clone();
 
-                    Box::new(
-                        move |_, type_, instance, source, round, value, pr, pv, justification| {
-                            if round > MAX_ROUND as i64 {
-                                return Err(QbftError::MaxRoundReached);
-                            }
+                    Box::new(move |req| {
+                        if req.round > MAX_ROUND as i64 {
+                            return Err(QbftError::MaxRoundReached);
+                        }
 
-                            if type_ == MSG_COMMIT && round <= test.commits_after.into() {
-                                trace.push(format!(
-                                    "{:?} {} dropping commit for round {}",
-                                    clock.elapsed(),
-                                    source,
-                                    round
-                                ));
-                                return Ok(());
-                            }
-
+                        if req.type_ == MSG_COMMIT && req.round <= test.commits_after.into() {
                             trace.push(format!(
-                                "{:?} {} => {}@{}",
+                                "{:?} {} dropping commit for round {}",
                                 clock.elapsed(),
-                                source,
-                                type_,
-                                round
+                                req.source,
+                                req.round
                             ));
+                            return Ok(());
+                        }
 
-                            let msg = new_msg(
-                                type_,
-                                *instance,
-                                source,
-                                round,
-                                *value,
-                                *value,
-                                pr,
-                                *pv,
-                                justification,
-                            );
-                            sender.send(msg.clone()).expect(WRITE_CHAN_ERR);
+                        trace.push(format!(
+                            "{:?} {} => {}@{}",
+                            clock.elapsed(),
+                            req.source,
+                            req.type_,
+                            req.round
+                        ));
 
-                            bcast(
-                                broadcast_tx.clone(),
-                                msg.clone(),
-                                test.bcast_jitter_ms,
-                                clock.clone(),
-                                trace.clone(),
-                                seed,
-                            );
+                        let msg = new_msg(
+                            req.type_,
+                            *req.instance,
+                            req.source,
+                            req.round,
+                            *req.value,
+                            *req.value,
+                            req.prepared_round,
+                            *req.prepared_value,
+                            req.justification,
+                        );
+                        sender.send(msg.clone()).expect(WRITE_CHAN_ERR);
 
-                            Ok(())
-                        },
-                    )
+                        bcast(
+                            broadcast_tx.clone(),
+                            msg.clone(),
+                            test.bcast_jitter_ms,
+                            clock.clone(),
+                            trace.clone(),
+                            seed,
+                        );
+
+                        Ok(())
+                    })
                 },
                 receive: receiver.clone(),
             };
@@ -1214,20 +1214,164 @@ fn noop_definition() -> Definition<TestQbft> {
         is_leader: Box::new(|_, _, _| false),
         new_timer: Box::new(|_| (mpmc::never(), Box::new(|| {}))),
         decide: Box::new(|_, _, _, _| {}),
-        compare: Arc::new(|_, _, _, _, _, _| {}),
+        compare: Arc::new(|_| {}),
         nodes: 0,
         fifo_limit: 0,
-        log_round_change: Box::new(|_, _, _, _, _, _| {}),
-        log_unjust: Box::new(|_, _, _| {}),
-        log_upon_rule: Box::new(|_, _, _, _, _| {}),
+        logger: QbftLogger {
+            round_change: Box::new(|_, _, _, _, _, _| {}),
+            unjust: Box::new(|_, _, _| {}),
+            upon_rule: Box::new(|_, _, _, _, _| {}),
+        },
     }
 }
 
 fn noop_transport() -> Transport<TestQbft> {
     Transport {
-        broadcast: Box::new(|_, _, _, _, _, _, _, _, _| Ok(())),
+        broadcast: Box::new(|_| Ok(())),
         receive: mpmc::never(),
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct BroadcastRecord {
+    canceled: bool,
+    type_: MessageType,
+    instance: i64,
+    source: i64,
+    round: i64,
+    value: i64,
+    prepared_round: i64,
+    prepared_value: i64,
+    justification_len: usize,
+}
+
+#[test]
+fn broadcast_request_maps_protocol_fields() {
+    let (receive_tx, receive_rx) = mpmc::bounded::<Msg<TestQbft>>(4);
+    receive_tx
+        .send(new_msg(MSG_PRE_PREPARE, 0, 1, 1, 7, 7, 0, 0, None))
+        .expect(WRITE_CHAN_ERR);
+    for source in 1..=3 {
+        receive_tx
+            .send(new_msg(MSG_PREPARE, 0, source, 1, 7, 7, 0, 0, None))
+            .expect(WRITE_CHAN_ERR);
+    }
+
+    let cts = CancellationTokenSource::new();
+    let token = cts.token().clone();
+    let (record_tx, record_rx) = mpmc::unbounded();
+    let transport = Transport {
+        broadcast: Box::new(move |req| {
+            record_tx
+                .send(BroadcastRecord {
+                    canceled: req.ct.is_canceled(),
+                    type_: req.type_,
+                    instance: *req.instance,
+                    source: req.source,
+                    round: req.round,
+                    value: *req.value,
+                    prepared_round: req.prepared_round,
+                    prepared_value: *req.prepared_value,
+                    justification_len: req.justification.map_or(0, Vec::len),
+                })
+                .expect(WRITE_CHAN_ERR);
+            if req.type_ == MSG_COMMIT {
+                cts.cancel();
+            }
+            Ok(())
+        }),
+        receive: receive_rx,
+    };
+    let mut def = noop_definition();
+    def.nodes = 4;
+    def.fifo_limit = 100;
+    def.is_leader = Box::new(|_, _, process| process == 1);
+    def.compare = Arc::new(|req| req.return_err.send(Ok(())).expect(WRITE_CHAN_ERR));
+
+    let (_input_tx, input_rx) = mpmc::bounded::<i64>(1);
+    let (_source_tx, source_rx) = mpmc::bounded::<i64>(1);
+    assert!(matches!(
+        qbft::run(&token, &def, &transport, &0, 2, input_rx, source_rx),
+        Err(QbftError::ContextCanceled)
+    ));
+    assert_eq!(
+        record_rx.try_iter().collect::<Vec<_>>(),
+        vec![
+            BroadcastRecord {
+                canceled: false,
+                type_: MSG_PREPARE,
+                instance: 0,
+                source: 2,
+                round: 1,
+                value: 7,
+                prepared_round: 0,
+                prepared_value: 0,
+                justification_len: 0,
+            },
+            BroadcastRecord {
+                canceled: false,
+                type_: MSG_COMMIT,
+                instance: 0,
+                source: 2,
+                round: 1,
+                value: 7,
+                prepared_round: 0,
+                prepared_value: 0,
+                justification_len: 0,
+            },
+        ]
+    );
+
+    let (timer_tx, timer_rx) = mpmc::bounded(1);
+    timer_tx.send(time::Instant::now()).expect(WRITE_CHAN_ERR);
+    let cts = CancellationTokenSource::new();
+    let token = cts.token().clone();
+    let (record_tx, record_rx) = mpmc::unbounded();
+    let transport = Transport {
+        broadcast: Box::new(move |req| {
+            record_tx
+                .send(BroadcastRecord {
+                    canceled: req.ct.is_canceled(),
+                    type_: req.type_,
+                    instance: *req.instance,
+                    source: req.source,
+                    round: req.round,
+                    value: *req.value,
+                    prepared_round: req.prepared_round,
+                    prepared_value: *req.prepared_value,
+                    justification_len: req.justification.map_or(0, Vec::len),
+                })
+                .expect(WRITE_CHAN_ERR);
+            cts.cancel();
+            Ok(())
+        }),
+        receive: mpmc::never(),
+    };
+    let mut def = noop_definition();
+    def.nodes = 4;
+    def.fifo_limit = 100;
+    def.new_timer = Box::new(move |_| (timer_rx.clone(), Box::new(|| {})));
+
+    let (_input_tx, input_rx) = mpmc::bounded::<i64>(1);
+    let (_source_tx, source_rx) = mpmc::bounded::<i64>(1);
+    assert!(matches!(
+        qbft::run(&token, &def, &transport, &0, 2, input_rx, source_rx),
+        Err(QbftError::ContextCanceled)
+    ));
+    assert_eq!(
+        record_rx.try_iter().collect::<Vec<_>>(),
+        vec![BroadcastRecord {
+            canceled: false,
+            type_: MSG_ROUND_CHANGE,
+            instance: 0,
+            source: 2,
+            round: 2,
+            value: 0,
+            prepared_round: 0,
+            prepared_value: 0,
+            justification_len: 0,
+        }]
+    );
 }
 
 // Tests quorum/faulty formulas across node counts.
@@ -1323,7 +1467,7 @@ fn duplicate_pre_prepare_rules() {
     def.nodes = 4;
     def.fifo_limit = 100;
     def.is_leader = Box::new(|_, _, process| process == LEADER);
-    def.log_upon_rule = Box::new(move |_, _, round, msg, upon_rule| {
+    def.logger.upon_rule = Box::new(move |_, _, round, msg, upon_rule| {
         println!("UponRule: rule={} round={} ", upon_rule, msg.round());
 
         assert!(upon_rule == UPON_JUSTIFIED_PRE_PREPARE);
@@ -1339,13 +1483,13 @@ fn duplicate_pre_prepare_rules() {
 
         panic!("unexpected round {}", round);
     });
-    def.compare = Arc::new(|_, msg, _, _, return_err, _| {
-        let result = if msg.round() == 1 {
+    def.compare = Arc::new(|req| {
+        let result = if req.qcommit.round() == 1 {
             Err(QbftError::CompareError)
         } else {
             Ok(())
         };
-        return_err.send(result).expect(WRITE_CHAN_ERR);
+        req.return_err.send(result).expect(WRITE_CHAN_ERR);
     });
 
     let (r_chan_tx, r_chan_rx) = mpmc::bounded::<Msg<TestQbft>>(2);
@@ -1695,8 +1839,8 @@ fn compare_success_error_cached_value_source_and_timeout() {
     let (_vs_tx, vs_rx) = mpmc::bounded::<i64>(1);
     let timer = mpmc::never();
     let mut def = noop_definition();
-    def.compare = Arc::new(|_, _, _, _, return_err, _| {
-        return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
+    def.compare = Arc::new(|req| {
+        req.return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
     });
     assert!(matches!(
         compare(cts.token(), &def, &msg, &vs_rx, 0, &timer),
@@ -1704,8 +1848,8 @@ fn compare_success_error_cached_value_source_and_timeout() {
     ));
 
     let mut def = noop_definition();
-    def.compare = Arc::new(|_, _, _, _, return_err, _| {
-        let return_err = return_err.clone();
+    def.compare = Arc::new(|req| {
+        let return_err = req.return_err.clone();
         thread::spawn(move || {
             thread::sleep(Duration::from_millis(10));
             return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
@@ -1717,8 +1861,8 @@ fn compare_success_error_cached_value_source_and_timeout() {
     ));
 
     let mut def = noop_definition();
-    def.compare = Arc::new(|_, _, _, _, return_err, _| {
-        return_err
+    def.compare = Arc::new(|req| {
+        req.return_err
             .send(Err(QbftError::CompareError))
             .expect(WRITE_CHAN_ERR);
     });
@@ -1730,19 +1874,17 @@ fn compare_success_error_cached_value_source_and_timeout() {
     let (vs_tx, vs_rx) = mpmc::bounded::<i64>(1);
     vs_tx.send(42).expect(WRITE_CHAN_ERR);
     let mut def = noop_definition();
-    def.compare = Arc::new(
-        |_, _, input_value_source_ch, input_value_source, return_err, return_value| {
-            let cached = if *input_value_source == 0 {
-                let value = input_value_source_ch.recv().expect(READ_CHAN_ERR);
-                return_value.send(value).expect(WRITE_CHAN_ERR);
-                value
-            } else {
-                *input_value_source
-            };
-            assert_eq!(42, cached);
-            return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
-        },
-    );
+    def.compare = Arc::new(|req| {
+        let cached = if *req.input_value_source == 0 {
+            let value = req.input_value_source_ch.recv().expect(READ_CHAN_ERR);
+            req.return_value.send(value).expect(WRITE_CHAN_ERR);
+            value
+        } else {
+            *req.input_value_source
+        };
+        assert_eq!(42, cached);
+        req.return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
+    });
     assert!(matches!(
         compare(cts.token(), &def, &msg, &vs_rx, 0, &timer),
         (42, Ok(()))
@@ -1751,21 +1893,19 @@ fn compare_success_error_cached_value_source_and_timeout() {
     let (vs_tx, vs_rx) = mpmc::bounded::<i64>(1);
     vs_tx.send(43).expect(WRITE_CHAN_ERR);
     let mut def = noop_definition();
-    def.compare = Arc::new(
-        |_, _, input_value_source_ch, input_value_source, return_err, return_value| {
-            let cached = if *input_value_source == 0 {
-                let value = input_value_source_ch.recv().expect(READ_CHAN_ERR);
-                return_value.send(value).expect(WRITE_CHAN_ERR);
-                value
-            } else {
-                *input_value_source
-            };
-            assert_eq!(43, cached);
-            return_err
-                .send(Err(QbftError::CompareError))
-                .expect(WRITE_CHAN_ERR);
-        },
-    );
+    def.compare = Arc::new(|req| {
+        let cached = if *req.input_value_source == 0 {
+            let value = req.input_value_source_ch.recv().expect(READ_CHAN_ERR);
+            req.return_value.send(value).expect(WRITE_CHAN_ERR);
+            value
+        } else {
+            *req.input_value_source
+        };
+        assert_eq!(43, cached);
+        req.return_err
+            .send(Err(QbftError::CompareError))
+            .expect(WRITE_CHAN_ERR);
+    });
     assert!(matches!(
         compare(cts.token(), &def, &msg, &vs_rx, 0, &timer),
         (43, Err(QbftError::CompareError))
@@ -1774,9 +1914,9 @@ fn compare_success_error_cached_value_source_and_timeout() {
     let (timer_tx, timer_rx) = mpmc::bounded(1);
     timer_tx.send(time::Instant::now()).expect(WRITE_CHAN_ERR);
     let mut def = noop_definition();
-    def.compare = Arc::new(|_, _, _, _, return_err, _| {
+    def.compare = Arc::new(|req| {
         thread::sleep(Duration::from_millis(20));
-        let _ = return_err.send(Ok(()));
+        let _ = req.return_err.send(Ok(()));
     });
     assert!(matches!(
         compare(cts.token(), &def, &msg, &vs_rx, 44, &timer_rx),
@@ -1795,11 +1935,11 @@ fn compare_timeout_does_not_wait_for_blocked_callback() {
     timer_tx.send(time::Instant::now()).expect(WRITE_CHAN_ERR);
 
     let mut def = noop_definition();
-    def.compare = Arc::new(|ct, _, _, _, return_err, _| {
-        while !ct.is_canceled() {
+    def.compare = Arc::new(|req| {
+        while !req.ct.is_canceled() {
             thread::sleep(Duration::from_millis(1));
         }
-        let _ = return_err.send(Ok(()));
+        let _ = req.return_err.send(Ok(()));
     });
 
     let (result_tx, result_rx) = mpmc::bounded(1);
@@ -1829,7 +1969,7 @@ fn compare_callback_exit_without_status_waits_for_timer() {
     let (callback_done_tx, callback_done_rx) = mpmc::bounded(1);
 
     let mut def = noop_definition();
-    def.compare = Arc::new(move |_, _, _, _, _, _| {
+    def.compare = Arc::new(move |_| {
         callback_done_tx.send(()).expect(WRITE_CHAN_ERR);
     });
 
@@ -1871,13 +2011,13 @@ fn compare_parent_cancel_cancels_callback_token() {
     let (token_cancelled_tx, token_cancelled_rx) = mpmc::bounded(1);
 
     let mut def = noop_definition();
-    def.compare = Arc::new(move |ct, _, _, _, return_err, _| {
+    def.compare = Arc::new(move |req| {
         compare_started_tx.send(()).expect(WRITE_CHAN_ERR);
-        while !ct.is_canceled() {
+        while !req.ct.is_canceled() {
             thread::sleep(Duration::from_millis(1));
         }
         token_cancelled_tx.send(()).expect(WRITE_CHAN_ERR);
-        let _ = return_err.send(Ok(()));
+        let _ = req.return_err.send(Ok(()));
     });
 
     let (result_tx, result_rx) = mpmc::bounded(1);
@@ -1923,19 +2063,19 @@ fn run_parent_cancel_during_compare_does_not_prepare() {
     def.nodes = 4;
     def.fifo_limit = 100;
     def.is_leader = Box::new(|_, _, process| process == LEADER);
-    def.compare = Arc::new(move |ct, _, _, _, return_err, _| {
+    def.compare = Arc::new(move |req| {
         compare_started_tx.send(()).expect(WRITE_CHAN_ERR);
-        while !ct.is_canceled() {
+        while !req.ct.is_canceled() {
             thread::sleep(Duration::from_millis(1));
         }
         compare_cancelled_tx.send(()).expect(WRITE_CHAN_ERR);
-        let _ = return_err.send(Ok(()));
+        let _ = req.return_err.send(Ok(()));
     });
 
     let (broadcast_tx, broadcast_rx) = mpmc::bounded(1);
     let transport = Transport {
-        broadcast: Box::new(move |_, type_, _, _, _, _, _, _, _| {
-            broadcast_tx.send(type_).expect(WRITE_CHAN_ERR);
+        broadcast: Box::new(move |req| {
+            broadcast_tx.send(req.type_).expect(WRITE_CHAN_ERR);
             Ok(())
         }),
         receive: receive_rx,
@@ -2052,83 +2192,78 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
         },
         compare: {
             let pending_compares = pending_compares.clone();
-            Arc::new(
-                move |_,
-                      qcommit,
-                      input_value_source_ch,
-                      input_value_source,
-                      return_err,
-                      return_value| {
-                    let _guard = PendingCompareGuard {
-                        pending_compares: pending_compares.clone(),
-                    };
-                    let leader_value_source = qcommit.value_source().expect("value source");
-                    let local = if *input_value_source == 0 {
-                        let value = input_value_source_ch.recv().expect(READ_CHAN_ERR);
-                        return_value.send(value).expect(WRITE_CHAN_ERR);
-                        value
-                    } else {
-                        *input_value_source
-                    };
+            Arc::new(move |req| {
+                let _guard = PendingCompareGuard {
+                    pending_compares: pending_compares.clone(),
+                };
+                let leader_value_source = req.qcommit.value_source().expect("value source");
+                let local = if *req.input_value_source == 0 {
+                    let value = req.input_value_source_ch.recv().expect(READ_CHAN_ERR);
+                    req.return_value.send(value).expect(WRITE_CHAN_ERR);
+                    value
+                } else {
+                    *req.input_value_source
+                };
 
-                    if leader_value_source != local {
-                        return_err
-                            .send(Err(QbftError::CompareError))
-                            .expect(WRITE_CHAN_ERR);
-                        return;
-                    }
+                if leader_value_source != local {
+                    req.return_err
+                        .send(Err(QbftError::CompareError))
+                        .expect(WRITE_CHAN_ERR);
+                    return;
+                }
 
-                    return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
-                },
-            )
+                req.return_err.send(Ok(())).expect(WRITE_CHAN_ERR);
+            })
         },
         nodes: N as i64,
         fifo_limit: FIFO_LIMIT,
-        log_round_change: {
-            let clock = clock.clone();
-            let trace = trace.clone();
-            let pending_timer_actions = pending_timer_actions.clone();
-            Box::new(move |_, process, round, new_round, upon_rule, _| {
-                if upon_rule == UPON_ROUND_TIMEOUT {
-                    complete_timer_action(&pending_timer_actions);
-                }
+        logger: QbftLogger {
+            round_change: {
+                let clock = clock.clone();
+                let trace = trace.clone();
+                let pending_timer_actions = pending_timer_actions.clone();
+                Box::new(move |_, process, round, new_round, upon_rule, _| {
+                    if upon_rule == UPON_ROUND_TIMEOUT {
+                        complete_timer_action(&pending_timer_actions);
+                    }
 
-                trace.push(format!(
-                    "{:?} - {}@{} change to {} ~= {}",
-                    clock.elapsed(),
-                    process,
-                    round,
-                    new_round,
-                    upon_rule
-                ));
-            })
-        },
-        log_unjust: {
-            let trace = trace.clone();
-            Box::new(move |_, process, msg| {
-                trace.push(format!("Unjust: process={} msg={:?}", process, msg))
-            })
-        },
-        log_upon_rule: {
-            let clock = clock.clone();
-            let trace = trace.clone();
-            let pending_compares = pending_compares.clone();
-            Box::new(move |_, process, round, msg, upon_rule| {
-                if upon_rule == UPON_JUSTIFIED_PRE_PREPARE {
-                    pending_compares.fetch_add(1, Ordering::SeqCst);
-                }
+                    trace.push(format!(
+                        "{:?} - {}@{} change to {} ~= {}",
+                        clock.elapsed(),
+                        process,
+                        round,
+                        new_round,
+                        upon_rule
+                    ));
+                })
+            },
+            unjust: {
+                let trace = trace.clone();
+                Box::new(move |_, process, msg| {
+                    trace.push(format!("Unjust: process={} msg={:?}", process, msg))
+                })
+            },
+            upon_rule: {
+                let clock = clock.clone();
+                let trace = trace.clone();
+                let pending_compares = pending_compares.clone();
+                Box::new(move |_, process, round, msg, upon_rule| {
+                    if upon_rule == UPON_JUSTIFIED_PRE_PREPARE {
+                        pending_compares.fetch_add(1, Ordering::SeqCst);
+                    }
 
-                trace.push(format!(
-                    "{:?} {} => {}@{} -> {}@{} ~= {}",
-                    clock.elapsed(),
-                    msg.source(),
-                    msg.type_(),
-                    msg.round(),
-                    process,
-                    round,
-                    upon_rule
-                ));
-            })
+                    trace.push(format!(
+                        "{:?} {} => {}@{} -> {}@{} ~= {}",
+                        clock.elapsed(),
+                        msg.source(),
+                        msg.type_(),
+                        msg.round(),
+                        process,
+                        round,
+                        upon_rule
+                    ));
+                })
+            },
         },
     });
 
@@ -2141,35 +2276,33 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
             let clock = clock.clone();
 
             let transport = Transport {
-                broadcast: Box::new(
-                    move |_, type_, instance, source, round, value, pr, pv, justification| {
-                        if round > MAX_ROUND {
-                            return Err(QbftError::MaxRoundReached);
-                        }
+                broadcast: Box::new(move |req| {
+                    if req.round > MAX_ROUND {
+                        return Err(QbftError::MaxRoundReached);
+                    }
 
-                        trace.push(format!(
-                            "{:?} {} => {}@{}",
-                            clock.elapsed(),
-                            source,
-                            type_,
-                            round
-                        ));
-                        let msg = new_msg(
-                            type_,
-                            *instance,
-                            source,
-                            round,
-                            *value,
-                            *value,
-                            pr,
-                            *pv,
-                            justification,
-                        );
-                        sender.send(msg.clone()).expect(WRITE_CHAN_ERR);
-                        broadcast_tx.send(msg).expect(WRITE_CHAN_ERR);
-                        Ok(())
-                    },
-                ),
+                    trace.push(format!(
+                        "{:?} {} => {}@{}",
+                        clock.elapsed(),
+                        req.source,
+                        req.type_,
+                        req.round
+                    ));
+                    let msg = new_msg(
+                        req.type_,
+                        *req.instance,
+                        req.source,
+                        req.round,
+                        *req.value,
+                        *req.value,
+                        req.prepared_round,
+                        *req.prepared_value,
+                        req.justification,
+                    );
+                    sender.send(msg.clone()).expect(WRITE_CHAN_ERR);
+                    broadcast_tx.send(msg).expect(WRITE_CHAN_ERR);
+                    Ok(())
+                }),
                 receive: receiver,
             };
 

@@ -44,16 +44,8 @@ pub trait QbftTypes: 'static {
     type Compare: Clone + Send + Sync + Default + 'static;
 }
 
-type CompareFn<T> = dyn Fn(
-        /* ct */ &CancellationToken,
-        /* qcommit */ &Msg<T>,
-        /* input_value_source_ch */ &mpmc::Receiver<<T as QbftTypes>::Compare>,
-        /* input_value_source */ &<T as QbftTypes>::Compare,
-        /* return_err */ &mpmc::Sender<Result<()>>,
-        /* return_value */ &mpmc::Sender<<T as QbftTypes>::Compare>,
-    ) + Send
-    + Sync
-    + 'static;
+type BroadcastFn<T> = dyn for<'a> Fn(BroadcastRequest<'a, T>) -> Result<()> + Send + Sync;
+type CompareFn<T> = dyn for<'a> Fn(CompareRequest<'a, T>) + Send + Sync + 'static;
 
 #[derive(Debug, thiserror::Error)]
 pub enum QbftError {
@@ -91,25 +83,61 @@ pub struct Transport<T: QbftTypes> {
     /// processes in the system (including this process).
     ///
     /// Note that an error exits the algorithm.
-    pub broadcast: Box<
-        dyn Fn(
-                /* ct */ &CancellationToken,
-                /* type_ */ MessageType,
-                /* instance */ &T::Instance,
-                /* source */ i64,
-                /* round */ i64,
-                /* value */ &T::Value,
-                /* pr */ i64,
-                /* pv */ &T::Value,
-                /* justification */ Option<&Vec<Msg<T>>>,
-            ) -> Result<()>
-            + Send
-            + Sync,
-    >,
+    pub broadcast: Box<BroadcastFn<T>>,
 
     /// Receive returns a stream of messages received
     /// from other processes in the system (including this process).
     pub receive: mpmc::Receiver<Msg<T>>,
+}
+
+/// Input passed to `Transport::broadcast`.
+pub struct BroadcastRequest<'a, T: QbftTypes> {
+    pub ct: &'a CancellationToken,
+    pub type_: MessageType,
+    pub instance: &'a T::Instance,
+    pub source: i64,
+    pub round: i64,
+    pub value: &'a T::Value,
+    pub prepared_round: i64,
+    pub prepared_value: &'a T::Value,
+    pub justification: Option<&'a Vec<Msg<T>>>,
+}
+
+/// Input passed to `Definition::compare`.
+pub struct CompareRequest<'a, T: QbftTypes> {
+    pub ct: &'a CancellationToken,
+    pub qcommit: &'a Msg<T>,
+    pub input_value_source_ch: &'a mpmc::Receiver<T::Compare>,
+    pub input_value_source: &'a T::Compare,
+    pub return_err: &'a mpmc::Sender<Result<()>>,
+    pub return_value: &'a mpmc::Sender<T::Compare>,
+}
+
+/// Debug hooks for QBFT state transitions and rejected messages.
+pub struct QbftLogger<T: QbftTypes> {
+    pub upon_rule: Box<
+        dyn Fn(
+                /* instance */ &T::Instance,
+                /* process */ i64,
+                /* round */ i64,
+                /* msg */ &Msg<T>,
+                /* upon_rule */ UponRule,
+            ) + Send
+            + Sync,
+    >,
+    pub round_change: Box<
+        dyn Fn(
+                /* instance */ &T::Instance,
+                /* process */ i64,
+                /* round */ i64,
+                /* new_round */ i64,
+                /* upon_rule */ UponRule,
+                /* msgs */ &Vec<Msg<T>>,
+            ) + Send
+            + Sync,
+    >,
+    pub unjust:
+        Box<dyn Fn(/* instance */ &T::Instance, /* process */ i64, /* msg */ Msg<T>) + Send + Sync>,
 }
 
 /// Defines the consensus system parameters that are external to the qbft
@@ -150,34 +178,8 @@ pub struct Definition<T: QbftTypes> {
             + Sync,
     >,
 
-    /// Allows debug logging of triggered upon rules on message receipt.
-    /// It includes the rule that triggered it and all received round messages.
-    pub log_upon_rule: Box<
-        dyn Fn(
-                /* instance */ &T::Instance,
-                /* process */ i64,
-                /* round */ i64,
-                /* msg */ &Msg<T>,
-                /* upon_rule */ UponRule,
-            ) + Send
-            + Sync,
-    >,
-    /// Allows debug logging of round changes.
-    pub log_round_change: Box<
-        dyn Fn(
-                /* instance */ &T::Instance,
-                /* process */ i64,
-                /* round */ i64,
-                /* new_round */ i64,
-                /* upon_rule */ UponRule,
-                /* msgs */ &Vec<Msg<T>>,
-            ) + Send
-            + Sync,
-    >,
-
-    /// Allows debug logging of unjust messages.
-    pub log_unjust:
-        Box<dyn Fn(/* instance */ &T::Instance, /* process */ i64, /* msg */ Msg<T>) + Send + Sync>,
+    /// Debug logging callbacks.
+    pub logger: QbftLogger<T>,
 
     /// Total number of nodes/processes participating in consensus.
     pub nodes: i64,
@@ -346,31 +348,33 @@ pub fn run<T: QbftTypes>(
     // Broadcasts a non-ROUND-CHANGE message for current round.
     let broadcast_msg =
         |type_: MessageType, value: &T::Value, justification: Option<&Vec<Msg<T>>>| {
-            (t.broadcast)(
+            let default_value = T::Value::default();
+            (t.broadcast)(BroadcastRequest {
                 ct,
                 type_,
                 instance,
-                process,
-                round.get(),
+                source: process,
+                round: round.get(),
                 value,
-                0,
-                &Default::default(),
+                prepared_round: 0,
+                prepared_value: &default_value,
                 justification,
-            )
+            })
         };
     // Broadcasts a ROUND-CHANGE message with current state.
     let broadcast_round_change = || {
-        (t.broadcast)(
+        let default_value = T::Value::default();
+        (t.broadcast)(BroadcastRequest {
             ct,
-            MSG_ROUND_CHANGE,
+            type_: MSG_ROUND_CHANGE,
             instance,
-            process,
-            round.get(),
-            &Default::default(),
-            prepared_round.get(),
-            &prepared_value.borrow(),
-            prepared_justification.borrow().as_ref(),
-        )
+            source: process,
+            round: round.get(),
+            value: &default_value,
+            prepared_round: prepared_round.get(),
+            prepared_value: &prepared_value.borrow(),
+            justification: prepared_justification.borrow().as_ref(),
+        })
     };
 
     // Broadcasts a PRE-PREPARE message with current state
@@ -414,7 +418,7 @@ pub fn run<T: QbftTypes>(
             return;
         }
 
-        (d.log_round_change)(
+        (d.logger.round_change)(
             instance,
             process,
             round.get(),
@@ -477,7 +481,7 @@ pub fn run<T: QbftTypes>(
 
                 // Drop unjust messages
                 if !is_justified(d, instance, &msg, compare_failure_round) {
-                    (d.log_unjust)(instance, process, msg);
+                    (d.logger.unjust)(instance, process, msg);
                     continue;
                 }
 
@@ -490,7 +494,7 @@ pub fn run<T: QbftTypes>(
                     continue;
                 }
 
-                (d.log_upon_rule)(instance, process, round.get(), &msg, rule);
+                (d.logger.upon_rule)(instance, process, round.get(), &msg, rule);
 
                 match rule {
                     // Algorithm 2:1
@@ -668,14 +672,14 @@ fn compare<T: QbftTypes>(
     // caller-provided compare callback ignores cancellation and never reports,
     // it may outlive this call.
     thread::spawn(move || {
-        (compare)(
-            &compare_ct,
-            &msg,
-            &input_value_source_ch,
-            &input_value_source,
-            &compare_err_tx,
-            &compare_value_tx,
-        );
+        (compare)(CompareRequest {
+            ct: &compare_ct,
+            qcommit: &msg,
+            input_value_source_ch: &input_value_source_ch,
+            input_value_source: &input_value_source,
+            return_err: &compare_err_tx,
+            return_value: &compare_value_tx,
+        });
     });
 
     loop {
