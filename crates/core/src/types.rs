@@ -704,51 +704,52 @@ impl TryFrom<(&DutyType, &pbcore::ParSignedDataSet)> for ParSignedDataSet {
     }
 }
 
-/// SignedDataSet is a set of signed duty data.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SignedDataSet<T: SignedData>(HashMap<PubKey, T>);
+/// A set of signed duty data.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct SignedDataSet(HashMap<PubKey, Box<dyn SignedData>>);
 
-impl<T> Default for SignedDataSet<T>
-where
-    T: SignedData,
-{
-    fn default() -> Self {
-        Self(HashMap::default())
-    }
-}
-
-impl<T> SignedDataSet<T>
-where
-    T: SignedData,
-{
+impl SignedDataSet {
     /// Create a new signed data set.
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Get a signed data by public key.
-    pub fn get(&self, pub_key: &PubKey) -> Option<&T> {
-        self.0.get(pub_key)
+    pub fn get(&self, pub_key: &PubKey) -> Option<&dyn SignedData> {
+        self.0.get(pub_key).map(|b| b.as_ref())
     }
 
     /// Insert a signed data.
-    pub fn insert(&mut self, pub_key: PubKey, signed_data: T) {
-        self.0.insert(pub_key, signed_data);
+    pub fn insert(&mut self, pub_key: PubKey, signed_data: impl SignedData) {
+        self.0.insert(pub_key, Box::new(signed_data));
     }
 
     /// Remove a signed data by public key.
-    pub fn remove(&mut self, pub_key: &PubKey) -> Option<T> {
+    pub fn remove(&mut self, pub_key: &PubKey) -> Option<Box<dyn SignedData>> {
         self.0.remove(pub_key)
     }
 
-    /// Inner signed data set.
-    pub fn inner(&self) -> &HashMap<PubKey, T> {
-        &self.0
+    /// Iterate over the signed data set by reference.
+    pub fn iter(&self) -> std::collections::hash_map::Iter<'_, PubKey, Box<dyn SignedData>> {
+        self.0.iter()
     }
+}
 
-    /// Inner signed data set.
-    pub fn inner_mut(&mut self) -> &mut HashMap<PubKey, T> {
-        &mut self.0
+impl IntoIterator for SignedDataSet {
+    type IntoIter = std::collections::hash_map::IntoIter<PubKey, Box<dyn SignedData>>;
+    type Item = (PubKey, Box<dyn SignedData>);
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a SignedDataSet {
+    type IntoIter = std::collections::hash_map::Iter<'a, PubKey, Box<dyn SignedData>>;
+    type Item = (&'a PubKey, &'a Box<dyn SignedData>);
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
     }
 }
 
@@ -1052,9 +1053,10 @@ mod tests {
     fn signed_data_set() {
         let mut signed_data_set = SignedDataSet::new();
         signed_data_set.insert(PubKey::new([42u8; PK_LEN]), MockSignedData);
+        let expected: &dyn SignedData = &MockSignedData;
         assert_eq!(
             signed_data_set.get(&PubKey::new([42u8; PK_LEN])),
-            Some(&MockSignedData)
+            Some(expected)
         );
     }
 

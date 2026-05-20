@@ -23,10 +23,14 @@ pub mod version;
 /// Duty deadline tracking and notification.
 pub mod deadline;
 
-/// parsigdb
+/// Implementations of ParSigDB.
 pub mod parsigdb;
 
+/// Implementations of AggSigDB.
+pub mod aggsigdb;
+
 mod parsigex_codec;
+
 // SSZ codec operates on compile-time-constant byte sizes and offsets.
 // Arithmetic is bounded and casts from `usize` to `u32` are safe because all
 // sizes are well below `u32::MAX`.
