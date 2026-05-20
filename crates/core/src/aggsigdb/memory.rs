@@ -1,10 +1,9 @@
-use tokio::sync::{Mutex, Notify};
-
-use crate::types;
+use crate::{deadline::Deadliner, types};
 use std::{
     collections::{HashMap, hash_map::Entry},
     sync::Arc,
 };
+use tokio::sync::{Mutex, Notify};
 
 /// Errors for the in-memory AggSigDB implementation.
 #[derive(Debug, thiserror::Error)]
@@ -22,19 +21,43 @@ pub enum Error {
 #[derive(Clone)]
 pub struct MemDB(Arc<MemDBInner>);
 
-#[derive(Debug)]
 struct MemDBInner {
     data: Mutex<HashMap<(types::Duty, types::PubKey), Box<dyn types::SignedData>>>,
+    deadliner: Arc<dyn Deadliner>,
     notify: Notify,
 }
 
 impl MemDB {
     /// Creates a new in-memory AggSigDB instance.
-    pub fn new() -> Self {
-        Self(Arc::new(MemDBInner {
+    pub fn new(deadliner: Arc<dyn Deadliner>) -> Self {
+        let this = Self(Arc::new(MemDBInner {
             data: Mutex::new(HashMap::new()),
+            deadliner: Arc::clone(&deadliner),
             notify: Notify::new(),
-        }))
+        }));
+
+        match deadliner.c() {
+            Some(evictions) => {
+                tokio::spawn(Self::evict(Arc::downgrade(&this.0), evictions));
+            }
+            None => {
+                // TODO: In Charon, `deadliner.c()` always returns `Some`
+            }
+        }
+
+        this
+    }
+
+    async fn evict(
+        inner: std::sync::Weak<MemDBInner>,
+        mut evictions: tokio::sync::mpsc::Receiver<types::Duty>,
+    ) {
+        while let Some(duty) = evictions.recv().await {
+            let Some(inner) = inner.upgrade() else {
+                return;
+            };
+            inner.data.lock().await.retain(|(d, _), _| d != &duty);
+        }
     }
 
     /// Stores aggregated signed duty data set.
@@ -44,6 +67,9 @@ impl MemDB {
         pub_key: types::PubKey,
         signed_data: Box<dyn types::SignedData>,
     ) -> Result<(), Error> {
+        // TODO(charon): Distinguish between no deadline supported vs already expired.
+        let _ = self.0.deadliner.add(duty.clone()).await;
+
         let mut data = self.0.data.lock().await;
 
         match data.entry((duty, pub_key)) {
@@ -91,16 +117,27 @@ impl MemDB {
 #[cfg(test)]
 mod tests {
     use crate::{
+        deadline::Deadliner,
         signeddata::SignedDataError,
         types::{Duty, PubKey, Signature, SignedData, SlotNumber},
     };
+    use async_trait::async_trait;
+    use std::sync::Arc;
+    use tokio::sync;
 
+    /// Some mock signed data type for testing.
     #[derive(Debug, Clone, PartialEq, Eq)]
-    struct MockSignedData;
+    struct MockSignedData(u8);
+
+    impl MockSignedData {
+        fn for_test(value: u8) -> Box<dyn SignedData> {
+            Box::new(Self(value))
+        }
+    }
 
     impl SignedData for MockSignedData {
         fn signature(&self) -> Result<Signature, SignedDataError> {
-            Ok(Signature::new([42u8; 96]))
+            Ok(Signature::new([self.0; 96]))
         }
 
         fn set_signature(&self, _signature: Signature) -> Result<Self, SignedDataError> {
@@ -108,16 +145,45 @@ mod tests {
         }
 
         fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
-            Ok([42u8; 32])
+            Ok([self.0; 32])
+        }
+    }
+
+    /// Deadliner that hands out a caller-supplied receiver, allowing tests to
+    /// drive eviction by sending on the paired sender.
+    struct TestDeadliner(std::sync::Mutex<Option<sync::mpsc::Receiver<Duty>>>);
+
+    impl TestDeadliner {
+        fn new(receiver: sync::mpsc::Receiver<Duty>) -> Arc<Self> {
+            Arc::new(Self(std::sync::Mutex::new(Some(receiver))))
+        }
+
+        /// Creates a deadliner that never returns any duties to evict, so no
+        /// eviction will occur.
+        fn never() -> Arc<Self> {
+            Arc::new(Self(std::sync::Mutex::new(None)))
+        }
+    }
+
+    #[async_trait]
+    impl Deadliner for TestDeadliner {
+        async fn add(&self, _duty: Duty) -> bool {
+            true
+        }
+
+        fn c(&self) -> Option<sync::mpsc::Receiver<Duty>> {
+            self.0.lock().unwrap().take()
         }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn store_and_wait() {
-        let store = super::MemDB::new();
+    async fn wait_then_store() {
+        let deadliner = TestDeadliner::never();
+        let store = super::MemDB::new(deadliner);
+
         let duty = Duty::new_attester_duty(SlotNumber::new(1));
         let pub_key = PubKey::new([7u8; 48]);
-        let signed_data: Box<dyn SignedData> = Box::new(MockSignedData);
+        let signed_data: Box<dyn SignedData> = MockSignedData::for_test(0);
 
         let reader = {
             let store = store.clone();
@@ -138,5 +204,60 @@ mod tests {
 
         assert!(write.is_ok());
         assert_eq!(read, signed_data);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn store_evict_wait_then_store() {
+        let (evict_tx, evict_rx) = sync::mpsc::channel::<Duty>(1);
+        let deadliner = TestDeadliner::new(evict_rx);
+
+        let store = super::MemDB::new(deadliner);
+
+        let duty = Duty::new_attester_duty(SlotNumber::new(1));
+        let pub_key = PubKey::new([7u8; 48]);
+        let first = MockSignedData::for_test(1);
+        let second = MockSignedData::for_test(2);
+
+        store
+            .store(duty.clone(), pub_key, first.clone())
+            .await
+            .unwrap();
+
+        // The eviction task runs concurrently, so we poll until the specific
+        // data gone, so new readers are guaranteed to not observe it.
+        evict_tx.send(duty.clone()).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while store
+                .0
+                .data
+                .lock()
+                .await
+                .contains_key(&(duty.clone(), pub_key))
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("eviction was not applied in time");
+
+        let reader = {
+            let store = store.clone();
+            let duty = duty.clone();
+
+            tokio::spawn(async move { store.wait_for(duty, pub_key).await })
+        };
+
+        // The eviction has been applied, so wait_for has no entry to return and must
+        // block.
+        tokio::task::yield_now().await;
+        assert!(!reader.is_finished(), "wait_for should block until store");
+
+        // Store new data for the same duty and pubkey. The reader should wake up and
+        // return the new data, not the evicted data.
+        store.store(duty, pub_key, second.clone()).await.unwrap();
+
+        let read = reader.await.unwrap();
+        assert_eq!(read, second);
+        assert_ne!(read, first);
     }
 }
