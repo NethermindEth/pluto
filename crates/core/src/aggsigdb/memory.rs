@@ -205,7 +205,6 @@ mod tests {
         let reader = {
             let store = store.clone();
             let duty = duty.clone();
-            let pub_key = pub_key.clone();
 
             tokio::spawn(async move { store.wait_for(duty, pub_key).await })
         };
