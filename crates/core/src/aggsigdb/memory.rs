@@ -260,4 +260,60 @@ mod tests {
         assert_eq!(read, second);
         assert_ne!(read, first);
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn write_read() {
+        let store = super::MemDB::new(TestDeadliner::never());
+
+        let duty = Duty::new_proposer_duty(SlotNumber::new(10));
+        let pub_key = PubKey::new([7u8; 48]);
+        let signed_data = MockSignedData::for_test(42);
+
+        store
+            .store(duty.clone(), pub_key, signed_data.clone())
+            .await
+            .unwrap();
+
+        let result = store.wait_for(duty, pub_key).await;
+        assert_eq!(result, signed_data);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cannot_overwrite() {
+        let store = super::MemDB::new(TestDeadliner::never());
+
+        let duty = Duty::new_proposer_duty(SlotNumber::new(10));
+        let pub_key = PubKey::new([7u8; 48]);
+        let first = MockSignedData::for_test(1);
+        let second = MockSignedData::for_test(2);
+
+        store.store(duty.clone(), pub_key, first).await.unwrap();
+
+        let err = store
+            .store(duty, pub_key, second)
+            .await
+            .expect_err("storing mismatching data should fail");
+        assert!(matches!(err, super::Error::MismatchingData));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn write_idempotent() {
+        let store = super::MemDB::new(TestDeadliner::never());
+
+        let duty = Duty::new_proposer_duty(SlotNumber::new(10));
+        let pub_key = PubKey::new([7u8; 48]);
+        let signed_data = MockSignedData::for_test(42);
+
+        store
+            .store(duty.clone(), pub_key, signed_data.clone())
+            .await
+            .unwrap();
+        store
+            .store(duty.clone(), pub_key, signed_data.clone())
+            .await
+            .unwrap();
+
+        let result = store.wait_for(duty, pub_key).await;
+        assert_eq!(result, signed_data);
+    }
 }
