@@ -288,6 +288,62 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct FailSignatureMock;
+
+    impl SignedData for FailSignatureMock {
+        fn signature(&self) -> std::result::Result<CoreSig, SignedDataError> {
+            Err(SignedDataError::UnknownType)
+        }
+
+        fn set_signature(&self, _: CoreSig) -> std::result::Result<Self, SignedDataError>
+        where
+            Self: Sized,
+        {
+            Ok(Self)
+        }
+
+        fn set_signature_boxed(
+            &self,
+            sig: CoreSig,
+        ) -> std::result::Result<Box<dyn SignedData>, SignedDataError> {
+            Ok(Box::new(self.set_signature(sig)?))
+        }
+
+        fn message_root(&self) -> std::result::Result<[u8; 32], SignedDataError> {
+            Ok([0u8; 32])
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct FailSetSignatureMock {
+        sig: [u8; 96],
+    }
+
+    impl SignedData for FailSetSignatureMock {
+        fn signature(&self) -> std::result::Result<CoreSig, SignedDataError> {
+            Ok(CoreSig::new(self.sig))
+        }
+
+        fn set_signature(&self, _: CoreSig) -> std::result::Result<Self, SignedDataError>
+        where
+            Self: Sized,
+        {
+            Err(SignedDataError::UnknownType)
+        }
+
+        fn set_signature_boxed(
+            &self,
+            _: CoreSig,
+        ) -> std::result::Result<Box<dyn SignedData>, SignedDataError> {
+            Err(SignedDataError::UnknownType)
+        }
+
+        fn message_root(&self) -> std::result::Result<[u8; 32], SignedDataError> {
+            Ok([0u8; 32])
+        }
+    }
+
     fn mock_par_sigs(count: usize, share_idx: u64) -> Vec<ParSignedData> {
         (0..count)
             .map(|_| ParSignedData::new(MockSignedData { sig: [0u8; 96] }, share_idx))
@@ -645,5 +701,144 @@ mod tests {
             let got = &received[pubkey];
             assert_eq!(*got.as_ref(), *exp_bytes);
         }
+    }
+
+    #[tokio::test]
+    async fn verify_fn_error() {
+        let ctx = make_bls_context();
+        let par_sigs: Vec<ParSignedData> = ctx
+            .sigs
+            .iter()
+            .map(|(idx, sig)| ParSignedData::new(MockSignedData { sig: *sig }, u64::from(*idx)))
+            .collect();
+
+        let fail_verify: VerifyFn =
+            Arc::new(|_, _| Box::pin(async { Err(SigAggError::InvalidThreshold) }));
+        let agg = Aggregator::new(3, fail_verify).unwrap();
+        let mut set = HashMap::new();
+        set.insert(PubKey::new(ctx.pubkey), par_sigs);
+        let err = agg
+            .aggregate(&Duty::new_attester_duty(1.into()), &set)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SigAggError::InvalidThreshold));
+    }
+
+    #[tokio::test]
+    async fn subscriber_error() {
+        let ctx = make_bls_context();
+        let par_sigs: Vec<ParSignedData> = ctx
+            .sigs
+            .iter()
+            .map(|(idx, sig)| ParSignedData::new(MockSignedData { sig: *sig }, u64::from(*idx)))
+            .collect();
+
+        let mut agg = Aggregator::new(3, noop_verify()).unwrap();
+        agg.subscribe(Arc::new(|_, _| {
+            Box::pin(async { Err(SigAggError::InvalidThreshold) })
+        }));
+        let mut set = HashMap::new();
+        set.insert(PubKey::new(ctx.pubkey), par_sigs);
+        let err = agg
+            .aggregate(&Duty::new_attester_duty(1.into()), &set)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SigAggError::InvalidThreshold));
+    }
+
+    #[tokio::test]
+    async fn signature_from_core_error() {
+        let agg = Aggregator::new(3, noop_verify()).unwrap();
+        let par_sigs: Vec<ParSignedData> = (0..3u64)
+            .map(|i| ParSignedData::new(FailSignatureMock, i))
+            .collect();
+        let mut set = HashMap::new();
+        set.insert(PubKey::new([1u8; 48]), par_sigs);
+        let err = agg
+            .aggregate(&Duty::new_attester_duty(1.into()), &set)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SigAggError::SignatureFromCore { .. }));
+    }
+
+    #[tokio::test]
+    async fn set_signature_error() {
+        let ctx = make_bls_context();
+        let par_sigs: Vec<ParSignedData> = ctx
+            .sigs
+            .iter()
+            .map(|(idx, sig)| {
+                ParSignedData::new(FailSetSignatureMock { sig: *sig }, u64::from(*idx))
+            })
+            .collect();
+
+        let agg = Aggregator::new(3, noop_verify()).unwrap();
+        let mut set = HashMap::new();
+        set.insert(PubKey::new(ctx.pubkey), par_sigs);
+        let err = agg
+            .aggregate(&Duty::new_attester_duty(1.into()), &set)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SigAggError::SetSignature { .. }));
+    }
+
+    #[tokio::test]
+    async fn versioned_attestation_validator_index_preference() {
+        let json = fs::read_to_string(fixture_path(
+            "TestJSONSerialisation_VersionedAttestation.json.golden",
+        ))
+        .unwrap();
+        let with_idx: VersionedAttestation = serde_json::from_str(&json).unwrap();
+        assert!(
+            with_idx.0.validator_index.is_some(),
+            "fixture must carry validator_index"
+        );
+
+        let mut inner_no_idx = with_idx.0.clone();
+        inner_no_idx.validator_index = None;
+        let without_idx = VersionedAttestation::new(inner_no_idx).unwrap();
+
+        let ctx = make_bls_context();
+        // First par_sig has no validator_index; second has it — template must prefer
+        // the latter.
+        let par_sigs: Vec<ParSignedData> = ctx
+            .sigs
+            .iter()
+            .enumerate()
+            .map(|(i, (idx, sig))| {
+                let template: &dyn SignedData = if i == 0 { &without_idx } else { &with_idx };
+                let signed = template.set_signature_boxed(CoreSig::new(*sig)).unwrap();
+                ParSignedData::new_boxed(signed, u64::from(*idx))
+            })
+            .collect();
+
+        let captured: Arc<Mutex<Option<Box<dyn SignedData>>>> = Arc::new(Mutex::new(None));
+        let captured_clone = captured.clone();
+
+        let mut agg = Aggregator::new(3, noop_verify()).unwrap();
+        agg.subscribe(Arc::new(move |_, set: &AggSignedDataSet| {
+            let captured_clone = captured_clone.clone();
+            let output = set.values().next().unwrap().clone();
+            Box::pin(async move {
+                *captured_clone.lock().unwrap() = Some(output);
+                Ok(())
+            })
+        }));
+
+        let mut set = HashMap::new();
+        set.insert(PubKey::new(ctx.pubkey), par_sigs);
+        agg.aggregate(&Duty::new_attester_duty(1.into()), &set)
+            .await
+            .unwrap();
+
+        let output = captured.lock().unwrap().take().unwrap();
+        let att = output
+            .as_any()
+            .downcast_ref::<VersionedAttestation>()
+            .expect("output must be VersionedAttestation");
+        assert!(
+            att.0.validator_index.is_some(),
+            "output must preserve validator_index from template"
+        );
     }
 }
