@@ -41,7 +41,7 @@ impl MemDB {
                 tokio::spawn(Self::evict(Arc::downgrade(&this.0), evictions));
             }
             None => {
-                // TODO: In Charon, `deadliner.c()` always returns `Some`
+                tracing::warn!("Deadliner channel is not available");
             }
         }
 
@@ -62,12 +62,13 @@ impl MemDB {
 
     /// Stores aggregated signed duty data set.
     pub async fn store(&self, duty: types::Duty, set: types::SignedDataSet) -> Result<(), Error> {
+        let mut data = self.0.data.lock().await;
+
         // TODO(charon): Distinguish between no deadline supported vs already expired.
         let _ = self.0.deadliner.add(duty.clone()).await;
 
-        let mut data = self.0.data.lock().await;
-
         // NOTE: Partial insertions on error match the semantics of Charon.
+        let mut inserted = false;
         let result = set.into_iter().try_for_each(|(pub_key, signed_data)| {
             let key = (duty.clone(), pub_key);
 
@@ -78,20 +79,25 @@ impl MemDB {
                 Entry::Occupied(_) => Ok(()),
                 Entry::Vacant(slot) => {
                     slot.insert(signed_data);
+                    inserted = true;
                     Ok(())
                 }
             }
         });
 
-        // TODO: Optimize wake to only occur if new data was actually inserted,
-        // and to only wake those who are waiting for the specific duty and pubkey,
-        // rather than all waiters.
-        self.0.notify.notify_waiters();
+        if inserted {
+            // TODO: Optimize to only wake those who are waiting for the specific duty and
+            // pubkey, rather than all waiters.
+            self.0.notify.notify_waiters();
+        }
 
         result
     }
 
     /// Blocks and returns the aggregated signed duty data when available.
+    ///
+    /// Might block indefinitely if no data is ever stored for the given duty
+    /// and public key.
     pub async fn wait_for(
         &self,
         duty: types::Duty,
