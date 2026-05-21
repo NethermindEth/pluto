@@ -22,29 +22,58 @@ pub enum SigAggError {
     EmptySet,
 
     /// A validator entry has fewer partial signatures than the threshold.
-    #[error("require threshold signatures")]
-    RequireThresholdSignatures,
+    #[error("validator {pubkey}: require threshold signatures")]
+    RequireThresholdSignatures {
+        /// The validator public key.
+        pubkey: PubKey,
+    },
 
     /// After deduplicating by share index, fewer distinct signatures remain
     /// than the threshold.
-    #[error("number of partial signatures less than threshold")]
-    InsufficientDistinctSignatures,
+    #[error("validator {pubkey}: number of partial signatures less than threshold")]
+    InsufficientDistinctSignatures {
+        /// The validator public key.
+        pubkey: PubKey,
+    },
 
     /// Failed to extract the BLS signature bytes from a partial signed data.
-    #[error("signature from core: {0}")]
-    SignatureFromCore(SignedDataError),
+    #[error("validator {pubkey}: signature from core: {source}")]
+    SignatureFromCore {
+        /// The validator public key.
+        pubkey: PubKey,
+        /// The underlying error.
+        #[source]
+        source: SignedDataError,
+    },
 
     /// Failed to inject the aggregated signature into the output signed data.
-    #[error("set signature: {0}")]
-    SetSignature(SignedDataError),
+    #[error("validator {pubkey}: set signature: {source}")]
+    SetSignature {
+        /// The validator public key.
+        pubkey: PubKey,
+        /// The underlying error.
+        #[source]
+        source: SignedDataError,
+    },
 
     /// BLS threshold aggregation failed.
-    #[error("threshold aggregate: {0}")]
-    ThresholdAggregate(pluto_crypto::types::Error),
+    #[error("validator {pubkey}: threshold aggregate: {source}")]
+    ThresholdAggregate {
+        /// The validator public key.
+        pubkey: PubKey,
+        /// The underlying error.
+        #[source]
+        source: pluto_crypto::types::Error,
+    },
 
     /// Share index does not fit in a u8.
-    #[error("invalid share index: {0}")]
-    InvalidShareIndex(u64),
+    #[error("validator {pubkey}: invalid share index: {idx}")]
+    InvalidShareIndex {
+        /// The validator public key.
+        pubkey: PubKey,
+        /// The out-of-range index value.
+        idx: u64,
+    },
 }
 
 type Result<T> = std::result::Result<T, SigAggError>;
@@ -130,35 +159,44 @@ impl Aggregator {
         par_sigs: &[ParSignedData],
     ) -> Result<Box<dyn SignedData>> {
         if (par_sigs.len() as u64) < self.threshold {
-            return Err(SigAggError::RequireThresholdSignatures);
+            return Err(SigAggError::RequireThresholdSignatures { pubkey: *pubkey });
         }
 
         // Deduplicate by share index; last writer wins (matches Go behaviour).
         let mut bls_sigs: HashMap<u64, Signature> = HashMap::new();
         for par_sig in par_sigs {
-            let sig = par_sig
-                .signed_data
-                .signature()
-                .map_err(SigAggError::SignatureFromCore)?;
+            let sig =
+                par_sig
+                    .signed_data
+                    .signature()
+                    .map_err(|e| SigAggError::SignatureFromCore {
+                        pubkey: *pubkey,
+                        source: e,
+                    })?;
             bls_sigs.insert(par_sig.share_idx, sig);
         }
 
         if (bls_sigs.len() as u64) < self.threshold {
-            return Err(SigAggError::InsufficientDistinctSignatures);
+            return Err(SigAggError::InsufficientDistinctSignatures { pubkey: *pubkey });
         }
 
         let bls_map: HashMap<u8, [u8; 96]> = bls_sigs
             .iter()
             .map(|(idx, sig)| {
-                let idx_u8 =
-                    u8::try_from(*idx).map_err(|_| SigAggError::InvalidShareIndex(*idx))?;
+                let idx_u8 = u8::try_from(*idx).map_err(|_| SigAggError::InvalidShareIndex {
+                    pubkey: *pubkey,
+                    idx: *idx,
+                })?;
                 Ok((idx_u8, *sig.as_ref()))
             })
             .collect::<Result<_>>()?;
 
-        let agg_bytes = BlstImpl
-            .threshold_aggregate(&bls_map)
-            .map_err(SigAggError::ThresholdAggregate)?;
+        let agg_bytes = BlstImpl.threshold_aggregate(&bls_map).map_err(|e| {
+            SigAggError::ThresholdAggregate {
+                pubkey: *pubkey,
+                source: e,
+            }
+        })?;
 
         // Prefer a VersionedAttestation that has validator_index set — the local VC
         // includes it, peers don't. Falling back to parSigs[0] is fine for all other
@@ -179,7 +217,10 @@ impl Aggregator {
 
         let agg_signed = template
             .set_signature_boxed(Signature::new(agg_bytes))
-            .map_err(SigAggError::SetSignature)?;
+            .map_err(|e| SigAggError::SetSignature {
+                pubkey: *pubkey,
+                source: e,
+            })?;
 
         (self.verify_fn)(pubkey, agg_signed.as_ref()).await?;
 
@@ -344,8 +385,17 @@ mod tests {
             .aggregate(&Duty::new_attester_duty(1.into()), set)
             .await
             .unwrap_err();
-        assert!(matches!(err, SigAggError::RequireThresholdSignatures));
-        assert_eq!(err.to_string(), "require threshold signatures");
+        assert!(matches!(
+            err,
+            SigAggError::RequireThresholdSignatures { .. }
+        ));
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "validator 0x{}: require threshold signatures",
+                "00".repeat(48)
+            )
+        );
     }
 
     #[tokio::test]
@@ -375,10 +425,16 @@ mod tests {
             .aggregate(&Duty::new_attester_duty(1.into()), set)
             .await
             .unwrap_err();
-        assert!(matches!(err, SigAggError::InsufficientDistinctSignatures));
+        assert!(matches!(
+            err,
+            SigAggError::InsufficientDistinctSignatures { .. }
+        ));
         assert_eq!(
             err.to_string(),
-            "number of partial signatures less than threshold"
+            format!(
+                "validator 0x{}: number of partial signatures less than threshold",
+                "00".repeat(48)
+            )
         );
     }
 
