@@ -131,7 +131,7 @@ impl Aggregator {
     pub async fn aggregate(
         &self,
         duty: &Duty,
-        set: HashMap<PubKey, Vec<ParSignedData>>,
+        set: &HashMap<PubKey, Vec<ParSignedData>>,
     ) -> Result<()> {
         if set.is_empty() {
             return Err(SigAggError::EmptySet);
@@ -139,7 +139,7 @@ impl Aggregator {
 
         let mut output = AggSignedDataSet::new();
 
-        for (pubkey, par_sigs) in &set {
+        for (pubkey, par_sigs) in set {
             let signed = self.aggregate_one(pubkey, par_sigs).await?;
             output.insert(*pubkey, signed);
         }
@@ -347,7 +347,7 @@ mod tests {
 
         let mut set = HashMap::new();
         set.insert(PubKey::new(pubkey), par_sigs);
-        agg.aggregate(duty, set).await.unwrap();
+        agg.aggregate(duty, &set).await.unwrap();
 
         let received_sig = received.lock().unwrap().take().unwrap();
         assert_eq!(*received_sig.as_ref(), expected_agg);
@@ -382,7 +382,7 @@ mod tests {
         let mut set = HashMap::new();
         set.insert(PubKey::new([0u8; 48]), vec![]);
         let err = agg
-            .aggregate(&Duty::new_attester_duty(1.into()), set)
+            .aggregate(&Duty::new_attester_duty(1.into()), &set)
             .await
             .unwrap_err();
         assert!(matches!(
@@ -422,7 +422,7 @@ mod tests {
         let mut set = HashMap::new();
         set.insert(PubKey::new([0u8; 48]), mock_par_sigs(4, 0));
         let err = agg
-            .aggregate(&Duty::new_attester_duty(1.into()), set)
+            .aggregate(&Duty::new_attester_duty(1.into()), &set)
             .await
             .unwrap_err();
         assert!(matches!(
@@ -442,7 +442,7 @@ mod tests {
     async fn empty_set() {
         let agg = Aggregator::new(3, noop_verify()).unwrap();
         let err = agg
-            .aggregate(&Duty::new_attester_duty(1.into()), HashMap::new())
+            .aggregate(&Duty::new_attester_duty(1.into()), &HashMap::new())
             .await
             .unwrap_err();
         assert!(matches!(err, SigAggError::EmptySet));
@@ -490,7 +490,7 @@ mod tests {
 
         let mut set = HashMap::new();
         set.insert(PubKey::new(pubkey), par_sigs);
-        agg.aggregate(&Duty::new_attester_duty(1.into()), set)
+        agg.aggregate(&Duty::new_attester_duty(1.into()), &set)
             .await
             .unwrap();
 
@@ -633,7 +633,7 @@ mod tests {
             })
         }));
 
-        agg.aggregate(&Duty::new_attester_duty(1.into()), agg_set)
+        agg.aggregate(&Duty::new_attester_duty(1.into()), &agg_set)
             .await
             .unwrap();
 
