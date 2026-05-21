@@ -21,8 +21,10 @@ pub enum Error {
 #[derive(Clone)]
 pub struct MemDB(Arc<MemDBInner>);
 
+type SignedDataByPubKey = HashMap<types::PubKey, Box<dyn types::SignedData>>;
+
 struct MemDBInner {
-    data: Mutex<HashMap<(types::Duty, types::PubKey), Box<dyn types::SignedData>>>,
+    data: Mutex<HashMap<types::Duty, SignedDataByPubKey>>,
     deadliner: Arc<dyn Deadliner>,
     notify: Notify,
 }
@@ -56,7 +58,7 @@ impl MemDB {
             let Some(inner) = inner.upgrade() else {
                 return;
             };
-            inner.data.lock().await.retain(|(d, _), _| d != &duty);
+            inner.data.lock().await.remove(&duty);
         }
     }
 
@@ -69,21 +71,20 @@ impl MemDB {
 
         // NOTE: Partial insertions on error match the semantics of Charon.
         let mut inserted = false;
-        let result = set.into_iter().try_for_each(|(pub_key, signed_data)| {
-            let key = (duty.clone(), pub_key);
-
-            match data.entry(key) {
-                Entry::Occupied(slot) if slot.get().as_ref() != signed_data.as_ref() => {
-                    Err(Error::MismatchingData)
-                }
-                Entry::Occupied(_) => Ok(()),
-                Entry::Vacant(slot) => {
-                    slot.insert(signed_data);
-                    inserted = true;
-                    Ok(())
-                }
-            }
-        });
+        let for_duty = data.entry(duty).or_default();
+        let result =
+            set.into_iter()
+                .try_for_each(|(pub_key, signed_data)| match for_duty.entry(pub_key) {
+                    Entry::Vacant(slot) => {
+                        slot.insert(signed_data);
+                        inserted = true;
+                        Ok(())
+                    }
+                    Entry::Occupied(slot) if slot.get() != &signed_data => {
+                        Err(Error::MismatchingData)
+                    }
+                    Entry::Occupied(_) => Ok(()),
+                });
 
         if inserted {
             // TODO: Optimize to only wake those who are waiting for the specific duty and
@@ -103,7 +104,6 @@ impl MemDB {
         duty: types::Duty,
         pub_key: types::PubKey,
     ) -> Box<dyn types::SignedData> {
-        let k = (duty, pub_key);
         loop {
             // Register interest before checking the map so that a concurrent `store` either
             // (a) inserts before we check and we observe the value, or (b) inserts after
@@ -113,14 +113,24 @@ impl MemDB {
             notified.as_mut().enable();
 
             {
-                let data = self.0.data.lock().await;
-                if let Some(data) = data.get(&k) {
+                if let Some(data) = self.get(&duty, &pub_key).await {
                     return data.clone();
                 }
             }
 
             notified.await;
         }
+    }
+
+    /// Immediately returns the aggregated signed duty data if available,
+    /// without blocking.
+    pub async fn get(
+        &self,
+        duty: &types::Duty,
+        pub_key: &types::PubKey,
+    ) -> Option<Box<dyn types::SignedData>> {
+        let data = self.0.data.lock().await;
+        data.get(duty).and_then(|inner| inner.get(pub_key)).cloned()
     }
 }
 
@@ -301,13 +311,7 @@ mod tests {
         // data gone, so new readers are guaranteed to not observe it.
         evict_tx.send(duty.clone()).await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while store
-                .0
-                .data
-                .lock()
-                .await
-                .contains_key(&(duty.clone(), pub_key))
-            {
+            while store.get(&duty, &pub_key).await.is_some() {
                 tokio::task::yield_now().await;
             }
         })
