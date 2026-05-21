@@ -228,10 +228,7 @@ pub struct MemDB {
 
 impl MemDB {
     /// Creates a new in-memory DutyDB.
-    /// cancel: cancellation token that shuts down the DB, it should be a child
-    /// token of the caller token to prevent further cancellation
-    /// propagation
-    pub fn new(deadliner: Arc<dyn Deadliner>, cancel: CancellationToken) -> Self {
+    pub fn new(deadliner: Arc<dyn Deadliner>, cancel: &CancellationToken) -> Self {
         let deadliner_rx = deadliner.c().expect(
             "Deadliner::c() returned None — the receiver was already consumed. Each MemDB must use a fresh Deadliner.",
         );
@@ -251,7 +248,7 @@ impl MemDB {
             proposer_notify: Notify::new(),
             aggregation_notify: Notify::new(),
             contrib_notify: Notify::new(),
-            cancel,
+            cancel: cancel.child_token(),
             deadliner,
         }
     }
@@ -775,11 +772,11 @@ mod tests {
     }
 
     fn make_db() -> MemDB {
-        MemDB::new(Arc::new(NoopDeadliner), CancellationToken::new())
+        MemDB::new(Arc::new(NoopDeadliner), &CancellationToken::new())
     }
 
     fn make_db_with_deadliner(deadliner: Arc<dyn Deadliner>) -> MemDB {
-        MemDB::new(deadliner, CancellationToken::new())
+        MemDB::new(deadliner, &CancellationToken::new())
     }
 
     fn att_data(slot: u64, committee_index: u64, validator_index: u64) -> AttestationData {
