@@ -41,6 +41,10 @@ pub enum SigAggError {
     /// BLS threshold aggregation failed.
     #[error("threshold aggregate: {0}")]
     ThresholdAggregate(pluto_crypto::types::Error),
+
+    /// Share index does not fit in a u8.
+    #[error("invalid share index: {0}")]
+    InvalidShareIndex(u64),
 }
 
 type Result<T> = std::result::Result<T, SigAggError>;
@@ -143,12 +147,14 @@ impl Aggregator {
             return Err(SigAggError::InsufficientDistinctSignatures);
         }
 
-        // Convert to u8-indexed map required by the crypto crate.
-        #[allow(clippy::cast_possible_truncation)]
         let bls_map: HashMap<u8, [u8; 96]> = bls_sigs
             .iter()
-            .map(|(idx, sig)| (*idx as u8, *sig.as_ref()))
-            .collect();
+            .map(|(idx, sig)| {
+                let idx_u8 =
+                    u8::try_from(*idx).map_err(|_| SigAggError::InvalidShareIndex(*idx))?;
+                Ok((idx_u8, *sig.as_ref()))
+            })
+            .collect::<Result<_>>()?;
 
         let agg_bytes = BlstImpl
             .threshold_aggregate(&bls_map)
