@@ -61,30 +61,36 @@ impl MemDB {
     }
 
     /// Stores aggregated signed duty data set.
-    pub async fn store(
-        &self,
-        duty: types::Duty,
-        pub_key: types::PubKey,
-        signed_data: Box<dyn types::SignedData>,
-    ) -> Result<(), Error> {
+    pub async fn store(&self, duty: types::Duty, set: types::SignedDataSet) -> Result<(), Error> {
         // TODO(charon): Distinguish between no deadline supported vs already expired.
         let _ = self.0.deadliner.add(duty.clone()).await;
 
         let mut data = self.0.data.lock().await;
 
-        match data.entry((duty, pub_key)) {
-            Entry::Occupied(slot) if slot.get().as_ref() != signed_data.as_ref() => {
-                Err(Error::MismatchingData)
-            }
-            Entry::Occupied(_) => Ok(()),
-            Entry::Vacant(slot) => {
-                slot.insert(signed_data);
-                // TODO: Optimize to only wake those who are waiting for this specific duty and
-                // pubkey
-                self.0.notify.notify_waiters();
-                Ok(())
-            }
-        }
+        let result = set
+            .into_iter()
+            .map(|(pub_key, signed_data)| {
+                let key = (duty.clone(), pub_key);
+
+                match data.entry(key) {
+                    Entry::Occupied(slot) if slot.get().as_ref() != signed_data.as_ref() => {
+                        Err(Error::MismatchingData)
+                    }
+                    Entry::Occupied(_) => Ok(()),
+                    Entry::Vacant(slot) => {
+                        slot.insert(signed_data);
+                        Ok(())
+                    }
+                }
+            })
+            .collect::<Result<Vec<_>, _>>();
+
+        // TODO: Optimize wake to only occur if new data was actually inserted,
+        // and to only wake those who are waiting for the specific duty and pubkey,
+        // rather than all waiters.
+        self.0.notify.notify_waiters();
+
+        result.map(|_| ())
     }
 
     /// Blocks and returns the aggregated signed duty data when available.
@@ -119,7 +125,7 @@ mod tests {
     use crate::{
         deadline::Deadliner,
         signeddata::SignedDataError,
-        types::{Duty, PubKey, Signature, SignedData, SlotNumber},
+        types::{Duty, PubKey, Signature, SignedData, SignedDataSet, SlotNumber},
     };
     use async_trait::async_trait;
     use std::sync::Arc;
@@ -128,12 +134,6 @@ mod tests {
     /// Some mock signed data type for testing.
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct MockSignedData(u8);
-
-    impl MockSignedData {
-        fn for_test(value: u8) -> Box<dyn SignedData> {
-            Box::new(Self(value))
-        }
-    }
 
     impl SignedData for MockSignedData {
         fn signature(&self) -> Result<Signature, SignedDataError> {
@@ -146,6 +146,18 @@ mod tests {
 
         fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
             Ok([self.0; 32])
+        }
+    }
+
+    impl MockSignedData {
+        fn to_set(&self, pub_key: PubKey) -> SignedDataSet {
+            let mut set = SignedDataSet::new();
+            set.insert(pub_key, self.clone());
+            set
+        }
+
+        fn boxed(&self) -> Box<dyn SignedData> {
+            Box::new(self.clone())
         }
     }
 
@@ -182,15 +194,15 @@ mod tests {
 
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
-        let signed_data = MockSignedData::for_test(42);
+        let signed_data = MockSignedData(42);
 
         store
-            .store(duty.clone(), pub_key, signed_data.clone())
+            .store(duty.clone(), signed_data.to_set(pub_key))
             .await
             .unwrap();
 
         let result = store.wait_for(duty, pub_key).await;
-        assert_eq!(result, signed_data);
+        assert_eq!(result, signed_data.boxed());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -200,7 +212,7 @@ mod tests {
 
         let duty = Duty::new_attester_duty(SlotNumber::new(1));
         let pub_key = PubKey::new([7u8; 48]);
-        let signed_data: Box<dyn SignedData> = MockSignedData::for_test(0);
+        let signed_data = MockSignedData(0);
 
         let reader = {
             let store = store.clone();
@@ -215,11 +227,11 @@ mod tests {
         tokio::task::yield_now().await;
         assert!(!reader.is_finished(), "wait_for should block until store");
 
-        let write = store.store(duty, pub_key, signed_data.clone()).await;
+        let write = store.store(duty, signed_data.to_set(pub_key)).await;
         let read = reader.await.unwrap();
 
         assert!(write.is_ok());
-        assert_eq!(read, signed_data);
+        assert_eq!(read, signed_data.boxed());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -228,13 +240,16 @@ mod tests {
 
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
-        let first = MockSignedData::for_test(1);
-        let second = MockSignedData::for_test(2);
+        let first = MockSignedData(1);
+        let second = MockSignedData(2);
 
-        store.store(duty.clone(), pub_key, first).await.unwrap();
+        store
+            .store(duty.clone(), first.to_set(pub_key))
+            .await
+            .unwrap();
 
         let err = store
-            .store(duty, pub_key, second)
+            .store(duty, second.to_set(pub_key))
             .await
             .expect_err("storing mismatching data should fail");
         assert!(matches!(err, super::Error::MismatchingData));
@@ -246,19 +261,19 @@ mod tests {
 
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
-        let signed_data = MockSignedData::for_test(42);
+        let signed_data = MockSignedData(42);
 
         store
-            .store(duty.clone(), pub_key, signed_data.clone())
+            .store(duty.clone(), signed_data.to_set(pub_key))
             .await
             .unwrap();
         store
-            .store(duty.clone(), pub_key, signed_data.clone())
+            .store(duty.clone(), signed_data.to_set(pub_key))
             .await
             .unwrap();
 
         let result = store.wait_for(duty, pub_key).await;
-        assert_eq!(result, signed_data);
+        assert_eq!(result, signed_data.boxed());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -270,11 +285,11 @@ mod tests {
 
         let duty = Duty::new_attester_duty(SlotNumber::new(1));
         let pub_key = PubKey::new([7u8; 48]);
-        let first = MockSignedData::for_test(1);
-        let second = MockSignedData::for_test(2);
+        let first = MockSignedData(1);
+        let second = MockSignedData(2);
 
         store
-            .store(duty.clone(), pub_key, first.clone())
+            .store(duty.clone(), first.to_set(pub_key))
             .await
             .unwrap();
 
@@ -309,11 +324,11 @@ mod tests {
 
         // Store new data for the same duty and pubkey. The reader should wake up and
         // return the new data, not the evicted data.
-        store.store(duty, pub_key, second.clone()).await.unwrap();
+        store.store(duty, second.to_set(pub_key)).await.unwrap();
 
         let read = reader.await.unwrap();
-        assert_eq!(read, second);
-        assert_ne!(read, first);
+        assert_eq!(read, second.boxed());
+        assert_ne!(read, first.boxed());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -323,7 +338,7 @@ mod tests {
         let store = super::MemDB::new(TestDeadliner::never());
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
-        let signed_data = MockSignedData::for_test(42);
+        let signed_data = MockSignedData(42);
 
         let readers: Vec<_> = (0..N)
             .map(|_| {
@@ -344,13 +359,13 @@ mod tests {
 
         // A single store unblocks all readers.
         store
-            .store(duty, pub_key, signed_data.clone())
+            .store(duty, signed_data.to_set(pub_key))
             .await
             .unwrap();
 
         for reader in readers {
             let read = reader.await.unwrap();
-            assert_eq!(read, signed_data);
+            assert_eq!(read, signed_data.boxed());
         }
     }
 
@@ -359,10 +374,10 @@ mod tests {
         let store = super::MemDB::new(TestDeadliner::never());
 
         let duty_a = Duty::new_proposer_duty(SlotNumber::new(10));
-        let data_a = MockSignedData::for_test(1);
+        let data_a = MockSignedData(1);
 
         let duty_b = Duty::new_attester_duty(SlotNumber::new(20));
-        let data_b = MockSignedData::for_test(2);
+        let data_b = MockSignedData(2);
 
         let pub_key = PubKey::new([7u8; 48]);
 
@@ -377,7 +392,7 @@ mod tests {
 
         // Storing an unrelated key wakes readers, which block again since the store is
         // unrelated.
-        store.store(duty_b, pub_key, data_b.clone()).await.unwrap();
+        store.store(duty_b, data_b.to_set(pub_key)).await.unwrap();
 
         tokio::task::yield_now().await;
         assert!(
@@ -386,10 +401,10 @@ mod tests {
         );
 
         // Storing the actual key unblocks the reader.
-        store.store(duty_a, pub_key, data_a.clone()).await.unwrap();
+        store.store(duty_a, data_a.to_set(pub_key)).await.unwrap();
 
         let read = reader.await.unwrap();
-        assert_eq!(read, data_a);
-        assert_ne!(read, data_b);
+        assert_eq!(read, data_a.boxed());
+        assert_ne!(read, data_b.boxed());
     }
 }
