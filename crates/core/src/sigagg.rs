@@ -210,7 +210,7 @@ impl Aggregator {
                     .signed_data
                     .as_any()
                     .downcast_ref::<VersionedAttestation>()?;
-                att.0.validator_index?;
+                att.0.validator_index?; // return an error if validator_index is not set
                 Some(ps.signed_data.as_ref())
             })
             .unwrap_or_else(|| par_sigs[0].signed_data.as_ref());
