@@ -76,7 +76,7 @@ pub enum SigAggError {
     },
 }
 
-type Result<T> = std::result::Result<T, SigAggError>;
+pub type Result<T> = std::result::Result<T, SigAggError>;
 
 /// Per-duty output: one aggregated [`SignedData`] per validator public key.
 pub type AggSignedDataSet = HashMap<PubKey, Box<dyn SignedData>>;
