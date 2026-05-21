@@ -130,6 +130,9 @@ impl Aggregator {
 
     /// Aggregates the partially signed duty data for the set of DVs and
     /// notifies all subscribers.
+    ///
+    /// If aggregation fails for any validator the entire call returns that
+    /// error immediately — no partial results are emitted.
     pub async fn aggregate(
         &self,
         duty: &Duty,
