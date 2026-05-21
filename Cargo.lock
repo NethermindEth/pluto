@@ -5766,6 +5766,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pluto-featureset"
+version = "1.7.1"
+dependencies = [
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "pluto-frost"
 version = "1.7.1"
 dependencies = [

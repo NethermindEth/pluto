@@ -11,6 +11,7 @@ members = [
     "crates/eth2api",
     "crates/eth2util",
     "crates/eth1wrap",
+    "crates/featureset",
     "crates/k1util",
     "crates/relay-server",
     "crates/p2p",
@@ -120,6 +121,7 @@ pluto-dkg = { path = "crates/dkg" }
 pluto-eth2api = { path = "crates/eth2api" }
 pluto-eth2util = { path = "crates/eth2util" }
 pluto-eth1wrap = { path = "crates/eth1wrap" }
+pluto-featureset = { path = "crates/featureset" }
 pluto-k1util = { path = "crates/k1util" }
 pluto-relay-server = { path = "crates/relay-server" }
 pluto-ssz = { path = "crates/ssz" }
