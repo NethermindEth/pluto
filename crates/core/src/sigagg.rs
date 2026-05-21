@@ -3,7 +3,7 @@
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
-use tracing::debug;
+use tracing::{debug, info_span};
 
 use crate::{
     signeddata::{SignedDataError, VersionedAttestation},
@@ -191,12 +191,12 @@ impl Aggregator {
             })
             .collect::<Result<_>>()?;
 
-        let agg_bytes = BlstImpl.threshold_aggregate(&bls_map).map_err(|e| {
-            SigAggError::ThresholdAggregate {
+        let agg_bytes = info_span!("tbls.ThresholdAggregate")
+            .in_scope(|| BlstImpl.threshold_aggregate(&bls_map))
+            .map_err(|e| SigAggError::ThresholdAggregate {
                 pubkey: *pubkey,
                 source: e,
-            }
-        })?;
+            })?;
 
         // Prefer a VersionedAttestation that has validator_index set — the local VC
         // includes it, peers don't. Falling back to parSigs[0] is fine for all other
