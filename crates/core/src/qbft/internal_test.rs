@@ -6,7 +6,7 @@ use crate::qbft::{
 use cancellation::CancellationTokenSource;
 use crossbeam::channel as mpmc;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
     fmt::Write as _,
     panic::{self, AssertUnwindSafe},
     sync::{
@@ -31,6 +31,7 @@ const TEST_STREAM_MSG_ROUND: u64 = 11;
 const TEST_STREAM_MSG_VALUE: u64 = 12;
 const TEST_STREAM_MSG_PREPARED_ROUND: u64 = 13;
 const TEST_STREAM_MSG_PREPARED_VALUE: u64 = 14;
+const TRACE_DUMP_LIMIT: usize = 200;
 const TEST_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
 // Wall-clock guard catches lack of harness progress. Fake time still controls
 // protocol progress, so slow-but-progressing parallel runs should not fail.
@@ -42,9 +43,9 @@ type TestMsgRef = Msg<TestQbft>;
 struct TestQbft;
 
 impl QbftTypes for TestQbft {
+    type Compare = i64;
     type Instance = i64;
     type Value = i64;
-    type Compare = i64;
 }
 
 struct PendingCompareGuard {
@@ -661,7 +662,7 @@ fn test_qbft(test: Test) {
 }
 
 #[derive(Clone, Default)]
-struct Trace(Arc<Mutex<Vec<String>>>);
+struct Trace(Arc<Mutex<VecDeque<String>>>);
 
 impl Trace {
     fn new() -> Self {
@@ -669,14 +670,17 @@ impl Trace {
     }
 
     fn push(&self, line: String) {
-        self.0.lock().unwrap().push(line);
+        let mut lines = self.0.lock().unwrap();
+        if lines.len() == TRACE_DUMP_LIMIT {
+            lines.pop_front();
+        }
+        lines.push_back(line);
     }
 
     fn dump(&self) -> String {
         let lines = self.0.lock().unwrap();
-        let start = lines.len().saturating_sub(200);
         let mut out = String::new();
-        for line in &lines[start..] {
+        for line in lines.iter() {
             let _ = writeln!(out, "{line}");
         }
         out
@@ -701,6 +705,10 @@ fn format_run_outcome(outcome: &RunOutcome) -> String {
 
 fn outcome_is_error(outcome: &RunOutcome, expected: fn(&QbftError) -> bool) -> bool {
     matches!(outcome, Ok(Err(err)) if expected(err))
+}
+
+fn assert_upon_rule(expected: UponRule, actual: UponRule) {
+    assert!(actual == expected, "want {expected}, got {actual}");
 }
 
 fn test_seed(test: &Test) -> u64 {
@@ -840,10 +848,9 @@ fn deliver_ready_broadcasts(
         .iter()
         .take_while(|delayed| delayed.deliver_at <= clock.elapsed())
         .count();
-    let ready = pending.drain(..ready_count).collect::<Vec<_>>();
 
-    ready
-        .into_iter()
+    pending
+        .drain(..ready_count)
         .map(|delayed| fanout_broadcast(receives, drop_prob, seed, trace, clock, delayed.msg))
         .sum()
 }
@@ -1554,29 +1561,41 @@ fn idle_run_returns_when_cancelled() {
     ));
 }
 
-// Tests definition validation at the `run` boundary.
-// Expect invalid node count and FIFO limit to return typed errors.
-#[test_case(0, 1, true ; "invalid_nodes")]
-#[test_case(4, 0, false ; "invalid_fifo_limit")]
-fn invalid_definition_rejected(nodes: i64, fifo_limit: i64, invalid_nodes: bool) {
+fn run_with_definition(def: &Definition<TestQbft>) -> Result<()> {
     let cts = CancellationTokenSource::new();
     let transport = noop_transport();
     let (_input_tx, input_rx) = mpmc::bounded::<i64>(1);
     let (_source_tx, source_rx) = mpmc::bounded::<i64>(1);
 
-    let mut def = noop_definition();
-    def.nodes = nodes;
-    def.fifo_limit = fifo_limit;
+    qbft::run(cts.token(), def, &transport, &0, 1, input_rx, source_rx)
+}
 
-    let result = qbft::run(cts.token(), &def, &transport, &0, 1, input_rx, source_rx);
-    if invalid_nodes {
-        assert!(matches!(result, Err(QbftError::InvalidNodes { nodes: 0 })));
-    } else {
-        assert!(matches!(
-            result,
-            Err(QbftError::InvalidFifoLimit { fifo_limit: 0 })
-        ));
-    }
+// Tests definition validation at the `run` boundary.
+// Expect invalid node count to return a typed error.
+#[test]
+fn invalid_nodes_rejected() {
+    let mut def = noop_definition();
+    def.nodes = 0;
+    def.fifo_limit = 1;
+
+    assert!(matches!(
+        run_with_definition(&def),
+        Err(QbftError::InvalidNodes { nodes: 0 })
+    ));
+}
+
+// Tests definition validation at the `run` boundary.
+// Expect invalid FIFO limit to return a typed error.
+#[test]
+fn invalid_fifo_limit_rejected() {
+    let mut def = noop_definition();
+    def.nodes = 4;
+    def.fifo_limit = 0;
+
+    assert!(matches!(
+        run_with_definition(&def),
+        Err(QbftError::InvalidFifoLimit { fifo_limit: 0 })
+    ));
 }
 
 // Tests cancellation under a continuously hot receive channel.
@@ -1646,15 +1665,17 @@ fn classify_rules() {
     def.is_leader = Box::new(make_is_leader(4));
 
     let preprepare = new_msg(MSG_PRE_PREPARE, 0, 1, 1, 1, 0, 0, 0, None);
-    assert!(classify(&def, &0, 1, 2, &HashMap::new(), &preprepare).0 == UPON_JUSTIFIED_PRE_PREPARE);
+    assert_upon_rule(
+        UPON_JUSTIFIED_PRE_PREPARE,
+        classify(&def, &0, 1, 2, &HashMap::new(), &preprepare).0,
+    );
 
-    let prepares = vec![
-        new_msg(MSG_PREPARE, 0, 1, 1, 2, 0, 0, 0, None),
-        new_msg(MSG_PREPARE, 0, 2, 1, 2, 0, 0, 0, None),
-        new_msg(MSG_PREPARE, 0, 3, 1, 2, 0, 0, 0, None),
-    ];
+    let prepares = new_prepare_quorum(1, 2);
     let buffer = buffer_by_source(&prepares);
-    assert!(classify(&def, &0, 1, 2, &buffer, &prepares[2]).0 == UPON_QUORUM_PREPARES);
+    assert_upon_rule(
+        UPON_QUORUM_PREPARES,
+        classify(&def, &0, 1, 2, &buffer, &prepares[2]).0,
+    );
 
     let commits = vec![
         new_msg(MSG_COMMIT, 0, 1, 1, 2, 0, 0, 0, None),
@@ -1662,7 +1683,10 @@ fn classify_rules() {
         new_msg(MSG_COMMIT, 0, 3, 1, 2, 0, 0, 0, None),
     ];
     let buffer = buffer_by_source(&commits);
-    assert!(classify(&def, &0, 1, 2, &buffer, &commits[2]).0 == UPON_QUORUM_COMMITS);
+    assert_upon_rule(
+        UPON_QUORUM_COMMITS,
+        classify(&def, &0, 1, 2, &buffer, &commits[2]).0,
+    );
 
     let future_round_changes = vec![
         new_msg(MSG_ROUND_CHANGE, 0, 1, 3, 0, 0, 0, 0, None),
@@ -1673,15 +1697,11 @@ fn classify_rules() {
         classify(&def, &0, 1, 2, &buffer, &future_round_changes[1]).0 == UPON_F_PLUS1_ROUND_CHANGES
     );
 
-    let unjust_round_changes = vec![
-        new_msg(MSG_ROUND_CHANGE, 0, 1, 1, 0, 0, 2, 9, None),
-        new_msg(MSG_ROUND_CHANGE, 0, 2, 1, 0, 0, 2, 9, None),
-        new_msg(MSG_ROUND_CHANGE, 0, 3, 1, 0, 0, 2, 9, None),
-    ];
+    let unjust_round_changes = new_round_change_quorum(1, 2, 9);
     let buffer = buffer_by_source(&unjust_round_changes);
-    assert!(
-        classify(&def, &0, 1, 2, &buffer, &unjust_round_changes[2]).0
-            == UPON_UNJUST_QUORUM_ROUND_CHANGES
+    assert_upon_rule(
+        UPON_UNJUST_QUORUM_ROUND_CHANGES,
+        classify(&def, &0, 1, 2, &buffer, &unjust_round_changes[2]).0,
     );
 }
 
@@ -1692,33 +1712,21 @@ fn classify_rules() {
 fn justified_qrc_j1_and_j2() {
     let mut def = noop_definition();
     def.nodes = 4;
-    let j1 = vec![
-        new_msg(MSG_ROUND_CHANGE, 0, 1, 2, 0, 0, 0, 0, None),
-        new_msg(MSG_ROUND_CHANGE, 0, 2, 2, 0, 0, 0, 0, None),
-        new_msg(MSG_ROUND_CHANGE, 0, 3, 2, 0, 0, 0, 0, None),
-    ];
+    let j1 = new_round_change_quorum(2, 0, 0);
     assert_eq!(Some(0), contains_justified_qrc(&def, &j1, 2));
     assert_eq!(3, get_justified_qrc(&def, &j1, 2).unwrap().len());
 
-    let j2 = vec![
+    let mut j2 = vec![
         new_msg(MSG_ROUND_CHANGE, 0, 1, 2, 0, 0, 1, 7, None),
         new_msg(MSG_ROUND_CHANGE, 0, 2, 2, 0, 0, 1, 7, None),
         new_msg(MSG_ROUND_CHANGE, 0, 3, 2, 0, 0, 0, 0, None),
-        new_msg(MSG_PREPARE, 0, 1, 1, 7, 0, 0, 0, None),
-        new_msg(MSG_PREPARE, 0, 2, 1, 7, 0, 0, 0, None),
-        new_msg(MSG_PREPARE, 0, 3, 1, 7, 0, 0, 0, None),
     ];
+    j2.extend(new_prepare_quorum(1, 7));
     assert_eq!(Some(7), contains_justified_qrc(&def, &j2, 2));
     assert!(get_justified_qrc(&def, &j2, 2).unwrap().len() >= 6);
 
-    let invalid_pr = vec![
-        new_msg(MSG_ROUND_CHANGE, 0, 1, 2, 0, 0, 2, 7, None),
-        new_msg(MSG_ROUND_CHANGE, 0, 2, 2, 0, 0, 2, 7, None),
-        new_msg(MSG_ROUND_CHANGE, 0, 3, 2, 0, 0, 2, 7, None),
-        new_msg(MSG_PREPARE, 0, 1, 2, 7, 0, 0, 0, None),
-        new_msg(MSG_PREPARE, 0, 2, 2, 7, 0, 0, 0, None),
-        new_msg(MSG_PREPARE, 0, 3, 2, 7, 0, 0, 0, None),
-    ];
+    let mut invalid_pr = new_round_change_quorum(2, 2, 7);
+    invalid_pr.extend(new_prepare_quorum(2, 7));
     assert_eq!(None, contains_justified_qrc(&def, &invalid_pr, 2));
     assert!(get_justified_qrc(&def, &invalid_pr, 2).is_none());
 }
@@ -2344,6 +2352,28 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
         let mut decided = false;
         let mut done = 0;
         let mut last_progress = time::Instant::now();
+        let chain_split_seed = seed_from_label(CHAIN_SPLIT_SEED_LABEL);
+        // The no-consensus halt case must reach round 11; using Go's 1ms tick
+        // here makes this Rust harness exceed its real-time guard, so only that
+        // halt path fast-forwards fake time.
+        let tick = if test.should_halt {
+            Duration::from_millis(100)
+        } else {
+            Duration::from_millis(1)
+        };
+        let timeout_limit = if test.should_halt {
+            let max_round = u32::try_from(MAX_ROUND).expect("MAX_ROUND fits u32");
+            let seconds = 1_u64
+                .checked_shl(
+                    max_round
+                        .checked_add(1)
+                        .expect("MAX_ROUND permits timeout limit"),
+                )
+                .expect("MAX_ROUND permits timeout limit");
+            Duration::from_secs(seconds)
+        } else {
+            Duration::from_secs(60)
+        };
 
         loop {
             mpmc::select! {
@@ -2355,13 +2385,7 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
                         continue;
                     }
                     out_tx.send(msg.clone()).expect(WRITE_CHAN_ERR);
-                    if deterministic_unit(
-                        seed_from_label(CHAIN_SPLIT_SEED_LABEL),
-                        &msg,
-                        *target,
-                        TEST_STREAM_DUPLICATE,
-                    ) < 0.1
-                    {
+                    if deterministic_unit(chain_split_seed, &msg, *target, TEST_STREAM_DUPLICATE) < 0.1 {
                         out_tx.send(msg.clone()).expect(WRITE_CHAN_ERR);
                     }
                 }
@@ -2380,7 +2404,7 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
                     );
                 }
 
-                for commit in q_commit.clone() {
+                for commit in &q_commit {
                     for previous in results.values() {
                         if previous.value() != commit.value() {
                             cts.cancel();
@@ -2420,7 +2444,7 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
                             );
                         }
                     }
-                    results.insert(commit.source(), commit);
+                    results.insert(commit.source(), commit.clone());
                 }
                 count += 1;
                 if count == N {
@@ -2478,26 +2502,9 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
                 // Matches the Go harness throttle; ordering correctness comes
                 // from the pending-work barriers, not this duration.
                 thread::sleep(Duration::from_micros(1));
-                // The no-consensus halt case must reach round 11; using Go's
-                // 1ms tick here makes this Rust harness exceed its real-time
-                // guard, so only that halt path fast-forwards fake time.
-                let tick = if test.should_halt {
-                    Duration::from_millis(100)
-                } else {
-                    Duration::from_millis(1)
-                };
                 clock.advance_and_wait(tick, &pending_timer_actions);
                 last_progress = time::Instant::now();
-                let limit = if test.should_halt {
-                    let max_round = u32::try_from(MAX_ROUND).expect("MAX_ROUND fits u32");
-                    let seconds = 1_u64
-                        .checked_shl(max_round.checked_add(1).expect("MAX_ROUND permits timeout limit"))
-                        .expect("MAX_ROUND permits timeout limit");
-                    Duration::from_secs(seconds)
-                } else {
-                    Duration::from_secs(60)
-                };
-                if clock.elapsed() > limit {
+                if clock.elapsed() > timeout_limit {
                     cts.cancel();
                     clock.cancel();
                     panic!("chain split hang: decided={decided} done={done} count={count} elapsed={:?}\n{}", clock.elapsed(), trace.dump());

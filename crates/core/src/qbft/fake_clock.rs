@@ -139,12 +139,7 @@ impl FakeClock {
 
             for (&id, record) in &inner.clients {
                 if record.deadline <= now {
-                    expired.push((
-                        id,
-                        record.deadline,
-                        record.priority,
-                        record.sender.clone(),
-                    ));
+                    expired.push((id, record.deadline, record.priority, record.sender.clone()));
                 }
             }
 

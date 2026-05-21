@@ -314,9 +314,10 @@ struct DedupKey {
 /// remains active so it can answer later `ROUND_CHANGE` messages with `DECIDED`
 /// catch-up messages.
 ///
-/// `T::Instance` identifies the consensus instance, `T::Value` is the comparable proposed value,
-/// and `T::Compare` is the application value used by `Definition::compare` to compare a
-/// leader proposal with the local input source.
+/// `T::Instance` identifies the consensus instance, `T::Value` is the
+/// comparable proposed value, and `T::Compare` is the application value used by
+/// `Definition::compare` to compare a leader proposal with the local input
+/// source.
 pub fn run<T: QbftTypes>(
     ct: &CancellationToken,
     d: &Definition<T>,
