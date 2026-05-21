@@ -83,7 +83,7 @@ pub type AggSignedDataSet = HashMap<PubKey, Box<dyn SignedData>>;
 
 /// Callback invoked after a successful threshold aggregation for a duty.
 pub type AggSub = Arc<
-    dyn Fn(&Duty, &AggSignedDataSet) -> Pin<Box<dyn Future<Output = Result<()>> + Send + Sync>>
+    dyn Fn(&Duty, &AggSignedDataSet) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>
         + Send
         + Sync
         + 'static,
@@ -91,7 +91,7 @@ pub type AggSub = Arc<
 
 /// Verify callback — checks the aggregated signature against the beacon chain.
 pub type VerifyFn = Arc<
-    dyn Fn(&PubKey, &dyn SignedData) -> Pin<Box<dyn Future<Output = Result<()>> + Send + Sync>>
+    dyn Fn(&PubKey, &dyn SignedData) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>
         + Send
         + Sync
         + 'static,
