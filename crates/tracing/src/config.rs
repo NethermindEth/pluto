@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt};
 
 /// Configuration for the tracing.
 #[derive(Debug, Clone, Default)]
@@ -20,7 +20,7 @@ pub struct TracingConfig {
 }
 
 /// Configuration for the loki logging.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LokiConfig {
     /// URL of the Loki instance.
     pub loki_url: String,
@@ -30,6 +30,31 @@ pub struct LokiConfig {
 
     /// Extra fields to add to the Loki logs.
     pub extra_fields: HashMap<String, String>,
+}
+
+impl fmt::Debug for LokiConfig {
+    // Redacts basic-auth credentials embedded in `loki_url` so the value is
+    // safe to log via `info!(config = ?config)`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LokiConfig")
+            .field("loki_url", &redact_url_userinfo(&self.loki_url))
+            .field("labels", &self.labels)
+            .field("extra_fields", &self.extra_fields)
+            .finish()
+    }
+}
+
+fn redact_url_userinfo(raw: &str) -> String {
+    let Ok(mut url) = tracing_loki::url::Url::parse(raw) else {
+        return raw.to_string();
+    };
+    if url.username().is_empty() && url.password().is_none() {
+        return url.into();
+    }
+    if url.set_username("").is_err() || url.set_password(None).is_err() {
+        return "<redacted: unable to strip credentials>".to_string();
+    }
+    url.into()
 }
 
 /// Configuration for the console logging.
@@ -181,5 +206,41 @@ impl TracingConfig {
     /// Creates a new builder for [`TracingConfig`].
     pub fn builder() -> TracingConfigBuilder {
         TracingConfigBuilder::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn loki_with_url(url: &str) -> LokiConfig {
+        LokiConfig {
+            loki_url: url.to_string(),
+            labels: HashMap::new(),
+            extra_fields: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn debug_redacts_basic_auth_credentials() {
+        let cfg = loki_with_url("https://user:secret@loki.example.com/push");
+        let dbg = format!("{cfg:?}");
+        assert!(!dbg.contains("user"), "username leaked in Debug: {dbg}");
+        assert!(!dbg.contains("secret"), "password leaked in Debug: {dbg}");
+        assert!(dbg.contains("loki.example.com"));
+    }
+
+    #[test]
+    fn debug_preserves_url_without_credentials() {
+        let cfg = loki_with_url("https://loki.example.com/loki/api/v1/push");
+        let dbg = format!("{cfg:?}");
+        assert!(dbg.contains("loki.example.com/loki/api/v1/push"));
+    }
+
+    #[test]
+    fn debug_falls_back_on_unparseable_url() {
+        let cfg = loki_with_url("not a url");
+        let dbg = format!("{cfg:?}");
+        assert!(dbg.contains("not a url"));
     }
 }

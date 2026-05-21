@@ -68,30 +68,6 @@ pub enum Error {
         committee_index: u64,
     },
 
-    /// Mismatched source checkpoint in the hardcoded `committee_index=0`
-    /// compatibility entry.
-    #[error(
-        "clashing attestation data committee_index=0 source: slot={slot} validator_index={validator_index}"
-    )]
-    ClashingAttestationDataCommIdx0Source {
-        /// Slot of the attestation duty.
-        slot: u64,
-        /// Validator index.
-        validator_index: u64,
-    },
-
-    /// Mismatched target checkpoint in the hardcoded `committee_index=0`
-    /// compatibility entry.
-    #[error(
-        "clashing attestation data committee_index=0 target: slot={slot} validator_index={validator_index}"
-    )]
-    ClashingAttestationDataCommIdx0Target {
-        /// Slot of the attestation duty.
-        slot: u64,
-        /// Validator index.
-        validator_index: u64,
-    },
-
     /// Two different sync contributions for the same `(slot,
     /// subcommittee_index, root)`.
     #[error("clashing sync contributions: slot={slot} subcommittee_index={subcommittee_index}")]
@@ -228,10 +204,7 @@ pub struct MemDB {
 
 impl MemDB {
     /// Creates a new in-memory DutyDB.
-    /// cancel: cancellation token that shuts down the DB, it should be a child
-    /// token of the caller token to prevent further cancellation
-    /// propagation
-    pub fn new(deadliner: Arc<dyn Deadliner>, cancel: CancellationToken) -> Self {
+    pub fn new(deadliner: Arc<dyn Deadliner>, cancel: &CancellationToken) -> Self {
         let deadliner_rx = deadliner.c().expect(
             "Deadliner::c() returned None — the receiver was already consumed. Each MemDB must use a fresh Deadliner.",
         );
@@ -251,7 +224,7 @@ impl MemDB {
             proposer_notify: Notify::new(),
             aggregation_notify: Notify::new(),
             contrib_notify: Notify::new(),
-            cancel,
+            cancel: cancel.child_token(),
             deadliner,
         }
     }
@@ -468,8 +441,6 @@ impl State {
 
         self.store_att_pubkey(slot, duty_slot, committee_index, validator_index, pubkey)?;
         self.store_att_data(slot, committee_index, &att.data)?;
-        self.store_att_compat_commidx0(slot, duty_slot, validator_index, pubkey, &att.data)?;
-
         Ok(())
     }
 
@@ -531,82 +502,6 @@ impl State {
             }
         } else {
             self.attestation_duties.insert(att_key, data.clone());
-        }
-        Ok(())
-    }
-
-    // Post-Electra, committee index 0 is the protocol default and well-behaved
-    // VCs request attestation data with committee_index=0. However, some VCs still
-    // request with the actual committee index, so Charon stores both: the real
-    // index (handled by the caller) and a hardcoded-0 entry here. Once all VCs
-    // are fixed this function can be removed.
-    //
-    // The clash check compares only source and target (not the full data)
-    // because a slow beacon node may return stale heads mid-loop, causing
-    // different validators to see different beacon block roots. Source/target
-    // mismatches are still a real error.
-    //
-    // See: https://ethereum.github.io/beacon-APIs/#/Validator/produceAttestationData
-    fn store_att_compat_commidx0(
-        &mut self,
-        slot: u64,
-        duty_slot: u64,
-        validator_index: u64,
-        pubkey: PubKey,
-        data: &phase0::AttestationData,
-    ) -> Result<()> {
-        let pk_key0 = PkKey {
-            slot,
-            committee_index: 0,
-            validator_index,
-        };
-        if let Some(&existing) = self.attestation_pub_keys.get(&pk_key0) {
-            if existing != pubkey {
-                warn!(
-                    slot,
-                    validator_index, "dutydb: clashing public key at committee_index=0"
-                );
-                return Err(Error::ClashingPublicKey {
-                    slot,
-                    committee_index: 0,
-                    validator_index,
-                });
-            }
-        } else {
-            self.attestation_pub_keys.insert(pk_key0, pubkey);
-            self.attestation_keys_by_slot
-                .entry(duty_slot)
-                .or_default()
-                .push(pk_key0);
-        }
-
-        let att_key0 = AttKey {
-            slot,
-            committee_index: 0,
-        };
-        if let Some(existing) = self.attestation_duties.get(&att_key0) {
-            if existing.source != data.source {
-                warn!(
-                    slot,
-                    validator_index, "dutydb: clashing attestation data committee_index=0 source"
-                );
-                return Err(Error::ClashingAttestationDataCommIdx0Source {
-                    slot,
-                    validator_index,
-                });
-            }
-            if existing.target != data.target {
-                warn!(
-                    slot,
-                    validator_index, "dutydb: clashing attestation data committee_index=0 target"
-                );
-                return Err(Error::ClashingAttestationDataCommIdx0Target {
-                    slot,
-                    validator_index,
-                });
-            }
-        } else {
-            self.attestation_duties.insert(att_key0, data.clone());
         }
         Ok(())
     }
@@ -775,11 +670,11 @@ mod tests {
     }
 
     fn make_db() -> MemDB {
-        MemDB::new(Arc::new(NoopDeadliner), CancellationToken::new())
+        MemDB::new(Arc::new(NoopDeadliner), &CancellationToken::new())
     }
 
     fn make_db_with_deadliner(deadliner: Arc<dyn Deadliner>) -> MemDB {
-        MemDB::new(deadliner, CancellationToken::new())
+        MemDB::new(deadliner, &CancellationToken::new())
     }
 
     fn att_data(slot: u64, committee_index: u64, validator_index: u64) -> AttestationData {
@@ -1132,77 +1027,6 @@ mod tests {
         assert!(
             matches!(err, Error::ClashingAttestationData { .. }),
             "expected ClashingAttestationData, got: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn clashing_attestation_data_commidx0_source() {
-        const SLOT: u64 = 52;
-
-        let db = make_db();
-        let duty = Duty::new(SlotNumber::new(SLOT), DutyType::Attester);
-
-        let mut att_a = att_data(SLOT, 1, 10);
-        att_a.data.source = phase0::Checkpoint {
-            epoch: 1,
-            root: [0xaa; 32],
-        };
-
-        let mut att_b = att_data(SLOT, 2, 11);
-        att_b.data.source = phase0::Checkpoint {
-            epoch: 2,
-            root: [0xbb; 32],
-        };
-
-        let mut set1 = UnsignedDataSet::new();
-        set1.insert(random_core_pub_key(), UnsignedDutyData::Attestation(att_a));
-        db.store(duty.clone(), set1).await.unwrap();
-
-        let mut set2 = UnsignedDataSet::new();
-        set2.insert(random_core_pub_key(), UnsignedDutyData::Attestation(att_b));
-        let err = db.store(duty, set2).await.unwrap_err();
-        assert!(
-            matches!(err, Error::ClashingAttestationDataCommIdx0Source { .. }),
-            "expected ClashingAttestationDataCommIdx0Source, got: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn clashing_attestation_data_commidx0_target() {
-        const SLOT: u64 = 53;
-
-        let db = make_db();
-        let duty = Duty::new(SlotNumber::new(SLOT), DutyType::Attester);
-
-        let source = phase0::Checkpoint {
-            epoch: 1,
-            root: [0x11; 32],
-        };
-
-        let mut att_a = att_data(SLOT, 1, 10);
-        att_a.data.source = source.clone();
-        att_a.data.target = phase0::Checkpoint {
-            epoch: 2,
-            root: [0xaa; 32],
-        };
-
-        let mut att_b = att_data(SLOT, 2, 11);
-        att_b.data.source = source;
-        att_b.data.target = phase0::Checkpoint {
-            epoch: 3,
-            root: [0xbb; 32],
-        };
-
-        let mut set1 = UnsignedDataSet::new();
-        set1.insert(random_core_pub_key(), UnsignedDutyData::Attestation(att_a));
-        db.store(duty.clone(), set1).await.unwrap();
-
-        let mut set2 = UnsignedDataSet::new();
-        set2.insert(random_core_pub_key(), UnsignedDutyData::Attestation(att_b));
-        let err = db.store(duty, set2).await.unwrap_err();
-        assert!(
-            matches!(err, Error::ClashingAttestationDataCommIdx0Target { .. }),
-            "expected ClashingAttestationDataCommIdx0Target, got: {err}"
         );
     }
 
