@@ -1,3 +1,12 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::collapsible_if
+)]
+
 use crate::qbft::{
     self,
     fake_clock::{FakeClock, TimerPriority},
@@ -150,13 +159,16 @@ fn test_qbft(test: Test) {
                     Duration::from_secs(u64::pow(2, (round as u32) - 1))
                 };
 
-                clock.new_timer(d)
+                let (receive, stop) = clock.new_timer(d);
+                Timer { receive, stop }
             })
         },
         decide: {
             let result_chan_tx = result_chan_tx.clone();
-            Box::new(move |_, _, _, q_commit| {
-                result_chan_tx.send(q_commit.clone()).expect(WRITE_CHAN_ERR);
+            Box::new(move |req| {
+                result_chan_tx
+                    .send(req.qcommit.clone())
+                    .expect(WRITE_CHAN_ERR);
             })
         },
         compare: {
@@ -176,18 +188,18 @@ fn test_qbft(test: Test) {
                 let trace = trace.clone();
                 let pending_timer_actions = pending_timer_actions.clone();
 
-                Box::new(move |_, process, round, new_round, upon_rule, _| {
-                    if upon_rule == UPON_ROUND_TIMEOUT {
+                Box::new(move |req| {
+                    if req.upon_rule == UPON_ROUND_TIMEOUT {
                         complete_timer_action(&pending_timer_actions);
                     }
 
                     trace.push(format!(
                         "{:?} - {}@{} change to {} ~= {}",
                         clock.elapsed(),
-                        process,
-                        round,
-                        new_round,
-                        upon_rule,
+                        req.process,
+                        req.round,
+                        req.new_round,
+                        req.upon_rule,
                     ));
                 })
             },
@@ -195,8 +207,8 @@ fn test_qbft(test: Test) {
                 let trace = trace.clone();
                 let unjust_tx = unjust_tx.clone();
                 let fuzz = test.fuzz;
-                Box::new(move |_, process, msg| {
-                    let line = format!("Unjust: process={} msg={:?}", process, msg);
+                Box::new(move |req| {
+                    let line = format!("Unjust: process={} msg={:?}", req.process, req.msg);
                     trace.push(line.clone());
                     if !fuzz {
                         unjust_tx.send(line).expect(WRITE_CHAN_ERR);
@@ -207,20 +219,20 @@ fn test_qbft(test: Test) {
                 let clock = clock.clone();
                 let trace = trace.clone();
                 let pending_compares = pending_compares.clone();
-                Box::new(move |_, process, round, msg, upon_rule| {
-                    if upon_rule == UPON_JUSTIFIED_PRE_PREPARE {
+                Box::new(move |req| {
+                    if req.upon_rule == UPON_JUSTIFIED_PRE_PREPARE {
                         pending_compares.fetch_add(1, Ordering::SeqCst);
                     }
 
                     trace.push(format!(
                         "{:?} {} => {}@{} -> {}@{} ~= {}",
                         clock.elapsed(),
-                        msg.source(),
-                        msg.type_(),
-                        msg.round(),
-                        process,
-                        round,
-                        upon_rule,
+                        req.msg.source(),
+                        req.msg.type_(),
+                        req.msg.round(),
+                        req.process,
+                        req.round,
+                        req.upon_rule,
                     ));
                 })
             },
@@ -362,7 +374,11 @@ fn test_qbft(test: Test) {
                     s.spawn(move || {
                         _ = v_chan_tx_send.send(i);
                     });
-                } else if is_leader(&test.instance, 1, i) {
+                } else if is_leader(LeaderRequest {
+                    instance: &test.instance,
+                    round: 1,
+                    process: i,
+                }) {
                     let v_chan_tx_send = keep_value_sender
                         .as_ref()
                         .expect("value sender kept until run returns")
@@ -545,7 +561,11 @@ fn test_qbft(test: Test) {
                                     );
                                 }
                             } else { // Otherwise check that leader value was used.
-                                if !is_leader(&test.instance, commit.round(), commit.value()) {
+                                if !is_leader(LeaderRequest {
+                                    instance: &test.instance,
+                                    round: commit.round(),
+                                    process: commit.value(),
+                                }) {
                                     cts.cancel();
                                     clock.cancel();
                                     panic!(
@@ -733,10 +753,8 @@ fn seed_from_label(label: &str) -> u64 {
 }
 
 /// Construct a leader election function.
-fn make_is_leader(n: i64) -> impl Fn(&i64, i64, i64) -> bool + Clone {
-    move |instance: &i64, round: i64, process: i64| -> bool {
-        (instance + round).rem_euclid(n) == process
-    }
+fn make_is_leader(n: i64) -> impl for<'a> Fn(LeaderRequest<'a, TestQbft>) -> bool + Clone {
+    move |req| (*req.instance + req.round).rem_euclid(n) == req.process
 }
 
 /// Returns a new message to be broadcast.
@@ -1218,16 +1236,19 @@ fn fuzzed(start_delay_secs: Option<u64>, decide_round: i32, random_round: bool) 
 
 fn noop_definition() -> Definition<TestQbft> {
     Definition {
-        is_leader: Box::new(|_, _, _| false),
-        new_timer: Box::new(|_| (mpmc::never(), Box::new(|| {}))),
-        decide: Box::new(|_, _, _, _| {}),
+        is_leader: Box::new(|_| false),
+        new_timer: Box::new(|_| Timer {
+            receive: mpmc::never(),
+            stop: Box::new(|| {}),
+        }),
+        decide: Box::new(|_| {}),
         compare: Arc::new(|_| {}),
         nodes: 0,
         fifo_limit: 0,
         logger: QbftLogger {
-            round_change: Box::new(|_, _, _, _, _, _| {}),
-            unjust: Box::new(|_, _, _| {}),
-            upon_rule: Box::new(|_, _, _, _, _| {}),
+            round_change: Box::new(|_| {}),
+            unjust: Box::new(|_| {}),
+            upon_rule: Box::new(|_| {}),
         },
     }
 }
@@ -1292,7 +1313,7 @@ fn broadcast_request_maps_protocol_fields() {
     let mut def = noop_definition();
     def.nodes = 4;
     def.fifo_limit = 100;
-    def.is_leader = Box::new(|_, _, process| process == 1);
+    def.is_leader = Box::new(|req| req.process == 1);
     def.compare = Arc::new(|req| req.return_err.send(Ok(())).expect(WRITE_CHAN_ERR));
 
     let (_input_tx, input_rx) = mpmc::bounded::<i64>(1);
@@ -1357,7 +1378,10 @@ fn broadcast_request_maps_protocol_fields() {
     let mut def = noop_definition();
     def.nodes = 4;
     def.fifo_limit = 100;
-    def.new_timer = Box::new(move |_| (timer_rx.clone(), Box::new(|| {})));
+    def.new_timer = Box::new(move |_| Timer {
+        receive: timer_rx.clone(),
+        stop: Box::new(|| {}),
+    });
 
     let (_input_tx, input_rx) = mpmc::bounded::<i64>(1);
     let (_source_tx, source_rx) = mpmc::bounded::<i64>(1);
@@ -1473,22 +1497,26 @@ fn duplicate_pre_prepare_rules() {
     let mut def = noop_definition();
     def.nodes = 4;
     def.fifo_limit = 100;
-    def.is_leader = Box::new(|_, _, process| process == LEADER);
-    def.logger.upon_rule = Box::new(move |_, _, round, msg, upon_rule| {
-        println!("UponRule: rule={} round={} ", upon_rule, msg.round());
+    def.is_leader = Box::new(|req| req.process == LEADER);
+    def.logger.upon_rule = Box::new(move |req| {
+        println!(
+            "UponRule: rule={} round={} ",
+            req.upon_rule,
+            req.msg.round()
+        );
 
-        assert!(upon_rule == UPON_JUSTIFIED_PRE_PREPARE);
+        assert!(req.upon_rule == UPON_JUSTIFIED_PRE_PREPARE);
 
-        if msg.round() == 1 {
+        if req.msg.round() == 1 {
             return;
         }
 
-        if msg.round() == 2 {
+        if req.msg.round() == 2 {
             cts.cancel();
             return;
         }
 
-        panic!("unexpected round {}", round);
+        panic!("unexpected round {}", req.round);
     });
     def.compare = Arc::new(|req| {
         let result = if req.qcommit.round() == 1 {
@@ -2070,7 +2098,7 @@ fn run_parent_cancel_during_compare_does_not_prepare() {
     let mut def = noop_definition();
     def.nodes = 4;
     def.fifo_limit = 100;
-    def.is_leader = Box::new(|_, _, process| process == LEADER);
+    def.is_leader = Box::new(|req| req.process == LEADER);
     def.compare = Arc::new(move |req| {
         compare_started_tx.send(()).expect(WRITE_CHAN_ERR);
         while !req.ct.is_canceled() {
@@ -2189,13 +2217,17 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
         new_timer: {
             let clock = clock.clone();
             Box::new(move |round| {
-                clock.new_timer(Duration::from_secs(u64::pow(2, (round as u32) - 1)))
+                let (receive, stop) =
+                    clock.new_timer(Duration::from_secs(u64::pow(2, (round as u32) - 1)));
+                Timer { receive, stop }
             })
         },
         decide: {
             let result_chan_tx = result_chan_tx.clone();
-            Box::new(move |_, _, _, q_commit| {
-                result_chan_tx.send(q_commit.clone()).expect(WRITE_CHAN_ERR);
+            Box::new(move |req| {
+                result_chan_tx
+                    .send(req.qcommit.clone())
+                    .expect(WRITE_CHAN_ERR);
             })
         },
         compare: {
@@ -2230,45 +2262,45 @@ fn test_qbft_chain_split(test: ChainSplitTest) {
                 let clock = clock.clone();
                 let trace = trace.clone();
                 let pending_timer_actions = pending_timer_actions.clone();
-                Box::new(move |_, process, round, new_round, upon_rule, _| {
-                    if upon_rule == UPON_ROUND_TIMEOUT {
+                Box::new(move |req| {
+                    if req.upon_rule == UPON_ROUND_TIMEOUT {
                         complete_timer_action(&pending_timer_actions);
                     }
 
                     trace.push(format!(
                         "{:?} - {}@{} change to {} ~= {}",
                         clock.elapsed(),
-                        process,
-                        round,
-                        new_round,
-                        upon_rule
+                        req.process,
+                        req.round,
+                        req.new_round,
+                        req.upon_rule
                     ));
                 })
             },
             unjust: {
                 let trace = trace.clone();
-                Box::new(move |_, process, msg| {
-                    trace.push(format!("Unjust: process={} msg={:?}", process, msg))
+                Box::new(move |req| {
+                    trace.push(format!("Unjust: process={} msg={:?}", req.process, req.msg))
                 })
             },
             upon_rule: {
                 let clock = clock.clone();
                 let trace = trace.clone();
                 let pending_compares = pending_compares.clone();
-                Box::new(move |_, process, round, msg, upon_rule| {
-                    if upon_rule == UPON_JUSTIFIED_PRE_PREPARE {
+                Box::new(move |req| {
+                    if req.upon_rule == UPON_JUSTIFIED_PRE_PREPARE {
                         pending_compares.fetch_add(1, Ordering::SeqCst);
                     }
 
                     trace.push(format!(
                         "{:?} {} => {}@{} -> {}@{} ~= {}",
                         clock.elapsed(),
-                        msg.source(),
-                        msg.type_(),
-                        msg.round(),
-                        process,
-                        round,
-                        upon_rule
+                        req.msg.source(),
+                        req.msg.type_(),
+                        req.msg.round(),
+                        req.process,
+                        req.round,
+                        req.upon_rule
                     ));
                 })
             },

@@ -1,3 +1,5 @@
+#![allow(clippy::arithmetic_side_effects)]
+
 use crossbeam::channel as mpmc;
 use std::{
     collections::BTreeMap,
