@@ -340,7 +340,7 @@ pub fn run<T: QbftTypes>(
     let prepared_justification: RefCell<Option<Vec<Msg<T>>>> = RefCell::new(None);
     let mut q_commit: Option<Vec<Msg<T>>> = None;
     let buffer: RefCell<HashMap<i64, Vec<Msg<T>>>> = RefCell::new(HashMap::new());
-    let dedup_rules: RefCell<HashMap<DedupKey, bool>> = RefCell::new(HashMap::new());
+    let dedup_rules: RefCell<HashSet<DedupKey>> = RefCell::new(HashSet::new());
     let mut timer_chan: mpmc::Receiver<time::Instant>;
     let mut stop_timer: Box<dyn Fn()>;
 
@@ -410,7 +410,7 @@ pub fn run<T: QbftTypes>(
     // change.
     let is_duplicated_rule = |upon_rule: UponRule, round: i64| {
         let k = DedupKey { upon_rule, round };
-        dedup_rules.borrow_mut().insert(k, true).is_some()
+        !dedup_rules.borrow_mut().insert(k)
     };
 
     // Updates round and clears the rule dedup state.
@@ -429,7 +429,7 @@ pub fn run<T: QbftTypes>(
         );
 
         round.set(new_round);
-        dedup_rules.replace(HashMap::new());
+        dedup_rules.replace(HashSet::new());
         ppj_cache.replace(None);
     };
 
@@ -920,7 +920,7 @@ fn is_justified_round_change<T: QbftTypes>(d: &Definition<T>, msg: &Msg<T>) -> b
         return false;
     }
 
-    let mut uniq = uniq_source::<T>(vec![]);
+    let mut uniq = uniq_source();
     for prepare in prepares {
         if !uniq(&prepare) {
             return false;
@@ -1062,7 +1062,7 @@ fn get_single_justified_pr_pv<T: QbftTypes>(
     let mut pr: i64 = 0;
     let mut pv: T::Value = Default::default();
     let mut count: i64 = 0;
-    let mut uniq = uniq_source::<T>(vec![]);
+    let mut uniq = uniq_source();
 
     for msg in msgs {
         if msg.type_() != MSG_PREPARE {
@@ -1113,7 +1113,7 @@ fn get_justified_qrc<T: QbftTypes>(
         let mut has_highest_prepared = false;
         let pr = prepares[0].round();
         let pv = prepares[0].value();
-        let mut uniq = uniq_source::<T>(vec![]);
+        let mut uniq = uniq_source();
 
         for rc in round_changes.iter() {
             if rc.prepared_round() > pr {
@@ -1218,12 +1218,7 @@ fn get_prepare_quorums<T: QbftTypes>(d: &Definition<T>, all: &Vec<Msg<T>>) -> Ve
             continue;
         }
 
-        let mut quorum = vec![];
-        for (_, msg) in msgs {
-            quorum.push(msg);
-        }
-
-        quorums.push(quorum);
+        quorums.push(msgs.into_values().collect());
     }
 
     quorums
@@ -1241,11 +1236,9 @@ fn quorum_null_prepared<T: QbftTypes>(
     let null_pv = Some(&Default::default());
 
     let justification = filter_msgs(all, MSG_ROUND_CHANGE, round, None, Some(null_pr), null_pv);
+    let has_quorum = justification.len() as i64 >= d.quorum();
 
-    (
-        justification.clone(),
-        justification.len() as i64 >= d.quorum(),
-    )
+    (justification, has_quorum)
 }
 
 /// Returns the messages matching the type and value.
@@ -1274,7 +1267,7 @@ fn filter_msgs<T: QbftTypes>(
     pv: Option<&T::Value>,
 ) -> Vec<Msg<T>> {
     let mut resp = Vec::new();
-    let mut uniq = uniq_source::<T>(vec![]);
+    let mut uniq = uniq_source();
 
     for msg in msgs {
         if message_type != msg.type_() {
@@ -1333,17 +1326,9 @@ fn flatten<T: QbftTypes>(buffer: &HashMap<i64, Vec<Msg<T>>>) -> Vec<Msg<T>> {
 
 /// Construct a function that returns true if the message is from a unique
 /// source.
-fn uniq_source<T: QbftTypes>(vec: Vec<Msg<T>>) -> Box<impl FnMut(&Msg<T>) -> bool> {
-    let mut s = vec.iter().map(|msg| msg.source()).collect::<HashSet<_>>();
-    Box::new(move |msg: &Msg<T>| {
-        let source = msg.source();
-        if s.contains(&source) {
-            false
-        } else {
-            s.insert(source);
-            true
-        }
-    })
+fn uniq_source<T: QbftTypes>() -> impl FnMut(&Msg<T>) -> bool {
+    let mut sources = HashSet::new();
+    move |msg: &Msg<T>| sources.insert(msg.source())
 }
 
 #[cfg(test)]
