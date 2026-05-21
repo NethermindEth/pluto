@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
 };
@@ -72,9 +73,10 @@ impl AppState {
     /// addresses at ingest time when `filter_private_addrs` is set.
     async fn advertised_addrs(&self) -> Vec<Multiaddr> {
         let listeners = self.addrs.read().await;
-        let mut union: Vec<Multiaddr> = self.external_addrs.clone();
-        for addr in listeners.iter() {
-            if !union.contains(addr) {
+        let mut seen: HashSet<&Multiaddr> = HashSet::new();
+        let mut union: Vec<Multiaddr> = Vec::new();
+        for addr in self.external_addrs.iter().chain(listeners.iter()) {
+            if seen.insert(addr) {
                 union.push(addr.clone());
             }
         }
@@ -467,6 +469,18 @@ mod tests {
         assert_eq!(got.len(), 2);
         assert_eq!(got[0], dup);
         assert_eq!(got[1], ma("/ip4/10.0.0.1/tcp/3610"));
+    }
+
+    #[tokio::test]
+    async fn advertised_addrs_dedupes_within_externals() {
+        let dup = ma("/ip4/1.2.3.4/tcp/3610");
+        let externals = vec![dup.clone(), dup.clone(), ma("/dns/example.com/tcp/3610")];
+        let (state, _) = test_state(Some("1.2.3.4"), Some("example.com"), externals, vec![]);
+
+        let got = state.advertised_addrs().await;
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0], dup);
+        assert_eq!(got[1], ma("/dns/example.com/tcp/3610"));
     }
 
     #[tokio::test]
