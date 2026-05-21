@@ -1,5 +1,6 @@
-/// SigAgg aggregates threshold partial BLS signatures into a single aggregated
-/// signature ready to be broadcast to the beacon chain.
+//! SigAgg aggregates threshold partial BLS signatures into a single aggregated
+//! signature ready to be broadcast to the beacon chain.
+
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
@@ -76,6 +77,7 @@ pub enum SigAggError {
     },
 }
 
+/// Convenience alias for [`std::result::Result`] with [`SigAggError`].
 pub type Result<T> = std::result::Result<T, SigAggError>;
 
 /// Per-duty output: one aggregated [`SignedData`] per validator public key.
