@@ -247,7 +247,7 @@ impl MemDB {
 
         let mut state = self.state.write().await;
 
-        if !self.deadliner.add(duty.clone()).await {
+        if !self.deadliner.add(duty.clone()).await.is_scheduled() {
             return Err(Error::ExpiredDuty);
         }
 
@@ -609,6 +609,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        deadline::AddOutcome,
         signeddata::{AttesterDuty, ProposalBlock},
         testutils::random_core_pub_key,
         types::{DutyType, SlotNumber},
@@ -619,8 +620,8 @@ mod tests {
 
     #[async_trait]
     impl Deadliner for NoopDeadliner {
-        async fn add(&self, _duty: Duty) -> bool {
-            true
+        async fn add(&self, _duty: Duty) -> AddOutcome {
+            AddOutcome::Scheduled
         }
     }
 
@@ -663,9 +664,9 @@ mod tests {
 
     #[async_trait]
     impl Deadliner for TestDeadliner {
-        async fn add(&self, duty: Duty) -> bool {
+        async fn add(&self, duty: Duty) -> AddOutcome {
             self.added.lock().unwrap().push(duty);
-            true
+            AddOutcome::Scheduled
         }
     }
 

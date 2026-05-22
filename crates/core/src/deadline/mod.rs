@@ -8,7 +8,7 @@
 //!
 //! ```no_run
 //! use pluto_core::{
-//!     deadline::{Deadliner, DeadlinerTask, DutyDeadlineCalculator},
+//!     deadline::{AddOutcome, Deadliner, DeadlinerTask, DutyDeadlineCalculator},
 //!     types::{Duty, SlotNumber},
 //! };
 //! use pluto_eth2api::EthBeaconNodeApiClient;
@@ -20,7 +20,12 @@
 //! let (deadliner, mut rx) = DeadlinerTask::start(cancel_token, "example", calculator);
 //!
 //! let duty = Duty::new_attester_duty(SlotNumber::new(1));
-//! let added = deadliner.add(duty).await;
+//! match deadliner.add(duty).await {
+//!     AddOutcome::Scheduled => {}
+//!     AddOutcome::AlreadyExpired => eprintln!("duty already expired — skipped"),
+//!     AddOutcome::NoDeadline => {}
+//!     AddOutcome::FailedToCompute => eprintln!("deadline calculation failed"),
+//! }
 //!
 //! while let Some(expired_duty) = rx.recv().await {
 //!     println!("Duty expired: {}", expired_duty);
@@ -78,6 +83,32 @@ fn to_chrono_duration(duration: Duration) -> Result<chrono::Duration> {
     chrono::Duration::from_std(duration).map_err(|_| DeadlineError::DurationConversion)
 }
 
+/// Outcome of [`Deadliner::add`].
+///
+/// Spells out the four distinct cases the previous `bool` return value
+/// conflated, so callers can react specifically (e.g. drop a duty that
+/// already expired vs. log a calculator error).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddOutcome {
+    /// The duty was accepted and a timer is now armed for its deadline.
+    Scheduled,
+    /// The duty's deadline is already in the past — nothing scheduled.
+    AlreadyExpired,
+    /// The calculator reports this duty type has no deadline (e.g. Exit,
+    /// BuilderRegistration). Not an error — just not tracked.
+    NoDeadline,
+    /// The calculator returned an error while computing the deadline.
+    FailedToCompute,
+}
+
+impl AddOutcome {
+    /// `true` only for [`AddOutcome::Scheduled`] — convenient for callers
+    /// that still treat "added" as a yes/no question.
+    pub fn is_scheduled(self) -> bool {
+        matches!(self, AddOutcome::Scheduled)
+    }
+}
+
 /// Deadliner provides duty deadline functionality.
 ///
 /// Producers submit duties via [`add`](Self::add). Expired duties are
@@ -87,21 +118,16 @@ fn to_chrono_duration(duration: Duration) -> Result<chrono::Duration> {
 pub trait Deadliner: Send + Sync {
     /// Adds a duty for deadline scheduling.
     ///
-    /// Returns `true` if the duty was added for future deadline scheduling.
-    /// This method is idempotent and returns `true` if the duty was previously
-    /// added and still awaits deadline scheduling.
-    ///
-    /// Returns `false` if:
-    /// - The duty has already expired and cannot be scheduled
-    /// - The calculator reports the duty has no deadline (`Ok(None)`)
-    /// - The calculator failed to compute the deadline (`Err(_)`)
-    async fn add(&self, duty: Duty) -> bool;
+    /// Idempotent: re-adding a duty already tracked returns
+    /// [`AddOutcome::Scheduled`] again. See [`AddOutcome`] for the meaning of
+    /// each variant.
+    async fn add(&self, duty: Duty) -> AddOutcome;
 }
 
 /// Internal message type for adding duties to the deadliner.
 struct DeadlineInput {
     duty: Duty,
-    response_tx: oneshot::Sender<bool>,
+    response_tx: oneshot::Sender<AddOutcome>,
 }
 
 /// Public-facing handle returned (paired with the expired-duty receiver) by
@@ -115,10 +141,10 @@ pub struct DeadlinerHandle {
 
 #[async_trait]
 impl Deadliner for DeadlinerHandle {
-    async fn add(&self, duty: Duty) -> bool {
+    async fn add(&self, duty: Duty) -> AddOutcome {
         // Check if shut down
         if self.cancel_token.is_cancelled() {
-            return false;
+            return AddOutcome::FailedToCompute;
         }
 
         let (response_tx, response_rx) = oneshot::channel();
@@ -126,11 +152,12 @@ impl Deadliner for DeadlinerHandle {
 
         // Send the duty to the background task
         if self.input_tx.send(input).await.is_err() {
-            return false;
+            return AddOutcome::FailedToCompute;
         }
 
-        // Wait for response
-        response_rx.await.unwrap_or(false)
+        // Wait for response — `FailedToCompute` if the task dropped the
+        // sender (shutdown race).
+        response_rx.await.unwrap_or(AddOutcome::FailedToCompute)
     }
 }
 
@@ -274,11 +301,11 @@ impl<C: DeadlineCalculator> DeadlinerTask<C> {
         let duty = input.duty;
         match self.calculator.deadline(&duty) {
             Ok(Some(deadline)) => {
-                let expired = deadline < Utc::now();
-                let _ = input.response_tx.send(!expired);
-                if expired {
+                if deadline < Utc::now() {
+                    let _ = input.response_tx.send(AddOutcome::AlreadyExpired);
                     return None;
                 }
+                let _ = input.response_tx.send(AddOutcome::Scheduled);
                 self.duties.insert(duty);
                 if deadline < self.curr_deadline {
                     self.recompute_curr();
@@ -294,12 +321,13 @@ impl<C: DeadlineCalculator> DeadlinerTask<C> {
                     error = %err,
                     "Failed to compute deadline for duty"
                 );
-                let _ = input.response_tx.send(false);
+                let _ = input.response_tx.send(AddOutcome::FailedToCompute);
                 None
             }
             Ok(None) => {
-                // Drop duties that never expire
-                let _ = input.response_tx.send(false);
+                // Duty type has no deadline (Exit, BuilderRegistration) —
+                // not tracked.
+                let _ = input.response_tx.send(AddOutcome::NoDeadline);
                 None
             }
         }
@@ -340,7 +368,7 @@ impl<C: DeadlineCalculator> DeadlinerTask<C> {
 mod tests {
     use super::{msecs::Msecs, *};
     use crate::types::SlotNumber;
-    use anyhow::{Context, Result, bail};
+    use anyhow::{Context, Result, bail, ensure};
     use pluto_testutil::BeaconMock;
     use tokio::time::timeout;
 
@@ -387,11 +415,11 @@ mod tests {
     async fn add_duties(
         duties: Vec<Duty>,
         deadliner: DeadlinerHandle,
-        result_tx: mpsc::Sender<bool>,
+        result_tx: mpsc::Sender<AddOutcome>,
     ) {
         for duty in duties {
-            let added = deadliner.add(duty).await;
-            let _ = result_tx.send(added).await;
+            let outcome = deadliner.add(duty).await;
+            let _ = result_tx.send(outcome).await;
         }
     }
 
@@ -467,19 +495,25 @@ mod tests {
         result_future_duties?;
 
         for _ in 0..expired_len {
-            let result = expired_rx.recv().await.context("expected expired ack")?;
-            assert!(!result, "expired duties should return false");
+            let outcome = expired_rx.recv().await.context("expected expired ack")?;
+            ensure!(
+                outcome == AddOutcome::AlreadyExpired,
+                "expired duties should report AlreadyExpired, got {outcome:?}"
+            );
         }
 
         let added_count = non_expired_len
             .checked_add(future_duties_len)
             .context("added_count overflow")?;
         for _ in 0..added_count {
-            let result = non_expired_rx
+            let outcome = non_expired_rx
                 .recv()
                 .await
                 .context("expected non-expired ack")?;
-            assert!(result, "non-expired duties should return true");
+            ensure!(
+                outcome == AddOutcome::Scheduled,
+                "non-expired duties should be Scheduled, got {outcome:?}"
+            );
         }
 
         // Collect expired duties from output channel.
@@ -508,8 +542,6 @@ mod tests {
     /// deadliner.
     #[tokio::test]
     async fn expired_duties_arrive_in_deadline_order() -> Result<()> {
-        use anyhow::ensure;
-
         let start_time = Utc::now();
         let calculator = TestCalculator {
             start_time,
@@ -527,9 +559,15 @@ mod tests {
         let earlier = Duty::new_attester_duty(SlotNumber::new(1));
 
         let added_later = deadliner.add(later.clone()).await;
-        ensure!(added_later, "later duty should be added");
+        ensure!(
+            added_later == AddOutcome::Scheduled,
+            "later duty should be Scheduled, got {added_later:?}"
+        );
         let added_earlier = deadliner.add(earlier.clone()).await;
-        ensure!(added_earlier, "earlier duty should be added");
+        ensure!(
+            added_earlier == AddOutcome::Scheduled,
+            "earlier duty should be Scheduled, got {added_earlier:?}"
+        );
 
         let first = timeout(Duration::from_secs(5), output_rx.recv())
             .await

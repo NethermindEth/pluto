@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{MemDB, get_threshold_matching, threshold_subscriber};
 use crate::{
-    deadline::Deadliner,
+    deadline::{AddOutcome, Deadliner},
     signeddata::{BeaconCommitteeSelection, SignedSyncMessage, VersionedAttestation},
     testutils::random_core_pub_key,
     types::{Duty, DutyType, ParSignedData, ParSignedDataSet, SlotNumber},
@@ -198,11 +198,11 @@ impl TestDeadliner {
 
 #[async_trait::async_trait]
 impl Deadliner for TestDeadliner {
-    async fn add(&self, duty: Duty) -> bool {
+    async fn add(&self, duty: Duty) -> AddOutcome {
         self.added
             .lock()
             .expect("test deadliner lock poisoned")
             .push(duty);
-        true
+        AddOutcome::Scheduled
     }
 }

@@ -49,7 +49,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use pluto_core::{
-    deadline::Deadliner,
+    deadline::{AddOutcome, Deadliner},
     parsigdb::memory::{
         InternalSubscriberError, MemDB, MemDBError, internal_subscriber, threshold_subscriber,
     },
@@ -140,8 +140,8 @@ struct NoopDeadliner;
 
 #[async_trait]
 impl Deadliner for NoopDeadliner {
-    async fn add(&self, _duty: Duty) -> bool {
-        true
+    async fn add(&self, _duty: Duty) -> AddOutcome {
+        AddOutcome::Scheduled
     }
 }
 
