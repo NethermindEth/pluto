@@ -8,7 +8,7 @@
 //!
 //! ```no_run
 //! use pluto_core::{
-//!     deadline::{AddOutcome, Deadliner, DeadlinerTask, DutyDeadlineCalculator},
+//!     deadline::{AddOutcome, DeadlinerTask, DutyDeadlineCalculator},
 //!     types::{Duty, SlotNumber},
 //! };
 //! use pluto_eth2api::EthBeaconNodeApiClient;
@@ -37,10 +37,9 @@
 mod calculator;
 mod msecs;
 
-pub use calculator::{DeadlineCalculator, DutyDeadlineCalculator};
+pub use calculator::{DeadlineCalculator, DutyDeadlineCalculator, NeverExpiringCalculator};
 
 use crate::types::{Duty, DutyType, SlotNumber};
-use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use pluto_eth2api::EthBeaconNodeApiClientError;
 use std::{collections::HashSet, time::Duration};
@@ -109,21 +108,6 @@ impl AddOutcome {
     }
 }
 
-/// Deadliner provides duty deadline functionality.
-///
-/// Producers submit duties via [`add`](Self::add). Expired duties are
-/// delivered on the receiver paired with the handle at
-/// [`DeadlinerTask::start`].
-#[async_trait]
-pub trait Deadliner: Send + Sync {
-    /// Adds a duty for deadline scheduling.
-    ///
-    /// Idempotent: re-adding a duty already tracked returns
-    /// [`AddOutcome::Scheduled`] again. See [`AddOutcome`] for the meaning of
-    /// each variant.
-    async fn add(&self, duty: Duty) -> AddOutcome;
-}
-
 /// Internal message type for adding duties to the deadliner.
 struct DeadlineInput {
     duty: Duty,
@@ -139,10 +123,13 @@ pub struct DeadlinerHandle {
     input_tx: mpsc::Sender<DeadlineInput>,
 }
 
-#[async_trait]
-impl Deadliner for DeadlinerHandle {
-    async fn add(&self, duty: Duty) -> AddOutcome {
-        // Check if shut down
+impl DeadlinerHandle {
+    /// Adds a duty for deadline scheduling.
+    ///
+    /// Idempotent: re-adding a duty already tracked returns
+    /// [`AddOutcome::Scheduled`] again. See [`AddOutcome`] for the meaning of
+    /// each variant.
+    pub async fn add(&self, duty: Duty) -> AddOutcome {
         if self.cancel_token.is_cancelled() {
             return AddOutcome::FailedToCompute;
         }
@@ -150,13 +137,11 @@ impl Deadliner for DeadlinerHandle {
         let (response_tx, response_rx) = oneshot::channel();
         let input = DeadlineInput { duty, response_tx };
 
-        // Send the duty to the background task
         if self.input_tx.send(input).await.is_err() {
             return AddOutcome::FailedToCompute;
         }
 
-        // Wait for response — `FailedToCompute` if the task dropped the
-        // sender (shutdown race).
+        // `FailedToCompute` if the task dropped the sender (shutdown race).
         response_rx.await.unwrap_or(AddOutcome::FailedToCompute)
     }
 }
