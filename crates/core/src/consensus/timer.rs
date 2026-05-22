@@ -134,16 +134,12 @@ pub struct IncreasingRoundTimer {
 impl IncreasingRoundTimer {
     /// Creates an increasing round timer.
     pub fn new() -> Self {
-        Self::from_parts(None)
+        Self { duty: None }
     }
 
     /// Creates an increasing round timer for a duty.
     pub fn with_duty(duty: Duty) -> Self {
-        Self::from_parts(Some(duty))
-    }
-
-    fn from_parts(duty: Option<Duty>) -> Self {
-        Self { duty }
+        Self { duty: Some(duty) }
     }
 }
 
@@ -195,17 +191,16 @@ pub struct EagerDoubleLinearRoundTimer {
 impl EagerDoubleLinearRoundTimer {
     /// Creates an eager double linear round timer.
     pub fn new() -> Self {
-        Self::from_parts(None)
+        Self {
+            duty: None,
+            first_deadlines: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Creates an eager double linear round timer for a duty.
     pub fn with_duty(duty: Duty) -> Self {
-        Self::from_parts(Some(duty))
-    }
-
-    fn from_parts(duty: Option<Duty>) -> Self {
         Self {
-            duty,
+            duty: Some(duty),
             first_deadlines: Mutex::new(HashMap::new()),
         }
     }
@@ -262,16 +257,12 @@ pub struct LinearRoundTimer {
 impl LinearRoundTimer {
     /// Creates a linear round timer.
     pub fn new() -> Self {
-        Self::from_parts(None)
+        Self { duty: None }
     }
 
     /// Creates a linear round timer for a duty.
     pub fn with_duty(duty: Duty) -> Self {
-        Self::from_parts(Some(duty))
-    }
-
-    fn from_parts(duty: Option<Duty>) -> Self {
-        Self { duty }
+        Self { duty: Some(duty) }
     }
 }
 
@@ -478,6 +469,24 @@ mod tests {
             "round 2 second timer did not fire",
         )
         .await;
+
+        assert_fires_after(
+            must_timer(timer.timer(3)),
+            Duration::from_millis(3_000),
+            "round 3 first timer did not fire",
+        )
+        .await;
+
+        let timeout = spawn_timeout(must_timer(timer.timer(3)));
+        advance(Duration::from_millis(2_500)).await;
+        tokio::task::yield_now().await;
+        assert!(!timeout.is_finished(), "round 3 second timer fired early");
+        assert_fires_after(
+            join_timeout(timeout),
+            Duration::from_millis(500),
+            "round 3 second timer did not fire",
+        )
+        .await;
     }
 
     #[test_case(1, Duration::from_millis(1_000) ; "round_1")]
@@ -636,11 +645,20 @@ mod tests {
 
     #[test]
     fn negative_round_returns_error() {
-        let timer = IncreasingRoundTimer::new();
+        let timers: Vec<(&str, Box<dyn RoundTimer>)> = vec![
+            ("increasing", Box::new(IncreasingRoundTimer::new())),
+            (
+                "eager_double_linear",
+                Box::new(EagerDoubleLinearRoundTimer::new()),
+            ),
+            ("linear", Box::new(LinearRoundTimer::new())),
+        ];
 
-        match timer.timer(-4) {
-            Ok(_) => panic!("negative round must fail"),
-            Err(err) => assert_eq!(Error::InvalidRound { round: -4 }, err),
+        for (name, timer) in timers {
+            match timer.timer(-4) {
+                Ok(_) => panic!("{name} negative round must fail"),
+                Err(err) => assert_eq!(Error::InvalidRound { round: -4 }, err),
+            }
         }
     }
 
@@ -660,6 +678,15 @@ mod tests {
 
     fn spawn_timeout(timeout: RoundTimerFuture) -> JoinHandle<Instant> {
         tokio::spawn(timeout)
+    }
+
+    fn join_timeout(timeout: JoinHandle<Instant>) -> RoundTimerFuture {
+        Box::pin(async move {
+            match timeout.await {
+                Ok(deadline) => deadline,
+                Err(err) => panic!("timer task failed: {err}"),
+            }
+        })
     }
 
     async fn assert_fires_after(timeout: RoundTimerFuture, duration: Duration, message: &str) {
