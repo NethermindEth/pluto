@@ -301,7 +301,7 @@ pub enum ProposalType {
 // [original implementation](https://github.com/ObolNetwork/charon/blob/b3008103c5429b031b63518195f4c49db4e9a68d/core/types.go#L264)
 const PK_LEN: usize = 48;
 
-pub use pluto_crypto::types::Signature;
+pub use pluto_crypto::types::{SIGNATURE_LENGTH, Signature};
 
 /// Public key struct
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1010,7 +1010,7 @@ mod tests {
 
     impl SignedData for MockSignedData {
         fn signature(&self) -> Result<Signature, SignedDataError> {
-            Ok([42u8; 96])
+            Ok([42u8; SIGNATURE_LENGTH])
         }
 
         fn set_signature(&self, _signature: Signature) -> Result<Self, SignedDataError> {
@@ -1031,7 +1031,10 @@ mod tests {
         assert!(retrieved.is_some());
         let retrieved = retrieved.unwrap();
         assert_eq!(retrieved.share_idx, 0);
-        assert_eq!(retrieved.signed_data.signature().unwrap(), [42u8; 96]);
+        assert_eq!(
+            retrieved.signed_data.signature().unwrap(),
+            [42u8; SIGNATURE_LENGTH]
+        );
     }
 
     #[test]

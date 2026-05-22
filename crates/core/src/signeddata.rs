@@ -1319,7 +1319,7 @@ mod tests {
     }
 
     fn sample_signature(byte: u8) -> Signature {
-        [byte; 96]
+        [byte; crate::types::SIGNATURE_LENGTH]
     }
 
     fn sample_root(byte: u8) -> phase0::Root {

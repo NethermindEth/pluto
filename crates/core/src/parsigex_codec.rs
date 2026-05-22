@@ -17,7 +17,7 @@ use crate::{
         VersionedSignedProposal, VersionedSignedValidatorRegistration,
     },
     ssz_codec,
-    types::{DutyType, Signature, SignedData},
+    types::{DutyType, SIGNATURE_LENGTH, Signature, SignedData},
 };
 
 /// Error type for partial signature exchange codec operations.
@@ -84,7 +84,7 @@ fn deserialize_signature(bytes: &[u8]) -> Result<Box<dyn SignedData>, ParSigExCo
         .map_err(|e| ParSigExCodecError::SignedData(format!("invalid base64: {e}")))?;
     let sig: Signature = raw.try_into().map_err(|v: Vec<u8>| {
         ParSigExCodecError::SignedData(format!(
-            "invalid signature length: got {}, want 96",
+            "invalid signature length: got {}, want {SIGNATURE_LENGTH}",
             v.len()
         ))
     })?;
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn marshal_unmarshal_signature() {
-        let sig: Signature = [0xab; 96];
+        let sig: Signature = [0xab; SIGNATURE_LENGTH];
         let bytes = serialize_signed_data(&sig).unwrap();
 
         // Snapshot: Signature serializes as a base64-encoded JSON string.
