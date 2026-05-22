@@ -5766,6 +5766,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pluto-featureset"
+version = "1.7.1"
+dependencies = [
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "pluto-frost"
 version = "1.7.1"
 dependencies = [
@@ -5897,6 +5905,8 @@ dependencies = [
  "pluto-p2p",
  "pluto-tracing",
  "rand 0.8.6",
+ "reqwest 0.13.3",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
@@ -5944,6 +5954,8 @@ dependencies = [
 name = "pluto-tracing"
 version = "1.7.1"
 dependencies = [
+ "base64",
+ "percent-encoding",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

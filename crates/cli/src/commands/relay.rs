@@ -4,9 +4,13 @@ use crate::{
 };
 use libp2p::multiaddr::Protocol;
 use pluto_p2p::k1;
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf, time::Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
+
+/// Grace period given to the Loki background task to flush buffered logs
+/// once `BackgroundTaskController::shutdown` has been signalled.
+const LOKI_FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Arguments for the relay command.
 #[derive(clap::Args, Clone)]
@@ -60,7 +64,34 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
             }
         };
 
-        let log_config = build_console_tracing_config(self.log.level.clone(), &self.log.color);
+        let loki_config = match self.loki.loki_addresses.as_slice() {
+            [] => None,
+            [loki_url, rest @ ..] => {
+                if !rest.is_empty() {
+                    // Charon fans logs out to every entry in `loki-addresses`, but
+                    // `pluto_tracing::TracingConfig` only supports a single Loki
+                    // layer today. `tracing::warn!` would be a no-op here because
+                    // no subscriber is installed yet (init happens later inside
+                    // `commands::relay::run`), so write directly to stderr.
+                    eprintln!(
+                        "warning: {extra} additional --loki-addresses ignored; only the first is used",
+                        extra = rest.len(),
+                    );
+                }
+
+                let labels =
+                    HashMap::from([("service".to_string(), self.loki.loki_service.clone())]);
+
+                Some(pluto_tracing::LokiConfig {
+                    loki_url: loki_url.clone(),
+                    labels,
+                    extra_fields: HashMap::new(),
+                })
+            }
+        };
+
+        let log_config =
+            build_console_tracing_config(self.log.level.clone(), &self.log.color, loki_config);
 
         let builder = pluto_relay_server::config::Config::builder()
             .data_dir(self.data_dir.data_dir)
@@ -265,6 +296,53 @@ pub async fn run(
     config: pluto_relay_server::config::Config,
     ct: CancellationToken,
 ) -> Result<(), CliError> {
+    let loki_shutdown = match pluto_tracing::init(&config.log_config) {
+        Ok(Some(loki)) => {
+            let controller = loki.controller;
+            let handle = tokio::spawn(loki.task);
+            Some((controller, handle))
+        }
+        Ok(None) => None,
+        // In tests, the global tracing subscriber is shared across runs in the
+        // same process, so reinitializing fails. In production this would mean
+        // the relay silently uses an unrelated subscriber and Loki forwarding
+        // is dropped — fail loudly instead.
+        #[cfg(test)]
+        Err(pluto_tracing::init::Error::Init(_)) => None,
+        Err(err) => return Err(err.into()),
+    };
+
+    // Run the relay in an inner scope so every early `?` / `return Err(..)` is
+    // captured into `result` and the Loki cleanup below always runs.
+    let result = serve_relay(&config, ct).await;
+
+    if let Err(err) = &result {
+        // Surface the shutdown reason through the subscriber so it reaches
+        // Loki before we close the worker; `main` only `eprintln!`s the
+        // returned error and that path bypasses the tracing subscriber.
+        error!(error = %err, "relay exited with error");
+    }
+
+    // Drain the Loki worker under a single budget so a hung Loki endpoint
+    // (e.g. `controller.shutdown` blocked on a full mpsc) cannot wedge
+    // process exit. After the budget elapses we hard-abort the worker.
+    if let Some((controller, handle)) = loki_shutdown {
+        let abort_handle = handle.abort_handle();
+        let _ = tokio::time::timeout(LOKI_FLUSH_TIMEOUT, async {
+            controller.shutdown().await;
+            let _ = handle.await;
+        })
+        .await;
+        abort_handle.abort();
+    }
+
+    result
+}
+
+async fn serve_relay(
+    config: &pluto_relay_server::config::Config,
+    ct: CancellationToken,
+) -> Result<(), CliError> {
     info!("{LICENSE}");
     info!(config = ?config);
 
@@ -291,7 +369,7 @@ pub async fn run(
         e => e,
     }?;
 
-    pluto_relay_server::p2p::run_relay_p2p_node(&config, key, ct)
+    pluto_relay_server::p2p::run_relay_p2p_node(config, key, ct)
         .await
         .map(|_| ())
         .map_err(Into::into)
@@ -505,7 +583,7 @@ mod tests {
                 p2p_relay_log_level: "info".into(),
                 max_res_per_peer: 0,
                 max_conns: 0,
-                advertise_priv: false,
+                advertise_priv: true,
             },
             debug_monitoring: super::RelayDebugMonitoringArgs {
                 monitor_addr: None,

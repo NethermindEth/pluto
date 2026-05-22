@@ -13,9 +13,6 @@ pub mod log;
 /// until the deadline has elapsed.
 pub mod retry;
 
-/// Featureset defines a set of global features and their rollout status.
-pub mod featureset;
-
 /// Obol API client for interacting with the Obol network API.
 pub mod obolapi;
 

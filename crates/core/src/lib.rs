@@ -26,6 +26,9 @@ pub mod deadline;
 /// Implementations of ParSigDB.
 pub mod parsigdb;
 
+/// DutyDB — in-memory store for unsigned duty data.
+pub mod dutydb;
+
 /// Implementations of AggSigDB.
 pub mod aggsigdb;
 

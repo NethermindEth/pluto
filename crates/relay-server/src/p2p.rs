@@ -19,8 +19,10 @@ use crate::{
 };
 use pluto_p2p::{
     BandwidthFactory, PeerConnectionMetrics,
+    manet::Manet,
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
+    utils::{external_tcp_multiaddrs, external_udp_multiaddrs},
 };
 
 /// Runs a relay P2P node.
@@ -39,7 +41,7 @@ pub async fn run_relay_p2p_node(
         config.p2p_config.clone(),
         key.clone(),
         NodeType::TCP,
-        false,
+        config.filter_private_addrs,
         // Relay servers don't track cluster peers - they serve all connections.
         P2PContext::default(),
         Some(bandwidth),
@@ -68,12 +70,20 @@ pub async fn run_relay_p2p_node(
 
     let listeners = Arc::new(RwLock::new(Vec::new()));
 
+    // Compute external multiaddrs from external_ip / external_host config so
+    // they're advertised on `/` and folded into ENR responses on `/enr` even
+    // when libp2p only sees private listen addresses (e.g., K8s pods behind
+    // NodePort).
+    let mut external_addrs = external_tcp_multiaddrs(&config.p2p_config)?;
+    external_addrs.extend(external_udp_multiaddrs(&config.p2p_config)?);
+
     let enr_server_handle = tokio::spawn(enr_server(
         server_errors.clone(),
         config.clone(),
         key.clone(),
         *node.local_peer_id(),
         listeners.clone(),
+        external_addrs,
         ct.child_token(),
     ));
 
@@ -108,7 +118,7 @@ pub async fn run_relay_p2p_node(
                 }
             },
             event = node.select_next_some() => {
-                let address_update = handle_swarm_event(&event);
+                let address_update = handle_swarm_event(&event, config.filter_private_addrs);
 
                 // Update listener address list
                 match address_update {
@@ -177,11 +187,22 @@ enum AddrUpdate {
 ///
 /// Returns an [`AddrUpdate`] describing any change to the listener address
 /// list that the caller should apply.
-fn handle_swarm_event(event: &SwarmEvent<PlutoBehaviourEvent<relay::Behaviour>>) -> AddrUpdate {
+///
+/// `filter_private_addrs` drops private listen addresses (e.g. loopback,
+/// RFC 1918) from the advertised set — parity with Go charon's
+/// `filterAdvertisedAddrs(excludeInternalPrivate=true)`.
+fn handle_swarm_event(
+    event: &SwarmEvent<PlutoBehaviourEvent<relay::Behaviour>>,
+    filter_private_addrs: bool,
+) -> AddrUpdate {
     match event {
         // Track listener address changes
         SwarmEvent::NewListenAddr { address, .. } => {
             debug!(%address, "listening on new address");
+            if filter_private_addrs && address.is_private() {
+                debug!(%address, "skipping private listen address");
+                return AddrUpdate::None;
+            }
             AddrUpdate::Add(address.clone())
         }
         SwarmEvent::ListenerClosed { addresses, .. } => {
