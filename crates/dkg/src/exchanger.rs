@@ -143,10 +143,6 @@ impl Deadliner for NoopDeadliner {
     async fn add(&self, _duty: Duty) -> bool {
         true
     }
-
-    fn c(&self) -> Option<tokio::sync::mpsc::Receiver<Duty>> {
-        None
-    }
 }
 
 impl Exchanger {

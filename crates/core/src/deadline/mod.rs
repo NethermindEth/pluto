@@ -8,25 +8,22 @@
 //!
 //! ```no_run
 //! use pluto_core::{
-//!     deadline::{DeadlinerTask, DutyDeadlineCalculator},
+//!     deadline::{Deadliner, DeadlinerTask, DutyDeadlineCalculator},
 //!     types::{Duty, SlotNumber},
 //! };
 //! use pluto_eth2api::EthBeaconNodeApiClient;
-//! use std::sync::Arc;
 //! use tokio_util::sync::CancellationToken;
 //!
 //! # async fn example(client: &EthBeaconNodeApiClient) -> anyhow::Result<()> {
 //! let cancel_token = CancellationToken::new();
 //! let calculator = DutyDeadlineCalculator::from_client(client).await?;
-//! let deadliner = DeadlinerTask::start(cancel_token, "example", calculator);
+//! let (deadliner, mut rx) = DeadlinerTask::start(cancel_token, "example", calculator);
 //!
 //! let duty = Duty::new_attester_duty(SlotNumber::new(1));
 //! let added = deadliner.add(duty).await;
 //!
-//! if let Some(mut rx) = deadliner.c() {
-//!     while let Some(expired_duty) = rx.recv().await {
-//!         println!("Duty expired: {}", expired_duty);
-//!     }
+//! while let Some(expired_duty) = rx.recv().await {
+//!     println!("Duty expired: {}", expired_duty);
 //! }
 //! # Ok(())
 //! # }
@@ -41,11 +38,7 @@ use crate::types::{Duty, DutyType, SlotNumber};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use pluto_eth2api::EthBeaconNodeApiClientError;
-use std::{
-    collections::HashSet,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{collections::HashSet, time::Duration};
 use tokio::{
     sync::{mpsc, oneshot},
     time::sleep,
@@ -87,10 +80,9 @@ fn to_chrono_duration(duration: Duration) -> Result<chrono::Duration> {
 
 /// Deadliner provides duty deadline functionality.
 ///
-/// The `c()` method returns a channel for receiving expired duties.
-/// It may only be called once and the returned channel should be used
-/// by a single task. Multiple instances are required for different
-/// components and use cases.
+/// Producers submit duties via [`add`](Self::add). Expired duties are
+/// delivered on the receiver paired with the handle at
+/// [`DeadlinerTask::start`].
 #[async_trait]
 pub trait Deadliner: Send + Sync {
     /// Adds a duty for deadline scheduling.
@@ -104,12 +96,6 @@ pub trait Deadliner: Send + Sync {
     /// - The calculator reports the duty has no deadline (`Ok(None)`)
     /// - The calculator failed to compute the deadline (`Err(_)`)
     async fn add(&self, duty: Duty) -> bool;
-
-    /// Returns the channel for receiving deadlined duties.
-    ///
-    /// This method may only be called once and returns `None` on subsequent
-    /// calls. The returned channel should only be used by a single task.
-    fn c(&self) -> Option<mpsc::Receiver<Duty>>;
 }
 
 /// Internal message type for adding duties to the deadliner.
@@ -118,13 +104,13 @@ struct DeadlineInput {
     response_tx: oneshot::Sender<bool>,
 }
 
-/// Public-facing handle: the `Arc<dyn Deadliner>` returned by
-/// [`DeadlinerTask::start`] wraps this. Holds the input channel, the
-/// take-once output receiver, and the cancellation token.
-struct DeadlinerHandle {
+/// Public-facing handle returned (paired with the expired-duty receiver) by
+/// [`DeadlinerTask::start`]. Cloning is cheap and shares the same background
+/// task — share it freely across producers inside one service.
+#[derive(Clone)]
+pub struct DeadlinerHandle {
     cancel_token: CancellationToken,
     input_tx: mpsc::Sender<DeadlineInput>,
-    output_rx: Mutex<Option<mpsc::Receiver<Duty>>>,
 }
 
 #[async_trait]
@@ -146,18 +132,11 @@ impl Deadliner for DeadlinerHandle {
         // Wait for response
         response_rx.await.unwrap_or(false)
     }
-
-    fn c(&self) -> Option<mpsc::Receiver<Duty>> {
-        self.output_rx
-            .lock()
-            .ok()
-            .and_then(|mut guard| guard.take())
-    }
 }
 
 /// Owned state of the background task that drives a [`DeadlinerHandle`]'s
 /// duty timers. Held exclusively by the spawned task — that's why it lives
-/// outside the `Arc<dyn Deadliner>` and `run_task` can take `mut self`.
+/// outside the public handle and `run_task` can take `mut self`.
 /// Constructed and spawned via [`DeadlinerTask::start`].
 pub struct DeadlinerTask<C> {
     cancel_token: CancellationToken,
@@ -172,14 +151,15 @@ pub struct DeadlinerTask<C> {
 }
 
 impl<C: DeadlineCalculator> DeadlinerTask<C> {
-    /// Builds the public-facing [`Deadliner`] handle and spawns the background
-    /// task that drives it. The background loop exits when `cancel_token` is
-    /// cancelled.
+    /// Spawns the background task and returns a `(handle, expired_rx)` pair.
+    /// The cloneable `handle` is for adding duties from any number of
+    /// producers; `expired_rx` is the single consumer's receiver of expired
+    /// duties. The background loop exits when `cancel_token` is cancelled.
     pub fn start(
         cancel_token: CancellationToken,
         label: impl Into<String>,
         calculator: C,
-    ) -> Arc<dyn Deadliner> {
+    ) -> (DeadlinerHandle, mpsc::Receiver<Duty>) {
         // Matches Charon's `outputBuffer = 10` — big enough for all duty
         // types expiring simultaneously while the consumer drains synchronously.
         const OUTPUT_BUFFER: usize = 10;
@@ -204,13 +184,12 @@ impl<C: DeadlineCalculator> DeadlinerTask<C> {
         };
         tokio::spawn(task.run_task());
 
-        let link = DeadlinerHandle {
+        let handle = DeadlinerHandle {
             cancel_token,
             input_tx,
-            output_rx: Mutex::new(Some(output_rx)),
         };
 
-        Arc::new(link)
+        (handle, output_rx)
     }
 
     /// Background task that manages duty deadlines.
@@ -407,7 +386,7 @@ mod tests {
     /// channel.
     async fn add_duties(
         duties: Vec<Duty>,
-        deadliner: Arc<dyn Deadliner>,
+        deadliner: DeadlinerHandle,
         result_tx: mpsc::Sender<bool>,
     ) {
         for duty in duties {
@@ -461,9 +440,8 @@ mod tests {
         };
 
         let cancel_token = CancellationToken::new();
-        let deadliner = DeadlinerTask::start(cancel_token.clone(), "test", calculator);
-
-        let mut output_rx = deadliner.c().context("output receiver already taken")?;
+        let (deadliner, mut output_rx) =
+            DeadlinerTask::start(cancel_token.clone(), "test", calculator);
 
         let (expired_tx, mut expired_rx) = mpsc::channel(100);
         let (non_expired_tx, mut non_expired_rx) = mpsc::channel(100);
@@ -472,21 +450,15 @@ mod tests {
         let non_expired_len = non_expired_duties.len();
         let future_duties_len = future_duties.len();
 
-        let handler_expired = tokio::spawn(add_duties(
-            expired_duties,
-            Arc::clone(&deadliner),
-            expired_tx,
-        ));
+        let handler_expired =
+            tokio::spawn(add_duties(expired_duties, deadliner.clone(), expired_tx));
         let handler_non_expired = tokio::spawn(add_duties(
             non_expired_duties.clone(),
-            Arc::clone(&deadliner),
+            deadliner.clone(),
             non_expired_tx.clone(),
         ));
-        let handler_future_duties = tokio::spawn(add_duties(
-            future_duties,
-            Arc::clone(&deadliner),
-            non_expired_tx,
-        ));
+        let handler_future_duties =
+            tokio::spawn(add_duties(future_duties, deadliner.clone(), non_expired_tx));
 
         let (result_expired, result_non_expired, result_future_duties) =
             tokio::join!(handler_expired, handler_non_expired, handler_future_duties);
@@ -545,9 +517,8 @@ mod tests {
         };
 
         let cancel_token = CancellationToken::new();
-        let deadliner = DeadlinerTask::start(cancel_token.clone(), "order-test", calculator);
-
-        let mut output_rx = deadliner.c().context("output receiver already taken")?;
+        let (deadliner, mut output_rx) =
+            DeadlinerTask::start(cancel_token.clone(), "order-test", calculator);
 
         // TestCalculator: deadline = start_time + slot * 500ms.
         // Insert the later one first to make sure ordering is by deadline,

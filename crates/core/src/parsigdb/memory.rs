@@ -1,7 +1,7 @@
 use std::{collections::HashMap, error::Error as StdError, future::Future, pin::Pin, sync::Arc};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::{
     deadline::Deadliner,
@@ -300,16 +300,12 @@ impl MemDB {
 
     /// Trims expired duties from the database.
     ///
-    /// This method runs in a loop, listening for expired duties from the
-    /// deadliner and removing their associated data from the database. It
-    /// should be spawned as a background task and will run until the
-    /// cancellation token is triggered.
-    pub async fn trim(&self) {
-        let Some(mut deadliner_rx) = self.deadliner.c() else {
-            warn!("Deadliner channel is not available");
-            return;
-        };
-
+    /// Runs in a loop, listening on `deadliner_rx` for expired duties and
+    /// removing their associated data. Should be spawned as a background task;
+    /// returns when the cancellation token is triggered or the receiver
+    /// closes. The receiver is the one paired with the [`Deadliner`] handle at
+    /// `DeadlinerTask::start`.
+    pub async fn trim(&self, mut deadliner_rx: mpsc::Receiver<Duty>) {
         loop {
             tokio::select! {
                 biased;

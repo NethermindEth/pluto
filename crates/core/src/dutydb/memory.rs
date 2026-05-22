@@ -8,7 +8,7 @@ use pluto_eth2api::{
     spec::{altair, phase0},
     versioned,
 };
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::{Notify, RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use tree_hash::TreeHash;
@@ -203,11 +203,13 @@ pub struct MemDB {
 }
 
 impl MemDB {
-    /// Creates a new in-memory DutyDB.
-    pub fn new(deadliner: Arc<dyn Deadliner>, cancel: &CancellationToken) -> Self {
-        let deadliner_rx = deadliner.c().expect(
-            "Deadliner::c() returned None — the receiver was already consumed. Each MemDB must use a fresh Deadliner.",
-        );
+    /// Creates a new in-memory DutyDB. `deadliner_rx` is the receiver paired
+    /// with `deadliner` (typically from `DeadlinerTask::start`).
+    pub fn new(
+        deadliner: Arc<dyn Deadliner>,
+        deadliner_rx: mpsc::Receiver<Duty>,
+        cancel: &CancellationToken,
+    ) -> Self {
         Self {
             state: RwLock::new(State {
                 attestation_duties: HashMap::new(),
@@ -620,11 +622,12 @@ mod tests {
         async fn add(&self, _duty: Duty) -> bool {
             true
         }
+    }
 
-        fn c(&self) -> Option<Receiver<Duty>> {
-            let (_, rx) = channel(1);
-            Some(rx)
-        }
+    /// Builds a never-firing receiver for tests that don't exercise eviction.
+    pub(crate) fn noop_deadliner_rx() -> Receiver<Duty> {
+        let (_, rx) = channel(1);
+        rx
     }
 
     /// Deadliner that collects duties and can flush them to a channel on
@@ -632,17 +635,18 @@ mod tests {
     pub(crate) struct TestDeadliner {
         added: Mutex<Vec<Duty>>,
         tx: Sender<Duty>,
-        rx: Mutex<Option<Receiver<Duty>>>,
     }
 
     impl TestDeadliner {
-        pub(crate) fn new() -> Arc<Self> {
+        /// Returns the test deadliner alongside the matching expiry receiver
+        /// — call `expire()` on the deadliner to drive `rx`.
+        pub(crate) fn new() -> (Arc<Self>, Receiver<Duty>) {
             let (tx, rx) = channel(64);
-            Arc::new(Self {
+            let deadliner = Arc::new(Self {
                 added: Mutex::new(Vec::new()),
                 tx,
-                rx: Mutex::new(Some(rx)),
-            })
+            });
+            (deadliner, rx)
         }
 
         /// Send all collected duties to the expiry channel.
@@ -663,18 +667,21 @@ mod tests {
             self.added.lock().unwrap().push(duty);
             true
         }
-
-        fn c(&self) -> Option<Receiver<Duty>> {
-            self.rx.lock().unwrap().take()
-        }
     }
 
     fn make_db() -> MemDB {
-        MemDB::new(Arc::new(NoopDeadliner), &CancellationToken::new())
+        MemDB::new(
+            Arc::new(NoopDeadliner),
+            noop_deadliner_rx(),
+            &CancellationToken::new(),
+        )
     }
 
-    fn make_db_with_deadliner(deadliner: Arc<dyn Deadliner>) -> MemDB {
-        MemDB::new(deadliner, &CancellationToken::new())
+    fn make_db_with_deadliner(
+        deadliner: Arc<dyn Deadliner>,
+        deadliner_rx: Receiver<Duty>,
+    ) -> MemDB {
+        MemDB::new(deadliner, deadliner_rx, &CancellationToken::new())
     }
 
     fn att_data(slot: u64, committee_index: u64, validator_index: u64) -> AttestationData {
@@ -1104,8 +1111,8 @@ mod tests {
 
     #[tokio::test]
     async fn duty_expiry() {
-        let deadliner = TestDeadliner::new();
-        let db = make_db_with_deadliner(Arc::clone(&deadliner) as Arc<dyn Deadliner>);
+        let (deadliner, deadliner_rx) = TestDeadliner::new();
+        let db = make_db_with_deadliner(deadliner.clone(), deadliner_rx);
 
         const SLOT: u64 = 123;
 

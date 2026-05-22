@@ -103,14 +103,15 @@ async fn memdb_threshold() {
     const THRESHOLD: u64 = 7;
     const N: usize = 10;
 
-    let deadliner = Arc::new(TestDeadliner::new());
+    let (deadliner, deadliner_rx) = TestDeadliner::new();
+    let deadliner = Arc::new(deadliner);
     let cancel = CancellationToken::new();
     let db = Arc::new(MemDB::new(cancel.clone(), THRESHOLD, deadliner.clone()));
 
     let trim_handle = tokio::spawn({
         let db = db.clone();
         async move {
-            db.trim().await;
+            db.trim(deadliner_rx).await;
         }
     });
 
@@ -166,17 +167,17 @@ async fn memdb_threshold() {
 struct TestDeadliner {
     added: StdMutex<Vec<Duty>>,
     tx: mpsc::Sender<Duty>,
-    rx: StdMutex<Option<mpsc::Receiver<Duty>>>,
 }
 
 impl TestDeadliner {
-    fn new() -> Self {
+    /// Returns the test deadliner with the matching expiry receiver.
+    fn new() -> (Self, mpsc::Receiver<Duty>) {
         let (tx, rx) = mpsc::channel(32);
-        Self {
+        let deadliner = Self {
             added: StdMutex::new(Vec::new()),
             tx,
-            rx: StdMutex::new(Some(rx)),
-        }
+        };
+        (deadliner, rx)
     }
 
     async fn expire(&self) -> bool {
@@ -203,9 +204,5 @@ impl Deadliner for TestDeadliner {
             .expect("test deadliner lock poisoned")
             .push(duty);
         true
-    }
-
-    fn c(&self) -> Option<mpsc::Receiver<Duty>> {
-        self.rx.lock().expect("test deadliner lock poisoned").take()
     }
 }
