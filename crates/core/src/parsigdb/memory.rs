@@ -303,7 +303,7 @@ impl MemDB {
     /// Runs in a loop, listening on `deadliner_rx` for expired duties and
     /// removing their associated data. Should be spawned as a background task;
     /// returns when the cancellation token is triggered or the receiver
-    /// closes. The receiver is the one paired with the [`Deadliner`] handle at
+    /// closes. The receiver is the one paired with the [`DeadlinerHandle`] at
     /// `DeadlinerTask::start`.
     pub async fn trim(&self, mut deadliner_rx: mpsc::Receiver<Duty>) {
         loop {

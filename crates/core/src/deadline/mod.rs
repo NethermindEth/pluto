@@ -1,8 +1,8 @@
 //! Duty deadline tracking and notification functionality.
 //!
-//! This module provides the [`Deadliner`] trait for tracking duty deadlines
-//! and notifying when duties expire. It implements a background task that
-//! manages timers for multiple duties and sends expired duties to a channel.
+//! Provides `DeadlinerHandle` for tracking duty deadlines and notifying when
+//! duties expire. A background task spawned by `DeadlinerTask::start` manages
+//! timers for multiple duties and emits expired ones on a channel.
 //!
 //! # Example
 //!
@@ -82,7 +82,7 @@ fn to_chrono_duration(duration: Duration) -> Result<chrono::Duration> {
     chrono::Duration::from_std(duration).map_err(|_| DeadlineError::DurationConversion)
 }
 
-/// Outcome of [`Deadliner::add`].
+/// Outcome of [`DeadlinerHandle::add`].
 ///
 /// Spells out the four distinct cases the previous `bool` return value
 /// conflated, so callers can react specifically (e.g. drop a duty that
