@@ -69,6 +69,25 @@ impl DutyType {
     pub fn is_valid(&self) -> bool {
         !matches!(self, DutyType::Unknown | DutyType::DutySentinel(_))
     }
+
+    /// Returns all valid duty types, matching Go's `AllDutyTypes()`.
+    pub fn all() -> &'static [DutyType] {
+        &[
+            DutyType::Proposer,
+            DutyType::Attester,
+            DutyType::Signature,
+            DutyType::Exit,
+            DutyType::BuilderProposer,
+            DutyType::BuilderRegistration,
+            DutyType::Randao,
+            DutyType::PrepareAggregator,
+            DutyType::Aggregator,
+            DutyType::SyncMessage,
+            DutyType::PrepareSyncContribution,
+            DutyType::SyncContribution,
+            DutyType::InfoSync,
+        ]
+    }
 }
 
 /// Error type for duty type conversion.
@@ -400,60 +419,12 @@ impl AsRef<[u8]> for PubKey {
 // todo: add toEth2Format for the pub key
 // https://github.com/ObolNetwork/charon/blob/b3008103c5429b031b63518195f4c49db4e9a68d/core/types.go#L311
 
-/// Duty definition type
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DutyDefinition<T: Clone + Serialize + StdDebug>(T);
+/// Duty definition interface
+pub trait DutyDefinition: DynClone + StdDebug + Send + Sync {}
+dyn_clone::clone_trait_object!(DutyDefinition);
 
-impl<T> DutyDefinition<T>
-where
-    T: Clone + Serialize + StdDebug,
-{
-    /// Create a new duty definition.
-    pub fn new(duty_definition: T) -> Self {
-        Self(duty_definition)
-    }
-}
-
-/// Duty definition set
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct DutyDefinitionSet<T>(HashMap<DutyType, DutyDefinition<T>>)
-where
-    T: Clone + Serialize + StdDebug;
-
-impl<T> DutyDefinitionSet<T>
-where
-    T: Clone + Serialize + StdDebug,
-{
-    /// Create a new duty definition set.
-    pub fn new() -> Self {
-        Self(HashMap::default())
-    }
-
-    /// Get a duty definition by duty type.
-    pub fn get(&self, duty_type: &DutyType) -> Option<&DutyDefinition<T>> {
-        self.0.get(duty_type)
-    }
-
-    /// Insert a duty definition.
-    pub fn insert(&mut self, duty_type: DutyType, duty_definition: DutyDefinition<T>) {
-        self.0.insert(duty_type, duty_definition);
-    }
-
-    /// Remove a duty definition by duty type.
-    pub fn remove(&mut self, duty_type: &DutyType) -> Option<DutyDefinition<T>> {
-        self.0.remove(duty_type)
-    }
-
-    /// Inner duty definition set.
-    pub fn inner(&self) -> &HashMap<DutyType, DutyDefinition<T>> {
-        &self.0
-    }
-
-    /// Inner duty definition set.
-    pub fn inner_mut(&mut self) -> &mut HashMap<DutyType, DutyDefinition<T>> {
-        &mut self.0
-    }
-}
+/// One duty definition per validator
+pub type DutyDefinitionSet = HashMap<PubKey, Box<dyn DutyDefinition>>;
 
 /// Unsigned data type
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -997,13 +968,11 @@ mod tests {
     }
 
     #[test]
-    fn duty_definition_set() {
-        let mut duty_definition_set = DutyDefinitionSet::new();
-        duty_definition_set.insert(DutyType::Proposer, DutyDefinition::new(DutyType::Proposer));
-        assert_eq!(
-            duty_definition_set.get(&DutyType::Proposer),
-            Some(&DutyDefinition::new(DutyType::Proposer))
-        );
+    fn duty_type_all() {
+        let all = DutyType::all();
+        assert_eq!(all.len(), 13);
+        assert!(all.iter().all(DutyType::is_valid));
+        assert!(!all.contains(&DutyType::Unknown));
     }
 
     #[test]
