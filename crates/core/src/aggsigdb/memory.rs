@@ -3,7 +3,7 @@ use std::{
     collections::{HashMap, hash_map::Entry},
     sync::Arc,
 };
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Notify, RwLock};
 
 /// Errors for the in-memory AggSigDB implementation.
 #[derive(Debug, thiserror::Error)]
@@ -24,7 +24,7 @@ pub struct MemDB(Arc<MemDBInner>);
 type SignedDataByPubKey = HashMap<types::PubKey, Box<dyn types::SignedData>>;
 
 struct MemDBInner {
-    data: Mutex<HashMap<types::Duty, SignedDataByPubKey>>,
+    data: RwLock<HashMap<types::Duty, SignedDataByPubKey>>,
     deadliner: Arc<dyn Deadliner>,
     notify: Notify,
 }
@@ -33,7 +33,7 @@ impl MemDB {
     /// Creates a new in-memory AggSigDB instance.
     pub fn new(deadliner: Arc<dyn Deadliner>) -> Self {
         let this = Self(Arc::new(MemDBInner {
-            data: Mutex::new(HashMap::new()),
+            data: RwLock::new(HashMap::new()),
             deadliner: Arc::clone(&deadliner),
             notify: Notify::new(),
         }));
@@ -58,7 +58,7 @@ impl MemDB {
             let Some(inner) = inner.upgrade() else {
                 return;
             };
-            inner.data.lock().await.remove(&duty);
+            inner.data.write().await.remove(&duty);
         }
     }
 
@@ -67,7 +67,7 @@ impl MemDB {
         let mut should_notify = false;
 
         let result = {
-            let mut data = self.0.data.lock().await;
+            let mut data = self.0.data.write().await;
             // TODO(charon): Distinguish between no deadline supported vs already expired.
             let _ = self.0.deadliner.add(duty.clone()).await;
 
@@ -131,7 +131,7 @@ impl MemDB {
         duty: &types::Duty,
         pub_key: &types::PubKey,
     ) -> Option<Box<dyn types::SignedData>> {
-        let data = self.0.data.lock().await;
+        let data = self.0.data.read().await;
         data.get(duty).and_then(|inner| inner.get(pub_key)).cloned()
     }
 }
