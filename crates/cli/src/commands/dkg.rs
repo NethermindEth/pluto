@@ -124,7 +124,8 @@ impl TryFrom<DkgArgs> for pluto_dkg::dkg::Config {
     fn try_from(args: DkgArgs) -> Result<Self> {
         validate_p2p_args(&args.p2p)?;
 
-        let tracing_config = build_console_tracing_config(args.log.level.clone(), &args.log.color);
+        let tracing_config =
+            build_console_tracing_config(args.log.level.clone(), &args.log.color, None);
         let p2p_config = {
             let mut relays = Vec::new();
 

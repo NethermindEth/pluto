@@ -83,7 +83,6 @@ async fn run() -> std::result::Result<(), CliError> {
         }
         Commands::Relay(args) => {
             let config: pluto_relay_server::config::Config = (*args).clone().try_into()?;
-            pluto_tracing::init(&config.log_config).expect("Failed to initialize tracing");
             commands::relay::run(config, ct).await
         }
         Commands::Alpha(args) => match args.command {

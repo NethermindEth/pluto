@@ -31,11 +31,11 @@ async fn main() {
         .override_env_filter("debug")
         .build();
 
-    let background_task = init(&config)
+    let loki = init(&config)
         .expect("Failed to initialize tracing")
-        .expect("Background task should be Some");
+        .expect("Loki background task should be Some");
 
-    tokio::spawn(background_task);
+    tokio::spawn(loki.task);
 
     let bind_address = SocketAddr::from(([0, 0, 0, 0], 9464));
 

@@ -23,10 +23,16 @@ pub enum ConsoleColor {
     Disable,
 }
 
-/// Builds a console tracing configuration for CLI commands.
+/// Builds a tracing configuration for CLI commands, optionally enabling Loki.
+///
+/// `loki` is `Some` when the caller wants events forwarded to a Loki endpoint
+/// (e.g. via `--loki-addresses`), and `None` for commands that only need
+/// console output.
+// TODO: wire `log-output-path` (Charon's `LogOutputPath`) into the file layer.
 pub fn build_console_tracing_config(
     level: impl Into<String>,
     color: &ConsoleColor,
+    loki: Option<pluto_tracing::LokiConfig>,
 ) -> pluto_tracing::TracingConfig {
     let mut builder = pluto_tracing::TracingConfig::builder().with_default_console();
 
@@ -36,9 +42,9 @@ pub fn build_console_tracing_config(
         ConsoleColor::Disable => builder.console_with_ansi(false),
     };
 
-    // TODO: Handle loki config
-
-    // TODO: Handle log output path
+    if let Some(loki) = loki {
+        builder = builder.loki(loki);
+    }
 
     builder.override_env_filter(level.into()).build()
 }

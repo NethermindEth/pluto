@@ -73,6 +73,11 @@ if ! command -v jq >/dev/null 2>&1; then
     exit 1
 fi
 
+if ! type -t compgen >/dev/null 2>&1; then
+    log_err "compgen builtin is required (bash must be built with programmable completion)"
+    exit 1
+fi
+
 if is_truthy "${RUN_SMOKE_VERIFY}" && ! command -v curl >/dev/null 2>&1; then
     log_err "curl is required for runtime smoke verification"
     exit 1

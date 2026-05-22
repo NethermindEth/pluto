@@ -26,6 +26,9 @@ pub mod deadline;
 /// parsigdb
 pub mod parsigdb;
 
+/// DutyDB — in-memory store for unsigned duty data.
+pub mod dutydb;
+
 mod parsigex_codec;
 // SSZ codec operates on compile-time-constant byte sizes and offsets.
 // Arithmetic is bounded and casts from `usize` to `u32` are safe because all

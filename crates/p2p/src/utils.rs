@@ -28,7 +28,7 @@ use crate::{
 
 /// Returns the external IP and Hostname fields as multiaddrs using the listen
 /// TCP addresses ports.
-pub(crate) fn external_tcp_multiaddrs(cfg: &P2PConfig) -> crate::p2p::Result<Vec<Multiaddr>> {
+pub fn external_tcp_multiaddrs(cfg: &P2PConfig) -> crate::p2p::Result<Vec<Multiaddr>> {
     let addrs = cfg.parse_tcp_addrs()?;
 
     let mut ports = vec![];
@@ -60,7 +60,7 @@ pub(crate) fn external_tcp_multiaddrs(cfg: &P2PConfig) -> crate::p2p::Result<Vec
 
 /// Returns the external IP and Hostname fields as multiaddrs using the listen
 /// UDP addresses ports.
-pub(crate) fn external_udp_multiaddrs(cfg: &P2PConfig) -> crate::p2p::Result<Vec<Multiaddr>> {
+pub fn external_udp_multiaddrs(cfg: &P2PConfig) -> crate::p2p::Result<Vec<Multiaddr>> {
     let addrs = cfg.parse_udp_addrs()?;
 
     let mut ports = vec![];
