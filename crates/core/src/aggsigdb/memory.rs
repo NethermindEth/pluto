@@ -64,29 +64,31 @@ impl MemDB {
 
     /// Stores aggregated signed duty data set.
     pub async fn store(&self, duty: types::Duty, set: types::SignedDataSet) -> Result<(), Error> {
-        let mut data = self.0.data.lock().await;
+        let mut should_notify = false;
 
-        // TODO(charon): Distinguish between no deadline supported vs already expired.
-        let _ = self.0.deadliner.add(duty.clone()).await;
+        let result = {
+            let mut data = self.0.data.lock().await;
+            // TODO(charon): Distinguish between no deadline supported vs already expired.
+            let _ = self.0.deadliner.add(duty.clone()).await;
 
-        // NOTE: Partial insertions on error match the semantics of Charon.
-        let mut inserted = false;
-        let for_duty = data.entry(duty).or_default();
-        let result =
+            // NOTE: Partial insertions on error match the semantics of Charon.
+            let for_duty = data.entry(duty).or_default();
+
             set.into_iter()
                 .try_for_each(|(pub_key, signed_data)| match for_duty.entry(pub_key) {
                     Entry::Vacant(slot) => {
                         slot.insert(signed_data);
-                        inserted = true;
+                        should_notify = true;
                         Ok(())
                     }
                     Entry::Occupied(slot) if slot.get() != &signed_data => {
                         Err(Error::MismatchingData)
                     }
                     Entry::Occupied(_) => Ok(()),
-                });
+                })
+        };
 
-        if inserted {
+        if should_notify {
             // TODO: Optimize to only wake those who are waiting for the specific duty and
             // pubkey, rather than all waiters.
             self.0.notify.notify_waiters();
