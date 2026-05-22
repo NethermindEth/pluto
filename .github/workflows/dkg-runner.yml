@@ -105,7 +105,7 @@ jobs:
           CHARON_BIN: ${{ github.workspace }}/bin/charon
           PLUTO_BIN: ${{ github.workspace }}/target/debug/pluto
           TIMEOUT: ${{ inputs.timeout || '120' }}
-          SHUTDOWN_DELAY: "120s"
+          SHUTDOWN_DELAY: "30s"
           NODE_EXIT_TIMEOUT: "180"
           RUN_SMOKE_VERIFY: "1"
           SMOKE_SECONDS: "8"
