@@ -1,3 +1,5 @@
+#![allow(clippy::arithmetic_side_effects)]
+
 use crossbeam::channel as mpmc;
 use std::{
     collections::BTreeMap,
@@ -28,7 +30,13 @@ struct FakeClockInner {
     now: Instant,
     last_id: usize,
     cancelled: bool,
-    clients: BTreeMap<usize, (mpmc::Sender<Instant>, Instant, TimerPriority)>,
+    clients: BTreeMap<usize, ClientRecord>,
+}
+
+struct ClientRecord {
+    sender: mpmc::Sender<Instant>,
+    deadline: Instant,
+    priority: TimerPriority,
 }
 
 impl FakeClock {
@@ -80,7 +88,14 @@ impl FakeClock {
             let deadline = inner.now + duration;
 
             inner.last_id += 1;
-            inner.clients.insert(id, (tx, deadline, priority));
+            inner.clients.insert(
+                id,
+                ClientRecord {
+                    sender: tx,
+                    deadline,
+                    priority,
+                },
+            );
 
             id
         };
@@ -124,9 +139,9 @@ impl FakeClock {
             inner.now += duration;
             let now = inner.now;
 
-            for (&id, (ch, deadline, priority)) in &inner.clients {
-                if *deadline <= now {
-                    expired.push((id, *deadline, *priority, ch.clone()));
+            for (&id, record) in &inner.clients {
+                if record.deadline <= now {
+                    expired.push((id, record.deadline, record.priority, record.sender.clone()));
                 }
             }
 
