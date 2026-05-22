@@ -38,6 +38,10 @@ pub(crate) mod ssz_codec;
 
 pub use parsigex_codec::ParSigExCodecError;
 
+/// Duty lifecycle tracker — monitors workflow steps and reports failures and
+/// participation.
+pub mod tracker;
+
 /// Test utilities.
 #[cfg(test)]
 pub mod testutils;
