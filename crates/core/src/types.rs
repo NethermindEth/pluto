@@ -419,12 +419,65 @@ impl AsRef<[u8]> for PubKey {
 // todo: add toEth2Format for the pub key
 // https://github.com/ObolNetwork/charon/blob/b3008103c5429b031b63518195f4c49db4e9a68d/core/types.go#L311
 
-/// Duty definition interface
-pub trait DutyDefinition: DynClone + StdDebug + Send + Sync {}
-dyn_clone::clone_trait_object!(DutyDefinition);
+/// Duty definition type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DutyDefinition<T: Clone + Serialize + StdDebug>(T);
 
-/// One duty definition per validator
-pub type DutyDefinitionSet = HashMap<PubKey, Box<dyn DutyDefinition>>;
+impl<T> DutyDefinition<T>
+where
+    T: Clone + Serialize + StdDebug,
+{
+    /// Create a new duty definition.
+    pub fn new(duty_definition: T) -> Self {
+        Self(duty_definition)
+    }
+
+    /// Inner value.
+    pub fn inner(&self) -> &T {
+        &self.0
+    }
+}
+
+/// One duty definition per validator, matching Go's `core.DutyDefinitionSet`.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DutyDefinitionSet<T>(HashMap<PubKey, DutyDefinition<T>>)
+where
+    T: Clone + Serialize + StdDebug;
+
+impl<T> DutyDefinitionSet<T>
+where
+    T: Clone + Serialize + StdDebug,
+{
+    /// Create a new duty definition set.
+    pub fn new() -> Self {
+        Self(HashMap::default())
+    }
+
+    /// Get a duty definition by public key.
+    pub fn get(&self, pubkey: &PubKey) -> Option<&DutyDefinition<T>> {
+        self.0.get(pubkey)
+    }
+
+    /// Insert a duty definition.
+    pub fn insert(&mut self, pubkey: PubKey, duty_definition: DutyDefinition<T>) {
+        self.0.insert(pubkey, duty_definition);
+    }
+
+    /// Remove a duty definition by public key.
+    pub fn remove(&mut self, pubkey: &PubKey) -> Option<DutyDefinition<T>> {
+        self.0.remove(pubkey)
+    }
+
+    /// Iterate over all public keys in the set.
+    pub fn keys(&self) -> impl Iterator<Item = &PubKey> {
+        self.0.keys()
+    }
+
+    /// Inner map.
+    pub fn inner(&self) -> &HashMap<PubKey, DutyDefinition<T>> {
+        &self.0
+    }
+}
 
 /// Unsigned data type
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -973,6 +1026,18 @@ mod tests {
         assert_eq!(all.len(), 13);
         assert!(all.iter().all(DutyType::is_valid));
         assert!(!all.contains(&DutyType::Unknown));
+    }
+
+    #[test]
+    fn duty_definition_set() {
+        let pubkey = PubKey::new([1u8; PK_LEN]);
+        let mut set = DutyDefinitionSet::new();
+        set.insert(pubkey, DutyDefinition::new(DutyType::Proposer));
+        assert_eq!(
+            set.get(&pubkey),
+            Some(&DutyDefinition::new(DutyType::Proposer))
+        );
+        assert_eq!(set.keys().count(), 1);
     }
 
     #[test]
