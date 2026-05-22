@@ -477,6 +477,11 @@ where
     pub fn inner(&self) -> &HashMap<PubKey, DutyDefinition<T>> {
         &self.0
     }
+
+    /// Inner map (mutable).
+    pub fn inner_mut(&mut self) -> &mut HashMap<PubKey, DutyDefinition<T>> {
+        &mut self.0
+    }
 }
 
 /// Unsigned data type
