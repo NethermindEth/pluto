@@ -7,6 +7,8 @@
 
 use std::any::Any;
 
+use base64::Engine as _;
+
 use crate::{
     signeddata::{
         Attestation, BeaconCommitteeSelection, SignedAggregateAndProof, SignedRandao,
@@ -70,6 +72,25 @@ pub enum ParSigExCodecError {
     InvalidSignature(String),
 }
 
+fn serialize_signature(sig: &Signature) -> Result<Vec<u8>, ParSigExCodecError> {
+    let encoded = base64::engine::general_purpose::STANDARD.encode(sig);
+    Ok(serde_json::to_vec(&encoded)?)
+}
+
+fn deserialize_signature(bytes: &[u8]) -> Result<Box<dyn SignedData>, ParSigExCodecError> {
+    let encoded: String = serde_json::from_slice(bytes)?;
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|e| ParSigExCodecError::SignedData(format!("invalid base64: {e}")))?;
+    let sig: Signature = raw.try_into().map_err(|v: Vec<u8>| {
+        ParSigExCodecError::SignedData(format!(
+            "invalid signature length: got {}, want 96",
+            v.len()
+        ))
+    })?;
+    Ok(Box::new(sig))
+}
+
 pub(crate) fn serialize_signed_data(data: &dyn SignedData) -> Result<Vec<u8>, ParSigExCodecError> {
     let any = data as &dyn Any;
 
@@ -131,7 +152,9 @@ pub(crate) fn serialize_signed_data(data: &dyn SignedData) -> Result<Vec<u8>, Pa
     serialize_json!(VersionedSignedValidatorRegistration);
     serialize_json!(SignedVoluntaryExit);
     serialize_json!(SignedRandao);
-    serialize_json!(Signature);
+    if let Some(value) = any.downcast_ref::<Signature>() {
+        return serialize_signature(value);
+    }
     serialize_json!(BeaconCommitteeSelection);
     serialize_json!(SyncCommitteeSelection);
 
@@ -206,7 +229,7 @@ pub(crate) fn deserialize_signed_data(
         DutyType::Randao => deserialize_json!(SignedRandao),
 
         // -- Signature: JSON-only --
-        DutyType::Signature => deserialize_json!(Signature),
+        DutyType::Signature => deserialize_signature(bytes),
 
         // -- PrepareAggregator: JSON-only --
         DutyType::PrepareAggregator => deserialize_json!(BeaconCommitteeSelection),
@@ -454,5 +477,21 @@ mod tests {
         let decoded: SignedAggregateAndProof =
             downcast(deserialize_signed_data(&DutyType::Aggregator, &json_bytes).unwrap());
         assert_eq!(sap, decoded);
+    }
+
+    #[test]
+    fn marshal_unmarshal_signature() {
+        let sig: Signature = [0xab; 96];
+        let bytes = serialize_signed_data(&sig).unwrap();
+
+        // Snapshot: Signature serializes as a base64-encoded JSON string.
+        // Changing this breaks wire compatibility with Charon.
+        const EXPECTED: &str = "\"q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6ur\
+             q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6ur\"";
+        assert_eq!(bytes, EXPECTED.as_bytes());
+
+        let decoded: Signature =
+            downcast(deserialize_signed_data(&DutyType::Signature, &bytes).unwrap());
+        assert_eq!(sig, decoded);
     }
 }

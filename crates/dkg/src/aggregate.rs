@@ -246,7 +246,7 @@ pub fn agg_validator_registrations(
             .verify(&share.pub_key, &sig_root, &agg_sig)
             .map_err(AggregateError::InvalidValidatorRegistrationAggregatedSignature)?;
 
-        res.push(msg.set_signature(pluto_core::types::Signature::new(agg_sig))?);
+        res.push(msg.set_signature(agg_sig)?);
     }
 
     Ok(res)
@@ -355,7 +355,7 @@ mod tests {
     }
 
     fn partial_signature(sig: Signature, share_idx: u64) -> ParSignedData {
-        ParSignedData::new(pluto_core::types::Signature::new(sig), share_idx)
+        ParSignedData::new(sig, share_idx)
     }
 
     #[test]
