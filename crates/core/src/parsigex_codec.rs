@@ -494,4 +494,25 @@ mod tests {
             downcast(deserialize_signed_data(&DutyType::Signature, &bytes).unwrap());
         assert_eq!(sig, decoded);
     }
+
+    #[test]
+    fn deserialize_signature_invalid_base64() {
+        let err = deserialize_signed_data(&DutyType::Signature, br#""%%%""#).unwrap_err();
+        assert!(
+            matches!(err, ParSigExCodecError::SignedData(_)),
+            "expected SignedData error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn deserialize_signature_wrong_length() {
+        let short =
+            base64::engine::general_purpose::STANDARD.encode([0x11_u8; SIGNATURE_LENGTH - 1]);
+        let input = format!("\"{short}\"");
+        let err = deserialize_signed_data(&DutyType::Signature, input.as_bytes()).unwrap_err();
+        assert!(
+            matches!(err, ParSigExCodecError::SignedData(_)),
+            "expected SignedData error, got {err:?}"
+        );
+    }
 }
