@@ -6,7 +6,7 @@ Shell scripts for running a complete DKG ceremony with a configurable mix of Plu
 
 - Pluto binary built (used for `create dkg` and for any Pluto nodes in the ceremony): `cargo build -p pluto-cli`
 - `charon` binary on your `$PATH` and `curl` installed (required when `RUN_SMOKE_VERIFY` is enabled; this is the default)
-- Relay server reachable (default: `https://0.relay.obol.tech`)
+- Relay server reachable (default: `https://pluto-relay-0.ovh.dev-nethermind.xyz`)
 
 ## Quick start
 
@@ -30,7 +30,7 @@ NODES=4 THRESHOLD=3 PLUTO_NODES=1 CHARON_NODES=3 ./scripts/dkg-runner/run.sh
 
 # Release binary, custom relay, longer timeout
 PLUTO_BIN=./target/release/pluto \
-RELAY_URL=https://0.relay.obol.tech \
+RELAY_URL=https://pluto-relay-0.ovh.dev-nethermind.xyz \
 TIMEOUT=300 \
 ./scripts/dkg-runner/run.sh
 
@@ -55,7 +55,7 @@ All variables are optional. Set them in the environment before calling any scrip
 | `THRESHOLD` | `3` | Min shares required to reconstruct the key |
 | `PLUTO_NODES` | `2` | How many slots use the Pluto binary (fills slots 0…N-1) |
 | `CHARON_NODES` | `2` | How many slots use the Charon binary (fills remaining slots) |
-| `RELAY_URL` | `https://0.relay.obol.tech` | Relay ENR endpoint passed to the DKG nodes |
+| `RELAY_URL` | `https://pluto-relay-0.ovh.dev-nethermind.xyz` | Relay ENR endpoint passed to the DKG nodes |
 | `NETWORK` | `holesky` | Ethereum network for the cluster definition |
 | `FEE_RECIPIENT` | `0xDeaDBeef…` | Fee recipient address for the cluster |
 | `WITHDRAWAL_ADDR` | `0xDeaDBeef…` | Withdrawal address for the cluster |

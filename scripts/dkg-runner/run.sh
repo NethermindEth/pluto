@@ -9,7 +9,7 @@
 #   THRESHOLD=3          Signing threshold (min shares required to reconstruct).
 #   PLUTO_NODES=2        How many of the NODES slots use the Pluto binary.
 #   CHARON_NODES=2       How many of the NODES slots use the Charon binary.
-#   RELAY_URL=https://0.relay.obol.tech
+#   RELAY_URL=https://pluto-relay-0.ovh.dev-nethermind.xyz
 #                        Relay ENR endpoint used by the DKG nodes.
 #   TIMEOUT=120          Seconds to wait for all nodes before aborting.
 #   NODE_EXIT_TIMEOUT=90 Seconds to wait for nodes to exit after completion.
