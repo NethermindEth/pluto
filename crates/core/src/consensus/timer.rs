@@ -143,12 +143,6 @@ impl IncreasingRoundTimer {
     }
 }
 
-impl Default for IncreasingRoundTimer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl RoundTimer for IncreasingRoundTimer {
     fn timer_type(&self) -> TimerType {
         TimerType::Increasing
@@ -206,12 +200,6 @@ impl EagerDoubleLinearRoundTimer {
     }
 }
 
-impl Default for EagerDoubleLinearRoundTimer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl RoundTimer for EagerDoubleLinearRoundTimer {
     fn timer_type(&self) -> TimerType {
         TimerType::EagerDoubleLinear
@@ -263,12 +251,6 @@ impl LinearRoundTimer {
     /// Creates a linear round timer for a duty.
     pub fn with_duty(duty: Duty) -> Self {
         Self { duty: Some(duty) }
-    }
-}
-
-impl Default for LinearRoundTimer {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -417,6 +399,7 @@ mod tests {
     use super::*;
     use crate::types::SlotNumber;
 
+    // Feature state is process-global.
     static FEATURESET_TEST_LOCK: StdMutex<()> = StdMutex::new(());
 
     #[test_case(TimerType::Increasing, "inc" ; "increasing")]
