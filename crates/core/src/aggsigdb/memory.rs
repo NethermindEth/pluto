@@ -14,43 +14,53 @@ pub enum Error {
     MismatchingData,
 }
 
+type Waiters =
+    HashMap<(types::Duty, types::PubKey), Vec<sync::oneshot::Sender<Box<dyn types::SignedData>>>>;
+
 struct Actor {
     entries: HashMap<types::Duty, HashMap<types::PubKey, Box<dyn types::SignedData>>>,
-    waiters: HashMap<
-        (types::Duty, types::PubKey),
-        Vec<sync::oneshot::Sender<Box<dyn types::SignedData>>>,
-    >,
+    waiters: Waiters,
     deadliner: Arc<dyn Deadliner>,
 }
 
 impl Actor {
-    async fn run(&mut self, mut messages: sync::mpsc::Receiver<Message>) {
-        while let Some(msg) = messages.recv().await {
-            match msg {
-                Message::Store {
-                    duty,
-                    set,
-                    response,
-                } => {
-                    let result = self.store(duty, set).await;
-                    let _ = response.send(result);
-                }
-                Message::WaitFor {
-                    duty,
-                    pub_key,
-                    response,
-                } => {
-                    if let Some(found) = self.get(&duty, &pub_key) {
-                        let _ = response.send(found);
-                    } else {
-                        self.waiters
-                            .entry((duty, pub_key))
-                            .or_default()
-                            .push(response);
+    async fn run(
+        &mut self,
+        mut messages: sync::mpsc::Receiver<Message>,
+        mut evictions: sync::mpsc::Receiver<types::Duty>,
+    ) {
+        loop {
+            tokio::select! {
+                biased; // We want to run evictions first
+
+                Some(duty) = evictions.recv() => self.evict(duty),
+
+                msg = messages.recv() => match msg {
+                    None => break, // All handles have been dropped, so we can stop the actor.
+                    Some(msg) => match msg {
+                        Message::Store {
+                            duty,
+                            set,
+                            response,
+                        } => {
+                            let result = self.store(duty, set).await;
+                            let _ = response.send(result);
+                        }
+                        Message::WaitFor {
+                            duty,
+                            pub_key,
+                            response,
+                        } => {
+                            if let Some(found) = self.get(&duty, &pub_key) {
+                                let _ = response.send(found);
+                            } else {
+                                self.waiters
+                                    .entry((duty, pub_key))
+                                    .or_default()
+                                    .push(response);
+                            }
+                        }
                     }
-                }
-                Message::Evict { duty } => {
-                    let _ = self.evict(duty);
                 }
             }
         }
@@ -103,9 +113,6 @@ impl Actor {
 }
 
 enum Message {
-    Evict {
-        duty: types::Duty,
-    },
     Store {
         duty: types::Duty,
         set: types::SignedDataSet,
@@ -138,16 +145,8 @@ impl Handle {
             waiters: HashMap::new(),
             deadliner: Arc::clone(&deadliner),
         };
-        tokio::spawn(async move { actor.run(receiver).await });
-
-        let deadliner_sender = sender.clone();
-        tokio::spawn(async move {
-            if let Some(mut c) = deadliner.c() {
-                while let Some(duty) = c.recv().await {
-                    let _ = deadliner_sender.send(Message::Evict { duty }).await;
-                }
-            }
-        });
+        let (_, never) = sync::mpsc::channel(1);
+        tokio::spawn(async move { actor.run(receiver, deadliner.c().unwrap_or(never)).await });
 
         Self { sender }
     }
@@ -161,7 +160,7 @@ impl Handle {
             response: response_tx,
         };
         let _ = self.sender.send(msg).await;
-        response_rx.await.unwrap()
+        response_rx.await.expect("Actor panicked")
     }
 
     /// Blocks and returns the aggregated signed duty data when available.
@@ -180,7 +179,7 @@ impl Handle {
             response: response_tx,
         };
         let _ = self.sender.send(msg).await;
-        response_rx.await.unwrap()
+        response_rx.await.expect("Actor panicked")
     }
 }
 
