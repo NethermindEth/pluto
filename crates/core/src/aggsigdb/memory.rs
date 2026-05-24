@@ -3,7 +3,7 @@ use std::{
     collections::{HashMap, hash_map::Entry},
     sync::Arc,
 };
-use tokio::sync::{Notify, RwLock};
+use tokio::sync;
 
 /// Errors for the in-memory AggSigDB implementation.
 #[derive(Debug, thiserror::Error)]
@@ -14,87 +14,154 @@ pub enum Error {
     MismatchingData,
 }
 
-/// An in-memory implementation of the AggSigDB.
+struct Actor {
+    entries: HashMap<types::Duty, HashMap<types::PubKey, Box<dyn types::SignedData>>>,
+    waiters: HashMap<
+        (types::Duty, types::PubKey),
+        Vec<sync::oneshot::Sender<Box<dyn types::SignedData>>>,
+    >,
+    deadliner: Arc<dyn Deadliner>,
+}
+
+impl Actor {
+    async fn run(&mut self, mut messages: sync::mpsc::Receiver<Message>) {
+        while let Some(msg) = messages.recv().await {
+            match msg {
+                Message::Store {
+                    duty,
+                    set,
+                    response,
+                } => {
+                    let result = self.store(duty, set).await;
+                    let _ = response.send(result);
+                }
+                Message::WaitFor {
+                    duty,
+                    pub_key,
+                    response,
+                } => {
+                    if let Some(found) = self.get(&duty, &pub_key) {
+                        let _ = response.send(found);
+                    } else {
+                        self.waiters
+                            .entry((duty, pub_key))
+                            .or_default()
+                            .push(response);
+                    }
+                }
+                Message::Evict { duty } => {
+                    let _ = self.evict(duty);
+                }
+            }
+        }
+    }
+
+    async fn store(&mut self, duty: types::Duty, set: types::SignedDataSet) -> Result<(), Error> {
+        // TODO: Improve the `deadliner` API:
+        // - Return if the duty is already expired. If so, return early.
+        // - Make `add` sync to avoid an `await` which blocks the actor.
+        let _ = self.deadliner.add(duty.clone()).await;
+
+        // NOTE: Partial insertions on error match the semantics of Charon.
+        let for_duty = self.entries.entry(duty.clone()).or_default();
+        for (pub_key, signed_data) in set.into_iter() {
+            match for_duty.entry(pub_key) {
+                Entry::Vacant(slot) => {
+                    slot.insert(signed_data.clone());
+
+                    let k = (duty.clone(), pub_key);
+                    if let Some((_, waiters)) = self.waiters.remove_entry(&k) {
+                        for w in waiters {
+                            let _ = w.send(signed_data.clone());
+                        }
+                    };
+                }
+                Entry::Occupied(slot) if slot.get() != &signed_data => {
+                    return Err(Error::MismatchingData);
+                }
+                Entry::Occupied(_) => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    fn get(
+        &self,
+        duty: &types::Duty,
+        pub_key: &types::PubKey,
+    ) -> Option<Box<dyn types::SignedData>> {
+        self.entries
+            .get(duty)
+            .and_then(|for_duty| for_duty.get(pub_key))
+            .cloned()
+    }
+
+    fn evict(&mut self, duty: types::Duty) {
+        self.entries.remove(&duty);
+    }
+}
+
+enum Message {
+    Evict {
+        duty: types::Duty,
+    },
+    Store {
+        duty: types::Duty,
+        set: types::SignedDataSet,
+        response: sync::oneshot::Sender<Result<(), Error>>,
+    },
+    WaitFor {
+        duty: types::Duty,
+        pub_key: types::PubKey,
+        response: sync::oneshot::Sender<Box<dyn types::SignedData>>,
+    },
+}
+
+/// An in-memory implementation of AggSigDB.
 ///
 /// Share an instance by cloning. Cloning is cheap and creates a new reference
 /// to the same underlying data.
 #[derive(Clone)]
-pub struct MemDB(Arc<MemDBInner>);
-
-type SignedDataByPubKey = HashMap<types::PubKey, Box<dyn types::SignedData>>;
-
-struct MemDBInner {
-    data: RwLock<HashMap<types::Duty, SignedDataByPubKey>>,
-    deadliner: Arc<dyn Deadliner>,
-    notify: Notify,
+pub struct Handle {
+    sender: sync::mpsc::Sender<Message>,
 }
 
-impl MemDB {
-    /// Creates a new in-memory AggSigDB instance.
+impl Handle {
+    /// Creates a new in-memory AggSigDB instance, and get a handle to it.
+    ///
+    /// The underlying instance gets dropped when all handles are dropped.
     pub fn new(deadliner: Arc<dyn Deadliner>) -> Self {
-        let this = Self(Arc::new(MemDBInner {
-            data: RwLock::new(HashMap::new()),
+        let (sender, receiver) = sync::mpsc::channel(100);
+        let mut actor = Actor {
+            entries: HashMap::new(),
+            waiters: HashMap::new(),
             deadliner: Arc::clone(&deadliner),
-            notify: Notify::new(),
-        }));
+        };
+        tokio::spawn(async move { actor.run(receiver).await });
 
-        match deadliner.c() {
-            Some(evictions) => {
-                tokio::spawn(Self::evict(Arc::downgrade(&this.0), evictions));
+        let deadliner_sender = sender.clone();
+        tokio::spawn(async move {
+            if let Some(mut c) = deadliner.c() {
+                while let Some(duty) = c.recv().await {
+                    let _ = deadliner_sender.send(Message::Evict { duty }).await;
+                }
             }
-            None => {
-                tracing::warn!("Deadliner channel is not available");
-            }
-        }
+        });
 
-        this
-    }
-
-    async fn evict(
-        inner: std::sync::Weak<MemDBInner>,
-        mut evictions: tokio::sync::mpsc::Receiver<types::Duty>,
-    ) {
-        while let Some(duty) = evictions.recv().await {
-            let Some(inner) = inner.upgrade() else {
-                return;
-            };
-            inner.data.write().await.remove(&duty);
-        }
+        Self { sender }
     }
 
     /// Stores aggregated signed duty data set.
     pub async fn store(&self, duty: types::Duty, set: types::SignedDataSet) -> Result<(), Error> {
-        let mut should_notify = false;
-
-        let result = {
-            let mut data = self.0.data.write().await;
-            // TODO(charon): Distinguish between no deadline supported vs already expired.
-            let _ = self.0.deadliner.add(duty.clone()).await;
-
-            // NOTE: Partial insertions on error match the semantics of Charon.
-            let for_duty = data.entry(duty).or_default();
-
-            set.into_iter()
-                .try_for_each(|(pub_key, signed_data)| match for_duty.entry(pub_key) {
-                    Entry::Vacant(slot) => {
-                        slot.insert(signed_data);
-                        should_notify = true;
-                        Ok(())
-                    }
-                    Entry::Occupied(slot) if slot.get() != &signed_data => {
-                        Err(Error::MismatchingData)
-                    }
-                    Entry::Occupied(_) => Ok(()),
-                })
+        let (response_tx, response_rx) = sync::oneshot::channel();
+        let msg = Message::Store {
+            duty,
+            set,
+            response: response_tx,
         };
-
-        if should_notify {
-            // TODO: Optimize to only wake those who are waiting for the specific duty and
-            // pubkey, rather than all waiters.
-            self.0.notify.notify_waiters();
-        }
-
-        result
+        let _ = self.sender.send(msg).await;
+        response_rx.await.unwrap()
     }
 
     /// Blocks and returns the aggregated signed duty data when available.
@@ -106,33 +173,14 @@ impl MemDB {
         duty: types::Duty,
         pub_key: types::PubKey,
     ) -> Box<dyn types::SignedData> {
-        loop {
-            // Register interest before checking the map so that a concurrent `store` either
-            // (a) inserts before we check and we observe the value, or (b) inserts after
-            // our `notified()` is enabled and wakes us.
-            let notified = self.0.notify.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-
-            {
-                if let Some(data) = self.get(&duty, &pub_key).await {
-                    return data.clone();
-                }
-            }
-
-            notified.await;
-        }
-    }
-
-    /// Immediately returns the aggregated signed duty data if available,
-    /// without blocking.
-    pub async fn get(
-        &self,
-        duty: &types::Duty,
-        pub_key: &types::PubKey,
-    ) -> Option<Box<dyn types::SignedData>> {
-        let data = self.0.data.read().await;
-        data.get(duty).and_then(|inner| inner.get(pub_key)).cloned()
+        let (response_tx, response_rx) = sync::oneshot::channel();
+        let msg = Message::WaitFor {
+            duty,
+            pub_key,
+            response: response_tx,
+        };
+        let _ = self.sender.send(msg).await;
+        response_rx.await.unwrap()
     }
 }
 
@@ -206,7 +254,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_read() {
-        let store = super::MemDB::new(TestDeadliner::never());
+        let store = super::Handle::new(TestDeadliner::never());
 
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
@@ -224,7 +272,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_unblocks() {
         let deadliner = TestDeadliner::never();
-        let store = super::MemDB::new(deadliner);
+        let store = super::Handle::new(deadliner);
 
         let duty = Duty::new_attester_duty(SlotNumber::new(1));
         let pub_key = PubKey::new([7u8; 48]);
@@ -252,7 +300,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cannot_overwrite() {
-        let store = super::MemDB::new(TestDeadliner::never());
+        let store = super::Handle::new(TestDeadliner::never());
 
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
@@ -273,7 +321,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_idempotent() {
-        let store = super::MemDB::new(TestDeadliner::never());
+        let store = super::Handle::new(TestDeadliner::never());
 
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
@@ -297,7 +345,7 @@ mod tests {
         let (evict_tx, evict_rx) = sync::mpsc::channel::<Duty>(1);
         let deadliner = TestDeadliner::new(evict_rx);
 
-        let store = super::MemDB::new(deadliner);
+        let store = super::Handle::new(deadliner);
 
         let duty = Duty::new_attester_duty(SlotNumber::new(1));
         let pub_key = PubKey::new([7u8; 48]);
@@ -309,17 +357,11 @@ mod tests {
             .await
             .unwrap();
 
-        // The eviction task runs concurrently, so we poll until the specific
-        // data gone, so new readers are guaranteed to not observe it.
+        // The eviction task runs concurrently, so we wait until the specific
+        // data is gone, so new readers are guaranteed to not observe it.
         evict_tx.send(duty.clone()).await.unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while store.get(&duty, &pub_key).await.is_some() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("eviction was not applied in time");
-
+        // TODO: Find a better mechanism to wait for eviction
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let reader = {
             let store = store.clone();
             let duty = duty.clone();
@@ -345,7 +387,7 @@ mod tests {
     async fn write_unblocks_many() {
         const N: usize = 4;
 
-        let store = super::MemDB::new(TestDeadliner::never());
+        let store = super::Handle::new(TestDeadliner::never());
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
         let signed_data = MockSignedData(42);
@@ -381,7 +423,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn unrelated_write_does_not_unblock() {
-        let store = super::MemDB::new(TestDeadliner::never());
+        let store = super::Handle::new(TestDeadliner::never());
 
         let duty_a = Duty::new_proposer_duty(SlotNumber::new(10));
         let data_a = MockSignedData(1);
