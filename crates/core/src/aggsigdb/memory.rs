@@ -356,11 +356,16 @@ mod tests {
             .await
             .unwrap();
 
-        // The eviction task runs concurrently, so we wait until the specific
-        // data is gone, so new readers are guaranteed to not observe it.
+        // Wait until the eviction is processed and the duty is removed.
         evict_tx.send(duty.clone()).await.unwrap();
-        // TODO: Find a better mechanism to wait for eviction
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while evict_tx.capacity() != evict_tx.max_capacity() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("Eviction did not complete in time");
+
         let reader = {
             let store = store.clone();
             let duty = duty.clone();
