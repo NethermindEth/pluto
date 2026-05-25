@@ -5938,7 +5938,6 @@ dependencies = [
  "async-trait",
  "bon",
  "chrono",
- "futures",
  "hex",
  "k256",
  "pluto-core",
