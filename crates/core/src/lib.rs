@@ -29,6 +29,9 @@ pub mod parsigdb;
 /// DutyDB — in-memory store for unsigned duty data.
 pub mod dutydb;
 
+/// Cache of Validators retrieved from the Beacon node
+pub mod valcache;
+
 /// Resolves beacon-chain duties per epoch, ticks the slot clock, and fans
 /// duties out to downstream components.
 pub mod scheduler;

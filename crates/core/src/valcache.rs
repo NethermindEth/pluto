@@ -1,4 +1,4 @@
-use pluto_core::types::PubKey;
+use crate::types::PubKey;
 use pluto_eth2api::{
     EthBeaconNodeApiClient, EthBeaconNodeApiClientError, GetStateValidatorsResponseResponse,
     GetStateValidatorsResponseResponseDatum, PostStateValidatorsRequest,
