@@ -17,7 +17,7 @@ use crate::{
         VersionedSignedProposal, VersionedSignedValidatorRegistration,
     },
     ssz_codec,
-    types::{DutyType, SIGNATURE_LENGTH, Signature, SignedData},
+    types::{DutyType, Signature, SignedData},
 };
 
 /// Error type for partial signature exchange codec operations.
@@ -82,12 +82,8 @@ fn deserialize_signature(bytes: &[u8]) -> Result<Box<dyn SignedData>, ParSigExCo
     let raw = base64::engine::general_purpose::STANDARD
         .decode(encoded)
         .map_err(|e| ParSigExCodecError::SignedData(format!("invalid base64: {e}")))?;
-    let sig: Signature = raw.try_into().map_err(|v: Vec<u8>| {
-        ParSigExCodecError::SignedData(format!(
-            "invalid signature length: got {}, want {SIGNATURE_LENGTH}",
-            v.len()
-        ))
-    })?;
+    let sig: Signature = pluto_crypto::tblsconv::signature_from_bytes(&raw)
+        .map_err(|e| ParSigExCodecError::InvalidSignature(e.to_string()))?;
     Ok(Box::new(sig))
 }
 
@@ -285,6 +281,7 @@ pub(crate) fn deserialize_signed_data(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::SIGNATURE_LENGTH;
     use pluto_eth2api::{
         spec::{altair, phase0},
         versioned,
@@ -510,8 +507,8 @@ mod tests {
         let input = format!("\"{short}\"");
         let err = deserialize_signed_data(&DutyType::Signature, input.as_bytes()).unwrap_err();
         assert!(
-            matches!(err, ParSigExCodecError::SignedData(_)),
-            "expected SignedData error, got {err:?}"
+            matches!(err, ParSigExCodecError::InvalidSignature(_)),
+            "expected InvalidSignature error, got {err:?}"
         );
     }
 }
