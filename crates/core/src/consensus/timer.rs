@@ -336,26 +336,21 @@ fn linear_round_timeout(round: i64) -> Result<Duration> {
 fn linear_subsequent_round_timeout(round: i64) -> Result<Duration> {
     ensure_non_negative_round(round)?;
 
-    // Upstream uses bare `time.Duration(200*(round-1)+200)`, so this is
-    // nanoseconds despite comments/tests referring to milliseconds.
+    // Charon fixed the previous bare `time.Duration(...)` bug in
+    // ObolNetwork/charon#4537; subsequent linear rounds are milliseconds.
     let previous_round = round
         .checked_sub(1)
         .ok_or(Error::DurationOverflow { round })?;
-    let increment_nanos = previous_round
+    let increment_millis = previous_round
         .checked_mul(200)
         .ok_or(Error::DurationOverflow { round })?;
-    let timeout_nanos = increment_nanos
+    let timeout_millis = increment_millis
         .checked_add(200)
         .ok_or(Error::DurationOverflow { round })?;
+    let timeout_millis =
+        u64::try_from(timeout_millis).map_err(|_| Error::DurationOverflow { round })?;
 
-    duration_from_nanos(timeout_nanos, round)
-}
-
-fn duration_from_nanos(timeout_nanos: i64, round: i64) -> Result<Duration> {
-    let timeout_nanos =
-        u64::try_from(timeout_nanos).map_err(|_| Error::DurationOverflow { round })?;
-
-    Ok(Duration::from_nanos(timeout_nanos))
+    Ok(Duration::from_millis(timeout_millis))
 }
 
 fn ensure_non_negative_round(round: i64) -> Result<()> {
@@ -474,9 +469,9 @@ mod tests {
     }
 
     #[test_case(1, Duration::from_millis(1_000) ; "round_1")]
-    #[test_case(2, Duration::from_nanos(400) ; "round_2")]
-    #[test_case(3, Duration::from_nanos(600) ; "round_3")]
-    #[test_case(4, Duration::from_nanos(800) ; "round_4")]
+    #[test_case(2, Duration::from_millis(400) ; "round_2")]
+    #[test_case(3, Duration::from_millis(600) ; "round_3")]
+    #[test_case(4, Duration::from_millis(800) ; "round_4")]
     #[tokio::test(start_paused = true)]
     async fn linear_round_timer(round: i64, want: Duration) {
         let timer = LinearRoundTimer::new();
@@ -488,12 +483,7 @@ mod tests {
         };
 
         assert_eq!(want, duration);
-        assert_fires_after(
-            timeout,
-            wake_duration(want),
-            &format!("Timer(round {round}) did not fire"),
-        )
-        .await;
+        assert_fires_after(timeout, want, &format!("Timer(round {round}) did not fire")).await;
     }
 
     #[test]
@@ -644,14 +634,9 @@ mod tests {
             features_config(vec![Feature::ProposalTimeout], vec![]),
             || must_timer(timer.timer(3)),
         );
-        let want = Duration::from_nanos(600);
+        let want = Duration::from_millis(600);
         assert_eq!(want, must_duration(linear_subsequent_round_timeout(3)));
-        assert_fires_after(
-            timeout,
-            wake_duration(want),
-            "round 3 proposer timer did not fire",
-        )
-        .await;
+        assert_fires_after(timeout, want, "round 3 proposer timer did not fire").await;
     }
 
     #[test]
@@ -776,10 +761,6 @@ mod tests {
             Ok(_) => {}
             Err(err) => panic!("timer task failed: {err}"),
         }
-    }
-
-    fn wake_duration(duration: Duration) -> Duration {
-        duration.max(Duration::from_millis(1))
     }
 
     fn features_config(enabled: Vec<Feature>, disabled: Vec<Feature>) -> Config {
