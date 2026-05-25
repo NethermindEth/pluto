@@ -158,6 +158,7 @@ impl Aggregator {
         Ok(())
     }
 
+    #[tracing::instrument(skip_all, fields(pubkey = %pubkey))]
     async fn aggregate_one(
         &self,
         pubkey: &PubKey,
@@ -196,7 +197,7 @@ impl Aggregator {
             })
             .collect::<Result<_>>()?;
 
-        let agg_bytes = info_span!("tbls.ThresholdAggregate")
+        let agg_bytes = info_span!("BlstImpl::threshold_aggregate")
             .in_scope(|| BlstImpl.threshold_aggregate(&bls_map))
             .map_err(|e| SigAggError::ThresholdAggregate {
                 pubkey: *pubkey,
