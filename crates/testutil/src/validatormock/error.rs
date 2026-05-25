@@ -40,6 +40,20 @@ pub enum Error {
         source: reqwest::Error,
     },
 
+    /// Beacon node returned a non-success status for a raw POST submission.
+    /// Surfaces the response body so beacon-node validation errors (e.g.
+    /// 400 "invalid signature on attestation 0") are visible — mirroring the
+    /// diagnostic richness of Go's typed `eth2Cl.SubmitAttestations` error.
+    #[error("submit {endpoint}: {status}: {body}")]
+    SubmitStatus {
+        /// Path of the failed POST.
+        endpoint: &'static str,
+        /// HTTP status code returned by the beacon node.
+        status: reqwest::StatusCode,
+        /// Response body (truncated to a sensible length).
+        body: String,
+    },
+
     /// Local signer could not produce a signature for the requested pubkey.
     #[error(transparent)]
     Sign(#[from] SignError),

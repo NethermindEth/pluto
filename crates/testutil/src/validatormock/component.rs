@@ -294,8 +294,21 @@ async fn run_scheduler(
                     tokio::select! {
                         _ = cancel_for_task.cancelled() => {},
                         () = inner_for_task.clock.sleep_until(start_time) => {
-                            if let Err(err) = run_duty_via_inner(&inner_for_task, scheduled).await {
-                                warn!(?err, slot, ?duty_label, "validatormock: duty failed");
+                            // Race the duty body against cancellation. Go's
+                            // `wait(ctx, ch)` selects on ctx, so a never-closed
+                            // readiness signal (e.g. when an earlier
+                            // `prepare()` failed) does not stick the goroutine
+                            // forever. Rust's `CloseOnce::wait` is not
+                            // cancellable, so without this outer select a duty
+                            // blocked on `duties_ok.wait()` would deadlock
+                            // `Component::shutdown`'s JoinSet drain.
+                            tokio::select! {
+                                _ = cancel_for_task.cancelled() => {},
+                                res = run_duty_via_inner(&inner_for_task, scheduled) => {
+                                    if let Err(err) = res {
+                                        warn!(?err, slot, ?duty_label, "validatormock: duty failed");
+                                    }
+                                }
                             }
                         }
                     }
@@ -561,5 +574,79 @@ mod tests {
             assert_eq!(state.sync_comms_by_epoch.len(), 2);
         }
         component.shutdown().await;
+    }
+
+    /// Regression: when a duty body blocks on a never-closed readiness signal
+    /// (e.g. an earlier `prepare()` errored out before closing `duties_ok`),
+    /// `shutdown()` must still terminate. Without the inner cancel-race in
+    /// `run_scheduler`, the `JoinSet` drain loop would wait forever.
+    #[tokio::test]
+    async fn shutdown_terminates_when_duty_blocked_on_close_once() {
+        use serde_json::json;
+        use wiremock::{
+            Mock, ResponseTemplate,
+            matchers::{method, path_regex},
+        };
+
+        use crate::validatormock::clock::FakeClock;
+
+        let genesis = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let mock = BeaconMock::builder()
+            .validator_set(ValidatorSet::validator_set_a())
+            .no_proposer_duties(true)
+            .no_attester_duties(true)
+            .no_sync_committee_duties(true)
+            .build()
+            .await
+            .expect("build mock");
+
+        // Mount an empty validators set so synccomm's `prepare_epoch` succeeds
+        // (otherwise `slot_ticked(2)` errors out before any duty is scheduled).
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/eth/v1/beacon/states/[^/]+/validators$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "execution_optimistic": false,
+                "finalized": true,
+                "data": []
+            })))
+            .with_priority(2)
+            .mount(mock.server())
+            .await;
+
+        let clock = FakeClock::new(genesis);
+        let meta = meta_at(genesis);
+        let component = Component::builder()
+            .eth2_cl(mock.client().clone())
+            .sign_func(Signer::arc(&[]).expect("empty signer"))
+            .pubkeys(Vec::new())
+            .meta(meta)
+            .builder_api(false)
+            .clock(Arc::new(clock.clone()) as Arc<dyn Clock>)
+            .build();
+
+        // Bypass the two-slot startup delay.
+        component.slot_ticked(0).await.expect("tick 0");
+        component.slot_ticked(1).await.expect("tick 1");
+
+        // Tick a non-epoch-boundary slot. `PrepareAggregator` only fires on
+        // epoch starts, so `Attester` here will see a never-closed
+        // `duties_ok` and `attest()` will park on `CloseOnce::wait` forever.
+        component.slot_ticked(2).await.expect("tick 2");
+
+        // Advance virtual time past the attester offset (1/3 of slot = 4s)
+        // so the duty body actually starts running and blocks on
+        // `duties_ok.wait()`.
+        let slot2 = MetaSlot { slot: 2, meta };
+        clock.advance_to(slot2.start_time() + Duration::from_secs(5));
+
+        // Give the scheduler a chance to spawn the duty body and park it.
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+
+        // Without the cancel-race fix this hangs forever.
+        tokio::time::timeout(Duration::from_secs(2), component.shutdown())
+            .await
+            .expect("shutdown must terminate even when duty body is parked on CloseOnce");
     }
 }

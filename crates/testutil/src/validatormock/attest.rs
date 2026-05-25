@@ -22,6 +22,16 @@
 //! structure matches the Go `eth2spec.VersionedAttestation` /
 //! `*SubmitAggregateAttestationsOpts` serializations. All other beacon-node
 //! interactions use the generated client.
+//!
+//! The byte-for-byte parity with the Go goldens is what current consumers
+//! (Charon-as-beacon-node fakes in the DV test harness) expect. The shape has
+//! NOT been validated end-to-end against a real beacon node — if a future
+//! integration needs that, either the typed client must learn the
+//! `VersionedAttestation` wire shape or we switch to the spec-conformant
+//! `SingleAttestation` payload and regenerate the goldens. On non-success
+//! responses [`submit_json`] surfaces the HTTP status and response body so a
+//! mismatch against a real beacon node would show up directly in the error
+//! message rather than as a silent reqwest failure.
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -597,6 +607,19 @@ async fn get_aggregate_attestation(
 // ---------------------------------------------------------------------------
 // Raw POST helpers
 // ---------------------------------------------------------------------------
+//
+// These submit the Go `*eth2spec.VersionedAttestation` /
+// `*SubmitAggregateAttestationsOpts` JSON shape, NOT the typed-client
+// `SingleAttestation` shape that the generated `submit_pool_attestations_v2`
+// would produce. See the module-level docstring for the rationale and the
+// follow-up tracked there. Errors surface the HTTP status AND response body
+// (via [`Error::SubmitStatus`]) so beacon-node validation failures are visible
+// — matching the diagnostic richness of Go's typed `SubmitAttestations` error.
+
+/// Maximum number of bytes of an HTTP error response body to keep in the
+/// surfaced error. Keeps log lines readable without dropping the useful prefix
+/// of beacon-node validation messages (typically a few hundred bytes).
+const ERROR_BODY_TRUNCATE: usize = 1024;
 
 async fn submit_attestations(
     eth2_cl: &EthBeaconNodeApiClient,
@@ -634,16 +657,38 @@ async fn submit_json<T: Serialize + ?Sized>(
         }
     }
 
-    eth2_cl
+    let response = eth2_cl
         .client
         .post(url)
         .json(body)
         .send()
         .await
-        .and_then(reqwest::Response::error_for_status)
         .map_err(|source| Error::Submit { endpoint, source })?;
 
-    Ok(())
+    let status = response.status();
+    if status.is_success() {
+        return Ok(());
+    }
+
+    // Read the body before discarding the response so the beacon-node's error
+    // payload (typically `{"code":400,"message":"..."}`) reaches the caller.
+    let body = response.text().await.unwrap_or_default();
+    let truncated = if body.len() > ERROR_BODY_TRUNCATE {
+        // `floor_char_boundary` is unstable; walk back to a UTF-8 boundary
+        // manually so non-ASCII payloads don't panic the slice.
+        let mut cut = ERROR_BODY_TRUNCATE;
+        while cut > 0 && !body.is_char_boundary(cut) {
+            cut = cut.saturating_sub(1);
+        }
+        format!("{}…", &body[..cut])
+    } else {
+        body
+    };
+    Err(Error::SubmitStatus {
+        endpoint,
+        status,
+        body: truncated,
+    })
 }
 
 // ---------------------------------------------------------------------------
