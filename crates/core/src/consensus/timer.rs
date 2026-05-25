@@ -126,7 +126,7 @@ pub trait RoundTimer: Send + Sync {
 }
 
 /// Implements a linearly increasing round timer.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct IncreasingRoundTimer {
     duty: Option<Duty>,
 }
@@ -140,12 +140,6 @@ impl IncreasingRoundTimer {
     /// Creates an increasing round timer for a duty.
     pub fn with_duty(duty: Duty) -> Self {
         Self { duty: Some(duty) }
-    }
-}
-
-impl Default for IncreasingRoundTimer {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -182,7 +176,7 @@ impl RoundTimer for IncreasingRoundTimer {
 ///
 /// It is linear, meaning the round duration increases linearly with the round
 /// number: 1s, 2s, 3s, etc.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct EagerDoubleLinearRoundTimer {
     duty: Option<Duty>,
     first_deadlines: Mutex<HashMap<i64, Instant>>,
@@ -203,12 +197,6 @@ impl EagerDoubleLinearRoundTimer {
             duty: Some(duty),
             first_deadlines: Mutex::new(HashMap::new()),
         }
-    }
-}
-
-impl Default for EagerDoubleLinearRoundTimer {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -249,7 +237,7 @@ impl RoundTimer for EagerDoubleLinearRoundTimer {
 /// other peers already had time to fetch the proposal and therefore need less
 /// time to reach consensus, so subsequent rounds start with a lower value and
 /// increase linearly.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LinearRoundTimer {
     duty: Option<Duty>,
 }
@@ -263,12 +251,6 @@ impl LinearRoundTimer {
     /// Creates a linear round timer for a duty.
     pub fn with_duty(duty: Duty) -> Self {
         Self { duty: Some(duty) }
-    }
-}
-
-impl Default for LinearRoundTimer {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
