@@ -1,14 +1,34 @@
 use backon::{BackoffBuilder, Retryable};
+use chrono::{DateTime, Utc};
 use std::{sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error, info, warn};
+
+/// Provides the "current time" used to compute retry deadlines.
+///
+/// A blanket implementation covers any `Fn() -> DateTime<Utc>`, so closures
+/// (including [`chrono::Utc::now`]) can be passed wherever a `Clock` is
+/// expected. Custom implementations are useful for deterministic tests.
+pub trait Clock: Send + Sync + 'static {
+    /// Returns the current time.
+    fn now(&self) -> DateTime<Utc>;
+}
+
+impl<F> Clock for F
+where
+    F: Fn() -> DateTime<Utc> + Send + Sync + 'static,
+{
+    fn now(&self) -> DateTime<Utc> {
+        self()
+    }
+}
 
 /// Options for the asynchronous retry executor.
 #[derive(Clone)]
 pub struct AsyncOptions<T> {
     backoff_builder: backon::ExponentialBuilder,
-    deadline_fn: Arc<dyn Fn(T) -> Option<chrono::DateTime<chrono::Utc>> + Send + Sync>,
-    time_fn: Arc<dyn Fn() -> chrono::DateTime<chrono::Utc> + Send + Sync>,
+    deadline_fn: Arc<dyn Fn(T) -> Option<DateTime<Utc>> + Send + Sync>,
+    clock: Arc<dyn Clock>,
     cancellation_token: Option<CancellationToken>,
 }
 
@@ -22,20 +42,19 @@ impl<T> AsyncOptions<T> {
     /// Set the deadline function.
     pub fn with_deadline(
         mut self,
-        deadline_fn: impl Fn(T) -> Option<chrono::DateTime<chrono::Utc>> + Send + Sync + 'static,
+        deadline_fn: impl Fn(T) -> Option<DateTime<Utc>> + Send + Sync + 'static,
     ) -> Self {
         self.deadline_fn = Arc::new(deadline_fn);
         self
     }
 
-    /// Set the time provider function. This function should return the "current
-    /// time", which will be compared with the deadline computed by the
-    /// `deadline_fn`.
-    pub fn with_time(
-        mut self,
-        time_fn: impl Fn() -> chrono::DateTime<chrono::Utc> + Send + Sync + 'static,
-    ) -> Self {
-        self.time_fn = Arc::new(time_fn);
+    /// Set the [`Clock`] providing the "current time", which is compared with
+    /// the deadline computed by the `deadline_fn`.
+    ///
+    /// Accepts any [`Clock`], including a `Fn() -> DateTime<Utc>` closure via
+    /// the blanket implementation.
+    pub fn with_time(mut self, clock: impl Clock) -> Self {
+        self.clock = Arc::new(clock);
         self
     }
 
@@ -56,7 +75,7 @@ impl<T> Default for AsyncOptions<T> {
                 .without_max_times()
                 .with_jitter(),
             deadline_fn: Arc::new(|_| None),
-            time_fn: Arc::new(chrono::Utc::now),
+            clock: Arc::new(Utc::now),
             cancellation_token: None,
         }
     }
@@ -128,7 +147,7 @@ pub async fn do_async<
     mut future: FutureFn,
 ) {
     let deadline = (options.deadline_fn)(t);
-    let now = (options.time_fn)();
+    let now = options.clock.now();
 
     #[allow(
         clippy::arithmetic_side_effects,
