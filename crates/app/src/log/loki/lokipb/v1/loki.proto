@@ -1,8 +1,10 @@
 syntax = "proto3";
 
-package loki;
+package app.log.loki.lokipb.v1;
 
 import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/obolnetwork/charon/app/log/loki/lokipb/v1";
 
 message PushRequest {
   repeated Stream streams = 1;

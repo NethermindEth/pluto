@@ -11,12 +11,12 @@ pub struct PushRequest {
 }
 impl ::prost::Name for PushRequest {
     const NAME: &'static str = "PushRequest";
-    const PACKAGE: &'static str = "loki";
+    const PACKAGE: &'static str = "app.log.loki.lokipb.v1";
     fn full_name() -> ::prost::alloc::string::String {
-        "loki.PushRequest".into()
+        "app.log.loki.lokipb.v1.PushRequest".into()
     }
     fn type_url() -> ::prost::alloc::string::String {
-        "type.googleapis.com/loki.PushRequest".into()
+        "type.googleapis.com/app.log.loki.lokipb.v1.PushRequest".into()
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -30,12 +30,12 @@ pub struct Stream {
 }
 impl ::prost::Name for Stream {
     const NAME: &'static str = "Stream";
-    const PACKAGE: &'static str = "loki";
+    const PACKAGE: &'static str = "app.log.loki.lokipb.v1";
     fn full_name() -> ::prost::alloc::string::String {
-        "loki.Stream".into()
+        "app.log.loki.lokipb.v1.Stream".into()
     }
     fn type_url() -> ::prost::alloc::string::String {
-        "type.googleapis.com/loki.Stream".into()
+        "type.googleapis.com/app.log.loki.lokipb.v1.Stream".into()
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -47,11 +47,11 @@ pub struct Entry {
 }
 impl ::prost::Name for Entry {
     const NAME: &'static str = "Entry";
-    const PACKAGE: &'static str = "loki";
+    const PACKAGE: &'static str = "app.log.loki.lokipb.v1";
     fn full_name() -> ::prost::alloc::string::String {
-        "loki.Entry".into()
+        "app.log.loki.lokipb.v1.Entry".into()
     }
     fn type_url() -> ::prost::alloc::string::String {
-        "type.googleapis.com/loki.Entry".into()
+        "type.googleapis.com/app.log.loki.lokipb.v1.Entry".into()
     }
 }
