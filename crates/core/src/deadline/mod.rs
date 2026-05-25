@@ -84,9 +84,17 @@ fn to_chrono_duration(duration: Duration) -> Result<chrono::Duration> {
 
 /// Outcome of [`DeadlinerHandle::add`].
 ///
-/// Spells out the four distinct cases the previous `bool` return value
-/// conflated, so callers can react specifically (e.g. drop a duty that
-/// already expired vs. log a calculator error).
+/// Spells out the four distinct cases so callers can react specifically (e.g.
+/// drop a duty that already expired vs. log a calculator error).
+///
+/// # Charon parity
+///
+/// Charon's `Deadliner.Add` returns a single `bool`: `true` when the duty was
+/// scheduled, `false` otherwise (the other three cases here — already expired,
+/// no deadline, and calculator error — are all folded into `false` there). See
+/// the [`Add` doc comment][charon-add].
+///
+/// [charon-add]: https://github.com/ObolNetwork/charon/blob/main/core/deadline.go#L37-L39
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddOutcome {
     /// The duty was accepted and a timer is now armed for its deadline.
@@ -98,14 +106,6 @@ pub enum AddOutcome {
     NoDeadline,
     /// The calculator returned an error while computing the deadline.
     FailedToCompute,
-}
-
-impl AddOutcome {
-    /// `true` only for [`AddOutcome::Scheduled`] — convenient for callers
-    /// that still treat "added" as a yes/no question.
-    pub fn is_scheduled(self) -> bool {
-        matches!(self, AddOutcome::Scheduled)
-    }
 }
 
 /// Internal message type for adding duties to the deadliner.

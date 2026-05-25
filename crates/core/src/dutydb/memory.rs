@@ -14,7 +14,7 @@ use tracing::{info, warn};
 use tree_hash::TreeHash;
 
 use crate::{
-    deadline::DeadlinerHandle,
+    deadline::{AddOutcome, DeadlinerHandle},
     signeddata::{
         AttestationData, SyncContribution, VersionedAggregatedAttestation, VersionedProposal,
     },
@@ -27,6 +27,11 @@ pub enum Error {
     /// Duty has already expired; unsigned data will not be stored.
     #[error("duty expired: unsigned data will not be stored")]
     ExpiredDuty,
+
+    /// The deadliner could not compute a deadline for the duty (calculator
+    /// error or a shutdown race); unsigned data will not be stored.
+    #[error("deadline computation failed: unsigned data will not be stored")]
+    DeadlineComputation,
 
     /// Proposer data set must contain at most one entry.
     #[error("proposer data set must contain at most one entry")]
@@ -247,8 +252,14 @@ impl MemDB {
 
         let mut state = self.state.write().await;
 
-        if !self.deadliner.add(duty.clone()).await.is_scheduled() {
-            return Err(Error::ExpiredDuty);
+        match self.deadliner.add(duty.clone()).await {
+            AddOutcome::Scheduled => {}
+            AddOutcome::AlreadyExpired => return Err(Error::ExpiredDuty),
+            // Types without a deadline aren't stored by DutyDB; fall through
+            // to the `duty_type` match below, which rejects them as
+            // `UnsupportedDutyType`.
+            AddOutcome::NoDeadline => {}
+            AddOutcome::FailedToCompute => return Err(Error::DeadlineComputation),
         }
 
         match duty.duty_type {
@@ -1083,7 +1094,7 @@ mod tests {
 
     #[tokio::test]
     async fn duty_expiry() {
-        // Real handle so `store()`'s `add(...).is_scheduled()` check passes.
+        // Real handle so `store()`'s `add(...)` returns `AddOutcome::Scheduled`.
         // Eviction is driven manually via `trim_tx` so the test stays
         // deterministic instead of racing the deadliner's timer.
         let deadliner = far_future_handle();
