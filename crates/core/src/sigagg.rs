@@ -66,7 +66,6 @@ pub enum SigAggError {
         #[source]
         source: pluto_crypto::types::Error,
     },
-
 }
 
 /// Convenience alias for [`std::result::Result`] with [`SigAggError`].
@@ -518,10 +517,7 @@ mod tests {
         let mut par_sigs = Vec::new();
         for (share_idx, share) in &shares {
             let sig = tbls.sign(share, &msg).unwrap();
-            par_sigs.push(ParSignedData::new(
-                MockSignedData { sig },
-                *share_idx,
-            ));
+            par_sigs.push(ParSignedData::new(MockSignedData { sig }, *share_idx));
         }
 
         let mut agg = Aggregator::new(THRESHOLD, noop_verify()).unwrap();
@@ -656,10 +652,7 @@ mod tests {
             for (share_idx, share) in &shares {
                 let sig = tbls.sign(share, &msg).unwrap();
                 bls_map.insert(*share_idx, sig);
-                par_sigs.push(ParSignedData::new(
-                    MockSignedData { sig },
-                    *share_idx,
-                ));
+                par_sigs.push(ParSignedData::new(MockSignedData { sig }, *share_idx));
             }
 
             let agg_sig = tbls.threshold_aggregate(&bls_map).unwrap();
@@ -760,9 +753,7 @@ mod tests {
         let par_sigs: Vec<ParSignedData> = ctx
             .sigs
             .iter()
-            .map(|(idx, sig)| {
-                ParSignedData::new(FailSetSignatureMock { sig: *sig }, *idx)
-            })
+            .map(|(idx, sig)| ParSignedData::new(FailSetSignatureMock { sig: *sig }, *idx))
             .collect();
 
         let agg = Aggregator::new(3, noop_verify()).unwrap();
