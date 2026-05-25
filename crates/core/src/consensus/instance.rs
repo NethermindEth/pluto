@@ -10,8 +10,9 @@
 //! a full channel surfaces immediately to the caller.
 //!
 //! Receiver ownership is explicit. Tokio receivers are single-consumer, so the
-//! task that drives an instance must call each needed `take_*_rx` method once at
-//! its ownership boundary. A second call returns `Error::ReceiverAlreadyTaken`.
+//! task that drives an instance must call each needed `take_*_rx` method once
+//! at its ownership boundary. A second call returns
+//! `Error::ReceiverAlreadyTaken`.
 //!
 //! The receive buffer accepts `RECV_BUFFER_SIZE` inbound messages before the
 //! runner starts. The hash, protobuf value, verify, error, and decided-at
