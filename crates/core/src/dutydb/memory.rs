@@ -255,10 +255,10 @@ impl MemDB {
         match self.deadliner.add(duty.clone()).await {
             AddOutcome::Scheduled => {}
             AddOutcome::AlreadyExpired => return Err(Error::ExpiredDuty),
-            // Types without a deadline aren't stored by DutyDB; fall through
-            // to the `duty_type` match below, which rejects them as
-            // `UnsupportedDutyType`.
-            AddOutcome::NoDeadline => {}
+            // Only `Exit`/`BuilderRegistration` have no deadline, and DutyDB
+            // doesn't store either. Reject explicitly so this doesn't depend on
+            // the `duty_type` match below also rejecting them.
+            AddOutcome::NoDeadline => return Err(Error::UnsupportedDutyType),
             AddOutcome::FailedToCompute => return Err(Error::DeadlineComputation),
         }
 
@@ -830,10 +830,10 @@ mod tests {
     /// `FarFutureCalculator` schedules every duty, so it can't exercise the
     /// `AddOutcome::NoDeadline` arm in `store()`. Back the DB with
     /// `NeverExpiringCalculator` (always `Ok(None)`) so that types without a
-    /// deadline fall through to the `duty_type` match and are rejected as
-    /// `UnsupportedDutyType` — not misclassified as `ExpiredDuty`.
+    /// deadline are rejected as `UnsupportedDutyType` — not misclassified as
+    /// `ExpiredDuty`.
     #[tokio::test]
-    async fn mem_db_store_no_deadline_falls_through() {
+    async fn mem_db_store_no_deadline_rejected() {
         let (deadliner, drop_rx) = DeadlinerTask::start(
             CancellationToken::new(),
             "dutydb-tests",
