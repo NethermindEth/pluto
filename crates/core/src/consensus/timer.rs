@@ -370,7 +370,8 @@ fn linear_subsequent_round_timeout(round: i64) -> Result<Duration> {
 }
 
 fn duration_from_nanos(timeout_nanos: i64, round: i64) -> Result<Duration> {
-    let timeout_nanos = u64::try_from(timeout_nanos).map_err(|_| Error::InvalidRound { round })?;
+    let timeout_nanos =
+        u64::try_from(timeout_nanos).map_err(|_| Error::DurationOverflow { round })?;
 
     Ok(Duration::from_nanos(timeout_nanos))
 }
