@@ -356,11 +356,14 @@ impl From<[u8; PK_LEN]> for PubKey {
 }
 
 /// Public key error type
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PubKeyError {
     /// Invalid public key length.
+    #[error("Invalid public key length")]
     InvalidLength,
+
     /// Invalid public key string.
+    #[error("Invalid public key string")]
     InvalidString,
 }
 

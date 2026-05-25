@@ -4,7 +4,7 @@ use backon::{BackoffBuilder, Retryable};
 use pluto_eth2api::{EthBeaconNodeApiClientError, client};
 use tokio_util::sync::CancellationToken;
 
-use crate::types;
+use crate::{types, valcache};
 
 /// Errors that can occur during the scheduling process.
 #[derive(Debug, thiserror::Error)]
@@ -12,17 +12,30 @@ pub enum SchedulerError {
     /// Beacon Node API client error.
     #[error("Error while fetching data from the Eth2 API: {0}")]
     EthBeaconNodeApiClientError(#[from] EthBeaconNodeApiClientError),
+
+    /// Validator cache error.
+    #[error("Error while accessing the validator cache: {0}")]
+    ValidatorCacheError(#[from] valcache::ValidatorCacheError),
+
+    /// Public key error.
+    #[error("Error while processing public key: {0}")]
+    PubKeyError(#[from] types::PubKeyError),
+
+    /// Invalid epoch error.
+    #[error("Invalid epoch")]
+    InvalidEpoch(#[from] std::num::ParseIntError),
 }
 
 type Result<T> = std::result::Result<T, SchedulerError>;
 
 struct Scheduler {
     client: client::EthBeaconNodeApiClient,
+    valcache: valcache::ValidatorCache,
 }
 
 impl Scheduler {
-    pub fn new(client: client::EthBeaconNodeApiClient, builder_enabled: bool) -> Self {
-        Scheduler { client }
+    pub fn new(client: client::EthBeaconNodeApiClient, valcache: valcache::ValidatorCache) -> Self {
+        Scheduler { client, valcache }
     }
 }
 
@@ -84,6 +97,50 @@ async fn new_slot_ticker(
     });
 
     Ok(rx)
+}
+
+struct Validator {
+    pubkey: types::PubKey,
+    v_idx: pluto_eth2api::spec::phase0::ValidatorIndex,
+}
+
+/// Returns the active validators (including their validator index) for the
+/// epoch.
+async fn resolve_active_validators(
+    epoch: u64,
+    valcache: &valcache::ValidatorCache,
+) -> Result<Vec<Validator>> {
+    let (_, complete) = valcache.get_by_head().await?;
+
+    let mut validators = vec![];
+    for (index, val) in complete.iter() {
+        let pubkey = types::PubKey::try_from(val.validator.pubkey.as_str())?;
+
+        // TODO: Support `submitter`
+        // submitter(pubkey, v.Balance, val.status.to_string())
+
+        // Check for active validators for the given epoch.
+        // The activation epoch needs to be checked in cases where this function is
+        // called before the epoch starts.
+        if !val.status.is_active() {
+            let activation_epoch = val
+                .validator
+                .activation_epoch
+                .parse::<u64>()
+                .map_err(SchedulerError::InvalidEpoch)?;
+
+            if activation_epoch != epoch {
+                continue;
+            }
+        }
+
+        validators.push(Validator {
+            pubkey,
+            v_idx: *index,
+        });
+    }
+
+    Ok(validators)
 }
 
 // TODO: Duplicated from `crates/p2p/src/bootnode.rs`
