@@ -598,6 +598,33 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn proposal_timeout_optimization_double_eager_linear_round_one_doubles() {
+        let duty = Duty::new_proposer_duty(SlotNumber::from(0));
+        let timer = EagerDoubleLinearRoundTimer::with_duty(duty);
+
+        let timeout = with_featureset(
+            features_config(vec![Feature::ProposalTimeout], vec![]),
+            || {
+                drop(must_timer(timer.timer(1)));
+                must_timer(timer.timer(1))
+            },
+        );
+        let timeout = spawn_timeout(timeout);
+        advance(Duration::from_millis(2_500)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !timeout.is_finished(),
+            "round 1 second proposer timer fired early"
+        );
+        assert_fires_after(
+            join_timeout(timeout),
+            Duration::from_millis(500),
+            "round 1 second proposer timer did not fire at doubled deadline",
+        )
+        .await;
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn proposal_timeout_optimization_linear_round_timer() {
         let duty = Duty::new_proposer_duty(SlotNumber::from(0));
         let timer = LinearRoundTimer::with_duty(duty);
@@ -646,6 +673,56 @@ mod tests {
         }
     }
 
+    #[test]
+    fn max_round_returns_duration_overflow() {
+        let timers: Vec<(&str, Box<dyn RoundTimer>)> = vec![
+            ("increasing", Box::new(IncreasingRoundTimer::new())),
+            (
+                "eager_double_linear",
+                Box::new(EagerDoubleLinearRoundTimer::new()),
+            ),
+            ("linear", Box::new(LinearRoundTimer::new())),
+        ];
+
+        for (name, timer) in timers {
+            match timer.timer(i64::MAX) {
+                Ok(_) => panic!("{name} max round must overflow"),
+                Err(err) => assert_eq!(Error::DurationOverflow { round: i64::MAX }, err),
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn round_zero_matches_go_behavior() {
+        assert_eq!(
+            Duration::from_millis(750),
+            must_duration(increasing_round_timeout(0))
+        );
+        assert_fires_after(
+            must_timer(IncreasingRoundTimer::new().timer(0)),
+            Duration::from_millis(750),
+            "increasing round 0 timer did not fire at 750ms",
+        )
+        .await;
+
+        assert_eq!(Duration::ZERO, must_duration(linear_round_timeout(0)));
+        assert_fires_immediately(
+            must_timer(EagerDoubleLinearRoundTimer::new().timer(0)),
+            "eager double-linear round 0 timer did not fire immediately",
+        )
+        .await;
+
+        assert_eq!(
+            Duration::ZERO,
+            must_duration(linear_subsequent_round_timeout(0))
+        );
+        assert_fires_immediately(
+            must_timer(LinearRoundTimer::new().timer(0)),
+            "linear round 0 timer did not fire immediately",
+        )
+        .await;
+    }
+
     fn must_timer(result: Result<RoundTimerFuture>) -> RoundTimerFuture {
         match result {
             Ok(timeout) => timeout,
@@ -680,6 +757,21 @@ mod tests {
         tokio::task::yield_now().await;
 
         assert!(timeout.is_finished(), "{message}");
+        match timeout.await {
+            Ok(_) => {}
+            Err(err) => panic!("timer task failed: {err}"),
+        }
+    }
+
+    async fn assert_fires_immediately(timeout: RoundTimerFuture, message: &str) {
+        let timeout = spawn_timeout(timeout);
+
+        tokio::task::yield_now().await;
+
+        if !timeout.is_finished() {
+            timeout.abort();
+            panic!("{message}");
+        }
         match timeout.await {
             Ok(_) => {}
             Err(err) => panic!("timer task failed: {err}"),
