@@ -332,7 +332,7 @@ mod tests {
     use anyhow::Context as _;
     use futures::StreamExt as _;
     use libp2p::{Multiaddr, swarm::SwarmEvent};
-    use pluto_core::types::{DutyType, ParSignedData, ParSignedDataSet, PubKey, Signature};
+    use pluto_core::types::{DutyType, ParSignedData, ParSignedDataSet, PubKey};
     use pluto_p2p::{
         config::P2PConfig,
         p2p::{Node, NodeType},
@@ -380,7 +380,7 @@ mod tests {
         let mut set = ParSignedDataSet::new();
         set.insert(
             PubKey::from(pk_bytes),
-            Signature::new_partial(Signature::new(sig_bytes), share_idx),
+            ParSignedData::new(sig_bytes, share_idx),
         );
         set
     }
@@ -493,7 +493,7 @@ mod tests {
                 .map(|j| {
                     let mut bytes = [0u8; 96];
                     rand::thread_rng().fill(&mut bytes[..]);
-                    Signature::new_partial(Signature::new(bytes), (j + 1) as u64)
+                    ParSignedData::new(bytes, (j + 1) as u64)
                 })
                 .collect();
             expected_data.insert(*pk, psigs);

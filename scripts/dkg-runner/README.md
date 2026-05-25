@@ -60,13 +60,13 @@ All variables are optional. Set them in the environment before calling any scrip
 | `FEE_RECIPIENT` | `0xDeaDBeef…` | Fee recipient address for the cluster |
 | `WITHDRAWAL_ADDR` | `0xDeaDBeef…` | Withdrawal address for the cluster |
 | `TIMEOUT` | `120` | Seconds to wait before declaring the ceremony failed |
-| `SHUTDOWN_DELAY` | `30s` | Graceful shutdown delay passed to each node via `--shutdown-delay` |
-| `NODE_EXIT_TIMEOUT` | `90` | Seconds to wait for node processes to exit cleanly after artifacts appear |
+| `SHUTDOWN_DELAY` | `120s` | Graceful shutdown delay passed to each node via `--shutdown-delay` |
+| `NODE_EXIT_TIMEOUT` | `180` | Seconds to wait for node processes to exit cleanly after artifacts appear |
 | `PLUTO_BIN` | `./target/debug/pluto` | Path to the Pluto binary (only required when `PLUTO_NODES > 0`) |
 | `CHARON_BIN` | `charon` | Path to the Charon binary |
 | `RUN_SMOKE_VERIFY` | `1` | Smoke-start the collected node dirs with `charon run` after output collection |
-| `SMOKE_SECONDS` | `8` | Seconds the smoke-started nodes must stay alive |
-| `SMOKE_PORT_BASE` | `39000` | First local port used by smoke verification |
+| `SMOKE_SECONDS` | `8` | Seconds to wait for smoke validator APIs to become ready |
+| `SMOKE_PORT_BASE` | `19000` | First local port used by smoke verification |
 | `WORK_DIR` | `/tmp/dkg-run` | Scratch directory — wiped at the start of every run |
 | `KEEP_NODES` | `0` | Leave node processes running after a successful ceremony when set to `1`/`true`/`yes`/`on` |
 | `CI` | _(unset)_ | When truthy, suppresses per-node tee to stdout; logs go to `WORK_DIR/node-*/node.log` only |
@@ -83,7 +83,7 @@ All variables are optional. Set them in the environment before calling any scrip
 | 4 | `wait-node-exits.sh` | Waits for each node process to exit with status `0` unless `KEEP_NODES` is enabled |
 | 5 | `collect.sh` | Copies keystores and `cluster-lock.json` to `WORK_DIR/output/`; prints a summary |
 | 6 | `ci/verify-output-semantic.sh` | Validates the collected output is internally consistent across nodes |
-| 7 | `ci/verify-run-smoke.sh` | Starts the collected node dirs with `charon run` and checks they stay up through the smoke window |
+| 7 | `ci/verify-run-smoke.sh` | Starts the collected node dirs with `charon run` and checks every validator API reaches readiness |
 
 On success, outputs are under `$WORK_DIR/output/`. On failure or timeout, partial outputs are still collected and `WORK_DIR` is preserved for inspection. `run.sh` never deletes `WORK_DIR`; use `./scripts/dkg-runner/reset.sh` when you're done.
 
