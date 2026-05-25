@@ -559,7 +559,7 @@ pub struct ParSignedData {
     pub signed_data: Box<dyn SignedData>,
 
     /// Threshold BLS share index.
-    pub share_idx: u64,
+    pub share_idx: u8,
 }
 
 impl Clone for ParSignedData {
@@ -581,7 +581,7 @@ impl Eq for ParSignedData {}
 
 impl ParSignedData {
     /// Create a new partially signed data.
-    pub fn new<T: SignedData>(partially_signed_data: T, share_idx: u64) -> Self {
+    pub fn new<T: SignedData>(partially_signed_data: T, share_idx: u8) -> Self {
         Self {
             signed_data: Box::new(partially_signed_data),
             share_idx,
@@ -589,7 +589,7 @@ impl ParSignedData {
     }
 
     /// Create a new partially signed data from a boxed signed data.
-    pub fn new_boxed(partially_signed_data: Box<dyn SignedData>, share_idx: u64) -> Self {
+    pub fn new_boxed(partially_signed_data: Box<dyn SignedData>, share_idx: u8) -> Self {
         Self {
             signed_data: partially_signed_data,
             share_idx,
@@ -602,8 +602,7 @@ impl TryFrom<&ParSignedData> for pbcore::ParSignedData {
 
     fn try_from(data: &ParSignedData) -> Result<Self, Self::Error> {
         let encoded = serialize_signed_data(data.signed_data.as_ref())?;
-        let share_idx =
-            i32::try_from(data.share_idx).map_err(|_| ParSigExCodecError::InvalidShareIndex)?;
+        let share_idx = i32::from(data.share_idx);
         let signature = data
             .signed_data
             .signature()
@@ -623,7 +622,7 @@ impl TryFrom<(&DutyType, &pbcore::ParSignedData)> for ParSignedData {
     fn try_from(value: (&DutyType, &pbcore::ParSignedData)) -> Result<Self, Self::Error> {
         let (duty_type, data) = value;
         let share_idx =
-            u64::try_from(data.share_idx).map_err(|_| ParSigExCodecError::InvalidShareIndex)?;
+            u8::try_from(data.share_idx).map_err(|_| ParSigExCodecError::InvalidShareIndex)?;
         let signed_data = deserialize_signed_data(duty_type, &data.data)?;
         Ok(Self::new_boxed(signed_data, share_idx))
     }

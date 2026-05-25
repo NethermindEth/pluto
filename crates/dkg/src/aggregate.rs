@@ -69,7 +69,7 @@ pub enum AggregateError {
     #[error("invalid deposit data partial signature from peer {share_idx} for pubkey {pub_key}")]
     InvalidDepositPartialSignature {
         /// Peer share index.
-        share_idx: u64,
+        share_idx: u8,
         /// Validator pubkey.
         pub_key: String,
     },
@@ -80,7 +80,7 @@ pub enum AggregateError {
     )]
     InvalidValidatorRegistrationPartialSignature {
         /// Peer share index.
-        share_idx: u64,
+        share_idx: u8,
         /// Validator pubkey.
         pub_key: String,
     },
@@ -91,7 +91,7 @@ pub enum AggregateError {
     )]
     InvalidLockHashPartialSignature {
         /// Peer share index.
-        share_idx: u64,
+        share_idx: u8,
         /// Validator pubkey.
         pub_key: String,
         /// Verification error.
@@ -113,10 +113,6 @@ pub enum AggregateError {
     /// Validator registration was missing for a validator.
     #[error("validator registration not found")]
     ValidatorRegistrationNotFound,
-
-    /// Failed to convert a share index to the threshold-signature index type.
-    #[error(transparent)]
-    ShareIndex(#[from] std::num::TryFromIntError),
 
     /// Fork version is not 4 bytes.
     #[error("invalid fork version length")]
@@ -144,7 +140,7 @@ pub fn agg_lock_hash_sig(
             let sig = extract_partial_signature(partial)?;
             let pubshare = share
                 .public_shares
-                .get(&partial.share_idx)
+                .get(&u64::from(partial.share_idx))
                 .ok_or(AggregateError::InvalidPubshare)?;
 
             BlstImpl.verify(pubshare, hash, &sig).map_err(|source| {
@@ -289,21 +285,21 @@ fn verify_threshold_partials(
     partials: &[ParSignedData],
     public_shares: &HashMap<u64, PublicKey>,
     message: &[u8],
-    invalid_signature_error: impl Fn(u64) -> AggregateError,
+    invalid_signature_error: impl Fn(u8) -> AggregateError,
 ) -> Result<HashMap<u8, Signature>> {
     let mut res = HashMap::with_capacity(partials.len());
 
     for partial in partials {
         let sig = extract_partial_signature(partial)?;
         let pubshare = public_shares
-            .get(&partial.share_idx)
+            .get(&u64::from(partial.share_idx))
             .ok_or(AggregateError::InvalidPubshare)?;
 
         BlstImpl
             .verify(pubshare, message, &sig)
             .map_err(|_| invalid_signature_error(partial.share_idx))?;
 
-        res.insert(u8::try_from(partial.share_idx)?, sig);
+        res.insert(partial.share_idx, sig);
     }
 
     Ok(res)
@@ -354,7 +350,7 @@ mod tests {
         )
     }
 
-    fn partial_signature(sig: Signature, share_idx: u64) -> ParSignedData {
+    fn partial_signature(sig: Signature, share_idx: u8) -> ParSignedData {
         ParSignedData::new(sig, share_idx)
     }
 
@@ -394,7 +390,7 @@ mod tests {
                             &sig_root,
                         )
                         .expect("partial signing should succeed"),
-                    u64::from(idx),
+                    idx,
                 )
             })
             .collect::<Vec<_>>();
@@ -441,7 +437,7 @@ mod tests {
                     message,
                 )
                 .expect("signing should succeed");
-            partials.push(partial_signature(sig, u64::from(idx)));
+            partials.push(partial_signature(sig, idx));
         }
 
         let err = agg_deposit_data(
@@ -477,7 +473,7 @@ mod tests {
                     message,
                 )
                 .expect("signing should succeed");
-            partials.push(partial_signature(sig, u64::from(idx)));
+            partials.push(partial_signature(sig, idx));
         }
 
         let err = agg_lock_hash_sig(
@@ -516,7 +512,7 @@ mod tests {
                             &sig_root,
                         )
                         .expect("signing should succeed"),
-                    u64::from(idx),
+                    idx,
                 )
             })
             .collect::<Vec<_>>();
@@ -544,7 +540,7 @@ mod tests {
                     BlstImpl
                         .sign(secret_shares.get(&idx).expect("share should exist"), hash)
                         .expect("signing should succeed"),
-                    u64::from(idx),
+                    idx,
                 )
             })
             .collect::<Vec<_>>();
@@ -589,7 +585,7 @@ mod tests {
                             &sig_root,
                         )
                         .expect("signing should succeed"),
-                    u64::from(idx),
+                    idx,
                 )
             })
             .collect::<Vec<_>>();

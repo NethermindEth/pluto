@@ -67,14 +67,6 @@ pub enum SigAggError {
         source: pluto_crypto::types::Error,
     },
 
-    /// Share index does not fit in a u8.
-    #[error("validator {pubkey}: invalid share index: {idx}")]
-    InvalidShareIndex {
-        /// The validator public key.
-        pubkey: PubKey,
-        /// The out-of-range index value.
-        idx: u64,
-    },
 }
 
 /// Convenience alias for [`std::result::Result`] with [`SigAggError`].
@@ -169,7 +161,7 @@ impl Aggregator {
         }
 
         // Deduplicate by share index; last writer wins (matches Go behaviour).
-        let mut bls_sigs: HashMap<u64, Signature> = HashMap::new();
+        let mut bls_sigs: HashMap<u8, Signature> = HashMap::new();
         for par_sig in par_sigs {
             let sig =
                 par_sig
@@ -186,19 +178,8 @@ impl Aggregator {
             return Err(SigAggError::InsufficientDistinctSignatures { pubkey: *pubkey });
         }
 
-        let bls_map: HashMap<u8, Signature> = bls_sigs
-            .iter()
-            .map(|(idx, sig)| {
-                let idx_u8 = u8::try_from(*idx).map_err(|_| SigAggError::InvalidShareIndex {
-                    pubkey: *pubkey,
-                    idx: *idx,
-                })?;
-                Ok((idx_u8, *sig))
-            })
-            .collect::<Result<_>>()?;
-
         let agg_bytes = info_span!("BlstImpl::threshold_aggregate")
-            .in_scope(|| BlstImpl.threshold_aggregate(&bls_map))
+            .in_scope(|| BlstImpl.threshold_aggregate(&bls_sigs))
             .map_err(|e| SigAggError::ThresholdAggregate {
                 pubkey: *pubkey,
                 source: e,
@@ -349,7 +330,7 @@ mod tests {
         }
     }
 
-    fn mock_par_sigs(count: usize, share_idx: u64) -> Vec<ParSignedData> {
+    fn mock_par_sigs(count: usize, share_idx: u8) -> Vec<ParSignedData> {
         (0..count)
             .map(|_| {
                 ParSignedData::new(
@@ -430,7 +411,7 @@ mod tests {
             .iter()
             .map(|(idx, sig)| {
                 let signed = template.set_signature_boxed(*sig).unwrap();
-                ParSignedData::new_boxed(signed, u64::from(*idx))
+                ParSignedData::new_boxed(signed, *idx)
             })
             .collect();
         assert_aggregates(ctx.pubkey, par_sigs, ctx.expected_agg, duty).await;
@@ -474,7 +455,7 @@ mod tests {
         let par_sigs = ctx
             .sigs
             .iter()
-            .map(|(idx, sig)| ParSignedData::new(MockSignedData { sig: *sig }, u64::from(*idx)))
+            .map(|(idx, sig)| ParSignedData::new(MockSignedData { sig: *sig }, *idx))
             .collect();
         assert_aggregates(
             ctx.pubkey,
@@ -539,7 +520,7 @@ mod tests {
             let sig = tbls.sign(share, &msg).unwrap();
             par_sigs.push(ParSignedData::new(
                 MockSignedData { sig },
-                u64::from(*share_idx),
+                *share_idx,
             ));
         }
 
@@ -575,7 +556,7 @@ mod tests {
         let mut par_sigs: Vec<ParSignedData> = ctx
             .sigs
             .iter()
-            .map(|(idx, sig)| ParSignedData::new(MockSignedData { sig: *sig }, u64::from(*idx)))
+            .map(|(idx, sig)| ParSignedData::new(MockSignedData { sig: *sig }, *idx))
             .collect();
 
         // Add a duplicate of the first share — last writer wins, same sig so result
@@ -677,7 +658,7 @@ mod tests {
                 bls_map.insert(*share_idx, sig);
                 par_sigs.push(ParSignedData::new(
                     MockSignedData { sig },
-                    u64::from(*share_idx),
+                    *share_idx,
                 ));
             }
 
@@ -721,7 +702,7 @@ mod tests {
         let par_sigs: Vec<ParSignedData> = ctx
             .sigs
             .iter()
-            .map(|(idx, sig)| ParSignedData::new(MockSignedData { sig: *sig }, u64::from(*idx)))
+            .map(|(idx, sig)| ParSignedData::new(MockSignedData { sig: *sig }, *idx))
             .collect();
 
         let fail_verify: VerifyFn =
@@ -742,7 +723,7 @@ mod tests {
         let par_sigs: Vec<ParSignedData> = ctx
             .sigs
             .iter()
-            .map(|(idx, sig)| ParSignedData::new(MockSignedData { sig: *sig }, u64::from(*idx)))
+            .map(|(idx, sig)| ParSignedData::new(MockSignedData { sig: *sig }, *idx))
             .collect();
 
         let mut agg = Aggregator::new(3, noop_verify()).unwrap();
@@ -761,7 +742,7 @@ mod tests {
     #[tokio::test]
     async fn signature_from_core_error() {
         let agg = Aggregator::new(3, noop_verify()).unwrap();
-        let par_sigs: Vec<ParSignedData> = (0..3u64)
+        let par_sigs: Vec<ParSignedData> = (0..3u8)
             .map(|i| ParSignedData::new(FailSignatureMock, i))
             .collect();
         let mut set = HashMap::new();
@@ -780,7 +761,7 @@ mod tests {
             .sigs
             .iter()
             .map(|(idx, sig)| {
-                ParSignedData::new(FailSetSignatureMock { sig: *sig }, u64::from(*idx))
+                ParSignedData::new(FailSetSignatureMock { sig: *sig }, *idx)
             })
             .collect();
 
@@ -820,7 +801,7 @@ mod tests {
             .map(|(i, (idx, sig))| {
                 let template: &dyn SignedData = if i == 0 { &without_idx } else { &with_idx };
                 let signed = template.set_signature_boxed(*sig).unwrap();
-                ParSignedData::new_boxed(signed, u64::from(*idx))
+                ParSignedData::new_boxed(signed, *idx)
             })
             .collect();
 
