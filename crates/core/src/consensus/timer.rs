@@ -281,7 +281,7 @@ impl RoundTimer for LinearRoundTimer {
         let timeout = match proposal_timeout_duration(self.duty.as_ref(), round) {
             Some(timeout) => timeout,
             None if round == 1 => Duration::from_secs(1),
-            None => linear_timer_timeout(round)?,
+            None => linear_subsequent_round_timeout(round)?,
         };
 
         timeout_from_now(timeout, round)
@@ -351,7 +351,7 @@ fn linear_round_timeout(round: i64) -> Result<Duration> {
         .ok_or(Error::DurationOverflow { round })
 }
 
-fn linear_timer_timeout(round: i64) -> Result<Duration> {
+fn linear_subsequent_round_timeout(round: i64) -> Result<Duration> {
     ensure_non_negative_round(round)?;
 
     // Upstream uses bare `time.Duration(200*(round-1)+200)`, so this is
@@ -501,7 +501,7 @@ mod tests {
         let duration = if round == 1 {
             Duration::from_secs(1)
         } else {
-            must_duration(linear_timer_timeout(round))
+            must_duration(linear_subsequent_round_timeout(round))
         };
 
         assert_eq!(want, duration);
@@ -635,7 +635,7 @@ mod tests {
             || must_timer(timer.timer(3)),
         );
         let want = Duration::from_nanos(600);
-        assert_eq!(want, must_duration(linear_timer_timeout(3)));
+        assert_eq!(want, must_duration(linear_subsequent_round_timeout(3)));
         assert_fires_after(
             timeout,
             wake_duration(want),
