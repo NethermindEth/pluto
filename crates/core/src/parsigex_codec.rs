@@ -486,8 +486,7 @@ mod tests {
 
         // Snapshot: Signature serializes as a base64-encoded JSON string.
         // Changing this breaks wire compatibility with Charon.
-        const EXPECTED: &str = "\"q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6ur\
-             q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6ur\"";
+        const EXPECTED: &str = "\"q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6ur\"";
         assert_eq!(bytes, EXPECTED.as_bytes());
 
         let decoded: Signature =
