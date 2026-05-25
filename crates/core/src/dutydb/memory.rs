@@ -620,7 +620,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        deadline::{self, DeadlineCalculator, DeadlinerTask},
+        deadline::{self, DeadlineCalculator, DeadlinerTask, NeverExpiringCalculator},
         signeddata::{AttesterDuty, ProposalBlock},
         testutils::random_core_pub_key,
         types::{DutyType, SlotNumber},
@@ -825,6 +825,31 @@ mod tests {
             matches!(err, Error::DeprecatedDutyBuilderProposer),
             "expected DeprecatedDutyBuilderProposer, got: {err}"
         );
+    }
+
+    /// `FarFutureCalculator` schedules every duty, so it can't exercise the
+    /// `AddOutcome::NoDeadline` arm in `store()`. Back the DB with
+    /// `NeverExpiringCalculator` (always `Ok(None)`) so that types without a
+    /// deadline fall through to the `duty_type` match and are rejected as
+    /// `UnsupportedDutyType` — not misclassified as `ExpiredDuty`.
+    #[tokio::test]
+    async fn mem_db_store_no_deadline_falls_through() {
+        let (deadliner, drop_rx) = DeadlinerTask::start(
+            CancellationToken::new(),
+            "dutydb-tests",
+            NeverExpiringCalculator,
+        );
+        let db = make_db_with_deadliner(deadliner, drop_rx);
+
+        for duty_type in [DutyType::Exit, DutyType::BuilderRegistration] {
+            let duty_type_str = duty_type.to_string();
+            let duty = Duty::new(SlotNumber::new(0), duty_type);
+            let err = db.store(duty, UnsignedDataSet::new()).await.unwrap_err();
+            assert!(
+                matches!(err, Error::UnsupportedDutyType),
+                "expected UnsupportedDutyType for {duty_type_str}, got: {err}"
+            );
+        }
     }
 
     #[tokio::test]
