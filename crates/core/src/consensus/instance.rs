@@ -26,7 +26,7 @@
 use std::{
     error::Error as StdError,
     sync::{
-        Mutex,
+        Mutex, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -54,13 +54,6 @@ pub enum Error {
         /// Channel name.
         channel: &'static str,
     },
-
-    /// Receiver mutex was poisoned.
-    #[error("receiver state poisoned: {channel}")]
-    ReceiverStatePoisoned {
-        /// Channel name.
-        channel: &'static str,
-    },
 }
 
 /// Instance I/O result.
@@ -83,6 +76,8 @@ pub type RunnerResult = std::result::Result<(), RunnerError>;
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct InstanceIo<T> {
+    // Lifecycle flags are duplicate/start guards only. They do not publish or
+    // synchronize channel payloads or runner state.
     participated: AtomicBool,
     proposed: AtomicBool,
     running: AtomicBool,
@@ -97,16 +92,15 @@ pub struct InstanceIo<T> {
 
     /// Supplies the local proposal value.
     ///
-    /// Uses `Any` as a concrete wire container so instance I/O can store and
-    /// forward protobuf payloads before consensus-specific code decodes the
-    /// concrete value type.
+    /// `Any` is only the wire container at this boundary. Runner wiring owns
+    /// the codec and type-url convention before decoding the concrete value.
     pub(crate) value_tx: mpsc::Sender<Any>,
     value_rx: ReceiverSlot<Any>,
 
     /// Supplies the value used to verify an external proposal.
     ///
-    /// Uses the same `Any` representation as `value_tx`, keeping proposal and
-    /// verification paths on one payload format.
+    /// Uses the same `Any` wire-container convention as `value_tx`, keeping
+    /// proposal and verification paths on one payload format.
     pub(crate) verify_tx: mpsc::Sender<Any>,
     verify_rx: ReceiverSlot<Any>,
 
@@ -220,7 +214,7 @@ fn take_receiver<T>(
 ) -> Result<mpsc::Receiver<T>> {
     receiver
         .lock()
-        .map_err(|_| Error::ReceiverStatePoisoned { channel })?
+        .unwrap_or_else(PoisonError::into_inner)
         .take()
         .ok_or(Error::ReceiverAlreadyTaken { channel })
 }
@@ -237,11 +231,9 @@ mod tests {
     #[error("test error")]
     struct TestError;
 
-    type TestIo<M> = InstanceIo<M>;
-
     #[test]
     fn mark_participated() {
-        let io = TestIo::<()>::new();
+        let io = InstanceIo::<()>::new();
 
         assert_eq!(Ok(()), io.mark_participated());
         assert_eq!(Err(Error::AlreadyParticipated), io.mark_participated());
@@ -249,7 +241,7 @@ mod tests {
 
     #[test]
     fn mark_proposed() {
-        let io = TestIo::<()>::new();
+        let io = InstanceIo::<()>::new();
 
         assert_eq!(Ok(()), io.mark_proposed());
         assert_eq!(Err(Error::AlreadyProposed), io.mark_proposed());
@@ -257,7 +249,7 @@ mod tests {
 
     #[test]
     fn maybe_start() {
-        let io = TestIo::<()>::new();
+        let io = InstanceIo::<()>::new();
 
         assert!(io.maybe_start());
         assert!(!io.maybe_start());
@@ -266,7 +258,7 @@ mod tests {
 
     #[test]
     fn recv_buffer_capacity_is_100() {
-        let io = TestIo::<usize>::new();
+        let io = InstanceIo::<usize>::new();
 
         for msg in 0..RECV_BUFFER_SIZE {
             assert!(io.recv_tx.try_send(msg).is_ok());
@@ -280,7 +272,7 @@ mod tests {
 
     #[test]
     fn single_item_channels_have_capacity_1() {
-        let io = TestIo::<()>::new();
+        let io = InstanceIo::<()>::new();
 
         assert!(io.hash_tx.try_send([0; 32]).is_ok());
         match io.hash_tx.try_send([1; 32]) {
@@ -315,8 +307,8 @@ mod tests {
     }
 
     #[test]
-    fn recv_buffering_before_start_does_not_start_instance() {
-        let io = TestIo::<u8>::new();
+    fn recv_tx_send_does_not_consume_start_token() {
+        let io = InstanceIo::<u8>::new();
 
         assert!(io.recv_tx.try_send(1).is_ok());
         assert!(io.maybe_start());
@@ -325,7 +317,7 @@ mod tests {
 
     #[test]
     fn receiver_ownership_can_only_be_taken_once() {
-        let io = TestIo::<()>::new();
+        let io = InstanceIo::<()>::new();
 
         assert!(io.take_recv_rx().is_ok());
         assert_receiver_already_taken(io.take_recv_rx(), "recv");
@@ -348,7 +340,7 @@ mod tests {
 
     #[test]
     fn concurrent_maybe_start_returns_true_once() {
-        let io = Arc::new(TestIo::<()>::new());
+        let io = Arc::new(InstanceIo::<()>::new());
         let mut handles = Vec::new();
 
         for _ in 0..32 {
