@@ -29,6 +29,10 @@ pub mod parsigdb;
 /// DutyDB — in-memory store for unsigned duty data.
 pub mod dutydb;
 
+/// Resolves beacon-chain duties per epoch, ticks the slot clock, and fans
+/// duties out to downstream components.
+pub mod scheduler;
+
 mod parsigex_codec;
 // SSZ codec operates on compile-time-constant byte sizes and offsets.
 // Arithmetic is bounded and casts from `usize` to `u32` are safe because all
