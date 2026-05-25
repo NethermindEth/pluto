@@ -177,12 +177,18 @@ impl Aggregator {
             return Err(SigAggError::InsufficientDistinctSignatures { pubkey: *pubkey });
         }
 
-        let agg_bytes = info_span!("BlstImpl::threshold_aggregate")
-            .in_scope(|| BlstImpl.threshold_aggregate(&bls_sigs))
-            .map_err(|e| SigAggError::ThresholdAggregate {
+        let span = info_span!("BlstImpl::threshold_aggregate");
+        let agg_bytes = {
+            let _enter = span.enter();
+            BlstImpl.threshold_aggregate(&bls_sigs)
+        }
+        .map_err(|e| {
+            tracing::error!(parent: &span, error = %e, "threshold aggregate failed");
+            SigAggError::ThresholdAggregate {
                 pubkey: *pubkey,
                 source: e,
-            })?;
+            }
+        })?;
 
         // Prefer a VersionedAttestation that has validator_index set — the local VC
         // includes it, peers don't. Falling back to parSigs[0] is fine for all other
@@ -201,15 +207,20 @@ impl Aggregator {
             })
             .unwrap_or_else(|| par_sigs[0].signed_data.as_ref());
 
-        let agg_signed =
-            template
-                .set_signature_boxed(agg_bytes)
-                .map_err(|e| SigAggError::SetSignature {
-                    pubkey: *pubkey,
-                    source: e,
-                })?;
+        let agg_signed = template.set_signature_boxed(agg_bytes).map_err(|e| {
+            tracing::error!(parent: &span, error = %e, "set_signature failed");
+            SigAggError::SetSignature {
+                pubkey: *pubkey,
+                source: e,
+            }
+        })?;
 
-        (self.verify_fn)(pubkey, agg_signed.as_ref()).await?;
+        (self.verify_fn)(pubkey, agg_signed.as_ref())
+            .await
+            .map_err(|e| {
+                tracing::error!(parent: &span, error = %e, "verify failed");
+                e
+            })?;
 
         Ok(agg_signed)
     }
