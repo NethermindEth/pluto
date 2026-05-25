@@ -493,7 +493,7 @@ mod tests {
                 .map(|j| {
                     let mut bytes = [0u8; 96];
                     rand::thread_rng().fill(&mut bytes[..]);
-                    ParSignedData::new(bytes, (j + 1) as u8)
+                    ParSignedData::new(bytes, u8::try_from(j + 1).expect("NODES fits u8"))
                 })
                 .collect();
             expected_data.insert(*pk, psigs);

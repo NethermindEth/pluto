@@ -560,7 +560,7 @@ mod tests {
         let (first_idx, first_sig) = ctx.sigs[0];
         par_sigs.push(ParSignedData::new(
             MockSignedData { sig: first_sig },
-            u64::from(first_idx),
+            first_idx,
         ));
 
         assert_aggregates(
