@@ -28,7 +28,6 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
-pluto-crypto.workspace = true
 pluto-eth2util.workspace = true
 pluto-featureset.workspace = true
 pluto-ssz.workspace = true

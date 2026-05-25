@@ -185,14 +185,14 @@ impl Aggregator {
             return Err(SigAggError::InsufficientDistinctSignatures { pubkey: *pubkey });
         }
 
-        let bls_map: HashMap<u8, [u8; 96]> = bls_sigs
+        let bls_map: HashMap<u8, Signature> = bls_sigs
             .iter()
             .map(|(idx, sig)| {
                 let idx_u8 = u8::try_from(*idx).map_err(|_| SigAggError::InvalidShareIndex {
                     pubkey: *pubkey,
                     idx: *idx,
                 })?;
-                Ok((idx_u8, *sig.as_ref()))
+                Ok((idx_u8, *sig))
             })
             .collect::<Result<_>>()?;
 
@@ -220,12 +220,13 @@ impl Aggregator {
             })
             .unwrap_or_else(|| par_sigs[0].signed_data.as_ref());
 
-        let agg_signed = template
-            .set_signature_boxed(Signature::new(agg_bytes))
-            .map_err(|e| SigAggError::SetSignature {
-                pubkey: *pubkey,
-                source: e,
-            })?;
+        let agg_signed =
+            template
+                .set_signature_boxed(agg_bytes)
+                .map_err(|e| SigAggError::SetSignature {
+                    pubkey: *pubkey,
+                    source: e,
+                })?;
 
         (self.verify_fn)(pubkey, agg_signed.as_ref()).await?;
 
@@ -255,7 +256,7 @@ mod tests {
             SignedDataError, SignedRandao, SignedVoluntaryExit, VersionedSignedProposal,
             VersionedSignedValidatorRegistration,
         },
-        types::Signature as CoreSig,
+        types::{SIGNATURE_LENGTH, Signature},
     };
 
     fn noop_verify() -> VerifyFn {
@@ -264,24 +265,24 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct MockSignedData {
-        sig: [u8; 96],
+        sig: [u8; SIGNATURE_LENGTH],
     }
 
     impl SignedData for MockSignedData {
-        fn signature(&self) -> std::result::Result<CoreSig, SignedDataError> {
-            Ok(CoreSig::new(self.sig))
+        fn signature(&self) -> std::result::Result<Signature, SignedDataError> {
+            Ok(self.sig)
         }
 
-        fn set_signature(&self, sig: CoreSig) -> std::result::Result<Self, SignedDataError>
+        fn set_signature(&self, sig: Signature) -> std::result::Result<Self, SignedDataError>
         where
             Self: Sized,
         {
-            Ok(Self { sig: *sig.as_ref() })
+            Ok(Self { sig })
         }
 
         fn set_signature_boxed(
             &self,
-            signature: CoreSig,
+            signature: Signature,
         ) -> std::result::Result<Box<dyn SignedData>, SignedDataError> {
             Ok(Box::new(self.set_signature(signature)?))
         }
@@ -295,11 +296,11 @@ mod tests {
     struct FailSignatureMock;
 
     impl SignedData for FailSignatureMock {
-        fn signature(&self) -> std::result::Result<CoreSig, SignedDataError> {
+        fn signature(&self) -> std::result::Result<Signature, SignedDataError> {
             Err(SignedDataError::UnknownType)
         }
 
-        fn set_signature(&self, _: CoreSig) -> std::result::Result<Self, SignedDataError>
+        fn set_signature(&self, _: Signature) -> std::result::Result<Self, SignedDataError>
         where
             Self: Sized,
         {
@@ -308,7 +309,7 @@ mod tests {
 
         fn set_signature_boxed(
             &self,
-            sig: CoreSig,
+            sig: Signature,
         ) -> std::result::Result<Box<dyn SignedData>, SignedDataError> {
             Ok(Box::new(self.set_signature(sig)?))
         }
@@ -320,15 +321,15 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct FailSetSignatureMock {
-        sig: [u8; 96],
+        sig: [u8; SIGNATURE_LENGTH],
     }
 
     impl SignedData for FailSetSignatureMock {
-        fn signature(&self) -> std::result::Result<CoreSig, SignedDataError> {
-            Ok(CoreSig::new(self.sig))
+        fn signature(&self) -> std::result::Result<Signature, SignedDataError> {
+            Ok(self.sig)
         }
 
-        fn set_signature(&self, _: CoreSig) -> std::result::Result<Self, SignedDataError>
+        fn set_signature(&self, _: Signature) -> std::result::Result<Self, SignedDataError>
         where
             Self: Sized,
         {
@@ -337,7 +338,7 @@ mod tests {
 
         fn set_signature_boxed(
             &self,
-            _: CoreSig,
+            _: Signature,
         ) -> std::result::Result<Box<dyn SignedData>, SignedDataError> {
             Err(SignedDataError::UnknownType)
         }
@@ -349,14 +350,21 @@ mod tests {
 
     fn mock_par_sigs(count: usize, share_idx: u64) -> Vec<ParSignedData> {
         (0..count)
-            .map(|_| ParSignedData::new(MockSignedData { sig: [0u8; 96] }, share_idx))
+            .map(|_| {
+                ParSignedData::new(
+                    MockSignedData {
+                        sig: [0u8; SIGNATURE_LENGTH],
+                    },
+                    share_idx,
+                )
+            })
             .collect()
     }
 
     struct BLSContext {
         pubkey: [u8; 48],
-        sigs: Vec<(u8, [u8; 96])>,
-        expected_agg: [u8; 96],
+        sigs: Vec<(u8, [u8; SIGNATURE_LENGTH])>,
+        expected_agg: [u8; SIGNATURE_LENGTH],
     }
 
     fn make_bls_context() -> BLSContext {
@@ -372,7 +380,7 @@ mod tests {
             .threshold_split(&secret, PEERS, u8::try_from(THRESHOLD).unwrap())
             .unwrap();
 
-        let mut bls_map: HashMap<u8, [u8; 96]> = HashMap::new();
+        let mut bls_map: HashMap<u8, [u8; SIGNATURE_LENGTH]> = HashMap::new();
         let mut sigs = Vec::new();
         for (share_idx, share) in &shares {
             let sig = tbls.sign(share, &MSG).unwrap();
@@ -390,10 +398,10 @@ mod tests {
     async fn assert_aggregates(
         pubkey: [u8; 48],
         par_sigs: Vec<ParSignedData>,
-        expected_agg: [u8; 96],
+        expected_agg: [u8; SIGNATURE_LENGTH],
         duty: &Duty,
     ) {
-        let received: Arc<Mutex<Option<CoreSig>>> = Arc::new(Mutex::new(None));
+        let received: Arc<Mutex<Option<Signature>>> = Arc::new(Mutex::new(None));
         let received_clone = received.clone();
 
         let mut agg = Aggregator::new(3, noop_verify()).unwrap();
@@ -411,7 +419,7 @@ mod tests {
         agg.aggregate(duty, &set).await.unwrap();
 
         let received_sig = received.lock().unwrap().take().unwrap();
-        assert_eq!(*received_sig.as_ref(), expected_agg);
+        assert_eq!(received_sig, expected_agg);
     }
 
     async fn run_aggregation_test(template: &dyn SignedData, duty: &Duty) {
@@ -420,7 +428,7 @@ mod tests {
             .sigs
             .iter()
             .map(|(idx, sig)| {
-                let signed = template.set_signature_boxed(CoreSig::new(*sig)).unwrap();
+                let signed = template.set_signature_boxed(*sig).unwrap();
                 ParSignedData::new_boxed(signed, u64::from(*idx))
             })
             .collect();
@@ -652,7 +660,7 @@ mod tests {
         let msg = [55u8; 32];
 
         let mut agg_set: HashMap<PubKey, Vec<ParSignedData>> = HashMap::new();
-        let mut expected: HashMap<PubKey, [u8; 96]> = HashMap::new();
+        let mut expected: HashMap<PubKey, [u8; SIGNATURE_LENGTH]> = HashMap::new();
 
         for _ in 0..2 {
             let secret = tbls.generate_secret_key(&mut rng).unwrap();
@@ -662,7 +670,7 @@ mod tests {
                 .unwrap();
 
             let mut par_sigs = Vec::new();
-            let mut bls_map: HashMap<u8, [u8; 96]> = HashMap::new();
+            let mut bls_map: HashMap<u8, [u8; SIGNATURE_LENGTH]> = HashMap::new();
             for (share_idx, share) in &shares {
                 let sig = tbls.sign(share, &msg).unwrap();
                 bls_map.insert(*share_idx, sig);
@@ -678,13 +686,13 @@ mod tests {
             agg_set.insert(pubkey, par_sigs);
         }
 
-        let received: Arc<Mutex<HashMap<PubKey, CoreSig>>> = Arc::new(Mutex::new(HashMap::new()));
+        let received: Arc<Mutex<HashMap<PubKey, Signature>>> = Arc::new(Mutex::new(HashMap::new()));
         let received_clone = received.clone();
 
         let mut agg = Aggregator::new(THRESHOLD, noop_verify()).unwrap();
         agg.subscribe(Arc::new(move |_, set: &AggSignedDataSet| {
             let received_clone = received_clone.clone();
-            let sigs: HashMap<PubKey, CoreSig> = set
+            let sigs: HashMap<PubKey, Signature> = set
                 .iter()
                 .map(|(k, v)| (*k, v.signature().unwrap()))
                 .collect();
@@ -702,7 +710,7 @@ mod tests {
         assert_eq!(received.len(), 2);
         for (pubkey, exp_bytes) in &expected {
             let got = &received[pubkey];
-            assert_eq!(*got.as_ref(), *exp_bytes);
+            assert_eq!(got, exp_bytes);
         }
     }
 
@@ -810,7 +818,7 @@ mod tests {
             .enumerate()
             .map(|(i, (idx, sig))| {
                 let template: &dyn SignedData = if i == 0 { &without_idx } else { &with_idx };
-                let signed = template.set_signature_boxed(CoreSig::new(*sig)).unwrap();
+                let signed = template.set_signature_boxed(*sig).unwrap();
                 ParSignedData::new_boxed(signed, u64::from(*idx))
             })
             .collect();
