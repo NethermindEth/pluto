@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use backon::Retryable;
+use backon::{BackoffBuilder, Retryable};
 use pluto_eth2api::{EthBeaconNodeApiClientError, client};
 use tokio_util::sync::CancellationToken;
 
@@ -86,22 +86,39 @@ async fn new_slot_ticker(
     Ok(rx)
 }
 
-/// Blocks until the beacon chain has started.
-async fn wait_chain_start(client: pluto_eth2api::client::EthBeaconNodeApiClient) -> Result<()> {
-    // TODO: Duplicated from `crates/p2p/src/bootnode.rs`
+// TODO: Duplicated from `crates/p2p/src/bootnode.rs`
+fn fast_backoff() -> backon::ExponentialBuilder {
     /// Backoff configuration constants matching Go's expbackoff.FastConfig.
     const FAST_BASE_DELAY: Duration = Duration::from_millis(100);
     const FAST_MAX_DELAY: Duration = Duration::from_secs(5);
     const FAST_MULTIPLIER: f32 = 1.6;
 
-    // Retry with exponential backoff
-    let backoff = backon::ExponentialBuilder::default()
+    backon::ExponentialBuilder::default()
         .with_min_delay(FAST_BASE_DELAY)
         .with_max_delay(FAST_MAX_DELAY)
         .with_factor(FAST_MULTIPLIER)
-        .with_jitter();
+        .without_max_times()
+        .with_jitter()
+}
 
+fn default_backoff() -> backon::ExponentialBuilder {
+    /// Backoff configuration constants matching Go's expbackoff.DefaultConfig.
+    const DEFAULT_BASE_DELAY: Duration = Duration::from_secs(1);
+    const DEFAULT_MAX_DELAY: Duration = Duration::from_secs(120);
+    const DEFAULT_MULTIPLIER: f32 = 1.6;
+
+    backon::ExponentialBuilder::default()
+        .with_min_delay(DEFAULT_BASE_DELAY)
+        .with_max_delay(DEFAULT_MAX_DELAY)
+        .with_factor(DEFAULT_MULTIPLIER)
+        .without_max_times()
+        .with_jitter()
+}
+
+/// Blocks until the beacon chain has started.
+async fn wait_chain_start(client: pluto_eth2api::client::EthBeaconNodeApiClient) -> Result<()> {
     let fetch = || client.fetch_genesis_time();
+    let backoff = fast_backoff();
     let genesis_time = fetch
         .retry(backoff)
         .notify(|err, _| tracing::error!(err = ?err, "Failure getting genesis"))
@@ -112,6 +129,42 @@ async fn wait_chain_start(client: pluto_eth2api::client::EthBeaconNodeApiClient)
         let delta = (genesis_time - now).to_std().unwrap_or_default();
         tracing::info!(genesis_time = %genesis_time, sleep = ?delta, "Sleeping until genesis time");
         tokio::time::sleep(delta).await;
+    }
+
+    Ok(())
+}
+
+/// Blocks until the beacon node is synced.
+async fn wait_beacon_sync(client: pluto_eth2api::client::EthBeaconNodeApiClient) -> Result<()> {
+    let fetch = || client.get_syncing_status(pluto_eth2api::GetSyncingStatusRequest {});
+    let fetch_backoff = fast_backoff();
+
+    let mut is_syncing_backoff = default_backoff().build();
+
+    loop {
+        let response: pluto_eth2api::GetSyncingStatusResponse = fetch
+            .retry(fetch_backoff)
+            .notify(|err, _| tracing::error!(err = ?err, "Failure getting syncing status"))
+            .await
+            .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?;
+
+        let state = match response {
+            pluto_eth2api::GetSyncingStatusResponse::Ok(syncing) => Ok(syncing.data),
+            _ => Err(pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse),
+        }?;
+
+        if state.is_syncing {
+            tracing::info!(
+                distance = state.sync_distance,
+                "Waiting for beacon node to sync"
+            );
+            let duration = is_syncing_backoff
+                .next()
+                .expect("Infinite backoff should never return None");
+            tokio::time::sleep(duration).await;
+        } else {
+            break;
+        }
     }
 
     Ok(())
