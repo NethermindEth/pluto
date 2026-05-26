@@ -1,6 +1,8 @@
 syntax = "proto3";
 
-package core;
+package core.corepb.v1;
+
+option go_package = "github.com/obolnetwork/charon/core/corepb/v1";
 
 message Duty {    // core.Duty
   uint64 slot = 1; // uint64
