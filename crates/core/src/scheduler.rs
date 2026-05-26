@@ -32,7 +32,7 @@ struct Scheduler {
     client: client::EthBeaconNodeApiClient,
     valcache: valcache::ValidatorCache,
 
-    slot_subs: Vec<tokio::sync::mpsc::Sender<types::Slot>>,
+    slot_broadcast: tokio::sync::broadcast::Sender<types::Slot>,
 }
 
 impl Scheduler {
@@ -40,7 +40,7 @@ impl Scheduler {
         Scheduler {
             client,
             valcache,
-            slot_subs: Vec::new(),
+            slot_broadcast: tokio::sync::broadcast::channel(100).0,
         }
     }
 
@@ -51,11 +51,10 @@ impl Scheduler {
         f: impl Fn(&types::Slot) -> Result<()> + Send + 'static,
         label: impl AsRef<str> + Send + 'static,
     ) {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(100);
-        self.slot_subs.push(tx);
+        let mut rx = self.slot_broadcast.subscribe();
 
         tokio::spawn(async move {
-            while let Some(slot) = rx.recv().await {
+            while let Ok(slot) = rx.recv().await {
                 if let Err(err) = f(&slot) {
                     tracing::error!(err = ?err, slot = %slot.slot, label = label.as_ref(), "Emit scheduled slot event");
                 }
@@ -74,15 +73,17 @@ impl Scheduler {
                 _ = ct.cancelled() => break,
 
                 Some(slot) = slot_ticker.recv() => {
-                    tracing::info!(slot = %slot.slot, "Slot ticked");
+                    tracing::debug!(slot = %slot.slot, "Slot ticked");
 
                     // TODO: metrics
                     // instrumentSlot(slot)
 
-                    // equivalent to `emitCoreSlot`
-                    for sub in &self.slot_subs {
-                        let _ = sub.send(slot.clone()).await;
+                    // ~ `emitCoreSlot`
+                    if self.slot_broadcast.send(slot).is_err() {
+                        tracing::debug!("No active subscribers for slot events, closing scheduler");
+                        break;
                     }
+
 
                     // self.schedule_slot()
                 },
