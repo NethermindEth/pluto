@@ -7,5 +7,8 @@
 /// Consensus protocols.
 pub mod protocols;
 
+/// QBFT consensus wrapper.
+pub mod qbft;
+
 /// Consensus round timers.
 pub mod timer;
