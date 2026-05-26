@@ -69,7 +69,7 @@ pub enum AggregateError {
     #[error("invalid deposit data partial signature from peer {share_idx} for pubkey {pub_key}")]
     InvalidDepositPartialSignature {
         /// Peer share index.
-        share_idx: u8,
+        share_idx: u64,
         /// Validator pubkey.
         pub_key: String,
     },
@@ -80,7 +80,7 @@ pub enum AggregateError {
     )]
     InvalidValidatorRegistrationPartialSignature {
         /// Peer share index.
-        share_idx: u8,
+        share_idx: u64,
         /// Validator pubkey.
         pub_key: String,
     },
@@ -91,7 +91,7 @@ pub enum AggregateError {
     )]
     InvalidLockHashPartialSignature {
         /// Peer share index.
-        share_idx: u8,
+        share_idx: u64,
         /// Validator pubkey.
         pub_key: String,
         /// Verification error.
@@ -140,7 +140,7 @@ pub fn agg_lock_hash_sig(
             let sig = extract_partial_signature(partial)?;
             let pubshare = share
                 .public_shares
-                .get(&u64::from(partial.share_idx))
+                .get(&partial.share_idx)
                 .ok_or(AggregateError::InvalidPubshare)?;
 
             BlstImpl.verify(pubshare, hash, &sig).map_err(|source| {
@@ -285,14 +285,14 @@ fn verify_threshold_partials(
     partials: &[ParSignedData],
     public_shares: &HashMap<u64, PublicKey>,
     message: &[u8],
-    invalid_signature_error: impl Fn(u8) -> AggregateError,
-) -> Result<HashMap<u8, Signature>> {
+    invalid_signature_error: impl Fn(u64) -> AggregateError,
+) -> Result<HashMap<u64, Signature>> {
     let mut res = HashMap::with_capacity(partials.len());
 
     for partial in partials {
         let sig = extract_partial_signature(partial)?;
         let pubshare = public_shares
-            .get(&u64::from(partial.share_idx))
+            .get(&partial.share_idx)
             .ok_or(AggregateError::InvalidPubshare)?;
 
         BlstImpl
@@ -318,7 +318,7 @@ mod tests {
     use pluto_eth2util::network;
     use rand::SeedableRng;
 
-    fn build_share_fixture() -> (Share, HashMap<u8, pluto_crypto::types::PrivateKey>) {
+    fn build_share_fixture() -> (Share, HashMap<u64, pluto_crypto::types::PrivateKey>) {
         let tbls = BlstImpl;
         let secret = tbls
             .generate_insecure_secret(rand::rngs::StdRng::seed_from_u64(7))
@@ -333,7 +333,7 @@ mod tests {
             .iter()
             .map(|(idx, share)| {
                 (
-                    u64::from(*idx),
+                    *idx,
                     tbls.secret_to_public_key(share)
                         .expect("public share derivation should succeed"),
                 )
@@ -350,7 +350,7 @@ mod tests {
         )
     }
 
-    fn partial_signature(sig: Signature, share_idx: u8) -> ParSignedData {
+    fn partial_signature(sig: Signature, share_idx: u64) -> ParSignedData {
         ParSignedData::new(sig, share_idx)
     }
 
@@ -380,7 +380,7 @@ mod tests {
             }),
         })
         .expect("registration should be valid");
-        let partials = [1u8, 2, 3]
+        let partials = [1u64, 2, 3]
             .into_iter()
             .map(|idx| {
                 partial_signature(
@@ -425,7 +425,7 @@ mod tests {
             deposit::get_message_signing_root(&msg, "goerli").expect("root should build");
         let mut partials = Vec::new();
 
-        for idx in [1_u8, 2, 3] {
+        for idx in [1_u64, 2, 3] {
             let message = if idx == 3 {
                 b"invalid msg".as_slice()
             } else {
@@ -461,7 +461,7 @@ mod tests {
         let hash = b"cluster lock hash";
         let mut partials = Vec::new();
 
-        for idx in [1_u8, 2, 3] {
+        for idx in [1_u64, 2, 3] {
             let message = if idx == 3 {
                 b"invalid msg".as_slice()
             } else {
@@ -502,7 +502,7 @@ mod tests {
         .expect("message should build");
         let sig_root =
             deposit::get_message_signing_root(&msg, "goerli").expect("root should build");
-        let partials = [1_u8, 2, 3]
+        let partials = [1_u64, 2, 3]
             .into_iter()
             .map(|idx| {
                 partial_signature(
@@ -533,7 +533,7 @@ mod tests {
         let (share, secret_shares) = build_share_fixture();
         let core_pub_key = PubKey::try_from(share.pub_key.as_slice()).expect("pubkey should fit");
         let hash = b"cluster lock hash";
-        let partials = [1_u8, 2, 3]
+        let partials = [1_u64, 2, 3]
             .into_iter()
             .map(|idx| {
                 partial_signature(
@@ -575,7 +575,7 @@ mod tests {
                 .try_into()
                 .expect("fork version should fit"),
         );
-        let partials = [1_u8, 2, 3]
+        let partials = [1_u64, 2, 3]
             .into_iter()
             .map(|idx| {
                 partial_signature(

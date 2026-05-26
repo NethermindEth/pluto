@@ -371,7 +371,7 @@ mod tests {
         .context("timed out waiting for libp2p connections")?
     }
 
-    fn test_par_signed_data_set(share_idx: u8) -> ParSignedDataSet {
+    fn test_par_signed_data_set(share_idx: u64) -> ParSignedDataSet {
         let mut pk_bytes = [0u8; 48];
         rand::thread_rng().fill_bytes(&mut pk_bytes);
         let mut sig_bytes = [0u8; 96];
@@ -493,7 +493,7 @@ mod tests {
                 .map(|j| {
                     let mut bytes = [0u8; 96];
                     rand::thread_rng().fill(&mut bytes[..]);
-                    ParSignedData::new(bytes, u8::try_from(j + 1).expect("NODES fits u8"))
+                    ParSignedData::new(bytes, u64::try_from(j + 1).expect("NODES fits u64"))
                 })
                 .collect();
             expected_data.insert(*pk, psigs);
@@ -503,7 +503,7 @@ mod tests {
         let mut data_to_be_sent: Vec<ParSignedDataSet> = vec![ParSignedDataSet::new(); NODES];
         for (pk, psigs) in &expected_data {
             for psig in psigs {
-                let node_idx = usize::from(psig.share_idx) - 1;
+                let node_idx = usize::try_from(psig.share_idx).expect("share_idx fits usize") - 1;
                 data_to_be_sent[node_idx].insert(*pk, psig.clone());
             }
         }
@@ -623,9 +623,10 @@ mod tests {
                 .with_context(|| format!("missing sig_type {sig_type} from received data"))?;
             assert_eq!(data.len(), DVS, "sig_type {sig_type}: wrong DV count");
             for (pk, psigs) in data {
-                let mut got: Vec<u8> = psigs.iter().map(|p| p.share_idx).collect();
+                let mut got: Vec<u64> = psigs.iter().map(|p| p.share_idx).collect();
                 got.sort_unstable();
-                let mut want: Vec<u8> = (1..=u8::try_from(NODES).expect("NODES fits u8")).collect();
+                let mut want: Vec<u64> =
+                    (1..=u64::try_from(NODES).expect("NODES fits u64")).collect();
                 want.sort_unstable();
                 assert_eq!(
                     got, want,

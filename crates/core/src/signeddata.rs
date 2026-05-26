@@ -151,7 +151,7 @@ impl VersionedSignedProposal {
     /// Creates a partial versioned signed proposal wrapper.
     pub fn new_partial(
         proposal: versioned::VersionedSignedProposal,
-        share_idx: u8,
+        share_idx: u64,
     ) -> Result<ParSignedData, SignedDataError> {
         Ok(ParSignedData::new(Self::new(proposal)?, share_idx))
     }
@@ -194,7 +194,7 @@ impl VersionedSignedProposal {
     /// Creates a partial proposal wrapper from a blinded proposal wrapper.
     pub fn new_partial_from_blinded_proposal(
         proposal: versioned::VersionedSignedBlindedProposal,
-        share_idx: u8,
+        share_idx: u64,
     ) -> Result<ParSignedData, SignedDataError> {
         Ok(ParSignedData::new(
             Self::from_blinded_proposal(proposal)?,
@@ -353,7 +353,7 @@ impl Attestation {
     }
 
     /// Creates a partial signed attestation wrapper.
-    pub fn new_partial(attestation: phase0::Attestation, share_idx: u8) -> ParSignedData {
+    pub fn new_partial(attestation: phase0::Attestation, share_idx: u64) -> ParSignedData {
         ParSignedData::new(Self::new(attestation), share_idx)
     }
 }
@@ -406,7 +406,7 @@ impl VersionedAttestation {
     /// Creates a partial versioned attestation wrapper.
     pub fn new_partial(
         attestation: versioned::VersionedAttestation,
-        share_idx: u8,
+        share_idx: u64,
     ) -> Result<ParSignedData, SignedDataError> {
         Ok(ParSignedData::new(Self::new(attestation)?, share_idx))
     }
@@ -595,7 +595,7 @@ impl SignedVoluntaryExit {
     }
 
     /// Creates a partially signed voluntary exit wrapper.
-    pub fn new_partial(exit: phase0::SignedVoluntaryExit, share_idx: u8) -> ParSignedData {
+    pub fn new_partial(exit: phase0::SignedVoluntaryExit, share_idx: u64) -> ParSignedData {
         ParSignedData::new(Self::new(exit), share_idx)
     }
 }
@@ -629,7 +629,7 @@ impl VersionedSignedValidatorRegistration {
     /// Creates a partial versioned signed validator registration wrapper.
     pub fn new_partial(
         registration: versioned::VersionedSignedValidatorRegistration,
-        share_idx: u8,
+        share_idx: u64,
     ) -> Result<ParSignedData, SignedDataError> {
         Ok(ParSignedData::new(Self::new(registration)?, share_idx))
     }
@@ -773,7 +773,7 @@ impl SignedRandao {
     pub fn new_partial(
         epoch: phase0::Epoch,
         randao: phase0::BLSSignature,
-        share_idx: u8,
+        share_idx: u64,
     ) -> ParSignedData {
         ParSignedData::new(Self::new(epoch, randao), share_idx)
     }
@@ -817,7 +817,7 @@ impl BeaconCommitteeSelection {
     }
 
     /// Creates a partial beacon committee selection wrapper.
-    pub fn new_partial(selection: v1::BeaconCommitteeSelection, share_idx: u8) -> ParSignedData {
+    pub fn new_partial(selection: v1::BeaconCommitteeSelection, share_idx: u64) -> ParSignedData {
         ParSignedData::new(Self::new(selection), share_idx)
     }
 }
@@ -860,7 +860,7 @@ impl SyncCommitteeSelection {
     }
 
     /// Creates a partial sync committee selection wrapper.
-    pub fn new_partial(selection: v1::SyncCommitteeSelection, share_idx: u8) -> ParSignedData {
+    pub fn new_partial(selection: v1::SyncCommitteeSelection, share_idx: u64) -> ParSignedData {
         ParSignedData::new(Self::new(selection), share_idx)
     }
 }
@@ -903,7 +903,7 @@ impl SignedAggregateAndProof {
     }
 
     /// Creates a partial signed aggregate-and-proof wrapper.
-    pub fn new_partial(data: phase0::SignedAggregateAndProof, share_idx: u8) -> ParSignedData {
+    pub fn new_partial(data: phase0::SignedAggregateAndProof, share_idx: u64) -> ParSignedData {
         ParSignedData::new(Self::new(data), share_idx)
     }
 }
@@ -942,7 +942,7 @@ impl VersionedSignedAggregateAndProof {
     /// Creates a partial versioned signed aggregate-and-proof wrapper.
     pub fn new_partial(
         data: versioned::VersionedSignedAggregateAndProof,
-        share_idx: u8,
+        share_idx: u64,
     ) -> ParSignedData {
         ParSignedData::new(Self::new(data), share_idx)
     }
@@ -1083,7 +1083,7 @@ impl SignedSyncMessage {
     }
 
     /// Creates a partial signed sync committee message wrapper.
-    pub fn new_partial(data: altair::SyncCommitteeMessage, share_idx: u8) -> ParSignedData {
+    pub fn new_partial(data: altair::SyncCommitteeMessage, share_idx: u64) -> ParSignedData {
         ParSignedData::new(Self::new(data), share_idx)
     }
 }
@@ -1126,7 +1126,7 @@ impl SyncContributionAndProof {
     }
 
     /// Creates a partial sync contribution-and-proof wrapper.
-    pub fn new_partial(proof: altair::ContributionAndProof, share_idx: u8) -> ParSignedData {
+    pub fn new_partial(proof: altair::ContributionAndProof, share_idx: u64) -> ParSignedData {
         ParSignedData::new(Self::new(proof), share_idx)
     }
 }
@@ -1169,7 +1169,7 @@ impl SignedSyncContributionAndProof {
     }
 
     /// Creates a partial signed sync contribution-and-proof wrapper.
-    pub fn new_partial(proof: altair::SignedContributionAndProof, share_idx: u8) -> ParSignedData {
+    pub fn new_partial(proof: altair::SignedContributionAndProof, share_idx: u64) -> ParSignedData {
         ParSignedData::new(Self::new(proof), share_idx)
     }
 }

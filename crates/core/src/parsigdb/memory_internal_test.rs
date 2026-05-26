@@ -51,7 +51,7 @@ async fn test_get_threshold_matching(input: Vec<usize>, output: Vec<usize>) {
                     signature: testutil::random_eth2_signature_bytes(),
                 };
 
-                SignedSyncMessage::new_partial(message, u8::try_from(i.wrapping_add(1)).unwrap())
+                SignedSyncMessage::new_partial(message, u64::try_from(i.wrapping_add(1)).unwrap())
             }),
         ),
         (
@@ -65,7 +65,7 @@ async fn test_get_threshold_matching(input: Vec<usize>, output: Vec<usize>) {
 
                 BeaconCommitteeSelection::new_partial(
                     selection,
-                    u8::try_from(i.wrapping_add(1)).unwrap(),
+                    u64::try_from(i.wrapping_add(1)).unwrap(),
                 )
             }),
         ),
@@ -135,7 +135,7 @@ async fn memdb_threshold() {
         for i in 0..N {
             let partial = VersionedAttestation::new_partial(
                 attestation.clone(),
-                u8::try_from(i + 1).unwrap(),
+                u64::try_from(i + 1).unwrap(),
             )
             .expect("versioned attestation should be valid");
 

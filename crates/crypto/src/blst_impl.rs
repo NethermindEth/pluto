@@ -70,11 +70,13 @@ impl Tbls for BlstImpl {
         if threshold <= 1 || threshold > total {
             return Err(Error::InvalidThreshold { threshold, total });
         }
+        let threashlod =
+            usize::try_from(threshold).map_err(|_| Error::InvalidThreshold { threshold, total })?;
 
         let sk = BlstSecretKey::from_bytes(secret_key)?;
 
         // Create polynomial coefficients: a_0 = secret, a_1..a_{t-1} = random
-        let mut poly = Vec::with_capacity(threshold as usize);
+        let mut poly = Vec::with_capacity(threashlod);
         poly.push(sk);
 
         for _ in 1..threshold {
@@ -270,7 +272,7 @@ fn evaluate_polynomial(poly: &[BlstSecretKey], x: Index) -> Result<BlstSecretKey
     let mut result = poly[0].clone();
 
     // Compute powers of x and accumulate
-    let mut x_power = scalar_from_u64(u64::from(x));
+    let mut x_power = scalar_from_u64(x);
 
     for coeff in poly.iter().skip(1) {
         // result += coeff * x_power
@@ -279,7 +281,7 @@ fn evaluate_polynomial(poly: &[BlstSecretKey], x: Index) -> Result<BlstSecretKey
 
         // x_power *= x for next iteration
         if poly.len() > 2 {
-            let x_scalar = scalar_from_u64(u64::from(x));
+            let x_scalar = scalar_from_u64(x);
             x_power = scalar_mult_scalars(&x_power, &x_scalar)?;
         }
     }
@@ -365,18 +367,16 @@ fn compute_lagrange_coefficients(indices: &[Index]) -> Result<Vec<blst::blst_sca
             }
 
             // numerator *= x_j
-            let x_j_scalar = scalar_from_u64(u64::from(x_j));
+            let x_j_scalar = scalar_from_u64(x_j);
             numerator = scalar_mult_scalars(&numerator, &x_j_scalar)?;
 
             // denominator *= (x_j - x_i)
             let diff = if x_j > x_i {
-                let diff_val = x_j.abs_diff(x_i);
-                scalar_from_u64(u64::from(diff_val))
+                scalar_from_u64(x_j.abs_diff(x_i))
             } else {
                 // For negative differences, we need to work in the scalar field
                 // x_j - x_i (mod r) where r is the curve order
-                let diff_val = x_i.abs_diff(x_j);
-                scalar_negate(&scalar_from_u64(u64::from(diff_val)))?
+                scalar_negate(&scalar_from_u64(x_i.abs_diff(x_j)))?
             };
 
             denominator = scalar_mult_scalars(&denominator, &diff)?;
@@ -605,12 +605,12 @@ mod tests {
         let total = 5;
 
         let shares = blst.threshold_split(&sk, total, threshold).unwrap();
-        assert_eq!(shares.len(), total as usize);
+        assert_eq!(shares.len(), usize::try_from(total).unwrap());
 
         // Take exactly threshold shares
         let subset: HashMap<Index, PrivateKey> = shares
             .iter()
-            .take(threshold as usize)
+            .take(usize::try_from(threshold).unwrap())
             .map(|(k, v)| (*k, *v))
             .collect();
 
@@ -628,7 +628,7 @@ mod tests {
         let total = 5;
 
         let shares = blst.threshold_split(&secret, total, threshold).unwrap();
-        assert_eq!(shares.len(), total as usize);
+        assert_eq!(shares.len(), usize::try_from(total).unwrap());
 
         // Recover using all shares
         let recovered = blst.recover_secret(&shares).unwrap();

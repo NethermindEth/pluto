@@ -413,7 +413,7 @@ fn parse_peers(enr_strings: &[String]) -> Result<Vec<Peer>> {
         .enumerate()
         .map(|(i, s)| {
             let record = Record::try_from(s.as_str())?;
-            Ok(Peer::from_enr(&record, i)?)
+            Ok(Peer::from_enr(&record, i as u64)?)
         })
         .collect()
 }

@@ -160,7 +160,7 @@ impl Aggregator {
         }
 
         // Deduplicate by share index; last writer wins (matches Go behaviour).
-        let mut bls_sigs: HashMap<u8, Signature> = HashMap::new();
+        let mut bls_sigs: HashMap<u64, Signature> = HashMap::new();
         for par_sig in par_sigs {
             let sig =
                 par_sig
@@ -340,7 +340,7 @@ mod tests {
         }
     }
 
-    fn mock_par_sigs(count: usize, share_idx: u8) -> Vec<ParSignedData> {
+    fn mock_par_sigs(count: usize, share_idx: u64) -> Vec<ParSignedData> {
         (0..count)
             .map(|_| {
                 ParSignedData::new(
@@ -355,24 +355,22 @@ mod tests {
 
     struct BLSContext {
         pubkey: [u8; 48],
-        sigs: Vec<(u8, [u8; SIGNATURE_LENGTH])>,
+        sigs: Vec<(u64, [u8; SIGNATURE_LENGTH])>,
         expected_agg: [u8; SIGNATURE_LENGTH],
     }
 
     fn make_bls_context() -> BLSContext {
         const THRESHOLD: u64 = 3;
-        const PEERS: u8 = 4;
+        const PEERS: u64 = 4;
         const MSG: [u8; 32] = [42u8; 32];
 
         let tbls = BlstImpl;
         let mut rng = rand::thread_rng();
         let secret = tbls.generate_secret_key(&mut rng).unwrap();
         let pubkey = tbls.secret_to_public_key(&secret).unwrap();
-        let shares = tbls
-            .threshold_split(&secret, PEERS, u8::try_from(THRESHOLD).unwrap())
-            .unwrap();
+        let shares = tbls.threshold_split(&secret, PEERS, THRESHOLD).unwrap();
 
-        let mut bls_map: HashMap<u8, [u8; SIGNATURE_LENGTH]> = HashMap::new();
+        let mut bls_map: HashMap<u64, [u8; SIGNATURE_LENGTH]> = HashMap::new();
         let mut sigs = Vec::new();
         for (share_idx, share) in &shares {
             let sig = tbls.sign(share, &MSG).unwrap();
@@ -513,16 +511,14 @@ mod tests {
     #[tokio::test]
     async fn multiple_subscribers_all_notified() {
         const THRESHOLD: u64 = 3;
-        const PEERS: u8 = 4;
+        const PEERS: u64 = 4;
 
         let tbls = BlstImpl;
         let mut rng = rand::thread_rng();
 
         let secret = tbls.generate_secret_key(&mut rng).unwrap();
         let pubkey = tbls.secret_to_public_key(&secret).unwrap();
-        let shares = tbls
-            .threshold_split(&secret, PEERS, u8::try_from(THRESHOLD).unwrap())
-            .unwrap();
+        let shares = tbls.threshold_split(&secret, PEERS, THRESHOLD).unwrap();
 
         let msg = [7u8; 32];
         let mut par_sigs = Vec::new();
@@ -642,7 +638,7 @@ mod tests {
     async fn multiple_validators() {
         // Two independent validators aggregated in a single aggregate() call.
         const THRESHOLD: u64 = 3;
-        const PEERS: u8 = 4;
+        const PEERS: u64 = 4;
 
         let tbls = BlstImpl;
         let mut rng = rand::thread_rng();
@@ -654,12 +650,10 @@ mod tests {
         for _ in 0..2 {
             let secret = tbls.generate_secret_key(&mut rng).unwrap();
             let pubkey_bytes = tbls.secret_to_public_key(&secret).unwrap();
-            let shares = tbls
-                .threshold_split(&secret, PEERS, u8::try_from(THRESHOLD).unwrap())
-                .unwrap();
+            let shares = tbls.threshold_split(&secret, PEERS, THRESHOLD).unwrap();
 
             let mut par_sigs = Vec::new();
-            let mut bls_map: HashMap<u8, [u8; SIGNATURE_LENGTH]> = HashMap::new();
+            let mut bls_map: HashMap<u64, [u8; SIGNATURE_LENGTH]> = HashMap::new();
             for (share_idx, share) in &shares {
                 let sig = tbls.sign(share, &msg).unwrap();
                 bls_map.insert(*share_idx, sig);
@@ -746,7 +740,7 @@ mod tests {
     #[tokio::test]
     async fn signature_from_core_error() {
         let agg = Aggregator::new(3, noop_verify()).unwrap();
-        let par_sigs: Vec<ParSignedData> = (0..3u8)
+        let par_sigs: Vec<ParSignedData> = (0..3u64)
             .map(|i| ParSignedData::new(FailSignatureMock, i))
             .collect();
         let mut set = HashMap::new();

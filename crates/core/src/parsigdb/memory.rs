@@ -127,7 +127,7 @@ pub enum MemDBError {
         /// Public key of the validator
         pubkey: PubKey,
         /// Share index of the mismatched signature
-        share_idx: u8,
+        share_idx: u64,
     },
 
     /// Signed data error.
