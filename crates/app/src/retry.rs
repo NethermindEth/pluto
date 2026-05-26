@@ -6,20 +6,20 @@ use tracing::{Instrument, debug, error, info, warn};
 
 /// Provides the "current time" used to compute retry deadlines.
 ///
-/// A blanket implementation covers any `Fn() -> DateTime<Utc>`, so closures
-/// (including [`chrono::Utc::now`]) can be passed wherever a `Clock` is
-/// expected. Custom implementations are useful for deterministic tests.
+/// [`SystemClock`] is the production implementation; tests can supply a
+/// deterministic clock instead.
 pub trait Clock: Send + Sync + 'static {
     /// Returns the current time.
     fn now(&self) -> DateTime<Utc>;
 }
 
-impl<F> Clock for F
-where
-    F: Fn() -> DateTime<Utc> + Send + Sync + 'static,
-{
+/// [`Clock`] backed by the system wall clock via [`chrono::Utc::now`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SystemClock;
+
+impl Clock for SystemClock {
     fn now(&self) -> DateTime<Utc> {
-        self()
+        Utc::now()
     }
 }
 
@@ -50,9 +50,6 @@ impl<T> AsyncOptions<T> {
 
     /// Set the [`Clock`] providing the "current time", which is compared with
     /// the deadline computed by the `deadline_fn`.
-    ///
-    /// Accepts any [`Clock`], including a `Fn() -> DateTime<Utc>` closure via
-    /// the blanket implementation.
     pub fn with_time(mut self, clock: impl Clock) -> Self {
         self.clock = Arc::new(clock);
         self
@@ -75,7 +72,7 @@ impl<T> Default for AsyncOptions<T> {
                 .without_max_times()
                 .with_jitter(),
             deadline_fn: Arc::new(|_| None),
-            clock: Arc::new(Utc::now),
+            clock: Arc::new(SystemClock),
             cancellation_token: None,
         }
     }
@@ -217,9 +214,19 @@ pub async fn do_async<
 mod tests {
     use tokio_util::sync::CancellationToken;
 
-    use crate::retry::{self, DoAsyncError};
+    use crate::retry::{self, Clock, DoAsyncError};
+    use chrono::{DateTime, Utc};
     use core::time;
     use std::sync::{Arc, Mutex};
+
+    /// [`Clock`] that always returns a fixed instant, for deterministic tests.
+    struct FixedClock(DateTime<Utc>);
+
+    impl Clock for FixedClock {
+        fn now(&self) -> DateTime<Utc> {
+            self.0
+        }
+    }
 
     struct TestCase {
         options: retry::AsyncOptions<()>,
@@ -304,12 +311,12 @@ mod tests {
 
     #[tokio::test]
     async fn one_attempt_timeout() {
-        let now = chrono::Utc::now();
+        let now = Utc::now();
 
         run_test(TestCase {
             options: retry::AsyncOptions::default()
                 .with_backoff(test_backoff())
-                .with_time(move || now)
+                .with_time(FixedClock(now))
                 .with_deadline(move |_| Some(now)),
             func: Arc::new(|_| Err(DoAsyncError::RetryableError)),
             expected_attempts: 1,
