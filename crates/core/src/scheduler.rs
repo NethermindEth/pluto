@@ -1,10 +1,18 @@
-use std::time::Duration;
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    time::Duration,
+};
 
 use backon::{BackoffBuilder, Retryable};
 use pluto_eth2api::{EthBeaconNodeApiClientError, client};
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::{types, valcache};
+
+// Trim cached duties after 3 epochs. Note inclusion delay calculation requires
+// now-32 slot duties.
+const TRIM_EPOCH_OFFSET: u64 = 3;
 
 /// Errors that can occur during the scheduling process.
 #[derive(Debug, thiserror::Error)]
@@ -33,6 +41,80 @@ struct Scheduler {
     valcache: valcache::ValidatorCache,
 
     slot_broadcast: tokio::sync::broadcast::Sender<types::Slot>,
+
+    storage: Mutex<Inner>,
+}
+
+struct Inner {
+    resolved_epoch: u64,
+    resolving_epoch: u64,
+    duties: HashMap<types::Duty, types::DutyDefinitionSet>,
+    duties_by_epoch: HashMap<u64, Vec<types::Duty>>,
+}
+
+impl Inner {
+    fn is_resolving_epoch(&self, epoch: u64) -> bool {
+        if self.resolving_epoch == u64::MAX {
+            return false;
+        }
+
+        self.resolving_epoch == epoch
+    }
+
+    fn is_epoch_resolved(&self, epoch: u64) -> bool {
+        if self.resolved_epoch == u64::MAX {
+            return false;
+        }
+
+        self.resolved_epoch >= epoch
+    }
+
+    fn is_epoch_trimmed(&self, epoch: u64) -> bool {
+        if self.resolved_epoch == u64::MAX {
+            return false;
+        }
+
+        epoch >= self.resolved_epoch + TRIM_EPOCH_OFFSET
+    }
+
+    fn trim_duties(&mut self, epoch: u64) {
+        let duties = self.duties_by_epoch.remove(&epoch);
+        if let Some(duties) = duties
+            && duties.len() > 0
+        {
+            for duty in duties {
+                self.duties.remove(&duty);
+            }
+        }
+    }
+
+    /// Inserts a duty definition for a given pubkey.
+    ///
+    /// Returns true if it's set, false if it was already set.
+    fn set_duty_definition(
+        &mut self,
+        duty: types::Duty,
+        epoch: u64,
+        pub_key: types::PubKey,
+        definition: types::DutyDefinition,
+    ) -> bool {
+        let def_set = self
+            .duties
+            .entry(duty.clone())
+            .or_insert(HashMap::default());
+        match def_set.entry(pub_key) {
+            Entry::Occupied(_) => return false,
+            Entry::Vacant(entry) => {
+                entry.insert(definition);
+            }
+        };
+        self.duties_by_epoch
+            .entry(epoch)
+            .or_insert(Vec::new())
+            .push(duty);
+
+        true
+    }
 }
 
 impl Scheduler {
@@ -41,6 +123,12 @@ impl Scheduler {
             client,
             valcache,
             slot_broadcast: tokio::sync::broadcast::channel(100).0,
+            storage: Mutex::new(Inner {
+                resolved_epoch: u64::MAX,
+                resolving_epoch: u64::MAX,
+                duties: HashMap::new(),
+                duties_by_epoch: HashMap::new(),
+            }),
         }
     }
 
