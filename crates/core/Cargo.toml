@@ -46,7 +46,6 @@ prost-types.workspace = true
 hex.workspace = true
 chrono.workspace = true
 test-case.workspace = true
-pluto-crypto.workspace = true
 pluto-eth2util.workspace = true
 pluto-cluster.workspace = true
 pluto-p2p.workspace = true
