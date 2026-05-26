@@ -75,6 +75,10 @@ pub enum QbftError {
     #[error("Zero input value not supported")]
     ZeroInputValue,
 
+    /// Message value source was missing.
+    #[error("value not found")]
+    ValueNotFound,
+
     /// Node count must be positive.
     #[error("invalid node count: must be greater than zero, got {nodes}")]
     InvalidNodes {
@@ -200,6 +204,18 @@ pub const MSG_DECIDED: MessageType = MessageType(5);
 const MSG_SENTINEL: MessageType = MessageType(6); // intentionally not public
 
 impl MessageType {
+    /// Converts a stable wire integer into a message type.
+    pub fn from_wire(value: i64) -> Self {
+        match value {
+            1 => MSG_PRE_PREPARE,
+            2 => MSG_PREPARE,
+            3 => MSG_COMMIT,
+            4 => MSG_ROUND_CHANGE,
+            5 => MSG_DECIDED,
+            _ => MSG_UNKNOWN,
+        }
+    }
+
     /// Returns true when the message type is one of the known QBFT wire types.
     pub fn valid(&self) -> bool {
         self.0 > MSG_UNKNOWN.0 && self.0 < MSG_SENTINEL.0
