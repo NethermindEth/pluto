@@ -31,11 +31,65 @@ type Result<T> = std::result::Result<T, SchedulerError>;
 struct Scheduler {
     client: client::EthBeaconNodeApiClient,
     valcache: valcache::ValidatorCache,
+
+    slot_subs: Vec<tokio::sync::mpsc::Sender<types::Slot>>,
 }
 
 impl Scheduler {
     pub fn new(client: client::EthBeaconNodeApiClient, valcache: valcache::ValidatorCache) -> Self {
-        Scheduler { client, valcache }
+        Scheduler {
+            client,
+            valcache,
+            slot_subs: Vec::new(),
+        }
+    }
+
+    /// Subscribes a callback function for triggered slots.
+    /// Note this should be called *before* [`Scheduler::run`].
+    pub async fn subscribe_slots(
+        &mut self,
+        f: impl Fn(&types::Slot) -> Result<()> + Send + 'static,
+        label: impl AsRef<str> + Send + 'static,
+    ) {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(100);
+        self.slot_subs.push(tx);
+
+        tokio::spawn(async move {
+            while let Some(slot) = rx.recv().await {
+                if let Err(err) = f(&slot) {
+                    tracing::error!(err = ?err, slot = %slot.slot, label = label.as_ref(), "Emit scheduled slot event");
+                }
+            }
+        });
+    }
+
+    pub async fn run(&mut self, ct: CancellationToken) -> Result<()> {
+        wait_chain_start(&self.client).await?;
+        wait_beacon_sync(&self.client).await?;
+
+        let mut slot_ticker = new_slot_ticker(&self.client, ct.clone()).await?;
+
+        loop {
+            tokio::select! {
+                _ = ct.cancelled() => break,
+
+                Some(slot) = slot_ticker.recv() => {
+                    tracing::info!(slot = %slot.slot, "Slot ticked");
+
+                    // TODO: metrics
+                    // instrumentSlot(slot)
+
+                    // equivalent to `emitCoreSlot`
+                    for sub in &self.slot_subs {
+                        let _ = sub.send(slot.clone()).await;
+                    }
+
+                    // self.schedule_slot()
+                },
+            }
+        }
+
+        todo!()
     }
 }
 
@@ -45,7 +99,7 @@ impl Scheduler {
 /// The production of slots is cancelled when the provided [`CancellationToken`]
 /// is cancelled.
 async fn new_slot_ticker(
-    client: client::EthBeaconNodeApiClient,
+    client: &client::EthBeaconNodeApiClient,
     ct: CancellationToken,
 ) -> Result<tokio::sync::mpsc::Receiver<types::Slot>> {
     let genesis_time = client.fetch_genesis_time().await?;
@@ -173,7 +227,7 @@ fn default_backoff() -> backon::ExponentialBuilder {
 }
 
 /// Blocks until the beacon chain has started.
-async fn wait_chain_start(client: pluto_eth2api::client::EthBeaconNodeApiClient) -> Result<()> {
+async fn wait_chain_start(client: &pluto_eth2api::client::EthBeaconNodeApiClient) -> Result<()> {
     let fetch = || client.fetch_genesis_time();
     let backoff = fast_backoff();
     let genesis_time = fetch
@@ -192,7 +246,7 @@ async fn wait_chain_start(client: pluto_eth2api::client::EthBeaconNodeApiClient)
 }
 
 /// Blocks until the beacon node is synced.
-async fn wait_beacon_sync(client: pluto_eth2api::client::EthBeaconNodeApiClient) -> Result<()> {
+async fn wait_beacon_sync(client: &pluto_eth2api::client::EthBeaconNodeApiClient) -> Result<()> {
     let fetch = || client.get_syncing_status(pluto_eth2api::GetSyncingStatusRequest {});
     let fetch_backoff = fast_backoff();
 

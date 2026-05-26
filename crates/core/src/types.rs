@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 //! Types for the Charon core.
 
 use std::{any::Any, collections::HashMap, fmt::Display, iter};
@@ -409,60 +411,13 @@ impl AsRef<[u8]> for PubKey {
 // todo: add toEth2Format for the pub key
 // https://github.com/ObolNetwork/charon/blob/b3008103c5429b031b63518195f4c49db4e9a68d/core/types.go#L311
 
-/// Duty definition type
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DutyDefinition<T: Clone + Serialize + StdDebug>(T);
-
-impl<T> DutyDefinition<T>
-where
-    T: Clone + Serialize + StdDebug,
-{
-    /// Create a new duty definition.
-    pub fn new(duty_definition: T) -> Self {
-        Self(duty_definition)
-    }
+pub enum DutyDefinition {
+    Attester(),
+    Proposer(),
+    SyncCommittee(),
 }
 
-/// Duty definition set
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct DutyDefinitionSet<T>(HashMap<DutyType, DutyDefinition<T>>)
-where
-    T: Clone + Serialize + StdDebug;
-
-impl<T> DutyDefinitionSet<T>
-where
-    T: Clone + Serialize + StdDebug,
-{
-    /// Create a new duty definition set.
-    pub fn new() -> Self {
-        Self(HashMap::default())
-    }
-
-    /// Get a duty definition by duty type.
-    pub fn get(&self, duty_type: &DutyType) -> Option<&DutyDefinition<T>> {
-        self.0.get(duty_type)
-    }
-
-    /// Insert a duty definition.
-    pub fn insert(&mut self, duty_type: DutyType, duty_definition: DutyDefinition<T>) {
-        self.0.insert(duty_type, duty_definition);
-    }
-
-    /// Remove a duty definition by duty type.
-    pub fn remove(&mut self, duty_type: &DutyType) -> Option<DutyDefinition<T>> {
-        self.0.remove(duty_type)
-    }
-
-    /// Inner duty definition set.
-    pub fn inner(&self) -> &HashMap<DutyType, DutyDefinition<T>> {
-        &self.0
-    }
-
-    /// Inner duty definition set.
-    pub fn inner_mut(&mut self) -> &mut HashMap<DutyType, DutyDefinition<T>> {
-        &mut self.0
-    }
-}
+pub type DutyDefinitionSet = HashMap<PubKey, DutyDefinition>;
 
 /// Unsigned data type
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1003,16 +958,6 @@ mod tests {
     fn pub_key_abbreviated() {
         let pk = PubKey::new([42u8; PK_LEN]);
         assert_eq!(pk.abbreviated(), "2a2_a2a");
-    }
-
-    #[test]
-    fn duty_definition_set() {
-        let mut duty_definition_set = DutyDefinitionSet::new();
-        duty_definition_set.insert(DutyType::Proposer, DutyDefinition::new(DutyType::Proposer));
-        assert_eq!(
-            duty_definition_set.get(&DutyType::Proposer),
-            Some(&DutyDefinition::new(DutyType::Proposer))
-        );
     }
 
     #[test]
