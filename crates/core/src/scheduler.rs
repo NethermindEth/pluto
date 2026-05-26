@@ -147,8 +147,8 @@ impl Scheduler {
                 Some(slot) = slot_ticker.recv() => {
                     tracing::debug!(slot = %slot.slot, "Slot ticked");
 
-                    // TODO: metrics
-                    // instrumentSlot(slot)
+                    // TODO:
+                    // instrument_slot(slot)
 
                     // NOTE: Ignore send errors, it means that there are no subscribers.
                     let _ = self.slot_broadcast.send(slot.clone());
@@ -248,8 +248,6 @@ impl Scheduler {
                 tracing::warn!(err = ?err, slot = %slot.slot, "Resolving duties error (retrying next slot)");
             }
         }
-
-        todo!()
     }
 
     async fn resolve_duties(&mut self, slot: types::Slot) -> Result<()> {
@@ -334,8 +332,8 @@ async fn resolve_active_validators(
     for (index, val) in complete.iter() {
         let pubkey = types::PubKey::try_from(val.validator.pubkey.as_str())?;
 
-        // TODO: Support `submitter`
-        // submitter(pubkey, v.Balance, val.status.to_string())
+        // TODO:
+        // submitter(pubkey, val.balance, val.status.to_string())
 
         // Check for active validators for the given epoch.
         // The activation epoch needs to be checked in cases where this function is
