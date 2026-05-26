@@ -8,14 +8,14 @@
 #   SMOKE_SECONDS  seconds allowed for monitoring endpoints to become ready
 #                  (default: 8)
 #   SMOKE_PORT_BASE
-#                  first local port used by this check (default: 39000)
+#                  first local port used by this check (default: 19000)
 #
 # This verifies the generated full node data dirs are loadable by a later
 # Charon/Pluto-style runtime: cluster lock, p2p key, validator keystores, and
 # passwords are all usable enough for the process to start.
 #
 # It does not prove real beacon duties. It uses Charon simnet mocks and kills
-# the processes after the smoke window.
+# the processes after every validator API reaches readiness.
 
 set -euo pipefail
 
@@ -23,7 +23,7 @@ WORK_DIR="${WORK_DIR:-/tmp/dkg-run}"
 NODES="${NODES:-4}"
 CHARON_BIN="${CHARON_BIN:-charon}"
 SMOKE_SECONDS="${SMOKE_SECONDS:-8}"
-SMOKE_PORT_BASE="${SMOKE_PORT_BASE:-39000}"
+SMOKE_PORT_BASE="${SMOKE_PORT_BASE:-19000}"
 SMOKE_DIR="${WORK_DIR}/run-smoke"
 
 fail() {

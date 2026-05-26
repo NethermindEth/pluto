@@ -12,7 +12,9 @@
 #   RELAY_URL=https://0.relay.obol.tech
 #                        Relay ENR endpoint used by the DKG nodes.
 #   TIMEOUT=120          Seconds to wait for all nodes before aborting.
-#   NODE_EXIT_TIMEOUT=90 Seconds to wait for nodes to exit after completion.
+#   SHUTDOWN_DELAY=120s Graceful shutdown delay passed to each node.
+#   NODE_EXIT_TIMEOUT=180
+#                        Seconds to wait for nodes to exit after completion.
 #   PLUTO_BIN=./target/debug/pluto
 #                        Path to the Pluto binary.
 #   CHARON_BIN=charon    Path to the Charon binary.
@@ -20,10 +22,10 @@
 #                        Scratch directory for the run (wiped on every call).
 #   KEEP_NODES=0         Leave nodes running after a successful ceremony when
 #                        set to 1/true/yes/on.
-#   RUN_SMOKE_VERIFY=0   Smoke-start generated node dirs with charon run after
+#   RUN_SMOKE_VERIFY=1   Smoke-start generated node dirs with charon run after
 #                        successful output collection.
-#   SMOKE_SECONDS=8      Seconds smoke-started nodes must stay alive.
-#   SMOKE_PORT_BASE=39000
+#   SMOKE_SECONDS=8      Seconds to wait for smoke validator APIs to become ready.
+#   SMOKE_PORT_BASE=19000
 #                        First local port used by runtime smoke verification.
 #   NETWORK=holesky      Ethereum network for the cluster definition.
 #   FEE_RECIPIENT=0xDeaD...
@@ -110,6 +112,7 @@ log_info "  CHARON_NODES = ${CHARON_NODES}"
 log_info "  RELAY_URL    = ${RELAY_URL}"
 log_info "  NETWORK      = ${NETWORK}"
 log_info "  TIMEOUT      = ${TIMEOUT}s"
+log_info "  SHUTDOWN_DELAY = ${SHUTDOWN_DELAY}"
 log_info "  NODE_EXIT_TIMEOUT = ${NODE_EXIT_TIMEOUT}s"
 log_info "  PLUTO_BIN    = ${PLUTO_BIN}"
 log_info "  CHARON_BIN   = ${CHARON_BIN}"
