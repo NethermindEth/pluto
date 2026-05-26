@@ -77,6 +77,25 @@ impl DutyType {
     pub fn never_expires(&self) -> bool {
         matches!(self, DutyType::Exit | DutyType::BuilderRegistration)
     }
+
+    /// All valid duty types.
+    pub fn all() -> [DutyType; 13] {
+        [
+            DutyType::Proposer,
+            DutyType::Attester,
+            DutyType::Signature,
+            DutyType::Exit,
+            DutyType::BuilderProposer,
+            DutyType::BuilderRegistration,
+            DutyType::Randao,
+            DutyType::PrepareAggregator,
+            DutyType::Aggregator,
+            DutyType::SyncMessage,
+            DutyType::PrepareSyncContribution,
+            DutyType::SyncContribution,
+            DutyType::InfoSync,
+        ]
+    }
 }
 
 /// Error type for duty type conversion.

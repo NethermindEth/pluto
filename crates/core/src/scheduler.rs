@@ -166,18 +166,52 @@ impl Scheduler {
                     // TODO: metrics
                     // instrumentSlot(slot)
 
-                    // ~ `emitCoreSlot`
-                    if self.slot_broadcast.send(slot).is_err() {
-                        tracing::debug!("No active subscribers for slot events, closing scheduler");
-                        break;
-                    }
+                    // NOTE: Ignore send errors since it just means there are no subscribers.
+                    let _ = self.slot_broadcast.send(slot.clone());
 
-
-                    // self.schedule_slot()
+                    self.schedule_slot(slot).await;
                 },
             }
         }
 
+        Ok(())
+    }
+
+    async fn schedule_slot(&mut self, slot: types::Slot) {
+        let resolved_epoch = self.storage.lock().await.resolved_epoch;
+        if resolved_epoch != slot.epoch() {
+            tracing::debug!(slot = %slot.slot, epoch = %slot.epoch(), "Resolving duties for slot");
+
+            if let Err(err) = self.resolve_duties(slot.clone()).await {
+                tracing::warn!(err = ?err, slot = %slot.slot, "Resolving duties error (retrying next slot)");
+            }
+        }
+
+        for duty_type in types::DutyType::all() {
+            let duty = types::Duty {
+                duty_type,
+                slot: slot.slot,
+            };
+
+            let Some(def_set) = self.storage.lock().await.duties.get(&duty) else {
+                // Nothing for this duty.
+                continue;
+            };
+
+            // TODO:
+            // Trigger duty async
+        }
+
+        if slot.last_in_epoch() {
+            if let Err(err) = self.resolve_duties(slot.next_slot()).await {
+                tracing::warn!(err = ?err, slot = %slot.slot, "Resolving duties error (retrying next slot)");
+            }
+        }
+
+        todo!()
+    }
+
+    async fn resolve_duties(&mut self, slot: types::Slot) -> Result<()> {
         todo!()
     }
 }
