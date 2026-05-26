@@ -1,6 +1,8 @@
 syntax = "proto3";
 
-package priority;
+package core.corepb.v1;
+
+option go_package = "github.com/obolnetwork/charon/core/corepb/v1";
 
 import "core.proto";
 import "google/protobuf/any.proto";
@@ -13,7 +15,7 @@ message PriorityResult {
 
 // PriorityMsg defines all the priorities and metadata of a single peer in the Prioritiser protocol.
 message PriorityMsg {
-  core.Duty                duty = 1;
+  core.corepb.v1.Duty                duty = 1;
   repeated PriorityTopicProposal   topics = 2;
   string                          peer_id = 3;
   bytes                         signature = 4;

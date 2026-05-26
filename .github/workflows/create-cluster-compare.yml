@@ -1,4 +1,4 @@
-name: DKG runner integration
+name: create cluster Charon parity
 
 on:
   push:
@@ -7,22 +7,17 @@ on:
       - "**/*.rs"
       - "**/Cargo.toml"
       - "Cargo.lock"
-      - "scripts/dkg-runner/**"
-      - ".github/workflows/dkg-runner.yml"
+      - "scripts/create-cluster-compare.sh"
+      - ".github/workflows/create-cluster-compare.yml"
   pull_request:
     types: [synchronize, opened, reopened, ready_for_review]
     paths:
       - "**/*.rs"
       - "**/Cargo.toml"
       - "Cargo.lock"
-      - "scripts/dkg-runner/**"
-      - ".github/workflows/dkg-runner.yml"
+      - "scripts/create-cluster-compare.sh"
+      - ".github/workflows/create-cluster-compare.yml"
   workflow_dispatch:
-    inputs:
-      timeout:
-        description: "Per-ceremony TIMEOUT (seconds)"
-        type: string
-        default: "120"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -37,23 +32,11 @@ env:
   CHARON_URL: https://github.com/ObolNetwork/charon/releases/download/v1.7.1/charon-v1.7.1-linux-amd64.tar.gz
 
 jobs:
-  dkg-ceremony:
-    name: ${{ matrix.name }}
+  create-cluster-compare:
+    name: create cluster Charon parity
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
 
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: 2 Charon + 2 Pluto nodes
-            id: 2-charon-2-pluto
-            pluto_nodes: 2
-            charon_nodes: 2
-          - name: 4 Pluto nodes
-            id: 4-pluto
-            pluto_nodes: 4
-            charon_nodes: 0
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -73,50 +56,35 @@ jobs:
         run: ./bin/charon version
 
       - name: Cache cargo registry and target
-        if: matrix.pluto_nodes > 0
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Update apt package list
-        if: matrix.pluto_nodes > 0
         run: sudo apt-get update
 
       - name: Install protobuf
-        if: matrix.pluto_nodes > 0
         uses: awalsh128/cache-apt-pkgs-action@acb598e5ddbc6f68a970c5da0688d2f3a9f04d05 # v1.6.0
         with:
           packages: protobuf-compiler=3.21.12*
           version: 3.21.12
 
       - name: Install oas3-gen
-        if: matrix.pluto_nodes > 0
         run: cargo install oas3-gen@0.24.0
 
       - name: Build pluto
-        if: matrix.pluto_nodes > 0
         run: cargo build -p pluto-cli
 
-      - name: Run DKG ceremony
+      - name: Run create cluster comparison
         env:
-          CI: "true"
-          NODES: "4"
-          THRESHOLD: "3"
-          PLUTO_NODES: ${{ matrix.pluto_nodes }}
-          CHARON_NODES: ${{ matrix.charon_nodes }}
           CHARON_BIN: ${{ github.workspace }}/bin/charon
           PLUTO_BIN: ${{ github.workspace }}/target/debug/pluto
-          TIMEOUT: ${{ inputs.timeout || '120' }}
-          SHUTDOWN_DELAY: "30s"
-          NODE_EXIT_TIMEOUT: "180"
-          RUN_SMOKE_VERIFY: "1"
-          SMOKE_SECONDS: "8"
-          SMOKE_PORT_BASE: "19000"
-        run: ./scripts/dkg-runner/run.sh
+          WORK_DIR: ${{ github.workspace }}/create-cluster-compare
+        run: ./scripts/create-cluster-compare.sh
 
       - name: Upload work dir on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: dkg-run-${{ github.run_id }}-${{ matrix.id }}
-          path: /tmp/dkg-run
+          name: create-cluster-compare-${{ github.run_id }}
+          path: create-cluster-compare
           if-no-files-found: warn
           retention-days: 7

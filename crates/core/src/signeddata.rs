@@ -3,7 +3,6 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tree_hash::TreeHash;
 
-use base64::Engine as _;
 use pluto_eth2api::{
     spec::{
         altair, bellatrix, capella, deneb, electra, phase0, serde_legacy_builder_version,
@@ -94,57 +93,16 @@ struct VersionedRawAggregateAndProofJson<T> {
 
 /// Converts an ETH2 signature to a core signature.
 pub fn sig_from_eth2(sig: phase0::BLSSignature) -> Signature {
-    Signature::new(sig)
+    sig
 }
 
 fn sig_to_eth2(sig: &Signature) -> phase0::BLSSignature {
-    *sig.as_ref()
-}
-
-impl serde::Serialize for Signature {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let encoded = base64::engine::general_purpose::STANDARD.encode(self.as_ref());
-        serializer.serialize_str(&encoded)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for Signature {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let encoded = String::deserialize(deserializer)?;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(encoded)
-            .map_err(|err| serde::de::Error::custom(format!("invalid base64 signature: {err}")))?;
-        let sig: [u8; 96] = bytes.try_into().map_err(|bytes: Vec<u8>| {
-            serde::de::Error::custom(format!(
-                "invalid signature length: got {}, want 96",
-                bytes.len()
-            ))
-        })?;
-        Ok(Signature::new(sig))
-    }
-}
-
-impl Signature {
-    /// Converts the signature to an ETH2 signature.
-    pub fn to_eth2(&self) -> phase0::BLSSignature {
-        sig_to_eth2(self)
-    }
-
-    /// Creates a partially signed signature wrapper.
-    pub fn new_partial(sig: Self, share_idx: u64) -> ParSignedData {
-        ParSignedData::new(sig, share_idx)
-    }
+    *sig
 }
 
 impl SignedData for Signature {
     fn signature(&self) -> Result<Signature, SignedDataError> {
-        Ok(self.clone())
+        Ok(*self)
     }
 
     fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
@@ -1361,7 +1319,7 @@ mod tests {
     }
 
     fn sample_signature(byte: u8) -> Signature {
-        Signature::new([byte; 96])
+        [byte; crate::types::SIGNATURE_LENGTH]
     }
 
     fn sample_root(byte: u8) -> phase0::Root {
@@ -2563,37 +2521,17 @@ mod tests {
     #[test]
     fn signature() {
         let sig1 = sample_signature(0x22);
-        let sig2 = sig1.clone();
+        let sig2 = sig1;
 
         assert!(matches!(
             sig1.message_root(),
             Err(SignedDataError::UnsupportedSignatureMessageRoot)
         ));
         assert_eq!(sig1, sig1.signature().unwrap());
-        assert_eq!(sig1.to_eth2(), sig2.signature().unwrap().to_eth2());
+        assert_eq!(sig1, sig2.signature().unwrap());
 
         let ss = sig1.set_signature(sig2.signature().unwrap()).unwrap();
         assert_eq!(sig2, ss);
-
-        let js = serde_json::to_vec(&sig1).unwrap();
-        let sig3: Signature = serde_json::from_slice(&js).unwrap();
-        assert_eq!(sig1, sig3);
-    }
-
-    #[test]
-    fn signature_json_errors() {
-        let invalid_base64 = serde_json::from_slice::<Signature>(br#""%%%""#);
-        assert!(matches!(
-            invalid_base64,
-            Err(err) if matches!(err.classify(), serde_json::error::Category::Data)
-        ));
-
-        let short = base64::engine::general_purpose::STANDARD.encode([0x11_u8; 95]);
-        let wrong_len = serde_json::from_slice::<Signature>(format!("\"{short}\"").as_bytes());
-        assert!(matches!(
-            wrong_len,
-            Err(err) if matches!(err.classify(), serde_json::error::Category::Data)
-        ));
     }
 
     #[test_case(false ; "unblinded")]
@@ -2751,7 +2689,7 @@ mod tests {
         assert_ne!(msg_root, [0_u8; 32]);
 
         let signature = sample_signature(0x99);
-        let updated = wrapped.set_signature(signature.clone()).unwrap();
+        let updated = wrapped.set_signature(signature).unwrap();
         assert_eq!(signature, updated.signature().unwrap());
 
         let js = serde_json::to_vec(&wrapped).unwrap();

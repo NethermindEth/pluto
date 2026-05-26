@@ -6,3 +6,6 @@
 
 /// Consensus protocols.
 pub mod protocols;
+
+/// Consensus round timers.
+pub mod timer;

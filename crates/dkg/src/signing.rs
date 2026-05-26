@@ -114,10 +114,7 @@ pub fn sign_lock_hash(share_idx: u64, shares: &[Share], hash: &[u8]) -> Result<P
         let pub_key = share_pubkey(share, "signing lock hash")?;
         let sig = BlstImpl.sign(&share.secret_share, hash)?;
 
-        set.insert(
-            pub_key,
-            ParSignedData::new(pluto_core::types::Signature::new(sig), share_idx),
-        );
+        set.insert(pub_key, ParSignedData::new(sig, share_idx));
     }
 
     Ok(set)
@@ -149,10 +146,7 @@ pub fn sign_deposit_msgs(
         let sig_root = deposit::get_message_signing_root(&msg, network_name)?;
         let sig = BlstImpl.sign(&share.secret_share, &sig_root)?;
 
-        set.insert(
-            pub_key,
-            ParSignedData::new(pluto_core::types::Signature::new(sig), share_idx),
-        );
+        set.insert(pub_key, ParSignedData::new(sig, share_idx));
         msgs.insert(pub_key, msg);
     }
 
@@ -205,10 +199,7 @@ pub fn sign_validator_registrations(
             },
         )?;
 
-        set.insert(
-            pub_key,
-            ParSignedData::new(pluto_core::types::Signature::new(sig), share_idx),
-        );
+        set.insert(pub_key, ParSignedData::new(sig, share_idx));
         msgs.insert(pub_key, signed_reg);
     }
 
@@ -486,7 +477,7 @@ mod tests {
                 .signature()
                 .expect("signature should exist");
             BlstImpl
-                .verify(&share.public_shares[&2], &hash, sig.as_ref())
+                .verify(&share.public_shares[&2], &hash, &sig)
                 .expect("partial signature should verify against share public key");
         }
     }

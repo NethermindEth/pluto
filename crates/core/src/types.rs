@@ -88,6 +88,12 @@ impl DutyType {
             DutyType::InfoSync,
         ]
     }
+    
+    /// Returns true if duties of this type have no deadline (e.g. voluntary
+    /// exits, builder registrations).
+    pub fn never_expires(&self) -> bool {
+        matches!(self, DutyType::Exit | DutyType::BuilderRegistration)
+    }
 }
 
 /// Error type for duty type conversion.
@@ -313,7 +319,8 @@ pub enum ProposalType {
 // the pub key as [u8; 48] instead of string.
 // [original implementation](https://github.com/ObolNetwork/charon/blob/b3008103c5429b031b63518195f4c49db4e9a68d/core/types.go#L264)
 const PK_LEN: usize = 48;
-const SIG_LEN: usize = 96;
+
+pub use pluto_crypto::types::{SIGNATURE_LENGTH, Signature};
 
 /// Public key struct
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -544,24 +551,6 @@ where
     /// Inner unsigned data set.
     pub fn inner_mut(&mut self) -> &mut HashMap<DutyType, UnsignedData<T>> {
         &mut self.0
-    }
-}
-
-// todo: add proper signature type
-/// Signature type
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Signature(pub(crate) [u8; SIG_LEN]);
-
-impl Signature {
-    /// Create a new signature.
-    pub fn new(signature: [u8; SIG_LEN]) -> Self {
-        Signature(signature)
-    }
-}
-
-impl AsRef<[u8; SIG_LEN]> for Signature {
-    fn as_ref(&self) -> &[u8; SIG_LEN] {
-        &self.0
     }
 }
 
@@ -1060,7 +1049,7 @@ mod tests {
 
     impl SignedData for MockSignedData {
         fn signature(&self) -> Result<Signature, SignedDataError> {
-            Ok(Signature::new([42u8; SIG_LEN]))
+            Ok([42u8; SIGNATURE_LENGTH])
         }
 
         fn set_signature(&self, _signature: Signature) -> Result<Self, SignedDataError> {
@@ -1083,7 +1072,7 @@ mod tests {
         assert_eq!(retrieved.share_idx, 0);
         assert_eq!(
             retrieved.signed_data.signature().unwrap(),
-            Signature::new([42u8; SIG_LEN])
+            [42u8; SIGNATURE_LENGTH]
         );
     }
 
