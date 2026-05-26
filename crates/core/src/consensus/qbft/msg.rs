@@ -24,7 +24,6 @@ use std::{any, collections::HashMap, fmt, sync};
 
 use k256::{PublicKey, SecretKey};
 use pluto_ssz::{HashWalker, Hasher, HasherError};
-use prost::Name;
 use prost_types::Any;
 
 use crate::{
@@ -117,7 +116,7 @@ pub struct Msg {
 impl fmt::Debug for Msg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Msg")
-            .field("type", &self.msg.r#type)
+            .field("type", &MessageType::from_wire(self.msg.r#type).to_string())
             .field(
                 "duty",
                 &self.msg.duty.as_ref().map(|duty| (duty.slot, duty.r#type)),
@@ -257,7 +256,7 @@ pub fn hash_proto<M>(msg: &M) -> Result<[u8; 32]>
 where
     M: prost::Message + prost::Name,
 {
-    if M::full_name() == Any::full_name() {
+    if M::PACKAGE == "google.protobuf" && M::NAME == "Any" {
         return Err(Error::CannotHashAnyProto);
     }
 
@@ -392,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    fn hash_proto_map_encoding_is_order_independent() {
+    fn hash_proto_uses_btree_map_for_deterministic_encoding() {
         let mut forward = std::collections::BTreeMap::new();
         forward.insert("a".to_string(), Bytes::from_static(b"first"));
         forward.insert("b".to_string(), Bytes::from_static(b"second"));
@@ -636,12 +635,33 @@ mod tests {
     }
 
     #[test]
+    fn sign_msg_resigns_already_signed_message() {
+        let key = secret_key(SIGNING_PRIVKEY);
+        let signed = sign_msg(&fixed_qbft_msg(), &key).unwrap();
+
+        let resigned = sign_msg(&signed, &key).unwrap();
+
+        assert_eq!(resigned, signed);
+    }
+
+    #[test]
     fn verify_msg_sig_wrong_key_returns_false() {
         let key = secret_key(SIGNING_PRIVKEY);
         let wrong_key = secret_key(WRONG_PRIVKEY);
         let signed = sign_msg(&fixed_qbft_msg(), &key).unwrap();
 
         let ok = verify_msg_sig(&signed, &wrong_key.public_key()).unwrap();
+
+        assert!(!ok);
+    }
+
+    #[test]
+    fn verify_msg_sig_tampered_message_returns_false() {
+        let key = secret_key(SIGNING_PRIVKEY);
+        let mut signed = sign_msg(&fixed_qbft_msg(), &key).unwrap();
+        signed.round += 1;
+
+        let ok = verify_msg_sig(&signed, &key.public_key()).unwrap();
 
         assert!(!ok);
     }
