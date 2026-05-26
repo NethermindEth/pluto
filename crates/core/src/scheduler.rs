@@ -1,3 +1,5 @@
+#![allow(dead_code, reason = "wip")]
+
 use std::{
     collections::{HashMap, hash_map::Entry},
     ops::Div,
