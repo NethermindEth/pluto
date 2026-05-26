@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::Context as _;
+use anyhow::{Context as _, ensure};
 use futures::StreamExt as _;
 use libp2p::{
     Multiaddr, PeerId,
@@ -534,4 +534,115 @@ fn verify_returned_shares(node_shares: &[Vec<Share>]) {
             .verify(&pub_key, msg, &sig)
             .expect("aggregated signature should verify");
     }
+}
+
+/// E2E proof that the overall DKG timeout (`crate::dkg::Config::timeout`,
+/// documented "Overall DKG timeout") is not enforced.
+///
+/// Real nodes are connected, but one peer never runs the DKG: its swarm stays
+/// up and answers reliable-broadcast signature requests, yet it never
+/// broadcasts its own round messages. The remaining nodes therefore wait in the
+/// round collection loop for a cast that never arrives.
+///
+/// FAILING TEST — it asserts the correct contract: a DKG with an unresponsive
+/// peer must abort on its own within the overall timeout. Today nothing bounds
+/// the rounds by `Config::timeout`, so the live nodes hang forever and the
+/// bounded wait below elapses. It will pass once the timeout is wired in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stalled_peer_hangs_dkg_without_overall_timeout() -> anyhow::Result<()> {
+    // Stand-in for the per-phase deadline that should be derived from
+    // `Config::timeout`; a correct DKG aborts well within this.
+    const DKG_DEADLINE: Duration = Duration::from_secs(8);
+
+    let keys = (0..NODES)
+        .map(|index| {
+            generate_insecure_k1_key(u8::try_from(index).expect("test index should fit u8"))
+        })
+        .collect::<Vec<_>>();
+    let peer_ids = keys
+        .iter()
+        .map(|key| peer_id_from_key(key.public_key()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let peer_share_indices = peer_ids
+        .iter()
+        .enumerate()
+        .map(|(index, peer_id)| {
+            let share_idx = u32::try_from(
+                index
+                    .checked_add(1)
+                    .expect("test share index should not overflow"),
+            )
+            .expect("test share index should fit u32");
+            (*peer_id, share_idx)
+        })
+        .collect::<HashMap<_, _>>();
+
+    let local_nodes = build_local_nodes(keys, &peer_ids, &peer_share_indices).await?;
+    let (conn_tx, mut conn_rx) = mpsc::unbounded_channel();
+    let (listen_tx, mut listen_rx) = mpsc::unbounded_channel();
+    let (frost_event_tx, _frost_event_rx) = mpsc::unbounded_channel();
+    let running = spawn_nodes(local_nodes, conn_tx, listen_tx, frost_event_tx)?;
+
+    let listen_addrs = wait_for_listen_addrs(&mut listen_rx).await?;
+    send_dial_targets(&running, &listen_addrs)?;
+    wait_for_connections(&mut conn_rx, &peer_ids).await?;
+
+    let cancellation = CancellationToken::new();
+
+    // Start the DKG on every node except the last: it stays connected (and
+    // answers broadcast signature requests) but never broadcasts its own round
+    // messages — a stalled peer the others wait on.
+    let mut dkg_tasks = Vec::with_capacity(NODES.saturating_sub(1));
+    let mut swarm_tasks = Vec::with_capacity(NODES);
+    let stalled_index = NODES.saturating_sub(1);
+    for (index, node) in running.into_iter().enumerate() {
+        swarm_tasks.push((node.stop_tx, node.join));
+        if index == stalled_index {
+            continue;
+        }
+        let cancellation = cancellation.clone();
+        let share_idx = u32::try_from(
+            index
+                .checked_add(1)
+                .expect("test share index should not overflow"),
+        )
+        .expect("test share index should fit u32");
+        let mut transport = node.transport;
+        dkg_tasks.push(tokio::spawn(async move {
+            run_frost_parallel(
+                cancellation,
+                &mut transport,
+                u32::try_from(NUM_VALIDATORS).expect("NUM_VALIDATORS should fit u32"),
+                u32::try_from(NODES).expect("NODES should fit u32"),
+                u32::try_from(THRESHOLD).expect("THRESHOLD should fit u32"),
+                share_idx,
+                "0",
+            )
+            .await
+        }));
+    }
+
+    // Correct behaviour: the DKG aborts on its own within the overall timeout.
+    let outcome = tokio::time::timeout(DKG_DEADLINE, async {
+        for task in dkg_tasks {
+            task.await.context("DKG task panicked")??;
+        }
+        anyhow::Ok(())
+    })
+    .await;
+
+    // Tear down the hung DKG tasks and swarms regardless of the result.
+    cancellation.cancel();
+    for (stop_tx, join) in swarm_tasks {
+        let _ = stop_tx.send(());
+        let _ = join.await;
+    }
+
+    ensure!(
+        outcome.is_ok(),
+        "DKG did not finish within the overall timeout: a single unresponsive peer hangs the \
+         ceremony forever because Config::timeout is never applied to the FROST rounds"
+    );
+
+    Ok(())
 }
