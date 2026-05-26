@@ -1,0 +1,178 @@
+# DKG "stalled peer" scenario — proves the overall DKG timeout is not enforced.
+#
+# A 4-operator cluster (threshold 3) is defined, but only 3 Pluto nodes are
+# started: node0, node1, node2. The 4th operator (node-3) exists in the cluster
+# definition but never runs — a permanently absent/stalled peer.
+#
+# The running nodes need every operator's FROST round messages, so they wait for
+# node-3 forever. A correct DKG aborts each node with a timeout error within
+# `--timeout` (default 60s). Today nothing enforces that, so the nodes hang.
+#
+# Build the image under test first and point PLUTO_IMAGE at it, e.g.:
+#   docker build -t pluto:local .
+#   PLUTO_IMAGE=pluto:local docker compose -f test-infra/docker-compose.dkg-stalled-peer.yml up
+#
+# Or run the assertion harness:
+#   PLUTO_IMAGE=pluto:local ./test-infra/dkg-stalled-peer-test.sh
+#
+# Reset:
+#   docker compose -f test-infra/docker-compose.dkg-stalled-peer.yml down -v
+
+name: pluto-dkg-stalled-peer
+
+services:
+  init:
+    image: docker:cli
+    command: >-
+      sh -c "mkdir -p /cluster/node-0 /cluster/node-1 /cluster/node-2 /cluster/node-3 /cluster/relay
+      && chmod -R 777 /cluster"
+    volumes:
+      - cluster-data:/cluster
+
+  # ENRs for all four operators are created so the cluster definition has the
+  # full 4-operator set; node-3 simply never runs as a service below.
+  setup-enr:
+    image: docker:cli
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        for node in node-0 node-1 node-2 node-3; do
+          docker run --rm -v ${COMPOSE_PROJECT_NAME}_cluster-data:/cluster \
+            ${PLUTO_IMAGE:-pluto:local} \
+            create enr --data-dir=/cluster/$$node 2>&1 | grep '^enr:' | head -1 > /cluster/$$node/enr.txt
+        done
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - cluster-data:/cluster
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  create-dkg:
+    image: docker:cli
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        ENR0=$$(cat /cluster/node-0/enr.txt)
+        ENR1=$$(cat /cluster/node-1/enr.txt)
+        ENR2=$$(cat /cluster/node-2/enr.txt)
+        ENR3=$$(cat /cluster/node-3/enr.txt)
+        docker run --rm -v ${COMPOSE_PROJECT_NAME}_cluster-data:/cluster \
+          ${PLUTO_IMAGE:-pluto:local} \
+          create dkg \
+          --operator-enrs="$$ENR0,$$ENR1,$$ENR2,$$ENR3" \
+          --threshold=3 \
+          --fee-recipient-addresses=0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF \
+          --withdrawal-addresses=0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF \
+          --network=holesky \
+          --name=stalled-peer-dkg \
+          --output-dir=/cluster
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - cluster-data:/cluster
+    depends_on:
+      setup-enr:
+        condition: service_completed_successfully
+
+  fix-perms:
+    image: docker:cli
+    command: chmod -R a+rX /cluster
+    volumes:
+      - cluster-data:/cluster
+    depends_on:
+      create-dkg:
+        condition: service_completed_successfully
+
+  relay:
+    image: ${PLUTO_IMAGE:-pluto:local}
+    command:
+      - relay
+      - --http-address=0.0.0.0:3640
+      - --p2p-tcp-address=0.0.0.0:3610
+      - --p2p-udp-address=0.0.0.0:3630
+      - --p2p-advertise-private-addresses
+      - --data-dir=/cluster/relay
+    depends_on:
+      fix-perms:
+        condition: service_completed_successfully
+    volumes:
+      - cluster-data:/cluster
+    networks:
+      - node0_net
+      - node1_net
+      - node2_net
+
+  node0:
+    image: ${PLUTO_IMAGE:-pluto:local}
+    environment:
+      - CHARON_LOG_LEVEL=${LOG_LEVEL:-info}
+    command:
+      - dkg
+      - --definition-file=/cluster/cluster-definition.json
+      - --data-dir=/cluster/node-0
+      - "--p2p-relays=${RELAY_URL:-http://relay:3640}"
+      - --p2p-tcp-address=0.0.0.0:3610
+    depends_on:
+      relay:
+        condition: service_started
+    volumes:
+      - cluster-data:/cluster
+    networks:
+      - node0_net
+      - nodes_net
+
+  node1:
+    image: ${PLUTO_IMAGE:-pluto:local}
+    environment:
+      - CHARON_LOG_LEVEL=${LOG_LEVEL:-info}
+    command:
+      - dkg
+      - --definition-file=/cluster/cluster-definition.json
+      - --data-dir=/cluster/node-1
+      - "--p2p-relays=${RELAY_URL:-http://relay:3640}"
+      - --p2p-tcp-address=0.0.0.0:3610
+    depends_on:
+      relay:
+        condition: service_started
+    volumes:
+      - cluster-data:/cluster
+    networks:
+      - node1_net
+      - nodes_net
+
+  node2:
+    image: ${PLUTO_IMAGE:-pluto:local}
+    environment:
+      - CHARON_LOG_LEVEL=${LOG_LEVEL:-info}
+    command:
+      - dkg
+      - --definition-file=/cluster/cluster-definition.json
+      - --data-dir=/cluster/node-2
+      - "--p2p-relays=${RELAY_URL:-http://relay:3640}"
+      - --p2p-tcp-address=0.0.0.0:3610
+    depends_on:
+      relay:
+        condition: service_started
+    volumes:
+      - cluster-data:/cluster
+    networks:
+      - node2_net
+      - nodes_net
+
+  # NOTE: node3 is intentionally NOT defined. node-3 is a cluster operator but
+  # its node never starts — the permanently stalled peer the others wait on.
+
+networks:
+  node0_net:
+    driver: bridge
+  node1_net:
+    driver: bridge
+  node2_net:
+    driver: bridge
+  nodes_net:
+    driver: bridge
+
+volumes:
+  cluster-data:
