@@ -2,7 +2,13 @@
 
 //! Types for the Charon core.
 
-use std::{any::Any, collections::HashMap, fmt::Display, iter};
+use std::{
+    any::Any,
+    collections::HashMap,
+    fmt::Display,
+    iter,
+    ops::{Deref, DerefMut},
+};
 
 use chrono::{DateTime, Duration, Utc};
 use dyn_clone::DynClone;
@@ -430,13 +436,29 @@ impl AsRef<[u8]> for PubKey {
 // todo: add toEth2Format for the pub key
 // https://github.com/ObolNetwork/charon/blob/b3008103c5429b031b63518195f4c49db4e9a68d/core/types.go#L311
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DutyDefinition {
     Attester(),
     Proposer(),
     SyncCommittee(),
 }
 
-pub type DutyDefinitionSet = HashMap<PubKey, DutyDefinition>;
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DutyDefinitionSet(HashMap<PubKey, DutyDefinition>);
+
+impl Deref for DutyDefinitionSet {
+    type Target = HashMap<PubKey, DutyDefinition>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for DutyDefinitionSet {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 /// Unsigned data type
 #[derive(Debug, Clone, PartialEq, Eq)]

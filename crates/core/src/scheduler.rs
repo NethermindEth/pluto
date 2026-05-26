@@ -1,12 +1,13 @@
 use std::{
     collections::{HashMap, hash_map::Entry},
+    ops::Div,
     time::Duration,
 };
 
 use backon::{BackoffBuilder, Retryable};
 use pluto_eth2api::{EthBeaconNodeApiClientError, client};
 use tokio::sync::Mutex;
-use tokio_util::sync::CancellationToken;
+use tokio_util::{future::FutureExt, sync::CancellationToken};
 
 use crate::{types, valcache};
 
@@ -41,6 +42,7 @@ struct Scheduler {
     valcache: valcache::ValidatorCache,
 
     slot_broadcast: tokio::sync::broadcast::Sender<types::Slot>,
+    duty_broadcast: tokio::sync::broadcast::Sender<(types::Duty, types::DutyDefinitionSet)>,
 
     storage: Mutex<Inner>,
 }
@@ -98,10 +100,7 @@ impl Inner {
         pub_key: types::PubKey,
         definition: types::DutyDefinition,
     ) -> bool {
-        let def_set = self
-            .duties
-            .entry(duty.clone())
-            .or_insert(HashMap::default());
+        let def_set = self.duties.entry(duty.clone()).or_default();
         match def_set.entry(pub_key) {
             Entry::Occupied(_) => return false,
             Entry::Vacant(entry) => {
@@ -123,6 +122,7 @@ impl Scheduler {
             client,
             valcache,
             slot_broadcast: tokio::sync::broadcast::channel(100).0,
+            duty_broadcast: tokio::sync::broadcast::channel(100).0,
             storage: Mutex::new(Inner {
                 resolved_epoch: u64::MAX,
                 resolving_epoch: u64::MAX,
@@ -130,6 +130,33 @@ impl Scheduler {
                 duties_by_epoch: HashMap::new(),
             }),
         }
+    }
+
+    pub async fn run(&mut self, ct: CancellationToken) -> Result<()> {
+        wait_chain_start(&self.client).await?;
+        wait_beacon_sync(&self.client).await?;
+
+        let mut slot_ticker = new_slot_ticker(&self.client, ct.clone()).await?;
+
+        loop {
+            tokio::select! {
+                _ = ct.cancelled() => break,
+
+                Some(slot) = slot_ticker.recv() => {
+                    tracing::debug!(slot = %slot.slot, "Slot ticked");
+
+                    // TODO: metrics
+                    // instrumentSlot(slot)
+
+                    // NOTE: Ignore send errors, it means that there are no subscribers.
+                    let _ = self.slot_broadcast.send(slot.clone());
+
+                    self.schedule_slot(slot, ct.clone()).await;
+                },
+            }
+        }
+
+        Ok(())
     }
 
     /// Subscribes a callback function for triggered slots.
@@ -150,34 +177,25 @@ impl Scheduler {
         });
     }
 
-    pub async fn run(&mut self, ct: CancellationToken) -> Result<()> {
-        wait_chain_start(&self.client).await?;
-        wait_beacon_sync(&self.client).await?;
+    /// Subscribes a callback function for triggered duties.
+    /// NOTE: this should be called *before* [`Scheduler::run`].
+    pub async fn subscribe_duties(
+        &mut self,
+        f: impl Fn(&types::Duty, &types::DutyDefinitionSet) -> Result<()> + Send + 'static,
+        label: impl AsRef<str> + Send + 'static,
+    ) {
+        let mut rx = self.duty_broadcast.subscribe();
 
-        let mut slot_ticker = new_slot_ticker(&self.client, ct.clone()).await?;
-
-        loop {
-            tokio::select! {
-                _ = ct.cancelled() => break,
-
-                Some(slot) = slot_ticker.recv() => {
-                    tracing::debug!(slot = %slot.slot, "Slot ticked");
-
-                    // TODO: metrics
-                    // instrumentSlot(slot)
-
-                    // NOTE: Ignore send errors since it just means there are no subscribers.
-                    let _ = self.slot_broadcast.send(slot.clone());
-
-                    self.schedule_slot(slot).await;
-                },
+        tokio::spawn(async move {
+            while let Ok((duty, set)) = rx.recv().await {
+                if let Err(err) = f(&duty, &set) {
+                    tracing::error!(err = ?err, label = label.as_ref(), "Trigger duty subscriber error");
+                }
             }
-        }
-
-        Ok(())
+        });
     }
 
-    async fn schedule_slot(&mut self, slot: types::Slot) {
+    async fn schedule_slot(&mut self, slot: types::Slot, ct: CancellationToken) {
         let resolved_epoch = self.storage.lock().await.resolved_epoch;
         if resolved_epoch != slot.epoch() {
             tracing::debug!(slot = %slot.slot, epoch = %slot.epoch(), "Resolving duties for slot");
@@ -193,13 +211,34 @@ impl Scheduler {
                 slot: slot.slot,
             };
 
-            let Some(def_set) = self.storage.lock().await.duties.get(&duty) else {
-                // Nothing for this duty.
-                continue;
+            let def_set = {
+                let storage = self.storage.lock().await;
+                let Some(def_set) = storage.duties.get(&duty) else {
+                    // Nothing for this duty.
+                    continue;
+                };
+
+                def_set.clone()
             };
 
-            // TODO:
-            // Trigger duty async
+            let ct = ct.clone();
+            let slot = slot.clone();
+            let broadcast = self.duty_broadcast.clone();
+            tokio::spawn(async move {
+                if let None = delay_slot_offset(&slot, &duty)
+                    .with_cancellation_token_owned(ct)
+                    .await
+                {
+                    // Cancelled early
+                    return;
+                }
+
+                // TODO:
+                // instrument_duty(duty, def_set);
+
+                // NOTE: Ignore send errors, it means that there are no subscribers.
+                let _ = broadcast.send((duty.clone(), def_set.clone()));
+            });
         }
 
         if slot.last_in_epoch() {
@@ -402,4 +441,16 @@ async fn wait_beacon_sync(client: &pluto_eth2api::client::EthBeaconNodeApiClient
     }
 
     Ok(())
+}
+
+/// Blocks until the slot offset for the duty has been reached.
+async fn delay_slot_offset(slot: &types::Slot, duty: &types::Duty) {
+    let to_sleep = match duty.duty_type {
+        types::DutyType::Attester => slot.slot_duration.div(3) * 1,
+        types::DutyType::Aggregator => slot.slot_duration.div(3) * 2,
+        types::DutyType::SyncContribution => slot.slot_duration.div(3) * 2,
+        _ => return,
+    };
+
+    tokio::time::sleep(to_sleep.to_std().unwrap_or_default()).await;
 }
