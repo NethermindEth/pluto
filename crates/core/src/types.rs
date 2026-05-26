@@ -88,7 +88,7 @@ impl DutyType {
             DutyType::InfoSync,
         ]
     }
-    
+
     /// Returns true if duties of this type have no deadline (e.g. voluntary
     /// exits, builder registrations).
     pub fn never_expires(&self) -> bool {
@@ -1020,6 +1020,9 @@ mod tests {
         assert_eq!(all.len(), 13);
         assert!(all.iter().all(DutyType::is_valid));
         assert!(!all.contains(&DutyType::Unknown));
+        for (i, dt) in all.iter().enumerate() {
+            assert_eq!(all.iter().position(|x| x == dt), Some(i));
+        }
     }
 
     #[test]
