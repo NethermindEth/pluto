@@ -212,7 +212,7 @@ impl SomeMsg<ConsensusQbftTypes> for Msg {
     }
 
     fn instance(&self) -> Duty {
-        duty_from_proto_unchecked(self.msg.duty.as_ref())
+        duty_from_proto(self.msg.duty.as_ref())
     }
 
     fn source(&self) -> i64 {
@@ -315,15 +315,16 @@ fn to_hash32(value: &[u8]) -> Option<[u8; 32]> {
     Some(value)
 }
 
-fn duty_from_proto_unchecked(duty: Option<&pbcore::Duty>) -> Duty {
+fn duty_from_proto(duty: Option<&pbcore::Duty>) -> Duty {
     let Some(duty) = duty else {
         return Duty::new(SlotNumber::new(0), DutyType::Unknown);
     };
 
     // Message receive validation rejects invalid duty types before this adapter
-    // is used by the consensus runner. This mirrors the unchecked protobuf
-    // projection used by the source implementation.
-    let duty_type = DutyType::try_from(duty.r#type).unwrap_or(DutyType::Unknown);
+    // is used by the consensus runner. If an invalid value reaches this local
+    // projection, Rust's closed enum maps it to Unknown instead of preserving
+    // the raw wire value.
+    let duty_type: DutyType = DutyType::try_from(duty.r#type).unwrap_or(DutyType::Unknown);
     Duty::new(SlotNumber::new(duty.slot), duty_type)
 }
 
