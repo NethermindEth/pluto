@@ -1,7 +1,4 @@
-use std::{
-    collections::{BTreeMap, HashMap},
-    time::Duration,
-};
+use std::collections::{BTreeMap, HashMap};
 
 use async_trait::async_trait;
 use pluto_crypto::{
@@ -13,7 +10,6 @@ use pluto_frost::{
     kryptology::{self, Round1Bcast, Round1Secret, Round2Bcast, ShamirShare},
     validate_num_of_signers,
 };
-use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
@@ -280,35 +276,12 @@ impl DkgParticipant {
 
 /// Runs `num_validators` Frost DKG processes in parallel (sharing transport
 /// rounds) and returns a list of shares (one for each distributed validator).
-/// Number of phases the overall DKG timeout is split across, matching Charon's
-/// `conf.Timeout / 6`. Each FROST round runs as one phase bounded by
-/// `conf.timeout / FROST_PHASES`.
-pub(crate) const FROST_PHASES: u32 = 6;
-
-/// Returns a child token of `parent` that cancels itself after `after`.
 ///
-/// This is the per-phase DKG deadline. It mirrors Charon, whose per-phase
-/// context deadline (`conf.Timeout / 6`) bounds each FROST round so an
-/// unresponsive peer cannot stall the ceremony forever. The rounds already
-/// return [`FrostError::Cancelled`] when the token fires, so no round logic
-/// changes; the deadline surfaces as a cancellation.
-fn phase_deadline_token(parent: &CancellationToken, after: Duration) -> CancellationToken {
-    let token = parent.child_token();
-    let timer = token.clone();
-    tokio::spawn(async move {
-        sleep(after).await;
-        timer.cancel();
-    });
-    token
-}
-
-#[allow(
-    clippy::too_many_arguments,
-    reason = "DKG parameters mirror the Go Charon signature; phase_timeout bounds each round"
-)]
+/// The caller bounds this whole FROST phase by passing a deadline-bounded
+/// `cancellation` token (see `run_ceremony`'s per-phase deadline). When it
+/// fires, the rounds return [`FrostError::Cancelled`].
 pub(crate) async fn run_frost_parallel<T: FTransport>(
     cancellation: CancellationToken,
-    phase_timeout: Duration,
     tp: &mut T,
     num_validators: u32,
     num_nodes: u32,
@@ -323,8 +296,7 @@ pub(crate) async fn run_frost_parallel<T: FTransport>(
 
     debug!("Sending round 1 messages");
 
-    let round1_deadline = phase_deadline_token(&cancellation, phase_timeout);
-    let (cast_r1_result, p2p_r1_result) = tp.round1(&round1_deadline, cast_r1, p2p_r1).await?;
+    let (cast_r1_result, p2p_r1_result) = tp.round1(&cancellation, cast_r1, p2p_r1).await?;
 
     debug!("Received round 1 results");
 
@@ -332,8 +304,7 @@ pub(crate) async fn run_frost_parallel<T: FTransport>(
 
     debug!("Sending round 2 messages");
 
-    let round2_deadline = phase_deadline_token(&cancellation, phase_timeout);
-    let cast_r2_result = tp.round2(&round2_deadline, cast_r2).await?;
+    let cast_r2_result = tp.round2(&cancellation, cast_r2).await?;
 
     debug!("Received round 2 results");
 
@@ -698,10 +669,8 @@ mod tests {
             let mut tp = Arc::clone(&tp);
             let cancellation = cancellation.clone();
             tasks.push(tokio::spawn(async move {
-                let phase_timeout = Duration::from_secs(30);
                 run_frost_parallel(
                     cancellation,
-                    phase_timeout,
                     &mut tp,
                     vals,
                     nodes,
@@ -737,10 +706,9 @@ mod tests {
         let task = {
             let mut tp = Arc::clone(&tp);
             let cancellation = cancellation.clone();
-            tokio::spawn(async move {
-                let phase_timeout = Duration::from_secs(30);
-                run_frost_parallel(cancellation, phase_timeout, &mut tp, 1, 2, 2, 1, "0").await
-            })
+            tokio::spawn(
+                async move { run_frost_parallel(cancellation, &mut tp, 1, 2, 2, 1, "0").await },
+            )
         };
 
         tokio::task::yield_now().await;
@@ -939,18 +907,7 @@ mod tests {
             let mut tp = Arc::clone(&tp);
             let cancellation = cancellation.clone();
             tasks.push(tokio::spawn(async move {
-                let phase_timeout = Duration::from_secs(30);
-                run_frost_parallel(
-                    cancellation,
-                    phase_timeout,
-                    &mut tp,
-                    3,
-                    3,
-                    3,
-                    share_idx,
-                    "0",
-                )
-                .await
+                run_frost_parallel(cancellation, &mut tp, 3, 3, 3, share_idx, "0").await
             }));
         }
 

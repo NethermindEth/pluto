@@ -434,7 +434,6 @@ async fn run_dkg(
         dkg_tasks.push(tokio::spawn(async move {
             run_frost_parallel(
                 cancellation,
-                TEST_TIMEOUT,
                 &mut transport,
                 u32::try_from(NUM_VALIDATORS).expect("NUM_VALIDATORS should fit u32"),
                 u32::try_from(NODES).expect("NODES should fit u32"),
@@ -586,7 +585,15 @@ async fn stalled_peer_aborts_dkg_within_phase_deadline() -> anyhow::Result<()> {
     send_dial_targets(&running, &listen_addrs)?;
     wait_for_connections(&mut conn_rx, &peer_ids).await?;
 
+    // Bound the FROST phase with a deadline token, exactly as `run_ceremony`
+    // does (Charon's per-phase `conf.timeout / DKG_PHASES`). When it fires the
+    // rounds return `Cancelled`.
     let cancellation = CancellationToken::new();
+    let deadline = cancellation.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(PHASE_TIMEOUT).await;
+        deadline.cancel();
+    });
 
     // Start the DKG on every node except the last: it stays connected (and
     // answers broadcast signature requests) but never broadcasts its own round
@@ -610,7 +617,6 @@ async fn stalled_peer_aborts_dkg_within_phase_deadline() -> anyhow::Result<()> {
         dkg_tasks.push(tokio::spawn(async move {
             run_frost_parallel(
                 cancellation,
-                PHASE_TIMEOUT,
                 &mut transport,
                 u32::try_from(NUM_VALIDATORS).expect("NUM_VALIDATORS should fit u32"),
                 u32::try_from(NODES).expect("NODES should fit u32"),

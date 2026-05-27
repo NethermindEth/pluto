@@ -46,16 +46,17 @@ const DEFAULT_PUBLISH_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_SHUTDOWN_DELAY: Duration = Duration::from_secs(1);
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Number of DKG phases the overall timeout is split across, matching Charon's
+/// `conf.Timeout / 6`. Each phase (peer sync, FROST rounds, partial-signature
+/// exchanges) is bounded by `conf.timeout / DKG_PHASES`.
+const DKG_PHASES: u32 = 6;
+
 /// Entry-point DKG error.
 #[derive(Debug, thiserror::Error)]
 pub enum DkgError {
     /// Shutdown was requested before the DKG entrypoint started.
     #[error("DKG shutdown requested before startup")]
     ShutdownRequestedBeforeStartup,
-
-    /// The overall DKG timeout elapsed before the ceremony completed.
-    #[error("DKG timed out after {0:?}")]
-    Timeout(Duration),
 
     /// Keymanager address was provided without the auth token.
     #[error(
@@ -371,6 +372,21 @@ fn default_tracing_config() -> TracingConfig {
         .build()
 }
 
+/// Returns a child token of `parent` that cancels itself after `after`.
+///
+/// This is the per-phase DKG deadline mirroring Charon's `phaseDuration`
+/// (`conf.Timeout / 6`): each phase observes the token and aborts when it
+/// fires, so an unresponsive peer cannot stall any phase forever.
+fn phase_deadline_token(parent: &CancellationToken, after: Duration) -> CancellationToken {
+    let token = parent.child_token();
+    let timer = token.clone();
+    tokio::spawn(async move {
+        sleep(after).await;
+        timer.cancel();
+    });
+    token
+}
+
 /// Runs the DKG entrypoint.
 pub async fn run(conf: Config, ct: CancellationToken) -> Result<(), DkgError> {
     if ct.is_cancelled() {
@@ -378,32 +394,7 @@ pub async fn run(conf: Config, ct: CancellationToken) -> Result<(), DkgError> {
     }
 
     let (lock_ct, lock_task) = start_private_key_lock(&conf).await?;
-
-    // Overall DKG timeout: cancel the whole ceremony once `conf.timeout`
-    // elapses so an unresponsive peer cannot hang any phase forever. Mirrors
-    // Charon, which bounds the DKG by `conf.Timeout`. All phases (connect,
-    // sync, FROST rounds) observe this token.
-    let timeout = conf.timeout;
-    let deadline_ct = ct.child_token();
-    let watchdog = {
-        let deadline_ct = deadline_ct.clone();
-        tokio::spawn(async move {
-            sleep(timeout).await;
-            deadline_ct.cancel();
-        })
-    };
-
-    let result = run_inner(conf, deadline_ct.clone()).await;
-
-    watchdog.abort();
-
-    // Distinguish a timeout from an external shutdown for clearer diagnostics:
-    // the deadline token fired but the caller's token did not.
-    let result = if deadline_ct.is_cancelled() && !ct.is_cancelled() {
-        Err(DkgError::Timeout(timeout))
-    } else {
-        result
-    };
+    let result = run_inner(conf, ct).await;
 
     lock_ct.cancel();
     lock_task
@@ -665,9 +656,16 @@ async fn run_ceremony<T: frost::FTransport>(
     sync_server: crate::sync::Server,
     sync_clients: Vec<crate::sync::Client>,
 ) -> Result<(), DkgError> {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "DKG_PHASES is a nonzero constant, so the division cannot panic"
+    )]
+    let phase = conf.timeout / DKG_PHASES;
+
     info!("Waiting to connect to all peers...");
 
-    let mut sync_runtime = start_sync_protocol(sync_server, sync_clients, ct.child_token()).await?;
+    let mut sync_runtime =
+        start_sync_protocol(sync_server, sync_clients, phase_deadline_token(&ct, phase)).await?;
 
     info!("All peers connected, starting DKG ceremony");
 
@@ -678,14 +676,8 @@ async fn run_ceremony<T: frost::FTransport>(
     let shares = match def.dkg_algorithm.as_str() {
         "default" | "frost" => {
             let num_nodes = u32::try_from(peers.len())?;
-            #[allow(
-                clippy::arithmetic_side_effects,
-                reason = "FROST_PHASES is a nonzero constant, so the division cannot panic"
-            )]
-            let phase_timeout = conf.timeout / frost::FROST_PHASES;
             frost::run_frost_parallel(
-                ct.child_token(),
-                phase_timeout,
+                phase_deadline_token(&ct, phase),
                 frost_transport,
                 num_validators,
                 num_nodes,
@@ -774,7 +766,11 @@ async fn run_ceremony<T: frost::FTransport>(
     sync_runtime.next_step().await?;
 
     lock.node_signatures = node_sig_caster
-        .exchange(Some(&key), &lock.lock_hash, ct.child_token())
+        .exchange(
+            Some(&key),
+            &lock.lock_hash,
+            phase_deadline_token(&ct, phase),
+        )
         .await?;
 
     if !pluto_cluster::version::support_node_signatures(&lock.version) {
