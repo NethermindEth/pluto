@@ -148,8 +148,8 @@ const EVENT_BUFFER: usize = 1024;
 
 /// A single event emitted by a core workflow component.
 ///
-/// `par_sig` is only set by `ValidatorAPI`, `ParSigDBInternal`, and
-/// `ParSigEx` events, matching Go's `event.parSig`.
+/// `par_sig` is only set by `ParSigDBInternal`, `ParSigEx`, and
+/// `ParSigDBExternal` events, matching Go's `event.parSig`.
 #[allow(dead_code)]
 pub(crate) struct Event {
     pub duty: Duty,
@@ -497,11 +497,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn events_accumulated_per_duty() {
+    async fn never_expiring_duties_are_not_accumulated() {
         let cancel = CancellationToken::new();
-        // NeverExpiring: duties are never scheduled, so add() returns
-        // NeverExpiring and every event is skipped before accumulation.
-        // This test verifies no panic from sending multiple events.
+        // NeverExpiring: deleter.add() returns NeverExpiring, so the loop
+        // continues without inserting into the events map. Verifies that the
+        // short-circuit correctly discards these events without panicking.
         let (analyser, analyser_rx) =
             DeadlinerTask::start(cancel.clone(), "analyser", NeverExpiringCalculator);
         let (deleter, deleter_rx) =
@@ -519,7 +519,6 @@ mod tests {
         let duty = attester(1);
         let keys = [pubkey(), PubKey::from([2u8; 48]), PubKey::from([3u8; 48])];
 
-        // Fan-out: three pubkeys → three events queued.
         handle.fetcher_fetched(duty.clone(), &keys, None).await;
         handle.fetcher_fetched(duty.clone(), &keys, None).await;
 
