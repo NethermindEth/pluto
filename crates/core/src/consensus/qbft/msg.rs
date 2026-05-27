@@ -19,6 +19,10 @@
 //!
 //! Do not hash `Any` directly. The consensus hash is over the deterministic
 //! protobuf bytes of the inner message.
+//!
+//! Inbound callers validate message type, duty type, peer membership, rounds,
+//! and signatures before constructing [`Msg`]. This adapter preserves raw
+//! message types, while invalid duty wire values project to [`DutyType::Unknown`].
 
 use std::{any, collections::HashMap, fmt, sync};
 
@@ -79,11 +83,11 @@ pub enum Error {
 
     /// Protobuf marshal failed.
     #[error("marshal proto: {0}")]
-    MarshalProto(prost::EncodeError),
+    MarshalProto(#[source] prost::EncodeError),
 
     /// SSZ hash failed.
     #[error("hash proto: {0}")]
-    HashProto(HasherError),
+    HashProto(#[source] HasherError),
 
     /// QBFT message signature was empty.
     #[error("empty signature")]
@@ -91,11 +95,11 @@ pub enum Error {
 
     /// Public key recovery failed.
     #[error("recover pubkey: {0}")]
-    RecoverPubkey(pluto_k1util::K1UtilError),
+    RecoverPubkey(#[source] pluto_k1util::K1UtilError),
 
     /// Signing failed.
     #[error("sign: {0}")]
-    Sign(pluto_k1util::K1UtilError),
+    Sign(#[source] pluto_k1util::K1UtilError),
 }
 
 /// Wrapped consensus message consumed by the generic QBFT core.
@@ -689,6 +693,18 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(err.to_string(), "empty signature");
+    }
+
+    #[test]
+    fn verify_msg_sig_errors_on_malformed_signature() {
+        let key = secret_key(SIGNING_PRIVKEY);
+        let mut msg = fixed_qbft_msg();
+        msg.signature = vec![0x42u8; 64].into();
+
+        let err = verify_msg_sig(&msg, &key.public_key()).unwrap_err();
+
+        assert!(matches!(err, Error::RecoverPubkey(_)));
+        assert!(std::error::Error::source(&err).is_some());
     }
 
     fn timestamp(seconds: i64) -> Timestamp {
