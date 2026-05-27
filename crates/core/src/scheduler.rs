@@ -4,6 +4,7 @@ use std::{
     collections::{HashMap, hash_map::Entry},
     ops::Div,
     time::Duration,
+    u64,
 };
 
 use backon::{BackoffBuilder, Retryable};
@@ -260,6 +261,26 @@ impl Scheduler {
             .ok_or_else(|| SchedulerError::DutyNotFound { epoch, duty })?;
 
         Ok(def_set.clone())
+    }
+
+    /// In case of a reorg of an already resolved epoch trim all duties.
+    ///
+    /// Duties will be resolved again in the nex slot.
+    pub async fn handle_chain_reorg(&mut self, epoch: u64) {
+        // NOTE: The SSE feature check should be done by the caller
+        let mut storage = self.storage.lock().await;
+
+        let resolved_epoch = storage.resolved_epoch;
+        if epoch < resolved_epoch {
+            storage.trim_duties(resolved_epoch);
+            storage.resolved_epoch = u64::MAX;
+
+            tracing::info!(
+                reorg_epoch = epoch,
+                resolved_epoch,
+                "Chain reorg event handled, duties trimmed"
+            )
+        }
     }
 
     async fn schedule_slot(&mut self, slot: types::Slot, ct: CancellationToken) {
