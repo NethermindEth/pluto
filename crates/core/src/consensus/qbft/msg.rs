@@ -22,7 +22,8 @@
 //!
 //! Inbound callers validate message type, duty type, peer membership, rounds,
 //! and signatures before constructing [`Msg`]. This adapter preserves raw
-//! message types, while invalid duty wire values project to [`DutyType::Unknown`].
+//! message types, while invalid duty wire values project to
+//! [`DutyType::Unknown`].
 
 use std::{any, collections::HashMap, fmt, sync};
 
