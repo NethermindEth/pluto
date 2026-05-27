@@ -430,6 +430,23 @@ mod tests {
     }
 
     #[test]
+    fn debug_unknown_message_type() {
+        let msg = Msg::new(
+            Some(pbconsensus::QbftMsg {
+                r#type: 99,
+                ..Default::default()
+            }),
+            vec![],
+            sync::Arc::default(),
+        )
+        .unwrap();
+
+        let debug = format!("{msg:?}");
+
+        assert!(debug.contains("type: \"\""));
+    }
+
+    #[test]
     fn new_maps_valid_value_and_prepared_hashes() {
         let value_hash = hash_proto(&timestamp(1)).unwrap();
         let prepared_hash = hash_proto(&timestamp(2)).unwrap();

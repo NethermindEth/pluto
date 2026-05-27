@@ -225,9 +225,9 @@ impl Display for MessageType {
             3 => "commit",
             4 => "round_change",
             5 => "decided",
-            _ => panic!("bug: invalid message type"),
+            _ => "",
         };
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 
@@ -295,9 +295,9 @@ impl Display for UponRule {
             6 => "quorum_round_changes",
             7 => "justified_decided",
             8 => "round_timeout",
-            _ => panic!("bug: invalid upon rule"),
+            _ => "",
         };
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 
@@ -1406,6 +1406,12 @@ mod tests {
 
         assert_eq!(message_type, MessageType(99));
         assert!(!message_type.valid());
+        assert_eq!(message_type.to_string(), "");
+    }
+
+    #[test]
+    fn upon_rule_display_unknown_value_does_not_panic() {
+        assert_eq!(UponRule(99).to_string(), "");
     }
 }
 
