@@ -5590,6 +5590,7 @@ dependencies = [
  "alloy",
  "anyhow",
  "async-trait",
+ "axum",
  "base64",
  "built",
  "cancellation",
