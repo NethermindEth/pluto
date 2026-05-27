@@ -4,13 +4,13 @@ pub mod reason;
 /// Step enum for the core workflow.
 pub mod step;
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, future::Future, sync::Arc};
 
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    deadline::Deadliner,
+    deadline::{AddOutcome, DeadlinerHandle},
     types::{Duty, ParSignedData, ParSignedDataSet, PubKey},
 };
 
@@ -47,13 +47,28 @@ pub struct PeerInfo {
 /// be cheaply cloned per event inside the implementation.
 pub trait Tracker: Send + Sync {
     /// Called when the fetcher fetches duty data.
-    fn fetcher_fetched(&self, duty: Duty, pubkeys: &[PubKey], err: Option<StepError>);
+    fn fetcher_fetched(
+        &self,
+        duty: Duty,
+        pubkeys: &[PubKey],
+        err: Option<StepError>,
+    ) -> impl Future<Output = ()> + Send;
 
     /// Called when consensus is reached on duty data.
-    fn consensus_proposed(&self, duty: Duty, pubkeys: &[PubKey], err: Option<StepError>);
+    fn consensus_proposed(
+        &self,
+        duty: Duty,
+        pubkeys: &[PubKey],
+        err: Option<StepError>,
+    ) -> impl Future<Output = ()> + Send;
 
     /// Called when duty data is stored in DutyDB.
-    fn duty_db_stored(&self, duty: Duty, pubkeys: &[PubKey], err: Option<StepError>);
+    fn duty_db_stored(
+        &self,
+        duty: Duty,
+        pubkeys: &[PubKey],
+        err: Option<StepError>,
+    ) -> impl Future<Output = ()> + Send;
 
     /// Called when local VC partial signatures are stored in parsigdb.
     fn par_sig_db_stored_internal(
@@ -61,10 +76,15 @@ pub trait Tracker: Send + Sync {
         duty: Duty,
         set: &ParSignedDataSet,
         err: Option<StepError>,
-    );
+    ) -> impl Future<Output = ()> + Send;
 
     /// Called when local VC partial signatures are broadcast to peers.
-    fn par_sig_ex_broadcasted(&self, duty: Duty, set: &ParSignedDataSet, err: Option<StepError>);
+    fn par_sig_ex_broadcasted(
+        &self,
+        duty: Duty,
+        set: &ParSignedDataSet,
+        err: Option<StepError>,
+    ) -> impl Future<Output = ()> + Send;
 
     /// Called when peer partial signatures are stored in parsigdb.
     fn par_sig_db_stored_external(
@@ -72,19 +92,39 @@ pub trait Tracker: Send + Sync {
         duty: Duty,
         set: &ParSignedDataSet,
         err: Option<StepError>,
-    );
+    ) -> impl Future<Output = ()> + Send;
 
     /// Called when partial signatures are aggregated.
-    fn sig_agg_aggregated(&self, duty: Duty, pubkeys: &[PubKey], err: Option<StepError>);
+    fn sig_agg_aggregated(
+        &self,
+        duty: Duty,
+        pubkeys: &[PubKey],
+        err: Option<StepError>,
+    ) -> impl Future<Output = ()> + Send;
 
     /// Called when aggregated signed data is stored in aggsigdb.
-    fn agg_sig_db_stored(&self, duty: Duty, pubkeys: &[PubKey], err: Option<StepError>);
+    fn agg_sig_db_stored(
+        &self,
+        duty: Duty,
+        pubkeys: &[PubKey],
+        err: Option<StepError>,
+    ) -> impl Future<Output = ()> + Send;
 
     /// Called when aggregated data is broadcast to the beacon node.
-    fn broadcaster_broadcast(&self, duty: Duty, pubkeys: &[PubKey], err: Option<StepError>);
+    fn broadcaster_broadcast(
+        &self,
+        duty: Duty,
+        pubkeys: &[PubKey],
+        err: Option<StepError>,
+    ) -> impl Future<Output = ()> + Send;
 
     /// Called when chain inclusion is checked for a duty.
-    fn inclusion_checked(&self, duty: Duty, pubkey: PubKey, err: Option<StepError>);
+    fn inclusion_checked(
+        &self,
+        duty: Duty,
+        pubkey: PubKey,
+        err: Option<StepError>,
+    ) -> impl Future<Output = ()> + Send;
 }
 
 /// Buffer capacity for the internal event channel.
@@ -113,15 +153,15 @@ pub struct TrackerHandle {
 }
 
 impl TrackerHandle {
-    fn send_event(&self, event: Event) {
-        if let Err(e) = self.input_tx.try_send(event) {
-            tracing::warn!(error = %e, "Tracker input channel full or closed; dropping event");
+    async fn send_event(&self, event: Event) {
+        if let Err(e) = self.input_tx.send(event).await {
+            tracing::warn!(error = %e, "Tracker input channel closed; dropping event");
         }
     }
 }
 
 impl Tracker for TrackerHandle {
-    fn fetcher_fetched(&self, duty: Duty, pubkeys: &[PubKey], err: Option<StepError>) {
+    async fn fetcher_fetched(&self, duty: Duty, pubkeys: &[PubKey], err: Option<StepError>) {
         for pubkey in pubkeys {
             self.send_event(Event {
                 duty: duty.clone(),
@@ -129,11 +169,12 @@ impl Tracker for TrackerHandle {
                 pubkey: *pubkey,
                 step_err: err.clone(),
                 par_sig: None,
-            });
+            })
+            .await;
         }
     }
 
-    fn consensus_proposed(&self, duty: Duty, pubkeys: &[PubKey], err: Option<StepError>) {
+    async fn consensus_proposed(&self, duty: Duty, pubkeys: &[PubKey], err: Option<StepError>) {
         for pubkey in pubkeys {
             self.send_event(Event {
                 duty: duty.clone(),
@@ -141,11 +182,12 @@ impl Tracker for TrackerHandle {
                 pubkey: *pubkey,
                 step_err: err.clone(),
                 par_sig: None,
-            });
+            })
+            .await;
         }
     }
 
-    fn duty_db_stored(&self, duty: Duty, pubkeys: &[PubKey], err: Option<StepError>) {
+    async fn duty_db_stored(&self, duty: Duty, pubkeys: &[PubKey], err: Option<StepError>) {
         for pubkey in pubkeys {
             self.send_event(Event {
                 duty: duty.clone(),
@@ -153,11 +195,12 @@ impl Tracker for TrackerHandle {
                 pubkey: *pubkey,
                 step_err: err.clone(),
                 par_sig: None,
-            });
+            })
+            .await;
         }
     }
 
-    fn par_sig_db_stored_internal(
+    async fn par_sig_db_stored_internal(
         &self,
         duty: Duty,
         set: &ParSignedDataSet,
@@ -170,11 +213,17 @@ impl Tracker for TrackerHandle {
                 pubkey: *pubkey,
                 step_err: err.clone(),
                 par_sig: Some(par_sig.clone()),
-            });
+            })
+            .await;
         }
     }
 
-    fn par_sig_ex_broadcasted(&self, duty: Duty, set: &ParSignedDataSet, err: Option<StepError>) {
+    async fn par_sig_ex_broadcasted(
+        &self,
+        duty: Duty,
+        set: &ParSignedDataSet,
+        err: Option<StepError>,
+    ) {
         for (pubkey, par_sig) in set.inner() {
             self.send_event(Event {
                 duty: duty.clone(),
@@ -182,11 +231,12 @@ impl Tracker for TrackerHandle {
                 pubkey: *pubkey,
                 step_err: err.clone(),
                 par_sig: Some(par_sig.clone()),
-            });
+            })
+            .await;
         }
     }
 
-    fn par_sig_db_stored_external(
+    async fn par_sig_db_stored_external(
         &self,
         duty: Duty,
         set: &ParSignedDataSet,
@@ -199,11 +249,12 @@ impl Tracker for TrackerHandle {
                 pubkey: *pubkey,
                 step_err: err.clone(),
                 par_sig: Some(par_sig.clone()),
-            });
+            })
+            .await;
         }
     }
 
-    fn sig_agg_aggregated(&self, duty: Duty, pubkeys: &[PubKey], err: Option<StepError>) {
+    async fn sig_agg_aggregated(&self, duty: Duty, pubkeys: &[PubKey], err: Option<StepError>) {
         for pubkey in pubkeys {
             self.send_event(Event {
                 duty: duty.clone(),
@@ -211,11 +262,12 @@ impl Tracker for TrackerHandle {
                 pubkey: *pubkey,
                 step_err: err.clone(),
                 par_sig: None,
-            });
+            })
+            .await;
         }
     }
 
-    fn agg_sig_db_stored(&self, duty: Duty, pubkeys: &[PubKey], err: Option<StepError>) {
+    async fn agg_sig_db_stored(&self, duty: Duty, pubkeys: &[PubKey], err: Option<StepError>) {
         for pubkey in pubkeys {
             self.send_event(Event {
                 duty: duty.clone(),
@@ -223,11 +275,12 @@ impl Tracker for TrackerHandle {
                 pubkey: *pubkey,
                 step_err: err.clone(),
                 par_sig: None,
-            });
+            })
+            .await;
         }
     }
 
-    fn broadcaster_broadcast(&self, duty: Duty, pubkeys: &[PubKey], err: Option<StepError>) {
+    async fn broadcaster_broadcast(&self, duty: Duty, pubkeys: &[PubKey], err: Option<StepError>) {
         for pubkey in pubkeys {
             self.send_event(Event {
                 duty: duty.clone(),
@@ -235,18 +288,20 @@ impl Tracker for TrackerHandle {
                 pubkey: *pubkey,
                 step_err: err.clone(),
                 par_sig: None,
-            });
+            })
+            .await;
         }
     }
 
-    fn inclusion_checked(&self, duty: Duty, pubkey: PubKey, err: Option<StepError>) {
+    async fn inclusion_checked(&self, duty: Duty, pubkey: PubKey, err: Option<StepError>) {
         self.send_event(Event {
             duty,
             step: Step::ChainInclusion,
             pubkey,
             step_err: err,
             par_sig: None,
-        });
+        })
+        .await;
     }
 }
 
@@ -258,9 +313,9 @@ impl Tracker for TrackerHandle {
 pub struct TrackerService {
     cancel: CancellationToken,
     input_rx: mpsc::Receiver<Event>,
-    analyser: Arc<dyn Deadliner>,
+    analyser: DeadlinerHandle,
     analyser_rx: mpsc::Receiver<Duty>,
-    deleter: Arc<dyn Deadliner>,
+    deleter: DeadlinerHandle,
     deleter_rx: mpsc::Receiver<Duty>,
     from_slot: u64,
     #[allow(dead_code)]
@@ -274,22 +329,16 @@ impl TrackerService {
     /// cleanup well after analysis (matching Go's contract that the deleter
     /// deadline must be well after the analyser's). `from_slot` sets the
     /// minimum slot to track — events for earlier slots are ignored.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `analyser.c()` or `deleter.c()` return `None`, which would
-    /// mean their receivers were already taken by a previous call.
     pub fn start(
         cancel: CancellationToken,
-        analyser: Arc<dyn Deadliner>,
-        deleter: Arc<dyn Deadliner>,
+        analyser: DeadlinerHandle,
+        analyser_rx: mpsc::Receiver<Duty>,
+        deleter: DeadlinerHandle,
+        deleter_rx: mpsc::Receiver<Duty>,
         peers: Vec<PeerInfo>,
         from_slot: u64,
     ) -> Arc<TrackerHandle> {
         let (input_tx, input_rx) = mpsc::channel(INPUT_BUFFER);
-
-        let analyser_rx = analyser.c().expect("analyser receiver already taken");
-        let deleter_rx = deleter.c().expect("deleter receiver already taken");
 
         let task = Self {
             cancel,
@@ -324,8 +373,8 @@ impl TrackerService {
                     }
 
                     // Ignore expired or never-expiring duties.
-                    if !self.deleter.add(e.duty.clone()).await
-                        || !self.analyser.add(e.duty.clone()).await
+                    if self.deleter.add(e.duty.clone()).await != AddOutcome::Scheduled
+                        || self.analyser.add(e.duty.clone()).await != AddOutcome::Scheduled
                     {
                         continue;
                     }
