@@ -6,7 +6,7 @@ use tracing::{Instrument, debug, error, info, warn};
 
 /// Provides the "current time" used to compute retry deadlines.
 ///
-/// [`SystemClock`] is the production implementation; tests can supply a
+/// [`ChronoClock`] is the production implementation; tests can supply a
 /// deterministic clock instead.
 pub trait Clock: Send + Sync + 'static {
     /// Returns the current time.
@@ -15,9 +15,9 @@ pub trait Clock: Send + Sync + 'static {
 
 /// [`Clock`] backed by the system wall clock via [`chrono::Utc::now`].
 #[derive(Debug, Clone, Copy, Default)]
-pub struct SystemClock;
+pub struct ChronoClock;
 
-impl Clock for SystemClock {
+impl Clock for ChronoClock {
     fn now(&self) -> DateTime<Utc> {
         Utc::now()
     }
@@ -72,7 +72,7 @@ impl<T> Default for AsyncOptions<T> {
                 .without_max_times()
                 .with_jitter(),
             deadline_fn: Arc::new(|_| None),
-            clock: Arc::new(SystemClock),
+            clock: Arc::new(ChronoClock),
             cancellation_token: None,
         }
     }

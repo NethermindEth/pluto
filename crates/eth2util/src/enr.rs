@@ -109,7 +109,7 @@ pub struct Record {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EnrEntry {
     /// Sets the IP address.
-    Ip(Ipv4Addr),
+    Ipv4(Ipv4Addr),
     /// Sets the TCP port.
     Tcp(u16),
     /// Sets the UDP port.
@@ -120,7 +120,7 @@ impl EnrEntry {
     /// Writes this entry into the record's key-value pairs.
     fn apply(self, kvs: &mut HashMap<String, Vec<u8>>) {
         match self {
-            Self::Ip(ip) => kvs.insert(KEY_IP.to_string(), ip.octets().to_vec()),
+            Self::Ipv4(ip) => kvs.insert(KEY_IP.to_string(), ip.octets().to_vec()),
             Self::Tcp(tcp) => kvs.insert(KEY_TCP.to_string(), tcp.to_be_bytes().to_vec()),
             Self::Udp(udp) => kvs.insert(KEY_UDP.to_string(), udp.to_be_bytes().to_vec()),
         };
@@ -392,7 +392,7 @@ mod tests {
         let r1 = Record::new(
             &secret_key,
             vec![
-                EnrEntry::Ip(expect_ip),
+                EnrEntry::Ipv4(expect_ip),
                 EnrEntry::Tcp(expect_tcp),
                 EnrEntry::Udp(expect_udp),
             ],

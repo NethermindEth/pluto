@@ -260,7 +260,7 @@ async fn main() -> anyhow::Result<()> {
     let enr = Record::new(
         &key,
         vec![
-            EnrEntry::Ip(Ipv4Addr::from([0, 0, 0, 0])),
+            EnrEntry::Ipv4(Ipv4Addr::from([0, 0, 0, 0])),
             EnrEntry::Tcp(args.port),
             EnrEntry::Udp(args.port),
         ],

@@ -288,7 +288,7 @@ pub async fn enr_handler(
     let record = Record::new(
         &state.secret_key,
         vec![
-            EnrEntry::Ip(ip),
+            EnrEntry::Ipv4(ip),
             EnrEntry::Tcp(tcp_port),
             EnrEntry::Udp(udp_port),
         ],
