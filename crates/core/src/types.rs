@@ -521,10 +521,53 @@ impl TryInto<ProposerDutyDefinition>
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct SyncCommitteeDutyDefinition {
+    pub pubkey: PubKey,
+    pub validator_index: u64,
+    pub validator_sync_committee_indices: Vec<u64>,
+
+    inner: pluto_eth2api::types::GetSyncCommitteeDutiesResponseResponseDatum,
+}
+
+impl TryInto<SyncCommitteeDutyDefinition>
+    for pluto_eth2api::types::GetSyncCommitteeDutiesResponseResponseDatum
+{
+    type Error = DutyDefinitionError;
+
+    fn try_into(self) -> Result<SyncCommitteeDutyDefinition, Self::Error> {
+        let pubkey = PubKey::try_from(self.pubkey.as_str())
+            .map_err(|_| DutyDefinitionError::InvalidField { field: "pubkey" })?;
+        let validator_index =
+            self.validator_index
+                .parse::<u64>()
+                .map_err(|_| DutyDefinitionError::InvalidField {
+                    field: "validator_index",
+                })?;
+        let validator_sync_committee_indices = self
+            .validator_sync_committee_indices
+            .iter()
+            .map(|idx| {
+                idx.parse::<u64>()
+                    .map_err(|_| DutyDefinitionError::InvalidField {
+                        field: "validator_sync_committee_indices",
+                    })
+            })
+            .collect::<Result<Vec<u64>, DutyDefinitionError>>()?;
+
+        Ok(SyncCommitteeDutyDefinition {
+            pubkey,
+            validator_index,
+            validator_sync_committee_indices,
+            inner: self,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum DutyDefinition {
     Attester(AttesterDutyDefinition),
     Proposer(ProposerDutyDefinition),
-    SyncCommittee(),
+    SyncCommittee(SyncCommitteeDutyDefinition),
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

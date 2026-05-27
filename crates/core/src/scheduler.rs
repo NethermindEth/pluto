@@ -268,18 +268,6 @@ impl Scheduler {
                 return Ok(());
             }
 
-            let att_duties = {
-                let mut att_duties = fetch_attester_duties(&slot, &vals, &s.client).await?;
-                att_duties.sort_by_key(|ad| ad.slot);
-                att_duties
-            };
-
-            let pro_duties = {
-                let mut pro_duties = fetch_proposer_duties(&slot, &vals, &s.client).await?;
-                pro_duties.sort_by_key(|pd| pd.slot);
-                pro_duties
-            };
-
             // TODO:
             // activeValsGauge.Set(float64(len(vals)))
 
@@ -287,6 +275,7 @@ impl Scheduler {
 
             // Resolve Attester duties
             {
+                let att_duties = fetch_attester_duties(&slot, &vals, &s.client).await?;
                 for att_duty in att_duties.into_iter() {
                     if !storage.set_duty_definition(
                         types::Duty::new_attester_duty(att_duty.slot),
@@ -318,6 +307,7 @@ impl Scheduler {
 
             // Resolve Proposer duties
             {
+                let pro_duties = fetch_proposer_duties(&slot, &vals, &s.client).await?;
                 for pro_duty in pro_duties.into_iter() {
                     if !storage.set_duty_definition(
                         types::Duty::new_proposer_duty(pro_duty.slot),
@@ -340,7 +330,30 @@ impl Scheduler {
 
             // Resolve Sync Committee duties
             {
-                todo!()
+                let sync_duties = fetch_sync_committee_duties(&slot, &vals, &s.client).await?;
+                for sync_duty in sync_duties.into_iter() {
+                    // TODO(charon): sync committee duties start in the slot before the sync
+                    // committee period.
+                    // Refer: https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/validator.md#sync-committee
+                    for sl in slot
+                        .iter()
+                        .take_while(|other| other.epoch() == slot.epoch())
+                    {
+                        storage.set_duty_definition(
+                            types::Duty::new_sync_contribution_duty(sl.slot),
+                            sl.epoch(),
+                            sync_duty.pubkey,
+                            types::DutyDefinition::SyncCommittee(sync_duty.clone()),
+                        );
+                    }
+
+                    tracing::info!(
+                        vidx = %&sync_duty.validator_index,
+                        pubkey = %sync_duty.pubkey,
+                        epoch = %slot.epoch(),
+                        "Resolved sync committee duty"
+                    );
+                }
             }
 
             storage.resolved_epoch = slot.epoch();
@@ -692,6 +705,63 @@ async fn fetch_proposer_duties(
         }
 
         result.push(pro_duty);
+    }
+
+    Ok(result)
+}
+
+/// Fetches the sync committee duties for the given slot and validators, and
+/// validates that the returned duties match the expected validators.
+async fn fetch_sync_committee_duties(
+    slot: &types::Slot,
+    validators: &Vec<Validator>,
+    client: &client::EthBeaconNodeApiClient,
+) -> Result<Vec<types::SyncCommitteeDutyDefinition>> {
+    let req = pluto_eth2api::GetSyncCommitteeDutiesRequest::builder()
+        .epoch(slot.epoch().to_string())
+        .body(validators.iter().map(|v| v.v_idx.to_string()).collect())
+        .build()
+        .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?;
+    let resp = client
+        .get_sync_committee_duties(req)
+        .await
+        .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?;
+
+    let sync_duties: Vec<types::SyncCommitteeDutyDefinition> = match resp {
+        pluto_eth2api::GetSyncCommitteeDutiesResponse::Ok(duties) => duties
+            .data
+            .into_iter()
+            .map(|d| {
+                d.try_into()
+                    .map_err(|_| pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse)
+            })
+            .collect::<std::result::Result<Vec<_>, _>>(),
+        _ => Err(pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse),
+    }?;
+
+    let mut result = vec![];
+    for sync_duty in sync_duties.into_iter() {
+        let Some(pubkey) = validators
+            .iter()
+            .find(|v| v.v_idx == sync_duty.validator_index)
+            .map(|v| v.pubkey)
+        else {
+            tracing::warn!(
+                vidx = sync_duty.validator_index,
+                slot = %slot.slot,
+                "Ignoring unexpected sync committee duty"
+            );
+            continue;
+        };
+
+        if pubkey != sync_duty.pubkey {
+            return Err(SchedulerError::InvalidDutyPubkey {
+                expected: pubkey,
+                actual: sync_duty.pubkey,
+            });
+        }
+
+        result.push(sync_duty);
     }
 
     Ok(result)
