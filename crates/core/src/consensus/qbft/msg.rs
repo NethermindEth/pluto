@@ -25,6 +25,9 @@
 //! message types, while invalid duty wire values project to
 //! [`DutyType::Unknown`].
 
+// TODO: Remove once component/transport wiring uses the crate-visible helpers.
+#![allow(dead_code)]
+
 use std::{any, collections::HashMap, fmt, sync};
 
 use k256::{PublicKey, SecretKey};
@@ -146,7 +149,7 @@ impl Msg {
     ///
     /// Justifications are raw protobuf messages from the same consensus
     /// envelope. They are recursively wrapped with the same shared value map.
-    pub fn new(
+    pub(crate) fn new(
         msg: Option<pbconsensus::QbftMsg>,
         justification: Vec<pbconsensus::QbftMsg>,
         values: sync::Arc<ValueMap>,
@@ -232,7 +235,10 @@ impl SomeMsg<ConsensusQbftTypes> for Msg {
     }
 
     fn value_source(&self) -> std::result::Result<Any, qbft::QbftError> {
-        Msg::value_source(self).map_err(|_| qbft::QbftError::ValueNotFound)
+        self.values
+            .get(&self.value_hash)
+            .cloned()
+            .ok_or(qbft::QbftError::ValueNotFound)
     }
 
     fn prepared_round(&self) -> i64 {
@@ -257,7 +263,7 @@ impl SomeMsg<ConsensusQbftTypes> for Msg {
 /// The hash input is deterministic protobuf encoding, then SSZ `PutBytes`
 /// merkleization. `Any` is rejected because the consensus value hash must bind
 /// to the inner message bytes, not the transport envelope.
-pub fn hash_proto<M>(msg: &M) -> Result<[u8; 32]>
+pub(crate) fn hash_proto<M>(msg: &M) -> Result<[u8; 32]>
 where
     M: prost::Message + prost::Name,
 {
@@ -279,7 +285,10 @@ where
 ///
 /// The signature field is cleared before hashing, so callers may pass either an
 /// unsigned message or an already-signed message to re-sign.
-pub fn sign_msg(msg: &pbconsensus::QbftMsg, privkey: &SecretKey) -> Result<pbconsensus::QbftMsg> {
+pub(crate) fn sign_msg(
+    msg: &pbconsensus::QbftMsg,
+    privkey: &SecretKey,
+) -> Result<pbconsensus::QbftMsg> {
     let mut clone = msg.clone();
     clone.signature.clear();
 
@@ -294,7 +303,7 @@ pub fn sign_msg(msg: &pbconsensus::QbftMsg, privkey: &SecretKey) -> Result<pbcon
 ///
 /// The signature is recoverable secp256k1 over [`hash_proto`] of the message
 /// with its signature field cleared.
-pub fn verify_msg_sig(msg: &pbconsensus::QbftMsg, pubkey: &PublicKey) -> Result<bool> {
+pub(crate) fn verify_msg_sig(msg: &pbconsensus::QbftMsg, pubkey: &PublicKey) -> Result<bool> {
     // Protobuf `bytes` fields decode both absent and explicit-empty values as
     // empty bytes in prost.
     if msg.signature.is_empty() {
