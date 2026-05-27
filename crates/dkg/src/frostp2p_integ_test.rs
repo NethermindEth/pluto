@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     bcast,
-    frost::run_frost_parallel,
+    frost::{FrostError, run_frost_parallel},
     frostp2p::{FrostP2P, FrostP2PBehaviour, FrostP2PEvent, new_frost_p2p},
     share::Share,
 };
@@ -434,6 +434,7 @@ async fn run_dkg(
         dkg_tasks.push(tokio::spawn(async move {
             run_frost_parallel(
                 cancellation,
+                TEST_TIMEOUT,
                 &mut transport,
                 u32::try_from(NUM_VALIDATORS).expect("NUM_VALIDATORS should fit u32"),
                 u32::try_from(NODES).expect("NODES should fit u32"),
@@ -536,23 +537,21 @@ fn verify_returned_shares(node_shares: &[Vec<Share>]) {
     }
 }
 
-/// E2E proof that the overall DKG timeout (`crate::dkg::Config::timeout`,
-/// documented "Overall DKG timeout") is not enforced.
+/// E2E test that a stalled peer cannot hang the DKG forever: the per-phase
+/// deadline (derived from `crate::dkg::Config::timeout`, like Charon's
+/// `conf.Timeout / 6`) aborts each running node.
 ///
 /// Real nodes are connected, but one peer never runs the DKG: its swarm stays
 /// up and answers reliable-broadcast signature requests, yet it never
-/// broadcasts its own round messages. The remaining nodes therefore wait in the
-/// round collection loop for a cast that never arrives.
-///
-/// FAILING TEST — it asserts the correct contract: a DKG with an unresponsive
-/// peer must abort on its own within the overall timeout. Today nothing bounds
-/// the rounds by `Config::timeout`, so the live nodes hang forever and the
-/// bounded wait below elapses. It will pass once the timeout is wired in.
+/// broadcasts its own round messages. The remaining nodes wait in the round
+/// collection loop for a cast that never arrives — and must abort with
+/// [`FrostError::Cancelled`] once the phase deadline fires.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn stalled_peer_hangs_dkg_without_overall_timeout() -> anyhow::Result<()> {
-    // Stand-in for the per-phase deadline that should be derived from
-    // `Config::timeout`; a correct DKG aborts well within this.
-    const DKG_DEADLINE: Duration = Duration::from_secs(8);
+async fn stalled_peer_aborts_dkg_within_phase_deadline() -> anyhow::Result<()> {
+    // Short per-phase deadline so the stalled rounds abort quickly.
+    const PHASE_TIMEOUT: Duration = Duration::from_secs(2);
+    // Generous guard so the test itself never hangs if the abort regresses.
+    const DKG_DEADLINE: Duration = Duration::from_secs(20);
 
     let keys = (0..NODES)
         .map(|index| {
@@ -611,6 +610,7 @@ async fn stalled_peer_hangs_dkg_without_overall_timeout() -> anyhow::Result<()> 
         dkg_tasks.push(tokio::spawn(async move {
             run_frost_parallel(
                 cancellation,
+                PHASE_TIMEOUT,
                 &mut transport,
                 u32::try_from(NUM_VALIDATORS).expect("NUM_VALIDATORS should fit u32"),
                 u32::try_from(NODES).expect("NODES should fit u32"),
@@ -622,26 +622,34 @@ async fn stalled_peer_hangs_dkg_without_overall_timeout() -> anyhow::Result<()> 
         }));
     }
 
-    // Correct behaviour: the DKG aborts on its own within the overall timeout.
-    let outcome = tokio::time::timeout(DKG_DEADLINE, async {
+    // Correct behaviour: every running node aborts within the phase deadline
+    // instead of waiting for the absent peer forever.
+    let results = tokio::time::timeout(DKG_DEADLINE, async {
+        let mut results = Vec::with_capacity(dkg_tasks.len());
         for task in dkg_tasks {
-            task.await.context("DKG task panicked")??;
+            results.push(task.await.context("DKG task panicked")?);
         }
-        anyhow::Ok(())
+        anyhow::Ok(results)
     })
-    .await;
+    .await
+    .context("DKG nodes did not abort within the deadline; the phase timeout is not enforced")??;
 
-    // Tear down the hung DKG tasks and swarms regardless of the result.
+    // Tear down the swarms (and the stalled peer).
     cancellation.cancel();
     for (stop_tx, join) in swarm_tasks {
         let _ = stop_tx.send(());
         let _ = join.await;
     }
 
+    let aborted = results
+        .iter()
+        .filter(|result| matches!(result, Err(FrostError::Cancelled)))
+        .count();
     ensure!(
-        outcome.is_ok(),
-        "DKG did not finish within the overall timeout: a single unresponsive peer hangs the \
-         ceremony forever because Config::timeout is never applied to the FROST rounds"
+        aborted == results.len(),
+        "expected all {} running nodes to abort with Cancelled at the phase deadline, but {} did",
+        results.len(),
+        aborted
     );
 
     Ok(())

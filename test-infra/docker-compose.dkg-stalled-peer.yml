@@ -114,6 +114,7 @@ services:
       - --data-dir=/cluster/node-0
       - "--p2p-relays=${RELAY_URL:-http://relay:3640}"
       - --p2p-tcp-address=0.0.0.0:3610
+      - "--timeout=${DKG_TIMEOUT:-30}s"
     depends_on:
       relay:
         condition: service_started
@@ -133,6 +134,7 @@ services:
       - --data-dir=/cluster/node-1
       - "--p2p-relays=${RELAY_URL:-http://relay:3640}"
       - --p2p-tcp-address=0.0.0.0:3610
+      - "--timeout=${DKG_TIMEOUT:-30}s"
     depends_on:
       relay:
         condition: service_started
@@ -152,6 +154,7 @@ services:
       - --data-dir=/cluster/node-2
       - "--p2p-relays=${RELAY_URL:-http://relay:3640}"
       - --p2p-tcp-address=0.0.0.0:3610
+      - "--timeout=${DKG_TIMEOUT:-30}s"
     depends_on:
       relay:
         condition: service_started

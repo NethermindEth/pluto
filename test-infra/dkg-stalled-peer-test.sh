@@ -25,11 +25,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PLUTO_IMAGE="${PLUTO_IMAGE:-pluto:local}"
-DKG_TIMEOUT="${DKG_TIMEOUT:-60}"
-WAIT_SECONDS="${WAIT_SECONDS:-$((DKG_TIMEOUT + 40))}"
+DKG_TIMEOUT="${DKG_TIMEOUT:-30}"
+WAIT_SECONDS="${WAIT_SECONDS:-$((DKG_TIMEOUT + 30))}"
 COMPOSE=(docker compose -f test-infra/docker-compose.dkg-stalled-peer.yml)
 
-export PLUTO_IMAGE
+# DKG_TIMEOUT feeds each node's --timeout via the compose file.
+export PLUTO_IMAGE DKG_TIMEOUT
 
 cleanup() {
   "${COMPOSE[@]}" down -v >/dev/null 2>&1 || true

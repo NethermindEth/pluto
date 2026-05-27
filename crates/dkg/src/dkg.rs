@@ -5,7 +5,7 @@ use futures::StreamExt;
 use libp2p::PeerId;
 use pluto_app::{privkeylock, utils::UtilsError};
 use pluto_core::version;
-use tokio::select;
+use tokio::{select, time::sleep};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -52,6 +52,10 @@ pub enum DkgError {
     /// Shutdown was requested before the DKG entrypoint started.
     #[error("DKG shutdown requested before startup")]
     ShutdownRequestedBeforeStartup,
+
+    /// The overall DKG timeout elapsed before the ceremony completed.
+    #[error("DKG timed out after {0:?}")]
+    Timeout(Duration),
 
     /// Keymanager address was provided without the auth token.
     #[error(
@@ -374,7 +378,32 @@ pub async fn run(conf: Config, ct: CancellationToken) -> Result<(), DkgError> {
     }
 
     let (lock_ct, lock_task) = start_private_key_lock(&conf).await?;
-    let result = run_inner(conf, ct).await;
+
+    // Overall DKG timeout: cancel the whole ceremony once `conf.timeout`
+    // elapses so an unresponsive peer cannot hang any phase forever. Mirrors
+    // Charon, which bounds the DKG by `conf.Timeout`. All phases (connect,
+    // sync, FROST rounds) observe this token.
+    let timeout = conf.timeout;
+    let deadline_ct = ct.child_token();
+    let watchdog = {
+        let deadline_ct = deadline_ct.clone();
+        tokio::spawn(async move {
+            sleep(timeout).await;
+            deadline_ct.cancel();
+        })
+    };
+
+    let result = run_inner(conf, deadline_ct.clone()).await;
+
+    watchdog.abort();
+
+    // Distinguish a timeout from an external shutdown for clearer diagnostics:
+    // the deadline token fired but the caller's token did not.
+    let result = if deadline_ct.is_cancelled() && !ct.is_cancelled() {
+        Err(DkgError::Timeout(timeout))
+    } else {
+        result
+    };
 
     lock_ct.cancel();
     lock_task
@@ -649,8 +678,14 @@ async fn run_ceremony<T: frost::FTransport>(
     let shares = match def.dkg_algorithm.as_str() {
         "default" | "frost" => {
             let num_nodes = u32::try_from(peers.len())?;
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "FROST_PHASES is a nonzero constant, so the division cannot panic"
+            )]
+            let phase_timeout = conf.timeout / frost::FROST_PHASES;
             frost::run_frost_parallel(
                 ct.child_token(),
+                phase_timeout,
                 frost_transport,
                 num_validators,
                 num_nodes,
@@ -825,7 +860,7 @@ async fn run_ceremony<T: frost::FTransport>(
         seconds = conf.shutdown_delay.as_secs(),
         "Graceful shutdown delay"
     );
-    tokio::time::sleep(conf.shutdown_delay).await;
+    sleep(conf.shutdown_delay).await;
 
     info!("Successfully completed DKG ceremony 🎉");
     if let Some(url) = dashboard_url {
