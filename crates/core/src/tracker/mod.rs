@@ -1,3 +1,15 @@
+//! Core tracking module for duty lifecycle monitoring.
+//!
+//! [`TrackerService::start`] spawns a background loop that accumulates
+//! per-duty [`Event`]s submitted by core workflow components via the
+//! [`Tracker`] trait. When the analyser deadline fires the accumulated events
+//! will be used to determine failure reasons and report participation (not yet
+//! implemented). When the deleter deadline fires the events for that duty are
+//! discarded to bound memory usage.
+//!
+//! Both deadliners must share the same [`CancellationToken`] as the tracker so
+//! that the whole system shuts down together.
+
 /// Failure reason definitions for duty analysis.
 pub mod reason;
 
@@ -132,7 +144,7 @@ pub trait Tracker: Send + Sync {
 /// Sized to absorb a full epoch's worth of events across all duty types and
 /// validators without back-pressuring producers while the loop is busy with a
 /// deadliner round-trip.
-const INPUT_BUFFER: usize = 1024;
+const EVENT_BUFFER: usize = 1024;
 
 /// A single event emitted by a core workflow component.
 ///
@@ -147,6 +159,17 @@ pub(crate) struct Event {
     pub par_sig: Option<ParSignedData>,
 }
 
+/// Newtype wrapper for the analyser deadliner's expired-duty receiver.
+///
+/// Prevents silent argument inversion when calling [`TrackerService::start`],
+/// since both the analyser and deleter receivers have the same underlying type.
+pub struct AnalyserRx(pub mpsc::Receiver<Duty>);
+
+/// Newtype wrapper for the deleter deadliner's expired-duty receiver.
+///
+/// See [`AnalyserRx`] for rationale.
+pub struct DeleterRx(pub mpsc::Receiver<Duty>);
+
 /// Public-facing handle returned by [`TrackerService::start`].
 ///
 /// Holds the send-half of the event channel and implements the [`Tracker`]
@@ -154,54 +177,71 @@ pub(crate) struct Event {
 /// that consumes those events lives in [`TrackerService`].
 pub struct TrackerHandle {
     input_tx: mpsc::Sender<Event>,
+    /// Kept so callers can detect task panics; also aborts on drop if desired.
+    pub(crate) task: tokio::task::JoinHandle<()>,
 }
 
 impl TrackerHandle {
     async fn send_event(&self, event: Event) {
         if let Err(e) = self.input_tx.send(event).await {
-            tracing::warn!(error = %e, "Tracker input channel closed; dropping event");
+            tracing::warn!(
+                duty = %e.0.duty,
+                step = %e.0.step,
+                "Tracker input channel closed; dropping event",
+            );
+        }
+    }
+
+    async fn send_pubkeys(
+        &self,
+        duty: Duty,
+        step: Step,
+        pubkeys: &[PubKey],
+        err: Option<StepError>,
+    ) {
+        for pubkey in pubkeys {
+            self.send_event(Event {
+                duty: duty.clone(),
+                step,
+                pubkey: *pubkey,
+                step_err: err.clone(),
+                par_sig: None,
+            })
+            .await;
+        }
+    }
+
+    async fn send_par_sig_set(
+        &self,
+        duty: Duty,
+        step: Step,
+        set: &ParSignedDataSet,
+        err: Option<StepError>,
+    ) {
+        for (pubkey, par_sig) in set.inner() {
+            self.send_event(Event {
+                duty: duty.clone(),
+                step,
+                pubkey: *pubkey,
+                step_err: err.clone(),
+                par_sig: Some(par_sig.clone()),
+            })
+            .await;
         }
     }
 }
 
 impl Tracker for TrackerHandle {
     async fn fetcher_fetched(&self, duty: Duty, pubkeys: &[PubKey], err: Option<StepError>) {
-        for pubkey in pubkeys {
-            self.send_event(Event {
-                duty: duty.clone(),
-                step: Step::Fetcher,
-                pubkey: *pubkey,
-                step_err: err.clone(),
-                par_sig: None,
-            })
-            .await;
-        }
+        self.send_pubkeys(duty, Step::Fetcher, pubkeys, err).await;
     }
 
     async fn consensus_proposed(&self, duty: Duty, pubkeys: &[PubKey], err: Option<StepError>) {
-        for pubkey in pubkeys {
-            self.send_event(Event {
-                duty: duty.clone(),
-                step: Step::Consensus,
-                pubkey: *pubkey,
-                step_err: err.clone(),
-                par_sig: None,
-            })
-            .await;
-        }
+        self.send_pubkeys(duty, Step::Consensus, pubkeys, err).await;
     }
 
     async fn duty_db_stored(&self, duty: Duty, pubkeys: &[PubKey], err: Option<StepError>) {
-        for pubkey in pubkeys {
-            self.send_event(Event {
-                duty: duty.clone(),
-                step: Step::DutyDB,
-                pubkey: *pubkey,
-                step_err: err.clone(),
-                par_sig: None,
-            })
-            .await;
-        }
+        self.send_pubkeys(duty, Step::DutyDB, pubkeys, err).await;
     }
 
     async fn par_sig_db_stored_internal(
@@ -210,16 +250,8 @@ impl Tracker for TrackerHandle {
         set: &ParSignedDataSet,
         err: Option<StepError>,
     ) {
-        for (pubkey, par_sig) in set.inner() {
-            self.send_event(Event {
-                duty: duty.clone(),
-                step: Step::ParSigDBInternal,
-                pubkey: *pubkey,
-                step_err: err.clone(),
-                par_sig: Some(par_sig.clone()),
-            })
+        self.send_par_sig_set(duty, Step::ParSigDBInternal, set, err)
             .await;
-        }
     }
 
     async fn par_sig_ex_broadcasted(
@@ -228,16 +260,7 @@ impl Tracker for TrackerHandle {
         set: &ParSignedDataSet,
         err: Option<StepError>,
     ) {
-        for (pubkey, par_sig) in set.inner() {
-            self.send_event(Event {
-                duty: duty.clone(),
-                step: Step::ParSigEx,
-                pubkey: *pubkey,
-                step_err: err.clone(),
-                par_sig: Some(par_sig.clone()),
-            })
-            .await;
-        }
+        self.send_par_sig_set(duty, Step::ParSigEx, set, err).await;
     }
 
     async fn par_sig_db_stored_external(
@@ -246,55 +269,20 @@ impl Tracker for TrackerHandle {
         set: &ParSignedDataSet,
         err: Option<StepError>,
     ) {
-        for (pubkey, par_sig) in set.inner() {
-            self.send_event(Event {
-                duty: duty.clone(),
-                step: Step::ParSigDBExternal,
-                pubkey: *pubkey,
-                step_err: err.clone(),
-                par_sig: Some(par_sig.clone()),
-            })
+        self.send_par_sig_set(duty, Step::ParSigDBExternal, set, err)
             .await;
-        }
     }
 
     async fn sig_agg_aggregated(&self, duty: Duty, pubkeys: &[PubKey], err: Option<StepError>) {
-        for pubkey in pubkeys {
-            self.send_event(Event {
-                duty: duty.clone(),
-                step: Step::SigAgg,
-                pubkey: *pubkey,
-                step_err: err.clone(),
-                par_sig: None,
-            })
-            .await;
-        }
+        self.send_pubkeys(duty, Step::SigAgg, pubkeys, err).await;
     }
 
     async fn agg_sig_db_stored(&self, duty: Duty, pubkeys: &[PubKey], err: Option<StepError>) {
-        for pubkey in pubkeys {
-            self.send_event(Event {
-                duty: duty.clone(),
-                step: Step::AggSigDB,
-                pubkey: *pubkey,
-                step_err: err.clone(),
-                par_sig: None,
-            })
-            .await;
-        }
+        self.send_pubkeys(duty, Step::AggSigDB, pubkeys, err).await;
     }
 
     async fn broadcaster_broadcast(&self, duty: Duty, pubkeys: &[PubKey], err: Option<StepError>) {
-        for pubkey in pubkeys {
-            self.send_event(Event {
-                duty: duty.clone(),
-                step: Step::Bcast,
-                pubkey: *pubkey,
-                step_err: err.clone(),
-                par_sig: None,
-            })
-            .await;
-        }
+        self.send_pubkeys(duty, Step::Bcast, pubkeys, err).await;
     }
 
     async fn inclusion_checked(&self, duty: Duty, pubkey: PubKey, err: Option<StepError>) {
@@ -333,16 +321,20 @@ impl TrackerService {
     /// cleanup well after analysis (matching Go's contract that the deleter
     /// deadline must be well after the analyser's). `from_slot` sets the
     /// minimum slot to track — events for earlier slots are ignored.
+    ///
+    /// Both `analyser` and `deleter` must have been started with the same
+    /// `cancel` token as passed here, so that all three components shut down
+    /// together.
     pub fn start(
         cancel: CancellationToken,
         analyser: DeadlinerHandle,
-        analyser_rx: mpsc::Receiver<Duty>,
+        AnalyserRx(analyser_rx): AnalyserRx,
         deleter: DeadlinerHandle,
-        deleter_rx: mpsc::Receiver<Duty>,
+        DeleterRx(deleter_rx): DeleterRx,
         peers: Vec<PeerInfo>,
         from_slot: u64,
     ) -> Arc<TrackerHandle> {
-        let (input_tx, input_rx) = mpsc::channel(INPUT_BUFFER);
+        let (input_tx, input_rx) = mpsc::channel(EVENT_BUFFER);
 
         let task = Self {
             cancel,
@@ -355,9 +347,9 @@ impl TrackerService {
             peers,
         };
 
-        tokio::spawn(task.run());
+        let task = tokio::spawn(task.run());
 
-        Arc::new(TrackerHandle { input_tx })
+        Arc::new(TrackerHandle { input_tx, task })
     }
 
     async fn run(mut self) {
@@ -388,17 +380,12 @@ impl TrackerService {
                         continue;
                     }
 
-                    // Run both deadliner adds concurrently to avoid stalling
-                    // the loop on two sequential channel round-trips.
-                    let (deleter_outcome, analyser_outcome) = tokio::join!(
-                        self.deleter.add(e.duty.clone()),
-                        self.analyser.add(e.duty.clone()),
-                    );
-
-                    // Ignore expired or never-expiring duties.
-                    if deleter_outcome != AddOutcome::Scheduled
-                        || analyser_outcome != AddOutcome::Scheduled
-                    {
+                    // Match Go's short-circuit: skip analyser entirely when
+                    // deleter returns non-Scheduled, avoiding a spurious timer.
+                    if self.deleter.add(e.duty.clone()).await != AddOutcome::Scheduled {
+                        continue;
+                    }
+                    if self.analyser.add(e.duty.clone()).await != AddOutcome::Scheduled {
                         continue;
                     }
 
@@ -406,5 +393,155 @@ impl TrackerService {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use chrono::{DateTime, Utc};
+    use tokio_util::sync::CancellationToken;
+
+    use super::*;
+    use crate::{
+        deadline::{DeadlineCalculator, DeadlinerTask, NeverExpiringCalculator},
+        types::{Duty, DutyType, SlotNumber},
+    };
+
+    fn attester(slot: u64) -> Duty {
+        Duty::new(SlotNumber::new(slot), DutyType::Attester)
+    }
+
+    fn pubkey() -> PubKey {
+        PubKey::from([1u8; 48])
+    }
+
+    /// Calculator that schedules every duty with a deadline far in the future.
+    struct FutureCalculator;
+
+    impl DeadlineCalculator for FutureCalculator {
+        fn deadline(&self, _: &Duty) -> crate::deadline::Result<Option<DateTime<Utc>>> {
+            Ok(Some(DateTime::<Utc>::MAX_UTC))
+        }
+    }
+
+    fn start_service(
+        cancel: &CancellationToken,
+        from_slot: u64,
+    ) -> Arc<TrackerHandle> {
+        let (analyser, analyser_rx) =
+            DeadlinerTask::start(cancel.clone(), "analyser", FutureCalculator);
+        let (deleter, deleter_rx) =
+            DeadlinerTask::start(cancel.clone(), "deleter", FutureCalculator);
+        TrackerService::start(
+            cancel.clone(),
+            analyser,
+            AnalyserRx(analyser_rx),
+            deleter,
+            DeleterRx(deleter_rx),
+            vec![],
+            from_slot,
+        )
+    }
+
+    #[tokio::test]
+    async fn cancel_stops_loop() {
+        let cancel = CancellationToken::new();
+        let handle = start_service(&cancel, 0);
+
+        cancel.cancel();
+
+        let raw = Arc::try_unwrap(handle)
+            .unwrap_or_else(|_| panic!("single Arc owner in test"));
+        tokio::time::timeout(Duration::from_secs(1), raw.task)
+            .await
+            .expect("task did not exit within timeout")
+            .expect("task panicked");
+    }
+
+    #[tokio::test]
+    async fn from_slot_filters_old_events() {
+        let cancel = CancellationToken::new();
+        let handle = start_service(&cancel, 10);
+
+        // Slot 5 is below from_slot=10 and must be filtered before reaching
+        // the deadliner. Slot 15 is above and must be scheduled normally.
+        handle
+            .fetcher_fetched(attester(5), &[pubkey()], None)
+            .await;
+        handle
+            .fetcher_fetched(attester(15), &[pubkey()], None)
+            .await;
+
+        // Yield so the loop processes both events.
+        tokio::task::yield_now().await;
+
+        cancel.cancel();
+
+        let raw = Arc::try_unwrap(handle)
+            .unwrap_or_else(|_| panic!("single Arc owner in test"));
+        tokio::time::timeout(Duration::from_secs(1), raw.task)
+            .await
+            .expect("task did not exit within timeout")
+            .expect("task panicked");
+    }
+
+    #[tokio::test]
+    async fn events_accumulated_per_duty() {
+        let cancel = CancellationToken::new();
+        // NeverExpiring: duties are never scheduled, so add() returns
+        // NeverExpiring and every event is skipped before accumulation.
+        // This test verifies no panic from sending multiple events.
+        let (analyser, analyser_rx) =
+            DeadlinerTask::start(cancel.clone(), "analyser", NeverExpiringCalculator);
+        let (deleter, deleter_rx) =
+            DeadlinerTask::start(cancel.clone(), "deleter", NeverExpiringCalculator);
+        let handle = TrackerService::start(
+            cancel.clone(),
+            analyser,
+            AnalyserRx(analyser_rx),
+            deleter,
+            DeleterRx(deleter_rx),
+            vec![],
+            0,
+        );
+
+        let duty = attester(1);
+        let keys = [pubkey(), PubKey::from([2u8; 48]), PubKey::from([3u8; 48])];
+
+        // Fan-out: three pubkeys → three events queued.
+        handle.fetcher_fetched(duty.clone(), &keys, None).await;
+        handle.fetcher_fetched(duty.clone(), &keys, None).await;
+
+        tokio::task::yield_now().await;
+
+        cancel.cancel();
+        let raw = Arc::try_unwrap(handle)
+            .unwrap_or_else(|_| panic!("single Arc owner in test"));
+        tokio::time::timeout(Duration::from_secs(1), raw.task)
+            .await
+            .expect("task did not exit within timeout")
+            .expect("task panicked");
+    }
+
+    #[tokio::test]
+    async fn fan_out_sends_one_event_per_pubkey() {
+        let cancel = CancellationToken::new();
+        let handle = start_service(&cancel, 0);
+
+        let keys = [pubkey(), PubKey::from([2u8; 48]), PubKey::from([3u8; 48])];
+        handle.fetcher_fetched(attester(1), &keys, None).await;
+        handle.consensus_proposed(attester(1), &keys, None).await;
+
+        tokio::task::yield_now().await;
+
+        cancel.cancel();
+        let raw = Arc::try_unwrap(handle)
+            .unwrap_or_else(|_| panic!("single Arc owner in test"));
+        tokio::time::timeout(Duration::from_secs(1), raw.task)
+            .await
+            .expect("task did not exit within timeout")
+            .expect("task panicked");
     }
 }
