@@ -42,14 +42,13 @@ use std::{
     sync::Arc,
 };
 
-use async_trait::async_trait;
 use libp2p::PeerId;
 use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use pluto_core::{
-    deadline::Deadliner,
+    deadline::{DeadlinerTask, NeverExpiringCalculator},
     parsigdb::memory::{
         InternalSubscriberError, MemDB, MemDBError, internal_subscriber, threshold_subscriber,
     },
@@ -134,21 +133,6 @@ pub struct Exchanger {
     pub ct: CancellationToken,
 }
 
-/// Deadliner that never expires any duty, used during DKG where slot-based
-/// expiry does not apply.
-struct NoopDeadliner;
-
-#[async_trait]
-impl Deadliner for NoopDeadliner {
-    async fn add(&self, _duty: Duty) -> bool {
-        true
-    }
-
-    fn c(&self) -> Option<tokio::sync::mpsc::Receiver<Duty>> {
-        None
-    }
-}
-
 impl Exchanger {
     /// Creates a new exchanger and wires up the three core subscriptions:
     ///
@@ -185,11 +169,13 @@ impl Exchanger {
         // threshold is len(peers) to wait until we get all the partial sigs from all
         // the peers per DV
         let threshold = u64::try_from(peers.len()).expect("usize fits in u64");
-        let sigdb = Arc::new(Mutex::new(MemDB::new(
-            ct.clone(),
-            threshold,
-            Arc::new(NoopDeadliner),
-        )));
+        // DKG is one-shot and outside the slot timeline; we wire a real
+        // deadliner with a never-expiring calculator just to satisfy the
+        // `MemDB` API. The paired receiver is dropped — the calculator
+        // guarantees the background task never tries to publish.
+        let (deadliner, _expired_rx) =
+            DeadlinerTask::start(ct.clone(), "dkg-exchanger", NeverExpiringCalculator);
+        let sigdb = Arc::new(Mutex::new(MemDB::new(ct.clone(), threshold, deadliner)));
         let sig_data = DataByPubkey::default();
 
         // Wiring core workflow components
@@ -493,7 +479,7 @@ mod tests {
                 .map(|j| {
                     let mut bytes = [0u8; 96];
                     rand::thread_rng().fill(&mut bytes[..]);
-                    ParSignedData::new(bytes, (j + 1) as u64)
+                    ParSignedData::new(bytes, u64::try_from(j + 1).expect("NODES fits u64"))
                 })
                 .collect();
             expected_data.insert(*pk, psigs);
@@ -503,7 +489,7 @@ mod tests {
         let mut data_to_be_sent: Vec<ParSignedDataSet> = vec![ParSignedDataSet::new(); NODES];
         for (pk, psigs) in &expected_data {
             for psig in psigs {
-                let node_idx = usize::try_from(psig.share_idx - 1).expect("share_idx fits usize");
+                let node_idx = usize::try_from(psig.share_idx).expect("share_idx fits usize") - 1;
                 data_to_be_sent[node_idx].insert(*pk, psig.clone());
             }
         }
@@ -625,7 +611,8 @@ mod tests {
             for (pk, psigs) in data {
                 let mut got: Vec<u64> = psigs.iter().map(|p| p.share_idx).collect();
                 got.sort_unstable();
-                let mut want: Vec<u64> = (1..=NODES as u64).collect();
+                let mut want: Vec<u64> =
+                    (1..=u64::try_from(NODES).expect("NODES fits u64")).collect();
                 want.sort_unstable();
                 assert_eq!(
                     got, want,

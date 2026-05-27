@@ -33,6 +33,9 @@ pub mod dutydb;
 /// subset related to distributed validation and proxies the rest upstream.
 pub mod validatorapi;
 
+/// SigAgg — threshold BLS signature aggregation.
+pub mod sigagg;
+
 mod parsigex_codec;
 // SSZ codec operates on compile-time-constant byte sizes and offsets.
 // Arithmetic is bounded and casts from `usize` to `u32` are safe because all

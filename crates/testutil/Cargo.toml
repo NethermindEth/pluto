@@ -12,22 +12,30 @@ serde_json.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 bon.workspace = true
 chrono.workspace = true
+hex.workspace = true
 k256.workspace = true
+pluto-core.workspace = true
 pluto-crypto.workspace = true
 pluto-eth2api.workspace = true
+pluto-eth2util.workspace = true
+pluto-ssz.workspace = true
 rand.workspace = true
-hex.workspace = true
+reqwest.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+serde_with.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+tracing.workspace = true
 tree_hash.workspace = true
 wiremock.workspace = true
 
 [dev-dependencies]
-reqwest.workspace = true
+assert-json-diff.workspace = true
 
 [lints]
 workspace = true

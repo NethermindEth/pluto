@@ -109,6 +109,13 @@ impl SignedData for Signature {
         Ok(signature)
     }
 
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
+    }
+
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         Err(SignedDataError::UnsupportedSignatureMessageRoot)
     }
@@ -215,6 +222,13 @@ impl SignedData for VersionedSignedProposal {
         proposal.block.set_signature(eth2_sig);
 
         Ok(out)
+    }
+
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
     }
 
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
@@ -355,6 +369,13 @@ impl SignedData for Attestation {
         Ok(out)
     }
 
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
+    }
+
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         Ok(hash_root(&self.0.data))
     }
@@ -431,6 +452,13 @@ impl SignedData for VersionedAttestation {
             .set_signature(sig_to_eth2(&signature));
 
         Ok(out)
+    }
+
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
     }
 
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
@@ -548,6 +576,13 @@ impl SignedData for SignedVoluntaryExit {
         Ok(out)
     }
 
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
+    }
+
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         Ok(self.0.message_root())
     }
@@ -630,6 +665,13 @@ impl SignedData for VersionedSignedValidatorRegistration {
         Ok(out)
     }
 
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
+    }
+
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         match self.0.version {
             versioned::BuilderVersion::V1 => self
@@ -706,6 +748,13 @@ impl SignedData for SignedRandao {
         Ok(out)
     }
 
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
+    }
+
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         Ok(self.0.message_root())
     }
@@ -749,6 +798,13 @@ impl SignedData for BeaconCommitteeSelection {
         Ok(out)
     }
 
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
+    }
+
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         Ok(self.0.message_root())
     }
@@ -785,6 +841,13 @@ impl SignedData for SyncCommitteeSelection {
         Ok(out)
     }
 
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
+    }
+
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         Ok(self.0.message_root())
     }
@@ -819,6 +882,13 @@ impl SignedData for SignedAggregateAndProof {
         let mut out = self.clone();
         out.0.signature = sig_to_eth2(&signature);
         Ok(out)
+    }
+
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
     }
 
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
@@ -899,6 +969,13 @@ impl SignedData for VersionedSignedAggregateAndProof {
             .set_signature(sig_to_eth2(&signature));
 
         Ok(out)
+    }
+
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
     }
 
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
@@ -987,6 +1064,13 @@ impl SignedData for SignedSyncMessage {
         Ok(out)
     }
 
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
+    }
+
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         Ok(self.0.message_root())
     }
@@ -1023,6 +1107,13 @@ impl SignedData for SyncContributionAndProof {
         Ok(out)
     }
 
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
+    }
+
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         Ok(self.0.selection_proof_message_root())
     }
@@ -1057,6 +1148,13 @@ impl SignedData for SignedSyncContributionAndProof {
         let mut out = self.clone();
         out.0.signature = sig_to_eth2(&signature);
         Ok(out)
+    }
+
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
     }
 
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
