@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 /// A reason for a duty failing, matching Go's `tracker.reason`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reason {

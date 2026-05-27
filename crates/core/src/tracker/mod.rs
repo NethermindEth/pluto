@@ -178,6 +178,7 @@ pub struct DeleterRx(pub mpsc::Receiver<Duty>);
 pub struct TrackerHandle {
     input_tx: mpsc::Sender<Event>,
     /// Kept so callers can detect task panics; also aborts on drop if desired.
+    #[allow(dead_code)]
     pub(crate) task: tokio::task::JoinHandle<()>,
 }
 
@@ -426,10 +427,7 @@ mod tests {
         }
     }
 
-    fn start_service(
-        cancel: &CancellationToken,
-        from_slot: u64,
-    ) -> Arc<TrackerHandle> {
+    fn start_service(cancel: &CancellationToken, from_slot: u64) -> Arc<TrackerHandle> {
         let (analyser, analyser_rx) =
             DeadlinerTask::start(cancel.clone(), "analyser", FutureCalculator);
         let (deleter, deleter_rx) =
@@ -452,8 +450,7 @@ mod tests {
 
         cancel.cancel();
 
-        let raw = Arc::try_unwrap(handle)
-            .unwrap_or_else(|_| panic!("single Arc owner in test"));
+        let raw = Arc::try_unwrap(handle).unwrap_or_else(|_| panic!("single Arc owner in test"));
         tokio::time::timeout(Duration::from_secs(1), raw.task)
             .await
             .expect("task did not exit within timeout")
@@ -467,9 +464,7 @@ mod tests {
 
         // Slot 5 is below from_slot=10 and must be filtered before reaching
         // the deadliner. Slot 15 is above and must be scheduled normally.
-        handle
-            .fetcher_fetched(attester(5), &[pubkey()], None)
-            .await;
+        handle.fetcher_fetched(attester(5), &[pubkey()], None).await;
         handle
             .fetcher_fetched(attester(15), &[pubkey()], None)
             .await;
@@ -479,8 +474,7 @@ mod tests {
 
         cancel.cancel();
 
-        let raw = Arc::try_unwrap(handle)
-            .unwrap_or_else(|_| panic!("single Arc owner in test"));
+        let raw = Arc::try_unwrap(handle).unwrap_or_else(|_| panic!("single Arc owner in test"));
         tokio::time::timeout(Duration::from_secs(1), raw.task)
             .await
             .expect("task did not exit within timeout")
@@ -517,8 +511,7 @@ mod tests {
         tokio::task::yield_now().await;
 
         cancel.cancel();
-        let raw = Arc::try_unwrap(handle)
-            .unwrap_or_else(|_| panic!("single Arc owner in test"));
+        let raw = Arc::try_unwrap(handle).unwrap_or_else(|_| panic!("single Arc owner in test"));
         tokio::time::timeout(Duration::from_secs(1), raw.task)
             .await
             .expect("task did not exit within timeout")
@@ -537,8 +530,7 @@ mod tests {
         tokio::task::yield_now().await;
 
         cancel.cancel();
-        let raw = Arc::try_unwrap(handle)
-            .unwrap_or_else(|_| panic!("single Arc owner in test"));
+        let raw = Arc::try_unwrap(handle).unwrap_or_else(|_| panic!("single Arc owner in test"));
         tokio::time::timeout(Duration::from_secs(1), raw.task)
             .await
             .expect("task did not exit within timeout")
