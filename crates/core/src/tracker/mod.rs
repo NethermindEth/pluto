@@ -52,8 +52,8 @@ pub struct PeerInfo {
 /// participation reporting, matching Go's `core.Tracker` interface.
 ///
 /// Methods that only need validator pubkeys (fetcher, consensus, dutydb,
-/// sigagg, aggsigdb, bcast) accept `&[PubKey]` for object safety. Methods
-/// that also carry partial-signature data accept `&ParSignedDataSet`.
+/// sigagg, aggsigdb, bcast) accept `&[PubKey]`. Methods that also carry
+/// partial-signature data accept `&ParSignedDataSet`.
 ///
 /// `err` is `Option<StepError>` (passed by value) so the caller's `Arc` can
 /// be cheaply cloned per event inside the implementation.
@@ -177,7 +177,8 @@ pub struct DeleterRx(pub mpsc::Receiver<Duty>);
 /// that consumes those events lives in [`TrackerService`].
 pub struct TrackerHandle {
     input_tx: mpsc::Sender<Event>,
-    /// Kept so callers can detect task panics; also aborts on drop if desired.
+    /// Kept so callers can detect task completion or panics by awaiting it.
+    /// Dropping the handle detaches the task; call `.abort()` to cancel it.
     #[allow(dead_code)]
     pub(crate) task: tokio::task::JoinHandle<()>,
 }
@@ -367,13 +368,27 @@ impl TrackerService {
                     return;
                 }
 
-                Some(duty) = self.analyser_rx.recv() => {
-                    // TODO: extract par sigs, analyse failed duty, report participation.
-                    tracing::debug!(duty = %duty, "Duty analysis triggered (not yet implemented)");
+                duty = self.analyser_rx.recv() => {
+                    match duty {
+                        Some(duty) => {
+                            // TODO: extract par sigs, analyse failed duty, report participation.
+                            tracing::debug!(duty = %duty, "Duty analysis triggered (not yet implemented)");
+                        }
+                        None => {
+                            tracing::error!("Analyser deadliner channel closed unexpectedly; stopping tracker");
+                            return;
+                        }
+                    }
                 }
 
-                Some(duty) = self.deleter_rx.recv() => {
-                    events.remove(&duty);
+                duty = self.deleter_rx.recv() => {
+                    match duty {
+                        Some(duty) => { events.remove(&duty); }
+                        None => {
+                            tracing::error!("Deleter deadliner channel closed unexpectedly; stopping tracker");
+                            return;
+                        }
+                    }
                 }
 
                 Some(e) = self.input_rx.recv() => {
