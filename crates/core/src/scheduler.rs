@@ -44,6 +44,32 @@ pub enum SchedulerError {
         /// Actual public key.
         actual: types::PubKey,
     },
+
+    /// Attempted to use the deprecated [`types::DutyType::BuilderProposer`]
+    /// duty type.
+    #[error("Deprecated duty DutyType::BuilderProposer")]
+    DeprecatedDutyBuilderProposer,
+
+    /// Attempted to get a duty definition for an epoch that has already been
+    /// trimmed.
+    #[error("Epoch {epoch} has already been trimmed")]
+    EpochAlreadyTrimmed {
+        /// Trimmed epoch
+        epoch: u64,
+
+        /// Duty attempted to be accessed
+        duty: types::Duty,
+    },
+
+    /// Duty definition not found for a resolved epoch.
+    #[error("Duty {duty} definition set not found in the resolved epoch {epoch}")]
+    DutyNotFound {
+        /// The resolved epoch.
+        epoch: u64,
+
+        /// Duty attempted to be accessed
+        duty: types::Duty,
+    },
 }
 
 type Result<T> = std::result::Result<T, SchedulerError>;
@@ -204,6 +230,36 @@ impl Scheduler {
                 }
             }
         });
+    }
+
+    /// Returns the definition for a duty if a definition exists for a resolved
+    /// epoch.
+    pub async fn get_duty_definition(
+        &mut self,
+        duty: types::Duty,
+    ) -> Result<types::DutyDefinitionSet> {
+        if duty.duty_type == types::DutyType::BuilderProposer {
+            return Err(SchedulerError::DeprecatedDutyBuilderProposer);
+        }
+
+        let (_, slots_per_epoch) = self.client.fetch_slots_config().await?;
+        let epoch = duty.slot.inner() / slots_per_epoch;
+
+        // TODO: The `is_resolving_epoch` and similar checks are a code smell.
+        // Rewrite to an Actor design so that we don't have concurrent access to the
+        // storage
+
+        let storage = self.storage.lock().await;
+        if storage.is_epoch_trimmed(epoch) {
+            return Err(SchedulerError::EpochAlreadyTrimmed { epoch, duty });
+        }
+
+        let def_set = storage
+            .duties
+            .get(&duty)
+            .ok_or_else(|| SchedulerError::DutyNotFound { epoch, duty })?;
+
+        Ok(def_set.clone())
     }
 
     async fn schedule_slot(&mut self, slot: types::Slot, ct: CancellationToken) {
