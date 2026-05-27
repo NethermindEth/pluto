@@ -4,7 +4,7 @@
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
-use tracing::{debug, info_span};
+use tracing::{debug, error, info_span};
 
 use crate::{
     signeddata::{SignedDataError, VersionedAttestation},
@@ -183,7 +183,7 @@ impl Aggregator {
             BlstImpl.threshold_aggregate(&bls_sigs)
         }
         .map_err(|e| {
-            tracing::error!(parent: &span, error = %e, "threshold aggregate failed");
+            error!(parent: &span, error = %e, "threshold aggregate failed");
             SigAggError::ThresholdAggregate {
                 pubkey: *pubkey,
                 source: e,
@@ -208,7 +208,7 @@ impl Aggregator {
             .unwrap_or_else(|| par_sigs[0].signed_data.as_ref());
 
         let agg_signed = template.set_signature_boxed(agg_bytes).map_err(|e| {
-            tracing::error!(parent: &span, error = %e, "set_signature failed");
+            error!(parent: &span, error = %e, "set_signature failed");
             SigAggError::SetSignature {
                 pubkey: *pubkey,
                 source: e,
@@ -218,7 +218,7 @@ impl Aggregator {
         (self.verify_fn)(pubkey, agg_signed.as_ref())
             .await
             .map_err(|e| {
-                tracing::error!(parent: &span, error = %e, "verify failed");
+                error!(parent: &span, error = %e, "verify failed");
                 e
             })?;
 
