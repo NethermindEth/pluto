@@ -9,13 +9,14 @@ publish.workspace = true
 [package.metadata.cargo-machete]
 # `oas3-gen` writes `src/client.rs` and `src/types.rs` during build; these
 # dependencies are used by that generated code but absent in a fresh checkout.
-ignored = ["bon", "http", "oas3-gen-support", "regex", "reqwest", "validator"]
+ignored = ["bon", "http", "indexmap", "oas3-gen-support", "regex", "reqwest", "validator"]
 
 [dependencies]
 anyhow.workspace = true
 bon.workspace = true
 http.workspace = true
 oas3-gen-support.workspace = true
+indexmap.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true

@@ -96,6 +96,7 @@ tempfile = "3.24"
 assert-json-diff = "2.0"
 validator = { version = "0.20", features = ["derive"] }
 oas3-gen-support = "0.24"
+indexmap = { version = "2", features = ["serde"] }
 bon = "3.8"
 testcontainers = "0.27"
 test-case = "3.3"
