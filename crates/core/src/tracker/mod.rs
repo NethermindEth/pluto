@@ -365,12 +365,22 @@ impl TrackerService {
 
         loop {
             tokio::select! {
-                // Cancellation is checked first so shutdown is never delayed by
-                // a busy event or deadliner channel.
+                // Cancellation and cleanup branches are checked first so that
+                // shutdown and HashMap shrinkage are never starved by a busy
+                // input channel.
                 biased;
 
                 _ = self.cancel.cancelled() => {
                     return;
+                }
+
+                Some(duty) = self.analyser_rx.recv() => {
+                    // TODO: extract par sigs, analyse failed duty, report participation.
+                    tracing::debug!(duty = %duty, "Duty analysis triggered (not yet implemented)");
+                }
+
+                Some(duty) = self.deleter_rx.recv() => {
+                    events.remove(&duty);
                 }
 
                 Some(e) = self.input_rx.recv() => {
@@ -393,15 +403,6 @@ impl TrackerService {
                     }
 
                     events.entry(e.duty.clone()).or_default().push(e);
-                }
-
-                Some(duty) = self.analyser_rx.recv() => {
-                    // TODO: extract par sigs, analyse failed duty, report participation.
-                    tracing::debug!(duty = %duty, "Duty analysis triggered (not yet implemented)");
-                }
-
-                Some(duty) = self.deleter_rx.recv() => {
-                    events.remove(&duty);
                 }
             }
         }
