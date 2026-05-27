@@ -483,9 +483,47 @@ impl TryInto<AttesterDutyDefinition>
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct ProposerDutyDefinition {
+    pub pubkey: PubKey,
+    pub v_idx: u64,
+    pub slot: SlotNumber,
+
+    inner: pluto_eth2api::types::GetProposerDutiesResponseResponseDatum,
+}
+
+impl TryInto<ProposerDutyDefinition>
+    for pluto_eth2api::types::GetProposerDutiesResponseResponseDatum
+{
+    type Error = DutyDefinitionError;
+
+    fn try_into(self) -> Result<ProposerDutyDefinition, Self::Error> {
+        let pubkey = PubKey::try_from(self.pubkey.as_str())
+            .map_err(|_| DutyDefinitionError::InvalidField { field: "pubkey" })?;
+        let v_idx =
+            self.validator_index
+                .parse::<u64>()
+                .map_err(|_| DutyDefinitionError::InvalidField {
+                    field: "validator_index",
+                })?;
+        let slot = SlotNumber::from(
+            self.slot
+                .parse::<u64>()
+                .map_err(|_| DutyDefinitionError::InvalidField { field: "slot" })?,
+        );
+
+        Ok(ProposerDutyDefinition {
+            pubkey,
+            v_idx,
+            slot,
+            inner: self,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum DutyDefinition {
     Attester(AttesterDutyDefinition),
-    Proposer(),
+    Proposer(ProposerDutyDefinition),
     SyncCommittee(),
 }
 

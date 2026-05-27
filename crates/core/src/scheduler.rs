@@ -36,9 +36,9 @@ pub enum SchedulerError {
     #[error("Invalid epoch")]
     InvalidEpoch(#[from] std::num::ParseIntError),
 
-    /// Invalid attester duty pubkey.
-    #[error("Invalid attester duty pubkey: expected {expected}, got {actual}")]
-    InvalidAttesterDutyPubkey {
+    /// Invalid duty pubkey.
+    #[error("Invalid duty pubkey: expected {expected}, got {actual}")]
+    InvalidDutyPubkey {
         /// Expected public key.
         expected: types::PubKey,
         /// Actual public key.
@@ -262,25 +262,31 @@ impl Scheduler {
     async fn resolve_duties(&mut self, slot: types::Slot) -> Result<()> {
         async fn inner(s: &mut Scheduler, slot: types::Slot) -> Result<()> {
             let vals = resolve_active_validators(slot.epoch(), &s.valcache).await?;
-
-            // TODO:
-            // activeValsGauge.Set(float64(len(vals)))
-
             if vals.is_empty() {
                 tracing::info!(slot = %slot.slot, "No active validators for slot");
                 s.storage.lock().await.resolved_epoch = slot.epoch();
                 return Ok(());
             }
 
+            let att_duties = {
+                let mut att_duties = fetch_attester_duties(&slot, &vals, &s.client).await?;
+                att_duties.sort_by_key(|ad| ad.slot);
+                att_duties
+            };
+
+            let pro_duties = {
+                let mut pro_duties = fetch_proposer_duties(&slot, &vals, &s.client).await?;
+                pro_duties.sort_by_key(|pd| pd.slot);
+                pro_duties
+            };
+
+            // TODO:
+            // activeValsGauge.Set(float64(len(vals)))
+
+            let mut storage = s.storage.lock().await;
+
             // Resolve Attester duties
             {
-                let att_duties = {
-                    let mut att_duties = fetch_attester_duties(&slot, &vals, &s.client).await?;
-                    att_duties.sort_by_key(|ad| ad.slot);
-                    att_duties
-                };
-                let mut storage = s.storage.lock().await;
-
                 for att_duty in att_duties.into_iter() {
                     if !storage.set_duty_definition(
                         types::Duty::new_attester_duty(att_duty.slot),
@@ -301,20 +307,42 @@ impl Scheduler {
 
                     // Schedule Aggregator duty as well
                     let agg_duty = types::Duty::new_aggregator_duty(att_duty.slot);
-                    if !storage.set_duty_definition(
+                    storage.set_duty_definition(
                         agg_duty,
                         slot.epoch(),
                         att_duty.pubkey,
                         types::DutyDefinition::Attester(att_duty),
-                    ) {
-                        continue;
-                    }
+                    );
                 }
             }
 
-            todo!();
+            // Resolve Proposer duties
+            {
+                for pro_duty in pro_duties.into_iter() {
+                    if !storage.set_duty_definition(
+                        types::Duty::new_proposer_duty(pro_duty.slot),
+                        slot.epoch(),
+                        pro_duty.pubkey,
+                        types::DutyDefinition::Proposer(pro_duty.clone()),
+                    ) {
+                        continue;
+                    }
 
-            let mut storage = s.storage.lock().await;
+                    tracing::info!(
+                        slot = %pro_duty.slot,
+                        vidx = %pro_duty.v_idx,
+                        pubkey = %pro_duty.pubkey,
+                        epoch = %slot.epoch(),
+                        "Resolved proposer duty"
+                    );
+                }
+            }
+
+            // Resolve Sync Committee duties
+            {
+                todo!()
+            }
+
             storage.resolved_epoch = slot.epoch();
             storage.trim_duties(slot.epoch() - TRIM_EPOCH_OFFSET);
 
@@ -587,7 +615,7 @@ async fn fetch_attester_duties(
         };
 
         if pubkey != att_duty.pubkey {
-            return Err(SchedulerError::InvalidAttesterDutyPubkey {
+            return Err(SchedulerError::InvalidDutyPubkey {
                 expected: pubkey,
                 actual: att_duty.pubkey,
             });
@@ -603,6 +631,67 @@ async fn fetch_attester_duties(
             validator_indexes = ?remaining,
             "Missing attester duties",
         );
+    }
+
+    Ok(result)
+}
+
+/// Fetches the proposer duties for the given slot and validators, and validates
+/// that the returned duties match the expected validators.
+async fn fetch_proposer_duties(
+    slot: &types::Slot,
+    validators: &Vec<Validator>,
+    client: &client::EthBeaconNodeApiClient,
+) -> Result<Vec<types::ProposerDutyDefinition>> {
+    let req = pluto_eth2api::GetProposerDutiesRequest::builder()
+        .epoch(slot.epoch().to_string())
+        .build()
+        .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?;
+    let resp = client
+        .get_proposer_duties(req)
+        .await
+        .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?;
+
+    let pro_duties: Vec<types::ProposerDutyDefinition> = match resp {
+        pluto_eth2api::GetProposerDutiesResponse::Ok(duties) => duties
+            .data
+            .into_iter()
+            .map(|d| {
+                d.try_into()
+                    .map_err(|_| pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse)
+            })
+            .collect::<std::result::Result<Vec<_>, _>>(),
+        _ => Err(pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse),
+    }?;
+
+    let mut result = vec![];
+    for pro_duty in pro_duties.into_iter() {
+        if pro_duty.slot < slot.slot {
+            // Skip duties for earlier slots in initial epoch.
+            continue;
+        }
+
+        let Some(pubkey) = validators
+            .iter()
+            .find(|v| v.v_idx == pro_duty.v_idx)
+            .map(|v| v.pubkey)
+        else {
+            tracing::warn!(
+                vidx = pro_duty.v_idx,
+                slot = %slot.slot,
+                "Ignoring unexpected proposer duty"
+            );
+            continue;
+        };
+
+        if pubkey != pro_duty.pubkey {
+            return Err(SchedulerError::InvalidDutyPubkey {
+                expected: pubkey,
+                actual: pro_duty.pubkey,
+            });
+        }
+
+        result.push(pro_duty);
     }
 
     Ok(result)
