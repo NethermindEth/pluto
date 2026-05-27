@@ -5589,7 +5589,6 @@ version = "1.7.1"
 dependencies = [
  "alloy",
  "anyhow",
- "async-trait",
  "base64",
  "built",
  "cancellation",
