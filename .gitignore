@@ -24,5 +24,12 @@ lcov.info
 coverage.json
 
 .charon*
+.omx
 
 .peerinfo*
+
+test-infra/sszfixtures/sszfixtures
+
+.claude/worktrees/
+.claude/scheduled_tasks.lock
+test-cluster

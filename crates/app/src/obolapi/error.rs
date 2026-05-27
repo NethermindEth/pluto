@@ -59,9 +59,9 @@ pub enum Error {
     #[error("signature string has invalid size: {0}")]
     InvalidSignatureSize(usize),
 
-    /// Failed to convert share index to u8.
-    #[error("failed to convert share index to u8: {0}")]
-    FailedToConvertShareIndexToU8(#[from] std::num::TryFromIntError),
+    /// Failed to convert share index.
+    #[error("failed to convert share index: {0}")]
+    FailedToConvertShareIndex(#[from] std::num::TryFromIntError),
 
     /// Math overflow error.
     #[error("math overflow error")]

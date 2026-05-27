@@ -32,53 +32,74 @@ async fn run() -> std::result::Result<(), CliError> {
     let matches = cmd.get_matches();
     let cli = Cli::from_arg_matches(&matches)?;
 
-    // Top level cancellation token for graceful shutdown on Ctrl+C
+    // Top level cancellation token for graceful shutdown on Ctrl+C / SIGTERM.
     let ct = CancellationToken::new();
     tokio::spawn({
         let ct = ct.clone();
         async move {
-            let _ = tokio::signal::ctrl_c().await;
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{SignalKind, signal};
+                let mut sigterm = match signal(SignalKind::terminate()) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        let _ = tokio::signal::ctrl_c().await;
+                        ct.cancel();
+                        return;
+                    }
+                };
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = sigterm.recv() => {}
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = tokio::signal::ctrl_c().await;
+            }
             ct.cancel();
         }
     });
 
+    let mut stdout = std::io::stdout();
     match cli.command {
-        Commands::Create(args) => match args.command {
-            CreateCommands::Dkg(args) => commands::create_dkg::run(*args).await,
-            CreateCommands::Enr(args) => commands::create_enr::run(args),
-            CreateCommands::Cluster(args) => {
-                let mut stdout = std::io::stdout();
-                commands::create_cluster::run(&mut stdout, *args).await
+        Commands::Create(args) => {
+            pluto_tracing::init(&pluto_tracing::TracingConfig::default())
+                .expect("Failed to initialize tracing");
+            match args.command {
+                CreateCommands::Dkg(args) => commands::create_dkg::run(*args).await,
+                CreateCommands::Enr(args) => commands::create_enr::run(args),
+                CreateCommands::Cluster(args) => {
+                    commands::create_cluster::run(&mut stdout, *args).await
+                }
             }
-        },
+        }
         Commands::Enr(args) => commands::enr::run(args),
         Commands::Version(args) => commands::version::run(args),
         Commands::Dkg(args) => {
             let config: pluto_dkg::dkg::Config = (*args).try_into()?;
             pluto_tracing::init(&config.log).expect("Failed to initialize tracing");
-            commands::dkg::run(config, ct.clone()).await
+            commands::dkg::run(config, ct).await
         }
         Commands::Relay(args) => {
             let config: pluto_relay_server::config::Config = (*args).clone().try_into()?;
-            pluto_tracing::init(&config.log_config).expect("Failed to initialize tracing");
             commands::relay::run(config, ct).await
         }
         Commands::Alpha(args) => match args.command {
             AlphaCommands::Test(args) => {
-                let mut stdout = std::io::stdout();
+                pluto_tracing::init(&pluto_tracing::TracingConfig::default())
+                    .expect("Failed to initialize tracing");
                 match args.command {
-                    TestCommands::Peers(args) => commands::test::peers::run(args, &mut stdout)
+                    TestCommands::Peers(args) => commands::test::peers::run(args, &mut stdout, ct)
                         .await
                         .map(|_| ()),
                     TestCommands::Beacon(args) => {
-                        pluto_tracing::init(&pluto_tracing::TracingConfig::default())
-                            .expect("Failed to initialize tracing");
                         commands::test::beacon::run(args, &mut stdout, ct)
                             .await
                             .map(|_| ())
                     }
                     TestCommands::Validator(args) => {
-                        commands::test::validator::run(args, &mut stdout, ct.clone())
+                        commands::test::validator::run(args, &mut stdout, ct)
                             .await
                             .map(|_| ())
                     }

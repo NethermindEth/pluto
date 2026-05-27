@@ -70,6 +70,22 @@ pub enum CliError {
     #[error("test case not supported")]
     TestCaseNotSupported,
 
+    /// Peer error.
+    #[error("Peer error: {0}")]
+    PeerError(#[from] pluto_p2p::peer::PeerError),
+
+    /// Bootnode error.
+    #[error("Bootnode error: {0}")]
+    BootnodeError(#[from] pluto_p2p::bootnode::BootnodeError),
+
+    /// P2P node error.
+    #[error("P2P node error: {0}")]
+    P2PNodeError(#[from] pluto_p2p::p2p::P2PError),
+
+    /// Fetch definition error.
+    #[error("Fetch definition error: {0}")]
+    FetchDefinitionError(#[from] pluto_cluster::helpers::FetchError),
+
     /// Relay P2P error.
     #[error("Relay P2P error: {0}")]
     RelayP2PError(#[from] pluto_relay_server::error::RelayP2PError),
@@ -106,9 +122,77 @@ pub enum CliError {
     #[error("Create DKG error: {0}")]
     CreateDKGError(#[from] crate::commands::create_dkg::CreateDkgError),
 
+    /// MEV test error.
+    #[error("MEV test error: {0}")]
+    MevTest(#[from] MevTestError),
+
     /// Generic error with message.
     #[error("{0}")]
     Other(String),
+}
+
+/// Errors specific to MEV relay tests.
+#[derive(thiserror::Error, Debug)]
+pub enum MevTestError {
+    /// Relay returned non-200 for the header request (triggers retry loop).
+    #[error("status code not 200 OK")]
+    StatusCodeNot200,
+
+    /// Unexpected HTTP error status code.
+    #[error("status code {0}")]
+    HttpStatus(u16),
+
+    /// Beacon node endpoint required but not provided.
+    #[error("beacon-node-endpoint required when load-test enabled")]
+    BeaconNodeEndpointRequired,
+
+    /// Beacon node endpoint provided but load-test not enabled.
+    #[error("beacon-node-endpoint only supported when load-test enabled")]
+    BeaconNodeEndpointNotAllowed,
+
+    /// Failed to parse a block timestamp string.
+    #[error("parse timestamp: {0}")]
+    ParseTimestamp(String),
+
+    /// Unix timestamp addition overflowed SystemTime.
+    #[error("timestamp overflow")]
+    TimestampOverflow,
+
+    /// Next-block timestamp addition overflowed.
+    #[error("next block timestamp overflow")]
+    NextBlockTimestampOverflow,
+
+    /// Failed to parse a slot number string.
+    #[error("parse slot: {0}")]
+    ParseSlot(String),
+
+    /// Failed to convert SLOTS_IN_EPOCH to i64.
+    #[error("slots_in_epoch conversion: {0}")]
+    SlotsInEpochConversion(String),
+
+    /// Epoch calculation division overflowed.
+    #[error("epoch calculation overflow")]
+    EpochCalculationOverflow,
+
+    /// Failed to convert elapsed nanoseconds to u64.
+    #[error("elapsed nanos conversion: {0}")]
+    ElapsedNanosConversion(String),
+
+    /// Failed to convert block count to u32.
+    #[error("block count conversion: {0}")]
+    BlockCountConversion(String),
+
+    /// No proposer duty found for the current slot.
+    #[error("slot not found")]
+    SlotNotFound,
+
+    /// Failed to JSON-marshal the signed blinded beacon block payload.
+    #[error("signed blinded beacon block json payload marshal: {0}")]
+    PayloadMarshal(String),
+
+    /// MEV builder bid missing header or uses an unsupported fork version.
+    #[error("not supported version or missing header: {0}")]
+    UnsupportedVersionOrMissingHeader(String),
 }
 
 #[derive(thiserror::Error, Debug)]

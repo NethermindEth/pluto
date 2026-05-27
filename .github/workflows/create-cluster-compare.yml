@@ -1,0 +1,90 @@
+name: create cluster Charon parity
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "scripts/create-cluster-compare.sh"
+      - ".github/workflows/create-cluster-compare.yml"
+  pull_request:
+    types: [synchronize, opened, reopened, ready_for_review]
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "scripts/create-cluster-compare.sh"
+      - ".github/workflows/create-cluster-compare.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  CHARON_VERSION: v1.7.1
+  CHARON_URL: https://github.com/ObolNetwork/charon/releases/download/v1.7.1/charon-v1.7.1-linux-amd64.tar.gz
+
+jobs:
+  create-cluster-compare:
+    name: create cluster Charon parity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Cache charon binary
+        id: cache-charon
+        uses: actions/cache@v4
+        with:
+          path: bin/charon
+          key: charon-${{ env.CHARON_VERSION }}-linux-amd64
+
+      - name: Install charon
+        if: steps.cache-charon.outputs.cache-hit != 'true'
+        run: ./scripts/dkg-runner/ci/install-charon.sh bin
+
+      - name: Verify charon
+        run: ./bin/charon version
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Update apt package list
+        run: sudo apt-get update
+
+      - name: Install protobuf
+        uses: awalsh128/cache-apt-pkgs-action@acb598e5ddbc6f68a970c5da0688d2f3a9f04d05 # v1.6.0
+        with:
+          packages: protobuf-compiler=3.21.12*
+          version: 3.21.12
+
+      - name: Install oas3-gen
+        run: cargo install oas3-gen@0.24.0
+
+      - name: Build pluto
+        run: cargo build -p pluto-cli
+
+      - name: Run create cluster comparison
+        env:
+          CHARON_BIN: ${{ github.workspace }}/bin/charon
+          PLUTO_BIN: ${{ github.workspace }}/target/debug/pluto
+          WORK_DIR: ${{ github.workspace }}/create-cluster-compare
+        run: ./scripts/create-cluster-compare.sh
+
+      - name: Upload work dir on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: create-cluster-compare-${{ github.run_id }}
+          path: create-cluster-compare
+          if-no-files-found: warn
+          retention-days: 7

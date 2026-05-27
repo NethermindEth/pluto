@@ -22,7 +22,7 @@ use tracing::debug;
 use crate::dkgpb::v1::bcast::BCastMessage;
 
 use super::{
-    component::{BroadcastCommand, Component, Registry},
+    component::{BroadcastCommand, BroadcastResultTx, Component, Registry},
     error::{Error, Result},
     handler::{DedupStore, Handler, InEvent, OutEvent},
     protocol,
@@ -53,6 +53,7 @@ struct SigOp {
 struct BroadcastState {
     msg_id: String,
     any_msg: prost_types::Any,
+    completion_tx: Option<BroadcastResultTx>,
     signatures: Vec<Option<Vec<u8>>>,
     sig_ops: HashMap<u64, SigOp>,
     msg_ops: HashMap<u64, PeerId>,
@@ -149,9 +150,25 @@ impl Behaviour {
         self.pending_events.push_back(ToSwarm::GenerateEvent(event));
     }
 
+    fn complete_command(
+        &mut self,
+        msg_id: String,
+        completion_tx: Option<BroadcastResultTx>,
+        result: Result<()>,
+    ) {
+        if let Some(tx) = completion_tx {
+            let result_for_waiter = match &result {
+                Ok(()) => Ok(()),
+                Err(error) => Err(Error::BroadcastFailed(error.to_string())),
+            };
+            let _ = tx.send(result_for_waiter);
+        }
+        self.emit_broadcast_result(msg_id, result);
+    }
+
     fn complete_active_broadcast(&mut self, result: Result<()>) {
         if let Some(state) = self.active_broadcast.take() {
-            self.emit_broadcast_result(state.msg_id, result);
+            self.complete_command(state.msg_id, state.completion_tx, result);
         }
     }
 
@@ -160,16 +177,26 @@ impl Behaviour {
             return;
         }
 
-        let Some(BroadcastCommand { msg_id, any_msg }) = self.pending_commands.pop_front() else {
+        let Some(BroadcastCommand {
+            msg_id,
+            any_msg,
+            completion_tx,
+        }) = self.pending_commands.pop_front()
+        else {
             return;
         };
 
-        self.start_broadcast(msg_id, any_msg);
+        self.start_broadcast(msg_id, any_msg, completion_tx);
     }
 
-    fn start_broadcast(&mut self, msg_id: String, any_msg: prost_types::Any) {
+    fn start_broadcast(
+        &mut self,
+        msg_id: String,
+        any_msg: prost_types::Any,
+        completion_tx: Option<BroadcastResultTx>,
+    ) {
         let Some(local_peer_id) = self.p2p_context.local_peer_id() else {
-            self.emit_broadcast_result(msg_id, Err(Error::LocalPeerMissing));
+            self.complete_command(msg_id, completion_tx, Err(Error::LocalPeerMissing));
             return;
         };
 
@@ -180,7 +207,7 @@ impl Behaviour {
         {
             Some(index) => index,
             None => {
-                self.emit_broadcast_result(msg_id, Err(Error::LocalPeerMissing));
+                self.complete_command(msg_id, completion_tx, Err(Error::LocalPeerMissing));
                 return;
             }
         };
@@ -189,7 +216,7 @@ impl Behaviour {
         let local_signature = match protocol::sign_any(&self.secret, &any_msg) {
             Ok(signature) => signature,
             Err(error) => {
-                self.emit_broadcast_result(msg_id, Err(error));
+                self.complete_command(msg_id, completion_tx, Err(error));
                 return;
             }
         };
@@ -203,7 +230,11 @@ impl Behaviour {
             }
 
             if !self.is_connected(peer_id) {
-                self.emit_broadcast_result(msg_id, Err(Error::PeerNotConnected(*peer_id)));
+                self.complete_command(
+                    msg_id,
+                    completion_tx,
+                    Err(Error::PeerNotConnected(*peer_id)),
+                );
                 return;
             }
             sig_dispatches.push((index, *peer_id));
@@ -212,6 +243,7 @@ impl Behaviour {
         let mut state = BroadcastState {
             msg_id,
             any_msg,
+            completion_tx,
             signatures,
             sig_ops: HashMap::new(),
             msg_ops: HashMap::new(),
@@ -719,7 +751,7 @@ mod tests {
 
         running[0]
             .component
-            .broadcast("timestamp", &timestamp(10))
+            .broadcast_and_wait("timestamp", &timestamp(10))
             .await?;
 
         let receipts = wait_for_receipts(&mut receipt_rx, 2).await?;
@@ -751,10 +783,12 @@ mod tests {
             Event::BroadcastCompleted { msg_id } if msg_id == "timestamp"
         ));
 
-        running[0]
+        let error = running[0]
             .component
-            .broadcast("timestamp", &timestamp(11))
-            .await?;
+            .broadcast_and_wait("timestamp", &timestamp(11))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::BroadcastFailed(_)));
         assert!(matches!(
             wait_for_bcast_event(&mut event_rx, 0).await?,
             Event::BroadcastFailed { msg_id, error: Error::OutboundFailure { .. } }

@@ -131,7 +131,7 @@ pub async fn load_definition(
         if conf.no_verify {
             warn!(
                 error = %error,
-                "Ignoring failed cluster definition signatures verification due to --no-verify flag"
+                "Ignoring failed cluster definition signature verification due to --no-verify flag"
             );
         } else {
             return Err(DiskError::ClusterDefinitionError(error));

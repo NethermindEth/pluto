@@ -56,11 +56,7 @@
 //! `--relays` also accepts raw libp2p multiaddrs
 //! (`/ip4/IP/tcp/PORT/p2p/PEER_ID`) and multiple comma-separated values.
 
-use std::{
-    collections::{HashMap, HashSet},
-    path::PathBuf,
-    time::Duration,
-};
+use std::{collections::HashSet, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
@@ -83,7 +79,7 @@ use pluto_p2p::{
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
     peer::peer_id_from_key,
-    relay::{MutableRelayReservation, RelayRouter},
+    relay::{RelayManager, RelayManagerEvent},
 };
 use pluto_parsigex::{self as parsigex, DutyGater, Event, Handle, Verifier};
 use pluto_tracing::TracingConfig;
@@ -95,8 +91,7 @@ use tracing::{info, warn};
 #[behaviour(to_swarm = "CombinedBehaviourEvent")]
 struct CombinedBehaviour {
     relay: relay::client::Behaviour,
-    relay_reservation: MutableRelayReservation,
-    relay_router: RelayRouter,
+    relay_manager: RelayManager,
     parsigex: parsigex::Behaviour,
 }
 
@@ -104,6 +99,7 @@ struct CombinedBehaviour {
 enum CombinedBehaviourEvent {
     ParSigEx(Event),
     Relay(relay::client::Event),
+    RelayManager(#[allow(dead_code)] RelayManagerEvent),
 }
 
 impl From<Event> for CombinedBehaviourEvent {
@@ -115,6 +111,12 @@ impl From<Event> for CombinedBehaviourEvent {
 impl From<relay::client::Event> for CombinedBehaviourEvent {
     fn from(event: relay::client::Event) -> Self {
         Self::Relay(event)
+    }
+}
+
+impl From<RelayManagerEvent> for CombinedBehaviourEvent {
+    fn from(event: RelayManagerEvent) -> Self {
+        Self::RelayManager(event)
     }
 }
 
@@ -180,7 +182,7 @@ fn make_sample_set(slot: u64, share_idx: u64) -> ParSignedDataSet {
     let mut set = ParSignedDataSet::new();
     set.insert(
         pub_key,
-        SignedRandao::new_partial(slot / 32, [share_byte; 96], share_idx),
+        SignedRandao::new_partial(slot / 32, [share_byte; 96], u64::from(share_byte)),
     );
     set
 }
@@ -259,7 +261,7 @@ async fn main() -> Result<()> {
 
     let relay_peer_ids: HashSet<_> = relays
         .iter()
-        .filter_map(|relay| relay.peer().ok().flatten().map(|peer| peer.id))
+        .filter_map(|relay| relay.peer().map(|peer| peer.id))
         .collect();
 
     let mut parsigex_handle: Option<Handle> = None;
@@ -287,8 +289,7 @@ async fn main() -> Result<()> {
                 .with_inner(CombinedBehaviour {
                     parsigex,
                     relay: relay_client,
-                    relay_reservation: MutableRelayReservation::new(relays.clone()),
-                    relay_router: RelayRouter::new(relays.clone(), p2p_context, local_peer_id),
+                    relay_manager: RelayManager::new(relays.clone(), p2p_context),
                 })
         },
     )?;
@@ -305,7 +306,6 @@ async fn main() -> Result<()> {
     );
 
     let mut ticker = tokio::time::interval(Duration::from_secs(args.broadcast_every));
-    let mut pending_broadcasts: HashMap<u64, (Duty, u64)> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -318,22 +318,25 @@ async fn main() -> Result<()> {
                 let mut slot = handle_slot.lock().await;
                 let duty = Duty::new(SlotNumber::new(*slot), DutyType::Randao);
                 let data_set = make_sample_set(*slot, args.share_idx);
+                let handle = parsigex_handle.clone();
+                let share_idx = args.share_idx;
+                *slot = slot.saturating_add(1);
 
-                match parsigex_handle.broadcast(duty.clone(), data_set.clone()).await {
-                    Ok(request_id) => {
-                        pending_broadcasts.insert(request_id, (duty.clone(), args.share_idx));
-                        info!(
-                            request_id,
-                            duty = %duty,
-                            share_idx = args.share_idx,
-                            "queued sample partial signature set for broadcast"
-                        );
-                        *slot = slot.saturating_add(1);
+                tokio::spawn(async move {
+                    match handle.broadcast_and_wait(duty.clone(), data_set).await {
+                        Ok(request_id) => {
+                            info!(
+                                request_id,
+                                duty = %duty,
+                                share_idx,
+                                "broadcasted sample partial signature set"
+                            );
+                        }
+                        Err(error) => {
+                            warn!(%error, duty = %duty, share_idx, "broadcast failed");
+                        }
                     }
-                    Err(error) => {
-                        warn!(%error, "broadcast failed");
-                    }
-                }
+                });
             }
             event = node.select_next_some() => {
                 let peer_type = |peer_id: &libp2p::PeerId| {
@@ -503,58 +506,26 @@ async fn main() -> Result<()> {
                             error,
                         }),
                     )) => {
-                        match pending_broadcasts.get(&request_id) {
-                            Some((duty, share_idx)) => {
-                                warn!(
-                                    request_id,
-                                    duty = %duty,
-                                    share_idx,
-                                    peer = ?peer,
-                                    error = %error,
-                                    "sample partial signature broadcast failed"
-                                );
-                            }
-                            None => {
-                                warn!(
-                                    request_id,
-                                    peer = ?peer,
-                                    error = %error,
-                                    "partial signature broadcast failed"
-                                );
-                            }
-                        }
+                        warn!(
+                            request_id,
+                            peer = ?peer,
+                            error = %error,
+                            "partial signature broadcast failed"
+                        );
                     }
                     SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(
                         CombinedBehaviourEvent::ParSigEx(Event::BroadcastComplete {
                             request_id,
                         }),
                     )) => {
-                        if let Some((duty, share_idx)) = pending_broadcasts.remove(&request_id) {
-                            info!(
-                                request_id,
-                                duty = %duty,
-                                share_idx,
-                                "broadcasted sample partial signature set"
-                            );
-                        } else {
-                            info!(request_id, "partial signature broadcast completed");
-                        }
+                        info!(request_id, "partial signature broadcast completed");
                     }
                     SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(
                         CombinedBehaviourEvent::ParSigEx(Event::BroadcastFailed {
                             request_id,
                         }),
                     )) => {
-                        if let Some((duty, share_idx)) = pending_broadcasts.remove(&request_id) {
-                            warn!(
-                                request_id,
-                                duty = %duty,
-                                share_idx,
-                                "sample partial signature broadcast finished with failures"
-                            );
-                        } else {
-                            warn!(request_id, "partial signature broadcast finished with failures");
-                        }
+                        warn!(request_id, "partial signature broadcast finished with failures");
                     }
                     _ => {}
                 }

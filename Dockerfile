@@ -1,5 +1,4 @@
-# Use the official Ubuntu image as the base
-FROM ubuntu:24.04 AS builder
+FROM rust:1.95.0-bookworm AS builder
 
 ARG GIT_COMMIT_HASH_SHORT
 ENV GIT_COMMIT_HASH_SHORT=${GIT_COMMIT_HASH_SHORT}
@@ -7,35 +6,28 @@ ENV GIT_COMMIT_HASH_SHORT=${GIT_COMMIT_HASH_SHORT}
 ARG SOURCE_DATE_EPOCH
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 
-# Install necessary system dependencies for Rust compilation
 RUN apt-get update && \
-  apt-get install -y curl build-essential pkg-config \
+  apt-get install -y pkg-config \
   openssl libssl-dev \
   protobuf-compiler=3.21.12*
 
-# Install Rust and required toolchain
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
-ENV PATH="/root/.cargo/bin:${PATH}"
 WORKDIR /build
 COPY rust-toolchain.toml .
 RUN rustup show
 
-# Install Rust dependencies
-RUN cargo install oas3-gen@0.24.0
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo install oas3-gen@0.24.0
 
-# Build the Pluto CLI
 COPY . .
-RUN cargo build --locked --release --package pluto-cli
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    cargo build --locked --release --package pluto-cli && \
+    cp /build/target/release/pluto /usr/local/bin/pluto
 
-FROM ubuntu:24.04 AS app
+FROM gcr.io/distroless/cc-debian13 AS app
 
-# Install runtime dependencies for TLS/HTTPS
-RUN apt-get update && \
-  apt-get install -y ca-certificates libssl3 && \
-  apt-get clean && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /usr/local/bin/pluto /app/bin/pluto
 
-# Copy the compiled binary from the builder stage
-COPY --from=builder /build/target/release/pluto /app/bin/pluto
-
-# Run the Pluto CLI
 ENTRYPOINT ["/app/bin/pluto"]

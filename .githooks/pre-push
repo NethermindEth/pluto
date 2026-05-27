@@ -8,6 +8,12 @@ if ! cargo deny check; then
     exit 1
 fi
 
+# Unused dependency check
+if ! cargo machete; then
+    echo "❌ Unused dependencies detected (run 'cargo machete')"
+    exit 1
+fi
+
 # Formatting check
 if ! cargo +nightly fmt --all -- --check; then
     echo "❌ Formatting issues (run 'cargo +nightly fmt --all')"

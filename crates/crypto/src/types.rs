@@ -8,6 +8,10 @@ pub const PUBLIC_KEY_LENGTH: usize = 48;
 pub const PRIVATE_KEY_LENGTH: usize = 32;
 /// Signature length (BLS12-381 G2 compressed)
 pub const SIGNATURE_LENGTH: usize = 96;
+/// BLS12-381 G1 compressed point length.
+pub const G1_COMPRESSED_LENGTH: usize = 48;
+/// BLS12-381 scalar length.
+pub const SCALAR_LENGTH: usize = 32;
 
 /// Public key type
 pub type PublicKey = [u8; PUBLIC_KEY_LENGTH];
@@ -16,7 +20,7 @@ pub type PrivateKey = [u8; PRIVATE_KEY_LENGTH];
 /// Signature type (BLS12-381 G2 compressed)
 pub type Signature = [u8; SIGNATURE_LENGTH];
 /// Index type & total shares / threshold
-pub type Index = u8;
+pub type Index = u64;
 
 /// Error type for charon-crypto operations.
 ///

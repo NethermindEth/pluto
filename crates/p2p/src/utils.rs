@@ -14,7 +14,7 @@ use std::{
 };
 
 use libp2p::{
-    Multiaddr, PeerId,
+    Multiaddr,
     identity::Keypair,
     multiaddr::{self, Protocol as MaProtocol},
 };
@@ -28,7 +28,7 @@ use crate::{
 
 /// Returns the external IP and Hostname fields as multiaddrs using the listen
 /// TCP addresses ports.
-pub(crate) fn external_tcp_multiaddrs(cfg: &P2PConfig) -> crate::p2p::Result<Vec<Multiaddr>> {
+pub fn external_tcp_multiaddrs(cfg: &P2PConfig) -> crate::p2p::Result<Vec<Multiaddr>> {
     let addrs = cfg.parse_tcp_addrs()?;
 
     let mut ports = vec![];
@@ -60,7 +60,7 @@ pub(crate) fn external_tcp_multiaddrs(cfg: &P2PConfig) -> crate::p2p::Result<Vec
 
 /// Returns the external IP and Hostname fields as multiaddrs using the listen
 /// UDP addresses ports.
-pub(crate) fn external_udp_multiaddrs(cfg: &P2PConfig) -> crate::p2p::Result<Vec<Multiaddr>> {
+pub fn external_udp_multiaddrs(cfg: &P2PConfig) -> crate::p2p::Result<Vec<Multiaddr>> {
     let addrs = cfg.parse_udp_addrs()?;
 
     let mut ports = vec![];
@@ -92,31 +92,6 @@ pub(crate) fn external_udp_multiaddrs(cfg: &P2PConfig) -> crate::p2p::Result<Vec
     }
 
     Ok(resp)
-}
-
-/// Constructs relay circuit multiaddrs for reaching a target peer through a
-/// relay.
-///
-/// Given a relay peer and a target peer ID, this function creates multiaddrs of
-/// the form: `/ip4/<relay-ip>/tcp/<relay-port>/p2p/<relay-id>/p2p-circuit/p2p/
-/// <target-peer-id>`
-///
-/// These addresses allow connecting to the target peer via the relay's circuit
-/// protocol.
-pub(crate) fn multi_addrs_via_relay(
-    relay_peer: &crate::peer::Peer,
-    peer_id: &PeerId,
-) -> Vec<Multiaddr> {
-    let mut addrs = vec![];
-
-    for mut addr in relay_peer.addresses.clone() {
-        addr = addr.with(MaProtocol::P2p(relay_peer.id));
-        addr = addr.with(MaProtocol::P2pCircuit);
-        addr = addr.with(MaProtocol::P2p(*peer_id));
-        addrs.push(addr);
-    }
-
-    addrs
 }
 
 pub(crate) struct ExternalAddresses(pub Vec<Multiaddr>);

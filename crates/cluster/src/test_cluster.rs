@@ -44,8 +44,10 @@ pub fn new_for_test(
             .threshold_split_insecure(&root_secret, n, k, &mut rng)
             .unwrap();
 
-        let mut pub_shares: Vec<pluto_crypto::types::PublicKey> = Vec::with_capacity(n as usize);
-        let mut priv_shares: Vec<pluto_crypto::types::PrivateKey> = Vec::with_capacity(n as usize);
+        let mut pub_shares: Vec<pluto_crypto::types::PublicKey> =
+            Vec::with_capacity(usize::try_from(n).expect("n fits in usize"));
+        let mut priv_shares: Vec<pluto_crypto::types::PrivateKey> =
+            Vec::with_capacity(usize::try_from(n).expect("n fits in usize"));
 
         for i in 0..n {
             let share_priv_key = *shares.get(&i.checked_add(1).unwrap()).unwrap();
@@ -76,8 +78,8 @@ pub fn new_for_test(
         ));
     }
 
-    let mut ops = Vec::with_capacity(n as usize);
-    let mut p2p_keys = Vec::with_capacity(n as usize);
+    let mut ops = Vec::with_capacity(usize::try_from(n).expect("n fits in usize"));
+    let mut p2p_keys = Vec::with_capacity(usize::try_from(n).expect("n fits in usize"));
 
     for i in 0..n {
         // Generate ENR
@@ -89,7 +91,7 @@ pub fn new_for_test(
             clippy::cast_possible_truncation,
             reason = "intentional truncation for testing purposes"
         )]
-        let p2p_key = pluto_testutil::random::generate_insecure_k1_key(seed as u8 + i);
+        let p2p_key = pluto_testutil::random::generate_insecure_k1_key(seed as u8 + i as u8);
         let addr = pluto_eth2util::helpers::public_key_to_address(&p2p_key.public_key());
         let record = pluto_eth2util::enr::Record::new(&p2p_key, Vec::new()).unwrap();
         let op = operator::Operator {
@@ -112,7 +114,7 @@ pub fn new_for_test(
     let mut definition = definition::Definition::new(
         "test cluster".into(),
         dv.try_into().unwrap(),
-        k.into(),
+        k,
         fee_recipient_addresses,
         withdrawal_addresses,
         pluto_eth2util::network::GOERLI

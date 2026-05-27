@@ -26,7 +26,18 @@ pub mod deadline;
 /// parsigdb
 pub mod parsigdb;
 
+/// DutyDB — in-memory store for unsigned duty data.
+pub mod dutydb;
+
+/// SigAgg — threshold BLS signature aggregation.
+pub mod sigagg;
+
 mod parsigex_codec;
+// SSZ codec operates on compile-time-constant byte sizes and offsets.
+// Arithmetic is bounded and casts from `usize` to `u32` are safe because all
+// sizes are well below `u32::MAX`.
+#[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)]
+pub(crate) mod ssz_codec;
 
 pub use parsigex_codec::ParSigExCodecError;
 

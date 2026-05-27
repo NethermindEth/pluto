@@ -3,9 +3,11 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tree_hash::TreeHash;
 
-use base64::Engine as _;
 use pluto_eth2api::{
-    spec::{altair, phase0, serde_legacy_builder_version, serde_legacy_data_version},
+    spec::{
+        altair, bellatrix, capella, deneb, electra, phase0, serde_legacy_builder_version,
+        serde_legacy_data_version,
+    },
     v1, versioned,
 };
 use pluto_eth2util::types::SignedEpoch;
@@ -91,61 +93,27 @@ struct VersionedRawAggregateAndProofJson<T> {
 
 /// Converts an ETH2 signature to a core signature.
 pub fn sig_from_eth2(sig: phase0::BLSSignature) -> Signature {
-    Signature::new(sig)
+    sig
 }
 
 fn sig_to_eth2(sig: &Signature) -> phase0::BLSSignature {
-    *sig.as_ref()
-}
-
-impl serde::Serialize for Signature {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let encoded = base64::engine::general_purpose::STANDARD.encode(self.as_ref());
-        serializer.serialize_str(&encoded)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for Signature {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let encoded = String::deserialize(deserializer)?;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(encoded)
-            .map_err(|err| serde::de::Error::custom(format!("invalid base64 signature: {err}")))?;
-        let sig: [u8; 96] = bytes.try_into().map_err(|bytes: Vec<u8>| {
-            serde::de::Error::custom(format!(
-                "invalid signature length: got {}, want 96",
-                bytes.len()
-            ))
-        })?;
-        Ok(Signature::new(sig))
-    }
-}
-
-impl Signature {
-    /// Converts the signature to an ETH2 signature.
-    pub fn to_eth2(&self) -> phase0::BLSSignature {
-        sig_to_eth2(self)
-    }
-
-    /// Creates a partially signed signature wrapper.
-    pub fn new_partial(sig: Self, share_idx: u64) -> ParSignedData {
-        ParSignedData::new(sig, share_idx)
-    }
+    *sig
 }
 
 impl SignedData for Signature {
     fn signature(&self) -> Result<Signature, SignedDataError> {
-        Ok(self.clone())
+        Ok(*self)
     }
 
     fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError> {
         Ok(signature)
+    }
+
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
     }
 
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
@@ -254,6 +222,13 @@ impl SignedData for VersionedSignedProposal {
         proposal.block.set_signature(eth2_sig);
 
         Ok(out)
+    }
+
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
     }
 
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
@@ -394,6 +369,13 @@ impl SignedData for Attestation {
         Ok(out)
     }
 
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
+    }
+
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         Ok(hash_root(&self.0.data))
     }
@@ -470,6 +452,13 @@ impl SignedData for VersionedAttestation {
             .set_signature(sig_to_eth2(&signature));
 
         Ok(out)
+    }
+
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
     }
 
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
@@ -587,6 +576,13 @@ impl SignedData for SignedVoluntaryExit {
         Ok(out)
     }
 
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
+    }
+
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         Ok(self.0.message_root())
     }
@@ -669,6 +665,13 @@ impl SignedData for VersionedSignedValidatorRegistration {
         Ok(out)
     }
 
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
+    }
+
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         match self.0.version {
             versioned::BuilderVersion::V1 => self
@@ -745,6 +748,13 @@ impl SignedData for SignedRandao {
         Ok(out)
     }
 
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
+    }
+
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         Ok(self.0.message_root())
     }
@@ -788,6 +798,13 @@ impl SignedData for BeaconCommitteeSelection {
         Ok(out)
     }
 
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
+    }
+
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         Ok(self.0.message_root())
     }
@@ -824,6 +841,13 @@ impl SignedData for SyncCommitteeSelection {
         Ok(out)
     }
 
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
+    }
+
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         Ok(self.0.message_root())
     }
@@ -858,6 +882,13 @@ impl SignedData for SignedAggregateAndProof {
         let mut out = self.clone();
         out.0.signature = sig_to_eth2(&signature);
         Ok(out)
+    }
+
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
     }
 
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
@@ -938,6 +969,13 @@ impl SignedData for VersionedSignedAggregateAndProof {
             .set_signature(sig_to_eth2(&signature));
 
         Ok(out)
+    }
+
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
     }
 
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
@@ -1026,6 +1064,13 @@ impl SignedData for SignedSyncMessage {
         Ok(out)
     }
 
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
+    }
+
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         Ok(self.0.message_root())
     }
@@ -1060,6 +1105,13 @@ impl SignedData for SyncContributionAndProof {
         let mut out = self.clone();
         out.0.selection_proof = sig_to_eth2(&signature);
         Ok(out)
+    }
+
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
     }
 
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
@@ -1098,6 +1150,13 @@ impl SignedData for SignedSyncContributionAndProof {
         Ok(out)
     }
 
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError> {
+        Ok(Box::new(self.set_signature(signature)?))
+    }
+
     fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
         Ok(self.0.message_root())
     }
@@ -1112,6 +1171,190 @@ impl SignedSyncContributionAndProof {
     /// Creates a partial signed sync contribution-and-proof wrapper.
     pub fn new_partial(proof: altair::SignedContributionAndProof, share_idx: u64) -> ParSignedData {
         ParSignedData::new(Self::new(proof), share_idx)
+    }
+}
+
+/// Attester duty metadata associated with an attestation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttesterDuty {
+    /// Slot for the duty.
+    pub slot: phase0::Slot,
+    /// Validator index.
+    pub validator_index: phase0::ValidatorIndex,
+    /// Committee index.
+    pub committee_index: u64,
+    /// Number of validators in the committee.
+    pub committee_length: u64,
+    /// Number of committees at this slot.
+    pub committees_at_slot: u64,
+    /// Validator's position within the committee.
+    pub validator_committee_index: u64,
+}
+
+/// Unsigned attestation data paired with its duty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttestationData {
+    /// Raw attestation data.
+    pub data: phase0::AttestationData,
+    /// Associated attester duty.
+    pub duty: AttesterDuty,
+}
+
+/// Versioned aggregated attestation (unsigned).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionedAggregatedAttestation(pub versioned::VersionedAttestation);
+
+impl VersionedAggregatedAttestation {
+    /// Returns the attestation data from the inner payload, if present.
+    pub fn data(&self) -> Option<&phase0::AttestationData> {
+        self.0.attestation.as_ref().map(|a| a.data())
+    }
+}
+
+/// Sync committee contribution (unsigned).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncContribution(pub altair::SyncCommitteeContribution);
+
+/// Unsigned proposal block across all supported forks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProposalBlock {
+    /// Phase0 beacon block.
+    Phase0(phase0::BeaconBlock),
+    /// Altair beacon block.
+    Altair(altair::BeaconBlock),
+    /// Bellatrix beacon block.
+    Bellatrix(bellatrix::BeaconBlock),
+    /// Bellatrix blinded beacon block.
+    BellatrixBlinded(bellatrix::BlindedBeaconBlock),
+    /// Capella beacon block.
+    Capella(capella::BeaconBlock),
+    /// Capella blinded beacon block.
+    CapellaBlinded(capella::BlindedBeaconBlock),
+    /// Deneb beacon block with KZG proofs and blobs.
+    Deneb {
+        /// Beacon block.
+        block: Box<deneb::BeaconBlock>,
+        /// KZG proofs.
+        kzg_proofs: Vec<deneb::KZGProof>,
+        /// Blobs.
+        blobs: Vec<deneb::Blob>,
+    },
+    /// Deneb blinded beacon block.
+    DenebBlinded(deneb::BlindedBeaconBlock),
+    /// Electra beacon block with KZG proofs and blobs.
+    Electra {
+        /// Beacon block.
+        block: Box<electra::BeaconBlock>,
+        /// KZG proofs.
+        kzg_proofs: Vec<deneb::KZGProof>,
+        /// Blobs.
+        blobs: Vec<deneb::Blob>,
+    },
+    /// Electra blinded beacon block.
+    ElectraBlinded(electra::BlindedBeaconBlock),
+    /// Fulu beacon block with KZG proofs and blobs (uses electra block type).
+    Fulu {
+        /// Beacon block.
+        block: Box<electra::BeaconBlock>,
+        /// KZG proofs.
+        kzg_proofs: Vec<deneb::KZGProof>,
+        /// Blobs.
+        blobs: Vec<deneb::Blob>,
+    },
+    /// Fulu blinded beacon block (uses electra block type).
+    FuluBlinded(electra::BlindedBeaconBlock),
+}
+
+impl ProposalBlock {
+    /// Returns the fork version of this block.
+    pub fn version(&self) -> versioned::DataVersion {
+        match self {
+            Self::Phase0(_) => versioned::DataVersion::Phase0,
+            Self::Altair(_) => versioned::DataVersion::Altair,
+            Self::Bellatrix(_) | Self::BellatrixBlinded(_) => versioned::DataVersion::Bellatrix,
+            Self::Capella(_) | Self::CapellaBlinded(_) => versioned::DataVersion::Capella,
+            Self::Deneb { .. } | Self::DenebBlinded(_) => versioned::DataVersion::Deneb,
+            Self::Electra { .. } | Self::ElectraBlinded(_) => versioned::DataVersion::Electra,
+            Self::Fulu { .. } | Self::FuluBlinded(_) => versioned::DataVersion::Fulu,
+        }
+    }
+
+    /// Returns true if this is a blinded block.
+    pub fn is_blinded(&self) -> bool {
+        matches!(
+            self,
+            Self::BellatrixBlinded(_)
+                | Self::CapellaBlinded(_)
+                | Self::DenebBlinded(_)
+                | Self::ElectraBlinded(_)
+                | Self::FuluBlinded(_)
+        )
+    }
+
+    /// Returns the slot of this block.
+    pub fn slot(&self) -> phase0::Slot {
+        match self {
+            Self::Phase0(b) => b.slot,
+            Self::Altair(b) => b.slot,
+            Self::Bellatrix(b) => b.slot,
+            Self::BellatrixBlinded(b) => b.slot,
+            Self::Capella(b) => b.slot,
+            Self::CapellaBlinded(b) => b.slot,
+            Self::Deneb { block, .. } => block.slot,
+            Self::DenebBlinded(b) => b.slot,
+            Self::Electra { block, .. } => block.slot,
+            Self::ElectraBlinded(b) => b.slot,
+            Self::Fulu { block, .. } => block.slot,
+            Self::FuluBlinded(b) => b.slot,
+        }
+    }
+
+    /// Returns the tree-hash root of this block.
+    pub fn root(&self) -> phase0::Root {
+        match self {
+            Self::Phase0(b) => b.tree_hash_root().0,
+            Self::Altair(b) => b.tree_hash_root().0,
+            Self::Bellatrix(b) => b.tree_hash_root().0,
+            Self::BellatrixBlinded(b) => b.tree_hash_root().0,
+            Self::Capella(b) => b.tree_hash_root().0,
+            Self::CapellaBlinded(b) => b.tree_hash_root().0,
+            Self::Deneb { block, .. } => block.tree_hash_root().0,
+            Self::DenebBlinded(b) => b.tree_hash_root().0,
+            Self::Electra { block, .. } => block.tree_hash_root().0,
+            Self::ElectraBlinded(b) => b.tree_hash_root().0,
+            Self::Fulu { block, .. } => block.tree_hash_root().0,
+            Self::FuluBlinded(b) => b.tree_hash_root().0,
+        }
+    }
+}
+
+/// Unsigned versioned proposal across all supported forks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionedProposal {
+    /// Unsigned block payload.
+    pub block: ProposalBlock,
+}
+
+impl VersionedProposal {
+    /// Returns the fork version, derived from the block variant.
+    pub fn version(&self) -> versioned::DataVersion {
+        self.block.version()
+    }
+
+    /// Returns true if this is a blinded proposal, derived from the block
+    /// variant.
+    pub fn is_blinded(&self) -> bool {
+        self.block.is_blinded()
+    }
+
+    /// Returns the slot of the proposal block.
+    pub fn slot(&self) -> phase0::Slot {
+        self.block.slot()
+    }
+
+    /// Returns the tree-hash root of the proposal block.
+    pub fn root(&self) -> phase0::Root {
+        self.block.root()
     }
 }
 
@@ -1174,7 +1417,7 @@ mod tests {
     }
 
     fn sample_signature(byte: u8) -> Signature {
-        Signature::new([byte; 96])
+        [byte; crate::types::SIGNATURE_LENGTH]
     }
 
     fn sample_root(byte: u8) -> phase0::Root {
@@ -2376,37 +2619,17 @@ mod tests {
     #[test]
     fn signature() {
         let sig1 = sample_signature(0x22);
-        let sig2 = sig1.clone();
+        let sig2 = sig1;
 
         assert!(matches!(
             sig1.message_root(),
             Err(SignedDataError::UnsupportedSignatureMessageRoot)
         ));
         assert_eq!(sig1, sig1.signature().unwrap());
-        assert_eq!(sig1.to_eth2(), sig2.signature().unwrap().to_eth2());
+        assert_eq!(sig1, sig2.signature().unwrap());
 
         let ss = sig1.set_signature(sig2.signature().unwrap()).unwrap();
         assert_eq!(sig2, ss);
-
-        let js = serde_json::to_vec(&sig1).unwrap();
-        let sig3: Signature = serde_json::from_slice(&js).unwrap();
-        assert_eq!(sig1, sig3);
-    }
-
-    #[test]
-    fn signature_json_errors() {
-        let invalid_base64 = serde_json::from_slice::<Signature>(br#""%%%""#);
-        assert!(matches!(
-            invalid_base64,
-            Err(err) if matches!(err.classify(), serde_json::error::Category::Data)
-        ));
-
-        let short = base64::engine::general_purpose::STANDARD.encode([0x11_u8; 95]);
-        let wrong_len = serde_json::from_slice::<Signature>(format!("\"{short}\"").as_bytes());
-        assert!(matches!(
-            wrong_len,
-            Err(err) if matches!(err.classify(), serde_json::error::Category::Data)
-        ));
     }
 
     #[test_case(false ; "unblinded")]
@@ -2564,7 +2787,7 @@ mod tests {
         assert_ne!(msg_root, [0_u8; 32]);
 
         let signature = sample_signature(0x99);
-        let updated = wrapped.set_signature(signature.clone()).unwrap();
+        let updated = wrapped.set_signature(signature).unwrap();
         assert_eq!(signature, updated.signature().unwrap());
 
         let js = serde_json::to_vec(&wrapped).unwrap();

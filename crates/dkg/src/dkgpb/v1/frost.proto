@@ -1,6 +1,8 @@
 syntax = "proto3";
 
-package frost;
+package dkg.dkgpb.v1;
+
+option go_package = "github.com/obolnetwork/charon/dkg/dkgpb/v1";
 
 message FrostMsgKey {    // dkg.msgKey
   uint32 val_idx = 1;

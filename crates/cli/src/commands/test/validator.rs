@@ -87,13 +87,6 @@ pub async fn run(
     writer: &mut dyn Write,
     ct: CancellationToken,
 ) -> Result<TestCategoryResult> {
-    pluto_tracing::init(
-        &pluto_tracing::TracingConfig::builder()
-            .with_default_console()
-            .build(),
-    )
-    .expect("Failed to initialize tracing");
-
     tracing::info!("Starting validator client test");
 
     // Get and filter test cases

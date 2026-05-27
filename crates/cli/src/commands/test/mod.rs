@@ -86,9 +86,21 @@ fn list_test_cases(category: TestCategory) -> Vec<String> {
             ]
         }
         TestCategory::Peers => {
-            // TODO: Extract from peers::supported_peer_test_cases() +
-            // supported_self_test_cases()
-            vec![]
+            let mut cases: Vec<String> = peers::supported_peer_test_cases()
+                .into_iter()
+                .map(|tc| tc.name.to_string())
+                .collect();
+            cases.extend(
+                peers::supported_self_test_cases()
+                    .into_iter()
+                    .map(|tc| tc.name.to_string()),
+            );
+            cases.extend(
+                peers::supported_relay_test_cases()
+                    .into_iter()
+                    .map(|tc| tc.name.to_string()),
+            );
+            cases
         }
         TestCategory::Infra => infra::supported_infra_test_cases()
             .into_iter()

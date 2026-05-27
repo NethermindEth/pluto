@@ -1,6 +1,6 @@
 ---
 name: rust-p2p
-description: Use when implementing, reviewing, debugging, or explaining Pluto Rust libp2p code: Node/P2PContext ownership, PlutoBehaviour composition, NetworkBehaviour and ConnectionHandler protocols, relay/force-direct/quic-upgrade behaviours, peerinfo/parsigex protocol handlers, DKG protocol handlers, and P2P tests.
+description: "Use when implementing, reviewing, debugging, or explaining Pluto Rust libp2p code: Node/P2PContext ownership, PlutoBehaviour composition, NetworkBehaviour and ConnectionHandler protocols, relay/force-direct/quic-upgrade behaviours, peerinfo/parsigex protocol handlers, DKG protocol handlers, and P2P tests."
 ---
 
 # Rust P2P

@@ -70,11 +70,13 @@ impl Tbls for BlstImpl {
         if threshold <= 1 || threshold > total {
             return Err(Error::InvalidThreshold { threshold, total });
         }
+        let threashlod =
+            usize::try_from(threshold).map_err(|_| Error::InvalidThreshold { threshold, total })?;
 
         let sk = BlstSecretKey::from_bytes(secret_key)?;
 
         // Create polynomial coefficients: a_0 = secret, a_1..a_{t-1} = random
-        let mut poly = Vec::with_capacity(threshold as usize);
+        let mut poly = Vec::with_capacity(threashlod);
         poly.push(sk);
 
         for _ in 1..threshold {
@@ -270,7 +272,7 @@ fn evaluate_polynomial(poly: &[BlstSecretKey], x: Index) -> Result<BlstSecretKey
     let mut result = poly[0].clone();
 
     // Compute powers of x and accumulate
-    let mut x_power = scalar_from_u64(u64::from(x));
+    let mut x_power = scalar_from_u64(x);
 
     for coeff in poly.iter().skip(1) {
         // result += coeff * x_power
@@ -279,7 +281,7 @@ fn evaluate_polynomial(poly: &[BlstSecretKey], x: Index) -> Result<BlstSecretKey
 
         // x_power *= x for next iteration
         if poly.len() > 2 {
-            let x_scalar = scalar_from_u64(u64::from(x));
+            let x_scalar = scalar_from_u64(x);
             x_power = scalar_mult_scalars(&x_power, &x_scalar)?;
         }
     }
@@ -365,18 +367,16 @@ fn compute_lagrange_coefficients(indices: &[Index]) -> Result<Vec<blst::blst_sca
             }
 
             // numerator *= x_j
-            let x_j_scalar = scalar_from_u64(u64::from(x_j));
+            let x_j_scalar = scalar_from_u64(x_j);
             numerator = scalar_mult_scalars(&numerator, &x_j_scalar)?;
 
             // denominator *= (x_j - x_i)
             let diff = if x_j > x_i {
-                let diff_val = x_j.abs_diff(x_i);
-                scalar_from_u64(u64::from(diff_val))
+                scalar_from_u64(x_j.abs_diff(x_i))
             } else {
                 // For negative differences, we need to work in the scalar field
                 // x_j - x_i (mod r) where r is the curve order
-                let diff_val = x_i.abs_diff(x_j);
-                scalar_negate(&scalar_from_u64(u64::from(diff_val)))?
+                scalar_negate(&scalar_from_u64(x_i.abs_diff(x_j)))?
             };
 
             denominator = scalar_mult_scalars(&denominator, &diff)?;
@@ -393,8 +393,9 @@ fn compute_lagrange_coefficients(indices: &[Index]) -> Result<Vec<blst::blst_sca
 /// Convert u64 to blst scalar
 fn scalar_from_u64(val: u64) -> blst::blst_scalar {
     let mut scalar = blst::blst_scalar::default();
+    let limbs: [u64; 4] = [val, 0, 0, 0];
     unsafe {
-        blst::blst_scalar_from_uint64(&mut scalar, &val);
+        blst::blst_scalar_from_uint64(&mut scalar, limbs.as_ptr());
     }
     scalar
 }
@@ -604,12 +605,12 @@ mod tests {
         let total = 5;
 
         let shares = blst.threshold_split(&sk, total, threshold).unwrap();
-        assert_eq!(shares.len(), total as usize);
+        assert_eq!(shares.len(), usize::try_from(total).unwrap());
 
         // Take exactly threshold shares
         let subset: HashMap<Index, PrivateKey> = shares
             .iter()
-            .take(threshold as usize)
+            .take(usize::try_from(threshold).unwrap())
             .map(|(k, v)| (*k, *v))
             .collect();
 
@@ -627,7 +628,7 @@ mod tests {
         let total = 5;
 
         let shares = blst.threshold_split(&secret, total, threshold).unwrap();
-        assert_eq!(shares.len(), total as usize);
+        assert_eq!(shares.len(), usize::try_from(total).unwrap());
 
         // Recover using all shares
         let recovered = blst.recover_secret(&shares).unwrap();
@@ -965,5 +966,26 @@ mod tests {
 
         // Verify no 0-indexed key exists
         assert!(!shares.contains_key(&0), "Should not contain key 0");
+    }
+
+    #[test]
+    fn scalar_from_u64_upper_limbs_are_zero() {
+        // blst_scalar_from_uint64 reads 4 consecutive u64s (4 × 8 = 32 bytes);
+        // passing &val instead of &[val, 0, 0, 0] reads 3 extra u64s from the
+        // stack. The scalar is stored little-endian: the value occupies the first
+        // u64 (bytes 0–7) and the remaining three limbs (bytes 8–31) must be zero.
+        for val in [0u64, 1, 2, 3, 4, 255, u64::from(u32::MAX)] {
+            let scalar = scalar_from_u64(val);
+            let expected = val.to_le_bytes();
+            assert_eq!(
+                &scalar.b[..8],
+                &expected,
+                "lower 8 bytes should encode {val}"
+            );
+            assert!(
+                scalar.b[8..].iter().all(|&b| b == 0),
+                "upper 24 bytes must be zero for val={val}"
+            );
+        }
     }
 }

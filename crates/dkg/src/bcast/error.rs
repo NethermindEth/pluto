@@ -88,6 +88,10 @@ pub enum Error {
     #[error("bcast behaviour is no longer running")]
     BehaviourClosed,
 
+    /// The broadcast operation failed after being accepted by the behaviour.
+    #[error("broadcast failed: {0}")]
+    BroadcastFailed(String),
+
     /// The outbound operation failed.
     #[error("outbound operation to {peer} failed: {failure}")]
     OutboundFailure {
@@ -154,6 +158,10 @@ pub enum Error {
     /// A required message body field was absent.
     #[error("missing protobuf field: {0}")]
     MissingField(&'static str),
+
+    /// A typed broadcast message failed protocol-specific validation.
+    #[error("invalid message: {0}")]
+    InvalidMessage(&'static str),
 
     /// Protobuf encoding failed.
     #[error("protobuf encode failed: {0}")]

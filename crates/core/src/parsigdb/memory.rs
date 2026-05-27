@@ -1,10 +1,10 @@
-use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
-use tokio::sync::Mutex;
+use std::{collections::HashMap, error::Error as StdError, future::Future, pin::Pin, sync::Arc};
+use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::{
-    deadline::Deadliner,
+    deadline::DeadlinerHandle,
     parsigdb::metrics::PARSIG_DB_METRICS,
     signeddata::SignedDataError,
     types::{Duty, DutyType, ParSignedData, ParSignedDataSet, PubKey},
@@ -133,6 +133,22 @@ pub enum MemDBError {
     /// Signed data error.
     #[error("signed data error: {0}")]
     SignedDataError(#[from] SignedDataError),
+
+    /// Internal subscriber error.
+    #[error("internal subscriber: {0}")]
+    InternalSubscriber(#[from] InternalSubscriberError),
+}
+
+/// Internal subscriber error.
+#[derive(Debug, thiserror::Error)]
+pub enum InternalSubscriberError {
+    /// Partial-signature broadcast failed.
+    #[error("parsigex broadcast failed")]
+    ParsigexBroadcast {
+        /// Broadcast source error.
+        #[source]
+        source: Box<dyn StdError + Send + Sync>,
+    },
 }
 
 type Result<T> = std::result::Result<T, MemDBError>;
@@ -162,7 +178,7 @@ pub struct MemDBInner {
 pub struct MemDB {
     ct: CancellationToken,
     inner: Arc<Mutex<MemDBInner>>,
-    deadliner: Arc<dyn Deadliner>,
+    deadliner: DeadlinerHandle,
     threshold: u64,
 }
 
@@ -173,7 +189,7 @@ impl MemDB {
     /// * `ct` - Cancellation token for graceful shutdown
     /// * `threshold` - Number of matching partial signatures required
     /// * `deadliner` - Deadliner for managing duty expiration
-    pub fn new(ct: CancellationToken, threshold: u64, deadliner: Arc<dyn Deadliner>) -> Self {
+    pub fn new(ct: CancellationToken, threshold: u64, deadliner: DeadlinerHandle) -> Self {
         Self {
             ct,
             inner: Arc::new(Mutex::new(MemDBInner {
@@ -284,16 +300,12 @@ impl MemDB {
 
     /// Trims expired duties from the database.
     ///
-    /// This method runs in a loop, listening for expired duties from the
-    /// deadliner and removing their associated data from the database. It
-    /// should be spawned as a background task and will run until the
-    /// cancellation token is triggered.
-    pub async fn trim(&self) {
-        let Some(mut deadliner_rx) = self.deadliner.c() else {
-            warn!("Deadliner channel is not available");
-            return;
-        };
-
+    /// Runs in a loop, listening on `deadliner_rx` for expired duties and
+    /// removing their associated data. Should be spawned as a background task;
+    /// returns when the cancellation token is triggered or the receiver
+    /// closes. The receiver is the one paired with the [`DeadlinerHandle`] at
+    /// `DeadlinerTask::start`.
+    pub async fn trim(&self, mut deadliner_rx: mpsc::Receiver<Duty>) {
         loop {
             tokio::select! {
                 biased;

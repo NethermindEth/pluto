@@ -42,7 +42,7 @@ pub enum Error {
 
     /// The local node index cannot be represented as a u32.
     #[error("node index {0} exceeds u32 range")]
-    NodeIndexOutOfRange(usize),
+    NodeIndexOutOfRange(u64),
 }
 
 /// Alias for `Result<T, Error>`.
@@ -53,7 +53,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct NodeSigBcast {
     sigs: Arc<Mutex<Vec<Option<Vec<u8>>>>>,
     bcast: Component,
-    node_idx: usize,
+    node_idx: u64,
     lock_hash_tx: watch::Sender<Option<Vec<u8>>>,
 }
 
@@ -63,7 +63,7 @@ impl NodeSigBcast {
     /// clone of `bcast_comp` to another `NodeSigBcast::new` will fail.
     pub async fn new(
         peers: Vec<Peer>,
-        node_idx: usize,
+        node_idx: u64,
         bcast_comp: Component,
         token: CancellationToken,
     ) -> Result<Self> {
@@ -99,8 +99,8 @@ impl NodeSigBcast {
 
     /// Exchanges K1 signatures over the lock hash with all peers.
     ///
-    /// Signs `lock_hash` with `key`, broadcasts the signature to all peers, and
-    /// polls until every peer's signature has been received and verified.
+    /// Signs `lock_hash` with `key`, waits for reliable-broadcast completion,
+    /// then polls until every peer's signature has been received and verified.
     /// Returns all collected signatures ordered by peer index.
     pub async fn exchange(
         self,
@@ -129,11 +129,16 @@ impl NodeSigBcast {
 
         tracing::debug!("Exchanging node signatures");
 
-        self.bcast.broadcast(NODE_SIG_MSG_ID, &bcast_data).await?;
+        tokio::select! {
+            () = token.cancelled() => return Err(Error::Cancelled),
+            result = self.bcast.broadcast_and_wait(NODE_SIG_MSG_ID, &bcast_data) => result?,
+        }
 
         {
             let mut sigs = self.sigs.lock().unwrap_or_else(|e| e.into_inner());
-            sigs[self.node_idx] = Some(local_sig);
+            let node_idx_usize = usize::try_from(self.node_idx)
+                .map_err(|_| Error::NodeIndexOutOfRange(self.node_idx))?;
+            sigs[node_idx_usize] = Some(local_sig);
         }
 
         let mut ticker = tokio::time::interval(Duration::from_millis(100));
@@ -167,33 +172,35 @@ fn all_sigs(sigs: &[Option<Vec<u8>>]) -> Option<Vec<Vec<u8>>> {
 async fn receive(
     peer_id: PeerId,
     msg: MsgNodeSig,
-    node_idx: usize,
+    node_idx: u64,
     peers: &[Peer],
     lock_hash_rx: watch::Receiver<Option<Vec<u8>>>,
     sigs: &Mutex<Vec<Option<Vec<u8>>>>,
     token: CancellationToken,
 ) -> bcast::Result<()> {
-    let peer_idx = usize::try_from(msg.peer_index).expect("peer_index out of usize range");
+    let peer_idx = u64::from(msg.peer_index);
+    let peer_idx_usize =
+        usize::try_from(peer_idx).map_err(|_| bcast::Error::InvalidPeerIndex(peer_id))?;
 
-    if peer_idx == node_idx || peer_idx >= peers.len() {
+    if peer_idx == node_idx || peer_idx_usize >= peers.len() {
         return Err(bcast::Error::InvalidPeerIndex(peer_id));
     }
 
-    if peers[peer_idx].id != peer_id {
+    if peers[peer_idx_usize].id != peer_id {
         return Err(bcast::Error::InvalidSenderPeerIndex(Box::new(
             bcast::SenderPeerMismatch {
                 sender: peer_id,
-                expected: peers[peer_idx].id,
+                expected: peers[peer_idx_usize].id,
             },
         )));
     }
 
     if msg.signature.as_ref() == NONE_DATA {
-        sigs.lock().unwrap_or_else(|e| e.into_inner())[peer_idx] = Some(NONE_DATA.to_vec());
+        sigs.lock().unwrap_or_else(|e| e.into_inner())[peer_idx_usize] = Some(NONE_DATA.to_vec());
         return Ok(());
     }
 
-    let pubkey = peers[peer_idx].public_key()?;
+    let pubkey = peers[peer_idx_usize].public_key()?;
 
     let lock_hash = {
         let mut rx = lock_hash_rx.clone();
@@ -209,7 +216,7 @@ async fn receive(
     };
 
     if lock_hash.as_slice() == NONE_DATA {
-        sigs.lock().unwrap_or_else(|e| e.into_inner())[peer_idx] = Some(NONE_DATA.to_vec());
+        sigs.lock().unwrap_or_else(|e| e.into_inner())[peer_idx_usize] = Some(NONE_DATA.to_vec());
         return Ok(());
     }
 
@@ -217,7 +224,7 @@ async fn receive(
         return Err(bcast::Error::InvalidSignature(peer_id));
     }
 
-    sigs.lock().unwrap_or_else(|e| e.into_inner())[peer_idx] = Some(msg.signature.to_vec());
+    sigs.lock().unwrap_or_else(|e| e.into_inner())[peer_idx_usize] = Some(msg.signature.to_vec());
 
     Ok(())
 }
@@ -246,7 +253,7 @@ mod tests {
 
     use super::*;
 
-    fn make_peer(seed: u8, index: usize) -> (SecretKey, Peer) {
+    fn make_peer(seed: u8, index: u64) -> (SecretKey, Peer) {
         let key = generate_insecure_k1_key(seed);
         let id = peer_id_from_key(key.public_key()).unwrap();
         let peer = Peer {
@@ -314,7 +321,13 @@ mod tests {
     ) {
         const N: usize = 10;
         let peers: Vec<Peer> = (0..N)
-            .map(|i| make_peer(u8::try_from(i).expect("The number fits into u8"), i).1)
+            .map(|i| {
+                make_peer(
+                    u8::try_from(i).expect("The number fits into u8"),
+                    u64::try_from(i).expect("The number fits into u64"),
+                )
+                .1
+            })
             .collect();
         let (_, rx) = watch::channel(lock_hash);
         let sigs = Mutex::new(vec![None::<Vec<u8>>; N]);
@@ -432,6 +445,53 @@ mod tests {
         assert_eq!(guard[1], Some(NONE_DATA.to_vec()));
     }
 
+    #[tokio::test]
+    async fn exchange_observes_bcast_failure_on_peer_unreachable() -> anyhow::Result<()> {
+        let (key0, peer0) = make_peer(0, 0);
+        let (_, peer1) = make_peer(1, 1);
+        let peer_ids = vec![peer0.id, peer1.id];
+        let p2p_context = P2PContext::new(peer_ids.clone());
+        let (behaviour, component) = Behaviour::new(peer_ids, p2p_context.clone(), key0.clone());
+        let nsig =
+            NodeSigBcast::new(vec![peer0, peer1], 0, component, CancellationToken::new()).await?;
+
+        let mut node = Node::new_server(
+            P2PConfig::default(),
+            key0.clone(),
+            NodeType::TCP,
+            false,
+            p2p_context,
+            None,
+            move |builder, _| builder.with_inner(behaviour),
+        )?;
+        let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
+        let node_task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut stop_rx => break,
+                    _ = node.select_next_some() => {}
+                }
+            }
+        });
+
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            nsig.exchange(Some(&key0), [42u8; 32], CancellationToken::new()),
+        )
+        .await
+        .context("exchange should observe bcast failure")?
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::Broadcast(bcast::Error::BroadcastFailed(_))
+        ));
+
+        let _ = stop_tx.send(());
+        node_task.await?;
+
+        Ok(())
+    }
+
     struct TestNode {
         node: Node<Behaviour>,
         addr: Multiaddr,
@@ -541,7 +601,7 @@ mod tests {
             .map(|(i, &id)| Peer {
                 id,
                 addresses: vec![],
-                index: i,
+                index: u64::try_from(i).expect("index fits u64"),
                 name: format!("peer-{i}"),
             })
             .collect();
@@ -560,8 +620,13 @@ mod tests {
             let p2p_context = P2PContext::new(peer_ids.clone());
             let (behaviour, component) =
                 Behaviour::new(peer_ids.clone(), p2p_context.clone(), key.clone());
-            let nsig =
-                NodeSigBcast::new(cluster_peers.clone(), index, component, token.clone()).await?;
+            let nsig = NodeSigBcast::new(
+                cluster_peers.clone(),
+                u64::try_from(index).expect("index fits u64"),
+                component,
+                token.clone(),
+            )
+            .await?;
             nsig_list.push(nsig);
 
             let node = Node::new_server(

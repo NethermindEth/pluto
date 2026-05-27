@@ -1,6 +1,8 @@
 syntax = "proto3";
 
-package consensus;
+package core.corepb.v1;
+
+option go_package = "github.com/obolnetwork/charon/core/corepb/v1";
 
 import "core.proto";
 import "google/protobuf/any.proto";
@@ -8,7 +10,7 @@ import "google/protobuf/timestamp.proto";
 
 message QBFTMsg {
   int64                          type                  = 1;
-  core.Duty            duty                  = 2;
+  core.corepb.v1.Duty            duty                  = 2;
   int64                          peer_idx              = 3;
   int64                          round                 = 4;
   reserved                                               5;
