@@ -532,11 +532,9 @@ async fn resolve_active_validators(
         // The activation epoch needs to be checked in cases where this function is
         // called before the epoch starts.
         if !val.status.is_active() {
-            let activation_epoch = val
-                .validator
-                .activation_epoch
-                .parse::<u64>()
-                .map_err(SchedulerError::InvalidEpoch)?;
+            let activation_epoch = val.validator.activation_epoch.parse::<u64>().map_err(|_| {
+                pluto_eth2api::EthBeaconNodeApiClientError::ParseError("activation_epoch".into())
+            })?;
 
             if activation_epoch != epoch {
                 continue;

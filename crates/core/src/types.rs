@@ -2,13 +2,7 @@
 
 //! Types for the Charon core.
 
-use std::{
-    any::Any,
-    collections::HashMap,
-    fmt::Display,
-    iter,
-    ops::{Deref, DerefMut},
-};
+use std::{any::Any, collections::HashMap, fmt::Display, iter};
 
 use chrono::{DateTime, Duration, Utc};
 use dyn_clone::DynClone;
@@ -433,17 +427,6 @@ impl AsRef<[u8]> for PubKey {
     }
 }
 
-// todo: add toEth2Format for the pub key
-// https://github.com/ObolNetwork/charon/blob/b3008103c5429b031b63518195f4c49db4e9a68d/core/types.go#L311
-
-/// Errors in [`DutyDefinition`].
-#[derive(Debug, thiserror::Error)]
-pub enum DutyDefinitionError {
-    /// Invalid field when parsing from a response.
-    #[error("invalid field `{field}` in duty definition")]
-    InvalidField { field: &'static str },
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct AttesterDutyDefinition {
     pub pubkey: PubKey,
@@ -456,22 +439,18 @@ pub struct AttesterDutyDefinition {
 impl TryInto<AttesterDutyDefinition>
     for pluto_eth2api::types::GetAttesterDutiesResponseResponseDatum
 {
-    type Error = DutyDefinitionError;
+    type Error = pluto_eth2api::EthBeaconNodeApiClientError;
 
     fn try_into(self) -> Result<AttesterDutyDefinition, Self::Error> {
         let pubkey = PubKey::try_from(self.pubkey.as_str())
-            .map_err(|_| DutyDefinitionError::InvalidField { field: "pubkey" })?;
-        let v_idx =
-            self.validator_index
-                .parse::<u64>()
-                .map_err(|_| DutyDefinitionError::InvalidField {
-                    field: "validator_index",
-                })?;
-        let slot = SlotNumber::from(
-            self.slot
-                .parse::<u64>()
-                .map_err(|_| DutyDefinitionError::InvalidField { field: "slot" })?,
-        );
+            .map_err(|_| pluto_eth2api::EthBeaconNodeApiClientError::ParseError("pubkey".into()))?;
+        let v_idx = self.validator_index.parse::<u64>().map_err(|_| {
+            pluto_eth2api::EthBeaconNodeApiClientError::ParseError("validator_index".into())
+        })?;
+        let slot =
+            SlotNumber::from(self.slot.parse::<u64>().map_err(|_| {
+                pluto_eth2api::EthBeaconNodeApiClientError::ParseError("slot".into())
+            })?);
 
         Ok(AttesterDutyDefinition {
             pubkey,
@@ -494,22 +473,18 @@ pub struct ProposerDutyDefinition {
 impl TryInto<ProposerDutyDefinition>
     for pluto_eth2api::types::GetProposerDutiesResponseResponseDatum
 {
-    type Error = DutyDefinitionError;
+    type Error = pluto_eth2api::EthBeaconNodeApiClientError;
 
     fn try_into(self) -> Result<ProposerDutyDefinition, Self::Error> {
         let pubkey = PubKey::try_from(self.pubkey.as_str())
-            .map_err(|_| DutyDefinitionError::InvalidField { field: "pubkey" })?;
-        let v_idx =
-            self.validator_index
-                .parse::<u64>()
-                .map_err(|_| DutyDefinitionError::InvalidField {
-                    field: "validator_index",
-                })?;
-        let slot = SlotNumber::from(
-            self.slot
-                .parse::<u64>()
-                .map_err(|_| DutyDefinitionError::InvalidField { field: "slot" })?,
-        );
+            .map_err(|_| pluto_eth2api::EthBeaconNodeApiClientError::ParseError("pubkey".into()))?;
+        let v_idx = self.validator_index.parse::<u64>().map_err(|_| {
+            pluto_eth2api::EthBeaconNodeApiClientError::ParseError("validator_index".into())
+        })?;
+        let slot =
+            SlotNumber::from(self.slot.parse::<u64>().map_err(|_| {
+                pluto_eth2api::EthBeaconNodeApiClientError::ParseError("slot".into())
+            })?);
 
         Ok(ProposerDutyDefinition {
             pubkey,
@@ -532,27 +507,25 @@ pub struct SyncCommitteeDutyDefinition {
 impl TryInto<SyncCommitteeDutyDefinition>
     for pluto_eth2api::types::GetSyncCommitteeDutiesResponseResponseDatum
 {
-    type Error = DutyDefinitionError;
+    type Error = pluto_eth2api::EthBeaconNodeApiClientError;
 
     fn try_into(self) -> Result<SyncCommitteeDutyDefinition, Self::Error> {
         let pubkey = PubKey::try_from(self.pubkey.as_str())
-            .map_err(|_| DutyDefinitionError::InvalidField { field: "pubkey" })?;
-        let validator_index =
-            self.validator_index
-                .parse::<u64>()
-                .map_err(|_| DutyDefinitionError::InvalidField {
-                    field: "validator_index",
-                })?;
+            .map_err(|_| pluto_eth2api::EthBeaconNodeApiClientError::ParseError("pubkey".into()))?;
+        let validator_index = self.validator_index.parse::<u64>().map_err(|_| {
+            pluto_eth2api::EthBeaconNodeApiClientError::ParseError("validator_index".into())
+        })?;
         let validator_sync_committee_indices = self
             .validator_sync_committee_indices
             .iter()
             .map(|idx| {
-                idx.parse::<u64>()
-                    .map_err(|_| DutyDefinitionError::InvalidField {
-                        field: "validator_sync_committee_indices",
-                    })
+                idx.parse::<u64>().map_err(|_| {
+                    pluto_eth2api::EthBeaconNodeApiClientError::ParseError(
+                        "validator_sync_committee_indices".into(),
+                    )
+                })
             })
-            .collect::<Result<Vec<u64>, DutyDefinitionError>>()?;
+            .collect::<Result<Vec<u64>, _>>()?;
 
         Ok(SyncCommitteeDutyDefinition {
             pubkey,
@@ -570,22 +543,7 @@ pub enum DutyDefinition {
     SyncCommittee(SyncCommitteeDutyDefinition),
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct DutyDefinitionSet(HashMap<PubKey, DutyDefinition>);
-
-impl Deref for DutyDefinitionSet {
-    type Target = HashMap<PubKey, DutyDefinition>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for DutyDefinitionSet {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
+pub type DutyDefinitionSet = HashMap<PubKey, DutyDefinition>;
 
 /// Unsigned data type
 #[derive(Debug, Clone, PartialEq, Eq)]
