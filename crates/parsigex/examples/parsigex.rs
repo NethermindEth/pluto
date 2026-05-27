@@ -182,7 +182,7 @@ fn make_sample_set(slot: u64, share_idx: u64) -> ParSignedDataSet {
     let mut set = ParSignedDataSet::new();
     set.insert(
         pub_key,
-        SignedRandao::new_partial(slot / 32, [share_byte; 96], share_idx),
+        SignedRandao::new_partial(slot / 32, [share_byte; 96], u64::from(share_byte)),
     );
     set
 }

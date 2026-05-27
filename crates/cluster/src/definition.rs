@@ -38,9 +38,9 @@ pub const ADDRESS_LEN: usize = 20;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeIdx {
     /// Index of a peer in the peer list (it's 0-indexed).
-    pub peer_idx: usize,
+    pub peer_idx: u64,
     /// tbls share identifier (it is 1-indexed).
-    pub share_idx: usize,
+    pub share_idx: u64,
 }
 
 /// Definition defines an intended charon cluster configuration excluding
@@ -517,7 +517,7 @@ impl Definition {
         for (i, peer) in peers.iter().enumerate() {
             if peer.id == *pid {
                 return Ok(NodeIdx {
-                    peer_idx: i,
+                    peer_idx: i as u64,
                     share_idx: peer.share_idx(),
                 });
             }
@@ -668,7 +668,7 @@ impl Definition {
 
             let enr = Record::try_from(operator.enr.as_str())?;
 
-            let peer = Peer::from_enr(&enr, i)?;
+            let peer = Peer::from_enr(&enr, i as u64)?;
 
             peers.push(peer);
         }

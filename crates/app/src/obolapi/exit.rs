@@ -324,7 +324,7 @@ impl Client {
         let exit_response: FullExitResponse = serde_json::from_slice(&response_body)?;
 
         // Aggregate partial signatures
-        let mut raw_signatures: HashMap<u8, Signature> = HashMap::new();
+        let mut raw_signatures: HashMap<u64, Signature> = HashMap::new();
 
         for (sig_idx, sig_str) in exit_response.signatures.iter().enumerate() {
             if sig_str.is_empty() {
@@ -345,8 +345,8 @@ impl Client {
 
             // Convert 0-indexed array position to 1-indexed share ID (API stores signatures
             // at array position share_id-1, e.g., share 1 at position 0)
-            let share_idx = u8::try_from(sig_idx)
-                .map_err(Error::FailedToConvertShareIndexToU8)?
+            let share_idx = u64::try_from(sig_idx)
+                .map_err(Error::FailedToConvertShareIndex)?
                 .checked_add(1)
                 .ok_or(Error::MathOverflow)?;
             raw_signatures.insert(share_idx, sig);

@@ -86,6 +86,17 @@ pub trait DeadlineCalculator: Send + Sync + 'static {
     fn deadline(&self, duty: &Duty) -> Result<Option<DateTime<Utc>>>;
 }
 
+/// Calculator that reports every duty as never expiring. Useful for
+/// scenarios that need to plug into the deadliner API but don't actually want
+/// any eviction (e.g. DKG, which is one-shot and outside the slot timeline).
+pub struct NeverExpiringCalculator;
+
+impl DeadlineCalculator for NeverExpiringCalculator {
+    fn deadline(&self, _duty: &Duty) -> Result<Option<DateTime<Utc>>> {
+        Ok(None)
+    }
+}
+
 impl DeadlineCalculator for DutyDeadlineCalculator {
     fn deadline(&self, duty: &Duty) -> Result<Option<DateTime<Utc>>> {
         if duty.duty_type.never_expires() {

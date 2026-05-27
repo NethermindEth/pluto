@@ -564,6 +564,12 @@ pub trait SignedData: Any + DynClone + DynEq + StdDebug + Send + Sync {
     where
         Self: Sized;
 
+    /// Object-safe equivalent of [`SignedData::set_signature`].
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError>;
+
     /// message_root returns the message root for the unsigned data.
     fn message_root(&self) -> Result<[u8; 32], SignedDataError>;
 }
@@ -1057,6 +1063,13 @@ mod tests {
 
         fn set_signature(&self, _signature: Signature) -> Result<Self, SignedDataError> {
             Ok(self.clone())
+        }
+
+        fn set_signature_boxed(
+            &self,
+            signature: Signature,
+        ) -> Result<Box<dyn SignedData>, SignedDataError> {
+            Ok(Box::new(self.set_signature(signature)?))
         }
 
         fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
