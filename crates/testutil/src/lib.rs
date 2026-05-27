@@ -14,8 +14,16 @@ pub mod random;
 /// Beacon node API mock utilities.
 pub mod beaconmock;
 
+/// Validator mock — drives validator-side duties against a [`BeaconMock`].
+pub mod validatormock;
+
 pub use beaconmock::{BeaconMock, MockState, Validator, ValidatorSet};
 pub use random::{
     random_deneb_versioned_attestation, random_eth2_signature, random_eth2_signature_bytes,
     random_root, random_root_bytes, random_slot, random_v_idx,
+};
+pub use validatormock::{
+    ActiveValidators, EndpointMatch, Error as ValidatorMockError, MetaEpoch, MetaSlot,
+    Result as ValidatorMockResult, Sign, SignError, SignFunc, Signer, SpecMeta, SubmissionCapture,
+    active_validators,
 };

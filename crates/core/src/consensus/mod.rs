@@ -9,6 +9,8 @@ pub mod protocols;
 
 /// QBFT consensus wrapper.
 pub mod qbft;
+/// Consensus instance I/O channels.
+pub mod instance;
 
 /// Consensus round timers.
 pub mod timer;

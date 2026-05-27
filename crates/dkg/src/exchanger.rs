@@ -42,14 +42,13 @@ use std::{
     sync::Arc,
 };
 
-use async_trait::async_trait;
 use libp2p::PeerId;
 use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use pluto_core::{
-    deadline::Deadliner,
+    deadline::{DeadlinerTask, NeverExpiringCalculator},
     parsigdb::memory::{
         InternalSubscriberError, MemDB, MemDBError, internal_subscriber, threshold_subscriber,
     },
@@ -134,21 +133,6 @@ pub struct Exchanger {
     pub ct: CancellationToken,
 }
 
-/// Deadliner that never expires any duty, used during DKG where slot-based
-/// expiry does not apply.
-struct NoopDeadliner;
-
-#[async_trait]
-impl Deadliner for NoopDeadliner {
-    async fn add(&self, _duty: Duty) -> bool {
-        true
-    }
-
-    fn c(&self) -> Option<tokio::sync::mpsc::Receiver<Duty>> {
-        None
-    }
-}
-
 impl Exchanger {
     /// Creates a new exchanger and wires up the three core subscriptions:
     ///
@@ -185,11 +169,13 @@ impl Exchanger {
         // threshold is len(peers) to wait until we get all the partial sigs from all
         // the peers per DV
         let threshold = u64::try_from(peers.len()).expect("usize fits in u64");
-        let sigdb = Arc::new(Mutex::new(MemDB::new(
-            ct.clone(),
-            threshold,
-            Arc::new(NoopDeadliner),
-        )));
+        // DKG is one-shot and outside the slot timeline; we wire a real
+        // deadliner with a never-expiring calculator just to satisfy the
+        // `MemDB` API. The paired receiver is dropped — the calculator
+        // guarantees the background task never tries to publish.
+        let (deadliner, _expired_rx) =
+            DeadlinerTask::start(ct.clone(), "dkg-exchanger", NeverExpiringCalculator);
+        let sigdb = Arc::new(Mutex::new(MemDB::new(ct.clone(), threshold, deadliner)));
         let sig_data = DataByPubkey::default();
 
         // Wiring core workflow components
