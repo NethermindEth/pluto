@@ -35,6 +35,15 @@ pub enum SchedulerError {
     /// Invalid epoch error.
     #[error("Invalid epoch")]
     InvalidEpoch(#[from] std::num::ParseIntError),
+
+    /// Invalid attester duty pubkey.
+    #[error("Invalid attester duty pubkey: expected {expected}, got {actual}")]
+    InvalidAttesterDutyPubkey {
+        /// Expected public key.
+        expected: types::PubKey,
+        /// Actual public key.
+        actual: types::PubKey,
+    },
 }
 
 type Result<T> = std::result::Result<T, SchedulerError>;
@@ -251,7 +260,73 @@ impl Scheduler {
     }
 
     async fn resolve_duties(&mut self, slot: types::Slot) -> Result<()> {
-        todo!()
+        async fn inner(s: &mut Scheduler, slot: types::Slot) -> Result<()> {
+            let vals = resolve_active_validators(slot.epoch(), &s.valcache).await?;
+
+            // TODO:
+            // activeValsGauge.Set(float64(len(vals)))
+
+            if vals.is_empty() {
+                tracing::info!(slot = %slot.slot, "No active validators for slot");
+                s.storage.lock().await.resolved_epoch = slot.epoch();
+                return Ok(());
+            }
+
+            // Resolve Attester duties
+            {
+                let att_duties = {
+                    let mut att_duties = fetch_attester_duties(&slot, &vals, &s.client).await?;
+                    att_duties.sort_by_key(|ad| ad.slot);
+                    att_duties
+                };
+                let mut storage = s.storage.lock().await;
+
+                for att_duty in att_duties.into_iter() {
+                    if !storage.set_duty_definition(
+                        types::Duty::new_attester_duty(att_duty.slot),
+                        slot.epoch(),
+                        att_duty.pubkey,
+                        types::DutyDefinition::Attester(att_duty.clone()),
+                    ) {
+                        continue;
+                    }
+
+                    tracing::info!(
+                        slot = %att_duty.slot,
+                        vidx = %att_duty.v_idx,
+                        pubkey = %att_duty.pubkey,
+                        epoch = %slot.epoch(),
+                        "Resolved attester duty"
+                    );
+
+                    // Schedule Aggregator duty as well
+                    let agg_duty = types::Duty::new_aggregator_duty(att_duty.slot);
+                    if !storage.set_duty_definition(
+                        agg_duty,
+                        slot.epoch(),
+                        att_duty.pubkey,
+                        types::DutyDefinition::Attester(att_duty),
+                    ) {
+                        continue;
+                    }
+                }
+            }
+
+            todo!();
+
+            let mut storage = s.storage.lock().await;
+            storage.resolved_epoch = slot.epoch();
+            storage.trim_duties(slot.epoch() - TRIM_EPOCH_OFFSET);
+
+            Ok(())
+        }
+
+        // TODO: Improve the poor-man's `defer`
+        self.storage.lock().await.resolving_epoch = slot.epoch();
+        let res = inner(self, slot).await;
+        self.storage.lock().await.resolving_epoch = u64::MAX;
+
+        res
     }
 }
 
@@ -453,4 +528,82 @@ async fn delay_slot_offset(slot: &types::Slot, duty: &types::Duty) {
     };
 
     tokio::time::sleep(to_sleep.to_std().unwrap_or_default()).await;
+}
+
+/// Fetches the attester duties for the given slot and validators, and validates
+/// that the returned duties match the expected validators.
+async fn fetch_attester_duties(
+    slot: &types::Slot,
+    validators: &Vec<Validator>,
+    client: &client::EthBeaconNodeApiClient,
+) -> Result<Vec<types::AttesterDutyDefinition>> {
+    let req = pluto_eth2api::GetAttesterDutiesRequest::builder()
+        .epoch(slot.epoch().to_string())
+        .body(validators.iter().map(|v| v.v_idx.to_string()).collect())
+        .build()
+        .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?;
+    let resp = client
+        .get_attester_duties(req)
+        .await
+        .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?;
+
+    let att_duties: Vec<types::AttesterDutyDefinition> = match resp {
+        pluto_eth2api::GetAttesterDutiesResponse::Ok(duties) => duties
+            .data
+            .into_iter()
+            .map(|d| {
+                d.try_into()
+                    .map_err(|_| pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse)
+            })
+            .collect::<std::result::Result<Vec<_>, _>>(),
+        _ => Err(pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse),
+    }?;
+
+    let mut remaining = validators
+        .iter()
+        .map(|v| (v.v_idx, true))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    let mut result = vec![];
+    for att_duty in att_duties.into_iter() {
+        remaining.remove(&att_duty.v_idx);
+
+        if att_duty.slot < slot.slot {
+            // Skip duties for earlier slots in initial epoch.
+            continue;
+        }
+
+        let Some(pubkey) = validators
+            .iter()
+            .find(|v| v.v_idx == att_duty.v_idx)
+            .map(|v| v.pubkey)
+        else {
+            tracing::warn!(
+                vidx = att_duty.v_idx,
+                slot = %slot.slot,
+                "Ignoring unexpected attester duty"
+            );
+            continue;
+        };
+
+        if pubkey != att_duty.pubkey {
+            return Err(SchedulerError::InvalidAttesterDutyPubkey {
+                expected: pubkey,
+                actual: att_duty.pubkey,
+            });
+        }
+
+        result.push(att_duty);
+    }
+
+    if remaining.len() > 0 {
+        tracing::warn!(
+            slot = %slot.slot,
+            epoch = %slot.epoch(),
+            validator_indexes = ?remaining,
+            "Missing attester duties",
+        );
+    }
+
+    Ok(result)
 }

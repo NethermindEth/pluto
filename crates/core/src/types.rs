@@ -161,7 +161,7 @@ impl TryFrom<i32> for DutyType {
 }
 
 /// SlotNumber struct
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SlotNumber(u64);
 
 impl Display for SlotNumber {
@@ -436,14 +436,60 @@ impl AsRef<[u8]> for PubKey {
 // todo: add toEth2Format for the pub key
 // https://github.com/ObolNetwork/charon/blob/b3008103c5429b031b63518195f4c49db4e9a68d/core/types.go#L311
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Errors in [`DutyDefinition`].
+#[derive(Debug, thiserror::Error)]
+pub enum DutyDefinitionError {
+    /// Invalid field when parsing from a response.
+    #[error("invalid field `{field}` in duty definition")]
+    InvalidField { field: &'static str },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AttesterDutyDefinition {
+    pub pubkey: PubKey,
+    pub v_idx: u64,
+    pub slot: SlotNumber,
+
+    inner: pluto_eth2api::types::GetAttesterDutiesResponseResponseDatum,
+}
+
+impl TryInto<AttesterDutyDefinition>
+    for pluto_eth2api::types::GetAttesterDutiesResponseResponseDatum
+{
+    type Error = DutyDefinitionError;
+
+    fn try_into(self) -> Result<AttesterDutyDefinition, Self::Error> {
+        let pubkey = PubKey::try_from(self.pubkey.as_str())
+            .map_err(|_| DutyDefinitionError::InvalidField { field: "pubkey" })?;
+        let v_idx =
+            self.validator_index
+                .parse::<u64>()
+                .map_err(|_| DutyDefinitionError::InvalidField {
+                    field: "validator_index",
+                })?;
+        let slot = SlotNumber::from(
+            self.slot
+                .parse::<u64>()
+                .map_err(|_| DutyDefinitionError::InvalidField { field: "slot" })?,
+        );
+
+        Ok(AttesterDutyDefinition {
+            pubkey,
+            v_idx,
+            slot,
+            inner: self,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum DutyDefinition {
-    Attester(),
+    Attester(AttesterDutyDefinition),
     Proposer(),
     SyncCommittee(),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct DutyDefinitionSet(HashMap<PubKey, DutyDefinition>);
 
 impl Deref for DutyDefinitionSet {
