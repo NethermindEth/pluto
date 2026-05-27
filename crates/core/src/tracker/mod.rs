@@ -128,6 +128,10 @@ pub trait Tracker: Send + Sync {
 }
 
 /// Buffer capacity for the internal event channel.
+///
+/// Sized to absorb a full epoch's worth of events across all duty types and
+/// validators without back-pressuring producers while the loop is busy with a
+/// deadliner round-trip.
 const INPUT_BUFFER: usize = 1024;
 
 /// A single event emitted by a core workflow component.
@@ -361,6 +365,8 @@ impl TrackerService {
 
         loop {
             tokio::select! {
+                // Cancellation is checked first so shutdown is never delayed by
+                // a busy event or deadliner channel.
                 biased;
 
                 _ = self.cancel.cancelled() => {
@@ -372,9 +378,16 @@ impl TrackerService {
                         continue;
                     }
 
+                    // Run both deadliner adds concurrently to avoid stalling
+                    // the loop on two sequential channel round-trips.
+                    let (deleter_outcome, analyser_outcome) = tokio::join!(
+                        self.deleter.add(e.duty.clone()),
+                        self.analyser.add(e.duty.clone()),
+                    );
+
                     // Ignore expired or never-expiring duties.
-                    if self.deleter.add(e.duty.clone()).await != AddOutcome::Scheduled
-                        || self.analyser.add(e.duty.clone()).await != AddOutcome::Scheduled
+                    if deleter_outcome != AddOutcome::Scheduled
+                        || analyser_outcome != AddOutcome::Scheduled
                     {
                         continue;
                     }
@@ -384,7 +397,6 @@ impl TrackerService {
 
                 Some(duty) = self.analyser_rx.recv() => {
                     // TODO: extract par sigs, analyse failed duty, report participation.
-                    let _ = &events;
                     tracing::debug!(duty = %duty, "Duty analysis triggered (not yet implemented)");
                 }
 

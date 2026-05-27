@@ -140,7 +140,7 @@ pub const REASON_NO_CONSENSUS: Reason = Reason {
 pub const REASON_NO_LOCAL_VC_SIGNATURE: Reason = Reason {
     code: "no_local_vc_signature",
     short: "signed duty not submitted by local validator client",
-    long: "Reason `no_local_vc_signature` indicates that partial signature we never submitted by the local validator client. This could indicate that the local validator client is offline, or has connection problems with charon, or has some other problem. See validator client logs for more details.",
+    long: "Reason `no_local_vc_signature` indicates that partial signature we never submitted by the local validator client. This could indicate that the local validator client is offline, or has connection problems with pluto, or has some other problem. See validator client logs for more details.",
 };
 
 /// No partial signatures were received from any peer.
@@ -161,7 +161,7 @@ pub const REASON_INSUFFICIENT_PEER_SIGNATURES: Reason = Reason {
 pub const REASON_PAR_SIG_DB_INCONSISTENT_SYNC: Reason = Reason {
     code: "par_sig_db_inconsistent_sync",
     short: "known limitation: inconsistent sync committee signatures received",
-    long: "Reason `par_sig_db_inconsistent_sync` indicates that partial signed data for the sync committee duty were inconsistent. This is known limitation in this version of charon.",
+    long: "Reason `par_sig_db_inconsistent_sync` indicates that partial signed data for the sync committee duty were inconsistent. This is known limitation in this version of pluto.",
 };
 
 /// Beacon node returned an error when broadcasting the aggregated duty.
@@ -175,21 +175,21 @@ pub const REASON_BROADCAST_BN_ERROR: Reason = Reason {
 pub const REASON_NOT_INCLUDED_ON_CHAIN: Reason = Reason {
     code: "not_included_onchain",
     short: "duty not included on-chain",
-    long: "Reason `not_included_onchain` indicates that even though charon broadcasted the duty successfully, it wasn't included in the beacon chain. This is expected for up to 20% of attestations. It may however indicate problematic charon broadcast delays or beacon node network problems.",
+    long: "Reason `not_included_onchain` indicates that even though pluto broadcasted the duty successfully, it wasn't included in the beacon chain. This is expected for up to 20% of attestations. It may however indicate problematic pluto broadcast delays or beacon node network problems.",
 };
 
 /// Bug: fetcher step encountered an unexpected error.
 pub const REASON_BUG_FETCH_ERROR: Reason = Reason {
     code: "bug_fetch_error",
     short: "bug: couldn't fetch due to unexpected error",
-    long: "Reason `bug_fetch_error` indicates duty failed in fetcher step with some unexpected error. This indicates a problem in charon as it is unexpected.",
+    long: "Reason `bug_fetch_error` indicates duty failed in fetcher step with some unexpected error. This indicates a problem in pluto as it is unexpected.",
 };
 
 /// Bug: partial signatures for a non-sync duty were inconsistent.
 pub const REASON_BUG_PAR_SIG_DB_INCONSISTENT: Reason = Reason {
     code: "bug_par_sig_db_inconsistent",
     short: "bug: inconsistent partial signatures received",
-    long: "Reason `bug_par_sig_db_inconsistent` indicates that partial signed data for the duty were inconsistent. This indicates a bug in charon as it is unexpected (for non-sync-committee-duties).",
+    long: "Reason `bug_par_sig_db_inconsistent` indicates that partial signed data for the duty were inconsistent. This indicates a bug in pluto as it is unexpected (for non-sync-committee-duties).",
 };
 
 /// Bug: failed to store external partial signatures in parsigdb.
@@ -203,7 +203,7 @@ pub const REASON_BUG_PAR_SIG_DB_EXTERNAL: Reason = Reason {
 pub const REASON_BUG_SIG_AGG: Reason = Reason {
     code: "bug_sig_agg",
     short: "bug: threshold aggregation of partial signatures failed due to inconsistent signed data",
-    long: "Reason `bug_sig_agg` indicates that BLS threshold aggregation of sufficient partial signatures failed. This indicates inconsistent signed data. This indicates a bug in charon as it is unexpected.",
+    long: "Reason `bug_sig_agg` indicates that BLS threshold aggregation of sufficient partial signatures failed. This indicates inconsistent signed data. This indicates a bug in pluto as it is unexpected.",
 };
 
 /// Bug: failed to store aggregated signature in aggsigdb.
