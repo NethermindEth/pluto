@@ -23,6 +23,9 @@ pub mod version;
 /// Duty deadline tracking and notification.
 pub mod deadline;
 
+/// Clock abstraction over the current time.
+pub mod clock;
+
 /// parsigdb
 pub mod parsigdb;
 

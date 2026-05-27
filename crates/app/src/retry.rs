@@ -1,27 +1,9 @@
 use backon::{BackoffBuilder, Retryable};
 use chrono::{DateTime, Utc};
+use pluto_core::clock::{ChronoClock, Clock};
 use std::{sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error, info, warn};
-
-/// Provides the "current time" used to compute retry deadlines.
-///
-/// [`ChronoClock`] is the production implementation; tests can supply a
-/// deterministic clock instead.
-pub trait Clock: Send + Sync + 'static {
-    /// Returns the current time.
-    fn now(&self) -> DateTime<Utc>;
-}
-
-/// [`Clock`] backed by the system wall clock via [`chrono::Utc::now`].
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ChronoClock;
-
-impl Clock for ChronoClock {
-    fn now(&self) -> DateTime<Utc> {
-        Utc::now()
-    }
-}
 
 /// Options for the asynchronous retry executor.
 #[derive(Clone)]
@@ -214,19 +196,10 @@ pub async fn do_async<
 mod tests {
     use tokio_util::sync::CancellationToken;
 
-    use crate::retry::{self, Clock, DoAsyncError};
-    use chrono::{DateTime, Utc};
+    use crate::retry::{self, DoAsyncError};
+    use chrono::Utc;
     use core::time;
     use std::sync::{Arc, Mutex};
-
-    /// [`Clock`] that always returns a fixed instant, for deterministic tests.
-    struct FixedClock(DateTime<Utc>);
-
-    impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
-            self.0
-        }
-    }
 
     struct TestCase {
         options: retry::AsyncOptions<()>,
@@ -316,7 +289,7 @@ mod tests {
         run_test(TestCase {
             options: retry::AsyncOptions::default()
                 .with_backoff(test_backoff())
-                .with_time(FixedClock(now))
+                .with_time(move || now)
                 .with_deadline(move |_| Some(now)),
             func: Arc::new(|_| Err(DoAsyncError::RetryableError)),
             expected_attempts: 1,
