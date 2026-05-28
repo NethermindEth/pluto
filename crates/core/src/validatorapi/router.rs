@@ -17,7 +17,7 @@ use super::{
     handler::Handler,
     types::{
         AttesterDutiesOpts, AttesterDutiesResponse, NodeVersionResponse, ProposerDutiesOpts,
-        ProposerDutiesResponse, ValIndexes,
+        ProposerDutiesResponse, SyncCommitteeDutiesOpts, SyncCommitteeDutiesResponse, ValIndexes,
     },
 };
 
@@ -151,8 +151,20 @@ async fn proposer_duties(
     Ok(Json(response))
 }
 
-async fn sync_committee_duties() {
-    todo!("vapi: sync_committee_duties");
+async fn sync_committee_duties(
+    State(state): State<Arc<AppState>>,
+    Path(epoch): Path<u64>,
+    Json(indices): Json<ValIndexes>,
+) -> Result<Json<SyncCommitteeDutiesResponse>, ApiError> {
+    let response = state
+        .handler
+        .sync_committee_duties(SyncCommitteeDutiesOpts {
+            epoch,
+            indices: indices.0,
+        })
+        .await?;
+
+    Ok(Json(response))
 }
 
 async fn attestation_data() {
@@ -245,7 +257,8 @@ mod tests {
     use crate::validatorapi::{
         testutils::TestHandler,
         types::{
-            AttesterDutiesResponse, AttesterDuty, ProposerDutiesResponse, ProposerDuty, ValIndexes,
+            AttesterDutiesResponse, AttesterDuty, ProposerDutiesResponse, ProposerDuty,
+            SyncCommitteeDutiesResponse, SyncCommitteeDuty, ValIndexes,
         },
     };
 
@@ -296,6 +309,37 @@ mod tests {
         assert_eq!(json["data"][0]["slot"], "12");
         assert_eq!(json["data"][0]["committee_index"], "3");
         assert_eq!(json["data"][0]["validator_index"], "7");
+    }
+
+    #[tokio::test]
+    async fn sync_committee_duties_wraps_handler_value() {
+        let duty = SyncCommitteeDuty {
+            pubkey: "0x112233".to_owned(),
+            validator_index: "9".to_owned(),
+            validator_sync_committee_indices: vec!["0".to_owned(), "5".to_owned()],
+        };
+        let handler =
+            TestHandler::default().with_sync_committee_duties(SyncCommitteeDutiesResponse {
+                data: vec![duty],
+                execution_optimistic: true,
+            });
+        let state = Arc::new(AppState {
+            handler: Arc::new(handler),
+            builder_enabled: false,
+        });
+
+        let Json(body) = sync_committee_duties(
+            State(state),
+            Path(7u64),
+            Json(ValIndexes(vec!["9".to_owned()])),
+        )
+        .await
+        .unwrap();
+
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["execution_optimistic"], true);
+        assert_eq!(json["data"][0]["validator_index"], "9");
+        assert_eq!(json["data"][0]["validator_sync_committee_indices"][1], "5");
     }
 
     #[test]

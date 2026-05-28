@@ -9,7 +9,7 @@ use super::{
         AttesterDutiesResponse, BeaconCommitteeSelection, EthResponse, NodeVersionResponse,
         ProposalOpts, ProposerDutiesOpts, ProposerDutiesResponse, SignedContributionAndProof,
         SignedValidatorRegistration, SignedVoluntaryExit, SyncCommitteeContribution,
-        SyncCommitteeContributionOpts, SyncCommitteeDutiesOpts, SyncCommitteeDuty,
+        SyncCommitteeContributionOpts, SyncCommitteeDutiesOpts, SyncCommitteeDutiesResponse,
         SyncCommitteeMessage, SyncCommitteeSelection, Validator, ValidatorsOpts,
         VersionedAttestation, VersionedProposal, VersionedSignedAggregateAndProof,
         VersionedSignedBlindedProposal, VersionedSignedProposal,
@@ -40,7 +40,7 @@ pub trait Handler: Send + Sync + 'static {
     async fn sync_committee_duties(
         &self,
         opts: SyncCommitteeDutiesOpts,
-    ) -> Result<EthResponse<Vec<SyncCommitteeDuty>>, ApiError>;
+    ) -> Result<SyncCommitteeDutiesResponse, ApiError>;
 
     /// `GET /eth/v1/validator/attestation_data`.
     async fn attestation_data(

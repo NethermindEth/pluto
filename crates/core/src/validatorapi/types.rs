@@ -12,6 +12,8 @@ pub use pluto_eth2api::{
     GetAttesterDutiesResponseResponseDatum as AttesterDuty,
     GetProposerDutiesResponseResponse as ProposerDutiesResponse,
     GetProposerDutiesResponseResponseDatum as ProposerDuty,
+    GetSyncCommitteeDutiesResponseResponse as SyncCommitteeDutiesResponse,
+    GetSyncCommitteeDutiesResponseResponseDatum as SyncCommitteeDuty,
     GetVersionResponseResponse as NodeVersionResponse,
     GetVersionResponseResponseData as NodeVersionData,
     spec::phase0::{Epoch, Root, Slot, ValidatorIndex},
@@ -121,10 +123,6 @@ pub struct SyncCommitteeContributionOpts {
     /// Hash-tree root of the beacon block the contribution signs over.
     pub beacon_block_root: Root,
 }
-
-/// Sync-committee duty payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct SyncCommitteeDuty {}
 
 /// Attestation data payload. Placeholder.
 #[derive(Debug, Clone)]

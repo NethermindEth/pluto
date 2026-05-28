@@ -15,8 +15,8 @@ use super::{
         NodeVersionResponse, ProposalOpts, ProposerDutiesOpts, ProposerDutiesResponse,
         SignedContributionAndProof, SignedValidatorRegistration, SignedVoluntaryExit,
         SyncCommitteeContribution, SyncCommitteeContributionOpts, SyncCommitteeDutiesOpts,
-        SyncCommitteeDuty, SyncCommitteeMessage, SyncCommitteeSelection, Validator, ValidatorsOpts,
-        VersionedAttestation, VersionedProposal, VersionedSignedAggregateAndProof,
+        SyncCommitteeDutiesResponse, SyncCommitteeMessage, SyncCommitteeSelection, Validator,
+        ValidatorsOpts, VersionedAttestation, VersionedProposal, VersionedSignedAggregateAndProof,
         VersionedSignedBlindedProposal, VersionedSignedProposal,
     },
 };
@@ -30,6 +30,8 @@ pub struct TestHandler {
     pub proposer_duties_response: Option<ProposerDutiesResponse>,
     /// Value returned by [`Handler::attester_duties`].
     pub attester_duties_response: Option<AttesterDutiesResponse>,
+    /// Value returned by [`Handler::sync_committee_duties`].
+    pub sync_committee_duties_response: Option<SyncCommitteeDutiesResponse>,
 }
 
 impl TestHandler {
@@ -50,6 +52,12 @@ impl TestHandler {
     /// Sets the response returned by [`Handler::attester_duties`].
     pub fn with_attester_duties(mut self, response: AttesterDutiesResponse) -> Self {
         self.attester_duties_response = Some(response);
+        self
+    }
+
+    /// Sets the response returned by [`Handler::sync_committee_duties`].
+    pub fn with_sync_committee_duties(mut self, response: SyncCommitteeDutiesResponse) -> Self {
+        self.sync_committee_duties_response = Some(response);
         self
     }
 }
@@ -87,8 +95,11 @@ impl Handler for TestHandler {
     async fn sync_committee_duties(
         &self,
         _opts: SyncCommitteeDutiesOpts,
-    ) -> Result<EthResponse<Vec<SyncCommitteeDuty>>, ApiError> {
-        unimplemented!("sync_committee_duties not stubbed in TestHandler")
+    ) -> Result<SyncCommitteeDutiesResponse, ApiError> {
+        Ok(self
+            .sync_committee_duties_response
+            .clone()
+            .expect("sync_committee_duties not stubbed in TestHandler"))
     }
 
     async fn attestation_data(

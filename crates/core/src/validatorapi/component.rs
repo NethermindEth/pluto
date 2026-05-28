@@ -10,7 +10,8 @@ use async_trait::async_trait;
 use axum::http::StatusCode;
 use pluto_eth2api::{
     EthBeaconNodeApiClient, GetAttesterDutiesRequest, GetAttesterDutiesResponse,
-    GetProposerDutiesRequest, GetProposerDutiesResponse, spec::phase0::BLSPubKey,
+    GetProposerDutiesRequest, GetProposerDutiesResponse, GetSyncCommitteeDutiesRequest,
+    GetSyncCommitteeDutiesResponse, spec::phase0::BLSPubKey,
 };
 
 use super::{
@@ -22,8 +23,8 @@ use super::{
         NodeVersionData, NodeVersionResponse, ProposalOpts, ProposerDutiesOpts,
         ProposerDutiesResponse, ProposerDuty, SignedContributionAndProof,
         SignedValidatorRegistration, SignedVoluntaryExit, SyncCommitteeContribution,
-        SyncCommitteeContributionOpts, SyncCommitteeDutiesOpts, SyncCommitteeDuty,
-        SyncCommitteeMessage, SyncCommitteeSelection, Validator, ValidatorsOpts,
+        SyncCommitteeContributionOpts, SyncCommitteeDutiesOpts, SyncCommitteeDutiesResponse,
+        SyncCommitteeDuty, SyncCommitteeMessage, SyncCommitteeSelection, Validator, ValidatorsOpts,
         VersionedAttestation, VersionedProposal, VersionedSignedAggregateAndProof,
         VersionedSignedBlindedProposal, VersionedSignedProposal,
     },
@@ -185,9 +186,48 @@ impl Handler for Component {
 
     async fn sync_committee_duties(
         &self,
-        _opts: SyncCommitteeDutiesOpts,
-    ) -> Result<EthResponse<Vec<SyncCommitteeDuty>>, ApiError> {
-        unimplemented!("sync_committee_duties not yet ported")
+        opts: SyncCommitteeDutiesOpts,
+    ) -> Result<SyncCommitteeDutiesResponse, ApiError> {
+        let request = GetSyncCommitteeDutiesRequest::builder()
+            .epoch(opts.epoch.to_string())
+            .body(opts.indices)
+            .build()
+            .map_err(|err| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "invalid sync committee duties request",
+                )
+                .with_source(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    err.to_string(),
+                ))
+            })?;
+
+        let response = self
+            .eth2_cl
+            .get_sync_committee_duties(request)
+            .await
+            .map_err(|err| {
+                ApiError::new(
+                    StatusCode::BAD_GATEWAY,
+                    "upstream sync committee duties failed",
+                )
+                .with_source(std::io::Error::other(err.to_string()))
+            })?;
+
+        let mut payload = match response {
+            GetSyncCommitteeDutiesResponse::Ok(payload) => payload,
+            other => {
+                return Err(ApiError::new(
+                    StatusCode::BAD_GATEWAY,
+                    format!("unexpected upstream sync committee duties response: {other:?}"),
+                ));
+            }
+        };
+
+        swap_sync_committee_pubshares(&mut payload.data, &self.pub_share_by_pubkey)?;
+
+        Ok(payload)
     }
 
     async fn attestation_data(
@@ -326,6 +366,24 @@ fn swap_attester_pubshares(
     Ok(())
 }
 
+/// Sync-committee duties variant of [`swap_attester_pubshares`].
+fn swap_sync_committee_pubshares(
+    duties: &mut [SyncCommitteeDuty],
+    pub_share_by_pubkey: &HashMap<BLSPubKey, BLSPubKey>,
+) -> Result<(), ApiError> {
+    for duty in duties {
+        let pubkey = parse_bls_pubkey(&duty.pubkey)?;
+        let share = pub_share_by_pubkey.get(&pubkey).ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                "pubshare not found for sync committee duty",
+            )
+        })?;
+        duty.pubkey = format_bls_pubkey(share);
+    }
+    Ok(())
+}
+
 fn parse_bls_pubkey(s: &str) -> Result<BLSPubKey, ApiError> {
     let trimmed = s.strip_prefix("0x").unwrap_or(s);
     let bytes = hex::decode(trimmed).map_err(|err| {
@@ -408,6 +466,31 @@ mod tests {
             validator_index: "6".to_owned(),
         }];
         let err = swap_attester_pubshares(&mut stranger_duties, &map).unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_GATEWAY);
+    }
+
+    #[test]
+    fn swap_sync_committee_replaces_pubkeys_and_rejects_unknown() {
+        let root = [0x44_u8; 48];
+        let share = [0x55_u8; 48];
+        let unknown = [0x66_u8; 48];
+
+        let map = HashMap::from([(root, share)]);
+
+        let mut duties = vec![SyncCommitteeDuty {
+            pubkey: format_bls_pubkey(&root),
+            validator_index: "12".to_owned(),
+            validator_sync_committee_indices: vec!["0".to_owned()],
+        }];
+        swap_sync_committee_pubshares(&mut duties, &map).unwrap();
+        assert_eq!(duties[0].pubkey, format_bls_pubkey(&share));
+
+        let mut stranger = vec![SyncCommitteeDuty {
+            pubkey: format_bls_pubkey(&unknown),
+            validator_index: "13".to_owned(),
+            validator_sync_committee_indices: vec![],
+        }];
+        let err = swap_sync_committee_pubshares(&mut stranger, &map).unwrap_err();
         assert_eq!(err.status_code, StatusCode::BAD_GATEWAY);
     }
 
