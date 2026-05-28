@@ -349,6 +349,7 @@ impl TrackerService {
     }
 
     /// Like [`start`] but with a configurable channel buffer size, for tests.
+    #[allow(clippy::too_many_arguments)]
     fn start_with_buffer(
         cancel: CancellationToken,
         analyser: DeadlinerHandle,
