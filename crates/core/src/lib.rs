@@ -23,7 +23,7 @@ pub mod version;
 /// Duty deadline tracking and notification.
 pub mod deadline;
 
-/// Implementations of ParSigDB.
+/// parsigdb.
 pub mod parsigdb;
 
 /// DutyDB — in-memory store for unsigned duty data.
