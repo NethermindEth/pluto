@@ -189,7 +189,7 @@ impl Transport {
         let task_ct = ct.clone();
         let recv_tx = self.recv_tx.clone();
         let sniffer = sync::Arc::clone(&self.sniffer);
-        let sniffed_msg = sync::Arc::clone(&msg);
+        let sniffed_msg = consensus_msg.clone();
         // Self-send is intentionally detached: the inner receive buffer can
         // block, but network broadcast must still proceed.
         tokio::spawn(async move {
@@ -197,7 +197,7 @@ impl Transport {
                 () = task_ct.cancelled() => {}
                 result = recv_tx.send(inner_msg) => {
                     if result.is_ok() {
-                        sniffer.add(sniffed_msg.to_consensus_msg());
+                        sniffer.add(sniffed_msg);
                     }
                 }
             }
