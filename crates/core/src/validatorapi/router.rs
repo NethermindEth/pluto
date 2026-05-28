@@ -15,7 +15,10 @@ use axum::{
 use super::{
     error::ApiError,
     handler::Handler,
-    types::{NodeVersionResponse, ProposerDutiesOpts, ProposerDutiesResponse},
+    types::{
+        AttesterDutiesOpts, AttesterDutiesResponse, NodeVersionResponse, ProposerDutiesOpts,
+        ProposerDutiesResponse, ValIndexes,
+    },
 };
 
 /// Shared router state. Cloned per request via [`Arc`].
@@ -120,8 +123,20 @@ pub fn new_router(handler: Arc<dyn Handler>, builder_enabled: bool) -> Router {
         .with_state(state)
 }
 
-async fn attester_duties() {
-    todo!("vapi: attester_duties");
+async fn attester_duties(
+    State(state): State<Arc<AppState>>,
+    Path(epoch): Path<u64>,
+    Json(indices): Json<ValIndexes>,
+) -> Result<Json<AttesterDutiesResponse>, ApiError> {
+    let response = state
+        .handler
+        .attester_duties(AttesterDutiesOpts {
+            epoch,
+            indices: indices.0,
+        })
+        .await?;
+
+    Ok(Json(response))
 }
 
 async fn proposer_duties(
@@ -229,7 +244,9 @@ mod tests {
     use super::*;
     use crate::validatorapi::{
         testutils::TestHandler,
-        types::{ProposerDutiesResponse, ProposerDuty},
+        types::{
+            AttesterDutiesResponse, AttesterDuty, ProposerDutiesResponse, ProposerDuty, ValIndexes,
+        },
     };
 
     #[tokio::test]
@@ -242,6 +259,55 @@ mod tests {
         let Json(body) = node_version(State(state)).await.unwrap();
 
         assert_eq!(body.data.version, "pluto/test/v1.0");
+    }
+
+    #[tokio::test]
+    async fn attester_duties_wraps_handler_value() {
+        let duty = AttesterDuty {
+            pubkey: "0xaabbccddeeff".to_owned(),
+            slot: "12".to_owned(),
+            committee_index: "3".to_owned(),
+            committee_length: "16".to_owned(),
+            committees_at_slot: "4".to_owned(),
+            validator_committee_index: "2".to_owned(),
+            validator_index: "7".to_owned(),
+        };
+        let handler = TestHandler::default().with_attester_duties(AttesterDutiesResponse {
+            data: vec![duty],
+            dependent_root: "0xab".to_owned(),
+            execution_optimistic: false,
+        });
+        let state = Arc::new(AppState {
+            handler: Arc::new(handler),
+            builder_enabled: false,
+        });
+
+        let Json(body) = attester_duties(
+            State(state),
+            Path(42u64),
+            Json(ValIndexes(vec!["7".to_owned()])),
+        )
+        .await
+        .unwrap();
+
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["dependent_root"], "0xab");
+        assert_eq!(json["execution_optimistic"], false);
+        assert_eq!(json["data"][0]["slot"], "12");
+        assert_eq!(json["data"][0]["committee_index"], "3");
+        assert_eq!(json["data"][0]["validator_index"], "7");
+    }
+
+    #[test]
+    fn val_indexes_accepts_numbers_and_strings() {
+        let nums: ValIndexes = serde_json::from_str("[1, 2, 3]").unwrap();
+        assert_eq!(nums.0, vec!["1", "2", "3"]);
+
+        let strs: ValIndexes = serde_json::from_str(r#"["4", "5"]"#).unwrap();
+        assert_eq!(strs.0, vec!["4", "5"]);
+
+        let bad = serde_json::from_str::<ValIndexes>(r#"["not-a-number"]"#);
+        assert!(bad.is_err());
     }
 
     #[tokio::test]

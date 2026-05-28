@@ -11,11 +11,11 @@ use super::{
     handler::Handler,
     types::{
         AggregateAttestationOpts, AttestationData, AttestationDataOpts, AttesterDutiesOpts,
-        AttesterDuty, BeaconCommitteeSelection, EthResponse, NodeVersionData, NodeVersionResponse,
-        ProposalOpts, ProposerDutiesOpts, ProposerDutiesResponse, SignedContributionAndProof,
-        SignedValidatorRegistration, SignedVoluntaryExit, SyncCommitteeContribution,
-        SyncCommitteeContributionOpts, SyncCommitteeDutiesOpts, SyncCommitteeDuty,
-        SyncCommitteeMessage, SyncCommitteeSelection, Validator, ValidatorsOpts,
+        AttesterDutiesResponse, BeaconCommitteeSelection, EthResponse, NodeVersionData,
+        NodeVersionResponse, ProposalOpts, ProposerDutiesOpts, ProposerDutiesResponse,
+        SignedContributionAndProof, SignedValidatorRegistration, SignedVoluntaryExit,
+        SyncCommitteeContribution, SyncCommitteeContributionOpts, SyncCommitteeDutiesOpts,
+        SyncCommitteeDuty, SyncCommitteeMessage, SyncCommitteeSelection, Validator, ValidatorsOpts,
         VersionedAttestation, VersionedProposal, VersionedSignedAggregateAndProof,
         VersionedSignedBlindedProposal, VersionedSignedProposal,
     },
@@ -28,6 +28,8 @@ pub struct TestHandler {
     pub version: String,
     /// Value returned by [`Handler::proposer_duties`].
     pub proposer_duties_response: Option<ProposerDutiesResponse>,
+    /// Value returned by [`Handler::attester_duties`].
+    pub attester_duties_response: Option<AttesterDutiesResponse>,
 }
 
 impl TestHandler {
@@ -42,6 +44,12 @@ impl TestHandler {
     /// Sets the response returned by [`Handler::proposer_duties`].
     pub fn with_proposer_duties(mut self, response: ProposerDutiesResponse) -> Self {
         self.proposer_duties_response = Some(response);
+        self
+    }
+
+    /// Sets the response returned by [`Handler::attester_duties`].
+    pub fn with_attester_duties(mut self, response: AttesterDutiesResponse) -> Self {
+        self.attester_duties_response = Some(response);
         self
     }
 }
@@ -59,8 +67,11 @@ impl Handler for TestHandler {
     async fn attester_duties(
         &self,
         _opts: AttesterDutiesOpts,
-    ) -> Result<EthResponse<Vec<AttesterDuty>>, ApiError> {
-        unimplemented!("attester_duties not stubbed in TestHandler")
+    ) -> Result<AttesterDutiesResponse, ApiError> {
+        Ok(self
+            .attester_duties_response
+            .clone()
+            .expect("attester_duties not stubbed in TestHandler"))
     }
 
     async fn proposer_duties(

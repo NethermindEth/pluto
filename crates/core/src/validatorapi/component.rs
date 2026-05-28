@@ -9,8 +9,8 @@ use std::{collections::HashMap, sync::Arc};
 use async_trait::async_trait;
 use axum::http::StatusCode;
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, GetProposerDutiesRequest, GetProposerDutiesResponse,
-    spec::phase0::BLSPubKey,
+    EthBeaconNodeApiClient, GetAttesterDutiesRequest, GetAttesterDutiesResponse,
+    GetProposerDutiesRequest, GetProposerDutiesResponse, spec::phase0::BLSPubKey,
 };
 
 use super::{
@@ -18,11 +18,12 @@ use super::{
     handler::Handler,
     types::{
         AggregateAttestationOpts, AttestationData, AttestationDataOpts, AttesterDutiesOpts,
-        AttesterDuty, BeaconCommitteeSelection, EthResponse, NodeVersionData, NodeVersionResponse,
-        ProposalOpts, ProposerDutiesOpts, ProposerDutiesResponse, ProposerDuty,
-        SignedContributionAndProof, SignedValidatorRegistration, SignedVoluntaryExit,
-        SyncCommitteeContribution, SyncCommitteeContributionOpts, SyncCommitteeDutiesOpts,
-        SyncCommitteeDuty, SyncCommitteeMessage, SyncCommitteeSelection, Validator, ValidatorsOpts,
+        AttesterDutiesResponse, AttesterDuty, BeaconCommitteeSelection, EthResponse,
+        NodeVersionData, NodeVersionResponse, ProposalOpts, ProposerDutiesOpts,
+        ProposerDutiesResponse, ProposerDuty, SignedContributionAndProof,
+        SignedValidatorRegistration, SignedVoluntaryExit, SyncCommitteeContribution,
+        SyncCommitteeContributionOpts, SyncCommitteeDutiesOpts, SyncCommitteeDuty,
+        SyncCommitteeMessage, SyncCommitteeSelection, Validator, ValidatorsOpts,
         VersionedAttestation, VersionedProposal, VersionedSignedAggregateAndProof,
         VersionedSignedBlindedProposal, VersionedSignedProposal,
     },
@@ -144,9 +145,42 @@ impl Handler for Component {
 
     async fn attester_duties(
         &self,
-        _opts: AttesterDutiesOpts,
-    ) -> Result<EthResponse<Vec<AttesterDuty>>, ApiError> {
-        unimplemented!("attester_duties not yet ported")
+        opts: AttesterDutiesOpts,
+    ) -> Result<AttesterDutiesResponse, ApiError> {
+        let request = GetAttesterDutiesRequest::builder()
+            .epoch(opts.epoch.to_string())
+            .body(opts.indices)
+            .build()
+            .map_err(|err| {
+                ApiError::new(StatusCode::BAD_REQUEST, "invalid attester duties request")
+                    .with_source(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        err.to_string(),
+                    ))
+            })?;
+
+        let response = self
+            .eth2_cl
+            .get_attester_duties(request)
+            .await
+            .map_err(|err| {
+                ApiError::new(StatusCode::BAD_GATEWAY, "upstream attester duties failed")
+                    .with_source(std::io::Error::other(err.to_string()))
+            })?;
+
+        let mut payload = match response {
+            GetAttesterDutiesResponse::Ok(payload) => payload,
+            other => {
+                return Err(ApiError::new(
+                    StatusCode::BAD_GATEWAY,
+                    format!("unexpected upstream attester duties response: {other:?}"),
+                ));
+            }
+        };
+
+        swap_attester_pubshares(&mut payload.data, &self.pub_share_by_pubkey)?;
+
+        Ok(payload)
     }
 
     async fn sync_committee_duties(
@@ -272,6 +306,26 @@ fn swap_proposer_pubshares(
     Ok(())
 }
 
+/// Like [`swap_proposer_pubshares`] but for attester duties. Attester duties
+/// only ever come back for validators owned by this cluster, so an unknown
+/// pubkey indicates a misconfiguration and is rejected.
+fn swap_attester_pubshares(
+    duties: &mut [AttesterDuty],
+    pub_share_by_pubkey: &HashMap<BLSPubKey, BLSPubKey>,
+) -> Result<(), ApiError> {
+    for duty in duties {
+        let pubkey = parse_bls_pubkey(&duty.pubkey)?;
+        let share = pub_share_by_pubkey.get(&pubkey).ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                "pubshare not found for attester duty",
+            )
+        })?;
+        duty.pubkey = format_bls_pubkey(share);
+    }
+    Ok(())
+}
+
 fn parse_bls_pubkey(s: &str) -> Result<BLSPubKey, ApiError> {
     let trimmed = s.strip_prefix("0x").unwrap_or(s);
     let bytes = hex::decode(trimmed).map_err(|err| {
@@ -321,6 +375,40 @@ mod tests {
 
         assert_eq!(duties[0].pubkey, format_bls_pubkey(&share));
         assert_eq!(duties[1].pubkey, format_bls_pubkey(&stranger));
+    }
+
+    #[test]
+    fn swap_attester_replaces_pubkeys_and_rejects_unknown() {
+        let root = [0x11_u8; 48];
+        let share = [0x22_u8; 48];
+        let unknown = [0x33_u8; 48];
+
+        let map = HashMap::from([(root, share)]);
+
+        let mut duties = vec![AttesterDuty {
+            pubkey: format_bls_pubkey(&root),
+            slot: "1".to_owned(),
+            committee_index: "0".to_owned(),
+            committee_length: "16".to_owned(),
+            committees_at_slot: "4".to_owned(),
+            validator_committee_index: "0".to_owned(),
+            validator_index: "5".to_owned(),
+        }];
+
+        swap_attester_pubshares(&mut duties, &map).unwrap();
+        assert_eq!(duties[0].pubkey, format_bls_pubkey(&share));
+
+        let mut stranger_duties = vec![AttesterDuty {
+            pubkey: format_bls_pubkey(&unknown),
+            slot: "2".to_owned(),
+            committee_index: "0".to_owned(),
+            committee_length: "16".to_owned(),
+            committees_at_slot: "4".to_owned(),
+            validator_committee_index: "0".to_owned(),
+            validator_index: "6".to_owned(),
+        }];
+        let err = swap_attester_pubshares(&mut stranger_duties, &map).unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_GATEWAY);
     }
 
     #[test]

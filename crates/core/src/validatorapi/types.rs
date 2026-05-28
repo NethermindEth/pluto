@@ -4,8 +4,12 @@
 //! Most data payloads are empty placeholders for now and will be swapped
 //! for the proper consensus-spec types in a later phase.
 
+use serde::{Deserialize, Deserializer, Serialize};
+
 pub use pluto_crypto::types::{PublicKey as BlsPubKey, Signature as BlsSignature};
 pub use pluto_eth2api::{
+    GetAttesterDutiesResponseResponse as AttesterDutiesResponse,
+    GetAttesterDutiesResponseResponseDatum as AttesterDuty,
     GetProposerDutiesResponseResponse as ProposerDutiesResponse,
     GetProposerDutiesResponseResponseDatum as ProposerDuty,
     GetVersionResponseResponse as NodeVersionResponse,
@@ -35,8 +39,9 @@ pub struct EthResponse<T> {
 pub struct AttesterDutiesOpts {
     /// Epoch to fetch duties for.
     pub epoch: Epoch,
-    /// Validator indices to fetch duties for.
-    pub indices: Vec<ValidatorIndex>,
+    /// Validator indices to fetch duties for. Carried as strings since the
+    /// upstream auto-generated client takes string-typed indices.
+    pub indices: Vec<String>,
 }
 
 /// Options for
@@ -53,8 +58,9 @@ pub struct ProposerDutiesOpts {
 pub struct SyncCommitteeDutiesOpts {
     /// Epoch to fetch duties for.
     pub epoch: Epoch,
-    /// Validator indices to fetch duties for.
-    pub indices: Vec<ValidatorIndex>,
+    /// Validator indices to fetch duties for. Carried as strings since the
+    /// upstream auto-generated client takes string-typed indices.
+    pub indices: Vec<String>,
 }
 
 /// Options for
@@ -116,10 +122,6 @@ pub struct SyncCommitteeContributionOpts {
     pub beacon_block_root: Root,
 }
 
-/// Attester duty payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct AttesterDuty {}
-
 /// Sync-committee duty payload. Placeholder.
 #[derive(Debug, Clone)]
 pub struct SyncCommitteeDuty {}
@@ -179,3 +181,38 @@ pub struct BeaconCommitteeSelection {}
 /// Sync-committee selection payload. Placeholder.
 #[derive(Debug, Clone)]
 pub struct SyncCommitteeSelection {}
+
+/// Validator-index request body for the `attester_duties` and
+/// `sync_committee_duties` endpoints.
+///
+/// Accepts both numeric (`[1, 2]`) and string-encoded (`["1", "2"]`) JSON
+/// arrays. Indices are stored as decimal strings so they pass straight through
+/// to the auto-generated request builders.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ValIndexes(pub Vec<String>);
+
+impl<'de> Deserialize<'de> for ValIndexes {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Either {
+            Numbers(Vec<u64>),
+            Strings(Vec<String>),
+        }
+
+        let value = Either::deserialize(deserializer)?;
+        let indices = match value {
+            Either::Numbers(ns) => ns.into_iter().map(|n| n.to_string()).collect(),
+            Either::Strings(strs) => {
+                for s in &strs {
+                    s.parse::<u64>().map_err(serde::de::Error::custom)?;
+                }
+                strs
+            }
+        };
+        Ok(Self(indices))
+    }
+}
