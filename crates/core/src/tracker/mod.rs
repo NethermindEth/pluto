@@ -3,9 +3,11 @@
 //! [`TrackerService::start`] spawns a background loop that accumulates
 //! per-duty [`Event`]s submitted by core workflow components via the
 //! [`Tracker`] trait. When the analyser deadline fires the accumulated events
-//! will be used to determine failure reasons and report participation (not yet
-//! implemented). When the deleter deadline fires the events for that duty are
-//! discarded to bound memory usage.
+//! are passed through [`analysis::analyse_duty_failed`] and
+//! [`analysis::analyse_participation`], and the results are dispatched to the
+//! reporters in [`reporters`] for metrics and structured logging. When the
+//! deleter deadline fires the events for that duty are discarded to bound
+//! memory usage.
 //!
 //! Both deadliners must share the same [`CancellationToken`] as the tracker so
 //! that the whole system shuts down together.
@@ -15,6 +17,15 @@ pub mod reason;
 
 /// Step enum for the core workflow.
 pub mod step;
+
+/// Pure analysis functions used by the tracker loop.
+pub mod analysis;
+
+/// Prometheus metrics for the tracker.
+pub mod metrics;
+
+/// Reporters that consume analysis results and emit metrics/logs.
+pub mod reporters;
 
 use std::{collections::HashMap, future::Future, sync::Arc};
 
@@ -26,6 +37,10 @@ use crate::{
     types::{Duty, ParSignedData, ParSignedDataSet, PubKey},
 };
 
+use analysis::{
+    analyse_duty_failed, analyse_participation, extract_par_sigs, msg_roots_consistent,
+};
+use reporters::{FailedDutyReporter, ParticipationReporter, UnsupportedIgnorer, report_par_sigs};
 use step::Step;
 
 /// Type-erased step error.
@@ -151,6 +166,7 @@ const EVENT_BUFFER: usize = 1024;
 /// `par_sig` is only set by `ParSigDBInternal`, `ParSigEx`, and
 /// `ParSigDBExternal` events, matching Go's `event.parSig`.
 #[allow(dead_code)]
+#[derive(Clone)]
 pub(crate) struct Event {
     pub duty: Duty,
     pub step: Step,
@@ -312,8 +328,9 @@ pub struct TrackerService {
     deleter: DeadlinerHandle,
     deleter_rx: mpsc::Receiver<Duty>,
     from_slot: u64,
-    #[allow(dead_code)]
-    peers: Vec<PeerInfo>,
+    failed_duty_reporter: FailedDutyReporter,
+    participation_reporter: ParticipationReporter,
+    unsupported_ignorer: UnsupportedIgnorer,
 }
 
 impl TrackerService {
@@ -370,12 +387,46 @@ impl TrackerService {
             deleter,
             deleter_rx,
             from_slot,
-            peers,
+            failed_duty_reporter: FailedDutyReporter::new(),
+            participation_reporter: ParticipationReporter::new(peers),
+            unsupported_ignorer: UnsupportedIgnorer::new(),
         };
 
         let task = tokio::spawn(task.run());
 
         Arc::new(TrackerHandle { input_tx, task })
+    }
+
+    fn analyse(&mut self, duty: &Duty, events: &std::collections::HashMap<Duty, Vec<Event>>) {
+        let duty_events = events.get(duty).map(Vec::as_slice).unwrap_or(&[]);
+        let parsigs = extract_par_sigs(duty_events);
+        report_par_sigs(duty, &parsigs);
+
+        let outcome = analyse_duty_failed(duty, events, msg_roots_consistent(&parsigs));
+
+        if self
+            .unsupported_ignorer
+            .check(duty, outcome.failed, outcome.step, outcome.reason)
+        {
+            return;
+        }
+
+        self.failed_duty_reporter.report(
+            duty,
+            outcome.failed,
+            outcome.step,
+            outcome.reason,
+            outcome.err.as_ref(),
+        );
+
+        let (participated, unexpected, expected_per_peer) = analyse_participation(duty, events);
+        self.participation_reporter.report(
+            duty,
+            outcome.failed,
+            &participated,
+            &unexpected,
+            expected_per_peer,
+        );
     }
 
     async fn run(mut self) {
@@ -395,8 +446,7 @@ impl TrackerService {
                 duty = self.analyser_rx.recv() => {
                     match duty {
                         Some(duty) => {
-                            // TODO: extract par sigs, analyse failed duty, report participation.
-                            tracing::debug!(duty = %duty, "Duty analysis triggered (not yet implemented)");
+                            self.analyse(&duty, &events);
                         }
                         None => {
                             tracing::error!("Analyser deadliner channel closed unexpectedly; stopping tracker");
