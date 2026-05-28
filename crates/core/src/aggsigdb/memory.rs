@@ -1,6 +1,7 @@
-use crate::{deadline::DeadlinerHandle, types};
+use crate::{deadline, types};
 use std::collections::{HashMap, hash_map::Entry};
 use tokio::sync;
+use tokio_util::sync::CancellationToken;
 
 /// Errors for the in-memory AggSigDB implementation.
 #[derive(Debug, thiserror::Error)]
@@ -9,6 +10,11 @@ pub enum Error {
     /// the new data.
     #[error("Mismatching data")]
     MismatchingData,
+
+    /// The request cannot be processed because the instance has been
+    /// terminated.
+    #[error("The instance has been terminated")]
+    Terminated,
 }
 
 type Waiters =
@@ -17,7 +23,7 @@ type Waiters =
 struct Actor {
     entries: HashMap<types::Duty, HashMap<types::PubKey, Box<dyn types::SignedData>>>,
     waiters: Waiters,
-    deadliner: DeadlinerHandle,
+    deadliner: deadline::DeadlinerHandle,
 }
 
 impl Actor {
@@ -25,15 +31,18 @@ impl Actor {
         &mut self,
         mut messages_rx: sync::mpsc::Receiver<Message>,
         mut expired_rx: sync::mpsc::Receiver<types::Duty>,
+        ct: CancellationToken,
     ) {
         loop {
             tokio::select! {
-                biased; // We want to run evictions first
+                biased; // We want to evaluate expirations first
+
+                _ = ct.cancelled() => break, // Stop the actor when the cancellation token is triggered.
 
                 Some(duty) = expired_rx.recv() => self.evict(duty),
 
                 msg = messages_rx.recv() => match msg {
-                    None => break, // All handles have been dropped, so we can stop the actor.
+                    None => break, // Stop the actor when all handles have been dropped.
                     Some(msg) => match msg {
                         Message::Store {
                             duty,
@@ -64,10 +73,14 @@ impl Actor {
     }
 
     async fn store(&mut self, duty: types::Duty, set: types::SignedDataSet) -> Result<(), Error> {
-        // TODO: Improve the `deadliner` API:
-        // - Return if the duty is already expired. If so, return early.
-        // - Make `add` sync to avoid an `await` which blocks the actor.
-        let _ = self.deadliner.add(duty.clone()).await;
+        match self.deadliner.add(duty.clone()).await {
+            // The duty is already expired, so we can ignore the store.
+            deadline::AddOutcome::AlreadyExpired => return Ok(()),
+            // Failures are treated as terminated.
+            deadline::AddOutcome::FailedToCompute => return Err(Error::Terminated),
+            // In other cases proceed with the store.
+            _ => {}
+        }
 
         // NOTE: Partial insertions on error match the semantics of Charon.
         let for_duty = self.entries.entry(duty.clone()).or_default();
@@ -136,8 +149,9 @@ impl Handle {
     ///
     /// The underlying instance gets dropped when all handles are dropped.
     pub fn new(
-        deadliner: DeadlinerHandle,
-        expiration_rx: sync::mpsc::Receiver<types::Duty>,
+        deadliner: deadline::DeadlinerHandle,
+        expired_rx: sync::mpsc::Receiver<types::Duty>,
+        ct: CancellationToken,
     ) -> Self {
         let (sender, receiver) = sync::mpsc::channel(100);
         let mut actor = Actor {
@@ -146,7 +160,7 @@ impl Handle {
             deadliner,
         };
 
-        tokio::spawn(async move { actor.run(receiver, expiration_rx).await });
+        tokio::spawn(async move { actor.run(receiver, expired_rx, ct).await });
 
         Self { sender }
     }
@@ -159,8 +173,8 @@ impl Handle {
             set,
             response: response_tx,
         };
-        let _ = self.sender.send(msg).await;
-        response_rx.await.expect("Actor panicked")
+        self.sender.send(msg).await.map_err(|_| Error::Terminated)?;
+        response_rx.await.map_err(|_| Error::Terminated)?
     }
 
     /// Blocks and returns the aggregated signed duty data when available.
@@ -171,15 +185,15 @@ impl Handle {
         &self,
         duty: types::Duty,
         pub_key: types::PubKey,
-    ) -> Box<dyn types::SignedData> {
+    ) -> Result<Box<dyn types::SignedData>, Error> {
         let (response_tx, response_rx) = sync::oneshot::channel();
         let msg = Message::WaitFor {
             duty,
             pub_key,
             response: response_tx,
         };
-        let _ = self.sender.send(msg).await;
-        response_rx.await.expect("Actor panicked")
+        self.sender.send(msg).await.map_err(|_| Error::Terminated)?;
+        response_rx.await.map_err(|_| Error::Terminated)
     }
 }
 
@@ -191,6 +205,7 @@ mod tests {
         types::{Duty, PubKey, Signature, SignedData, SignedDataSet, SlotNumber},
     };
     use tokio::sync;
+    use tokio_util::sync::CancellationToken;
 
     /// Some mock signed data type for testing.
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,7 +259,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_read() {
         let (_, deadliner, expiration_rx) = test_deadline();
-        let store = super::Handle::new(deadliner, expiration_rx);
+        let store = super::Handle::new(deadliner, expiration_rx, CancellationToken::new());
 
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
@@ -255,14 +270,14 @@ mod tests {
             .await
             .unwrap();
 
-        let result = store.wait_for(duty, pub_key).await;
+        let result = store.wait_for(duty, pub_key).await.unwrap();
         assert_eq!(result, signed_data.boxed());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_unblocks() {
         let (_, deadliner, expiration_rx) = test_deadline();
-        let store = super::Handle::new(deadliner, expiration_rx);
+        let store = super::Handle::new(deadliner, expiration_rx, CancellationToken::new());
 
         let duty = Duty::new_attester_duty(SlotNumber::new(1));
         let pub_key = PubKey::new([7u8; 48]);
@@ -282,16 +297,33 @@ mod tests {
         assert!(!reader.is_finished(), "wait_for should block until store");
 
         let write = store.store(duty, signed_data.singleton(pub_key)).await;
-        let read = reader.await.unwrap();
+        let read = reader.await.unwrap().unwrap();
 
         assert!(write.is_ok());
         assert_eq!(read, signed_data.boxed());
     }
 
+    #[tokio::test]
+    async fn write_while_cancelled() {
+        let ct = CancellationToken::new();
+
+        let (_, deadliner, expiration_rx) = test_deadline();
+        let store = super::Handle::new(deadliner, expiration_rx, ct.clone());
+
+        let duty = Duty::new_proposer_duty(SlotNumber::new(10));
+        let pub_key = PubKey::new([7u8; 48]);
+        let signed_data = MockSignedData(42);
+
+        ct.cancel();
+
+        let res = store.store(duty, signed_data.singleton(pub_key)).await;
+        assert!(matches!(res, Err(super::Error::Terminated)));
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cannot_overwrite() {
         let (_, deadliner, expiration_rx) = test_deadline();
-        let store = super::Handle::new(deadliner, expiration_rx);
+        let store = super::Handle::new(deadliner, expiration_rx, CancellationToken::new());
 
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
@@ -313,7 +345,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_idempotent() {
         let (_, deadliner, expiration_rx) = test_deadline();
-        let store = super::Handle::new(deadliner, expiration_rx);
+        let store = super::Handle::new(deadliner, expiration_rx, CancellationToken::new());
 
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
@@ -328,7 +360,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = store.wait_for(duty, pub_key).await;
+        let result = store.wait_for(duty, pub_key).await.unwrap();
         assert_eq!(result, signed_data.boxed());
     }
 
@@ -336,7 +368,7 @@ mod tests {
     async fn write_evict_wait_then_write() {
         let (expiration_tx, deadliner, expiration_rx) = test_deadline();
 
-        let store = super::Handle::new(deadliner.clone(), expiration_rx);
+        let store = super::Handle::new(deadliner.clone(), expiration_rx, CancellationToken::new());
 
         let duty = Duty::new_attester_duty(SlotNumber::new(1));
         let pub_key = PubKey::new([7u8; 48]);
@@ -374,7 +406,7 @@ mod tests {
         // return the new data, not the evicted data.
         store.store(duty, second.singleton(pub_key)).await.unwrap();
 
-        let read = reader.await.unwrap();
+        let read = reader.await.unwrap().unwrap();
         assert_eq!(read, second.boxed());
         assert_ne!(read, first.boxed());
     }
@@ -384,7 +416,7 @@ mod tests {
         const N: usize = 4;
 
         let (_, deadliner, expiration_rx) = test_deadline();
-        let store = super::Handle::new(deadliner, expiration_rx);
+        let store = super::Handle::new(deadliner, expiration_rx, CancellationToken::new());
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
         let signed_data = MockSignedData(42);
@@ -413,7 +445,7 @@ mod tests {
             .unwrap();
 
         for reader in readers {
-            let read = reader.await.unwrap();
+            let read = reader.await.unwrap().unwrap();
             assert_eq!(read, signed_data.boxed());
         }
     }
@@ -421,7 +453,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn unrelated_write_does_not_unblock() {
         let (_, deadliner, expiration_rx) = test_deadline();
-        let store = super::Handle::new(deadliner, expiration_rx);
+        let store = super::Handle::new(deadliner, expiration_rx, CancellationToken::new());
 
         let duty_a = Duty::new_proposer_duty(SlotNumber::new(10));
         let data_a = MockSignedData(1);
@@ -459,7 +491,7 @@ mod tests {
             .await
             .unwrap();
 
-        let read = reader.await.unwrap();
+        let read = reader.await.unwrap().unwrap();
         assert_eq!(read, data_a.boxed());
         assert_ne!(read, data_b.boxed());
     }
