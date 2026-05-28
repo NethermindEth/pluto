@@ -37,7 +37,7 @@ impl TestHandler {
 }
 
 #[async_trait]
-impl Handler for TestHandler { 
+impl Handler for TestHandler {
     async fn node_version(&self) -> Result<EthResponse<String>, ApiError> {
         Ok(EthResponse {
             data: self.version.clone(),
