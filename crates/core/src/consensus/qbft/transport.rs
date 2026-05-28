@@ -78,6 +78,8 @@ pub(crate) enum Error {
 pub(crate) struct Transport {
     broadcaster: Broadcaster,
     privkey: SecretKey,
+    // Async admission buffer for wrapped QBFT messages. Runner wiring bridges
+    // this tokio channel into the crossbeam receiver used by core::qbft::run.
     recv_tx: mpsc::Sender<qbft::Msg<ConsensusQbftTypes>>,
     sniffer: sync::Arc<Sniffer>,
     value_rx: Mutex<mpsc::Receiver<Any>>,
