@@ -1,10 +1,10 @@
 use std::fmt::Display;
 
-/// Step in the core workflow, matching Go's `tracker.step`.
+/// Step in the core workflow.
 ///
 /// Variants are ordered by their position in the workflow; this ordering is
 /// used when scanning backwards to find the last reached step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum Step {
     /// No step reached (zero value).

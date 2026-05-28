@@ -5607,6 +5607,7 @@ dependencies = [
  "pluto-eth2api",
  "pluto-eth2util",
  "pluto-featureset",
+ "pluto-k1util",
  "pluto-p2p",
  "pluto-ssz",
  "pluto-testutil",

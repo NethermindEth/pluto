@@ -75,6 +75,10 @@ pub enum QbftError {
     #[error("Zero input value not supported")]
     ZeroInputValue,
 
+    /// Message value source was missing.
+    #[error("value not found")]
+    ValueNotFound,
+
     /// Node count must be positive.
     #[error("invalid node count: must be greater than zero, got {nodes}")]
     InvalidNodes {
@@ -200,6 +204,11 @@ pub const MSG_DECIDED: MessageType = MessageType(5);
 const MSG_SENTINEL: MessageType = MessageType(6); // intentionally not public
 
 impl MessageType {
+    /// Converts a stable wire integer into a message type without clamping.
+    pub fn from_wire(value: i64) -> Self {
+        Self(value)
+    }
+
     /// Returns true when the message type is one of the known QBFT wire types.
     pub fn valid(&self) -> bool {
         self.0 > MSG_UNKNOWN.0 && self.0 < MSG_SENTINEL.0
@@ -216,9 +225,9 @@ impl Display for MessageType {
             3 => "commit",
             4 => "round_change",
             5 => "decided",
-            _ => panic!("bug: invalid message type"),
+            _ => "",
         };
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 
@@ -286,9 +295,9 @@ impl Display for UponRule {
             6 => "quorum_round_changes",
             7 => "justified_decided",
             8 => "round_timeout",
-            _ => panic!("bug: invalid upon rule"),
+            _ => "",
         };
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 
@@ -1375,6 +1384,35 @@ fn flatten<T: QbftTypes>(buffer: &HashMap<i64, Vec<Msg<T>>>) -> Vec<Msg<T>> {
 fn uniq_source<T: QbftTypes>() -> impl FnMut(&Msg<T>) -> bool {
     let mut sources = HashSet::new();
     move |msg: &Msg<T>| sources.insert(msg.source())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn message_type_from_wire_preserves_known_types() {
+        assert_eq!(MessageType::from_wire(0), MSG_UNKNOWN);
+        assert_eq!(MessageType::from_wire(1), MSG_PRE_PREPARE);
+        assert_eq!(MessageType::from_wire(2), MSG_PREPARE);
+        assert_eq!(MessageType::from_wire(3), MSG_COMMIT);
+        assert_eq!(MessageType::from_wire(4), MSG_ROUND_CHANGE);
+        assert_eq!(MessageType::from_wire(5), MSG_DECIDED);
+    }
+
+    #[test]
+    fn message_type_from_wire_preserves_unknown_wire_value() {
+        let message_type = MessageType::from_wire(99);
+
+        assert_eq!(message_type, MessageType(99));
+        assert!(!message_type.valid());
+        assert_eq!(message_type.to_string(), "");
+    }
+
+    #[test]
+    fn upon_rule_display_unknown_value_does_not_panic() {
+        assert_eq!(UponRule(99).to_string(), "");
+    }
 }
 
 #[cfg(test)]
