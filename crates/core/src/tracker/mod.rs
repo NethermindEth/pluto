@@ -28,7 +28,7 @@ use crate::{
 
 use step::Step;
 
-/// Type-erased step error, matching Go's `error` interface.
+/// Type-erased step error.
 ///
 /// `Arc` rather than `Box` so a single error can be cheaply fanned out to
 /// multiple events (one per pubkey in a duty set) without cloning the
@@ -49,7 +49,7 @@ pub struct PeerInfo {
 }
 
 /// Tracker receives events from core workflow components for duty analysis and
-/// participation reporting, matching Go's `core.Tracker` interface.
+/// participation reporting.
 ///
 /// Methods that only need validator pubkeys (fetcher, consensus, dutydb,
 /// sigagg, aggsigdb, bcast) accept `&[PubKey]`. Methods that also carry
@@ -330,13 +330,36 @@ impl TrackerService {
     pub fn start(
         cancel: CancellationToken,
         analyser: DeadlinerHandle,
+        analyser_rx: AnalyserRx,
+        deleter: DeadlinerHandle,
+        deleter_rx: DeleterRx,
+        peers: Vec<PeerInfo>,
+        from_slot: u64,
+    ) -> Arc<TrackerHandle> {
+        Self::start_with_buffer(
+            cancel,
+            analyser,
+            analyser_rx,
+            deleter,
+            deleter_rx,
+            peers,
+            from_slot,
+            EVENT_BUFFER,
+        )
+    }
+
+    /// Like [`start`] but with a configurable channel buffer size, for tests.
+    fn start_with_buffer(
+        cancel: CancellationToken,
+        analyser: DeadlinerHandle,
         AnalyserRx(analyser_rx): AnalyserRx,
         deleter: DeadlinerHandle,
         DeleterRx(deleter_rx): DeleterRx,
         peers: Vec<PeerInfo>,
         from_slot: u64,
+        buffer: usize,
     ) -> Arc<TrackerHandle> {
-        let (input_tx, input_rx) = mpsc::channel(EVENT_BUFFER);
+        let (input_tx, input_rx) = mpsc::channel(buffer);
 
         let task = Self {
             cancel,
@@ -535,7 +558,20 @@ mod tests {
     #[tokio::test]
     async fn fan_out_sends_one_event_per_pubkey() {
         let cancel = CancellationToken::new();
-        let handle = start_service(&cancel, 0);
+        let (analyser, analyser_rx) =
+            DeadlinerTask::start(cancel.clone(), "analyser", FutureCalculator);
+        let (deleter, deleter_rx) =
+            DeadlinerTask::start(cancel.clone(), "deleter", FutureCalculator);
+        let handle = TrackerService::start_with_buffer(
+            cancel.clone(),
+            analyser,
+            AnalyserRx(analyser_rx),
+            deleter,
+            DeleterRx(deleter_rx),
+            vec![],
+            0,
+            1,
+        );
 
         let keys = [pubkey(), PubKey::from([2u8; 48]), PubKey::from([3u8; 48])];
         handle.fetcher_fetched(attester(1), &keys, None).await;

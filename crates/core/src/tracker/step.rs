@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-/// Step in the core workflow, matching Go's `tracker.step`.
+/// Step in the core workflow.
 ///
 /// Variants are ordered by their position in the workflow; this ordering is
 /// used when scanning backwards to find the last reached step.
