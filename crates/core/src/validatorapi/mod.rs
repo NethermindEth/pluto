@@ -3,11 +3,15 @@
 //! Serves the subset of beacon-API endpoints related to distributed
 //! validation and reverse-proxies the rest to the upstream beacon node.
 
+pub mod body;
 pub mod error;
 pub mod handler;
 pub mod metrics;
 pub mod router;
 pub mod types;
+
+#[cfg(test)]
+pub mod testutils;
 
 pub use error::ApiError;
 pub use handler::Handler;

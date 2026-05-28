@@ -3,23 +3,43 @@
 //! The endpoint table preserves the order of the upstream definition,
 //! including which endpoints unconditionally respond `404`.
 
+use std::sync::Arc;
+
 use axum::{
-    Router,
+    Json, Router,
+    extract::State,
     response::IntoResponse,
     routing::{get, post},
 };
 
-use super::{error::ApiError, handler::Handler};
+use super::{
+    body::{NodeVersionData, NodeVersionResponse},
+    error::ApiError,
+    handler::Handler,
+};
+
+/// Shared router state. Cloned per request via [`Arc`].
+pub(super) struct AppState<H> {
+    /// Request handler invoked by each route.
+    pub handler: H,
+    /// Whether builder mode is enabled. Read by `propose_block_v3`.
+    #[allow(dead_code, reason = "consumed by propose_block_v3 in a later PR")]
+    pub builder_enabled: bool,
+}
 
 /// Builds the validator API HTTP router.
 ///
 /// Registers the distributed-validator-related endpoints and a fallback
 /// that reverse-proxies everything else to the upstream beacon node.
 ///
-/// `_handler` will be threaded into Axum router state once request bodies
-/// and responses are wired. `_builder_enabled` is consumed only by
-/// `propose_block_v3`.
-pub fn new_router<H: Handler>(_handler: H, _builder_enabled: bool) -> Router {
+/// `builder_enabled` is consumed by `propose_block_v3` to maximise the
+/// builder boost factor.
+pub fn new_router<H: Handler>(handler: H, builder_enabled: bool) -> Router {
+    let state = Arc::new(AppState {
+        handler,
+        builder_enabled,
+    });
+
     Router::new()
         .route(
             "/eth/v1/validator/duties/attester/{epoch}",
@@ -95,8 +115,9 @@ pub fn new_router<H: Handler>(_handler: H, _builder_enabled: bool) -> Router {
             "/eth/v1/validator/sync_committee_selections",
             post(sync_committee_selections),
         )
-        .route("/eth/v1/node/version", get(node_version))
+        .route("/eth/v1/node/version", get(node_version::<H>))
         .fallback(proxy_handler)
+        .with_state(state)
 }
 
 async fn attester_duties() {
@@ -179,8 +200,16 @@ async fn sync_committee_selections() {
     todo!("vapi: sync_committee_selections");
 }
 
-async fn node_version() {
-    todo!("vapi: node_version");
+async fn node_version<H: Handler>(
+    State(state): State<Arc<AppState<H>>>,
+) -> Result<Json<NodeVersionResponse>, ApiError> {
+    let response = state.handler.node_version().await?;
+
+    Ok(Json(NodeVersionResponse {
+        data: NodeVersionData {
+            version: response.data,
+        },
+    }))
 }
 
 async fn respond_404() -> impl IntoResponse {
@@ -189,4 +218,22 @@ async fn respond_404() -> impl IntoResponse {
 
 async fn proxy_handler() {
     todo!("vapi: proxy_handler");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::validatorapi::testutils::TestHandler;
+
+    #[tokio::test]
+    async fn node_version_wraps_handler_value() {
+        let state = Arc::new(AppState {
+            handler: TestHandler::with_version("pluto/test/v1.0"),
+            builder_enabled: false,
+        });
+
+        let Json(body) = node_version(State(state)).await.unwrap();
+
+        assert_eq!(body.data.version, "pluto/test/v1.0");
+    }
 }
