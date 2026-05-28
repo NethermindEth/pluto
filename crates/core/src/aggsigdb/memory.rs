@@ -1,8 +1,5 @@
-use crate::{deadline::Deadliner, types};
-use std::{
-    collections::{HashMap, hash_map::Entry},
-    sync::Arc,
-};
+use crate::{deadline::DeadlinerHandle, types};
+use std::collections::{HashMap, hash_map::Entry};
 use tokio::sync;
 
 /// Errors for the in-memory AggSigDB implementation.
@@ -20,7 +17,7 @@ type Waiters =
 struct Actor {
     entries: HashMap<types::Duty, HashMap<types::PubKey, Box<dyn types::SignedData>>>,
     waiters: Waiters,
-    deadliner: Arc<dyn Deadliner>,
+    deadliner: DeadlinerHandle,
 }
 
 impl Actor {
@@ -138,15 +135,15 @@ impl Handle {
     /// Creates a new in-memory AggSigDB instance, and get a handle to it.
     ///
     /// The underlying instance gets dropped when all handles are dropped.
-    pub fn new(deadliner: Arc<dyn Deadliner>) -> Self {
+    pub fn new(deadliner: DeadlinerHandle, evictions: sync::mpsc::Receiver<types::Duty>) -> Self {
         let (sender, receiver) = sync::mpsc::channel(100);
         let mut actor = Actor {
             entries: HashMap::new(),
             waiters: HashMap::new(),
-            deadliner: Arc::clone(&deadliner),
+            deadliner,
         };
-        let (_, never) = sync::mpsc::channel(1);
-        tokio::spawn(async move { actor.run(receiver, deadliner.c().unwrap_or(never)).await });
+
+        tokio::spawn(async move { actor.run(receiver, evictions).await });
 
         Self { sender }
     }
@@ -186,13 +183,12 @@ impl Handle {
 #[cfg(test)]
 mod tests {
     use crate::{
-        deadline::Deadliner,
+        deadline,
         signeddata::SignedDataError,
         types::{Duty, PubKey, Signature, SignedData, SignedDataSet, SlotNumber},
     };
-    use async_trait::async_trait;
-    use std::sync::Arc;
     use tokio::sync;
+    use tokio_util::sync::CancellationToken;
 
     /// Some mock signed data type for testing.
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,11 +196,18 @@ mod tests {
 
     impl SignedData for MockSignedData {
         fn signature(&self) -> Result<Signature, SignedDataError> {
-            Ok(Signature::new([self.0; 96]))
+            Ok([self.0; 96])
         }
 
         fn set_signature(&self, _signature: Signature) -> Result<Self, SignedDataError> {
             Ok(self.clone())
+        }
+
+        fn set_signature_boxed(
+            &self,
+            signature: Signature,
+        ) -> Result<Box<dyn SignedData>, SignedDataError> {
+            Ok(Box::new(self.set_signature(signature)?))
         }
 
         fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
@@ -224,36 +227,28 @@ mod tests {
         }
     }
 
-    /// Deadliner that hands out a caller-supplied receiver, allowing tests to
-    /// drive eviction by sending on the paired sender.
-    struct TestDeadliner(std::sync::Mutex<Option<sync::mpsc::Receiver<Duty>>>);
+    struct TestDeadliner;
 
     impl TestDeadliner {
-        fn new(receiver: sync::mpsc::Receiver<Duty>) -> Arc<Self> {
-            Arc::new(Self(std::sync::Mutex::new(Some(receiver))))
+        // Creates a deadliner that immediately schedules the Duty for eviction
+        fn immediate() -> (deadline::DeadlinerHandle, sync::mpsc::Receiver<Duty>) {
+            todo!()
         }
 
-        /// Creates a deadliner that never returns any duties to evict, so no
-        /// eviction will occur.
-        fn never() -> Arc<Self> {
-            Arc::new(Self(std::sync::Mutex::new(None)))
-        }
-    }
-
-    #[async_trait]
-    impl Deadliner for TestDeadliner {
-        async fn add(&self, _duty: Duty) -> bool {
-            true
-        }
-
-        fn c(&self) -> Option<sync::mpsc::Receiver<Duty>> {
-            self.0.lock().unwrap().take()
+        // Creates a deadliner that never returns any duties to evict
+        fn never() -> (deadline::DeadlinerHandle, sync::mpsc::Receiver<Duty>) {
+            deadline::DeadlinerTask::start(
+                CancellationToken::new(),
+                "",
+                deadline::NeverExpiringCalculator,
+            )
         }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_read() {
-        let store = super::Handle::new(TestDeadliner::never());
+        let (deadliner, evictions) = TestDeadliner::never();
+        let store = super::Handle::new(deadliner, evictions);
 
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
@@ -270,8 +265,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_unblocks() {
-        let deadliner = TestDeadliner::never();
-        let store = super::Handle::new(deadliner);
+        let (deadliner, evictions) = TestDeadliner::never();
+        let store = super::Handle::new(deadliner, evictions);
 
         let duty = Duty::new_attester_duty(SlotNumber::new(1));
         let pub_key = PubKey::new([7u8; 48]);
@@ -299,7 +294,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cannot_overwrite() {
-        let store = super::Handle::new(TestDeadliner::never());
+        let (deadliner, evictions) = TestDeadliner::never();
+        let store = super::Handle::new(deadliner, evictions);
 
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
@@ -320,7 +316,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_idempotent() {
-        let store = super::Handle::new(TestDeadliner::never());
+        let (deadliner, evictions) = TestDeadliner::never();
+        let store = super::Handle::new(deadliner, evictions);
 
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
@@ -341,10 +338,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_evict_wait_then_write() {
-        let (evict_tx, evict_rx) = sync::mpsc::channel::<Duty>(1);
-        let deadliner = TestDeadliner::new(evict_rx);
+        let (deadliner, evictions) = TestDeadliner::immediate();
 
-        let store = super::Handle::new(deadliner);
+        let store = super::Handle::new(deadliner.clone(), evictions);
 
         let duty = Duty::new_attester_duty(SlotNumber::new(1));
         let pub_key = PubKey::new([7u8; 48]);
@@ -357,11 +353,9 @@ mod tests {
             .unwrap();
 
         // Wait until the eviction is processed and the duty is removed.
-        evict_tx.send(duty.clone()).await.unwrap();
+        deadliner.add(duty.clone()).await;
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while evict_tx.capacity() != evict_tx.max_capacity() {
-                tokio::task::yield_now().await;
-            }
+            todo!("Find a way to ensure that the eviction has been processed");
         })
         .await
         .expect("Eviction did not complete in time");
@@ -391,7 +385,8 @@ mod tests {
     async fn write_unblocks_many() {
         const N: usize = 4;
 
-        let store = super::Handle::new(TestDeadliner::never());
+        let (deadliner, evictions) = TestDeadliner::never();
+        let store = super::Handle::new(deadliner, evictions);
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
         let signed_data = MockSignedData(42);
@@ -427,7 +422,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn unrelated_write_does_not_unblock() {
-        let store = super::Handle::new(TestDeadliner::never());
+        let (deadliner, evictions) = TestDeadliner::never();
+        let store = super::Handle::new(deadliner, evictions);
 
         let duty_a = Duty::new_proposer_duty(SlotNumber::new(10));
         let data_a = MockSignedData(1);
