@@ -16,8 +16,11 @@ pub use pluto_eth2api::{
     GetSyncCommitteeDutiesResponseResponseDatum as SyncCommitteeDuty,
     GetVersionResponseResponse as NodeVersionResponse,
     GetVersionResponseResponseData as NodeVersionData,
-    spec::phase0::{Epoch, Root, Slot, ValidatorIndex},
+    spec::phase0::{self, Epoch, Root, Slot, ValidatorIndex},
 };
+
+/// Attestation data alias for the consensus-spec phase0 type.
+pub type AttestationData = phase0::AttestationData;
 
 /// Index of a beacon committee within a slot.
 pub type CommitteeIndex = u64;
@@ -124,9 +127,12 @@ pub struct SyncCommitteeContributionOpts {
     pub beacon_block_root: Root,
 }
 
-/// Attestation data payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct AttestationData {}
+/// Response envelope for the `attestation_data` endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttestationDataResponse {
+    /// Unsigned attestation data produced by the consensus pipeline.
+    pub data: AttestationData,
+}
 
 /// Validator payload. Placeholder.
 #[derive(Debug, Clone)]

@@ -7,19 +7,28 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     response::IntoResponse,
     routing::{get, post},
 };
+use serde::Deserialize;
 
 use super::{
     error::ApiError,
     handler::Handler,
     types::{
-        AttesterDutiesOpts, AttesterDutiesResponse, NodeVersionResponse, ProposerDutiesOpts,
-        ProposerDutiesResponse, SyncCommitteeDutiesOpts, SyncCommitteeDutiesResponse, ValIndexes,
+        AttestationDataOpts, AttestationDataResponse, AttesterDutiesOpts, AttesterDutiesResponse,
+        CommitteeIndex, NodeVersionResponse, ProposerDutiesOpts, ProposerDutiesResponse,
+        SyncCommitteeDutiesOpts, SyncCommitteeDutiesResponse, ValIndexes,
     },
 };
+
+/// Query parameters for `GET /eth/v1/validator/attestation_data`.
+#[derive(Debug, Clone, Deserialize)]
+struct AttestationDataQuery {
+    slot: u64,
+    committee_index: CommitteeIndex,
+}
 
 /// Shared router state. Cloned per request via [`Arc`].
 pub(super) struct AppState {
@@ -167,8 +176,19 @@ async fn sync_committee_duties(
     Ok(Json(response))
 }
 
-async fn attestation_data() {
-    todo!("vapi: attestation_data");
+async fn attestation_data(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<AttestationDataQuery>,
+) -> Result<Json<AttestationDataResponse>, ApiError> {
+    let response = state
+        .handler
+        .attestation_data(AttestationDataOpts {
+            slot: query.slot,
+            committee_index: query.committee_index,
+        })
+        .await?;
+
+    Ok(Json(response))
 }
 
 async fn submit_attestations() {
@@ -254,11 +274,13 @@ async fn proxy_handler() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pluto_eth2api::spec::phase0;
+
     use crate::validatorapi::{
         testutils::TestHandler,
         types::{
-            AttesterDutiesResponse, AttesterDuty, ProposerDutiesResponse, ProposerDuty,
-            SyncCommitteeDutiesResponse, SyncCommitteeDuty, ValIndexes,
+            AttestationDataResponse, AttesterDutiesResponse, AttesterDuty, ProposerDutiesResponse,
+            ProposerDuty, SyncCommitteeDutiesResponse, SyncCommitteeDuty, ValIndexes,
         },
     };
 
@@ -340,6 +362,44 @@ mod tests {
         assert_eq!(json["execution_optimistic"], true);
         assert_eq!(json["data"][0]["validator_index"], "9");
         assert_eq!(json["data"][0]["validator_sync_committee_indices"][1], "5");
+    }
+
+    #[tokio::test]
+    async fn attestation_data_wraps_handler_value() {
+        let data = phase0::AttestationData {
+            slot: 99,
+            index: 3,
+            beacon_block_root: [0xaa; 32],
+            source: phase0::Checkpoint {
+                epoch: 7,
+                root: [0xbb; 32],
+            },
+            target: phase0::Checkpoint {
+                epoch: 8,
+                root: [0xcc; 32],
+            },
+        };
+        let handler =
+            TestHandler::default().with_attestation_data(AttestationDataResponse { data });
+        let state = Arc::new(AppState {
+            handler: Arc::new(handler),
+            builder_enabled: false,
+        });
+
+        let Json(body) = attestation_data(
+            State(state),
+            Query(AttestationDataQuery {
+                slot: 99,
+                committee_index: 3,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["data"]["slot"], "99");
+        assert_eq!(json["data"]["index"], "3");
+        assert_eq!(json["data"]["source"]["epoch"], "7");
     }
 
     #[test]

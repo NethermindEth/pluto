@@ -18,7 +18,7 @@ use super::{
     error::ApiError,
     handler::Handler,
     types::{
-        AggregateAttestationOpts, AttestationData, AttestationDataOpts, AttesterDutiesOpts,
+        AggregateAttestationOpts, AttestationDataOpts, AttestationDataResponse, AttesterDutiesOpts,
         AttesterDutiesResponse, AttesterDuty, BeaconCommitteeSelection, EthResponse,
         NodeVersionData, NodeVersionResponse, ProposalOpts, ProposerDutiesOpts,
         ProposerDutiesResponse, ProposerDuty, SignedContributionAndProof,
@@ -29,7 +29,7 @@ use super::{
         VersionedSignedBlindedProposal, VersionedSignedProposal,
     },
 };
-use crate::version;
+use crate::{dutydb::MemDB, version};
 
 /// Validator API [`Handler`] implementation.
 ///
@@ -41,6 +41,9 @@ use crate::version;
 pub struct Component {
     /// Upstream beacon-node API client.
     eth2_cl: Arc<EthBeaconNodeApiClient>,
+    /// In-memory DutyDB used to await consensus output (e.g. attestation
+    /// data) produced by the rest of the pipeline.
+    dutydb: Arc<MemDB>,
     /// Threshold BLS share index assigned to this node (1-indexed).
     #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     share_idx: u64,
@@ -64,12 +67,14 @@ impl Component {
     /// Builds a new component.
     pub fn new(
         eth2_cl: Arc<EthBeaconNodeApiClient>,
+        dutydb: Arc<MemDB>,
         share_idx: u64,
         pub_share_by_pubkey: HashMap<BLSPubKey, BLSPubKey>,
         builder_enabled: bool,
     ) -> Self {
         Self {
             eth2_cl,
+            dutydb,
             share_idx,
             pub_share_by_pubkey,
             builder_enabled,
@@ -79,9 +84,14 @@ impl Component {
 
     /// Builds a component that skips partial-signature verification on
     /// submit endpoints. Test use only.
-    pub fn new_insecure(eth2_cl: Arc<EthBeaconNodeApiClient>, share_idx: u64) -> Self {
+    pub fn new_insecure(
+        eth2_cl: Arc<EthBeaconNodeApiClient>,
+        dutydb: Arc<MemDB>,
+        share_idx: u64,
+    ) -> Self {
         Self {
             eth2_cl,
+            dutydb,
             share_idx,
             pub_share_by_pubkey: HashMap::new(),
             builder_enabled: false,
@@ -232,9 +242,21 @@ impl Handler for Component {
 
     async fn attestation_data(
         &self,
-        _opts: AttestationDataOpts,
-    ) -> Result<EthResponse<AttestationData>, ApiError> {
-        unimplemented!("attestation_data not yet ported")
+        opts: AttestationDataOpts,
+    ) -> Result<AttestationDataResponse, ApiError> {
+        let data = self
+            .dutydb
+            .await_attestation(opts.slot, opts.committee_index)
+            .await
+            .map_err(|err| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "await attestation failed",
+                )
+                .with_source(std::io::Error::other(err.to_string()))
+            })?;
+
+        Ok(AttestationDataResponse { data })
     }
 
     async fn submit_attestations(
@@ -505,17 +527,100 @@ mod tests {
         assert_eq!(err.status_code, StatusCode::BAD_GATEWAY);
     }
 
-    #[tokio::test]
-    async fn node_version_formats_pluto_string() {
-        // Use an unreachable upstream — node_version doesn't call it.
+    use chrono::{DateTime, Utc};
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+
+    use crate::{
+        deadline::{DeadlineCalculator, DeadlinerTask, Result as DeadlineResult},
+        dutydb::{UnsignedDataSet, UnsignedDutyData},
+        signeddata::{
+            AttestationData as SignedAttestationData, AttesterDuty as SignedAttesterDuty,
+        },
+        testutils::random_core_pub_key,
+        types::{Duty, DutyType, SlotNumber},
+        validatorapi::types::AttestationDataOpts,
+    };
+
+    /// Schedules every duty with a deadline at `MAX_UTC`, so duties are
+    /// `Scheduled` but never naturally expire.
+    struct FarFutureCalculator;
+
+    impl DeadlineCalculator for FarFutureCalculator {
+        fn deadline(&self, _: &Duty) -> DeadlineResult<Option<DateTime<Utc>>> {
+            Ok(Some(DateTime::<Utc>::MAX_UTC))
+        }
+    }
+
+    /// Build a Component backed by a real (but never-expiring) DutyDB plus a
+    /// dummy upstream client. Useful for tests that only exercise endpoints
+    /// served from the DB.
+    fn make_test_component() -> (Component, Arc<MemDB>) {
+        let cancel = CancellationToken::new();
+        let (deadliner, _deadliner_rx) =
+            DeadlinerTask::start(cancel.clone(), "validatorapi-tests", FarFutureCalculator);
+        let (_unused_tx, evict_rx) = mpsc::channel(1);
+        let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
         let eth2_cl =
             Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
-        let component = Component::new_insecure(eth2_cl, 1);
+        let component = Component::new_insecure(eth2_cl, Arc::clone(&dutydb), 1);
+        (component, dutydb)
+    }
+
+    #[tokio::test]
+    async fn node_version_formats_pluto_string() {
+        let (component, _db) = make_test_component();
 
         let response = component.node_version().await.unwrap();
 
         assert!(response.data.version.starts_with("obolnetwork/pluto/"));
         assert!(response.data.version.contains(std::env::consts::ARCH));
         assert!(response.data.version.contains(std::env::consts::OS));
+    }
+
+    #[tokio::test]
+    async fn attestation_data_returns_data_stored_in_dutydb() {
+        const SLOT: u64 = 100;
+        const COMM_IDX: u64 = 4;
+        const V_IDX: u64 = 1;
+
+        let (component, db) = make_test_component();
+
+        let unsigned = SignedAttestationData {
+            data: pluto_eth2api::spec::phase0::AttestationData {
+                slot: SLOT,
+                index: COMM_IDX,
+                beacon_block_root: [0x11; 32],
+                source: pluto_eth2api::spec::phase0::Checkpoint::default(),
+                target: pluto_eth2api::spec::phase0::Checkpoint::default(),
+            },
+            duty: SignedAttesterDuty {
+                slot: SLOT,
+                validator_index: V_IDX,
+                committee_index: COMM_IDX,
+                committee_length: 8,
+                committees_at_slot: 1,
+                validator_committee_index: 0,
+            },
+        };
+        let mut set = UnsignedDataSet::new();
+        set.insert(
+            random_core_pub_key(),
+            UnsignedDutyData::Attestation(unsigned.clone()),
+        );
+        db.store(Duty::new(SlotNumber::new(SLOT), DutyType::Attester), set)
+            .await
+            .unwrap();
+
+        let response = component
+            .attestation_data(AttestationDataOpts {
+                slot: SLOT,
+                committee_index: COMM_IDX,
+            })
+            .await
+            .unwrap();
+        assert_eq!(response.data.slot, SLOT);
+        assert_eq!(response.data.index, COMM_IDX);
+        assert_eq!(response.data.beacon_block_root, [0x11; 32]);
     }
 }

@@ -10,7 +10,7 @@ use super::{
     error::ApiError,
     handler::Handler,
     types::{
-        AggregateAttestationOpts, AttestationData, AttestationDataOpts, AttesterDutiesOpts,
+        AggregateAttestationOpts, AttestationDataOpts, AttestationDataResponse, AttesterDutiesOpts,
         AttesterDutiesResponse, BeaconCommitteeSelection, EthResponse, NodeVersionData,
         NodeVersionResponse, ProposalOpts, ProposerDutiesOpts, ProposerDutiesResponse,
         SignedContributionAndProof, SignedValidatorRegistration, SignedVoluntaryExit,
@@ -32,6 +32,8 @@ pub struct TestHandler {
     pub attester_duties_response: Option<AttesterDutiesResponse>,
     /// Value returned by [`Handler::sync_committee_duties`].
     pub sync_committee_duties_response: Option<SyncCommitteeDutiesResponse>,
+    /// Value returned by [`Handler::attestation_data`].
+    pub attestation_data_response: Option<AttestationDataResponse>,
 }
 
 impl TestHandler {
@@ -58,6 +60,12 @@ impl TestHandler {
     /// Sets the response returned by [`Handler::sync_committee_duties`].
     pub fn with_sync_committee_duties(mut self, response: SyncCommitteeDutiesResponse) -> Self {
         self.sync_committee_duties_response = Some(response);
+        self
+    }
+
+    /// Sets the response returned by [`Handler::attestation_data`].
+    pub fn with_attestation_data(mut self, response: AttestationDataResponse) -> Self {
+        self.attestation_data_response = Some(response);
         self
     }
 }
@@ -105,8 +113,11 @@ impl Handler for TestHandler {
     async fn attestation_data(
         &self,
         _opts: AttestationDataOpts,
-    ) -> Result<EthResponse<AttestationData>, ApiError> {
-        unimplemented!("attestation_data not stubbed in TestHandler")
+    ) -> Result<AttestationDataResponse, ApiError> {
+        Ok(self
+            .attestation_data_response
+            .clone()
+            .expect("attestation_data not stubbed in TestHandler"))
     }
 
     async fn submit_attestations(

@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use super::{
     error::ApiError,
     types::{
-        AggregateAttestationOpts, AttestationData, AttestationDataOpts, AttesterDutiesOpts,
+        AggregateAttestationOpts, AttestationDataOpts, AttestationDataResponse, AttesterDutiesOpts,
         AttesterDutiesResponse, BeaconCommitteeSelection, EthResponse, NodeVersionResponse,
         ProposalOpts, ProposerDutiesOpts, ProposerDutiesResponse, SignedContributionAndProof,
         SignedValidatorRegistration, SignedVoluntaryExit, SyncCommitteeContribution,
@@ -46,7 +46,7 @@ pub trait Handler: Send + Sync + 'static {
     async fn attestation_data(
         &self,
         opts: AttestationDataOpts,
-    ) -> Result<EthResponse<AttestationData>, ApiError>;
+    ) -> Result<AttestationDataResponse, ApiError>;
 
     /// `POST /eth/v2/beacon/pool/attestations`.
     async fn submit_attestations(
