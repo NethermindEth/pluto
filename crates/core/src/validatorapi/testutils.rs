@@ -11,10 +11,11 @@ use super::{
     handler::Handler,
     types::{
         AggregateAttestationOpts, AttestationData, AttestationDataOpts, AttesterDutiesOpts,
-        AttesterDuty, BeaconCommitteeSelection, EthResponse, ProposalOpts, ProposerDutiesOpts,
-        ProposerDuty, SignedContributionAndProof, SignedValidatorRegistration, SignedVoluntaryExit,
-        SyncCommitteeContribution, SyncCommitteeContributionOpts, SyncCommitteeDutiesOpts,
-        SyncCommitteeDuty, SyncCommitteeMessage, SyncCommitteeSelection, Validator, ValidatorsOpts,
+        AttesterDuty, BeaconCommitteeSelection, EthResponse, NodeVersionData, NodeVersionResponse,
+        ProposalOpts, ProposerDutiesOpts, ProposerDutiesResponse, SignedContributionAndProof,
+        SignedValidatorRegistration, SignedVoluntaryExit, SyncCommitteeContribution,
+        SyncCommitteeContributionOpts, SyncCommitteeDutiesOpts, SyncCommitteeDuty,
+        SyncCommitteeMessage, SyncCommitteeSelection, Validator, ValidatorsOpts,
         VersionedAttestation, VersionedProposal, VersionedSignedAggregateAndProof,
         VersionedSignedBlindedProposal, VersionedSignedProposal,
     },
@@ -25,6 +26,8 @@ use super::{
 pub struct TestHandler {
     /// Value returned by [`Handler::node_version`].
     pub version: String,
+    /// Value returned by [`Handler::proposer_duties`].
+    pub proposer_duties_response: Option<ProposerDutiesResponse>,
 }
 
 impl TestHandler {
@@ -32,18 +35,24 @@ impl TestHandler {
     pub fn with_version(version: impl Into<String>) -> Self {
         Self {
             version: version.into(),
+            ..Self::default()
         }
+    }
+
+    /// Sets the response returned by [`Handler::proposer_duties`].
+    pub fn with_proposer_duties(mut self, response: ProposerDutiesResponse) -> Self {
+        self.proposer_duties_response = Some(response);
+        self
     }
 }
 
 #[async_trait]
 impl Handler for TestHandler {
-    async fn node_version(&self) -> Result<EthResponse<String>, ApiError> {
-        Ok(EthResponse {
-            data: self.version.clone(),
-            execution_optimistic: false,
-            finalized: false,
-            dependent_root: None,
+    async fn node_version(&self) -> Result<NodeVersionResponse, ApiError> {
+        Ok(NodeVersionResponse {
+            data: NodeVersionData {
+                version: self.version.clone(),
+            },
         })
     }
 
@@ -57,8 +66,11 @@ impl Handler for TestHandler {
     async fn proposer_duties(
         &self,
         _opts: ProposerDutiesOpts,
-    ) -> Result<EthResponse<Vec<ProposerDuty>>, ApiError> {
-        unimplemented!("proposer_duties not stubbed in TestHandler")
+    ) -> Result<ProposerDutiesResponse, ApiError> {
+        Ok(self
+            .proposer_duties_response
+            .clone()
+            .expect("proposer_duties not stubbed in TestHandler"))
     }
 
     async fn sync_committee_duties(

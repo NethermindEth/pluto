@@ -7,15 +7,15 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Path, State},
     response::IntoResponse,
     routing::{get, post},
 };
 
 use super::{
-    body::{NodeVersionData, NodeVersionResponse},
     error::ApiError,
     handler::Handler,
+    types::{NodeVersionResponse, ProposerDutiesOpts, ProposerDutiesResponse},
 };
 
 /// Shared router state. Cloned per request via [`Arc`].
@@ -47,7 +47,7 @@ pub fn new_router<H: Handler>(handler: H, builder_enabled: bool) -> Router {
         )
         .route(
             "/eth/v1/validator/duties/proposer/{epoch}",
-            get(proposer_duties),
+            get(proposer_duties::<H>),
         )
         .route(
             "/eth/v1/validator/duties/sync/{epoch}",
@@ -124,8 +124,16 @@ async fn attester_duties() {
     todo!("vapi: attester_duties");
 }
 
-async fn proposer_duties() {
-    todo!("vapi: proposer_duties");
+async fn proposer_duties<H: Handler>(
+    State(state): State<Arc<AppState<H>>>,
+    Path(epoch): Path<u64>,
+) -> Result<Json<ProposerDutiesResponse>, ApiError> {
+    let response = state
+        .handler
+        .proposer_duties(ProposerDutiesOpts { epoch })
+        .await?;
+
+    Ok(Json(response))
 }
 
 async fn sync_committee_duties() {
@@ -205,11 +213,7 @@ async fn node_version<H: Handler>(
 ) -> Result<Json<NodeVersionResponse>, ApiError> {
     let response = state.handler.node_version().await?;
 
-    Ok(Json(NodeVersionResponse {
-        data: NodeVersionData {
-            version: response.data,
-        },
-    }))
+    Ok(Json(response))
 }
 
 async fn respond_404() -> impl IntoResponse {
@@ -223,7 +227,10 @@ async fn proxy_handler() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::validatorapi::testutils::TestHandler;
+    use crate::validatorapi::{
+        testutils::TestHandler,
+        types::{ProposerDutiesResponse, ProposerDuty},
+    };
 
     #[tokio::test]
     async fn node_version_wraps_handler_value() {
@@ -235,5 +242,32 @@ mod tests {
         let Json(body) = node_version(State(state)).await.unwrap();
 
         assert_eq!(body.data.version, "pluto/test/v1.0");
+    }
+
+    #[tokio::test]
+    async fn proposer_duties_wraps_handler_value() {
+        let duty = ProposerDuty {
+            pubkey: "0xaabbccddeeff".to_owned(),
+            slot: "1234".to_owned(),
+            validator_index: "7".to_owned(),
+        };
+        let handler = TestHandler::default().with_proposer_duties(ProposerDutiesResponse {
+            data: vec![duty],
+            dependent_root: "0xcd".to_owned(),
+            execution_optimistic: true,
+        });
+        let state = Arc::new(AppState {
+            handler,
+            builder_enabled: false,
+        });
+
+        let Json(body) = proposer_duties(State(state), Path(99u64)).await.unwrap();
+
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["dependent_root"], "0xcd");
+        assert_eq!(json["execution_optimistic"], true);
+        assert_eq!(json["data"][0]["slot"], "1234");
+        assert_eq!(json["data"][0]["validator_index"], "7");
+        assert_eq!(json["data"][0]["pubkey"], "0xaabbccddeeff");
     }
 }

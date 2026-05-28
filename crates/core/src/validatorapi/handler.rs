@@ -6,10 +6,11 @@ use super::{
     error::ApiError,
     types::{
         AggregateAttestationOpts, AttestationData, AttestationDataOpts, AttesterDutiesOpts,
-        AttesterDuty, BeaconCommitteeSelection, EthResponse, ProposalOpts, ProposerDutiesOpts,
-        ProposerDuty, SignedContributionAndProof, SignedValidatorRegistration, SignedVoluntaryExit,
-        SyncCommitteeContribution, SyncCommitteeContributionOpts, SyncCommitteeDutiesOpts,
-        SyncCommitteeDuty, SyncCommitteeMessage, SyncCommitteeSelection, Validator, ValidatorsOpts,
+        AttesterDuty, BeaconCommitteeSelection, EthResponse, NodeVersionResponse, ProposalOpts,
+        ProposerDutiesOpts, ProposerDutiesResponse, SignedContributionAndProof,
+        SignedValidatorRegistration, SignedVoluntaryExit, SyncCommitteeContribution,
+        SyncCommitteeContributionOpts, SyncCommitteeDutiesOpts, SyncCommitteeDuty,
+        SyncCommitteeMessage, SyncCommitteeSelection, Validator, ValidatorsOpts,
         VersionedAttestation, VersionedProposal, VersionedSignedAggregateAndProof,
         VersionedSignedBlindedProposal, VersionedSignedProposal,
     },
@@ -33,7 +34,7 @@ pub trait Handler: Send + Sync + 'static {
     async fn proposer_duties(
         &self,
         opts: ProposerDutiesOpts,
-    ) -> Result<EthResponse<Vec<ProposerDuty>>, ApiError>;
+    ) -> Result<ProposerDutiesResponse, ApiError>;
 
     /// `POST /eth/v1/validator/duties/sync/{epoch}`.
     async fn sync_committee_duties(
@@ -126,5 +127,5 @@ pub trait Handler: Send + Sync + 'static {
     ) -> Result<(), ApiError>;
 
     /// `GET /eth/v1/node/version`.
-    async fn node_version(&self) -> Result<EthResponse<String>, ApiError>;
+    async fn node_version(&self) -> Result<NodeVersionResponse, ApiError>;
 }
