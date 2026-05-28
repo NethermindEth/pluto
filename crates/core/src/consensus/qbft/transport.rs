@@ -82,8 +82,12 @@ pub(crate) struct Transport {
     // this tokio channel into the crossbeam receiver used by core::qbft::run.
     recv_tx: mpsc::Sender<qbft::Msg<ConsensusQbftTypes>>,
     sniffer: sync::Arc<Sniffer>,
-    value_rx: Mutex<mpsc::Receiver<Any>>,
-    values: Mutex<ValueMap>,
+    values: Mutex<ValueStore>,
+}
+
+struct ValueStore {
+    value_rx: mpsc::Receiver<Any>,
+    values: ValueMap,
 }
 
 impl Transport {
@@ -100,8 +104,10 @@ impl Transport {
             privkey,
             recv_tx,
             sniffer: sync::Arc::new(sniffer),
-            value_rx: Mutex::new(value_rx),
-            values: Mutex::default(),
+            values: Mutex::new(ValueStore {
+                value_rx,
+                values: ValueMap::new(),
+            }),
         }
     }
 
@@ -110,6 +116,7 @@ impl Transport {
         self.values
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+            .values
             .extend(
                 msg.values()
                     .iter()
@@ -119,19 +126,13 @@ impl Transport {
 
     /// Returns a cached value by hash, after draining at most one local value.
     pub(crate) fn get_value(&self, hash: [u8; 32]) -> Result<Any> {
-        let local_value = self
-            .value_rx
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .try_recv();
-
-        let mut values = self.values.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Ok(local) = local_value {
+        let mut store = self.values.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Ok(local) = store.value_rx.try_recv() {
             let hash = msg::hash_proto_bytes(&local.value)?;
-            values.insert(hash, local);
+            store.values.insert(hash, local);
         }
 
-        values.get(&hash).cloned().ok_or(Error::UnknownValue)
+        store.values.get(&hash).cloned().ok_or(Error::UnknownValue)
     }
 
     /// Creates, self-enqueues, sniffs, and externally broadcasts a QBFT
