@@ -19,9 +19,9 @@ use super::{
 };
 
 /// Shared router state. Cloned per request via [`Arc`].
-pub(super) struct AppState<H> {
+pub(super) struct AppState {
     /// Request handler invoked by each route.
-    pub handler: H,
+    pub handler: Arc<dyn Handler>,
     /// Whether builder mode is enabled. Read by `propose_block_v3`.
     #[allow(dead_code, reason = "consumed by propose_block_v3 in a later PR")]
     pub builder_enabled: bool,
@@ -34,7 +34,7 @@ pub(super) struct AppState<H> {
 ///
 /// `builder_enabled` is consumed by `propose_block_v3` to maximise the
 /// builder boost factor.
-pub fn new_router<H: Handler>(handler: H, builder_enabled: bool) -> Router {
+pub fn new_router(handler: Arc<dyn Handler>, builder_enabled: bool) -> Router {
     let state = Arc::new(AppState {
         handler,
         builder_enabled,
@@ -47,7 +47,7 @@ pub fn new_router<H: Handler>(handler: H, builder_enabled: bool) -> Router {
         )
         .route(
             "/eth/v1/validator/duties/proposer/{epoch}",
-            get(proposer_duties::<H>),
+            get(proposer_duties),
         )
         .route(
             "/eth/v1/validator/duties/sync/{epoch}",
@@ -115,7 +115,7 @@ pub fn new_router<H: Handler>(handler: H, builder_enabled: bool) -> Router {
             "/eth/v1/validator/sync_committee_selections",
             post(sync_committee_selections),
         )
-        .route("/eth/v1/node/version", get(node_version::<H>))
+        .route("/eth/v1/node/version", get(node_version))
         .fallback(proxy_handler)
         .with_state(state)
 }
@@ -124,8 +124,8 @@ async fn attester_duties() {
     todo!("vapi: attester_duties");
 }
 
-async fn proposer_duties<H: Handler>(
-    State(state): State<Arc<AppState<H>>>,
+async fn proposer_duties(
+    State(state): State<Arc<AppState>>,
     Path(epoch): Path<u64>,
 ) -> Result<Json<ProposerDutiesResponse>, ApiError> {
     let response = state
@@ -208,8 +208,8 @@ async fn sync_committee_selections() {
     todo!("vapi: sync_committee_selections");
 }
 
-async fn node_version<H: Handler>(
-    State(state): State<Arc<AppState<H>>>,
+async fn node_version(
+    State(state): State<Arc<AppState>>,
 ) -> Result<Json<NodeVersionResponse>, ApiError> {
     let response = state.handler.node_version().await?;
 
@@ -235,7 +235,7 @@ mod tests {
     #[tokio::test]
     async fn node_version_wraps_handler_value() {
         let state = Arc::new(AppState {
-            handler: TestHandler::with_version("pluto/test/v1.0"),
+            handler: Arc::new(TestHandler::with_version("pluto/test/v1.0")),
             builder_enabled: false,
         });
 
@@ -257,7 +257,7 @@ mod tests {
             execution_optimistic: true,
         });
         let state = Arc::new(AppState {
-            handler,
+            handler: Arc::new(handler),
             builder_enabled: false,
         });
 
