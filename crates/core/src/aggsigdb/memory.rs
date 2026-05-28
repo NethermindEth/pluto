@@ -186,6 +186,10 @@ impl Handle {
     ///
     /// Might block indefinitely if no data is ever stored for the given duty
     /// and public key.
+    ///
+    /// To avoid blocking indefinitely, consider using a timeout,
+    /// [`CancellationToken`] or racing using `tokio::select!` against other
+    /// events.
     pub async fn wait_for(
         &self,
         duty: types::Duty,
