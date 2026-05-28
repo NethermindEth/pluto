@@ -18,7 +18,7 @@ use crate::{
     signeddata::{
         AttestationData, SyncContribution, VersionedAggregatedAttestation, VersionedProposal,
     },
-    types::{Duty, DutyType, PubKey},
+    types::{Duty, DutyType, PubKey, UnsignedDataSet, UnsignedDutyData},
 };
 
 /// Error type for DutyDB operations.
@@ -128,23 +128,6 @@ pub enum Error {
 
 /// Result type for DutyDB operations.
 pub type Result<T> = std::result::Result<T, Error>;
-
-/// Unsigned duty data variant — matches Go's `core.UnsignedData` interface.
-#[derive(Debug, Clone)]
-pub enum UnsignedDutyData {
-    /// Unsigned proposal (DutyProposer).
-    Proposal(Box<VersionedProposal>),
-    /// Unsigned attestation data (DutyAttester).
-    Attestation(AttestationData),
-    /// Unsigned aggregated attestation (DutyAggregator).
-    AggAttestation(VersionedAggregatedAttestation),
-    /// Unsigned sync contribution (DutySyncContribution).
-    SyncContribution(SyncContribution),
-}
-
-/// Map from public key to unsigned duty data, equivalent to Go's
-/// `core.UnsignedDataSet`.
-pub type UnsignedDataSet = HashMap<PubKey, UnsignedDutyData>;
 
 /// Lookup key for attestation data: (slot, committee index).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

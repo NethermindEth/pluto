@@ -32,6 +32,9 @@ pub mod dutydb;
 /// SigAgg — threshold BLS signature aggregation.
 pub mod sigagg;
 
+/// Fetcher — fetches unsigned duty data from the beacon node.
+pub mod fetcher;
+
 mod parsigex_codec;
 // SSZ codec operates on compile-time-constant byte sizes and offsets.
 // Arithmetic is bounded and casts from `usize` to `u32` are safe because all
