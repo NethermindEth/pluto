@@ -1,17 +1,17 @@
-use std::{
-    sync::{Arc, Mutex as StdMutex},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use pluto_eth2api::{spec::altair, v1};
 use pluto_testutil as testutil;
 use test_case::test_case;
-use tokio::sync::{Mutex, mpsc};
+use tokio::{
+    sync::{Mutex, mpsc},
+    time::sleep,
+};
 use tokio_util::sync::CancellationToken;
 
 use super::{MemDB, get_threshold_matching, threshold_subscriber};
 use crate::{
-    deadline::Deadliner,
+    deadline::{DeadlinerTask, NeverExpiringCalculator},
     signeddata::{BeaconCommitteeSelection, SignedSyncMessage, VersionedAttestation},
     testutils::random_core_pub_key,
     types::{Duty, DutyType, ParSignedData, ParSignedDataSet, SlotNumber},
@@ -103,14 +103,19 @@ async fn memdb_threshold() {
     const THRESHOLD: u64 = 7;
     const N: usize = 10;
 
-    let deadliner = Arc::new(TestDeadliner::new());
     let cancel = CancellationToken::new();
-    let db = Arc::new(MemDB::new(cancel.clone(), THRESHOLD, deadliner.clone()));
+    // Real deadliner so `MemDB.store_external` has a handle to call `.add` on.
+    // The calculator never expires anything, so the deadliner's natural output
+    // is silent — eviction is driven manually through `trim_tx` below.
+    let (deadliner, _drop_rx) =
+        DeadlinerTask::start(cancel.clone(), "memdb_threshold", NeverExpiringCalculator);
+    let (trim_tx, trim_rx) = mpsc::channel::<Duty>(32);
+    let db = Arc::new(MemDB::new(cancel.clone(), THRESHOLD, deadliner));
 
     let trim_handle = tokio::spawn({
         let db = db.clone();
         async move {
-            db.trim().await;
+            db.trim(trim_rx).await;
         }
     });
 
@@ -151,8 +156,13 @@ async fn memdb_threshold() {
     enqueue_n().await;
     assert_eq!(1, *times_called.lock().await);
 
-    deadliner.expire().await;
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    // Drive eviction manually: simulate the deadliner emitting `duty` as
+    // expired. Wait a beat so the trim task processes it.
+    trim_tx
+        .send(duty.clone())
+        .await
+        .expect("trim_tx should be open");
+    sleep(Duration::from_millis(20)).await;
 
     enqueue_n().await;
     assert_eq!(2, *times_called.lock().await);
@@ -161,51 +171,4 @@ async fn memdb_threshold() {
     trim_handle
         .await
         .expect("trim task should shut down cleanly");
-}
-
-struct TestDeadliner {
-    added: StdMutex<Vec<Duty>>,
-    tx: mpsc::Sender<Duty>,
-    rx: StdMutex<Option<mpsc::Receiver<Duty>>>,
-}
-
-impl TestDeadliner {
-    fn new() -> Self {
-        let (tx, rx) = mpsc::channel(32);
-        Self {
-            added: StdMutex::new(Vec::new()),
-            tx,
-            rx: StdMutex::new(Some(rx)),
-        }
-    }
-
-    async fn expire(&self) -> bool {
-        let duties = {
-            let mut added = self.added.lock().expect("test deadliner lock poisoned");
-            std::mem::take(&mut *added)
-        };
-
-        for duty in duties {
-            if self.tx.send(duty).await.is_err() {
-                return false;
-            }
-        }
-
-        true
-    }
-}
-
-#[async_trait::async_trait]
-impl Deadliner for TestDeadliner {
-    async fn add(&self, duty: Duty) -> bool {
-        self.added
-            .lock()
-            .expect("test deadliner lock poisoned")
-            .push(duty);
-        true
-    }
-
-    fn c(&self) -> Option<mpsc::Receiver<Duty>> {
-        self.rx.lock().expect("test deadliner lock poisoned").take()
-    }
 }

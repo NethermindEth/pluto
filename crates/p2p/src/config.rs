@@ -9,7 +9,9 @@ use std::{
 use libp2p::{Multiaddr, multiaddr, ping};
 
 /// Shared default relay endpoints used by commands and P2P-facing configs.
-pub const DEFAULT_RELAYS: [&str; 3] = [
+pub const DEFAULT_RELAYS: [&str; 5] = [
+    "https://pluto-relay-0.ovh.dev-nethermind.xyz",
+    "https://pluto-relay-1.ovh.dev-nethermind.xyz",
     "https://0.relay.obol.tech",
     "https://2.relay.obol.dev",
     "https://1.relay.obol.tech",

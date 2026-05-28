@@ -51,7 +51,7 @@ impl Cluster {
 
             let record = Record::try_from(operator.enr.as_str())?;
 
-            let peer = Peer::from_enr(&record, i)?;
+            let peer = Peer::from_enr(&record, i as u64)?;
 
             resp.push(peer);
         }
@@ -72,8 +72,8 @@ impl Cluster {
         for (i, p) in peers.iter().enumerate() {
             if p.id == *peer_id {
                 return Ok(NodeIdx {
-                    peer_idx: i,                    // 0-indexed
-                    share_idx: i.saturating_add(1), // 1-indexed
+                    peer_idx: i as u64,                    // 0-indexed
+                    share_idx: i.saturating_add(1) as u64, // 1-indexed
                 });
             }
         }
@@ -151,7 +151,7 @@ impl Cluster {
             }
 
             let n_idx = self.node_idx(pid)?;
-            return Ok(n_idx.share_idx as u64);
+            return Ok(n_idx.share_idx);
         }
 
         Err(ManifestError::NodeIdxNotFound)

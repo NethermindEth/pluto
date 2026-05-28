@@ -70,6 +70,25 @@ impl DutyType {
         !matches!(self, DutyType::Unknown | DutyType::DutySentinel(_))
     }
 
+    /// Returns all valid duty types, matching Go's `AllDutyTypes()`.
+    pub fn all() -> &'static [DutyType] {
+        &[
+            DutyType::Proposer,
+            DutyType::Attester,
+            DutyType::Signature,
+            DutyType::Exit,
+            DutyType::BuilderProposer,
+            DutyType::BuilderRegistration,
+            DutyType::Randao,
+            DutyType::PrepareAggregator,
+            DutyType::Aggregator,
+            DutyType::SyncMessage,
+            DutyType::PrepareSyncContribution,
+            DutyType::SyncContribution,
+            DutyType::InfoSync,
+        ]
+    }
+
     /// Returns true if duties of this type have no deadline (e.g. voluntary
     /// exits, builder registrations).
     pub fn never_expires(&self) -> bool {
@@ -300,7 +319,8 @@ pub enum ProposalType {
 // the pub key as [u8; 48] instead of string.
 // [original implementation](https://github.com/ObolNetwork/charon/blob/b3008103c5429b031b63518195f4c49db4e9a68d/core/types.go#L264)
 const PK_LEN: usize = 48;
-const SIG_LEN: usize = 96;
+
+pub use pluto_crypto::types::{SIGNATURE_LENGTH, Signature};
 
 /// Public key struct
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -406,7 +426,7 @@ impl AsRef<[u8]> for PubKey {
 // todo: add toEth2Format for the pub key
 // https://github.com/ObolNetwork/charon/blob/b3008103c5429b031b63518195f4c49db4e9a68d/core/types.go#L311
 
-/// Duty definition type
+/// Duty definition type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DutyDefinition<T: Clone + Serialize + StdDebug>(T);
 
@@ -418,11 +438,16 @@ where
     pub fn new(duty_definition: T) -> Self {
         Self(duty_definition)
     }
+
+    /// Inner value.
+    pub fn inner(&self) -> &T {
+        &self.0
+    }
 }
 
-/// Duty definition set
+/// One duty definition per validator, matching Go's `core.DutyDefinitionSet`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct DutyDefinitionSet<T>(HashMap<DutyType, DutyDefinition<T>>)
+pub struct DutyDefinitionSet<T>(HashMap<PubKey, DutyDefinition<T>>)
 where
     T: Clone + Serialize + StdDebug;
 
@@ -435,28 +460,33 @@ where
         Self(HashMap::default())
     }
 
-    /// Get a duty definition by duty type.
-    pub fn get(&self, duty_type: &DutyType) -> Option<&DutyDefinition<T>> {
-        self.0.get(duty_type)
+    /// Get a duty definition by public key.
+    pub fn get(&self, pubkey: &PubKey) -> Option<&DutyDefinition<T>> {
+        self.0.get(pubkey)
     }
 
     /// Insert a duty definition.
-    pub fn insert(&mut self, duty_type: DutyType, duty_definition: DutyDefinition<T>) {
-        self.0.insert(duty_type, duty_definition);
+    pub fn insert(&mut self, pubkey: PubKey, duty_definition: DutyDefinition<T>) {
+        self.0.insert(pubkey, duty_definition);
     }
 
-    /// Remove a duty definition by duty type.
-    pub fn remove(&mut self, duty_type: &DutyType) -> Option<DutyDefinition<T>> {
-        self.0.remove(duty_type)
+    /// Remove a duty definition by public key.
+    pub fn remove(&mut self, pubkey: &PubKey) -> Option<DutyDefinition<T>> {
+        self.0.remove(pubkey)
     }
 
-    /// Inner duty definition set.
-    pub fn inner(&self) -> &HashMap<DutyType, DutyDefinition<T>> {
+    /// Iterate over all public keys in the set.
+    pub fn keys(&self) -> impl Iterator<Item = &PubKey> {
+        self.0.keys()
+    }
+
+    /// Inner map.
+    pub fn inner(&self) -> &HashMap<PubKey, DutyDefinition<T>> {
         &self.0
     }
 
-    /// Inner duty definition set.
-    pub fn inner_mut(&mut self) -> &mut HashMap<DutyType, DutyDefinition<T>> {
+    /// Inner map (mutable).
+    pub fn inner_mut(&mut self) -> &mut HashMap<PubKey, DutyDefinition<T>> {
         &mut self.0
     }
 }
@@ -524,24 +554,6 @@ where
     }
 }
 
-// todo: add proper signature type
-/// Signature type
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Signature(pub(crate) [u8; SIG_LEN]);
-
-impl Signature {
-    /// Create a new signature.
-    pub fn new(signature: [u8; SIG_LEN]) -> Self {
-        Signature(signature)
-    }
-}
-
-impl AsRef<[u8; SIG_LEN]> for Signature {
-    fn as_ref(&self) -> &[u8; SIG_LEN] {
-        &self.0
-    }
-}
-
 /// Signed data type
 pub trait SignedData: Any + DynClone + DynEq + StdDebug + Send + Sync {
     /// signature returns the signed duty data's signature.
@@ -551,6 +563,12 @@ pub trait SignedData: Any + DynClone + DynEq + StdDebug + Send + Sync {
     fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError>
     where
         Self: Sized;
+
+    /// Object-safe equivalent of [`SignedData::set_signature`].
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError>;
 
     /// message_root returns the message root for the unsigned data.
     fn message_root(&self) -> Result<[u8; 32], SignedDataError>;
@@ -1004,13 +1022,26 @@ mod tests {
     }
 
     #[test]
+    fn duty_type_all() {
+        let all = DutyType::all();
+        assert_eq!(all.len(), 13);
+        assert!(all.iter().all(DutyType::is_valid));
+        assert!(!all.contains(&DutyType::Unknown));
+        for (i, dt) in all.iter().enumerate() {
+            assert_eq!(all.iter().position(|x| x == dt), Some(i));
+        }
+    }
+
+    #[test]
     fn duty_definition_set() {
-        let mut duty_definition_set = DutyDefinitionSet::new();
-        duty_definition_set.insert(DutyType::Proposer, DutyDefinition::new(DutyType::Proposer));
+        let pubkey = PubKey::new([1u8; PK_LEN]);
+        let mut set = DutyDefinitionSet::new();
+        set.insert(pubkey, DutyDefinition::new(DutyType::Proposer));
         assert_eq!(
-            duty_definition_set.get(&DutyType::Proposer),
+            set.get(&pubkey),
             Some(&DutyDefinition::new(DutyType::Proposer))
         );
+        assert_eq!(set.keys().count(), 1);
     }
 
     #[test]
@@ -1028,11 +1059,18 @@ mod tests {
 
     impl SignedData for MockSignedData {
         fn signature(&self) -> Result<Signature, SignedDataError> {
-            Ok(Signature::new([42u8; SIG_LEN]))
+            Ok([42u8; SIGNATURE_LENGTH])
         }
 
         fn set_signature(&self, _signature: Signature) -> Result<Self, SignedDataError> {
             Ok(self.clone())
+        }
+
+        fn set_signature_boxed(
+            &self,
+            signature: Signature,
+        ) -> Result<Box<dyn SignedData>, SignedDataError> {
+            Ok(Box::new(self.set_signature(signature)?))
         }
 
         fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
@@ -1051,7 +1089,7 @@ mod tests {
         assert_eq!(retrieved.share_idx, 0);
         assert_eq!(
             retrieved.signed_data.signature().unwrap(),
-            Signature::new([42u8; SIG_LEN])
+            [42u8; SIGNATURE_LENGTH]
         );
     }
 
