@@ -188,7 +188,6 @@ mod tests {
         types::{Duty, PubKey, Signature, SignedData, SignedDataSet, SlotNumber},
     };
     use tokio::sync;
-    use tokio_util::sync::CancellationToken;
 
     /// Some mock signed data type for testing.
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,27 +226,21 @@ mod tests {
         }
     }
 
-    struct TestDeadliner;
+    /// Create a test deadline handle and an eviction channel.
+    fn test_deadline() -> (
+        sync::mpsc::Sender<Duty>,
+        deadline::DeadlinerHandle,
+        sync::mpsc::Receiver<Duty>,
+    ) {
+        let (tx, rx) = sync::mpsc::channel(1);
+        let deadliner = deadline::DeadlinerHandle::always(deadline::AddOutcome::Scheduled);
 
-    impl TestDeadliner {
-        // Creates a deadliner that immediately schedules the Duty for eviction
-        fn immediate() -> (deadline::DeadlinerHandle, sync::mpsc::Receiver<Duty>) {
-            todo!()
-        }
-
-        // Creates a deadliner that never returns any duties to evict
-        fn never() -> (deadline::DeadlinerHandle, sync::mpsc::Receiver<Duty>) {
-            deadline::DeadlinerTask::start(
-                CancellationToken::new(),
-                "",
-                deadline::NeverExpiringCalculator,
-            )
-        }
+        (tx, deadliner, rx)
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_read() {
-        let (deadliner, evictions) = TestDeadliner::never();
+        let (_, deadliner, evictions) = test_deadline();
         let store = super::Handle::new(deadliner, evictions);
 
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
@@ -265,7 +258,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_unblocks() {
-        let (deadliner, evictions) = TestDeadliner::never();
+        let (_, deadliner, evictions) = test_deadline();
         let store = super::Handle::new(deadliner, evictions);
 
         let duty = Duty::new_attester_duty(SlotNumber::new(1));
@@ -294,7 +287,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cannot_overwrite() {
-        let (deadliner, evictions) = TestDeadliner::never();
+        let (_, deadliner, evictions) = test_deadline();
         let store = super::Handle::new(deadliner, evictions);
 
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
@@ -316,7 +309,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_idempotent() {
-        let (deadliner, evictions) = TestDeadliner::never();
+        let (_, deadliner, evictions) = test_deadline();
         let store = super::Handle::new(deadliner, evictions);
 
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
@@ -338,7 +331,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_evict_wait_then_write() {
-        let (deadliner, evictions) = TestDeadliner::immediate();
+        let (evict, deadliner, evictions) = test_deadline();
 
         let store = super::Handle::new(deadliner.clone(), evictions);
 
@@ -353,9 +346,11 @@ mod tests {
             .unwrap();
 
         // Wait until the eviction is processed and the duty is removed.
-        deadliner.add(duty.clone()).await;
+        evict.send(duty.clone()).await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            todo!("Find a way to ensure that the eviction has been processed");
+            while evict.capacity() != evict.max_capacity() {
+                tokio::task::yield_now().await;
+            }
         })
         .await
         .expect("Eviction did not complete in time");
@@ -385,7 +380,7 @@ mod tests {
     async fn write_unblocks_many() {
         const N: usize = 4;
 
-        let (deadliner, evictions) = TestDeadliner::never();
+        let (_, deadliner, evictions) = test_deadline();
         let store = super::Handle::new(deadliner, evictions);
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
@@ -422,7 +417,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn unrelated_write_does_not_unblock() {
-        let (deadliner, evictions) = TestDeadliner::never();
+        let (_, deadliner, evictions) = test_deadline();
         let store = super::Handle::new(deadliner, evictions);
 
         let duty_a = Duty::new_proposer_duty(SlotNumber::new(10));
