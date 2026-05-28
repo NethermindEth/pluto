@@ -291,7 +291,7 @@ fn create_msg(request: CreateMsgRequest<'_>) -> Result<msg::Msg> {
     }
 
     Ok(msg::Msg::new(
-        Some(pb_msg),
+        pb_msg,
         justifications,
         sync::Arc::new(values),
     )?)
@@ -402,7 +402,7 @@ mod tests {
             ..Default::default()
         };
         let justification = msg::Msg::new(
-            Some(raw_justification.clone()),
+            raw_justification.clone(),
             vec![nested],
             sync::Arc::default(),
         )
@@ -720,7 +720,7 @@ mod tests {
         }
 
         msg::Msg::new(
-            Some(QbftMsg {
+            QbftMsg {
                 r#type: type_.as_i64(),
                 duty: Some(pbcore::Duty::try_from(&duty()).unwrap()),
                 peer_idx: 1,
@@ -729,7 +729,7 @@ mod tests {
                 prepared_round: 0,
                 prepared_value_hash: prepared_value_hash.to_vec().into(),
                 ..Default::default()
-            }),
+            },
             justification,
             sync::Arc::new(values),
         )
