@@ -69,6 +69,9 @@ impl Actor {
                     }
                 }
             }
+
+            // After each message, trim waiters in case that the futures are dropped.
+            self.trim_readers();
         }
     }
 
@@ -113,6 +116,14 @@ impl Actor {
 
     fn evict(&mut self, duty: types::Duty) {
         self.entries.remove(&duty);
+    }
+
+    fn trim_readers(&mut self) {
+        self.waiters.retain(|_, waiters| {
+            waiters.retain(|w| !w.is_closed());
+
+            !waiters.is_empty()
+        });
     }
 }
 
@@ -374,15 +385,16 @@ mod tests {
             .await
             .unwrap();
 
-        // Wait until the expiration is processed and the duty is evicted.
+        // Queue the expiration. Immediately run a dummy store, and by the time it
+        // compeltes we know that the expiration has been processed.
         expiration_tx.send(duty.clone()).await.unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while expiration_tx.capacity() != expiration_tx.max_capacity() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("Eviction did not complete in time");
+        {
+            let dummy = Duty::new_attester_duty(SlotNumber::new(u64::MAX));
+            store
+                .store(dummy, MockSignedData(0).singleton(pub_key))
+                .await
+                .unwrap();
+        }
 
         let reader = {
             let store = store.clone();
@@ -466,8 +478,7 @@ mod tests {
         tokio::task::yield_now().await;
         assert!(!reader.is_finished(), "reader should block initially");
 
-        // Storing an unrelated key wakes readers, which block again since the store is
-        // unrelated.
+        // Storing an unrelated key does not affect readers.
         store
             .store(duty_b, data_b.singleton(pub_key))
             .await
