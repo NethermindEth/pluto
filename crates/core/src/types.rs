@@ -729,53 +729,7 @@ impl TryFrom<(&DutyType, &pbcore::ParSignedDataSet)> for ParSignedDataSet {
 }
 
 /// A set of signed duty data.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct SignedDataSet(HashMap<PubKey, Box<dyn SignedData>>);
-
-impl SignedDataSet {
-    /// Create a new signed data set.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Get a signed data by public key.
-    pub fn get(&self, pub_key: &PubKey) -> Option<&dyn SignedData> {
-        self.0.get(pub_key).map(|b| b.as_ref())
-    }
-
-    /// Insert a signed data.
-    pub fn insert(&mut self, pub_key: PubKey, signed_data: impl SignedData) {
-        self.0.insert(pub_key, Box::new(signed_data));
-    }
-
-    /// Remove a signed data by public key.
-    pub fn remove(&mut self, pub_key: &PubKey) -> Option<Box<dyn SignedData>> {
-        self.0.remove(pub_key)
-    }
-
-    /// Iterate over the signed data set by reference.
-    pub fn iter(&self) -> std::collections::hash_map::Iter<'_, PubKey, Box<dyn SignedData>> {
-        self.0.iter()
-    }
-}
-
-impl IntoIterator for SignedDataSet {
-    type IntoIter = std::collections::hash_map::IntoIter<PubKey, Box<dyn SignedData>>;
-    type Item = (PubKey, Box<dyn SignedData>);
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter()
-    }
-}
-
-impl<'a> IntoIterator for &'a SignedDataSet {
-    type IntoIter = std::collections::hash_map::Iter<'a, PubKey, Box<dyn SignedData>>;
-    type Item = (&'a PubKey, &'a Box<dyn SignedData>);
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.iter()
-    }
-}
+pub type SignedDataSet = HashMap<PubKey, Box<dyn SignedData>>;
 
 /// Slot struct
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1057,6 +1011,12 @@ mod tests {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     struct MockSignedData;
 
+    impl MockSignedData {
+        fn boxed(&self) -> Box<dyn SignedData> {
+            Box::new(self.clone())
+        }
+    }
+
     impl SignedData for MockSignedData {
         fn signature(&self) -> Result<Signature, SignedDataError> {
             Ok([42u8; SIGNATURE_LENGTH])
@@ -1096,11 +1056,11 @@ mod tests {
     #[test]
     fn signed_data_set() {
         let mut signed_data_set = SignedDataSet::new();
-        signed_data_set.insert(PubKey::new([42u8; PK_LEN]), MockSignedData);
-        let expected: &dyn SignedData = &MockSignedData;
+        signed_data_set.insert(PubKey::new([42u8; PK_LEN]), MockSignedData.boxed());
+        let expected = MockSignedData.boxed();
         assert_eq!(
             signed_data_set.get(&PubKey::new([42u8; PK_LEN])),
-            Some(expected)
+            Some(&expected)
         );
     }
 

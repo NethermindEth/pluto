@@ -235,7 +235,7 @@ mod tests {
     impl MockSignedData {
         fn singleton(&self, pub_key: PubKey) -> SignedDataSet {
             let mut set = SignedDataSet::new();
-            set.insert(pub_key, self.clone());
+            set.insert(pub_key, self.boxed());
             set
         }
 
