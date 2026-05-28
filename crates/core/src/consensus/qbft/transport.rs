@@ -491,7 +491,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(received.value(), value_hash);
-        assert_eq!(transport.sniffer_instance().msgs.len(), 1);
+        wait_for_sniffer_len(&transport, 1).await;
     }
 
     #[tokio::test]
@@ -556,6 +556,24 @@ mod tests {
         ct.cancel();
 
         transport.process_receives(ct, outer_rx).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn process_receives_errors_when_receive_buffer_closed() {
+        let value_hash = value_hash(1);
+        let msg = wrapped_msg(qbft::MSG_PRE_PREPARE, value_hash, [0u8; 32], vec![]);
+        let (transport, recv_rx, _sent) = test_transport(empty_value_rx());
+        drop(recv_rx);
+
+        let (outer_tx, outer_rx) = mpsc::channel(1);
+        outer_tx.send(msg).await.unwrap();
+
+        let err = transport
+            .process_receives(CancellationToken::new(), outer_rx)
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.to_string(), "receive buffer closed");
     }
 
     #[derive(Debug)]
@@ -634,6 +652,16 @@ mod tests {
                 Ok(())
             })
         })
+    }
+
+    async fn wait_for_sniffer_len(transport: &Transport, expected: usize) {
+        timeout(Duration::from_secs(1), async {
+            while transport.sniffer_instance().msgs.len() != expected {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
     }
 
     fn create_msg_request<'a>(duty: &'a Duty, privkey: &'a SecretKey) -> CreateMsgRequest<'a> {
