@@ -73,14 +73,8 @@ impl Actor {
     }
 
     async fn store(&mut self, duty: types::Duty, set: types::SignedDataSet) -> Result<(), Error> {
-        match self.deadliner.add(duty.clone()).await {
-            // The duty is already expired, so we can ignore the store.
-            deadline::AddOutcome::AlreadyExpired => return Ok(()),
-            // Failures are treated as terminated.
-            deadline::AddOutcome::FailedToCompute => return Err(Error::Terminated),
-            // In other cases proceed with the store.
-            _ => {}
-        }
+        // TODO(charon): Distinguish between no deadline supported vs already expired.
+        let _ = self.deadliner.add(duty.clone()).await;
 
         // NOTE: Partial insertions on error match the semantics of Charon.
         let for_duty = self.entries.entry(duty.clone()).or_default();
