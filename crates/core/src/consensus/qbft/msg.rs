@@ -274,9 +274,14 @@ where
     let mut encoded = Vec::with_capacity(msg.encoded_len());
     msg.encode(&mut encoded).map_err(Error::MarshalProto)?;
 
+    hash_proto_bytes(&encoded)
+}
+
+/// Returns the consensus hash for deterministic protobuf bytes.
+pub(crate) fn hash_proto_bytes(encoded: &[u8]) -> Result<[u8; 32]> {
     let mut hasher = Hasher::default();
     let index = hasher.index();
-    hasher.put_bytes(&encoded).map_err(Error::HashProto)?;
+    hasher.put_bytes(encoded).map_err(Error::HashProto)?;
     hasher.merkleize(index).map_err(Error::HashProto)?;
     hasher.hash_root().map_err(Error::HashProto)
 }

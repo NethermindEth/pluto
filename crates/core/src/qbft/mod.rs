@@ -209,6 +209,11 @@ impl MessageType {
         Self(value)
     }
 
+    /// Returns the stable wire integer.
+    pub(crate) fn as_i64(self) -> i64 {
+        self.0
+    }
+
     /// Returns true when the message type is one of the known QBFT wire types.
     pub fn valid(&self) -> bool {
         self.0 > MSG_UNKNOWN.0 && self.0 < MSG_SENTINEL.0
