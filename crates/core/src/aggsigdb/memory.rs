@@ -23,16 +23,16 @@ struct Actor {
 impl Actor {
     async fn run(
         &mut self,
-        mut messages: sync::mpsc::Receiver<Message>,
-        mut evictions: sync::mpsc::Receiver<types::Duty>,
+        mut messages_rx: sync::mpsc::Receiver<Message>,
+        mut expired_rx: sync::mpsc::Receiver<types::Duty>,
     ) {
         loop {
             tokio::select! {
                 biased; // We want to run evictions first
 
-                Some(duty) = evictions.recv() => self.evict(duty),
+                Some(duty) = expired_rx.recv() => self.evict(duty),
 
-                msg = messages.recv() => match msg {
+                msg = messages_rx.recv() => match msg {
                     None => break, // All handles have been dropped, so we can stop the actor.
                     Some(msg) => match msg {
                         Message::Store {
@@ -135,7 +135,10 @@ impl Handle {
     /// Creates a new in-memory AggSigDB instance, and get a handle to it.
     ///
     /// The underlying instance gets dropped when all handles are dropped.
-    pub fn new(deadliner: DeadlinerHandle, evictions: sync::mpsc::Receiver<types::Duty>) -> Self {
+    pub fn new(
+        deadliner: DeadlinerHandle,
+        expiration_rx: sync::mpsc::Receiver<types::Duty>,
+    ) -> Self {
         let (sender, receiver) = sync::mpsc::channel(100);
         let mut actor = Actor {
             entries: HashMap::new(),
@@ -143,7 +146,7 @@ impl Handle {
             deadliner,
         };
 
-        tokio::spawn(async move { actor.run(receiver, evictions).await });
+        tokio::spawn(async move { actor.run(receiver, expiration_rx).await });
 
         Self { sender }
     }
@@ -226,7 +229,7 @@ mod tests {
         }
     }
 
-    /// Create a test deadline handle and an eviction channel.
+    /// Create a test deadline handle and an expiration channel.
     fn test_deadline() -> (
         sync::mpsc::Sender<Duty>,
         deadline::DeadlinerHandle,
@@ -240,8 +243,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_read() {
-        let (_, deadliner, evictions) = test_deadline();
-        let store = super::Handle::new(deadliner, evictions);
+        let (_, deadliner, expiration_rx) = test_deadline();
+        let store = super::Handle::new(deadliner, expiration_rx);
 
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
@@ -258,8 +261,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_unblocks() {
-        let (_, deadliner, evictions) = test_deadline();
-        let store = super::Handle::new(deadliner, evictions);
+        let (_, deadliner, expiration_rx) = test_deadline();
+        let store = super::Handle::new(deadliner, expiration_rx);
 
         let duty = Duty::new_attester_duty(SlotNumber::new(1));
         let pub_key = PubKey::new([7u8; 48]);
@@ -287,8 +290,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cannot_overwrite() {
-        let (_, deadliner, evictions) = test_deadline();
-        let store = super::Handle::new(deadliner, evictions);
+        let (_, deadliner, expiration_rx) = test_deadline();
+        let store = super::Handle::new(deadliner, expiration_rx);
 
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
@@ -309,8 +312,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_idempotent() {
-        let (_, deadliner, evictions) = test_deadline();
-        let store = super::Handle::new(deadliner, evictions);
+        let (_, deadliner, expiration_rx) = test_deadline();
+        let store = super::Handle::new(deadliner, expiration_rx);
 
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
@@ -331,9 +334,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_evict_wait_then_write() {
-        let (evict, deadliner, evictions) = test_deadline();
+        let (expiration_tx, deadliner, expiration_rx) = test_deadline();
 
-        let store = super::Handle::new(deadliner.clone(), evictions);
+        let store = super::Handle::new(deadliner.clone(), expiration_rx);
 
         let duty = Duty::new_attester_duty(SlotNumber::new(1));
         let pub_key = PubKey::new([7u8; 48]);
@@ -345,10 +348,10 @@ mod tests {
             .await
             .unwrap();
 
-        // Wait until the eviction is processed and the duty is removed.
-        evict.send(duty.clone()).await.unwrap();
+        // Wait until the expiration is processed and the duty is evicted.
+        expiration_tx.send(duty.clone()).await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while evict.capacity() != evict.max_capacity() {
+            while expiration_tx.capacity() != expiration_tx.max_capacity() {
                 tokio::task::yield_now().await;
             }
         })
@@ -380,8 +383,8 @@ mod tests {
     async fn write_unblocks_many() {
         const N: usize = 4;
 
-        let (_, deadliner, evictions) = test_deadline();
-        let store = super::Handle::new(deadliner, evictions);
+        let (_, deadliner, expiration_rx) = test_deadline();
+        let store = super::Handle::new(deadliner, expiration_rx);
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
         let signed_data = MockSignedData(42);
@@ -417,8 +420,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn unrelated_write_does_not_unblock() {
-        let (_, deadliner, evictions) = test_deadline();
-        let store = super::Handle::new(deadliner, evictions);
+        let (_, deadliner, expiration_rx) = test_deadline();
+        let store = super::Handle::new(deadliner, expiration_rx);
 
         let duty_a = Duty::new_proposer_duty(SlotNumber::new(10));
         let data_a = MockSignedData(1);
