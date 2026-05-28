@@ -479,7 +479,7 @@ mod tests {
                 .map(|j| {
                     let mut bytes = [0u8; 96];
                     rand::thread_rng().fill(&mut bytes[..]);
-                    ParSignedData::new(bytes, (j + 1) as u64)
+                    ParSignedData::new(bytes, u64::try_from(j + 1).expect("NODES fits u64"))
                 })
                 .collect();
             expected_data.insert(*pk, psigs);
@@ -489,7 +489,7 @@ mod tests {
         let mut data_to_be_sent: Vec<ParSignedDataSet> = vec![ParSignedDataSet::new(); NODES];
         for (pk, psigs) in &expected_data {
             for psig in psigs {
-                let node_idx = usize::try_from(psig.share_idx - 1).expect("share_idx fits usize");
+                let node_idx = usize::try_from(psig.share_idx).expect("share_idx fits usize") - 1;
                 data_to_be_sent[node_idx].insert(*pk, psig.clone());
             }
         }
@@ -611,7 +611,8 @@ mod tests {
             for (pk, psigs) in data {
                 let mut got: Vec<u64> = psigs.iter().map(|p| p.share_idx).collect();
                 got.sort_unstable();
-                let mut want: Vec<u64> = (1..=NODES as u64).collect();
+                let mut want: Vec<u64> =
+                    (1..=u64::try_from(NODES).expect("NODES fits u64")).collect();
                 want.sort_unstable();
                 assert_eq!(
                     got, want,

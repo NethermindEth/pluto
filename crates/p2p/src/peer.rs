@@ -73,7 +73,7 @@ pub struct Peer {
 
     /// Index is the order of this node in the cluster.
     /// This is only applicable to charon nodes, not relays.
-    pub index: usize,
+    pub index: u64,
 
     /// Represents a human friendly name for the peer.
     pub name: String,
@@ -91,7 +91,7 @@ impl Peer {
     }
 
     /// Creates a Peer from a ENR.
-    pub fn from_enr(enr: &Record, index: usize) -> Result<Peer> {
+    pub fn from_enr(enr: &Record, index: u64) -> Result<Peer> {
         let id = peer_id_from_key(enr.public_key.ok_or(PeerError::MissingPublicKeyInEnr)?)?;
 
         Ok(Peer {
@@ -104,7 +104,7 @@ impl Peer {
 
     /// Returns share index of this Peer. ShareIdx is 1-indexed while peer index
     /// is 0-indexed.
-    pub fn share_idx(&self) -> usize {
+    pub fn share_idx(&self) -> u64 {
         self.index.wrapping_add(1)
     }
 

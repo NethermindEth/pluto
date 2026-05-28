@@ -216,7 +216,7 @@ pub(crate) async fn sign_and_agg_deposit_data(
     deposit_amounts: &[phase0::Gwei],
     compounding: bool,
 ) -> Result<Vec<Vec<phase0::DepositData>>> {
-    let share_idx = u64::try_from(node_idx.share_idx)?;
+    let share_idx = node_idx.share_idx;
     let mut result = Vec::with_capacity(deposit_amounts.len());
 
     for (i, &amount) in deposit_amounts.iter().enumerate() {
@@ -260,7 +260,7 @@ pub(crate) async fn sign_and_agg_validator_registrations(
         gas_limit
     };
 
-    let share_idx = u64::try_from(node_idx.share_idx)?;
+    let share_idx = node_idx.share_idx;
     let (set, msgs) = sign_validator_registrations(
         shares,
         share_idx,
@@ -347,7 +347,7 @@ pub(crate) async fn sign_and_aggregate_lock_hash(
         .cloned()
         .collect();
 
-    let share_idx = u64::try_from(node_idx.share_idx)?;
+    let share_idx = node_idx.share_idx;
     let lock_hash_sig_set = sign_lock_hash(share_idx, &all_shares, &lock.lock_hash)?;
     let peer_sigs = exchanger.exchange(SIG_LOCK, lock_hash_sig_set).await?;
 
@@ -380,7 +380,12 @@ mod tests {
     use super::*;
     use rand::SeedableRng;
 
-    fn build_shares(num_validators: usize, total: u8, threshold: u8, share_idx: u8) -> Vec<Share> {
+    fn build_shares(
+        num_validators: usize,
+        total: u64,
+        threshold: u64,
+        share_idx: u64,
+    ) -> Vec<Share> {
         let mut res = Vec::with_capacity(num_validators);
 
         for seed in 0..num_validators {
@@ -408,7 +413,7 @@ mod tests {
                     .into_iter()
                     .map(|(idx, secret_share)| {
                         (
-                            u64::from(idx),
+                            idx,
                             BlstImpl
                                 .secret_to_public_key(&secret_share)
                                 .expect("public share derivation should succeed"),
