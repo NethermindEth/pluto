@@ -27,11 +27,11 @@ use crate::{
         },
         step::Step,
     },
-    types::{Duty, DutyType, PubKey},
+    types::{Duty, DutyType, ParSignedData, PubKey},
 };
 
 /// Partial signatures grouped by message root, grouped by pubkey.
-pub type ParSigsByMsg = HashMap<PubKey, HashMap<[u8; 32], Vec<crate::types::ParSignedData>>>;
+pub type ParSigsByMsg = HashMap<PubKey, HashMap<[u8; 32], Vec<ParSignedData>>>;
 
 /// Returns true if every pubkey has at most one distinct message root.
 pub(crate) fn msg_roots_consistent(parsigs: &ParSigsByMsg) -> bool {
