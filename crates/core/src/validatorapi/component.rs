@@ -13,10 +13,14 @@ use pluto_eth2api::{
     EthBeaconNodeApiClient, GetAttesterDutiesRequest, GetAttesterDutiesResponse,
     GetProposerDutiesRequest, GetProposerDutiesResponse, GetSyncCommitteeDutiesRequest,
     GetSyncCommitteeDutiesResponse,
-    spec::phase0::{BLSPubKey, Epoch, Root, ValidatorIndex},
+    spec::phase0::{BLSPubKey, Epoch, Root, Slot, ValidatorIndex},
 };
-use pluto_eth2util::signing::{self, DomainName, SigningError};
+use pluto_eth2util::{
+    helpers::epoch_from_slot,
+    signing::{self, DomainName, SigningError},
+};
 use tokio::time::error::Elapsed;
+use tree_hash::TreeHash;
 
 use super::{
     error::ApiError,
@@ -36,11 +40,12 @@ use super::{
 };
 use crate::{
     dutydb::{Error as DutyDbError, MemDB},
+    signeddata,
     signeddata::{
         SyncContribution, VersionedAggregatedAttestation,
         VersionedProposal as UnsignedVersionedProposal,
     },
-    types::{Duty, ParSignedDataSet, PubKey, Signature, SignedData},
+    types::{Duty, ParSignedDataSet, PubKey, Signature, SignedData, SlotNumber},
     version,
 };
 
@@ -121,6 +126,14 @@ const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// attestation duty has time to flow through the pipeline.
 const ATTESTATION_DATA_TIMEOUT: Duration = Duration::from_secs(24);
 
+/// Hard deadline for each blocking `await_agg_sig_db_fn` lookup performed by
+/// the selection handlers. The Go reference relies on the request context
+/// timeout; here we set an explicit bound so a stalled AggSigDB cannot pin a
+/// selections request forever. Sized to roughly two slots so a real
+/// `PrepareAggregator` / `PrepareSyncContribution` duty has time to reach
+/// the AggSigDB.
+const SELECTIONS_AGG_SIG_DB_TIMEOUT: Duration = Duration::from_secs(24);
+
 /// Validator API [`Handler`] implementation.
 ///
 /// Holds the upstream beacon-node client and the cluster's public-key /
@@ -182,7 +195,6 @@ pub struct Component {
     /// DV root public keys. Mirrors Go's `c.eth2Cl.ActiveValidators(ctx)`,
     /// which is itself backed by `app/eth2wrap`'s per-epoch validator
     /// cache.
-    #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     validator_cache: Arc<dyn CachedValidatorsProvider>,
 }
 
@@ -372,7 +384,6 @@ impl Component {
     /// underlying error into the client-visible message. Mirrors Go's
     /// `c.eth2Cl.ActiveValidators(ctx)`, which is itself implemented via
     /// `app/eth2wrap`'s validator cache.
-    #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     async fn fetch_active_validators(
         &self,
     ) -> Result<HashMap<ValidatorIndex, BLSPubKey>, ApiError> {
@@ -386,6 +397,69 @@ impl Component {
             ApiError::new(StatusCode::BAD_GATEWAY, "active validators lookup failed")
                 .with_boxed_source(err)
         })
+    }
+
+    /// Looks up the DV root pubkey for a selection's `validator_index`.
+    /// Mirrors Go's `vals[selection.ValidatorIndex]` / `core.PubKeyFromBytes`
+    /// pair at the top of each selection loop. Returns both representations
+    /// the handler needs: the `BLSPubKey` for signature verification and the
+    /// `core::PubKey` for use as a `ParSignedDataSet` key.
+    fn resolve_validator(
+        &self,
+        validator_index: ValidatorIndex,
+        active_validators: &HashMap<ValidatorIndex, BLSPubKey>,
+        endpoint: &'static str,
+    ) -> Result<(BLSPubKey, PubKey), ApiError> {
+        let root = active_validators.get(&validator_index).ok_or_else(|| {
+            // Mirrors Go's `errors.New("validator not found")` branch — the
+            // caller asked us to sign for a validator that is not part of
+            // the cluster. 400 (not 502): the failure is request-level, not
+            // gateway-level.
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!("{endpoint}: validator not found"),
+            )
+        })?;
+        Ok((*root, PubKey::new(*root)))
+    }
+
+    /// Verifies a selection's partial signature. Bundles slot → epoch
+    /// resolution alongside the underlying `verify_partial_sig` call and
+    /// surfaces the failure as a 400 with a generic message (matching the
+    /// Go path where `verifyPartialSig` returns an error that propagates
+    /// out of the handler).
+    async fn verify_selection_partial_sig(
+        &self,
+        root_pubkey: &BLSPubKey,
+        domain: DomainName,
+        slot: Slot,
+        message_root: Root,
+        signature: &Signature,
+        endpoint: &'static str,
+    ) -> Result<(), ApiError> {
+        // Resolve the epoch first so a misconfigured upstream surfaces as
+        // 502 rather than as a verification failure.
+        let epoch = epoch_from_slot(&self.eth2_cl, slot).await.map_err(|err| {
+            ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                format!("{endpoint}: epoch lookup failed"),
+            )
+            .with_source(err)
+        })?;
+
+        self.verify_partial_sig(root_pubkey, domain, epoch, message_root, signature)
+            .await
+            .map_err(|err| match err {
+                VerifyPartialSigError::UnknownPubKey => ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("{endpoint}: unknown validator public key"),
+                ),
+                VerifyPartialSigError::Signing(inner) => ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!("{endpoint}: invalid partial signature"),
+                )
+                .with_source(inner),
+            })
     }
 }
 
@@ -627,16 +701,202 @@ impl Handler for Component {
 
     async fn beacon_committee_selections(
         &self,
-        _selections: Vec<BeaconCommitteeSelection>,
+        selections: Vec<BeaconCommitteeSelection>,
     ) -> Result<EthResponse<Vec<BeaconCommitteeSelection>>, ApiError> {
-        unimplemented!("beacon_committee_selections not yet ported")
+        // Port of `BeaconCommitteeSelections` in
+        // `core/validatorapi/validatorapi.go` (lines 798–864).
+        let active_validators = self.fetch_active_validators().await?;
+
+        // psigs_by_slot mirrors Go's `psigsBySlot[slot]ParSignedDataSet` —
+        // keyed by `(slot, pubkey)` so the per-slot fanout below produces one
+        // `PrepareAggregator` duty per slot covering every selection from
+        // that slot.
+        let mut psigs_by_slot: HashMap<Slot, ParSignedDataSet> = HashMap::new();
+        for selection in &selections {
+            let (root_pubkey, core_pubkey) = self.resolve_validator(
+                selection.validator_index,
+                &active_validators,
+                "beacon committee selection",
+            )?;
+
+            let par_sig = signeddata::BeaconCommitteeSelection::new_partial(
+                selection.clone(),
+                self.share_idx,
+            );
+
+            // The selection-proof signs the slot under
+            // `DOMAIN_SELECTION_PROOF`.
+            self.verify_selection_partial_sig(
+                &root_pubkey,
+                DomainName::SelectionProof,
+                selection.slot,
+                selection.slot.tree_hash_root().0,
+                &selection.selection_proof,
+                "beacon committee selection",
+            )
+            .await?;
+
+            psigs_by_slot
+                .entry(selection.slot)
+                .or_default()
+                .insert(core_pubkey, par_sig);
+        }
+
+        // Fanout every per-slot set to every subscriber. Subscribers receive
+        // their own clone (the wrapper installed by `subscribe` clones the
+        // set before each invocation).
+        for (slot, set) in &psigs_by_slot {
+            let duty = Duty::new_prepare_aggregator_duty(SlotNumber::new(*slot));
+            for sub in &self.subs {
+                sub(&duty, set.clone()).await.map_err(|err| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "beacon committee selection subscriber failed",
+                    )
+                    .with_boxed_source(err)
+                })?;
+            }
+        }
+
+        // Pull every aggregated selection back out of the AggSigDB.
+        let await_fn = self.await_agg_sig_db_fn.as_ref().ok_or_else(|| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "await_agg_sig_db hook not registered",
+            )
+        })?;
+
+        let mut resp: Vec<BeaconCommitteeSelection> = Vec::with_capacity(selections.len());
+        for (slot, set) in &psigs_by_slot {
+            let duty = Duty::new_prepare_aggregator_duty(SlotNumber::new(*slot));
+            for pk in set.inner().keys() {
+                let signed = tokio::time::timeout(
+                    SELECTIONS_AGG_SIG_DB_TIMEOUT,
+                    await_fn(duty.clone(), *pk),
+                )
+                .await
+                .map_err(|_: Elapsed| {
+                    ApiError::new(
+                        StatusCode::REQUEST_TIMEOUT,
+                        "aggregated beacon committee selection not available before deadline",
+                    )
+                })?
+                .map_err(|err| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "aggregated beacon committee selection lookup failed",
+                    )
+                    .with_boxed_source(err)
+                })?;
+
+                let selection = downcast_beacon_committee_selection(signed.as_ref())?;
+                resp.push(selection.0.clone());
+            }
+        }
+
+        Ok(EthResponse {
+            data: resp,
+            execution_optimistic: false,
+            finalized: false,
+            dependent_root: None,
+        })
     }
 
     async fn sync_committee_selections(
         &self,
-        _selections: Vec<SyncCommitteeSelection>,
+        selections: Vec<SyncCommitteeSelection>,
     ) -> Result<EthResponse<Vec<SyncCommitteeSelection>>, ApiError> {
-        unimplemented!("sync_committee_selections not yet ported")
+        // Port of `SyncCommitteeSelections` in
+        // `core/validatorapi/validatorapi.go` (lines 1072–1138).
+        let active_validators = self.fetch_active_validators().await?;
+
+        let mut psigs_by_slot: HashMap<Slot, ParSignedDataSet> = HashMap::new();
+        for selection in &selections {
+            let (root_pubkey, core_pubkey) = self.resolve_validator(
+                selection.validator_index,
+                &active_validators,
+                "sync committee selection",
+            )?;
+
+            let par_sig =
+                signeddata::SyncCommitteeSelection::new_partial(selection.clone(), self.share_idx);
+
+            // Sync committee selection proofs sign over a
+            // `SyncAggregatorSelectionData` root under
+            // `DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF`. The Rust selection
+            // wrapper's `message_root()` already computes this exactly the
+            // way Go's `SyncCommitteeSelection.MessageRoot()` does — see
+            // `crates/eth2api/src/v1.rs`.
+            self.verify_selection_partial_sig(
+                &root_pubkey,
+                DomainName::SyncCommitteeSelectionProof,
+                selection.slot,
+                selection.message_root(),
+                &selection.selection_proof,
+                "sync committee selection",
+            )
+            .await?;
+
+            psigs_by_slot
+                .entry(selection.slot)
+                .or_default()
+                .insert(core_pubkey, par_sig);
+        }
+
+        for (slot, set) in &psigs_by_slot {
+            let duty = Duty::new_prepare_sync_contribution_duty(SlotNumber::new(*slot));
+            for sub in &self.subs {
+                sub(&duty, set.clone()).await.map_err(|err| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "sync committee selection subscriber failed",
+                    )
+                    .with_boxed_source(err)
+                })?;
+            }
+        }
+
+        let await_fn = self.await_agg_sig_db_fn.as_ref().ok_or_else(|| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "await_agg_sig_db hook not registered",
+            )
+        })?;
+
+        let mut resp: Vec<SyncCommitteeSelection> = Vec::with_capacity(selections.len());
+        for (slot, set) in &psigs_by_slot {
+            let duty = Duty::new_prepare_sync_contribution_duty(SlotNumber::new(*slot));
+            for pk in set.inner().keys() {
+                let signed = tokio::time::timeout(
+                    SELECTIONS_AGG_SIG_DB_TIMEOUT,
+                    await_fn(duty.clone(), *pk),
+                )
+                .await
+                .map_err(|_: Elapsed| {
+                    ApiError::new(
+                        StatusCode::REQUEST_TIMEOUT,
+                        "aggregated sync committee selection not available before deadline",
+                    )
+                })?
+                .map_err(|err| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "aggregated sync committee selection lookup failed",
+                    )
+                    .with_boxed_source(err)
+                })?;
+
+                let selection = downcast_sync_committee_selection(signed.as_ref())?;
+                resp.push(selection.0.clone());
+            }
+        }
+
+        Ok(EthResponse {
+            data: resp,
+            execution_optimistic: false,
+            finalized: false,
+            dependent_root: None,
+        })
     }
 
     async fn validators(
@@ -810,6 +1070,41 @@ fn swap_sync_committee_pubshares(
         duty.pubkey = format_bls_pubkey(share);
     }
     Ok(())
+}
+
+/// Downcasts the aggregated signed data from the AggSigDB to a
+/// `BeaconCommitteeSelection`. Mirrors Go's
+/// `s.(core.BeaconCommitteeSelection)` type assertion. A mismatch indicates
+/// a wiring bug — the cluster stored the wrong duty type under the
+/// `PrepareAggregator` duty — so it surfaces as 500 rather than 4xx.
+fn downcast_beacon_committee_selection(
+    signed: &dyn SignedData,
+) -> Result<&signeddata::BeaconCommitteeSelection, ApiError> {
+    signed
+        .as_any()
+        .downcast_ref::<signeddata::BeaconCommitteeSelection>()
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invalid beacon committee selection",
+            )
+        })
+}
+
+/// Sync committee selections counterpart of
+/// [`downcast_beacon_committee_selection`].
+fn downcast_sync_committee_selection(
+    signed: &dyn SignedData,
+) -> Result<&signeddata::SyncCommitteeSelection, ApiError> {
+    signed
+        .as_any()
+        .downcast_ref::<signeddata::SyncCommitteeSelection>()
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invalid sync committee selection",
+            )
+        })
 }
 
 fn parse_bls_pubkey(s: &str) -> Result<BLSPubKey, ApiError> {
@@ -1667,7 +1962,6 @@ mod tests {
             .expect("insecure_test mode skips verification");
     }
 
-    // ====================================================================
     // CachedValidatorsProvider plumbing
     // ====================================================================
 
@@ -1736,5 +2030,487 @@ mod tests {
         let err = component.fetch_active_validators().await.unwrap_err();
         assert_eq!(err.status_code, StatusCode::BAD_GATEWAY);
         assert_eq!(err.message, "active validators lookup failed");
+    }
+
+    // ====================================================================
+    // beacon_committee_selections / sync_committee_selections handlers
+    // ====================================================================
+
+    use pluto_eth2api::v1::{
+        BeaconCommitteeSelection as V1BeaconCommitteeSelection,
+        SyncCommitteeSelection as V1SyncCommitteeSelection,
+    };
+
+    use crate::signeddata::{
+        BeaconCommitteeSelection as SignedBeaconCommitteeSelection,
+        SyncCommitteeSelection as SignedSyncCommitteeSelection,
+    };
+
+    /// Builds a `(Component, BeaconMock)` pair backed by `BeaconMock`'s
+    /// default spec — which already contains `DOMAIN_SELECTION_PROOF`,
+    /// `DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF`, and `SLOTS_PER_EPOCH`. The
+    /// component is *insecure* so the selections handlers can run without
+    /// real BLS signatures; specific tests that exercise verification opt
+    /// into a secure component via [`make_selections_component_secure`]. The
+    /// caller-supplied `active_validators` map populates the per-epoch
+    /// validator cache the handlers consult to translate
+    /// `validator_index → DV root pubkey`.
+    async fn make_selections_component_insecure(
+        active_validators: HashMap<ValidatorIndex, BLSPubKey>,
+    ) -> (Component, BeaconMock) {
+        let mock = BeaconMock::builder()
+            .genesis_time(DateTime::from_timestamp(0, 0).unwrap())
+            .genesis_validators_root([0; 32])
+            .build()
+            .await
+            .unwrap();
+        let cancel = CancellationToken::new();
+        let (deadliner, _deadliner_rx) =
+            DeadlinerTask::start(cancel.clone(), "selections-tests", FarFutureCalculator);
+        let (_evict_tx, evict_rx) = mpsc::channel(1);
+        let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let component = Component::new_insecure(
+            eth2_cl,
+            dutydb,
+            1,
+            TestValidatorCache::arc(active_validators),
+        );
+        (component, mock)
+    }
+
+    /// Like [`make_selections_component_insecure`] but with `insecure_test`
+    /// disabled. The caller supplies the `pub_share_by_pubkey` map so
+    /// `verify_partial_sig` can resolve a verify-share for each DV root, and
+    /// the `active_validators` map populates the validator-cache the
+    /// selections handlers consult.
+    async fn make_selections_component_secure(
+        map: HashMap<BLSPubKey, BLSPubKey>,
+        active_validators: HashMap<ValidatorIndex, BLSPubKey>,
+    ) -> (Component, BeaconMock) {
+        let mock = BeaconMock::builder()
+            .genesis_time(DateTime::from_timestamp(0, 0).unwrap())
+            .genesis_validators_root([0; 32])
+            .build()
+            .await
+            .unwrap();
+        let cancel = CancellationToken::new();
+        let (deadliner, _deadliner_rx) = DeadlinerTask::start(
+            cancel.clone(),
+            "selections-secure-tests",
+            FarFutureCalculator,
+        );
+        let (_evict_tx, evict_rx) = mpsc::channel(1);
+        let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let component = Component::new(
+            eth2_cl,
+            dutydb,
+            1,
+            map,
+            false,
+            TestValidatorCache::arc(active_validators),
+        );
+        (component, mock)
+    }
+
+    /// Happy-path beacon committee selections: one selection in, one
+    /// aggregated selection out. Mirrors the per-validator-index flow in
+    /// Go's `BeaconCommitteeSelections` at `validatorapi.go:798-864`.
+    #[tokio::test]
+    async fn beacon_committee_selections_happy_path() {
+        const SLOT: Slot = 12;
+        const VAL_IDX: ValidatorIndex = 5;
+        let dv_root = dv_pubkey(0xA1);
+
+        let (mut component, _mock) =
+            make_selections_component_insecure(HashMap::from([(VAL_IDX, dv_root)])).await;
+
+        // Returned aggregated selection — the byte pattern shows the
+        // response actually flowed through `await_agg_sig_db`.
+        let agg_selection = V1BeaconCommitteeSelection {
+            slot: SLOT,
+            validator_index: VAL_IDX,
+            selection_proof: [0xAB; 96],
+        };
+        let agg_clone = agg_selection.clone();
+        component.register_await_agg_sig_db(move |_duty, _pk| {
+            let agg = agg_clone.clone();
+            async move {
+                Ok::<Box<dyn SignedData>, CallbackError>(Box::new(
+                    SignedBeaconCommitteeSelection::new(agg),
+                ))
+            }
+        });
+
+        let input = V1BeaconCommitteeSelection {
+            slot: SLOT,
+            validator_index: VAL_IDX,
+            selection_proof: [0x77; 96],
+        };
+        let resp = component
+            .beacon_committee_selections(vec![input])
+            .await
+            .expect("happy path");
+
+        assert_eq!(resp.data.len(), 1);
+        assert_eq!(resp.data[0], agg_selection);
+    }
+
+    /// Multi-selection input is fanned out via the subscriber once per slot
+    /// covered, and every aggregated reply is stitched into the response.
+    #[tokio::test]
+    async fn beacon_committee_selections_multi_selection_fanout_and_stitching() {
+        const SLOT_A: Slot = 10;
+        const SLOT_B: Slot = 11;
+        const VAL_IDX_A: ValidatorIndex = 1;
+        const VAL_IDX_B: ValidatorIndex = 2;
+        let dv_root_a = dv_pubkey(0xB1);
+        let dv_root_b = dv_pubkey(0xB2);
+
+        let (mut component, _mock) = make_selections_component_insecure(HashMap::from([
+            (VAL_IDX_A, dv_root_a),
+            (VAL_IDX_B, dv_root_b),
+        ]))
+        .await;
+
+        // Track subscriber invocations: one per distinct slot in the input.
+        let observed_slots: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let observed_slots = Arc::clone(&observed_slots);
+            component.subscribe(move |duty, _set| {
+                let observed_slots = Arc::clone(&observed_slots);
+                async move {
+                    observed_slots.lock().unwrap().push(duty.slot.inner());
+                    Ok(())
+                }
+            });
+        }
+
+        // AggSigDB returns the slot+validator-index in the response so we
+        // can verify each `(slot, pk)` pair was awaited exactly once.
+        component.register_await_agg_sig_db(move |duty, pk| {
+            let slot = duty.slot.inner();
+            let pk_bytes = pk.as_ref();
+            // Recover the validator index from the pubkey: byte 0 is 0xB1
+            // for VAL_IDX_A, 0xB2 for VAL_IDX_B.
+            let val_idx = match pk_bytes[0] {
+                0xB1 => VAL_IDX_A,
+                0xB2 => VAL_IDX_B,
+                _ => 999,
+            };
+            async move {
+                Ok::<Box<dyn SignedData>, CallbackError>(Box::new(
+                    SignedBeaconCommitteeSelection::new(V1BeaconCommitteeSelection {
+                        slot,
+                        validator_index: val_idx,
+                        selection_proof: [0xCD; 96],
+                    }),
+                ))
+            }
+        });
+
+        let input = vec![
+            V1BeaconCommitteeSelection {
+                slot: SLOT_A,
+                validator_index: VAL_IDX_A,
+                selection_proof: [0x11; 96],
+            },
+            V1BeaconCommitteeSelection {
+                slot: SLOT_B,
+                validator_index: VAL_IDX_B,
+                selection_proof: [0x22; 96],
+            },
+        ];
+        let resp = component
+            .beacon_committee_selections(input)
+            .await
+            .expect("multi-selection");
+
+        // Both slots were fanned out to the subscriber once each.
+        let mut slots = observed_slots.lock().unwrap().clone();
+        slots.sort();
+        assert_eq!(slots, vec![SLOT_A, SLOT_B]);
+
+        // Both aggregated selections present in the response — iteration
+        // order over the HashMap is non-deterministic so we sort.
+        assert_eq!(resp.data.len(), 2);
+        let mut returned_slots: Vec<u64> = resp.data.iter().map(|s| s.slot).collect();
+        returned_slots.sort();
+        assert_eq!(returned_slots, vec![SLOT_A, SLOT_B]);
+        let mut returned_indices: Vec<u64> = resp.data.iter().map(|s| s.validator_index).collect();
+        returned_indices.sort();
+        assert_eq!(returned_indices, vec![VAL_IDX_A, VAL_IDX_B]);
+    }
+
+    /// A selection whose validator index is not part of the cluster's
+    /// active set fails the lookup short-circuit with `400 Bad Request`,
+    /// mirroring Go's `errors.New("validator not found")` branch.
+    #[tokio::test]
+    async fn beacon_committee_selections_rejects_unknown_validator_index() {
+        let (mut component, _mock) = make_selections_component_insecure(HashMap::new()).await;
+
+        // `await_agg_sig_db` must NOT be reached for an unknown validator.
+        component.register_await_agg_sig_db(|_duty, _pk| async {
+            panic!("await_agg_sig_db must not be called when validator index is unknown");
+        });
+
+        let err = component
+            .beacon_committee_selections(vec![V1BeaconCommitteeSelection {
+                slot: 1,
+                validator_index: 999,
+                selection_proof: [0xEE; 96],
+            }])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+        assert!(err.message.contains("validator not found"));
+    }
+
+    /// A tampered selection proof fails `verify_partial_sig` and the
+    /// handler short-circuits with `400 Bad Request` — the remaining
+    /// selections in the batch are not fanned out and the AggSigDB await is
+    /// never reached.
+    #[tokio::test]
+    async fn beacon_committee_selections_verification_failure_short_circuits() {
+        // Wire a secure component (insecure_test = false) and register a
+        // public-share map so `verify_partial_sig` runs the real BLS check
+        // against the zero signature.
+        let dv_root = dv_pubkey(0xC1);
+        let pub_share = [0x55_u8; 48];
+        let map = HashMap::from([(dv_root, pub_share)]);
+
+        let (mut component, _mock) =
+            make_selections_component_secure(map, HashMap::from([(1u64, dv_root)])).await;
+
+        component.register_await_agg_sig_db(|_duty, _pk| async {
+            panic!("await_agg_sig_db must not be called after verification failure");
+        });
+
+        // Zero signature is rejected by `signing::verify` before BLS runs
+        // (returns SigningError::ZeroSignature).
+        let err = component
+            .beacon_committee_selections(vec![V1BeaconCommitteeSelection {
+                slot: 1,
+                validator_index: 1,
+                selection_proof: [0; 96],
+            }])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+    }
+
+    /// A stalled `await_agg_sig_db` hook trips
+    /// `SELECTIONS_AGG_SIG_DB_TIMEOUT` and the handler returns 408.
+    #[tokio::test(start_paused = true)]
+    async fn beacon_committee_selections_await_agg_sig_db_times_out() {
+        let dv_root = dv_pubkey(0xD1);
+        let (mut component, _mock) =
+            make_selections_component_insecure(HashMap::from([(1u64, dv_root)])).await;
+
+        // Closure that never completes.
+        component.register_await_agg_sig_db(|_duty, _pk| async {
+            std::future::pending::<Result<Box<dyn SignedData>, CallbackError>>().await
+        });
+
+        let err = component
+            .beacon_committee_selections(vec![V1BeaconCommitteeSelection {
+                slot: 1,
+                validator_index: 1,
+                selection_proof: [0xDD; 96],
+            }])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::REQUEST_TIMEOUT);
+    }
+
+    /// Happy-path sync committee selections.
+    #[tokio::test]
+    async fn sync_committee_selections_happy_path() {
+        const SLOT: Slot = 13;
+        const VAL_IDX: ValidatorIndex = 7;
+        const SUBCOMM: u64 = 3;
+        let dv_root = dv_pubkey(0xE1);
+
+        let (mut component, _mock) =
+            make_selections_component_insecure(HashMap::from([(VAL_IDX, dv_root)])).await;
+
+        let agg_selection = V1SyncCommitteeSelection {
+            slot: SLOT,
+            validator_index: VAL_IDX,
+            subcommittee_index: SUBCOMM,
+            selection_proof: [0xCC; 96],
+        };
+        let agg_clone = agg_selection.clone();
+        component.register_await_agg_sig_db(move |_duty, _pk| {
+            let agg = agg_clone.clone();
+            async move {
+                Ok::<Box<dyn SignedData>, CallbackError>(Box::new(
+                    SignedSyncCommitteeSelection::new(agg),
+                ))
+            }
+        });
+
+        let resp = component
+            .sync_committee_selections(vec![V1SyncCommitteeSelection {
+                slot: SLOT,
+                validator_index: VAL_IDX,
+                subcommittee_index: SUBCOMM,
+                selection_proof: [0x99; 96],
+            }])
+            .await
+            .expect("happy path");
+        assert_eq!(resp.data.len(), 1);
+        assert_eq!(resp.data[0], agg_selection);
+    }
+
+    /// Multi-selection sync committee selections produce one subscriber
+    /// invocation per distinct slot and stitch every aggregated reply into
+    /// the response.
+    #[tokio::test]
+    async fn sync_committee_selections_multi_selection_fanout_and_stitching() {
+        const SLOT_A: Slot = 20;
+        const SLOT_B: Slot = 21;
+        const VAL_IDX_A: ValidatorIndex = 1;
+        const VAL_IDX_B: ValidatorIndex = 2;
+        let dv_root_a = dv_pubkey(0xF1);
+        let dv_root_b = dv_pubkey(0xF2);
+
+        let (mut component, _mock) = make_selections_component_insecure(HashMap::from([
+            (VAL_IDX_A, dv_root_a),
+            (VAL_IDX_B, dv_root_b),
+        ]))
+        .await;
+
+        let observed_slots: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let observed_slots = Arc::clone(&observed_slots);
+            component.subscribe(move |duty, _set| {
+                let observed_slots = Arc::clone(&observed_slots);
+                async move {
+                    observed_slots.lock().unwrap().push(duty.slot.inner());
+                    Ok(())
+                }
+            });
+        }
+
+        component.register_await_agg_sig_db(move |duty, pk| {
+            let slot = duty.slot.inner();
+            let pk_bytes = pk.as_ref();
+            let val_idx = match pk_bytes[0] {
+                0xF1 => VAL_IDX_A,
+                0xF2 => VAL_IDX_B,
+                _ => 999,
+            };
+            async move {
+                Ok::<Box<dyn SignedData>, CallbackError>(Box::new(
+                    SignedSyncCommitteeSelection::new(V1SyncCommitteeSelection {
+                        slot,
+                        validator_index: val_idx,
+                        subcommittee_index: 0,
+                        selection_proof: [0xDE; 96],
+                    }),
+                ))
+            }
+        });
+
+        let resp = component
+            .sync_committee_selections(vec![
+                V1SyncCommitteeSelection {
+                    slot: SLOT_A,
+                    validator_index: VAL_IDX_A,
+                    subcommittee_index: 0,
+                    selection_proof: [0x11; 96],
+                },
+                V1SyncCommitteeSelection {
+                    slot: SLOT_B,
+                    validator_index: VAL_IDX_B,
+                    subcommittee_index: 1,
+                    selection_proof: [0x22; 96],
+                },
+            ])
+            .await
+            .expect("multi-selection");
+
+        let mut slots = observed_slots.lock().unwrap().clone();
+        slots.sort();
+        assert_eq!(slots, vec![SLOT_A, SLOT_B]);
+
+        assert_eq!(resp.data.len(), 2);
+        let mut returned_slots: Vec<u64> = resp.data.iter().map(|s| s.slot).collect();
+        returned_slots.sort();
+        assert_eq!(returned_slots, vec![SLOT_A, SLOT_B]);
+    }
+
+    /// Sync committee selection with an unknown validator index returns
+    /// 400 without touching the AggSigDB.
+    #[tokio::test]
+    async fn sync_committee_selections_rejects_unknown_validator_index() {
+        let (mut component, _mock) = make_selections_component_insecure(HashMap::new()).await;
+
+        component.register_await_agg_sig_db(|_duty, _pk| async {
+            panic!("await_agg_sig_db must not be called when validator index is unknown");
+        });
+
+        let err = component
+            .sync_committee_selections(vec![V1SyncCommitteeSelection {
+                slot: 1,
+                validator_index: 999,
+                subcommittee_index: 0,
+                selection_proof: [0xEE; 96],
+            }])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+        assert!(err.message.contains("validator not found"));
+    }
+
+    /// Sync committee selection verification failure short-circuits.
+    #[tokio::test]
+    async fn sync_committee_selections_verification_failure_short_circuits() {
+        let dv_root = dv_pubkey(0xC2);
+        let pub_share = [0x66_u8; 48];
+        let map = HashMap::from([(dv_root, pub_share)]);
+
+        let (mut component, _mock) =
+            make_selections_component_secure(map, HashMap::from([(1u64, dv_root)])).await;
+
+        component.register_await_agg_sig_db(|_duty, _pk| async {
+            panic!("await_agg_sig_db must not be called after verification failure");
+        });
+
+        let err = component
+            .sync_committee_selections(vec![V1SyncCommitteeSelection {
+                slot: 1,
+                validator_index: 1,
+                subcommittee_index: 0,
+                selection_proof: [0; 96],
+            }])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+    }
+
+    /// Sync committee selection times out on a stalled AggSigDB.
+    #[tokio::test(start_paused = true)]
+    async fn sync_committee_selections_await_agg_sig_db_times_out() {
+        let dv_root = dv_pubkey(0xD2);
+        let (mut component, _mock) =
+            make_selections_component_insecure(HashMap::from([(1u64, dv_root)])).await;
+
+        component.register_await_agg_sig_db(|_duty, _pk| async {
+            std::future::pending::<Result<Box<dyn SignedData>, CallbackError>>().await
+        });
+
+        let err = component
+            .sync_committee_selections(vec![V1SyncCommitteeSelection {
+                slot: 1,
+                validator_index: 1,
+                subcommittee_index: 0,
+                selection_proof: [0xDD; 96],
+            }])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::REQUEST_TIMEOUT);
     }
 }

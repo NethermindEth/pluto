@@ -22,7 +22,22 @@ pub use pluto_eth2api::{
     GetVersionResponseResponse as NodeVersionResponse,
     GetVersionResponseResponseData as NodeVersionData,
     spec::phase0::{self, Epoch, Root, Slot, ValidatorIndex},
+    v1::{
+        BeaconCommitteeSelection as V1BeaconCommitteeSelection,
+        SyncCommitteeSelection as V1SyncCommitteeSelection,
+    },
 };
+
+/// Beacon-committee selection payload. Aliases the consensus-spec
+/// `v1::BeaconCommitteeSelection` so the handler can operate on the same
+/// validator-index / slot / selection-proof tuple Go uses at
+/// `core/validatorapi/validatorapi.go:798`.
+pub type BeaconCommitteeSelection = V1BeaconCommitteeSelection;
+
+/// Sync-committee selection payload. Aliases the consensus-spec
+/// `v1::SyncCommitteeSelection`, matching Go's
+/// `core/validatorapi/validatorapi.go:1072` input shape.
+pub type SyncCommitteeSelection = V1SyncCommitteeSelection;
 
 /// Attestation data alias for the consensus-spec phase0 type.
 pub type AttestationData = phase0::AttestationData;
@@ -182,14 +197,6 @@ pub struct SyncCommitteeContribution {}
 /// Signed contribution-and-proof payload. Placeholder.
 #[derive(Debug, Clone)]
 pub struct SignedContributionAndProof {}
-
-/// Beacon-committee selection payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct BeaconCommitteeSelection {}
-
-/// Sync-committee selection payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct SyncCommitteeSelection {}
 
 /// Validator-index request body for the `attester_duties` and
 /// `sync_committee_duties` endpoints.
