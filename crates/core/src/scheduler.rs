@@ -1,5 +1,3 @@
-#![allow(missing_docs)]
-
 use std::{
     collections::{HashMap, hash_map::Entry},
     time::Duration,
@@ -61,7 +59,10 @@ pub enum SchedulerError {
     /// Attempted to get a duty definition for an epoch that has not been
     /// resolved yet.
     #[error("Epoch {epoch} has not been resolved yet")]
-    EpochNotResolved { epoch: u64 },
+    EpochNotResolved {
+        /// The unresolved epoch.
+        epoch: u64,
+    },
 
     /// Duty definition not found for a resolved epoch.
     #[error("Duty {duty} definition set not found in the resolved epoch {epoch}")]
@@ -84,6 +85,12 @@ pub enum SchedulerError {
 
 type Result<T> = std::result::Result<T, SchedulerError>;
 
+/// A builder for the Scheduler.
+///
+/// Allows setting up subscriptions for slot and duty events, as well as
+/// well as setting up a source of chain reorg events.
+///
+/// The Scheduler can be started by calling [`Builder::build`].
 pub struct Builder {
     slot_broadcast: sync::broadcast::Sender<types::Slot>,
     duty_broadcast: sync::broadcast::Sender<(types::Duty, types::DutyDefinitionSet)>,
@@ -231,6 +238,11 @@ enum Message {
     },
 }
 
+/// A handle to interact with the Scheduler actor.
+///
+/// Cloning the handle is cheap and allows sending messages to the actor from
+/// multiple tasks.
+#[derive(Clone)]
 pub struct Handle {
     sender: sync::mpsc::Sender<Message>,
 }
