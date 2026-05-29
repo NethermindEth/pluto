@@ -2,7 +2,6 @@
 
 use std::{
     collections::{HashMap, hash_map::Entry},
-    ops::Div,
     time::Duration,
     u64,
 };
@@ -711,14 +710,17 @@ async fn wait_beacon_sync(client: &pluto_eth2api::client::EthBeaconNodeApiClient
 
 /// Blocks until the slot offset for the duty has been reached.
 async fn delay_slot_offset(slot: &types::Slot, duty: &types::Duty) {
-    let to_sleep = match duty.duty_type {
-        types::DutyType::Attester => slot.slot_duration.div(3) * 1,
-        types::DutyType::Aggregator => slot.slot_duration.div(3) * 2,
-        types::DutyType::SyncContribution => slot.slot_duration.div(3) * 2,
+    let offset = match duty.duty_type {
+        types::DutyType::Attester => slot.slot_duration / 3,
+        types::DutyType::Aggregator => slot.slot_duration * 2 / 3,
+        types::DutyType::SyncContribution => slot.slot_duration * 2 / 3,
         _ => return,
     };
 
-    tokio::time::sleep(to_sleep.to_std().unwrap_or_default()).await;
+    // Wait until the absolute deadline
+    let deadline = slot.time + offset;
+    let wait = (deadline - chrono::Utc::now()).to_std().unwrap_or_default();
+    tokio::time::sleep(wait).await;
 }
 
 /// Fetches the attester duties for the given slot and validators, and validates
