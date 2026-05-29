@@ -92,6 +92,10 @@ struct ValueStore {
 
 impl Transport {
     /// Creates a new QBFT consensus transport.
+    ///
+    /// Callers must cancel the tokens passed to [`Transport::broadcast`] when
+    /// the consensus instance ends. Detached self-send tasks use those tokens
+    /// to stop if the inner receive buffer stays full.
     pub(crate) fn new(
         broadcaster: Broadcaster,
         privkey: SecretKey,
@@ -128,6 +132,9 @@ impl Transport {
     pub(crate) fn get_value(&self, hash: [u8; 32]) -> Result<Any> {
         let mut store = self.values.lock().unwrap_or_else(PoisonError::into_inner);
         if let Ok(local) = store.value_rx.try_recv() {
+            // Any::value is hashable here because the local producer must pack
+            // canonical deterministic bytes for the concrete inner protobuf.
+            // Inbound values must be decoded and canonicalized before caching.
             let hash = msg::hash_proto_bytes(&local.value)?;
             store.values.insert(hash, local);
         }
@@ -137,6 +144,11 @@ impl Transport {
 
     /// Creates, self-enqueues, sniffs, and externally broadcasts a QBFT
     /// message.
+    ///
+    /// The self-send task exits when the message is accepted by the inner
+    /// receive buffer or when `request.ct` is cancelled. Instance teardown must
+    /// cancel that token so blocked self-send tasks cannot outlive the
+    /// transport.
     pub(crate) async fn broadcast(&self, request: BroadcastRequest) -> Result<()> {
         let BroadcastRequest {
             ct,
