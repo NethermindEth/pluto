@@ -1,8 +1,5 @@
 //! QBFT consensus transport adapter.
 
-// TODO: Remove once the consensus runner wires this transport.
-#![allow(dead_code)]
-
 use std::sync::{self, Mutex, PoisonError};
 
 use futures::future::BoxFuture;
@@ -11,7 +8,7 @@ use prost_types::Any;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::{
+use pluto_core::{
     corepb::v1::{consensus as pbconsensus, core as pbcore},
     qbft::{self, SomeMsg},
     types::{Duty, DutyTypeError},
@@ -68,6 +65,10 @@ pub(crate) enum Error {
     /// Inner receive buffer was closed.
     #[error("receive buffer closed")]
     ReceiveBufferClosed,
+
+    /// External broadcaster failed.
+    #[error("broadcast: {0}")]
+    Broadcast(String),
 
     /// Consensus message wrapping/signing failed.
     #[error("{0}")]
@@ -267,6 +268,10 @@ struct CreateMsgRequest<'a> {
 }
 
 /// Creates a signed consensus QBFT message wrapper.
+///
+/// This is the final boundary before the generic core message becomes a wire
+/// message: it maps the domain duty, signs the raw protobuf, and preserves raw
+/// justification protobufs for transport.
 fn create_msg(request: CreateMsgRequest<'_>) -> Result<msg::Msg> {
     let CreateMsgRequest {
         type_,
@@ -312,8 +317,8 @@ fn create_msg(request: CreateMsgRequest<'_>) -> Result<msg::Msg> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        consensus::qbft::{msg::hash_proto, sniffer::Sniffer},
+    use crate::qbft::{msg::hash_proto, sniffer::Sniffer};
+    use pluto_core::{
         corepb::v1::consensus::QbftMsg,
         qbft::SomeMsg,
         types::{DutyType, SlotNumber},

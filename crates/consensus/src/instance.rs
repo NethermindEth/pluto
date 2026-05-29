@@ -203,11 +203,13 @@ impl<T> InstanceIo<T> {
 }
 
 impl<T> Default for InstanceIo<T> {
+    /// Creates a fresh instance I/O state.
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// Takes exclusive ownership of a single-consumer receiver slot.
 fn take_receiver<T>(
     receiver: &Mutex<Option<mpsc::Receiver<T>>>,
     channel: &'static str,

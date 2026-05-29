@@ -1,8 +1,5 @@
 //! QBFT consensus message sniffer.
 
-// TODO: Remove once the consensus component exports sniffer lifecycle hooks.
-#![allow(dead_code)]
-
 use std::{
     sync::{Mutex, PoisonError},
     time::SystemTime,
@@ -10,9 +7,9 @@ use std::{
 
 use prost_types::Timestamp;
 
-use crate::{
-    consensus::protocols::QBFT_V2_PROTOCOL_ID,
-    corepb::v1::consensus::{QbftConsensusMsg, SniffedConsensusInstance, SniffedConsensusMsg},
+use crate::protocols::QBFT_V2_PROTOCOL_ID;
+use pluto_core::corepb::v1::consensus::{
+    QbftConsensusMsg, SniffedConsensusInstance, SniffedConsensusMsg,
 };
 
 /// Buffers consensus messages for the debug API.
@@ -65,7 +62,7 @@ impl Sniffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::corepb::v1::consensus::QbftMsg;
+    use pluto_core::corepb::v1::consensus::QbftMsg;
 
     #[test]
     fn sniffer_add_records_messages() {

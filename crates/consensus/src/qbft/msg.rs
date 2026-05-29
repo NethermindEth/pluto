@@ -1,7 +1,7 @@
 //! QBFT protobuf message adapter.
 //!
 //! This module bridges the domain-specific consensus protobuf messages with
-//! the generic [`crate::qbft`] state machine.
+//! the generic [`pluto_core::qbft`] state machine.
 //!
 //! [`QbftMsg`](pbconsensus::QbftMsg) carries only consensus metadata and value
 //! hashes. The concrete proposal values are transported beside it in
@@ -34,7 +34,7 @@ use k256::{PublicKey, SecretKey};
 use pluto_ssz::{HashWalker, Hasher, HasherError};
 use prost_types::Any;
 
-use crate::{
+use pluto_core::{
     corepb::v1::{consensus as pbconsensus, core as pbcore},
     qbft::{self, MessageType, SomeMsg},
     types::{Duty, DutyType, SlotNumber},
@@ -208,26 +208,32 @@ impl Msg {
 }
 
 impl SomeMsg<ConsensusQbftTypes> for Msg {
+    /// Returns the QBFT message type preserved from the wire value.
     fn type_(&self) -> MessageType {
         MessageType::from_wire(self.msg.r#type)
     }
 
+    /// Returns the duty instance this message belongs to.
     fn instance(&self) -> Duty {
         duty_from_proto(self.msg.duty.as_ref())
     }
 
+    /// Returns the sender's zero-based peer index.
     fn source(&self) -> i64 {
         self.msg.peer_idx
     }
 
+    /// Returns the QBFT round carried by the message.
     fn round(&self) -> i64 {
         self.msg.round
     }
 
+    /// Returns the cached proposal value hash.
     fn value(&self) -> [u8; 32] {
         self.value_hash
     }
 
+    /// Returns the original value payload for core compare callbacks.
     fn value_source(&self) -> std::result::Result<Any, qbft::QbftError> {
         self.values
             .get(&self.value_hash)
@@ -235,18 +241,22 @@ impl SomeMsg<ConsensusQbftTypes> for Msg {
             .ok_or(qbft::QbftError::ValueNotFound)
     }
 
+    /// Returns the prepared round carried by a round-change message.
     fn prepared_round(&self) -> i64 {
         self.msg.prepared_round
     }
 
+    /// Returns the cached prepared value hash.
     fn prepared_value(&self) -> [u8; 32] {
         self.prepared_value_hash
     }
 
+    /// Returns wrapped justification messages for core validation.
     fn justification(&self) -> Vec<qbft::Msg<ConsensusQbftTypes>> {
         self.justification.clone()
     }
 
+    /// Exposes the concrete wrapper for transport downcasts.
     fn as_any(&self) -> &dyn any::Any {
         self
     }
@@ -322,6 +332,7 @@ pub(crate) fn verify_msg_sig(msg: &pbconsensus::QbftMsg, pubkey: &PublicKey) -> 
     Ok(recovered == *pubkey)
 }
 
+/// Converts a protobuf bytes field into a non-zero 32-byte hash.
 fn to_hash32(value: &[u8]) -> Option<[u8; 32]> {
     let value: [u8; 32] = value.try_into().ok()?;
     if value == [0u8; 32] {
@@ -331,6 +342,7 @@ fn to_hash32(value: &[u8]) -> Option<[u8; 32]> {
     Some(value)
 }
 
+/// Converts an optional protobuf duty into the domain duty type.
 fn duty_from_proto(duty: Option<&pbcore::Duty>) -> Duty {
     let Some(duty) = duty else {
         return Duty::new(SlotNumber::new(0), DutyType::Unknown);
@@ -347,7 +359,7 @@ fn duty_from_proto(duty: Option<&pbcore::Duty>) -> Duty {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::qbft::{MSG_PRE_PREPARE, MSG_PREPARE};
+    use pluto_core::qbft::{MSG_PRE_PREPARE, MSG_PREPARE};
     use prost::bytes::Bytes;
     use prost_types::Timestamp;
     use test_case::test_case;
