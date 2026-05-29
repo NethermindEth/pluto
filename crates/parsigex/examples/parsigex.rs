@@ -31,17 +31,17 @@
 //! ```bash
 //! # Terminal 1
 //! cargo run -p pluto-parsigex --example parsigex -- \
-//!   --relays https://0.relay.obol.tech,https://1.relay.obol.tech \
+//!   --relays https://pluto-relay-0.ovh.dev-nethermind.xyz,https://pluto-relay-1.ovh.dev-nethermind.xyz \
 //!   --data-dir ./cluster/node0 --share-idx 1
 //!
 //! # Terminal 2
 //! cargo run -p pluto-parsigex --example parsigex -- \
-//!   --relays https://0.relay.obol.tech,https://1.relay.obol.tech \
+//!   --relays https://pluto-relay-0.ovh.dev-nethermind.xyz,https://pluto-relay-1.ovh.dev-nethermind.xyz \
 //!   --data-dir ./cluster/node1 --share-idx 2
 //!
 //! # Terminal 3
 //! cargo run -p pluto-parsigex --example parsigex -- \
-//!   --relays https://0.relay.obol.tech,https://1.relay.obol.tech \
+//!   --relays https://pluto-relay-0.ovh.dev-nethermind.xyz,https://pluto-relay-1.ovh.dev-nethermind.xyz \
 //!   --data-dir ./cluster/node2 --share-idx 3
 //! ```
 //!

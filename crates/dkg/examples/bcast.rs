@@ -16,15 +16,15 @@
 //!
 //! # Run in 3 terminals against the generated node directories
 //! cargo run -p pluto-dkg --example bcast -- \
-//!   --relays https://0.relay.obol.tech,https://1.relay.obol.tech \
+//!   --relays https://pluto-relay-0.ovh.dev-nethermind.xyz,https://pluto-relay-1.ovh.dev-nethermind.xyz \
 //!   --data-dir /tmp/pluto-bcast-demo/node0
 //!
 //! cargo run -p pluto-dkg --example bcast -- \
-//!   --relays https://0.relay.obol.tech,https://1.relay.obol.tech \
+//!   --relays https://pluto-relay-0.ovh.dev-nethermind.xyz,https://pluto-relay-1.ovh.dev-nethermind.xyz \
 //!   --data-dir /tmp/pluto-bcast-demo/node1
 //!
 //! cargo run -p pluto-dkg --example bcast -- \
-//!   --relays https://0.relay.obol.tech,https://1.relay.obol.tech \
+//!   --relays https://pluto-relay-0.ovh.dev-nethermind.xyz,https://pluto-relay-1.ovh.dev-nethermind.xyz \
 //!   --data-dir /tmp/pluto-bcast-demo/node2
 //! ```
 //!

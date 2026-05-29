@@ -230,6 +230,7 @@ async fn write_file(path: impl AsRef<Path>, data: &[u8], mode: u32) -> Result<()
         .open(path.as_ref())
         .await?;
     file.write_all(data).await?;
+    file.flush().await?;
 
     Ok(())
 }

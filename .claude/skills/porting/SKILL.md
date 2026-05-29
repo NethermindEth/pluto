@@ -97,6 +97,25 @@ Examples where different implementation is acceptable:
 
 Keep Go file open alongside. After each function, verify behavior matches before moving on.
 
+### Comments to avoid in ported code
+
+Do **not** write Go-cross-reference comments in the Rust source:
+
+- `// Mirrors X` / `// Mirror of Go's X`
+- `// Equivalent to Go's X`
+- `// Ports charon/<path> (vX.Y.Z)`
+- `// Placeholder for go.eth2v1.Foo`
+- Inline `// foo — router.go:108` cross-refs on routes/fields/methods
+- `// router.go:NN` line-number anchors anywhere
+
+Reasons:
+
+- The Go file and version live in the PR description, commit message, and the porting plan — not in code.
+- Line-number anchors rot the moment Charon refactors.
+- Cross-reference prose is noise that crowds out the actual *why*-comments that matter.
+
+Doc comments should describe what the Rust item does and any non-obvious *why* (constraint, invariant, edge case). If you need to record the Go origin for your own bookkeeping while porting, do it in the plan or PR description, never the source.
+
 ---
 
 ## Step 6 — Tests
