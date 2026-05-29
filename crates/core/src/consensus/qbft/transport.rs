@@ -270,7 +270,7 @@ fn create_msg(request: CreateMsgRequest<'_>) -> Result<msg::Msg> {
     } = request;
 
     let pb_msg = pbconsensus::QbftMsg {
-        r#type: type_.as_i64(),
+        r#type: i64::from(type_),
         duty: Some(pbcore::Duty::try_from(duty).map_err(Error::InvalidDuty)?),
         peer_idx,
         round,
@@ -721,7 +721,7 @@ mod tests {
 
         msg::Msg::new(
             QbftMsg {
-                r#type: type_.as_i64(),
+                r#type: i64::from(type_),
                 duty: Some(pbcore::Duty::try_from(&duty()).unwrap()),
                 peer_idx: 1,
                 round: 2,

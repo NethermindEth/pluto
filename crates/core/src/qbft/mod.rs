@@ -209,14 +209,15 @@ impl MessageType {
         Self(value)
     }
 
-    /// Returns the stable wire integer.
-    pub(crate) fn as_i64(self) -> i64 {
-        self.0
-    }
-
     /// Returns true when the message type is one of the known QBFT wire types.
     pub fn valid(&self) -> bool {
         self.0 > MSG_UNKNOWN.0 && self.0 < MSG_SENTINEL.0
+    }
+}
+
+impl From<MessageType> for i64 {
+    fn from(value: MessageType) -> Self {
+        value.0
     }
 }
 
@@ -1410,6 +1411,7 @@ mod tests {
         let message_type = MessageType::from_wire(99);
 
         assert_eq!(message_type, MessageType(99));
+        assert_eq!(i64::from(message_type), 99);
         assert!(!message_type.valid());
         assert_eq!(message_type.to_string(), "");
     }
