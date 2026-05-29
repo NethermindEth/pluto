@@ -31,8 +31,6 @@ use crate::{
 };
 
 /// Partial signatures grouped by message root, grouped by pubkey.
-///
-/// Equivalent to Go's `parsigsByMsg`.
 pub type ParSigsByMsg = HashMap<PubKey, HashMap<[u8; 32], Vec<crate::types::ParSignedData>>>;
 
 /// Returns true if every pubkey has at most one distinct message root.
@@ -41,8 +39,6 @@ pub(crate) fn msg_roots_consistent(parsigs: &ParSigsByMsg) -> bool {
 }
 
 /// Set of duty types for which chain inclusion is supported.
-///
-/// Mirrors Go's `inclSupported()` in `inclusion.go`.
 pub(crate) fn incl_supported() -> HashSet<DutyType> {
     let mut set = HashSet::new();
     set.insert(DutyType::Proposer);
@@ -90,7 +86,7 @@ pub struct DutyFailure {
 /// Returns whether the duty failed, the step where it got stuck, and the
 /// last error reported by that step.
 ///
-/// Mirrors Go's `dutyFailedStep`. An empty event slice indicates a duty
+/// An empty event slice indicates a duty
 /// that failed before any event was recorded (returns `step = Zero`).
 pub(crate) fn duty_failed_step(events: &[Event]) -> (bool, Step, Option<StepError>) {
     if events.is_empty() {
@@ -139,8 +135,6 @@ pub(crate) fn duty_failed_step(events: &[Event]) -> (bool, Step, Option<StepErro
 }
 
 /// Analyses whether a duty failed and, if so, why.
-///
-/// Mirrors Go's `analyseDutyFailed`.
 pub(crate) fn analyse_duty_failed(
     duty: &Duty,
     all_events: &HashMap<Duty, Vec<Event>>,
@@ -189,7 +183,7 @@ pub(crate) fn analyse_duty_failed(
                 return DutyFailure {
                     failed: true,
                     step: Step::ParSigDBExternal,
-                    reason: crate::tracker::reason::REASON_BUG_PAR_SIG_DB_EXTERNAL,
+                    reason: REASON_BUG_PAR_SIG_DB_EXTERNAL,
                     err,
                 };
             }
@@ -233,8 +227,6 @@ pub(crate) fn analyse_duty_failed(
             )));
         }
     }
-
-    let _ = REASON_BUG_PAR_SIG_DB_EXTERNAL; // silence unused-import lint on this branch
 
     DutyFailure {
         failed: true,
