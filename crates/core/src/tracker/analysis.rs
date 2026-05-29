@@ -1,7 +1,10 @@
 //! Pure analysis functions for tracker duty failure detection and peer
 //! participation accounting.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::OnceLock,
+};
 
 use pluto_eth2api::EthBeaconNodeApiClientError;
 use pluto_featureset::{Feature, GLOBAL_STATE};
@@ -39,16 +42,18 @@ pub(crate) fn msg_roots_consistent(parsigs: &ParSigsByMsg) -> bool {
 }
 
 /// Set of duty types for which chain inclusion is supported.
-pub(crate) fn incl_supported() -> HashSet<DutyType> {
-    let mut set = HashSet::new();
-    set.insert(DutyType::Proposer);
-
-    let state = GLOBAL_STATE.read().expect("featureset poisoned");
-    if state.enabled(Feature::AttestationInclusion) {
-        set.insert(DutyType::Attester);
-        set.insert(DutyType::Aggregator);
-    }
-    set
+pub(crate) fn incl_supported() -> &'static HashSet<DutyType> {
+    static CACHE: OnceLock<HashSet<DutyType>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        let mut set = HashSet::new();
+        set.insert(DutyType::Proposer);
+        let state = GLOBAL_STATE.read().expect("featureset poisoned");
+        if state.enabled(Feature::AttestationInclusion) {
+            set.insert(DutyType::Attester);
+            set.insert(DutyType::Aggregator);
+        }
+        set
+    })
 }
 
 /// Returns the terminal step for a duty type — either `Bcast` or
