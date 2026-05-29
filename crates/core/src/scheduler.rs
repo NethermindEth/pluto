@@ -3,7 +3,6 @@
 use std::{
     collections::{HashMap, hash_map::Entry},
     time::Duration,
-    u64,
 };
 
 use backon::{BackoffBuilder, Retryable};
@@ -220,6 +219,11 @@ impl Builder {
     }
 }
 
+impl Default for Builder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 enum Message {
     GetDutyDefinition {
         duty: types::Duty,
