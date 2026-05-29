@@ -152,8 +152,14 @@ impl Builder {
         client: client::EthBeaconNodeApiClient,
         ct: CancellationToken,
     ) -> Result<Handle> {
-        wait_chain_start(&client).await?;
-        wait_beacon_sync(&client).await?;
+        wait_chain_start(&client)
+            .with_cancellation_token(&ct)
+            .await
+            .ok_or(SchedulerError::Terminated)??;
+        wait_beacon_sync(&client)
+            .with_cancellation_token(&ct)
+            .await
+            .ok_or(SchedulerError::Terminated)??;
 
         let slot_rx = new_slot_ticker(&client.clone(), ct.clone()).await?;
 
