@@ -73,7 +73,12 @@ pub enum SchedulerError {
         /// Duty attempted to be accessed
         duty: types::Duty,
     },
+    /// Timed out while waiting for the scheduler to respond with a duty
+    /// definition.
+    #[error("Timed out while waiting for a duty definition")]
+    TimeoutError,
 
+    /// The underlying scheduler actor has been terminated.
     #[error("Scheduler actor has been terminated")]
     Terminated,
 }
@@ -229,6 +234,8 @@ pub struct Handle {
 impl Handle {
     /// Returns the definition for a duty if a definition exists for a resolved
     /// epoch.
+    ///
+    /// NOTE: this operation has a default timeout of 100 ms.
     pub async fn get_duty_definition(&self, duty: types::Duty) -> Result<types::DutyDefinitionSet> {
         let (tx, rx) = sync::oneshot::channel();
         let msg = Message::GetDutyDefinition { duty, resp: tx };
@@ -238,9 +245,12 @@ impl Handle {
             .await
             .map_err(|_| SchedulerError::Terminated)?;
 
-        // TODO: In Charon, this call has a default timeout of 100 ms while the epoch is
-        // being resolved. I don't like that approach.
-        rx.await.map_err(|_| SchedulerError::Terminated)?
+        // This has to be very rare event, when the requested epoch is being resolved.
+        // We wait for the epoch to be resolved before returning the duty definition.
+        tokio::time::timeout(Duration::from_millis(100), rx)
+            .await
+            .map_err(|_| SchedulerError::TimeoutError)?
+            .map_err(|_| SchedulerError::Terminated)?
     }
 }
 
@@ -274,6 +284,13 @@ impl Actor {
                     self.handle_chain_reorg(epoch).await;
                 },
 
+                Some(msg) = msg_rx.recv() => match msg {
+                    Message::GetDutyDefinition { duty, resp } => {
+                        let result = self.get_duty_definition(duty).await;
+                        let _ = resp.send(result);
+                    },
+                },
+
                 Some(slot) = slot_rx.recv() => {
                     tracing::debug!(slot = %slot.slot, "Slot ticked");
 
@@ -285,14 +302,24 @@ impl Actor {
 
                     self.schedule_slot(slot, ct.clone()).await;
                 },
-
-                Some(msg) = msg_rx.recv() => match msg {
-                    Message::GetDutyDefinition { duty, resp } => {
-                        let result = self.get_duty_definition(duty).await;
-                        let _ = resp.send(result);
-                    },
-                }
             }
+        }
+    }
+
+    /// In case of a reorg of an already resolved epoch trim all duties.
+    ///
+    /// Duties will be resolved again in the nex slot.
+    pub async fn handle_chain_reorg(&mut self, epoch: u64) {
+        let resolved_epoch = self.resolved_epoch;
+        if epoch < resolved_epoch {
+            self.trim_duties(resolved_epoch);
+            self.resolved_epoch = u64::MAX;
+
+            tracing::info!(
+                reorg_epoch = epoch,
+                resolved_epoch,
+                "Chain reorg event handled, duties trimmed"
+            )
         }
     }
 
@@ -320,23 +347,6 @@ impl Actor {
             .ok_or_else(|| SchedulerError::DutyNotFound { epoch, duty })?;
 
         Ok(def_set.clone())
-    }
-
-    /// In case of a reorg of an already resolved epoch trim all duties.
-    ///
-    /// Duties will be resolved again in the nex slot.
-    pub async fn handle_chain_reorg(&mut self, epoch: u64) {
-        let resolved_epoch = self.resolved_epoch;
-        if epoch < resolved_epoch {
-            self.trim_duties(resolved_epoch);
-            self.resolved_epoch = u64::MAX;
-
-            tracing::info!(
-                reorg_epoch = epoch,
-                resolved_epoch,
-                "Chain reorg event handled, duties trimmed"
-            )
-        }
     }
 
     /// Resolves upcoming duties and triggers resolved duties for the given
