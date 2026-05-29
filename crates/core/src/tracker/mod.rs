@@ -40,6 +40,7 @@ use crate::{
 use analysis::{
     analyse_duty_failed, analyse_participation, extract_par_sigs, msg_roots_consistent,
 };
+use reason::REASON_UNKNOWN;
 use reporters::{
     DutyFailureReporter, MetricsFailedDutyReporter, MetricsParticipationReporter,
     ParticipationReporter, UnsupportedIgnorer, report_par_sigs,
@@ -432,25 +433,24 @@ impl TrackerService {
 
         let outcome = analyse_duty_failed(duty, events, msg_roots_consistent(&parsigs));
 
-        if self
-            .unsupported_ignorer
-            .check(duty, outcome.failed, outcome.step, outcome.reason)
-        {
+        if self.unsupported_ignorer.check(duty, outcome.as_ref()) {
             return;
         }
 
-        self.failed_duty_reporter.report(
-            duty,
-            outcome.failed,
-            outcome.step,
-            outcome.reason,
-            outcome.err.as_ref(),
-        );
+        let failed = outcome.is_some();
+        let (step, reason, err) = outcome
+            .as_ref()
+            .map_or((Step::Zero, REASON_UNKNOWN, None), |f| {
+                (f.step, f.reason, f.err.as_ref())
+            });
+
+        self.failed_duty_reporter
+            .report(duty, failed, step, reason, err);
 
         let (participated, unexpected, expected_per_peer) = analyse_participation(duty, events);
         self.participation_reporter.report(
             duty,
-            outcome.failed,
+            failed,
             &participated,
             &unexpected,
             expected_per_peer,

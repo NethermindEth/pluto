@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use crate::{
     tracker::{
         PeerInfo, StepError,
-        analysis::{ParSigsByMsg, expect_inconsistent_par_sigs, msg_roots_consistent},
+        analysis::{DutyFailure, ParSigsByMsg, expect_inconsistent_par_sigs, msg_roots_consistent},
         metrics::TRACKER_METRICS,
         reason::{
             REASON_SYNC_CONTRIBUTION_ZERO_PREPARES, REASON_ZERO_AGGREGATOR_SELECTIONS, Reason,
@@ -145,8 +145,8 @@ impl UnsupportedIgnorer {
     /// unsupported feature we've already warned about. Also tracks
     /// successful aggregator/sync-contribution duties so future failures
     /// aren't silenced.
-    pub fn check(&mut self, duty: &Duty, failed: bool, step: Step, reason: Reason) -> bool {
-        if !failed {
+    pub fn check(&mut self, duty: &Duty, outcome: Option<&DutyFailure>) -> bool {
+        let Some(f) = outcome else {
             if duty.duty_type == DutyType::Aggregator {
                 self.aggregation_supported = true;
             }
@@ -154,12 +154,12 @@ impl UnsupportedIgnorer {
                 self.contribution_supported = true;
             }
             return false;
-        }
+        };
 
         if !self.aggregation_supported
             && duty.duty_type == DutyType::Aggregator
-            && step == Step::Fetcher
-            && reason == REASON_ZERO_AGGREGATOR_SELECTIONS
+            && f.step == Step::Fetcher
+            && f.reason == REASON_ZERO_AGGREGATOR_SELECTIONS
         {
             if !self.logged_no_aggregator {
                 tracing::warn!(
@@ -172,8 +172,8 @@ impl UnsupportedIgnorer {
 
         if !self.contribution_supported
             && duty.duty_type == DutyType::SyncContribution
-            && step == Step::Fetcher
-            && reason == REASON_SYNC_CONTRIBUTION_ZERO_PREPARES
+            && f.step == Step::Fetcher
+            && f.reason == REASON_SYNC_CONTRIBUTION_ZERO_PREPARES
         {
             if !self.logged_no_contribution {
                 tracing::warn!(
@@ -361,58 +361,61 @@ mod tests {
         // Attester with non-aggregator reason is never ignored.
         assert!(!ignorer.check(
             &Duty::new_attester_duty(SlotNumber::new(123)),
-            true,
-            Step::SigAgg,
-            REASON_BUG_AGGREGATION_ERROR,
+            Some(&DutyFailure {
+                step: Step::SigAgg,
+                reason: REASON_BUG_AGGREGATION_ERROR,
+                err: None
+            }),
         ));
 
         // First Aggregator / Fetcher / ZeroAggregatorSelections failure is ignored.
         assert!(ignorer.check(
             &Duty::new_aggregator_duty(SlotNumber::new(123)),
-            true,
-            Step::Fetcher,
-            REASON_ZERO_AGGREGATOR_SELECTIONS,
+            Some(&DutyFailure {
+                step: Step::Fetcher,
+                reason: REASON_ZERO_AGGREGATOR_SELECTIONS,
+                err: None
+            }),
         ));
 
         // A successful Aggregator marks aggregation as supported.
-        assert!(!ignorer.check(
-            &Duty::new_aggregator_duty(SlotNumber::new(123)),
-            false,
-            Step::Fetcher,
-            REASON_ZERO_AGGREGATOR_SELECTIONS,
-        ));
+        assert!(!ignorer.check(&Duty::new_aggregator_duty(SlotNumber::new(123)), None,));
 
         // After aggregation_supported is true, future Aggregator failures
         // are no longer ignored.
         assert!(!ignorer.check(
             &Duty::new_aggregator_duty(SlotNumber::new(123)),
-            true,
-            Step::Fetcher,
-            REASON_ZERO_AGGREGATOR_SELECTIONS,
+            Some(&DutyFailure {
+                step: Step::Fetcher,
+                reason: REASON_ZERO_AGGREGATOR_SELECTIONS,
+                err: None
+            }),
         ));
 
         // First SyncContribution / Fetcher / ZeroPrepares failure is ignored.
         assert!(ignorer.check(
             &Duty::new_sync_contribution_duty(SlotNumber::new(123)),
-            true,
-            Step::Fetcher,
-            REASON_SYNC_CONTRIBUTION_ZERO_PREPARES,
+            Some(&DutyFailure {
+                step: Step::Fetcher,
+                reason: REASON_SYNC_CONTRIBUTION_ZERO_PREPARES,
+                err: None
+            }),
         ));
 
         // A successful SyncContribution marks contribution as supported.
         assert!(!ignorer.check(
             &Duty::new_sync_contribution_duty(SlotNumber::new(123)),
-            false,
-            Step::Fetcher,
-            REASON_SYNC_CONTRIBUTION_ZERO_PREPARES,
+            None,
         ));
 
         // Subsequent SyncContribution failures are no longer ignored.
         assert!(!ignorer.check(
             &Duty::new_sync_contribution_duty(SlotNumber::new(123)),
-            true,
-            Step::Fetcher,
-            REASON_SYNC_CONTRIBUTION_ZERO_PREPARES,
+            Some(&DutyFailure {
+                step: Step::Fetcher,
+                reason: REASON_SYNC_CONTRIBUTION_ZERO_PREPARES,
+                err: None
+            }),
         ));
     }
 
@@ -425,17 +428,21 @@ mod tests {
         // Aggregator failure with a different reason → not ignored.
         assert!(!ignorer.check(
             &Duty::new_aggregator_duty(SlotNumber::new(1)),
-            true,
-            Step::Fetcher,
-            REASON_UNKNOWN,
+            Some(&DutyFailure {
+                step: Step::Fetcher,
+                reason: REASON_UNKNOWN,
+                err: None
+            }),
         ));
 
         // SyncContribution failure at a non-Fetcher step → not ignored.
         assert!(!ignorer.check(
             &Duty::new_sync_contribution_duty(SlotNumber::new(1)),
-            true,
-            Step::Consensus,
-            REASON_SYNC_CONTRIBUTION_ZERO_PREPARES,
+            Some(&DutyFailure {
+                step: Step::Consensus,
+                reason: REASON_SYNC_CONTRIBUTION_ZERO_PREPARES,
+                err: None
+            }),
         ));
     }
 }
