@@ -17,6 +17,11 @@ use pluto_eth2api::{
 use pluto_eth2util::signing::{self, DomainName, SigningError};
 use tokio::time::error::Elapsed;
 
+use pluto_eth2api::{
+    spec::phase0::ValidatorIndex,
+    versioned::{DataVersion, SignedBlindedProposalBlock, SignedProposalBlock},
+};
+
 use super::{
     error::ApiError,
     handler::Handler,
@@ -35,10 +40,10 @@ use super::{
 use crate::{
     dutydb::{Error as DutyDbError, MemDB},
     signeddata::{
-        SyncContribution, VersionedAggregatedAttestation,
+        SignedDataError, SignedRandao, SyncContribution, VersionedAggregatedAttestation,
         VersionedProposal as UnsignedVersionedProposal,
     },
-    types::{Duty, ParSignedDataSet, PubKey, Signature, SignedData},
+    types::{Duty, ParSignedDataSet, PubKey, Signature, SignedData, SlotNumber},
     version,
 };
 
@@ -96,6 +101,16 @@ pub type DutyDefFn = Arc<
 pub type PubKeyByAttFn =
     Arc<dyn Fn(u64, u64, u64) -> CallbackFuture<'static, PubKey> + Send + Sync + 'static>;
 
+/// Returns the DV root [`PubKey`] of the proposer for a given slot. Mirrors
+/// Go's `getProposerPubkey`, which queries `dutyDefFunc` for a single-entry
+/// proposer-duty definition set and extracts the lone key.
+///
+/// Pluto's `duty_def_fn` is type-erased (`Box<dyn Any>`), so we expose this
+/// thin typed hook for the proposer-pubkey path. The shape mirrors
+/// [`PubKeyByAttFn`].
+pub type ProposerPubkeyFn =
+    Arc<dyn Fn(u64) -> CallbackFuture<'static, PubKey> + Send + Sync + 'static>;
+
 /// Hard deadline for upstream beacon-node calls. Bounds the worst-case
 /// handler latency when the upstream hangs or stalls. Roughly one slot.
 const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(12);
@@ -105,6 +120,12 @@ const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(12);
 /// hold a handler task indefinitely. Sized at roughly two slots so a real
 /// attestation duty has time to flow through the pipeline.
 const ATTESTATION_DATA_TIMEOUT: Duration = Duration::from_secs(24);
+
+/// Hard deadline for the `proposal` await on the local DutyDB. Same sizing
+/// rationale as [`ATTESTATION_DATA_TIMEOUT`] — roughly two slots so an
+/// in-flight proposer duty has time to flow through consensus before this
+/// handler gives up.
+const PROPOSAL_TIMEOUT: Duration = Duration::from_secs(24);
 
 /// Validator API [`Handler`] implementation.
 ///
@@ -120,7 +141,6 @@ pub struct Component {
     /// data) produced by the rest of the pipeline.
     dutydb: Arc<MemDB>,
     /// Threshold BLS share index assigned to this node (1-indexed).
-    #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     share_idx: u64,
     /// Maps DV root public keys to this node's public share. Used to rewrite
     /// validator-client-facing endpoints (proposer/attester duties, etc.) so
@@ -138,10 +158,8 @@ pub struct Component {
     /// Subscribers invoked by submit endpoints once a partial-signed-data set
     /// has been validated. Each entry clones the set before invoking the
     /// user-provided callback, mirroring Go's `Subscribe`.
-    #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     subs: Vec<SubscriberFn>,
     /// Looks up an unsigned beacon proposal for a slot.
-    #[allow(dead_code, reason = "consumed by proposal handler in later PRs")]
     await_proposal_fn: Option<AwaitProposalFn>,
     /// Looks up an aggregated attestation by `(slot, attestation_root)`.
     #[allow(dead_code, reason = "consumed by aggregate_attestation in later PRs")]
@@ -161,6 +179,10 @@ pub struct Component {
     /// Looks up the root pubkey for an `(slot, commIdx, valIdx)` triple.
     #[allow(dead_code, reason = "consumed by submit_attestations in later PRs")]
     pub_key_by_att_fn: Option<PubKeyByAttFn>,
+    /// Looks up the proposer's root pubkey for a slot. Mirrors Go's
+    /// `getProposerPubkey`, which extracts the single key from the
+    /// proposer-duty definition set returned by `dutyDefFunc`.
+    proposer_pubkey_fn: Option<ProposerPubkeyFn>,
 }
 
 impl Component {
@@ -186,6 +208,7 @@ impl Component {
             await_agg_sig_db_fn: None,
             duty_def_fn: None,
             pub_key_by_att_fn: None,
+            proposer_pubkey_fn: None,
         }
     }
 
@@ -213,6 +236,7 @@ impl Component {
             await_agg_sig_db_fn: None,
             duty_def_fn: None,
             pub_key_by_att_fn: None,
+            proposer_pubkey_fn: None,
         }
     }
 
@@ -294,6 +318,18 @@ impl Component {
         }));
     }
 
+    /// Registers (and overwrites any prior) proposer-pubkey lookup. Mirrors
+    /// Go's `getProposerPubkey`, which is itself a thin wrapper over
+    /// `dutyDefFunc` that returns the single DV root pubkey responsible for
+    /// proposing in the given slot.
+    pub fn register_proposer_pubkey<F, Fut>(&mut self, f: F)
+    where
+        F: Fn(u64) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<PubKey, CallbackError>> + Send + 'static,
+    {
+        self.proposer_pubkey_fn = Some(Arc::new(move |slot| Box::pin(f(slot))));
+    }
+
     /// Verifies a partial BLS signature produced by the validator client
     /// against this node's public share for the given DV root pubkey.
     ///
@@ -306,7 +342,6 @@ impl Component {
     /// invoke this helper.
     ///
     /// Skipped entirely when [`Self::insecure_test`] is set.
-    #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     pub async fn verify_partial_sig(
         &self,
         root_pubkey: &BLSPubKey,
@@ -337,6 +372,50 @@ impl Component {
         .await?;
 
         Ok(())
+    }
+
+    /// Resolves the proposer's DV root [`PubKey`] for a slot. Mirrors Go's
+    /// `getProposerPubkey` — both `Proposal` and `Submit{,Blinded}Proposal`
+    /// invoke this before fanning out partial signed data.
+    async fn lookup_proposer_pubkey(&self, slot: u64) -> Result<PubKey, ApiError> {
+        let f = self.proposer_pubkey_fn.as_ref().ok_or_else(|| {
+            // 503 mirrors the wider "DV pipeline not ready" failure mode —
+            // a misconfigured Component (no hook) shouldn't surface as a 500.
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "proposer pubkey lookup not registered",
+            )
+        })?;
+        f(slot).await.map_err(|err| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "proposer pubkey lookup failed",
+            )
+            .with_boxed_source(err)
+        })
+    }
+
+    /// Awaits the consensus-side unsigned proposal for a slot. Prefers the
+    /// PR-1 `await_proposal_fn` hook when registered; falls back to the
+    /// local dutydb so router-only tests don't need to wire it.
+    async fn await_proposal_for_handler(
+        &self,
+        slot: u64,
+    ) -> Result<UnsignedVersionedProposal, ApiError> {
+        if let Some(f) = self.await_proposal_fn.as_ref() {
+            return f(slot).await.map_err(|err| {
+                ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "await proposal hook failed",
+                )
+                .with_boxed_source(err)
+            });
+        }
+        self.dutydb.await_proposal(slot).await.map_err(|err| {
+            // Reuse `map_dutydb_error` for shape parity with
+            // `attestation_data`.
+            map_dutydb_error(err)
+        })
     }
 }
 
@@ -547,20 +626,180 @@ impl Handler for Component {
 
     async fn proposal(
         &self,
-        _opts: ProposalOpts,
+        opts: ProposalOpts,
     ) -> Result<EthResponse<VersionedProposal>, ApiError> {
-        unimplemented!("proposal not yet ported")
+        // Resolve the proposer pubkey first — this is a blocking lookup in
+        // Go (`getProposerPubkey`) that the rest of the handler depends on.
+        // The Pluto hook is registered by the wider scheduler; without it we
+        // cannot perform partial-randao verification.
+        let pubkey = self.lookup_proposer_pubkey(opts.slot).await?;
+
+        // Translate slot → epoch using the upstream beacon-node's
+        // SLOTS_PER_EPOCH. Mirrors Go's `eth2util.EpochFromSlot`.
+        let epoch = pluto_eth2util::helpers::epoch_from_slot(&self.eth2_cl, opts.slot)
+            .await
+            .map_err(|err| {
+                ApiError::new(StatusCode::BAD_GATEWAY, "could not resolve epoch from slot")
+                    .with_source(err)
+            })?;
+
+        // Build the partial randao parsig — the VC's randao reveal signed by
+        // its share. Mirrors Go's `core.NewPartialSignedRandao(epoch, sig,
+        // shareIdx)` followed by `verifyPartialSig`.
+        let randao_par_sig = SignedRandao::new_partial(epoch, opts.randao_reveal, self.share_idx);
+        let randao_signature = randao_par_sig.signed_data.signature().map_err(|err| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not extract randao signature",
+            )
+            .with_source(err)
+        })?;
+        let randao_root = randao_par_sig.signed_data.message_root().map_err(|err| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not derive randao message root",
+            )
+            .with_source(err)
+        })?;
+        let pubkey_bytes = pubkey_to_bls(&pubkey);
+        self.verify_partial_sig(
+            &pubkey_bytes,
+            DomainName::Randao,
+            epoch,
+            randao_root,
+            &randao_signature,
+        )
+        .await
+        .map_err(verify_partial_sig_error)?;
+
+        // Fan out the partial randao to subscribers. They feed the rest of
+        // the DV pipeline that eventually fills the dutydb with the unsigned
+        // block we will return below.
+        let mut parsig_set = ParSignedDataSet::new();
+        parsig_set.insert(pubkey, randao_par_sig);
+        let randao_duty = Duty::new_randao_duty(SlotNumber::new(opts.slot));
+        for sub in &self.subs {
+            sub(&randao_duty, parsig_set.clone()).await.map_err(|err| {
+                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "subscriber failed")
+                    .with_boxed_source(err)
+            })?;
+        }
+
+        // Block on the unsigned proposal landing in dutydb. PR-1 plumbed
+        // `await_proposal_fn`; fall back to the dutydb directly when the
+        // hook is not registered (router-local tests).
+        let data =
+            tokio::time::timeout(PROPOSAL_TIMEOUT, self.await_proposal_for_handler(opts.slot))
+                .await
+                .map_err(|_: Elapsed| {
+                    ApiError::new(
+                        StatusCode::REQUEST_TIMEOUT,
+                        "proposal not available before deadline",
+                    )
+                })??;
+
+        Ok(EthResponse {
+            data,
+            execution_optimistic: false,
+            finalized: false,
+            dependent_root: None,
+        })
     }
 
-    async fn submit_proposal(&self, _proposal: VersionedSignedProposal) -> Result<(), ApiError> {
-        unimplemented!("submit_proposal not yet ported")
+    async fn submit_proposal(&self, proposal: VersionedSignedProposal) -> Result<(), ApiError> {
+        let slot = signed_proposal_slot(&proposal.0.block);
+        let pubkey = self.lookup_proposer_pubkey(slot).await?;
+
+        // Pull the consensus-side unsigned proposal that the rest of the
+        // pipeline produced for this slot.
+        let consensus_proposal = self.await_proposal_for_handler(slot).await.map_err(|err| {
+            let status = err.status_code;
+            ApiError::new(status, "could not fetch block definition from dutydb")
+                .with_source(std::io::Error::other(err.message))
+        })?;
+
+        // Cross-check the VC submission against the consensus proposal —
+        // version, blinded flag, proposer index, and tree-hash root all
+        // have to line up.
+        proposal_matches_duty(&proposal, &consensus_proposal).map_err(|err| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "consensus proposal and VC-submitted one do not match",
+            )
+            .with_source(err)
+        })?;
+
+        let par_sig =
+            crate::signeddata::VersionedSignedProposal::new_partial(proposal.0, self.share_idx)
+                .map_err(map_signed_data_error)?;
+
+        // Verify the partial signature against this node's public share.
+        verify_par_signed_proposal(self, &pubkey, slot, &par_sig).await?;
+
+        let mut set = ParSignedDataSet::new();
+        set.insert(pubkey, par_sig);
+        let duty = Duty::new_proposer_duty(SlotNumber::new(slot));
+        for sub in &self.subs {
+            sub(&duty, set.clone()).await.map_err(|err| {
+                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "subscriber failed")
+                    .with_boxed_source(err)
+            })?;
+        }
+        Ok(())
     }
 
     async fn submit_blinded_proposal(
         &self,
-        _proposal: VersionedSignedBlindedProposal,
+        proposal: VersionedSignedBlindedProposal,
     ) -> Result<(), ApiError> {
-        unimplemented!("submit_blinded_proposal not yet ported")
+        let slot = blinded_proposal_slot(&proposal);
+        let pubkey = self.lookup_proposer_pubkey(slot).await?;
+
+        // Same fan-out shape as `submit_proposal`: pull the consensus-side
+        // unsigned proposal, build a wrapped "blinded" `VersionedSignedProposal`
+        // for the matches-duty check, and emit a partial signed wrapper to
+        // subscribers.
+        let consensus_proposal = self.await_proposal_for_handler(slot).await.map_err(|err| {
+            let status = err.status_code;
+            ApiError::new(status, "could not fetch block definition from dutydb")
+                .with_source(std::io::Error::other(err.message))
+        })?;
+
+        // Translate the blinded payload into the generic versioned signed
+        // shape so we can share the `proposal_matches_duty` helper. Mirrors
+        // Go's `SubmitBlindedProposal` which constructs a
+        // `SubmitProposalOpts` from the blinded fields before calling the
+        // same `propDataMatchesDuty` helper.
+        let typed_wrapper =
+            crate::signeddata::VersionedSignedProposal::from_blinded_proposal(proposal.clone())
+                .map_err(map_signed_data_error)?;
+        proposal_matches_duty(&typed_wrapper, &consensus_proposal).map_err(|err| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "consensus proposal and VC-submitted one do not match",
+            )
+            .with_source(err)
+        })?;
+
+        let par_sig =
+            crate::signeddata::VersionedSignedProposal::new_partial_from_blinded_proposal(
+                proposal,
+                self.share_idx,
+            )
+            .map_err(map_signed_data_error)?;
+
+        verify_par_signed_proposal(self, &pubkey, slot, &par_sig).await?;
+
+        let mut set = ParSignedDataSet::new();
+        set.insert(pubkey, par_sig);
+        let duty = Duty::new_proposer_duty(SlotNumber::new(slot));
+        for sub in &self.subs {
+            sub(&duty, set.clone()).await.map_err(|err| {
+                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "subscriber failed")
+                    .with_boxed_source(err)
+            })?;
+        }
+        Ok(())
     }
 
     async fn aggregate_attestation(
@@ -782,6 +1021,258 @@ fn parse_bls_pubkey(s: &str) -> Result<BLSPubKey, ApiError> {
 
 fn format_bls_pubkey(pubkey: &BLSPubKey) -> String {
     format!("0x{}", hex::encode(pubkey))
+}
+
+/// Re-interprets a Pluto [`PubKey`] as the [`BLSPubKey`] byte-array used by
+/// [`Component::verify_partial_sig`] and the `pub_share_by_pubkey` map.
+fn pubkey_to_bls(pk: &PubKey) -> BLSPubKey {
+    let mut out = [0_u8; 48];
+    out.copy_from_slice(pk.as_ref());
+    out
+}
+
+/// Maps a [`VerifyPartialSigError`] back to an [`ApiError`]. `UnknownPubKey`
+/// signals a cluster/share-mapping misconfiguration — same 500 reasoning as
+/// `swap_attester_pubshares`. Signing-level failures (zero signature, bad
+/// BLS, beacon-node lookup) become 400 since they reflect bad VC input.
+fn verify_partial_sig_error(err: VerifyPartialSigError) -> ApiError {
+    match err {
+        VerifyPartialSigError::UnknownPubKey => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "pubshare not registered for proposer",
+        )
+        .with_source(err),
+        VerifyPartialSigError::Signing(_) => ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "partial signature verification failed",
+        )
+        .with_source(err),
+    }
+}
+
+/// Maps a [`SignedDataError`] coming from a `new_partial` constructor to the
+/// `ApiError` we return on submit. These errors only fire when the
+/// VC-supplied payload is malformed (unknown fork version, missing block),
+/// so the client gets a 400.
+fn map_signed_data_error(err: SignedDataError) -> ApiError {
+    ApiError::new(
+        StatusCode::BAD_REQUEST,
+        "could not wrap VC proposal as partial signed data",
+    )
+    .with_source(err)
+}
+
+/// Verifies the partial signature embedded in a `ParSignedData` wrapper
+/// against this node's public share for `pubkey`. Mirrors Go's
+/// `verifyPartialSig(ctx, parSig, pubkey)`. The caller passes the slot used
+/// to compute the signing-epoch since `dyn SignedData` is intentionally
+/// opaque about the wrapped block shape.
+async fn verify_par_signed_proposal(
+    component: &Component,
+    pubkey: &PubKey,
+    slot: u64,
+    par_sig: &crate::types::ParSignedData,
+) -> Result<(), ApiError> {
+    let signature = par_sig.signed_data.signature().map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "could not extract partial signature",
+        )
+        .with_source(err)
+    })?;
+    let message_root = par_sig.signed_data.message_root().map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "could not derive message root",
+        )
+        .with_source(err)
+    })?;
+
+    let epoch = pluto_eth2util::helpers::epoch_from_slot(&component.eth2_cl, slot)
+        .await
+        .map_err(|err| {
+            ApiError::new(StatusCode::BAD_GATEWAY, "could not resolve epoch from slot")
+                .with_source(err)
+        })?;
+
+    let pubkey_bytes = pubkey_to_bls(pubkey);
+    component
+        .verify_partial_sig(
+            &pubkey_bytes,
+            DomainName::BeaconProposer,
+            epoch,
+            message_root,
+            &signature,
+        )
+        .await
+        .map_err(verify_partial_sig_error)
+}
+
+/// Cross-checks a VC-submitted proposal against the consensus proposal that
+/// landed in the dutydb for the same slot. Mirrors Go's
+/// `propDataMatchesDuty` — version, blinded flag, proposer index, and the
+/// SSZ tree-hash root of the block must all match.
+fn proposal_matches_duty(
+    vc: &VersionedSignedProposal,
+    consensus: &UnsignedVersionedProposal,
+) -> Result<(), ProposalMatchError> {
+    let vc_version = signed_proposal_version(&vc.0.block);
+    let consensus_version = consensus.version();
+    if vc_version != consensus_version {
+        return Err(ProposalMatchError::Version {
+            consensus: consensus_version,
+            vc: vc_version,
+        });
+    }
+    if vc.0.blinded != consensus.is_blinded() {
+        return Err(ProposalMatchError::Blinded {
+            consensus: consensus.is_blinded(),
+            vc: vc.0.blinded,
+        });
+    }
+    let vc_index = signed_proposal_proposer_index(&vc.0.block);
+    let consensus_index = unsigned_proposal_proposer_index(consensus);
+    if vc_index != consensus_index {
+        return Err(ProposalMatchError::ProposerIndex {
+            consensus: consensus_index,
+            vc: vc_index,
+        });
+    }
+    let vc_root = signed_proposal_message_root(&vc.0.block);
+    let consensus_root = consensus.root();
+    if vc_root != consensus_root {
+        return Err(ProposalMatchError::Root {
+            consensus: hex::encode(consensus_root),
+            vc: hex::encode(vc_root),
+        });
+    }
+    Ok(())
+}
+
+/// Reports a mismatch between a VC-submitted proposal and the consensus
+/// proposal pulled from the dutydb. Same shape as Go's `errors.New(...)`
+/// branches inside `propDataMatchesDuty`.
+#[derive(Debug, thiserror::Error)]
+enum ProposalMatchError {
+    #[error("dutydb and VC proposals have different version: consensus={consensus:?} vc={vc:?}")]
+    Version {
+        consensus: DataVersion,
+        vc: DataVersion,
+    },
+    #[error("dutydb and VC proposals have different blinded value: consensus={consensus} vc={vc}")]
+    Blinded { consensus: bool, vc: bool },
+    #[error("dutydb and VC proposals have different proposer index: consensus={consensus} vc={vc}")]
+    ProposerIndex { consensus: u64, vc: u64 },
+    #[error("dutydb and VC proposals have different block root: consensus={consensus} vc={vc}")]
+    Root { consensus: String, vc: String },
+}
+
+/// Returns the slot of the inner block in a blinded versioned signed
+/// proposal. Mirrors Go's `VersionedSignedBlindedProposal.Slot()`.
+fn blinded_proposal_slot(p: &VersionedSignedBlindedProposal) -> u64 {
+    match &p.block {
+        SignedBlindedProposalBlock::Bellatrix(b) => b.message.slot,
+        SignedBlindedProposalBlock::Capella(b) => b.message.slot,
+        SignedBlindedProposalBlock::Deneb(b) => b.message.slot,
+        SignedBlindedProposalBlock::Electra(b) => b.message.slot,
+        SignedBlindedProposalBlock::Fulu(b) => b.message.slot,
+    }
+}
+
+/// Returns the slot of the inner block in a signed proposal block.
+fn signed_proposal_slot(b: &SignedProposalBlock) -> u64 {
+    match b {
+        SignedProposalBlock::Phase0(b) => b.message.slot,
+        SignedProposalBlock::Altair(b) => b.message.slot,
+        SignedProposalBlock::Bellatrix(b) => b.message.slot,
+        SignedProposalBlock::BellatrixBlinded(b) => b.message.slot,
+        SignedProposalBlock::Capella(b) => b.message.slot,
+        SignedProposalBlock::CapellaBlinded(b) => b.message.slot,
+        SignedProposalBlock::Deneb(b) => b.signed_block.message.slot,
+        SignedProposalBlock::DenebBlinded(b) => b.message.slot,
+        SignedProposalBlock::Electra(b) => b.signed_block.message.slot,
+        SignedProposalBlock::ElectraBlinded(b) => b.message.slot,
+        SignedProposalBlock::Fulu(b) => b.signed_block.message.slot,
+        SignedProposalBlock::FuluBlinded(b) => b.message.slot,
+    }
+}
+
+/// Returns the fork version of a signed proposal block.
+fn signed_proposal_version(b: &SignedProposalBlock) -> DataVersion {
+    match b {
+        SignedProposalBlock::Phase0(_) => DataVersion::Phase0,
+        SignedProposalBlock::Altair(_) => DataVersion::Altair,
+        SignedProposalBlock::Bellatrix(_) | SignedProposalBlock::BellatrixBlinded(_) => {
+            DataVersion::Bellatrix
+        }
+        SignedProposalBlock::Capella(_) | SignedProposalBlock::CapellaBlinded(_) => {
+            DataVersion::Capella
+        }
+        SignedProposalBlock::Deneb(_) | SignedProposalBlock::DenebBlinded(_) => DataVersion::Deneb,
+        SignedProposalBlock::Electra(_) | SignedProposalBlock::ElectraBlinded(_) => {
+            DataVersion::Electra
+        }
+        SignedProposalBlock::Fulu(_) | SignedProposalBlock::FuluBlinded(_) => DataVersion::Fulu,
+    }
+}
+
+/// Returns the proposer index of a signed proposal block.
+fn signed_proposal_proposer_index(b: &SignedProposalBlock) -> ValidatorIndex {
+    match b {
+        SignedProposalBlock::Phase0(b) => b.message.proposer_index,
+        SignedProposalBlock::Altair(b) => b.message.proposer_index,
+        SignedProposalBlock::Bellatrix(b) => b.message.proposer_index,
+        SignedProposalBlock::BellatrixBlinded(b) => b.message.proposer_index,
+        SignedProposalBlock::Capella(b) => b.message.proposer_index,
+        SignedProposalBlock::CapellaBlinded(b) => b.message.proposer_index,
+        SignedProposalBlock::Deneb(b) => b.signed_block.message.proposer_index,
+        SignedProposalBlock::DenebBlinded(b) => b.message.proposer_index,
+        SignedProposalBlock::Electra(b) => b.signed_block.message.proposer_index,
+        SignedProposalBlock::ElectraBlinded(b) => b.message.proposer_index,
+        SignedProposalBlock::Fulu(b) => b.signed_block.message.proposer_index,
+        SignedProposalBlock::FuluBlinded(b) => b.message.proposer_index,
+    }
+}
+
+/// Returns the SSZ tree-hash root of the inner message of a signed
+/// proposal block. Mirrors the per-variant `HashTreeRoot()` branches in
+/// Go's `propDataMatchesDuty`.
+fn signed_proposal_message_root(b: &SignedProposalBlock) -> Root {
+    use tree_hash::TreeHash;
+    match b {
+        SignedProposalBlock::Phase0(b) => b.message.tree_hash_root().0,
+        SignedProposalBlock::Altair(b) => b.message.tree_hash_root().0,
+        SignedProposalBlock::Bellatrix(b) => b.message.tree_hash_root().0,
+        SignedProposalBlock::BellatrixBlinded(b) => b.message.tree_hash_root().0,
+        SignedProposalBlock::Capella(b) => b.message.tree_hash_root().0,
+        SignedProposalBlock::CapellaBlinded(b) => b.message.tree_hash_root().0,
+        SignedProposalBlock::Deneb(b) => b.signed_block.message.tree_hash_root().0,
+        SignedProposalBlock::DenebBlinded(b) => b.message.tree_hash_root().0,
+        SignedProposalBlock::Electra(b) => b.signed_block.message.tree_hash_root().0,
+        SignedProposalBlock::ElectraBlinded(b) => b.message.tree_hash_root().0,
+        SignedProposalBlock::Fulu(b) => b.signed_block.message.tree_hash_root().0,
+        SignedProposalBlock::FuluBlinded(b) => b.message.tree_hash_root().0,
+    }
+}
+
+/// Returns the proposer index of an unsigned `signeddata::VersionedProposal`.
+/// Mirrors Go's `VersionedProposal.ProposerIndex()`.
+fn unsigned_proposal_proposer_index(p: &UnsignedVersionedProposal) -> ValidatorIndex {
+    use crate::signeddata::ProposalBlock;
+    match &p.block {
+        ProposalBlock::Phase0(b) => b.proposer_index,
+        ProposalBlock::Altair(b) => b.proposer_index,
+        ProposalBlock::Bellatrix(b) => b.proposer_index,
+        ProposalBlock::BellatrixBlinded(b) => b.proposer_index,
+        ProposalBlock::Capella(b) => b.proposer_index,
+        ProposalBlock::CapellaBlinded(b) => b.proposer_index,
+        ProposalBlock::Deneb { block, .. } => block.proposer_index,
+        ProposalBlock::DenebBlinded(b) => b.proposer_index,
+        ProposalBlock::Electra { block, .. } => block.proposer_index,
+        ProposalBlock::ElectraBlinded(b) => b.proposer_index,
+        ProposalBlock::Fulu { block, .. } => block.proposer_index,
+        ProposalBlock::FuluBlinded(b) => b.proposer_index,
+    }
 }
 
 #[cfg(test)]
@@ -1447,6 +1938,7 @@ mod tests {
         assert!(component.await_agg_sig_db_fn.is_none());
         assert!(component.duty_def_fn.is_none());
         assert!(component.pub_key_by_att_fn.is_none());
+        assert!(component.proposer_pubkey_fn.is_none());
         assert!(component.subs.is_empty());
     }
 
@@ -1594,5 +2086,673 @@ mod tests {
             )
             .await
             .expect("insecure_test mode skips verification");
+    }
+
+    // ====================================================================
+    // proposal / submit_proposal / submit_blinded_proposal
+    // ====================================================================
+
+    use pluto_eth2api::{
+        spec::{bellatrix, phase0 as p0},
+        versioned::{
+            DataVersion as V, SignedBlindedProposalBlock, SignedProposalBlock,
+            VersionedSignedBlindedProposal as Eth2VersionedSignedBlindedProposal,
+            VersionedSignedProposal as Eth2VersionedSignedProposal,
+        },
+    };
+
+    use crate::{
+        signeddata::{ProposalBlock, VersionedProposal as UnsignedProposal},
+        validatorapi::types::{
+            ProposalOpts, VersionedSignedBlindedProposal, VersionedSignedProposal,
+        },
+    };
+
+    /// Same spec as [`signing_spec_fixture`] but extended with the chain-
+    /// timing keys (`SECONDS_PER_SLOT`, `SLOTS_PER_EPOCH`) required by
+    /// `epoch_from_slot`.
+    fn proposal_spec_fixture() -> serde_json::Value {
+        let mut spec = signing_spec_fixture();
+        let obj = spec.as_object_mut().unwrap();
+        obj.insert(
+            "SECONDS_PER_SLOT".to_owned(),
+            serde_json::Value::String("12".to_owned()),
+        );
+        obj.insert(
+            "SLOTS_PER_EPOCH".to_owned(),
+            serde_json::Value::String("32".to_owned()),
+        );
+        spec
+    }
+
+    async fn mock_beacon_for_proposal() -> BeaconMock {
+        BeaconMock::builder()
+            .spec(proposal_spec_fixture())
+            .genesis_time(DateTime::from_timestamp(0, 0).unwrap())
+            .genesis_validators_root([0; 32])
+            .build()
+            .await
+            .unwrap()
+    }
+
+    /// Build a Component pinned to a real beacon mock so `epoch_from_slot`
+    /// resolves against `SLOTS_PER_EPOCH=32`. Insecure-test mode is set so
+    /// BLS verification is skipped — the proposal tests do not exercise
+    /// signature crypto.
+    async fn make_proposal_component() -> (Component, BeaconMock) {
+        let mock = mock_beacon_for_proposal().await;
+        let cancel = CancellationToken::new();
+        let (deadliner, _deadliner_rx) = DeadlinerTask::start(
+            cancel.clone(),
+            "validatorapi-proposal-tests",
+            FarFutureCalculator,
+        );
+        let (_evict_tx, evict_rx) = mpsc::channel(1);
+        let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let component = Component::new_insecure(eth2_cl, Arc::clone(&dutydb), 1);
+        (component, mock)
+    }
+
+    /// Builds a 512-bit zero `BitVector<512>` to populate the
+    /// `sync_committee_bits` field of an Altair-or-later sync aggregate.
+    /// 512 bits = 64 bytes — the spec-fixed length validated by the
+    /// serde_json deserializer.
+    fn empty_sync_committee_bits() -> pluto_ssz::BitVector<512> {
+        let hex = format!("\"0x{}\"", "00".repeat(64));
+        serde_json::from_str(&hex).unwrap()
+    }
+
+    fn sample_phase0_body() -> p0::BeaconBlockBody {
+        p0::BeaconBlockBody {
+            randao_reveal: [0; 96],
+            eth1_data: p0::ETH1Data {
+                deposit_root: [0; 32],
+                deposit_count: 0,
+                block_hash: [0; 32],
+            },
+            graffiti: [0; 32],
+            proposer_slashings: vec![].into(),
+            attester_slashings: vec![].into(),
+            attestations: vec![].into(),
+            deposits: vec![].into(),
+            voluntary_exits: vec![].into(),
+        }
+    }
+
+    /// Build a matching pair of consensus-side (unsigned) and VC-side
+    /// (signed) phase0 proposals — same slot, proposer index, parent/state
+    /// roots, body — so `proposal_matches_duty` succeeds.
+    fn matched_phase0_proposals(
+        slot: u64,
+        proposer_index: u64,
+    ) -> (UnsignedProposal, Eth2VersionedSignedProposal) {
+        let body = sample_phase0_body();
+        let unsigned_block = p0::BeaconBlock {
+            slot,
+            proposer_index,
+            parent_root: [0; 32],
+            state_root: [0; 32],
+            body: body.clone(),
+        };
+        let signed_block = p0::SignedBeaconBlock {
+            message: unsigned_block.clone(),
+            signature: [0; 96],
+        };
+        let unsigned = UnsignedProposal {
+            block: ProposalBlock::Phase0(unsigned_block),
+        };
+        let signed = Eth2VersionedSignedProposal {
+            version: V::Phase0,
+            blinded: false,
+            block: SignedProposalBlock::Phase0(signed_block),
+        };
+        (unsigned, signed)
+    }
+
+    /// Build a matching pair of consensus-side (unsigned) and VC-side
+    /// (signed) bellatrix-blinded proposals.
+    fn matched_bellatrix_blinded_proposals(
+        slot: u64,
+        proposer_index: u64,
+    ) -> (UnsignedProposal, Eth2VersionedSignedBlindedProposal) {
+        // Use the same payload-header bytes across both consensus and VC
+        // sides — the SSZ hash-tree root is computed structurally, so the
+        // values just need to be equal.
+        let header = bellatrix::ExecutionPayloadHeader {
+            parent_hash: [0; 32],
+            fee_recipient: [0; 20],
+            state_root: [0; 32],
+            receipts_root: [0; 32],
+            logs_bloom: [0; 256],
+            prev_randao: [0; 32],
+            block_number: 0,
+            gas_limit: 30_000_000,
+            gas_used: 0,
+            timestamp: 0,
+            extra_data: vec![].into(),
+            base_fee_per_gas: alloy::primitives::U256::ZERO,
+            block_hash: [0; 32],
+            transactions_root: [0; 32],
+        };
+        let body = bellatrix::BlindedBeaconBlockBody {
+            randao_reveal: [0; 96],
+            eth1_data: p0::ETH1Data {
+                deposit_root: [0; 32],
+                deposit_count: 0,
+                block_hash: [0; 32],
+            },
+            graffiti: [0; 32],
+            proposer_slashings: vec![].into(),
+            attester_slashings: vec![].into(),
+            attestations: vec![].into(),
+            deposits: vec![].into(),
+            voluntary_exits: vec![].into(),
+            sync_aggregate: pluto_eth2api::spec::altair::SyncAggregate {
+                sync_committee_bits: empty_sync_committee_bits(),
+                sync_committee_signature: [0; 96],
+            },
+            execution_payload_header: header,
+        };
+        let unsigned_block = bellatrix::BlindedBeaconBlock {
+            slot,
+            proposer_index,
+            parent_root: [0; 32],
+            state_root: [0; 32],
+            body: body.clone(),
+        };
+        let signed_block = bellatrix::SignedBlindedBeaconBlock {
+            message: unsigned_block.clone(),
+            signature: [0; 96],
+        };
+        let unsigned = UnsignedProposal {
+            block: ProposalBlock::BellatrixBlinded(unsigned_block),
+        };
+        let signed = Eth2VersionedSignedBlindedProposal {
+            version: V::Bellatrix,
+            block: SignedBlindedProposalBlock::Bellatrix(signed_block),
+        };
+        (unsigned, signed)
+    }
+
+    /// Happy path: registered hooks resolve proposer pubkey and proposal,
+    /// the randao subscriber fires, and the returned proposal's wrapped
+    /// block matches what the hook produced.
+    #[tokio::test]
+    async fn proposal_returns_proposal_from_hook_and_fans_out_randao() {
+        let (mut component, _mock) = make_proposal_component().await;
+
+        let core_pk = core_pubkey(0x7A);
+        let (unsigned, _signed) = matched_phase0_proposals(48, 7);
+
+        component.register_proposer_pubkey(move |_slot| async move { Ok(core_pk) });
+        let captured: Arc<Mutex<Option<UnsignedProposal>>> = Arc::new(Mutex::new(Some(unsigned)));
+        component.register_await_proposal({
+            let captured = Arc::clone(&captured);
+            move |_slot| {
+                let captured = Arc::clone(&captured);
+                async move {
+                    let value = captured.lock().unwrap().take().unwrap();
+                    Ok(value)
+                }
+            }
+        });
+
+        let randao_calls: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let randao_calls = Arc::clone(&randao_calls);
+            component.subscribe(move |duty, _set| {
+                let randao_calls = Arc::clone(&randao_calls);
+                async move {
+                    randao_calls.lock().unwrap().push(duty.slot.inner());
+                    Ok(())
+                }
+            });
+        }
+
+        let response = component
+            .proposal(ProposalOpts {
+                slot: 48,
+                randao_reveal: [0; 96],
+                graffiti: [0; 32],
+                builder_boost_factor: None,
+            })
+            .await
+            .unwrap();
+
+        // The proposer-randao duty fires for the requested slot, exactly
+        // once per registered subscriber.
+        assert_eq!(*randao_calls.lock().unwrap(), vec![48]);
+        // The returned proposal carries the slot the hook produced.
+        assert_eq!(response.data.slot(), 48);
+    }
+
+    /// Builder-mode branch: when the upstream pipeline produced a blinded
+    /// (builder) proposal, the handler returns it unchanged. The builder
+    /// gate is set by the wider scheduler, not by `Proposal` itself — but
+    /// this verifies the handler is fork-agnostic, matching Go's behavior.
+    #[tokio::test]
+    async fn proposal_returns_blinded_proposal_in_builder_mode() {
+        let (mut component, _mock) = make_proposal_component().await;
+        // Flip the gate so the field is exercised in builder-mode tests.
+        component.builder_enabled = true;
+
+        let core_pk = core_pubkey(0x7B);
+        let (unsigned_blinded, _signed) = matched_bellatrix_blinded_proposals(64, 9);
+
+        component.register_proposer_pubkey(move |_slot| async move { Ok(core_pk) });
+        let captured: Arc<Mutex<Option<UnsignedProposal>>> =
+            Arc::new(Mutex::new(Some(unsigned_blinded)));
+        component.register_await_proposal({
+            let captured = Arc::clone(&captured);
+            move |_slot| {
+                let captured = Arc::clone(&captured);
+                async move {
+                    let value = captured.lock().unwrap().take().unwrap();
+                    Ok(value)
+                }
+            }
+        });
+
+        let response = component
+            .proposal(ProposalOpts {
+                slot: 64,
+                randao_reveal: [0; 96],
+                graffiti: [0; 32],
+                builder_boost_factor: None,
+            })
+            .await
+            .unwrap();
+        assert!(response.data.is_blinded());
+        assert_eq!(response.data.version(), V::Bellatrix);
+    }
+
+    /// When no `proposer_pubkey_fn` is registered, the handler short-
+    /// circuits with 503. Mirrors Go's `getProposerPubkey` failure (which
+    /// returns an error when `dutyDefFunc` is missing or empty).
+    #[tokio::test]
+    async fn proposal_rejects_when_proposer_pubkey_hook_missing() {
+        let (component, _mock) = make_proposal_component().await;
+
+        let err = component
+            .proposal(ProposalOpts {
+                slot: 1,
+                randao_reveal: [0; 96],
+                graffiti: [0; 32],
+                builder_boost_factor: None,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// When the proposal hook is registered but the consensus-side proposal
+    /// never arrives within `PROPOSAL_TIMEOUT`, the handler returns 408
+    /// instead of hanging.
+    #[tokio::test(start_paused = true)]
+    async fn proposal_times_out_when_consensus_proposal_never_arrives() {
+        let (mut component, _mock) = make_proposal_component().await;
+
+        component.register_proposer_pubkey(|_slot| async move { Ok(core_pubkey(0x10)) });
+        // No `register_await_proposal` — the handler falls back to the
+        // dutydb, which has no entry for this slot, so the
+        // `PROPOSAL_TIMEOUT` trips.
+
+        let err = component
+            .proposal(ProposalOpts {
+                slot: 1234,
+                randao_reveal: [0; 96],
+                graffiti: [0; 32],
+                builder_boost_factor: None,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::REQUEST_TIMEOUT);
+    }
+
+    /// Submit happy path: consensus proposal is stored in dutydb, the VC
+    /// submits a matching proposal, the subscriber fires with the proposer
+    /// duty and a non-empty partial-signed set.
+    #[tokio::test]
+    async fn submit_proposal_fans_out_partial_signed_to_subscribers() {
+        let (mut component, _mock) = make_proposal_component().await;
+
+        let core_pk = core_pubkey(0x44);
+        let (unsigned, signed) = matched_phase0_proposals(33, 5);
+
+        component.register_proposer_pubkey(move |_slot| async move { Ok(core_pk) });
+        let captured: Arc<Mutex<Option<UnsignedProposal>>> = Arc::new(Mutex::new(Some(unsigned)));
+        component.register_await_proposal({
+            let captured = Arc::clone(&captured);
+            move |_slot| {
+                let captured = Arc::clone(&captured);
+                async move {
+                    let value = captured.lock().unwrap().take().unwrap();
+                    Ok(value)
+                }
+            }
+        });
+        let observed: Arc<Mutex<Vec<(Duty, usize)>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let observed = Arc::clone(&observed);
+            component.subscribe(move |duty, set| {
+                let observed = Arc::clone(&observed);
+                async move {
+                    observed.lock().unwrap().push((duty, set.inner().len()));
+                    Ok(())
+                }
+            });
+        }
+
+        component
+            .submit_proposal(VersionedSignedProposal(signed))
+            .await
+            .unwrap();
+
+        let observed = observed.lock().unwrap().clone();
+        assert_eq!(observed.len(), 1, "subscriber fires once");
+        let (duty, set_len) = &observed[0];
+        assert_eq!(duty.duty_type, DutyType::Proposer);
+        assert_eq!(duty.slot.inner(), 33);
+        assert_eq!(*set_len, 1, "partial-signed set carries one entry");
+    }
+
+    /// Submit rejects when the VC-submitted version disagrees with the
+    /// consensus-side proposal. Mirrors Go's `propDataMatchesDuty` version
+    /// branch.
+    #[tokio::test]
+    async fn submit_proposal_rejects_version_mismatch() {
+        let (mut component, _mock) = make_proposal_component().await;
+
+        // Consensus side is Phase0; build a Bellatrix-blinded VC payload
+        // that disagrees on `version`.
+        let (consensus, _) = matched_phase0_proposals(33, 5);
+        let (_, bellatrix_blinded) = matched_bellatrix_blinded_proposals(33, 5);
+        let bellatrix_signed =
+            crate::signeddata::VersionedSignedProposal::from_blinded_proposal(bellatrix_blinded)
+                .unwrap();
+        let signed = bellatrix_signed.0;
+
+        component.register_proposer_pubkey(|_slot| async move { Ok(core_pubkey(0x88)) });
+        let captured: Arc<Mutex<Option<UnsignedProposal>>> = Arc::new(Mutex::new(Some(consensus)));
+        component.register_await_proposal({
+            let captured = Arc::clone(&captured);
+            move |_slot| {
+                let captured = Arc::clone(&captured);
+                async move {
+                    let value = captured.lock().unwrap().take().unwrap();
+                    Ok(value)
+                }
+            }
+        });
+
+        let err = component
+            .submit_proposal(VersionedSignedProposal(signed))
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+    }
+
+    /// Submit rejects when the proposer index doesn't match the consensus
+    /// proposal. Mirrors Go's `propDataMatchesDuty` proposer-index branch.
+    #[tokio::test]
+    async fn submit_proposal_rejects_proposer_index_mismatch() {
+        let (mut component, _mock) = make_proposal_component().await;
+
+        let (consensus, _) = matched_phase0_proposals(33, 5);
+        let (_, signed_wrong) = matched_phase0_proposals(33, 6); // different index
+
+        component.register_proposer_pubkey(|_slot| async move { Ok(core_pubkey(0x88)) });
+        let captured: Arc<Mutex<Option<UnsignedProposal>>> = Arc::new(Mutex::new(Some(consensus)));
+        component.register_await_proposal({
+            let captured = Arc::clone(&captured);
+            move |_slot| {
+                let captured = Arc::clone(&captured);
+                async move {
+                    let value = captured.lock().unwrap().take().unwrap();
+                    Ok(value)
+                }
+            }
+        });
+
+        let err = component
+            .submit_proposal(VersionedSignedProposal(signed_wrong))
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+    }
+
+    /// Submit rejects when the consensus proposal is blinded but the VC
+    /// submitted a non-blinded payload (or vice-versa).
+    #[tokio::test]
+    async fn submit_proposal_rejects_blinded_mismatch() {
+        let (mut component, _mock) = make_proposal_component().await;
+
+        // Consensus side is blinded bellatrix; VC submits non-blinded
+        // phase0 — both `version` and `blinded` disagree, but the version
+        // check fires first. Use matching versions to isolate `blinded`.
+        let (blinded_unsigned, blinded_signed) = matched_bellatrix_blinded_proposals(40, 3);
+        // Same version (Bellatrix), but a non-blinded VC payload.
+        let body = bellatrix::BeaconBlockBody {
+            randao_reveal: [0; 96],
+            eth1_data: p0::ETH1Data {
+                deposit_root: [0; 32],
+                deposit_count: 0,
+                block_hash: [0; 32],
+            },
+            graffiti: [0; 32],
+            proposer_slashings: vec![].into(),
+            attester_slashings: vec![].into(),
+            attestations: vec![].into(),
+            deposits: vec![].into(),
+            voluntary_exits: vec![].into(),
+            sync_aggregate: pluto_eth2api::spec::altair::SyncAggregate {
+                sync_committee_bits: empty_sync_committee_bits(),
+                sync_committee_signature: [0; 96],
+            },
+            execution_payload: bellatrix::ExecutionPayload {
+                parent_hash: [0; 32],
+                fee_recipient: [0; 20],
+                state_root: [0; 32],
+                receipts_root: [0; 32],
+                logs_bloom: [0; 256],
+                prev_randao: [0; 32],
+                block_number: 0,
+                gas_limit: 30_000_000,
+                gas_used: 0,
+                timestamp: 0,
+                extra_data: vec![].into(),
+                base_fee_per_gas: alloy::primitives::U256::ZERO,
+                block_hash: [0; 32],
+                transactions: vec![].into(),
+            },
+        };
+        let non_blinded_block = bellatrix::BeaconBlock {
+            slot: 40,
+            proposer_index: 3,
+            parent_root: [0; 32],
+            state_root: [0; 32],
+            body,
+        };
+        let non_blinded_signed = Eth2VersionedSignedProposal {
+            version: V::Bellatrix,
+            blinded: false,
+            block: SignedProposalBlock::Bellatrix(bellatrix::SignedBeaconBlock {
+                message: non_blinded_block,
+                signature: [0; 96],
+            }),
+        };
+        // Drop the unused signed handle from the helper.
+        let _ = blinded_signed;
+
+        component.register_proposer_pubkey(|_slot| async move { Ok(core_pubkey(0x88)) });
+        let captured: Arc<Mutex<Option<UnsignedProposal>>> =
+            Arc::new(Mutex::new(Some(blinded_unsigned)));
+        component.register_await_proposal({
+            let captured = Arc::clone(&captured);
+            move |_slot| {
+                let captured = Arc::clone(&captured);
+                async move {
+                    let value = captured.lock().unwrap().take().unwrap();
+                    Ok(value)
+                }
+            }
+        });
+
+        let err = component
+            .submit_proposal(VersionedSignedProposal(non_blinded_signed))
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+    }
+
+    /// Submit_proposal must verify the partial signature. With a real
+    /// pub_share_by_pubkey map (non-insecure mode), an all-zeros signature
+    /// trips the `ZeroSignature` rejection in `signing::verify`. Mirrors
+    /// Go's `verifyPartialSig` post-`propDataMatchesDuty` step.
+    #[tokio::test]
+    async fn submit_proposal_rejects_when_verification_fails() {
+        // Real component (not `new_insecure`), but with an empty pubshare
+        // map so the verify path trips on `UnknownPubKey` (the partial-sig
+        // helper's "unknown public key" branch).
+        let mock = mock_beacon_for_proposal().await;
+        let cancel = CancellationToken::new();
+        let (deadliner, _deadliner_rx) = DeadlinerTask::start(
+            cancel.clone(),
+            "validatorapi-proposal-verify-tests",
+            FarFutureCalculator,
+        );
+        let (_evict_tx, evict_rx) = mpsc::channel(1);
+        let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let mut component = Component::new(eth2_cl, Arc::clone(&dutydb), 1, HashMap::new(), false);
+
+        let (consensus, signed) = matched_phase0_proposals(33, 5);
+
+        component.register_proposer_pubkey(|_slot| async move { Ok(core_pubkey(0x88)) });
+        let captured: Arc<Mutex<Option<UnsignedProposal>>> = Arc::new(Mutex::new(Some(consensus)));
+        component.register_await_proposal({
+            let captured = Arc::clone(&captured);
+            move |_slot| {
+                let captured = Arc::clone(&captured);
+                async move {
+                    let value = captured.lock().unwrap().take().unwrap();
+                    Ok(value)
+                }
+            }
+        });
+
+        let err = component
+            .submit_proposal(VersionedSignedProposal(signed))
+            .await
+            .unwrap_err();
+        // Unknown pubshare → 500 (cluster misconfiguration), per
+        // `verify_partial_sig_error`.
+        assert_eq!(err.status_code, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// `submit_blinded_proposal` fan-out happy path — same shape as
+    /// `submit_proposal` but with a blinded payload going through the
+    /// `from_blinded_proposal` translation step before the matches-duty
+    /// check.
+    #[tokio::test]
+    async fn submit_blinded_proposal_fans_out_partial_signed_to_subscribers() {
+        let (mut component, _mock) = make_proposal_component().await;
+
+        let (consensus, signed_blinded) = matched_bellatrix_blinded_proposals(72, 11);
+
+        component.register_proposer_pubkey(|_slot| async move { Ok(core_pubkey(0x99)) });
+        let captured: Arc<Mutex<Option<UnsignedProposal>>> = Arc::new(Mutex::new(Some(consensus)));
+        component.register_await_proposal({
+            let captured = Arc::clone(&captured);
+            move |_slot| {
+                let captured = Arc::clone(&captured);
+                async move {
+                    let value = captured.lock().unwrap().take().unwrap();
+                    Ok(value)
+                }
+            }
+        });
+        let observed: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let observed = Arc::clone(&observed);
+            component.subscribe(move |duty, _set| {
+                let observed = Arc::clone(&observed);
+                async move {
+                    observed.lock().unwrap().push(duty.slot.inner());
+                    Ok(())
+                }
+            });
+        }
+
+        component
+            .submit_blinded_proposal(VersionedSignedBlindedProposal {
+                version: signed_blinded.version,
+                block: signed_blinded.block,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(*observed.lock().unwrap(), vec![72]);
+    }
+
+    /// `submit_blinded_proposal` rejects a payload whose proposer index
+    /// doesn't match the consensus-side block.
+    #[tokio::test]
+    async fn submit_blinded_proposal_rejects_proposer_index_mismatch() {
+        let (mut component, _mock) = make_proposal_component().await;
+
+        let (consensus, _) = matched_bellatrix_blinded_proposals(72, 11);
+        let (_, signed_wrong) = matched_bellatrix_blinded_proposals(72, 12);
+
+        component.register_proposer_pubkey(|_slot| async move { Ok(core_pubkey(0x99)) });
+        let captured: Arc<Mutex<Option<UnsignedProposal>>> = Arc::new(Mutex::new(Some(consensus)));
+        component.register_await_proposal({
+            let captured = Arc::clone(&captured);
+            move |_slot| {
+                let captured = Arc::clone(&captured);
+                async move {
+                    let value = captured.lock().unwrap().take().unwrap();
+                    Ok(value)
+                }
+            }
+        });
+
+        let err = component
+            .submit_blinded_proposal(VersionedSignedBlindedProposal {
+                version: signed_wrong.version,
+                block: signed_wrong.block,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+    }
+
+    /// `submit_proposal` falls back to the local dutydb when no
+    /// `await_proposal_fn` is registered — exercises the non-hook code
+    /// path so router-only tests don't need to wire the PR-1 closure.
+    #[tokio::test]
+    async fn submit_proposal_uses_dutydb_fallback_when_hook_missing() {
+        let (mut component, _mock) = make_proposal_component().await;
+        let db = Arc::clone(&component.dutydb);
+
+        let (consensus, signed) = matched_phase0_proposals(55, 13);
+
+        // Populate dutydb (no hook).
+        let mut set = UnsignedDataSet::new();
+        set.insert(
+            random_core_pub_key(),
+            UnsignedDutyData::Proposal(Box::new(consensus)),
+        );
+        db.store(Duty::new(SlotNumber::new(55), DutyType::Proposer), set)
+            .await
+            .unwrap();
+
+        component.register_proposer_pubkey(|_slot| async move { Ok(core_pubkey(0x55)) });
+
+        component
+            .submit_proposal(VersionedSignedProposal(signed))
+            .await
+            .unwrap();
     }
 }
