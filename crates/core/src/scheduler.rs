@@ -1,4 +1,5 @@
 #![allow(dead_code, reason = "wip")]
+#![allow(missing_docs)]
 
 use std::{
     collections::{HashMap, hash_map::Entry},
@@ -9,10 +10,347 @@ use std::{
 
 use backon::{BackoffBuilder, Retryable};
 use pluto_eth2api::{EthBeaconNodeApiClientError, client};
-use tokio::sync::Mutex;
+use tokio::sync::{self, Mutex};
 use tokio_util::{future::FutureExt, sync::CancellationToken};
 
 use crate::{types, valcache};
+
+pub struct Builder {
+    slot_broadcast: sync::broadcast::Sender<types::Slot>,
+    duty_broadcast: sync::broadcast::Sender<(types::Duty, types::DutyDefinitionSet)>,
+    reorg_rx: sync::mpsc::Receiver<u64>,
+}
+
+impl Builder {
+    pub fn new() -> Self {
+        Builder {
+            slot_broadcast: sync::broadcast::channel(100).0,
+            duty_broadcast: sync::broadcast::channel(100).0,
+            reorg_rx: sync::mpsc::channel(100).1, // A channel that never receives
+        }
+    }
+
+    /// Subscribes a callback function for triggered slots.
+    pub fn subscribe_slot(
+        &mut self,
+        f: impl Fn(&types::Slot) -> Result<()> + Send + 'static,
+        label: impl AsRef<str> + Send + 'static,
+    ) {
+        let mut rx = self.slot_broadcast.subscribe();
+
+        // TODO: We might want to return a handle so clients can `.abort()` them to drop
+        // the subscription
+        tokio::spawn(async move {
+            while let Ok(slot) = rx.recv().await {
+                if let Err(err) = f(&slot) {
+                    tracing::error!(err = ?err, slot = %slot.slot, label = label.as_ref(), "Emit scheduled slot event");
+                }
+            }
+        });
+    }
+
+    /// Subscribes a callback function for triggered duties.
+    pub fn subscribe_duty(
+        &mut self,
+        f: impl Fn(&types::Duty, &types::DutyDefinitionSet) -> Result<()> + Send + 'static,
+        label: impl AsRef<str> + Send + 'static,
+    ) {
+        let mut rx = self.duty_broadcast.subscribe();
+
+        tokio::spawn(async move {
+            while let Ok((duty, set)) = rx.recv().await {
+                if let Err(err) = f(&duty, &set) {
+                    tracing::error!(err = ?err, label = label.as_ref(), "Trigger duty subscriber error");
+                }
+            }
+        });
+    }
+
+    pub fn with_chain_reorgs(&mut self, reorg_rx: sync::mpsc::Receiver<u64>) {
+        // NOTE: The SSE feature check should be done by the caller
+        self.reorg_rx = reorg_rx;
+    }
+
+    fn build(self) -> Result<Handle> {
+        todo!()
+    }
+}
+
+enum Message {
+    GetDutyDefinition {
+        duty: types::Duty,
+        resp: sync::oneshot::Sender<Result<types::DutyDefinitionSet>>,
+    },
+}
+
+struct Handle {
+    sender: sync::mpsc::Sender<Message>,
+}
+
+impl Handle {
+    /// Returns the definition for a duty if a definition exists for a resolved
+    /// epoch.
+    async fn get_duty_definition(&self, duty: types::Duty) -> Result<types::DutyDefinitionSet> {
+        let (tx, rx) = sync::oneshot::channel();
+        let msg = Message::GetDutyDefinition { duty, resp: tx };
+
+        self.sender
+            .send(msg)
+            .await
+            .map_err(|_| SchedulerError::Terminated)?;
+
+        // TODO: In Charon, this call has a default timeout of 100 ms while the epoch is
+        // being resolved. I don't like that approach.
+        rx.await.map_err(|_| SchedulerError::Terminated)?
+    }
+}
+
+struct Actor {
+    client: client::EthBeaconNodeApiClient,
+    valcache: valcache::ValidatorCache,
+
+    slot_broadcast: sync::broadcast::Sender<types::Slot>,
+    duty_broadcast: sync::broadcast::Sender<(types::Duty, types::DutyDefinitionSet)>,
+
+    // TODO: Flatten
+    inner: Inner,
+}
+
+impl Actor {
+    async fn run(
+        mut self,
+        mut slot_rx: sync::mpsc::Receiver<types::Slot>,
+        mut msg_rx: sync::mpsc::Receiver<Message>,
+        mut reorg_rx: sync::mpsc::Receiver<u64>,
+        ct: CancellationToken,
+    ) {
+        loop {
+            tokio::select! {
+                biased;
+
+                _ = ct.cancelled() => break,
+
+                Some(epoch) = reorg_rx.recv() => {
+                    self.handle_chain_reorg(epoch).await;
+                },
+
+                Some(slot) = slot_rx.recv() => {
+                    tracing::debug!(slot = %slot.slot, "Slot ticked");
+
+                    // TODO:
+                    // instrument_slot(slot)
+
+                    // NOTE: Ignore send errors, it means that there are no subscribers.
+                    let _ = self.slot_broadcast.send(slot.clone());
+
+                    self.schedule_slot(slot, ct.clone()).await;
+                },
+
+                Some(msg) = msg_rx.recv() => match msg {
+                    Message::GetDutyDefinition { duty, resp } => {
+                        let result = self.get_duty_definition(duty).await;
+                        let _ = resp.send(result);
+                    },
+                }
+            }
+        }
+    }
+
+    /// Returns the definition for a duty if a definition exists for a resolved
+    /// epoch.
+    async fn get_duty_definition(&mut self, duty: types::Duty) -> Result<types::DutyDefinitionSet> {
+        if duty.duty_type == types::DutyType::BuilderProposer {
+            return Err(SchedulerError::DeprecatedDutyBuilderProposer);
+        }
+
+        let (_, slots_per_epoch) = self.client.fetch_slots_config().await?;
+        let epoch = duty.slot.inner() / slots_per_epoch;
+
+        // TODO: Cleanup
+        let storage = &self.inner;
+        if storage.is_epoch_trimmed(epoch) {
+            return Err(SchedulerError::EpochAlreadyTrimmed { epoch, duty });
+        }
+
+        let def_set = storage
+            .duties
+            .get(&duty)
+            .ok_or_else(|| SchedulerError::DutyNotFound { epoch, duty })?;
+
+        Ok(def_set.clone())
+    }
+
+    /// In case of a reorg of an already resolved epoch trim all duties.
+    ///
+    /// Duties will be resolved again in the nex slot.
+    pub async fn handle_chain_reorg(&mut self, epoch: u64) {
+        let resolved_epoch = self.inner.resolved_epoch;
+        if epoch < resolved_epoch {
+            self.inner.trim_duties(resolved_epoch);
+            self.inner.resolved_epoch = u64::MAX;
+
+            tracing::info!(
+                reorg_epoch = epoch,
+                resolved_epoch,
+                "Chain reorg event handled, duties trimmed"
+            )
+        }
+    }
+
+    /// TODO: Add docs
+    async fn schedule_slot(&mut self, slot: types::Slot, ct: CancellationToken) {
+        if self.inner.resolved_epoch != slot.epoch() {
+            tracing::debug!(slot = %slot.slot, epoch = %slot.epoch(), "Resolving duties for slot");
+
+            if let Err(err) = self.resolve_duties(slot.clone()).await {
+                tracing::warn!(err = ?err, slot = %slot.slot, "Resolving duties error (retrying next slot)");
+            }
+        }
+
+        for duty_type in types::DutyType::all() {
+            let duty = types::Duty {
+                duty_type,
+                slot: slot.slot,
+            };
+
+            let def_set = {
+                let storage = &self.inner;
+                let Some(def_set) = storage.duties.get(&duty) else {
+                    // Nothing for this duty.
+                    continue;
+                };
+
+                def_set.clone()
+            };
+
+            let ct = ct.clone();
+            let slot = slot.clone();
+            let broadcast = self.duty_broadcast.clone();
+            tokio::spawn(async move {
+                if let None = delay_slot_offset(&slot, &duty)
+                    .with_cancellation_token_owned(ct)
+                    .await
+                {
+                    // Cancelled early
+                    return;
+                }
+
+                // TODO:
+                // instrument_duty(duty, def_set);
+
+                // NOTE: Ignore send errors, it means that there are no subscribers.
+                let _ = broadcast.send((duty.clone(), def_set.clone()));
+            });
+        }
+
+        if slot.last_in_epoch() {
+            if let Err(err) = self.resolve_duties(slot.next_slot()).await {
+                tracing::warn!(err = ?err, slot = %slot.slot, "Resolving duties error (retrying next slot)");
+            }
+        }
+    }
+
+    /// TODO: Add docs
+    async fn resolve_duties(&mut self, slot: types::Slot) -> Result<()> {
+        let vals = resolve_active_validators(slot.epoch(), &self.valcache).await?;
+        if vals.is_empty() {
+            tracing::info!(slot = %slot.slot, "No active validators for slot");
+            self.inner.resolved_epoch = slot.epoch();
+            return Ok(());
+        }
+
+        // TODO:
+        // activeValsGauge.Set(float64(len(vals)))
+
+        // Resolve Attester duties
+        {
+            let att_duties = fetch_attester_duties(&slot, &vals, &self.client).await?;
+            for att_duty in att_duties.into_iter() {
+                if !self.inner.set_duty_definition(
+                    types::Duty::new_attester_duty(att_duty.slot),
+                    slot.epoch(),
+                    att_duty.pubkey,
+                    types::DutyDefinition::Attester(att_duty.clone()),
+                ) {
+                    continue;
+                }
+
+                tracing::info!(
+                    slot = %att_duty.slot,
+                    vidx = %att_duty.v_idx,
+                    pubkey = %att_duty.pubkey,
+                    epoch = %slot.epoch(),
+                    "Resolved attester duty"
+                );
+
+                // Schedule Aggregator duty as well
+                let agg_duty = types::Duty::new_aggregator_duty(att_duty.slot);
+                self.inner.set_duty_definition(
+                    agg_duty,
+                    slot.epoch(),
+                    att_duty.pubkey,
+                    types::DutyDefinition::Attester(att_duty),
+                );
+            }
+        }
+
+        // Resolve Proposer duties
+        {
+            let pro_duties = fetch_proposer_duties(&slot, &vals, &self.client).await?;
+            for pro_duty in pro_duties.into_iter() {
+                if !self.inner.set_duty_definition(
+                    types::Duty::new_proposer_duty(pro_duty.slot),
+                    slot.epoch(),
+                    pro_duty.pubkey,
+                    types::DutyDefinition::Proposer(pro_duty.clone()),
+                ) {
+                    continue;
+                }
+
+                tracing::info!(
+                    slot = %pro_duty.slot,
+                    vidx = %pro_duty.v_idx,
+                    pubkey = %pro_duty.pubkey,
+                    epoch = %slot.epoch(),
+                    "Resolved proposer duty"
+                );
+            }
+        }
+
+        // Resolve Sync Committee duties
+        {
+            let sync_duties = fetch_sync_committee_duties(&slot, &vals, &self.client).await?;
+            for sync_duty in sync_duties.into_iter() {
+                // TODO(charon): sync committee duties start in the slot before the sync
+                // committee period.
+                // Refer: https://github.com/ethereum/consensus-specs/blob/dev/specs/altair/validator.md#sync-committee
+                for sl in slot
+                    .iter()
+                    .take_while(|other| other.epoch() == slot.epoch())
+                {
+                    self.inner.set_duty_definition(
+                        types::Duty::new_sync_contribution_duty(sl.slot),
+                        sl.epoch(),
+                        sync_duty.pubkey,
+                        types::DutyDefinition::SyncCommittee(sync_duty.clone()),
+                    );
+                }
+
+                tracing::info!(
+                    vidx = %&sync_duty.validator_index,
+                    pubkey = %sync_duty.pubkey,
+                    epoch = %slot.epoch(),
+                    "Resolved sync committee duty"
+                );
+            }
+        }
+
+        self.inner.resolved_epoch = slot.epoch();
+        self.inner.trim_duties(slot.epoch() - TRIM_EPOCH_OFFSET);
+
+        Ok(())
+    }
+}
 
 // Trim cached duties after 3 epochs. Note inclusion delay calculation requires
 // now-32 slot duties.
@@ -71,6 +409,9 @@ pub enum SchedulerError {
         /// Duty attempted to be accessed
         duty: types::Duty,
     },
+
+    #[error("Scheduler actor has been terminated")]
+    Terminated,
 }
 
 type Result<T> = std::result::Result<T, SchedulerError>;
@@ -79,8 +420,8 @@ struct Scheduler {
     client: client::EthBeaconNodeApiClient,
     valcache: valcache::ValidatorCache,
 
-    slot_broadcast: tokio::sync::broadcast::Sender<types::Slot>,
-    duty_broadcast: tokio::sync::broadcast::Sender<(types::Duty, types::DutyDefinitionSet)>,
+    slot_broadcast: sync::broadcast::Sender<types::Slot>,
+    duty_broadcast: sync::broadcast::Sender<(types::Duty, types::DutyDefinitionSet)>,
 
     storage: Mutex<Inner>,
 }
@@ -159,8 +500,8 @@ impl Scheduler {
         Scheduler {
             client,
             valcache,
-            slot_broadcast: tokio::sync::broadcast::channel(100).0,
-            duty_broadcast: tokio::sync::broadcast::channel(100).0,
+            slot_broadcast: sync::broadcast::channel(100).0,
+            duty_broadcast: sync::broadcast::channel(100).0,
             storage: Mutex::new(Inner {
                 resolved_epoch: u64::MAX,
                 resolving_epoch: u64::MAX,
@@ -198,7 +539,7 @@ impl Scheduler {
     }
 
     /// Subscribes a callback function for triggered slots.
-    /// Note this should be called *before* [`Scheduler::run`].
+    /// NOTE: this should be called *before* [`Scheduler::run`].
     pub async fn subscribe_slots(
         &mut self,
         f: impl Fn(&types::Slot) -> Result<()> + Send + 'static,
@@ -456,7 +797,7 @@ impl Scheduler {
 async fn new_slot_ticker(
     client: &client::EthBeaconNodeApiClient,
     ct: CancellationToken,
-) -> Result<tokio::sync::mpsc::Receiver<types::Slot>> {
+) -> Result<sync::mpsc::Receiver<types::Slot>> {
     let genesis_time = client.fetch_genesis_time().await?;
     let (slot_duration, slots_per_epoch) = client.fetch_slots_config().await?;
     let slot_duration = chrono::Duration::from_std(slot_duration).unwrap();
@@ -475,7 +816,7 @@ async fn new_slot_ticker(
         }
     };
 
-    let (tx, rx) = tokio::sync::mpsc::channel(100);
+    let (tx, rx) = sync::mpsc::channel(100);
     tokio::spawn(async move {
         let mut slot = current_slot();
 
