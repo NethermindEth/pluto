@@ -105,9 +105,24 @@ impl Builder {
         // TODO: We might want to return a handle so clients can `.abort()` them to drop
         // the subscription
         tokio::spawn(async move {
-            while let Ok(slot) = rx.recv().await {
-                if let Err(err) = f(&slot) {
-                    tracing::error!(err = ?err, slot = %slot.slot, label = label.as_ref(), "Emit scheduled slot event");
+            loop {
+                match rx.recv().await {
+                    Ok(slot) => {
+                        if let Err(err) = f(&slot) {
+                            tracing::error!(err = ?err, slot = %slot.slot, label = label.as_ref(), "Emit scheduled slot event");
+                        }
+                    }
+                    // NOTE: A lagging subscriber requires further analysis.
+                    // Log the error and terminate the subscription.
+                    Err(sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::error!(
+                            skipped,
+                            label = label.as_ref(),
+                            "Emit scheduled slot subscriber lagged"
+                        );
+                        break;
+                    }
+                    Err(sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
         });
@@ -122,9 +137,23 @@ impl Builder {
         let mut rx = self.duty_broadcast.subscribe();
 
         tokio::spawn(async move {
-            while let Ok((duty, set)) = rx.recv().await {
-                if let Err(err) = f(&duty, &set) {
-                    tracing::error!(err = ?err, label = label.as_ref(), "Trigger duty subscriber error");
+            loop {
+                match rx.recv().await {
+                    Ok((duty, set)) => {
+                        if let Err(err) = f(&duty, &set) {
+                            tracing::error!(err = ?err, label = label.as_ref(), "Trigger duty subscriber error");
+                        }
+                    }
+                    // NOTE: Same as in `subscribe_slot`, a lagging subscriber requires further analysis.
+                    Err(sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::error!(
+                            skipped,
+                            label = label.as_ref(),
+                            "Trigger duty subscriber lagged"
+                        );
+                        break;
+                    }
+                    Err(sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
         });
