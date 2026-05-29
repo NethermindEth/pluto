@@ -335,7 +335,11 @@ impl Actor {
         }
 
         let (_, slots_per_epoch) = self.client.fetch_slots_config().await?;
-        let epoch = duty.slot.inner() / slots_per_epoch;
+        let epoch = duty
+            .slot
+            .inner()
+            .checked_div(slots_per_epoch)
+            .expect("non-zero");
 
         if !self.is_epoch_resolved(epoch) {
             return Err(SchedulerError::EpochNotResolved { epoch });
@@ -383,9 +387,10 @@ impl Actor {
             let slot = slot.clone();
             let broadcast = self.duty_broadcast.clone();
             tokio::spawn(async move {
-                if let None = delay_slot_offset(&slot, &duty)
+                if delay_slot_offset(&slot, &duty)
                     .with_cancellation_token_owned(ct)
                     .await
+                    .is_none()
                 {
                     // Cancelled early
                     return;
@@ -399,10 +404,10 @@ impl Actor {
             });
         }
 
-        if slot.last_in_epoch() {
-            if let Err(err) = self.resolve_duties(slot.next_slot()).await {
-                tracing::warn!(err = ?err, slot = %slot.slot, "Resolving duties error (retrying next slot)");
-            }
+        if slot.last_in_epoch()
+            && let Err(err) = self.resolve_duties(slot.next_slot()).await
+        {
+            tracing::warn!(err = ?err, slot = %slot.slot, "Resolving duties error (retrying next slot)");
         }
     }
 
@@ -528,10 +533,7 @@ impl Actor {
                 entry.insert(definition);
             }
         };
-        self.duties_by_epoch
-            .entry(epoch)
-            .or_insert(Vec::new())
-            .push(duty);
+        self.duties_by_epoch.entry(epoch).or_default().push(duty);
 
         true
     }
@@ -540,7 +542,7 @@ impl Actor {
     fn trim_duties(&mut self, epoch: u64) {
         let duties = self.duties_by_epoch.remove(&epoch);
         if let Some(duties) = duties
-            && duties.len() > 0
+            && !duties.is_empty()
         {
             for duty in duties {
                 self.duties.remove(&duty);
@@ -554,7 +556,7 @@ impl Actor {
             return false;
         }
 
-        self.resolved_epoch >= epoch + TRIM_EPOCH_OFFSET
+        self.resolved_epoch >= epoch.saturating_add(TRIM_EPOCH_OFFSET)
     }
 
     /// Returns true if the epoch is resolved
@@ -578,16 +580,23 @@ async fn new_slot_ticker(
 ) -> Result<sync::mpsc::Receiver<types::Slot>> {
     let genesis_time = client.fetch_genesis_time().await?;
     let (slot_duration, slots_per_epoch) = client.fetch_slots_config().await?;
-    let slot_duration = chrono::Duration::from_std(slot_duration).unwrap();
+    let slot_duration = chrono::Duration::from_std(slot_duration).expect("withing range");
 
     let current_slot = move || {
-        let chain_age = chrono::Utc::now() - genesis_time;
+        let chain_age = chrono::Utc::now().signed_duration_since(genesis_time);
         let slot_ms = slot_duration.num_milliseconds();
-        let slot = chain_age.num_milliseconds() / slot_ms;
-        let start_time = genesis_time + chrono::Duration::milliseconds(slot * slot_ms);
+        let slot = chain_age
+            .num_milliseconds()
+            .checked_div(slot_ms)
+            .expect("non-zero");
+        let start_offset =
+            chrono::Duration::milliseconds(slot.checked_mul(slot_ms).expect("within range"));
+        let start_time = genesis_time
+            .checked_add_signed(start_offset)
+            .expect("within range");
 
         types::Slot {
-            slot: types::SlotNumber::new(slot as u64),
+            slot: types::SlotNumber::new(slot.cast_unsigned()),
             time: start_time,
             slots_per_epoch,
             slot_duration,
@@ -599,7 +608,9 @@ async fn new_slot_ticker(
         let mut slot = current_slot();
 
         loop {
-            let wait = (slot.time - chrono::Utc::now())
+            let wait = slot
+                .time
+                .signed_duration_since(chrono::Utc::now())
                 .to_std()
                 .unwrap_or_default();
             tokio::time::sleep(wait).await;
@@ -726,7 +737,10 @@ async fn wait_chain_start(client: &pluto_eth2api::client::EthBeaconNodeApiClient
 
     let now = chrono::Utc::now();
     if now < genesis_time {
-        let delta = (genesis_time - now).to_std().unwrap_or_default();
+        let delta = genesis_time
+            .signed_duration_since(now)
+            .to_std()
+            .unwrap_or_default();
         tracing::info!(genesis_time = %genesis_time, sleep = ?delta, "Sleeping until genesis time");
         tokio::time::sleep(delta).await;
     }
@@ -772,16 +786,23 @@ async fn wait_beacon_sync(client: &pluto_eth2api::client::EthBeaconNodeApiClient
 
 /// Blocks until the slot offset for the duty has been reached.
 async fn delay_slot_offset(slot: &types::Slot, duty: &types::Duty) {
+    // A slot duration is small (~12s), so these never overflow chrono's range.
     let offset = match duty.duty_type {
-        types::DutyType::Attester => slot.slot_duration / 3,
-        types::DutyType::Aggregator => slot.slot_duration * 2 / 3,
-        types::DutyType::SyncContribution => slot.slot_duration * 2 / 3,
+        types::DutyType::Attester => slot.slot_duration.checked_div(3).expect("within range"),
+        types::DutyType::Aggregator | types::DutyType::SyncContribution => slot
+            .slot_duration
+            .checked_mul(2)
+            .and_then(|d| d.checked_div(3))
+            .expect("within range"),
         _ => return,
     };
 
     // Wait until the absolute deadline
-    let deadline = slot.time + offset;
-    let wait = (deadline - chrono::Utc::now()).to_std().unwrap_or_default();
+    let deadline = slot.time.checked_add_signed(offset).expect("within range");
+    let wait = deadline
+        .signed_duration_since(chrono::Utc::now())
+        .to_std()
+        .unwrap_or_default();
     tokio::time::sleep(wait).await;
 }
 
@@ -789,9 +810,10 @@ async fn delay_slot_offset(slot: &types::Slot, duty: &types::Duty) {
 /// that the returned duties match the expected validators.
 async fn fetch_attester_duties(
     slot: &types::Slot,
-    validators: &Vec<Validator>,
+    validators: impl AsRef<[Validator]>,
     client: &client::EthBeaconNodeApiClient,
 ) -> Result<Vec<types::AttesterDutyDefinition>> {
+    let validators = validators.as_ref();
     let req = pluto_eth2api::GetAttesterDutiesRequest::builder()
         .epoch(slot.epoch().to_string())
         .body(validators.iter().map(|v| v.v_idx.to_string()).collect())
@@ -851,7 +873,7 @@ async fn fetch_attester_duties(
         result.push(att_duty);
     }
 
-    if remaining.len() > 0 {
+    if !remaining.is_empty() {
         tracing::warn!(
             slot = %slot.slot,
             epoch = %slot.epoch(),
@@ -867,9 +889,10 @@ async fn fetch_attester_duties(
 /// that the returned duties match the expected validators.
 async fn fetch_proposer_duties(
     slot: &types::Slot,
-    validators: &Vec<Validator>,
+    validators: impl AsRef<[Validator]>,
     client: &client::EthBeaconNodeApiClient,
 ) -> Result<Vec<types::ProposerDutyDefinition>> {
+    let validators = validators.as_ref();
     let req = pluto_eth2api::GetProposerDutiesRequest::builder()
         .epoch(slot.epoch().to_string())
         .build()
@@ -928,9 +951,10 @@ async fn fetch_proposer_duties(
 /// validates that the returned duties match the expected validators.
 async fn fetch_sync_committee_duties(
     slot: &types::Slot,
-    validators: &Vec<Validator>,
+    validators: impl AsRef<[Validator]>,
     client: &client::EthBeaconNodeApiClient,
 ) -> Result<Vec<types::SyncCommitteeDutyDefinition>> {
+    let validators = validators.as_ref();
     let req = pluto_eth2api::GetSyncCommitteeDutiesRequest::builder()
         .epoch(slot.epoch().to_string())
         .body(validators.iter().map(|v| v.v_idx.to_string()).collect())
