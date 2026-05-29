@@ -15,12 +15,32 @@ use crate::{
     types::{Duty, DutyType},
 };
 
-/// Logs and reports failed/successful duties to Prometheus.
-///
-/// Mirrors Go's `newFailedDutyReporter` closure.
-pub struct FailedDutyReporter;
+pub(crate) trait DutyFailureReporter: Send {
+    fn report(
+        &mut self,
+        duty: &Duty,
+        failed: bool,
+        step: Step,
+        reason: Reason,
+        err: Option<&StepError>,
+    );
+}
 
-impl FailedDutyReporter {
+pub(crate) trait ParticipationReporter: Send {
+    fn report(
+        &mut self,
+        duty: &Duty,
+        failed: bool,
+        participated: &HashMap<u64, usize>,
+        unexpected: &HashMap<u64, usize>,
+        expected_per_peer: usize,
+    );
+}
+
+/// Logs and reports failed/successful duties to Prometheus.
+pub struct MetricsFailedDutyReporter;
+
+impl MetricsFailedDutyReporter {
     /// Creates a reporter and zero-initialises per-duty-type counters so that
     /// Prometheus exports them even before the first event fires.
     pub fn new() -> Self {
@@ -80,9 +100,22 @@ impl FailedDutyReporter {
     }
 }
 
-impl Default for FailedDutyReporter {
+impl Default for MetricsFailedDutyReporter {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl DutyFailureReporter for MetricsFailedDutyReporter {
+    fn report(
+        &mut self,
+        duty: &Duty,
+        failed: bool,
+        step: Step,
+        reason: Reason,
+        err: Option<&StepError>,
+    ) {
+        MetricsFailedDutyReporter::report(self, duty, failed, step, reason, err);
     }
 }
 
@@ -162,14 +195,12 @@ impl Default for UnsupportedIgnorer {
 }
 
 /// Reports per-peer duty participation to metrics and logs absence changes.
-///
-/// Mirrors Go's `newParticipationReporter` closure.
-pub struct ParticipationReporter {
+pub struct MetricsParticipationReporter {
     peers: Vec<PeerInfo>,
     prev_absent: HashMap<DutyType, Vec<String>>,
 }
 
-impl ParticipationReporter {
+impl MetricsParticipationReporter {
     /// Creates a reporter and zero-initialises per-peer × per-duty counters
     /// so that Prometheus exports them before the first event.
     pub fn new(peers: Vec<PeerInfo>) -> Self {
@@ -254,9 +285,27 @@ impl ParticipationReporter {
     }
 }
 
+impl ParticipationReporter for MetricsParticipationReporter {
+    fn report(
+        &mut self,
+        duty: &Duty,
+        failed: bool,
+        participated: &HashMap<u64, usize>,
+        unexpected: &HashMap<u64, usize>,
+        expected_per_peer: usize,
+    ) {
+        MetricsParticipationReporter::report(
+            self,
+            duty,
+            failed,
+            participated,
+            unexpected,
+            expected_per_peer,
+        );
+    }
+}
+
 /// Reports inconsistent partial signature data across peers.
-///
-/// Mirrors Go's `reportParSigs`.
 pub fn report_par_sigs(duty: &Duty, parsigs: &ParSigsByMsg) {
     if msg_roots_consistent(parsigs) {
         return;
@@ -303,7 +352,7 @@ mod tests {
         types::SlotNumber,
     };
 
-    /// Mirrors Go's TestIgnoreUnsupported. The ignorer is stateful, so order
+    /// The ignorer is stateful, so order
     /// matters across assertions.
     #[test]
     fn unsupported_ignorer_state_machine() {

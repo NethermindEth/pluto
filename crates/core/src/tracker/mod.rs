@@ -40,7 +40,10 @@ use crate::{
 use analysis::{
     analyse_duty_failed, analyse_participation, extract_par_sigs, msg_roots_consistent,
 };
-use reporters::{FailedDutyReporter, ParticipationReporter, UnsupportedIgnorer, report_par_sigs};
+use reporters::{
+    DutyFailureReporter, MetricsFailedDutyReporter, MetricsParticipationReporter,
+    ParticipationReporter, UnsupportedIgnorer, report_par_sigs,
+};
 use step::Step;
 
 /// Type-erased step error.
@@ -328,8 +331,8 @@ pub struct TrackerService {
     deleter: DeadlinerHandle,
     deleter_rx: mpsc::Receiver<Duty>,
     from_slot: u64,
-    failed_duty_reporter: FailedDutyReporter,
-    participation_reporter: ParticipationReporter,
+    failed_duty_reporter: Box<dyn DutyFailureReporter>,
+    participation_reporter: Box<dyn ParticipationReporter>,
     unsupported_ignorer: UnsupportedIgnorer,
 }
 
@@ -370,12 +373,37 @@ impl TrackerService {
     fn start_with_buffer(
         cancel: CancellationToken,
         analyser: DeadlinerHandle,
-        AnalyserRx(analyser_rx): AnalyserRx,
+        analyser_rx: AnalyserRx,
         deleter: DeadlinerHandle,
-        DeleterRx(deleter_rx): DeleterRx,
+        deleter_rx: DeleterRx,
         peers: Vec<PeerInfo>,
         from_slot: u64,
         buffer: usize,
+    ) -> Arc<TrackerHandle> {
+        Self::start_with_sinks(
+            cancel,
+            analyser,
+            analyser_rx,
+            deleter,
+            deleter_rx,
+            from_slot,
+            buffer,
+            Box::new(MetricsFailedDutyReporter::new()),
+            Box::new(MetricsParticipationReporter::new(peers)),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn start_with_sinks(
+        cancel: CancellationToken,
+        analyser: DeadlinerHandle,
+        AnalyserRx(analyser_rx): AnalyserRx,
+        deleter: DeadlinerHandle,
+        DeleterRx(deleter_rx): DeleterRx,
+        from_slot: u64,
+        buffer: usize,
+        failed_duty_reporter: Box<dyn DutyFailureReporter>,
+        participation_reporter: Box<dyn ParticipationReporter>,
     ) -> Arc<TrackerHandle> {
         let (input_tx, input_rx) = mpsc::channel(buffer);
 
@@ -387,8 +415,8 @@ impl TrackerService {
             deleter,
             deleter_rx,
             from_slot,
-            failed_duty_reporter: FailedDutyReporter::new(),
-            participation_reporter: ParticipationReporter::new(peers),
+            failed_duty_reporter,
+            participation_reporter,
             unsupported_ignorer: UnsupportedIgnorer::new(),
         };
 
@@ -488,7 +516,7 @@ impl TrackerService {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{collections::HashMap, sync::Mutex, time::Duration};
 
     use chrono::{DateTime, Utc};
     use tokio_util::sync::CancellationToken;
@@ -496,8 +524,181 @@ mod tests {
     use super::*;
     use crate::{
         deadline::{DeadlineCalculator, DeadlinerTask, NeverExpiringCalculator},
-        types::{Duty, DutyType, SlotNumber},
+        signeddata::SignedDataError,
+        tracker::{
+            reason::Reason,
+            reporters::{DutyFailureReporter, ParticipationReporter},
+        },
+        types::{Duty, DutyType, ParSignedData, ParSignedDataSet, SlotNumber},
     };
+
+    // ── Integration test infrastructure ─────────────────────────────────────
+
+    #[derive(Debug, Clone)]
+    struct FailRecord {
+        duty: Duty,
+        failed: bool,
+        step: Step,
+        reason: Reason,
+    }
+
+    #[derive(Debug, Clone)]
+    struct PartRecord {
+        duty: Duty,
+        failed: bool,
+        participated: HashMap<u64, usize>,
+        unexpected: HashMap<u64, usize>,
+    }
+
+    struct RecordingFailureReporter {
+        records: std::sync::Arc<Mutex<Vec<FailRecord>>>,
+        cancel: CancellationToken,
+        trigger_on: usize,
+    }
+
+    impl DutyFailureReporter for RecordingFailureReporter {
+        fn report(
+            &mut self,
+            duty: &Duty,
+            failed: bool,
+            step: Step,
+            reason: Reason,
+            _err: Option<&StepError>,
+        ) {
+            let mut recs = self.records.lock().unwrap();
+            recs.push(FailRecord {
+                duty: duty.clone(),
+                failed,
+                step,
+                reason,
+            });
+            if recs.len() >= self.trigger_on {
+                self.cancel.cancel();
+            }
+        }
+    }
+
+    struct RecordingParticipationReporter {
+        records: std::sync::Arc<Mutex<Vec<PartRecord>>>,
+        cancel: CancellationToken,
+        trigger_on: usize,
+    }
+
+    impl ParticipationReporter for RecordingParticipationReporter {
+        fn report(
+            &mut self,
+            duty: &Duty,
+            failed: bool,
+            participated: &HashMap<u64, usize>,
+            unexpected: &HashMap<u64, usize>,
+            _expected_per_peer: usize,
+        ) {
+            let mut recs = self.records.lock().unwrap();
+            recs.push(PartRecord {
+                duty: duty.clone(),
+                failed,
+                participated: participated.clone(),
+                unexpected: unexpected.clone(),
+            });
+            if recs.len() >= self.trigger_on {
+                self.cancel.cancel();
+            }
+        }
+    }
+
+    struct NopFailureReporter;
+
+    impl DutyFailureReporter for NopFailureReporter {
+        fn report(&mut self, _: &Duty, _: bool, _: Step, _: Reason, _: Option<&StepError>) {}
+    }
+
+    #[expect(dead_code)]
+    struct NopParticipationReporter;
+
+    impl ParticipationReporter for NopParticipationReporter {
+        fn report(
+            &mut self,
+            _: &Duty,
+            _: bool,
+            _: &HashMap<u64, usize>,
+            _: &HashMap<u64, usize>,
+            _: usize,
+        ) {
+        }
+    }
+
+    /// Starts a `TrackerService` with custom reporters and test-controlled
+    /// analyser/deleter trigger channels (bypassing the real deadliner).
+    fn start_test_tracker(
+        cancel: &CancellationToken,
+        failure_sink: Box<dyn reporters::DutyFailureReporter>,
+        participation_sink: Box<dyn reporters::ParticipationReporter>,
+    ) -> (Arc<TrackerHandle>, mpsc::Sender<Duty>, mpsc::Sender<Duty>) {
+        let (analyser_handle, _) =
+            DeadlinerTask::start(cancel.clone(), "analyser", FutureCalculator);
+        let (deleter_handle, _) = DeadlinerTask::start(cancel.clone(), "deleter", FutureCalculator);
+        let (analyser_tx, analyser_rx) = mpsc::channel(16);
+        let (deleter_tx, deleter_rx) = mpsc::channel(16);
+
+        let handle = TrackerService::start_with_sinks(
+            cancel.clone(),
+            analyser_handle,
+            AnalyserRx(analyser_rx),
+            deleter_handle,
+            DeleterRx(deleter_rx),
+            0,
+            EVENT_BUFFER,
+            failure_sink,
+            participation_sink,
+        );
+
+        (handle, analyser_tx, deleter_tx)
+    }
+
+    async fn wait_for_task(handle: Arc<TrackerHandle>) {
+        let raw = Arc::try_unwrap(handle).unwrap_or_else(|_| panic!("single Arc owner in test"));
+        tokio::time::timeout(Duration::from_secs(1), raw.task)
+            .await
+            .expect("task did not exit within timeout")
+            .expect("task panicked");
+    }
+
+    /// Minimal [`crate::types::SignedData`] for constructing [`ParSignedData`]
+    /// in tests without needing real ETH2 attestation data.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct SimpleSignedData;
+
+    impl crate::types::SignedData for SimpleSignedData {
+        fn signature(&self) -> Result<pluto_crypto::types::Signature, SignedDataError> {
+            Ok([0u8; 96])
+        }
+
+        fn set_signature(
+            &self,
+            _sig: pluto_crypto::types::Signature,
+        ) -> Result<Self, SignedDataError> {
+            Ok(Self)
+        }
+
+        fn set_signature_boxed(
+            &self,
+            sig: pluto_crypto::types::Signature,
+        ) -> Result<Box<dyn crate::types::SignedData>, SignedDataError> {
+            Ok(Box::new(self.set_signature(sig)?))
+        }
+
+        fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
+            Ok([0u8; 32])
+        }
+    }
+
+    fn par_sig_set(pubkeys: &[PubKey], share_idx: u64) -> ParSignedDataSet {
+        let mut set = ParSignedDataSet::new();
+        for pk in pubkeys {
+            set.insert(*pk, ParSignedData::new(SimpleSignedData, share_idx));
+        }
+        set
+    }
 
     fn attester(slot: u64) -> Duty {
         Duty::new(SlotNumber::new(slot), DutyType::Attester)
@@ -604,6 +805,256 @@ mod tests {
             .await
             .expect("task did not exit within timeout")
             .expect("task panicked");
+    }
+
+    // ── Integration tests ────────────────────────────────────────────────────
+
+    /// Sends a fetcher event and a consensus event with an error, triggers the
+    /// analyser, and verifies the failure is reported at the consensus step.
+    #[tokio::test]
+    async fn tracker_failed_duty_fail_at_consensus() {
+        use crate::tracker::reason::REASON_NO_CONSENSUS;
+
+        let cancel = CancellationToken::new();
+        let duty = attester(1);
+        let keys = [pubkey(), PubKey::from([2u8; 48]), PubKey::from([3u8; 48])];
+
+        let fail_records: std::sync::Arc<Mutex<Vec<FailRecord>>> = Default::default();
+        let part_records: std::sync::Arc<Mutex<Vec<PartRecord>>> = Default::default();
+
+        let (handle, analyser_tx, deleter_tx) = start_test_tracker(
+            &cancel,
+            Box::new(RecordingFailureReporter {
+                records: fail_records.clone(),
+                cancel: cancel.clone(),
+                trigger_on: 1,
+            }),
+            Box::new(RecordingParticipationReporter {
+                records: part_records.clone(),
+                cancel: cancel.clone(),
+                trigger_on: usize::MAX,
+            }),
+        );
+
+        let consensus_err: StepError =
+            std::sync::Arc::new(std::io::Error::other("consensus error"));
+        handle.fetcher_fetched(duty.clone(), &keys, None).await;
+        handle
+            .consensus_proposed(duty.clone(), &keys, Some(consensus_err))
+            .await;
+        tokio::task::yield_now().await;
+
+        analyser_tx.send(duty.clone()).await.unwrap();
+        tokio::task::yield_now().await;
+        // Cancel fires inside the sink; deleter send may race — ignore errors.
+        let _ = deleter_tx.send(duty.clone()).await;
+
+        wait_for_task(handle).await;
+
+        let recs = fail_records.lock().unwrap();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].duty, duty);
+        assert!(recs[0].failed);
+        assert_eq!(recs[0].step, Step::Consensus);
+        assert_eq!(recs[0].reason, REASON_NO_CONSENSUS);
+
+        let part = part_records.lock().unwrap();
+        assert_eq!(part.len(), 1);
+        assert!(part[0].failed);
+    }
+
+    /// Sends a broadcast (Bcast) event with no error — the terminal step for
+    /// an Attester duty — and verifies the duty is reported as successful.
+    #[tokio::test]
+    async fn tracker_failed_duty_success() {
+        let cancel = CancellationToken::new();
+        let duty = attester(1);
+        let keys = [pubkey(), PubKey::from([2u8; 48]), PubKey::from([3u8; 48])];
+
+        let fail_records: std::sync::Arc<Mutex<Vec<FailRecord>>> = Default::default();
+        let part_records: std::sync::Arc<Mutex<Vec<PartRecord>>> = Default::default();
+
+        let (handle, analyser_tx, deleter_tx) = start_test_tracker(
+            &cancel,
+            Box::new(RecordingFailureReporter {
+                records: fail_records.clone(),
+                cancel: cancel.clone(),
+                trigger_on: 1,
+            }),
+            Box::new(RecordingParticipationReporter {
+                records: part_records.clone(),
+                cancel: cancel.clone(),
+                trigger_on: usize::MAX,
+            }),
+        );
+
+        handle
+            .broadcaster_broadcast(duty.clone(), &keys, None)
+            .await;
+        tokio::task::yield_now().await;
+
+        analyser_tx.send(duty.clone()).await.unwrap();
+        tokio::task::yield_now().await;
+        let _ = deleter_tx.send(duty.clone()).await;
+
+        wait_for_task(handle).await;
+
+        let recs = fail_records.lock().unwrap();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].duty, duty);
+        assert!(!recs[0].failed);
+        assert_eq!(recs[0].step, Step::Zero);
+
+        let part = part_records.lock().unwrap();
+        assert_eq!(part.len(), 1);
+        assert!(!part[0].failed);
+    }
+
+    /// A partial-signature event arrives for a peer whose share index has no
+    /// corresponding fetcher event, so it is counted as unexpected rather than
+    /// participated.
+    #[tokio::test]
+    async fn unexpected_participation() {
+        const UNEXPECTED_PEER: u64 = 2;
+        let cancel = CancellationToken::new();
+        let duty = attester(123);
+        let pk = pubkey();
+
+        let part_records: std::sync::Arc<Mutex<Vec<PartRecord>>> = Default::default();
+
+        let (handle, analyser_tx, deleter_tx) = start_test_tracker(
+            &cancel,
+            Box::new(NopFailureReporter),
+            Box::new(RecordingParticipationReporter {
+                records: part_records.clone(),
+                cancel: cancel.clone(),
+                trigger_on: 1,
+            }),
+        );
+
+        handle
+            .par_sig_db_stored_external(duty.clone(), &par_sig_set(&[pk], UNEXPECTED_PEER), None)
+            .await;
+        tokio::task::yield_now().await;
+
+        analyser_tx.send(duty.clone()).await.unwrap();
+        tokio::task::yield_now().await;
+        let _ = deleter_tx.send(duty.clone()).await;
+
+        wait_for_task(handle).await;
+
+        let recs = part_records.lock().unwrap();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].duty, duty);
+        assert!(recs[0].failed);
+        assert_eq!(recs[0].participated, HashMap::new());
+        assert_eq!(recs[0].unexpected, HashMap::from([(UNEXPECTED_PEER, 1)]));
+    }
+
+    /// When Proposer events are deleted before Randao is analysed, the Randao
+    /// partial signature cannot be cross-referenced to a scheduled Proposer
+    /// duty and must be counted as unexpected.
+    #[tokio::test]
+    async fn duty_randao_unexpected() {
+        const VALID_PEER: u64 = 1;
+        let cancel = CancellationToken::new();
+        let slot = SlotNumber::new(123);
+        let duty_proposer = Duty::new_proposer_duty(slot);
+        let duty_randao = Duty::new_randao_duty(slot);
+        let pk = pubkey();
+
+        let part_records: std::sync::Arc<Mutex<Vec<PartRecord>>> = Default::default();
+
+        let (handle, analyser_tx, deleter_tx) = start_test_tracker(
+            &cancel,
+            Box::new(NopFailureReporter),
+            Box::new(RecordingParticipationReporter {
+                records: part_records.clone(),
+                cancel: cancel.clone(),
+                trigger_on: 2,
+            }),
+        );
+
+        let fetch_err: StepError =
+            std::sync::Arc::new(std::io::Error::other("failed to query randao"));
+        handle
+            .fetcher_fetched(duty_proposer.clone(), &[pk], Some(fetch_err))
+            .await;
+        handle
+            .par_sig_db_stored_external(duty_randao.clone(), &par_sig_set(&[pk], VALID_PEER), None)
+            .await;
+        tokio::task::yield_now().await;
+
+        analyser_tx.send(duty_proposer.clone()).await.unwrap();
+        tokio::task::yield_now().await;
+        deleter_tx.send(duty_proposer.clone()).await.unwrap();
+        tokio::task::yield_now().await;
+        // Cancel fires after both records are received; send may race.
+        let _ = analyser_tx.send(duty_randao.clone()).await;
+
+        wait_for_task(handle).await;
+
+        let recs = part_records.lock().unwrap();
+        let randao_rec = recs
+            .iter()
+            .find(|r| r.duty == duty_randao)
+            .expect("randao record");
+        assert!(randao_rec.failed);
+        assert_eq!(randao_rec.participated, HashMap::new());
+        assert_eq!(randao_rec.unexpected, HashMap::from([(VALID_PEER, 1)]));
+    }
+
+    /// When Proposer events are still present when Randao is analysed, the
+    /// Randao partial signature is cross-referenced to the scheduled Proposer
+    /// duty and counted as normal participation (not unexpected).
+    #[tokio::test]
+    async fn duty_randao_expected() {
+        const VALID_PEER: u64 = 1;
+        let cancel = CancellationToken::new();
+        let slot = SlotNumber::new(123);
+        let duty_proposer = Duty::new_proposer_duty(slot);
+        let duty_randao = Duty::new_randao_duty(slot);
+        let pk = pubkey();
+
+        let part_records: std::sync::Arc<Mutex<Vec<PartRecord>>> = Default::default();
+
+        let (handle, analyser_tx, deleter_tx) = start_test_tracker(
+            &cancel,
+            Box::new(NopFailureReporter),
+            Box::new(RecordingParticipationReporter {
+                records: part_records.clone(),
+                cancel: cancel.clone(),
+                trigger_on: 2,
+            }),
+        );
+
+        let fetch_err: StepError =
+            std::sync::Arc::new(std::io::Error::other("failed to query randao"));
+        handle
+            .fetcher_fetched(duty_proposer.clone(), &[pk], Some(fetch_err))
+            .await;
+        handle
+            .par_sig_db_stored_external(duty_randao.clone(), &par_sig_set(&[pk], VALID_PEER), None)
+            .await;
+        tokio::task::yield_now().await;
+
+        analyser_tx.send(duty_proposer.clone()).await.unwrap();
+        tokio::task::yield_now().await;
+        analyser_tx.send(duty_randao.clone()).await.unwrap();
+        tokio::task::yield_now().await;
+        // Cancel fires after the randao record; deleter send may race.
+        let _ = deleter_tx.send(duty_proposer.clone()).await;
+
+        wait_for_task(handle).await;
+
+        let recs = part_records.lock().unwrap();
+        let randao_rec = recs
+            .iter()
+            .find(|r| r.duty == duty_randao)
+            .expect("randao record");
+        assert!(randao_rec.failed);
+        assert_eq!(randao_rec.participated, HashMap::from([(VALID_PEER, 1)]));
+        assert_eq!(randao_rec.unexpected, HashMap::new());
     }
 
     #[tokio::test]
