@@ -1,32 +1,21 @@
-use crate::{deadline, types};
+use crate::{
+    aggsigdb::{AggSigDB, Error},
+    deadline, types,
+};
 use std::collections::{HashMap, hash_map::Entry};
 use tokio::sync;
 use tokio_util::sync::CancellationToken;
 
-/// Errors for the in-memory AggSigDB implementation.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    /// Data for the same duty and public key already exists but does not match
-    /// the new data.
-    #[error("Mismatching data")]
-    MismatchingData,
-
-    /// The request cannot be processed because the instance has been
-    /// terminated.
-    #[error("The instance has been terminated")]
-    Terminated,
-}
-
 type Waiters =
     HashMap<(types::Duty, types::PubKey), Vec<sync::oneshot::Sender<Box<dyn types::SignedData>>>>;
 
-struct Actor {
+struct MemoryDBActor {
     entries: HashMap<types::Duty, HashMap<types::PubKey, Box<dyn types::SignedData>>>,
     waiters: Waiters,
     deadliner: deadline::DeadlinerHandle,
 }
 
-impl Actor {
+impl MemoryDBActor {
     async fn run(
         &mut self,
         mut messages_rx: sync::mpsc::Receiver<Message>,
@@ -145,11 +134,11 @@ enum Message {
 /// Share an instance by cloning. Cloning is cheap and creates a new reference
 /// to the same underlying data.
 #[derive(Clone)]
-pub struct Handle {
+pub struct MemoryDBHandle {
     sender: sync::mpsc::Sender<Message>,
 }
 
-impl Handle {
+impl MemoryDBHandle {
     /// Creates a new in-memory AggSigDB instance, and get a handle to it.
     ///
     /// The underlying instance gets dropped when all handles are dropped.
@@ -159,7 +148,7 @@ impl Handle {
         ct: CancellationToken,
     ) -> Self {
         let (sender, receiver) = sync::mpsc::channel(100);
-        let mut actor = Actor {
+        let mut actor = MemoryDBActor {
             entries: HashMap::new(),
             waiters: HashMap::new(),
             deadliner,
@@ -169,9 +158,11 @@ impl Handle {
 
         Self { sender }
     }
+}
 
-    /// Stores aggregated signed duty data set.
-    pub async fn store(&self, duty: types::Duty, set: types::SignedDataSet) -> Result<(), Error> {
+#[async_trait::async_trait]
+impl AggSigDB for MemoryDBHandle {
+    async fn store(&self, duty: types::Duty, set: types::SignedDataSet) -> Result<(), Error> {
         let (response_tx, response_rx) = sync::oneshot::channel();
         let msg = Message::Store {
             duty,
@@ -182,15 +173,7 @@ impl Handle {
         response_rx.await.map_err(|_| Error::Terminated)?
     }
 
-    /// Blocks and returns the aggregated signed duty data when available.
-    ///
-    /// Might block indefinitely if no data is ever stored for the given duty
-    /// and public key.
-    ///
-    /// To avoid blocking indefinitely, consider using a timeout,
-    /// [`CancellationToken`] or racing using `tokio::select!` against other
-    /// events.
-    pub async fn wait_for(
+    async fn wait_for(
         &self,
         duty: types::Duty,
         pub_key: types::PubKey,
@@ -209,6 +192,7 @@ impl Handle {
 #[cfg(test)]
 mod tests {
     use crate::{
+        aggsigdb::{AggSigDB, Error, memory::MemoryDBHandle},
         deadline,
         signeddata::SignedDataError,
         types::{Duty, PubKey, Signature, SignedData, SignedDataSet, SlotNumber},
@@ -268,7 +252,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_read() {
         let (_, deadliner, expiration_rx) = test_deadline();
-        let store = super::Handle::new(deadliner, expiration_rx, CancellationToken::new());
+        let store = MemoryDBHandle::new(deadliner, expiration_rx, CancellationToken::new());
 
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
@@ -286,7 +270,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_unblocks() {
         let (_, deadliner, expiration_rx) = test_deadline();
-        let store = super::Handle::new(deadliner, expiration_rx, CancellationToken::new());
+        let store = MemoryDBHandle::new(deadliner, expiration_rx, CancellationToken::new());
 
         let duty = Duty::new_attester_duty(SlotNumber::new(1));
         let pub_key = PubKey::new([7u8; 48]);
@@ -317,7 +301,7 @@ mod tests {
         let ct = CancellationToken::new();
 
         let (_, deadliner, expiration_rx) = test_deadline();
-        let store = super::Handle::new(deadliner, expiration_rx, ct.clone());
+        let store = MemoryDBHandle::new(deadliner, expiration_rx, ct.clone());
 
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
@@ -326,13 +310,13 @@ mod tests {
         ct.cancel();
 
         let res = store.store(duty, signed_data.singleton(pub_key)).await;
-        assert!(matches!(res, Err(super::Error::Terminated)));
+        assert!(matches!(res, Err(Error::Terminated)));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cannot_overwrite() {
         let (_, deadliner, expiration_rx) = test_deadline();
-        let store = super::Handle::new(deadliner, expiration_rx, CancellationToken::new());
+        let store = MemoryDBHandle::new(deadliner, expiration_rx, CancellationToken::new());
 
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
@@ -354,7 +338,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_idempotent() {
         let (_, deadliner, expiration_rx) = test_deadline();
-        let store = super::Handle::new(deadliner, expiration_rx, CancellationToken::new());
+        let store = MemoryDBHandle::new(deadliner, expiration_rx, CancellationToken::new());
 
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
@@ -377,7 +361,7 @@ mod tests {
     async fn write_evict_wait_then_write() {
         let (expiration_tx, deadliner, expiration_rx) = test_deadline();
 
-        let store = super::Handle::new(deadliner.clone(), expiration_rx, CancellationToken::new());
+        let store = MemoryDBHandle::new(deadliner.clone(), expiration_rx, CancellationToken::new());
 
         let duty = Duty::new_attester_duty(SlotNumber::new(1));
         let pub_key = PubKey::new([7u8; 48]);
@@ -426,7 +410,7 @@ mod tests {
         const N: usize = 4;
 
         let (_, deadliner, expiration_rx) = test_deadline();
-        let store = super::Handle::new(deadliner, expiration_rx, CancellationToken::new());
+        let store = MemoryDBHandle::new(deadliner, expiration_rx, CancellationToken::new());
         let duty = Duty::new_proposer_duty(SlotNumber::new(10));
         let pub_key = PubKey::new([7u8; 48]);
         let signed_data = MockSignedData(42);
@@ -463,7 +447,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn unrelated_write_does_not_unblock() {
         let (_, deadliner, expiration_rx) = test_deadline();
-        let store = super::Handle::new(deadliner, expiration_rx, CancellationToken::new());
+        let store = MemoryDBHandle::new(deadliner, expiration_rx, CancellationToken::new());
 
         let duty_a = Duty::new_proposer_duty(SlotNumber::new(10));
         let data_a = MockSignedData(1);
