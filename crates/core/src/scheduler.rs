@@ -504,7 +504,7 @@ impl Actor {
             return false;
         }
 
-        epoch >= self.resolved_epoch + TRIM_EPOCH_OFFSET
+        self.resolved_epoch >= epoch + TRIM_EPOCH_OFFSET
     }
 
     /// Returns true if the epoch is resolved
