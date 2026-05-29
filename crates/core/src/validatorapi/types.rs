@@ -17,6 +17,7 @@ pub use pluto_eth2api::{
     GetAttesterDutiesResponseResponseDatum as AttesterDuty,
     GetProposerDutiesResponseResponse as ProposerDutiesResponse,
     GetProposerDutiesResponseResponseDatum as ProposerDuty,
+    GetStateValidatorsResponseResponseDatum as Validator,
     GetSyncCommitteeDutiesResponseResponse as SyncCommitteeDutiesResponse,
     GetSyncCommitteeDutiesResponseResponseDatum as SyncCommitteeDuty,
     GetVersionResponseResponse as NodeVersionResponse,
@@ -138,10 +139,6 @@ pub struct AttestationDataResponse {
     /// Unsigned attestation data produced by the consensus pipeline.
     pub data: AttestationData,
 }
-
-/// Validator payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct Validator {}
 
 /// Versioned unsigned proposal payload. Placeholder.
 #[derive(Debug, Clone)]
