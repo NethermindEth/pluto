@@ -11,7 +11,9 @@ use pluto_eth2api::{EthBeaconNodeApiClientError, client};
 use tokio::sync;
 use tokio_util::{future::FutureExt, sync::CancellationToken};
 
-use crate::{types, valcache};
+use crate::{scheduler::metrics::SCHEDULER_METRICS, types, valcache};
+
+mod metrics;
 
 // Trim cached duties after 3 epochs. Note inclusion delay calculation requires
 // now-32 slot duties.
@@ -144,7 +146,7 @@ impl Builder {
                             tracing::error!(err = ?err, label = label.as_ref(), "Trigger duty subscriber error");
                         }
                     }
-                    // NOTE: Same as in `subscribe_slot`, a lagging subscriber requires further analysis.
+                    // NOTE: Same as in `subscribe_slot`
                     Err(sync::broadcast::error::RecvError::Lagged(skipped)) => {
                         tracing::error!(
                             skipped,
@@ -275,8 +277,8 @@ impl Actor {
                 Some(slot) = slot_rx.recv() => {
                     tracing::debug!(slot = %slot.slot, "Slot ticked");
 
-                    // TODO:
-                    // instrument_slot(slot)
+                    SCHEDULER_METRICS.current_slot.set(slot.slot.inner());
+                    SCHEDULER_METRICS.current_epoch.set(slot.epoch());
 
                     // NOTE: Ignore send errors, it means that there are no subscribers.
                     let _ = self.slot_broadcast.send(slot.clone());
@@ -375,8 +377,8 @@ impl Actor {
                     return;
                 }
 
-                // TODO:
-                // instrument_duty(duty, def_set);
+                SCHEDULER_METRICS.duty_total[&duty.duty_type.to_string()]
+                    .inc_by(def_set.len() as u64);
 
                 // NOTE: Ignore send errors, it means that there are no subscribers.
                 let _ = broadcast.send((duty.clone(), def_set.clone()));
@@ -397,14 +399,14 @@ impl Actor {
         // This is the same behavior as in Charon, but it might not be desirable.
 
         let vals = resolve_active_validators(slot.epoch(), &self.valcache).await?;
+
+        SCHEDULER_METRICS.validators_active.set(vals.len() as u64);
+
         if vals.is_empty() {
             tracing::info!(slot = %slot.slot, "No active validators for slot");
             self.resolved_epoch = slot.epoch();
             return Ok(());
         }
-
-        // TODO:
-        // activeValsGauge.Set(float64(len(vals)))
 
         // Resolve Attester duties
         {
@@ -593,7 +595,7 @@ async fn new_slot_ticker(
             if chrono::Utc::now() > slot.next_slot().time {
                 let actual = current_slot();
                 tracing::warn!(actual_slot = %actual.slot, expect_slot = %slot.slot, "Slot(s) skipped");
-                // skipCounter.inc()
+                SCHEDULER_METRICS.skipped_slots_total.inc();
                 slot = actual;
             }
 
@@ -628,8 +630,25 @@ async fn resolve_active_validators(
     for (index, val) in complete.iter() {
         let pubkey = types::PubKey::try_from(val.validator.pubkey.as_str())?;
 
-        // TODO:
-        // submitter(pubkey, val.balance, val.status.to_string())
+        // Submit validator balance and status metrics.
+        // Equivalent to Charon's `newMetricSubmitter` closure
+        let pubkey_full = pubkey.to_string();
+        let pubkey_abbrev = pubkey.abbreviated();
+        let balance = val.balance.parse::<u64>().unwrap_or_default();
+        SCHEDULER_METRICS.validator_balance_gwei[&(pubkey_full.clone(), pubkey_abbrev.clone())]
+            .set(balance);
+
+        // Emulate Charon's `statusGauge.Reset`:
+        // Vise's `Family` cannot delete series, so instead set any previously-reported
+        // status for this validator to 0 and the current one to 1.
+        let status = val.status.to_string();
+        for ((full, abbrev, prev_status), gauge) in SCHEDULER_METRICS.validator_status.to_entries()
+        {
+            if full == pubkey_full && abbrev == pubkey_abbrev && prev_status != status {
+                gauge.set(0);
+            }
+        }
+        SCHEDULER_METRICS.validator_status[&(pubkey_full, pubkey_abbrev, status)].set(1);
 
         // Check for active validators for the given epoch.
         // The activation epoch needs to be checked in cases where this function is
