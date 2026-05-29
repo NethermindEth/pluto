@@ -7,11 +7,18 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
+    extract::{DefaultBodyLimit, Path, Query, State, rejection::QueryRejection},
+    http::StatusCode,
     response::IntoResponse,
-    routing::{get, post},
+    routing::{MethodRouter, get, post},
 };
 use serde::Deserialize;
+
+/// Cap on the `POST /eth/v1/validator/duties/{attester,sync}/{epoch}` request
+/// bodies. A realistic cluster ships at most a few thousand validator indices;
+/// 64 KiB still allows ~10k indices in either numeric or string encoding,
+/// well above any plausible workload.
+const DUTIES_BODY_LIMIT: usize = 64 * 1024;
 
 use super::{
     error::ApiError,
@@ -55,7 +62,7 @@ pub fn new_router(handler: Arc<dyn Handler>, builder_enabled: bool) -> Router {
     Router::new()
         .route(
             "/eth/v1/validator/duties/attester/{epoch}",
-            post(attester_duties),
+            duties_post(attester_duties),
         )
         .route(
             "/eth/v1/validator/duties/proposer/{epoch}",
@@ -63,7 +70,7 @@ pub fn new_router(handler: Arc<dyn Handler>, builder_enabled: bool) -> Router {
         )
         .route(
             "/eth/v1/validator/duties/sync/{epoch}",
-            post(sync_committee_duties),
+            duties_post(sync_committee_duties),
         )
         .route("/eth/v1/validator/attestation_data", get(attestation_data))
         .route("/eth/v1/beacon/pool/attestations", post(respond_404))
@@ -178,8 +185,9 @@ async fn sync_committee_duties(
 
 async fn attestation_data(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<AttestationDataQuery>,
+    query: Result<Query<AttestationDataQuery>, QueryRejection>,
 ) -> Result<Json<AttestationDataResponse>, ApiError> {
+    let Query(query) = query.map_err(query_rejection_to_api_error)?;
     let response = state
         .handler
         .attestation_data(AttestationDataOpts {
@@ -189,6 +197,26 @@ async fn attestation_data(
         .await?;
 
     Ok(Json(response))
+}
+
+/// Wraps a `POST /eth/v1/validator/duties/*` handler with a body-size cap.
+/// The cap is local to these two routes so unrelated POST handlers (e.g.
+/// `submit_attestations`) keep axum's default 2 MiB.
+fn duties_post<H, T, S>(handler: H) -> MethodRouter<S>
+where
+    H: axum::handler::Handler<T, S>,
+    T: 'static,
+    S: Clone + Send + Sync + 'static,
+{
+    post(handler).route_layer(DefaultBodyLimit::max(DUTIES_BODY_LIMIT))
+}
+
+/// Renders an axum query-extractor rejection as Pluto's standard
+/// [`ApiError`] body shape, so all 4xx responses from this router share the
+/// same `{ "code", "message" }` schema.
+fn query_rejection_to_api_error(rejection: QueryRejection) -> ApiError {
+    ApiError::new(StatusCode::BAD_REQUEST, "invalid query parameters")
+        .with_source(std::io::Error::other(rejection.body_text()))
 }
 
 async fn submit_attestations() {
@@ -388,10 +416,10 @@ mod tests {
 
         let Json(body) = attestation_data(
             State(state),
-            Query(AttestationDataQuery {
+            Ok(Query(AttestationDataQuery {
                 slot: 99,
                 committee_index: 3,
-            }),
+            })),
         )
         .await
         .unwrap();
@@ -439,5 +467,116 @@ mod tests {
         assert_eq!(json["data"][0]["slot"], "1234");
         assert_eq!(json["data"][0]["validator_index"], "7");
         assert_eq!(json["data"][0]["pubkey"], "0xaabbccddeeff");
+    }
+
+    /// Verifies the manual `Query` rejection path emits the same
+    /// `{ code, message }` envelope as the rest of the router, instead of
+    /// axum's default plain-text 400.
+    #[tokio::test]
+    async fn attestation_data_returns_api_error_shape_on_bad_query() {
+        use axum::{
+            body::{Body, to_bytes},
+            http::Request,
+        };
+        use tower::ServiceExt;
+
+        let handler = TestHandler::default().with_attestation_data(AttestationDataResponse {
+            data: phase0::AttestationData {
+                slot: 0,
+                index: 0,
+                beacon_block_root: [0; 32],
+                source: phase0::Checkpoint::default(),
+                target: phase0::Checkpoint::default(),
+            },
+        });
+        let app = new_router(Arc::new(handler), false);
+
+        // Missing `committee_index`.
+        let req = Request::builder()
+            .uri("/eth/v1/validator/attestation_data?slot=10")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], 400);
+        assert!(json["message"].is_string());
+
+        // Non-numeric `slot`.
+        let req = Request::builder()
+            .uri("/eth/v1/validator/attestation_data?slot=foo&committee_index=1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], 400);
+    }
+
+    /// Verifies the body-limit layer on `POST /eth/v1/validator/duties/*`
+    /// rejects oversized bodies — defense against the `Vec<u64>` parse
+    /// amplification on the duties endpoints.
+    #[tokio::test]
+    async fn attester_duties_rejects_oversized_body() {
+        use axum::{
+            body::Body,
+            http::{Method, Request},
+        };
+        use tower::ServiceExt;
+
+        let handler = TestHandler::default();
+        let app = new_router(Arc::new(handler), false);
+
+        // 128 KiB of zeros — well past the 64 KiB cap, valid JSON or not.
+        let big = vec![b'0'; 128 * 1024];
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/validator/duties/attester/42")
+            .header("content-type", "application/json")
+            .header("content-length", big.len())
+            .body(Body::from(big))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    /// `[]` is a valid request body — the upstream returns an empty duty
+    /// list — and `ValIndexes` should accept it.
+    #[test]
+    fn val_indexes_accepts_empty_array() {
+        let v: ValIndexes = serde_json::from_str("[]").unwrap();
+        assert!(v.0.is_empty());
+    }
+
+    /// Mixed numeric + string elements are accepted; each element is
+    /// validated independently. The previous untagged-enum implementation
+    /// rejected this entirely.
+    #[test]
+    fn val_indexes_accepts_mixed_elements() {
+        let v: ValIndexes = serde_json::from_str(r#"[1, "2", 3, "4"]"#).unwrap();
+        assert_eq!(v.0, vec!["1", "2", "3", "4"]);
+    }
+
+    /// Caps the request to `VAL_INDEXES_MAX_LEN` elements.
+    #[test]
+    fn val_indexes_rejects_oversized_array() {
+        use crate::validatorapi::types::VAL_INDEXES_MAX_LEN;
+
+        let too_many = (0..=VAL_INDEXES_MAX_LEN)
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let json = format!("[{too_many}]");
+        let err = serde_json::from_str::<ValIndexes>(&json).unwrap_err();
+        assert!(err.to_string().contains("too many validator indices"));
+    }
+
+    /// Negative integers are rejected (validator indices are u64).
+    #[test]
+    fn val_indexes_rejects_negative_numbers() {
+        let bad = serde_json::from_str::<ValIndexes>("[-1]");
+        assert!(bad.is_err());
     }
 }

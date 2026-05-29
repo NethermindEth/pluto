@@ -47,6 +47,18 @@ impl ApiError {
         self.source = Some(Box::new(source));
         self
     }
+
+    /// Attaches a boxed source error for debug logging. Use this when the
+    /// upstream error is not `std::error::Error` itself (e.g. `anyhow::Error`,
+    /// which only implements `AsRef<dyn Error>` and converts via `.into()`).
+    #[must_use]
+    pub fn with_boxed_source(
+        mut self,
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    ) -> Self {
+        self.source = Some(source);
+        self
+    }
 }
 
 impl fmt::Display for ApiError {

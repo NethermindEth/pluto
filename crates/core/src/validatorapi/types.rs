@@ -4,7 +4,12 @@
 //! Most data payloads are empty placeholders for now and will be swapped
 //! for the proper consensus-spec types in a later phase.
 
-use serde::{Deserialize, Deserializer, Serialize};
+use std::fmt;
+
+use serde::{
+    Deserialize, Deserializer, Serialize,
+    de::{self, SeqAccess, Visitor},
+};
 
 pub use pluto_crypto::types::{PublicKey as BlsPubKey, Signature as BlsSignature};
 pub use pluto_eth2api::{
@@ -195,28 +200,90 @@ pub struct SyncCommitteeSelection {}
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct ValIndexes(pub Vec<String>);
 
+/// Hard cap on the number of validator indices accepted per request. A real
+/// cluster has at most a few hundred validators; the cap is set generously
+/// above that to leave room for future growth while still bounding the work
+/// per request so a single misbehaving caller cannot drive unbounded
+/// allocation. Pairs with the route-level [`DUTIES_BODY_LIMIT`]
+/// (`router.rs`) which limits the *bytes* the deserializer ever sees;
+/// this limits the *count* even within those bytes.
+pub const VAL_INDEXES_MAX_LEN: usize = 8192;
+
 impl<'de> Deserialize<'de> for ValIndexes {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Either {
-            Numbers(Vec<u64>),
-            Strings(Vec<String>),
+        // Custom visitor: streams elements via `SeqAccess::next_element`,
+        // validates each on read, and aborts as soon as the cap is exceeded.
+        // Avoids the `#[serde(untagged)]` two-pass behavior (which buffers the
+        // input via serde's `Content` cache before retrying) and the
+        // single-allocation `Vec<String>` materialization.
+        struct ValIndexesVisitor;
+
+        impl<'de> Visitor<'de> for ValIndexesVisitor {
+            type Value = ValIndexes;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an array of validator indices (numeric or decimal string)")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(64));
+                while let Some(elem) = seq.next_element::<Element>()? {
+                    if out.len() >= VAL_INDEXES_MAX_LEN {
+                        return Err(de::Error::custom(format!(
+                            "too many validator indices (max {VAL_INDEXES_MAX_LEN})"
+                        )));
+                    }
+                    out.push(elem.0);
+                }
+                Ok(ValIndexes(out))
+            }
         }
 
-        let value = Either::deserialize(deserializer)?;
-        let indices = match value {
-            Either::Numbers(ns) => ns.into_iter().map(|n| n.to_string()).collect(),
-            Either::Strings(strs) => {
-                for s in &strs {
-                    s.parse::<u64>().map_err(serde::de::Error::custom)?;
-                }
-                strs
+        deserializer.deserialize_seq(ValIndexesVisitor)
+    }
+}
+
+/// One validator-index element. Accepts either a JSON number (formatted into
+/// a decimal string) or a JSON string (validated as a `u64` then kept
+/// verbatim). Single-pass; no untagged-enum buffering.
+struct Element(String);
+
+impl<'de> Deserialize<'de> for Element {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ElemVisitor;
+
+        impl Visitor<'_> for ElemVisitor {
+            type Value = Element;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a validator index (u64 or decimal string)")
             }
-        };
-        Ok(Self(indices))
+
+            fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+                Ok(Element(v.to_string()))
+            }
+
+            fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+                u64::try_from(v)
+                    .map(|n| Element(n.to_string()))
+                    .map_err(|_| de::Error::custom("validator index must be non-negative"))
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                v.parse::<u64>().map_err(de::Error::custom)?;
+                Ok(Element(v.to_owned()))
+            }
+        }
+
+        deserializer.deserialize_any(ElemVisitor)
     }
 }
