@@ -71,8 +71,35 @@ impl Builder {
         self.reorg_rx = reorg_rx;
     }
 
-    fn build(self) -> Result<Handle> {
-        todo!()
+    async fn build(
+        self,
+        client: client::EthBeaconNodeApiClient,
+        ct: CancellationToken,
+    ) -> Result<Handle> {
+        wait_chain_start(&client).await?;
+        wait_beacon_sync(&client).await?;
+
+        let slot_rx = new_slot_ticker(&client.clone(), ct.clone()).await?;
+
+        let actor = Actor {
+            client: client.clone(),
+            // TODO: Figure out what to pass as `pub_keys`.
+            // In Charon, these are not used (dead code)
+            valcache: valcache::ValidatorCache::new(client.clone(), Vec::new()),
+
+            slot_broadcast: self.slot_broadcast,
+            duty_broadcast: self.duty_broadcast,
+
+            resolved_epoch: u64::MAX,
+            duties: HashMap::new(),
+            duties_by_epoch: HashMap::new(),
+        };
+
+        let (msg_tx, msg_rx) = sync::mpsc::channel(100);
+        let handle = Handle { sender: msg_tx };
+        tokio::spawn(actor.run(slot_rx, msg_rx, self.reorg_rx, ct));
+
+        Ok(handle)
     }
 }
 
@@ -112,8 +139,9 @@ struct Actor {
     slot_broadcast: sync::broadcast::Sender<types::Slot>,
     duty_broadcast: sync::broadcast::Sender<(types::Duty, types::DutyDefinitionSet)>,
 
-    // TODO: Flatten
-    inner: Inner,
+    resolved_epoch: u64,
+    duties: HashMap<types::Duty, types::DutyDefinitionSet>,
+    duties_by_epoch: HashMap<u64, Vec<types::Duty>>,
 }
 
 impl Actor {
@@ -166,13 +194,11 @@ impl Actor {
         let (_, slots_per_epoch) = self.client.fetch_slots_config().await?;
         let epoch = duty.slot.inner() / slots_per_epoch;
 
-        // TODO: Cleanup
-        let storage = &self.inner;
-        if storage.is_epoch_trimmed(epoch) {
+        if self.is_epoch_trimmed(epoch) {
             return Err(SchedulerError::EpochAlreadyTrimmed { epoch, duty });
         }
 
-        let def_set = storage
+        let def_set = self
             .duties
             .get(&duty)
             .ok_or_else(|| SchedulerError::DutyNotFound { epoch, duty })?;
@@ -184,10 +210,10 @@ impl Actor {
     ///
     /// Duties will be resolved again in the nex slot.
     pub async fn handle_chain_reorg(&mut self, epoch: u64) {
-        let resolved_epoch = self.inner.resolved_epoch;
+        let resolved_epoch = self.resolved_epoch;
         if epoch < resolved_epoch {
-            self.inner.trim_duties(resolved_epoch);
-            self.inner.resolved_epoch = u64::MAX;
+            self.trim_duties(resolved_epoch);
+            self.resolved_epoch = u64::MAX;
 
             tracing::info!(
                 reorg_epoch = epoch,
@@ -197,9 +223,8 @@ impl Actor {
         }
     }
 
-    /// TODO: Add docs
     async fn schedule_slot(&mut self, slot: types::Slot, ct: CancellationToken) {
-        if self.inner.resolved_epoch != slot.epoch() {
+        if self.resolved_epoch != slot.epoch() {
             tracing::debug!(slot = %slot.slot, epoch = %slot.epoch(), "Resolving duties for slot");
 
             if let Err(err) = self.resolve_duties(slot.clone()).await {
@@ -214,8 +239,7 @@ impl Actor {
             };
 
             let def_set = {
-                let storage = &self.inner;
-                let Some(def_set) = storage.duties.get(&duty) else {
+                let Some(def_set) = self.duties.get(&duty) else {
                     // Nothing for this duty.
                     continue;
                 };
@@ -250,12 +274,11 @@ impl Actor {
         }
     }
 
-    /// TODO: Add docs
     async fn resolve_duties(&mut self, slot: types::Slot) -> Result<()> {
         let vals = resolve_active_validators(slot.epoch(), &self.valcache).await?;
         if vals.is_empty() {
             tracing::info!(slot = %slot.slot, "No active validators for slot");
-            self.inner.resolved_epoch = slot.epoch();
+            self.resolved_epoch = slot.epoch();
             return Ok(());
         }
 
@@ -266,7 +289,7 @@ impl Actor {
         {
             let att_duties = fetch_attester_duties(&slot, &vals, &self.client).await?;
             for att_duty in att_duties.into_iter() {
-                if !self.inner.set_duty_definition(
+                if !self.set_duty_definition(
                     types::Duty::new_attester_duty(att_duty.slot),
                     slot.epoch(),
                     att_duty.pubkey,
@@ -285,7 +308,7 @@ impl Actor {
 
                 // Schedule Aggregator duty as well
                 let agg_duty = types::Duty::new_aggregator_duty(att_duty.slot);
-                self.inner.set_duty_definition(
+                self.set_duty_definition(
                     agg_duty,
                     slot.epoch(),
                     att_duty.pubkey,
@@ -298,7 +321,7 @@ impl Actor {
         {
             let pro_duties = fetch_proposer_duties(&slot, &vals, &self.client).await?;
             for pro_duty in pro_duties.into_iter() {
-                if !self.inner.set_duty_definition(
+                if !self.set_duty_definition(
                     types::Duty::new_proposer_duty(pro_duty.slot),
                     slot.epoch(),
                     pro_duty.pubkey,
@@ -328,7 +351,7 @@ impl Actor {
                     .iter()
                     .take_while(|other| other.epoch() == slot.epoch())
                 {
-                    self.inner.set_duty_definition(
+                    self.set_duty_definition(
                         types::Duty::new_sync_contribution_duty(sl.slot),
                         sl.epoch(),
                         sync_duty.pubkey,
@@ -345,10 +368,54 @@ impl Actor {
             }
         }
 
-        self.inner.resolved_epoch = slot.epoch();
-        self.inner.trim_duties(slot.epoch() - TRIM_EPOCH_OFFSET);
+        self.resolved_epoch = slot.epoch();
+        self.trim_duties(slot.epoch() - TRIM_EPOCH_OFFSET);
 
         Ok(())
+    }
+
+    /// Inserts a duty definition for a given pubkey.
+    ///
+    /// Returns true if it's set, false if it was already set.
+    fn set_duty_definition(
+        &mut self,
+        duty: types::Duty,
+        epoch: u64,
+        pub_key: types::PubKey,
+        definition: types::DutyDefinition,
+    ) -> bool {
+        let def_set = self.duties.entry(duty.clone()).or_default();
+        match def_set.entry(pub_key) {
+            Entry::Occupied(_) => return false,
+            Entry::Vacant(entry) => {
+                entry.insert(definition);
+            }
+        };
+        self.duties_by_epoch
+            .entry(epoch)
+            .or_insert(Vec::new())
+            .push(duty);
+
+        true
+    }
+
+    fn trim_duties(&mut self, epoch: u64) {
+        let duties = self.duties_by_epoch.remove(&epoch);
+        if let Some(duties) = duties
+            && duties.len() > 0
+        {
+            for duty in duties {
+                self.duties.remove(&duty);
+            }
+        }
+    }
+
+    fn is_epoch_trimmed(&self, epoch: u64) -> bool {
+        if self.resolved_epoch == u64::MAX {
+            return false;
+        }
+
+        epoch >= self.resolved_epoch + TRIM_EPOCH_OFFSET
     }
 }
 
