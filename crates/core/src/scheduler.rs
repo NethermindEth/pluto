@@ -456,7 +456,7 @@ impl Actor {
         }
 
         self.resolved_epoch = slot.epoch();
-        self.trim_duties(slot.epoch() - TRIM_EPOCH_OFFSET);
+        self.trim_duties(slot.epoch().saturating_sub(TRIM_EPOCH_OFFSET));
 
         Ok(())
     }
