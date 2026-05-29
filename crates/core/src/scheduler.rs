@@ -270,12 +270,12 @@ impl Actor {
         let (_, slots_per_epoch) = self.client.fetch_slots_config().await?;
         let epoch = duty.slot.inner() / slots_per_epoch;
 
-        if self.is_epoch_trimmed(epoch) {
-            return Err(SchedulerError::EpochAlreadyTrimmed { epoch, duty });
-        }
-
         if !self.is_epoch_resolved(epoch) {
             return Err(SchedulerError::EpochNotResolved { epoch });
+        }
+
+        if self.is_epoch_trimmed(epoch) {
+            return Err(SchedulerError::EpochAlreadyTrimmed { epoch, duty });
         }
 
         let def_set = self
