@@ -42,8 +42,8 @@ use analysis::{
 };
 use reason::REASON_UNKNOWN;
 use reporters::{
-    DutyFailureReporter, MetricsFailedDutyReporter, MetricsParticipationReporter,
-    ParticipationReporter, UnsupportedIgnorer, report_par_sigs,
+    DutyResultReporter, MetricsDutyReporter, MetricsParticipationReporter, ParticipationReporter,
+    UnsupportedIgnorer, report_par_sigs,
 };
 use step::Step;
 
@@ -332,7 +332,7 @@ pub struct TrackerService {
     deleter: DeadlinerHandle,
     deleter_rx: mpsc::Receiver<Duty>,
     from_slot: u64,
-    failed_duty_reporter: Box<dyn DutyFailureReporter>,
+    failed_duty_reporter: Box<dyn DutyResultReporter>,
     participation_reporter: Box<dyn ParticipationReporter>,
     unsupported_ignorer: UnsupportedIgnorer,
 }
@@ -389,7 +389,7 @@ impl TrackerService {
             deleter_rx,
             from_slot,
             buffer,
-            Box::new(MetricsFailedDutyReporter::new()),
+            Box::new(MetricsDutyReporter::new()),
             Box::new(MetricsParticipationReporter::new(peers)),
         )
     }
@@ -403,7 +403,7 @@ impl TrackerService {
         DeleterRx(deleter_rx): DeleterRx,
         from_slot: u64,
         buffer: usize,
-        failed_duty_reporter: Box<dyn DutyFailureReporter>,
+        failed_duty_reporter: Box<dyn DutyResultReporter>,
         participation_reporter: Box<dyn ParticipationReporter>,
     ) -> Arc<TrackerHandle> {
         let (input_tx, input_rx) = mpsc::channel(buffer);
@@ -527,7 +527,7 @@ mod tests {
         signeddata::SignedDataError,
         tracker::{
             reason::Reason,
-            reporters::{DutyFailureReporter, ParticipationReporter},
+            reporters::{DutyResultReporter, ParticipationReporter},
         },
         types::{Duty, DutyType, ParSignedData, ParSignedDataSet, SlotNumber},
     };
@@ -556,7 +556,7 @@ mod tests {
         trigger_on: usize,
     }
 
-    impl DutyFailureReporter for RecordingFailureReporter {
+    impl DutyResultReporter for RecordingFailureReporter {
         fn report(
             &mut self,
             duty: &Duty,
@@ -608,7 +608,7 @@ mod tests {
 
     struct NopFailureReporter;
 
-    impl DutyFailureReporter for NopFailureReporter {
+    impl DutyResultReporter for NopFailureReporter {
         fn report(&mut self, _: &Duty, _: bool, _: Step, _: Reason, _: Option<&StepError>) {}
     }
 
@@ -631,7 +631,7 @@ mod tests {
     /// analyser/deleter trigger channels (bypassing the real deadliner).
     fn start_test_tracker(
         cancel: &CancellationToken,
-        failure_sink: Box<dyn reporters::DutyFailureReporter>,
+        failure_sink: Box<dyn reporters::DutyResultReporter>,
         participation_sink: Box<dyn reporters::ParticipationReporter>,
     ) -> (Arc<TrackerHandle>, mpsc::Sender<Duty>, mpsc::Sender<Duty>) {
         let (analyser_handle, _) =

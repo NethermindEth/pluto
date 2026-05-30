@@ -15,7 +15,7 @@ use crate::{
     types::{Duty, DutyType},
 };
 
-pub(crate) trait DutyFailureReporter: Send {
+pub(crate) trait DutyResultReporter: Send {
     fn report(
         &mut self,
         duty: &Duty,
@@ -38,9 +38,9 @@ pub(crate) trait ParticipationReporter: Send {
 }
 
 /// Logs and reports failed/successful duties to Prometheus.
-pub struct MetricsFailedDutyReporter;
+pub struct MetricsDutyReporter;
 
-impl MetricsFailedDutyReporter {
+impl MetricsDutyReporter {
     /// Creates a reporter and zero-initialises per-duty-type counters so that
     /// Prometheus exports them even before the first event fires.
     pub fn new() -> Self {
@@ -100,13 +100,13 @@ impl MetricsFailedDutyReporter {
     }
 }
 
-impl Default for MetricsFailedDutyReporter {
+impl Default for MetricsDutyReporter {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl DutyFailureReporter for MetricsFailedDutyReporter {
+impl DutyResultReporter for MetricsDutyReporter {
     fn report(
         &mut self,
         duty: &Duty,
@@ -115,7 +115,7 @@ impl DutyFailureReporter for MetricsFailedDutyReporter {
         reason: Reason,
         err: Option<&StepError>,
     ) {
-        MetricsFailedDutyReporter::report(self, duty, failed, step, reason, err);
+        MetricsDutyReporter::report(self, duty, failed, step, reason, err);
     }
 }
 
@@ -266,12 +266,7 @@ impl MetricsParticipationReporter {
 
         // Only log when the absent set changes from the previous duty of this
         // type, to avoid log spam every slot.
-        let prev = self
-            .prev_absent
-            .get(&duty.duty_type)
-            .cloned()
-            .unwrap_or_default();
-        if prev != absent {
+        if self.prev_absent.get(&duty.duty_type) == Some(&absent) {
             if absent.is_empty() {
                 tracing::info!(duty = %duty, "All peers participated in duty");
             } else if absent.len() == self.peers.len() {
@@ -314,6 +309,9 @@ pub fn report_par_sigs(duty: &Duty, parsigs: &ParSigsByMsg) {
     TRACKER_METRICS.inconsistent_parsigs_total[&duty.duty_type.to_string()].inc();
 
     for (pubkey, by_root) in parsigs {
+        // Intentional fix over Go: Go checks len(parsigMsgs) (the outer map, i.e. number
+        // of pubkeys) instead of the per-pubkey root count, so it silently skips logging
+        // when only one pubkey has inconsistent roots (tracker.go:851).
         if by_root.len() <= 1 {
             continue;
         }
