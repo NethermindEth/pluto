@@ -242,6 +242,10 @@ pub(crate) fn analyse_fetcher_failed(
             analyse_fetcher_failed_sync_contribution(duty, all_events, fetch_err)
         }
         _ => {
+            // TODO: when the fetcher is ported, add an `is_cancelled_error` check here
+            // (similar to `is_eth2_api_error`) so cancellation/timeout errors map to the
+            // default reason rather than `REASON_BUG_FETCH_ERROR`, matching Go's three-tier
+            // logic in `analyseFetcherFailed` (tracker.go:299–305).
             let reason = if let Some(e) = &fetch_err
                 && is_eth2_api_error(e.as_ref())
             {
