@@ -1,5 +1,3 @@
-#![allow(missing_docs)]
-
 //! Types for the Charon core.
 
 use std::{any::Any, collections::HashMap, fmt::Display, iter};
@@ -428,10 +426,14 @@ impl AsRef<[u8]> for PubKey {
     }
 }
 
+/// Attestation duties to be performed by validators for a particular epoch.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AttesterDutyDefinition {
+    /// The validator's BLS public key
     pub pubkey: PubKey,
+    /// Index of validator in validator registry
     pub v_idx: u64,
+    /// The slot at which the validator must attest.
     pub slot: SlotNumber,
 
     inner: pluto_eth2api::types::GetAttesterDutiesResponseResponseDatum,
@@ -462,10 +464,14 @@ impl TryInto<AttesterDutyDefinition>
     }
 }
 
+/// Indicates that a validator must propose a block in a given epoch
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProposerDutyDefinition {
+    /// The validator's BLS public key
     pub pubkey: PubKey,
+    ///Index of validator in validator registry.
     pub v_idx: u64,
+    /// The slot at which the validator must propose a block.
     pub slot: SlotNumber,
 
     inner: pluto_eth2api::types::GetProposerDutiesResponseResponseDatum,
@@ -496,10 +502,14 @@ impl TryInto<ProposerDutyDefinition>
     }
 }
 
+/// Sync committee duties for a particular epoch
 #[derive(Debug, Clone, PartialEq)]
 pub struct SyncCommitteeDutyDefinition {
+    /// The validator's BLS public key
     pub pubkey: PubKey,
+    /// Index of validator in validator registry.
     pub validator_index: u64,
+    /// The indices of the validator in the sync committee.
     pub validator_sync_committee_indices: Vec<u64>,
 
     inner: pluto_eth2api::types::GetSyncCommitteeDutiesResponseResponseDatum,
@@ -537,13 +547,19 @@ impl TryInto<SyncCommitteeDutyDefinition>
     }
 }
 
+/// All duty definitions for a validator in a given epoch.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DutyDefinition {
+    /// Attester duty definition.
     Attester(AttesterDutyDefinition),
+    /// Proposer duty definition.
     Proposer(ProposerDutyDefinition),
+    /// Sync committee duty definition.
     SyncCommittee(SyncCommitteeDutyDefinition),
 }
 
+/// A set of duty definitions for all validators in a given epoch, indexed by
+/// public key.
 pub type DutyDefinitionSet = HashMap<PubKey, DutyDefinition>;
 
 /// Unsigned data type
