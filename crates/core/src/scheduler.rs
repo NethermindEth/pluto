@@ -523,7 +523,12 @@ impl Actor {
         }
 
         self.resolved_epoch = slot.epoch();
-        self.trim_duties(slot.epoch().saturating_sub(TRIM_EPOCH_OFFSET));
+        // Only trim once there is an epoch old enough to trim.
+        // NOTE: Charon relies on `uint64` underflow wrapping to a huge (absent) epoch
+        // for epochs < 3. `checked_sub` reproduces that no-op
+        if let Some(trim_epoch) = slot.epoch().checked_sub(TRIM_EPOCH_OFFSET) {
+            self.trim_duties(trim_epoch);
+        }
 
         Ok(())
     }
@@ -1015,4 +1020,504 @@ async fn fetch_sync_committee_duties(
     }
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use pluto_eth2api::{
+        GetStateValidatorsResponseResponse, GetStateValidatorsResponseResponseDatum,
+    };
+    use pluto_testutil::{BeaconMock, ValidatorSet};
+    use wiremock::{
+        Mock, ResponseTemplate,
+        matchers::{method, path},
+    };
+
+    use super::*;
+    use crate::testutils::random_core_pub_key;
+
+    /// Builds a beacon mock seeded with `ValidatorSetA` and deterministic
+    /// duties for every duty type
+    async fn duties_mock(slots_per_epoch: u64) -> BeaconMock {
+        BeaconMock::builder()
+            .validator_set(ValidatorSet::validator_set_a())
+            .deterministic_attester_duties(0)
+            .deterministic_proposer_duties(0)
+            .deterministic_sync_comm_duties((2, 2))
+            .slots_per_epoch(slots_per_epoch)
+            .slot_duration(std::time::Duration::from_secs(12))
+            .build()
+            .await
+            .expect("build beacon mock")
+    }
+
+    /// The `ValidatorSetA` validators as `/states/head/validators`.
+    ///
+    /// NOTE: the default mock only serves this endpoint over GET, but
+    /// `valcache::get_by_head` queries it over POST.
+    fn validator_set_a_datums() -> Vec<GetStateValidatorsResponseResponseDatum> {
+        ValidatorSet::validator_set_a()
+            .validators()
+            .into_iter()
+            .map(|v| GetStateValidatorsResponseResponseDatum {
+                index: v.index.to_string(),
+                balance: v.balance.to_string(),
+                status: v.status,
+                validator: v.validator,
+            })
+            .collect()
+    }
+
+    /// `ValidatorSetA` validators with their real indexes but random pubkeys,
+    /// to force the `InvalidDutyPubkey` mismatch path
+    fn validator_set_a_mismatched() -> Vec<Validator> {
+        ValidatorSet::validator_set_a()
+            .validators()
+            .into_iter()
+            .map(|v| Validator {
+                pubkey: random_core_pub_key(),
+                v_idx: v.index,
+            })
+            .collect()
+    }
+
+    /// Mounts the POST `/states/head/validators` endpoint used by
+    /// `valcache::get_by_head`.
+    async fn mount_head_validators(
+        mock: &BeaconMock,
+        data: Vec<GetStateValidatorsResponseResponseDatum>,
+    ) {
+        Mock::given(method("POST"))
+            .and(path("/eth/v1/beacon/states/head/validators"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                GetStateValidatorsResponseResponse {
+                    execution_optimistic: false,
+                    finalized: true,
+                    data,
+                },
+            ))
+            .mount(mock.server())
+            .await;
+    }
+
+    /// Builds an initial `Actor` wired to the mock's client. No epoch resolved
+    /// yet.
+    fn test_actor(mock: &BeaconMock) -> Actor {
+        let client = mock.client().clone();
+        Actor {
+            client: client.clone(),
+            valcache: valcache::ValidatorCache::new(client, Vec::new()),
+            slot_broadcast: sync::broadcast::channel(100).0,
+            duty_broadcast: sync::broadcast::channel(100).0,
+            resolved_epoch: u64::MAX,
+            duties: HashMap::new(),
+            duties_by_epoch: HashMap::new(),
+        }
+    }
+
+    /// A `Slot` dated far in the past so `delay_slot_offset` deadlines have
+    /// already elapsed and duty broadcasts fire immediately.
+    fn test_past_slot(slot: u64, slots_per_epoch: u64) -> types::Slot {
+        types::Slot {
+            slot: types::SlotNumber::new(slot),
+            time: chrono::Utc::now()
+                .checked_sub_signed(chrono::Duration::days(1))
+                .expect("within chrono range"),
+            slot_duration: chrono::Duration::seconds(12),
+            slots_per_epoch,
+        }
+    }
+
+    /// Builds an attester duty definition for tests.
+    fn test_attester_def(pubkey: types::PubKey, v_idx: u64, slot: u64) -> types::DutyDefinition {
+        let datum = pluto_eth2api::types::GetAttesterDutiesResponseResponseDatum {
+            pubkey: pubkey.to_string(),
+            validator_index: v_idx.to_string(),
+            slot: slot.to_string(),
+            ..Default::default()
+        };
+        let def: types::AttesterDutyDefinition = datum.try_into().expect("valid attester datum");
+        types::DutyDefinition::Attester(def)
+    }
+
+    /// Drives the actor's `run` loop with test-controlled channels.
+    struct Harness {
+        slot_tx: sync::mpsc::Sender<types::Slot>,
+        reorg_tx: sync::mpsc::Sender<u64>,
+        handle: Handle,
+        slot_sub: sync::broadcast::Receiver<types::Slot>,
+        duty_sub: sync::broadcast::Receiver<(types::Duty, types::DutyDefinitionSet)>,
+        ct: CancellationToken,
+    }
+
+    fn spawn_actor(mock: &BeaconMock) -> Harness {
+        let client = mock.client().clone();
+        let slot_broadcast = sync::broadcast::channel(100).0;
+        let duty_broadcast = sync::broadcast::channel(100).0;
+        let slot_sub = slot_broadcast.subscribe();
+        let duty_sub = duty_broadcast.subscribe();
+
+        let actor = Actor {
+            client: client.clone(),
+            valcache: valcache::ValidatorCache::new(client, Vec::new()),
+            slot_broadcast,
+            duty_broadcast,
+            resolved_epoch: u64::MAX,
+            duties: HashMap::new(),
+            duties_by_epoch: HashMap::new(),
+        };
+
+        let (slot_tx, slot_rx) = sync::mpsc::channel(100);
+        let (msg_tx, msg_rx) = sync::mpsc::channel(100);
+        let (reorg_tx, reorg_rx) = sync::mpsc::channel(100);
+        let ct = CancellationToken::new();
+
+        tokio::spawn(actor.run(slot_rx, msg_rx, reorg_rx, ct.clone()));
+
+        Harness {
+            slot_tx,
+            reorg_tx,
+            handle: Handle { sender: msg_tx },
+            slot_sub,
+            duty_sub,
+            ct,
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_attester_duties_rejects_mismatched_pubkey() {
+        let mock = duties_mock(1).await;
+        let err = fetch_attester_duties(
+            &test_past_slot(0, 1),
+            validator_set_a_mismatched(),
+            mock.client(),
+        )
+        .await
+        .expect_err("mismatched pubkey should be rejected");
+        assert!(matches!(err, SchedulerError::InvalidDutyPubkey { .. }));
+    }
+
+    #[tokio::test]
+    async fn fetch_proposer_duties_rejects_mismatched_pubkey() {
+        let mock = duties_mock(1).await;
+        let err = fetch_proposer_duties(
+            &test_past_slot(0, 1),
+            validator_set_a_mismatched(),
+            mock.client(),
+        )
+        .await
+        .expect_err("mismatched pubkey should be rejected");
+        assert!(matches!(err, SchedulerError::InvalidDutyPubkey { .. }));
+    }
+
+    #[tokio::test]
+    async fn fetch_sync_committee_duties_rejects_mismatched_pubkey() {
+        let mock = duties_mock(1).await;
+        let err = fetch_sync_committee_duties(
+            &test_past_slot(0, 1),
+            validator_set_a_mismatched(),
+            mock.client(),
+        )
+        .await
+        .expect_err("mismatched pubkey should be rejected");
+        assert!(matches!(err, SchedulerError::InvalidDutyPubkey { .. }));
+    }
+
+    #[tokio::test]
+    async fn epoch_resolved_and_trimmed_boundaries() {
+        let mock = BeaconMock::builder().build().await.expect("build mock");
+        let mut actor = test_actor(&mock);
+
+        // Sentinel: nothing resolved yet.
+        assert!(!actor.is_epoch_resolved(5));
+        assert!(!actor.is_epoch_trimmed(5));
+
+        actor.resolved_epoch = 10;
+        assert!(actor.is_epoch_resolved(9));
+        assert!(actor.is_epoch_resolved(10));
+        assert!(!actor.is_epoch_resolved(11));
+
+        // Trimmed iff resolved_epoch >= epoch + TRIM_EPOCH_OFFSET (epoch <= 7).
+        assert!(actor.is_epoch_trimmed(7));
+        assert!(!actor.is_epoch_trimmed(8));
+    }
+
+    #[tokio::test]
+    async fn set_duty_definition_dedups_and_trim_removes() {
+        let mock = BeaconMock::builder().build().await.expect("build mock");
+        let mut actor = test_actor(&mock);
+
+        let duty = types::Duty::new_attester_duty(types::SlotNumber::new(0));
+        let pk = random_core_pub_key();
+        let def = test_attester_def(pk, 1, 0);
+
+        assert!(actor.set_duty_definition(duty.clone(), 0, pk, def.clone()));
+        // Same pubkey for the same duty is a no-op and reports `false`.
+        assert!(!actor.set_duty_definition(duty.clone(), 0, pk, def));
+        assert!(actor.duties.contains_key(&duty));
+
+        actor.trim_duties(0);
+        assert!(!actor.duties.contains_key(&duty));
+    }
+
+    #[tokio::test]
+    async fn get_duty_definition_variants() {
+        let mock = BeaconMock::builder()
+            .slots_per_epoch(1)
+            .build()
+            .await
+            .expect("build mock");
+        let mut actor = test_actor(&mock);
+        let slot0 = types::SlotNumber::new(0);
+
+        // Deprecated builder-proposer duty (checked before any network call).
+        let builder = types::Duty::new(slot0, types::DutyType::BuilderProposer);
+        assert!(matches!(
+            actor.get_duty_definition(builder).await,
+            Err(SchedulerError::DeprecatedDutyBuilderProposer)
+        ));
+
+        // Epoch not resolved yet (resolved_epoch == u64::MAX).
+        let att = types::Duty::new_attester_duty(slot0);
+        assert!(matches!(
+            actor.get_duty_definition(att.clone()).await,
+            Err(SchedulerError::EpochNotResolved { epoch: 0 })
+        ));
+
+        // Resolved but no duty stored.
+        actor.resolved_epoch = 0;
+        assert!(matches!(
+            actor.get_duty_definition(att.clone()).await,
+            Err(SchedulerError::DutyNotFound { epoch: 0, .. })
+        ));
+
+        // Resolved and present: returns a clone of the definition set.
+        let pk = random_core_pub_key();
+        actor.set_duty_definition(att.clone(), 0, pk, test_attester_def(pk, 1, 0));
+        let set = actor
+            .get_duty_definition(att.clone())
+            .await
+            .expect("resolved duty is returned");
+        assert!(set.contains_key(&pk));
+
+        // Advance resolved_epoch so epoch 0 is now trimmed.
+        actor.resolved_epoch = TRIM_EPOCH_OFFSET;
+        assert!(matches!(
+            actor.get_duty_definition(att).await,
+            Err(SchedulerError::EpochAlreadyTrimmed { epoch: 0, .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn resolve_duties_stores_all_duty_types() {
+        let mock = duties_mock(16).await;
+        mount_head_validators(&mock, validator_set_a_datums()).await;
+        let mut actor = test_actor(&mock);
+
+        actor
+            .resolve_duties(test_past_slot(0, 16))
+            .await
+            .expect("resolve duties");
+
+        assert_eq!(actor.resolved_epoch, 0);
+
+        let slot0 = types::SlotNumber::new(0);
+        // Attester duty plus its paired aggregator duty.
+        assert!(
+            actor
+                .duties
+                .contains_key(&types::Duty::new_attester_duty(slot0))
+        );
+        assert!(
+            actor
+                .duties
+                .contains_key(&types::Duty::new_aggregator_duty(slot0))
+        );
+        // Proposer and sync-contribution duties.
+        assert!(
+            actor
+                .duties
+                .contains_key(&types::Duty::new_proposer_duty(slot0))
+        );
+        assert!(
+            actor
+                .duties
+                .contains_key(&types::Duty::new_sync_contribution_duty(slot0))
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_duties_no_active_validators() {
+        let mock = BeaconMock::builder()
+            .slots_per_epoch(1)
+            .build()
+            .await
+            .expect("build mock");
+        mount_head_validators(&mock, Vec::new()).await;
+        let mut actor = test_actor(&mock);
+
+        actor
+            .resolve_duties(test_past_slot(0, 1))
+            .await
+            .expect("resolve duties");
+
+        assert_eq!(actor.resolved_epoch, 0);
+        assert!(matches!(
+            actor
+                .get_duty_definition(types::Duty::new_attester_duty(types::SlotNumber::new(0)))
+                .await,
+            Err(SchedulerError::DutyNotFound { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn handle_chain_reorg_trims_and_resets() {
+        let mock = BeaconMock::builder().build().await.expect("build mock");
+        let mut actor = test_actor(&mock);
+
+        // Seed a resolved epoch 5 holding one duty.
+        let duty = types::Duty::new_attester_duty(types::SlotNumber::new(5));
+        let pk = random_core_pub_key();
+        actor.set_duty_definition(duty.clone(), 5, pk, test_attester_def(pk, 1, 5));
+        actor.resolved_epoch = 5;
+
+        // A reorg at/after the resolved epoch is a no-op.
+        actor.handle_chain_reorg(5).await;
+        assert_eq!(actor.resolved_epoch, 5);
+        assert!(actor.duties.contains_key(&duty));
+
+        // A reorg before the resolved epoch trims duties and resets the epoch.
+        actor.handle_chain_reorg(4).await;
+        assert_eq!(actor.resolved_epoch, u64::MAX);
+        assert!(!actor.duties.contains_key(&duty));
+    }
+
+    // ---- 6. Channel-driven actor (the full run loop) ----------------------
+
+    #[test_case::test_case(0 ; "first slot in epoch 0 triggers duties")]
+    #[test_case::test_case(16 ; "first slot in epoch 1 triggers duties")]
+    #[tokio::test]
+    async fn first_slot_broadcasts_slot_and_triggers_duties(slot_number: u64) {
+        let mock = duties_mock(16).await;
+        mount_head_validators(&mock, validator_set_a_datums()).await;
+        let mut h = spawn_actor(&mock);
+
+        h.slot_tx
+            .send(test_past_slot(slot_number, 16))
+            .await
+            .expect("send slot");
+
+        // The slot itself is broadcast immediately.
+        let slot = tokio::time::timeout(Duration::from_secs(2), h.slot_sub.recv())
+            .await
+            .expect("slot broadcast within timeout")
+            .expect("slot value");
+        assert_eq!(slot.slot.inner(), slot_number);
+
+        // Past-dated slot => duties broadcast (near-)immediately. Collect the
+        // four expected duty types triggered for the given slot.
+        let mut seen = HashSet::new();
+        while seen.len() < 4 {
+            let (duty, set) = tokio::time::timeout(Duration::from_secs(2), h.duty_sub.recv())
+                .await
+                .expect("duty broadcast within timeout")
+                .expect("duty value");
+            assert!(!set.is_empty());
+            seen.insert(duty.duty_type);
+        }
+        assert!(seen.contains(&types::DutyType::Attester));
+        assert!(seen.contains(&types::DutyType::Aggregator));
+        assert!(seen.contains(&types::DutyType::Proposer));
+        assert!(seen.contains(&types::DutyType::SyncContribution));
+
+        h.ct.cancel();
+    }
+
+    #[test_case::test_case(1 ; "mid-epoch slot 1 triggers only sync contribution duties")]
+    #[test_case::test_case(5 ; "mid-epoch slot 5 triggers only sync contribution duties")]
+    #[test_case::test_case(15 ; "mid-epoch slot 15 triggers only sync contribution duties")]
+    #[tokio::test]
+    async fn mid_epoch_slot_broadcasts_slot_and_triggers_only_sync_contribution_duty(
+        slot_number: u64,
+    ) {
+        let mock = duties_mock(16).await;
+        mount_head_validators(&mock, validator_set_a_datums()).await;
+        let mut h = spawn_actor(&mock);
+
+        // Slot is mid-epoch (epoch 0 spans slots 0..=15). With the deterministic
+        // Beacon setup:
+        // - Attester duties are only included in the first slot of an epoch
+        //      - The paired Aggregator duties are not included either
+        // - Proposer duties are only included in the first slot of an epoch
+        // - Sync-committee contribution duties are included in every slot of an epoch
+        h.slot_tx
+            .send(test_past_slot(slot_number, 16))
+            .await
+            .expect("send slot");
+
+        // The slot itself is broadcast immediately.
+        let slot = tokio::time::timeout(Duration::from_secs(2), h.slot_sub.recv())
+            .await
+            .expect("slot broadcast within timeout")
+            .expect("slot value");
+        assert_eq!(slot.slot.inner(), slot_number);
+
+        // The only duty triggered for a mid-epoch slot is the sync-committee
+        // contribution.
+        let (duty, set) = tokio::time::timeout(Duration::from_secs(2), h.duty_sub.recv())
+            .await
+            .expect("duty broadcast within timeout")
+            .expect("duty value");
+        assert_eq!(duty.duty_type, types::DutyType::SyncContribution);
+        assert!(!set.is_empty());
+
+        // No attester/proposer/aggregator duty is broadcast for this slot.
+        let next = tokio::time::timeout(Duration::from_millis(200), h.duty_sub.recv()).await;
+        assert!(
+            next.is_err(),
+            "expected no further duty broadcasts, got {next:?}"
+        );
+
+        h.ct.cancel();
+    }
+
+    #[tokio::test]
+    async fn get_duty_success_then_reorg_then_get_duty_fails() {
+        let mock = duties_mock(16).await;
+        mount_head_validators(&mock, validator_set_a_datums()).await;
+        let mut h = spawn_actor(&mock);
+
+        // Drive a slot in epoch 1 and wait for a duty broadcast, which only
+        // happens once `resolve_duties` has completed for the epoch.
+        h.slot_tx
+            .send(test_past_slot(16, 16))
+            .await
+            .expect("send slot");
+        tokio::time::timeout(Duration::from_secs(2), h.duty_sub.recv())
+            .await
+            .expect("duty broadcast within timeout")
+            .expect("duty value");
+
+        // The handle can now read the resolved attester duty.
+        let att = types::Duty::new_attester_duty(types::SlotNumber::new(16));
+        let set = h
+            .handle
+            .get_duty_definition(att.clone())
+            .await
+            .expect("resolved duty");
+        assert!(!set.is_empty());
+
+        // A reorg before the resolved epoch trims duties; the handle then
+        // reports the epoch as unresolved. The reorg is handled first so an immediate
+        // read observes the reset.
+        h.reorg_tx.send(0).await.expect("send reorg");
+        assert!(matches!(
+            h.handle.get_duty_definition(att).await,
+            Err(SchedulerError::EpochNotResolved { .. })
+        ));
+
+        h.ct.cancel();
+    }
 }
