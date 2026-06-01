@@ -72,8 +72,6 @@ pub type RunnerResult = std::result::Result<(), RunnerError>;
 /// Sender fields are crate-visible so component code can enqueue directly.
 /// Receiver fields stay private because each receiver must move exactly once to
 /// the task that owns that stream.
-// TODO: Remove once the instance runner wires these senders.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct InstanceIo<T> {
     // Lifecycle flags are duplicate/start guards only. They do not publish or

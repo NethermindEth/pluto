@@ -719,11 +719,7 @@ mod tests {
     use std::{
         collections::HashSet,
         error::Error as StdError,
-        fs,
-        path::{Path, PathBuf},
-        process::Stdio,
         task::{Context, Poll},
-        time::{SystemTime, UNIX_EPOCH},
     };
 
     use futures::{StreamExt as _, io::Cursor, task::noop_waker};
@@ -737,12 +733,9 @@ mod tests {
             dial_opts::PeerCondition,
         },
     };
-    use prost::bytes::Bytes;
-    use tokio::{
-        io::{AsyncBufReadExt, BufReader, Lines},
-        process::{Child, ChildStdout, Command},
-        sync::{mpsc, oneshot},
-    };
+    use prost::{Message, bytes::Bytes};
+    use prost_types::Any;
+    use tokio::sync::{mpsc, oneshot};
 
     use crate::{
         protocols::QBFT_V2_PROTOCOL_ID,
@@ -756,7 +749,7 @@ mod tests {
     };
     use pluto_core::{
         corepb::v1::{consensus as pbconsensus, core as pbcore},
-        qbft::{self, SomeMsg},
+        qbft,
     };
     use pluto_p2p::{
         behaviours::pluto::PlutoBehaviourEvent,
@@ -768,13 +761,44 @@ mod tests {
     use super::*;
 
     const TEST_TIMEOUT: Duration = Duration::from_secs(10);
-    const GO_INTEROP_TIMEOUT: Duration = Duration::from_secs(60);
+    const LIBP2P_SETUP_TIMEOUT: Duration = Duration::from_secs(60);
+    const REFERENCE_SIGNATURE: &str = "4cf90756a4241bce7b71e18c6fb9cf91dc96abc6ef1739218974d96e75faf0a15921d47997210232cf064b5e401c6de800fb1f654fcadca0e293dea335fe924200";
+    const REFERENCE_PAYLOAD: &str = "0a6f08021204082a1002200142414cf90756a4241bce7b71e18c6fb9cf91dc96abc6ef1739218974d96e75faf0a15921d47997210232cf064b5e401c6de800fb1f654fcadca0e293dea335fe9242005a200a0c0a04307839391204010203040000000000000000000000000000000000001a440a32747970652e676f6f676c65617069732e636f6d2f636f72652e636f726570622e76312e556e7369676e656444617461536574120e0a0c0a0430783939120401020304";
+    const REFERENCE_FRAME: &str = "b7010a6f08021204082a1002200142414cf90756a4241bce7b71e18c6fb9cf91dc96abc6ef1739218974d96e75faf0a15921d47997210232cf064b5e401c6de800fb1f654fcadca0e293dea335fe9242005a200a0c0a04307839391204010203040000000000000000000000000000000000001a440a32747970652e676f6f676c65617069732e636f6d2f636f72652e636f726570622e76312e556e7369676e656444617461536574120e0a0c0a0430783939120401020304";
 
     type TestResult<T> = Result<T, Box<dyn StdError + Send + Sync>>;
 
     #[test]
     fn protocol_id_matches_qbft_v2() {
         assert_eq!(protocol_id().to_string(), QBFT_V2_PROTOCOL_ID);
+    }
+
+    #[tokio::test]
+    async fn reference_framed_message_decodes() {
+        let mut cursor = Cursor::new(hex::decode(REFERENCE_FRAME).expect("valid fixture hex"));
+
+        let decoded = pluto_p2p::proto::read_protobuf_with_max_size::<
+            pbconsensus::QbftConsensusMsg,
+            _,
+        >(&mut cursor, pluto_p2p::proto::MAX_MESSAGE_SIZE)
+        .await
+        .expect("reference frame should decode");
+
+        assert_eq!(decoded, reference_consensus_msg());
+    }
+
+    #[tokio::test]
+    async fn rust_rebuilds_reference_message_and_frame() {
+        let rebuilt = build_reference_consensus_msg();
+        let mut frame = Cursor::new(Vec::new());
+
+        pluto_p2p::proto::write_protobuf(&mut frame, &rebuilt)
+            .await
+            .expect("frame write should succeed");
+
+        assert_eq!(rebuilt, reference_consensus_msg());
+        assert_eq!(hex::encode(rebuilt.encode_to_vec()), REFERENCE_PAYLOAD);
+        assert_eq!(hex::encode(frame.into_inner()), REFERENCE_FRAME);
     }
 
     #[tokio::test]
@@ -992,82 +1016,6 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    #[ignore = "requires local Charon source, Go toolchain, and local TCP sockets"]
-    async fn mixed_charon_pluto_libp2p_interop() -> TestResult<()> {
-        let keys = test_keys_n(4)?;
-        let peer_ids = peer_ids(&keys)?;
-        let mut nodes = build_pluto_nodes(keys[..2].to_vec(), peer_ids.clone())?;
-        let mut node0_recv = nodes
-            .get_mut(0)
-            .and_then(|node| node.recv_rx.take())
-            .ok_or_else(|| std::io::Error::other("missing node 0 receiver"))?;
-        let mut node1_recv = nodes
-            .get_mut(1)
-            .and_then(|node| node.recv_rx.take())
-            .ok_or_else(|| std::io::Error::other("missing node 1 receiver"))?;
-        let handle0 = nodes
-            .first()
-            .map(|node| node.handle.clone())
-            .ok_or_else(|| std::io::Error::other("missing node 0 handle"))?;
-        let handle1 = nodes
-            .get(1)
-            .map(|node| node.handle.clone())
-            .ok_or_else(|| std::io::Error::other("missing node 1 handle"))?;
-
-        let (listen_tx, mut listen_rx) = mpsc::unbounded_channel();
-        let (conn_tx, mut conn_rx) = mpsc::unbounded_channel();
-        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-        let (task_err_tx, mut task_err_rx) = mpsc::unbounded_channel();
-        let running = spawn_nodes(nodes, listen_tx, conn_tx, event_tx, task_err_tx)?;
-        let rust_addrs = wait_for_listen_addrs(&mut listen_rx, &mut task_err_rx).await?;
-
-        let harness_dir = write_go_interop_harness()?;
-        let mut child = spawn_go_interop(&harness_dir, &rust_addrs)?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| std::io::Error::other("missing go harness stdout"))?;
-        let mut go_lines = BufReader::new(stdout).lines();
-
-        let result =
-            async {
-                let go_addrs = wait_for_go_ready(&mut go_lines).await?;
-                dial_go_peers(&running, &go_addrs)?;
-                wait_for_specific_connections(&mut conn_rx, &[0, 1], &peer_ids[2..4]).await?;
-
-                wait_for_sources(&mut node0_recv, &mut event_rx, 0, &[2, 3]).await?;
-                wait_for_sources(&mut node1_recv, &mut event_rx, 1, &[2, 3]).await?;
-
-                handle0
-                    .broadcast(CancellationToken::new(), signed_consensus_msg(&duty(), 0)?)
-                    .await?;
-                handle1
-                    .broadcast(CancellationToken::new(), signed_consensus_msg(&duty(), 1)?)
-                    .await?;
-
-                wait_for_event(&mut event_rx, 0, |event| {
-                matches!(event, Event::Sent { peer, .. } if peer_ids[2..4].contains(peer))
-            })
-            .await?;
-                wait_for_event(&mut event_rx, 1, |event| {
-                matches!(event, Event::Sent { peer, .. } if peer_ids[2..4].contains(peer))
-            })
-            .await?;
-                wait_for_go_done(&mut go_lines).await
-            }
-            .await;
-
-        drop(go_lines);
-        let status = finish_go_interop(&mut child, result.is_err()).await;
-        let cleanup = fs::remove_dir_all(&harness_dir);
-        stop_nodes(running).await?;
-        result?;
-        status?;
-        cleanup?;
-        Ok(())
-    }
-
     struct LocalNode {
         node: Node<Behaviour>,
         handle: Handle,
@@ -1224,7 +1172,7 @@ mod tests {
         listen_rx: &mut mpsc::UnboundedReceiver<(usize, Multiaddr)>,
         task_err_rx: &mut mpsc::UnboundedReceiver<(usize, String)>,
     ) -> TestResult<Vec<Multiaddr>> {
-        tokio::time::timeout(GO_INTEROP_TIMEOUT, async {
+        tokio::time::timeout(LIBP2P_SETUP_TIMEOUT, async {
             let mut addrs = vec![None, None];
             while addrs.iter().any(Option::is_none) {
                 tokio::select! {
@@ -1277,7 +1225,7 @@ mod tests {
         conn_rx: &mut mpsc::UnboundedReceiver<(usize, PeerId)>,
         peer_ids: &[PeerId],
     ) -> TestResult<()> {
-        tokio::time::timeout(GO_INTEROP_TIMEOUT, async {
+        tokio::time::timeout(LIBP2P_SETUP_TIMEOUT, async {
             let mut seen = [HashSet::new(), HashSet::new()];
             while seen.iter().any(|peers| peers.is_empty()) {
                 let (index, peer_id) = conn_rx
@@ -1293,65 +1241,6 @@ mod tests {
         })
         .await
         .map_err(|_| std::io::Error::other("timeout waiting for loopback connections"))?
-    }
-
-    async fn wait_for_specific_connections(
-        conn_rx: &mut mpsc::UnboundedReceiver<(usize, PeerId)>,
-        node_indices: &[usize],
-        expected_peers: &[PeerId],
-    ) -> TestResult<()> {
-        tokio::time::timeout(TEST_TIMEOUT, async {
-            let mut seen = vec![HashSet::new(); node_indices.len()];
-            while seen.iter().any(|peers| peers.len() < expected_peers.len()) {
-                let (index, peer_id) = conn_rx
-                    .recv()
-                    .await
-                    .ok_or_else(|| std::io::Error::other("connection channel closed"))?;
-                if let Some(position) = node_indices.iter().position(|node| *node == index)
-                    && expected_peers.contains(&peer_id)
-                {
-                    seen[position].insert(peer_id);
-                }
-            }
-
-            Ok(())
-        })
-        .await
-        .map_err(|_| std::io::Error::other("timeout waiting for Go peer connections"))?
-    }
-
-    async fn wait_for_sources(
-        recv_rx: &mut mpsc::Receiver<super::super::msg::Msg>,
-        event_rx: &mut mpsc::UnboundedReceiver<(usize, Event)>,
-        node_index: usize,
-        expected_sources: &[i64],
-    ) -> TestResult<()> {
-        tokio::time::timeout(TEST_TIMEOUT, async {
-            let mut seen = HashSet::new();
-            while seen.len() < expected_sources.len() {
-                tokio::select! {
-                    msg = recv_rx.recv() => {
-                        let msg = msg.ok_or_else(|| std::io::Error::other("receive buffer closed"))?;
-                        if expected_sources.contains(&msg.source()) {
-                            seen.insert(msg.source());
-                        }
-                    }
-                    event = event_rx.recv() => {
-                        let (index, event) = event.ok_or_else(|| std::io::Error::other("event channel closed"))?;
-                        if index == node_index
-                            && let Event::InboundError { error, .. } = event
-                        {
-                            return Err(Box::new(std::io::Error::other(error))
-                                as Box<dyn StdError + Send + Sync>);
-                        }
-                    }
-                }
-            }
-
-            Ok(())
-        })
-        .await
-        .map_err(|_| std::io::Error::other("timeout waiting for Charon inbound messages"))?
     }
 
     async fn wait_for_event(
@@ -1444,6 +1333,49 @@ mod tests {
         Ok(Keypair::secp256k1_from_der(&mut der)?.public().to_peer_id())
     }
 
+    fn build_reference_consensus_msg() -> pbconsensus::QbftConsensusMsg {
+        let value = reference_value();
+        let value_hash = msg::hash_proto(&value).expect("value should hash");
+        let signed = msg::sign_msg(
+            &pbconsensus::QbftMsg {
+                r#type: i64::from(pluto_core::qbft::MSG_PREPARE),
+                duty: Some(pbcore::Duty {
+                    slot: 42,
+                    r#type: 2,
+                }),
+                peer_idx: 0,
+                round: 1,
+                value_hash: value_hash.to_vec().into(),
+                ..Default::default()
+            },
+            &secret_key(1),
+        )
+        .expect("message should sign");
+
+        assert_eq!(hex::encode(&signed.signature), REFERENCE_SIGNATURE);
+
+        pbconsensus::QbftConsensusMsg {
+            msg: Some(signed),
+            justification: vec![],
+            values: vec![Any::from_msg(&value).expect("value should pack")],
+        }
+    }
+
+    fn reference_consensus_msg() -> pbconsensus::QbftConsensusMsg {
+        pbconsensus::QbftConsensusMsg::decode(
+            hex::decode(REFERENCE_PAYLOAD)
+                .expect("valid fixture hex")
+                .as_slice(),
+        )
+        .expect("reference payload should decode")
+    }
+
+    fn reference_value() -> pbcore::UnsignedDataSet {
+        let mut set = std::collections::BTreeMap::new();
+        set.insert("0x99".to_string(), Bytes::from_static(&[1, 2, 3, 4]));
+        pbcore::UnsignedDataSet { set }
+    }
+
     fn signed_consensus_msg(
         duty: &pluto_core::types::Duty,
         peer_idx: i64,
@@ -1473,362 +1405,4 @@ mod tests {
             values: Vec::new(),
         })
     }
-
-    type GoLines = Lines<BufReader<ChildStdout>>;
-
-    fn dial_go_peers(running: &[RunningNode], go_addrs: &[Multiaddr]) -> TestResult<()> {
-        for node in running {
-            node.dial_tx.send(go_addrs.to_vec())?;
-        }
-
-        Ok(())
-    }
-
-    async fn wait_for_go_ready(lines: &mut GoLines) -> TestResult<Vec<Multiaddr>> {
-        let line = read_go_line(lines, "READY ").await?;
-        line.strip_prefix("READY ")
-            .ok_or_else(|| std::io::Error::other("missing go ready prefix"))?
-            .split_whitespace()
-            .map(|addr| addr.parse().map_err(|error| Box::new(error) as _))
-            .collect()
-    }
-
-    async fn wait_for_go_done(lines: &mut GoLines) -> TestResult<()> {
-        tokio::time::timeout(GO_INTEROP_TIMEOUT, async {
-            loop {
-                let line = lines
-                    .next_line()
-                    .await?
-                    .ok_or_else(|| std::io::Error::other("go harness stdout closed"))?;
-                if line == "DONE" {
-                    return Ok(());
-                }
-            }
-        })
-        .await
-        .map_err(|_| std::io::Error::other("timeout waiting for Go DONE"))?
-    }
-
-    async fn read_go_line(lines: &mut GoLines, prefix: &str) -> TestResult<String> {
-        tokio::time::timeout(GO_INTEROP_TIMEOUT, async {
-            loop {
-                let line = lines
-                    .next_line()
-                    .await?
-                    .ok_or_else(|| std::io::Error::other("go harness stdout closed"))?;
-                if line.starts_with(prefix) {
-                    return Ok(line);
-                }
-            }
-        })
-        .await
-        .map_err(|_| std::io::Error::other("timeout waiting for Go harness output"))?
-    }
-
-    fn write_go_interop_harness() -> TestResult<PathBuf> {
-        let charon_repo = charon_repo_path();
-        if !charon_repo.join("go.mod").exists() {
-            return Err(Box::new(std::io::Error::other(format!(
-                "missing Charon repo at {}; set CHARON_REPO",
-                charon_repo.display()
-            ))));
-        }
-
-        let mut dir = std::env::temp_dir();
-        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        dir.push(format!(
-            "pluto-qbft-interop-{}-{timestamp}",
-            std::process::id()
-        ));
-        fs::create_dir(&dir)?;
-        fs::write(dir.join("main.go"), GO_INTEROP_HARNESS)?;
-
-        Ok(dir)
-    }
-
-    fn charon_repo_path() -> PathBuf {
-        std::env::var("CHARON_REPO")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("/Users/quangle/Documents/nethermind/obol/charon"))
-    }
-
-    fn spawn_go_interop(harness_dir: &Path, rust_addrs: &[Multiaddr]) -> TestResult<Child> {
-        if rust_addrs.len() != 2 {
-            return Err(Box::new(std::io::Error::other("expected two rust addrs")));
-        }
-
-        Ok(Command::new("go")
-            .arg("run")
-            .arg(harness_dir.join("main.go"))
-            .arg(rust_addrs[0].to_string())
-            .arg(rust_addrs[1].to_string())
-            .current_dir(charon_repo_path())
-            .env("GOWORK", "off")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()?)
-    }
-
-    async fn finish_go_interop(child: &mut Child, kill: bool) -> TestResult<()> {
-        if kill {
-            let _ = child.kill().await;
-        }
-
-        let status = tokio::time::timeout(GO_INTEROP_TIMEOUT, child.wait()).await??;
-        if !status.success() {
-            return Err(Box::new(std::io::Error::other(format!(
-                "go harness exited with {status}"
-            ))));
-        }
-
-        Ok(())
-    }
-
-    const GO_INTEROP_HARNESS: &str = r#"
-package main
-
-import (
-	"bytes"
-	"context"
-	"encoding/hex"
-	"fmt"
-	"os"
-	"time"
-
-	k1 "github.com/decred/dcrd/dcrec/secp256k1/v4"
-	ssz "github.com/ferranbt/fastssz"
-	"github.com/libp2p/go-libp2p"
-	libp2pcrypto "github.com/libp2p/go-libp2p/core/crypto"
-	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/core/peerstore"
-	"github.com/libp2p/go-libp2p/p2p/security/noise"
-	"github.com/multiformats/go-multiaddr"
-	"github.com/obolnetwork/charon/app/k1util"
-	"github.com/obolnetwork/charon/core"
-	"github.com/obolnetwork/charon/core/consensus/protocols"
-	pbv1 "github.com/obolnetwork/charon/core/corepb/v1"
-	coreqbft "github.com/obolnetwork/charon/core/qbft"
-	"github.com/obolnetwork/charon/p2p"
-	"google.golang.org/protobuf/proto"
-)
-
-type received struct {
-	node int
-	from int64
-}
-
-func main() {
-	if len(os.Args) != 3 {
-		panic("usage: go run . <rust-addr-0> <rust-addr-1>")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	keys := make([]*k1.PrivateKey, 4)
-	peerIDs := make([]peer.ID, 4)
-	pubkeys := make(map[int64]*k1.PublicKey, 4)
-	for i := range keys {
-		keyBytes := bytes.Repeat([]byte{byte(i + 1)}, 32)
-		keys[i] = k1.PrivKeyFromBytes(keyBytes)
-		priv := (*libp2pcrypto.Secp256k1PrivateKey)(keys[i])
-		id, err := peer.IDFromPrivateKey(priv)
-		if err != nil {
-			panic(err)
-		}
-		peerIDs[i] = id
-		pubkeys[int64(i)] = keys[i].PubKey()
-	}
-
-	rustAddrs := make([]multiaddr.Multiaddr, 2)
-	for i, arg := range os.Args[1:] {
-		addr, err := multiaddr.NewMultiaddr(arg)
-		if err != nil {
-			panic(err)
-		}
-		rustAddrs[i] = addr
-	}
-
-	recvCh := make(chan received, 16)
-	hosts := make([]host.Host, 2)
-	for i := range hosts {
-		peerIdx := i + 2
-		priv := (*libp2pcrypto.Secp256k1PrivateKey)(keys[peerIdx])
-		h, err := libp2p.New(
-			libp2p.Identity(priv),
-			libp2p.Security(noise.ID, noise.New),
-			libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
-		)
-		if err != nil {
-			panic(err)
-		}
-		defer h.Close()
-		hosts[i] = h
-
-		node := peerIdx
-		p2p.RegisterHandler("qbft-interop", h, protocols.QBFTv2ProtocolID,
-			func() proto.Message { return new(pbv1.QBFTConsensusMsg) },
-			func(_ context.Context, _ peer.ID, req proto.Message) (proto.Message, bool, error) {
-				msg, ok := req.(*pbv1.QBFTConsensusMsg)
-				if !ok {
-					return nil, false, fmt.Errorf("unexpected request %T", req)
-				}
-				if err := verifyMsg(msg.GetMsg(), pubkeys); err != nil {
-					return nil, false, err
-				}
-				recvCh <- received{node: node, from: msg.GetMsg().GetPeerIdx()}
-				return nil, false, nil
-			})
-	}
-
-	goAddrs := make([]string, 2)
-	for i, h := range hosts {
-		if len(h.Addrs()) == 0 {
-			panic("go host has no listen address")
-		}
-		peerPart, err := multiaddr.NewMultiaddr("/p2p/" + h.ID().String())
-		if err != nil {
-			panic(err)
-		}
-		goAddrs[i] = h.Addrs()[0].Encapsulate(peerPart).String()
-	}
-	fmt.Printf("READY %s %s\n", goAddrs[0], goAddrs[1])
-
-	for _, h := range hosts {
-		for i := range rustAddrs {
-			h.Peerstore().AddAddrs(peerIDs[i], []multiaddr.Multiaddr{rustAddrs[i]}, peerstore.PermanentAddrTTL)
-		}
-	}
-
-	for i, h := range hosts {
-		peerIdx := int64(i + 2)
-		for target := 0; target < 2; target++ {
-			if err := p2p.Send(ctx, h, protocols.QBFTv2ProtocolID, peerIDs[target], signedConsensusMsg(peerIdx, keys[peerIdx])); err != nil {
-				panic(err)
-			}
-		}
-	}
-	fmt.Println("SENT")
-
-	seen := map[int]map[int64]bool{
-		2: {},
-		3: {},
-	}
-	for {
-		if seen[2][0] && seen[2][1] && seen[3][0] && seen[3][1] {
-			fmt.Println("DONE")
-			return
-		}
-
-		select {
-		case <-ctx.Done():
-			panic(ctx.Err())
-		case recv := <-recvCh:
-			if recv.node == 2 || recv.node == 3 {
-				seen[recv.node][recv.from] = true
-				fmt.Printf("RECEIVED %d %d\n", recv.node, recv.from)
-			}
-		}
-	}
-}
-
-func signedConsensusMsg(peerIdx int64, key *k1.PrivateKey) *pbv1.QBFTConsensusMsg {
-	msg := &pbv1.QBFTMsg{
-		Type:              int64(coreqbft.MsgPrepare),
-		Duty:              &pbv1.Duty{Slot: 42, Type: int32(core.DutyAttester)},
-		PeerIdx:           peerIdx,
-		Round:             1,
-		ValueHash:         nil,
-		PreparedValueHash: nil,
-	}
-	signed, err := signMsg(msg, key)
-	if err != nil {
-		panic(err)
-	}
-	return &pbv1.QBFTConsensusMsg{Msg: signed}
-}
-
-func signMsg(msg *pbv1.QBFTMsg, privkey *k1.PrivateKey) (*pbv1.QBFTMsg, error) {
-	clone := proto.Clone(msg).(*pbv1.QBFTMsg)
-	clone.Signature = nil
-
-	hash, err := hashProto(clone)
-	if err != nil {
-		return nil, err
-	}
-
-	clone.Signature, err = k1util.Sign(privkey, hash[:])
-	if err != nil {
-		return nil, err
-	}
-
-	return clone, nil
-}
-
-func verifyMsg(msg *pbv1.QBFTMsg, pubkeys map[int64]*k1.PublicKey) error {
-	if msg == nil || msg.GetDuty() == nil {
-		return fmt.Errorf("invalid consensus message")
-	}
-	if typ := coreqbft.MsgType(msg.GetType()); !typ.Valid() {
-		return fmt.Errorf("invalid consensus message type: %d", typ)
-	}
-	if typ := core.DutyType(msg.GetDuty().GetType()); !typ.Valid() {
-		return fmt.Errorf("invalid consensus message duty type: %d", typ)
-	}
-	if msg.GetRound() <= 0 {
-		return fmt.Errorf("invalid consensus message round: %d", msg.GetRound())
-	}
-	if msg.GetPreparedRound() < 0 {
-		return fmt.Errorf("invalid consensus message prepared round")
-	}
-
-	pubkey, ok := pubkeys[msg.GetPeerIdx()]
-	if !ok {
-		return fmt.Errorf("invalid peer index: %d", msg.GetPeerIdx())
-	}
-	ok, err := verifyMsgSig(msg, pubkey)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("invalid consensus message signature")
-	}
-	return nil
-}
-
-func verifyMsgSig(msg *pbv1.QBFTMsg, pubkey *k1.PublicKey) (bool, error) {
-	clone := proto.Clone(msg).(*pbv1.QBFTMsg)
-	signature := clone.GetSignature()
-	if len(signature) == 0 {
-		return false, fmt.Errorf("empty signature")
-	}
-	clone.Signature = nil
-
-	hash, err := hashProto(clone)
-	if err != nil {
-		return false, err
-	}
-	recovered, err := k1util.Recover(hash[:], signature)
-	if err != nil {
-		return false, err
-	}
-	return hex.EncodeToString(recovered.SerializeCompressed()) == hex.EncodeToString(pubkey.SerializeCompressed()), nil
-}
-
-func hashProto(msg proto.Message) ([32]byte, error) {
-	hh := ssz.DefaultHasherPool.Get()
-	defer ssz.DefaultHasherPool.Put(hh)
-
-	index := hh.Index()
-	b, err := proto.MarshalOptions{Deterministic: true}.Marshal(msg)
-	if err != nil {
-		return [32]byte{}, err
-	}
-
-	hh.PutBytes(b)
-	hh.Merkleize(index)
-	return hh.HashRoot()
-}
-"#;
 }

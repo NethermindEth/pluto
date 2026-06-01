@@ -15,8 +15,7 @@ use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    admission,
-    component::{DecodedValue, SubscriberSet},
+    component::{DecodedValue, Error as ComponentError, SubscriberSet, decode_supported_any},
     msg::{self, ConsensusQbftTypes},
 };
 
@@ -138,7 +137,7 @@ fn decide(
         return;
     };
 
-    let decoded = match admission::decode_supported_any(any_value) {
+    let decoded = match decode_supported_any(any_value) {
         Ok(decoded) => decoded,
         Err(err) => {
             tracing::error!(error = %err, "Invalid any value");
@@ -231,7 +230,7 @@ fn local_compare_value(
 }
 
 fn decode_attester_set(any: &Any) -> std::result::Result<UnsignedDataSet, AttesterCompareError> {
-    match admission::decode_supported_any(any).map_err(AttesterCompareError::DecodeAny)? {
+    match decode_supported_any(any).map_err(AttesterCompareError::DecodeAny)? {
         DecodedValue::UnsignedDataSet(value) => {
             unsigned_data_set_from_proto(&DutyType::Attester, &value)
                 .map_err(AttesterCompareError::DecodeUnsignedDataSet)
@@ -261,7 +260,7 @@ enum AttesterCompareError {
     #[error("msg has no value source: {0}")]
     ValueSource(#[source] qbft::QbftError),
     #[error("decode any: {0}")]
-    DecodeAny(#[source] admission::Error),
+    DecodeAny(#[source] ComponentError),
     #[error("unexpected compare value type")]
     UnexpectedValueType,
     #[error("timeout on waiting for local value")]
