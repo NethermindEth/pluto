@@ -204,6 +204,9 @@ impl MetricsParticipationReporter {
         failed: bool,
         participated: &HashMap<u64, usize>,
         unexpected: &HashMap<u64, usize>,
+        // Distinct validator pubkeys that had any event for this duty (matches
+        // Go's pubkeyMapLen). For aggregator duties this may be fewer than the
+        // cluster's total validator count if only some validators were selected.
         expected_per_peer: usize,
     ) {
         // Suppress no-op duties (e.g. aggregator slots with no selected peer)

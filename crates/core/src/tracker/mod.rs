@@ -206,6 +206,8 @@ pub struct TrackerHandle {
 
 impl TrackerHandle {
     async fn send_event(&self, event: Event) {
+        // Shutdown is signalled by the receiver being dropped, which causes
+        // send() to return Err immediately — no explicit cancellation select needed.
         if let Err(e) = self.input_tx.send(event).await {
             tracing::warn!(
                 duty = %e.0.duty,

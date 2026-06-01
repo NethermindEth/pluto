@@ -42,6 +42,11 @@ pub(crate) fn msg_roots_consistent(parsigs: &ParSigsByMsg) -> bool {
 }
 
 /// Set of duty types for which chain inclusion is supported.
+///
+/// The result is cached for the lifetime of the process. This assumes
+/// `GLOBAL_STATE` (and therefore `Feature::AttestationInclusion`) is
+/// configured once at startup and never mutated afterward — matching Go,
+/// which reads the flag on every call but relies on the same invariant.
 pub(crate) fn incl_supported() -> &'static HashSet<DutyType> {
     static CACHE: OnceLock<HashSet<DutyType>> = OnceLock::new();
     CACHE.get_or_init(|| {
