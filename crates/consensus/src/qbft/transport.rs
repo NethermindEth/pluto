@@ -241,7 +241,12 @@ impl Transport {
             tokio::select! {
                 () = ct.cancelled() => return Ok(()),
                 result = self.recv_tx.send(inner_msg) => {
-                    result.map_err(|_| Error::ReceiveBufferClosed)?;
+                    if result.is_err() {
+                        if ct.is_cancelled() {
+                            return Ok(());
+                        }
+                        return Err(Error::ReceiveBufferClosed);
+                    }
                     self.sniffer.add(consensus_msg);
                 }
             }

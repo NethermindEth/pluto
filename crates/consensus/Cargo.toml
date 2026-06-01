@@ -28,7 +28,12 @@ tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+anyhow.workspace = true
+clap.workspace = true
+pluto-cluster.workspace = true
 pluto-eth2api.workspace = true
+pluto-eth2util.workspace = true
+serde_json.workspace = true
 ssz.workspace = true
 test-case.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
