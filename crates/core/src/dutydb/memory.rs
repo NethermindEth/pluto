@@ -2,19 +2,19 @@
 //!
 //! Equivalent to charon/core/dutydb/memory.go.
 
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use pluto_eth2api::{
     spec::{altair, phase0},
     versioned,
 };
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::{Notify, RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use tree_hash::TreeHash;
 
 use crate::{
-    deadline::Deadliner,
+    deadline::{AddOutcome, DeadlinerHandle},
     signeddata::{
         AttestationData, SyncContribution, VersionedAggregatedAttestation, VersionedProposal,
     },
@@ -27,6 +27,11 @@ pub enum Error {
     /// Duty has already expired; unsigned data will not be stored.
     #[error("duty expired: unsigned data will not be stored")]
     ExpiredDuty,
+
+    /// The deadliner could not compute a deadline for the duty (calculator
+    /// error or a shutdown race); unsigned data will not be stored.
+    #[error("deadline computation failed: unsigned data will not be stored")]
+    DeadlineComputation,
 
     /// Proposer data set must contain at most one entry.
     #[error("proposer data set must contain at most one entry")]
@@ -199,15 +204,17 @@ pub struct MemDB {
     aggregation_notify: Notify,
     contrib_notify: Notify,
     cancel: CancellationToken,
-    deadliner: Arc<dyn Deadliner>,
+    deadliner: DeadlinerHandle,
 }
 
 impl MemDB {
-    /// Creates a new in-memory DutyDB.
-    pub fn new(deadliner: Arc<dyn Deadliner>, cancel: &CancellationToken) -> Self {
-        let deadliner_rx = deadliner.c().expect(
-            "Deadliner::c() returned None — the receiver was already consumed. Each MemDB must use a fresh Deadliner.",
-        );
+    /// Creates a new in-memory DutyDB. `deadliner_rx` is the receiver paired
+    /// with `deadliner` (typically from `DeadlinerTask::start`).
+    pub fn new(
+        deadliner: DeadlinerHandle,
+        deadliner_rx: mpsc::Receiver<Duty>,
+        cancel: &CancellationToken,
+    ) -> Self {
         Self {
             state: RwLock::new(State {
                 attestation_duties: HashMap::new(),
@@ -245,8 +252,14 @@ impl MemDB {
 
         let mut state = self.state.write().await;
 
-        if !self.deadliner.add(duty.clone()).await {
-            return Err(Error::ExpiredDuty);
+        match self.deadliner.add(duty.clone()).await {
+            AddOutcome::Scheduled => {}
+            AddOutcome::AlreadyExpired => return Err(Error::ExpiredDuty),
+            // Only `Exit`/`BuilderRegistration` have no deadline, and DutyDB
+            // doesn't store either. Reject explicitly so this doesn't depend on
+            // the `duty_type` match below also rejecting them.
+            AddOutcome::NoDeadline => return Err(Error::UnsupportedDutyType),
+            AddOutcome::FailedToCompute => return Err(Error::DeadlineComputation),
         }
 
         match duty.duty_type {
@@ -599,82 +612,59 @@ impl State {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
-    use async_trait::async_trait;
-    use tokio::sync::mpsc::{Receiver, Sender, channel};
+    use chrono::{DateTime, Utc};
+    use tokio::sync::mpsc::{Receiver, channel};
     use tokio_util::sync::CancellationToken;
 
     use super::*;
     use crate::{
+        deadline::{self, DeadlineCalculator, DeadlinerTask, NeverExpiringCalculator},
         signeddata::{AttesterDuty, ProposalBlock},
         testutils::random_core_pub_key,
         types::{DutyType, SlotNumber},
     };
 
-    /// Deadliner that always accepts duties and never expires them.
-    pub(crate) struct NoopDeadliner;
+    /// Test calculator whose every duty is `Scheduled` (deadline is `MAX_UTC`).
+    /// The deadliner never actually fires for this calculator, so the paired
+    /// output receiver stays silent — eviction in tests is driven manually
+    /// through a separate channel (see `duty_expiry`).
+    struct FarFutureCalculator;
 
-    #[async_trait]
-    impl Deadliner for NoopDeadliner {
-        async fn add(&self, _duty: Duty) -> bool {
-            true
-        }
-
-        fn c(&self) -> Option<Receiver<Duty>> {
-            let (_, rx) = channel(1);
-            Some(rx)
+    impl DeadlineCalculator for FarFutureCalculator {
+        fn deadline(&self, _: &Duty) -> deadline::Result<Option<DateTime<Utc>>> {
+            Ok(Some(DateTime::<Utc>::MAX_UTC))
         }
     }
 
-    /// Deadliner that collects duties and can flush them to a channel on
-    /// demand.
-    pub(crate) struct TestDeadliner {
-        added: Mutex<Vec<Duty>>,
-        tx: Sender<Duty>,
-        rx: Mutex<Option<Receiver<Duty>>>,
+    /// Builds a never-firing receiver for tests that don't exercise eviction.
+    pub(crate) fn noop_deadliner_rx() -> Receiver<Duty> {
+        let (_, rx) = channel(1);
+        rx
     }
 
-    impl TestDeadliner {
-        pub(crate) fn new() -> Arc<Self> {
-            let (tx, rx) = channel(64);
-            Arc::new(Self {
-                added: Mutex::new(Vec::new()),
-                tx,
-                rx: Mutex::new(Some(rx)),
-            })
-        }
-
-        /// Send all collected duties to the expiry channel.
-        pub(crate) async fn expire(&self) {
-            let duties: Vec<Duty> = {
-                let mut added = self.added.lock().unwrap();
-                std::mem::take(&mut *added)
-            };
-            for duty in duties {
-                let _ = self.tx.send(duty).await;
-            }
-        }
-    }
-
-    #[async_trait]
-    impl Deadliner for TestDeadliner {
-        async fn add(&self, duty: Duty) -> bool {
-            self.added.lock().unwrap().push(duty);
-            true
-        }
-
-        fn c(&self) -> Option<Receiver<Duty>> {
-            self.rx.lock().unwrap().take()
-        }
+    /// Creates a real deadliner handle backed by [`FarFutureCalculator`] —
+    /// `add()` always reports `Scheduled` but nothing naturally expires.
+    fn far_future_handle() -> DeadlinerHandle {
+        let (handle, _drop_rx) = DeadlinerTask::start(
+            CancellationToken::new(),
+            "dutydb-tests",
+            FarFutureCalculator,
+        );
+        handle
     }
 
     fn make_db() -> MemDB {
-        MemDB::new(Arc::new(NoopDeadliner), &CancellationToken::new())
+        MemDB::new(
+            far_future_handle(),
+            noop_deadliner_rx(),
+            &CancellationToken::new(),
+        )
     }
 
-    fn make_db_with_deadliner(deadliner: Arc<dyn Deadliner>) -> MemDB {
-        MemDB::new(deadliner, &CancellationToken::new())
+    fn make_db_with_deadliner(deadliner: DeadlinerHandle, deadliner_rx: Receiver<Duty>) -> MemDB {
+        MemDB::new(deadliner, deadliner_rx, &CancellationToken::new())
     }
 
     fn att_data(slot: u64, committee_index: u64, validator_index: u64) -> AttestationData {
@@ -835,6 +825,31 @@ mod tests {
             matches!(err, Error::DeprecatedDutyBuilderProposer),
             "expected DeprecatedDutyBuilderProposer, got: {err}"
         );
+    }
+
+    /// `FarFutureCalculator` schedules every duty, so it can't exercise the
+    /// `AddOutcome::NoDeadline` arm in `store()`. Back the DB with
+    /// `NeverExpiringCalculator` (always `Ok(None)`) so that types without a
+    /// deadline are rejected as `UnsupportedDutyType` — not misclassified as
+    /// `ExpiredDuty`.
+    #[tokio::test]
+    async fn mem_db_store_no_deadline_rejected() {
+        let (deadliner, drop_rx) = DeadlinerTask::start(
+            CancellationToken::new(),
+            "dutydb-tests",
+            NeverExpiringCalculator,
+        );
+        let db = make_db_with_deadliner(deadliner, drop_rx);
+
+        for duty_type in [DutyType::Exit, DutyType::BuilderRegistration] {
+            let duty_type_str = duty_type.to_string();
+            let duty = Duty::new(SlotNumber::new(0), duty_type);
+            let err = db.store(duty, UnsignedDataSet::new()).await.unwrap_err();
+            assert!(
+                matches!(err, Error::UnsupportedDutyType),
+                "expected UnsupportedDutyType for {duty_type_str}, got: {err}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1104,8 +1119,12 @@ mod tests {
 
     #[tokio::test]
     async fn duty_expiry() {
-        let deadliner = TestDeadliner::new();
-        let db = make_db_with_deadliner(Arc::clone(&deadliner) as Arc<dyn Deadliner>);
+        // Real handle so `store()`'s `add(...)` returns `AddOutcome::Scheduled`.
+        // Eviction is driven manually via `trim_tx` so the test stays
+        // deterministic instead of racing the deadliner's timer.
+        let deadliner = far_future_handle();
+        let (trim_tx, trim_rx) = channel::<Duty>(64);
+        let db = make_db_with_deadliner(deadliner, trim_rx);
 
         const SLOT: u64 = 123;
 
@@ -1122,8 +1141,12 @@ mod tests {
         // Should be findable now.
         db.pub_key_by_attestation(SLOT, 0, 0).await.unwrap();
 
-        // Expire the duty.
-        deadliner.expire().await;
+        // Expire the duty: simulate the deadliner emitting it.
+        let expired_duty = Duty::new(SlotNumber::new(SLOT), DutyType::Attester);
+        trim_tx
+            .send(expired_duty)
+            .await
+            .expect("trim_tx should be open");
 
         // Trigger expiry processing by storing another duty.
         let proposal = phase0_proposal(SLOT.saturating_add(1), 0);

@@ -321,7 +321,8 @@ pub enum ProposalType {
 // the pub key as [u8; 48] instead of string.
 // [original implementation](https://github.com/ObolNetwork/charon/blob/b3008103c5429b031b63518195f4c49db4e9a68d/core/types.go#L264)
 const PK_LEN: usize = 48;
-const SIG_LEN: usize = 96;
+
+pub use pluto_crypto::types::{SIGNATURE_LENGTH, Signature};
 
 /// Public key struct
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -608,24 +609,6 @@ where
     }
 }
 
-// todo: add proper signature type
-/// Signature type
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Signature(pub(crate) [u8; SIG_LEN]);
-
-impl Signature {
-    /// Create a new signature.
-    pub fn new(signature: [u8; SIG_LEN]) -> Self {
-        Signature(signature)
-    }
-}
-
-impl AsRef<[u8; SIG_LEN]> for Signature {
-    fn as_ref(&self) -> &[u8; SIG_LEN] {
-        &self.0
-    }
-}
-
 /// Signed data type
 pub trait SignedData: Any + DynClone + DynEq + StdDebug + Send + Sync {
     /// signature returns the signed duty data's signature.
@@ -635,6 +618,12 @@ pub trait SignedData: Any + DynClone + DynEq + StdDebug + Send + Sync {
     fn set_signature(&self, signature: Signature) -> Result<Self, SignedDataError>
     where
         Self: Sized;
+
+    /// Object-safe equivalent of [`SignedData::set_signature`].
+    fn set_signature_boxed(
+        &self,
+        signature: Signature,
+    ) -> Result<Box<dyn SignedData>, SignedDataError>;
 
     /// message_root returns the message root for the unsigned data.
     fn message_root(&self) -> Result<[u8; 32], SignedDataError>;
@@ -1101,11 +1090,18 @@ mod tests {
 
     impl SignedData for MockSignedData {
         fn signature(&self) -> Result<Signature, SignedDataError> {
-            Ok(Signature::new([42u8; SIG_LEN]))
+            Ok([42u8; SIGNATURE_LENGTH])
         }
 
         fn set_signature(&self, _signature: Signature) -> Result<Self, SignedDataError> {
             Ok(self.clone())
+        }
+
+        fn set_signature_boxed(
+            &self,
+            signature: Signature,
+        ) -> Result<Box<dyn SignedData>, SignedDataError> {
+            Ok(Box::new(self.set_signature(signature)?))
         }
 
         fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
@@ -1124,7 +1120,7 @@ mod tests {
         assert_eq!(retrieved.share_idx, 0);
         assert_eq!(
             retrieved.signed_data.signature().unwrap(),
-            Signature::new([42u8; SIG_LEN])
+            [42u8; SIGNATURE_LENGTH]
         );
     }
 

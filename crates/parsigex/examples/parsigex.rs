@@ -31,17 +31,17 @@
 //! ```bash
 //! # Terminal 1
 //! cargo run -p pluto-parsigex --example parsigex -- \
-//!   --relays https://0.relay.obol.tech,https://1.relay.obol.tech \
+//!   --relays https://pluto-relay-0.ovh.dev-nethermind.xyz,https://pluto-relay-1.ovh.dev-nethermind.xyz \
 //!   --data-dir ./cluster/node0 --share-idx 1
 //!
 //! # Terminal 2
 //! cargo run -p pluto-parsigex --example parsigex -- \
-//!   --relays https://0.relay.obol.tech,https://1.relay.obol.tech \
+//!   --relays https://pluto-relay-0.ovh.dev-nethermind.xyz,https://pluto-relay-1.ovh.dev-nethermind.xyz \
 //!   --data-dir ./cluster/node1 --share-idx 2
 //!
 //! # Terminal 3
 //! cargo run -p pluto-parsigex --example parsigex -- \
-//!   --relays https://0.relay.obol.tech,https://1.relay.obol.tech \
+//!   --relays https://pluto-relay-0.ovh.dev-nethermind.xyz,https://pluto-relay-1.ovh.dev-nethermind.xyz \
 //!   --data-dir ./cluster/node2 --share-idx 3
 //! ```
 //!
@@ -182,7 +182,7 @@ fn make_sample_set(slot: u64, share_idx: u64) -> ParSignedDataSet {
     let mut set = ParSignedDataSet::new();
     set.insert(
         pub_key,
-        SignedRandao::new_partial(slot / 32, [share_byte; 96], share_idx),
+        SignedRandao::new_partial(slot / 32, [share_byte; 96], u64::from(share_byte)),
     );
     set
 }

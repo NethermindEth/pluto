@@ -29,6 +29,13 @@ pub mod parsigdb;
 /// DutyDB — in-memory store for unsigned duty data.
 pub mod dutydb;
 
+/// ValidatorAPI — HTTP router that serves the validator-facing beacon API
+/// subset related to distributed validation and proxies the rest upstream.
+pub mod validatorapi;
+
+/// SigAgg — threshold BLS signature aggregation.
+pub mod sigagg;
+
 /// Cache of Validators retrieved from the Beacon node
 pub mod valcache;
 
@@ -44,6 +51,10 @@ mod parsigex_codec;
 pub(crate) mod ssz_codec;
 
 pub use parsigex_codec::ParSigExCodecError;
+
+/// Duty lifecycle tracker — monitors workflow steps and reports failures and
+/// participation.
+pub mod tracker;
 
 /// Test utilities.
 #[cfg(test)]

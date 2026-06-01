@@ -20,7 +20,7 @@ pub type PrivateKey = [u8; PRIVATE_KEY_LENGTH];
 /// Signature type (BLS12-381 G2 compressed)
 pub type Signature = [u8; SIGNATURE_LENGTH];
 /// Index type & total shares / threshold
-pub type Index = u8;
+pub type Index = u64;
 
 /// Error type for charon-crypto operations.
 ///

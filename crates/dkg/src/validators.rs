@@ -214,9 +214,7 @@ mod tests {
     fn set_registration_signature_updates_v1_signature() {
         let reg =
             make_core_registration([0x11; 48], [0x22; 20], 30_000_000, 1_746_843_400, [0; 96]);
-        let updated =
-            set_registration_signature(&reg, pluto_core::types::Signature::new([0x44; 96]))
-                .expect("should work");
+        let updated = set_registration_signature(&reg, [0x44u8; 96]).expect("should work");
 
         let builder_registration =
             builder_registration_from_eth2(&updated).expect("conversion should succeed");

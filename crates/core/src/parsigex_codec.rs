@@ -7,6 +7,8 @@
 
 use std::any::Any;
 
+use base64::Engine as _;
+
 use crate::{
     signeddata::{
         Attestation, BeaconCommitteeSelection, SignedAggregateAndProof, SignedRandao,
@@ -70,6 +72,21 @@ pub enum ParSigExCodecError {
     InvalidSignature(String),
 }
 
+fn serialize_signature(sig: &Signature) -> Result<Vec<u8>, ParSigExCodecError> {
+    let encoded = base64::engine::general_purpose::STANDARD.encode(sig);
+    Ok(serde_json::to_vec(&encoded)?)
+}
+
+fn deserialize_signature(bytes: &[u8]) -> Result<Box<dyn SignedData>, ParSigExCodecError> {
+    let encoded: String = serde_json::from_slice(bytes)?;
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|e| ParSigExCodecError::SignedData(format!("invalid base64: {e}")))?;
+    let sig: Signature = pluto_crypto::tblsconv::signature_from_bytes(&raw)
+        .map_err(|e| ParSigExCodecError::InvalidSignature(e.to_string()))?;
+    Ok(Box::new(sig))
+}
+
 pub(crate) fn serialize_signed_data(data: &dyn SignedData) -> Result<Vec<u8>, ParSigExCodecError> {
     let any = data as &dyn Any;
 
@@ -131,7 +148,9 @@ pub(crate) fn serialize_signed_data(data: &dyn SignedData) -> Result<Vec<u8>, Pa
     serialize_json!(VersionedSignedValidatorRegistration);
     serialize_json!(SignedVoluntaryExit);
     serialize_json!(SignedRandao);
-    serialize_json!(Signature);
+    if let Some(value) = any.downcast_ref::<Signature>() {
+        return serialize_signature(value);
+    }
     serialize_json!(BeaconCommitteeSelection);
     serialize_json!(SyncCommitteeSelection);
 
@@ -206,7 +225,7 @@ pub(crate) fn deserialize_signed_data(
         DutyType::Randao => deserialize_json!(SignedRandao),
 
         // -- Signature: JSON-only --
-        DutyType::Signature => deserialize_json!(Signature),
+        DutyType::Signature => deserialize_signature(bytes),
 
         // -- PrepareAggregator: JSON-only --
         DutyType::PrepareAggregator => deserialize_json!(BeaconCommitteeSelection),
@@ -262,6 +281,7 @@ pub(crate) fn deserialize_signed_data(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::SIGNATURE_LENGTH;
     use pluto_eth2api::{
         spec::{altair, phase0},
         versioned,
@@ -454,5 +474,41 @@ mod tests {
         let decoded: SignedAggregateAndProof =
             downcast(deserialize_signed_data(&DutyType::Aggregator, &json_bytes).unwrap());
         assert_eq!(sap, decoded);
+    }
+
+    #[test]
+    fn marshal_unmarshal_signature() {
+        let sig: Signature = [0xab; SIGNATURE_LENGTH];
+        let bytes = serialize_signed_data(&sig).unwrap();
+
+        // Snapshot: Signature serializes as a base64-encoded JSON string.
+        // Changing this breaks wire compatibility with Charon.
+        const EXPECTED: &str = "\"q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6ur\"";
+        assert_eq!(bytes, EXPECTED.as_bytes());
+
+        let decoded: Signature =
+            downcast(deserialize_signed_data(&DutyType::Signature, &bytes).unwrap());
+        assert_eq!(sig, decoded);
+    }
+
+    #[test]
+    fn deserialize_signature_invalid_base64() {
+        let err = deserialize_signed_data(&DutyType::Signature, br#""%%%""#).unwrap_err();
+        assert!(
+            matches!(err, ParSigExCodecError::SignedData(_)),
+            "expected SignedData error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn deserialize_signature_wrong_length() {
+        let short =
+            base64::engine::general_purpose::STANDARD.encode([0x11_u8; SIGNATURE_LENGTH - 1]);
+        let input = format!("\"{short}\"");
+        let err = deserialize_signed_data(&DutyType::Signature, input.as_bytes()).unwrap_err();
+        assert!(
+            matches!(err, ParSigExCodecError::InvalidSignature(_)),
+            "expected InvalidSignature error, got {err:?}"
+        );
     }
 }

@@ -956,11 +956,6 @@ fn get_tss_shares(
     let mut dvs = Vec::new();
     let mut splits = Vec::new();
 
-    let num_nodes = u8::try_from(num_nodes)
-        .map_err(|_| CreateClusterError::ValueExceedsU8 { value: num_nodes })?;
-    let threshold = u8::try_from(threshold)
-        .map_err(|_| CreateClusterError::ValueExceedsU8 { value: threshold })?;
-
     for secret in secrets {
         let shares = tbls.threshold_split(secret, num_nodes, threshold)?;
 
@@ -2535,7 +2530,7 @@ mod tests {
 
                 let ks: keystore::Keystore = serde_json::from_str(&req.keystores[0]).unwrap();
                 let secret = keystore::decrypt(&ks, &req.passwords[0]).unwrap();
-                shares.insert(u8::try_from(i + 1).unwrap(), secret);
+                shares.insert(u64::try_from(i + 1).unwrap(), secret);
             }
 
             let recovered = tbls_impl.recover_secret(&shares).unwrap();
