@@ -132,6 +132,9 @@ pub struct Handle {
 
 impl Handle {
     /// Enqueues a QBFT message for async broadcast to every non-self peer.
+    ///
+    /// The token is accepted for the shared broadcaster shape. After enqueue,
+    /// network fanout is best-effort and is not cancelled by this token.
     pub async fn broadcast(
         &self,
         _ct: CancellationToken,
@@ -487,7 +490,8 @@ impl Behaviour {
     /// Fans a broadcast command out to every non-self peer.
     fn handle_broadcast(&mut self, command: BroadcastCommand) {
         let mut target_count = 0usize;
-        for peer_id in self.config.peers.clone() {
+        for peer_idx in 0..self.config.peers.len() {
+            let peer_id = self.config.peers[peer_idx];
             if peer_id == self.config.local_peer_id {
                 continue;
             }

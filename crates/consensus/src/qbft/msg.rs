@@ -25,9 +25,6 @@
 //! message types, while invalid duty wire values project to
 //! [`DutyType::Unknown`].
 
-// TODO: Remove once component/transport wiring uses the crate-visible helpers.
-#![allow(dead_code)]
-
 use std::{any, collections::HashMap, fmt, sync};
 
 use k256::{PublicKey, SecretKey};
