@@ -90,17 +90,17 @@ type Result<T> = std::result::Result<T, SchedulerError>;
 /// Allows setting up subscriptions for slot and duty events, as well as
 /// well as setting up a source of chain reorg events.
 ///
-/// The Scheduler can be started by calling [`Builder::build`].
-pub struct Builder {
+/// The Scheduler can be started by calling [`SchedulerBuilder::build`].
+pub struct SchedulerBuilder {
     slot_broadcast: sync::broadcast::Sender<types::Slot>,
     duty_broadcast: sync::broadcast::Sender<(types::Duty, types::DutyDefinitionSet)>,
     reorg_rx: sync::mpsc::Receiver<u64>,
 }
 
-impl Builder {
-    /// Construct a default [`Builder`] with no chain reorg handling.
+impl SchedulerBuilder {
+    /// Construct a default [`SchedulerBuilder`] with no chain reorg handling.
     pub fn new() -> Self {
-        Builder {
+        SchedulerBuilder {
             slot_broadcast: sync::broadcast::channel(100).0,
             duty_broadcast: sync::broadcast::channel(100).0,
             reorg_rx: sync::mpsc::channel(100).1, // A channel that never receives
@@ -186,13 +186,13 @@ impl Builder {
     /// Listeners for duties and slots should be registered before calling this
     /// function.
     ///
-    /// The returned [`Handle`] can be used to query the scheduler for duty
-    /// definitions.
+    /// The returned [`SchedulerHandle`] can be used to query the scheduler for
+    /// duty definitions.
     pub async fn build(
         self,
         client: client::EthBeaconNodeApiClient,
         ct: CancellationToken,
-    ) -> Result<Handle> {
+    ) -> Result<SchedulerHandle> {
         wait_chain_start(&client)
             .with_cancellation_token(&ct)
             .await
@@ -204,7 +204,7 @@ impl Builder {
 
         let slot_rx = new_slot_ticker(&client.clone(), ct.clone()).await?;
 
-        let actor = Actor {
+        let actor = SchedulerActor {
             client: client.clone(),
             // TODO: Figure out what to pass as `pub_keys`.
             // In Charon, these are not used (dead code)
@@ -219,19 +219,19 @@ impl Builder {
         };
 
         let (msg_tx, msg_rx) = sync::mpsc::channel(100);
-        let handle = Handle { sender: msg_tx };
+        let handle = SchedulerHandle { sender: msg_tx };
         tokio::spawn(actor.run(slot_rx, msg_rx, self.reorg_rx, ct));
 
         Ok(handle)
     }
 }
 
-impl Default for Builder {
+impl Default for SchedulerBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
-enum Message {
+enum SchedulerMessage {
     GetDutyDefinition {
         duty: types::Duty,
         resp: sync::oneshot::Sender<Result<types::DutyDefinitionSet>>,
@@ -243,18 +243,18 @@ enum Message {
 /// Cloning the handle is cheap and allows sending messages to the actor from
 /// multiple tasks.
 #[derive(Clone)]
-pub struct Handle {
-    sender: sync::mpsc::Sender<Message>,
+pub struct SchedulerHandle {
+    sender: sync::mpsc::Sender<SchedulerMessage>,
 }
 
-impl Handle {
+impl SchedulerHandle {
     /// Returns the definition for a duty if a definition exists for a resolved
     /// epoch.
     ///
     /// NOTE: this operation has a default timeout of 100 ms.
     pub async fn get_duty_definition(&self, duty: types::Duty) -> Result<types::DutyDefinitionSet> {
         let (tx, rx) = sync::oneshot::channel();
-        let msg = Message::GetDutyDefinition { duty, resp: tx };
+        let msg = SchedulerMessage::GetDutyDefinition { duty, resp: tx };
 
         self.sender
             .send(msg)
@@ -270,7 +270,7 @@ impl Handle {
     }
 }
 
-struct Actor {
+struct SchedulerActor {
     client: client::EthBeaconNodeApiClient,
     valcache: valcache::ValidatorCache,
 
@@ -282,11 +282,11 @@ struct Actor {
     duties_by_epoch: HashMap<u64, Vec<types::Duty>>,
 }
 
-impl Actor {
+impl SchedulerActor {
     async fn run(
         mut self,
         mut slot_rx: sync::mpsc::Receiver<types::Slot>,
-        mut msg_rx: sync::mpsc::Receiver<Message>,
+        mut msg_rx: sync::mpsc::Receiver<SchedulerMessage>,
         mut reorg_rx: sync::mpsc::Receiver<u64>,
         ct: CancellationToken,
     ) {
@@ -301,7 +301,7 @@ impl Actor {
                 },
 
                 Some(msg) = msg_rx.recv() => match msg {
-                    Message::GetDutyDefinition { duty, resp } => {
+                    SchedulerMessage::GetDutyDefinition { duty, resp } => {
                         let result = self.get_duty_definition(duty).await;
                         let _ = resp.send(result);
                     },
@@ -1056,7 +1056,7 @@ mod tests {
     /// The `ValidatorSetA` validators as `/states/head/validators`.
     ///
     /// NOTE: the default mock only serves this endpoint over GET, but
-    /// `valcache::get_by_head` queries it over POST.
+    /// [`valcache::ValidatorCache::get_by_head`] queries it over POST.
     fn validator_set_a_datums() -> Vec<GetStateValidatorsResponseResponseDatum> {
         ValidatorSet::validator_set_a()
             .validators()
@@ -1071,7 +1071,7 @@ mod tests {
     }
 
     /// `ValidatorSetA` validators with their real indexes but random pubkeys,
-    /// to force the `InvalidDutyPubkey` mismatch path
+    /// to force the [`SchedulerError::InvalidDutyPubkey`] mismatch path
     fn validator_set_a_mismatched() -> Vec<Validator> {
         ValidatorSet::validator_set_a()
             .validators()
@@ -1084,7 +1084,7 @@ mod tests {
     }
 
     /// Mounts the POST `/states/head/validators` endpoint used by
-    /// `valcache::get_by_head`.
+    /// [`valcache::ValidatorCache::get_by_head`].
     async fn mount_head_validators(
         mock: &BeaconMock,
         data: Vec<GetStateValidatorsResponseResponseDatum>,
@@ -1102,11 +1102,11 @@ mod tests {
             .await;
     }
 
-    /// Builds an initial `Actor` wired to the mock's client. No epoch resolved
-    /// yet.
-    fn test_actor(mock: &BeaconMock) -> Actor {
+    /// Builds an initial [`SchedulerActor`] wired to the mock's client. No
+    /// epoch resolved yet.
+    fn test_actor(mock: &BeaconMock) -> SchedulerActor {
         let client = mock.client().clone();
-        Actor {
+        SchedulerActor {
             client: client.clone(),
             valcache: valcache::ValidatorCache::new(client, Vec::new()),
             slot_broadcast: sync::broadcast::channel(100).0,
@@ -1117,7 +1117,7 @@ mod tests {
         }
     }
 
-    /// A `Slot` dated far in the past so `delay_slot_offset` deadlines have
+    /// A [`types::Slot`] dated far in the past so `delay_slot_offset` deadlines have
     /// already elapsed and duty broadcasts fire immediately.
     fn test_past_slot(slot: u64, slots_per_epoch: u64) -> types::Slot {
         types::Slot {
@@ -1143,23 +1143,23 @@ mod tests {
     }
 
     /// Drives the actor's `run` loop with test-controlled channels.
-    struct Harness {
+    struct TestHarness {
         slot_tx: sync::mpsc::Sender<types::Slot>,
         reorg_tx: sync::mpsc::Sender<u64>,
-        handle: Handle,
+        handle: SchedulerHandle,
         slot_sub: sync::broadcast::Receiver<types::Slot>,
         duty_sub: sync::broadcast::Receiver<(types::Duty, types::DutyDefinitionSet)>,
         ct: CancellationToken,
     }
 
-    fn spawn_actor(mock: &BeaconMock) -> Harness {
+    fn spawn_actor(mock: &BeaconMock) -> TestHarness {
         let client = mock.client().clone();
         let slot_broadcast = sync::broadcast::channel(100).0;
         let duty_broadcast = sync::broadcast::channel(100).0;
         let slot_sub = slot_broadcast.subscribe();
         let duty_sub = duty_broadcast.subscribe();
 
-        let actor = Actor {
+        let actor = SchedulerActor {
             client: client.clone(),
             valcache: valcache::ValidatorCache::new(client, Vec::new()),
             slot_broadcast,
@@ -1176,10 +1176,10 @@ mod tests {
 
         tokio::spawn(actor.run(slot_rx, msg_rx, reorg_rx, ct.clone()));
 
-        Harness {
+        TestHarness {
             slot_tx,
             reorg_tx,
-            handle: Handle { sender: msg_tx },
+            handle: SchedulerHandle { sender: msg_tx },
             slot_sub,
             duty_sub,
             ct,
