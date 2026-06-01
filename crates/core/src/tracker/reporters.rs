@@ -4,26 +4,17 @@ use std::collections::HashMap;
 
 use crate::{
     tracker::{
-        PeerInfo, StepError,
+        PeerInfo,
         analysis::{DutyFailure, ParSigsByMsg, expect_inconsistent_par_sigs, msg_roots_consistent},
         metrics::TRACKER_METRICS,
-        reason::{
-            REASON_SYNC_CONTRIBUTION_ZERO_PREPARES, REASON_ZERO_AGGREGATOR_SELECTIONS, Reason,
-        },
+        reason::{REASON_SYNC_CONTRIBUTION_ZERO_PREPARES, REASON_ZERO_AGGREGATOR_SELECTIONS},
         step::Step,
     },
     types::{Duty, DutyType},
 };
 
 pub(crate) trait DutyResultReporter: Send {
-    fn report(
-        &mut self,
-        duty: &Duty,
-        failed: bool,
-        step: Step,
-        reason: Reason,
-        err: Option<&StepError>,
-    );
+    fn report(&mut self, duty: &Duty, failed: bool, result: &DutyFailure);
 }
 
 pub(crate) trait ParticipationReporter: Send {
@@ -54,19 +45,12 @@ impl MetricsDutyReporter {
     }
 
     /// Reports the outcome of a duty: logs a warning on failure and updates
-    /// per-duty counters.
-    pub fn report(
-        &self,
-        duty: &Duty,
-        failed: bool,
-        step: Step,
-        reason: Reason,
-        err: Option<&StepError>,
-    ) {
+    /// per-duty counters. On success only `result.step` is read.
+    pub fn report(&self, duty: &Duty, failed: bool, result: &DutyFailure) {
         if !failed {
             // Skip fetcher-level success counts to avoid double-counting duties
             // (matches Go's TODO around aggregator detection).
-            if step == Step::Fetcher {
+            if result.step == Step::Fetcher {
                 return;
             }
             let dt = duty.duty_type.to_string();
@@ -75,19 +59,19 @@ impl MetricsDutyReporter {
             return;
         }
 
-        match err {
+        match result.err.as_ref() {
             Some(e) => tracing::warn!(
-                step = %step,
-                reason = %reason.short,
-                reason_code = %reason.code,
+                step = %result.step,
+                reason = %result.reason.short,
+                reason_code = %result.reason.code,
                 error = %e,
                 duty = %duty,
                 "Duty failed",
             ),
             None => tracing::warn!(
-                step = %step,
-                reason = %reason.short,
-                reason_code = %reason.code,
+                step = %result.step,
+                reason = %result.reason.short,
+                reason_code = %result.reason.code,
                 duty = %duty,
                 "Duty failed",
             ),
@@ -96,7 +80,7 @@ impl MetricsDutyReporter {
         let dt = duty.duty_type.to_string();
         TRACKER_METRICS.expect_duties_total[&dt].inc();
         TRACKER_METRICS.failed_duties_total[&dt].inc();
-        TRACKER_METRICS.failed_duty_reasons_total[&(dt, reason.code.to_string())].inc();
+        TRACKER_METRICS.failed_duty_reasons_total[&(dt, result.reason.code.to_string())].inc();
     }
 }
 
@@ -107,15 +91,8 @@ impl Default for MetricsDutyReporter {
 }
 
 impl DutyResultReporter for MetricsDutyReporter {
-    fn report(
-        &mut self,
-        duty: &Duty,
-        failed: bool,
-        step: Step,
-        reason: Reason,
-        err: Option<&StepError>,
-    ) {
-        MetricsDutyReporter::report(self, duty, failed, step, reason, err);
+    fn report(&mut self, duty: &Duty, failed: bool, result: &DutyFailure) {
+        MetricsDutyReporter::report(self, duty, failed, result);
     }
 }
 
@@ -266,7 +243,7 @@ impl MetricsParticipationReporter {
 
         // Only log when the absent set changes from the previous duty of this
         // type, to avoid log spam every slot.
-        if self.prev_absent.get(&duty.duty_type) == Some(&absent) {
+        if self.prev_absent.get(&duty.duty_type) != Some(&absent) {
             if absent.is_empty() {
                 tracing::info!(duty = %duty, "All peers participated in duty");
             } else if absent.len() == self.peers.len() {

@@ -38,7 +38,8 @@ use crate::{
 };
 
 use analysis::{
-    analyse_duty_failed, analyse_participation, extract_par_sigs, msg_roots_consistent,
+    DutyFailure, analyse_duty_failed, analyse_participation, duty_failed_step, extract_par_sigs,
+    msg_roots_consistent,
 };
 use reason::REASON_UNKNOWN;
 use reporters::{
@@ -407,21 +408,25 @@ impl TrackerService {
         let parsigs = extract_par_sigs(duty_events);
         report_par_sigs(duty, &parsigs);
 
-        let outcome = analyse_duty_failed(duty, events, msg_roots_consistent(&parsigs));
+        let failed_step = duty_failed_step(duty_events);
+        let outcome =
+            analyse_duty_failed(duty, events, &failed_step, msg_roots_consistent(&parsigs));
 
         if self.unsupported_ignorer.check(duty, outcome.as_ref()) {
             return;
         }
 
         let failed = outcome.is_some();
-        let (step, reason, err) = outcome
-            .as_ref()
-            .map_or((Step::Zero, REASON_UNKNOWN, None), |f| {
-                (f.step, f.reason, f.err.as_ref())
-            });
+        // On success the reporter only reads `step`: `Fetcher` for
+        // aggregator/sync-contribution slots with no selection (a no-op the
+        // reporter must skip, not count) versus `Zero` for a genuine success.
+        let result = outcome.unwrap_or(DutyFailure {
+            step: failed_step.step,
+            reason: REASON_UNKNOWN,
+            err: None,
+        });
 
-        self.failed_duty_reporter
-            .report(duty, failed, step, reason, err);
+        self.failed_duty_reporter.report(duty, failed, &result);
 
         let part = analyse_participation(duty, events);
         self.participation_reporter.report(
@@ -534,20 +539,13 @@ mod tests {
     }
 
     impl DutyResultReporter for RecordingFailureReporter {
-        fn report(
-            &mut self,
-            duty: &Duty,
-            failed: bool,
-            step: Step,
-            reason: Reason,
-            _err: Option<&StepError>,
-        ) {
+        fn report(&mut self, duty: &Duty, failed: bool, result: &DutyFailure) {
             let mut recs = self.records.lock().unwrap();
             recs.push(FailRecord {
                 duty: duty.clone(),
                 failed,
-                step,
-                reason,
+                step: result.step,
+                reason: result.reason,
             });
             if recs.len() >= self.trigger_on {
                 self.cancel.cancel();
@@ -587,7 +585,7 @@ mod tests {
     struct NopFailureReporter;
 
     impl DutyResultReporter for NopFailureReporter {
-        fn report(&mut self, _: &Duty, _: bool, _: Step, _: Reason, _: Option<&StepError>) {}
+        fn report(&mut self, _: &Duty, _: bool, _: &DutyFailure) {}
     }
 
     struct NopParticipationReporter;

@@ -86,14 +86,29 @@ pub struct DutyFailure {
     pub err: Option<StepError>,
 }
 
-/// Returns whether the duty failed, the step where it got stuck, and the
-/// last error reported by that step.
+/// The step at which a duty stopped progressing.
+#[derive(Debug, Clone)]
+pub(crate) struct DutyFailedStep {
+    /// Whether the duty failed, i.e. did not reach its terminal step.
+    pub failed: bool,
+    /// The step the duty got stuck at; `Zero` on success.
+    pub step: Step,
+    /// The error reported by that step, if any.
+    pub err: Option<StepError>,
+}
+
+/// Locates the step where a duty got stuck, the last error reported by that
+/// step, and whether the duty failed.
 ///
 /// An empty event slice indicates a duty
 /// that failed before any event was recorded (returns `step = Zero`).
-pub(crate) fn duty_failed_step(events: &[Event]) -> (bool, Step, Option<StepError>) {
+pub(crate) fn duty_failed_step(events: &[Event]) -> DutyFailedStep {
     if events.is_empty() {
-        return (true, Step::Zero, None);
+        return DutyFailedStep {
+            failed: true,
+            step: Step::Zero,
+            err: None,
+        };
     }
 
     let mut events_by_step: HashMap<Step, Vec<&Event>> = HashMap::new();
@@ -124,36 +139,47 @@ pub(crate) fn duty_failed_step(events: &[Event]) -> (bool, Step, Option<StepErro
         .next();
 
     let Some(last) = last else {
-        return (true, Step::Zero, None);
+        return DutyFailedStep {
+            failed: true,
+            step: Step::Zero,
+            err: None,
+        };
     };
 
     // Determine if the final step was successful. Use the duty type from the
     // first event (all events in the slice share the same duty).
     let last_for_duty = last_step(&events[0].duty.duty_type);
     if last.step == last_for_duty && last.step_err.is_none() {
-        return (false, Step::Zero, None);
+        return DutyFailedStep {
+            failed: false,
+            step: Step::Zero,
+            err: None,
+        };
     }
 
-    (true, last.step, last.step_err.clone())
+    DutyFailedStep {
+        failed: true,
+        step: last.step,
+        err: last.step_err.clone(),
+    }
 }
 
 /// Analyses whether a duty failed and, if so, why.
 pub(crate) fn analyse_duty_failed(
     duty: &Duty,
     all_events: &HashMap<Duty, Vec<Event>>,
+    failed_step: &DutyFailedStep,
     msg_root_consistent: bool,
 ) -> Option<DutyFailure> {
-    let events = all_events.get(duty).map(Vec::as_slice).unwrap_or(&[]);
-    let (failed, failed_step, failed_err) = duty_failed_step(events);
-    if !failed {
+    if !failed_step.failed {
         return None;
     }
 
     let mut reason = REASON_UNKNOWN;
-    let mut step = failed_step;
-    let mut err = failed_err;
+    let mut step = failed_step.step;
+    let mut err = failed_step.err.clone();
 
-    match failed_step {
+    match failed_step.step {
         Step::Fetcher => return analyse_fetcher_failed(duty, all_events, err),
         Step::Consensus => {
             if err.is_some() {
@@ -220,7 +246,7 @@ pub(crate) fn analyse_duty_failed(
         _ => {
             err = Some(string_error(&format!(
                 "duty failed at step {}",
-                failed_step
+                failed_step.step
             )));
         }
     }
@@ -272,10 +298,10 @@ fn analyse_fetcher_failed_proposer(
         .get(&randao_duty)
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let (randao_failed, randao_step, _) = duty_failed_step(randao_events);
+    let randao = duty_failed_step(randao_events);
 
-    let reason = if randao_failed {
-        match randao_step {
+    let reason = if randao.failed {
+        match randao.step {
             Step::ParSigEx => REASON_PROPOSER_NO_EXTERNAL_RANDAOS,
             Step::ParSigDBExternal => REASON_PROPOSER_INSUFFICIENT_RANDAOS,
             Step::Zero => REASON_PROPOSER_ZERO_RANDAOS,
@@ -304,10 +330,10 @@ fn analyse_fetcher_failed_aggregator(
         .get(&prep_agg_duty)
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let (prep_failed, prep_step, _) = duty_failed_step(prep_events);
+    let prep = duty_failed_step(prep_events);
 
-    if prep_failed {
-        let reason = match prep_step {
+    if prep.failed {
+        let reason = match prep.step {
             Step::ParSigEx => REASON_NO_AGGREGATOR_SELECTIONS,
             Step::ParSigDBExternal => REASON_INSUFFICIENT_AGGREGATOR_SELECTIONS,
             Step::Zero => REASON_ZERO_AGGREGATOR_SELECTIONS,
@@ -325,9 +351,9 @@ fn analyse_fetcher_failed_aggregator(
         .get(&attester_duty)
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let (att_failed, att_step, _) = duty_failed_step(att_events);
+    let att = duty_failed_step(att_events);
 
-    let reason = if att_failed && att_step <= Step::DutyDB {
+    let reason = if att.failed && att.step <= Step::DutyDB {
         REASON_MISSING_AGGREGATOR_ATTESTATION
     } else {
         REASON_BUG_FETCH_ERROR
@@ -349,10 +375,10 @@ fn analyse_fetcher_failed_sync_contribution(
 
     let prep_duty = Duty::new_prepare_sync_contribution_duty(duty.slot);
     let prep_events = all_events.get(&prep_duty).map(Vec::as_slice).unwrap_or(&[]);
-    let (prep_failed, prep_step, _) = duty_failed_step(prep_events);
+    let prep = duty_failed_step(prep_events);
 
-    if prep_failed {
-        let reason = match prep_step {
+    if prep.failed {
+        let reason = match prep.step {
             Step::ParSigEx => REASON_SYNC_CONTRIBUTION_NO_EXTERNAL_PREPARES,
             Step::ParSigDBExternal => REASON_SYNC_CONTRIBUTION_FEW_PREPARES,
             Step::Zero => REASON_SYNC_CONTRIBUTION_ZERO_PREPARES,
@@ -370,9 +396,9 @@ fn analyse_fetcher_failed_sync_contribution(
         .get(&sync_msg_duty)
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let (sync_failed, sync_step, _) = duty_failed_step(sync_events);
+    let sync = duty_failed_step(sync_events);
 
-    let reason = if sync_failed && sync_step <= Step::AggSigDB {
+    let reason = if sync.failed && sync.step <= Step::AggSigDB {
         REASON_SYNC_CONTRIBUTION_NO_SYNC_MSG
     } else {
         REASON_BUG_FETCH_ERROR
@@ -555,6 +581,17 @@ mod tests {
         PubKey::from([byte; 48])
     }
 
+    /// Computes the failed step for `duty` and runs the failure analysis,
+    /// mirroring how `TrackerService::analyse` wires the two together.
+    fn analyse_failed(
+        duty: &Duty,
+        events: &HashMap<Duty, Vec<Event>>,
+        msg_root_consistent: bool,
+    ) -> Option<DutyFailure> {
+        let failed_step = duty_failed_step(events.get(duty).map(Vec::as_slice).unwrap_or(&[]));
+        analyse_duty_failed(duty, events, &failed_step, msg_root_consistent)
+    }
+
     fn evt(duty: Duty, step: Step) -> Event {
         Event {
             duty,
@@ -659,7 +696,7 @@ mod tests {
             Step::Fetcher,
             "fetcher failed",
         ));
-        let r = analyse_duty_failed(&att, &events, true).unwrap();
+        let r = analyse_failed(&att, &events, true).unwrap();
         assert_eq!(r.step, Step::Fetcher);
         assert_eq!(r.reason, REASON_BUG_FETCH_ERROR);
         assert!(r.err.is_some());
@@ -670,7 +707,7 @@ mod tests {
             Step::Consensus,
             "consensus failed",
         ));
-        let r = analyse_duty_failed(&att, &events, true).unwrap();
+        let r = analyse_failed(&att, &events, true).unwrap();
         assert_eq!(r.step, Step::Consensus);
         assert_eq!(r.reason, REASON_NO_CONSENSUS);
 
@@ -679,7 +716,7 @@ mod tests {
             .entry(att.clone())
             .or_default()
             .push(evt(att.clone(), Step::DutyDB));
-        let r = analyse_duty_failed(&att, &events, true).unwrap();
+        let r = analyse_failed(&att, &events, true).unwrap();
         assert_eq!(r.step, Step::ValidatorAPI);
         assert_eq!(r.reason, REASON_NO_LOCAL_VC_SIGNATURE);
         assert!(r.err.is_none());
@@ -690,7 +727,7 @@ mod tests {
             Step::ParSigDBInternal,
             "parsigdb_internal failed",
         ));
-        let r = analyse_duty_failed(&att, &events, true).unwrap();
+        let r = analyse_failed(&att, &events, true).unwrap();
         assert_eq!(r.step, Step::ParSigDBInternal);
         assert_eq!(r.reason, REASON_BUG_PAR_SIG_DB_INTERNAL);
 
@@ -699,7 +736,7 @@ mod tests {
             .entry(att.clone())
             .or_default()
             .push(evt(att.clone(), Step::ParSigEx));
-        let r = analyse_duty_failed(&att, &events, true).unwrap();
+        let r = analyse_failed(&att, &events, true).unwrap();
         assert_eq!(r.step, Step::ParSigEx);
         assert_eq!(r.reason, REASON_NO_PEER_SIGNATURES);
 
@@ -709,7 +746,7 @@ mod tests {
             Step::ParSigDBExternal,
             "parsigdb_external failed",
         ));
-        let r = analyse_duty_failed(&att, &events, true).unwrap();
+        let r = analyse_failed(&att, &events, true).unwrap();
         assert_eq!(r.step, Step::ParSigDBExternal);
         assert_eq!(r.reason, REASON_BUG_PAR_SIG_DB_EXTERNAL);
 
@@ -718,18 +755,18 @@ mod tests {
             .entry(att.clone())
             .or_default()
             .push(evt(att.clone(), Step::ParSigDBExternal));
-        let r = analyse_duty_failed(&att, &events, true).unwrap();
+        let r = analyse_failed(&att, &events, true).unwrap();
         assert_eq!(r.step, Step::ParSigDBExternal);
         assert_eq!(r.reason, REASON_INSUFFICIENT_PEER_SIGNATURES);
 
-        let r = analyse_duty_failed(&att, &events, false).unwrap();
+        let r = analyse_failed(&att, &events, false).unwrap();
         assert_eq!(r.step, Step::ParSigDBExternal);
         assert_eq!(r.reason, REASON_BUG_PAR_SIG_DB_INCONSISTENT);
 
         // Sync-committee duty reuses the same events for the inconsistent case.
         let sync_msg = Duty::new_sync_message_duty(SlotNumber::new(1));
         events.insert(sync_msg.clone(), events.get(&att).cloned().unwrap());
-        let r = analyse_duty_failed(&sync_msg, &events, false).unwrap();
+        let r = analyse_failed(&sync_msg, &events, false).unwrap();
         assert_eq!(r.step, Step::ParSigDBExternal);
         assert_eq!(r.reason, REASON_PAR_SIG_DB_INCONSISTENT_SYNC);
 
@@ -739,7 +776,7 @@ mod tests {
             Step::Bcast,
             "bcast failed",
         ));
-        let r = analyse_duty_failed(&att, &events, true).unwrap();
+        let r = analyse_failed(&att, &events, true).unwrap();
         assert_eq!(r.step, Step::Bcast);
         assert_eq!(r.reason, REASON_BROADCAST_BN_ERROR);
 
@@ -749,7 +786,7 @@ mod tests {
             Step::ChainInclusion,
             "not included on chain",
         ));
-        let r = analyse_duty_failed(&att, &events, true).unwrap();
+        let r = analyse_failed(&att, &events, true).unwrap();
         assert_eq!(r.step, Step::ChainInclusion);
         assert_eq!(r.reason, REASON_NOT_INCLUDED_ON_CHAIN);
     }
@@ -778,7 +815,7 @@ mod tests {
         );
 
         // Randao reached ParSigEx → ProposerNoExternalRandaos.
-        let r = analyse_duty_failed(&proposer, &events, true).unwrap();
+        let r = analyse_failed(&proposer, &events, true).unwrap();
         assert_eq!(r.step, Step::Fetcher);
         assert_eq!(r.reason, REASON_PROPOSER_NO_EXTERNAL_RANDAOS);
 
@@ -787,12 +824,12 @@ mod tests {
             .get_mut(&randao)
             .unwrap()
             .push(evt(randao.clone(), Step::ParSigDBExternal));
-        let r = analyse_duty_failed(&proposer, &events, true).unwrap();
+        let r = analyse_failed(&proposer, &events, true).unwrap();
         assert_eq!(r.reason, REASON_PROPOSER_INSUFFICIENT_RANDAOS);
 
         // No Randao events at all → ProposerZeroRandaos.
         events.insert(randao, vec![]);
-        let r = analyse_duty_failed(&proposer, &events, true).unwrap();
+        let r = analyse_failed(&proposer, &events, true).unwrap();
         assert_eq!(r.reason, REASON_PROPOSER_ZERO_RANDAOS);
     }
 
@@ -820,7 +857,7 @@ mod tests {
         ))
         .collect();
 
-        assert!(analyse_duty_failed(&att, &events, true).is_none());
+        assert!(analyse_failed(&att, &events, true).is_none());
     }
 
     #[test]
@@ -840,15 +877,15 @@ mod tests {
         ];
         let events: Vec<Event> = steps.iter().map(|s| evt(att.clone(), *s)).collect();
 
-        let (failed, step, err) = duty_failed_step(&events);
-        assert!(!failed);
-        assert_eq!(step, Step::Zero);
-        assert!(err.is_none());
+        let r = duty_failed_step(&events);
+        assert!(!r.failed);
+        assert_eq!(r.step, Step::Zero);
+        assert!(r.err.is_none());
 
-        let (failed, step, err) = duty_failed_step(&[]);
-        assert!(failed);
-        assert_eq!(step, Step::Zero);
-        assert!(err.is_none());
+        let r = duty_failed_step(&[]);
+        assert!(r.failed);
+        assert_eq!(r.step, Step::Zero);
+        assert!(r.err.is_none());
     }
 
     #[test]
@@ -875,20 +912,20 @@ mod tests {
             }
         }
 
-        let (failed, step, err) = duty_failed_step(&events);
-        assert!(failed);
-        assert_eq!(step, Step::Bcast);
-        assert!(err.is_some());
+        let r = duty_failed_step(&events);
+        assert!(r.failed);
+        assert_eq!(r.step, Step::Bcast);
+        assert!(r.err.is_some());
 
         // Now also append success (no-error) events for every step. The
         // newest event at the terminal step has no error → success.
         for s in steps {
             events.push(evt(att.clone(), s));
         }
-        let (failed, step, err) = duty_failed_step(&events);
-        assert!(!failed);
-        assert_eq!(step, Step::Zero);
-        assert!(err.is_none());
+        let r = duty_failed_step(&events);
+        assert!(!r.failed);
+        assert_eq!(r.step, Step::Zero);
+        assert!(r.err.is_none());
     }
 
     #[test]
@@ -1185,12 +1222,22 @@ mod tests {
         ];
 
         for c in cases {
-            let r = analyse_duty_failed(&c.duty, &c.events, true);
+            let r = analyse_failed(&c.duty, &c.events, true);
             assert_eq!(r.is_some(), c.failed, "{}: failed mismatch", c.name);
             if let Some(f) = r {
                 assert_eq!(f.reason, c.reason, "{}: reason mismatch", c.name);
                 assert_eq!(f.step, Step::Fetcher, "{}: step mismatch", c.name);
                 assert_eq!(f.err.is_some(), c.has_err, "{}: err presence", c.name);
+            } else {
+                // Not-failed fetcher cases (no aggregator/sync selected this
+                // slot) must surface as `Step::Fetcher` so the metrics reporter
+                // skips them rather than counting a success.
+                assert_eq!(
+                    duty_failed_step(&c.events[&c.duty]).step,
+                    Step::Fetcher,
+                    "{}: expected fetcher no-op step",
+                    c.name
+                );
             }
         }
     }
@@ -1397,7 +1444,7 @@ mod tests {
         // consensus with nil error → REASON_UNKNOWN (Go's reasonUnknown).
         let mut events = HashMap::new();
         events.insert(att.clone(), vec![evt(att.clone(), Step::Consensus)]);
-        let r = analyse_duty_failed(&att, &events, false).unwrap();
+        let r = analyse_failed(&att, &events, false).unwrap();
         assert_eq!(r.step, Step::Consensus);
         assert_eq!(r.reason, REASON_UNKNOWN);
         assert!(r.err.is_none());
@@ -1412,7 +1459,7 @@ mod tests {
                 "parsigex broadcast err",
             )],
         );
-        let r = analyse_duty_failed(&att, &events, false).unwrap();
+        let r = analyse_failed(&att, &events, false).unwrap();
         assert_eq!(r.step, Step::ParSigEx);
         assert_eq!(r.reason, REASON_UNKNOWN);
         assert!(r.err.is_some());
@@ -1420,7 +1467,7 @@ mod tests {
         // sigAgg with nil error → REASON_UNKNOWN.
         let mut events = HashMap::new();
         events.insert(att.clone(), vec![evt(att.clone(), Step::SigAgg)]);
-        let r = analyse_duty_failed(&att, &events, false).unwrap();
+        let r = analyse_failed(&att, &events, false).unwrap();
         assert_eq!(r.step, Step::SigAgg);
         assert_eq!(r.reason, REASON_UNKNOWN);
         assert!(r.err.is_none());
