@@ -7,7 +7,10 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, Query, State, rejection::QueryRejection},
+    extract::{
+        DefaultBodyLimit, Path, Query, State,
+        rejection::{JsonRejection, QueryRejection},
+    },
     http::StatusCode,
     response::IntoResponse,
     routing::{MethodRouter, get, post},
@@ -142,8 +145,9 @@ pub fn new_router(handler: Arc<dyn Handler>, builder_enabled: bool) -> Router {
 async fn attester_duties(
     State(state): State<Arc<AppState>>,
     Path(epoch): Path<u64>,
-    Json(indices): Json<ValIndexes>,
+    indices: Result<Json<ValIndexes>, JsonRejection>,
 ) -> Result<Json<AttesterDutiesResponse>, ApiError> {
+    let Json(indices) = indices.map_err(json_rejection_to_api_error)?;
     let response = state
         .handler
         .attester_duties(AttesterDutiesOpts {
@@ -170,8 +174,9 @@ async fn proposer_duties(
 async fn sync_committee_duties(
     State(state): State<Arc<AppState>>,
     Path(epoch): Path<u64>,
-    Json(indices): Json<ValIndexes>,
+    indices: Result<Json<ValIndexes>, JsonRejection>,
 ) -> Result<Json<SyncCommitteeDutiesResponse>, ApiError> {
+    let Json(indices) = indices.map_err(json_rejection_to_api_error)?;
     let response = state
         .handler
         .sync_committee_duties(SyncCommitteeDutiesOpts {
@@ -217,6 +222,25 @@ where
 fn query_rejection_to_api_error(rejection: QueryRejection) -> ApiError {
     ApiError::new(StatusCode::BAD_REQUEST, "invalid query parameters")
         .with_source(std::io::Error::other(rejection.body_text()))
+}
+
+/// Renders an axum JSON body-extractor rejection as Pluto's standard
+/// [`ApiError`] body shape, so it shares the `{ "code", "message" }` schema
+/// instead of axum's default plain-text response.
+///
+/// Every genuine parse failure — malformed JSON (`400`), wrong element type
+/// (`422`), missing `content-type` (`415`) — is normalised to a uniform
+/// `400`, matching Charon's `unmarshal`, which returns `400` for all body
+/// unmarshal failures. The body-size-limit rejection from [`DefaultBodyLimit`]
+/// surfaces here too (the limit is enforced as the `Json` extractor reads the
+/// body); its `413 Payload Too Large` is preserved, since that is Pluto's
+/// DoS defense rather than a parse error.
+fn json_rejection_to_api_error(rejection: JsonRejection) -> ApiError {
+    let (status, message) = match rejection.status() {
+        StatusCode::PAYLOAD_TOO_LARGE => (StatusCode::PAYLOAD_TOO_LARGE, "request body too large"),
+        _ => (StatusCode::BAD_REQUEST, "invalid request body"),
+    };
+    ApiError::new(status, message).with_source(std::io::Error::other(rejection.body_text()))
 }
 
 async fn submit_attestations() {
@@ -348,7 +372,7 @@ mod tests {
         let Json(body) = attester_duties(
             State(state),
             Path(42u64),
-            Json(ValIndexes(vec!["7".to_owned()])),
+            Ok(Json(ValIndexes(vec!["7".to_owned()]))),
         )
         .await
         .unwrap();
@@ -381,7 +405,7 @@ mod tests {
         let Json(body) = sync_committee_duties(
             State(state),
             Path(7u64),
-            Json(ValIndexes(vec!["9".to_owned()])),
+            Ok(Json(ValIndexes(vec!["9".to_owned()]))),
         )
         .await
         .unwrap();
@@ -540,6 +564,37 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    /// A malformed duties body emits the same `{ code, message }` envelope and
+    /// uniform 400 as the rest of the router, rather than axum's default
+    /// plain-text rejection (which would be 400 for a syntax error but 422 for
+    /// a type error). Mirrors Charon's `unmarshal`, which returns 400 for every
+    /// body parse failure.
+    #[tokio::test]
+    async fn attester_duties_returns_api_error_shape_on_bad_body() {
+        use axum::{
+            body::{Body, to_bytes},
+            http::{Method, Request},
+        };
+        use tower::ServiceExt;
+
+        let app = new_router(Arc::new(TestHandler::default()), false);
+
+        // Valid JSON, wrong shape (object, not an array) — axum's default
+        // would surface this as a 422 type error.
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/validator/duties/attester/42")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"not":"an array"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], 400);
+        assert!(json["message"].is_string());
     }
 
     /// `[]` is a valid request body — the upstream returns an empty duty
