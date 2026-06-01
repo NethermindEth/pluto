@@ -20,8 +20,6 @@ use super::{
     msg::{self, ConsensusQbftTypes},
 };
 
-const LOCAL_COMPARE_VALUE_POLL_INTERVAL: time::Duration = time::Duration::from_millis(10);
-
 /// Callback invoked with the decided commit quorum.
 pub(crate) type DecideCallback =
     Arc<dyn Fn(Vec<qbft::Msg<ConsensusQbftTypes>>) + Send + Sync + 'static>;
@@ -213,27 +211,23 @@ fn local_compare_value(
         return Ok(request.input_value_source.clone());
     }
 
-    // Poll in short intervals so compare-scoped cancellation is still observed
-    // while waiting on the blocking local-value channel.
-    loop {
-        if request.ct.is_canceled() {
-            return Err(AttesterCompareError::TimeoutWaitingLocalValue);
-        }
+    let (cancel_tx, cancel_rx) = mpmc::bounded(1);
 
-        match request
-            .input_value_source_ch
-            .recv_timeout(LOCAL_COMPARE_VALUE_POLL_INTERVAL)
-        {
-            Ok(value) => {
-                let _ = request.return_value.send(value.clone());
-                return Ok(value);
+    request.ct.run(
+        move || {
+            let _ = cancel_tx.try_send(());
+        },
+        || {
+            mpmc::select! {
+                recv(request.input_value_source_ch) -> msg => {
+                    let value = msg.map_err(|_| AttesterCompareError::LocalValueChannelClosed)?;
+                    let _ = request.return_value.send(value.clone());
+                    Ok(value)
+                },
+                recv(cancel_rx) -> _ => Err(AttesterCompareError::TimeoutWaitingLocalValue),
             }
-            Err(mpmc::RecvTimeoutError::Timeout) => {}
-            Err(mpmc::RecvTimeoutError::Disconnected) => {
-                return Err(AttesterCompareError::LocalValueChannelClosed);
-            }
-        }
-    }
+        },
+    )
 }
 
 fn decode_attester_set(any: &Any) -> std::result::Result<UnsignedDataSet, AttesterCompareError> {
@@ -825,6 +819,41 @@ mod tests {
                 return_value: &return_value_tx,
             },
         );
+
+        assert!(matches!(
+            return_err_rx.recv().unwrap(),
+            Err(qbft::QbftError::CompareError)
+        ));
+    }
+
+    #[test]
+    fn compare_attester_wakes_when_cancelled_while_waiting_for_local_value() {
+        let leader = unsigned_attestation_set(&pubkey(1), attestation_data());
+        let cts = cancellation::CancellationTokenSource::new();
+        let ct = cts.token().clone();
+        let qcommit = qcommit_for_value(component::tests::duty(), any_unsigned(&leader));
+        let (_input_tx, input_rx) = mpmc::bounded(1);
+        let (return_err_tx, return_err_rx) = mpmc::bounded(1);
+        let (return_value_tx, _return_value_rx) = mpmc::bounded(1);
+        let input_value = Any::default();
+
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                compare(
+                    true,
+                    qbft::CompareRequest {
+                        ct: &ct,
+                        qcommit: &qcommit,
+                        input_value_source_ch: &input_rx,
+                        input_value_source: &input_value,
+                        return_err: &return_err_tx,
+                        return_value: &return_value_tx,
+                    },
+                );
+            });
+
+            cts.cancel();
+        });
 
         assert!(matches!(
             return_err_rx.recv().unwrap(),
