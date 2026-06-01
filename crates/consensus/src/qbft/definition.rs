@@ -5,17 +5,22 @@ use std::{sync::Arc, time};
 use crate::{instance::RECV_BUFFER_SIZE, timer::RoundTimer};
 use crossbeam::channel as mpmc;
 use pluto_core::{
+    dutydb::{UnsignedDataSet, UnsignedDutyData, unsigned_data_set_from_proto},
     qbft::{self, QbftLogger},
-    types::{Duty, DutyType},
+    signeddata::AttestationData as CoreAttestationData,
+    types::{Duty, DutyType, PubKey},
 };
+use prost_types::Any;
 use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
 
 use super::{
     admission,
-    component::SubscriberSet,
+    component::{DecodedValue, SubscriberSet},
     msg::{self, ConsensusQbftTypes},
 };
+
+const LOCAL_COMPARE_VALUE_POLL_INTERVAL: time::Duration = time::Duration::from_millis(10);
 
 /// Callback invoked with the decided commit quorum.
 pub(crate) type DecideCallback =
@@ -149,18 +154,132 @@ fn decide(
 
 /// Compares proposal values before commit when attester comparison is enabled.
 fn compare(compare_attestations: bool, request: qbft::CompareRequest<'_, ConsensusQbftTypes>) {
-    if !compare_attestations {
+    if !compare_attestations || request.qcommit.instance().duty_type != DutyType::Attester {
         let _ = request.return_err.send(Ok(()));
         return;
     }
 
-    if request.qcommit.instance().duty_type != DutyType::Attester {
-        let _ = request.return_err.send(Ok(()));
-        return;
+    let result = compare_attester(&request).map_err(|err| {
+        tracing::warn!(error = %err, "QBFT attester compare failed");
+        qbft::QbftError::CompareError
+    });
+    let _ = request.return_err.send(result);
+}
+
+/// Compares the leader's attestation source/target with the local value.
+fn compare_attester(
+    request: &qbft::CompareRequest<'_, ConsensusQbftTypes>,
+) -> std::result::Result<(), AttesterCompareError> {
+    let leader_any = request
+        .qcommit
+        .value_source()
+        .map_err(AttesterCompareError::ValueSource)?;
+    let leader = decode_attester_set(&leader_any)?;
+    let local_any = local_compare_value(request)?;
+    let local = decode_attester_set(&local_any)?;
+
+    for (pubkey, leader_data) in &leader {
+        let leader_data = attestation_data(leader_data)?;
+        let Some(local_data) = local.get(pubkey) else {
+            tracing::warn!(pubkey = %pubkey, "No local attestation found, skipping");
+            continue;
+        };
+        let local_data = attestation_data(local_data)?;
+
+        if leader_data.data.source.epoch != local_data.data.source.epoch {
+            return Err(attestation_mismatch(pubkey, "source epoch"));
+        }
+        if leader_data.data.source.root != local_data.data.source.root {
+            return Err(attestation_mismatch(pubkey, "source root"));
+        }
+        if leader_data.data.target.epoch != local_data.data.target.epoch {
+            return Err(attestation_mismatch(pubkey, "target epoch"));
+        }
+        if leader_data.data.target.root != local_data.data.target.root {
+            return Err(attestation_mismatch(pubkey, "target root"));
+        }
     }
 
-    tracing::warn!("QBFT attester compare deferred: unsigned data domain decoding is unavailable");
-    let _ = request.return_err.send(Err(qbft::QbftError::CompareError));
+    Ok(())
+}
+
+/// Returns the cached local compare value or waits for the runner-provided one.
+fn local_compare_value(
+    request: &qbft::CompareRequest<'_, ConsensusQbftTypes>,
+) -> std::result::Result<Any, AttesterCompareError> {
+    // The generic QBFT core uses `T::Compare::default()` as the "not cached"
+    // sentinel. For this adapter that is `Any::default()`.
+    if request.input_value_source != &Any::default() {
+        return Ok(request.input_value_source.clone());
+    }
+
+    // Poll in short intervals so compare-scoped cancellation is still observed
+    // while waiting on the blocking local-value channel.
+    loop {
+        if request.ct.is_canceled() {
+            return Err(AttesterCompareError::TimeoutWaitingLocalValue);
+        }
+
+        match request
+            .input_value_source_ch
+            .recv_timeout(LOCAL_COMPARE_VALUE_POLL_INTERVAL)
+        {
+            Ok(value) => {
+                let _ = request.return_value.send(value.clone());
+                return Ok(value);
+            }
+            Err(mpmc::RecvTimeoutError::Timeout) => {}
+            Err(mpmc::RecvTimeoutError::Disconnected) => {
+                return Err(AttesterCompareError::LocalValueChannelClosed);
+            }
+        }
+    }
+}
+
+fn decode_attester_set(any: &Any) -> std::result::Result<UnsignedDataSet, AttesterCompareError> {
+    match admission::decode_supported_any(any).map_err(AttesterCompareError::DecodeAny)? {
+        DecodedValue::UnsignedDataSet(value) => {
+            unsigned_data_set_from_proto(&DutyType::Attester, &value)
+                .map_err(AttesterCompareError::DecodeUnsignedDataSet)
+        }
+        DecodedValue::PriorityResult(_) => Err(AttesterCompareError::UnexpectedValueType),
+    }
+}
+
+fn attestation_data(
+    data: &UnsignedDutyData,
+) -> std::result::Result<&CoreAttestationData, AttesterCompareError> {
+    match data {
+        UnsignedDutyData::Attestation(data) => Ok(data),
+        _ => Err(AttesterCompareError::UnexpectedUnsignedDataType),
+    }
+}
+
+fn attestation_mismatch(pubkey: &PubKey, field: &'static str) -> AttesterCompareError {
+    AttesterCompareError::AttestationMismatch {
+        pubkey: pubkey.to_string(),
+        field,
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum AttesterCompareError {
+    #[error("msg has no value source: {0}")]
+    ValueSource(#[source] qbft::QbftError),
+    #[error("decode any: {0}")]
+    DecodeAny(#[source] admission::Error),
+    #[error("unexpected compare value type")]
+    UnexpectedValueType,
+    #[error("timeout on waiting for local value")]
+    TimeoutWaitingLocalValue,
+    #[error("local value channel closed")]
+    LocalValueChannelClosed,
+    #[error("decode unsigned data set: {0}")]
+    DecodeUnsignedDataSet(#[source] pluto_core::ParSigExCodecError),
+    #[error("unexpected unsigned data type")]
+    UnexpectedUnsignedDataType,
+    #[error("leader attestation {field} differs from local {field}; public_key={pubkey}")]
+    AttestationMismatch { pubkey: String, field: &'static str },
 }
 
 /// Adapts an async round timer future into the blocking QBFT core timer type.
@@ -373,8 +492,10 @@ mod tests {
         },
     };
 
-    use prost::{Message, Name};
+    use pluto_eth2api::spec::phase0;
+    use prost::{Message, bytes::Bytes};
     use prost_types::Any;
+    use ssz::Encode;
     use test_case::test_case;
 
     use super::*;
@@ -383,6 +504,9 @@ mod tests {
         corepb::v1::{consensus as pbconsensus, core as pbcore},
         types::{Duty, DutyType, SlotNumber},
     };
+
+    const ATTESTATION_DATA_SSZ_OFFSET: usize = 8;
+    const ATTESTER_DUTY_SSZ_SIZE: usize = 96;
 
     #[test_case(0, DutyType::Attester, 1, 4, 3 ; "attester_round_1")]
     #[test_case(42, DutyType::Attester, 1, 4, 1 ; "slot_42_attester")]
@@ -593,10 +717,119 @@ mod tests {
     }
 
     #[test]
-    fn compare_defers_attester_source_target_matching() {
-        let result = run_compare(true, DutyType::Attester);
+    fn compare_attester_accepts_matching_source_target() {
+        let leader = unsigned_attestation_set(&pubkey(1), attestation_data());
+        let local = leader.clone();
+
+        let result = run_compare_attester(leader, Some(any_unsigned(&local)), Any::default());
+
+        assert!(matches!(result, Ok(())));
+    }
+
+    #[test_case(
+        |data: &mut phase0::AttestationData| data.source.epoch = 2 ;
+        "source_epoch"
+    )]
+    #[test_case(
+        |data: &mut phase0::AttestationData| data.source.root = [3; 32] ;
+        "source_root"
+    )]
+    #[test_case(
+        |data: &mut phase0::AttestationData| data.target.epoch = 4 ;
+        "target_epoch"
+    )]
+    #[test_case(
+        |data: &mut phase0::AttestationData| data.target.root = [5; 32] ;
+        "target_root"
+    )]
+    fn compare_attester_rejects_source_target_mismatch(mutate: fn(&mut phase0::AttestationData)) {
+        let pubkey = pubkey(1);
+        let leader = unsigned_attestation_set(&pubkey, attestation_data());
+        let mut local_data = attestation_data();
+        mutate(&mut local_data);
+        let local = unsigned_attestation_set(&pubkey, local_data);
+
+        let result = run_compare_attester(leader, Some(any_unsigned(&local)), Any::default());
 
         assert!(matches!(result, Err(qbft::QbftError::CompareError)));
+    }
+
+    #[test]
+    fn compare_attester_skips_missing_local_attestation() {
+        let leader = unsigned_attestation_set(&pubkey(1), attestation_data());
+        let local = unsigned_attestation_set(&pubkey(2), changed_attestation_data());
+
+        let result = run_compare_attester(leader, Some(any_unsigned(&local)), Any::default());
+
+        assert!(matches!(result, Ok(())));
+    }
+
+    #[test]
+    fn compare_attester_waits_for_local_value_and_returns_cache() {
+        let leader = unsigned_attestation_set(&pubkey(1), attestation_data());
+        let local = any_unsigned(&leader);
+        let cts = cancellation::CancellationTokenSource::new();
+        let ct = cts.token().clone();
+        let qcommit = qcommit_for_value(component::tests::duty(), any_unsigned(&leader));
+        let (input_tx, input_rx) = mpmc::bounded(1);
+        input_tx.send(local.clone()).unwrap();
+        let (return_err_tx, return_err_rx) = mpmc::bounded(1);
+        let (return_value_tx, return_value_rx) = mpmc::bounded(1);
+        let input_value = Any::default();
+
+        compare(
+            true,
+            qbft::CompareRequest {
+                ct: &ct,
+                qcommit: &qcommit,
+                input_value_source_ch: &input_rx,
+                input_value_source: &input_value,
+                return_err: &return_err_tx,
+                return_value: &return_value_tx,
+            },
+        );
+
+        assert!(matches!(return_err_rx.recv().unwrap(), Ok(())));
+        assert_eq!(return_value_rx.recv().unwrap(), local);
+    }
+
+    #[test]
+    fn compare_attester_uses_cached_local_value() {
+        let leader = unsigned_attestation_set(&pubkey(1), attestation_data());
+        let local = any_unsigned(&leader);
+        let result = run_compare_attester(leader, None, local);
+
+        assert!(matches!(result, Ok(())));
+    }
+
+    #[test]
+    fn compare_attester_returns_error_when_cancelled_waiting_for_local_value() {
+        let leader = unsigned_attestation_set(&pubkey(1), attestation_data());
+        let cts = cancellation::CancellationTokenSource::new();
+        cts.cancel();
+        let ct = cts.token().clone();
+        let qcommit = qcommit_for_value(component::tests::duty(), any_unsigned(&leader));
+        let (_input_tx, input_rx) = mpmc::bounded(1);
+        let (return_err_tx, return_err_rx) = mpmc::bounded(1);
+        let (return_value_tx, _return_value_rx) = mpmc::bounded(1);
+        let input_value = Any::default();
+
+        compare(
+            true,
+            qbft::CompareRequest {
+                ct: &ct,
+                qcommit: &qcommit,
+                input_value_source_ch: &input_rx,
+                input_value_source: &input_value,
+                return_err: &return_err_tx,
+                return_value: &return_value_tx,
+            },
+        );
+
+        assert!(matches!(
+            return_err_rx.recv().unwrap(),
+            Err(qbft::QbftError::CompareError)
+        ));
     }
 
     #[tokio::test]
@@ -684,7 +917,47 @@ mod tests {
         return_err_rx.recv().unwrap()
     }
 
+    fn run_compare_attester(
+        leader: pbcore::UnsignedDataSet,
+        local_from_channel: Option<Any>,
+        cached_local: Any,
+    ) -> std::result::Result<(), qbft::QbftError> {
+        let cts = cancellation::CancellationTokenSource::new();
+        let ct = cts.token().clone();
+        let qcommit = qcommit_for_value(component::tests::duty(), any_unsigned(&leader));
+        let (input_tx, input_rx) = mpmc::bounded(1);
+        if let Some(local) = local_from_channel {
+            input_tx.send(local).unwrap();
+        }
+        let (return_err_tx, return_err_rx) = mpmc::bounded(1);
+        let (return_value_tx, _return_value_rx) = mpmc::bounded(1);
+
+        compare(
+            true,
+            qbft::CompareRequest {
+                ct: &ct,
+                qcommit: &qcommit,
+                input_value_source_ch: &input_rx,
+                input_value_source: &cached_local,
+                return_err: &return_err_tx,
+                return_value: &return_value_tx,
+            },
+        );
+
+        return_err_rx.recv().unwrap()
+    }
+
     fn commit_msg(duty: Duty, hash: [u8; 32], value: Any) -> qbft::Msg<ConsensusQbftTypes> {
+        qcommit_for_hash(duty, hash, value)
+    }
+
+    fn qcommit_for_value(duty: Duty, value: Any) -> qbft::Msg<ConsensusQbftTypes> {
+        let decoded = pbcore::UnsignedDataSet::decode(value.value.as_slice()).unwrap();
+        let hash = msg::hash_proto(&decoded).unwrap();
+        qcommit_for_hash(duty, hash, value)
+    }
+
+    fn qcommit_for_hash(duty: Duty, hash: [u8; 32], value: Any) -> qbft::Msg<ConsensusQbftTypes> {
         let values = Arc::new(HashMap::from([(hash, value)]));
         Arc::new(
             msg::Msg::new(
@@ -732,12 +1005,74 @@ mod tests {
         pbcore::UnsignedDataSet::default()
     }
 
-    fn any_unsigned(value: &pbcore::UnsignedDataSet) -> Any {
-        let mut buf = Vec::new();
-        value.encode(&mut buf).unwrap();
-        Any {
-            type_url: pbcore::UnsignedDataSet::type_url(),
-            value: buf,
+    fn unsigned_attestation_set(
+        pubkey: &str,
+        data: phase0::AttestationData,
+    ) -> pbcore::UnsignedDataSet {
+        pbcore::UnsignedDataSet {
+            set: [(pubkey.to_string(), attestation_bytes(&data))].into(),
         }
+    }
+
+    fn attestation_bytes(data: &phase0::AttestationData) -> Bytes {
+        let data = data.as_ssz_bytes();
+        let duty_offset = ATTESTATION_DATA_SSZ_OFFSET
+            .checked_add(data.len())
+            .expect("test attestation data offset fits usize");
+        let capacity = duty_offset
+            .checked_add(ATTESTER_DUTY_SSZ_SIZE)
+            .expect("test attestation data length fits usize");
+        let mut out = Vec::with_capacity(capacity);
+        out.extend_from_slice(
+            &u32::try_from(ATTESTATION_DATA_SSZ_OFFSET)
+                .expect("test attestation data offset fits u32")
+                .to_le_bytes(),
+        );
+        out.extend_from_slice(
+            &u32::try_from(duty_offset)
+                .expect("test attestation duty offset fits u32")
+                .to_le_bytes(),
+        );
+        out.extend_from_slice(&data);
+        out.extend_from_slice(&[0; ATTESTER_DUTY_SSZ_SIZE]);
+        Bytes::from(out)
+    }
+
+    fn attestation_data() -> phase0::AttestationData {
+        phase0::AttestationData {
+            slot: 1,
+            index: 2,
+            beacon_block_root: [3; 32],
+            source: phase0::Checkpoint {
+                epoch: 4,
+                root: [5; 32],
+            },
+            target: phase0::Checkpoint {
+                epoch: 6,
+                root: [7; 32],
+            },
+        }
+    }
+
+    fn changed_attestation_data() -> phase0::AttestationData {
+        phase0::AttestationData {
+            source: phase0::Checkpoint {
+                epoch: 8,
+                root: [9; 32],
+            },
+            target: phase0::Checkpoint {
+                epoch: 10,
+                root: [11; 32],
+            },
+            ..attestation_data()
+        }
+    }
+
+    fn any_unsigned(value: &pbcore::UnsignedDataSet) -> Any {
+        Any::from_msg(value).unwrap()
+    }
+
+    fn pubkey(seed: u8) -> String {
+        format!("0x{}", hex::encode([seed; 48]))
     }
 }
