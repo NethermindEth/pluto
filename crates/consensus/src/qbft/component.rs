@@ -271,10 +271,17 @@ impl Consensus {
             return Err(admission::Error::DutyExpired);
         }
 
-        let recv_tx = self.get_recv_buffer(duty);
+        let inst = self.get_instance_io(duty);
         tokio::select! {
-            result = recv_tx.send(wrapped) => {
-                result.map_err(|_| admission::Error::TimeoutEnqueuingReceiveBuffer)
+            result = inst.recv_tx.send(wrapped) => {
+                match result {
+                    Ok(()) => Ok(()),
+                    // A completed instance is retained until the duty deadline
+                    // expires. Its receive task is gone, but late messages
+                    // should not abort the sender's broadcast.
+                    Err(_) if inst.has_started() => Ok(()),
+                    Err(_) => Err(admission::Error::TimeoutEnqueuingReceiveBuffer),
+                }
             }
             () = ct.cancelled() => Err(admission::Error::TimeoutEnqueuingReceiveBuffer),
         }
@@ -349,11 +356,6 @@ impl Consensus {
             .entry(duty)
             .or_insert_with(|| Arc::new(InstanceIo::new()))
             .clone()
-    }
-
-    /// Returns the inbound message buffer for a duty instance.
-    pub(crate) fn get_recv_buffer(&self, duty: Duty) -> mpsc::Sender<msg::Msg> {
-        self.get_instance_io(duty).recv_tx.clone()
     }
 
     /// Drops cached I/O for a completed or expired duty instance.

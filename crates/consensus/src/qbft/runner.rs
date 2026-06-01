@@ -122,10 +122,17 @@ where
     let inst = consensus.get_instance_io(duty.clone());
 
     inst.mark_proposed().map_err(Error::ProposeConsensus)?;
-    try_send_input(&inst.value_tx, any.clone())?;
-    try_send_input(&inst.hash_tx, hash)?;
-    if consensus.compare_attestations() {
-        try_send_input(&inst.verify_tx, any)?;
+    let value_closed = try_send_input(&inst.value_tx, any.clone())?.is_closed();
+    let hash_closed = try_send_input(&inst.hash_tx, hash)?.is_closed();
+    let verify_closed =
+        consensus.compare_attestations() && try_send_input(&inst.verify_tx, any)?.is_closed();
+    let input_closed = value_closed || hash_closed || verify_closed;
+
+    if input_closed {
+        if inst.has_started() {
+            return wait_instance_result(&inst).await;
+        }
+        return Err(Error::InputChannelFull);
     }
 
     if !inst.maybe_start() {
@@ -173,7 +180,6 @@ pub(crate) async fn run_instance(
     let result = run_instance_inner(consensus, parent_ct, duty.clone(), Arc::clone(&inst)).await;
     let runner_result = to_runner_result(&result);
     let _ = inst.err_tx.send(runner_result).await;
-    consensus.delete_instance_io(&duty);
 
     result
 }
@@ -358,9 +364,25 @@ async fn run_instance_inner(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputSend {
+    Sent,
+    Closed,
+}
+
+impl InputSend {
+    fn is_closed(self) -> bool {
+        self == Self::Closed
+    }
+}
+
 /// Sends a one-shot local input into an instance channel without waiting.
-fn try_send_input<T>(tx: &mpsc::Sender<T>, value: T) -> Result<()> {
-    tx.try_send(value).map_err(|_| Error::InputChannelFull)
+fn try_send_input<T>(tx: &mpsc::Sender<T>, value: T) -> Result<InputSend> {
+    match tx.try_send(value) {
+        Ok(()) => Ok(InputSend::Sent),
+        Err(mpsc::error::TrySendError::Full(_)) => Err(Error::InputChannelFull),
+        Err(mpsc::error::TrySendError::Closed(_)) => Ok(InputSend::Closed),
+    }
 }
 
 /// Waits for an already-running instance to finish.
@@ -623,6 +645,37 @@ mod tests {
         let runner_err = recv_one(&mut err_rx).await.unwrap_err();
         assert_eq!(runner_err.to_string(), "consensus timeout");
         assert_eq!(sniffed.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn completed_participation_keeps_instance_for_late_propose() {
+        let consensus = component::tests::consensus(0, true);
+        let duty = component::tests::duty();
+        let inst = consensus.get_instance_io(duty.clone());
+        inst.mark_participated().unwrap();
+        assert!(inst.maybe_start());
+        let ct = CancellationToken::new();
+        ct.cancel();
+
+        let err = run_instance(&consensus, &ct, duty.clone(), Arc::clone(&inst))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, Error::ConsensusTimeout));
+        let retained = consensus.get_instance_io(duty.clone());
+        assert!(Arc::ptr_eq(&inst, &retained));
+        assert!(retained.has_started());
+
+        let err = consensus
+            .propose(&CancellationToken::new(), duty.clone(), unsigned_value(0))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::RunnerResult(ref message) if message == "consensus timeout"
+        ));
+        assert!(Arc::ptr_eq(&retained, &consensus.get_instance_io(duty)));
     }
 
     #[tokio::test]

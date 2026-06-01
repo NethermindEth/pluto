@@ -171,6 +171,11 @@ impl<T> InstanceIo<T> {
             .is_ok()
     }
 
+    /// Returns true once this instance's runner has been started.
+    pub fn has_started(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
+    }
+
     /// Transfers receive-buffer ownership to the runner.
     pub fn take_recv_rx(&self) -> Result<mpsc::Receiver<T>> {
         take_receiver(&self.recv_rx, "recv")

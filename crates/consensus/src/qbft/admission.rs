@@ -455,6 +455,35 @@ mod tests {
         assert_eq!(err.to_string(), "timeout enqueuing receive buffer");
     }
 
+    #[tokio::test]
+    async fn handle_drops_late_message_after_started_receiver_closed() {
+        let consensus = consensus(0, true);
+        let duty = duty();
+        let inst = consensus.get_instance_io(duty.clone());
+        assert!(inst.maybe_start());
+        drop(inst.take_recv_rx().unwrap());
+        let any = unsigned_any("a", b"first");
+        let value = pbcore::UnsignedDataSet::decode(any.value.as_slice()).unwrap();
+        let value_hash = msg::hash_proto(&value).unwrap();
+        let mut msg = unsigned_msg(0);
+        msg.value_hash = value_hash.to_vec().into();
+        let msg = sign_for_peer(msg, 0);
+
+        consensus
+            .handle(
+                &CancellationToken::new(),
+                Some(pbconsensus::QbftConsensusMsg {
+                    msg: Some(msg),
+                    justification: vec![],
+                    values: vec![any],
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert!(Arc::ptr_eq(&inst, &consensus.get_instance_io(duty)));
+    }
+
     fn consensus_msg(msg: pbconsensus::QbftMsg) -> pbconsensus::QbftConsensusMsg {
         pbconsensus::QbftConsensusMsg {
             msg: Some(msg),
