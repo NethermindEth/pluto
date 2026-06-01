@@ -16,7 +16,6 @@ anyhow.workspace = true
 bon.workspace = true
 http.workspace = true
 oas3-gen-support.workspace = true
-indexmap.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true

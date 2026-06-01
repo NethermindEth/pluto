@@ -309,9 +309,10 @@ pub fn report_par_sigs(duty: &Duty, parsigs: &ParSigsByMsg) {
     TRACKER_METRICS.inconsistent_parsigs_total[&duty.duty_type.to_string()].inc();
 
     for (pubkey, by_root) in parsigs {
-        // Intentional fix over Go: Go checks len(parsigMsgs) (the outer map, i.e. number
-        // of pubkeys) instead of the per-pubkey root count, so it silently skips logging
-        // when only one pubkey has inconsistent roots (tracker.go:851).
+        // Intentional fix over Go: Go checks len(parsigMsgs) (the outer map, i.e.
+        // number of pubkeys) instead of the per-pubkey root count, so it
+        // silently skips logging when only one pubkey has inconsistent roots
+        // (tracker.go:851).
         if by_root.len() <= 1 {
             continue;
         }
