@@ -8,10 +8,7 @@ use std::{
 
 use futures::future::BoxFuture;
 use k256::{PublicKey, SecretKey};
-use tokio::{
-    sync::{mpsc, mpsc::error::TrySendError},
-    task::JoinHandle,
-};
+use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -274,13 +271,13 @@ impl Consensus {
             return Err(admission::Error::DutyExpired);
         }
 
-        self.get_recv_buffer(duty)
-            .try_send(wrapped)
-            .map_err(|err| match err {
-                TrySendError::Full(_) | TrySendError::Closed(_) => {
-                    admission::Error::TimeoutEnqueuingReceiveBuffer
-                }
-            })
+        let recv_tx = self.get_recv_buffer(duty);
+        tokio::select! {
+            result = recv_tx.send(wrapped) => {
+                result.map_err(|_| admission::Error::TimeoutEnqueuingReceiveBuffer)
+            }
+            () = ct.cancelled() => Err(admission::Error::TimeoutEnqueuingReceiveBuffer),
+        }
     }
 
     /// Verifies fields and signature for one raw QBFT message.

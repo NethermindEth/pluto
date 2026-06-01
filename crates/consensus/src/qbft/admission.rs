@@ -401,19 +401,55 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_rejects_full_receive_buffer() {
+    async fn handle_waits_for_receive_buffer_capacity() {
         let consensus = consensus(0, true);
         let inst = consensus.get_instance_io(duty());
+        let mut recv_rx = inst.take_recv_rx().unwrap();
         for _ in 0..crate::instance::RECV_BUFFER_SIZE {
             inst.recv_tx.try_send(wrapped_msg()).unwrap();
         }
 
-        let err = consensus
-            .handle(
-                &CancellationToken::new(),
-                Some(consensus_msg(signed_msg(0))),
-            )
+        let ct = CancellationToken::new();
+        let handle = consensus.handle(&ct, Some(consensus_msg(signed_msg(0))));
+        tokio::pin!(handle);
+
+        tokio::select! {
+            result = &mut handle => panic!(
+                "handle completed while receive buffer was full: {result:?}"
+            ),
+            () = tokio::task::yield_now() => {}
+        }
+
+        recv_rx.recv().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), &mut handle)
             .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn handle_rejects_full_receive_buffer_after_cancellation() {
+        let consensus = consensus(0, true);
+        let inst = consensus.get_instance_io(duty());
+        let _recv_rx = inst.take_recv_rx().unwrap();
+        for _ in 0..crate::instance::RECV_BUFFER_SIZE {
+            inst.recv_tx.try_send(wrapped_msg()).unwrap();
+        }
+
+        let ct = CancellationToken::new();
+        let handle = consensus.handle(&ct, Some(consensus_msg(signed_msg(0))));
+        tokio::pin!(handle);
+
+        tokio::select! {
+            result = &mut handle => panic!(
+                "handle completed while receive buffer was full: {result:?}"
+            ),
+            () = tokio::task::yield_now() => {}
+        }
+        ct.cancel();
+        let err = tokio::time::timeout(std::time::Duration::from_secs(1), &mut handle)
+            .await
+            .unwrap()
             .unwrap_err();
 
         assert_eq!(err.to_string(), "timeout enqueuing receive buffer");
