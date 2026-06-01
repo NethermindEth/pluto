@@ -1117,8 +1117,8 @@ mod tests {
         }
     }
 
-    /// A [`types::Slot`] dated far in the past so `delay_slot_offset` deadlines have
-    /// already elapsed and duty broadcasts fire immediately.
+    /// A [`types::Slot`] dated far in the past so `delay_slot_offset` deadlines
+    /// have already elapsed and duty broadcasts fire immediately.
     fn test_past_slot(slot: u64, slots_per_epoch: u64) -> types::Slot {
         types::Slot {
             slot: types::SlotNumber::new(slot),
