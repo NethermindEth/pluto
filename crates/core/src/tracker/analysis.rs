@@ -419,20 +419,34 @@ pub(crate) fn extract_par_sigs(events: &[Event]) -> ParSigsByMsg {
     resp
 }
 
+/// Result of [`analyse_participation`].
+pub(crate) struct ParticipationResult {
+    /// Partial-signature count per peer share index for expected peers.
+    pub participated: HashMap<u64, usize>,
+    /// Partial-signature count per peer share index for unexpected peers.
+    pub unexpected: HashMap<u64, usize>,
+    /// Number of distinct validator pubkeys that had any event for this duty.
+    pub validators_per_duty: usize,
+}
+
 /// Counts partial signatures per peer share index — both expected
 /// participations and unexpected events — plus the total number of distinct
 /// validator pubkeys that had this duty scheduled.
 pub(crate) fn analyse_participation(
     duty: &Duty,
     all_events: &HashMap<Duty, Vec<Event>>,
-) -> (HashMap<u64, usize>, HashMap<u64, usize>, usize) {
+) -> ParticipationResult {
     let mut participated: HashMap<u64, usize> = HashMap::new();
     let mut unexpected: HashMap<u64, usize> = HashMap::new();
     let mut dedup: HashSet<(u64, PubKey)> = HashSet::new();
     let mut pubkeys: HashSet<PubKey> = HashSet::new();
 
     let Some(events) = all_events.get(duty) else {
-        return (participated, unexpected, 0);
+        return ParticipationResult {
+            participated,
+            unexpected,
+            validators_per_duty: 0,
+        };
     };
 
     for e in events {
@@ -459,7 +473,11 @@ pub(crate) fn analyse_participation(
         }
     }
 
-    (participated, unexpected, pubkeys.len())
+    ParticipationResult {
+        participated,
+        unexpected,
+        validators_per_duty: pubkeys.len(),
+    }
 }
 
 /// Returns true if a partial-signature event is expected for the given duty

@@ -357,45 +357,21 @@ impl TrackerService {
         peers: Vec<PeerInfo>,
         from_slot: u64,
     ) -> Arc<TrackerHandle> {
-        Self::start_with_buffer(
+        Self::start_with_buffer_and_sinks(
             cancel,
             analyser,
             analyser_rx,
             deleter,
             deleter_rx,
-            peers,
             from_slot,
             EVENT_BUFFER,
-        )
-    }
-
-    /// Like [`start`] but with a configurable channel buffer size, for tests.
-    #[allow(clippy::too_many_arguments)]
-    fn start_with_buffer(
-        cancel: CancellationToken,
-        analyser: DeadlinerHandle,
-        analyser_rx: AnalyserRx,
-        deleter: DeadlinerHandle,
-        deleter_rx: DeleterRx,
-        peers: Vec<PeerInfo>,
-        from_slot: u64,
-        buffer: usize,
-    ) -> Arc<TrackerHandle> {
-        Self::start_with_sinks(
-            cancel,
-            analyser,
-            analyser_rx,
-            deleter,
-            deleter_rx,
-            from_slot,
-            buffer,
             Box::new(MetricsDutyReporter::new()),
             Box::new(MetricsParticipationReporter::new(peers)),
         )
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn start_with_sinks(
+    fn start_with_buffer_and_sinks(
         cancel: CancellationToken,
         analyser: DeadlinerHandle,
         AnalyserRx(analyser_rx): AnalyserRx,
@@ -447,13 +423,13 @@ impl TrackerService {
         self.failed_duty_reporter
             .report(duty, failed, step, reason, err);
 
-        let (participated, unexpected, expected_per_peer) = analyse_participation(duty, events);
+        let part = analyse_participation(duty, events);
         self.participation_reporter.report(
             duty,
             failed,
-            &participated,
-            &unexpected,
-            expected_per_peer,
+            &part.participated,
+            &part.unexpected,
+            part.validators_per_duty,
         );
     }
 
@@ -543,11 +519,12 @@ mod tests {
     }
 
     #[derive(Debug, Clone)]
-    struct PartRecord {
+    struct ParticipationRecord {
         duty: Duty,
         failed: bool,
         participated: HashMap<u64, usize>,
         unexpected: HashMap<u64, usize>,
+        expected_per_peer: usize,
     }
 
     struct RecordingFailureReporter {
@@ -579,7 +556,7 @@ mod tests {
     }
 
     struct RecordingParticipationReporter {
-        records: std::sync::Arc<Mutex<Vec<PartRecord>>>,
+        records: std::sync::Arc<Mutex<Vec<ParticipationRecord>>>,
         cancel: CancellationToken,
         trigger_on: usize,
     }
@@ -591,14 +568,15 @@ mod tests {
             failed: bool,
             participated: &HashMap<u64, usize>,
             unexpected: &HashMap<u64, usize>,
-            _expected_per_peer: usize,
+            expected_per_peer: usize,
         ) {
             let mut recs = self.records.lock().unwrap();
-            recs.push(PartRecord {
+            recs.push(ParticipationRecord {
                 duty: duty.clone(),
                 failed,
                 participated: participated.clone(),
                 unexpected: unexpected.clone(),
+                expected_per_peer,
             });
             if recs.len() >= self.trigger_on {
                 self.cancel.cancel();
@@ -612,7 +590,6 @@ mod tests {
         fn report(&mut self, _: &Duty, _: bool, _: Step, _: Reason, _: Option<&StepError>) {}
     }
 
-    #[expect(dead_code)]
     struct NopParticipationReporter;
 
     impl ParticipationReporter for NopParticipationReporter {
@@ -631,6 +608,7 @@ mod tests {
     /// analyser/deleter trigger channels (bypassing the real deadliner).
     fn start_test_tracker(
         cancel: &CancellationToken,
+        from_slot: u64,
         failure_sink: Box<dyn reporters::DutyResultReporter>,
         participation_sink: Box<dyn reporters::ParticipationReporter>,
     ) -> (Arc<TrackerHandle>, mpsc::Sender<Duty>, mpsc::Sender<Duty>) {
@@ -640,13 +618,13 @@ mod tests {
         let (analyser_tx, analyser_rx) = mpsc::channel(16);
         let (deleter_tx, deleter_rx) = mpsc::channel(16);
 
-        let handle = TrackerService::start_with_sinks(
+        let handle = TrackerService::start_with_buffer_and_sinks(
             cancel.clone(),
             analyser_handle,
             AnalyserRx(analyser_rx),
             deleter_handle,
             DeleterRx(deleter_rx),
-            0,
+            from_slot,
             EVENT_BUFFER,
             failure_sink,
             participation_sink,
@@ -750,25 +728,53 @@ mod tests {
     #[tokio::test]
     async fn from_slot_filters_old_events() {
         let cancel = CancellationToken::new();
-        let handle = start_service(&cancel, 10);
 
-        // Slot 5 is below from_slot=10 and must be filtered before reaching
-        // the deadliner. Slot 15 is above and must be scheduled normally.
+        let fail_records: std::sync::Arc<Mutex<Vec<FailRecord>>> = Default::default();
+
+        // from_slot=10: slot-5 events must be discarded, slot-15 events kept.
+        let (handle, analyser_tx, deleter_tx) = start_test_tracker(
+            &cancel,
+            10,
+            Box::new(RecordingFailureReporter {
+                records: fail_records.clone(),
+                cancel: cancel.clone(),
+                trigger_on: 2,
+            }),
+            Box::new(NopParticipationReporter),
+        );
+
         handle.fetcher_fetched(attester(5), &[pubkey()], None).await;
         handle
             .fetcher_fetched(attester(15), &[pubkey()], None)
             .await;
-
-        // Yield so the loop processes both events.
         tokio::task::yield_now().await;
 
-        cancel.cancel();
+        // Trigger analysis for both; only slot-15 had events stored.
+        analyser_tx.send(attester(5)).await.unwrap();
+        analyser_tx.send(attester(15)).await.unwrap();
+        tokio::task::yield_now().await;
+        let _ = deleter_tx.send(attester(5)).await;
+        let _ = deleter_tx.send(attester(15)).await;
 
-        let raw = Arc::try_unwrap(handle).unwrap_or_else(|_| panic!("single Arc owner in test"));
-        tokio::time::timeout(Duration::from_secs(1), raw.task)
-            .await
-            .expect("task did not exit within timeout")
-            .expect("task panicked");
+        wait_for_task(handle).await;
+
+        let recs = fail_records.lock().unwrap();
+        assert_eq!(recs.len(), 2);
+
+        let slot5 = recs.iter().find(|r| r.duty == attester(5)).unwrap();
+        assert!(slot5.failed);
+        // No events stored for slot 5 (filtered): analysis sees an empty map.
+        assert_eq!(
+            slot5.step,
+            Step::Zero,
+            "slot-5 was filtered: no events in map"
+        );
+
+        let slot15 = recs.iter().find(|r| r.duty == attester(15)).unwrap();
+        assert!(slot15.failed);
+        // Slot-15 fetcher event was stored and analysed (fails at fetcher, no
+        // completion).
+        assert_eq!(slot15.step, Step::Fetcher, "slot-15 events were accepted");
     }
 
     #[tokio::test]
@@ -820,10 +826,11 @@ mod tests {
         let keys = [pubkey(), PubKey::from([2u8; 48]), PubKey::from([3u8; 48])];
 
         let fail_records: std::sync::Arc<Mutex<Vec<FailRecord>>> = Default::default();
-        let part_records: std::sync::Arc<Mutex<Vec<PartRecord>>> = Default::default();
+        let part_records: std::sync::Arc<Mutex<Vec<ParticipationRecord>>> = Default::default();
 
         let (handle, analyser_tx, deleter_tx) = start_test_tracker(
             &cancel,
+            0,
             Box::new(RecordingFailureReporter {
                 records: fail_records.clone(),
                 cancel: cancel.clone(),
@@ -872,10 +879,11 @@ mod tests {
         let keys = [pubkey(), PubKey::from([2u8; 48]), PubKey::from([3u8; 48])];
 
         let fail_records: std::sync::Arc<Mutex<Vec<FailRecord>>> = Default::default();
-        let part_records: std::sync::Arc<Mutex<Vec<PartRecord>>> = Default::default();
+        let part_records: std::sync::Arc<Mutex<Vec<ParticipationRecord>>> = Default::default();
 
         let (handle, analyser_tx, deleter_tx) = start_test_tracker(
             &cancel,
+            0,
             Box::new(RecordingFailureReporter {
                 records: fail_records.clone(),
                 cancel: cancel.clone(),
@@ -920,10 +928,11 @@ mod tests {
         let duty = attester(123);
         let pk = pubkey();
 
-        let part_records: std::sync::Arc<Mutex<Vec<PartRecord>>> = Default::default();
+        let part_records: std::sync::Arc<Mutex<Vec<ParticipationRecord>>> = Default::default();
 
         let (handle, analyser_tx, deleter_tx) = start_test_tracker(
             &cancel,
+            0,
             Box::new(NopFailureReporter),
             Box::new(RecordingParticipationReporter {
                 records: part_records.clone(),
@@ -963,10 +972,11 @@ mod tests {
         let duty_randao = Duty::new_randao_duty(slot);
         let pk = pubkey();
 
-        let part_records: std::sync::Arc<Mutex<Vec<PartRecord>>> = Default::default();
+        let part_records: std::sync::Arc<Mutex<Vec<ParticipationRecord>>> = Default::default();
 
         let (handle, analyser_tx, deleter_tx) = start_test_tracker(
             &cancel,
+            0,
             Box::new(NopFailureReporter),
             Box::new(RecordingParticipationReporter {
                 records: part_records.clone(),
@@ -1016,10 +1026,11 @@ mod tests {
         let duty_randao = Duty::new_randao_duty(slot);
         let pk = pubkey();
 
-        let part_records: std::sync::Arc<Mutex<Vec<PartRecord>>> = Default::default();
+        let part_records: std::sync::Arc<Mutex<Vec<ParticipationRecord>>> = Default::default();
 
         let (handle, analyser_tx, deleter_tx) = start_test_tracker(
             &cancel,
+            0,
             Box::new(NopFailureReporter),
             Box::new(RecordingParticipationReporter {
                 records: part_records.clone(),
@@ -1060,32 +1071,36 @@ mod tests {
     #[tokio::test]
     async fn fan_out_sends_one_event_per_pubkey() {
         let cancel = CancellationToken::new();
-        let (analyser, analyser_rx) =
-            DeadlinerTask::start(cancel.clone(), "analyser", FutureCalculator);
-        let (deleter, deleter_rx) =
-            DeadlinerTask::start(cancel.clone(), "deleter", FutureCalculator);
-        let handle = TrackerService::start_with_buffer(
-            cancel.clone(),
-            analyser,
-            AnalyserRx(analyser_rx),
-            deleter,
-            DeleterRx(deleter_rx),
-            vec![],
+        let duty = attester(1);
+        let keys = [pubkey(), PubKey::from([2u8; 48]), PubKey::from([3u8; 48])];
+
+        let part_records: std::sync::Arc<Mutex<Vec<ParticipationRecord>>> = Default::default();
+
+        let (handle, analyser_tx, deleter_tx) = start_test_tracker(
+            &cancel,
             0,
-            1,
+            Box::new(NopFailureReporter),
+            Box::new(RecordingParticipationReporter {
+                records: part_records.clone(),
+                cancel: cancel.clone(),
+                trigger_on: 1,
+            }),
         );
 
-        let keys = [pubkey(), PubKey::from([2u8; 48]), PubKey::from([3u8; 48])];
-        handle.fetcher_fetched(attester(1), &keys, None).await;
-        handle.consensus_proposed(attester(1), &keys, None).await;
-
+        handle.fetcher_fetched(duty.clone(), &keys, None).await;
+        handle.consensus_proposed(duty.clone(), &keys, None).await;
         tokio::task::yield_now().await;
 
-        cancel.cancel();
-        let raw = Arc::try_unwrap(handle).unwrap_or_else(|_| panic!("single Arc owner in test"));
-        tokio::time::timeout(Duration::from_secs(1), raw.task)
-            .await
-            .expect("task did not exit within timeout")
-            .expect("task panicked");
+        analyser_tx.send(duty.clone()).await.unwrap();
+        tokio::task::yield_now().await;
+        let _ = deleter_tx.send(duty.clone()).await;
+
+        wait_for_task(handle).await;
+
+        let recs = part_records.lock().unwrap();
+        assert_eq!(recs.len(), 1);
+        // analyse_participation counts distinct pubkeys across all stored events;
+        // expected_per_peer==3 proves each key produced its own event entry.
+        assert_eq!(recs[0].expected_per_peer, 3);
     }
 }
