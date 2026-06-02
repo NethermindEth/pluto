@@ -215,6 +215,12 @@ impl MessageType {
     }
 }
 
+impl From<MessageType> for i64 {
+    fn from(value: MessageType) -> Self {
+        value.0
+    }
+}
+
 impl Display for MessageType {
     /// Formats the message type using the stable wire/debug label.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1405,6 +1411,7 @@ mod tests {
         let message_type = MessageType::from_wire(99);
 
         assert_eq!(message_type, MessageType(99));
+        assert_eq!(i64::from(message_type), 99);
         assert!(!message_type.valid());
         assert_eq!(message_type.to_string(), "");
     }

@@ -65,10 +65,6 @@ type Result<T> = std::result::Result<T, Error>;
 /// Errors returned by QBFT message wrapping.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// Nil QBFT protobuf message.
-    #[error("nil qbft message")]
-    NilQbftMessage,
-
     /// Value hash did not exist in the values map.
     #[error("value hash not found in values")]
     ValueHashNotFound,
@@ -150,12 +146,10 @@ impl Msg {
     /// Justifications are raw protobuf messages from the same consensus
     /// envelope. They are recursively wrapped with the same shared value map.
     pub(crate) fn new(
-        msg: Option<pbconsensus::QbftMsg>,
+        msg: pbconsensus::QbftMsg,
         justification: Vec<pbconsensus::QbftMsg>,
         values: sync::Arc<ValueMap>,
     ) -> Result<Self> {
-        let msg = msg.ok_or(Error::NilQbftMessage)?;
-
         let value_hash = match to_hash32(&msg.value_hash) {
             Some(hash) if values.contains_key(&hash) => hash,
             Some(_) => return Err(Error::ValueHashNotFound),
@@ -171,7 +165,7 @@ impl Msg {
             Vec::with_capacity(justification.len());
 
         for justification_msg in &justification {
-            let impl_msg = Self::new(Some(justification_msg.clone()), vec![], values.clone())?;
+            let impl_msg = Self::new(justification_msg.clone(), vec![], values.clone())?;
             justification_impls.push(sync::Arc::new(impl_msg));
         }
 
@@ -274,9 +268,18 @@ where
     let mut encoded = Vec::with_capacity(msg.encoded_len());
     msg.encode(&mut encoded).map_err(Error::MarshalProto)?;
 
+    hash_proto_bytes(&encoded)
+}
+
+/// Returns the consensus hash for deterministic inner-protobuf bytes.
+///
+/// This helper hashes the bytes exactly as provided; it does not decode or
+/// canonicalize a protobuf envelope. Callers must pass bytes produced from the
+/// concrete inner message with deterministic field/map ordering.
+pub(crate) fn hash_proto_bytes(encoded: &[u8]) -> Result<[u8; 32]> {
     let mut hasher = Hasher::default();
     let index = hasher.index();
-    hasher.put_bytes(&encoded).map_err(Error::HashProto)?;
+    hasher.put_bytes(encoded).map_err(Error::HashProto)?;
     hasher.merkleize(index).map_err(Error::HashProto)?;
     hasher.hash_root().map_err(Error::HashProto)
 }
@@ -437,19 +440,12 @@ mod tests {
     }
 
     #[test]
-    fn new_rejects_nil_message() {
-        let err = Msg::new(None, vec![], sync::Arc::default()).unwrap_err();
-
-        assert_eq!(err.to_string(), "nil qbft message");
-    }
-
-    #[test]
     fn debug_unknown_message_type() {
         let msg = Msg::new(
-            Some(pbconsensus::QbftMsg {
+            pbconsensus::QbftMsg {
                 r#type: 99,
                 ..Default::default()
-            }),
+            },
             vec![],
             sync::Arc::default(),
         )
@@ -470,7 +466,7 @@ mod tests {
         ]));
 
         let msg = Msg::new(
-            Some(pbconsensus::QbftMsg {
+            pbconsensus::QbftMsg {
                 r#type: 1,
                 duty: Some(pbcore::Duty {
                     slot: 42,
@@ -482,7 +478,7 @@ mod tests {
                 value_hash: value_hash.to_vec().into(),
                 prepared_value_hash: prepared_hash.to_vec().into(),
                 ..Default::default()
-            }),
+            },
             vec![],
             values,
         )
@@ -506,10 +502,10 @@ mod tests {
     #[test_case(vec![0; 32] ; "zero_hash")]
     fn new_treats_invalid_value_hash_as_nil(hash: Vec<u8>) {
         let msg = Msg::new(
-            Some(pbconsensus::QbftMsg {
+            pbconsensus::QbftMsg {
                 value_hash: hash.into(),
                 ..Default::default()
-            }),
+            },
             vec![],
             sync::Arc::default(),
         )
@@ -522,10 +518,10 @@ mod tests {
     #[test_case(vec![0; 32] ; "zero_hash")]
     fn new_treats_invalid_prepared_value_hash_as_nil(hash: Vec<u8>) {
         let msg = Msg::new(
-            Some(pbconsensus::QbftMsg {
+            pbconsensus::QbftMsg {
                 prepared_value_hash: hash.into(),
                 ..Default::default()
-            }),
+            },
             vec![],
             sync::Arc::default(),
         )
@@ -537,10 +533,10 @@ mod tests {
     #[test]
     fn new_errors_on_missing_value_hash() {
         let err = Msg::new(
-            Some(pbconsensus::QbftMsg {
+            pbconsensus::QbftMsg {
                 value_hash: [1u8; 32].to_vec().into(),
                 ..Default::default()
-            }),
+            },
             vec![],
             sync::Arc::default(),
         )
@@ -552,10 +548,10 @@ mod tests {
     #[test]
     fn new_errors_on_missing_prepared_value_hash() {
         let err = Msg::new(
-            Some(pbconsensus::QbftMsg {
+            pbconsensus::QbftMsg {
                 prepared_value_hash: [2u8; 32].to_vec().into(),
                 ..Default::default()
-            }),
+            },
             vec![],
             sync::Arc::default(),
         )
@@ -567,7 +563,7 @@ mod tests {
     #[test]
     fn new_errors_on_nested_justification_missing_value() {
         let err = Msg::new(
-            Some(pbconsensus::QbftMsg::default()),
+            pbconsensus::QbftMsg::default(),
             vec![pbconsensus::QbftMsg {
                 value_hash: [3u8; 32].to_vec().into(),
                 ..Default::default()
@@ -582,7 +578,7 @@ mod tests {
     #[test]
     fn value_source_errors_when_value_missing() {
         let msg = Msg::new(
-            Some(pbconsensus::QbftMsg::default()),
+            pbconsensus::QbftMsg::default(),
             vec![],
             sync::Arc::default(),
         )
@@ -599,7 +595,7 @@ mod tests {
         let values = sync::Arc::new(value_map(vec![(value_hash, any_timestamp(1))]));
 
         let msg = Msg::new(
-            Some(pbconsensus::QbftMsg::default()),
+            pbconsensus::QbftMsg::default(),
             vec![pbconsensus::QbftMsg {
                 r#type: 2,
                 value_hash: value_hash.to_vec().into(),
@@ -637,12 +633,7 @@ mod tests {
             ..Default::default()
         };
 
-        let msg = Msg::new(
-            Some(raw_msg.clone()),
-            vec![raw_justification.clone()],
-            values,
-        )
-        .unwrap();
+        let msg = Msg::new(raw_msg.clone(), vec![raw_justification.clone()], values).unwrap();
         let consensus_msg = msg.to_consensus_msg();
 
         assert_eq!(msg.msg(), &raw_msg);

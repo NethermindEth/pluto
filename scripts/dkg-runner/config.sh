@@ -9,7 +9,7 @@
 : "${THRESHOLD:=3}"
 : "${PLUTO_NODES:=2}"
 : "${CHARON_NODES:=2}"
-: "${RELAY_URL:=https://0.relay.obol.tech}"
+: "${RELAY_URL:=https://pluto-relay-0.ovh.dev-nethermind.xyz}"
 : "${TIMEOUT:=120}"
 : "${SHUTDOWN_DELAY:=120s}"
 : "${NODE_EXIT_TIMEOUT:=180}"

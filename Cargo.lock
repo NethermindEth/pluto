@@ -5600,6 +5600,7 @@ dependencies = [
  "dyn-clone",
  "dyn-eq",
  "ethereum_ssz",
+ "futures",
  "hex",
  "k256",
  "libp2p",
