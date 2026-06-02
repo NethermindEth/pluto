@@ -38,9 +38,9 @@ pluto-featureset.workspace = true
 pluto-ssz.workspace = true
 ssz.workspace = true
 tree_hash.workspace = true
-anyhow.workspace = true
 
 [dev-dependencies]
+anyhow.workspace = true
 alloy.workspace = true
 clap.workspace = true
 rand.workspace = true
