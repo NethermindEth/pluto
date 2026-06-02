@@ -49,11 +49,16 @@ pub type CallbackError = Box<dyn std::error::Error + Send + Sync + 'static>;
 /// Convenience alias for the future returned by an async registered callback.
 type CallbackFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, CallbackError>> + Send + 'a>>;
 
-/// Subscriber callback for `Subscribe`. Receives a [`Duty`] and a clone of
-/// the [`ParSignedDataSet`] — cloning happens inside the registered wrapper,
-/// matching Go's `Subscribe` clone-before-fanout behaviour.
+/// Subscriber callback for `Subscribe`. Receives the [`Duty`] and the
+/// [`ParSignedDataSet`] by reference; the registered wrapper clones the
+/// set exactly once before invoking the user closure so every subscriber
+/// observes an independent copy — mirroring Go's `Subscribe`
+/// clone-before-fanout behaviour at `validatorapi.go:249-256`.
 pub type SubscriberFn = Arc<
-    dyn for<'a> Fn(&'a Duty, ParSignedDataSet) -> CallbackFuture<'a, ()> + Send + Sync + 'static,
+    dyn for<'a> Fn(&'a Duty, &'a ParSignedDataSet) -> CallbackFuture<'a, ()>
+        + Send
+        + Sync
+        + 'static,
 >;
 
 /// Looks up an unsigned beacon proposal by slot. Mirrors Go's
@@ -221,14 +226,17 @@ impl Component {
     /// partial-signed-data set has been validated. Mirrors Go's
     /// `(*Component).Subscribe` — the registered closure receives its own
     /// clone of the set, so subscribers can mutate without affecting peers.
+    ///
+    /// The wrapper takes the set by reference and clones it exactly once
+    /// before handing the owned copy to the user closure. Future submit
+    /// handlers iterate `&self.subs` and pass `&set` to each subscriber,
+    /// giving the Go-parity cost of one clone per subscriber.
     pub fn subscribe<F, Fut>(&mut self, f: F)
     where
         F: Fn(Duty, ParSignedDataSet) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<(), CallbackError>> + Send + 'static,
     {
         let wrapped: SubscriberFn = Arc::new(move |duty, set| {
-            // Clone before invoking each subscriber — exactly as Go's
-            // `Subscribe` wraps the user fn with a `set.Clone()` step.
             let fut = f(duty.clone(), set.clone());
             Box::pin(fut)
         });
@@ -1316,9 +1324,10 @@ mod tests {
         set.insert(key_b, SignedRandao::new_partial(0, [0; 96], 1));
         let duty = Duty::new(SlotNumber::new(1), DutyType::Attester);
 
-        // Fanout: every sub must observe its own clone.
+        // Fanout: each subscriber gets the set by reference; the registered
+        // wrapper clones once so every subscriber observes its own copy.
         for sub in component.subs.iter() {
-            sub(&duty, set.clone()).await.unwrap();
+            sub(&duty, &set).await.unwrap();
         }
 
         let observed = received.lock().unwrap().clone();
