@@ -899,6 +899,7 @@ mod tests {
         peer_idx: i64,
         round: i64,
     ) -> qbft::Msg<ConsensusQbftTypes> {
+        let (value_hash, values) = test_value_parts(type_);
         Arc::new(
             msg::Msg::new(
                 pbconsensus::QbftMsg {
@@ -909,10 +910,11 @@ mod tests {
                     }),
                     peer_idx,
                     round,
+                    value_hash,
                     ..Default::default()
                 },
                 vec![],
-                Arc::default(),
+                values,
             )
             .unwrap(),
         )
@@ -1010,6 +1012,7 @@ mod tests {
         round: i64,
         duty_type: DutyType,
     ) -> qbft::Msg<ConsensusQbftTypes> {
+        let (value_hash, values) = test_value_parts(type_);
         Arc::new(
             msg::Msg::new(
                 pbconsensus::QbftMsg {
@@ -1020,17 +1023,33 @@ mod tests {
                     }),
                     peer_idx,
                     round,
+                    value_hash,
                     ..Default::default()
                 },
                 vec![],
-                Arc::default(),
+                values,
             )
             .unwrap(),
         )
     }
 
+    fn test_value_parts(type_: qbft::MessageType) -> (Bytes, Arc<HashMap<[u8; 32], Any>>) {
+        if type_ == qbft::MSG_ROUND_CHANGE || !type_.valid() {
+            return (Bytes::new(), Arc::default());
+        }
+
+        let value = unsigned_value();
+        let hash = msg::hash_proto(&value).unwrap();
+        (
+            hash.to_vec().into(),
+            Arc::new(HashMap::from([(hash, any_unsigned(&value))])),
+        )
+    }
+
     fn unsigned_value() -> pbcore::UnsignedDataSet {
-        pbcore::UnsignedDataSet::default()
+        pbcore::UnsignedDataSet {
+            set: [("0x1".to_string(), Bytes::from_static(&[1]))].into(),
+        }
     }
 
     fn unsigned_attestation_set(

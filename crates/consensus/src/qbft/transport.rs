@@ -414,19 +414,21 @@ mod tests {
         let key = secret_key();
         let duty = duty();
         let nested = QbftMsg {
-            r#type: 3,
+            r#type: i64::from(qbft::MSG_ROUND_CHANGE),
             round: 9,
             ..Default::default()
         };
+        let value_hash = value_hash(1);
         let raw_justification = QbftMsg {
-            r#type: 2,
+            r#type: i64::from(qbft::MSG_PREPARE),
             round: 4,
+            value_hash: value_hash.to_vec().into(),
             ..Default::default()
         };
         let justification = msg::Msg::new(
             raw_justification.clone(),
             vec![nested],
-            sync::Arc::default(),
+            sync::Arc::new(value_map(vec![(value_hash, any_timestamp(1))])),
         )
         .unwrap();
         let justification: qbft::Msg<ConsensusQbftTypes> = sync::Arc::new(justification);
@@ -436,6 +438,7 @@ mod tests {
         request.peer_idx = 2;
         request.round = 5;
         request.justification = &justifications;
+        request.values = value_map(vec![(value_hash, any_timestamp(1))]);
 
         let msg = create_msg(request).unwrap();
 

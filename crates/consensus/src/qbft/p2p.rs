@@ -1380,6 +1380,8 @@ mod tests {
         duty: &pluto_core::types::Duty,
         peer_idx: i64,
     ) -> TestResult<pbconsensus::QbftConsensusMsg> {
+        let value = reference_value();
+        let value_hash = msg::hash_proto(&value)?;
         let key = match peer_idx {
             0 => secret_key(1),
             1 => secret_key(2),
@@ -1394,7 +1396,7 @@ mod tests {
             duty: Some(pbcore::Duty::try_from(duty)?),
             peer_idx,
             round: 1,
-            value_hash: Bytes::new(),
+            value_hash: value_hash.to_vec().into(),
             prepared_value_hash: Bytes::new(),
             ..Default::default()
         };
@@ -1402,7 +1404,7 @@ mod tests {
         Ok(pbconsensus::QbftConsensusMsg {
             msg: Some(msg::sign_msg(&msg, &key)?),
             justification: Vec::new(),
-            values: Vec::new(),
+            values: vec![Any::from_msg(&value)?],
         })
     }
 }

@@ -914,6 +914,24 @@ pub(crate) mod tests {
     #[test_case(vec![1; 31] ; "short")]
     #[test_case(vec![1; 33] ; "long")]
     #[tokio::test]
+    async fn handle_rejects_invalid_value_hash(hash: Vec<u8>) {
+        let mut msg = unsigned_msg(0);
+        msg.value_hash = hash.into();
+        let msg = sign_for_peer(msg, 0);
+
+        let err = consensus(0, true)
+            .handle(&CancellationToken::new(), Some(consensus_msg(msg)))
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.to_string(), "invalid value hash");
+    }
+
+    #[test_case(vec![] ; "empty")]
+    #[test_case(vec![0; 32] ; "zero")]
+    #[test_case(vec![1; 31] ; "short")]
+    #[test_case(vec![1; 33] ; "long")]
+    #[tokio::test]
     async fn handle_rejects_invalid_prepared_round_change_hash(hash: Vec<u8>) {
         let mut msg = unsigned_msg(0);
         msg.r#type = i64::from(qbft::MSG_ROUND_CHANGE);
@@ -1009,10 +1027,7 @@ pub(crate) mod tests {
         .unwrap();
 
         let err = consensus
-            .handle(
-                &CancellationToken::new(),
-                Some(consensus_msg(signed_msg(0))),
-            )
+            .handle(&CancellationToken::new(), Some(valid_consensus_msg(0)))
             .await
             .unwrap_err();
 
@@ -1025,7 +1040,7 @@ pub(crate) mod tests {
         ct.cancel();
 
         let err = consensus(0, true)
-            .handle(&ct, Some(consensus_msg(signed_msg(0))))
+            .handle(&ct, Some(valid_consensus_msg(0)))
             .await
             .unwrap_err();
 
@@ -1042,7 +1057,7 @@ pub(crate) mod tests {
         }
 
         let ct = CancellationToken::new();
-        let handle = consensus.handle(&ct, Some(consensus_msg(signed_msg(0))));
+        let handle = consensus.handle(&ct, Some(valid_consensus_msg(0)));
         tokio::pin!(handle);
 
         tokio::select! {
@@ -1069,7 +1084,7 @@ pub(crate) mod tests {
         }
 
         let ct = CancellationToken::new();
-        let handle = consensus.handle(&ct, Some(consensus_msg(signed_msg(0))));
+        let handle = consensus.handle(&ct, Some(valid_consensus_msg(0)));
         tokio::pin!(handle);
 
         tokio::select! {
@@ -1161,6 +1176,20 @@ pub(crate) mod tests {
         sign_for_peer(unsigned_msg(peer_idx), peer_idx)
     }
 
+    fn valid_consensus_msg(peer_idx: i64) -> pbconsensus::QbftConsensusMsg {
+        let any = unsigned_any("a", b"first");
+        let value = pbcore::UnsignedDataSet::decode(any.value.as_slice()).unwrap();
+        let value_hash = msg::hash_proto(&value).unwrap();
+        let mut msg = unsigned_msg(peer_idx);
+        msg.value_hash = value_hash.to_vec().into();
+
+        pbconsensus::QbftConsensusMsg {
+            msg: Some(sign_for_peer(msg, peer_idx)),
+            justification: vec![],
+            values: vec![any],
+        }
+    }
+
     fn sign_for_peer(msg: pbconsensus::QbftMsg, peer_idx: i64) -> pbconsensus::QbftMsg {
         let seed = u8::try_from(peer_idx.checked_add(1).unwrap()).unwrap();
         msg::sign_msg(&msg, &secret_key(seed)).unwrap()
@@ -1193,7 +1222,13 @@ pub(crate) mod tests {
     }
 
     fn wrapped_msg() -> msg::Msg {
-        msg::Msg::new(unsigned_msg(0), vec![], Arc::default()).unwrap()
+        let any = unsigned_any("a", b"first");
+        let value = pbcore::UnsignedDataSet::decode(any.value.as_slice()).unwrap();
+        let value_hash = msg::hash_proto(&value).unwrap();
+        let mut msg = unsigned_msg(0);
+        msg.value_hash = value_hash.to_vec().into();
+
+        msg::Msg::new(msg, vec![], Arc::new(ValueMap::from([(value_hash, any)]))).unwrap()
     }
 
     pub(crate) fn consensus(local_peer_idx: i64, duty_allowed: bool) -> Consensus {
