@@ -65,6 +65,10 @@ impl MemoryDBActor {
     }
 
     async fn store(&mut self, duty: types::Duty, set: types::SignedDataSet) -> Result<(), Error> {
+        if set.is_empty() {
+            return Ok(());
+        }
+
         // TODO(charon): Distinguish between no deadline supported vs already expired.
         let _ = self.deadliner.add(duty.clone()).await;
 
