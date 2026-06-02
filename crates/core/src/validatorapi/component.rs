@@ -810,7 +810,12 @@ fn format_bls_pubkey(pubkey: &BLSPubKey) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use chrono::{DateTime, Utc};
+    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
+    use pluto_testutil::BeaconMock;
+    use serde_json::json;
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
@@ -820,9 +825,10 @@ mod tests {
         dutydb::{UnsignedDataSet, UnsignedDutyData},
         signeddata::{
             AttestationData as SignedAttestationData, AttesterDuty as SignedAttesterDuty,
+            SignedRandao, SyncContribution, VersionedAggregatedAttestation,
         },
         testutils::random_core_pub_key,
-        types::{Duty, DutyType, SlotNumber},
+        types::{Duty, DutyType, PubKey, SlotNumber},
         validatorapi::types::AttestationDataOpts,
     };
 
@@ -1255,18 +1261,6 @@ mod tests {
     // ====================================================================
     // Plumbing tests — Subscribe / Register* / verify_partial_sig
     // ====================================================================
-
-    use std::sync::Mutex;
-
-    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
-    use pluto_eth2util::signing::DomainName;
-    use pluto_testutil::BeaconMock;
-    use serde_json::json;
-
-    use crate::{
-        signeddata::{SignedRandao, SyncContribution, VersionedAggregatedAttestation},
-        types::PubKey,
-    };
 
     fn dv_pubkey(byte: u8) -> BLSPubKey {
         [byte; 48]
