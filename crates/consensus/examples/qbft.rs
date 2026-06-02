@@ -265,8 +265,8 @@ impl DutyRun {
             .current()
             .expect("incomplete duty run has duty")
             .clone();
-        let leader_node = node_number(leader_index(&duty, fixture.peer_ids.len()));
-        let local_node = node_number(fixture.local_index);
+        let leader_node = leader_index(&duty, fixture.peer_ids.len());
+        let local_node = fixture.local_index;
         println!(
             "node={local_node} starting duty {}/{} duty={} leader=node-{leader_node}",
             self.index.checked_add(1).expect("duty index increments"),
@@ -332,9 +332,9 @@ async fn main() -> Result<()> {
     let duties = build_duties(args.slot, args.duties)?;
     let first_duty = duties.first().expect("duty count is non-zero");
     let fixture = load_fixture(&args).await?;
-    let local_node = node_number(fixture.local_index);
+    let local_node = fixture.local_index;
     let leader = leader_index(first_duty, fixture.peer_ids.len());
-    let leader_node = node_number(leader);
+    let leader_node = leader;
 
     let cancel = CancellationToken::new();
     let relays = bootnode::new_relays(
@@ -353,12 +353,13 @@ async fn main() -> Result<()> {
             .with_relays(relays.clone())
             .with_peer_ids(fixture.peer_ids.clone()),
     );
+    let p2p_context = P2PContext::new(fixture.peer_ids.iter().copied());
 
     let (decision_tx, mut decision_rx) = tokio::sync::mpsc::unbounded_channel();
     let consensus = build_consensus(&fixture, timeout, cancel.child_token(), decision_tx)?;
     let (qbft_behaviour, handle) = qbft::p2p::Behaviour::new(qbft::p2p::Config {
         consensus: Arc::clone(&consensus.component),
-        p2p_context: consensus.p2p_context.clone(),
+        p2p_context: p2p_context.clone(),
         peers: fixture.peer_ids.clone(),
         local_peer_id: fixture.peer_ids[fixture.local_index],
         cancellation: cancel.child_token(),
@@ -381,7 +382,7 @@ async fn main() -> Result<()> {
         fixture.key.clone(),
         NodeType::QUIC,
         args.filter_private_addrs,
-        consensus.p2p_context.clone(),
+        p2p_context,
         |builder, keypair, relay_client| {
             let local_peer_id = keypair.public().to_peer_id();
             let p2p_context = builder.p2p_context();
@@ -546,7 +547,7 @@ async fn load_fixture(args: &Args) -> Result<Fixture> {
                 .context("operator ENR missing public key")?;
             Ok(qbft::Peer {
                 index: i64::try_from(index)?,
-                name: format!("node-{}", node_number(index)),
+                name: format!("node-{index}"),
                 public_key,
             })
         })
@@ -563,7 +564,6 @@ async fn load_fixture(args: &Args) -> Result<Fixture> {
 
 struct ConsensusRuntime {
     component: Arc<qbft::Consensus>,
-    p2p_context: P2PContext,
     handle_slot: Arc<OnceLock<qbft::p2p::Handle>>,
     lifecycle_task: tokio::task::JoinHandle<()>,
 }
@@ -589,10 +589,10 @@ fn build_consensus(
 
     let (deadliner, expired_rx) = DeadlinerTask::start(
         cancel.child_token(),
-        format!("qbft-example-node-{}", node_number(fixture.local_index)),
+        format!("qbft-example-node-{}", fixture.local_index),
         DemoDeadline { timeout },
     );
-    let local_node = node_number(fixture.local_index);
+    let local_node = fixture.local_index;
     let component = Arc::new(qbft::Consensus::new(qbft::Config {
         peers: fixture.consensus_peers.clone(),
         local_peer_idx: i64::try_from(fixture.local_index)?,
@@ -622,7 +622,6 @@ fn build_consensus(
 
     Ok(ConsensusRuntime {
         component,
-        p2p_context: P2PContext::new(fixture.peer_ids.iter().copied()),
         handle_slot,
         lifecycle_task,
     })
@@ -636,7 +635,7 @@ fn handle_swarm_event(
     connected_cluster_peers: &mut HashSet<PeerId>,
     verbose_p2p: bool,
 ) -> Result<()> {
-    let local_node = node_number(fixture.local_index);
+    let local_node = fixture.local_index;
     match event {
         SwarmEvent::NewListenAddr { address, .. } => {
             if verbose_p2p {
@@ -718,7 +717,7 @@ fn start_consensus_for_node(
     duty: Duty,
     cancel: CancellationToken,
 ) -> tokio::task::JoinHandle<Result<()>> {
-    let local_node = node_number(fixture.local_index);
+    let local_node = fixture.local_index;
     let leader = leader_index(&duty, fixture.peer_ids.len());
     if fixture.local_index == leader {
         let slot = duty.slot.inner();
@@ -809,15 +808,11 @@ fn demo_value(node: usize, slot: u64) -> pbcore::UnsignedDataSet {
     pbcore::UnsignedDataSet { set }
 }
 
-fn node_number(index: usize) -> usize {
-    index.checked_add(1).expect("node index increments")
-}
-
 fn peer_list(peers: &[PeerId]) -> String {
     peers
         .iter()
         .enumerate()
-        .map(|(index, peer_id)| format!("node-{}={peer_id}", node_number(index)))
+        .map(|(index, peer_id)| format!("node-{index}={peer_id}"))
         .collect::<Vec<_>>()
         .join(",")
 }
