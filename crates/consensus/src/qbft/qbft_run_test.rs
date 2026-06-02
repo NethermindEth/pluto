@@ -9,15 +9,17 @@ use pluto_core::{
     corepb::v1::core as pbcore,
     types::{Duty, DutyType, SlotNumber},
 };
+use pluto_eth2api::spec::phase0;
 use prost::bytes::Bytes;
 use test_case::test_case;
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
 use super::{
     Peer,
     component::{self, Config, Consensus},
 };
+use crate::timer::{RoundTimer, RoundTimerFunc, RoundTimerFuture, TimerType};
 
 #[test_case(2, 3 ; "two_of_three")]
 #[test_case(3, 4 ; "three_of_four")]
@@ -26,8 +28,20 @@ use super::{
 #[tokio::test]
 async fn qbft_consensus(threshold: usize, cluster_nodes: usize) {
     assert!(threshold <= cluster_nodes);
-    let (sniffed_tx, mut sniffed_rx) = mpsc::unbounded_channel();
-    let active_nodes = in_memory_network(threshold, sniffed_tx);
+    run_qbft_consensus(threshold, false, unsigned_value).await;
+}
+
+#[tokio::test]
+async fn qbft_consensus_attester_compare_enabled() {
+    run_qbft_consensus(3, true, |_| attester_value(0)).await;
+}
+
+#[tokio::test]
+async fn qbft_consensus_attester_compare_mismatch_does_not_decide() {
+    let threshold = 3;
+    let (sniffed_tx, _sniffed_rx) = mpsc::unbounded_channel();
+    let active_nodes =
+        in_memory_network(threshold, true, Some(Duration::from_millis(20)), sniffed_tx);
     let (decided_tx, mut decided_rx) = mpsc::unbounded_channel();
     let duty = Duty::new(SlotNumber::new(1), DutyType::Attester);
     let ct = CancellationToken::new();
@@ -48,15 +62,70 @@ async fn qbft_consensus(threshold: usize, cluster_nodes: usize) {
     }
     drop(decided_tx);
 
-    let mut tasks = Vec::with_capacity(active_nodes.len());
+    let mut tasks = JoinSet::new();
     for (node_idx, node) in active_nodes.iter().enumerate() {
         let node = Arc::clone(node);
         let duty = duty.clone();
-        let value = unsigned_value(node_idx);
+        let value = attester_value(node_idx);
         let ct = ct.clone();
-        tasks.push(tokio::spawn(
-            async move { node.propose(&ct, duty, value).await },
-        ));
+        tasks.spawn(async move { node.propose(&ct, duty, value).await });
+    }
+
+    tokio::time::timeout(Duration::from_millis(150), decided_rx.recv())
+        .await
+        .expect_err("mismatched attester compare unexpectedly decided");
+
+    ct.cancel();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while let Some(result) = tasks.join_next().await {
+            assert!(result.expect("mismatched compare task panicked").is_err());
+        }
+    })
+    .await
+    .expect("mismatched compare tasks did not stop after cancellation");
+    assert!(decided_rx.try_recv().is_err());
+
+    start_ct.cancel();
+    drop(expired_txs);
+    for task in start_tasks {
+        task.await.unwrap();
+    }
+}
+
+async fn run_qbft_consensus(
+    threshold: usize,
+    compare_attestations: bool,
+    value: fn(usize) -> pbcore::UnsignedDataSet,
+) {
+    let (sniffed_tx, mut sniffed_rx) = mpsc::unbounded_channel();
+    let active_nodes = in_memory_network(threshold, compare_attestations, None, sniffed_tx);
+    let (decided_tx, mut decided_rx) = mpsc::unbounded_channel();
+    let duty = Duty::new(SlotNumber::new(1), DutyType::Attester);
+    let ct = CancellationToken::new();
+    let start_ct = CancellationToken::new();
+    let mut expired_txs = Vec::with_capacity(active_nodes.len());
+    let mut start_tasks = Vec::with_capacity(active_nodes.len());
+
+    for (node_idx, node) in active_nodes.iter().enumerate() {
+        let decided_tx = decided_tx.clone();
+        node.subscribe(move |duty, value| {
+            let _ = decided_tx.send((node_idx, duty, value));
+            Ok(())
+        });
+
+        let (expired_tx, expired_rx) = mpsc::channel(1);
+        expired_txs.push(expired_tx);
+        start_tasks.push(Arc::clone(node).start(start_ct.clone(), expired_rx));
+    }
+    drop(decided_tx);
+
+    let mut tasks = JoinSet::new();
+    for (node_idx, node) in active_nodes.iter().enumerate() {
+        let node = Arc::clone(node);
+        let duty = duty.clone();
+        let value = value(node_idx);
+        let ct = ct.clone();
+        tasks.spawn(async move { node.propose(&ct, duty, value).await });
     }
 
     let mut decided = Vec::with_capacity(active_nodes.len());
@@ -64,8 +133,10 @@ async fn qbft_consensus(threshold: usize, cluster_nodes: usize) {
         decided.push(recv_one(&mut decided_rx).await);
     }
 
-    for task in tasks {
-        task.await.unwrap().unwrap();
+    while let Some(result) = tasks.join_next().await {
+        result
+            .expect("consensus task panicked")
+            .expect("consensus task failed");
     }
 
     decided.sort_by_key(|(node_idx, ..)| *node_idx);
@@ -112,8 +183,60 @@ fn unsigned_value(seed: usize) -> pbcore::UnsignedDataSet {
     pbcore::UnsignedDataSet { set }
 }
 
+fn attester_value(seed: usize) -> pbcore::UnsignedDataSet {
+    let mut set = BTreeMap::new();
+    set.insert(pubkey(1), attestation_json_bytes(&attestation_data(seed)));
+    pbcore::UnsignedDataSet { set }
+}
+
+fn attestation_json_bytes(data: &phase0::AttestationData) -> Bytes {
+    let value = serde_json::json!({
+        "attestation_data": data,
+        "attestation_duty": {
+            "slot": "1",
+            "validator_index": "1",
+            "committee_index": "2",
+            "committee_length": "8",
+            "committees_at_slot": "1",
+            "validator_committee_index": "1",
+        },
+    });
+    Bytes::from(serde_json::to_vec(&value).expect("test attestation json serializes"))
+}
+
+fn attestation_data(seed: usize) -> phase0::AttestationData {
+    let seed = u8::try_from(seed).expect("test attestation seed fits u8");
+    let source_epoch = u64::from(seed)
+        .checked_add(4)
+        .expect("test source epoch fits u64");
+    let source_root = seed.checked_add(5).expect("test source root byte fits u8");
+    let target_epoch = u64::from(seed)
+        .checked_add(6)
+        .expect("test target epoch fits u64");
+    let target_root = seed.checked_add(7).expect("test target root byte fits u8");
+    phase0::AttestationData {
+        slot: 1,
+        index: 2,
+        beacon_block_root: [3; 32],
+        source: phase0::Checkpoint {
+            epoch: source_epoch,
+            root: [source_root; 32],
+        },
+        target: phase0::Checkpoint {
+            epoch: target_epoch,
+            root: [target_root; 32],
+        },
+    }
+}
+
+fn pubkey(seed: u8) -> String {
+    format!("0x{}", hex::encode([seed; 48]))
+}
+
 fn in_memory_network(
     count: usize,
+    compare_attestations: bool,
+    round_timeout: Option<Duration>,
     sniffed_tx: mpsc::UnboundedSender<(usize, usize)>,
 ) -> Vec<Arc<Consensus>> {
     let peers = (0..count)
@@ -156,7 +279,11 @@ fn in_memory_network(
                         .expect("test peer index fits u8"),
                 ),
                 broadcaster,
-                compare_attestations: false,
+                compare_attestations,
+                timer_func: match round_timeout {
+                    Some(timeout) => short_timer_func(timeout),
+                    None => crate::timer::get_round_timer_func(),
+                },
                 sniffer: {
                     let sniffed_tx = sniffed_tx.clone();
                     Arc::new(move |instance| {
@@ -171,4 +298,28 @@ fn in_memory_network(
     }
 
     nodes.lock().unwrap().clone()
+}
+
+fn short_timer_func(timeout: Duration) -> RoundTimerFunc {
+    Box::new(move |_| Box::new(ShortRoundTimer { timeout }))
+}
+
+struct ShortRoundTimer {
+    timeout: Duration,
+}
+
+impl RoundTimer for ShortRoundTimer {
+    fn timer_type(&self) -> TimerType {
+        TimerType::Increasing
+    }
+
+    fn timer(&self, _round: i64) -> crate::timer::Result<RoundTimerFuture> {
+        let deadline = tokio::time::Instant::now()
+            .checked_add(self.timeout)
+            .expect("test timer deadline fits Instant");
+        Ok(Box::pin(async move {
+            tokio::time::sleep_until(deadline).await;
+            deadline
+        }))
+    }
 }
