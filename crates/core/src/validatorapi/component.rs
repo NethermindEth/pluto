@@ -4,10 +4,11 @@
 //! and public-share mappings needed to translate between distributed-validator
 //! root keys and this node's threshold-BLS share.
 
-use std::{any::Any, collections::HashMap, future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{any::Any, collections::HashMap, future::Future, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use axum::http::StatusCode;
+use futures::future::BoxFuture;
 use pluto_eth2api::{
     EthBeaconNodeApiClient, GetAttesterDutiesRequest, GetAttesterDutiesResponse,
     GetProposerDutiesRequest, GetProposerDutiesResponse, GetSyncCommitteeDutiesRequest,
@@ -46,16 +47,13 @@ use crate::{
 /// `error` return for `awaitX` / `dutyDef` / `pubKeyByAtt` callbacks.
 pub type CallbackError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
-/// Convenience alias for the future returned by an async registered callback.
-type CallbackFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, CallbackError>> + Send + 'a>>;
-
 /// Subscriber callback for `Subscribe`. Receives the [`Duty`] and the
 /// [`ParSignedDataSet`] by reference; the registered wrapper clones the
 /// set exactly once before invoking the user closure so every subscriber
 /// observes an independent copy — mirroring Go's `Subscribe`
 /// clone-before-fanout behaviour at `validatorapi.go:249-256`.
 pub type SubscriberFn = Arc<
-    dyn for<'a> Fn(&'a Duty, &'a ParSignedDataSet) -> CallbackFuture<'a, ()>
+    dyn for<'a> Fn(&'a Duty, &'a ParSignedDataSet) -> BoxFuture<'a, Result<(), CallbackError>>
         + Send
         + Sync
         + 'static,
@@ -63,13 +61,17 @@ pub type SubscriberFn = Arc<
 
 /// Looks up an unsigned beacon proposal by slot. Mirrors Go's
 /// `awaitProposalFunc(ctx, slot) -> *eth2api.VersionedProposal`.
-pub type AwaitProposalFn =
-    Arc<dyn Fn(u64) -> CallbackFuture<'static, UnsignedVersionedProposal> + Send + Sync + 'static>;
+pub type AwaitProposalFn = Arc<
+    dyn Fn(u64) -> BoxFuture<'static, Result<UnsignedVersionedProposal, CallbackError>>
+        + Send
+        + Sync
+        + 'static,
+>;
 
 /// Looks up an aggregated attestation by `(slot, attestation_root)`. Mirrors
 /// Go's `awaitAggAttFunc(ctx, slot, root) -> *eth2spec.VersionedAttestation`.
 pub type AwaitAggAttestationFn = Arc<
-    dyn Fn(u64, Root) -> CallbackFuture<'static, VersionedAggregatedAttestation>
+    dyn Fn(u64, Root) -> BoxFuture<'static, Result<VersionedAggregatedAttestation, CallbackError>>
         + Send
         + Sync
         + 'static,
@@ -78,13 +80,19 @@ pub type AwaitAggAttestationFn = Arc<
 /// Looks up a sync committee contribution by `(slot, subcommittee_index,
 /// beacon_block_root)`. Mirrors Go's `awaitSyncContributionFunc`.
 pub type AwaitSyncContributionFn = Arc<
-    dyn Fn(u64, u64, Root) -> CallbackFuture<'static, SyncContribution> + Send + Sync + 'static,
+    dyn Fn(u64, u64, Root) -> BoxFuture<'static, Result<SyncContribution, CallbackError>>
+        + Send
+        + Sync
+        + 'static,
 >;
 
 /// Looks up aggregated signed data from the AggSigDB for a `(duty, pubkey)`.
 /// Mirrors Go's `awaitAggSigDBFunc(ctx, duty, pubkey) -> core.SignedData`.
 pub type AwaitAggSigDBFn = Arc<
-    dyn Fn(Duty, PubKey) -> CallbackFuture<'static, Box<dyn SignedData>> + Send + Sync + 'static,
+    dyn Fn(Duty, PubKey) -> BoxFuture<'static, Result<Box<dyn SignedData>, CallbackError>>
+        + Send
+        + Sync
+        + 'static,
 >;
 
 /// Looks up the duty-definition set for a given [`Duty`]. Mirrors Go's
@@ -93,13 +101,20 @@ pub type AwaitAggSigDBFn = Arc<
 /// type-erased shape via `Box<dyn Any>` so callers can downcast to the
 /// concrete `DutyDefinitionSet<T>` they need.
 pub type DutyDefFn = Arc<
-    dyn Fn(Duty) -> CallbackFuture<'static, Box<dyn Any + Send + Sync>> + Send + Sync + 'static,
+    dyn Fn(Duty) -> BoxFuture<'static, Result<Box<dyn Any + Send + Sync>, CallbackError>>
+        + Send
+        + Sync
+        + 'static,
 >;
 
 /// Looks up the root pubkey responsible for `(slot, committee_index,
 /// validator_index)`. Mirrors Go's `pubKeyByAttFunc`.
-pub type PubKeyByAttFn =
-    Arc<dyn Fn(u64, u64, u64) -> CallbackFuture<'static, PubKey> + Send + Sync + 'static>;
+pub type PubKeyByAttFn = Arc<
+    dyn Fn(u64, u64, u64) -> BoxFuture<'static, Result<PubKey, CallbackError>>
+        + Send
+        + Sync
+        + 'static,
+>;
 
 /// Hard deadline for upstream beacon-node calls. Bounds the worst-case
 /// handler latency when the upstream hangs or stalls. Mirrors Charon's
