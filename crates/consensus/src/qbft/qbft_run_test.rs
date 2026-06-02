@@ -28,20 +28,25 @@ use crate::timer::{RoundTimer, RoundTimerFunc, RoundTimerFuture, TimerType};
 #[tokio::test]
 async fn qbft_consensus(threshold: usize, cluster_nodes: usize) {
     assert!(threshold <= cluster_nodes);
-    run_qbft_consensus(threshold, false, unsigned_value).await;
+    run_qbft_consensus(threshold, cluster_nodes, false, unsigned_value).await;
 }
 
 #[tokio::test]
 async fn qbft_consensus_attester_compare_enabled() {
-    run_qbft_consensus(3, true, |_| attester_value(0)).await;
+    run_qbft_consensus(3, 3, true, |_| attester_value(0)).await;
 }
 
 #[tokio::test]
 async fn qbft_consensus_attester_compare_mismatch_does_not_decide() {
     let threshold = 3;
     let (sniffed_tx, _sniffed_rx) = mpsc::unbounded_channel();
-    let active_nodes =
-        in_memory_network(threshold, true, Some(Duration::from_millis(20)), sniffed_tx);
+    let active_nodes = in_memory_network(
+        threshold,
+        threshold,
+        true,
+        Some(Duration::from_millis(20)),
+        sniffed_tx,
+    );
     let (decided_tx, mut decided_rx) = mpsc::unbounded_channel();
     let duty = Duty::new(SlotNumber::new(1), DutyType::Attester);
     let ct = CancellationToken::new();
@@ -94,11 +99,22 @@ async fn qbft_consensus_attester_compare_mismatch_does_not_decide() {
 
 async fn run_qbft_consensus(
     threshold: usize,
+    cluster_nodes: usize,
     compare_attestations: bool,
     value: fn(usize) -> pbcore::UnsignedDataSet,
 ) {
     let (sniffed_tx, mut sniffed_rx) = mpsc::unbounded_channel();
-    let active_nodes = in_memory_network(threshold, compare_attestations, None, sniffed_tx);
+    // Silent-peer cases intentionally exercise leader rotation, so keep their
+    // round timers short enough for the test suite.
+    let round_timeout = (cluster_nodes > threshold).then_some(Duration::from_millis(100));
+    let nodes = in_memory_network(
+        cluster_nodes,
+        threshold,
+        compare_attestations,
+        round_timeout,
+        sniffed_tx,
+    );
+    let active_nodes = &nodes[..threshold];
     let (decided_tx, mut decided_rx) = mpsc::unbounded_channel();
     let duty = Duty::new(SlotNumber::new(1), DutyType::Attester);
     let ct = CancellationToken::new();
@@ -133,11 +149,15 @@ async fn run_qbft_consensus(
         decided.push(recv_one(&mut decided_rx).await);
     }
 
-    while let Some(result) = tasks.join_next().await {
-        result
-            .expect("consensus task panicked")
-            .expect("consensus task failed");
-    }
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while let Some(result) = tasks.join_next().await {
+            result
+                .expect("consensus task panicked")
+                .expect("consensus task failed");
+        }
+    })
+    .await
+    .expect("consensus tasks did not stop after decision");
 
     decided.sort_by_key(|(node_idx, ..)| *node_idx);
     assert_eq!(decided.len(), threshold);
@@ -235,10 +255,12 @@ fn pubkey(seed: u8) -> String {
 
 fn in_memory_network(
     count: usize,
+    active_count: usize,
     compare_attestations: bool,
     round_timeout: Option<Duration>,
     sniffed_tx: mpsc::UnboundedSender<(usize, usize)>,
 ) -> Vec<Arc<Consensus>> {
+    assert!(active_count <= count);
     let peers = (0..count)
         .map(|index| Peer {
             index: i64::try_from(index).expect("test peer index fits i64"),
@@ -259,7 +281,7 @@ fn in_memory_network(
             Box::pin(async move {
                 let peer_idx = msg.msg.as_ref().map_or(-1, |msg| msg.peer_idx);
                 let peers = network.lock().unwrap().clone();
-                for (index, consensus) in peers.into_iter().enumerate() {
+                for (index, consensus) in peers.into_iter().take(active_count).enumerate() {
                     if i64::try_from(index).expect("test peer index fits i64") == peer_idx {
                         continue;
                     }

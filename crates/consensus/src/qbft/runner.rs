@@ -9,11 +9,7 @@ use cancellation::CancellationTokenSource;
 use crossbeam::channel as mpmc;
 use prost::{Message, Name};
 use prost_types::Any;
-use tokio::{
-    sync::mpsc,
-    task::JoinError,
-    time::{Duration, Instant},
-};
+use tokio::{sync::mpsc, task::JoinError, time::Duration};
 use tokio_util::sync::CancellationToken;
 
 use crate::instance::{self, InstanceIo, RunnerError, RunnerResult};
@@ -279,12 +275,10 @@ async fn run_instance_inner(
 
     let decide_callback: DecideCallback = {
         let decided = Arc::clone(&decided);
-        let decided_at_tx = inst.decided_at_tx.clone();
         let instance_ct = instance_ct.clone();
         let core_cts = Arc::clone(&core_cts);
         Arc::new(move |_qcommit| {
             decided.store(true, Ordering::Relaxed);
-            let _ = decided_at_tx.try_send(Instant::now());
             instance_ct.cancel();
             core_cts.cancel();
         })
