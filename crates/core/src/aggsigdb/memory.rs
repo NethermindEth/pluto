@@ -1,5 +1,5 @@
 use crate::{
-    aggsigdb::{AggSigDB, Error},
+    aggsigdb::types::{AggSigDB, Error},
     deadline, types,
 };
 use std::collections::{HashMap, hash_map::Entry};
@@ -198,7 +198,10 @@ impl AggSigDB for MemoryDBHandle {
 #[cfg(test)]
 mod tests {
     use crate::{
-        aggsigdb::{AggSigDB, Error, memory::MemoryDBHandle},
+        aggsigdb::{
+            memory::MemoryDBHandle,
+            types::{AggSigDB, Error},
+        },
         deadline,
         signeddata::SignedDataError,
         types::{Duty, PubKey, Signature, SignedData, SignedDataSet, SlotNumber},
