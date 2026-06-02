@@ -391,7 +391,7 @@ where
 
     match result {
         Ok(Ok(())) => Ok(()),
-        Ok(Err(error)) => Err(error.to_string()),
+        Ok(Err(error)) => Err(error),
         Err(error) => Err(format!("request {request_id}: {}", timeout_error(error))),
     }
 }
