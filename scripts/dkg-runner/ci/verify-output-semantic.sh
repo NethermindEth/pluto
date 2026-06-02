@@ -2,13 +2,15 @@
 # verify-output-semantic.sh — semantic checks for DKG runner output.
 #
 # Env:
-#   WORK_DIR   scratch directory used by run.sh (default: /tmp/dkg-run)
-#   NODES      total node count (default: 4)
-#   THRESHOLD  expected threshold (default: 3)
+#   WORK_DIR           scratch directory used by run.sh (default: /tmp/dkg-run)
+#   NODES              total node count (default: 4)
+#   THRESHOLD          expected threshold (default: 3)
+#   EXPECT_VALIDATORS  expected distributed validator count (default: 1)
 #
 # Checks:
 #   - every node lock is JSON-identical
 #   - lock operator count, threshold, validator count are consistent
+#   - distributed validator count equals EXPECT_VALIDATORS (default: exactly one)
 #   - every validator has one public share per node
 #   - validator pubkey matches deposit data and builder registration pubkeys
 #   - every node keystore pubkey set matches that node's public shares
@@ -20,6 +22,7 @@ set -euo pipefail
 WORK_DIR="${WORK_DIR:-/tmp/dkg-run}"
 NODES="${NODES:-4}"
 THRESHOLD="${THRESHOLD:-3}"
+EXPECT_VALIDATORS="${EXPECT_VALIDATORS:-1}"
 OUTPUT_DIR="${WORK_DIR}/output"
 TMP_DIR="${WORK_DIR}/semantic-verify"
 
@@ -119,6 +122,11 @@ declared_validators="$(jq -r '(.cluster_definition // .definition).num_validator
 [[ "${validator_count}" == "${declared_validators}" ]] \
     || fail "distributed validator count mismatch: got ${validator_count}, definition says ${declared_validators}"
 (( validator_count > 0 )) || fail "validator count must be greater than zero"
+
+# A ceremony creates exactly one validator by default; override
+# EXPECT_VALIDATORS for multi-validator runs.
+[[ "${validator_count}" == "${EXPECT_VALIDATORS}" ]] \
+    || fail "validator count ${validator_count} != expected ${EXPECT_VALIDATORS}"
 
 # Lock hash and aggregate signature must have valid byte lengths.
 lock_hash="$(jq -r "${norm_hex_jq}"'(.lock_hash // empty) | normhex' "${LOCK}")"
