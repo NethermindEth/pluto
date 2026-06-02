@@ -88,7 +88,7 @@ pub type AwaitSyncContributionFn = Arc<
 
 /// Looks up aggregated signed data from the AggSigDB for a `(duty, pubkey)`.
 /// Mirrors Go's `awaitAggSigDBFunc(ctx, duty, pubkey) -> core.SignedData`.
-pub type AwaitAggSigDBFn = Arc<
+pub type AwaitAggSigDbFn = Arc<
     dyn Fn(Duty, PubKey) -> BoxFuture<'static, Result<Box<dyn SignedData>, CallbackError>>
         + Send
         + Sync
@@ -175,7 +175,7 @@ pub struct Component {
     await_sync_contribution_fn: Option<AwaitSyncContributionFn>,
     /// Looks up aggregated signed data for a `(duty, pubkey)`.
     #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
-    await_agg_sig_db_fn: Option<AwaitAggSigDBFn>,
+    await_agg_sig_db_fn: Option<AwaitAggSigDbFn>,
     /// Looks up the duty-definition set for a duty.
     #[allow(dead_code, reason = "consumed by submit_attestations in later PRs")]
     duty_def_fn: Option<DutyDefFn>,
