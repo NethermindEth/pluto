@@ -909,6 +909,67 @@ pub(crate) mod tests {
         assert_eq!(err.to_string(), "value hash not found in values");
     }
 
+    #[test_case(vec![] ; "empty")]
+    #[test_case(vec![0; 32] ; "zero")]
+    #[test_case(vec![1; 31] ; "short")]
+    #[test_case(vec![1; 33] ; "long")]
+    #[tokio::test]
+    async fn handle_rejects_invalid_prepared_round_change_hash(hash: Vec<u8>) {
+        let mut msg = unsigned_msg(0);
+        msg.r#type = i64::from(qbft::MSG_ROUND_CHANGE);
+        msg.prepared_round = 1;
+        msg.prepared_value_hash = hash.into();
+        let msg = sign_for_peer(msg, 0);
+
+        let err = consensus(0, true)
+            .handle(&CancellationToken::new(), Some(consensus_msg(msg)))
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.to_string(), "invalid prepared value hash");
+    }
+
+    #[tokio::test]
+    async fn handle_rejects_missing_prepared_round_change_hash() {
+        let mut msg = unsigned_msg(0);
+        msg.r#type = i64::from(qbft::MSG_ROUND_CHANGE);
+        msg.prepared_round = 1;
+        msg.prepared_value_hash = [2u8; 32].to_vec().into();
+        let msg = sign_for_peer(msg, 0);
+
+        let err = consensus(0, true)
+            .handle(&CancellationToken::new(), Some(consensus_msg(msg)))
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.to_string(), "prepared value hash not found in values");
+    }
+
+    #[test_case(vec![] ; "empty")]
+    #[test_case(vec![0; 32] ; "zero")]
+    #[tokio::test]
+    async fn handle_accepts_null_unprepared_round_change_hash(hash: Vec<u8>) {
+        let consensus = consensus(0, true);
+        let mut msg = unsigned_msg(0);
+        msg.r#type = i64::from(qbft::MSG_ROUND_CHANGE);
+        msg.value_hash = Bytes::new();
+        msg.prepared_round = 0;
+        msg.prepared_value_hash = hash.into();
+        let msg = sign_for_peer(msg, 0);
+        let inst = consensus.get_instance_io(duty());
+
+        consensus
+            .handle(&CancellationToken::new(), Some(consensus_msg(msg)))
+            .await
+            .unwrap();
+
+        let mut recv_rx = inst.take_recv_rx().unwrap();
+        let received = recv_rx.try_recv().unwrap();
+        assert_eq!(received.type_(), qbft::MSG_ROUND_CHANGE);
+        assert_eq!(received.prepared_round(), 0);
+        assert_eq!(received.prepared_value(), [0u8; 32]);
+    }
+
     #[tokio::test]
     async fn handle_enqueues_valid_message() {
         let consensus = consensus(0, true);

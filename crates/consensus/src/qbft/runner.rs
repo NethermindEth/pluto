@@ -9,7 +9,11 @@ use cancellation::CancellationTokenSource;
 use crossbeam::channel as mpmc;
 use prost::{Message, Name};
 use prost_types::Any;
-use tokio::{sync::mpsc, task::JoinError, time::Instant};
+use tokio::{
+    sync::mpsc,
+    task::JoinError,
+    time::{Duration, Instant},
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::instance::{self, InstanceIo, RunnerError, RunnerResult};
@@ -27,6 +31,10 @@ use super::{
     sniffer::Sniffer,
     transport,
 };
+
+// Only used while a bounded core channel is full; keep it low enough to resume
+// promptly, but not a 1ms spin under sustained backpressure.
+const BRIDGE_SEND_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Runner result.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -209,9 +217,9 @@ async fn run_instance_inner(
     let runtime = tokio::runtime::Handle::current();
 
     let (inner_recv_tx, inner_recv_rx) = mpsc::channel(instance::RECV_BUFFER_SIZE);
-    let (core_recv_tx, core_recv_rx) = mpmc::unbounded();
-    let (core_hash_tx, core_hash_rx) = mpmc::unbounded();
-    let (core_verify_tx, core_verify_rx) = mpmc::unbounded();
+    let (core_recv_tx, core_recv_rx) = mpmc::bounded(instance::RECV_BUFFER_SIZE);
+    let (core_hash_tx, core_hash_rx) = mpmc::bounded(1);
+    let (core_verify_tx, core_verify_rx) = mpmc::bounded(1);
 
     let nodes = consensus.node_count();
     let peer_idx = consensus.get_peer_idx();
@@ -326,9 +334,10 @@ async fn run_instance_inner(
     };
 
     let duty_for_run = duty.clone();
+    let core_ct_for_run = core_ct.clone();
     let core_result = tokio::task::spawn_blocking(move || {
         qbft::run(
-            &core_ct,
+            &core_ct_for_run,
             &def,
             &core_transport,
             &duty_for_run,
@@ -340,6 +349,8 @@ async fn run_instance_inner(
     .await
     .map_err(Error::Join)?;
 
+    let canceled_before_teardown =
+        parent_ct.is_cancelled() || instance_ct.is_cancelled() || core_ct.is_canceled();
     instance_ct.cancel();
     for task in tasks {
         let _ = task.await;
@@ -360,6 +371,9 @@ async fn run_instance_inner(
         Ok(()) => Ok(()),
         Err(qbft::QbftError::ContextCanceled) if decided.load(Ordering::Relaxed) => Ok(()),
         Err(qbft::QbftError::ContextCanceled) => Err(Error::ConsensusTimeout),
+        Err(qbft::QbftError::ChannelError(_)) if canceled_before_teardown => {
+            Err(Error::ConsensusTimeout)
+        }
         Err(err) => Err(Error::Core(err)),
     }
 }
@@ -412,8 +426,20 @@ async fn bridge_mpsc_to_crossbeam<T>(
             },
         };
 
-        if tx.send(value).is_err() {
-            return;
+        send_to_crossbeam(&ct, &tx, value).await;
+    }
+}
+
+async fn send_to_crossbeam<T>(ct: &CancellationToken, tx: &mpmc::Sender<T>, mut value: T) {
+    loop {
+        match tx.try_send(value) {
+            Ok(()) | Err(mpmc::TrySendError::Disconnected(_)) => return,
+            Err(mpmc::TrySendError::Full(returned)) => value = returned,
+        }
+
+        tokio::select! {
+            () = ct.cancelled() => return,
+            () = tokio::time::sleep(BRIDGE_SEND_RETRY_INTERVAL) => {}
         }
     }
 }
@@ -641,7 +667,10 @@ mod tests {
 
         let err = run_instance(&consensus, &ct, duty, inst).await.unwrap_err();
 
-        assert!(matches!(err, Error::ConsensusTimeout));
+        assert!(
+            matches!(err, Error::ConsensusTimeout),
+            "unexpected error: {err:?}"
+        );
         let runner_err = recv_one(&mut err_rx).await.unwrap_err();
         assert_eq!(runner_err.to_string(), "consensus timeout");
         assert_eq!(sniffed.lock().unwrap().len(), 1);
@@ -661,7 +690,10 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(matches!(err, Error::ConsensusTimeout));
+        assert!(
+            matches!(err, Error::ConsensusTimeout),
+            "unexpected error: {err:?}"
+        );
         let retained = consensus.get_instance_io(duty.clone());
         assert!(Arc::ptr_eq(&inst, &retained));
         assert!(retained.has_started());
@@ -716,6 +748,47 @@ mod tests {
             matches!(err, Error::ConsensusTimeout),
             "unexpected error: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn bridge_stops_draining_when_core_channel_is_full() {
+        let ct = CancellationToken::new();
+        let (async_tx, async_rx) = mpsc::channel(1);
+        let (core_tx, core_rx) = mpmc::bounded(1);
+        core_tx.try_send(0).unwrap();
+        async_tx.try_send(1).unwrap();
+        let task = tokio::spawn(bridge_mpsc_to_crossbeam(ct.clone(), async_rx, core_tx));
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            let mut value = 2;
+            loop {
+                match async_tx.try_send(value) {
+                    Ok(()) => return,
+                    Err(mpsc::error::TrySendError::Full(returned)) => {
+                        value = returned;
+                        tokio::task::yield_now().await;
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        panic!("async bridge input closed")
+                    }
+                }
+            }
+        })
+        .await
+        .expect("bridge did not take first async item");
+
+        assert!(matches!(
+            async_tx.try_send(3),
+            Err(mpsc::error::TrySendError::Full(3))
+        ));
+        assert_eq!(core_rx.len(), 1);
+
+        ct.cancel();
+        drop(core_rx);
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("bridge task did not stop")
+            .expect("bridge task panicked");
     }
 
     async fn recv_one<T>(rx: &mut mpsc::Receiver<T>) -> T {

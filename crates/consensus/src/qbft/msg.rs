@@ -70,6 +70,11 @@ pub enum Error {
     #[error("prepared value hash not found in values")]
     PreparedValueHashNotFound,
 
+    /// Prepared value hash was absent, zero, or not exactly 32 bytes when
+    /// required.
+    #[error("invalid prepared value hash")]
+    InvalidPreparedValueHash,
+
     /// Value did not exist in the values map.
     #[error("value not found")]
     ValueNotFound,
@@ -152,11 +157,7 @@ impl Msg {
             Some(_) => return Err(Error::ValueHashNotFound),
             None => [0u8; 32],
         };
-        let prepared_value_hash = match to_hash32(&msg.prepared_value_hash) {
-            Some(hash) if values.contains_key(&hash) => hash,
-            Some(_) => return Err(Error::PreparedValueHashNotFound),
-            None => [0u8; 32],
-        };
+        let prepared_value_hash = prepared_value_hash(&msg, &values)?;
 
         let mut justification_impls: Vec<qbft::Msg<ConsensusQbftTypes>> =
             Vec::with_capacity(justification.len());
@@ -337,6 +338,34 @@ fn to_hash32(value: &[u8]) -> Option<[u8; 32]> {
     }
 
     Some(value)
+}
+
+fn prepared_value_hash(msg: &pbconsensus::QbftMsg, values: &ValueMap) -> Result<[u8; 32]> {
+    if msg.prepared_value_hash.is_empty() {
+        return if msg.prepared_round > 0 {
+            Err(Error::InvalidPreparedValueHash)
+        } else {
+            Ok([0u8; 32])
+        };
+    }
+
+    if msg.prepared_value_hash.len() != 32 {
+        return Err(Error::InvalidPreparedValueHash);
+    }
+
+    let Some(hash) = to_hash32(&msg.prepared_value_hash) else {
+        return if msg.prepared_round > 0 {
+            Err(Error::InvalidPreparedValueHash)
+        } else {
+            Ok([0u8; 32])
+        };
+    };
+
+    if values.contains_key(&hash) {
+        return Ok(hash);
+    }
+
+    Err(Error::PreparedValueHashNotFound)
 }
 
 /// Converts an optional protobuf duty into the domain duty type.
@@ -523,9 +552,9 @@ mod tests {
         assert_eq!(msg.value(), [0u8; 32]);
     }
 
-    #[test_case(vec![1; 31] ; "invalid_length")]
+    #[test_case(vec![] ; "empty")]
     #[test_case(vec![0; 32] ; "zero_hash")]
-    fn new_treats_invalid_prepared_value_hash_as_nil(hash: Vec<u8>) {
+    fn new_allows_nil_prepared_value_hash_when_unprepared(hash: Vec<u8>) {
         let msg = Msg::new(
             pbconsensus::QbftMsg {
                 prepared_value_hash: hash.into(),
@@ -537,6 +566,27 @@ mod tests {
         .unwrap();
 
         assert_eq!(msg.prepared_value(), [0u8; 32]);
+    }
+
+    #[test_case(0, vec![1; 31] ; "unprepared_short")]
+    #[test_case(0, vec![1; 33] ; "unprepared_long")]
+    #[test_case(1, vec![] ; "prepared_empty")]
+    #[test_case(1, vec![0; 32] ; "prepared_zero")]
+    #[test_case(1, vec![1; 31] ; "prepared_short")]
+    #[test_case(1, vec![1; 33] ; "prepared_long")]
+    fn new_rejects_invalid_prepared_value_hash(prepared_round: i64, hash: Vec<u8>) {
+        let err = Msg::new(
+            pbconsensus::QbftMsg {
+                prepared_round,
+                prepared_value_hash: hash.into(),
+                ..Default::default()
+            },
+            vec![],
+            sync::Arc::default(),
+        )
+        .unwrap_err();
+
+        assert_eq!(err.to_string(), "invalid prepared value hash");
     }
 
     #[test]
