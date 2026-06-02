@@ -108,11 +108,12 @@ impl SchedulerBuilder {
     }
 
     /// Subscribes a callback function for triggered slots.
-    pub fn subscribe_slot(
-        &mut self,
-        f: impl Fn(&types::Slot) -> Result<()> + Send + 'static,
-        label: impl AsRef<str> + Send + 'static,
-    ) {
+    pub fn subscribe_slot<F, Fut, E>(&mut self, f: F, label: impl AsRef<str> + Send + 'static)
+    where
+        F: Fn(&types::Slot) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = std::result::Result<(), E>> + Send + 'static,
+        E: std::error::Error + Send + Sync + 'static,
+    {
         let mut rx = self.slot_broadcast.subscribe();
 
         // TODO: We might want to return a handle so clients can `.abort()` them to drop
@@ -121,7 +122,7 @@ impl SchedulerBuilder {
             loop {
                 match rx.recv().await {
                     Ok(slot) => {
-                        if let Err(err) = f(&slot) {
+                        if let Err(err) = f(&slot).await {
                             tracing::error!(err = ?err, slot = %slot.slot, label = label.as_ref(), "Emit scheduled slot event");
                         }
                     }
@@ -142,18 +143,19 @@ impl SchedulerBuilder {
     }
 
     /// Subscribes a callback function for triggered duties.
-    pub fn subscribe_duty(
-        &mut self,
-        f: impl Fn(&types::Duty, &types::DutyDefinitionSet) -> Result<()> + Send + 'static,
-        label: impl AsRef<str> + Send + 'static,
-    ) {
+    pub fn subscribe_duty<F, Fut, E>(&mut self, f: F, label: impl AsRef<str> + Send + 'static)
+    where
+        F: Fn(&types::Duty, &types::DutyDefinitionSet) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = std::result::Result<(), E>> + Send + 'static,
+        E: std::error::Error + Send + Sync + 'static,
+    {
         let mut rx = self.duty_broadcast.subscribe();
 
         tokio::spawn(async move {
             loop {
                 match rx.recv().await {
                     Ok((duty, set)) => {
-                        if let Err(err) = f(&duty, &set) {
+                        if let Err(err) = f(&duty, &set).await {
                             tracing::error!(err = ?err, label = label.as_ref(), "Trigger duty subscriber error");
                         }
                     }
