@@ -82,7 +82,9 @@ impl MemoryDBActor {
                     let k = (duty.clone(), pub_key);
                     if let Some((_, waiters)) = self.waiters.remove_entry(&k) {
                         for w in waiters {
-                            let _ = w.send(signed_data.clone());
+                            if !w.is_closed() {
+                                let _ = w.send(signed_data.clone());
+                            }
                         }
                     };
                 }
