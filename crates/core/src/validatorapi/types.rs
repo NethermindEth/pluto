@@ -5,7 +5,13 @@
 //! for the proper consensus-spec types in a later phase.
 
 pub use pluto_crypto::types::{PublicKey as BlsPubKey, Signature as BlsSignature};
-pub use pluto_eth2api::spec::phase0::{Epoch, Root, Slot, ValidatorIndex};
+pub use pluto_eth2api::{
+    GetProposerDutiesResponseResponse as ProposerDutiesResponse,
+    GetProposerDutiesResponseResponseDatum as ProposerDuty,
+    GetVersionResponseResponse as NodeVersionResponse,
+    GetVersionResponseResponseData as NodeVersionData,
+    spec::phase0::{Epoch, Root, Slot, ValidatorIndex},
+};
 
 /// Index of a beacon committee within a slot.
 pub type CommitteeIndex = u64;
@@ -113,10 +119,6 @@ pub struct SyncCommitteeContributionOpts {
 /// Attester duty payload. Placeholder.
 #[derive(Debug, Clone)]
 pub struct AttesterDuty {}
-
-/// Proposer duty payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct ProposerDuty {}
 
 /// Sync-committee duty payload. Placeholder.
 #[derive(Debug, Clone)]
