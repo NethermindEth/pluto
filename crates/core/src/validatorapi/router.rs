@@ -8,11 +8,12 @@ use std::sync::Arc;
 use axum::{
     Json, Router,
     extract::{
-        DefaultBodyLimit, Path, Query, State,
+        DefaultBodyLimit, Path, Query, Request, State,
         rejection::{JsonRejection, QueryRejection},
     },
-    http::StatusCode,
-    response::IntoResponse,
+    http::{HeaderValue, StatusCode, header},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{MethodRouter, get, post},
 };
 use serde::Deserialize;
@@ -204,16 +205,48 @@ async fn attestation_data(
     Ok(Json(response))
 }
 
-/// Wraps a `POST /eth/v1/validator/duties/*` handler with a body-size cap.
-/// The cap is local to these two routes so unrelated POST handlers (e.g.
-/// `submit_attestations`) keep axum's default 2 MiB.
+/// Wraps a `POST /eth/v1/validator/duties/*` handler with a body-size cap
+/// and the Charon-parity content-type policy. The cap is local to these
+/// two routes so unrelated POST handlers (e.g. `submit_attestations`) keep
+/// axum's default 2 MiB.
 fn duties_post<H, T, S>(handler: H) -> MethodRouter<S>
 where
     H: axum::handler::Handler<T, S>,
     T: 'static,
     S: Clone + Send + Sync + 'static,
 {
-    post(handler).route_layer(DefaultBodyLimit::max(DUTIES_BODY_LIMIT))
+    post(handler)
+        .route_layer(DefaultBodyLimit::max(DUTIES_BODY_LIMIT))
+        .route_layer(middleware::from_fn(enforce_json_content_type))
+}
+
+/// Matches Charon's content-type handling at `core/validatorapi/router.go:365`:
+/// a missing `Content-Type` is treated as `application/json`; an unrecognized
+/// content type is rejected with `415 Unsupported Media Type`. SSZ is not
+/// supported yet — when it lands, this is the right seam to extend.
+///
+/// Without this layer, axum's `Json` extractor would reject a missing header
+/// with `MissingJsonContentType`, which our envelope normalises to `400` —
+/// diverging from Charon, which lets VCs that don't set the header through.
+async fn enforce_json_content_type(mut req: Request, next: Next) -> Result<Response, ApiError> {
+    match req.headers().get(header::CONTENT_TYPE) {
+        None => {
+            req.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            );
+        }
+        Some(value) => {
+            let s = value.to_str().unwrap_or("");
+            if !s.contains("application/json") {
+                return Err(ApiError::new(
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                    format!("unsupported media type {s}"),
+                ));
+            }
+        }
+    }
+    Ok(next.run(req).await)
 }
 
 /// Renders an axum query-extractor rejection as Pluto's standard
@@ -228,11 +261,13 @@ fn query_rejection_to_api_error(rejection: QueryRejection) -> ApiError {
 /// [`ApiError`] body shape, so it shares the `{ "code", "message" }` schema
 /// instead of axum's default plain-text response.
 ///
-/// Every genuine parse failure — malformed JSON (`400`), wrong element type
-/// (`422`), missing `content-type` (`415`) — is normalised to a uniform
-/// `400`, matching Charon's `unmarshal`, which returns `400` for all body
-/// unmarshal failures. The body-size-limit rejection from [`DefaultBodyLimit`]
-/// surfaces here too (the limit is enforced as the `Json` extractor reads the
+/// Genuine parse failures — malformed JSON (`400`) and wrong element type
+/// (`422`) — are normalised to a uniform `400`, matching Charon's `unmarshal`,
+/// which returns `400` for all body unmarshal failures. Content-Type rejections
+/// no longer reach this function: [`enforce_json_content_type`] intercepts
+/// them upstream so missing/JSON requests pass through and non-JSON requests
+/// return `415`. The body-size-limit rejection from [`DefaultBodyLimit`]
+/// surfaces here (the limit is enforced as the `Json` extractor reads the
 /// body); its `413 Payload Too Large` is preserved, since that is Pluto's
 /// DoS defense rather than a parse error.
 fn json_rejection_to_api_error(rejection: JsonRejection) -> ApiError {
@@ -595,6 +630,67 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["code"], 400);
         assert!(json["message"].is_string());
+    }
+
+    /// Charon-parity: a duties request that omits `Content-Type` is
+    /// treated as `application/json` rather than rejected — the
+    /// `enforce_json_content_type` middleware injects the header before
+    /// the `Json` extractor sees the request. See `core/validatorapi/
+    /// router.go:365` (`if contentHeader == "" || ...`).
+    #[tokio::test]
+    async fn attester_duties_accepts_missing_content_type() {
+        use axum::{
+            body::Body,
+            http::{Method, Request},
+        };
+        use tower::ServiceExt;
+
+        let handler = TestHandler::default().with_attester_duties(AttesterDutiesResponse {
+            data: vec![],
+            dependent_root: "0x00".to_owned(),
+            execution_optimistic: false,
+        });
+        let app = new_router(Arc::new(handler), false);
+
+        // No Content-Type header at all.
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/validator/duties/attester/42")
+            .body(Body::from("[]"))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// Charon-parity: a duties request with a non-JSON `Content-Type`
+    /// returns `415 Unsupported Media Type`, not the `400` that the
+    /// generic body-parse normaliser would produce.
+    #[tokio::test]
+    async fn attester_duties_rejects_non_json_content_type() {
+        use axum::{
+            body::{Body, to_bytes},
+            http::{Method, Request},
+        };
+        use tower::ServiceExt;
+
+        let app = new_router(Arc::new(TestHandler::default()), false);
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/validator/duties/attester/42")
+            .header("content-type", "text/plain")
+            .body(Body::from("[]"))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], 415);
+        assert!(
+            json["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("text/plain"))
+        );
     }
 
     /// `[]` is a valid request body — the upstream returns an empty duty

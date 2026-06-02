@@ -36,8 +36,9 @@ use crate::{
 };
 
 /// Hard deadline for upstream beacon-node calls. Bounds the worst-case
-/// handler latency when the upstream hangs or stalls. Roughly one slot.
-const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(12);
+/// handler latency when the upstream hangs or stalls. Mirrors Charon's
+/// `defaultRequestTimeout` (`core/validatorapi/router.go:61`).
+const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Hard deadline for the `attestation_data` await on the local DutyDB.
 /// Bounded so a request whose slot never produces consensus output cannot
