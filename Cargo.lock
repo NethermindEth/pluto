@@ -5640,6 +5640,7 @@ dependencies = [
  "pluto-crypto",
  "pluto-eth2api",
  "pluto-eth2util",
+ "pluto-featureset",
  "pluto-ssz",
  "pluto-testutil",
  "pluto-tracing",
