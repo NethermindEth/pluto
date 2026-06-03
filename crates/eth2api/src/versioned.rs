@@ -12,7 +12,8 @@ use crate::{
 /// Graffiti string used to mark synthetic blocks that must never be submitted.
 pub const SYNTHETIC_BLOCK_GRAFFITI: &str = "SYNTHETIC BLOCK: DO NOT SUBMIT";
 
-/// 32-byte graffiti used to mark synthetic blocks, left-aligned with zero padding.
+/// 32-byte graffiti used to mark synthetic blocks, left-aligned with zero
+/// padding.
 pub const SYNTHETIC_GRAFFITI: phase0::Root = {
     let mut graffiti = [0u8; 32];
     let src = SYNTHETIC_BLOCK_GRAFFITI.as_bytes();
