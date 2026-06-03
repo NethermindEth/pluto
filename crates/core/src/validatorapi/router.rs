@@ -18,19 +18,6 @@ use axum::{
 };
 use serde::Deserialize;
 
-/// Cap on the `POST /eth/v1/validator/duties/{attester,sync}/{epoch}` request
-/// bodies. A realistic cluster ships at most a few thousand validator indices;
-/// 64 KiB still allows ~10k indices in either numeric or string encoding,
-/// well above any plausible workload.
-const DUTIES_BODY_LIMIT: usize = 64 * 1024;
-
-/// Cap on the `POST /eth/v1/validator/{beacon,sync}_committee_selections`
-/// request bodies. Each selection is ~300 bytes of JSON (slot, validator index,
-/// 96-byte BLS proof in hex); 64 KiB allows >200 entries per request, far more
-/// than a realistic cluster size while bounding the per-request CPU cost of
-/// the BLS verifications and AggSigDB awaits the handler performs.
-const SELECTIONS_BODY_LIMIT: usize = 64 * 1024;
-
 use super::{
     error::ApiError,
     handler::Handler,
@@ -42,6 +29,20 @@ use super::{
         ValIndexes,
     },
 };
+
+/// Cap on the `POST /eth/v1/validator/duties/{attester,sync}/{epoch}` request
+/// bodies. A realistic cluster ships at most a few thousand validator indices;
+/// 64 KiB still allows ~10k indices in either numeric or string encoding,
+/// well above any plausible workload.
+const DUTIES_BODY_LIMIT: usize = 64 * 1024;
+
+/// Cap on the `POST /eth/v1/validator/{beacon,sync}_committee_selections`
+/// request bodies. Each selection is ~210-250 bytes of JSON (slot, validator
+/// index, optional subcommittee index, 96-byte BLS proof in `0x` hex), so
+/// 64 KiB admits ~250-300 entries — far more than a realistic cluster while
+/// bounding the per-request CPU cost of the BLS verifications and AggSigDB
+/// awaits the handler performs.
+const SELECTIONS_BODY_LIMIT: usize = 64 * 1024;
 
 /// Query parameters for `GET /eth/v1/validator/attestation_data`.
 #[derive(Debug, Clone, Deserialize)]
@@ -75,7 +76,7 @@ pub fn new_router(handler: Arc<dyn Handler>, builder_enabled: bool) -> Router {
     Router::new()
         .route(
             "/eth/v1/validator/duties/attester/{epoch}",
-            duties_post(attester_duties),
+            bounded_post(attester_duties, DUTIES_BODY_LIMIT),
         )
         .route(
             "/eth/v1/validator/duties/proposer/{epoch}",
@@ -83,7 +84,7 @@ pub fn new_router(handler: Arc<dyn Handler>, builder_enabled: bool) -> Router {
         )
         .route(
             "/eth/v1/validator/duties/sync/{epoch}",
-            duties_post(sync_committee_duties),
+            bounded_post(sync_committee_duties, DUTIES_BODY_LIMIT),
         )
         .route("/eth/v1/validator/attestation_data", get(attestation_data))
         .route("/eth/v1/beacon/pool/attestations", post(respond_404))
@@ -115,7 +116,7 @@ pub fn new_router(handler: Arc<dyn Handler>, builder_enabled: bool) -> Router {
         .route("/proposer_config", get(respond_404))
         .route(
             "/eth/v1/validator/beacon_committee_selections",
-            selections_post(beacon_committee_selections),
+            bounded_post(beacon_committee_selections, SELECTIONS_BODY_LIMIT),
         )
         .route("/eth/v1/validator/aggregate_attestation", get(respond_404))
         .route(
@@ -145,7 +146,7 @@ pub fn new_router(handler: Arc<dyn Handler>, builder_enabled: bool) -> Router {
         )
         .route(
             "/eth/v1/validator/sync_committee_selections",
-            selections_post(sync_committee_selections),
+            bounded_post(sync_committee_selections, SELECTIONS_BODY_LIMIT),
         )
         .route("/eth/v1/node/version", get(node_version))
         .fallback(proxy_handler)
@@ -214,18 +215,17 @@ async fn attestation_data(
     Ok(Json(response))
 }
 
-/// Wraps a `POST /eth/v1/validator/duties/*` handler with a body-size cap
-/// and the Charon-parity content-type policy. The cap is local to these
-/// two routes so unrelated POST handlers (e.g. `submit_attestations`) keep
-/// axum's default 2 MiB.
-fn duties_post<H, T, S>(handler: H) -> MethodRouter<S>
+/// Wraps a `POST` handler with a body-size cap and the Charon-parity
+/// content-type policy. The cap is local to the route so unrelated POST
+/// handlers (e.g. `submit_attestations`) keep axum's default 2 MiB.
+fn bounded_post<H, T, S>(handler: H, body_limit: usize) -> MethodRouter<S>
 where
     H: axum::handler::Handler<T, S>,
     T: 'static,
     S: Clone + Send + Sync + 'static,
 {
     post(handler)
-        .route_layer(DefaultBodyLimit::max(DUTIES_BODY_LIMIT))
+        .route_layer(DefaultBodyLimit::max(body_limit))
         .route_layer(middleware::from_fn(enforce_json_content_type))
 }
 
@@ -256,18 +256,6 @@ async fn enforce_json_content_type(mut req: Request, next: Next) -> Result<Respo
         }
     }
     Ok(next.run(req).await)
-}
-
-/// Wraps a `POST /eth/v1/validator/{beacon,sync}_committee_selections`
-/// handler with a body-size cap. Bounds the per-request CPU work (one BLS
-/// verification per selection) before deserialisation completes.
-fn selections_post<H, T, S>(handler: H) -> MethodRouter<S>
-where
-    H: axum::handler::Handler<T, S>,
-    T: 'static,
-    S: Clone + Send + Sync + 'static,
-{
-    post(handler).route_layer(DefaultBodyLimit::max(SELECTIONS_BODY_LIMIT))
 }
 
 /// Renders an axum query-extractor rejection as Pluto's standard
@@ -333,8 +321,9 @@ async fn submit_exit() {
 
 async fn beacon_committee_selections(
     State(state): State<Arc<AppState>>,
-    Json(selections): Json<Vec<BeaconCommitteeSelection>>,
+    selections: Result<Json<Vec<BeaconCommitteeSelection>>, JsonRejection>,
 ) -> Result<Json<BeaconCommitteeSelectionsResponse>, ApiError> {
+    let Json(selections) = selections.map_err(json_rejection_to_api_error)?;
     let response = state
         .handler
         .beacon_committee_selections(selections)
@@ -371,8 +360,9 @@ async fn submit_proposal_preparations() {
 
 async fn sync_committee_selections(
     State(state): State<Arc<AppState>>,
-    Json(selections): Json<Vec<SyncCommitteeSelection>>,
+    selections: Result<Json<Vec<SyncCommitteeSelection>>, JsonRejection>,
 ) -> Result<Json<SyncCommitteeSelectionsResponse>, ApiError> {
+    let Json(selections) = selections.map_err(json_rejection_to_api_error)?;
     let response = state.handler.sync_committee_selections(selections).await?;
 
     Ok(Json(SyncCommitteeSelectionsResponse {
@@ -793,7 +783,7 @@ mod tests {
             builder_enabled: false,
         });
 
-        let Json(body) = beacon_committee_selections(State(state), Json(vec![]))
+        let Json(body) = beacon_committee_selections(State(state), Ok(Json(vec![])))
             .await
             .unwrap();
 
@@ -826,7 +816,7 @@ mod tests {
             builder_enabled: false,
         });
 
-        let Json(body) = sync_committee_selections(State(state), Json(vec![]))
+        let Json(body) = sync_committee_selections(State(state), Ok(Json(vec![])))
             .await
             .unwrap();
 
@@ -884,5 +874,62 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    /// Malformed JSON on the selection POST routes is normalised into the
+    /// router's standard `{ code, message }` envelope rather than axum's
+    /// default plain-text 400 / 422 / 415 — matching Charon's `unmarshal`
+    /// which surfaces every body unmarshal failure as a uniform `400`. The
+    /// same plumbing covers the duties endpoints.
+    #[tokio::test]
+    async fn beacon_committee_selections_returns_api_error_shape_on_malformed_body() {
+        use axum::{
+            body::{Body, to_bytes},
+            http::{Method, Request},
+        };
+        use tower::ServiceExt;
+
+        let handler = TestHandler::default();
+        let app = new_router(Arc::new(handler), false);
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/validator/beacon_committee_selections")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{ "not": "an array" }"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], 400);
+        assert!(json["message"].is_string());
+    }
+
+    /// Counterpart of
+    /// [`beacon_committee_selections_returns_api_error_shape_on_malformed_body`].
+    #[tokio::test]
+    async fn sync_committee_selections_returns_api_error_shape_on_malformed_body() {
+        use axum::{
+            body::{Body, to_bytes},
+            http::{Method, Request},
+        };
+        use tower::ServiceExt;
+
+        let handler = TestHandler::default();
+        let app = new_router(Arc::new(handler), false);
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/validator/sync_committee_selections")
+            .header("content-type", "application/json")
+            .body(Body::from("not-json-at-all"))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], 400);
+        assert!(json["message"].is_string());
     }
 }

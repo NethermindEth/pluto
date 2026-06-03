@@ -121,7 +121,10 @@ pub type PubKeyByAttFn = Arc<
 /// validator-client-supplied validator index into the DV root pubkey under
 /// which the partial-signed selection is stored.
 pub type ActiveValidatorsFn = Arc<
-    dyn Fn() -> CallbackFuture<'static, HashMap<ValidatorIndex, BLSPubKey>> + Send + Sync + 'static,
+    dyn Fn() -> BoxFuture<'static, Result<HashMap<ValidatorIndex, BLSPubKey>, CallbackError>>
+        + Send
+        + Sync
+        + 'static,
 >;
 
 /// Hard deadline for upstream beacon-node calls. Bounds the worst-case
@@ -777,7 +780,7 @@ impl Handler for Component {
         for (slot, set) in &psigs_by_slot {
             let duty = Duty::new_prepare_aggregator_duty(SlotNumber::new(*slot));
             for sub in &self.subs {
-                tokio::time::timeout_at(deadline, sub(&duty, set.clone()))
+                tokio::time::timeout_at(deadline, sub(&duty, set))
                     .await
                     .map_err(|_: Elapsed| {
                         tracing::warn!(
@@ -905,7 +908,7 @@ impl Handler for Component {
         for (slot, set) in &psigs_by_slot {
             let duty = Duty::new_prepare_sync_contribution_duty(SlotNumber::new(*slot));
             for sub in &self.subs {
-                tokio::time::timeout_at(deadline, sub(&duty, set.clone()))
+                tokio::time::timeout_at(deadline, sub(&duty, set))
                     .await
                     .map_err(|_: Elapsed| {
                         tracing::warn!(
