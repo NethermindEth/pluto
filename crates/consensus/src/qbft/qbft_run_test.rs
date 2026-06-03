@@ -16,7 +16,10 @@ use pluto_eth2api::spec::phase0;
 use prost::bytes::Bytes;
 use prost_types::Any;
 use test_case::test_case;
-use tokio::{sync::mpsc, task::JoinSet};
+use tokio::{
+    sync::{Mutex as AsyncMutex, mpsc},
+    task::JoinSet,
+};
 use tokio_util::sync::CancellationToken;
 
 use super::{
@@ -27,23 +30,29 @@ use super::{
 };
 use crate::timer::{RoundTimer, RoundTimerFunc, RoundTimerFuture, TimerType};
 
+const CONSENSUS_RECV_TIMEOUT: Duration = Duration::from_secs(5);
+static FULL_RUN_TEST_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
+
 #[test_case(2, 3 ; "two_of_three")]
 #[test_case(3, 4 ; "three_of_four")]
 #[test_case(4, 4 ; "four_of_four")]
 #[test_case(4, 6 ; "four_of_six")]
 #[tokio::test]
 async fn qbft_consensus(threshold: usize, cluster_nodes: usize) {
+    let _guard = full_run_test_guard().await;
     assert!(threshold <= cluster_nodes);
     run_qbft_consensus(threshold, cluster_nodes, false, unsigned_value).await;
 }
 
 #[tokio::test]
 async fn qbft_consensus_attester_compare_enabled() {
+    let _guard = full_run_test_guard().await;
     run_qbft_consensus(3, 3, true, |_| attester_value(0)).await;
 }
 
 #[tokio::test]
 async fn qbft_sniffed_instance_replay_decides() {
+    let _guard = full_run_test_guard().await;
     let sniffed = run_qbft_consensus(4, 4, false, unsigned_value).await;
     let instance = sniffed
         .into_iter()
@@ -56,6 +65,7 @@ async fn qbft_sniffed_instance_replay_decides() {
 
 #[tokio::test]
 async fn qbft_priority_consensus() {
+    let _guard = full_run_test_guard().await;
     let threshold = 3;
     let (sniffed_tx, _sniffed_rx) = mpsc::unbounded_channel();
     let active_nodes = in_memory_network(threshold, threshold, false, None, sniffed_tx);
@@ -121,6 +131,7 @@ async fn qbft_priority_consensus() {
 
 #[tokio::test]
 async fn qbft_consensus_participate_then_late_propose() {
+    let _guard = full_run_test_guard().await;
     let threshold = 4;
     let (sniffed_tx, _sniffed_rx) = mpsc::unbounded_channel();
     let active_nodes = in_memory_network(threshold, threshold, false, None, sniffed_tx);
@@ -206,6 +217,7 @@ async fn qbft_consensus_participate_then_late_propose() {
 
 #[tokio::test]
 async fn qbft_consensus_attester_compare_mismatch_does_not_decide() {
+    let _guard = full_run_test_guard().await;
     let threshold = 3;
     let (sniffed_tx, _sniffed_rx) = mpsc::unbounded_channel();
     let active_nodes = in_memory_network(
@@ -357,6 +369,12 @@ async fn run_qbft_consensus(
     sniffed
 }
 
+async fn full_run_test_guard() -> tokio::sync::MutexGuard<'static, ()> {
+    // Each test spins up an in-memory multi-node cluster. Running several of
+    // them concurrently can turn liveness checks into scheduler-load flakes.
+    FULL_RUN_TEST_LOCK.lock().await
+}
+
 async fn replay_sniffed_instance_decides(instance: pbconsensus::SniffedConsensusInstance) {
     assert!(!instance.msgs.is_empty());
 
@@ -483,7 +501,9 @@ fn hash32(value: &[u8]) -> Option<[u8; 32]> {
 }
 
 async fn recv_one<T>(rx: &mut mpsc::UnboundedReceiver<T>) -> T {
-    tokio::time::timeout(Duration::from_secs(1), rx.recv())
+    // Consensus liveness is tested by receiving a decision, not by a tight
+    // wall-clock bound. Keep a guard for hangs while allowing scheduler load.
+    tokio::time::timeout(CONSENSUS_RECV_TIMEOUT, rx.recv())
         .await
         .expect("receiver timed out")
         .expect("receiver closed")

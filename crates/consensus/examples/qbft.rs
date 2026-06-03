@@ -576,14 +576,14 @@ fn build_consensus(
 ) -> Result<ConsensusRuntime> {
     let handle_slot = Arc::new(OnceLock::<qbft::p2p::Handle>::new());
     let broadcaster_slot = Arc::clone(&handle_slot);
-    let broadcaster: qbft::Broadcaster = Arc::new(move |ct, msg| {
+    let broadcaster: qbft::Broadcaster = Arc::new(move |_ct, msg| {
         let broadcaster_slot = Arc::clone(&broadcaster_slot);
         Box::pin(async move {
             let Some(handle) = broadcaster_slot.get() else {
                 let err = std::io::Error::other("qbft p2p handle not initialized");
                 return Err(Box::new(err) as Box<dyn StdError + Send + Sync>);
             };
-            handle.broadcast(ct, msg).await
+            handle.broadcast(msg).await
         })
     });
 

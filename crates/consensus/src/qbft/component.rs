@@ -258,6 +258,7 @@ impl SubscriberSet {
 /// QBFT consensus component.
 pub struct Consensus {
     peers: Vec<Peer>,
+    #[cfg(test)]
     peer_labels: Vec<String>,
     pubkeys: HashMap<i64, PublicKey>,
     local_peer_idx: i64,
@@ -276,11 +277,13 @@ impl Consensus {
     /// Creates a new QBFT consensus component.
     pub fn new(config: Config) -> Result<Self> {
         let mut pubkeys = HashMap::with_capacity(config.peers.len());
+        #[cfg(test)]
         let mut peer_labels = Vec::with_capacity(config.peers.len());
 
         for (index, peer) in config.peers.iter().enumerate() {
             let peer_idx = i64::try_from(index).map_err(|_| Error::PeerIndexOverflow { index })?;
             pubkeys.insert(peer_idx, peer.public_key);
+            #[cfg(test)]
             peer_labels.push(format!("{}:{}", peer.index, peer.name));
         }
 
@@ -292,6 +295,7 @@ impl Consensus {
 
         Ok(Self {
             peers: config.peers,
+            #[cfg(test)]
             peer_labels,
             pubkeys,
             local_peer_idx: config.local_peer_idx,
