@@ -24,13 +24,22 @@ use serde::Deserialize;
 /// well above any plausible workload.
 const DUTIES_BODY_LIMIT: usize = 64 * 1024;
 
+/// Cap on the `POST /eth/v1/validator/{beacon,sync}_committee_selections`
+/// request bodies. Each selection is ~300 bytes of JSON (slot, validator index,
+/// 96-byte BLS proof in hex); 64 KiB allows >200 entries per request, far more
+/// than a realistic cluster size while bounding the per-request CPU cost of
+/// the BLS verifications and AggSigDB awaits the handler performs.
+const SELECTIONS_BODY_LIMIT: usize = 64 * 1024;
+
 use super::{
     error::ApiError,
     handler::Handler,
     types::{
         AttestationDataOpts, AttestationDataResponse, AttesterDutiesOpts, AttesterDutiesResponse,
-        CommitteeIndex, NodeVersionResponse, ProposerDutiesOpts, ProposerDutiesResponse,
-        SyncCommitteeDutiesOpts, SyncCommitteeDutiesResponse, ValIndexes,
+        BeaconCommitteeSelection, BeaconCommitteeSelectionsResponse, CommitteeIndex,
+        NodeVersionResponse, ProposerDutiesOpts, ProposerDutiesResponse,
+        SyncCommitteeDutiesOpts, SyncCommitteeDutiesResponse, SyncCommitteeSelection,
+        SyncCommitteeSelectionsResponse, ValIndexes,
     },
 };
 
@@ -106,7 +115,7 @@ pub fn new_router(handler: Arc<dyn Handler>, builder_enabled: bool) -> Router {
         .route("/proposer_config", get(respond_404))
         .route(
             "/eth/v1/validator/beacon_committee_selections",
-            post(beacon_committee_selections),
+            selections_post(beacon_committee_selections),
         )
         .route("/eth/v1/validator/aggregate_attestation", get(respond_404))
         .route(
@@ -136,7 +145,7 @@ pub fn new_router(handler: Arc<dyn Handler>, builder_enabled: bool) -> Router {
         )
         .route(
             "/eth/v1/validator/sync_committee_selections",
-            post(sync_committee_selections),
+            selections_post(sync_committee_selections),
         )
         .route("/eth/v1/node/version", get(node_version))
         .fallback(proxy_handler)
@@ -249,6 +258,18 @@ async fn enforce_json_content_type(mut req: Request, next: Next) -> Result<Respo
     Ok(next.run(req).await)
 }
 
+/// Wraps a `POST /eth/v1/validator/{beacon,sync}_committee_selections`
+/// handler with a body-size cap. Bounds the per-request CPU work (one BLS
+/// verification per selection) before deserialisation completes.
+fn selections_post<H, T, S>(handler: H) -> MethodRouter<S>
+where
+    H: axum::handler::Handler<T, S>,
+    T: 'static,
+    S: Clone + Send + Sync + 'static,
+{
+    post(handler).route_layer(DefaultBodyLimit::max(SELECTIONS_BODY_LIMIT))
+}
+
 /// Renders an axum query-extractor rejection as Pluto's standard
 /// [`ApiError`] body shape, so all 4xx responses from this router share the
 /// same `{ "code", "message" }` schema.
@@ -310,8 +331,18 @@ async fn submit_exit() {
     todo!("vapi: submit_exit");
 }
 
-async fn beacon_committee_selections() {
-    todo!("vapi: beacon_committee_selections");
+async fn beacon_committee_selections(
+    State(state): State<Arc<AppState>>,
+    Json(selections): Json<Vec<BeaconCommitteeSelection>>,
+) -> Result<Json<BeaconCommitteeSelectionsResponse>, ApiError> {
+    let response = state
+        .handler
+        .beacon_committee_selections(selections)
+        .await?;
+
+    Ok(Json(BeaconCommitteeSelectionsResponse {
+        data: response.data,
+    }))
 }
 
 async fn aggregate_attestation() {
@@ -338,8 +369,15 @@ async fn submit_proposal_preparations() {
     todo!("vapi: submit_proposal_preparations");
 }
 
-async fn sync_committee_selections() {
-    todo!("vapi: sync_committee_selections");
+async fn sync_committee_selections(
+    State(state): State<Arc<AppState>>,
+    Json(selections): Json<Vec<SyncCommitteeSelection>>,
+) -> Result<Json<SyncCommitteeSelectionsResponse>, ApiError> {
+    let response = state.handler.sync_committee_selections(selections).await?;
+
+    Ok(Json(SyncCommitteeSelectionsResponse {
+        data: response.data,
+    }))
 }
 
 async fn node_version(
@@ -366,8 +404,9 @@ mod tests {
     use crate::validatorapi::{
         testutils::TestHandler,
         types::{
-            AttestationDataResponse, AttesterDutiesResponse, AttesterDuty, ProposerDutiesResponse,
-            ProposerDuty, SyncCommitteeDutiesResponse, SyncCommitteeDuty, ValIndexes,
+            AttestationDataResponse, AttesterDutiesResponse, AttesterDuty,
+            BeaconCommitteeSelection, EthResponse, ProposerDutiesResponse, ProposerDuty,
+            SyncCommitteeDutiesResponse, SyncCommitteeDuty, SyncCommitteeSelection, ValIndexes,
         },
     };
 
@@ -729,5 +768,123 @@ mod tests {
     fn val_indexes_rejects_negative_numbers() {
         let bad = serde_json::from_str::<ValIndexes>("[-1]");
         assert!(bad.is_err());
+    }
+
+    /// Verifies the router wraps the `Handler::beacon_committee_selections`
+    /// payload into the `{ "data": [...] }` shape Charon's wire format uses
+    /// (`beaconCommitteeSelectionsJSON` in `core/validatorapi/router.go`),
+    /// dropping the `execution_optimistic` / `finalized` / `dependent_root`
+    /// metadata that the trait method carries internally.
+    #[tokio::test]
+    async fn beacon_committee_selections_wraps_handler_value() {
+        let selection = BeaconCommitteeSelection {
+            slot: 10,
+            validator_index: 5,
+            selection_proof: [0xAA; 96],
+        };
+        let handler =
+            TestHandler::default().with_beacon_committee_selections(EthResponse {
+                data: vec![selection],
+                execution_optimistic: false,
+                finalized: false,
+                dependent_root: None,
+            });
+        let state = Arc::new(AppState {
+            handler: Arc::new(handler),
+            builder_enabled: false,
+        });
+
+        let Json(body) = beacon_committee_selections(State(state), Json(vec![]))
+            .await
+            .unwrap();
+
+        let json = serde_json::to_value(&body).unwrap();
+        assert!(json.get("execution_optimistic").is_none());
+        assert!(json.get("finalized").is_none());
+        assert!(json.get("dependent_root").is_none());
+        assert_eq!(json["data"][0]["slot"], "10");
+        assert_eq!(json["data"][0]["validator_index"], "5");
+    }
+
+    /// Counterpart of [`beacon_committee_selections_wraps_handler_value`] for
+    /// the sync-committee variant.
+    #[tokio::test]
+    async fn sync_committee_selections_wraps_handler_value() {
+        let selection = SyncCommitteeSelection {
+            slot: 20,
+            validator_index: 7,
+            subcommittee_index: 2,
+            selection_proof: [0xBB; 96],
+        };
+        let handler =
+            TestHandler::default().with_sync_committee_selections(EthResponse {
+                data: vec![selection],
+                execution_optimistic: false,
+                finalized: false,
+                dependent_root: None,
+            });
+        let state = Arc::new(AppState {
+            handler: Arc::new(handler),
+            builder_enabled: false,
+        });
+
+        let Json(body) = sync_committee_selections(State(state), Json(vec![]))
+            .await
+            .unwrap();
+
+        let json = serde_json::to_value(&body).unwrap();
+        assert!(json.get("execution_optimistic").is_none());
+        assert_eq!(json["data"][0]["slot"], "20");
+        assert_eq!(json["data"][0]["validator_index"], "7");
+        assert_eq!(json["data"][0]["subcommittee_index"], "2");
+    }
+
+    /// Verifies the body-limit layer on the selection POST routes rejects
+    /// oversized bodies before any BLS verification work happens.
+    #[tokio::test]
+    async fn beacon_committee_selections_rejects_oversized_body() {
+        use axum::{
+            body::Body,
+            http::{Method, Request},
+        };
+        use tower::ServiceExt;
+
+        let handler = TestHandler::default();
+        let app = new_router(Arc::new(handler), false);
+
+        let big = vec![b'0'; SELECTIONS_BODY_LIMIT * 2];
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/validator/beacon_committee_selections")
+            .header("content-type", "application/json")
+            .header("content-length", big.len())
+            .body(Body::from(big))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    /// Counterpart of [`beacon_committee_selections_rejects_oversized_body`].
+    #[tokio::test]
+    async fn sync_committee_selections_rejects_oversized_body() {
+        use axum::{
+            body::Body,
+            http::{Method, Request},
+        };
+        use tower::ServiceExt;
+
+        let handler = TestHandler::default();
+        let app = new_router(Arc::new(handler), false);
+
+        let big = vec![b'0'; SELECTIONS_BODY_LIMIT * 2];
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/validator/sync_committee_selections")
+            .header("content-type", "application/json")
+            .header("content-length", big.len())
+            .body(Body::from(big))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 }
