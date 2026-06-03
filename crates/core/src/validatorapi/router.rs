@@ -37,9 +37,9 @@ use super::{
     types::{
         AttestationDataOpts, AttestationDataResponse, AttesterDutiesOpts, AttesterDutiesResponse,
         BeaconCommitteeSelection, BeaconCommitteeSelectionsResponse, CommitteeIndex,
-        NodeVersionResponse, ProposerDutiesOpts, ProposerDutiesResponse,
-        SyncCommitteeDutiesOpts, SyncCommitteeDutiesResponse, SyncCommitteeSelection,
-        SyncCommitteeSelectionsResponse, ValIndexes,
+        NodeVersionResponse, ProposerDutiesOpts, ProposerDutiesResponse, SyncCommitteeDutiesOpts,
+        SyncCommitteeDutiesResponse, SyncCommitteeSelection, SyncCommitteeSelectionsResponse,
+        ValIndexes,
     },
 };
 
@@ -782,13 +782,12 @@ mod tests {
             validator_index: 5,
             selection_proof: [0xAA; 96],
         };
-        let handler =
-            TestHandler::default().with_beacon_committee_selections(EthResponse {
-                data: vec![selection],
-                execution_optimistic: false,
-                finalized: false,
-                dependent_root: None,
-            });
+        let handler = TestHandler::default().with_beacon_committee_selections(EthResponse {
+            data: vec![selection],
+            execution_optimistic: false,
+            finalized: false,
+            dependent_root: None,
+        });
         let state = Arc::new(AppState {
             handler: Arc::new(handler),
             builder_enabled: false,
@@ -816,13 +815,12 @@ mod tests {
             subcommittee_index: 2,
             selection_proof: [0xBB; 96],
         };
-        let handler =
-            TestHandler::default().with_sync_committee_selections(EthResponse {
-                data: vec![selection],
-                execution_optimistic: false,
-                finalized: false,
-                dependent_root: None,
-            });
+        let handler = TestHandler::default().with_sync_committee_selections(EthResponse {
+            data: vec![selection],
+            execution_optimistic: false,
+            finalized: false,
+            dependent_root: None,
+        });
         let state = Arc::new(AppState {
             handler: Arc::new(handler),
             builder_enabled: false,
