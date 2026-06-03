@@ -132,14 +132,7 @@ pub struct Handle {
 
 impl Handle {
     /// Enqueues a QBFT message for async broadcast to every non-self peer.
-    ///
-    /// The token is accepted for the shared broadcaster shape. After enqueue,
-    /// network fanout is best-effort and is not cancelled by this token.
-    pub async fn broadcast(
-        &self,
-        _ct: CancellationToken,
-        msg: pbconsensus::QbftConsensusMsg,
-    ) -> BroadcastResult {
+    pub async fn broadcast(&self, msg: pbconsensus::QbftConsensusMsg) -> BroadcastResult {
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         self.cmd_tx
             .send(BroadcastCommand { request_id, msg })
@@ -149,9 +142,9 @@ impl Handle {
     /// Returns a consensus broadcaster callback backed by this handle.
     pub fn broadcaster(&self) -> super::Broadcaster {
         let handle = self.clone();
-        Arc::new(move |ct, msg| {
+        Arc::new(move |_ct, msg| {
             let handle = handle.clone();
-            Box::pin(async move { handle.broadcast(ct, msg).await })
+            Box::pin(async move { handle.broadcast(msg).await })
         })
     }
 }
@@ -353,7 +346,7 @@ where
             .map_err(|error| error.to_string())?;
 
         consensus
-            .handle(&cancellation, Some(msg))
+            .handle(&cancellation, msg)
             .await
             .map_err(|error| error.to_string())
     })
@@ -846,9 +839,7 @@ mod tests {
             cancellation: CancellationToken::new(),
         })?;
 
-        handle
-            .broadcast(CancellationToken::new(), signed_consensus_msg(&duty(), 1)?)
-            .await?;
+        handle.broadcast(signed_consensus_msg(&duty(), 1)?).await?;
 
         let events = drain_behaviour_events(&mut behaviour);
         let targets = events
@@ -890,9 +881,7 @@ mod tests {
             local_peer_id,
             cancellation: CancellationToken::new(),
         })?;
-        handle
-            .broadcast(CancellationToken::new(), signed_consensus_msg(&duty(), 0)?)
-            .await?;
+        handle.broadcast(signed_consensus_msg(&duty(), 0)?).await?;
         let _ = drain_behaviour_events(&mut behaviour);
 
         let error = DialError::DialPeerConditionFalse(PeerCondition::DisconnectedAndNotDialing);
@@ -926,9 +915,7 @@ mod tests {
             local_peer_id,
             cancellation: CancellationToken::new(),
         })?;
-        handle
-            .broadcast(CancellationToken::new(), signed_consensus_msg(&duty(), 0)?)
-            .await?;
+        handle.broadcast(signed_consensus_msg(&duty(), 0)?).await?;
         let _ = drain_behaviour_events(&mut behaviour);
 
         let error = DialError::NoAddresses;
@@ -994,9 +981,7 @@ mod tests {
         wait_for_connections(&mut conn_rx, &peer_ids[..2]).await?;
 
         let network_msg = signed_consensus_msg(&duty(), 0)?;
-        handle
-            .broadcast(CancellationToken::new(), network_msg.clone())
-            .await?;
+        handle.broadcast(network_msg.clone()).await?;
 
         wait_for_event(&mut event_rx, 1, |event| {
             matches!(event, Event::Received { .. })
@@ -1147,12 +1132,12 @@ mod tests {
             let handle_slot = Arc::new(OnceLock::<Handle>::new());
             let broadcaster = {
                 let handle_slot = Arc::clone(&handle_slot);
-                Arc::new(move |ct, msg| {
+                Arc::new(move |_ct, msg| {
                     let handle = handle_slot
                         .get()
                         .expect("test p2p handle initialized")
                         .clone();
-                    Box::pin(async move { handle.broadcast(ct, msg).await })
+                    Box::pin(async move { handle.broadcast(msg).await })
                         as futures::future::BoxFuture<'static, BroadcastResult>
                 })
             };

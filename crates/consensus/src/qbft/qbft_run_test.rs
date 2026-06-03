@@ -591,7 +591,7 @@ fn in_memory_network(
                     if i64::try_from(index).expect("test peer index fits i64") == peer_idx {
                         continue;
                     }
-                    if let Err(err) = consensus.handle(&ct, Some(msg.clone())).await {
+                    if let Err(err) = consensus.handle(&ct, msg.clone()).await {
                         return Err(Box::new(err) as Box<dyn StdError + Send + Sync>);
                     }
                 }

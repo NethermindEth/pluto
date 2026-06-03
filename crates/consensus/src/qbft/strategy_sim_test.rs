@@ -551,7 +551,7 @@ async fn broadcast_with_latency(
             tokio::select! {
                 () = delivery_ct.cancelled() => {}
                 () = tokio::time::sleep(delay) => {
-                    let _ = node.handle(&delivery_ct, Some(msg)).await;
+                    let _ = node.handle(&delivery_ct, msg).await;
                 }
             }
         });
