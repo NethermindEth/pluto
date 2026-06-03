@@ -9,7 +9,11 @@ use cancellation::CancellationTokenSource;
 use crossbeam::channel as mpmc;
 use prost::{Message, Name};
 use prost_types::Any;
-use tokio::{sync::mpsc, task::JoinError, time::Duration};
+use tokio::{
+    sync::mpsc,
+    task::{JoinError, JoinSet},
+    time::Duration,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::instance::{self, InstanceIo, RunnerError, RunnerResult};
@@ -159,7 +163,11 @@ pub(crate) async fn participate(
         return Ok(());
     }
 
-    if !consensus_participate_enabled() {
+    if !pluto_featureset::GLOBAL_STATE
+        .read()
+        .expect("global feature set lock poisoned")
+        .enabled(pluto_featureset::Feature::ConsensusParticipate)
+    {
         return Ok(());
     }
 
@@ -182,7 +190,10 @@ pub(crate) async fn run_instance(
     inst: Arc<InstanceIo<msg::Msg>>,
 ) -> Result<()> {
     let result = run_instance_inner(consensus, parent_ct, duty.clone(), Arc::clone(&inst)).await;
-    let runner_result = to_runner_result(&result);
+    let runner_result: RunnerResult = result
+        .as_ref()
+        .map_err(|err| Box::new(RunnerResultError(err.to_string())) as RunnerError)
+        .copied();
     let _ = inst.err_tx.send(runner_result).await;
 
     result
@@ -205,7 +216,7 @@ async fn run_instance_inner(
     let value_rx = inst.take_value_rx()?;
     let verify_rx = inst.take_verify_rx()?;
 
-    let instance_ct = CancellationToken::new();
+    let instance_ct = parent_ct.child_token();
     let core_cts = Arc::new(CancellationTokenSource::new());
     let core_ct = core_cts.token().clone();
     let decided = Arc::new(AtomicBool::new(false));
@@ -227,50 +238,43 @@ async fn run_instance_inner(
         Sniffer::new(i64::try_from(nodes).expect("node count fits i64"), peer_idx),
     ));
 
-    let mut tasks = vec![
-        tokio::spawn(bridge_mpsc_to_crossbeam(
-            instance_ct.clone(),
-            inner_recv_rx,
-            core_recv_tx,
-        )),
-        tokio::spawn(bridge_mpsc_to_crossbeam(
-            instance_ct.clone(),
-            hash_rx,
-            core_hash_tx,
-        )),
-        tokio::spawn(bridge_mpsc_to_crossbeam(
-            instance_ct.clone(),
-            verify_rx,
-            core_verify_tx,
-        )),
-    ];
+    let mut tasks = JoinSet::new();
+    tasks.spawn(bridge_mpsc_to_crossbeam(
+        instance_ct.clone(),
+        inner_recv_rx,
+        core_recv_tx,
+    ));
+    tasks.spawn(bridge_mpsc_to_crossbeam(
+        instance_ct.clone(),
+        hash_rx,
+        core_hash_tx,
+    ));
+    tasks.spawn(bridge_mpsc_to_crossbeam(
+        instance_ct.clone(),
+        verify_rx,
+        core_verify_tx,
+    ));
 
     {
         let transport = Arc::clone(&transport);
         let instance_ct = instance_ct.clone();
         let transport_error = Arc::clone(&transport_error);
-        tasks.push(tokio::spawn(async move {
+        tasks.spawn(async move {
             if let Err(err) = transport.process_receives(instance_ct, outer_rx).await {
                 *transport_error
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner) = Some(err.to_string());
             }
-        }));
+        });
     }
 
     {
-        let parent_ct = parent_ct.clone();
         let instance_ct = instance_ct.clone();
         let core_cts = Arc::clone(&core_cts);
-        tasks.push(tokio::spawn(async move {
-            tokio::select! {
-                () = parent_ct.cancelled() => {
-                    instance_ct.cancel();
-                    core_cts.cancel();
-                }
-                () = instance_ct.cancelled() => core_cts.cancel(),
-            }
-        }));
+        tasks.spawn(async move {
+            instance_ct.cancelled().await;
+            core_cts.cancel();
+        });
     }
 
     let decide_callback: DecideCallback = {
@@ -299,7 +303,7 @@ async fn run_instance_inner(
             let runtime = runtime.clone();
             let instance_ct = instance_ct.clone();
             let transport_error = Arc::clone(&transport_error);
-            move |request| {
+            move |request: qbft::BroadcastRequest<'_, ConsensusQbftTypes>| {
                 let justification = request.justification.cloned().unwrap_or_default();
                 let result = runtime.block_on(transport.broadcast(transport::BroadcastRequest {
                     ct: instance_ct.clone(),
@@ -327,27 +331,25 @@ async fn run_instance_inner(
         receive: core_recv_rx,
     };
 
-    let duty_for_run = duty.clone();
     let core_ct_for_run = core_ct.clone();
     let core_result = tokio::task::spawn_blocking(move || {
         qbft::run(
             &core_ct_for_run,
             &def,
             &core_transport,
-            &duty_for_run,
+            &duty,
             peer_idx,
             core_hash_rx,
             core_verify_rx,
         )
     })
-    .await
-    .map_err(Error::Join)?;
+    .await;
 
     let canceled_before_teardown =
         parent_ct.is_cancelled() || instance_ct.is_cancelled() || core_ct.is_canceled();
     instance_ct.cancel();
-    for task in tasks {
-        let _ = task.await;
+    while let Some(result) = tasks.join_next().await {
+        let _ = result;
     }
 
     let sniffer = consensus.sniffer();
@@ -360,6 +362,8 @@ async fn run_instance_inner(
     {
         return Err(Error::Transport(err));
     }
+
+    let core_result = core_result.map_err(Error::Join)?;
 
     match core_result {
         Ok(()) => Ok(()),
@@ -448,22 +452,6 @@ fn transport_broadcaster(broadcaster: super::component::Broadcaster) -> transpor
                 .map_err(|err| transport::Error::Broadcast(err.to_string()))
         })
     })
-}
-
-/// Converts a runner result into the channel payload shared with joiners.
-fn to_runner_result(result: &Result<()>) -> RunnerResult {
-    match result {
-        Ok(()) => Ok(()),
-        Err(err) => Err(Box::new(RunnerResultError(err.to_string())) as RunnerError),
-    }
-}
-
-/// Returns whether passive consensus participation is enabled.
-fn consensus_participate_enabled() -> bool {
-    pluto_featureset::GLOBAL_STATE
-        .read()
-        .expect("global feature set lock poisoned")
-        .enabled(pluto_featureset::Feature::ConsensusParticipate)
 }
 
 #[cfg(test)]
