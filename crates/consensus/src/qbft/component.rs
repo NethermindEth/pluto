@@ -863,6 +863,25 @@ pub(crate) mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn handle_accepts_same_duty_justification() {
+        let consensus = consensus(0, true);
+        let inst = consensus.get_instance_io(duty());
+        let mut justification = unsigned_msg(0);
+        justification.r#type = i64::from(qbft::MSG_ROUND_CHANGE);
+        justification.value_hash = Bytes::new();
+        let mut outer = valid_consensus_msg(0);
+        outer.justification = vec![sign_for_peer(justification, 0)];
+
+        consensus
+            .handle(&CancellationToken::new(), Some(outer))
+            .await
+            .unwrap();
+
+        let mut recv_rx = inst.take_recv_rx().unwrap();
+        assert_eq!(recv_rx.try_recv().unwrap().justification().len(), 1);
+    }
+
     #[test]
     fn values_by_hash_rejects_invalid_type_url() {
         let err = values_by_hash(&[Any {

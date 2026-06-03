@@ -21,3 +21,5 @@ pub(crate) mod transport;
 
 #[cfg(test)]
 mod qbft_run_test;
+#[cfg(test)]
+mod strategy_sim_test;

@@ -84,7 +84,7 @@ pub enum Error {
 
     /// Running instance completed with an error.
     #[error("runner result: {0}")]
-    RunnerResult(String),
+    RunnerResult(#[source] RunnerError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -398,7 +398,7 @@ async fn wait_instance_result(inst: &InstanceIo<msg::Msg>) -> Result<()> {
     let mut err_rx = inst.take_err_rx()?;
     match err_rx.recv().await {
         Some(Ok(())) => Ok(()),
-        Some(Err(err)) => Err(Error::RunnerResult(err.to_string())),
+        Some(Err(err)) => Err(Error::RunnerResult(err)),
         None => Err(Error::RunnerResultChannelClosed),
     }
 }
@@ -697,10 +697,11 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(matches!(
-            err,
-            Error::RunnerResult(ref message) if message == "consensus timeout"
-        ));
+        let Error::RunnerResult(source) = err else {
+            panic!("unexpected error: {err:?}");
+        };
+        assert_eq!(source.to_string(), "consensus timeout");
+        assert!(source.source().is_none());
         assert!(Arc::ptr_eq(&retained, &consensus.get_instance_io(duty)));
     }
 

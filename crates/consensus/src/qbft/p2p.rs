@@ -717,8 +717,9 @@ impl NetworkBehaviour for Behaviour {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::HashSet,
+        collections::{BTreeMap, HashSet},
         error::Error as StdError,
+        sync::OnceLock,
         task::{Context, Poll},
     };
 
@@ -735,7 +736,10 @@ mod tests {
     };
     use prost::{Message, bytes::Bytes};
     use prost_types::Any;
-    use tokio::sync::{mpsc, oneshot};
+    use tokio::{
+        sync::{mpsc, oneshot},
+        task::JoinSet,
+    };
 
     use crate::{
         protocols::QBFT_V2_PROTOCOL_ID,
@@ -750,6 +754,7 @@ mod tests {
     use pluto_core::{
         corepb::v1::{consensus as pbconsensus, core as pbcore},
         qbft,
+        types::Duty,
     };
     use pluto_p2p::{
         behaviours::pluto::PlutoBehaviourEvent,
@@ -984,9 +989,9 @@ mod tests {
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
         let (task_err_tx, mut task_err_rx) = mpsc::unbounded_channel();
         let running = spawn_nodes(nodes, listen_tx, conn_tx, event_tx, task_err_tx)?;
-        let addrs = wait_for_listen_addrs(&mut listen_rx, &mut task_err_rx).await?;
+        let addrs = wait_for_listen_addrs(2, &mut listen_rx, &mut task_err_rx).await?;
         dial_forward_pairs(&running, &addrs)?;
-        wait_for_connections(&mut conn_rx, &peer_ids).await?;
+        wait_for_connections(&mut conn_rx, &peer_ids[..2]).await?;
 
         let network_msg = signed_consensus_msg(&duty(), 0)?;
         handle
@@ -1016,8 +1021,70 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn real_libp2p_loopback_runs_consensus() -> TestResult<()> {
+        let keys = test_keys()?;
+        let peer_ids = peer_ids(&keys)?;
+        let (decided_tx, mut decided_rx) = mpsc::unbounded_channel();
+        let nodes = build_consensus_nodes(keys, peer_ids.clone(), decided_tx)?;
+        let consensuses = nodes
+            .iter()
+            .map(|node| Arc::clone(&node.consensus))
+            .collect::<Vec<_>>();
+
+        let (listen_tx, mut listen_rx) = mpsc::unbounded_channel();
+        let (conn_tx, mut conn_rx) = mpsc::unbounded_channel();
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let (task_err_tx, mut task_err_rx) = mpsc::unbounded_channel();
+        let running = spawn_nodes(nodes, listen_tx, conn_tx, event_tx, task_err_tx)?;
+        let addrs = wait_for_listen_addrs(peer_ids.len(), &mut listen_rx, &mut task_err_rx).await?;
+        dial_forward_pairs(&running, &addrs)?;
+        wait_for_connections(&mut conn_rx, &peer_ids).await?;
+
+        let ct = CancellationToken::new();
+        let duty = duty();
+        let mut tasks = JoinSet::new();
+        for (index, consensus) in consensuses.iter().enumerate() {
+            let consensus = Arc::clone(consensus);
+            let duty = duty.clone();
+            let ct = ct.clone();
+            tasks.spawn(async move { consensus.propose(&ct, duty, unsigned_value(index)).await });
+        }
+
+        let mut decided = Vec::with_capacity(consensuses.len());
+        for _ in 0..consensuses.len() {
+            decided.push(
+                tokio::time::timeout(TEST_TIMEOUT, decided_rx.recv())
+                    .await?
+                    .ok_or_else(|| std::io::Error::other("decided channel closed"))?,
+            );
+        }
+
+        tokio::time::timeout(TEST_TIMEOUT, async {
+            while let Some(result) = tasks.join_next().await {
+                result
+                    .expect("consensus task panicked")
+                    .expect("consensus task failed");
+            }
+        })
+        .await
+        .map_err(|_| std::io::Error::other("timeout waiting for consensus tasks"))?;
+
+        ct.cancel();
+        stop_nodes(running).await?;
+
+        let (_, _, expected) = decided.first().expect("at least one decision").clone();
+        for (node_index, decided_duty, value) in decided {
+            assert_eq!(decided_duty, duty, "node {node_index} decided wrong duty");
+            assert_eq!(value, expected, "node {node_index} decided different value");
+        }
+
+        Ok(())
+    }
+
     struct LocalNode {
         node: Node<Behaviour>,
+        consensus: Arc<Consensus>,
         handle: Handle,
         recv_rx: Option<mpsc::Receiver<super::super::msg::Msg>>,
     }
@@ -1036,13 +1103,13 @@ mod tests {
         keys: Vec<SecretKey>,
         peer_ids: Vec<PeerId>,
     ) -> TestResult<Vec<LocalNode>> {
-        let mut nodes = Vec::with_capacity(2);
+        let mut nodes = Vec::with_capacity(keys.len());
         for (index, key) in keys.into_iter().enumerate() {
             let p2p_context = P2PContext::new(peer_ids.iter().copied());
             let consensus = Arc::new(consensus_for_cluster(index, peer_ids.len(), true)?);
             let mut recv_rx = Some(consensus.get_instance_io(duty()).take_recv_rx()?);
             let (behaviour, handle) = Behaviour::new(Config {
-                consensus,
+                consensus: Arc::clone(&consensus),
                 p2p_context: p2p_context.clone(),
                 peers: peer_ids.clone(),
                 local_peer_id: peer_ids[index],
@@ -1060,8 +1127,69 @@ mod tests {
 
             nodes.push(LocalNode {
                 node,
+                consensus,
                 handle,
                 recv_rx: recv_rx.take(),
+            });
+        }
+
+        Ok(nodes)
+    }
+
+    fn build_consensus_nodes(
+        keys: Vec<SecretKey>,
+        peer_ids: Vec<PeerId>,
+        decided_tx: mpsc::UnboundedSender<(usize, Duty, pbcore::UnsignedDataSet)>,
+    ) -> TestResult<Vec<LocalNode>> {
+        let mut nodes = Vec::with_capacity(keys.len());
+        for (index, key) in keys.into_iter().enumerate() {
+            let p2p_context = P2PContext::new(peer_ids.iter().copied());
+            let handle_slot = Arc::new(OnceLock::<Handle>::new());
+            let broadcaster = {
+                let handle_slot = Arc::clone(&handle_slot);
+                Arc::new(move |ct, msg| {
+                    let handle = handle_slot
+                        .get()
+                        .expect("test p2p handle initialized")
+                        .clone();
+                    Box::pin(async move { handle.broadcast(ct, msg).await })
+                        as futures::future::BoxFuture<'static, BroadcastResult>
+                })
+            };
+            let mut config = config_for_cluster(index, peer_ids.len(), true)?;
+            config.broadcaster = broadcaster;
+            let consensus = Arc::new(Consensus::new(config)?);
+            let decided_tx = decided_tx.clone();
+            consensus.subscribe(move |duty, value| {
+                let _ = decided_tx.send((index, duty, value));
+                Ok(())
+            });
+
+            let (behaviour, handle) = Behaviour::new(Config {
+                consensus: Arc::clone(&consensus),
+                p2p_context: p2p_context.clone(),
+                peers: peer_ids.clone(),
+                local_peer_id: peer_ids[index],
+                cancellation: CancellationToken::new(),
+            })?;
+            handle_slot
+                .set(handle.clone())
+                .map_err(|_| std::io::Error::other("test p2p handle set twice"))?;
+            let node = Node::new_server(
+                P2PConfig::default(),
+                key,
+                NodeType::TCP,
+                false,
+                p2p_context,
+                None,
+                move |builder, _keypair| builder.with_inner(behaviour),
+            )?;
+
+            nodes.push(LocalNode {
+                node,
+                consensus,
+                handle,
+                recv_rx: None,
             });
         }
 
@@ -1073,6 +1201,19 @@ mod tests {
         peer_count: usize,
         duty_allowed: bool,
     ) -> TestResult<Consensus> {
+        Consensus::new(config_for_cluster(
+            local_peer_idx,
+            peer_count,
+            duty_allowed,
+        )?)
+        .map_err(|error| Box::new(error) as _)
+    }
+
+    fn config_for_cluster(
+        local_peer_idx: usize,
+        peer_count: usize,
+        duty_allowed: bool,
+    ) -> TestResult<super::super::Config> {
         let mut config = config_base(false);
         config.peers = (0..peer_count)
             .map(|index| {
@@ -1097,7 +1238,7 @@ mod tests {
         config.privkey = test_secret_key(seed)?;
         config.duty_gater = Arc::new(move |_| duty_allowed);
 
-        Consensus::new(config).map_err(|error| Box::new(error) as _)
+        Ok(config)
     }
 
     fn spawn_nodes(
@@ -1130,8 +1271,10 @@ mod tests {
                                     node.dial(target)?;
                                 }
                             }
-                            event = node.select_next_some() => {
-                                match event {
+                            event = node.next() => {
+                                match event.ok_or_else(|| {
+                                    std::io::Error::other("node swarm ended")
+                                })? {
                                     SwarmEvent::NewListenAddr { address, .. } => {
                                         let _ = listen_tx.send((index, address));
                                     }
@@ -1169,16 +1312,24 @@ mod tests {
     }
 
     async fn wait_for_listen_addrs(
+        node_count: usize,
         listen_rx: &mut mpsc::UnboundedReceiver<(usize, Multiaddr)>,
         task_err_rx: &mut mpsc::UnboundedReceiver<(usize, String)>,
     ) -> TestResult<Vec<Multiaddr>> {
         tokio::time::timeout(LIBP2P_SETUP_TIMEOUT, async {
-            let mut addrs = vec![None, None];
+            let mut addrs = vec![None; node_count];
             while addrs.iter().any(Option::is_none) {
                 tokio::select! {
                     result = listen_rx.recv() => {
-                        let (index, addr) = result
-                            .ok_or_else(|| std::io::Error::other("listen channel closed"))?;
+                        let Some((index, addr)) = result else {
+                            if let Ok((index, error)) = task_err_rx.try_recv() {
+                                return Err(Box::new(std::io::Error::other(format!(
+                                    "node {index} exited before listen: {error}"
+                                ))) as Box<dyn StdError + Send + Sync>);
+                            }
+                            return Err(Box::new(std::io::Error::other("listen channel closed"))
+                                as Box<dyn StdError + Send + Sync>);
+                        };
                         if index < addrs.len() && addrs[index].is_none() {
                             addrs[index] = Some(addr);
                         }
@@ -1226,8 +1377,9 @@ mod tests {
         peer_ids: &[PeerId],
     ) -> TestResult<()> {
         tokio::time::timeout(LIBP2P_SETUP_TIMEOUT, async {
-            let mut seen = [HashSet::new(), HashSet::new()];
-            while seen.iter().any(|peers| peers.is_empty()) {
+            let mut seen = vec![HashSet::new(); peer_ids.len()];
+            let expected_connections = peer_ids.len().saturating_sub(1);
+            while seen.iter().any(|peers| peers.len() < expected_connections) {
                 let (index, peer_id) = conn_rx
                     .recv()
                     .await
@@ -1301,6 +1453,15 @@ mod tests {
         }
 
         Ok(context)
+    }
+
+    fn unsigned_value(seed: usize) -> pbcore::UnsignedDataSet {
+        let mut set = BTreeMap::new();
+        set.insert(
+            format!("validator-{seed}"),
+            Bytes::from(format!("unsigned-{seed}")),
+        );
+        pbcore::UnsignedDataSet { set }
     }
 
     fn test_keys() -> TestResult<Vec<SecretKey>> {
