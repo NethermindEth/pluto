@@ -56,6 +56,7 @@ pluto-testutil.workspace = true
 pluto-tracing.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 wiremock.workspace = true
+tower = { workspace = true, features = ["util"] }
 
 [build-dependencies]
 pluto-build-proto.workspace = true

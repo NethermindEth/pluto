@@ -24,7 +24,9 @@ DEF_FILE="${WORK_DIR}/cluster-definition.json"
 PID_FILE="${WORK_DIR}/pids"
 
 # ── Pre-flight ───────────────────────────────────────────────────────────────
-require_bin "charon" "${CHARON_BIN}" || exit 1
+if (( CHARON_NODES > 0 )); then
+    require_bin "charon" "${CHARON_BIN}" || exit 1
+fi
 if (( PLUTO_NODES > 0 )); then
     require_bin "pluto" "${PLUTO_BIN}" || exit 1
 fi
