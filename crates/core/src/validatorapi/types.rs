@@ -154,6 +154,24 @@ pub struct AttestationDataResponse {
     pub data: AttestationData,
 }
 
+/// Response envelope for the `beacon_committee_selections` endpoint.
+/// Matches Charon's `beaconCommitteeSelectionsJSON` wire shape — a `data`
+/// array of aggregated selection proofs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BeaconCommitteeSelectionsResponse {
+    /// Aggregated beacon-committee selection proofs.
+    pub data: Vec<BeaconCommitteeSelection>,
+}
+
+/// Response envelope for the `sync_committee_selections` endpoint.
+/// Matches Charon's `syncCommitteeSelectionsJSON` wire shape — a `data`
+/// array of aggregated selection proofs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncCommitteeSelectionsResponse {
+    /// Aggregated sync-committee selection proofs.
+    pub data: Vec<SyncCommitteeSelection>,
+}
+
 /// Validator payload. Placeholder.
 #[derive(Debug, Clone)]
 pub struct Validator {}
