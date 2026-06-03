@@ -258,7 +258,6 @@ impl SubscriberSet {
 /// QBFT consensus component.
 pub struct Consensus {
     peers: Vec<Peer>,
-    #[cfg(test)]
     peer_labels: Vec<String>,
     pubkeys: HashMap<i64, PublicKey>,
     local_peer_idx: i64,
@@ -277,13 +276,11 @@ impl Consensus {
     /// Creates a new QBFT consensus component.
     pub fn new(config: Config) -> Result<Self> {
         let mut pubkeys = HashMap::with_capacity(config.peers.len());
-        #[cfg(test)]
         let mut peer_labels = Vec::with_capacity(config.peers.len());
 
         for (index, peer) in config.peers.iter().enumerate() {
             let peer_idx = i64::try_from(index).map_err(|_| Error::PeerIndexOverflow { index })?;
             pubkeys.insert(peer_idx, peer.public_key);
-            #[cfg(test)]
             peer_labels.push(format!("{}:{}", peer.index, peer.name));
         }
 
@@ -295,7 +292,6 @@ impl Consensus {
 
         Ok(Self {
             peers: config.peers,
-            #[cfg(test)]
             peer_labels,
             pubkeys,
             local_peer_idx: config.local_peer_idx,
@@ -336,15 +332,14 @@ impl Consensus {
     pub async fn handle(
         &self,
         ct: &CancellationToken,
-        req: Option<pbconsensus::QbftConsensusMsg>,
+        pb_msg: pbconsensus::QbftConsensusMsg,
     ) -> Result<()> {
-        let pb_msg = req.ok_or(Error::InvalidConsensusMessage)?;
         let msg = pb_msg.msg.as_ref().ok_or(Error::InvalidConsensusMessage)?;
 
         self.verify_msg(msg)?;
         let duty = duty_from_msg(msg)?;
 
-        if !self.duty_allowed(&duty) {
+        if !(self.duty_gater)(&duty) {
             return Err(Error::InvalidDuty);
         }
 
@@ -468,11 +463,6 @@ impl Consensus {
     /// Returns the public key registered for a QBFT peer index.
     pub(crate) fn pubkey(&self, peer_idx: i64) -> Option<&PublicKey> {
         self.pubkeys.get(&peer_idx)
-    }
-
-    /// Returns whether local policy admits consensus for the duty.
-    pub(crate) fn duty_allowed(&self, duty: &Duty) -> bool {
-        (self.duty_gater)(duty)
     }
 
     /// Registers the duty with the deadline scheduler.
@@ -706,21 +696,11 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn handle_rejects_invalid_outer_message() {
-        let err = consensus(0, true)
-            .handle(&CancellationToken::new(), None)
-            .await
-            .unwrap_err();
-
-        assert_eq!(err.to_string(), "invalid consensus message");
-    }
-
-    #[tokio::test]
     async fn handle_rejects_missing_inner_message() {
         let err = consensus(0, true)
             .handle(
                 &CancellationToken::new(),
-                Some(pbconsensus::QbftConsensusMsg::default()),
+                pbconsensus::QbftConsensusMsg::default(),
             )
             .await
             .unwrap_err();
@@ -810,10 +790,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn handle_rejects_duty_gate_false() {
         let err = consensus(0, false)
-            .handle(
-                &CancellationToken::new(),
-                Some(consensus_msg(signed_msg(0))),
-            )
+            .handle(&CancellationToken::new(), consensus_msg(signed_msg(0)))
             .await
             .unwrap_err();
 
@@ -831,7 +808,7 @@ pub(crate) mod tests {
         };
 
         let err = consensus(0, true)
-            .handle(&CancellationToken::new(), Some(outer))
+            .handle(&CancellationToken::new(), outer)
             .await
             .unwrap_err();
 
@@ -853,7 +830,7 @@ pub(crate) mod tests {
         };
 
         let err = consensus(0, true)
-            .handle(&CancellationToken::new(), Some(outer))
+            .handle(&CancellationToken::new(), outer)
             .await
             .unwrap_err();
 
@@ -874,7 +851,7 @@ pub(crate) mod tests {
         outer.justification = vec![sign_for_peer(justification, 0)];
 
         consensus
-            .handle(&CancellationToken::new(), Some(outer))
+            .handle(&CancellationToken::new(), outer)
             .await
             .unwrap();
 
@@ -921,7 +898,7 @@ pub(crate) mod tests {
         let msg = sign_for_peer(msg, 0);
 
         let err = consensus(0, true)
-            .handle(&CancellationToken::new(), Some(consensus_msg(msg)))
+            .handle(&CancellationToken::new(), consensus_msg(msg))
             .await
             .unwrap_err();
 
@@ -939,7 +916,7 @@ pub(crate) mod tests {
         let msg = sign_for_peer(msg, 0);
 
         let err = consensus(0, true)
-            .handle(&CancellationToken::new(), Some(consensus_msg(msg)))
+            .handle(&CancellationToken::new(), consensus_msg(msg))
             .await
             .unwrap_err();
 
@@ -959,7 +936,7 @@ pub(crate) mod tests {
         let msg = sign_for_peer(msg, 0);
 
         let err = consensus(0, true)
-            .handle(&CancellationToken::new(), Some(consensus_msg(msg)))
+            .handle(&CancellationToken::new(), consensus_msg(msg))
             .await
             .unwrap_err();
 
@@ -975,7 +952,7 @@ pub(crate) mod tests {
         let msg = sign_for_peer(msg, 0);
 
         let err = consensus(0, true)
-            .handle(&CancellationToken::new(), Some(consensus_msg(msg)))
+            .handle(&CancellationToken::new(), consensus_msg(msg))
             .await
             .unwrap_err();
 
@@ -996,7 +973,7 @@ pub(crate) mod tests {
         let inst = consensus.get_instance_io(duty());
 
         consensus
-            .handle(&CancellationToken::new(), Some(consensus_msg(msg)))
+            .handle(&CancellationToken::new(), consensus_msg(msg))
             .await
             .unwrap();
 
@@ -1022,11 +999,11 @@ pub(crate) mod tests {
         consensus
             .handle(
                 &CancellationToken::new(),
-                Some(pbconsensus::QbftConsensusMsg {
+                pbconsensus::QbftConsensusMsg {
                     msg: Some(msg),
                     justification: vec![],
                     values: vec![any],
-                }),
+                },
             )
             .await
             .unwrap();
@@ -1046,7 +1023,7 @@ pub(crate) mod tests {
         .unwrap();
 
         let err = consensus
-            .handle(&CancellationToken::new(), Some(valid_consensus_msg(0)))
+            .handle(&CancellationToken::new(), valid_consensus_msg(0))
             .await
             .unwrap_err();
 
@@ -1059,7 +1036,7 @@ pub(crate) mod tests {
         ct.cancel();
 
         let err = consensus(0, true)
-            .handle(&ct, Some(valid_consensus_msg(0)))
+            .handle(&ct, valid_consensus_msg(0))
             .await
             .unwrap_err();
 
@@ -1076,7 +1053,7 @@ pub(crate) mod tests {
         }
 
         let ct = CancellationToken::new();
-        let handle = consensus.handle(&ct, Some(valid_consensus_msg(0)));
+        let handle = consensus.handle(&ct, valid_consensus_msg(0));
         tokio::pin!(handle);
 
         tokio::select! {
@@ -1103,7 +1080,7 @@ pub(crate) mod tests {
         }
 
         let ct = CancellationToken::new();
-        let handle = consensus.handle(&ct, Some(valid_consensus_msg(0)));
+        let handle = consensus.handle(&ct, valid_consensus_msg(0));
         tokio::pin!(handle);
 
         tokio::select! {
@@ -1138,11 +1115,11 @@ pub(crate) mod tests {
         consensus
             .handle(
                 &CancellationToken::new(),
-                Some(pbconsensus::QbftConsensusMsg {
+                pbconsensus::QbftConsensusMsg {
                     msg: Some(msg),
                     justification: vec![],
                     values: vec![any],
-                }),
+                },
             )
             .await
             .unwrap();
@@ -1159,7 +1136,7 @@ pub(crate) mod tests {
             .expect("recv receiver should be available");
 
         consensus
-            .handle(&CancellationToken::new(), Some(reference_consensus_msg()))
+            .handle(&CancellationToken::new(), reference_consensus_msg())
             .await
             .expect("reference message should be admitted");
 
