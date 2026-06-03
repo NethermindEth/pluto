@@ -759,7 +759,7 @@ impl Handler for Component {
         for (slot, set) in &psigs_by_slot {
             let duty = Duty::new_prepare_aggregator_duty(SlotNumber::new(*slot));
             for sub in &self.subs {
-                tokio::time::timeout_at(deadline, sub(&duty, set.clone()))
+                tokio::time::timeout_at(deadline, sub(&duty, set))
                     .await
                     .map_err(|_: Elapsed| {
                         tracing::warn!(
@@ -887,7 +887,7 @@ impl Handler for Component {
         for (slot, set) in &psigs_by_slot {
             let duty = Duty::new_prepare_sync_contribution_duty(SlotNumber::new(*slot));
             for sub in &self.subs {
-                tokio::time::timeout_at(deadline, sub(&duty, set.clone()))
+                tokio::time::timeout_at(deadline, sub(&duty, set))
                     .await
                     .map_err(|_: Elapsed| {
                         tracing::warn!(
