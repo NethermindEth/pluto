@@ -767,7 +767,9 @@ impl Handler for Component {
         // Bound the entire fan-out + AggSigDB phase with a single deadline
         // anchored here so total wall time scales with
         // `SELECTIONS_PHASE_TIMEOUT`, not with the number of selections.
-        let deadline = tokio::time::Instant::now() + SELECTIONS_PHASE_TIMEOUT;
+        let deadline = tokio::time::Instant::now()
+            .checked_add(SELECTIONS_PHASE_TIMEOUT)
+            .expect("Instant + 24s does not overflow on a real clock");
 
         // Fanout every per-slot set to every subscriber. Subscribers receive
         // their own clone (the wrapper installed by `subscribe` clones the
@@ -896,7 +898,9 @@ impl Handler for Component {
         // See `beacon_committee_selections` — bound the whole fan-out +
         // AggSigDB phase against a single deadline so the per-selection
         // count does not multiply the wall-time budget.
-        let deadline = tokio::time::Instant::now() + SELECTIONS_PHASE_TIMEOUT;
+        let deadline = tokio::time::Instant::now()
+            .checked_add(SELECTIONS_PHASE_TIMEOUT)
+            .expect("Instant + 24s does not overflow on a real clock");
 
         for (slot, set) in &psigs_by_slot {
             let duty = Duty::new_prepare_sync_contribution_duty(SlotNumber::new(*slot));
