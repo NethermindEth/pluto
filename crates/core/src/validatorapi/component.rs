@@ -20,7 +20,6 @@ use pluto_eth2util::{
     signing::{self, DomainName, SigningError},
 };
 use tokio::time::error::Elapsed;
-use tree_hash::TreeHash;
 
 use super::{
     error::ApiError,
@@ -148,6 +147,18 @@ const ATTESTATION_DATA_TIMEOUT: Duration = Duration::from_secs(24);
 /// `PrepareAggregator` / `PrepareSyncContribution` duty has time to reach
 /// the AggSigDB.
 const SELECTIONS_PHASE_TIMEOUT: Duration = Duration::from_secs(24);
+
+/// Returns the absolute deadline for the selections fan-out + AggSigDB
+/// phase, `SELECTIONS_PHASE_TIMEOUT` in the future. Factored out so both
+/// selection handlers anchor the deadline identically and so the
+/// `clippy::arithmetic_side_effects`-driven `checked_add(...).expect(...)`
+/// pattern lives in one place (and tracks the constant rather than a
+/// hard-coded string).
+fn selections_deadline() -> tokio::time::Instant {
+    tokio::time::Instant::now()
+        .checked_add(SELECTIONS_PHASE_TIMEOUT)
+        .expect("Instant + SELECTIONS_PHASE_TIMEOUT does not overflow on a real clock")
+}
 
 /// Validator API [`Handler`] implementation.
 ///
@@ -409,19 +420,21 @@ impl Component {
         &self,
     ) -> Result<HashMap<ValidatorIndex, BLSPubKey>, ApiError> {
         let active_fn = self.active_validators_fn.as_ref().ok_or_else(|| {
+            tracing::error!(
+                "active_validators hook not registered — selections handler invoked with a half-wired Component"
+            );
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "active_validators hook not registered",
             )
         })?;
-        let map = tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, active_fn())
+        tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, active_fn())
             .await
             .map_err(|_: Elapsed| upstream_timeout("active validators"))?
             .map_err(|err| {
                 ApiError::new(StatusCode::BAD_GATEWAY, "active validators lookup failed")
                     .with_boxed_source(err)
-            })?;
-        Ok(map)
+            })
     }
 
     /// Looks up the DV root pubkey for a selection's `validator_index`.
@@ -750,12 +763,16 @@ impl Handler for Component {
             );
 
             // The selection-proof signs the slot under
-            // `DOMAIN_SELECTION_PROOF`.
+            // `DOMAIN_SELECTION_PROOF`. `BeaconCommitteeSelection::message_root()`
+            // centralises this SSZ root computation (see
+            // `crates/eth2api/src/v1.rs`) — call it through the helper so the
+            // beacon and sync handlers share the same single source of truth
+            // for the per-variant signing root.
             self.verify_selection_partial_sig(
                 &root_pubkey,
                 DomainName::SelectionProof,
                 selection.slot,
-                selection.slot.tree_hash_root().0,
+                selection.message_root(),
                 &selection.selection_proof,
                 "beacon committee selection",
             )
@@ -770,31 +787,26 @@ impl Handler for Component {
         // Bound the entire fan-out + AggSigDB phase with a single deadline
         // anchored here so total wall time scales with
         // `SELECTIONS_PHASE_TIMEOUT`, not with the number of selections.
-        let deadline = tokio::time::Instant::now()
-            .checked_add(SELECTIONS_PHASE_TIMEOUT)
-            .expect("Instant + 24s does not overflow on a real clock");
+        let deadline = selections_deadline();
 
         // Fanout every per-slot set to every subscriber. Subscribers receive
         // their own clone (the wrapper installed by `subscribe` clones the
         // set before each invocation).
-        for (slot, set) in &psigs_by_slot {
-            let duty = Duty::new_prepare_aggregator_duty(SlotNumber::new(*slot));
+        for (&slot, set) in &psigs_by_slot {
+            let duty = Duty::new_prepare_aggregator_duty(SlotNumber::new(slot));
             for sub in &self.subs {
                 tokio::time::timeout_at(deadline, sub(&duty, set))
                     .await
                     .map_err(|_: Elapsed| {
-                        tracing::warn!(
-                            slot = *slot,
-                            "beacon_committee_selections: subscriber timed out"
-                        );
+                        tracing::warn!(slot, "beacon_committee_selections: subscriber timed out");
                         ApiError::new(
                             StatusCode::REQUEST_TIMEOUT,
                             "beacon committee selection subscriber timed out",
                         )
                     })?
                     .map_err(|err| {
-                        tracing::warn!(
-                            slot = *slot,
+                        tracing::error!(
+                            slot,
                             error = %err,
                             "beacon_committee_selections: subscriber failed"
                         );
@@ -809,6 +821,9 @@ impl Handler for Component {
 
         // Pull every aggregated selection back out of the AggSigDB.
         let await_fn = self.await_agg_sig_db_fn.as_ref().ok_or_else(|| {
+            tracing::error!(
+                "beacon_committee_selections: await_agg_sig_db hook not registered — Component is half-wired"
+            );
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "await_agg_sig_db hook not registered",
@@ -816,14 +831,14 @@ impl Handler for Component {
         })?;
 
         let mut resp: Vec<BeaconCommitteeSelection> = Vec::with_capacity(selections.len());
-        for (slot, set) in &psigs_by_slot {
-            let duty = Duty::new_prepare_aggregator_duty(SlotNumber::new(*slot));
+        for (&slot, set) in &psigs_by_slot {
+            let duty = Duty::new_prepare_aggregator_duty(SlotNumber::new(slot));
             for pk in set.inner().keys() {
                 let signed = tokio::time::timeout_at(deadline, await_fn(duty.clone(), *pk))
                     .await
                     .map_err(|_: Elapsed| {
                         tracing::warn!(
-                            slot = *slot,
+                            slot,
                             "beacon_committee_selections: aggsigdb await timed out"
                         );
                         ApiError::new(
@@ -832,8 +847,8 @@ impl Handler for Component {
                         )
                     })?
                     .map_err(|err| {
-                        tracing::warn!(
-                            slot = *slot,
+                        tracing::error!(
+                            slot,
                             error = %err,
                             "beacon_committee_selections: aggsigdb lookup failed"
                         );
@@ -901,28 +916,23 @@ impl Handler for Component {
         // See `beacon_committee_selections` — bound the whole fan-out +
         // AggSigDB phase against a single deadline so the per-selection
         // count does not multiply the wall-time budget.
-        let deadline = tokio::time::Instant::now()
-            .checked_add(SELECTIONS_PHASE_TIMEOUT)
-            .expect("Instant + 24s does not overflow on a real clock");
+        let deadline = selections_deadline();
 
-        for (slot, set) in &psigs_by_slot {
-            let duty = Duty::new_prepare_sync_contribution_duty(SlotNumber::new(*slot));
+        for (&slot, set) in &psigs_by_slot {
+            let duty = Duty::new_prepare_sync_contribution_duty(SlotNumber::new(slot));
             for sub in &self.subs {
                 tokio::time::timeout_at(deadline, sub(&duty, set))
                     .await
                     .map_err(|_: Elapsed| {
-                        tracing::warn!(
-                            slot = *slot,
-                            "sync_committee_selections: subscriber timed out"
-                        );
+                        tracing::warn!(slot, "sync_committee_selections: subscriber timed out");
                         ApiError::new(
                             StatusCode::REQUEST_TIMEOUT,
                             "sync committee selection subscriber timed out",
                         )
                     })?
                     .map_err(|err| {
-                        tracing::warn!(
-                            slot = *slot,
+                        tracing::error!(
+                            slot,
                             error = %err,
                             "sync_committee_selections: subscriber failed"
                         );
@@ -936,6 +946,9 @@ impl Handler for Component {
         }
 
         let await_fn = self.await_agg_sig_db_fn.as_ref().ok_or_else(|| {
+            tracing::error!(
+                "sync_committee_selections: await_agg_sig_db hook not registered — Component is half-wired"
+            );
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "await_agg_sig_db hook not registered",
@@ -943,24 +956,21 @@ impl Handler for Component {
         })?;
 
         let mut resp: Vec<SyncCommitteeSelection> = Vec::with_capacity(selections.len());
-        for (slot, set) in &psigs_by_slot {
-            let duty = Duty::new_prepare_sync_contribution_duty(SlotNumber::new(*slot));
+        for (&slot, set) in &psigs_by_slot {
+            let duty = Duty::new_prepare_sync_contribution_duty(SlotNumber::new(slot));
             for pk in set.inner().keys() {
                 let signed = tokio::time::timeout_at(deadline, await_fn(duty.clone(), *pk))
                     .await
                     .map_err(|_: Elapsed| {
-                        tracing::warn!(
-                            slot = *slot,
-                            "sync_committee_selections: aggsigdb await timed out"
-                        );
+                        tracing::warn!(slot, "sync_committee_selections: aggsigdb await timed out");
                         ApiError::new(
                             StatusCode::REQUEST_TIMEOUT,
                             "aggregated sync committee selection not available before deadline",
                         )
                     })?
                     .map_err(|err| {
-                        tracing::warn!(
-                            slot = *slot,
+                        tracing::error!(
+                            slot,
                             error = %err,
                             "sync_committee_selections: aggsigdb lookup failed"
                         );

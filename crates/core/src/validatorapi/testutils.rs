@@ -185,20 +185,20 @@ impl Handler for TestHandler {
         &self,
         _selections: Vec<BeaconCommitteeSelection>,
     ) -> Result<EthResponse<Vec<BeaconCommitteeSelection>>, ApiError> {
-        Ok(self
-            .beacon_committee_selections_response
-            .clone()
-            .expect("beacon_committee_selections not stubbed in TestHandler"))
+        match self.beacon_committee_selections_response.as_ref() {
+            Some(r) => Ok(r.clone()),
+            None => unimplemented!("beacon_committee_selections not stubbed in TestHandler"),
+        }
     }
 
     async fn sync_committee_selections(
         &self,
         _selections: Vec<SyncCommitteeSelection>,
     ) -> Result<EthResponse<Vec<SyncCommitteeSelection>>, ApiError> {
-        Ok(self
-            .sync_committee_selections_response
-            .clone()
-            .expect("sync_committee_selections not stubbed in TestHandler"))
+        match self.sync_committee_selections_response.as_ref() {
+            Some(r) => Ok(r.clone()),
+            None => unimplemented!("sync_committee_selections not stubbed in TestHandler"),
+        }
     }
 
     async fn validators(
