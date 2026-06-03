@@ -126,13 +126,17 @@ const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// attestation duty has time to flow through the pipeline.
 const ATTESTATION_DATA_TIMEOUT: Duration = Duration::from_secs(24);
 
-/// Hard deadline for each blocking `await_agg_sig_db_fn` lookup performed by
-/// the selection handlers. The Go reference relies on the request context
-/// timeout; here we set an explicit bound so a stalled AggSigDB cannot pin a
-/// selections request forever. Sized to roughly two slots so a real
+/// Hard deadline for the *whole* fan-out + AggSigDB phase of the selection
+/// handlers — the per-slot subscriber calls plus every blocking
+/// `await_agg_sig_db_fn` lookup share a single budget anchored at this
+/// duration after the phase begins. The Go reference relies on the request
+/// context timeout; here we set an explicit bound so neither a stalled
+/// subscriber nor a stalled AggSigDB can pin a selections request forever,
+/// and the worst-case wall time scales with the duration rather than with
+/// the per-selection count. Sized to roughly two slots so a real
 /// `PrepareAggregator` / `PrepareSyncContribution` duty has time to reach
 /// the AggSigDB.
-const SELECTIONS_AGG_SIG_DB_TIMEOUT: Duration = Duration::from_secs(24);
+const SELECTIONS_PHASE_TIMEOUT: Duration = Duration::from_secs(24);
 
 /// Validator API [`Handler`] implementation.
 ///
@@ -742,19 +746,41 @@ impl Handler for Component {
                 .insert(core_pubkey, par_sig);
         }
 
+        // Bound the entire fan-out + AggSigDB phase with a single deadline
+        // anchored here so total wall time scales with
+        // `SELECTIONS_PHASE_TIMEOUT`, not with the number of selections.
+        let deadline = tokio::time::Instant::now() + SELECTIONS_PHASE_TIMEOUT;
+
         // Fanout every per-slot set to every subscriber. Subscribers receive
         // their own clone (the wrapper installed by `subscribe` clones the
         // set before each invocation).
         for (slot, set) in &psigs_by_slot {
             let duty = Duty::new_prepare_aggregator_duty(SlotNumber::new(*slot));
             for sub in &self.subs {
-                sub(&duty, set.clone()).await.map_err(|err| {
-                    ApiError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "beacon committee selection subscriber failed",
-                    )
-                    .with_boxed_source(err)
-                })?;
+                tokio::time::timeout_at(deadline, sub(&duty, set.clone()))
+                    .await
+                    .map_err(|_: Elapsed| {
+                        tracing::warn!(
+                            slot = *slot,
+                            "beacon_committee_selections: subscriber timed out"
+                        );
+                        ApiError::new(
+                            StatusCode::REQUEST_TIMEOUT,
+                            "beacon committee selection subscriber timed out",
+                        )
+                    })?
+                    .map_err(|err| {
+                        tracing::warn!(
+                            slot = *slot,
+                            error = %err,
+                            "beacon_committee_selections: subscriber failed"
+                        );
+                        ApiError::new(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "beacon committee selection subscriber failed",
+                        )
+                        .with_boxed_source(err)
+                    })?;
             }
         }
 
@@ -770,24 +796,30 @@ impl Handler for Component {
         for (slot, set) in &psigs_by_slot {
             let duty = Duty::new_prepare_aggregator_duty(SlotNumber::new(*slot));
             for pk in set.inner().keys() {
-                let signed = tokio::time::timeout(
-                    SELECTIONS_AGG_SIG_DB_TIMEOUT,
-                    await_fn(duty.clone(), *pk),
-                )
-                .await
-                .map_err(|_: Elapsed| {
-                    ApiError::new(
-                        StatusCode::REQUEST_TIMEOUT,
-                        "aggregated beacon committee selection not available before deadline",
-                    )
-                })?
-                .map_err(|err| {
-                    ApiError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "aggregated beacon committee selection lookup failed",
-                    )
-                    .with_boxed_source(err)
-                })?;
+                let signed = tokio::time::timeout_at(deadline, await_fn(duty.clone(), *pk))
+                    .await
+                    .map_err(|_: Elapsed| {
+                        tracing::warn!(
+                            slot = *slot,
+                            "beacon_committee_selections: aggsigdb await timed out"
+                        );
+                        ApiError::new(
+                            StatusCode::REQUEST_TIMEOUT,
+                            "aggregated beacon committee selection not available before deadline",
+                        )
+                    })?
+                    .map_err(|err| {
+                        tracing::warn!(
+                            slot = *slot,
+                            error = %err,
+                            "beacon_committee_selections: aggsigdb lookup failed"
+                        );
+                        ApiError::new(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "aggregated beacon committee selection lookup failed",
+                        )
+                        .with_boxed_source(err)
+                    })?;
 
                 let selection = downcast_beacon_committee_selection(signed.as_ref())?;
                 resp.push(selection.0.clone());
@@ -843,16 +875,38 @@ impl Handler for Component {
                 .insert(core_pubkey, par_sig);
         }
 
+        // See `beacon_committee_selections` — bound the whole fan-out +
+        // AggSigDB phase against a single deadline so the per-selection
+        // count does not multiply the wall-time budget.
+        let deadline = tokio::time::Instant::now() + SELECTIONS_PHASE_TIMEOUT;
+
         for (slot, set) in &psigs_by_slot {
             let duty = Duty::new_prepare_sync_contribution_duty(SlotNumber::new(*slot));
             for sub in &self.subs {
-                sub(&duty, set.clone()).await.map_err(|err| {
-                    ApiError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "sync committee selection subscriber failed",
-                    )
-                    .with_boxed_source(err)
-                })?;
+                tokio::time::timeout_at(deadline, sub(&duty, set.clone()))
+                    .await
+                    .map_err(|_: Elapsed| {
+                        tracing::warn!(
+                            slot = *slot,
+                            "sync_committee_selections: subscriber timed out"
+                        );
+                        ApiError::new(
+                            StatusCode::REQUEST_TIMEOUT,
+                            "sync committee selection subscriber timed out",
+                        )
+                    })?
+                    .map_err(|err| {
+                        tracing::warn!(
+                            slot = *slot,
+                            error = %err,
+                            "sync_committee_selections: subscriber failed"
+                        );
+                        ApiError::new(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "sync committee selection subscriber failed",
+                        )
+                        .with_boxed_source(err)
+                    })?;
             }
         }
 
@@ -867,24 +921,30 @@ impl Handler for Component {
         for (slot, set) in &psigs_by_slot {
             let duty = Duty::new_prepare_sync_contribution_duty(SlotNumber::new(*slot));
             for pk in set.inner().keys() {
-                let signed = tokio::time::timeout(
-                    SELECTIONS_AGG_SIG_DB_TIMEOUT,
-                    await_fn(duty.clone(), *pk),
-                )
-                .await
-                .map_err(|_: Elapsed| {
-                    ApiError::new(
-                        StatusCode::REQUEST_TIMEOUT,
-                        "aggregated sync committee selection not available before deadline",
-                    )
-                })?
-                .map_err(|err| {
-                    ApiError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "aggregated sync committee selection lookup failed",
-                    )
-                    .with_boxed_source(err)
-                })?;
+                let signed = tokio::time::timeout_at(deadline, await_fn(duty.clone(), *pk))
+                    .await
+                    .map_err(|_: Elapsed| {
+                        tracing::warn!(
+                            slot = *slot,
+                            "sync_committee_selections: aggsigdb await timed out"
+                        );
+                        ApiError::new(
+                            StatusCode::REQUEST_TIMEOUT,
+                            "aggregated sync committee selection not available before deadline",
+                        )
+                    })?
+                    .map_err(|err| {
+                        tracing::warn!(
+                            slot = *slot,
+                            error = %err,
+                            "sync_committee_selections: aggsigdb lookup failed"
+                        );
+                        ApiError::new(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "aggregated sync committee selection lookup failed",
+                        )
+                        .with_boxed_source(err)
+                    })?;
 
                 let selection = downcast_sync_committee_selection(signed.as_ref())?;
                 resp.push(selection.0.clone());
@@ -2301,7 +2361,7 @@ mod tests {
     }
 
     /// A stalled `await_agg_sig_db` hook trips
-    /// `SELECTIONS_AGG_SIG_DB_TIMEOUT` and the handler returns 408.
+    /// [`SELECTIONS_PHASE_TIMEOUT`] and the handler returns 408.
     #[tokio::test(start_paused = true)]
     async fn beacon_committee_selections_await_agg_sig_db_times_out() {
         let dv_root = dv_pubkey(0xD1);
@@ -2512,5 +2572,168 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status_code, StatusCode::REQUEST_TIMEOUT);
+    }
+
+    /// A stalled subscriber must not pin the handler indefinitely — the
+    /// per-request deadline applies to subscriber fan-out as well as the
+    /// AggSigDB await. The handler returns 408.
+    #[tokio::test(start_paused = true)]
+    async fn beacon_committee_selections_subscriber_timeout() {
+        let dv_root = dv_pubkey(0xF1);
+        let (mut component, _mock) =
+            make_selections_component_insecure(HashMap::from([(1u64, dv_root)])).await;
+
+        // Subscriber that never completes.
+        component.subscribe(|_duty, _set| async {
+            std::future::pending::<Result<(), CallbackError>>().await
+        });
+        // `await_agg_sig_db` must NOT be reached if the subscriber blocks.
+        component.register_await_agg_sig_db(|_duty, _pk| async {
+            panic!("await_agg_sig_db must not be reached when the subscriber stalls");
+        });
+
+        let err = component
+            .beacon_committee_selections(vec![V1BeaconCommitteeSelection {
+                slot: 1,
+                validator_index: 1,
+                selection_proof: [0xAA; 96],
+            }])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::REQUEST_TIMEOUT);
+    }
+
+    /// Counterpart of [`beacon_committee_selections_subscriber_timeout`].
+    #[tokio::test(start_paused = true)]
+    async fn sync_committee_selections_subscriber_timeout() {
+        let dv_root = dv_pubkey(0xF2);
+        let (mut component, _mock) =
+            make_selections_component_insecure(HashMap::from([(1u64, dv_root)])).await;
+
+        component.subscribe(|_duty, _set| async {
+            std::future::pending::<Result<(), CallbackError>>().await
+        });
+        component.register_await_agg_sig_db(|_duty, _pk| async {
+            panic!("await_agg_sig_db must not be reached when the subscriber stalls");
+        });
+
+        let err = component
+            .sync_committee_selections(vec![V1SyncCommitteeSelection {
+                slot: 1,
+                validator_index: 1,
+                subcommittee_index: 0,
+                selection_proof: [0xBB; 96],
+            }])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::REQUEST_TIMEOUT);
+    }
+
+    /// An empty selections array is a well-defined no-op: the handler runs
+    /// the active-validators lookup, finds nothing to fan out, never queries
+    /// the AggSigDB, and returns an empty `data` array. Mirrors Go's
+    /// behaviour where `wrapResponse(nil)` returns `data: []`.
+    #[tokio::test]
+    async fn beacon_committee_selections_empty_input_returns_empty_data() {
+        let (mut component, _mock) = make_selections_component_insecure(HashMap::new()).await;
+
+        // Subscriber and AggSigDB must NOT be touched for an empty input.
+        component.subscribe(|_duty, _set| async {
+            panic!("subscriber must not run for empty input");
+        });
+        component.register_await_agg_sig_db(|_duty, _pk| async {
+            panic!("await_agg_sig_db must not be reached for empty input");
+        });
+
+        let resp = component
+            .beacon_committee_selections(vec![])
+            .await
+            .expect("empty input is a no-op success");
+        assert!(resp.data.is_empty());
+    }
+
+    /// Counterpart of
+    /// [`beacon_committee_selections_empty_input_returns_empty_data`].
+    #[tokio::test]
+    async fn sync_committee_selections_empty_input_returns_empty_data() {
+        let (mut component, _mock) = make_selections_component_insecure(HashMap::new()).await;
+
+        component.subscribe(|_duty, _set| async {
+            panic!("subscriber must not run for empty input");
+        });
+        component.register_await_agg_sig_db(|_duty, _pk| async {
+            panic!("await_agg_sig_db must not be reached for empty input");
+        });
+
+        let resp = component
+            .sync_committee_selections(vec![])
+            .await
+            .expect("empty input is a no-op success");
+        assert!(resp.data.is_empty());
+    }
+
+    /// If the AggSigDB ever returns the wrong concrete `SignedData` type
+    /// under a `PrepareAggregator` duty (a wiring bug), the handler must
+    /// surface `500 Internal Server Error` rather than panic or return a
+    /// silently-wrong response.
+    #[tokio::test]
+    async fn beacon_committee_selections_rejects_aggsigdb_type_mismatch() {
+        let dv_root = dv_pubkey(0xA1);
+        let (mut component, _mock) =
+            make_selections_component_insecure(HashMap::from([(1u64, dv_root)])).await;
+
+        // Wrong type — returns a `SyncCommitteeSelection` under a
+        // `PrepareAggregator` duty, which `downcast_beacon_committee_selection`
+        // cannot satisfy.
+        component.register_await_agg_sig_db(|_duty, _pk| async {
+            Ok::<Box<dyn SignedData>, CallbackError>(Box::new(SignedSyncCommitteeSelection::new(
+                V1SyncCommitteeSelection {
+                    slot: 1,
+                    validator_index: 1,
+                    subcommittee_index: 0,
+                    selection_proof: [0xCC; 96],
+                },
+            )))
+        });
+
+        let err = component
+            .beacon_committee_selections(vec![V1BeaconCommitteeSelection {
+                slot: 1,
+                validator_index: 1,
+                selection_proof: [0x00; 96],
+            }])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// Counterpart of
+    /// [`beacon_committee_selections_rejects_aggsigdb_type_mismatch`].
+    #[tokio::test]
+    async fn sync_committee_selections_rejects_aggsigdb_type_mismatch() {
+        let dv_root = dv_pubkey(0xA2);
+        let (mut component, _mock) =
+            make_selections_component_insecure(HashMap::from([(1u64, dv_root)])).await;
+
+        component.register_await_agg_sig_db(|_duty, _pk| async {
+            Ok::<Box<dyn SignedData>, CallbackError>(Box::new(SignedBeaconCommitteeSelection::new(
+                V1BeaconCommitteeSelection {
+                    slot: 1,
+                    validator_index: 1,
+                    selection_proof: [0xDD; 96],
+                },
+            )))
+        });
+
+        let err = component
+            .sync_committee_selections(vec![V1SyncCommitteeSelection {
+                slot: 1,
+                validator_index: 1,
+                subcommittee_index: 0,
+                selection_proof: [0x00; 96],
+            }])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::INTERNAL_SERVER_ERROR);
     }
 }
