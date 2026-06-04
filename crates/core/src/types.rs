@@ -728,53 +728,8 @@ impl TryFrom<(&DutyType, &pbcore::ParSignedDataSet)> for ParSignedDataSet {
     }
 }
 
-/// SignedDataSet is a set of signed duty data.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SignedDataSet<T: SignedData>(HashMap<PubKey, T>);
-
-impl<T> Default for SignedDataSet<T>
-where
-    T: SignedData,
-{
-    fn default() -> Self {
-        Self(HashMap::default())
-    }
-}
-
-impl<T> SignedDataSet<T>
-where
-    T: SignedData,
-{
-    /// Create a new signed data set.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Get a signed data by public key.
-    pub fn get(&self, pub_key: &PubKey) -> Option<&T> {
-        self.0.get(pub_key)
-    }
-
-    /// Insert a signed data.
-    pub fn insert(&mut self, pub_key: PubKey, signed_data: T) {
-        self.0.insert(pub_key, signed_data);
-    }
-
-    /// Remove a signed data by public key.
-    pub fn remove(&mut self, pub_key: &PubKey) -> Option<T> {
-        self.0.remove(pub_key)
-    }
-
-    /// Inner signed data set.
-    pub fn inner(&self) -> &HashMap<PubKey, T> {
-        &self.0
-    }
-
-    /// Inner signed data set.
-    pub fn inner_mut(&mut self) -> &mut HashMap<PubKey, T> {
-        &mut self.0
-    }
-}
+/// A set of signed duty data.
+pub type SignedDataSet = HashMap<PubKey, Box<dyn SignedData>>;
 
 /// Slot struct
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1056,6 +1011,12 @@ mod tests {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     struct MockSignedData;
 
+    impl MockSignedData {
+        fn boxed(&self) -> Box<dyn SignedData> {
+            Box::new(self.clone())
+        }
+    }
+
     impl SignedData for MockSignedData {
         fn signature(&self) -> Result<Signature, SignedDataError> {
             Ok([42u8; SIGNATURE_LENGTH])
@@ -1095,10 +1056,11 @@ mod tests {
     #[test]
     fn signed_data_set() {
         let mut signed_data_set = SignedDataSet::new();
-        signed_data_set.insert(PubKey::new([42u8; PK_LEN]), MockSignedData);
+        signed_data_set.insert(PubKey::new([42u8; PK_LEN]), MockSignedData.boxed());
+        let expected = MockSignedData.boxed();
         assert_eq!(
             signed_data_set.get(&PubKey::new([42u8; PK_LEN])),
-            Some(&MockSignedData)
+            Some(&expected)
         );
     }
 

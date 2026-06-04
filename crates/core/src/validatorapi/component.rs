@@ -4,15 +4,18 @@
 //! and public-share mappings needed to translate between distributed-validator
 //! root keys and this node's threshold-BLS share.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{any::Any, collections::HashMap, future::Future, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use axum::http::StatusCode;
+use futures::future::BoxFuture;
 use pluto_eth2api::{
     EthBeaconNodeApiClient, GetAttesterDutiesRequest, GetAttesterDutiesResponse,
     GetProposerDutiesRequest, GetProposerDutiesResponse, GetSyncCommitteeDutiesRequest,
-    GetSyncCommitteeDutiesResponse, spec::phase0::BLSPubKey,
+    GetSyncCommitteeDutiesResponse,
+    spec::phase0::{BLSPubKey, Epoch, Root},
 };
+use pluto_eth2util::signing::{self, DomainName, SigningError};
 use tokio::time::error::Elapsed;
 
 use super::{
@@ -32,12 +35,83 @@ use super::{
 };
 use crate::{
     dutydb::{Error as DutyDbError, MemDB},
+    signeddata::{
+        SyncContribution, VersionedAggregatedAttestation,
+        VersionedProposal as UnsignedVersionedProposal,
+    },
+    types::{Duty, ParSignedDataSet, PubKey, Signature, SignedData},
     version,
 };
 
+/// Boxed error returned by registered callbacks.
+pub type CallbackError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+/// Subscriber callback for `Subscribe`. Receives the [`Duty`] and the
+/// [`ParSignedDataSet`] by reference; the registered wrapper clones the
+/// set exactly once before invoking the user closure so every subscriber
+/// observes an independent copy.
+pub type SubscriberFn = Arc<
+    dyn for<'a> Fn(&'a Duty, &'a ParSignedDataSet) -> BoxFuture<'a, Result<(), CallbackError>>
+        + Send
+        + Sync
+        + 'static,
+>;
+
+/// Looks up an unsigned beacon proposal by slot.
+pub type AwaitProposalFn = Arc<
+    dyn Fn(u64) -> BoxFuture<'static, Result<UnsignedVersionedProposal, CallbackError>>
+        + Send
+        + Sync
+        + 'static,
+>;
+
+/// Looks up an aggregated attestation by `(slot, attestation_root)`.
+pub type AwaitAggAttestationFn = Arc<
+    dyn Fn(u64, Root) -> BoxFuture<'static, Result<VersionedAggregatedAttestation, CallbackError>>
+        + Send
+        + Sync
+        + 'static,
+>;
+
+/// Looks up a sync committee contribution by `(slot, subcommittee_index,
+/// beacon_block_root)`.
+pub type AwaitSyncContributionFn = Arc<
+    dyn Fn(u64, u64, Root) -> BoxFuture<'static, Result<SyncContribution, CallbackError>>
+        + Send
+        + Sync
+        + 'static,
+>;
+
+/// Looks up aggregated signed data from the AggSigDB for a `(duty, pubkey)`.
+pub type AwaitAggSigDbFn = Arc<
+    dyn Fn(Duty, PubKey) -> BoxFuture<'static, Result<Box<dyn SignedData>, CallbackError>>
+        + Send
+        + Sync
+        + 'static,
+>;
+
+/// Looks up the duty-definition set for a given [`Duty`]. The return type
+/// is an untyped interface map keyed by pubkey, kept as a type-erased
+/// `Box<dyn Any>` so callers can downcast to the concrete
+/// `DutyDefinitionSet<T>` they need.
+pub type DutyDefFn = Arc<
+    dyn Fn(Duty) -> BoxFuture<'static, Result<Box<dyn Any + Send + Sync>, CallbackError>>
+        + Send
+        + Sync
+        + 'static,
+>;
+
+/// Looks up the root pubkey responsible for `(slot, committee_index,
+/// validator_index)`.
+pub type PubKeyByAttFn = Arc<
+    dyn Fn(u64, u64, u64) -> BoxFuture<'static, Result<PubKey, CallbackError>>
+        + Send
+        + Sync
+        + 'static,
+>;
+
 /// Hard deadline for upstream beacon-node calls. Bounds the worst-case
-/// handler latency when the upstream hangs or stalls. Mirrors Charon's
-/// `defaultRequestTimeout` (`core/validatorapi/router.go:61`).
+/// handler latency when the upstream hangs or stalls.
 const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Hard deadline for the `attestation_data` await on the local DutyDB.
@@ -74,8 +148,33 @@ pub struct Component {
     )]
     builder_enabled: bool,
     /// Skip signature verification on partial-signed submissions. Test-only.
-    #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     insecure_test: bool,
+    /// Subscribers invoked by submit endpoints once a partial-signed-data set
+    /// has been validated. Each entry clones the set before invoking the
+    /// user-provided callback.
+    #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
+    subs: Vec<SubscriberFn>,
+    /// Looks up an unsigned beacon proposal for a slot.
+    #[allow(dead_code, reason = "consumed by proposal handler in later PRs")]
+    await_proposal_fn: Option<AwaitProposalFn>,
+    /// Looks up an aggregated attestation by `(slot, attestation_root)`.
+    #[allow(dead_code, reason = "consumed by aggregate_attestation in later PRs")]
+    await_agg_attestation_fn: Option<AwaitAggAttestationFn>,
+    /// Looks up a sync committee contribution.
+    #[allow(
+        dead_code,
+        reason = "consumed by sync_committee_contribution in later PRs"
+    )]
+    await_sync_contribution_fn: Option<AwaitSyncContributionFn>,
+    /// Looks up aggregated signed data for a `(duty, pubkey)`.
+    #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
+    await_agg_sig_db_fn: Option<AwaitAggSigDbFn>,
+    /// Looks up the duty-definition set for a duty.
+    #[allow(dead_code, reason = "consumed by submit_attestations in later PRs")]
+    duty_def_fn: Option<DutyDefFn>,
+    /// Looks up the root pubkey for an `(slot, commIdx, valIdx)` triple.
+    #[allow(dead_code, reason = "consumed by submit_attestations in later PRs")]
+    pub_key_by_att_fn: Option<PubKeyByAttFn>,
 }
 
 impl Component {
@@ -94,6 +193,13 @@ impl Component {
             pub_share_by_pubkey,
             builder_enabled,
             insecure_test: false,
+            subs: Vec::new(),
+            await_proposal_fn: None,
+            await_agg_attestation_fn: None,
+            await_sync_contribution_fn: None,
+            await_agg_sig_db_fn: None,
+            duty_def_fn: None,
+            pub_key_by_att_fn: None,
         }
     }
 
@@ -114,8 +220,151 @@ impl Component {
             pub_share_by_pubkey: HashMap::new(),
             builder_enabled: false,
             insecure_test: true,
+            subs: Vec::new(),
+            await_proposal_fn: None,
+            await_agg_attestation_fn: None,
+            await_sync_contribution_fn: None,
+            await_agg_sig_db_fn: None,
+            duty_def_fn: None,
+            pub_key_by_att_fn: None,
         }
     }
+
+    /// Appends a subscriber that is invoked by submit endpoints once a
+    /// partial-signed-data set has been validated. The registered closure
+    /// receives its own clone of the set, so subscribers can mutate without
+    /// affecting peers.
+    ///
+    /// The wrapper takes the set by reference and clones it exactly once
+    /// before handing the owned copy to the user closure. Future submit
+    /// handlers iterate `&self.subs` and pass `&set` to each subscriber,
+    /// giving the cost of one clone per subscriber.
+    pub fn subscribe<F, Fut>(&mut self, f: F)
+    where
+        F: Fn(Duty, ParSignedDataSet) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), CallbackError>> + Send + 'static,
+    {
+        let wrapped: SubscriberFn = Arc::new(move |duty, set| {
+            let fut = f(duty.clone(), set.clone());
+            Box::pin(fut)
+        });
+        self.subs.push(wrapped);
+    }
+
+    /// Registers (and overwrites any prior) `awaitProposalFunc`. Only the
+    /// most recently registered closure is invoked.
+    pub fn register_await_proposal<F, Fut>(&mut self, f: F)
+    where
+        F: Fn(u64) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<UnsignedVersionedProposal, CallbackError>> + Send + 'static,
+    {
+        self.await_proposal_fn = Some(Arc::new(move |slot| Box::pin(f(slot))));
+    }
+
+    /// Registers (and overwrites any prior) `awaitAggAttestationFunc`.
+    pub fn register_await_agg_attestation<F, Fut>(&mut self, f: F)
+    where
+        F: Fn(u64, Root) -> Fut + Send + Sync + 'static,
+        Fut:
+            Future<Output = Result<VersionedAggregatedAttestation, CallbackError>> + Send + 'static,
+    {
+        self.await_agg_attestation_fn = Some(Arc::new(move |slot, root| Box::pin(f(slot, root))));
+    }
+
+    /// Registers (and overwrites any prior) `awaitSyncContributionFunc`.
+    pub fn register_await_sync_contribution<F, Fut>(&mut self, f: F)
+    where
+        F: Fn(u64, u64, Root) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<SyncContribution, CallbackError>> + Send + 'static,
+    {
+        self.await_sync_contribution_fn = Some(Arc::new(move |slot, subcomm, root| {
+            Box::pin(f(slot, subcomm, root))
+        }));
+    }
+
+    /// Registers (and overwrites any prior) `awaitAggSigDBFunc`.
+    pub fn register_await_agg_sig_db<F, Fut>(&mut self, f: F)
+    where
+        F: Fn(Duty, PubKey) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Box<dyn SignedData>, CallbackError>> + Send + 'static,
+    {
+        self.await_agg_sig_db_fn = Some(Arc::new(move |duty, pubkey| Box::pin(f(duty, pubkey))));
+    }
+
+    /// Registers (and overwrites any prior) `dutyDefFunc`.
+    pub fn register_get_duty_definition<F, Fut>(&mut self, f: F)
+    where
+        F: Fn(Duty) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Box<dyn Any + Send + Sync>, CallbackError>> + Send + 'static,
+    {
+        self.duty_def_fn = Some(Arc::new(move |duty| Box::pin(f(duty))));
+    }
+
+    /// Registers (and overwrites any prior) `pubKeyByAttFunc`.
+    pub fn register_pub_key_by_attestation<F, Fut>(&mut self, f: F)
+    where
+        F: Fn(u64, u64, u64) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<PubKey, CallbackError>> + Send + 'static,
+    {
+        self.pub_key_by_att_fn = Some(Arc::new(move |slot, comm, val| {
+            Box::pin(f(slot, comm, val))
+        }));
+    }
+
+    /// Verifies a partial BLS signature produced by the validator client
+    /// against this node's public share for the given DV root pubkey.
+    ///
+    /// The BLS domain / epoch / message-root are passed directly rather
+    /// than projected through a signed-data trait — each submit handler in
+    /// later PRs derives the triple from the concrete signed-data wrapper
+    /// it is processing, then invokes this helper.
+    ///
+    /// Skipped entirely when [`Self::insecure_test`] is set.
+    #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
+    pub async fn verify_partial_sig(
+        &self,
+        root_pubkey: &BLSPubKey,
+        domain_name: DomainName,
+        epoch: Epoch,
+        message_root: Root,
+        signature: &Signature,
+    ) -> Result<(), VerifyPartialSigError> {
+        if self.insecure_test {
+            return Ok(());
+        }
+
+        // The verify-share is this node's public share for the given DV root
+        // pubkey.
+        let pubshare = self
+            .pub_share_by_pubkey
+            .get(root_pubkey)
+            .ok_or(VerifyPartialSigError::UnknownPubKey)?;
+
+        signing::verify(
+            &self.eth2_cl,
+            domain_name,
+            epoch,
+            message_root,
+            signature,
+            pubshare,
+        )
+        .await?;
+
+        Ok(())
+    }
+}
+
+/// Errors returned by [`Component::verify_partial_sig`].
+#[derive(Debug, thiserror::Error)]
+pub enum VerifyPartialSigError {
+    /// The supplied DV root public key has no public share registered on
+    /// this node.
+    #[error("unknown public key")]
+    UnknownPubKey,
+
+    /// The beacon-node signing-domain lookup or BLS verification failed.
+    #[error(transparent)]
+    Signing(#[from] SigningError),
 }
 
 #[async_trait]
@@ -550,7 +799,12 @@ fn format_bls_pubkey(pubkey: &BLSPubKey) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use chrono::{DateTime, Utc};
+    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
+    use pluto_testutil::BeaconMock;
+    use serde_json::json;
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
@@ -560,9 +814,10 @@ mod tests {
         dutydb::{UnsignedDataSet, UnsignedDutyData},
         signeddata::{
             AttestationData as SignedAttestationData, AttesterDuty as SignedAttesterDuty,
+            SignedRandao, SyncContribution, VersionedAggregatedAttestation,
         },
         testutils::random_core_pub_key,
-        types::{Duty, DutyType, SlotNumber},
+        types::{Duty, DutyType, PubKey, SlotNumber},
         validatorapi::types::AttestationDataOpts,
     };
 
@@ -990,5 +1245,358 @@ mod tests {
         assert_eq!(err.status_code, StatusCode::BAD_GATEWAY);
         assert!(!err.message.contains("Unknown"));
         assert!(err.source.as_ref().unwrap().to_string().contains("Unknown"));
+    }
+
+    // ====================================================================
+    // Plumbing tests — Subscribe / Register* / verify_partial_sig
+    // ====================================================================
+
+    fn dv_pubkey(byte: u8) -> BLSPubKey {
+        [byte; 48]
+    }
+
+    fn core_pubkey(byte: u8) -> PubKey {
+        PubKey::new([byte; 48])
+    }
+
+    /// Build a component with one DV pubkey/share pair and a deterministic
+    /// pub_share_by_pubkey map.
+    fn make_plumbed_component(map: HashMap<BLSPubKey, BLSPubKey>) -> Component {
+        let cancel = CancellationToken::new();
+        let (deadliner, _deadliner_rx) = DeadlinerTask::start(
+            cancel.clone(),
+            "validatorapi-plumbing-tests",
+            FarFutureCalculator,
+        );
+        let (_evict_tx, evict_rx) = mpsc::channel(1);
+        let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
+        let eth2_cl =
+            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
+        Component::new(eth2_cl, dutydb, 1, map, false)
+    }
+
+    /// `Subscribe` invokes every registered subscriber, each receiving its
+    /// own clone of the set. Mutating one clone does not affect the others.
+    #[tokio::test]
+    async fn subscribe_fanouts_clones_to_every_subscriber() {
+        let mut component = make_plumbed_component(HashMap::new());
+
+        let received: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+
+        // Two validator entries in the input set.
+        let key_a = core_pubkey(0x11);
+        let key_b = core_pubkey(0x22);
+
+        // First subscriber: records the set size, then mutates its own copy
+        // by removing one entry. The mutation must NOT leak into the second
+        // subscriber's copy.
+        {
+            let received = Arc::clone(&received);
+            component.subscribe(move |_duty, mut set| {
+                let received = Arc::clone(&received);
+                async move {
+                    received.lock().unwrap().push(set.inner().len());
+                    set.remove(&key_a);
+                    Ok(())
+                }
+            });
+        }
+        // Second subscriber: also records the set size — must see the
+        // pristine size (2), not the first subscriber's mutated size (1).
+        {
+            let received = Arc::clone(&received);
+            component.subscribe(move |_duty, set| {
+                let received = Arc::clone(&received);
+                async move {
+                    received.lock().unwrap().push(set.inner().len());
+                    Ok(())
+                }
+            });
+        }
+
+        // Build a set with two entries. Use SignedRandao — the simplest
+        // ParSignedData wrapper that doesn't require populating spec fields.
+        let mut set = ParSignedDataSet::new();
+        set.insert(key_a, SignedRandao::new_partial(0, [0; 96], 1));
+        set.insert(key_b, SignedRandao::new_partial(0, [0; 96], 1));
+        let duty = Duty::new(SlotNumber::new(1), DutyType::Attester);
+
+        // Fanout: each subscriber gets the set by reference; the registered
+        // wrapper clones once so every subscriber observes its own copy.
+        for sub in component.subs.iter() {
+            sub(&duty, &set).await.unwrap();
+        }
+
+        let observed = received.lock().unwrap().clone();
+        assert_eq!(
+            observed,
+            vec![2, 2],
+            "both subscribers see the pristine (uncloned) set size"
+        );
+    }
+
+    /// `register_await_proposal` overwrites a prior registration — only the
+    /// most recently registered closure is invoked.
+    #[tokio::test]
+    async fn register_await_proposal_overwrites_prior_registration() {
+        let mut component = make_plumbed_component(HashMap::new());
+
+        let calls_a: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+        let calls_b: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+
+        {
+            let calls_a = Arc::clone(&calls_a);
+            component.register_await_proposal(move |_slot| {
+                let calls_a = Arc::clone(&calls_a);
+                async move {
+                    *calls_a.lock().unwrap() += 1;
+                    Err("first registration".into())
+                }
+            });
+        }
+        {
+            let calls_b = Arc::clone(&calls_b);
+            component.register_await_proposal(move |_slot| {
+                let calls_b = Arc::clone(&calls_b);
+                async move {
+                    *calls_b.lock().unwrap() += 1;
+                    Err("second registration".into())
+                }
+            });
+        }
+
+        // The component holds the second registration only.
+        let fut = (component.await_proposal_fn.as_ref().unwrap())(42);
+        let _ = fut.await;
+
+        assert_eq!(*calls_a.lock().unwrap(), 0);
+        assert_eq!(*calls_b.lock().unwrap(), 1);
+    }
+
+    /// `register_await_agg_attestation` / `register_await_sync_contribution` /
+    /// `register_await_agg_sig_db` / `register_get_duty_definition` /
+    /// `register_pub_key_by_attestation` all follow the same overwrite-on-
+    /// re-register semantics. Spot-check the remaining five hooks store the
+    /// most-recent closure.
+    #[tokio::test]
+    async fn other_register_hooks_store_most_recent_closure() {
+        let mut component = make_plumbed_component(HashMap::new());
+
+        component.register_await_agg_attestation(|_slot, _root| async {
+            Err::<VersionedAggregatedAttestation, _>("a1".into())
+        });
+        component.register_await_agg_attestation(|_slot, _root| async {
+            Err::<VersionedAggregatedAttestation, _>("a2".into())
+        });
+        let err = (component.await_agg_attestation_fn.as_ref().unwrap())(0, [0; 32])
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "a2");
+
+        component.register_await_sync_contribution(|_, _, _| async {
+            Err::<SyncContribution, _>("s1".into())
+        });
+        component.register_await_sync_contribution(|_, _, _| async {
+            Err::<SyncContribution, _>("s2".into())
+        });
+        let err = (component.await_sync_contribution_fn.as_ref().unwrap())(0, 0, [0; 32])
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "s2");
+
+        component.register_await_agg_sig_db(|_duty, _pk| async {
+            Err::<Box<dyn SignedData>, _>("d1".into())
+        });
+        component.register_await_agg_sig_db(|_duty, _pk| async {
+            Err::<Box<dyn SignedData>, _>("d2".into())
+        });
+        let err = (component.await_agg_sig_db_fn.as_ref().unwrap())(
+            Duty::new(SlotNumber::new(0), DutyType::Attester),
+            core_pubkey(0),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.to_string(), "d2");
+
+        component.register_get_duty_definition(|_duty| async {
+            Err::<Box<dyn Any + Send + Sync>, _>("def1".into())
+        });
+        component.register_get_duty_definition(|_duty| async {
+            Err::<Box<dyn Any + Send + Sync>, _>("def2".into())
+        });
+        let err = (component.duty_def_fn.as_ref().unwrap())(Duty::new(
+            SlotNumber::new(0),
+            DutyType::Attester,
+        ))
+        .await
+        .unwrap_err();
+        assert_eq!(err.to_string(), "def2");
+
+        component
+            .register_pub_key_by_attestation(|_, _, _| async { Err::<PubKey, _>("p1".into()) });
+        component
+            .register_pub_key_by_attestation(|_, _, _| async { Err::<PubKey, _>("p2".into()) });
+        let err = (component.pub_key_by_att_fn.as_ref().unwrap())(0, 0, 0)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "p2");
+    }
+
+    /// Sanity-check: a never-registered hook is `None` so callers can
+    /// distinguish "not wired up" from "errored".
+    #[tokio::test]
+    async fn unregistered_hooks_default_to_none() {
+        let component = make_plumbed_component(HashMap::new());
+        assert!(component.await_proposal_fn.is_none());
+        assert!(component.await_agg_attestation_fn.is_none());
+        assert!(component.await_sync_contribution_fn.is_none());
+        assert!(component.await_agg_sig_db_fn.is_none());
+        assert!(component.duty_def_fn.is_none());
+        assert!(component.pub_key_by_att_fn.is_none());
+        assert!(component.subs.is_empty());
+    }
+
+    /// Mirrors signing-fixture spec from `pluto_eth2util::signing` tests so
+    /// `verify_partial_sig` can resolve a real beacon-attester domain.
+    fn signing_spec_fixture() -> serde_json::Value {
+        json!({
+            "DOMAIN_BEACON_PROPOSER": "0x00000000",
+            "DOMAIN_BEACON_ATTESTER": "0x01000000",
+            "DOMAIN_RANDAO": "0x02000000",
+            "DOMAIN_VOLUNTARY_EXIT": "0x04000000",
+            "DOMAIN_APPLICATION_BUILDER": "0x00000001",
+            "ALTAIR_FORK_VERSION": "0x01020304",
+            "ALTAIR_FORK_EPOCH": "10",
+            "BELLATRIX_FORK_VERSION": "0x02030405",
+            "BELLATRIX_FORK_EPOCH": "20",
+            "CAPELLA_FORK_VERSION": "0x03040506",
+            "CAPELLA_FORK_EPOCH": "30",
+            "DENEB_FORK_VERSION": "0x04050607",
+            "DENEB_FORK_EPOCH": "40",
+            "ELECTRA_FORK_VERSION": "0x05060708",
+            "ELECTRA_FORK_EPOCH": "50",
+            "FULU_FORK_VERSION": "0x06070809",
+            "FULU_FORK_EPOCH": "60"
+        })
+    }
+
+    async fn mock_beacon_for_signing() -> BeaconMock {
+        BeaconMock::builder()
+            .spec(signing_spec_fixture())
+            .genesis_time(DateTime::from_timestamp(0, 0).unwrap())
+            .genesis_validators_root([0; 32])
+            .build()
+            .await
+            .unwrap()
+    }
+
+    /// Helper: build a verify_partial_sig-ready component pinned to a real
+    /// beacon-mock client and a known DV-root → public-share map.
+    async fn make_verify_component(map: HashMap<BLSPubKey, BLSPubKey>) -> (Component, BeaconMock) {
+        let mock = mock_beacon_for_signing().await;
+        let cancel = CancellationToken::new();
+        let (deadliner, _deadliner_rx) = DeadlinerTask::start(
+            cancel.clone(),
+            "validatorapi-verify-tests",
+            FarFutureCalculator,
+        );
+        let (_evict_tx, evict_rx) = mpsc::channel(1);
+        let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let component = Component::new(eth2_cl, dutydb, 1, map, false);
+        (component, mock)
+    }
+
+    /// `verify_partial_sig` accepts a correctly signed share and rejects an
+    /// invalid one — same domain/epoch/message-root, but a tampered
+    /// signature.
+    #[tokio::test]
+    async fn verify_partial_sig_accepts_valid_and_rejects_invalid() {
+        // Generate a BLS keypair to act as this node's public share.
+        let secret = BlstImpl
+            .generate_insecure_secret(rand::rngs::OsRng)
+            .unwrap();
+        let pubshare = BlstImpl.secret_to_public_key(&secret).unwrap();
+
+        let dv_root = dv_pubkey(0xAA);
+        let map = HashMap::from([(dv_root, pubshare)]);
+
+        let (component, mock) = make_verify_component(map).await;
+
+        let domain = DomainName::BeaconAttester;
+        let epoch: Epoch = 0;
+        let message_root: Root = [0x42; 32];
+
+        // Compute the signing root the same way `signing::verify` does, then
+        // sign it with the share's secret.
+        let signing_root =
+            pluto_eth2util::signing::get_data_root(mock.client(), domain, epoch, message_root)
+                .await
+                .unwrap();
+        let good_signature = BlstImpl.sign(&secret, &signing_root).unwrap();
+
+        component
+            .verify_partial_sig(&dv_root, domain, epoch, message_root, &good_signature)
+            .await
+            .expect("valid signature accepted");
+
+        // Tamper one byte of the signature.
+        let mut bad_signature = good_signature;
+        bad_signature[0] ^= 0xFF;
+        let err = component
+            .verify_partial_sig(&dv_root, domain, epoch, message_root, &bad_signature)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, VerifyPartialSigError::Signing(_)),
+            "expected Signing error, got {err:?}"
+        );
+    }
+
+    /// `verify_partial_sig` rejects when this node has no public share
+    /// registered for the provided DV root pubkey.
+    #[tokio::test]
+    async fn verify_partial_sig_rejects_unknown_pubkey() {
+        let (component, _mock) = make_verify_component(HashMap::new()).await;
+        let err = component
+            .verify_partial_sig(
+                &dv_pubkey(0xBB),
+                DomainName::BeaconAttester,
+                0,
+                [0; 32],
+                &[0; 96],
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, VerifyPartialSigError::UnknownPubKey));
+    }
+
+    /// `verify_partial_sig` short-circuits when `insecure_test` is set —
+    /// this must succeed even with a zero pubshare lookup and zero
+    /// signature, so we know no BLS verify ran.
+    #[tokio::test]
+    async fn verify_partial_sig_skipped_in_insecure_test_mode() {
+        let cancel = CancellationToken::new();
+        let (deadliner, _deadliner_rx) = DeadlinerTask::start(
+            cancel.clone(),
+            "validatorapi-insecure-tests",
+            FarFutureCalculator,
+        );
+        let (_evict_tx, evict_rx) = mpsc::channel(1);
+        let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
+        let eth2_cl =
+            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
+        let component = Component::new_insecure(eth2_cl, dutydb, 1);
+
+        component
+            .verify_partial_sig(
+                &dv_pubkey(0xCC),
+                DomainName::BeaconAttester,
+                0,
+                [0; 32],
+                &[0; 96],
+            )
+            .await
+            .expect("insecure_test mode skips verification");
     }
 }
