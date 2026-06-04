@@ -880,7 +880,9 @@ mod tests {
     /// router's standard `{ code, message }` envelope rather than axum's
     /// default plain-text 400 / 422 / 415 — matching Charon's `unmarshal`
     /// which surfaces every body unmarshal failure as a uniform `400`. The
-    /// same plumbing covers the duties endpoints.
+    /// same plumbing covers the duties endpoints; see
+    /// [`attester_duties_returns_api_error_shape_on_malformed_body`] for the
+    /// duties variant.
     #[tokio::test]
     async fn beacon_committee_selections_returns_api_error_shape_on_malformed_body() {
         use axum::{
@@ -924,6 +926,36 @@ mod tests {
             .uri("/eth/v1/validator/sync_committee_selections")
             .header("content-type", "application/json")
             .body(Body::from("not-json-at-all"))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], 400);
+        assert!(json["message"].is_string());
+    }
+
+    /// Duties POST endpoints share the same `json_rejection_to_api_error`
+    /// plumbing as the selection routes — this test locks the envelope
+    /// contract on the duties side so a future refactor that re-introduces
+    /// bare `Json<ValIndexes>` extraction is caught by a failing test rather
+    /// than only by manual review.
+    #[tokio::test]
+    async fn attester_duties_returns_api_error_shape_on_malformed_body() {
+        use axum::{
+            body::{Body, to_bytes},
+            http::{Method, Request},
+        };
+        use tower::ServiceExt;
+
+        let handler = TestHandler::default();
+        let app = new_router(Arc::new(handler), false);
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/validator/duties/attester/42")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{ "not": "an array" }"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
