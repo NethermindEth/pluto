@@ -278,12 +278,16 @@ enum AttesterCompareError {
 /// Adapts an async round timer future into the blocking QBFT core timer type.
 fn new_timer(round_timer: Arc<dyn RoundTimer>, runtime: Handle, round: i64) -> qbft::Timer {
     let (timer_tx, timer_rx) = mpmc::bounded(1);
-    let Ok(timer) = round_timer.timer(round) else {
-        tracing::warn!(round, "QBFT round timer construction failed");
-        return qbft::Timer {
-            receive: timer_rx,
-            stop: Box::new(|| {}),
-        };
+    let timer = match round_timer.timer(round) {
+        Ok(timer) => timer,
+        Err(err) => {
+            tracing::warn!(round, error = %err, "QBFT round timer construction failed");
+            drop(timer_tx);
+            return qbft::Timer {
+                receive: timer_rx,
+                stop: Box::new(|| {}),
+            };
+        }
     };
 
     let ct = CancellationToken::new();
@@ -883,6 +887,30 @@ mod tests {
             round: 3,
             process: 1,
         }));
+    }
+
+    #[tokio::test]
+    async fn new_timer_failure_disconnects_receiver() {
+        let timer = new_timer(
+            Arc::new(FailingRoundTimer),
+            tokio::runtime::Handle::current(),
+            i64::MAX,
+        );
+
+        assert!(timer.receive.recv().is_err());
+        (timer.stop)();
+    }
+
+    struct FailingRoundTimer;
+
+    impl RoundTimer for FailingRoundTimer {
+        fn timer_type(&self) -> crate::timer::TimerType {
+            crate::timer::TimerType::Increasing
+        }
+
+        fn timer(&self, round: i64) -> crate::timer::Result<crate::timer::RoundTimerFuture> {
+            Err(crate::timer::Error::DurationOverflow { round })
+        }
     }
 
     fn step(type_: qbft::MessageType, present: Vec<usize>, missing: Vec<usize>) -> RoundStep {
