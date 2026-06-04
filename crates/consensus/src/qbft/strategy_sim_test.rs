@@ -305,6 +305,9 @@ async fn run_strategy_simulator(config: SimConfig) -> Vec<SimResult> {
         });
     }
 
+    simulator_gosched().await;
+    network.process_buffer().await;
+
     let mut results = (0..peer_count)
         .map(|peer_idx| SimResult {
             peer_idx,
@@ -315,6 +318,8 @@ async fn run_strategy_simulator(config: SimConfig) -> Vec<SimResult> {
         .collect::<Vec<_>>();
 
     while start.elapsed() < config.timeout && !all_started_peers_decided(&results, &config) {
+        network.process_buffer().await;
+        simulator_gosched().await;
         drain_decisions(&mut decided_rx, &mut results);
 
         if all_started_peers_decided(&results, &config) {
@@ -322,7 +327,9 @@ async fn run_strategy_simulator(config: SimConfig) -> Vec<SimResult> {
         }
 
         tokio::time::advance(TICK).await;
-        tokio::task::yield_now().await;
+        simulator_gosched().await;
+        network.process_buffer().await;
+        simulator_gosched().await;
     }
 
     drain_decisions(&mut decided_rx, &mut results);
@@ -399,6 +406,13 @@ fn quorum_decided_duration(results: &[SimResult]) -> Duration {
     durations[quorum_index]
 }
 
+async fn simulator_gosched() {
+    for _ in 0..3 {
+        tokio::task::yield_now().await;
+        std::thread::sleep(Duration::from_micros(50));
+    }
+}
+
 fn f64_from_usize(value: usize) -> f64 {
     f64::from(u32::try_from(value).expect("test matrix count fits u32"))
 }
@@ -419,7 +433,13 @@ fn all_started_peers_decided(results: &[SimResult], config: &SimConfig) -> bool 
 
 struct SimNetwork {
     nodes: Arc<Mutex<Vec<Arc<Consensus>>>>,
-    delivery_ct: CancellationToken,
+    pending: Arc<Mutex<Vec<PendingDelivery>>>,
+}
+
+struct PendingDelivery {
+    peer_idx: usize,
+    deliver_at: Instant,
+    msg: pbconsensus::QbftConsensusMsg,
 }
 
 impl SimNetwork {
@@ -429,33 +449,23 @@ impl SimNetwork {
         round_tx: mpsc::UnboundedSender<(usize, i64)>,
     ) -> Self {
         let nodes = Arc::new(Mutex::new(Vec::with_capacity(peer_count)));
-        let delivery_ct = CancellationToken::new();
+        let pending = Arc::new(Mutex::new(Vec::new()));
         let peers = peers(peer_count);
         let rng = Arc::new(Mutex::new(TestRng::new(config.seed)));
         let latency_per_peer = Arc::new(config.latency_per_peer.clone());
 
         for peer_idx in 0..peer_count {
-            let network = Arc::clone(&nodes);
+            let pending = Arc::clone(&pending);
             let rng = Arc::clone(&rng);
             let latency_per_peer = Arc::clone(&latency_per_peer);
             let latency_jitter = config.latency_jitter;
-            let delivery_ct = delivery_ct.clone();
             let broadcaster: component::Broadcaster = Arc::new(move |ct, msg| {
-                let network = Arc::clone(&network);
+                let pending = Arc::clone(&pending);
                 let rng = Arc::clone(&rng);
                 let latency_per_peer = Arc::clone(&latency_per_peer);
-                let delivery_ct = delivery_ct.clone();
                 Box::pin(async move {
-                    broadcast_with_latency(
-                        network,
-                        rng,
-                        latency_per_peer,
-                        latency_jitter,
-                        delivery_ct,
-                        ct,
-                        msg,
-                    )
-                    .await
+                    broadcast_with_latency(pending, rng, latency_per_peer, latency_jitter, ct, msg)
+                        .await
                 })
             });
 
@@ -487,7 +497,7 @@ impl SimNetwork {
                 .push(consensus);
         }
 
-        Self { nodes, delivery_ct }
+        Self { nodes, pending }
     }
 
     fn nodes(&self) -> Vec<Arc<Consensus>> {
@@ -498,7 +508,42 @@ impl SimNetwork {
     }
 
     fn cancel(&self) {
-        self.delivery_ct.cancel();
+        self.pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+    }
+
+    async fn process_buffer(&self) {
+        loop {
+            let now = Instant::now();
+            let mut due = {
+                let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut due = Vec::new();
+                let mut index = 0;
+                while index < pending.len() {
+                    if pending[index].deliver_at <= now {
+                        due.push(pending.swap_remove(index));
+                    } else {
+                        index = index.checked_add(1).expect("pending index increments");
+                    }
+                }
+                due
+            };
+
+            if due.is_empty() {
+                return;
+            }
+
+            due.sort_by_key(|delivery| (delivery.deliver_at, delivery.peer_idx));
+            let nodes = self.nodes();
+            for delivery in due {
+                if let Some(node) = nodes.get(delivery.peer_idx) {
+                    let delivery_ct = CancellationToken::new();
+                    let _ = node.handle(&delivery_ct, delivery.msg).await;
+                }
+            }
+        }
     }
 }
 
@@ -514,11 +559,10 @@ fn decided_round_from_sniffer(instance: &pbconsensus::SniffedConsensusInstance) 
 }
 
 async fn broadcast_with_latency(
-    network: Arc<Mutex<Vec<Arc<Consensus>>>>,
+    pending: Arc<Mutex<Vec<PendingDelivery>>>,
     rng: Arc<Mutex<TestRng>>,
     latency_per_peer: Arc<BTreeMap<usize, Duration>>,
     latency_jitter: Duration,
-    delivery_ct: CancellationToken,
     sender_ct: CancellationToken,
     msg: pbconsensus::QbftConsensusMsg,
 ) -> component::BroadcastResult {
@@ -527,12 +571,8 @@ async fn broadcast_with_latency(
     }
 
     let source = msg.msg.as_ref().map_or(-1, |msg| msg.peer_idx);
-    let nodes = network
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone();
-
-    for (peer_idx, node) in nodes.into_iter().enumerate() {
+    let mut pending = pending.lock().unwrap_or_else(PoisonError::into_inner);
+    for peer_idx in latency_per_peer.keys().copied() {
         if i64::try_from(peer_idx).expect("test peer index fits i64") == source {
             continue;
         }
@@ -544,16 +584,13 @@ async fn broadcast_with_latency(
             let mut rng = rng.lock().unwrap_or_else(PoisonError::into_inner);
             jittered_latency(mean, latency_jitter, &mut rng)
         };
-        let delivery_ct = delivery_ct.clone();
-        let msg = msg.clone();
-
-        tokio::spawn(async move {
-            tokio::select! {
-                () = delivery_ct.cancelled() => {}
-                () = tokio::time::sleep(delay) => {
-                    let _ = node.handle(&delivery_ct, msg).await;
-                }
-            }
+        let deliver_at = Instant::now()
+            .checked_add(delay)
+            .expect("test delivery deadline fits Instant");
+        pending.push(PendingDelivery {
+            peer_idx,
+            deliver_at,
+            msg: msg.clone(),
         });
     }
 

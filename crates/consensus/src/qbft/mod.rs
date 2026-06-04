@@ -20,6 +20,9 @@ pub(crate) mod sniffer;
 pub(crate) mod transport;
 
 #[cfg(test)]
+pub(crate) static FEATURESET_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[cfg(test)]
 mod qbft_run_test;
 #[cfg(test)]
 mod strategy_sim_test;

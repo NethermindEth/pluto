@@ -28,6 +28,7 @@ use super::{
 use crate::timer::{RoundTimer, RoundTimerFunc, RoundTimerFuture, TimerType};
 
 const CONSENSUS_RECV_TIMEOUT: Duration = Duration::from_secs(5);
+const SILENT_LEADER_RECV_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[test_case(2, 3 ; "two_of_three")]
 #[test_case(3, 4 ; "three_of_four")]
@@ -56,11 +57,105 @@ async fn qbft_sniffed_instance_replay_decides() {
     replay_sniffed_instance_decides(instance).await;
 }
 
+// Slow liveness regression for a silent round-1 leader. It waits for a round
+// timeout plus round-change, and full parallel test scheduling makes its
+// wall-clock tail noisy, so keep it out of default CI.
+#[ignore = "slow silent-leader round-change liveness scenario"]
+#[tokio::test]
+async fn qbft_consensus_with_silent_round_one_leader_decides() {
+    let nodes_count = 4;
+    let active_count = 3;
+    let silent_peer_idx = 3;
+    let duty = Duty::new(SlotNumber::new(4), DutyType::Attester);
+    assert_eq!(
+        definition::leader(
+            &duty,
+            1,
+            i64::try_from(nodes_count).expect("test node count fits i64")
+        ),
+        silent_peer_idx
+    );
+
+    let (sniffed_tx, _sniffed_rx) = mpsc::unbounded_channel();
+    let nodes = in_memory_network(
+        nodes_count,
+        active_count,
+        false,
+        Some(Duration::from_millis(100)),
+        sniffed_tx,
+    );
+    let active_nodes = &nodes[..active_count];
+    let (decided_tx, mut decided_rx) = mpsc::unbounded_channel();
+    let ct = CancellationToken::new();
+    let start_ct = CancellationToken::new();
+    let mut expired_txs = Vec::with_capacity(active_nodes.len());
+    let mut start_tasks = Vec::with_capacity(active_nodes.len());
+
+    for (node_idx, node) in active_nodes.iter().enumerate() {
+        let decided_tx = decided_tx.clone();
+        node.subscribe(move |duty, value| {
+            let _ = decided_tx.send((node_idx, duty, value));
+            Ok(())
+        });
+
+        let (expired_tx, expired_rx) = mpsc::channel(1);
+        expired_txs.push(expired_tx);
+        start_tasks.push(Arc::clone(node).start(start_ct.clone(), expired_rx));
+    }
+    drop(decided_tx);
+
+    let mut tasks = JoinSet::new();
+    for (node_idx, node) in active_nodes.iter().enumerate() {
+        let node = Arc::clone(node);
+        let duty = duty.clone();
+        let value = unsigned_value(node_idx);
+        let ct = ct.clone();
+        tasks.spawn(async move { node.propose(&ct, duty, value).await });
+    }
+
+    let mut decided = collect_decisions_or_task_error_with_timeout(
+        &mut decided_rx,
+        &mut tasks,
+        active_nodes.len(),
+        "silent-peer consensus decision",
+        SILENT_LEADER_RECV_TIMEOUT,
+    )
+    .await;
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while let Some(result) = tasks.join_next().await {
+            result
+                .expect("silent-peer consensus task panicked")
+                .expect("silent-peer consensus task failed");
+        }
+    })
+    .await
+    .expect("silent-peer consensus tasks did not stop after decision");
+
+    decided.sort_by_key(|(node_idx, ..)| *node_idx);
+    assert_eq!(decided.len(), active_count);
+    let (_, _, expected_value) = decided.first().expect("at least one decided value").clone();
+    for (node_idx, decided_duty, decided_value) in decided {
+        assert_eq!(decided_duty, duty, "node {node_idx} decided wrong duty");
+        assert_eq!(
+            decided_value, expected_value,
+            "node {node_idx} decided different value"
+        );
+    }
+
+    ct.cancel();
+    start_ct.cancel();
+    drop(expired_txs);
+    for task in start_tasks {
+        task.await.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn qbft_priority_consensus() {
     let threshold = 3;
     let (sniffed_tx, _sniffed_rx) = mpsc::unbounded_channel();
-    let active_nodes = in_memory_network(threshold, false, None, sniffed_tx);
+    let active_nodes = in_memory_network(threshold, threshold, false, None, sniffed_tx);
     let (decided_tx, mut decided_rx) = mpsc::unbounded_channel();
     let duty = Duty::new(SlotNumber::new(1), DutyType::InfoSync);
     let ct = CancellationToken::new();
@@ -126,9 +221,10 @@ async fn qbft_priority_consensus() {
 
 #[tokio::test]
 async fn qbft_consensus_participate_then_late_propose() {
+    let _featureset_guard = super::FEATURESET_TEST_LOCK.lock().await;
     let threshold = 4;
     let (sniffed_tx, _sniffed_rx) = mpsc::unbounded_channel();
-    let active_nodes = in_memory_network(threshold, false, None, sniffed_tx);
+    let active_nodes = in_memory_network(threshold, threshold, false, None, sniffed_tx);
     let (decided_tx, mut decided_rx) = mpsc::unbounded_channel();
     let duty = Duty::new(SlotNumber::new(1), DutyType::Attester);
     let ct = CancellationToken::new();
@@ -213,8 +309,13 @@ async fn qbft_consensus_participate_then_late_propose() {
 async fn qbft_consensus_attester_compare_mismatch_does_not_decide() {
     let threshold = 3;
     let (sniffed_tx, _sniffed_rx) = mpsc::unbounded_channel();
-    let active_nodes =
-        in_memory_network(threshold, true, Some(Duration::from_millis(20)), sniffed_tx);
+    let active_nodes = in_memory_network(
+        threshold,
+        threshold,
+        true,
+        Some(Duration::from_millis(20)),
+        sniffed_tx,
+    );
     let (decided_tx, mut decided_rx) = mpsc::unbounded_channel();
     let duty = Duty::new(SlotNumber::new(1), DutyType::Attester);
     let ct = CancellationToken::new();
@@ -276,7 +377,7 @@ async fn run_qbft_consensus(
     let (sniffed_tx, mut sniffed_rx) = mpsc::unbounded_channel();
     // This mirrors the upstream consensus wrapper test: cluster metadata may
     // describe more nodes, but the test only instantiates threshold peers.
-    let nodes = in_memory_network(threshold, compare_attestations, None, sniffed_tx);
+    let nodes = in_memory_network(threshold, threshold, compare_attestations, None, sniffed_tx);
     let active_nodes = nodes.as_slice();
     let (decided_tx, mut decided_rx) = mpsc::unbounded_channel();
     let duty = Duty::new(SlotNumber::new(1), DutyType::Attester);
@@ -495,8 +596,19 @@ async fn collect_decisions_or_task_error<T>(
     expected: usize,
     label: &str,
 ) -> Vec<T> {
+    collect_decisions_or_task_error_with_timeout(rx, tasks, expected, label, CONSENSUS_RECV_TIMEOUT)
+        .await
+}
+
+async fn collect_decisions_or_task_error_with_timeout<T>(
+    rx: &mut mpsc::UnboundedReceiver<T>,
+    tasks: &mut JoinSet<super::RunnerResult<()>>,
+    expected: usize,
+    label: &str,
+    recv_timeout: Duration,
+) -> Vec<T> {
     let mut decided = Vec::with_capacity(expected);
-    let timeout = tokio::time::sleep(CONSENSUS_RECV_TIMEOUT);
+    let timeout = tokio::time::sleep(recv_timeout);
     tokio::pin!(timeout);
     let mut tasks_open = true;
 
@@ -609,10 +721,13 @@ fn pubkey(seed: u8) -> String {
 
 fn in_memory_network(
     count: usize,
+    active_count: usize,
     compare_attestations: bool,
     round_timeout: Option<Duration>,
     sniffed_tx: mpsc::UnboundedSender<(usize, pbconsensus::SniffedConsensusInstance)>,
 ) -> Vec<Arc<Consensus>> {
+    assert!(active_count <= count);
+
     let peers = (0..count)
         .map(|index| Peer {
             index: i64::try_from(index).expect("test peer index fits i64"),
@@ -628,16 +743,19 @@ fn in_memory_network(
 
     for index in 0..count {
         let network = Arc::clone(&nodes);
-        let broadcaster: component::Broadcaster = Arc::new(move |ct, msg| {
+        let broadcaster: component::Broadcaster = Arc::new(move |_ct, msg| {
             let network = Arc::clone(&network);
             Box::pin(async move {
                 let peer_idx = msg.msg.as_ref().map_or(-1, |msg| msg.peer_idx);
                 let peers = network.lock().unwrap().clone();
-                for (index, consensus) in peers.into_iter().enumerate() {
+                for (index, consensus) in peers.into_iter().take(active_count).enumerate() {
                     if i64::try_from(index).expect("test peer index fits i64") == peer_idx {
                         continue;
                     }
-                    if let Err(err) = consensus.handle(&ct, msg.clone()).await {
+                    // Sender teardown must not cancel an already-started
+                    // in-memory delivery to later peers.
+                    let delivery_ct = CancellationToken::new();
+                    if let Err(err) = consensus.handle(&delivery_ct, msg.clone()).await {
                         return Err(Box::new(err) as Box<dyn StdError + Send + Sync>);
                     }
                 }

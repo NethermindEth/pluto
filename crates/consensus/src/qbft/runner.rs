@@ -458,7 +458,7 @@ fn transport_broadcaster(broadcaster: super::component::Broadcaster) -> transpor
 mod tests {
     use std::{
         mem,
-        sync::{Arc, Mutex, MutexGuard},
+        sync::{Arc, Mutex},
         time::Duration,
     };
 
@@ -470,8 +470,6 @@ mod tests {
     use super::*;
     use crate::qbft::component::{self, Config};
     use pluto_core::{corepb::v1::core as pbcore, types::SlotNumber};
-
-    static FEATURESET_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[tokio::test]
     async fn propose_when_instance_already_running_fills_value_hash_and_verify_channels() {
@@ -573,29 +571,23 @@ mod tests {
 
     #[tokio::test]
     async fn participate_skips_when_feature_disabled() {
+        let _featureset_guard = crate::qbft::FEATURESET_TEST_LOCK.lock().await;
         let consensus = component::tests::consensus(0, true);
         let duty = component::tests::duty();
+        let _guard = FeatureSetGuard::new(FeatureConfig {
+            disabled: vec![Feature::ConsensusParticipate],
+            ..FeatureConfig::default()
+        });
 
-        let result = with_featureset(
-            FeatureConfig {
-                disabled: vec![Feature::ConsensusParticipate],
-                ..FeatureConfig::default()
-            },
-            || {
-                futures::executor::block_on(participate(
-                    &consensus,
-                    &CancellationToken::new(),
-                    duty.clone(),
-                ))
-            },
-        );
-
-        result.unwrap();
+        participate(&consensus, &CancellationToken::new(), duty.clone())
+            .await
+            .unwrap();
         assert!(consensus.get_instance_io(duty).mark_participated().is_ok());
     }
 
     #[tokio::test]
     async fn participate_rejects_duplicate_entrypoint() {
+        let _featureset_guard = crate::qbft::FEATURESET_TEST_LOCK.lock().await;
         let consensus = component::tests::consensus(0, true);
         let duty = component::tests::duty();
         let inst = consensus.get_instance_io(duty.clone());
@@ -790,21 +782,12 @@ mod tests {
         pbcore::UnsignedDataSet { set }
     }
 
-    fn with_featureset<T>(config: FeatureConfig, test: impl FnOnce() -> T) -> T {
-        let _guard = FeatureSetGuard::new(config);
-        test()
-    }
-
     struct FeatureSetGuard {
         previous: Option<FeatureSet>,
-        _lock: MutexGuard<'static, ()>,
     }
 
     impl FeatureSetGuard {
         fn new(config: FeatureConfig) -> Self {
-            let lock = FEATURESET_TEST_LOCK
-                .lock()
-                .expect("featureset test lock poisoned");
             let replacement = FeatureSet::from_config(FeatureConfig {
                 min_status: Status::Stable,
                 ..config
@@ -818,7 +801,6 @@ mod tests {
 
             Self {
                 previous: Some(previous),
-                _lock: lock,
             }
         }
     }
