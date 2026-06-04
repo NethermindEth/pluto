@@ -4,11 +4,10 @@
 //! and public-share mappings needed to translate between distributed-validator
 //! root keys and this node's threshold-BLS share.
 
-use std::{any::Any, collections::HashMap, future::Future, sync::Arc, time::Duration};
+use std::{any::Any, collections::HashMap, future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use axum::http::StatusCode;
-use futures::future::BoxFuture;
 use pluto_eth2api::{
     EthBeaconNodeApiClient, GetAttesterDutiesRequest, GetAttesterDutiesResponse,
     GetProposerDutiesRequest, GetProposerDutiesResponse, GetSyncCommitteeDutiesRequest,
@@ -45,6 +44,9 @@ use crate::{
 
 /// Boxed error returned by registered callbacks.
 pub type CallbackError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+/// Boxed async callback result.
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Subscriber callback for `Subscribe`. Receives the [`Duty`] and the
 /// [`ParSignedDataSet`] by reference; the registered wrapper clones the
