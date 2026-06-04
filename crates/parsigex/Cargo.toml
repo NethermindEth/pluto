@@ -22,9 +22,12 @@ anyhow.workspace = true
 clap.workspace = true
 hex.workspace = true
 pluto-cluster.workspace = true
+pluto-crypto.workspace = true
+pluto-testutil.workspace = true
 pluto-tracing.workspace = true
 tokio-util.workspace = true
 serde_json.workspace = true
+k256.workspace = true
 
 [lints]
 workspace = true
