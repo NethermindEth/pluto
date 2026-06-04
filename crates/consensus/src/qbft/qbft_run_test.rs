@@ -61,8 +61,8 @@ async fn qbft_sniffed_instance_replay_decides() {
 // active and the missing peer is the round-1 leader, so the instance cannot
 // progress until the round timer expires and the active peers rotate to round
 // 2. Full parallel test runs add Tokio scheduling noise around that timeout, so
-// keep it out of default CI and run it explicitly with `--ignored` when checking
-// silent-peer liveness.
+// keep it out of default CI and run it explicitly with `--ignored` when
+// checking silent-peer liveness.
 #[ignore = "slow silent-leader round-change liveness scenario"]
 #[tokio::test]
 async fn qbft_consensus_with_silent_round_one_leader_decides() {
