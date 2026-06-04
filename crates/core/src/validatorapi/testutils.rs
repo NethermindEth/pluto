@@ -106,40 +106,40 @@ impl Handler for TestHandler {
         &self,
         _opts: AttesterDutiesOpts,
     ) -> Result<AttesterDutiesResponse, ApiError> {
-        Ok(self
-            .attester_duties_response
-            .clone()
-            .expect("attester_duties not stubbed in TestHandler"))
+        match self.attester_duties_response.as_ref() {
+            Some(r) => Ok(r.clone()),
+            None => unimplemented!("attester_duties not stubbed in TestHandler"),
+        }
     }
 
     async fn proposer_duties(
         &self,
         _opts: ProposerDutiesOpts,
     ) -> Result<ProposerDutiesResponse, ApiError> {
-        Ok(self
-            .proposer_duties_response
-            .clone()
-            .expect("proposer_duties not stubbed in TestHandler"))
+        match self.proposer_duties_response.as_ref() {
+            Some(r) => Ok(r.clone()),
+            None => unimplemented!("proposer_duties not stubbed in TestHandler"),
+        }
     }
 
     async fn sync_committee_duties(
         &self,
         _opts: SyncCommitteeDutiesOpts,
     ) -> Result<SyncCommitteeDutiesResponse, ApiError> {
-        Ok(self
-            .sync_committee_duties_response
-            .clone()
-            .expect("sync_committee_duties not stubbed in TestHandler"))
+        match self.sync_committee_duties_response.as_ref() {
+            Some(r) => Ok(r.clone()),
+            None => unimplemented!("sync_committee_duties not stubbed in TestHandler"),
+        }
     }
 
     async fn attestation_data(
         &self,
         _opts: AttestationDataOpts,
     ) -> Result<AttestationDataResponse, ApiError> {
-        Ok(self
-            .attestation_data_response
-            .clone()
-            .expect("attestation_data not stubbed in TestHandler"))
+        match self.attestation_data_response.as_ref() {
+            Some(r) => Ok(r.clone()),
+            None => unimplemented!("attestation_data not stubbed in TestHandler"),
+        }
     }
 
     async fn submit_attestations(
