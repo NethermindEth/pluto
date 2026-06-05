@@ -25,7 +25,7 @@ For each file in scope:
 
 Do not guess. If behavior is unclear, ask.
 
-For DKG, sync, reshare, FetchDefinition, or peer-indexed broadcast code, still use Charon v1.7.1 as the porting baseline, but explicitly check and apply the [February 20, 2026 Trail of Bits Charon Pedersen DKG audit](https://github.com/ObolNetwork/charon/blob/main/docs/audit/2026%20-%20Charon%20V2%20Audit%20-%20TrailOfBits.pdf) fixes where v1.7.1 behavior is known vulnerable.
+For DKG, sync, reshare, FetchDefinition, or peer-indexed broadcast code, still use Charon v1.7.1 as the porting baseline, but load `.claude/skills/pluto-review/references/trail-of-bits-charon-v2-audit.md` and apply those fixes where v1.7.1 behavior is known vulnerable.
 
 ---
 
