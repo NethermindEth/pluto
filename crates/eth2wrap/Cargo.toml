@@ -1,0 +1,21 @@
+[package]
+name = "pluto-eth2wrap"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+hex.workspace = true
+pluto-eth2api.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+pluto-testutil.workspace = true
+wiremock.workspace = true
+
+[lints]
+workspace = true

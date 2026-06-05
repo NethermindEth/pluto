@@ -10,6 +10,7 @@ members = [
     "crates/dkg",
     "crates/eth2api",
     "crates/eth2util",
+    "crates/eth2wrap",
     "crates/eth1wrap",
     "crates/featureset",
     "crates/k1util",
@@ -121,6 +122,7 @@ pluto-crypto = { path = "crates/crypto" }
 pluto-dkg = { path = "crates/dkg" }
 pluto-eth2api = { path = "crates/eth2api" }
 pluto-eth2util = { path = "crates/eth2util" }
+pluto-eth2wrap = { path = "crates/eth2wrap" }
 pluto-eth1wrap = { path = "crates/eth1wrap" }
 pluto-featureset = { path = "crates/featureset" }
 pluto-k1util = { path = "crates/k1util" }

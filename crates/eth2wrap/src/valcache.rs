@@ -1,9 +1,9 @@
-use pluto_core::types::PubKey;
+use async_trait::async_trait;
 use pluto_eth2api::{
     EthBeaconNodeApiClient, EthBeaconNodeApiClientError, GetStateValidatorsResponseResponse,
     GetStateValidatorsResponseResponseDatum, PostStateValidatorsRequest,
     PostStateValidatorsRequestPath, PostStateValidatorsResponse, ValidatorRequestBody,
-    spec::phase0::ValidatorIndex,
+    spec::phase0::{BLSPubKey, ValidatorIndex},
 };
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
@@ -16,17 +16,35 @@ pub enum ValidatorCacheError {
     /// Beacon Node API client error.
     #[error("Beacon Node API client error: {0}")]
     EthBeaconNodeApiClientError(#[from] EthBeaconNodeApiClientError),
+    /// Pubkey string returned by the beacon node could not be decoded.
+    #[error("invalid pubkey hex returned by beacon node")]
+    InvalidPubkeyHex,
 }
 
-/// Active validators as [`PubKey`] indexed by their validator index.
+/// Active validators as [`BLSPubKey`] indexed by their validator index.
+///
+/// Mirrors Charon's `app/eth2wrap.ActiveValidators` — the on-the-wire pubkey
+/// representation, before any conversion into a Pluto-specific wrapper type.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct ActiveValidators(HashMap<ValidatorIndex, PubKey>);
+pub struct ActiveValidators(HashMap<ValidatorIndex, BLSPubKey>);
 
 impl std::ops::Deref for ActiveValidators {
-    type Target = HashMap<ValidatorIndex, PubKey>;
+    type Target = HashMap<ValidatorIndex, BLSPubKey>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl From<HashMap<ValidatorIndex, BLSPubKey>> for ActiveValidators {
+    fn from(value: HashMap<ValidatorIndex, BLSPubKey>) -> Self {
+        Self(value)
+    }
+}
+
+impl From<ActiveValidators> for HashMap<ValidatorIndex, BLSPubKey> {
+    fn from(value: ActiveValidators) -> Self {
+        value.0
     }
 }
 
@@ -49,19 +67,31 @@ impl ActiveValidators {
     }
 
     /// An [`Iterator`] of active validator public keys.
-    pub fn pubkeys(&self) -> impl Iterator<Item = &PubKey> + '_ {
+    pub fn pubkeys(&self) -> impl Iterator<Item = &BLSPubKey> + '_ {
         self.0.values()
     }
 }
 
-/// A provider of cached validator information for the current epoch,
-/// including both active validators and complete validator data.
-pub trait CachedValidatorsProvider {
-    /// Get the cached active validators.
-    fn active_validators(&self) -> Result<ActiveValidators>;
+/// Boxed error returned by [`CachedValidatorsProvider`] methods. Kept
+/// opaque so the trait does not bind callers to any single backing
+/// implementation's error type.
+pub type CachedValidatorsError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
-    /// Get all the cached validators.
-    fn complete_validators(&self) -> Result<CompleteValidators>;
+/// A provider of cached validator information for the current epoch.
+///
+/// Mirrors Charon's `eth2wrap.CachedValidatorsProvider` — the validator-API
+/// component fetches the cluster's active validators through this interface
+/// rather than going directly to the beacon node, so it benefits from
+/// per-epoch caching and so the cache is the single source of truth across
+/// duty handlers.
+#[async_trait]
+pub trait CachedValidatorsProvider: Send + Sync {
+    /// Returns the cluster's currently active validators, indexed by
+    /// validator index. The implementation may populate the cache on demand
+    /// — callers should not assume the call is non-blocking.
+    async fn active_validators(
+        &self,
+    ) -> std::result::Result<ActiveValidators, CachedValidatorsError>;
 }
 
 /// A cache for active validators.
@@ -70,14 +100,14 @@ pub struct ValidatorCache(Arc<RwLock<ValidatorCacheInner>>);
 
 struct ValidatorCacheInner {
     eth2_cl: EthBeaconNodeApiClient,
-    pubkeys: Vec<PubKey>,
+    pubkeys: Vec<BLSPubKey>,
     active: Option<ActiveValidators>,
     complete: Option<CompleteValidators>,
 }
 
 impl ValidatorCache {
     /// Creates a new, empty validator cache.
-    pub fn new(eth2_cl: EthBeaconNodeApiClient, pubkeys: Vec<PubKey>) -> Self {
+    pub fn new(eth2_cl: EthBeaconNodeApiClient, pubkeys: Vec<BLSPubKey>) -> Self {
         Self(Arc::new(RwLock::new(ValidatorCacheInner {
             eth2_cl,
             pubkeys,
@@ -108,7 +138,7 @@ impl ValidatorCache {
                 state_id: "head".into(),
             },
             body: ValidatorRequestBody {
-                ids: Some(inner.pubkeys.iter().map(|pk| pk.to_string()).collect()),
+                ids: Some(inner.pubkeys.iter().map(pubkey_to_hex).collect()),
                 ..Default::default()
             },
         };
@@ -148,7 +178,7 @@ impl ValidatorCache {
                 state_id: slot.to_string(),
             },
             body: ValidatorRequestBody {
-                ids: Some(inner.pubkeys.iter().map(|pk| pk.to_string()).collect()),
+                ids: Some(inner.pubkeys.iter().map(pubkey_to_hex).collect()),
                 ..Default::default()
             },
         };
@@ -183,6 +213,26 @@ impl ValidatorCache {
     }
 }
 
+#[async_trait]
+impl CachedValidatorsProvider for ValidatorCache {
+    async fn active_validators(
+        &self,
+    ) -> std::result::Result<ActiveValidators, CachedValidatorsError> {
+        let (active, _) = self.get_by_head().await?;
+        Ok(active)
+    }
+}
+
+fn pubkey_to_hex(pk: &BLSPubKey) -> String {
+    format!("0x{}", hex::encode(pk))
+}
+
+fn parse_pubkey_hex(s: &str) -> Result<BLSPubKey> {
+    let bytes = hex::decode(s.strip_prefix("0x").unwrap_or(s))
+        .map_err(|_| ValidatorCacheError::InvalidPubkeyHex)?;
+    BLSPubKey::try_from(bytes.as_slice()).map_err(|_| ValidatorCacheError::InvalidPubkeyHex)
+}
+
 fn validators_from_response(
     response: GetStateValidatorsResponseResponse,
 ) -> Result<(ActiveValidators, CompleteValidators)> {
@@ -202,17 +252,8 @@ fn validators_from_response(
     let active_validators = all_validators
         .iter()
         .filter(|(_, v)| v.status.is_active())
-        .map(|(&index, v)| {
-            let pubkey = v
-                .validator
-                .pubkey
-                .as_str()
-                .try_into()
-                .map_err(|_| EthBeaconNodeApiClientError::UnexpectedType)?;
-
-            Ok((index, pubkey))
-        })
-        .collect::<Result<HashMap<ValidatorIndex, PubKey>>>()?;
+        .map(|(&index, v)| Ok((index, parse_pubkey_hex(v.validator.pubkey.as_str())?)))
+        .collect::<Result<HashMap<ValidatorIndex, BLSPubKey>>>()?;
 
     Ok((
         ActiveValidators(active_validators),
@@ -236,7 +277,7 @@ mod tests {
     #[tokio::test]
     async fn get_by_head_successful_fetch() {
         // Create a set of validators with different statuses (some active, some not)
-        let pubkeys = (0..10u8).map(test_pubkey).collect::<Vec<PubKey>>();
+        let pubkeys = (0..10u8).map(test_pubkey).collect::<Vec<BLSPubKey>>();
         let datums = [
             test_validator_datum(0, &pubkeys[0], ValidatorStatus::PendingInitialized), /* not active */
             test_validator_datum(1, &pubkeys[1], ValidatorStatus::PendingQueued), /* not active */
@@ -262,10 +303,10 @@ mod tests {
             .iter()
             .filter(|(_, datum)| datum.status.is_active())
             .map(|(&index, datum)| {
-                let pubkey: PubKey = datum.validator.pubkey.as_str().try_into().unwrap();
+                let pubkey = parse_pubkey_hex(datum.validator.pubkey.as_str()).unwrap();
                 (index, pubkey)
             })
-            .collect::<HashMap<ValidatorIndex, PubKey>>();
+            .collect::<HashMap<ValidatorIndex, BLSPubKey>>();
 
         // Create a mock server that tracks request count
         let mock = BeaconMock::builder()
@@ -463,15 +504,51 @@ mod tests {
         assert!(!refreshed_by_slot);
     }
 
-    fn test_pubkey(seed: u8) -> PubKey {
+    /// The trait impl funnels through `get_by_head`, so two consecutive
+    /// `active_validators` calls hit the upstream once and reuse the cached
+    /// value on the second call.
+    #[tokio::test]
+    async fn cached_validators_provider_uses_cache() {
+        let pubkeys = vec![test_pubkey(0), test_pubkey(1)];
+        let mock = BeaconMock::builder()
+            .build()
+            .await
+            .expect("should create beacon mock");
+
+        post_state_validators_success(
+            "head",
+            vec![
+                test_validator_datum(0, &pubkeys[0], ValidatorStatus::ActiveOngoing),
+                test_validator_datum(1, &pubkeys[1], ValidatorStatus::PendingQueued),
+            ],
+        )
+        .expect(1)
+        .mount(mock.server())
+        .await;
+
+        let cache = ValidatorCache::new(mock.client().clone(), pubkeys.clone());
+
+        let first = CachedValidatorsProvider::active_validators(&cache)
+            .await
+            .expect("active_validators succeeds");
+        assert_eq!(first.len(), 1);
+        assert_eq!(first.get(&0), Some(&pubkeys[0]));
+
+        let second = CachedValidatorsProvider::active_validators(&cache)
+            .await
+            .expect("active_validators succeeds");
+        assert_eq!(first, second);
+    }
+
+    fn test_pubkey(seed: u8) -> BLSPubKey {
         let mut bytes = [0u8; 48];
         bytes[0] = seed;
-        PubKey::new(bytes)
+        bytes
     }
 
     fn test_validator_datum(
         index: u64,
-        pubkey: &PubKey,
+        pubkey: &BLSPubKey,
         status: ValidatorStatus,
     ) -> GetStateValidatorsResponseResponseDatum {
         // NOTE: these values are placeholders intended for testing only
@@ -480,7 +557,7 @@ mod tests {
             balance: "32000000000".to_string(),
             status,
             validator: ValidatorResponseValidator {
-                pubkey: pubkey.to_string(),
+                pubkey: pubkey_to_hex(pubkey),
                 withdrawal_credentials:
                     "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
                 effective_balance: "32000000000".to_string(),

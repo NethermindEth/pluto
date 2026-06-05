@@ -19,6 +19,7 @@ use pluto_eth2util::{
     helpers::epoch_from_slot,
     signing::{self, DomainName, SigningError},
 };
+use pluto_eth2wrap::CachedValidatorsProvider;
 use tokio::time::error::Elapsed;
 
 use super::{
@@ -114,18 +115,6 @@ pub type PubKeyByAttFn = Arc<
         + 'static,
 >;
 
-/// Returns the cluster's active-validators map (`validator_index -> root
-/// pubkey`). Mirrors Go's `eth2Cl.ActiveValidators(ctx)` lookup used by
-/// `BeaconCommitteeSelections` / `SyncCommitteeSelections` to translate a
-/// validator-client-supplied validator index into the DV root pubkey under
-/// which the partial-signed selection is stored.
-pub type ActiveValidatorsFn = Arc<
-    dyn Fn() -> BoxFuture<'static, Result<HashMap<ValidatorIndex, BLSPubKey>, CallbackError>>
-        + Send
-        + Sync
-        + 'static,
->;
-
 /// Hard deadline for upstream beacon-node calls. Bounds the worst-case
 /// handler latency when the upstream hangs or stalls.
 const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -215,10 +204,11 @@ pub struct Component {
     /// Looks up the root pubkey for an `(slot, commIdx, valIdx)` triple.
     #[allow(dead_code, reason = "consumed by submit_attestations in later PRs")]
     pub_key_by_att_fn: Option<PubKeyByAttFn>,
-    /// Looks up the cluster's active-validators map. Consumed by the beacon
-    /// and sync committee selection handlers to translate validator indices
-    /// into DV root public keys.
-    active_validators_fn: Option<ActiveValidatorsFn>,
+    /// Cluster's per-epoch validator cache. Consumed by the beacon and sync
+    /// committee selection handlers to translate validator indices into DV
+    /// root public keys. Mirrors Charon's `eth2Cl.ActiveValidators(ctx)` —
+    /// itself a thin wrapper over the same valcache.
+    validator_cache: Arc<dyn CachedValidatorsProvider>,
 }
 
 impl Component {
@@ -229,6 +219,7 @@ impl Component {
         share_idx: u64,
         pub_share_by_pubkey: HashMap<BLSPubKey, BLSPubKey>,
         builder_enabled: bool,
+        validator_cache: Arc<dyn CachedValidatorsProvider>,
     ) -> Self {
         Self {
             eth2_cl,
@@ -244,7 +235,7 @@ impl Component {
             await_agg_sig_db_fn: None,
             duty_def_fn: None,
             pub_key_by_att_fn: None,
-            active_validators_fn: None,
+            validator_cache,
         }
     }
 
@@ -257,6 +248,7 @@ impl Component {
         eth2_cl: Arc<EthBeaconNodeApiClient>,
         dutydb: Arc<MemDB>,
         share_idx: u64,
+        validator_cache: Arc<dyn CachedValidatorsProvider>,
     ) -> Self {
         Self {
             eth2_cl,
@@ -272,7 +264,7 @@ impl Component {
             await_agg_sig_db_fn: None,
             duty_def_fn: None,
             pub_key_by_att_fn: None,
-            active_validators_fn: None,
+            validator_cache,
         }
     }
 
@@ -357,20 +349,6 @@ impl Component {
         }));
     }
 
-    /// Registers (and overwrites any prior) active-validators lookup. The
-    /// closure returns the current `validator_index -> DV root pubkey` map.
-    /// Mirrors Go's reliance on `eth2Cl.ActiveValidators(ctx)` inside the
-    /// selection handlers.
-    pub fn register_active_validators<F, Fut>(&mut self, f: F)
-    where
-        F: Fn() -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<HashMap<ValidatorIndex, BLSPubKey>, CallbackError>>
-            + Send
-            + 'static,
-    {
-        self.active_validators_fn = Some(Arc::new(move || Box::pin(f())));
-    }
-
     /// Verifies a partial BLS signature produced by the validator client
     /// against this node's public share for the given DV root pubkey.
     ///
@@ -413,28 +391,26 @@ impl Component {
         Ok(())
     }
 
-    /// Invokes the registered `active_validators_fn` hook with a hard
-    /// timeout. Translates registration / call failures into `ApiError`s
-    /// without leaking the underlying error into the client-visible message.
+    /// Fetches the cluster's active validators through the per-epoch
+    /// `validator_cache`, bounded by [`UPSTREAM_REQUEST_TIMEOUT`]. Translates
+    /// cache failures into `ApiError`s without leaking the underlying error
+    /// into the client-visible message. Mirrors Go's
+    /// `c.eth2Cl.ActiveValidators(ctx)`, which is itself implemented via
+    /// the same valcache.
     async fn fetch_active_validators(
         &self,
     ) -> Result<HashMap<ValidatorIndex, BLSPubKey>, ApiError> {
-        let active_fn = self.active_validators_fn.as_ref().ok_or_else(|| {
-            tracing::error!(
-                "active_validators hook not registered — selections handler invoked with a half-wired Component"
-            );
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "active_validators hook not registered",
-            )
+        let active = tokio::time::timeout(
+            UPSTREAM_REQUEST_TIMEOUT,
+            self.validator_cache.active_validators(),
+        )
+        .await
+        .map_err(|_: Elapsed| upstream_timeout("active validators"))?
+        .map_err(|err| {
+            ApiError::new(StatusCode::BAD_GATEWAY, "active validators lookup failed")
+                .with_boxed_source(err)
         })?;
-        tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, active_fn())
-            .await
-            .map_err(|_: Elapsed| upstream_timeout("active validators"))?
-            .map_err(|err| {
-                ApiError::new(StatusCode::BAD_GATEWAY, "active validators lookup failed")
-                    .with_boxed_source(err)
-            })
+        Ok(active.into())
     }
 
     /// Looks up the DV root pubkey for a selection's `validator_index`.
@@ -1256,6 +1232,34 @@ mod tests {
         }
     }
 
+    /// In-memory stand-in for `pluto_eth2wrap::ValidatorCache`. Test code
+    /// supplies the `validator_index -> root pubkey` map up front instead of
+    /// running a real beacon-node mock through the cache.
+    #[derive(Default)]
+    struct TestValidatorCache(HashMap<ValidatorIndex, BLSPubKey>);
+
+    impl TestValidatorCache {
+        fn arc(map: HashMap<ValidatorIndex, BLSPubKey>) -> Arc<dyn CachedValidatorsProvider> {
+            Arc::new(Self(map))
+        }
+
+        fn empty() -> Arc<dyn CachedValidatorsProvider> {
+            Self::arc(HashMap::new())
+        }
+    }
+
+    #[async_trait]
+    impl CachedValidatorsProvider for TestValidatorCache {
+        async fn active_validators(
+            &self,
+        ) -> std::result::Result<
+            pluto_eth2wrap::ActiveValidators,
+            pluto_eth2wrap::CachedValidatorsError,
+        > {
+            Ok(self.0.clone().into())
+        }
+    }
+
     /// Build a Component backed by a real (but never-expiring) DutyDB plus a
     /// dummy upstream client. Useful for tests that only exercise endpoints
     /// served from the DB.
@@ -1269,7 +1273,8 @@ mod tests {
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
         let eth2_cl =
             Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
-        let component = Component::new_insecure(eth2_cl, Arc::clone(&dutydb), 1);
+        let component =
+            Component::new_insecure(eth2_cl, Arc::clone(&dutydb), 1, TestValidatorCache::empty());
         (component, dutydb)
     }
 
@@ -1511,7 +1516,8 @@ mod tests {
         let dutydb = Arc::new(MemDB::new(deadliner, trim_rx, &cancel));
         let eth2_cl =
             Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
-        let component = Component::new_insecure(eth2_cl, Arc::clone(&dutydb), 1);
+        let component =
+            Component::new_insecure(eth2_cl, Arc::clone(&dutydb), 1, TestValidatorCache::empty());
 
         // Start an await before any data is stored.
         let waiter = {
@@ -1697,7 +1703,7 @@ mod tests {
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
         let eth2_cl =
             Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
-        Component::new(eth2_cl, dutydb, 1, map, false)
+        Component::new(eth2_cl, dutydb, 1, map, false, TestValidatorCache::empty())
     }
 
     /// `Subscribe` invokes every registered subscriber, each receiving its
@@ -1928,7 +1934,7 @@ mod tests {
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
         let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
-        let component = Component::new(eth2_cl, dutydb, 1, map, false);
+        let component = Component::new(eth2_cl, dutydb, 1, map, false, TestValidatorCache::empty());
         (component, mock)
     }
 
@@ -2011,7 +2017,7 @@ mod tests {
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
         let eth2_cl =
             Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
-        let component = Component::new_insecure(eth2_cl, dutydb, 1);
+        let component = Component::new_insecure(eth2_cl, dutydb, 1, TestValidatorCache::empty());
 
         component
             .verify_partial_sig(
@@ -2046,7 +2052,13 @@ mod tests {
     /// component is *insecure* so the selections handlers can run without
     /// real BLS signatures; specific tests that exercise verification opt
     /// into a secure component via [`make_selections_component_secure`].
-    async fn make_selections_component_insecure() -> (Component, BeaconMock) {
+    ///
+    /// `active` is the `validator_index -> DV root pubkey` map used to back
+    /// the `validator_cache` dependency — mirrors Charon's per-epoch
+    /// valcache contents.
+    async fn make_selections_component_insecure(
+        active: HashMap<ValidatorIndex, BLSPubKey>,
+    ) -> (Component, BeaconMock) {
         let mock = BeaconMock::builder()
             .genesis_time(DateTime::from_timestamp(0, 0).unwrap())
             .genesis_validators_root([0; 32])
@@ -2059,15 +2071,18 @@ mod tests {
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
         let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
-        let component = Component::new_insecure(eth2_cl, dutydb, 1);
+        let component =
+            Component::new_insecure(eth2_cl, dutydb, 1, TestValidatorCache::arc(active));
         (component, mock)
     }
 
     /// Like [`make_selections_component_insecure`] but with `insecure_test`
     /// disabled. The caller supplies the `pub_share_by_pubkey` map so
-    /// `verify_partial_sig` can resolve a verify-share for each DV root.
+    /// `verify_partial_sig` can resolve a verify-share for each DV root, and
+    /// the `active` validator-cache contents for the selections handlers.
     async fn make_selections_component_secure(
         map: HashMap<BLSPubKey, BLSPubKey>,
+        active: HashMap<ValidatorIndex, BLSPubKey>,
     ) -> (Component, BeaconMock) {
         let mock = BeaconMock::builder()
             .genesis_time(DateTime::from_timestamp(0, 0).unwrap())
@@ -2084,7 +2099,14 @@ mod tests {
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
         let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
-        let component = Component::new(eth2_cl, dutydb, 1, map, false);
+        let component = Component::new(
+            eth2_cl,
+            dutydb,
+            1,
+            map,
+            false,
+            TestValidatorCache::arc(active),
+        );
         (component, mock)
     }
 
@@ -2093,15 +2115,12 @@ mod tests {
     /// Go's `BeaconCommitteeSelections` at `validatorapi.go:798-864`.
     #[tokio::test]
     async fn beacon_committee_selections_happy_path() {
-        let (mut component, _mock) = make_selections_component_insecure().await;
-
         const SLOT: Slot = 12;
         const VAL_IDX: ValidatorIndex = 5;
         let dv_root = dv_pubkey(0xA1);
 
-        component.register_active_validators({
-            move || async move { Ok(HashMap::from([(VAL_IDX, dv_root)])) }
-        });
+        let (mut component, _mock) =
+            make_selections_component_insecure(HashMap::from([(VAL_IDX, dv_root)])).await;
 
         // Returned aggregated selection — the byte pattern shows the
         // response actually flowed through `await_agg_sig_db`.
@@ -2138,8 +2157,6 @@ mod tests {
     /// covered, and every aggregated reply is stitched into the response.
     #[tokio::test]
     async fn beacon_committee_selections_multi_selection_fanout_and_stitching() {
-        let (mut component, _mock) = make_selections_component_insecure().await;
-
         const SLOT_A: Slot = 10;
         const SLOT_B: Slot = 11;
         const VAL_IDX_A: ValidatorIndex = 1;
@@ -2147,13 +2164,11 @@ mod tests {
         let dv_root_a = dv_pubkey(0xB1);
         let dv_root_b = dv_pubkey(0xB2);
 
-        component.register_active_validators({
-            let map = HashMap::from([(VAL_IDX_A, dv_root_a), (VAL_IDX_B, dv_root_b)]);
-            move || {
-                let map = map.clone();
-                async move { Ok(map) }
-            }
-        });
+        let (mut component, _mock) = make_selections_component_insecure(HashMap::from([
+            (VAL_IDX_A, dv_root_a),
+            (VAL_IDX_B, dv_root_b),
+        ]))
+        .await;
 
         // Track subscriber invocations: one per distinct slot in the input.
         let observed_slots: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
@@ -2229,9 +2244,8 @@ mod tests {
     /// mirroring Go's `errors.New("validator not found")` branch.
     #[tokio::test]
     async fn beacon_committee_selections_rejects_unknown_validator_index() {
-        let (mut component, _mock) = make_selections_component_insecure().await;
+        let (mut component, _mock) = make_selections_component_insecure(HashMap::new()).await;
 
-        component.register_active_validators(|| async { Ok(HashMap::new()) });
         // `await_agg_sig_db` must NOT be reached for an unknown validator.
         component.register_await_agg_sig_db(|_duty, _pk| async {
             panic!("await_agg_sig_db must not be called when validator index is unknown");
@@ -2262,11 +2276,9 @@ mod tests {
         let pub_share = [0x55_u8; 48];
         let map = HashMap::from([(dv_root, pub_share)]);
 
-        let (mut component, _mock) = make_selections_component_secure(map).await;
+        let (mut component, _mock) =
+            make_selections_component_secure(map, HashMap::from([(1u64, dv_root)])).await;
 
-        component.register_active_validators({
-            move || async move { Ok(HashMap::from([(1u64, dv_root)])) }
-        });
         component.register_await_agg_sig_db(|_duty, _pk| async {
             panic!("await_agg_sig_db must not be called after verification failure");
         });
@@ -2288,12 +2300,9 @@ mod tests {
     /// [`SELECTIONS_PHASE_TIMEOUT`] and the handler returns 408.
     #[tokio::test(start_paused = true)]
     async fn beacon_committee_selections_await_agg_sig_db_times_out() {
-        let (mut component, _mock) = make_selections_component_insecure().await;
-
         let dv_root = dv_pubkey(0xD1);
-        component.register_active_validators({
-            move || async move { Ok(HashMap::from([(1u64, dv_root)])) }
-        });
+        let (mut component, _mock) =
+            make_selections_component_insecure(HashMap::from([(1u64, dv_root)])).await;
 
         // Closure that never completes.
         component.register_await_agg_sig_db(|_duty, _pk| async {
@@ -2314,16 +2323,13 @@ mod tests {
     /// Happy-path sync committee selections.
     #[tokio::test]
     async fn sync_committee_selections_happy_path() {
-        let (mut component, _mock) = make_selections_component_insecure().await;
-
         const SLOT: Slot = 13;
         const VAL_IDX: ValidatorIndex = 7;
         const SUBCOMM: u64 = 3;
         let dv_root = dv_pubkey(0xE1);
 
-        component.register_active_validators({
-            move || async move { Ok(HashMap::from([(VAL_IDX, dv_root)])) }
-        });
+        let (mut component, _mock) =
+            make_selections_component_insecure(HashMap::from([(VAL_IDX, dv_root)])).await;
 
         let agg_selection = V1SyncCommitteeSelection {
             slot: SLOT,
@@ -2359,8 +2365,6 @@ mod tests {
     /// the response.
     #[tokio::test]
     async fn sync_committee_selections_multi_selection_fanout_and_stitching() {
-        let (mut component, _mock) = make_selections_component_insecure().await;
-
         const SLOT_A: Slot = 20;
         const SLOT_B: Slot = 21;
         const VAL_IDX_A: ValidatorIndex = 1;
@@ -2368,13 +2372,11 @@ mod tests {
         let dv_root_a = dv_pubkey(0xF1);
         let dv_root_b = dv_pubkey(0xF2);
 
-        component.register_active_validators({
-            let map = HashMap::from([(VAL_IDX_A, dv_root_a), (VAL_IDX_B, dv_root_b)]);
-            move || {
-                let map = map.clone();
-                async move { Ok(map) }
-            }
-        });
+        let (mut component, _mock) = make_selections_component_insecure(HashMap::from([
+            (VAL_IDX_A, dv_root_a),
+            (VAL_IDX_B, dv_root_b),
+        ]))
+        .await;
 
         let observed_slots: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
         {
@@ -2440,9 +2442,8 @@ mod tests {
     /// 400 without touching the AggSigDB.
     #[tokio::test]
     async fn sync_committee_selections_rejects_unknown_validator_index() {
-        let (mut component, _mock) = make_selections_component_insecure().await;
+        let (mut component, _mock) = make_selections_component_insecure(HashMap::new()).await;
 
-        component.register_active_validators(|| async { Ok(HashMap::new()) });
         component.register_await_agg_sig_db(|_duty, _pk| async {
             panic!("await_agg_sig_db must not be called when validator index is unknown");
         });
@@ -2467,11 +2468,9 @@ mod tests {
         let pub_share = [0x66_u8; 48];
         let map = HashMap::from([(dv_root, pub_share)]);
 
-        let (mut component, _mock) = make_selections_component_secure(map).await;
+        let (mut component, _mock) =
+            make_selections_component_secure(map, HashMap::from([(1u64, dv_root)])).await;
 
-        component.register_active_validators({
-            move || async move { Ok(HashMap::from([(1u64, dv_root)])) }
-        });
         component.register_await_agg_sig_db(|_duty, _pk| async {
             panic!("await_agg_sig_db must not be called after verification failure");
         });
@@ -2491,12 +2490,9 @@ mod tests {
     /// Sync committee selection times out on a stalled AggSigDB.
     #[tokio::test(start_paused = true)]
     async fn sync_committee_selections_await_agg_sig_db_times_out() {
-        let (mut component, _mock) = make_selections_component_insecure().await;
-
         let dv_root = dv_pubkey(0xD2);
-        component.register_active_validators({
-            move || async move { Ok(HashMap::from([(1u64, dv_root)])) }
-        });
+        let (mut component, _mock) =
+            make_selections_component_insecure(HashMap::from([(1u64, dv_root)])).await;
 
         component.register_await_agg_sig_db(|_duty, _pk| async {
             std::future::pending::<Result<Box<dyn SignedData>, CallbackError>>().await
@@ -2519,12 +2515,9 @@ mod tests {
     /// AggSigDB await. The handler returns 408.
     #[tokio::test(start_paused = true)]
     async fn beacon_committee_selections_subscriber_timeout() {
-        let (mut component, _mock) = make_selections_component_insecure().await;
-
         let dv_root = dv_pubkey(0xF1);
-        component.register_active_validators({
-            move || async move { Ok(HashMap::from([(1u64, dv_root)])) }
-        });
+        let (mut component, _mock) =
+            make_selections_component_insecure(HashMap::from([(1u64, dv_root)])).await;
 
         // Subscriber that never completes.
         component.subscribe(|_duty, _set| async {
@@ -2549,12 +2542,9 @@ mod tests {
     /// Counterpart of [`beacon_committee_selections_subscriber_timeout`].
     #[tokio::test(start_paused = true)]
     async fn sync_committee_selections_subscriber_timeout() {
-        let (mut component, _mock) = make_selections_component_insecure().await;
-
         let dv_root = dv_pubkey(0xF2);
-        component.register_active_validators({
-            move || async move { Ok(HashMap::from([(1u64, dv_root)])) }
-        });
+        let (mut component, _mock) =
+            make_selections_component_insecure(HashMap::from([(1u64, dv_root)])).await;
 
         component.subscribe(|_duty, _set| async {
             std::future::pending::<Result<(), CallbackError>>().await
@@ -2581,9 +2571,8 @@ mod tests {
     /// behaviour where `wrapResponse(nil)` returns `data: []`.
     #[tokio::test]
     async fn beacon_committee_selections_empty_input_returns_empty_data() {
-        let (mut component, _mock) = make_selections_component_insecure().await;
+        let (mut component, _mock) = make_selections_component_insecure(HashMap::new()).await;
 
-        component.register_active_validators(|| async { Ok(HashMap::new()) });
         // Subscriber and AggSigDB must NOT be touched for an empty input.
         component.subscribe(|_duty, _set| async {
             panic!("subscriber must not run for empty input");
@@ -2603,9 +2592,8 @@ mod tests {
     /// [`beacon_committee_selections_empty_input_returns_empty_data`].
     #[tokio::test]
     async fn sync_committee_selections_empty_input_returns_empty_data() {
-        let (mut component, _mock) = make_selections_component_insecure().await;
+        let (mut component, _mock) = make_selections_component_insecure(HashMap::new()).await;
 
-        component.register_active_validators(|| async { Ok(HashMap::new()) });
         component.subscribe(|_duty, _set| async {
             panic!("subscriber must not run for empty input");
         });
@@ -2626,12 +2614,9 @@ mod tests {
     /// silently-wrong response.
     #[tokio::test]
     async fn beacon_committee_selections_rejects_aggsigdb_type_mismatch() {
-        let (mut component, _mock) = make_selections_component_insecure().await;
-
         let dv_root = dv_pubkey(0xA1);
-        component.register_active_validators({
-            move || async move { Ok(HashMap::from([(1u64, dv_root)])) }
-        });
+        let (mut component, _mock) =
+            make_selections_component_insecure(HashMap::from([(1u64, dv_root)])).await;
 
         // Wrong type — returns a `SyncCommitteeSelection` under a
         // `PrepareAggregator` duty, which `downcast_beacon_committee_selection`
@@ -2662,12 +2647,9 @@ mod tests {
     /// [`beacon_committee_selections_rejects_aggsigdb_type_mismatch`].
     #[tokio::test]
     async fn sync_committee_selections_rejects_aggsigdb_type_mismatch() {
-        let (mut component, _mock) = make_selections_component_insecure().await;
-
         let dv_root = dv_pubkey(0xA2);
-        component.register_active_validators({
-            move || async move { Ok(HashMap::from([(1u64, dv_root)])) }
-        });
+        let (mut component, _mock) =
+            make_selections_component_insecure(HashMap::from([(1u64, dv_root)])).await;
 
         component.register_await_agg_sig_db(|_duty, _pk| async {
             Ok::<Box<dyn SignedData>, CallbackError>(Box::new(SignedBeaconCommitteeSelection::new(

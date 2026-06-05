@@ -5609,6 +5609,7 @@ dependencies = [
  "pluto-crypto",
  "pluto-eth2api",
  "pluto-eth2util",
+ "pluto-eth2wrap",
  "pluto-featureset",
  "pluto-k1util",
  "pluto-p2p",
@@ -5769,6 +5770,19 @@ dependencies = [
  "walkdir",
  "wiremock",
  "zeroize",
+]
+
+[[package]]
+name = "pluto-eth2wrap"
+version = "1.7.1"
+dependencies = [
+ "async-trait",
+ "hex",
+ "pluto-eth2api",
+ "pluto-testutil",
+ "thiserror 2.0.18",
+ "tokio",
+ "wiremock",
 ]
 
 [[package]]
