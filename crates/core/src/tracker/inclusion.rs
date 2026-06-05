@@ -304,7 +304,7 @@ impl InclusionCore {
                         Some(proposal) => proposal.0.blinded,
                         None => {
                             tracing::error!(
-                                duty = %self.submissions[&key].duty,
+                                duty = %sub.duty,
                                 "Submission data has wrong type",
                             );
                             continue;
