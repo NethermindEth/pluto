@@ -408,7 +408,10 @@ impl Component {
             });
         }
         // Reuse `map_dutydb_error` for shape parity with `attestation_data`.
-        self.dutydb.await_proposal(slot).await.map_err(map_dutydb_error)
+        self.dutydb
+            .await_proposal(slot)
+            .await
+            .map_err(map_dutydb_error)
     }
 }
 
