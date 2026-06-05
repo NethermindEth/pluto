@@ -2482,19 +2482,49 @@ mod tests {
 
     /// Submit rejects when the VC-submitted version disagrees with the
     /// consensus-side proposal. Mirrors Go's `propDataMatchesDuty` version
-    /// branch.
+    /// branch. Both sides must agree on `proposer_index` and `blinded` so
+    /// that the reordered check (proposer_index → blinded → version → root)
+    /// reaches the version comparison.
     #[tokio::test]
     async fn submit_proposal_rejects_version_mismatch() {
         let (mut component, _mock) = make_proposal_component().await;
 
-        // Consensus side is Phase0; build a Bellatrix-blinded VC payload
-        // that disagrees on `version`.
+        // Consensus side is Phase0 (non-blinded); VC side is Altair
+        // (non-blinded). Same proposer_index and `blinded=false` so the
+        // first two checks pass and the third (version) trips.
         let (consensus, _) = matched_phase0_proposals(33, 5);
-        let (_, bellatrix_blinded) = matched_bellatrix_blinded_proposals(33, 5);
-        let bellatrix_signed =
-            crate::signeddata::VersionedSignedProposal::from_blinded_proposal(bellatrix_blinded)
-                .unwrap();
-        let signed = bellatrix_signed.0;
+        let altair_signed = pluto_eth2api::spec::altair::SignedBeaconBlock {
+            message: pluto_eth2api::spec::altair::BeaconBlock {
+                slot: 33,
+                proposer_index: 5,
+                parent_root: [0; 32],
+                state_root: [0; 32],
+                body: pluto_eth2api::spec::altair::BeaconBlockBody {
+                    randao_reveal: [0; 96],
+                    eth1_data: p0::ETH1Data {
+                        deposit_root: [0; 32],
+                        deposit_count: 0,
+                        block_hash: [0; 32],
+                    },
+                    graffiti: [0; 32],
+                    proposer_slashings: vec![].into(),
+                    attester_slashings: vec![].into(),
+                    attestations: vec![].into(),
+                    deposits: vec![].into(),
+                    voluntary_exits: vec![].into(),
+                    sync_aggregate: pluto_eth2api::spec::altair::SyncAggregate {
+                        sync_committee_bits: empty_sync_committee_bits(),
+                        sync_committee_signature: [0; 96],
+                    },
+                },
+            },
+            signature: [0; 96],
+        };
+        let signed = Eth2VersionedSignedProposal {
+            version: V::Altair,
+            blinded: false,
+            block: SignedProposalBlock::Altair(altair_signed),
+        };
 
         component.register_proposer_pubkey(|_slot| async move { Ok(core_pubkey(0x88)) });
         let captured: Arc<Mutex<Option<UnsignedProposal>>> = Arc::new(Mutex::new(Some(consensus)));
@@ -2514,6 +2544,14 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+        // Lock the variant down so a future reorder doesn't silently let
+        // a different check fire first.
+        let cause = std::error::Error::source(&err).expect("error has source");
+        let cause_str = format!("{cause}");
+        assert!(
+            cause_str.contains("different version"),
+            "expected Version mismatch, got: {cause_str}"
+        );
     }
 
     /// Submit rejects when the proposer index doesn't match the consensus
@@ -2551,11 +2589,13 @@ mod tests {
     async fn submit_proposal_rejects_blinded_mismatch() {
         let (mut component, _mock) = make_proposal_component().await;
 
-        // Consensus side is blinded bellatrix; VC submits non-blinded
-        // phase0 — both `version` and `blinded` disagree, but the version
-        // check fires first. Use matching versions to isolate `blinded`.
+        // Consensus side is blinded bellatrix; VC submits a non-blinded
+        // bellatrix payload with the same proposer_index. The reordered
+        // check (proposer_index → blinded → version → root) reaches
+        // `blinded` after proposer_index matches, then trips.
         let (blinded_unsigned, _) = matched_bellatrix_blinded_proposals(40, 3);
-        // Same version (Bellatrix), but a non-blinded VC payload.
+        // Same version (Bellatrix) and proposer_index (3), but a
+        // non-blinded VC payload.
         let body = bellatrix::BeaconBlockBody {
             randao_reveal: [0; 96],
             eth1_data: p0::ETH1Data {
