@@ -17,3 +17,6 @@ pub mod qbft;
 
 /// Consensus round timers.
 pub mod timer;
+
+/// Swappable consensus implementation wrapper.
+pub mod wrapper;
