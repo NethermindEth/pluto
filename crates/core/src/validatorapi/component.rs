@@ -117,10 +117,14 @@ const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(12);
 /// attestation duty has time to flow through the pipeline.
 const ATTESTATION_DATA_TIMEOUT: Duration = Duration::from_secs(24);
 
-/// Hard deadline for the `proposal` await on the local DutyDB. Same sizing
-/// rationale as [`ATTESTATION_DATA_TIMEOUT`] — roughly two slots so an
+/// Hard deadline for the whole `proposal` / `submit_proposal` /
+/// `submit_blinded_proposal` handler body. Bounds every leg — proposer
+/// pubkey lookup, `epoch_from_slot`, partial-sig verification (which itself
+/// calls upstream `signing::verify`), the synchronous subscriber fan-out,
+/// and the dutydb await — so a hung upstream beacon or slow subscriber
+/// cannot park a tokio task indefinitely. Sized at roughly two slots so an
 /// in-flight proposer duty has time to flow through consensus before this
-/// handler gives up.
+/// handler gives up. Same sizing rationale as [`ATTESTATION_DATA_TIMEOUT`].
 const PROPOSAL_TIMEOUT: Duration = Duration::from_secs(24);
 
 /// Validator API [`Handler`] implementation.
@@ -2438,6 +2442,47 @@ mod tests {
                 randao_reveal: [0; 96],
                 graffiti: [0; 32],
                 builder_boost_factor: None,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::REQUEST_TIMEOUT);
+    }
+
+    /// `submit_proposal` is bounded by the same outer `PROPOSAL_TIMEOUT`
+    /// wrap as `proposal` — when the consensus pipeline never produces an
+    /// unsigned proposal for the slot, the handler returns 408 instead of
+    /// hanging on the dutydb `Notify`.
+    #[tokio::test(start_paused = true)]
+    async fn submit_proposal_times_out_when_consensus_proposal_never_arrives() {
+        let (mut component, _mock) = make_proposal_component().await;
+
+        component.register_proposer_pubkey(|_slot| async move { Ok(core_pubkey(0x10)) });
+        // No `register_await_proposal` — falls back to the dutydb, which
+        // has no entry for slot 1234.
+        let (_, signed) = matched_phase0_proposals(1234, 5);
+
+        let err = component
+            .submit_proposal(VersionedSignedProposal(signed))
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::REQUEST_TIMEOUT);
+    }
+
+    /// `submit_blinded_proposal` is bounded by the same outer wrap as the
+    /// non-blinded variant — same failure mode, same 408.
+    #[tokio::test(start_paused = true)]
+    async fn submit_blinded_proposal_times_out_when_consensus_proposal_never_arrives() {
+        let (mut component, _mock) = make_proposal_component().await;
+
+        component.register_proposer_pubkey(|_slot| async move { Ok(core_pubkey(0x10)) });
+        // No `register_await_proposal` — falls back to the dutydb, which
+        // has no entry for slot 1234.
+        let (_, blinded) = matched_bellatrix_blinded_proposals(1234, 5);
+
+        let err = component
+            .submit_blinded_proposal(VersionedSignedBlindedProposal {
+                version: blinded.version,
+                block: blinded.block,
             })
             .await
             .unwrap_err();
