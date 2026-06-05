@@ -875,13 +875,13 @@ mod tests {
     /// Block has bits 0 and 1 set; submission has only bit 0 → included.
     #[test]
     fn check_attestation_inclusion_phase0_contains() {
-        assert_eq!(run_phase0_inclusion_check(&[0, 1], &[0]).unwrap(), true);
+        assert!(run_phase0_inclusion_check(&[0, 1], &[0]).unwrap());
     }
 
     /// Block has bit 1; submission has bit 0 → not included.
     #[test]
     fn check_attestation_inclusion_phase0_not_contained() {
-        assert_eq!(run_phase0_inclusion_check(&[1], &[0]).unwrap(), false);
+        assert!(!run_phase0_inclusion_check(&[1], &[0]).unwrap());
     }
 
     // committee 0 has 3 validators, committee 1 has 4; validator sits at
@@ -952,12 +952,12 @@ mod tests {
     /// validator_committee_index 2 → global bit 5 is set → included.
     #[test]
     fn check_attestation_inclusion_electra_offset() {
-        assert_eq!(run_electra_inclusion_check(&[5]).unwrap(), true);
+        assert!(run_electra_inclusion_check(&[5]).unwrap());
     }
 
     /// Global bit 5 is not set in the block (bit 4 is) → not included.
     #[test]
     fn check_attestation_inclusion_electra_offset_not_included() {
-        assert_eq!(run_electra_inclusion_check(&[4]).unwrap(), false);
+        assert!(!run_electra_inclusion_check(&[4]).unwrap());
     }
 }
