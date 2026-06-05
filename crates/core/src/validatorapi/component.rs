@@ -1138,12 +1138,17 @@ fn proposal_matches_duty(
     vc: &VersionedSignedProposal,
     consensus: &UnsignedVersionedProposal,
 ) -> Result<(), ProposalMatchError> {
-    let vc_version = signed_proposal_version(&vc.0.block);
-    let consensus_version = consensus.version();
-    if vc_version != consensus_version {
-        return Err(ProposalMatchError::Version {
-            consensus: consensus_version,
-            vc: vc_version,
+    // Check order mirrors Go's `propDataMatchesDuty`
+    // (charon/core/validatorapi/validatorapi.go:454-487): proposer_index,
+    // blinded, version, then hash-tree root. Diverging the order would
+    // change the first-mismatch error a misbehaving VC sees and break
+    // parity with Charon log-driven dashboards.
+    let vc_index = signed_proposal_proposer_index(&vc.0.block);
+    let consensus_index = unsigned_proposal_proposer_index(consensus);
+    if vc_index != consensus_index {
+        return Err(ProposalMatchError::ProposerIndex {
+            consensus: consensus_index,
+            vc: vc_index,
         });
     }
     if vc.0.blinded != consensus.is_blinded() {
@@ -1152,12 +1157,12 @@ fn proposal_matches_duty(
             vc: vc.0.blinded,
         });
     }
-    let vc_index = signed_proposal_proposer_index(&vc.0.block);
-    let consensus_index = unsigned_proposal_proposer_index(consensus);
-    if vc_index != consensus_index {
-        return Err(ProposalMatchError::ProposerIndex {
-            consensus: consensus_index,
-            vc: vc_index,
+    let vc_version = signed_proposal_version(&vc.0.block);
+    let consensus_version = consensus.version();
+    if vc_version != consensus_version {
+        return Err(ProposalMatchError::Version {
+            consensus: consensus_version,
+            vc: vc_version,
         });
     }
     let vc_root = signed_proposal_message_root(&vc.0.block);
