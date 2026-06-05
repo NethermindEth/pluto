@@ -823,4 +823,141 @@ mod tests {
             Some("duty not included on-chain".to_string()),
         );
     }
+
+    fn versioned_att_phase0(
+        slot: u64,
+        agg_bits: pluto_ssz::BitList<2048>,
+    ) -> versioned::VersionedAttestation {
+        versioned::VersionedAttestation {
+            version: versioned::DataVersion::Deneb,
+            validator_index: None,
+            attestation: Some(versioned::AttestationPayload::Deneb(phase0::Attestation {
+                aggregation_bits: agg_bits,
+                data: att_data(slot),
+                signature: [0u8; 96],
+            })),
+        }
+    }
+
+    fn run_phase0_inclusion_check(
+        block_set_bits: &[usize],
+        sub_set_bits: &[usize],
+    ) -> Result<bool, InclusionError> {
+        let slot = 5u64;
+        let data_root = att_data(slot).tree_hash_root().0;
+        let block_att = versioned_att_phase0(
+            slot,
+            pluto_ssz::BitList::<2048>::with_bits(4, block_set_bits),
+        );
+        let sub_att = versioned::VersionedAttestation {
+            version: versioned::DataVersion::Deneb,
+            validator_index: None,
+            attestation: Some(versioned::AttestationPayload::Deneb(phase0::Attestation {
+                aggregation_bits: pluto_ssz::BitList::<2048>::with_bits(4, sub_set_bits),
+                data: att_data(slot),
+                signature: [0u8; 96],
+            })),
+        };
+        let sub = submission(
+            Duty::new_attester_duty(SlotNumber::new(slot)),
+            Box::new(VersionedAttestation::new(sub_att).unwrap()),
+            data_root,
+        );
+        let block = Block {
+            slot,
+            att_duties: vec![],
+            attestations_by_data_root: HashMap::from([(data_root, block_att)]),
+            beacon_committees: vec![],
+        };
+        check_attestation_inclusion(&sub, &block)
+    }
+
+    /// Block has bits 0 and 1 set; submission has only bit 0 → included.
+    #[test]
+    fn check_attestation_inclusion_phase0_contains() {
+        assert_eq!(run_phase0_inclusion_check(&[0, 1], &[0]).unwrap(), true);
+    }
+
+    /// Block has bit 1; submission has bit 0 → not included.
+    #[test]
+    fn check_attestation_inclusion_phase0_not_contained() {
+        assert_eq!(run_phase0_inclusion_check(&[1], &[0]).unwrap(), false);
+    }
+
+    // committee 0 has 3 validators, committee 1 has 4; validator sits at
+    // committee_index=1, validator_committee_index=2 → global bit 5.
+    fn run_electra_inclusion_check(block_set_bits: &[usize]) -> Result<bool, InclusionError> {
+        use pluto_eth2api::spec::electra;
+        use pluto_ssz::BitVector;
+
+        let slot = 10u64;
+        let validator_index: u64 = 99;
+        let committee_index: usize = 1;
+        let committee0_size: usize = 3;
+        let validator_committee_index: u64 = 2;
+        let total_validators = committee0_size + 4;
+
+        let data_root = att_data(slot).tree_hash_root().0;
+        let block_att = versioned::VersionedAttestation {
+            version: versioned::DataVersion::Electra,
+            validator_index: None,
+            attestation: Some(versioned::AttestationPayload::Electra(
+                electra::Attestation {
+                    aggregation_bits: BitList::with_bits(total_validators, block_set_bits),
+                    data: att_data(slot),
+                    signature: [0u8; 96],
+                    committee_bits: BitVector::with_bits(&[committee_index]),
+                },
+            )),
+        };
+        let sub_att = versioned::VersionedAttestation {
+            version: versioned::DataVersion::Electra,
+            validator_index: Some(validator_index),
+            attestation: Some(versioned::AttestationPayload::Electra(
+                electra::Attestation {
+                    aggregation_bits: BitList::default(),
+                    data: att_data(slot),
+                    signature: [0u8; 96],
+                    committee_bits: BitVector::with_bits(&[committee_index]),
+                },
+            )),
+        };
+        let sub = submission(
+            Duty::new_attester_duty(SlotNumber::new(slot)),
+            Box::new(VersionedAttestation::new(sub_att).unwrap()),
+            data_root,
+        );
+        let block = Block {
+            slot,
+            att_duties: vec![AttesterDuty {
+                validator_index,
+                validator_committee_index,
+            }],
+            attestations_by_data_root: HashMap::from([(data_root, block_att)]),
+            beacon_committees: vec![
+                BeaconCommittee {
+                    index: 0,
+                    validators: vec![0u64; committee0_size],
+                },
+                BeaconCommittee {
+                    index: 1,
+                    validators: vec![0u64; 4],
+                },
+            ],
+        };
+        check_attestation_inclusion(&sub, &block)
+    }
+
+    /// Validator in committee 1 (preceded by 3 validators in committee 0),
+    /// validator_committee_index 2 → global bit 5 is set → included.
+    #[test]
+    fn check_attestation_inclusion_electra_offset() {
+        assert_eq!(run_electra_inclusion_check(&[5]).unwrap(), true);
+    }
+
+    /// Global bit 5 is not set in the block (bit 4 is) → not included.
+    #[test]
+    fn check_attestation_inclusion_electra_offset_not_included() {
+        assert_eq!(run_electra_inclusion_check(&[4]).unwrap(), false);
+    }
 }
