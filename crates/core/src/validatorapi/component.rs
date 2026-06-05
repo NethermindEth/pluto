@@ -624,200 +624,201 @@ impl Handler for Component {
         &self,
         opts: ProposalOpts,
     ) -> Result<EthResponse<VersionedProposal>, ApiError> {
-        // Resolve the proposer pubkey first — this is a blocking lookup in
-        // Go (`getProposerPubkey`) that the rest of the handler depends on.
-        // The Pluto hook is registered by the wider scheduler; without it we
-        // cannot perform partial-randao verification.
-        let pubkey = self.lookup_proposer_pubkey(opts.slot).await?;
+        // Single outer deadline bounds every leg of the handler — proposer
+        // pubkey lookup, the upstream `epoch_from_slot` call, randao partial
+        // signature verification (which itself calls upstream
+        // `signing::verify`), subscriber fan-out, and the dutydb `await`.
+        // A hung upstream beacon node or slow subscriber cannot park this
+        // task past `PROPOSAL_TIMEOUT`, defending the validator API listener
+        // against task exhaustion. Mirrors Charon's per-handler context
+        // deadline pattern.
+        tokio::time::timeout(PROPOSAL_TIMEOUT, async {
+            // Resolve the proposer pubkey first — this is a blocking lookup
+            // in Go (`getProposerPubkey`) that the rest of the handler
+            // depends on. The Pluto hook is registered by the wider
+            // scheduler; without it we cannot perform partial-randao
+            // verification.
+            let pubkey = self.lookup_proposer_pubkey(opts.slot).await?;
 
-        // Translate slot → epoch using the upstream beacon-node's
-        // SLOTS_PER_EPOCH. Mirrors Go's `eth2util.EpochFromSlot`.
-        let epoch = pluto_eth2util::helpers::epoch_from_slot(&self.eth2_cl, opts.slot)
-            .await
-            .map_err(|err| {
-                ApiError::new(StatusCode::BAD_GATEWAY, "could not resolve epoch from slot")
-                    .with_source(err)
-            })?;
-
-        // Build the partial randao parsig — the VC's randao reveal signed by
-        // its share. Mirrors Go's `core.NewPartialSignedRandao(epoch, sig,
-        // shareIdx)` followed by `verifyPartialSig`.
-        let randao_par_sig = SignedRandao::new_partial(epoch, opts.randao_reveal, self.share_idx);
-        let randao_signature = randao_par_sig.signed_data.signature().map_err(|err| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "could not extract randao signature",
-            )
-            .with_source(err)
-        })?;
-        let randao_root = randao_par_sig.signed_data.message_root().map_err(|err| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "could not derive randao message root",
-            )
-            .with_source(err)
-        })?;
-        let pubkey_bytes = pubkey_to_bls(&pubkey);
-        self.verify_partial_sig(
-            &pubkey_bytes,
-            DomainName::Randao,
-            epoch,
-            randao_root,
-            &randao_signature,
-        )
-        .await
-        .map_err(verify_partial_sig_error)?;
-
-        // Fan out the partial randao to subscribers. They feed the rest of
-        // the DV pipeline that eventually fills the dutydb with the unsigned
-        // block we will return below.
-        let mut parsig_set = ParSignedDataSet::new();
-        parsig_set.insert(pubkey, randao_par_sig);
-        let randao_duty = Duty::new_randao_duty(SlotNumber::new(opts.slot));
-        for sub in &self.subs {
-            sub(&randao_duty, parsig_set.clone()).await.map_err(|err| {
-                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "subscriber failed")
-                    .with_boxed_source(err)
-            })?;
-        }
-
-        // Block on the unsigned proposal landing in dutydb. PR-1 plumbed
-        // `await_proposal_fn`; fall back to the dutydb directly when the
-        // hook is not registered (router-local tests).
-        let data =
-            tokio::time::timeout(PROPOSAL_TIMEOUT, self.await_proposal_for_handler(opts.slot))
+            // Translate slot → epoch using the upstream beacon-node's
+            // SLOTS_PER_EPOCH. Mirrors Go's `eth2util.EpochFromSlot`.
+            let epoch = pluto_eth2util::helpers::epoch_from_slot(&self.eth2_cl, opts.slot)
                 .await
-                .map_err(|_: Elapsed| {
-                    ApiError::new(
-                        StatusCode::REQUEST_TIMEOUT,
-                        "proposal not available before deadline",
-                    )
-                })??;
+                .map_err(|err| {
+                    ApiError::new(StatusCode::BAD_GATEWAY, "could not resolve epoch from slot")
+                        .with_source(err)
+                })?;
 
-        Ok(EthResponse {
-            data,
-            execution_optimistic: false,
-            finalized: false,
-            dependent_root: None,
+            // Build the partial randao parsig — the VC's randao reveal
+            // signed by its share. Mirrors Go's
+            // `core.NewPartialSignedRandao(epoch, sig, shareIdx)` followed
+            // by `verifyPartialSig`.
+            let randao_par_sig =
+                SignedRandao::new_partial(epoch, opts.randao_reveal, self.share_idx);
+            let randao_signature = randao_par_sig.signed_data.signature().map_err(|err| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "could not extract randao signature",
+                )
+                .with_source(err)
+            })?;
+            let randao_root = randao_par_sig.signed_data.message_root().map_err(|err| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "could not derive randao message root",
+                )
+                .with_source(err)
+            })?;
+            let pubkey_bytes = pubkey_to_bls(&pubkey);
+            self.verify_partial_sig(
+                &pubkey_bytes,
+                DomainName::Randao,
+                epoch,
+                randao_root,
+                &randao_signature,
+            )
+            .await
+            .map_err(verify_partial_sig_error)?;
+
+            // Fan out the partial randao to subscribers. They feed the rest
+            // of the DV pipeline that eventually fills the dutydb with the
+            // unsigned block we will return below.
+            let mut parsig_set = ParSignedDataSet::new();
+            parsig_set.insert(pubkey, randao_par_sig);
+            let randao_duty = Duty::new_randao_duty(SlotNumber::new(opts.slot));
+            for sub in &self.subs {
+                sub(&randao_duty, parsig_set.clone()).await.map_err(|err| {
+                    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "subscriber failed")
+                        .with_boxed_source(err)
+                })?;
+            }
+
+            // Block on the unsigned proposal landing in dutydb. PR-1 plumbed
+            // `await_proposal_fn`; fall back to the dutydb directly when the
+            // hook is not registered (router-local tests).
+            let data = self.await_proposal_for_handler(opts.slot).await?;
+
+            Ok(EthResponse {
+                data,
+                execution_optimistic: false,
+                finalized: false,
+                dependent_root: None,
+            })
         })
+        .await
+        .map_err(|_: Elapsed| proposal_timeout())?
     }
 
     async fn submit_proposal(&self, proposal: VersionedSignedProposal) -> Result<(), ApiError> {
-        let slot = signed_proposal_slot(&proposal.0.block);
-        let pubkey = self.lookup_proposer_pubkey(slot).await?;
+        // Single outer deadline bounds every leg of the handler (proposer
+        // pubkey lookup, dutydb await, partial-sig verify which calls
+        // upstream `signing::verify`, and the subscriber fan-out). See
+        // [`Self::proposal`] for the full rationale.
+        tokio::time::timeout(PROPOSAL_TIMEOUT, async {
+            let slot = signed_proposal_slot(&proposal.0.block);
+            let pubkey = self.lookup_proposer_pubkey(slot).await?;
 
-        // Pull the consensus-side unsigned proposal that the rest of the
-        // pipeline produced for this slot. Bound the wait with
-        // `PROPOSAL_TIMEOUT` so a malicious or buggy VC submitting a slot
-        // the consensus pipeline will never produce cannot park a tokio
-        // task indefinitely.
-        let consensus_proposal =
-            tokio::time::timeout(PROPOSAL_TIMEOUT, self.await_proposal_for_handler(slot))
-                .await
-                .map_err(|_: Elapsed| {
-                    ApiError::new(
-                        StatusCode::REQUEST_TIMEOUT,
-                        "proposal not available before deadline",
-                    )
-                })?
-                .map_err(|err| {
+            // Pull the consensus-side unsigned proposal that the rest of the
+            // pipeline produced for this slot.
+            let consensus_proposal =
+                self.await_proposal_for_handler(slot).await.map_err(|err| {
                     let status = err.status_code;
                     ApiError::new(status, "could not fetch block definition from dutydb")
                         .with_source(err)
                 })?;
 
-        // Cross-check the VC submission against the consensus proposal —
-        // version, blinded flag, proposer index, and tree-hash root all
-        // have to line up.
-        proposal_matches_duty(&proposal, &consensus_proposal).map_err(|err| {
-            ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "consensus proposal and VC-submitted one do not match",
-            )
-            .with_source(err)
-        })?;
-
-        let par_sig =
-            crate::signeddata::VersionedSignedProposal::new_partial(proposal.0, self.share_idx)
-                .map_err(map_signed_data_error)?;
-
-        // Verify the partial signature against this node's public share.
-        verify_par_signed_proposal(self, &pubkey, slot, &par_sig).await?;
-
-        let mut set = ParSignedDataSet::new();
-        set.insert(pubkey, par_sig);
-        let duty = Duty::new_proposer_duty(SlotNumber::new(slot));
-        for sub in &self.subs {
-            sub(&duty, set.clone()).await.map_err(|err| {
-                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "subscriber failed")
-                    .with_boxed_source(err)
+            // Cross-check the VC submission against the consensus proposal —
+            // version, blinded flag, proposer index, and tree-hash root all
+            // have to line up.
+            proposal_matches_duty(&proposal, &consensus_proposal).map_err(|err| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "consensus proposal and VC-submitted one do not match",
+                )
+                .with_source(err)
             })?;
-        }
-        Ok(())
+
+            let par_sig =
+                crate::signeddata::VersionedSignedProposal::new_partial(proposal.0, self.share_idx)
+                    .map_err(map_signed_data_error)?;
+
+            // Verify the partial signature against this node's public share.
+            verify_par_signed_proposal(self, &pubkey, slot, &par_sig).await?;
+
+            let mut set = ParSignedDataSet::new();
+            set.insert(pubkey, par_sig);
+            let duty = Duty::new_proposer_duty(SlotNumber::new(slot));
+            for sub in &self.subs {
+                sub(&duty, set.clone()).await.map_err(|err| {
+                    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "subscriber failed")
+                        .with_boxed_source(err)
+                })?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|_: Elapsed| proposal_timeout())?
     }
 
     async fn submit_blinded_proposal(
         &self,
         proposal: VersionedSignedBlindedProposal,
     ) -> Result<(), ApiError> {
-        let slot = blinded_proposal_slot(&proposal);
-        let pubkey = self.lookup_proposer_pubkey(slot).await?;
+        // Single outer deadline bounds every leg of the handler. See
+        // [`Self::proposal`] for the full rationale.
+        tokio::time::timeout(PROPOSAL_TIMEOUT, async {
+            let slot = blinded_proposal_slot(&proposal);
+            let pubkey = self.lookup_proposer_pubkey(slot).await?;
 
-        // Same fan-out shape as `submit_proposal`: pull the consensus-side
-        // unsigned proposal, build a wrapped "blinded" `VersionedSignedProposal`
-        // for the matches-duty check, and emit a partial signed wrapper to
-        // subscribers. Bound the wait with `PROPOSAL_TIMEOUT` for the same
-        // reason as the non-blinded path.
-        let consensus_proposal =
-            tokio::time::timeout(PROPOSAL_TIMEOUT, self.await_proposal_for_handler(slot))
-                .await
-                .map_err(|_: Elapsed| {
-                    ApiError::new(
-                        StatusCode::REQUEST_TIMEOUT,
-                        "proposal not available before deadline",
-                    )
-                })?
-                .map_err(|err| {
+            // Same fan-out shape as `submit_proposal`: pull the
+            // consensus-side unsigned proposal, build a wrapped "blinded"
+            // `VersionedSignedProposal` for the matches-duty check, and emit
+            // a partial signed wrapper to subscribers.
+            let consensus_proposal =
+                self.await_proposal_for_handler(slot).await.map_err(|err| {
                     let status = err.status_code;
                     ApiError::new(status, "could not fetch block definition from dutydb")
                         .with_source(err)
                 })?;
 
-        // Translate the blinded payload into the generic versioned signed
-        // shape so we can share the `proposal_matches_duty` helper. Mirrors
-        // Go's `SubmitBlindedProposal` which constructs a
-        // `SubmitProposalOpts` from the blinded fields before calling the
-        // same `propDataMatchesDuty` helper.
-        let typed_wrapper =
-            crate::signeddata::VersionedSignedProposal::from_blinded_proposal(proposal.clone())
-                .map_err(map_signed_data_error)?;
-        proposal_matches_duty(&typed_wrapper, &consensus_proposal).map_err(|err| {
-            ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "consensus proposal and VC-submitted one do not match",
-            )
-            .with_source(err)
-        })?;
-
-        let par_sig =
-            crate::signeddata::VersionedSignedProposal::new_partial_from_blinded_proposal(
-                proposal,
-                self.share_idx,
-            )
-            .map_err(map_signed_data_error)?;
-
-        verify_par_signed_proposal(self, &pubkey, slot, &par_sig).await?;
-
-        let mut set = ParSignedDataSet::new();
-        set.insert(pubkey, par_sig);
-        let duty = Duty::new_proposer_duty(SlotNumber::new(slot));
-        for sub in &self.subs {
-            sub(&duty, set.clone()).await.map_err(|err| {
-                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "subscriber failed")
-                    .with_boxed_source(err)
+            // Translate the blinded payload into the generic versioned
+            // signed shape so we can share the `proposal_matches_duty`
+            // helper. Mirrors Go's `SubmitBlindedProposal` which constructs
+            // a `SubmitProposalOpts` from the blinded fields before calling
+            // the same `propDataMatchesDuty` helper.
+            let typed_wrapper =
+                crate::signeddata::VersionedSignedProposal::from_blinded_proposal(proposal.clone())
+                    .map_err(map_signed_data_error)?;
+            proposal_matches_duty(&typed_wrapper, &consensus_proposal).map_err(|err| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "consensus proposal and VC-submitted one do not match",
+                )
+                .with_source(err)
             })?;
-        }
-        Ok(())
+
+            let par_sig =
+                crate::signeddata::VersionedSignedProposal::new_partial_from_blinded_proposal(
+                    proposal,
+                    self.share_idx,
+                )
+                .map_err(map_signed_data_error)?;
+
+            verify_par_signed_proposal(self, &pubkey, slot, &par_sig).await?;
+
+            let mut set = ParSignedDataSet::new();
+            set.insert(pubkey, par_sig);
+            let duty = Duty::new_proposer_duty(SlotNumber::new(slot));
+            for sub in &self.subs {
+                sub(&duty, set.clone()).await.map_err(|err| {
+                    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "subscriber failed")
+                        .with_boxed_source(err)
+                })?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|_: Elapsed| proposal_timeout())?
     }
 
     async fn aggregate_attestation(
@@ -894,6 +895,16 @@ fn upstream_timeout(endpoint: &'static str) -> ApiError {
     ApiError::new(
         StatusCode::GATEWAY_TIMEOUT,
         format!("upstream {endpoint} timed out"),
+    )
+}
+
+/// Builds the `ApiError` returned when a proposal-related handler elapses
+/// past [`PROPOSAL_TIMEOUT`]. 408 is the status Charon uses for "could not
+/// produce in time", and it tells a VC to retry rather than to fail over.
+fn proposal_timeout() -> ApiError {
+    ApiError::new(
+        StatusCode::REQUEST_TIMEOUT,
+        "proposal not available before deadline",
     )
 }
 
