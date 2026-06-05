@@ -4,6 +4,9 @@
 //! This crate implements the consensus algorithms and protocols required for
 //! coordinating validator operations across the distributed network.
 
+/// Consensus debug message buffer.
+pub mod debugger;
+
 /// Consensus protocols.
 pub mod protocols;
 

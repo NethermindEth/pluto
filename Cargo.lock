@@ -5589,12 +5589,14 @@ name = "pluto-consensus"
 version = "1.7.1"
 dependencies = [
  "anyhow",
+ "axum",
  "cancellation",
  "chrono",
  "clap",
  "crossbeam",
  "either",
  "ethereum_ssz",
+ "flate2",
  "futures",
  "hex",
  "k256",
