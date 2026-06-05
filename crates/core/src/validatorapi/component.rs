@@ -12,15 +12,11 @@ use pluto_eth2api::{
     EthBeaconNodeApiClient, GetAttesterDutiesRequest, GetAttesterDutiesResponse,
     GetProposerDutiesRequest, GetProposerDutiesResponse, GetSyncCommitteeDutiesRequest,
     GetSyncCommitteeDutiesResponse,
-    spec::phase0::{BLSPubKey, Epoch, Root},
+    spec::phase0::{BLSPubKey, Epoch, Root, ValidatorIndex},
+    versioned::{DataVersion, SignedBlindedProposalBlock, SignedProposalBlock},
 };
 use pluto_eth2util::signing::{self, DomainName, SigningError};
 use tokio::time::error::Elapsed;
-
-use pluto_eth2api::{
-    spec::phase0::ValidatorIndex,
-    versioned::{DataVersion, SignedBlindedProposalBlock, SignedProposalBlock},
-};
 
 use super::{
     error::ApiError,
@@ -2558,7 +2554,7 @@ mod tests {
         // Consensus side is blinded bellatrix; VC submits non-blinded
         // phase0 — both `version` and `blinded` disagree, but the version
         // check fires first. Use matching versions to isolate `blinded`.
-        let (blinded_unsigned, blinded_signed) = matched_bellatrix_blinded_proposals(40, 3);
+        let (blinded_unsigned, _) = matched_bellatrix_blinded_proposals(40, 3);
         // Same version (Bellatrix), but a non-blinded VC payload.
         let body = bellatrix::BeaconBlockBody {
             randao_reveal: [0; 96],
@@ -2609,9 +2605,6 @@ mod tests {
                 signature: [0; 96],
             }),
         };
-        // Drop the unused signed handle from the helper.
-        let _ = blinded_signed;
-
         component.register_proposer_pubkey(|_slot| async move { Ok(core_pubkey(0x88)) });
         let captured: Arc<Mutex<Option<UnsignedProposal>>> =
             Arc::new(Mutex::new(Some(blinded_unsigned)));
@@ -2633,10 +2626,12 @@ mod tests {
         assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
     }
 
-    /// Submit_proposal must verify the partial signature. With a real
-    /// pub_share_by_pubkey map (non-insecure mode), an all-zeros signature
-    /// trips the `ZeroSignature` rejection in `signing::verify`. Mirrors
-    /// Go's `verifyPartialSig` post-`propDataMatchesDuty` step.
+    /// Submit_proposal must verify the partial signature. In non-insecure
+    /// mode the pubshare lookup runs first; with an empty pubshare map this
+    /// test exercises the `UnknownPubKey` rejection branch of
+    /// `verify_partial_sig`, mapped to 500 by `verify_partial_sig_error`.
+    /// Mirrors the post-`propDataMatchesDuty` verify step in Go's
+    /// `SubmitProposal`.
     #[tokio::test]
     async fn submit_proposal_rejects_when_verification_fails() {
         // Real component (not `new_insecure`), but with an empty pubshare
