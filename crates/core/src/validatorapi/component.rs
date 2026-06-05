@@ -711,12 +711,24 @@ impl Handler for Component {
         let pubkey = self.lookup_proposer_pubkey(slot).await?;
 
         // Pull the consensus-side unsigned proposal that the rest of the
-        // pipeline produced for this slot.
-        let consensus_proposal = self.await_proposal_for_handler(slot).await.map_err(|err| {
-            let status = err.status_code;
-            ApiError::new(status, "could not fetch block definition from dutydb")
-                .with_source(std::io::Error::other(err.message))
-        })?;
+        // pipeline produced for this slot. Bound the wait with
+        // `PROPOSAL_TIMEOUT` so a malicious or buggy VC submitting a slot
+        // the consensus pipeline will never produce cannot park a tokio
+        // task indefinitely.
+        let consensus_proposal =
+            tokio::time::timeout(PROPOSAL_TIMEOUT, self.await_proposal_for_handler(slot))
+                .await
+                .map_err(|_: Elapsed| {
+                    ApiError::new(
+                        StatusCode::REQUEST_TIMEOUT,
+                        "proposal not available before deadline",
+                    )
+                })?
+                .map_err(|err| {
+                    let status = err.status_code;
+                    ApiError::new(status, "could not fetch block definition from dutydb")
+                        .with_source(err)
+                })?;
 
         // Cross-check the VC submission against the consensus proposal —
         // version, blinded flag, proposer index, and tree-hash root all
@@ -758,12 +770,22 @@ impl Handler for Component {
         // Same fan-out shape as `submit_proposal`: pull the consensus-side
         // unsigned proposal, build a wrapped "blinded" `VersionedSignedProposal`
         // for the matches-duty check, and emit a partial signed wrapper to
-        // subscribers.
-        let consensus_proposal = self.await_proposal_for_handler(slot).await.map_err(|err| {
-            let status = err.status_code;
-            ApiError::new(status, "could not fetch block definition from dutydb")
-                .with_source(std::io::Error::other(err.message))
-        })?;
+        // subscribers. Bound the wait with `PROPOSAL_TIMEOUT` for the same
+        // reason as the non-blinded path.
+        let consensus_proposal =
+            tokio::time::timeout(PROPOSAL_TIMEOUT, self.await_proposal_for_handler(slot))
+                .await
+                .map_err(|_: Elapsed| {
+                    ApiError::new(
+                        StatusCode::REQUEST_TIMEOUT,
+                        "proposal not available before deadline",
+                    )
+                })?
+                .map_err(|err| {
+                    let status = err.status_code;
+                    ApiError::new(status, "could not fetch block definition from dutydb")
+                        .with_source(err)
+                })?;
 
         // Translate the blinded payload into the generic versioned signed
         // shape so we can share the `proposal_matches_duty` helper. Mirrors
