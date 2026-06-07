@@ -100,6 +100,7 @@ jobs:
           CI: "true"
           NODES: "4"
           THRESHOLD: "3"
+          EXPECT_VALIDATORS: "1"
           PLUTO_NODES: ${{ matrix.pluto_nodes }}
           CHARON_NODES: ${{ matrix.charon_nodes }}
           CHARON_BIN: ${{ github.workspace }}/bin/charon

@@ -144,6 +144,24 @@ impl DeadlinerHandle {
         // `FailedToCompute` if the task dropped the sender (shutdown race).
         response_rx.await.unwrap_or(AddOutcome::FailedToCompute)
     }
+
+    /// Create a handle that always returns the given [`AddOutcome`].
+    #[cfg(test)]
+    pub fn always(expected: AddOutcome) -> Self {
+        let (tx, mut rx) = mpsc::channel(1);
+        let handle = DeadlinerHandle {
+            cancel_token: CancellationToken::new(),
+            input_tx: tx,
+        };
+
+        tokio::spawn(async move {
+            while let Some(input) = rx.recv().await {
+                let _ = input.response_tx.send(expected);
+            }
+        });
+
+        handle
+    }
 }
 
 /// Owned state of the background task that drives a [`DeadlinerHandle`]'s

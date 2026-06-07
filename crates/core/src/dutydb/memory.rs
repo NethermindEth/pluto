@@ -469,11 +469,10 @@ impl MemDB {
     // notify (HashMap<Key, Sender>) would avoid them but adds complexity that
     // isn't worth it here.
     //
-    // The deadliner-driven drain loop in `store()` wakes the per-duty-type
-    // notify after each `delete_duty` call, so waiters whose duty just
-    // expired exit immediately via the `Lookup::Evicted` branch instead of
-    // parking for another `notify_waiters` call or for the per-request
-    // timeout in the caller.
+    // `delete_duty` also wakes the notify so waiters whose duty just expired
+    // exit immediately via the `Lookup::Evicted` branch, instead of parking
+    // for another `notify_waiters` call or for the per-request timeout in
+    // the caller.
     async fn await_data<V>(
         &self,
         notify: &Notify,

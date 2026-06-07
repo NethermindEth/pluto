@@ -4,10 +4,11 @@
 //! and public-share mappings needed to translate between distributed-validator
 //! root keys and this node's threshold-BLS share.
 
-use std::{any::Any, collections::HashMap, future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{any::Any, collections::HashMap, future::Future, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use axum::http::StatusCode;
+use futures::future::BoxFuture;
 use pluto_eth2api::{
     EthBeaconNodeApiClient, GetAttesterDutiesRequest, GetAttesterDutiesResponse,
     GetProposerDutiesRequest, GetProposerDutiesResponse, GetSyncCommitteeDutiesRequest,
@@ -43,73 +44,82 @@ use crate::{
     version,
 };
 
-/// Boxed error returned by registered callbacks. Mirrors Go's untyped
-/// `error` return for `awaitX` / `dutyDef` / `pubKeyByAtt` callbacks.
+/// Boxed error returned by registered callbacks.
 pub type CallbackError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
-/// Convenience alias for the future returned by an async registered callback.
-type CallbackFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, CallbackError>> + Send + 'a>>;
-
-/// Subscriber callback for `Subscribe`. Receives a [`Duty`] and a clone of
-/// the [`ParSignedDataSet`] — cloning happens inside the registered wrapper,
-/// matching Go's `Subscribe` clone-before-fanout behaviour.
+/// Subscriber callback for `Subscribe`. Receives the [`Duty`] and the
+/// [`ParSignedDataSet`] by reference; the registered wrapper clones the
+/// set exactly once before invoking the user closure so every subscriber
+/// observes an independent copy.
 pub type SubscriberFn = Arc<
-    dyn for<'a> Fn(&'a Duty, ParSignedDataSet) -> CallbackFuture<'a, ()> + Send + Sync + 'static,
+    dyn for<'a> Fn(&'a Duty, &'a ParSignedDataSet) -> BoxFuture<'a, Result<(), CallbackError>>
+        + Send
+        + Sync
+        + 'static,
 >;
 
-/// Looks up an unsigned beacon proposal by slot. Mirrors Go's
-/// `awaitProposalFunc(ctx, slot) -> *eth2api.VersionedProposal`.
-pub type AwaitProposalFn =
-    Arc<dyn Fn(u64) -> CallbackFuture<'static, UnsignedVersionedProposal> + Send + Sync + 'static>;
+/// Looks up an unsigned beacon proposal by slot.
+pub type AwaitProposalFn = Arc<
+    dyn Fn(u64) -> BoxFuture<'static, Result<UnsignedVersionedProposal, CallbackError>>
+        + Send
+        + Sync
+        + 'static,
+>;
 
-/// Looks up an aggregated attestation by `(slot, attestation_root)`. Mirrors
-/// Go's `awaitAggAttFunc(ctx, slot, root) -> *eth2spec.VersionedAttestation`.
+/// Looks up an aggregated attestation by `(slot, attestation_root)`.
 pub type AwaitAggAttestationFn = Arc<
-    dyn Fn(u64, Root) -> CallbackFuture<'static, VersionedAggregatedAttestation>
+    dyn Fn(u64, Root) -> BoxFuture<'static, Result<VersionedAggregatedAttestation, CallbackError>>
         + Send
         + Sync
         + 'static,
 >;
 
 /// Looks up a sync committee contribution by `(slot, subcommittee_index,
-/// beacon_block_root)`. Mirrors Go's `awaitSyncContributionFunc`.
+/// beacon_block_root)`.
 pub type AwaitSyncContributionFn = Arc<
-    dyn Fn(u64, u64, Root) -> CallbackFuture<'static, SyncContribution> + Send + Sync + 'static,
+    dyn Fn(u64, u64, Root) -> BoxFuture<'static, Result<SyncContribution, CallbackError>>
+        + Send
+        + Sync
+        + 'static,
 >;
 
 /// Looks up aggregated signed data from the AggSigDB for a `(duty, pubkey)`.
-/// Mirrors Go's `awaitAggSigDBFunc(ctx, duty, pubkey) -> core.SignedData`.
-pub type AwaitAggSigDBFn = Arc<
-    dyn Fn(Duty, PubKey) -> CallbackFuture<'static, Box<dyn SignedData>> + Send + Sync + 'static,
+pub type AwaitAggSigDbFn = Arc<
+    dyn Fn(Duty, PubKey) -> BoxFuture<'static, Result<Box<dyn SignedData>, CallbackError>>
+        + Send
+        + Sync
+        + 'static,
 >;
 
-/// Looks up the duty-definition set for a given [`Duty`]. Mirrors Go's
-/// `dutyDefFunc(ctx, duty) -> core.DutyDefinitionSet`. The Go return type is
-/// an untyped interface map keyed by pubkey; in Rust we keep the same
-/// type-erased shape via `Box<dyn Any>` so callers can downcast to the
-/// concrete `DutyDefinitionSet<T>` they need.
+/// Looks up the duty-definition set for a given [`Duty`]. The return type
+/// is an untyped interface map keyed by pubkey, kept as a type-erased
+/// `Box<dyn Any>` so callers can downcast to the concrete
+/// `DutyDefinitionSet<T>` they need.
 pub type DutyDefFn = Arc<
-    dyn Fn(Duty) -> CallbackFuture<'static, Box<dyn Any + Send + Sync>> + Send + Sync + 'static,
+    dyn Fn(Duty) -> BoxFuture<'static, Result<Box<dyn Any + Send + Sync>, CallbackError>>
+        + Send
+        + Sync
+        + 'static,
 >;
 
 /// Looks up the root pubkey responsible for `(slot, committee_index,
-/// validator_index)`. Mirrors Go's `pubKeyByAttFunc`.
-pub type PubKeyByAttFn =
-    Arc<dyn Fn(u64, u64, u64) -> CallbackFuture<'static, PubKey> + Send + Sync + 'static>;
+/// validator_index)`.
+pub type PubKeyByAttFn = Arc<
+    dyn Fn(u64, u64, u64) -> BoxFuture<'static, Result<PubKey, CallbackError>>
+        + Send
+        + Sync
+        + 'static,
+>;
 
-/// Returns the DV root [`PubKey`] of the proposer for a given slot. Mirrors
-/// Go's `getProposerPubkey`, which queries `dutyDefFunc` for a single-entry
-/// proposer-duty definition set and extracts the lone key.
-///
-/// Pluto's `duty_def_fn` is type-erased (`Box<dyn Any>`), so we expose this
-/// thin typed hook for the proposer-pubkey path. The shape mirrors
-/// [`PubKeyByAttFn`].
+/// Returns the DV root [`PubKey`] of the proposer for a given slot. A thin
+/// typed hook for the proposer-pubkey path, used by the proposal /
+/// submit_proposal / submit_blinded_proposal handlers.
 pub type ProposerPubkeyFn =
-    Arc<dyn Fn(u64) -> CallbackFuture<'static, PubKey> + Send + Sync + 'static>;
+    Arc<dyn Fn(u64) -> BoxFuture<'static, Result<PubKey, CallbackError>> + Send + Sync + 'static>;
 
 /// Hard deadline for upstream beacon-node calls. Bounds the worst-case
-/// handler latency when the upstream hangs or stalls. Roughly one slot.
-const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(12);
+/// handler latency when the upstream hangs or stalls.
+const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Hard deadline for the `attestation_data` await on the local DutyDB.
 /// Bounded so a request whose slot never produces consensus output cannot
@@ -122,9 +132,7 @@ const ATTESTATION_DATA_TIMEOUT: Duration = Duration::from_secs(24);
 /// pubkey lookup, `epoch_from_slot`, partial-sig verification (which itself
 /// calls upstream `signing::verify`), the synchronous subscriber fan-out,
 /// and the dutydb await — so a hung upstream beacon or slow subscriber
-/// cannot park a tokio task indefinitely. Sized at roughly two slots so an
-/// in-flight proposer duty has time to flow through consensus before this
-/// handler gives up. Same sizing rationale as [`ATTESTATION_DATA_TIMEOUT`].
+/// cannot park a tokio task indefinitely.
 const PROPOSAL_TIMEOUT: Duration = Duration::from_secs(24);
 
 /// Validator API [`Handler`] implementation.
@@ -141,6 +149,7 @@ pub struct Component {
     /// data) produced by the rest of the pipeline.
     dutydb: Arc<MemDB>,
     /// Threshold BLS share index assigned to this node (1-indexed).
+    #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     share_idx: u64,
     /// Maps DV root public keys to this node's public share. Used to rewrite
     /// validator-client-facing endpoints (proposer/attester duties, etc.) so
@@ -157,9 +166,11 @@ pub struct Component {
     insecure_test: bool,
     /// Subscribers invoked by submit endpoints once a partial-signed-data set
     /// has been validated. Each entry clones the set before invoking the
-    /// user-provided callback, mirroring Go's `Subscribe`.
+    /// user-provided callback.
+    #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     subs: Vec<SubscriberFn>,
     /// Looks up an unsigned beacon proposal for a slot.
+    #[allow(dead_code, reason = "consumed by proposal handler in later PRs")]
     await_proposal_fn: Option<AwaitProposalFn>,
     /// Looks up an aggregated attestation by `(slot, attestation_root)`.
     #[allow(dead_code, reason = "consumed by aggregate_attestation in later PRs")]
@@ -172,16 +183,15 @@ pub struct Component {
     await_sync_contribution_fn: Option<AwaitSyncContributionFn>,
     /// Looks up aggregated signed data for a `(duty, pubkey)`.
     #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
-    await_agg_sig_db_fn: Option<AwaitAggSigDBFn>,
+    await_agg_sig_db_fn: Option<AwaitAggSigDbFn>,
     /// Looks up the duty-definition set for a duty.
     #[allow(dead_code, reason = "consumed by submit_attestations in later PRs")]
     duty_def_fn: Option<DutyDefFn>,
     /// Looks up the root pubkey for an `(slot, commIdx, valIdx)` triple.
     #[allow(dead_code, reason = "consumed by submit_attestations in later PRs")]
     pub_key_by_att_fn: Option<PubKeyByAttFn>,
-    /// Looks up the proposer's root pubkey for a slot. Mirrors Go's
-    /// `getProposerPubkey`, which extracts the single key from the
-    /// proposer-duty definition set returned by `dutyDefFunc`.
+    /// Looks up the proposer's root pubkey for a slot. The proposal /
+    /// submit_proposal / submit_blinded_proposal handlers consult this.
     proposer_pubkey_fn: Option<ProposerPubkeyFn>,
 }
 
@@ -241,25 +251,28 @@ impl Component {
     }
 
     /// Appends a subscriber that is invoked by submit endpoints once a
-    /// partial-signed-data set has been validated. Mirrors Go's
-    /// `(*Component).Subscribe` — the registered closure receives its own
-    /// clone of the set, so subscribers can mutate without affecting peers.
+    /// partial-signed-data set has been validated. The registered closure
+    /// receives its own clone of the set, so subscribers can mutate without
+    /// affecting peers.
+    ///
+    /// The wrapper takes the set by reference and clones it exactly once
+    /// before handing the owned copy to the user closure. Future submit
+    /// handlers iterate `&self.subs` and pass `&set` to each subscriber,
+    /// giving the cost of one clone per subscriber.
     pub fn subscribe<F, Fut>(&mut self, f: F)
     where
         F: Fn(Duty, ParSignedDataSet) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<(), CallbackError>> + Send + 'static,
     {
         let wrapped: SubscriberFn = Arc::new(move |duty, set| {
-            // Clone before invoking each subscriber — exactly as Go's
-            // `Subscribe` wraps the user fn with a `set.Clone()` step.
             let fut = f(duty.clone(), set.clone());
             Box::pin(fut)
         });
         self.subs.push(wrapped);
     }
 
-    /// Registers (and overwrites any prior) `awaitProposalFunc`. Mirrors
-    /// Go's `RegisterAwaitProposal` single-function semantics.
+    /// Registers (and overwrites any prior) `awaitProposalFunc`. Only the
+    /// most recently registered closure is invoked.
     pub fn register_await_proposal<F, Fut>(&mut self, f: F)
     where
         F: Fn(u64) -> Fut + Send + Sync + 'static,
@@ -318,10 +331,7 @@ impl Component {
         }));
     }
 
-    /// Registers (and overwrites any prior) proposer-pubkey lookup. Mirrors
-    /// Go's `getProposerPubkey`, which is itself a thin wrapper over
-    /// `dutyDefFunc` that returns the single DV root pubkey responsible for
-    /// proposing in the given slot.
+    /// Registers (and overwrites any prior) proposer-pubkey lookup.
     pub fn register_proposer_pubkey<F, Fut>(&mut self, f: F)
     where
         F: Fn(u64) -> Fut + Send + Sync + 'static,
@@ -330,18 +340,55 @@ impl Component {
         self.proposer_pubkey_fn = Some(Arc::new(move |slot| Box::pin(f(slot))));
     }
 
+    /// Resolves the proposer's DV root [`PubKey`] for a slot.
+    async fn lookup_proposer_pubkey(&self, slot: u64) -> Result<PubKey, ApiError> {
+        let f = self.proposer_pubkey_fn.as_ref().ok_or_else(|| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "proposer pubkey lookup not registered",
+            )
+        })?;
+        f(slot).await.map_err(|err| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "proposer pubkey lookup failed",
+            )
+            .with_boxed_source(err)
+        })
+    }
+
+    /// Awaits the consensus-side unsigned proposal for a slot. Prefers the
+    /// registered `await_proposal_fn` hook; falls back to the local dutydb
+    /// so router-only tests don't need to wire it.
+    async fn await_proposal_for_handler(
+        &self,
+        slot: u64,
+    ) -> Result<UnsignedVersionedProposal, ApiError> {
+        if let Some(f) = self.await_proposal_fn.as_ref() {
+            return f(slot).await.map_err(|err| {
+                ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "await proposal hook failed",
+                )
+                .with_boxed_source(err)
+            });
+        }
+        self.dutydb
+            .await_proposal(slot)
+            .await
+            .map_err(map_dutydb_error)
+    }
+
     /// Verifies a partial BLS signature produced by the validator client
     /// against this node's public share for the given DV root pubkey.
     ///
-    /// Mirrors Go's `verifyPartialSig` at
-    /// `core/validatorapi/validatorapi.go:1352`. Unlike the Go variant —
-    /// which projects the BLS-domain / epoch / message-root through the
-    /// `core.Eth2SignedData` interface — this Rust hook takes those three
-    /// values directly. Each submit handler in PRs 3–6 will derive the
-    /// triple from the concrete signed-data wrapper it is processing, then
-    /// invoke this helper.
+    /// The BLS domain / epoch / message-root are passed directly rather
+    /// than projected through a signed-data trait — each submit handler in
+    /// later PRs derives the triple from the concrete signed-data wrapper
+    /// it is processing, then invokes this helper.
     ///
     /// Skipped entirely when [`Self::insecure_test`] is set.
+    #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     pub async fn verify_partial_sig(
         &self,
         root_pubkey: &BLSPubKey,
@@ -355,7 +402,7 @@ impl Component {
         }
 
         // The verify-share is this node's public share for the given DV root
-        // pubkey. Mirrors Go's `getVerifyShareFunc` lookup.
+        // pubkey.
         let pubshare = self
             .pub_share_by_pubkey
             .get(root_pubkey)
@@ -373,58 +420,13 @@ impl Component {
 
         Ok(())
     }
-
-    /// Resolves the proposer's DV root [`PubKey`] for a slot. Mirrors Go's
-    /// `getProposerPubkey` — both `Proposal` and `Submit{,Blinded}Proposal`
-    /// invoke this before fanning out partial signed data.
-    async fn lookup_proposer_pubkey(&self, slot: u64) -> Result<PubKey, ApiError> {
-        let f = self.proposer_pubkey_fn.as_ref().ok_or_else(|| {
-            // 503 mirrors the wider "DV pipeline not ready" failure mode —
-            // a misconfigured Component (no hook) shouldn't surface as a 500.
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "proposer pubkey lookup not registered",
-            )
-        })?;
-        f(slot).await.map_err(|err| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "proposer pubkey lookup failed",
-            )
-            .with_boxed_source(err)
-        })
-    }
-
-    /// Awaits the consensus-side unsigned proposal for a slot. Prefers the
-    /// PR-1 `await_proposal_fn` hook when registered; falls back to the
-    /// local dutydb so router-only tests don't need to wire it.
-    async fn await_proposal_for_handler(
-        &self,
-        slot: u64,
-    ) -> Result<UnsignedVersionedProposal, ApiError> {
-        if let Some(f) = self.await_proposal_fn.as_ref() {
-            return f(slot).await.map_err(|err| {
-                ApiError::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "await proposal hook failed",
-                )
-                .with_boxed_source(err)
-            });
-        }
-        // Reuse `map_dutydb_error` for shape parity with `attestation_data`.
-        self.dutydb
-            .await_proposal(slot)
-            .await
-            .map_err(map_dutydb_error)
-    }
 }
 
 /// Errors returned by [`Component::verify_partial_sig`].
 #[derive(Debug, thiserror::Error)]
 pub enum VerifyPartialSigError {
     /// The supplied DV root public key has no public share registered on
-    /// this node. Mirrors Go's `getVerifyShareFunc` "unknown public key"
-    /// branch.
+    /// this node.
     #[error("unknown public key")]
     UnknownPubKey,
 
@@ -628,24 +630,9 @@ impl Handler for Component {
         &self,
         opts: ProposalOpts,
     ) -> Result<EthResponse<VersionedProposal>, ApiError> {
-        // Single outer deadline bounds every leg of the handler — proposer
-        // pubkey lookup, the upstream `epoch_from_slot` call, randao partial
-        // signature verification (which itself calls upstream
-        // `signing::verify`), subscriber fan-out, and the dutydb `await`.
-        // A hung upstream beacon node or slow subscriber cannot park this
-        // task past `PROPOSAL_TIMEOUT`, defending the validator API listener
-        // against task exhaustion. Mirrors Charon's per-handler context
-        // deadline pattern.
         tokio::time::timeout(PROPOSAL_TIMEOUT, async {
-            // Resolve the proposer pubkey first — this is a blocking lookup
-            // in Go (`getProposerPubkey`) that the rest of the handler
-            // depends on. The Pluto hook is registered by the wider
-            // scheduler; without it we cannot perform partial-randao
-            // verification.
             let pubkey = self.lookup_proposer_pubkey(opts.slot).await?;
 
-            // Translate slot → epoch using the upstream beacon-node's
-            // SLOTS_PER_EPOCH. Mirrors Go's `eth2util.EpochFromSlot`.
             let epoch = pluto_eth2util::helpers::epoch_from_slot(&self.eth2_cl, opts.slot)
                 .await
                 .map_err(|err| {
@@ -653,10 +640,6 @@ impl Handler for Component {
                         .with_source(err)
                 })?;
 
-            // Build the partial randao parsig — the VC's randao reveal
-            // signed by its share. Mirrors Go's
-            // `core.NewPartialSignedRandao(epoch, sig, shareIdx)` followed
-            // by `verifyPartialSig`.
             let randao_par_sig =
                 SignedRandao::new_partial(epoch, opts.randao_reveal, self.share_idx);
             let randao_signature = randao_par_sig.signed_data.signature().map_err(|err| {
@@ -684,22 +667,16 @@ impl Handler for Component {
             .await
             .map_err(verify_partial_sig_error)?;
 
-            // Fan out the partial randao to subscribers. They feed the rest
-            // of the DV pipeline that eventually fills the dutydb with the
-            // unsigned block we will return below.
             let mut parsig_set = ParSignedDataSet::new();
             parsig_set.insert(pubkey, randao_par_sig);
             let randao_duty = Duty::new_randao_duty(SlotNumber::new(opts.slot));
             for sub in &self.subs {
-                sub(&randao_duty, parsig_set.clone()).await.map_err(|err| {
+                sub(&randao_duty, &parsig_set).await.map_err(|err| {
                     ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "subscriber failed")
                         .with_boxed_source(err)
                 })?;
             }
 
-            // Block on the unsigned proposal landing in dutydb. PR-1 plumbed
-            // `await_proposal_fn`; fall back to the dutydb directly when the
-            // hook is not registered (router-local tests).
             let data = self.await_proposal_for_handler(opts.slot).await?;
 
             Ok(EthResponse {
@@ -714,16 +691,10 @@ impl Handler for Component {
     }
 
     async fn submit_proposal(&self, proposal: VersionedSignedProposal) -> Result<(), ApiError> {
-        // Single outer deadline bounds every leg of the handler (proposer
-        // pubkey lookup, dutydb await, partial-sig verify which calls
-        // upstream `signing::verify`, and the subscriber fan-out). See
-        // [`Self::proposal`] for the full rationale.
         tokio::time::timeout(PROPOSAL_TIMEOUT, async {
             let slot = signed_proposal_slot(&proposal.0.block);
             let pubkey = self.lookup_proposer_pubkey(slot).await?;
 
-            // Pull the consensus-side unsigned proposal that the rest of the
-            // pipeline produced for this slot.
             let consensus_proposal =
                 self.await_proposal_for_handler(slot).await.map_err(|err| {
                     let status = err.status_code;
@@ -731,9 +702,6 @@ impl Handler for Component {
                         .with_source(err)
                 })?;
 
-            // Cross-check the VC submission against the consensus proposal —
-            // version, blinded flag, proposer index, and tree-hash root all
-            // have to line up.
             proposal_matches_duty(&proposal, &consensus_proposal).map_err(|err| {
                 ApiError::new(
                     StatusCode::BAD_REQUEST,
@@ -746,14 +714,13 @@ impl Handler for Component {
                 crate::signeddata::VersionedSignedProposal::new_partial(proposal.0, self.share_idx)
                     .map_err(map_signed_data_error)?;
 
-            // Verify the partial signature against this node's public share.
             verify_par_signed_proposal(self, &pubkey, slot, &par_sig).await?;
 
             let mut set = ParSignedDataSet::new();
             set.insert(pubkey, par_sig);
             let duty = Duty::new_proposer_duty(SlotNumber::new(slot));
             for sub in &self.subs {
-                sub(&duty, set.clone()).await.map_err(|err| {
+                sub(&duty, &set).await.map_err(|err| {
                     ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "subscriber failed")
                         .with_boxed_source(err)
                 })?;
@@ -768,16 +735,10 @@ impl Handler for Component {
         &self,
         proposal: VersionedSignedBlindedProposal,
     ) -> Result<(), ApiError> {
-        // Single outer deadline bounds every leg of the handler. See
-        // [`Self::proposal`] for the full rationale.
         tokio::time::timeout(PROPOSAL_TIMEOUT, async {
             let slot = blinded_proposal_slot(&proposal);
             let pubkey = self.lookup_proposer_pubkey(slot).await?;
 
-            // Same fan-out shape as `submit_proposal`: pull the
-            // consensus-side unsigned proposal, build a wrapped "blinded"
-            // `VersionedSignedProposal` for the matches-duty check, and emit
-            // a partial signed wrapper to subscribers.
             let consensus_proposal =
                 self.await_proposal_for_handler(slot).await.map_err(|err| {
                     let status = err.status_code;
@@ -785,11 +746,6 @@ impl Handler for Component {
                         .with_source(err)
                 })?;
 
-            // Translate the blinded payload into the generic versioned
-            // signed shape so we can share the `proposal_matches_duty`
-            // helper. Mirrors Go's `SubmitBlindedProposal` which constructs
-            // a `SubmitProposalOpts` from the blinded fields before calling
-            // the same `propDataMatchesDuty` helper.
             let typed_wrapper =
                 crate::signeddata::VersionedSignedProposal::from_blinded_proposal(proposal.clone())
                     .map_err(map_signed_data_error)?;
@@ -814,7 +770,7 @@ impl Handler for Component {
             set.insert(pubkey, par_sig);
             let duty = Duty::new_proposer_duty(SlotNumber::new(slot));
             for sub in &self.subs {
-                sub(&duty, set.clone()).await.map_err(|err| {
+                sub(&duty, &set).await.map_err(|err| {
                     ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "subscriber failed")
                         .with_boxed_source(err)
                 })?;
@@ -903,8 +859,7 @@ fn upstream_timeout(endpoint: &'static str) -> ApiError {
 }
 
 /// Builds the `ApiError` returned when a proposal-related handler elapses
-/// past [`PROPOSAL_TIMEOUT`]. 408 is the status Charon uses for "could not
-/// produce in time", and it tells a VC to retry rather than to fail over.
+/// past [`PROPOSAL_TIMEOUT`].
 fn proposal_timeout() -> ApiError {
     ApiError::new(
         StatusCode::REQUEST_TIMEOUT,
@@ -1065,9 +1020,9 @@ fn pubkey_to_bls(pk: &PubKey) -> BLSPubKey {
 }
 
 /// Maps a [`VerifyPartialSigError`] back to an [`ApiError`]. `UnknownPubKey`
-/// signals a cluster/share-mapping misconfiguration — same 500 reasoning as
-/// `swap_attester_pubshares`. Signing-level failures (zero signature, bad
-/// BLS, beacon-node lookup) become 400 since they reflect bad VC input.
+/// signals a cluster/share-mapping misconfiguration. Signing-level failures
+/// (zero signature, bad BLS, beacon-node lookup) become 400 since they
+/// reflect bad VC input.
 fn verify_partial_sig_error(err: VerifyPartialSigError) -> ApiError {
     match err {
         VerifyPartialSigError::UnknownPubKey => ApiError::new(
@@ -1085,8 +1040,7 @@ fn verify_partial_sig_error(err: VerifyPartialSigError) -> ApiError {
 
 /// Maps a [`SignedDataError`] coming from a `new_partial` constructor to the
 /// `ApiError` we return on submit. These errors only fire when the
-/// VC-supplied payload is malformed (unknown fork version, missing block),
-/// so the client gets a 400.
+/// VC-supplied payload is malformed.
 fn map_signed_data_error(err: SignedDataError) -> ApiError {
     ApiError::new(
         StatusCode::BAD_REQUEST,
@@ -1096,10 +1050,7 @@ fn map_signed_data_error(err: SignedDataError) -> ApiError {
 }
 
 /// Verifies the partial signature embedded in a `ParSignedData` wrapper
-/// against this node's public share for `pubkey`. Mirrors Go's
-/// `verifyPartialSig(ctx, parSig, pubkey)`. The caller passes the slot used
-/// to compute the signing-epoch since `dyn SignedData` is intentionally
-/// opaque about the wrapped block shape.
+/// against this node's public share for `pubkey`.
 async fn verify_par_signed_proposal(
     component: &Component,
     pubkey: &PubKey,
@@ -1142,18 +1093,12 @@ async fn verify_par_signed_proposal(
 }
 
 /// Cross-checks a VC-submitted proposal against the consensus proposal that
-/// landed in the dutydb for the same slot. Mirrors Go's
-/// `propDataMatchesDuty` — version, blinded flag, proposer index, and the
-/// SSZ tree-hash root of the block must all match.
+/// landed in the dutydb for the same slot. Version, blinded flag, proposer
+/// index, and the SSZ tree-hash root of the block must all match.
 fn proposal_matches_duty(
     vc: &VersionedSignedProposal,
     consensus: &UnsignedVersionedProposal,
 ) -> Result<(), ProposalMatchError> {
-    // Check order mirrors Go's `propDataMatchesDuty`
-    // (charon/core/validatorapi/validatorapi.go:454-487): proposer_index,
-    // blinded, version, then hash-tree root. Diverging the order would
-    // change the first-mismatch error a misbehaving VC sees and break
-    // parity with Charon log-driven dashboards.
     let vc_index = signed_proposal_proposer_index(&vc.0.block);
     let consensus_index = unsigned_proposal_proposer_index(consensus);
     if vc_index != consensus_index {
@@ -1188,8 +1133,7 @@ fn proposal_matches_duty(
 }
 
 /// Reports a mismatch between a VC-submitted proposal and the consensus
-/// proposal pulled from the dutydb. Same shape as Go's `errors.New(...)`
-/// branches inside `propDataMatchesDuty`.
+/// proposal pulled from the dutydb.
 #[derive(Debug, thiserror::Error)]
 enum ProposalMatchError {
     #[error("dutydb and VC proposals have different version: consensus={consensus:?} vc={vc:?}")]
@@ -1206,7 +1150,7 @@ enum ProposalMatchError {
 }
 
 /// Returns the slot of the inner block in a blinded versioned signed
-/// proposal. Mirrors Go's `VersionedSignedBlindedProposal.Slot()`.
+/// proposal.
 fn blinded_proposal_slot(p: &VersionedSignedBlindedProposal) -> u64 {
     match &p.block {
         SignedBlindedProposalBlock::Bellatrix(b) => b.message.slot,
@@ -1273,8 +1217,7 @@ fn signed_proposal_proposer_index(b: &SignedProposalBlock) -> ValidatorIndex {
 }
 
 /// Returns the SSZ tree-hash root of the inner message of a signed
-/// proposal block. Mirrors the per-variant `HashTreeRoot()` branches in
-/// Go's `propDataMatchesDuty`.
+/// proposal block.
 fn signed_proposal_message_root(b: &SignedProposalBlock) -> Root {
     use tree_hash::TreeHash;
     match b {
@@ -1294,7 +1237,6 @@ fn signed_proposal_message_root(b: &SignedProposalBlock) -> Root {
 }
 
 /// Returns the proposer index of an unsigned `signeddata::VersionedProposal`.
-/// Mirrors Go's `VersionedProposal.ProposerIndex()`.
 fn unsigned_proposal_proposer_index(p: &UnsignedVersionedProposal) -> ValidatorIndex {
     use crate::signeddata::ProposalBlock;
     match &p.block {
@@ -1315,7 +1257,12 @@ fn unsigned_proposal_proposer_index(p: &UnsignedVersionedProposal) -> ValidatorI
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use chrono::{DateTime, Utc};
+    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
+    use pluto_testutil::BeaconMock;
+    use serde_json::json;
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
@@ -1325,9 +1272,10 @@ mod tests {
         dutydb::{UnsignedDataSet, UnsignedDutyData},
         signeddata::{
             AttestationData as SignedAttestationData, AttesterDuty as SignedAttesterDuty,
+            SignedRandao, SyncContribution, VersionedAggregatedAttestation,
         },
         testutils::random_core_pub_key,
-        types::{Duty, DutyType, SlotNumber},
+        types::{Duty, DutyType, PubKey, SlotNumber},
         validatorapi::types::AttestationDataOpts,
     };
 
@@ -1761,18 +1709,6 @@ mod tests {
     // Plumbing tests — Subscribe / Register* / verify_partial_sig
     // ====================================================================
 
-    use std::sync::Mutex;
-
-    use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
-    use pluto_eth2util::signing::DomainName;
-    use pluto_testutil::BeaconMock;
-    use serde_json::json;
-
-    use crate::{
-        signeddata::{SignedRandao, SyncContribution, VersionedAggregatedAttestation},
-        types::PubKey,
-    };
-
     fn dv_pubkey(byte: u8) -> BLSPubKey {
         [byte; 48]
     }
@@ -1799,7 +1735,6 @@ mod tests {
 
     /// `Subscribe` invokes every registered subscriber, each receiving its
     /// own clone of the set. Mutating one clone does not affect the others.
-    /// Mirrors Go's `Subscribe` clone-before-fanout behaviour.
     #[tokio::test]
     async fn subscribe_fanouts_clones_to_every_subscriber() {
         let mut component = make_plumbed_component(HashMap::new());
@@ -1844,9 +1779,10 @@ mod tests {
         set.insert(key_b, SignedRandao::new_partial(0, [0; 96], 1));
         let duty = Duty::new(SlotNumber::new(1), DutyType::Attester);
 
-        // Fanout: every sub must observe its own clone.
+        // Fanout: each subscriber gets the set by reference; the registered
+        // wrapper clones once so every subscriber observes its own copy.
         for sub in component.subs.iter() {
-            sub(&duty, set.clone()).await.unwrap();
+            sub(&duty, &set).await.unwrap();
         }
 
         let observed = received.lock().unwrap().clone();
@@ -1858,8 +1794,7 @@ mod tests {
     }
 
     /// `register_await_proposal` overwrites a prior registration — only the
-    /// most recently registered closure is invoked. Mirrors Go's
-    /// single-function-input semantics.
+    /// most recently registered closure is invoked.
     #[tokio::test]
     async fn register_await_proposal_overwrites_prior_registration() {
         let mut component = make_plumbed_component(HashMap::new());
@@ -1976,7 +1911,6 @@ mod tests {
         assert!(component.await_agg_sig_db_fn.is_none());
         assert!(component.duty_def_fn.is_none());
         assert!(component.pub_key_by_att_fn.is_none());
-        assert!(component.proposer_pubkey_fn.is_none());
         assert!(component.subs.is_empty());
     }
 
@@ -2078,8 +2012,7 @@ mod tests {
     }
 
     /// `verify_partial_sig` rejects when this node has no public share
-    /// registered for the provided DV root pubkey. Mirrors Go's
-    /// `getVerifyShareFunc -> errors.New("unknown public key")` branch.
+    /// registered for the provided DV root pubkey.
     #[tokio::test]
     async fn verify_partial_sig_rejects_unknown_pubkey() {
         let (component, _mock) = make_verify_component(HashMap::new()).await;
@@ -2097,9 +2030,8 @@ mod tests {
     }
 
     /// `verify_partial_sig` short-circuits when `insecure_test` is set —
-    /// mirrors the Go early-return at `validatorapi.go:1353`. This must
-    /// succeed even with a zero pubshare lookup and zero signature, so we
-    /// know no BLS verify ran.
+    /// this must succeed even with a zero pubshare lookup and zero
+    /// signature, so we know no BLS verify ran.
     #[tokio::test]
     async fn verify_partial_sig_skipped_in_insecure_test_mode() {
         let cancel = CancellationToken::new();
