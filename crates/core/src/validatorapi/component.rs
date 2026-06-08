@@ -40,7 +40,7 @@ use crate::{
         SignedDataError, SignedRandao, SyncContribution, VersionedAggregatedAttestation,
         VersionedProposal as UnsignedVersionedProposal,
     },
-    types::{Duty, ParSignedDataSet, PubKey, Signature, SignedData, SlotNumber},
+    types::{Duty, DutyDefinitionSet, ParSignedDataSet, PubKey, Signature, SignedData, SlotNumber},
     version,
 };
 
@@ -111,12 +111,6 @@ pub type PubKeyByAttFn = Arc<
         + 'static,
 >;
 
-/// Returns the DV root [`PubKey`] of the proposer for a given slot. A thin
-/// typed hook for the proposer-pubkey path, used by the proposal /
-/// submit_proposal / submit_blinded_proposal handlers.
-pub type ProposerPubkeyFn =
-    Arc<dyn Fn(u64) -> BoxFuture<'static, Result<PubKey, CallbackError>> + Send + Sync + 'static>;
-
 /// Hard deadline for upstream beacon-node calls. Bounds the worst-case
 /// handler latency when the upstream hangs or stalls.
 const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -184,15 +178,14 @@ pub struct Component {
     /// Looks up aggregated signed data for a `(duty, pubkey)`.
     #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     await_agg_sig_db_fn: Option<AwaitAggSigDbFn>,
-    /// Looks up the duty-definition set for a duty.
-    #[allow(dead_code, reason = "consumed by submit_attestations in later PRs")]
+    /// Looks up the duty-definition set for a duty. The proposal /
+    /// submit_proposal / submit_blinded_proposal handlers consult this to
+    /// resolve the proposer's DV root pubkey, mirroring Charon's
+    /// `getProposerPubkey` (`core/validatorapi/validatorapi.go:1334`).
     duty_def_fn: Option<DutyDefFn>,
     /// Looks up the root pubkey for an `(slot, commIdx, valIdx)` triple.
     #[allow(dead_code, reason = "consumed by submit_attestations in later PRs")]
     pub_key_by_att_fn: Option<PubKeyByAttFn>,
-    /// Looks up the proposer's root pubkey for a slot. The proposal /
-    /// submit_proposal / submit_blinded_proposal handlers consult this.
-    proposer_pubkey_fn: Option<ProposerPubkeyFn>,
 }
 
 impl Component {
@@ -218,7 +211,6 @@ impl Component {
             await_agg_sig_db_fn: None,
             duty_def_fn: None,
             pub_key_by_att_fn: None,
-            proposer_pubkey_fn: None,
         }
     }
 
@@ -246,7 +238,6 @@ impl Component {
             await_agg_sig_db_fn: None,
             duty_def_fn: None,
             pub_key_by_att_fn: None,
-            proposer_pubkey_fn: None,
         }
     }
 
@@ -331,30 +322,45 @@ impl Component {
         }));
     }
 
-    /// Registers (and overwrites any prior) proposer-pubkey lookup.
-    pub fn register_proposer_pubkey<F, Fut>(&mut self, f: F)
-    where
-        F: Fn(u64) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<PubKey, CallbackError>> + Send + 'static,
-    {
-        self.proposer_pubkey_fn = Some(Arc::new(move |slot| Box::pin(f(slot))));
-    }
-
-    /// Resolves the proposer's DV root [`PubKey`] for a slot.
-    async fn lookup_proposer_pubkey(&self, slot: u64) -> Result<PubKey, ApiError> {
-        let f = self.proposer_pubkey_fn.as_ref().ok_or_else(|| {
+    /// Resolves the proposer's DV root [`PubKey`] for the given proposer
+    /// [`Duty`] via the registered `duty_def_fn`. Mirrors Charon's
+    /// `getProposerPubkey(ctx, duty)`
+    /// (`core/validatorapi/validatorapi.go:1334`): ask `dutyDefFunc` for
+    /// the definition set, require exactly one entry, and return its sole
+    /// key.
+    async fn lookup_proposer_pubkey(&self, duty: Duty) -> Result<PubKey, ApiError> {
+        let f = self.duty_def_fn.as_ref().ok_or_else(|| {
             ApiError::new(
                 StatusCode::SERVICE_UNAVAILABLE,
-                "proposer pubkey lookup not registered",
+                "duty definition lookup not registered",
             )
         })?;
-        f(slot).await.map_err(|err| {
+
+        let boxed = f(duty).await.map_err(|err| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "proposer pubkey lookup failed",
+                "duty definition lookup failed",
             )
             .with_boxed_source(err)
-        })
+        })?;
+
+        let def_set = boxed
+            .downcast::<DutyDefinitionSet<ProposerDuty>>()
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "duty definition lookup returned unexpected type",
+                )
+            })?;
+
+        if def_set.inner().len() != 1 {
+            return Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "unexpected amount of proposer duties",
+            ));
+        }
+
+        Ok(*def_set.keys().next().expect("def_set length checked above"))
     }
 
     /// Awaits the consensus-side unsigned proposal for a slot. Prefers the
@@ -631,7 +637,9 @@ impl Handler for Component {
         opts: ProposalOpts,
     ) -> Result<EthResponse<VersionedProposal>, ApiError> {
         tokio::time::timeout(PROPOSAL_TIMEOUT, async {
-            let pubkey = self.lookup_proposer_pubkey(opts.slot).await?;
+            let pubkey = self
+                .lookup_proposer_pubkey(Duty::new_proposer_duty(SlotNumber::new(opts.slot)))
+                .await?;
 
             let epoch = pluto_eth2util::helpers::epoch_from_slot(&self.eth2_cl, opts.slot)
                 .await
@@ -693,7 +701,8 @@ impl Handler for Component {
     async fn submit_proposal(&self, proposal: VersionedSignedProposal) -> Result<(), ApiError> {
         tokio::time::timeout(PROPOSAL_TIMEOUT, async {
             let slot = signed_proposal_slot(&proposal.0.block);
-            let pubkey = self.lookup_proposer_pubkey(slot).await?;
+            let duty = Duty::new_proposer_duty(SlotNumber::new(slot));
+            let pubkey = self.lookup_proposer_pubkey(duty.clone()).await?;
 
             let consensus_proposal =
                 self.await_proposal_for_handler(slot).await.map_err(|err| {
@@ -718,7 +727,6 @@ impl Handler for Component {
 
             let mut set = ParSignedDataSet::new();
             set.insert(pubkey, par_sig);
-            let duty = Duty::new_proposer_duty(SlotNumber::new(slot));
             for sub in &self.subs {
                 sub(&duty, &set).await.map_err(|err| {
                     ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "subscriber failed")
@@ -737,7 +745,8 @@ impl Handler for Component {
     ) -> Result<(), ApiError> {
         tokio::time::timeout(PROPOSAL_TIMEOUT, async {
             let slot = blinded_proposal_slot(&proposal);
-            let pubkey = self.lookup_proposer_pubkey(slot).await?;
+            let duty = Duty::new_proposer_duty(SlotNumber::new(slot));
+            let pubkey = self.lookup_proposer_pubkey(duty.clone()).await?;
 
             let consensus_proposal =
                 self.await_proposal_for_handler(slot).await.map_err(|err| {
@@ -768,7 +777,6 @@ impl Handler for Component {
 
             let mut set = ParSignedDataSet::new();
             set.insert(pubkey, par_sig);
-            let duty = Duty::new_proposer_duty(SlotNumber::new(slot));
             for sub in &self.subs {
                 sub(&duty, &set).await.map_err(|err| {
                     ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "subscriber failed")
@@ -1275,7 +1283,7 @@ mod tests {
             SignedRandao, SyncContribution, VersionedAggregatedAttestation,
         },
         testutils::random_core_pub_key,
-        types::{Duty, DutyType, PubKey, SlotNumber},
+        types::{Duty, DutyDefinition, DutyType, PubKey, SlotNumber},
         validatorapi::types::AttestationDataOpts,
     };
 
@@ -2124,6 +2132,30 @@ mod tests {
         (component, mock)
     }
 
+    /// Build a single-entry `DutyDefinitionSet<ProposerDuty>` keyed by
+    /// `pubkey`, matching the shape Charon's scheduler hands to
+    /// `dutyDefFunc` for proposer duties. The inner `ProposerDuty` value
+    /// is a default placeholder — `getProposerPubkey` only reads the map
+    /// keys, so the value's contents are immaterial to these tests.
+    fn proposer_def_set(pubkey: PubKey) -> DutyDefinitionSet<ProposerDuty> {
+        let mut set = DutyDefinitionSet::new();
+        set.insert(pubkey, DutyDefinition::new(ProposerDuty::default()));
+        set
+    }
+
+    /// Convenience wrapper around `register_get_duty_definition` for the
+    /// proposal tests: registers a hook that always returns a one-entry
+    /// proposer set keyed by `pubkey`. This is the Pluto analogue of
+    /// Charon's wired `dutyDefFunc` for proposer duties — the proposal /
+    /// submit_proposal / submit_blinded_proposal handlers read the
+    /// resulting key as the proposer pubkey.
+    fn register_proposer_def(component: &mut Component, pubkey: PubKey) {
+        component.register_get_duty_definition(move |_duty| {
+            let set = proposer_def_set(pubkey);
+            async move { Ok(Box::new(set) as Box<dyn Any + Send + Sync>) }
+        });
+    }
+
     /// Builds a 512-bit zero `BitVector<512>` to populate the
     /// `sync_committee_bits` field of an Altair-or-later sync aggregate.
     /// 512 bits = 64 bytes — the spec-fixed length validated by the
@@ -2255,7 +2287,7 @@ mod tests {
         let core_pk = core_pubkey(0x7A);
         let (unsigned, _signed) = matched_phase0_proposals(48, 7);
 
-        component.register_proposer_pubkey(move |_slot| async move { Ok(core_pk) });
+        register_proposer_def(&mut component, core_pk);
         let captured: Arc<Mutex<Option<UnsignedProposal>>> = Arc::new(Mutex::new(Some(unsigned)));
         component.register_await_proposal({
             let captured = Arc::clone(&captured);
@@ -2310,7 +2342,7 @@ mod tests {
         let core_pk = core_pubkey(0x7B);
         let (unsigned_blinded, _signed) = matched_bellatrix_blinded_proposals(64, 9);
 
-        component.register_proposer_pubkey(move |_slot| async move { Ok(core_pk) });
+        register_proposer_def(&mut component, core_pk);
         let captured: Arc<Mutex<Option<UnsignedProposal>>> =
             Arc::new(Mutex::new(Some(unsigned_blinded)));
         component.register_await_proposal({
@@ -2337,11 +2369,13 @@ mod tests {
         assert_eq!(response.data.version(), V::Bellatrix);
     }
 
-    /// When no `proposer_pubkey_fn` is registered, the handler short-
-    /// circuits with 503. Mirrors Go's `getProposerPubkey` failure (which
-    /// returns an error when `dutyDefFunc` is missing or empty).
+    /// When no `dutyDefFunc` is registered, the handler short-circuits
+    /// with 503 — mirrors Charon's `getProposerPubkey` failure path
+    /// (`core/validatorapi/validatorapi.go:1334`), which propagates the
+    /// underlying `dutyDefFunc` error when the lookup is wired to a nil
+    /// closure / unresolved duty.
     #[tokio::test]
-    async fn proposal_rejects_when_proposer_pubkey_hook_missing() {
+    async fn proposal_rejects_when_duty_def_hook_missing() {
         let (component, _mock) = make_proposal_component().await;
 
         let err = component
@@ -2356,6 +2390,39 @@ mod tests {
         assert_eq!(err.status_code, StatusCode::SERVICE_UNAVAILABLE);
     }
 
+    /// When `dutyDefFunc` resolves to a set whose cardinality is not
+    /// exactly one (here: two entries), the handler returns 500 —
+    /// mirrors Charon's `errors.New("unexpected amount of proposer
+    /// duties")` branch in `getProposerPubkey`.
+    #[tokio::test]
+    async fn proposal_rejects_when_duty_def_returns_wrong_cardinality() {
+        let (mut component, _mock) = make_proposal_component().await;
+
+        component.register_get_duty_definition(|_duty| async move {
+            let mut set: DutyDefinitionSet<ProposerDuty> = DutyDefinitionSet::new();
+            set.insert(
+                core_pubkey(0xAA),
+                DutyDefinition::new(ProposerDuty::default()),
+            );
+            set.insert(
+                core_pubkey(0xBB),
+                DutyDefinition::new(ProposerDuty::default()),
+            );
+            Ok(Box::new(set) as Box<dyn Any + Send + Sync>)
+        });
+
+        let err = component
+            .proposal(ProposalOpts {
+                slot: 1,
+                randao_reveal: [0; 96],
+                graffiti: [0; 32],
+                builder_boost_factor: None,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
     /// When the proposal hook is registered but the consensus-side proposal
     /// never arrives within `PROPOSAL_TIMEOUT`, the handler returns 408
     /// instead of hanging.
@@ -2363,7 +2430,7 @@ mod tests {
     async fn proposal_times_out_when_consensus_proposal_never_arrives() {
         let (mut component, _mock) = make_proposal_component().await;
 
-        component.register_proposer_pubkey(|_slot| async move { Ok(core_pubkey(0x10)) });
+        register_proposer_def(&mut component, core_pubkey(0x10));
         // No `register_await_proposal` — the handler falls back to the
         // dutydb, which has no entry for this slot, so the
         // `PROPOSAL_TIMEOUT` trips.
@@ -2388,7 +2455,7 @@ mod tests {
     async fn submit_proposal_times_out_when_consensus_proposal_never_arrives() {
         let (mut component, _mock) = make_proposal_component().await;
 
-        component.register_proposer_pubkey(|_slot| async move { Ok(core_pubkey(0x10)) });
+        register_proposer_def(&mut component, core_pubkey(0x10));
         // No `register_await_proposal` — falls back to the dutydb, which
         // has no entry for slot 1234.
         let (_, signed) = matched_phase0_proposals(1234, 5);
@@ -2406,7 +2473,7 @@ mod tests {
     async fn submit_blinded_proposal_times_out_when_consensus_proposal_never_arrives() {
         let (mut component, _mock) = make_proposal_component().await;
 
-        component.register_proposer_pubkey(|_slot| async move { Ok(core_pubkey(0x10)) });
+        register_proposer_def(&mut component, core_pubkey(0x10));
         // No `register_await_proposal` — falls back to the dutydb, which
         // has no entry for slot 1234.
         let (_, blinded) = matched_bellatrix_blinded_proposals(1234, 5);
@@ -2431,7 +2498,7 @@ mod tests {
         let core_pk = core_pubkey(0x44);
         let (unsigned, signed) = matched_phase0_proposals(33, 5);
 
-        component.register_proposer_pubkey(move |_slot| async move { Ok(core_pk) });
+        register_proposer_def(&mut component, core_pk);
         let captured: Arc<Mutex<Option<UnsignedProposal>>> = Arc::new(Mutex::new(Some(unsigned)));
         component.register_await_proposal({
             let captured = Arc::clone(&captured);
@@ -2514,7 +2581,7 @@ mod tests {
             block: SignedProposalBlock::Altair(altair_signed),
         };
 
-        component.register_proposer_pubkey(|_slot| async move { Ok(core_pubkey(0x88)) });
+        register_proposer_def(&mut component, core_pubkey(0x88));
         let captured: Arc<Mutex<Option<UnsignedProposal>>> = Arc::new(Mutex::new(Some(consensus)));
         component.register_await_proposal({
             let captured = Arc::clone(&captured);
@@ -2551,7 +2618,7 @@ mod tests {
         let (consensus, _) = matched_phase0_proposals(33, 5);
         let (_, signed_wrong) = matched_phase0_proposals(33, 6); // different index
 
-        component.register_proposer_pubkey(|_slot| async move { Ok(core_pubkey(0x88)) });
+        register_proposer_def(&mut component, core_pubkey(0x88));
         let captured: Arc<Mutex<Option<UnsignedProposal>>> = Arc::new(Mutex::new(Some(consensus)));
         component.register_await_proposal({
             let captured = Arc::clone(&captured);
@@ -2633,7 +2700,7 @@ mod tests {
                 signature: [0; 96],
             }),
         };
-        component.register_proposer_pubkey(|_slot| async move { Ok(core_pubkey(0x88)) });
+        register_proposer_def(&mut component, core_pubkey(0x88));
         let captured: Arc<Mutex<Option<UnsignedProposal>>> =
             Arc::new(Mutex::new(Some(blinded_unsigned)));
         component.register_await_proposal({
@@ -2679,7 +2746,7 @@ mod tests {
 
         let (consensus, signed) = matched_phase0_proposals(33, 5);
 
-        component.register_proposer_pubkey(|_slot| async move { Ok(core_pubkey(0x88)) });
+        register_proposer_def(&mut component, core_pubkey(0x88));
         let captured: Arc<Mutex<Option<UnsignedProposal>>> = Arc::new(Mutex::new(Some(consensus)));
         component.register_await_proposal({
             let captured = Arc::clone(&captured);
@@ -2711,7 +2778,7 @@ mod tests {
 
         let (consensus, signed_blinded) = matched_bellatrix_blinded_proposals(72, 11);
 
-        component.register_proposer_pubkey(|_slot| async move { Ok(core_pubkey(0x99)) });
+        register_proposer_def(&mut component, core_pubkey(0x99));
         let captured: Arc<Mutex<Option<UnsignedProposal>>> = Arc::new(Mutex::new(Some(consensus)));
         component.register_await_proposal({
             let captured = Arc::clone(&captured);
@@ -2755,7 +2822,7 @@ mod tests {
         let (consensus, _) = matched_bellatrix_blinded_proposals(72, 11);
         let (_, signed_wrong) = matched_bellatrix_blinded_proposals(72, 12);
 
-        component.register_proposer_pubkey(|_slot| async move { Ok(core_pubkey(0x99)) });
+        register_proposer_def(&mut component, core_pubkey(0x99));
         let captured: Arc<Mutex<Option<UnsignedProposal>>> = Arc::new(Mutex::new(Some(consensus)));
         component.register_await_proposal({
             let captured = Arc::clone(&captured);
@@ -2798,7 +2865,7 @@ mod tests {
             .await
             .unwrap();
 
-        component.register_proposer_pubkey(|_slot| async move { Ok(core_pubkey(0x55)) });
+        register_proposer_def(&mut component, core_pubkey(0x55));
 
         component
             .submit_proposal(VersionedSignedProposal(signed))
