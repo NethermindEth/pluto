@@ -10,7 +10,7 @@
 //! directly from tests. The networked driver that polls the beacon node and
 //! builds the [`Block`] inputs is layered on top separately.
 
-// The networked `InclusionChecker` that wires the default reporters and drives
+// TODO: The networked `InclusionChecker` that wires the default reporters and drives
 // this core is added in a follow-up; until then some core items (default
 // reporters, committee plumbing) have no in-crate caller.
 #![allow(dead_code)]
