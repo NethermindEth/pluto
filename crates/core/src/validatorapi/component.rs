@@ -13,7 +13,7 @@ use pluto_eth2api::{
     EthBeaconNodeApiClient, GetAttesterDutiesRequest, GetAttesterDutiesResponse,
     GetProposerDutiesRequest, GetProposerDutiesResponse, GetSyncCommitteeDutiesRequest,
     GetSyncCommitteeDutiesResponse,
-    spec::phase0::{BLSPubKey, Epoch, Root},
+    spec::phase0::{BLSPubKey, Epoch, Root, ValidatorIndex},
 };
 use pluto_eth2util::signing::{self, DomainName, SigningError};
 use tokio::time::error::Elapsed;
@@ -32,6 +32,7 @@ use super::{
         VersionedAttestation, VersionedProposal, VersionedSignedAggregateAndProof,
         VersionedSignedBlindedProposal, VersionedSignedProposal,
     },
+    validator_cache::CachedValidatorsProvider,
 };
 use crate::{
     dutydb::{Error as DutyDbError, MemDB},
@@ -175,6 +176,14 @@ pub struct Component {
     /// Looks up the root pubkey for an `(slot, commIdx, valIdx)` triple.
     #[allow(dead_code, reason = "consumed by submit_attestations in later PRs")]
     pub_key_by_att_fn: Option<PubKeyByAttFn>,
+    /// Cluster's per-epoch active-validators lookup. Consumed by the
+    /// selections / voluntary-exit / sync-committee submit handlers to
+    /// translate validator-client-supplied `validator_index` values into
+    /// DV root public keys. Mirrors Go's `c.eth2Cl.ActiveValidators(ctx)`,
+    /// which is itself backed by `app/eth2wrap`'s per-epoch validator
+    /// cache.
+    #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
+    validator_cache: Arc<dyn CachedValidatorsProvider>,
 }
 
 impl Component {
@@ -185,6 +194,7 @@ impl Component {
         share_idx: u64,
         pub_share_by_pubkey: HashMap<BLSPubKey, BLSPubKey>,
         builder_enabled: bool,
+        validator_cache: Arc<dyn CachedValidatorsProvider>,
     ) -> Self {
         Self {
             eth2_cl,
@@ -200,6 +210,7 @@ impl Component {
             await_agg_sig_db_fn: None,
             duty_def_fn: None,
             pub_key_by_att_fn: None,
+            validator_cache,
         }
     }
 
@@ -212,6 +223,7 @@ impl Component {
         eth2_cl: Arc<EthBeaconNodeApiClient>,
         dutydb: Arc<MemDB>,
         share_idx: u64,
+        validator_cache: Arc<dyn CachedValidatorsProvider>,
     ) -> Self {
         Self {
             eth2_cl,
@@ -227,6 +239,7 @@ impl Component {
             await_agg_sig_db_fn: None,
             duty_def_fn: None,
             pub_key_by_att_fn: None,
+            validator_cache,
         }
     }
 
@@ -351,6 +364,28 @@ impl Component {
         .await?;
 
         Ok(())
+    }
+
+    /// Fetches the cluster's active validators through the per-epoch
+    /// [`CachedValidatorsProvider`], bounded by [`UPSTREAM_REQUEST_TIMEOUT`].
+    /// Translates cache failures into `ApiError`s without leaking the
+    /// underlying error into the client-visible message. Mirrors Go's
+    /// `c.eth2Cl.ActiveValidators(ctx)`, which is itself implemented via
+    /// `app/eth2wrap`'s validator cache.
+    #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
+    async fn fetch_active_validators(
+        &self,
+    ) -> Result<HashMap<ValidatorIndex, BLSPubKey>, ApiError> {
+        tokio::time::timeout(
+            UPSTREAM_REQUEST_TIMEOUT,
+            self.validator_cache.active_validators(),
+        )
+        .await
+        .map_err(|_: Elapsed| upstream_timeout("active validators"))?
+        .map_err(|err| {
+            ApiError::new(StatusCode::BAD_GATEWAY, "active validators lookup failed")
+                .with_boxed_source(err)
+        })
     }
 }
 
@@ -821,6 +856,36 @@ mod tests {
         validatorapi::types::AttestationDataOpts,
     };
 
+    /// In-memory stand-in for the per-epoch validator cache. Tests supply
+    /// the `validator_index -> root pubkey` map up front instead of
+    /// running a real beacon-node mock through a `ValidatorCache`.
+    #[derive(Default)]
+    pub(super) struct TestValidatorCache(HashMap<ValidatorIndex, BLSPubKey>);
+
+    impl TestValidatorCache {
+        pub(super) fn arc(
+            map: HashMap<ValidatorIndex, BLSPubKey>,
+        ) -> Arc<dyn CachedValidatorsProvider> {
+            Arc::new(Self(map))
+        }
+
+        pub(super) fn empty() -> Arc<dyn CachedValidatorsProvider> {
+            Self::arc(HashMap::new())
+        }
+    }
+
+    #[async_trait]
+    impl CachedValidatorsProvider for TestValidatorCache {
+        async fn active_validators(
+            &self,
+        ) -> Result<
+            HashMap<ValidatorIndex, BLSPubKey>,
+            super::super::validator_cache::CachedValidatorsError,
+        > {
+            Ok(self.0.clone())
+        }
+    }
+
     /// Schedules every duty with a deadline at `MAX_UTC`, so duties are
     /// `Scheduled` but never naturally expire.
     struct FarFutureCalculator;
@@ -844,7 +909,8 @@ mod tests {
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
         let eth2_cl =
             Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
-        let component = Component::new_insecure(eth2_cl, Arc::clone(&dutydb), 1);
+        let component =
+            Component::new_insecure(eth2_cl, Arc::clone(&dutydb), 1, TestValidatorCache::empty());
         (component, dutydb)
     }
 
@@ -1086,7 +1152,8 @@ mod tests {
         let dutydb = Arc::new(MemDB::new(deadliner, trim_rx, &cancel));
         let eth2_cl =
             Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
-        let component = Component::new_insecure(eth2_cl, Arc::clone(&dutydb), 1);
+        let component =
+            Component::new_insecure(eth2_cl, Arc::clone(&dutydb), 1, TestValidatorCache::empty());
 
         // Start an await before any data is stored.
         let waiter = {
@@ -1272,7 +1339,7 @@ mod tests {
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
         let eth2_cl =
             Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
-        Component::new(eth2_cl, dutydb, 1, map, false)
+        Component::new(eth2_cl, dutydb, 1, map, false, TestValidatorCache::empty())
     }
 
     /// `Subscribe` invokes every registered subscriber, each receiving its
@@ -1503,7 +1570,7 @@ mod tests {
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
         let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
-        let component = Component::new(eth2_cl, dutydb, 1, map, false);
+        let component = Component::new(eth2_cl, dutydb, 1, map, false, TestValidatorCache::empty());
         (component, mock)
     }
 
@@ -1586,7 +1653,7 @@ mod tests {
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
         let eth2_cl =
             Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
-        let component = Component::new_insecure(eth2_cl, dutydb, 1);
+        let component = Component::new_insecure(eth2_cl, dutydb, 1, TestValidatorCache::empty());
 
         component
             .verify_partial_sig(
@@ -1598,5 +1665,76 @@ mod tests {
             )
             .await
             .expect("insecure_test mode skips verification");
+    }
+
+    // ====================================================================
+    // CachedValidatorsProvider plumbing
+    // ====================================================================
+
+    /// `fetch_active_validators` returns whatever the registered
+    /// `CachedValidatorsProvider` yields, untouched. Mirrors Go's
+    /// `c.eth2Cl.ActiveValidators(ctx)` return shape.
+    #[tokio::test]
+    async fn fetch_active_validators_returns_cache_contents() {
+        let cancel = CancellationToken::new();
+        let (deadliner, _deadliner_rx) = DeadlinerTask::start(
+            cancel.clone(),
+            "validatorapi-validator-cache-tests",
+            FarFutureCalculator,
+        );
+        let (_evict_tx, evict_rx) = mpsc::channel(1);
+        let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
+        let eth2_cl =
+            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
+
+        let expected = HashMap::from([(1u64, dv_pubkey(0xA1)), (7u64, dv_pubkey(0xA7))]);
+        let component = Component::new_insecure(
+            eth2_cl,
+            dutydb,
+            1,
+            TestValidatorCache::arc(expected.clone()),
+        );
+
+        let got = component
+            .fetch_active_validators()
+            .await
+            .expect("test cache always succeeds");
+        assert_eq!(got, expected);
+    }
+
+    /// A provider that surfaces a transport-style error is mapped to a 502
+    /// without leaking the underlying error into the client-visible
+    /// message.
+    #[tokio::test]
+    async fn fetch_active_validators_maps_provider_error_to_502() {
+        struct FailingCache;
+
+        #[async_trait]
+        impl CachedValidatorsProvider for FailingCache {
+            async fn active_validators(
+                &self,
+            ) -> Result<
+                HashMap<ValidatorIndex, BLSPubKey>,
+                super::super::validator_cache::CachedValidatorsError,
+            > {
+                Err("upstream unavailable".into())
+            }
+        }
+
+        let cancel = CancellationToken::new();
+        let (deadliner, _deadliner_rx) = DeadlinerTask::start(
+            cancel.clone(),
+            "validatorapi-validator-cache-fail-tests",
+            FarFutureCalculator,
+        );
+        let (_evict_tx, evict_rx) = mpsc::channel(1);
+        let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
+        let eth2_cl =
+            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
+        let component = Component::new_insecure(eth2_cl, dutydb, 1, Arc::new(FailingCache));
+
+        let err = component.fetch_active_validators().await.unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_GATEWAY);
+        assert_eq!(err.message, "active validators lookup failed");
     }
 }
