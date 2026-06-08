@@ -685,7 +685,14 @@ impl Handler for Component {
                 })?;
             }
 
-            let data = self.await_proposal_for_handler(opts.slot).await?;
+            let mut data = self.await_proposal_for_handler(opts.slot).await?;
+
+            // Pluto, like Charon, does not persist the upstream v3
+            // produce-block reward fields in the pipeline. Override both
+            // to `1` so the value is unified across nodes — mirrors
+            // `core/validatorapi/validatorapi.go:442-444` (Charon v1.7.1).
+            data.consensus_block_value = alloy::primitives::U256::from(1u8);
+            data.execution_payload_value = alloy::primitives::U256::from(1u8);
 
             Ok(EthResponse {
                 data,
@@ -2203,6 +2210,8 @@ mod tests {
         };
         let unsigned = UnsignedProposal {
             block: ProposalBlock::Phase0(unsigned_block),
+            consensus_block_value: alloy::primitives::U256::ZERO,
+            execution_payload_value: alloy::primitives::U256::ZERO,
         };
         let signed = Eth2VersionedSignedProposal {
             version: V::Phase0,
@@ -2269,6 +2278,8 @@ mod tests {
         };
         let unsigned = UnsignedProposal {
             block: ProposalBlock::BellatrixBlinded(unsigned_block),
+            consensus_block_value: alloy::primitives::U256::ZERO,
+            execution_payload_value: alloy::primitives::U256::ZERO,
         };
         let signed = Eth2VersionedSignedBlindedProposal {
             version: V::Bellatrix,
@@ -2327,6 +2338,50 @@ mod tests {
         assert_eq!(*randao_calls.lock().unwrap(), vec![48]);
         // The returned proposal carries the slot the hook produced.
         assert_eq!(response.data.slot(), 48);
+    }
+
+    /// The handler must force `consensus_block_value` and
+    /// `execution_payload_value` to `1` regardless of what the upstream
+    /// pipeline supplied — mirrors
+    /// `core/validatorapi/validatorapi.go:442-444` in Charon v1.7.1:
+    /// "We do not persist this v3-specific data in the pipeline, but to
+    /// comply with the API, we need to return non-nil values, and these
+    /// should be unified across all nodes."
+    #[tokio::test]
+    async fn proposal_forces_v3_block_values_to_one() {
+        use alloy::primitives::U256;
+
+        let (mut component, _mock) = make_proposal_component().await;
+
+        let core_pk = core_pubkey(0x7C);
+        let (mut unsigned, _signed) = matched_phase0_proposals(56, 11);
+        // Seed both values to something other than 1 to prove the
+        // handler overrides them rather than passing them through.
+        unsigned.consensus_block_value = U256::from(42u64);
+        unsigned.execution_payload_value = U256::from(99u64);
+
+        register_proposer_def(&mut component, core_pk);
+        let captured: Arc<Mutex<Option<UnsignedProposal>>> = Arc::new(Mutex::new(Some(unsigned)));
+        component.register_await_proposal({
+            let captured = Arc::clone(&captured);
+            move |_slot| {
+                let captured = Arc::clone(&captured);
+                async move { Ok(captured.lock().unwrap().take().unwrap()) }
+            }
+        });
+
+        let response = component
+            .proposal(ProposalOpts {
+                slot: 56,
+                randao_reveal: [0; 96],
+                graffiti: [0; 32],
+                builder_boost_factor: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(response.data.consensus_block_value, U256::from(1u8));
+        assert_eq!(response.data.execution_payload_value, U256::from(1u8));
     }
 
     /// Builder-mode branch: when the upstream pipeline produced a blinded

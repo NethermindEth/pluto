@@ -822,6 +822,8 @@ mod tests {
         };
         VersionedProposal {
             block: ProposalBlock::Phase0(block),
+            consensus_block_value: alloy::primitives::U256::ZERO,
+            execution_payload_value: alloy::primitives::U256::ZERO,
         }
     }
 

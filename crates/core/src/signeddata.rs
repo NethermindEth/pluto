@@ -1,5 +1,6 @@
 //! Signed data types and helpers.
 
+use alloy::primitives::U256;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tree_hash::TreeHash;
 
@@ -1333,6 +1334,17 @@ impl ProposalBlock {
 pub struct VersionedProposal {
     /// Unsigned block payload.
     pub block: ProposalBlock,
+    /// Consensus block reward, in Wei. Mirrors Go's
+    /// `eth2api.VersionedProposal.ConsensusValue`. Pluto, like Charon,
+    /// does not persist the upstream v3 produce-block reward in the
+    /// pipeline — the validatorapi `Proposal` handler overrides this to
+    /// `1` before returning so the value is unified across nodes (see
+    /// Charon `core/validatorapi/validatorapi.go:442-444`).
+    pub consensus_block_value: U256,
+    /// Execution payload value, in Wei. Mirrors Go's
+    /// `eth2api.VersionedProposal.ExecutionValue`. See
+    /// [`Self::consensus_block_value`] for the same override rationale.
+    pub execution_payload_value: U256,
 }
 
 impl VersionedProposal {
