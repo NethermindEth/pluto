@@ -18,6 +18,7 @@ use pluto_eth2api::{
 };
 use pluto_eth2util::signing::{self, DomainName, SigningError};
 use tokio::time::error::Elapsed;
+use tracing::{debug, instrument};
 
 use super::{
     error::ApiError,
@@ -324,6 +325,7 @@ impl Component {
     /// Resolves the proposer's DV root [`PubKey`] for the given proposer
     /// [`Duty`] via the registered `duty_def_fn`: ask for the definition
     /// set, require exactly one entry, and return its sole key.
+    #[instrument(skip_all, fields(slot = duty.slot.inner()))]
     async fn lookup_proposer_pubkey(&self, duty: Duty) -> Result<PubKey, ApiError> {
         let f = self.duty_def_fn.as_ref().ok_or_else(|| {
             ApiError::new(
@@ -356,12 +358,14 @@ impl Component {
             ));
         }
 
-        Ok(*def_set.keys().next().expect("def_set length checked above"))
+        let pubkey = *def_set.keys().next().expect("def_set length checked above");
+        Ok(pubkey)
     }
 
     /// Awaits the consensus-side unsigned proposal for a slot. Prefers the
     /// registered `await_proposal_fn` hook; falls back to the local dutydb
     /// so router-only tests don't need to wire it.
+    #[instrument(skip_all, fields(slot))]
     async fn await_proposal_for_handler(
         &self,
         slot: u64,
@@ -391,6 +395,7 @@ impl Component {
     ///
     /// Skipped entirely when [`Self::insecure_test`] is set.
     #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
+    #[instrument(skip_all, fields(domain = ?domain_name, epoch))]
     pub async fn verify_partial_sig(
         &self,
         root_pubkey: &BLSPubKey,
@@ -439,6 +444,7 @@ pub enum VerifyPartialSigError {
 
 #[async_trait]
 impl Handler for Component {
+    #[instrument(skip_all)]
     async fn node_version(&self) -> Result<NodeVersionResponse, ApiError> {
         let (commit, _) = version::git_commit();
         let version = format!(
@@ -454,6 +460,7 @@ impl Handler for Component {
         })
     }
 
+    #[instrument(skip_all, fields(epoch = opts.epoch))]
     async fn proposer_duties(
         &self,
         opts: ProposerDutiesOpts,
@@ -501,6 +508,7 @@ impl Handler for Component {
         Ok(payload)
     }
 
+    #[instrument(skip_all, fields(epoch = opts.epoch))]
     async fn attester_duties(
         &self,
         opts: AttesterDutiesOpts,
@@ -549,6 +557,7 @@ impl Handler for Component {
         Ok(payload)
     }
 
+    #[instrument(skip_all, fields(epoch = opts.epoch))]
     async fn sync_committee_duties(
         &self,
         opts: SyncCommitteeDutiesOpts,
@@ -600,6 +609,7 @@ impl Handler for Component {
         Ok(payload)
     }
 
+    #[instrument(skip_all, fields(slot = opts.slot, committee_index = opts.committee_index))]
     async fn attestation_data(
         &self,
         opts: AttestationDataOpts,
@@ -621,6 +631,7 @@ impl Handler for Component {
         Ok(AttestationDataResponse { data })
     }
 
+    #[instrument(skip_all)]
     async fn submit_attestations(
         &self,
         _attestations: Vec<VersionedAttestation>,
@@ -628,6 +639,7 @@ impl Handler for Component {
         unimplemented!("submit_attestations not yet ported")
     }
 
+    #[instrument(skip_all, fields(slot = opts.slot))]
     async fn proposal(
         &self,
         opts: ProposalOpts,
@@ -700,9 +712,11 @@ impl Handler for Component {
         .map_err(|_: Elapsed| proposal_timeout())?
     }
 
+    #[instrument(skip_all)]
     async fn submit_proposal(&self, proposal: VersionedSignedProposal) -> Result<(), ApiError> {
         tokio::time::timeout(PROPOSAL_TIMEOUT, async {
             let slot = signed_proposal_slot(&proposal.0.block);
+            let block_version = signed_proposal_version(&proposal.0.block);
             let duty = Duty::new_proposer_duty(SlotNumber::new(slot));
             let pubkey = self.lookup_proposer_pubkey(duty.clone()).await?;
 
@@ -727,6 +741,12 @@ impl Handler for Component {
 
             verify_par_signed_proposal(self, &pubkey, slot, &par_sig).await?;
 
+            debug!(
+                slot,
+                block_version = ?block_version,
+                "Beacon proposal submitted by validator client",
+            );
+
             let mut set = ParSignedDataSet::new();
             set.insert(pubkey, par_sig);
             for sub in &self.subs {
@@ -741,6 +761,7 @@ impl Handler for Component {
         .map_err(|_: Elapsed| proposal_timeout())?
     }
 
+    #[instrument(skip_all)]
     async fn submit_blinded_proposal(
         &self,
         proposal: VersionedSignedBlindedProposal,
@@ -777,6 +798,8 @@ impl Handler for Component {
 
             verify_par_signed_proposal(self, &pubkey, slot, &par_sig).await?;
 
+            debug!(slot, "Blinded beacon block submitted by validator client");
+
             let mut set = ParSignedDataSet::new();
             set.insert(pubkey, par_sig);
             for sub in &self.subs {
@@ -791,6 +814,7 @@ impl Handler for Component {
         .map_err(|_: Elapsed| proposal_timeout())?
     }
 
+    #[instrument(skip_all)]
     async fn aggregate_attestation(
         &self,
         _opts: AggregateAttestationOpts,
@@ -798,6 +822,7 @@ impl Handler for Component {
         unimplemented!("aggregate_attestation not yet ported")
     }
 
+    #[instrument(skip_all)]
     async fn submit_aggregate_attestations(
         &self,
         _aggregates: Vec<VersionedSignedAggregateAndProof>,
@@ -805,6 +830,7 @@ impl Handler for Component {
         unimplemented!("submit_aggregate_attestations not yet ported")
     }
 
+    #[instrument(skip_all)]
     async fn beacon_committee_selections(
         &self,
         _selections: Vec<BeaconCommitteeSelection>,
@@ -812,6 +838,7 @@ impl Handler for Component {
         unimplemented!("beacon_committee_selections not yet ported")
     }
 
+    #[instrument(skip_all)]
     async fn sync_committee_selections(
         &self,
         _selections: Vec<SyncCommitteeSelection>,
@@ -819,6 +846,7 @@ impl Handler for Component {
         unimplemented!("sync_committee_selections not yet ported")
     }
 
+    #[instrument(skip_all)]
     async fn validators(
         &self,
         _opts: ValidatorsOpts,
@@ -826,6 +854,7 @@ impl Handler for Component {
         unimplemented!("validators not yet ported")
     }
 
+    #[instrument(skip_all)]
     async fn submit_validator_registrations(
         &self,
         _registrations: Vec<SignedValidatorRegistration>,
@@ -833,10 +862,12 @@ impl Handler for Component {
         unimplemented!("submit_validator_registrations not yet ported")
     }
 
+    #[instrument(skip_all)]
     async fn submit_voluntary_exit(&self, _exit: SignedVoluntaryExit) -> Result<(), ApiError> {
         unimplemented!("submit_voluntary_exit not yet ported")
     }
 
+    #[instrument(skip_all)]
     async fn sync_committee_contribution(
         &self,
         _opts: SyncCommitteeContributionOpts,
@@ -844,6 +875,7 @@ impl Handler for Component {
         unimplemented!("sync_committee_contribution not yet ported")
     }
 
+    #[instrument(skip_all)]
     async fn submit_sync_committee_contributions(
         &self,
         _contributions: Vec<SignedContributionAndProof>,
@@ -851,6 +883,7 @@ impl Handler for Component {
         unimplemented!("submit_sync_committee_contributions not yet ported")
     }
 
+    #[instrument(skip_all)]
     async fn submit_sync_committee_messages(
         &self,
         _messages: Vec<SyncCommitteeMessage>,
