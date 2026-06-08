@@ -1,0 +1,11 @@
+{
+  "name": "proposal_pending",
+  "endpoint": "proposal",
+  "status": "unimplemented",
+  "go_source": "core/validatorapi/validatorapi.go:388-450",
+  "request": {
+    "kind": "proposal",
+    "opts": {}
+  },
+  "notes": "Pluto stub on main; the in-flight port is PR #461. When that lands, replace this fixture with implemented cases covering randao fan-out, v3 block-value override, dutydb fallback, etc."
+}

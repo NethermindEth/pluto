@@ -1,0 +1,11 @@
+{
+  "name": "submit_sync_committee_messages_pending",
+  "endpoint": "submit_sync_committee_messages",
+  "status": "unimplemented",
+  "go_source": "core/validatorapi/validatorapi.go (SubmitSyncCommitteeMessages)",
+  "request": {
+    "kind": "submit_sync_committee_messages",
+    "messages": []
+  },
+  "notes": "Pluto stub. When ported, cover the SyncCommitteeMessage parsig fan-out."
+}

@@ -1,0 +1,11 @@
+{
+  "name": "aggregate_attestation_pending",
+  "endpoint": "aggregate_attestation",
+  "status": "unimplemented",
+  "go_source": "core/validatorapi/validatorapi.go (AggregateAttestation)",
+  "request": {
+    "kind": "aggregate_attestation",
+    "opts": {}
+  },
+  "notes": "Pluto stub. When ported, cover the dutydb await on (slot, attestation_data_root) with happy-path and timeout."
+}

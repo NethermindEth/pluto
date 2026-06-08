@@ -1,0 +1,11 @@
+{
+  "name": "validators_pending",
+  "endpoint": "validators",
+  "status": "unimplemented",
+  "go_source": "core/validatorapi/validatorapi.go (Validators)",
+  "request": {
+    "kind": "validators",
+    "opts": {}
+  },
+  "notes": "Pluto stub. When ported, cover the pubkey-rewrite path that swaps root pubkeys for this node's pubshares before returning."
+}

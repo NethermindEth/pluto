@@ -1,0 +1,11 @@
+{
+  "name": "submit_blinded_proposal_pending",
+  "endpoint": "submit_blinded_proposal",
+  "status": "unimplemented",
+  "go_source": "core/validatorapi/validatorapi.go:606-673",
+  "request": {
+    "kind": "submit_blinded_proposal",
+    "proposal": {}
+  },
+  "notes": "Pluto stub on main; in-flight on PR #461. When ported, mirror the blinded-side of propDataMatchesDuty (Blinded=true forced on wrapper)."
+}

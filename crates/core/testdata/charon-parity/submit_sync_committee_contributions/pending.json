@@ -1,0 +1,11 @@
+{
+  "name": "submit_sync_committee_contributions_pending",
+  "endpoint": "submit_sync_committee_contributions",
+  "status": "unimplemented",
+  "go_source": "core/validatorapi/validatorapi.go (SubmitSyncCommitteeContributions)",
+  "request": {
+    "kind": "submit_sync_committee_contributions",
+    "contributions": []
+  },
+  "notes": "Pluto stub. When ported, cover the SignedContributionAndProof parsig fan-out."
+}

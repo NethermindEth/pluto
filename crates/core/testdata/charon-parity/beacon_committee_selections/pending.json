@@ -1,0 +1,11 @@
+{
+  "name": "beacon_committee_selections_pending",
+  "endpoint": "beacon_committee_selections",
+  "status": "unimplemented",
+  "go_source": "core/validatorapi/validatorapi.go (SubmitBeaconCommitteeSelections)",
+  "request": {
+    "kind": "beacon_committee_selections",
+    "selections": []
+  },
+  "notes": "Pluto stub. When ported, cover BLS verification + AggSigDB await + per-validator selection envelope shape."
+}

@@ -62,5 +62,9 @@ tower = { workspace = true, features = ["util"] }
 pluto-build-proto.workspace = true
 built.workspace = true
 
+[[test]]
+name = "charon_parity"
+path = "tests/charon_parity/main.rs"
+
 [lints]
 workspace = true

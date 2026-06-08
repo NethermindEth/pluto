@@ -1,0 +1,11 @@
+{
+  "name": "submit_proposal_pending",
+  "endpoint": "submit_proposal",
+  "status": "unimplemented",
+  "go_source": "core/validatorapi/validatorapi.go:551-605",
+  "request": {
+    "kind": "submit_proposal",
+    "proposal": {}
+  },
+  "notes": "Pluto stub on main; in-flight on PR #461. When ported, cover propDataMatchesDuty version/blinded/proposer-index/root branches and the parsig fan-out path."
+}

@@ -1,0 +1,11 @@
+{
+  "name": "submit_attestations_pending",
+  "endpoint": "submit_attestations",
+  "status": "unimplemented",
+  "go_source": "core/validatorapi/validatorapi.go (SubmitAttestations / SubmitAttestationsV2)",
+  "request": {
+    "kind": "submit_attestations",
+    "attestations": []
+  },
+  "notes": "Pluto stub on main. When ported, replace this fixture with implemented cases covering: typed attestation set, parsig fan-out to subscribers, version mismatch rejection, etc."
+}

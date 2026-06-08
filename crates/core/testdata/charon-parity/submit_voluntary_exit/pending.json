@@ -1,0 +1,11 @@
+{
+  "name": "submit_voluntary_exit_pending",
+  "endpoint": "submit_voluntary_exit",
+  "status": "unimplemented",
+  "go_source": "core/validatorapi/validatorapi.go (SubmitVoluntaryExit)",
+  "request": {
+    "kind": "submit_voluntary_exit",
+    "exit": {}
+  },
+  "notes": "Pluto stub. When ported, cover the SignedVoluntaryExit partial-sig fan-out + Exit-domain verify."
+}

@@ -1,0 +1,11 @@
+{
+  "name": "sync_committee_selections_pending",
+  "endpoint": "sync_committee_selections",
+  "status": "unimplemented",
+  "go_source": "core/validatorapi/validatorapi.go (SubmitSyncCommitteeSelections)",
+  "request": {
+    "kind": "sync_committee_selections",
+    "selections": []
+  },
+  "notes": "Pluto stub. Mirrors the beacon-committee selection path; cover the same shape once ported."
+}

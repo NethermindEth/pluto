@@ -1,0 +1,11 @@
+{
+  "name": "submit_aggregate_attestations_pending",
+  "endpoint": "submit_aggregate_attestations",
+  "status": "unimplemented",
+  "go_source": "core/validatorapi/validatorapi.go (SubmitAggregateAttestations / V2)",
+  "request": {
+    "kind": "submit_aggregate_attestations",
+    "aggregates": []
+  },
+  "notes": "Pluto stub. When ported, cover the parsig fan-out and the selection-proof verify branch."
+}

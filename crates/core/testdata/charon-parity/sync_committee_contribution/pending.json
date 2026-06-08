@@ -1,0 +1,11 @@
+{
+  "name": "sync_committee_contribution_pending",
+  "endpoint": "sync_committee_contribution",
+  "status": "unimplemented",
+  "go_source": "core/validatorapi/validatorapi.go (SyncCommitteeContribution)",
+  "request": {
+    "kind": "sync_committee_contribution",
+    "opts": {}
+  },
+  "notes": "Pluto stub. When ported, cover the dutydb await on (slot, subcommittee_index, beacon_block_root)."
+}

@@ -1,0 +1,11 @@
+{
+  "name": "submit_validator_registrations_pending",
+  "endpoint": "submit_validator_registrations",
+  "status": "unimplemented",
+  "go_source": "core/validatorapi/validatorapi.go (SubmitValidatorRegistrations)",
+  "request": {
+    "kind": "submit_validator_registrations",
+    "registrations": []
+  },
+  "notes": "Pluto stub. When ported, cover both V1 and current envelopes plus the builder-domain partial-sig verification."
+}
