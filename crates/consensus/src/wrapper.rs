@@ -28,7 +28,7 @@ pub trait Consensus: Send + Sync {
     fn start(&self, ct: CancellationToken);
 
     /// Starts participating in a consensus instance.
-    fn participate(&self, ct: CancellationToken, duty: Duty) -> BoxFuture<'static, Result<()>>;
+    fn participate(&self, ct: CancellationToken, duty: Duty) -> BoxFuture<'_, Result<()>>;
 
     /// Proposes unsigned duty data for a consensus instance.
     fn propose(
@@ -36,7 +36,7 @@ pub trait Consensus: Send + Sync {
         ct: CancellationToken,
         duty: Duty,
         value: pbcore::UnsignedDataSet,
-    ) -> BoxFuture<'static, Result<()>>;
+    ) -> BoxFuture<'_, Result<()>>;
 
     /// Registers a callback for decided unsigned duty data.
     fn subscribe(&self, subscriber: Subscriber);
@@ -201,11 +201,7 @@ mod tests {
             self.record("start");
         }
 
-        fn participate(
-            &self,
-            _ct: CancellationToken,
-            _duty: Duty,
-        ) -> BoxFuture<'static, Result<()>> {
+        fn participate(&self, _ct: CancellationToken, _duty: Duty) -> BoxFuture<'_, Result<()>> {
             self.record("participate");
             async { Ok(()) }.boxed()
         }
@@ -215,7 +211,7 @@ mod tests {
             _ct: CancellationToken,
             _duty: Duty,
             _value: pbcore::UnsignedDataSet,
-        ) -> BoxFuture<'static, Result<()>> {
+        ) -> BoxFuture<'_, Result<()>> {
             self.record("propose");
             async { Ok(()) }.boxed()
         }

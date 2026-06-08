@@ -76,6 +76,8 @@ pub struct Config {
     pub privkey: SecretKey,
     /// Duty deadline scheduler.
     pub deadliner: DeadlinerHandle,
+    /// Expired-duty receiver paired with `deadliner`.
+    pub expired_rx: mpsc::Receiver<Duty>,
     /// Duty admission gate.
     pub duty_gater: DutyGater,
     /// External message broadcaster.
@@ -264,13 +266,14 @@ pub struct Consensus {
     local_peer_idx: i64,
     privkey: SecretKey,
     deadliner: DeadlinerHandle,
+    expired_rx: Mutex<Option<mpsc::Receiver<Duty>>>,
     duty_gater: DutyGater,
     broadcaster: Broadcaster,
     sniffer: SnifferSink,
     timer_func: RoundTimerFunc,
     compare_attestations: bool,
     subscribers: SubscriberSet,
-    instances: Mutex<HashMap<Duty, Arc<InstanceIo<msg::Msg>>>>,
+    instances: Arc<Mutex<HashMap<Duty, Arc<InstanceIo<msg::Msg>>>>>,
 }
 
 impl Consensus {
@@ -301,13 +304,14 @@ impl Consensus {
             local_peer_idx: config.local_peer_idx,
             privkey: config.privkey,
             deadliner: config.deadliner,
+            expired_rx: Mutex::new(Some(config.expired_rx)),
             duty_gater: config.duty_gater,
             broadcaster: config.broadcaster,
             sniffer: config.sniffer,
             timer_func: config.timer_func,
             compare_attestations: config.compare_attestations,
             subscribers: SubscriberSet::default(),
-            instances: Mutex::default(),
+            instances: Arc::new(Mutex::default()),
         })
     }
 
@@ -421,17 +425,29 @@ impl Consensus {
     }
 
     /// Runs the internal expired-duty cleanup loop until cancellation.
-    pub fn start(
-        self: Arc<Self>,
-        ct: CancellationToken,
-        mut expired_rx: mpsc::Receiver<Duty>,
-    ) -> JoinHandle<()> {
+    pub fn start(&self, ct: CancellationToken) -> JoinHandle<()> {
+        let expired_rx = self
+            .expired_rx
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        let instances = Arc::clone(&self.instances);
+
         tokio::spawn(async move {
+            let Some(mut expired_rx) = expired_rx else {
+                return;
+            };
+
             loop {
                 tokio::select! {
                     () = ct.cancelled() => return,
                     duty = expired_rx.recv() => match duty {
-                        Some(duty) => self.delete_instance_io(&duty),
+                        Some(duty) => {
+                            instances
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .remove(&duty);
+                        }
                         None => return,
                     },
                 }
@@ -452,6 +468,7 @@ impl Consensus {
     }
 
     /// Drops cached I/O for a completed or expired duty instance.
+    #[cfg(test)]
     pub(crate) fn delete_instance_io(&self, duty: &Duty) {
         self.instances
             .lock()
@@ -545,6 +562,45 @@ impl Consensus {
     }
 }
 
+impl crate::wrapper::Consensus for Consensus {
+    fn protocol_id(&self) -> String {
+        self.protocol_id().to_string()
+    }
+
+    fn start(&self, ct: CancellationToken) {
+        drop(Consensus::start(self, ct));
+    }
+
+    fn participate(
+        &self,
+        ct: CancellationToken,
+        duty: Duty,
+    ) -> BoxFuture<'_, crate::wrapper::Result<()>> {
+        Box::pin(async move {
+            Consensus::participate(self, &ct, duty)
+                .await
+                .map_err(|err| Box::new(err) as Box<dyn StdError + Send + Sync>)
+        })
+    }
+
+    fn propose(
+        &self,
+        ct: CancellationToken,
+        duty: Duty,
+        value: pbcore::UnsignedDataSet,
+    ) -> BoxFuture<'_, crate::wrapper::Result<()>> {
+        Box::pin(async move {
+            Consensus::propose(self, &ct, duty, value)
+                .await
+                .map_err(|err| Box::new(err) as Box<dyn StdError + Send + Sync>)
+        })
+    }
+
+    fn subscribe(&self, subscriber: crate::wrapper::Subscriber) {
+        Consensus::subscribe(self, subscriber);
+    }
+}
+
 /// Extracts the domain duty from a validated raw QBFT message.
 fn duty_from_msg(msg: &pbconsensus::QbftMsg) -> Result<Duty> {
     let duty = msg.duty.as_ref().ok_or(Error::InvalidConsensusMessage)?;
@@ -619,12 +675,19 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn start_deletes_expired_instance_io_until_cancelled() {
-        let consensus = Arc::new(consensus(0, true));
+        let (expired_tx, expired_rx) = mpsc::channel(1);
+        let consensus = Arc::new(
+            Consensus::new(Config {
+                peers: peers(),
+                expired_rx,
+                ..config_base(false)
+            })
+            .unwrap(),
+        );
         let duty = duty();
         let first = consensus.get_instance_io(duty.clone());
         let cancel = CancellationToken::new();
-        let (expired_tx, expired_rx) = mpsc::channel(1);
-        let task = Arc::clone(&consensus).start(cancel.clone(), expired_rx);
+        let task = consensus.start(cancel.clone());
 
         expired_tx.send(duty.clone()).await.unwrap();
         tokio::time::timeout(
@@ -1243,7 +1306,7 @@ pub(crate) mod tests {
 
     pub(crate) fn config_base(never_expiring: bool) -> Config {
         let cancel = CancellationToken::new();
-        let (deadliner, _expired_rx) = if never_expiring {
+        let (deadliner, expired_rx) = if never_expiring {
             DeadlinerTask::start(
                 cancel,
                 "qbft-test",
@@ -1258,6 +1321,7 @@ pub(crate) mod tests {
             local_peer_idx: 0,
             privkey: secret_key(1),
             deadliner,
+            expired_rx,
             duty_gater: Arc::new(|_| true),
             broadcaster: Arc::new(|_, _| Box::pin(async { Ok(()) })),
             sniffer: Arc::new(|_| {}),
