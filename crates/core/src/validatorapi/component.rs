@@ -180,8 +180,7 @@ pub struct Component {
     await_agg_sig_db_fn: Option<AwaitAggSigDbFn>,
     /// Looks up the duty-definition set for a duty. The proposal /
     /// submit_proposal / submit_blinded_proposal handlers consult this to
-    /// resolve the proposer's DV root pubkey, mirroring Charon's
-    /// `getProposerPubkey` (`core/validatorapi/validatorapi.go:1334`).
+    /// resolve the proposer's DV root pubkey.
     duty_def_fn: Option<DutyDefFn>,
     /// Looks up the root pubkey for an `(slot, commIdx, valIdx)` triple.
     #[allow(dead_code, reason = "consumed by submit_attestations in later PRs")]
@@ -323,11 +322,8 @@ impl Component {
     }
 
     /// Resolves the proposer's DV root [`PubKey`] for the given proposer
-    /// [`Duty`] via the registered `duty_def_fn`. Mirrors Charon's
-    /// `getProposerPubkey(ctx, duty)`
-    /// (`core/validatorapi/validatorapi.go:1334`): ask `dutyDefFunc` for
-    /// the definition set, require exactly one entry, and return its sole
-    /// key.
+    /// [`Duty`] via the registered `duty_def_fn`: ask for the definition
+    /// set, require exactly one entry, and return its sole key.
     async fn lookup_proposer_pubkey(&self, duty: Duty) -> Result<PubKey, ApiError> {
         let f = self.duty_def_fn.as_ref().ok_or_else(|| {
             ApiError::new(
@@ -687,10 +683,9 @@ impl Handler for Component {
 
             let mut data = self.await_proposal_for_handler(opts.slot).await?;
 
-            // Pluto, like Charon, does not persist the upstream v3
-            // produce-block reward fields in the pipeline. Override both
-            // to `1` so the value is unified across nodes — mirrors
-            // `core/validatorapi/validatorapi.go:442-444` (Charon v1.7.1).
+            // The upstream v3 produce-block reward fields are not
+            // persisted in the pipeline; override both to a unified `1`
+            // so every node returns the same value.
             data.consensus_block_value = alloy::primitives::U256::from(1u8);
             data.execution_payload_value = alloy::primitives::U256::from(1u8);
 
@@ -2140,10 +2135,9 @@ mod tests {
     }
 
     /// Build a single-entry `DutyDefinitionSet<ProposerDuty>` keyed by
-    /// `pubkey`, matching the shape Charon's scheduler hands to
-    /// `dutyDefFunc` for proposer duties. The inner `ProposerDuty` value
-    /// is a default placeholder — `getProposerPubkey` only reads the map
-    /// keys, so the value's contents are immaterial to these tests.
+    /// `pubkey`. The inner `ProposerDuty` value is a default placeholder
+    /// — `lookup_proposer_pubkey` only reads the map keys, so the
+    /// value's contents are immaterial to these tests.
     fn proposer_def_set(pubkey: PubKey) -> DutyDefinitionSet<ProposerDuty> {
         let mut set = DutyDefinitionSet::new();
         set.insert(pubkey, DutyDefinition::new(ProposerDuty::default()));
@@ -2152,10 +2146,9 @@ mod tests {
 
     /// Convenience wrapper around `register_get_duty_definition` for the
     /// proposal tests: registers a hook that always returns a one-entry
-    /// proposer set keyed by `pubkey`. This is the Pluto analogue of
-    /// Charon's wired `dutyDefFunc` for proposer duties — the proposal /
-    /// submit_proposal / submit_blinded_proposal handlers read the
-    /// resulting key as the proposer pubkey.
+    /// proposer set keyed by `pubkey`. The proposal / submit_proposal /
+    /// submit_blinded_proposal handlers read the resulting key as the
+    /// proposer pubkey.
     fn register_proposer_def(component: &mut Component, pubkey: PubKey) {
         component.register_get_duty_definition(move |_duty| {
             let set = proposer_def_set(pubkey);
@@ -2342,11 +2335,7 @@ mod tests {
 
     /// The handler must force `consensus_block_value` and
     /// `execution_payload_value` to `1` regardless of what the upstream
-    /// pipeline supplied — mirrors
-    /// `core/validatorapi/validatorapi.go:442-444` in Charon v1.7.1:
-    /// "We do not persist this v3-specific data in the pipeline, but to
-    /// comply with the API, we need to return non-nil values, and these
-    /// should be unified across all nodes."
+    /// pipeline supplied, so every node returns the same value.
     #[tokio::test]
     async fn proposal_forces_v3_block_values_to_one() {
         use alloy::primitives::U256;
@@ -2386,8 +2375,8 @@ mod tests {
 
     /// Builder-mode branch: when the upstream pipeline produced a blinded
     /// (builder) proposal, the handler returns it unchanged. The builder
-    /// gate is set by the wider scheduler, not by `Proposal` itself — but
-    /// this verifies the handler is fork-agnostic, matching Go's behavior.
+    /// gate is set by the wider scheduler, not by `Proposal` itself — this
+    /// verifies the handler is fork-agnostic.
     #[tokio::test]
     async fn proposal_returns_blinded_proposal_in_builder_mode() {
         let (mut component, _mock) = make_proposal_component().await;
@@ -2424,11 +2413,8 @@ mod tests {
         assert_eq!(response.data.version(), V::Bellatrix);
     }
 
-    /// When no `dutyDefFunc` is registered, the handler short-circuits
-    /// with 503 — mirrors Charon's `getProposerPubkey` failure path
-    /// (`core/validatorapi/validatorapi.go:1334`), which propagates the
-    /// underlying `dutyDefFunc` error when the lookup is wired to a nil
-    /// closure / unresolved duty.
+    /// When no `duty_def_fn` is registered, the handler short-circuits
+    /// with 503.
     #[tokio::test]
     async fn proposal_rejects_when_duty_def_hook_missing() {
         let (component, _mock) = make_proposal_component().await;
@@ -2445,10 +2431,9 @@ mod tests {
         assert_eq!(err.status_code, StatusCode::SERVICE_UNAVAILABLE);
     }
 
-    /// When `dutyDefFunc` resolves to a set whose cardinality is not
-    /// exactly one (here: two entries), the handler returns 500 —
-    /// mirrors Charon's `errors.New("unexpected amount of proposer
-    /// duties")` branch in `getProposerPubkey`.
+    /// When `duty_def_fn` resolves to a set whose cardinality is not
+    /// exactly one (here: two entries), the handler returns 500
+    /// "unexpected amount of proposer duties".
     #[tokio::test]
     async fn proposal_rejects_when_duty_def_returns_wrong_cardinality() {
         let (mut component, _mock) = make_proposal_component().await;
@@ -2591,10 +2576,9 @@ mod tests {
     }
 
     /// Submit rejects when the VC-submitted version disagrees with the
-    /// consensus-side proposal. Mirrors Go's `propDataMatchesDuty` version
-    /// branch. Both sides must agree on `proposer_index` and `blinded` so
-    /// that the reordered check (proposer_index → blinded → version → root)
-    /// reaches the version comparison.
+    /// consensus-side proposal. Both sides must agree on `proposer_index`
+    /// and `blinded` so that the check order (proposer_index → blinded →
+    /// version → root) reaches the version comparison.
     #[tokio::test]
     async fn submit_proposal_rejects_version_mismatch() {
         let (mut component, _mock) = make_proposal_component().await;
@@ -2665,7 +2649,7 @@ mod tests {
     }
 
     /// Submit rejects when the proposer index doesn't match the consensus
-    /// proposal. Mirrors Go's `propDataMatchesDuty` proposer-index branch.
+    /// proposal.
     #[tokio::test]
     async fn submit_proposal_rejects_proposer_index_mismatch() {
         let (mut component, _mock) = make_proposal_component().await;
@@ -2780,8 +2764,6 @@ mod tests {
     /// mode the pubshare lookup runs first; with an empty pubshare map this
     /// test exercises the `UnknownPubKey` rejection branch of
     /// `verify_partial_sig`, mapped to 500 by `verify_partial_sig_error`.
-    /// Mirrors the post-`propDataMatchesDuty` verify step in Go's
-    /// `SubmitProposal`.
     #[tokio::test]
     async fn submit_proposal_rejects_when_verification_fails() {
         // Real component (not `new_insecure`), but with an empty pubshare
