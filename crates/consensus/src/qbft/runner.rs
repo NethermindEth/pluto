@@ -206,6 +206,20 @@ async fn run_instance_inner(
     duty: Duty,
     inst: Arc<InstanceIo<msg::Msg>>,
 ) -> Result<()> {
+    let nodes = consensus.node_count();
+    let nodes_i64 = i64::try_from(nodes).expect("node count fits i64");
+    let peer_idx = consensus.get_peer_idx();
+    let peer_names = consensus.peer_names();
+    let round_timer = consensus.round_timer(duty.clone());
+
+    tracing::debug!(
+        duty = %duty,
+        peer = peer_idx,
+        peers = ?consensus.peer_labels(),
+        timer = round_timer.timer_type().as_str(),
+        "QBFT consensus instance starting"
+    );
+
     if consensus.add_deadline(duty.clone()).await != AddOutcome::Scheduled {
         tracing::warn!(duty = %duty, "Skipping consensus for expired duty");
         return Ok(());
@@ -228,8 +242,6 @@ async fn run_instance_inner(
     let (core_hash_tx, core_hash_rx) = mpmc::bounded(1);
     let (core_verify_tx, core_verify_rx) = mpmc::bounded(1);
 
-    let nodes = consensus.node_count();
-    let peer_idx = consensus.get_peer_idx();
     let transport = Arc::new(transport::Transport::new(
         transport_broadcaster(consensus.broadcaster()),
         consensus.privkey(),
@@ -279,9 +291,25 @@ async fn run_instance_inner(
 
     let decide_callback: DecideCallback = {
         let decided = Arc::clone(&decided);
+        let duty = duty.clone();
         let instance_ct = instance_ct.clone();
         let core_cts = Arc::clone(&core_cts);
-        Arc::new(move |_qcommit| {
+        Arc::new(move |qcommit| {
+            let round = qcommit.first().map_or(0, |msg| msg.round());
+            let leader_index = definition::leader(&duty, round, nodes_i64);
+            let leader_name = usize::try_from(leader_index)
+                .ok()
+                .and_then(|index| peer_names.get(index))
+                .map(String::as_str)
+                .unwrap_or("unknown");
+            tracing::debug!(
+                duty = %duty.duty_type,
+                slot = duty.slot.inner(),
+                round,
+                leader_index,
+                leader_name,
+                "QBFT consensus decided"
+            );
             decided.store(true, Ordering::Relaxed);
             instance_ct.cancel();
             core_cts.cancel();
@@ -291,7 +319,7 @@ async fn run_instance_inner(
     let def = definition::new_definition(DefinitionConfig {
         nodes,
         subscribers: consensus.subscribers(),
-        round_timer: consensus.round_timer(duty.clone()),
+        round_timer,
         decide_callback,
         compare_attestations: consensus.compare_attestations(),
         runtime: runtime.clone(),

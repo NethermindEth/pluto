@@ -63,6 +63,8 @@ pub(crate) fn new_definition(config: DefinitionConfig) -> qbft::Definition<Conse
         logger: QbftLogger {
             upon_rule: Box::new(|log| {
                 tracing::debug!(
+                    duty = %log.instance,
+                    process = log.process,
                     rule = %log.upon_rule,
                     round = log.round,
                     "QBFT upon rule triggered"
@@ -79,6 +81,8 @@ pub(crate) fn new_definition(config: DefinitionConfig) -> qbft::Definition<Conse
 
                 if log.upon_rule == qbft::UPON_ROUND_TIMEOUT {
                     tracing::debug!(
+                        duty = %log.instance,
+                        process = log.process,
                         rule = %log.upon_rule,
                         round = log.round,
                         new_round = log.new_round,
@@ -91,6 +95,8 @@ pub(crate) fn new_definition(config: DefinitionConfig) -> qbft::Definition<Conse
                     );
                 } else {
                     tracing::debug!(
+                        duty = %log.instance,
+                        process = log.process,
                         rule = %log.upon_rule,
                         round = log.round,
                         new_round = log.new_round,
@@ -104,6 +110,8 @@ pub(crate) fn new_definition(config: DefinitionConfig) -> qbft::Definition<Conse
             }),
             unjust: Box::new(|log| {
                 tracing::warn!(
+                    duty = %log.instance,
+                    process = log.process,
                     type = %log.msg.type_(),
                     peer = log.msg.source(),
                     "Unjustified consensus message from peer"

@@ -258,7 +258,6 @@ impl SubscriberSet {
 /// QBFT consensus component.
 pub struct Consensus {
     peers: Vec<Peer>,
-    #[cfg(test)]
     peer_labels: Vec<String>,
     pubkeys: HashMap<i64, PublicKey>,
     local_peer_idx: i64,
@@ -277,13 +276,11 @@ impl Consensus {
     /// Creates a new QBFT consensus component.
     pub fn new(config: Config) -> Result<Self> {
         let mut pubkeys = HashMap::with_capacity(config.peers.len());
-        #[cfg(test)]
         let mut peer_labels = Vec::with_capacity(config.peers.len());
 
         for (index, peer) in config.peers.iter().enumerate() {
             let peer_idx = i64::try_from(index).map_err(|_| Error::PeerIndexOverflow { index })?;
             pubkeys.insert(peer_idx, peer.public_key);
-            #[cfg(test)]
             peer_labels.push(format!("{}:{}", peer.index, peer.name));
         }
 
@@ -295,7 +292,6 @@ impl Consensus {
 
         Ok(Self {
             peers: config.peers,
-            #[cfg(test)]
             peer_labels,
             pubkeys,
             local_peer_idx: config.local_peer_idx,
@@ -534,14 +530,12 @@ impl Consensus {
         runner::participate(self, ct, duty).await
     }
 
-    #[cfg(test)]
-    pub(crate) fn pubkeys(&self) -> &HashMap<i64, PublicKey> {
-        &self.pubkeys
+    pub(crate) fn peer_labels(&self) -> &[String] {
+        self.peer_labels.as_slice()
     }
 
-    #[cfg(test)]
-    pub(crate) fn peer_labels(&self) -> &[String] {
-        &self.peer_labels
+    pub(crate) fn peer_names(&self) -> Vec<String> {
+        self.peers.iter().map(|peer| peer.name.clone()).collect()
     }
 }
 
@@ -591,9 +585,9 @@ pub(crate) mod tests {
     async fn constructor_builds_pubkey_map_by_peer_order() {
         let consensus = consensus(1, true);
 
-        assert_eq!(consensus.pubkeys().len(), 2);
         assert_eq!(consensus.pubkey(0), Some(&secret_key(1).public_key()));
         assert_eq!(consensus.pubkey(1), Some(&secret_key(2).public_key()));
+        assert_eq!(consensus.pubkey(2), None);
         assert_eq!(consensus.peer_labels(), ["10:node-0", "20:node-1"]);
     }
 
