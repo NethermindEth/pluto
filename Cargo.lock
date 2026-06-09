@@ -5607,6 +5607,7 @@ dependencies = [
  "pluto-k1util",
  "pluto-p2p",
  "pluto-ssz",
+ "pluto-tracing",
  "prost 0.14.3",
  "prost-types 0.14.3",
  "serde_json",

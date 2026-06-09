@@ -106,9 +106,11 @@ use pluto_p2p::{
     peer::peer_id_from_key,
     relay::{RelayManager, RelayManagerEvent},
 };
+use pluto_tracing::TracingConfig;
 use prost::bytes::Bytes;
 use tokio::fs;
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, info};
 
 const COMPLETION_DRAIN: Duration = Duration::from_secs(2);
 
@@ -211,9 +213,9 @@ struct Args {
     #[arg(long, default_value_t = 60)]
     timeout_secs: u64,
 
-    /// Print discovery, relay, send, receive, and connection-error details.
-    #[arg(long, default_value_t = false)]
-    verbose_p2p: bool,
+    /// Tracing filter for example logs.
+    #[arg(long, default_value = "info")]
+    log_level: String,
 }
 
 #[derive(Debug)]
@@ -267,11 +269,13 @@ impl DutyRun {
             .clone();
         let leader_node = leader_index(&duty, fixture.peer_ids.len());
         let local_node = fixture.local_index;
-        println!(
-            "node={local_node} starting duty {}/{} duty={} leader=node-{leader_node}",
-            self.index.checked_add(1).expect("duty index increments"),
-            self.duties.len(),
-            duty
+        info!(
+            node = local_node,
+            duty_index = self.index.checked_add(1).expect("duty index increments"),
+            duty_count = self.duties.len(),
+            duty = %duty,
+            leader = leader_node,
+            "starting duty"
         );
 
         self.started = true;
@@ -328,6 +332,13 @@ impl DeadlineCalculator for DemoDeadline {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    pluto_tracing::init(
+        &TracingConfig::builder()
+            .with_default_console()
+            .override_env_filter(&args.log_level)
+            .build(),
+    )?;
+
     let timeout = Duration::from_secs(args.timeout_secs);
     let duties = build_duties(args.slot, args.duties)?;
     let first_duty = duties.first().expect("duty count is non-zero");
@@ -344,10 +355,6 @@ async fn main() -> Result<()> {
     )
     .await
     .context("resolve relays")?;
-    let relay_peer_ids = relays
-        .iter()
-        .filter_map(|relay| relay.peer().map(|peer| peer.id))
-        .collect::<HashSet<_>>();
     let conn_gater = gater::ConnGater::new(
         gater::Config::closed()
             .with_relays(relays.clone())
@@ -397,13 +404,15 @@ async fn main() -> Result<()> {
         },
     )?;
 
-    println!(
-        "qbft example started node={local_node} peer_id={} duties={} first_duty={} first_leader=node-{leader_node}",
-        node.local_peer_id(),
-        duties.len(),
-        first_duty
+    info!(
+        node = local_node,
+        peer_id = %node.local_peer_id(),
+        duties = duties.len(),
+        first_duty = %first_duty,
+        first_leader = leader_node,
+        "QBFT example started"
     );
-    println!("cluster peers={}", peer_list(&fixture.peer_ids));
+    info!(peers = %peer_list(&fixture.peer_ids), "cluster peers");
 
     let start_after = args
         .start_after_peers
@@ -415,7 +424,7 @@ async fn main() -> Result<()> {
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
-                println!("node={local_node} ctrl-c received");
+                info!(node = local_node, "ctrl-c received");
                 break;
             }
             _ = cancel.cancelled() => break,
@@ -436,7 +445,7 @@ async fn main() -> Result<()> {
                 result?;
                 duty_run.clear_task();
                 if duty_run.advance_if_ready() && duty_run.is_complete() {
-                    println!("node={local_node} all duties decided");
+                    info!(node = local_node, "all duties decided");
                     // Keep libp2p alive briefly so slower peers can receive
                     // final duty messages before this demo process exits.
                     completion_drain = Some(Box::pin(tokio::time::sleep(COMPLETION_DRAIN)));
@@ -451,14 +460,15 @@ async fn main() -> Result<()> {
             }
             Some(decision) = decision_rx.recv() => {
                 if duty_run.mark_decided(&decision.duty) {
-                    println!(
-                        "node={local_node} decided duty={} entries={}",
-                        decision.duty,
-                        format_value(&decision.value)
+                    info!(
+                        node = local_node,
+                        duty = %decision.duty,
+                        entries = %format_value(&decision.value),
+                        "decided"
                     );
-                    println!("-------------");
+                    info!("-------------");
                     if duty_run.advance_if_ready() && duty_run.is_complete() {
-                        println!("node={local_node} all duties decided");
+                        info!(node = local_node, "all duties decided");
                         // Keep libp2p alive briefly so slower peers can receive
                         // final duty messages before this demo process exits.
                         completion_drain = Some(Box::pin(tokio::time::sleep(COMPLETION_DRAIN)));
@@ -470,8 +480,12 @@ async fn main() -> Result<()> {
                         start_after,
                         cancel.child_token(),
                     );
-                } else if args.verbose_p2p {
-                    println!("node={local_node} ignoring out-of-order decision duty={}", decision.duty);
+                } else {
+                    debug!(
+                        node = local_node,
+                        duty = %decision.duty,
+                        "ignoring out-of-order decision"
+                    );
                 }
             }
             event = node.select_next_some() => {
@@ -479,9 +493,7 @@ async fn main() -> Result<()> {
                     event,
                     &fixture,
                     &mut node,
-                    &relay_peer_ids,
                     &mut connected_cluster_peers,
-                    args.verbose_p2p,
                 )?;
                 duty_run.try_start(
                     &consensus.component,
@@ -505,7 +517,7 @@ async fn main() -> Result<()> {
             .context("consensus task join")??;
     }
     consensus.lifecycle_task.await?;
-    println!("node={local_node} qbft example stopped");
+    info!(node = local_node, "QBFT example stopped");
 
     Ok(())
 }
@@ -601,9 +613,10 @@ fn build_consensus(
         duty_gater: Arc::new(|duty| duty.duty_type == DutyType::Attester),
         broadcaster,
         sniffer: Arc::new(move |instance| {
-            println!(
-                "node={local_node} sniffed consensus messages={}",
-                instance.msgs.len()
+            info!(
+                node = local_node,
+                messages = instance.msgs.len(),
+                "sniffed consensus"
             );
         }),
         compare_attestations: false,
@@ -631,27 +644,24 @@ fn handle_swarm_event(
     event: SwarmEvent<PlutoBehaviourEvent<ExampleBehaviour>>,
     fixture: &Fixture,
     node: &mut Node<ExampleBehaviour>,
-    relay_peer_ids: &HashSet<PeerId>,
     connected_cluster_peers: &mut HashSet<PeerId>,
-    verbose_p2p: bool,
 ) -> Result<()> {
     let local_node = fixture.local_index;
     match event {
         SwarmEvent::NewListenAddr { address, .. } => {
-            if verbose_p2p {
-                println!("node={local_node} listen={address}");
-            }
+            debug!(node = local_node, %address, "listen address");
         }
         SwarmEvent::ConnectionEstablished { peer_id, .. } => {
             if fixture.peer_ids.contains(&peer_id)
                 && peer_id != fixture.peer_ids[fixture.local_index]
                 && connected_cluster_peers.insert(peer_id)
             {
-                println!(
-                    "node={local_node} connected cluster_peer={} count={}/{}",
-                    peer_id,
-                    connected_cluster_peers.len(),
-                    fixture.peer_ids.len().saturating_sub(1)
+                info!(
+                    node = local_node,
+                    peer = %peer_id,
+                    connected = connected_cluster_peers.len(),
+                    expected = fixture.peer_ids.len().saturating_sub(1),
+                    "connected cluster peer"
                 );
             }
         }
@@ -662,9 +672,7 @@ fn handle_swarm_event(
                 if fixture.peer_ids.contains(&peer_id)
                     && peer_id != fixture.peer_ids[fixture.local_index]
                 {
-                    if verbose_p2p {
-                        println!("node={local_node} mdns discovered peer={peer_id} addr={addr}");
-                    }
+                    debug!(node = local_node, peer = %peer_id, address = %addr, "mDNS discovered cluster peer");
                     node.dial(addr)?;
                 }
             }
@@ -672,27 +680,19 @@ fn handle_swarm_event(
         SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(ExampleBehaviourEvent::RelayManager(
             event,
         ))) => {
-            if verbose_p2p {
-                println!("node={local_node} relay_manager={event:?}");
-            }
+            debug!(node = local_node, ?event, "relay manager event");
         }
         SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(ExampleBehaviourEvent::Relay(event))) => {
-            if verbose_p2p {
-                println!("node={local_node} relay={event:?}");
-            }
+            debug!(node = local_node, ?event, "relay event");
         }
         SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(ExampleBehaviourEvent::Qbft(event))) => {
-            log_qbft_event(local_node, event, verbose_p2p);
+            log_qbft_event(local_node, event);
         }
         SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-            if verbose_p2p {
-                println!("node={local_node} outgoing_error peer={peer_id:?} error={error}");
-            }
+            debug!(node = local_node, peer = ?peer_id, %error, "outgoing connection error");
         }
         SwarmEvent::IncomingConnectionError { error, .. } => {
-            if verbose_p2p {
-                println!("node={local_node} incoming_error error={error}");
-            }
+            debug!(node = local_node, %error, "incoming connection error");
         }
         SwarmEvent::Behaviour(PlutoBehaviourEvent::Identify(_))
         | SwarmEvent::Behaviour(PlutoBehaviourEvent::Ping(_))
@@ -701,11 +701,7 @@ fn handle_swarm_event(
         | SwarmEvent::Behaviour(PlutoBehaviourEvent::Gater(_))
         | SwarmEvent::Behaviour(PlutoBehaviourEvent::QuicUpgrade(_))
         | SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(ExampleBehaviourEvent::Mdns(_))) => {}
-        _ => {
-            if verbose_p2p && !relay_peer_ids.is_empty() {
-                println!("node={local_node} swarm_event={event:?}");
-            }
-        }
+        _ => debug!(node = local_node, ?event, "swarm event"),
     }
 
     Ok(())
@@ -721,7 +717,7 @@ fn start_consensus_for_node(
     let leader = leader_index(&duty, fixture.peer_ids.len());
     if fixture.local_index == leader {
         let slot = duty.slot.inner();
-        println!("node={local_node} proposing value");
+        info!(node = local_node, "proposing value");
         tokio::spawn(async move {
             component
                 .propose(&cancel, duty, demo_value(local_node, slot))
@@ -729,7 +725,7 @@ fn start_consensus_for_node(
                 .map_err(|error| anyhow!(error))
         })
     } else {
-        println!("node={local_node} participating");
+        info!(node = local_node, "participating");
         tokio::spawn(async move {
             component
                 .participate(&cancel, duty)
@@ -739,37 +735,32 @@ fn start_consensus_for_node(
     }
 }
 
-fn log_qbft_event(local_node: usize, event: qbft::p2p::Event, verbose_p2p: bool) {
+fn log_qbft_event(local_node: usize, event: qbft::p2p::Event) {
     match event {
         qbft::p2p::Event::BroadcastQueued {
             request_id,
             target_count,
         } => {
-            println!(
-                "node={local_node} qbft broadcast request={request_id} targets={target_count}"
+            debug!(
+                node = local_node,
+                request_id, target_count, "QBFT broadcast queued"
             );
         }
         qbft::p2p::Event::Received { peer, .. } => {
-            if verbose_p2p {
-                println!("node={local_node} qbft received peer={peer}");
-            }
+            debug!(node = local_node, peer = %peer, "QBFT message received");
         }
         qbft::p2p::Event::Sent { request_id, peer } => {
-            if verbose_p2p {
-                println!("node={local_node} qbft sent request={request_id} peer={peer}");
-            }
+            debug!(node = local_node, request_id, peer = %peer, "QBFT message sent");
         }
         qbft::p2p::Event::SendError {
             request_id,
             peer,
             error,
         } => {
-            println!(
-                "node={local_node} qbft send_error request={request_id} peer={peer} error={error}"
-            );
+            debug!(node = local_node, request_id, peer = %peer, %error, "QBFT send error");
         }
         qbft::p2p::Event::InboundError { peer, error, .. } => {
-            println!("node={local_node} qbft inbound_error peer={peer} error={error}");
+            debug!(node = local_node, peer = %peer, %error, "QBFT inbound error");
         }
     }
 }
