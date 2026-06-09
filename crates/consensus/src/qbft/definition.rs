@@ -5,10 +5,10 @@ use std::{sync::Arc, time};
 use crate::{instance::RECV_BUFFER_SIZE, timer::RoundTimer};
 use crossbeam::channel as mpmc;
 use pluto_core::{
-    dutydb::{UnsignedDataSet, UnsignedDutyData, unsigned_data_set_from_proto},
     qbft::{self, QbftLogger},
     signeddata::AttestationData as CoreAttestationData,
     types::{Duty, DutyType, PubKey},
+    unsigneddata::{UnsignedDataSet, UnsignedDutyData, unsigned_data_set_from_proto},
 };
 use prost_types::Any;
 use tokio::runtime::Handle;

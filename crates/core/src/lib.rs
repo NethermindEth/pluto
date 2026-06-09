@@ -8,6 +8,9 @@ pub mod qbft;
 /// Types for the Charon core.
 pub mod types;
 
+/// Unsigned duty data decoding.
+pub mod unsigneddata;
+
 /// Signed data wrappers and helpers.
 pub mod signeddata;
 

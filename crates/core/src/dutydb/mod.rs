@@ -2,4 +2,4 @@
 
 pub mod memory;
 
-pub use memory::{Error, MemDB, UnsignedDataSet, UnsignedDutyData, unsigned_data_set_from_proto};
+pub use memory::{Error, MemDB};

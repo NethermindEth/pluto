@@ -813,13 +813,13 @@ mod tests {
     use super::*;
     use crate::{
         deadline::{DeadlineCalculator, DeadlinerTask, Result as DeadlineResult},
-        dutydb::{UnsignedDataSet, UnsignedDutyData},
         signeddata::{
             AttestationData as SignedAttestationData, AttesterDuty as SignedAttesterDuty,
             SignedRandao, SyncContribution, VersionedAggregatedAttestation,
         },
         testutils::random_core_pub_key,
         types::{Duty, DutyType, PubKey, SlotNumber},
+        unsigneddata::{UnsignedDataSet, UnsignedDutyData},
         validatorapi::types::AttestationDataOpts,
     };
 
