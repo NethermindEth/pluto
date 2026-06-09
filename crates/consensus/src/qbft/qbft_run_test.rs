@@ -125,15 +125,7 @@ async fn qbft_consensus_with_silent_round_one_leader_decides() {
     )
     .await;
 
-    tokio::time::timeout(Duration::from_secs(1), async {
-        while let Some(result) = tasks.join_next().await {
-            result
-                .expect("silent-peer consensus task panicked")
-                .expect("silent-peer consensus task failed");
-        }
-    })
-    .await
-    .expect("silent-peer consensus tasks did not stop after decision");
+    join_successful_tasks(tasks, "silent-peer consensus task").await;
 
     decided.sort_by_key(|(node_idx, ..)| *node_idx);
     assert_eq!(decided.len(), active_count);
@@ -204,15 +196,7 @@ async fn qbft_priority_consensus() {
         );
     }
 
-    tokio::time::timeout(Duration::from_secs(1), async {
-        while let Some(result) = tasks.join_next().await {
-            result
-                .expect("priority consensus task panicked")
-                .expect("priority consensus task failed");
-        }
-    })
-    .await
-    .expect("priority consensus tasks did not stop after decision");
+    join_successful_tasks(tasks, "priority consensus task").await;
 
     ct.cancel();
     start_ct.cancel();
@@ -290,15 +274,7 @@ async fn qbft_consensus_participate_then_late_propose() {
         );
     }
 
-    tokio::time::timeout(Duration::from_secs(1), async {
-        while let Some(result) = tasks.join_next().await {
-            result
-                .expect("consensus task panicked")
-                .expect("consensus task failed");
-        }
-    })
-    .await
-    .expect("consensus tasks did not stop after decision");
+    join_successful_tasks(tasks, "consensus task").await;
 
     ct.cancel();
     start_ct.cancel();
@@ -353,13 +329,7 @@ async fn qbft_consensus_attester_compare_mismatch_does_not_decide() {
         .expect_err("mismatched attester compare unexpectedly decided");
 
     ct.cancel();
-    tokio::time::timeout(Duration::from_secs(1), async {
-        while let Some(result) = tasks.join_next().await {
-            assert!(result.expect("mismatched compare task panicked").is_err());
-        }
-    })
-    .await
-    .expect("mismatched compare tasks did not stop after cancellation");
+    join_failed_tasks(tasks, "mismatched compare task").await;
     assert!(decided_rx.try_recv().is_err());
 
     start_ct.cancel();
@@ -419,15 +389,7 @@ async fn run_qbft_consensus(
     )
     .await;
 
-    tokio::time::timeout(Duration::from_secs(1), async {
-        while let Some(result) = tasks.join_next().await {
-            result
-                .expect("consensus task panicked")
-                .expect("consensus task failed");
-        }
-    })
-    .await
-    .expect("consensus tasks did not stop after decision");
+    join_successful_tasks(tasks, "consensus task").await;
 
     decided.sort_by_key(|(node_idx, ..)| *node_idx);
     assert_eq!(decided.len(), threshold);
@@ -650,6 +612,27 @@ async fn collect_decisions_or_task_error_with_timeout<T>(
     }
 
     decided
+}
+
+async fn join_successful_tasks(tasks: JoinSet<super::RunnerResult<()>>, label: &str) {
+    let results = tokio::time::timeout(Duration::from_secs(1), tasks.join_all())
+        .await
+        .unwrap_or_else(|_| panic!("{label}s did not stop after decision"));
+
+    for result in results {
+        result.unwrap_or_else(|err| panic!("{label} failed: {err}"));
+    }
+}
+
+async fn join_failed_tasks(tasks: JoinSet<super::RunnerResult<()>>, label: &str) {
+    let results = tokio::time::timeout(Duration::from_secs(1), tasks.join_all())
+        .await
+        .unwrap_or_else(|_| panic!("{label}s did not stop after cancellation"));
+
+    assert!(
+        results.into_iter().all(|result| result.is_err()),
+        "{label} unexpectedly succeeded"
+    );
 }
 
 fn unsigned_value(seed: usize) -> pbcore::UnsignedDataSet {
