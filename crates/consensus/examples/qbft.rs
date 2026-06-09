@@ -420,6 +420,8 @@ async fn main() -> Result<()> {
     let mut connected_cluster_peers = HashSet::<PeerId>::new();
     let mut duty_run = DutyRun::new(duties);
     let mut completion_drain = None;
+    let start_deadline = tokio::time::sleep(timeout);
+    tokio::pin!(start_deadline);
 
     loop {
         tokio::select! {
@@ -503,7 +505,7 @@ async fn main() -> Result<()> {
                     cancel.child_token(),
                 );
             }
-            _ = tokio::time::sleep(timeout), if !duty_run.started && !duty_run.is_complete() => {
+            _ = &mut start_deadline, if !duty_run.started && !duty_run.is_complete() => {
                 bail!("timeout waiting for enough peers to start QBFT");
             }
         }
