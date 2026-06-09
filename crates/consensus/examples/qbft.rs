@@ -45,11 +45,10 @@
 //!    consensus peer set (secp256k1 public keys from each operator ENR).
 //! 2. **Wire consensus** (`build_consensus`): constructs a `qbft::Consensus`
 //!    with an attester-only duty gater, an `IncreasingRoundTimer`, a
-//!    `DemoDeadline`, and a broadcaster bound to the QBFT libp2p
-//!    `qbft::p2p::Handle` through a shared `OnceLock` (the handle only exists
-//!    after the behaviour is built, so the broadcaster reads it lazily).
-//!    Decided values are forwarded to a channel via `Consensus::subscribe`, and
-//!    the expired-duty cleanup loop is spawned.
+//!    `DemoDeadline`, and a broadcaster that queues outbound messages for the
+//!    main event loop to forward through the QBFT libp2p handle. Decided values
+//!    are forwarded to a channel via `Consensus::subscribe`, and the
+//!    expired-duty cleanup loop is spawned.
 //! 3. **Build the libp2p node**: an `ExampleBehaviour` combining the relay
 //!    client, `RelayManager`, mDNS, and the `qbft::p2p::Behaviour`, gated to
 //!    the configured relays and cluster peers.
@@ -70,9 +69,8 @@
 use std::{
     collections::{BTreeMap, HashSet},
     convert::Infallible,
-    error::Error as StdError,
     path::PathBuf,
-    sync::{Arc, OnceLock},
+    sync::Arc,
     time::Duration,
 };
 
@@ -91,7 +89,7 @@ use pluto_consensus::{
     timer::{IncreasingRoundTimer, RoundTimer},
 };
 use pluto_core::{
-    corepb::v1::core as pbcore,
+    corepb::v1::{consensus as pbconsensus, core as pbcore},
     deadline::{DeadlineCalculator, DeadlinerTask},
     types::{Duty, DutyType, SlotNumber},
 };
@@ -108,7 +106,7 @@ use pluto_p2p::{
 };
 use pluto_tracing::TracingConfig;
 use prost::bytes::Bytes;
-use tokio::fs;
+use tokio::{fs, sync::mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
@@ -362,19 +360,22 @@ async fn main() -> Result<()> {
     );
     let p2p_context = P2PContext::new(fixture.peer_ids.iter().copied());
 
-    let (decision_tx, mut decision_rx) = tokio::sync::mpsc::unbounded_channel();
-    let consensus = build_consensus(&fixture, timeout, cancel.child_token(), decision_tx)?;
+    let (decision_tx, mut decision_rx) = mpsc::unbounded_channel();
+    let (mut broadcast_rx, broadcaster) = queued_broadcaster();
+    let (consensus, lifecycle_task) = build_consensus(
+        &fixture,
+        timeout,
+        cancel.child_token(),
+        broadcaster,
+        decision_tx,
+    )?;
     let (qbft_behaviour, handle) = qbft::p2p::Behaviour::new(qbft::p2p::Config {
-        consensus: Arc::clone(&consensus.component),
+        consensus: Arc::clone(&consensus),
         p2p_context: p2p_context.clone(),
         peers: fixture.peer_ids.clone(),
         local_peer_id: fixture.peer_ids[fixture.local_index],
         cancellation: cancel.child_token(),
     })?;
-    consensus
-        .handle_slot
-        .set(handle)
-        .map_err(|_| anyhow!("qbft handle already initialized"))?;
 
     let p2p_config = P2PConfig {
         relays: vec![],
@@ -453,7 +454,7 @@ async fn main() -> Result<()> {
                     completion_drain = Some(Box::pin(tokio::time::sleep(COMPLETION_DRAIN)));
                 }
                 duty_run.try_start(
-                    &consensus.component,
+                    &consensus,
                     &fixture,
                     connected_cluster_peers.len(),
                     start_after,
@@ -476,7 +477,7 @@ async fn main() -> Result<()> {
                         completion_drain = Some(Box::pin(tokio::time::sleep(COMPLETION_DRAIN)));
                     }
                     duty_run.try_start(
-                        &consensus.component,
+                        &consensus,
                         &fixture,
                         connected_cluster_peers.len(),
                         start_after,
@@ -490,6 +491,12 @@ async fn main() -> Result<()> {
                     );
                 }
             }
+            Some(msg) = broadcast_rx.recv() => {
+                handle
+                    .broadcast(msg)
+                    .await
+                    .map_err(|error| anyhow!("broadcast QBFT message: {error}"))?;
+            }
             event = node.select_next_some() => {
                 handle_swarm_event(
                     event,
@@ -498,7 +505,7 @@ async fn main() -> Result<()> {
                     &mut connected_cluster_peers,
                 )?;
                 duty_run.try_start(
-                    &consensus.component,
+                    &consensus,
                     &fixture,
                     connected_cluster_peers.len(),
                     start_after,
@@ -518,7 +525,7 @@ async fn main() -> Result<()> {
             .context("timeout waiting for consensus task to stop")?
             .context("consensus task join")??;
     }
-    consensus.lifecycle_task.await?;
+    lifecycle_task.await?;
     info!(node = local_node, "QBFT example stopped");
 
     Ok(())
@@ -576,31 +583,15 @@ async fn load_fixture(args: &Args) -> Result<Fixture> {
     })
 }
 
-struct ConsensusRuntime {
-    component: Arc<qbft::Consensus>,
-    handle_slot: Arc<OnceLock<qbft::p2p::Handle>>,
-    lifecycle_task: tokio::task::JoinHandle<()>,
-}
-
+// Return the consensus component for p2p admission/propose/participate calls
+// and the cleanup task so main can join it during shutdown.
 fn build_consensus(
     fixture: &Fixture,
     timeout: Duration,
     cancel: CancellationToken,
-    decision_tx: tokio::sync::mpsc::UnboundedSender<Decision>,
-) -> Result<ConsensusRuntime> {
-    let handle_slot = Arc::new(OnceLock::<qbft::p2p::Handle>::new());
-    let broadcaster_slot = Arc::clone(&handle_slot);
-    let broadcaster: qbft::Broadcaster = Arc::new(move |_ct, msg| {
-        let broadcaster_slot = Arc::clone(&broadcaster_slot);
-        Box::pin(async move {
-            let Some(handle) = broadcaster_slot.get() else {
-                let err = std::io::Error::other("qbft p2p handle not initialized");
-                return Err(Box::new(err) as Box<dyn StdError + Send + Sync>);
-            };
-            handle.broadcast(msg).await
-        })
-    });
-
+    broadcaster: qbft::Broadcaster,
+    decision_tx: mpsc::UnboundedSender<Decision>,
+) -> Result<(Arc<qbft::Consensus>, tokio::task::JoinHandle<()>)> {
     let (deadliner, expired_rx) = DeadlinerTask::start(
         cancel.child_token(),
         format!("qbft-example-node-{}", fixture.local_index),
@@ -635,11 +626,27 @@ fn build_consensus(
     });
     let lifecycle_task = Arc::clone(&component).start(cancel.child_token(), expired_rx);
 
-    Ok(ConsensusRuntime {
-        component,
-        handle_slot,
-        lifecycle_task,
-    })
+    Ok((component, lifecycle_task))
+}
+
+/// Returns a broadcaster that queues outbound messages and the receiver that
+/// main forwards through the p2p handle after the behaviour is built.
+fn queued_broadcaster() -> (
+    mpsc::UnboundedReceiver<pbconsensus::QbftConsensusMsg>,
+    qbft::Broadcaster,
+) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let broadcaster: qbft::Broadcaster = Arc::new(move |_ct, msg| {
+        let tx = tx.clone();
+        Box::pin(async move {
+            tx.send(msg).map_err(|_| {
+                let err = std::io::Error::other("qbft outbound queue closed");
+                Box::new(err) as Box<dyn std::error::Error + Send + Sync>
+            })
+        })
+    });
+
+    (rx, broadcaster)
 }
 
 fn handle_swarm_event(
