@@ -22,6 +22,11 @@ pub mod extensions;
 
 pub use extensions::*;
 
+/// Beacon node client wrapper.
+pub mod beacon_node;
+
+pub use beacon_node::BeaconNodeClient;
+
 /// Ethereum 2.0 consensus layer specification types.
 pub mod spec;
 
