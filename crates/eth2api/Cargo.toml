@@ -31,11 +31,12 @@ tree_hash.workspace = true
 tree_hash_derive.workspace = true
 alloy.workspace = true
 pluto-ssz.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 testcontainers.workspace = true
-tokio.workspace = true
 test-case.workspace = true
+wiremock.workspace = true
 
 [build-dependencies]
 regex.workspace = true

@@ -31,6 +31,9 @@ pub mod v1;
 /// Versioned wrappers for signeddata-related payloads.
 pub mod versioned;
 
+/// Cache of Validators retrieved from the Beacon node.
+pub mod valcache;
+
 #[cfg(test)]
 pub(crate) mod test_fixtures;
 
