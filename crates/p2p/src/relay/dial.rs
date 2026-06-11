@@ -94,7 +94,9 @@ pub(super) fn addr_sets_equal(a: &[Multiaddr], b: &[Multiaddr]) -> bool {
         return false;
     }
     let a_set: HashSet<&Multiaddr> = a.iter().collect();
-    b.iter().all(|x| a_set.contains(x))
+    let b_set: HashSet<&Multiaddr> = b.iter().collect();
+
+    a_set == b_set
 }
 
 /// Exponential backoff delay for a given retry count.
