@@ -103,7 +103,7 @@ async fn qbft_consensus_with_silent_round_one_leader_decides() {
 
         let (expired_tx, expired_rx) = mpsc::channel(1);
         expired_txs.push(expired_tx);
-        start_tasks.push(Arc::clone(node).start(start_ct.clone(), expired_rx));
+        start_tasks.push(Arc::clone(node).start(expired_rx, start_ct.clone()));
     }
     drop(decided_tx);
 
@@ -113,7 +113,7 @@ async fn qbft_consensus_with_silent_round_one_leader_decides() {
         let duty = duty.clone();
         let value = unsigned_value(node_idx);
         let ct = ct.clone();
-        tasks.spawn(async move { node.propose(&ct, duty, value).await });
+        tasks.spawn(async move { node.propose(duty, value, &ct).await });
     }
 
     let mut decided = collect_decisions_or_task_error_with_timeout(
@@ -167,7 +167,7 @@ async fn qbft_priority_consensus() {
 
         let (expired_tx, expired_rx) = mpsc::channel(1);
         expired_txs.push(expired_tx);
-        start_tasks.push(Arc::clone(node).start(start_ct.clone(), expired_rx));
+        start_tasks.push(Arc::clone(node).start(expired_rx, start_ct.clone()));
     }
     drop(decided_tx);
 
@@ -177,7 +177,7 @@ async fn qbft_priority_consensus() {
         let duty = duty.clone();
         let value = priority_value(&duty, node_idx);
         let ct = ct.clone();
-        tasks.spawn(async move { node.propose_priority(&ct, duty, value).await });
+        tasks.spawn(async move { node.propose_priority(duty, value, &ct).await });
     }
 
     let decided = collect_decisions_or_task_error(
@@ -228,7 +228,7 @@ async fn qbft_consensus_participate_then_late_propose() {
 
         let (expired_tx, expired_rx) = mpsc::channel(1);
         expired_txs.push(expired_tx);
-        start_tasks.push(Arc::clone(node).start(start_ct.clone(), expired_rx));
+        start_tasks.push(Arc::clone(node).start(expired_rx, start_ct.clone()));
     }
     drop(decided_tx);
 
@@ -237,7 +237,7 @@ async fn qbft_consensus_participate_then_late_propose() {
         let node = Arc::clone(node);
         let duty = duty.clone();
         let ct = ct.clone();
-        tasks.spawn(async move { node.participate(&ct, duty).await });
+        tasks.spawn(async move { node.participate(duty, &ct).await });
     }
 
     tokio::time::timeout(Duration::from_secs(1), async {
@@ -258,7 +258,7 @@ async fn qbft_consensus_participate_then_late_propose() {
         let node = Arc::clone(node);
         let duty = duty.clone();
         let ct = ct.clone();
-        tasks.spawn(async move { node.propose(&ct, duty, unsigned_value(node_idx)).await });
+        tasks.spawn(async move { node.propose(duty, unsigned_value(node_idx), &ct).await });
     }
 
     let mut decided = Vec::with_capacity(active_nodes.len());
@@ -311,7 +311,7 @@ async fn qbft_consensus_attester_compare_mismatch_does_not_decide() {
 
         let (expired_tx, expired_rx) = mpsc::channel(1);
         expired_txs.push(expired_tx);
-        start_tasks.push(Arc::clone(node).start(start_ct.clone(), expired_rx));
+        start_tasks.push(Arc::clone(node).start(expired_rx, start_ct.clone()));
     }
     drop(decided_tx);
 
@@ -321,7 +321,7 @@ async fn qbft_consensus_attester_compare_mismatch_does_not_decide() {
         let duty = duty.clone();
         let value = attester_value(node_idx);
         let ct = ct.clone();
-        tasks.spawn(async move { node.propose(&ct, duty, value).await });
+        tasks.spawn(async move { node.propose(duty, value, &ct).await });
     }
 
     tokio::time::timeout(Duration::from_millis(150), decided_rx.recv())
@@ -368,7 +368,7 @@ async fn run_qbft_consensus(
 
         let (expired_tx, expired_rx) = mpsc::channel(1);
         expired_txs.push(expired_tx);
-        start_tasks.push(Arc::clone(node).start(start_ct.clone(), expired_rx));
+        start_tasks.push(Arc::clone(node).start(expired_rx, start_ct.clone()));
     }
     drop(decided_tx);
 
@@ -378,7 +378,7 @@ async fn run_qbft_consensus(
         let duty = duty.clone();
         let value = value(node_idx);
         let ct = ct.clone();
-        tasks.spawn(async move { node.propose(&ct, duty, value).await });
+        tasks.spawn(async move { node.propose(duty, value, &ct).await });
     }
 
     let mut decided = collect_decisions_or_task_error(
@@ -741,7 +741,7 @@ fn in_memory_network(
                     // Sender teardown must not cancel an already-started
                     // in-memory delivery to later peers.
                     let delivery_ct = CancellationToken::new();
-                    if let Err(err) = consensus.handle(&delivery_ct, msg.clone()).await {
+                    if let Err(err) = consensus.handle(msg.clone(), &delivery_ct).await {
                         return Err(Box::new(err) as Box<dyn StdError + Send + Sync>);
                     }
                 }

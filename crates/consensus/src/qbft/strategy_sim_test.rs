@@ -300,7 +300,7 @@ async fn run_strategy_simulator(config: SimConfig) -> Vec<SimResult> {
             if !start_delay.is_zero() {
                 tokio::time::sleep(start_delay).await;
             }
-            let result = node.propose(&ct, duty, unsigned_value(peer_idx)).await;
+            let result = node.propose(duty, unsigned_value(peer_idx), &ct).await;
             (peer_idx, result)
         });
     }
@@ -540,7 +540,7 @@ impl SimNetwork {
             for delivery in due {
                 if let Some(node) = nodes.get(delivery.peer_idx) {
                     let delivery_ct = CancellationToken::new();
-                    let _ = node.handle(&delivery_ct, delivery.msg).await;
+                    let _ = node.handle(delivery.msg, &delivery_ct).await;
                 }
             }
         }

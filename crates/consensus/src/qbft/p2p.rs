@@ -346,7 +346,7 @@ where
             .map_err(|error| error.to_string())?;
 
         consensus
-            .handle(&cancellation, msg)
+            .handle(msg, &cancellation)
             .await
             .map_err(|error| error.to_string())
     })
@@ -1033,7 +1033,7 @@ mod tests {
             let consensus = Arc::clone(consensus);
             let duty = duty.clone();
             let ct = ct.clone();
-            tasks.spawn(async move { consensus.propose(&ct, duty, unsigned_value(index)).await });
+            tasks.spawn(async move { consensus.propose(duty, unsigned_value(index), &ct).await });
         }
 
         let mut decided = Vec::with_capacity(consensuses.len());

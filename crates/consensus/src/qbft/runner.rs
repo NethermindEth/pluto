@@ -98,29 +98,29 @@ struct RunnerResultError(String);
 /// Proposes an unsigned duty data set into a QBFT instance.
 pub(crate) async fn propose_unsigned(
     consensus: &Consensus,
-    ct: &CancellationToken,
     duty: Duty,
     value: pbcore::UnsignedDataSet,
+    ct: &CancellationToken,
 ) -> Result<()> {
-    propose(consensus, ct, duty, value).await
+    propose(consensus, duty, value, ct).await
 }
 
 /// Proposes a priority protocol result into a QBFT instance.
 pub(crate) async fn propose_priority(
     consensus: &Consensus,
-    ct: &CancellationToken,
     duty: Duty,
     value: pbpriority::PriorityResult,
+    ct: &CancellationToken,
 ) -> Result<()> {
-    propose(consensus, ct, duty, value).await
+    propose(consensus, duty, value, ct).await
 }
 
 /// Hashes and packs the local value, then starts or joins the duty runner.
 async fn propose<M>(
     consensus: &Consensus,
-    ct: &CancellationToken,
     duty: Duty,
     value: M,
+    ct: &CancellationToken,
 ) -> Result<()>
 where
     M: Message + Name + Clone + Send + Sync + 'static,
@@ -147,14 +147,14 @@ where
         return wait_instance_result(&inst).await;
     }
 
-    run_instance(consensus, ct, duty, inst).await
+    run_instance(consensus, duty, inst, ct).await
 }
 
 /// Starts participating in a duty without a local proposal value.
 pub(crate) async fn participate(
     consensus: &Consensus,
-    ct: &CancellationToken,
     duty: Duty,
+    ct: &CancellationToken,
 ) -> Result<()> {
     if matches!(
         duty.duty_type,
@@ -179,17 +179,17 @@ pub(crate) async fn participate(
         return Ok(());
     }
 
-    run_instance(consensus, ct, duty, inst).await
+    run_instance(consensus, duty, inst, ct).await
 }
 
 /// Runs one consensus instance and publishes its completion result.
 pub(crate) async fn run_instance(
     consensus: &Consensus,
-    parent_ct: &CancellationToken,
     duty: Duty,
     inst: Arc<InstanceIo<msg::Msg>>,
+    parent_ct: &CancellationToken,
 ) -> Result<()> {
-    let result = run_instance_inner(consensus, parent_ct, duty.clone(), Arc::clone(&inst)).await;
+    let result = run_instance_inner(consensus, duty.clone(), Arc::clone(&inst), parent_ct).await;
     let runner_result: RunnerResult = result
         .as_ref()
         .map_err(|err| Box::new(RunnerResultError(err.to_string())) as RunnerError)
@@ -202,9 +202,9 @@ pub(crate) async fn run_instance(
 /// Wires async component state into the generic blocking QBFT core.
 async fn run_instance_inner(
     consensus: &Consensus,
-    parent_ct: &CancellationToken,
     duty: Duty,
     inst: Arc<InstanceIo<msg::Msg>>,
+    parent_ct: &CancellationToken,
 ) -> Result<()> {
     let nodes = consensus.node_count();
     let nodes_i64 = i64::try_from(nodes).expect("node count fits i64");
@@ -525,7 +525,7 @@ mod tests {
             let value = value.clone();
             tokio::spawn(async move {
                 let ct = CancellationToken::new();
-                consensus.propose(&ct, duty, value).await
+                consensus.propose(duty, value, &ct).await
             })
         };
 
@@ -544,7 +544,7 @@ mod tests {
         inst.mark_proposed().unwrap();
 
         let err = consensus
-            .propose(&CancellationToken::new(), duty, unsigned_value(0))
+            .propose(duty, unsigned_value(0), &CancellationToken::new())
             .await
             .unwrap_err();
 
@@ -559,7 +559,7 @@ mod tests {
         inst.value_tx.try_send(Any::default()).unwrap();
 
         let err = consensus
-            .propose(&CancellationToken::new(), duty, unsigned_value(0))
+            .propose(duty, unsigned_value(0), &CancellationToken::new())
             .await
             .unwrap_err();
 
@@ -572,13 +572,13 @@ mod tests {
         let aggregator = Duty::new(SlotNumber::new(1), DutyType::Aggregator);
         let sync_contribution = Duty::new(SlotNumber::new(1), DutyType::SyncContribution);
 
-        participate(&consensus, &CancellationToken::new(), aggregator.clone())
+        participate(&consensus, aggregator.clone(), &CancellationToken::new())
             .await
             .unwrap();
         participate(
             &consensus,
-            &CancellationToken::new(),
             sync_contribution.clone(),
+            &CancellationToken::new(),
         )
         .await
         .unwrap();
@@ -607,7 +607,7 @@ mod tests {
             ..FeatureConfig::default()
         });
 
-        participate(&consensus, &CancellationToken::new(), duty.clone())
+        participate(&consensus, duty.clone(), &CancellationToken::new())
             .await
             .unwrap();
         assert!(consensus.get_instance_io(duty).mark_participated().is_ok());
@@ -621,7 +621,7 @@ mod tests {
         let inst = consensus.get_instance_io(duty.clone());
         inst.mark_participated().unwrap();
 
-        let err = participate(&consensus, &CancellationToken::new(), duty)
+        let err = participate(&consensus, duty, &CancellationToken::new())
             .await
             .unwrap_err();
 
@@ -642,7 +642,7 @@ mod tests {
         let inst = consensus.get_instance_io(duty.clone());
         let mut err_rx = inst.take_err_rx().unwrap();
 
-        run_instance(&consensus, &CancellationToken::new(), duty, inst)
+        run_instance(&consensus, duty, inst, &CancellationToken::new())
             .await
             .unwrap();
 
@@ -667,7 +667,7 @@ mod tests {
         let ct = CancellationToken::new();
         ct.cancel();
 
-        let err = run_instance(&consensus, &ct, duty, inst).await.unwrap_err();
+        let err = run_instance(&consensus, duty, inst, &ct).await.unwrap_err();
 
         assert!(
             matches!(err, Error::ConsensusTimeout),
@@ -688,7 +688,7 @@ mod tests {
         let ct = CancellationToken::new();
         ct.cancel();
 
-        let err = run_instance(&consensus, &ct, duty.clone(), Arc::clone(&inst))
+        let err = run_instance(&consensus, duty.clone(), Arc::clone(&inst), &ct)
             .await
             .unwrap_err();
 
@@ -701,7 +701,7 @@ mod tests {
         assert!(retained.has_started());
 
         let err = consensus
-            .propose(&CancellationToken::new(), duty.clone(), unsigned_value(0))
+            .propose(duty.clone(), unsigned_value(0), &CancellationToken::new())
             .await
             .unwrap_err();
 
@@ -737,7 +737,7 @@ mod tests {
         let task_ct = ct.clone();
 
         let task =
-            tokio::spawn(async move { consensus.propose(&task_ct, duty, unsigned_value(0)).await });
+            tokio::spawn(async move { consensus.propose(duty, unsigned_value(0), &task_ct).await });
 
         recv_one(&mut broadcast_started_rx).await;
         ct.cancel();

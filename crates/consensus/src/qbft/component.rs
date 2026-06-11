@@ -331,8 +331,8 @@ impl Consensus {
     /// Validates, wraps, and queues an inbound QBFT consensus message.
     pub async fn handle(
         &self,
-        ct: &CancellationToken,
         pb_msg: pbconsensus::QbftConsensusMsg,
+        ct: &CancellationToken,
     ) -> Result<()> {
         let msg = pb_msg.msg.as_ref().ok_or(Error::InvalidConsensusMessage)?;
 
@@ -419,8 +419,8 @@ impl Consensus {
     /// Runs the internal expired-duty cleanup loop until cancellation.
     pub fn start(
         self: Arc<Self>,
-        ct: CancellationToken,
         mut expired_rx: mpsc::Receiver<Duty>,
+        ct: CancellationToken,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             loop {
@@ -508,26 +508,26 @@ impl Consensus {
     /// Proposes unsigned duty data for a consensus instance.
     pub async fn propose(
         &self,
-        ct: &CancellationToken,
         duty: Duty,
         value: pbcore::UnsignedDataSet,
+        ct: &CancellationToken,
     ) -> runner::Result<()> {
-        runner::propose_unsigned(self, ct, duty, value).await
+        runner::propose_unsigned(self, duty, value, ct).await
     }
 
     /// Proposes priority protocol data for a consensus instance.
     pub async fn propose_priority(
         &self,
-        ct: &CancellationToken,
         duty: Duty,
         value: pbpriority::PriorityResult,
+        ct: &CancellationToken,
     ) -> runner::Result<()> {
-        runner::propose_priority(self, ct, duty, value).await
+        runner::propose_priority(self, duty, value, ct).await
     }
 
     /// Starts participating in a consensus instance.
-    pub async fn participate(&self, ct: &CancellationToken, duty: Duty) -> runner::Result<()> {
-        runner::participate(self, ct, duty).await
+    pub async fn participate(&self, duty: Duty, ct: &CancellationToken) -> runner::Result<()> {
+        runner::participate(self, duty, ct).await
     }
 
     pub(crate) fn peer_labels(&self) -> &[String] {
@@ -618,7 +618,7 @@ pub(crate) mod tests {
         let first = consensus.get_instance_io(duty.clone());
         let cancel = CancellationToken::new();
         let (expired_tx, expired_rx) = mpsc::channel(1);
-        let task = Arc::clone(&consensus).start(cancel.clone(), expired_rx);
+        let task = Arc::clone(&consensus).start(expired_rx, cancel.clone());
 
         expired_tx.send(duty.clone()).await.unwrap();
         tokio::time::timeout(
@@ -697,8 +697,8 @@ pub(crate) mod tests {
     async fn handle_rejects_missing_inner_message() {
         let err = consensus(0, true)
             .handle(
-                &CancellationToken::new(),
                 pbconsensus::QbftConsensusMsg::default(),
+                &CancellationToken::new(),
             )
             .await
             .unwrap_err();
@@ -788,7 +788,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn handle_rejects_duty_gate_false() {
         let err = consensus(0, false)
-            .handle(&CancellationToken::new(), consensus_msg(signed_msg(0)))
+            .handle(consensus_msg(signed_msg(0)), &CancellationToken::new())
             .await
             .unwrap_err();
 
@@ -806,7 +806,7 @@ pub(crate) mod tests {
         };
 
         let err = consensus(0, true)
-            .handle(&CancellationToken::new(), outer)
+            .handle(outer, &CancellationToken::new())
             .await
             .unwrap_err();
 
@@ -828,7 +828,7 @@ pub(crate) mod tests {
         };
 
         let err = consensus(0, true)
-            .handle(&CancellationToken::new(), outer)
+            .handle(outer, &CancellationToken::new())
             .await
             .unwrap_err();
 
@@ -849,7 +849,7 @@ pub(crate) mod tests {
         outer.justification = vec![sign_for_peer(justification, 0)];
 
         consensus
-            .handle(&CancellationToken::new(), outer)
+            .handle(outer, &CancellationToken::new())
             .await
             .unwrap();
 
@@ -896,7 +896,7 @@ pub(crate) mod tests {
         let msg = sign_for_peer(msg, 0);
 
         let err = consensus(0, true)
-            .handle(&CancellationToken::new(), consensus_msg(msg))
+            .handle(consensus_msg(msg), &CancellationToken::new())
             .await
             .unwrap_err();
 
@@ -914,7 +914,7 @@ pub(crate) mod tests {
         let msg = sign_for_peer(msg, 0);
 
         let err = consensus(0, true)
-            .handle(&CancellationToken::new(), consensus_msg(msg))
+            .handle(consensus_msg(msg), &CancellationToken::new())
             .await
             .unwrap_err();
 
@@ -934,7 +934,7 @@ pub(crate) mod tests {
         let msg = sign_for_peer(msg, 0);
 
         let err = consensus(0, true)
-            .handle(&CancellationToken::new(), consensus_msg(msg))
+            .handle(consensus_msg(msg), &CancellationToken::new())
             .await
             .unwrap_err();
 
@@ -950,7 +950,7 @@ pub(crate) mod tests {
         let msg = sign_for_peer(msg, 0);
 
         let err = consensus(0, true)
-            .handle(&CancellationToken::new(), consensus_msg(msg))
+            .handle(consensus_msg(msg), &CancellationToken::new())
             .await
             .unwrap_err();
 
@@ -971,7 +971,7 @@ pub(crate) mod tests {
         let inst = consensus.get_instance_io(duty());
 
         consensus
-            .handle(&CancellationToken::new(), consensus_msg(msg))
+            .handle(consensus_msg(msg), &CancellationToken::new())
             .await
             .unwrap();
 
@@ -996,12 +996,12 @@ pub(crate) mod tests {
 
         consensus
             .handle(
-                &CancellationToken::new(),
                 pbconsensus::QbftConsensusMsg {
                     msg: Some(msg),
                     justification: vec![],
                     values: vec![any],
                 },
+                &CancellationToken::new(),
             )
             .await
             .unwrap();
@@ -1021,7 +1021,7 @@ pub(crate) mod tests {
         .unwrap();
 
         let err = consensus
-            .handle(&CancellationToken::new(), valid_consensus_msg(0))
+            .handle(valid_consensus_msg(0), &CancellationToken::new())
             .await
             .unwrap_err();
 
@@ -1034,7 +1034,7 @@ pub(crate) mod tests {
         ct.cancel();
 
         let err = consensus(0, true)
-            .handle(&ct, valid_consensus_msg(0))
+            .handle(valid_consensus_msg(0), &ct)
             .await
             .unwrap_err();
 
@@ -1051,7 +1051,7 @@ pub(crate) mod tests {
         }
 
         let ct = CancellationToken::new();
-        let handle = consensus.handle(&ct, valid_consensus_msg(0));
+        let handle = consensus.handle(valid_consensus_msg(0), &ct);
         tokio::pin!(handle);
 
         tokio::select! {
@@ -1078,7 +1078,7 @@ pub(crate) mod tests {
         }
 
         let ct = CancellationToken::new();
-        let handle = consensus.handle(&ct, valid_consensus_msg(0));
+        let handle = consensus.handle(valid_consensus_msg(0), &ct);
         tokio::pin!(handle);
 
         tokio::select! {
@@ -1112,12 +1112,12 @@ pub(crate) mod tests {
 
         consensus
             .handle(
-                &CancellationToken::new(),
                 pbconsensus::QbftConsensusMsg {
                     msg: Some(msg),
                     justification: vec![],
                     values: vec![any],
                 },
+                &CancellationToken::new(),
             )
             .await
             .unwrap();
@@ -1134,7 +1134,7 @@ pub(crate) mod tests {
             .expect("recv receiver should be available");
 
         consensus
-            .handle(&CancellationToken::new(), reference_consensus_msg())
+            .handle(reference_consensus_msg(), &CancellationToken::new())
             .await
             .expect("reference message should be admitted");
 

@@ -42,7 +42,7 @@ pub(crate) struct DefinitionConfig {
 /// Returns a QBFT core definition for one consensus instance.
 pub(crate) fn new_definition(config: DefinitionConfig) -> qbft::Definition<ConsensusQbftTypes> {
     let nodes = i64::try_from(config.nodes).expect("node count fits i64");
-    let quorum = quorum(nodes);
+    let quorum = usize::try_from(qbft::quorum(nodes)).expect("quorum fits usize");
     let round_timer: Arc<dyn RoundTimer> = Arc::from(config.round_timer);
     let compare_attestations = config.compare_attestations;
     let subscribers = config.subscribers;
@@ -313,16 +313,6 @@ fn new_timer(round_timer: Arc<dyn RoundTimer>, runtime: Handle, round: i64) -> q
         receive: timer_rx,
         stop: Box::new(move || ct.cancel()),
     }
-}
-
-/// Returns the QBFT quorum threshold for `nodes`.
-fn quorum(nodes: i64) -> usize {
-    let quorum = nodes
-        .checked_mul(2)
-        .and_then(|nodes| nodes.checked_add(2))
-        .and_then(|nodes| nodes.checked_div(3))
-        .expect("node count permits quorum calculation");
-    usize::try_from(quorum).expect("quorum fits usize")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

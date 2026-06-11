@@ -624,7 +624,7 @@ fn build_consensus(
         });
         Ok(())
     });
-    let lifecycle_task = Arc::clone(&component).start(cancel.child_token(), expired_rx);
+    let lifecycle_task = Arc::clone(&component).start(expired_rx, cancel.child_token());
 
     Ok((component, lifecycle_task))
 }
@@ -729,7 +729,7 @@ fn start_consensus_for_node(
         info!(node = local_node, "proposing value");
         tokio::spawn(async move {
             component
-                .propose(&cancel, duty, demo_value(local_node, slot))
+                .propose(duty, demo_value(local_node, slot), &cancel)
                 .await
                 .map_err(|error| anyhow!(error))
         })
@@ -737,7 +737,7 @@ fn start_consensus_for_node(
         info!(node = local_node, "participating");
         tokio::spawn(async move {
             component
-                .participate(&cancel, duty)
+                .participate(duty, &cancel)
                 .await
                 .map_err(|error| anyhow!(error))
         })
