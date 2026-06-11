@@ -22,6 +22,11 @@ pub mod extensions;
 
 pub use extensions::*;
 
+/// Beacon node client wrapper.
+pub mod beacon_node;
+
+pub use beacon_node::BeaconNodeClient;
+
 /// Ethereum 2.0 consensus layer specification types.
 pub mod spec;
 
@@ -30,6 +35,9 @@ pub mod v1;
 
 /// Versioned wrappers for signeddata-related payloads.
 pub mod versioned;
+
+/// Cache of Validators retrieved from the Beacon node.
+pub mod valcache;
 
 #[cfg(test)]
 pub(crate) mod test_fixtures;
