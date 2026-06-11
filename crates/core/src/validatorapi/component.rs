@@ -1156,7 +1156,7 @@ fn proposal_matches_duty(
             vc: vc.0.blinded,
         });
     }
-    let vc_version = signed_proposal_version(&vc.0.block);
+    let vc_version = vc.0.version;
     let consensus_version = consensus.version();
     if vc_version != consensus_version {
         return Err(ProposalMatchError::Version {
