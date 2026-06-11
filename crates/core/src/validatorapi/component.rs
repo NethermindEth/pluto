@@ -95,7 +95,7 @@ pub type AwaitAggSigDbFn = Arc<
 /// Looks up the duty-definition set for a given [`Duty`]. The return type
 /// is an untyped interface map keyed by pubkey, kept as a type-erased
 /// `Box<dyn Any>` so callers can downcast to the concrete
-/// `DutyDefinitionSet<T>` they need.
+/// `DutyDefinitionSet` they need.
 pub type DutyDefFn = Arc<
     dyn Fn(Duty) -> BoxFuture<'static, Result<Box<dyn Any + Send + Sync>, CallbackError>>
         + Send
@@ -342,16 +342,14 @@ impl Component {
             .with_boxed_source(err)
         })?;
 
-        let def_set = boxed
-            .downcast::<DutyDefinitionSet<ProposerDuty>>()
-            .map_err(|_| {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "duty definition lookup returned unexpected type",
-                )
-            })?;
+        let def_set = boxed.downcast::<DutyDefinitionSet>().map_err(|_| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "duty definition lookup returned unexpected type",
+            )
+        })?;
 
-        if def_set.inner().len() != 1 {
+        if def_set.len() != 1 {
             return Err(ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "unexpected amount of proposer duties",
@@ -1318,7 +1316,7 @@ mod tests {
             SignedRandao, SyncContribution, VersionedAggregatedAttestation,
         },
         testutils::random_core_pub_key,
-        types::{Duty, DutyDefinition, DutyType, PubKey, SlotNumber},
+        types::{Duty, DutyDefinition, DutyType, ProposerDutyDefinition, PubKey, SlotNumber},
         validatorapi::types::AttestationDataOpts,
     };
 
@@ -2167,13 +2165,18 @@ mod tests {
         (component, mock)
     }
 
-    /// Build a single-entry `DutyDefinitionSet<ProposerDuty>` keyed by
+    /// Build a single-entry `DutyDefinitionSet` keyed by
     /// `pubkey`. The inner `ProposerDuty` value is a default placeholder
     /// — `lookup_proposer_pubkey` only reads the map keys, so the
     /// value's contents are immaterial to these tests.
-    fn proposer_def_set(pubkey: PubKey) -> DutyDefinitionSet<ProposerDuty> {
+    fn proposer_def_set(pubkey: PubKey) -> DutyDefinitionSet {
+        let definition = ProposerDutyDefinition {
+            pubkey,
+            v_idx: 0,
+            slot: 0.into(),
+        };
         let mut set = DutyDefinitionSet::new();
-        set.insert(pubkey, DutyDefinition::new(ProposerDuty::default()));
+        set.insert(pubkey, DutyDefinition::Proposer(definition));
         set
     }
 
@@ -2472,14 +2475,22 @@ mod tests {
         let (mut component, _mock) = make_proposal_component().await;
 
         component.register_get_duty_definition(|_duty| async move {
-            let mut set: DutyDefinitionSet<ProposerDuty> = DutyDefinitionSet::new();
+            let mut set: DutyDefinitionSet = DutyDefinitionSet::new();
             set.insert(
                 core_pubkey(0xAA),
-                DutyDefinition::new(ProposerDuty::default()),
+                DutyDefinition::Proposer(ProposerDutyDefinition {
+                    pubkey: core_pubkey(0xAA),
+                    v_idx: 0,
+                    slot: 0.into(),
+                }),
             );
             set.insert(
                 core_pubkey(0xBB),
-                DutyDefinition::new(ProposerDuty::default()),
+                DutyDefinition::Proposer(ProposerDutyDefinition {
+                    pubkey: core_pubkey(0xBB),
+                    v_idx: 0,
+                    slot: 0.into(),
+                }),
             );
             Ok(Box::new(set) as Box<dyn Any + Send + Sync>)
         });

@@ -8,7 +8,8 @@ use pluto_eth2api::{EthBeaconNodeApiClientError, client};
 use tokio::sync;
 use tokio_util::{future::FutureExt, sync::CancellationToken};
 
-use crate::{scheduler::metrics::SCHEDULER_METRICS, types, valcache};
+use crate::{scheduler::metrics::SCHEDULER_METRICS, types};
+use pluto_eth2api::valcache;
 
 mod metrics;
 

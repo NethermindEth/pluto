@@ -1,12 +1,4 @@
-<<<<<<<< HEAD:crates/core/src/valcache.rs
-use crate::types::PubKey;
-use pluto_eth2api::{
-|||||||| ed684e31:crates/app/src/eth2wrap/valcache.rs
-use pluto_core::types::PubKey;
-use pluto_eth2api::{
-========
 use crate::{
->>>>>>>> origin/main:crates/eth2api/src/valcache.rs
     EthBeaconNodeApiClient, EthBeaconNodeApiClientError, GetStateValidatorsResponseResponse,
     GetStateValidatorsResponseResponseDatum, PostStateValidatorsRequest,
     PostStateValidatorsRequestPath, PostStateValidatorsResponse, ValidatorRequestBody,
