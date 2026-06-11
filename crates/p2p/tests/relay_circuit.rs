@@ -69,9 +69,7 @@ async fn two_nodes_connect_through_relay_circuit() {
     let relay_listen = "/ip4/127.0.0.1/tcp/0"
         .parse::<Multiaddr>()
         .expect("parse relay listen multiaddr");
-    relay_node
-        .listen_on(relay_listen)
-        .expect("relay listen_on");
+    relay_node.listen_on(relay_listen).expect("relay listen_on");
 
     // Wait for the relay's concrete TCP address, then keep the relay driven in
     // the background so it can service reservations and circuits.
