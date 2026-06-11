@@ -106,6 +106,7 @@ tree_hash_derive = "0.12"
 tar = "0.4"
 flate2 = "1.1"
 wiremock = "0.6"
+tower = "0.5"
 sysinfo = "0.33"
 quick-xml = { version = "0.39", features = ["serialize"] }
 

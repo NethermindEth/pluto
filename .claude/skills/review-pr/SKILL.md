@@ -37,6 +37,11 @@ If a file is not available locally, use the raw diff.
 
 Also note the head commit SHA — you will need it for the review API call.
 
+If the PR touches DKG, sync, reshare, `FetchDefinition`, or peer-indexed
+broadcast code, load `.claude/skills/pluto-review/references/trail-of-bits-charon-v2-audit.md`
+and include that audit overlay in the `pluto-review` and `security-review`
+agent prompts.
+
 ## Step 2 — Parallel agent review
 
 Spawn **four agents in a single message** so they run concurrently.  Give each

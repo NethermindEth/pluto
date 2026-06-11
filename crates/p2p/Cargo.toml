@@ -39,6 +39,10 @@ anyhow.workspace = true
 clap.workspace = true
 pluto-cluster.workspace = true
 hex.workspace = true
+libp2p.workspace = true
+k256.workspace = true
+tokio.workspace = true
+futures.workspace = true
 
 [lints]
 workspace = true

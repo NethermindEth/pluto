@@ -5,11 +5,11 @@ use async_trait::async_trait;
 use super::{
     error::ApiError,
     types::{
-        AggregateAttestationOpts, AttestationData, AttestationDataOpts, AttesterDutiesOpts,
-        AttesterDuty, BeaconCommitteeSelection, EthResponse, NodeVersionResponse, ProposalOpts,
-        ProposerDutiesOpts, ProposerDutiesResponse, SignedContributionAndProof,
+        AggregateAttestationOpts, AttestationDataOpts, AttestationDataResponse, AttesterDutiesOpts,
+        AttesterDutiesResponse, BeaconCommitteeSelection, EthResponse, NodeVersionResponse,
+        ProposalOpts, ProposerDutiesOpts, ProposerDutiesResponse, SignedContributionAndProof,
         SignedValidatorRegistration, SignedVoluntaryExit, SyncCommitteeContribution,
-        SyncCommitteeContributionOpts, SyncCommitteeDutiesOpts, SyncCommitteeDuty,
+        SyncCommitteeContributionOpts, SyncCommitteeDutiesOpts, SyncCommitteeDutiesResponse,
         SyncCommitteeMessage, SyncCommitteeSelection, Validator, ValidatorsOpts,
         VersionedAttestation, VersionedProposal, VersionedSignedAggregateAndProof,
         VersionedSignedBlindedProposal, VersionedSignedProposal,
@@ -28,7 +28,7 @@ pub trait Handler: Send + Sync + 'static {
     async fn attester_duties(
         &self,
         opts: AttesterDutiesOpts,
-    ) -> Result<EthResponse<Vec<AttesterDuty>>, ApiError>;
+    ) -> Result<AttesterDutiesResponse, ApiError>;
 
     /// `GET /eth/v1/validator/duties/proposer/{epoch}`.
     async fn proposer_duties(
@@ -40,13 +40,13 @@ pub trait Handler: Send + Sync + 'static {
     async fn sync_committee_duties(
         &self,
         opts: SyncCommitteeDutiesOpts,
-    ) -> Result<EthResponse<Vec<SyncCommitteeDuty>>, ApiError>;
+    ) -> Result<SyncCommitteeDutiesResponse, ApiError>;
 
     /// `GET /eth/v1/validator/attestation_data`.
     async fn attestation_data(
         &self,
         opts: AttestationDataOpts,
-    ) -> Result<EthResponse<AttestationData>, ApiError>;
+    ) -> Result<AttestationDataResponse, ApiError>;
 
     /// `POST /eth/v2/beacon/pool/attestations`.
     async fn submit_attestations(

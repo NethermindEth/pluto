@@ -14,6 +14,7 @@ use axum::{
 };
 use k256::SecretKey;
 use libp2p::{Multiaddr, PeerId, multiaddr};
+use pluto_eth2util::enr::{EnrEntry, Record};
 use tokio::{
     net::TcpListener,
     sync::{RwLock, mpsc},
@@ -284,12 +285,12 @@ pub async fn enr_handler(
     };
 
     // Create ENR record
-    let record = pluto_eth2util::enr::Record::new(
+    let record = Record::new(
         &state.secret_key,
         vec![
-            pluto_eth2util::enr::with_ip_impl(ip),
-            pluto_eth2util::enr::with_tcp_impl(tcp_port),
-            pluto_eth2util::enr::with_udp_impl(udp_port),
+            EnrEntry::Ipv4(ip),
+            EnrEntry::Tcp(tcp_port),
+            EnrEntry::Udp(udp_port),
         ],
     )
     .map_err(|e| HandlerError {

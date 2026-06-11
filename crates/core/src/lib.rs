@@ -23,6 +23,9 @@ pub mod version;
 /// Duty deadline tracking and notification.
 pub mod deadline;
 
+/// Clock abstraction over the current time.
+pub mod clock;
+
 /// parsigdb
 pub mod parsigdb;
 
@@ -36,14 +39,15 @@ pub mod validatorapi;
 /// SigAgg — threshold BLS signature aggregation.
 pub mod sigagg;
 
-/// Cache of Validators retrieved from the Beacon node
-pub mod valcache;
-
 /// Resolves beacon-chain duties per epoch, ticks the slot clock, and fans
 /// duties out to downstream components.
 pub mod scheduler;
 
+/// Implementations of AggSigDB.
+pub mod aggsigdb;
+
 mod parsigex_codec;
+
 // SSZ codec operates on compile-time-constant byte sizes and offsets.
 // Arithmetic is bounded and casts from `usize` to `u32` are safe because all
 // sizes are well below `u32::MAX`.
