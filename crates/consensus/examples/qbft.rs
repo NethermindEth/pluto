@@ -372,7 +372,6 @@ async fn main() -> Result<()> {
     let (qbft_behaviour, handle) = qbft::p2p::Behaviour::new(qbft::p2p::Config {
         consensus: Arc::clone(&consensus),
         p2p_context: p2p_context.clone(),
-        peers: fixture.peer_ids.clone(),
         local_peer_id: fixture.peer_ids[fixture.local_index],
         cancellation: cancel.child_token(),
     })?;

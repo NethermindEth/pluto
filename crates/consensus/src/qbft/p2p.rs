@@ -51,10 +51,9 @@ pub fn protocol_id() -> StreamProtocol {
 pub struct Config {
     /// Consensus component that admits inbound QBFT messages.
     pub consensus: Arc<Consensus>,
-    /// Shared runtime P2P state for connection checks.
+    /// Shared runtime P2P state, source of truth for cluster membership and
+    /// connection checks.
     pub p2p_context: P2PContext,
-    /// Cluster peer IDs in consensus peer order.
-    pub peers: Vec<PeerId>,
     /// Local libp2p peer ID.
     pub local_peer_id: PeerId,
     /// Cancellation token for inbound admission.
@@ -462,7 +461,7 @@ pub struct Behaviour {
 impl Behaviour {
     /// Creates a behaviour and its outbound broadcast handle.
     pub fn new(config: Config) -> Result<(Self, Handle), Error> {
-        if !config.peers.contains(&config.local_peer_id) {
+        if !config.p2p_context.is_known_peer(&config.local_peer_id) {
             return Err(Error::LocalPeerMissing {
                 peer_id: config.local_peer_id,
             });
@@ -487,7 +486,7 @@ impl Behaviour {
 
     /// Returns a real QBFT handler only for configured cluster peers.
     fn connection_handler_for_peer(&self, peer_id: PeerId) -> THandler<Self> {
-        if self.config.peers.contains(&peer_id) {
+        if self.config.p2p_context.is_known_peer(&peer_id) {
             Either::Left(Handler::new(
                 Arc::clone(&self.config.consensus),
                 self.config.cancellation.clone(),
@@ -516,14 +515,18 @@ impl Behaviour {
 
     /// Fans a broadcast command out to every non-self peer.
     fn handle_broadcast(&mut self, command: BroadcastCommand) {
-        let mut target_count = 0usize;
-        for peer_idx in 0..self.config.peers.len() {
-            let peer_id = self.config.peers[peer_idx];
-            if peer_id == self.config.local_peer_id {
-                continue;
-            }
+        let local_peer_id = self.config.local_peer_id;
+        let targets: Vec<PeerId> = self
+            .config
+            .p2p_context
+            .known_peers()
+            .iter()
+            .copied()
+            .filter(|peer_id| *peer_id != local_peer_id)
+            .collect();
+        let target_count = targets.len();
 
-            target_count = target_count.saturating_add(1);
+        for peer_id in targets {
             self.enqueue_send(
                 peer_id,
                 PendingSend {
@@ -868,7 +871,6 @@ mod tests {
         let (mut behaviour, handle) = Behaviour::new(Config {
             consensus: Arc::new(consensus(1, true)),
             p2p_context,
-            peers: peer_ids.clone(),
             local_peer_id,
             cancellation: CancellationToken::new(),
         })?;
@@ -911,7 +913,6 @@ mod tests {
         let (mut behaviour, handle) = Behaviour::new(Config {
             consensus: Arc::new(consensus(0, true)),
             p2p_context: P2PContext::new(peer_ids.iter().copied()),
-            peers: peer_ids,
             local_peer_id,
             cancellation: CancellationToken::new(),
         })?;
@@ -945,7 +946,6 @@ mod tests {
         let (mut behaviour, handle) = Behaviour::new(Config {
             consensus: Arc::new(consensus(0, true)),
             p2p_context: P2PContext::new(peer_ids.iter().copied()),
-            peers: peer_ids,
             local_peer_id,
             cancellation: CancellationToken::new(),
         })?;
@@ -1130,7 +1130,6 @@ mod tests {
             let (behaviour, handle) = Behaviour::new(Config {
                 consensus: Arc::clone(&consensus),
                 p2p_context: p2p_context.clone(),
-                peers: peer_ids.clone(),
                 local_peer_id: peer_ids[index],
                 cancellation: CancellationToken::new(),
             })?;
@@ -1187,7 +1186,6 @@ mod tests {
             let (behaviour, handle) = Behaviour::new(Config {
                 consensus: Arc::clone(&consensus),
                 p2p_context: p2p_context.clone(),
-                peers: peer_ids.clone(),
                 local_peer_id: peer_ids[index],
                 cancellation: CancellationToken::new(),
             })?;
