@@ -13,7 +13,7 @@ use pluto_eth2api::{
     EthBeaconNodeApiClient, GetAttesterDutiesRequest, GetAttesterDutiesResponse,
     GetProposerDutiesRequest, GetProposerDutiesResponse, GetSyncCommitteeDutiesRequest,
     GetSyncCommitteeDutiesResponse,
-    spec::phase0::{BLSPubKey, Epoch, Root, ValidatorIndex},
+    spec::phase0::{BLSPubKey, Epoch, Root},
 };
 use pluto_eth2util::signing::{self, DomainName, SigningError};
 use tokio::time::error::Elapsed;
@@ -32,10 +32,10 @@ use super::{
         VersionedAttestation, VersionedProposal, VersionedSignedAggregateAndProof,
         VersionedSignedBlindedProposal, VersionedSignedProposal,
     },
-    validator_cache::CachedValidatorsProvider,
 };
 use crate::{
     dutydb::{Error as DutyDbError, MemDB},
+    eth2wrap::valcache::{ActiveValidators, CachedValidatorsProvider},
     signeddata::{
         SyncContribution, VersionedAggregatedAttestation,
         VersionedProposal as UnsignedVersionedProposal,
@@ -180,8 +180,7 @@ pub struct Component {
     /// selections / voluntary-exit / sync-committee submit handlers to
     /// translate validator-client-supplied `validator_index` values into
     /// DV root public keys. Mirrors Go's `c.eth2Cl.ActiveValidators(ctx)`,
-    /// which is itself backed by `app/eth2wrap`'s per-epoch validator
-    /// cache.
+    /// which is itself backed by `eth2wrap`'s per-epoch validator cache.
     #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     validator_cache: Arc<dyn CachedValidatorsProvider>,
 }
@@ -371,11 +370,9 @@ impl Component {
     /// Translates cache failures into `ApiError`s without leaking the
     /// underlying error into the client-visible message. Mirrors Go's
     /// `c.eth2Cl.ActiveValidators(ctx)`, which is itself implemented via
-    /// `app/eth2wrap`'s validator cache.
+    /// `eth2wrap`'s validator cache.
     #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
-    async fn fetch_active_validators(
-        &self,
-    ) -> Result<HashMap<ValidatorIndex, BLSPubKey>, ApiError> {
+    async fn fetch_active_validators(&self) -> Result<ActiveValidators, ApiError> {
         tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
             self.validator_cache.active_validators(),
@@ -384,7 +381,7 @@ impl Component {
         .map_err(|_: Elapsed| upstream_timeout("active validators"))?
         .map_err(|err| {
             ApiError::new(StatusCode::BAD_GATEWAY, "active validators lookup failed")
-                .with_boxed_source(err)
+                .with_source(err)
         })
     }
 }
@@ -856,21 +853,16 @@ mod tests {
         validatorapi::types::AttestationDataOpts,
     };
 
-    /// In-memory stand-in for the per-epoch validator cache. Tests supply
-    /// the `validator_index -> root pubkey` map up front instead of
-    /// running a real beacon-node mock through a `ValidatorCache`.
+    /// In-memory stand-in for the per-epoch validator cache. Returns an
+    /// empty [`ActiveValidators`]; tests that need populated data go
+    /// through the real [`crate::eth2wrap::valcache::ValidatorCache`] with
+    /// a beacon mock instead.
     #[derive(Default)]
-    pub(super) struct TestValidatorCache(HashMap<ValidatorIndex, BLSPubKey>);
+    pub(super) struct TestValidatorCache;
 
     impl TestValidatorCache {
-        pub(super) fn arc(
-            map: HashMap<ValidatorIndex, BLSPubKey>,
-        ) -> Arc<dyn CachedValidatorsProvider> {
-            Arc::new(Self(map))
-        }
-
         pub(super) fn empty() -> Arc<dyn CachedValidatorsProvider> {
-            Self::arc(HashMap::new())
+            Arc::new(Self)
         }
     }
 
@@ -878,11 +870,17 @@ mod tests {
     impl CachedValidatorsProvider for TestValidatorCache {
         async fn active_validators(
             &self,
+        ) -> Result<ActiveValidators, crate::eth2wrap::valcache::ValidatorCacheError> {
+            Ok(ActiveValidators::default())
+        }
+
+        async fn complete_validators(
+            &self,
         ) -> Result<
-            HashMap<ValidatorIndex, BLSPubKey>,
-            super::super::validator_cache::CachedValidatorsError,
+            crate::eth2wrap::valcache::CompleteValidators,
+            crate::eth2wrap::valcache::ValidatorCacheError,
         > {
-            Ok(self.0.clone())
+            Ok(crate::eth2wrap::valcache::CompleteValidators::default())
         }
     }
 
@@ -1672,7 +1670,7 @@ mod tests {
     // ====================================================================
 
     /// `fetch_active_validators` returns whatever the registered
-    /// `CachedValidatorsProvider` yields, untouched. Mirrors Go's
+    /// [`CachedValidatorsProvider`] yields, untouched. Mirrors Go's
     /// `c.eth2Cl.ActiveValidators(ctx)` return shape.
     #[tokio::test]
     async fn fetch_active_validators_returns_cache_contents() {
@@ -1687,19 +1685,13 @@ mod tests {
         let eth2_cl =
             Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
 
-        let expected = HashMap::from([(1u64, dv_pubkey(0xA1)), (7u64, dv_pubkey(0xA7))]);
-        let component = Component::new_insecure(
-            eth2_cl,
-            dutydb,
-            1,
-            TestValidatorCache::arc(expected.clone()),
-        );
+        let component = Component::new_insecure(eth2_cl, dutydb, 1, TestValidatorCache::empty());
 
         let got = component
             .fetch_active_validators()
             .await
             .expect("test cache always succeeds");
-        assert_eq!(got, expected);
+        assert!(got.is_empty());
     }
 
     /// A provider that surfaces a transport-style error is mapped to a 502
@@ -1707,17 +1699,30 @@ mod tests {
     /// message.
     #[tokio::test]
     async fn fetch_active_validators_maps_provider_error_to_502() {
+        use pluto_eth2api::EthBeaconNodeApiClientError;
+
         struct FailingCache;
 
         #[async_trait]
         impl CachedValidatorsProvider for FailingCache {
             async fn active_validators(
                 &self,
+            ) -> Result<ActiveValidators, crate::eth2wrap::valcache::ValidatorCacheError>
+            {
+                Err(crate::eth2wrap::valcache::ValidatorCacheError::from(
+                    EthBeaconNodeApiClientError::UnexpectedResponse,
+                ))
+            }
+
+            async fn complete_validators(
+                &self,
             ) -> Result<
-                HashMap<ValidatorIndex, BLSPubKey>,
-                super::super::validator_cache::CachedValidatorsError,
+                crate::eth2wrap::valcache::CompleteValidators,
+                crate::eth2wrap::valcache::ValidatorCacheError,
             > {
-                Err("upstream unavailable".into())
+                Err(crate::eth2wrap::valcache::ValidatorCacheError::from(
+                    EthBeaconNodeApiClientError::UnexpectedResponse,
+                ))
             }
         }
 

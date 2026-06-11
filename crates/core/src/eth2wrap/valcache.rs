@@ -1,4 +1,5 @@
-use pluto_core::types::PubKey;
+use crate::types::PubKey;
+use async_trait::async_trait;
 use pluto_eth2api::{
     EthBeaconNodeApiClient, EthBeaconNodeApiClientError, GetStateValidatorsResponseResponse,
     GetStateValidatorsResponseResponseDatum, PostStateValidatorsRequest,
@@ -56,12 +57,13 @@ impl ActiveValidators {
 
 /// A provider of cached validator information for the current epoch,
 /// including both active validators and complete validator data.
-pub trait CachedValidatorsProvider {
+#[async_trait]
+pub trait CachedValidatorsProvider: Send + Sync {
     /// Get the cached active validators.
-    fn active_validators(&self) -> Result<ActiveValidators>;
+    async fn active_validators(&self) -> Result<ActiveValidators>;
 
     /// Get all the cached validators.
-    fn complete_validators(&self) -> Result<CompleteValidators>;
+    async fn complete_validators(&self) -> Result<CompleteValidators>;
 }
 
 /// A cache for active validators.

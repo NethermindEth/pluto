@@ -36,6 +36,9 @@ pub mod validatorapi;
 /// SigAgg — threshold BLS signature aggregation.
 pub mod sigagg;
 
+/// `eth2wrap` — wrappers around the upstream beacon-node API client.
+pub mod eth2wrap;
+
 /// Implementations of AggSigDB.
 pub mod aggsigdb;
 
