@@ -16,9 +16,6 @@ pub mod retry;
 /// Obol API client for interacting with the Obol network API.
 pub mod obolapi;
 
-/// Ethereum CL RPC client management.
-pub mod eth2wrap;
-
 /// Private key locking service.
 pub mod privkeylock;
 

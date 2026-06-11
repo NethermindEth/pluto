@@ -5476,7 +5476,6 @@ dependencies = [
  "k256",
  "pluto-build-proto",
  "pluto-cluster",
- "pluto-core",
  "pluto-crypto",
  "pluto-eth2api",
  "pluto-k1util",
@@ -5484,7 +5483,6 @@ dependencies = [
  "pluto-testutil",
  "prost 0.14.3",
  "prost-types 0.14.3",
- "regex",
  "reqwest 0.13.3",
  "serde",
  "serde_json",
@@ -5606,9 +5604,11 @@ dependencies = [
  "libp2p",
  "pluto-build-proto",
  "pluto-cluster",
+ "pluto-core-utils",
  "pluto-crypto",
  "pluto-eth2api",
  "pluto-eth2util",
+ "pluto-eth2wrap",
  "pluto-featureset",
  "pluto-k1util",
  "pluto-p2p",
@@ -5618,7 +5618,6 @@ dependencies = [
  "prost 0.14.3",
  "prost-types 0.14.3",
  "rand 0.8.6",
- "regex",
  "serde",
  "serde_json",
  "test-case",
@@ -5630,6 +5629,20 @@ dependencies = [
  "tree_hash",
  "vise",
  "wiremock",
+]
+
+[[package]]
+name = "pluto-core-utils"
+version = "1.7.1"
+dependencies = [
+ "built",
+ "chrono",
+ "hex",
+ "pluto-crypto",
+ "regex",
+ "serde",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -5769,6 +5782,23 @@ dependencies = [
  "walkdir",
  "wiremock",
  "zeroize",
+]
+
+[[package]]
+name = "pluto-eth2wrap"
+version = "1.7.1"
+dependencies = [
+ "async-trait",
+ "pluto-build-proto",
+ "pluto-core-utils",
+ "pluto-eth2api",
+ "pluto-testutil",
+ "regex",
+ "test-case",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "wiremock",
 ]
 
 [[package]]

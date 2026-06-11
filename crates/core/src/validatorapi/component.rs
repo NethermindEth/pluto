@@ -35,7 +35,6 @@ use super::{
 };
 use crate::{
     dutydb::{Error as DutyDbError, MemDB},
-    eth2wrap::valcache::{ActiveValidators, CachedValidatorsProvider},
     signeddata::{
         SyncContribution, VersionedAggregatedAttestation,
         VersionedProposal as UnsignedVersionedProposal,
@@ -43,6 +42,7 @@ use crate::{
     types::{Duty, ParSignedDataSet, PubKey, Signature, SignedData},
     version,
 };
+use pluto_eth2wrap::valcache::{ActiveValidators, CachedValidatorsProvider};
 
 /// Boxed error returned by registered callbacks.
 pub type CallbackError = Box<dyn std::error::Error + Send + Sync + 'static>;
@@ -853,9 +853,11 @@ mod tests {
         validatorapi::types::AttestationDataOpts,
     };
 
+    use pluto_eth2wrap as eth2wrap;
+
     /// In-memory stand-in for the per-epoch validator cache. Returns an
     /// empty [`ActiveValidators`]; tests that need populated data go
-    /// through the real [`crate::eth2wrap::valcache::ValidatorCache`] with
+    /// through the real [`eth2wrap::valcache::ValidatorCache`] with
     /// a beacon mock instead.
     #[derive(Default)]
     pub(super) struct TestValidatorCache;
@@ -870,17 +872,15 @@ mod tests {
     impl CachedValidatorsProvider for TestValidatorCache {
         async fn active_validators(
             &self,
-        ) -> Result<ActiveValidators, crate::eth2wrap::valcache::ValidatorCacheError> {
+        ) -> Result<ActiveValidators, eth2wrap::valcache::ValidatorCacheError> {
             Ok(ActiveValidators::default())
         }
 
         async fn complete_validators(
             &self,
-        ) -> Result<
-            crate::eth2wrap::valcache::CompleteValidators,
-            crate::eth2wrap::valcache::ValidatorCacheError,
-        > {
-            Ok(crate::eth2wrap::valcache::CompleteValidators::default())
+        ) -> Result<eth2wrap::valcache::CompleteValidators, eth2wrap::valcache::ValidatorCacheError>
+        {
+            Ok(eth2wrap::valcache::CompleteValidators::default())
         }
     }
 
@@ -1707,9 +1707,8 @@ mod tests {
         impl CachedValidatorsProvider for FailingCache {
             async fn active_validators(
                 &self,
-            ) -> Result<ActiveValidators, crate::eth2wrap::valcache::ValidatorCacheError>
-            {
-                Err(crate::eth2wrap::valcache::ValidatorCacheError::from(
+            ) -> Result<ActiveValidators, eth2wrap::valcache::ValidatorCacheError> {
+                Err(eth2wrap::valcache::ValidatorCacheError::from(
                     EthBeaconNodeApiClientError::UnexpectedResponse,
                 ))
             }
@@ -1717,10 +1716,10 @@ mod tests {
             async fn complete_validators(
                 &self,
             ) -> Result<
-                crate::eth2wrap::valcache::CompleteValidators,
-                crate::eth2wrap::valcache::ValidatorCacheError,
+                eth2wrap::valcache::CompleteValidators,
+                eth2wrap::valcache::ValidatorCacheError,
             > {
-                Err(crate::eth2wrap::valcache::ValidatorCacheError::from(
+                Err(eth2wrap::valcache::ValidatorCacheError::from(
                     EthBeaconNodeApiClientError::UnexpectedResponse,
                 ))
             }

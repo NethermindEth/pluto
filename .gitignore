@@ -32,4 +32,5 @@ test-infra/sszfixtures/sszfixtures
 
 .claude/worktrees/
 .claude/scheduled_tasks.lock
+.claude/notes/
 test-cluster

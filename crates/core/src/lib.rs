@@ -17,9 +17,6 @@ pub mod consensus;
 /// Protobuf definitions.
 pub mod corepb;
 
-/// Semver version parsing utilities.
-pub mod version;
-
 /// Duty deadline tracking and notification.
 pub mod deadline;
 
@@ -35,9 +32,6 @@ pub mod validatorapi;
 
 /// SigAgg — threshold BLS signature aggregation.
 pub mod sigagg;
-
-/// `eth2wrap` — wrappers around the upstream beacon-node API client.
-pub mod eth2wrap;
 
 /// Implementations of AggSigDB.
 pub mod aggsigdb;
@@ -55,6 +49,8 @@ pub use parsigex_codec::ParSigExCodecError;
 /// Duty lifecycle tracker — monitors workflow steps and reports failures and
 /// participation.
 pub mod tracker;
+
+pub use pluto_core_utils::version;
 
 /// Test utilities.
 #[cfg(test)]

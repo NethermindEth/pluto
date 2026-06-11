@@ -1,4 +1,4 @@
-use pluto_core::version::{self};
+use pluto_core_utils::version::{self};
 use std::sync::LazyLock;
 use tracing::warn;
 

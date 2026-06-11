@@ -1,5 +1,5 @@
-use crate::types::PubKey;
 use async_trait::async_trait;
+use pluto_core_utils::pubkey::PubKey;
 use pluto_eth2api::{
     EthBeaconNodeApiClient, EthBeaconNodeApiClientError, GetStateValidatorsResponseResponse,
     GetStateValidatorsResponseResponseDatum, PostStateValidatorsRequest,
