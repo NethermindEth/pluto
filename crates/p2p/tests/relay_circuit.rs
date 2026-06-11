@@ -16,7 +16,6 @@
 
 use std::{fmt::Debug, time::Duration};
 
-use anyhow::{Context as _, ensure};
 use futures::StreamExt as _;
 use libp2p::{Multiaddr, PeerId, multiaddr::Protocol, relay, swarm::SwarmEvent};
 use pluto_p2p::{
@@ -73,16 +72,16 @@ fn note_swarm_event<E: Debug>(label: &str, event: &SwarmEvent<E>) {
 }
 
 #[tokio::test]
-async fn two_nodes_connect_through_relay_circuit() -> anyhow::Result<()> {
+async fn two_nodes_connect_through_relay_circuit() {
     init_logs();
 
     let relay_key = generate_insecure_k1_key(1);
     let listener_key = generate_insecure_k1_key(2);
     let dialer_key = generate_insecure_k1_key(3);
 
-    let relay_peer = peer_id_from_key(relay_key.public_key()).context("relay peer id")?;
-    let listener_peer = peer_id_from_key(listener_key.public_key()).context("listener peer id")?;
-    let dialer_peer = peer_id_from_key(dialer_key.public_key()).context("dialer peer id")?;
+    let relay_peer = peer_id_from_key(relay_key.public_key()).expect("relay peer id");
+    let listener_peer = peer_id_from_key(listener_key.public_key()).expect("listener peer id");
+    let dialer_peer = peer_id_from_key(dialer_key.public_key()).expect("dialer peer id");
 
     // --- Relay server node. ---
     let relay_config = relay::Config {
@@ -108,14 +107,14 @@ async fn two_nodes_connect_through_relay_circuit() -> anyhow::Result<()> {
             builder.with_inner(behaviour)
         },
     )
-    .context("build relay server node")?;
+    .expect("build relay server node");
 
     let relay_listen = "/ip4/127.0.0.1/tcp/0"
         .parse::<Multiaddr>()
-        .context("parse relay listen multiaddr")?;
+        .expect("parse relay listen multiaddr");
     relay_node
         .listen_on(relay_listen)
-        .context("relay listen_on")?;
+        .expect("relay listen_on");
 
     // Wait for the relay's concrete TCP address, then keep the relay driven in
     // the background so it can service reservations and circuits.
@@ -129,7 +128,7 @@ async fn two_nodes_connect_through_relay_circuit() -> anyhow::Result<()> {
         }
     })
     .await
-    .context("timed out waiting for the relay listen address")?;
+    .expect("timed out waiting for the relay listen address");
 
     // The relay must advertise a reachable address, otherwise reservations are
     // rejected client-side with `NoAddressesInReservation`.
@@ -147,8 +146,8 @@ async fn two_nodes_connect_through_relay_circuit() -> anyhow::Result<()> {
     let circuit_base = relay_with_id.clone().with(Protocol::P2pCircuit);
 
     // --- Two client nodes. ---
-    let make_client = |key, known: PeerId| -> anyhow::Result<Node<relay::client::Behaviour>> {
-        let node = Node::new(
+    let make_client = |key, known: PeerId| -> Node<relay::client::Behaviour> {
+        Node::new(
             P2PConfig::default(),
             key,
             NodeType::TCP,
@@ -156,18 +155,16 @@ async fn two_nodes_connect_through_relay_circuit() -> anyhow::Result<()> {
             P2PContext::new(vec![known, relay_peer]),
             |builder, _keypair, relay_client| builder.with_inner(relay_client),
         )
-        .context("build relay client node")?;
-
-        Ok(node)
+        .expect("build relay client node")
     };
 
-    let mut listener = make_client(listener_key, dialer_peer)?;
-    let mut dialer = make_client(dialer_key, listener_peer)?;
+    let mut listener = make_client(listener_key, dialer_peer);
+    let mut dialer = make_client(dialer_key, listener_peer);
 
     // The listener reserves a relay slot by listening on the circuit address.
     listener
         .listen_on(circuit_base.clone())
-        .context("listener listen_on circuit")?;
+        .expect("listener listen_on circuit");
 
     // Drive the listener until the reservation is confirmed (a relayed listen
     // address appears).
@@ -182,13 +179,13 @@ async fn two_nodes_connect_through_relay_circuit() -> anyhow::Result<()> {
         }
     })
     .await
-    .context("timed out waiting for the listener's relay reservation")?;
+    .expect("timed out waiting for the listener's relay reservation");
 
     // The dialer reaches the listener purely through the relay circuit.
     let dial_target = circuit_base.with(Protocol::P2p(listener_peer));
     dialer
         .dial(dial_target)
-        .context("dialer dial listener via circuit")?;
+        .expect("dialer dial listener via circuit");
 
     // Both ends must observe a connection to *each other* (connections to the
     // relay peer don't count).
@@ -218,18 +215,16 @@ async fn two_nodes_connect_through_relay_circuit() -> anyhow::Result<()> {
         }
     })
     .await
-    .context("timed out establishing the relayed connection")?;
+    .expect("timed out establishing the relayed connection");
 
-    ensure!(
+    assert!(
         listener_linked,
         "listener never saw the dialer over the relay"
     );
-    ensure!(
+    assert!(
         dialer_linked,
         "dialer never reached the listener over the relay"
     );
 
     relay_handle.abort();
-
-    Ok(())
 }
