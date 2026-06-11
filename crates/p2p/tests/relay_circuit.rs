@@ -14,7 +14,7 @@
 //! and relay client paths over real sockets — the relay reservation and circuit
 //! hop, not just a direct dial.
 
-use std::{fmt::Debug, time::Duration};
+use std::time::Duration;
 
 use futures::StreamExt as _;
 use libp2p::{Multiaddr, PeerId, multiaddr::Protocol, relay, swarm::SwarmEvent};
@@ -27,49 +27,11 @@ use pluto_p2p::{
 };
 use pluto_testutil::random::generate_insecure_k1_key;
 use tokio::time::timeout;
-use tracing_subscriber::EnvFilter;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Installs a test tracing subscriber. Defaults to `warn` so reservation and
-/// circuit failures surface even without `RUST_LOG`; set e.g.
-/// `RUST_LOG=libp2p=debug,pluto_p2p=debug` for full transport tracing.
-fn init_logs() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_test_writer()
-        .try_init();
-}
-
-/// Logs swarm events instead of silently dropping them: failures at `warn`, the
-/// rest at `trace`. A rejected reservation or failed circuit dial then shows up
-/// in the logs rather than as a bare timeout.
-fn note_swarm_event<E: Debug>(label: &str, event: &SwarmEvent<E>) {
-    use SwarmEvent::*;
-    match event {
-        OutgoingConnectionError { peer_id, error, .. } => {
-            tracing::warn!(node = label, ?peer_id, %error, "outgoing connection error");
-        }
-        IncomingConnectionError { error, .. } => {
-            tracing::warn!(node = label, %error, "incoming connection error");
-        }
-        ListenerError { error, .. } => {
-            tracing::warn!(node = label, %error, "listener error");
-        }
-        ListenerClosed {
-            reason: Err(error), ..
-        } => {
-            tracing::warn!(node = label, %error, "listener closed with error");
-        }
-        _ => tracing::trace!(node = label, ?event, "swarm event"),
-    }
-}
-
 #[tokio::test]
 async fn two_nodes_connect_through_relay_circuit() {
-    init_logs();
-
     let relay_key = generate_insecure_k1_key(1);
     let listener_key = generate_insecure_k1_key(2);
     let dialer_key = generate_insecure_k1_key(3);
@@ -116,7 +78,6 @@ async fn two_nodes_connect_through_relay_circuit() {
     let relay_addr = timeout(TEST_TIMEOUT, async {
         loop {
             let event = relay_node.select_next_some().await;
-            note_swarm_event("relay", &event);
             if let SwarmEvent::NewListenAddr { address, .. } = event {
                 return address;
             }
@@ -131,8 +92,7 @@ async fn two_nodes_connect_through_relay_circuit() {
 
     let relay_handle = tokio::spawn(async move {
         loop {
-            let event = relay_node.select_next_some().await;
-            note_swarm_event("relay", &event);
+            relay_node.select_next_some().await;
         }
     });
 
@@ -166,7 +126,6 @@ async fn two_nodes_connect_through_relay_circuit() {
     timeout(TEST_TIMEOUT, async {
         loop {
             let event = listener.select_next_some().await;
-            note_swarm_event("listener", &event);
             if matches!(event, SwarmEvent::NewListenAddr { ref address, .. } if is_relay_addr(address))
             {
                 return;
@@ -191,13 +150,11 @@ async fn two_nodes_connect_through_relay_circuit() {
         loop {
             tokio::select! {
                 event = listener.select_next_some() => {
-                    note_swarm_event("listener", &event);
                     if matches!(event, SwarmEvent::ConnectionEstablished { peer_id, .. } if peer_id == dialer_peer) {
                         listener_linked = true;
                     }
                 }
                 event = dialer.select_next_some() => {
-                    note_swarm_event("dialer", &event);
                     if matches!(event, SwarmEvent::ConnectionEstablished { peer_id, .. } if peer_id == listener_peer) {
                         dialer_linked = true;
                     }
