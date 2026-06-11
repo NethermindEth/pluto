@@ -1,4 +1,6 @@
 use backon::{BackoffBuilder, Retryable};
+use chrono::{DateTime, Utc};
+use pluto_core::clock::{ChronoClock, Clock};
 use std::{sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error, info, warn};
@@ -7,8 +9,8 @@ use tracing::{Instrument, debug, error, info, warn};
 #[derive(Clone)]
 pub struct AsyncOptions<T> {
     backoff_builder: backon::ExponentialBuilder,
-    deadline_fn: Arc<dyn Fn(T) -> Option<chrono::DateTime<chrono::Utc>> + Send + Sync>,
-    time_fn: Arc<dyn Fn() -> chrono::DateTime<chrono::Utc> + Send + Sync>,
+    deadline_fn: Arc<dyn Fn(T) -> Option<DateTime<Utc>> + Send + Sync>,
+    clock: Arc<dyn Clock>,
     cancellation_token: Option<CancellationToken>,
 }
 
@@ -22,20 +24,16 @@ impl<T> AsyncOptions<T> {
     /// Set the deadline function.
     pub fn with_deadline(
         mut self,
-        deadline_fn: impl Fn(T) -> Option<chrono::DateTime<chrono::Utc>> + Send + Sync + 'static,
+        deadline_fn: impl Fn(T) -> Option<DateTime<Utc>> + Send + Sync + 'static,
     ) -> Self {
         self.deadline_fn = Arc::new(deadline_fn);
         self
     }
 
-    /// Set the time provider function. This function should return the "current
-    /// time", which will be compared with the deadline computed by the
-    /// `deadline_fn`.
-    pub fn with_time(
-        mut self,
-        time_fn: impl Fn() -> chrono::DateTime<chrono::Utc> + Send + Sync + 'static,
-    ) -> Self {
-        self.time_fn = Arc::new(time_fn);
+    /// Set the [`Clock`] providing the "current time", which is compared with
+    /// the deadline computed by the `deadline_fn`.
+    pub fn with_time(mut self, clock: impl Clock) -> Self {
+        self.clock = Arc::new(clock);
         self
     }
 
@@ -56,7 +54,7 @@ impl<T> Default for AsyncOptions<T> {
                 .without_max_times()
                 .with_jitter(),
             deadline_fn: Arc::new(|_| None),
-            time_fn: Arc::new(chrono::Utc::now),
+            clock: Arc::new(ChronoClock),
             cancellation_token: None,
         }
     }
@@ -128,7 +126,7 @@ pub async fn do_async<
     mut future: FutureFn,
 ) {
     let deadline = (options.deadline_fn)(t);
-    let now = (options.time_fn)();
+    let now = options.clock.now();
 
     #[allow(
         clippy::arithmetic_side_effects,
@@ -199,6 +197,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use crate::retry::{self, DoAsyncError};
+    use chrono::Utc;
     use core::time;
     use std::sync::{Arc, Mutex};
 
@@ -285,7 +284,7 @@ mod tests {
 
     #[tokio::test]
     async fn one_attempt_timeout() {
-        let now = chrono::Utc::now();
+        let now = Utc::now();
 
         run_test(TestCase {
             options: retry::AsyncOptions::default()
