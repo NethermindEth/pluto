@@ -23,18 +23,13 @@ use pluto_p2p::{
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
     peer::peer_id_from_key,
+    utils::is_relay_addr,
 };
 use pluto_testutil::random::generate_insecure_k1_key;
 use tokio::time::timeout;
 use tracing_subscriber::EnvFilter;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Returns true if `addr` is a relayed (`/p2p-circuit`) address.
-fn is_circuit_addr(addr: &Multiaddr) -> bool {
-    addr.iter()
-        .any(|proto| matches!(proto, Protocol::P2pCircuit))
-}
 
 /// Installs a test tracing subscriber. Defaults to `warn` so reservation and
 /// circuit failures surface even without `RUST_LOG`; set e.g.
@@ -172,7 +167,7 @@ async fn two_nodes_connect_through_relay_circuit() {
         loop {
             let event = listener.select_next_some().await;
             note_swarm_event("listener", &event);
-            if matches!(event, SwarmEvent::NewListenAddr { ref address, .. } if is_circuit_addr(address))
+            if matches!(event, SwarmEvent::NewListenAddr { ref address, .. } if is_relay_addr(address))
             {
                 return;
             }
