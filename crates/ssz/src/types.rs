@@ -253,6 +253,15 @@ impl<T: TreeHash, const SIZE: usize> TreeHash for SszVector<T, SIZE> {
 
 const BIT_MASK: [u8; 8] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80];
 
+/// Error returned by bitfield combinators that require operands of equal
+/// length.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum BitfieldError {
+    /// The two bitlists have different bit lengths and cannot be combined.
+    #[error("bitlists are different lengths")]
+    DifferentLength,
+}
+
 /// SSZ variable-length bitfield with maximum capacity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BitList<const MAX: usize> {
@@ -344,6 +353,66 @@ impl<const MAX: usize> BitList<MAX> {
             len: capacity,
         }
     }
+
+    /// Returns the bit at index `i`, or `false` if `i` is out of range.
+    pub fn bit_at(&self, i: usize) -> bool {
+        if i >= self.len {
+            return false;
+        }
+        self.bytes[i / 8] & BIT_MASK[i % 8] != 0
+    }
+
+    /// Sets the bit at index `i` to `value`; out-of-range indices are ignored.
+    pub fn set_bit_at(&mut self, i: usize, value: bool) {
+        if i >= self.len {
+            return;
+        }
+        if value {
+            self.bytes[i / 8] |= BIT_MASK[i % 8];
+        } else {
+            self.bytes[i / 8] &= !BIT_MASK[i % 8];
+        }
+    }
+
+    /// Returns the indices of all set bits in ascending order.
+    pub fn bit_indices(&self) -> Vec<usize> {
+        (0..self.len).filter(|&i| self.bit_at(i)).collect()
+    }
+
+    /// Returns `true` if every bit set in `other` is also set in `self`.
+    ///
+    /// Errors with [`BitfieldError::DifferentLength`] if the two bitlists do
+    /// not have the same bit length.
+    pub fn contains(&self, other: &Self) -> Result<bool, BitfieldError> {
+        if self.len != other.len {
+            return Err(BitfieldError::DifferentLength);
+        }
+        Ok(other
+            .bytes
+            .iter()
+            .zip(&self.bytes)
+            .all(|(o, s)| o & s == *o))
+    }
+
+    /// Returns the bitwise OR (union) of `self` and `other`.
+    ///
+    /// Errors with [`BitfieldError::DifferentLength`] if the two bitlists do
+    /// not have the same bit length.
+    pub fn or(&self, other: &Self) -> Result<Self, BitfieldError> {
+        if self.len != other.len {
+            return Err(BitfieldError::DifferentLength);
+        }
+        let bytes = self
+            .bytes
+            .iter()
+            .zip(&other.bytes)
+            .map(|(a, b)| a | b)
+            .collect();
+        Ok(Self {
+            bytes,
+            len: self.len,
+        })
+    }
 }
 
 impl<const MAX: usize> Serialize for BitList<MAX> {
@@ -432,6 +501,31 @@ impl<const SIZE: usize> BitVector<SIZE> {
             v.bytes[bit / 8] |= BIT_MASK[bit % 8];
         }
         v
+    }
+
+    /// Returns the bit at index `i`, or `false` if `i` is out of range.
+    pub fn bit_at(&self, i: usize) -> bool {
+        if i >= SIZE {
+            return false;
+        }
+        self.bytes[i / 8] & BIT_MASK[i % 8] != 0
+    }
+
+    /// Sets the bit at index `i` to `value`; out-of-range indices are ignored.
+    pub fn set_bit_at(&mut self, i: usize, value: bool) {
+        if i >= SIZE {
+            return;
+        }
+        if value {
+            self.bytes[i / 8] |= BIT_MASK[i % 8];
+        } else {
+            self.bytes[i / 8] &= !BIT_MASK[i % 8];
+        }
+    }
+
+    /// Returns the indices of all set bits in ascending order.
+    pub fn bit_indices(&self) -> Vec<usize> {
+        (0..SIZE).filter(|&i| self.bit_at(i)).collect()
     }
 }
 
@@ -559,5 +653,78 @@ mod tests {
     fn ssz_vector_u8_as_ref_matches_inner_bytes() {
         let vec: SszVector<u8, 3> = vec![1, 2, 3].into();
         assert_eq!(vec.as_ref(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn bitlist_bit_at_and_indices() {
+        let bl = BitList::<2048>::with_bits(3, &[0, 2]);
+        assert!(bl.bit_at(0));
+        assert!(!bl.bit_at(1));
+        assert!(bl.bit_at(2));
+        // Out-of-range index reads as unset.
+        assert!(!bl.bit_at(3));
+        assert!(!bl.bit_at(9001));
+        assert_eq!(bl.bit_indices(), vec![0, 2]);
+    }
+
+    #[test]
+    fn bitlist_bit_at_matches_ssz_round_trip() {
+        // SSZ byte 0x0D = sentinel at bit 3 ⇒ 3 data bits with bits 0 and 2 set,
+        // matching the bytes returned by `aggregation_bits()`.
+        let bl = BitList::<2048>::from_ssz_bytes(vec![0x0D]);
+        assert_eq!(bl.len(), 3);
+        assert_eq!(bl.bit_indices(), vec![0, 2]);
+    }
+
+    #[test]
+    fn bitlist_set_bit_at() {
+        let mut bl = BitList::<2048>::with_bits(8, &[0]);
+        bl.set_bit_at(3, true);
+        assert_eq!(bl.bit_indices(), vec![0, 3]);
+        bl.set_bit_at(0, false);
+        assert_eq!(bl.bit_indices(), vec![3]);
+        // Out-of-range set is a no-op.
+        bl.set_bit_at(8, true);
+        assert_eq!(bl.bit_indices(), vec![3]);
+    }
+
+    #[test]
+    fn bitlist_contains() {
+        let superset = BitList::<2048>::with_bits(4, &[0, 1, 2]);
+        let subset = BitList::<2048>::with_bits(4, &[0, 2]);
+        assert_eq!(superset.contains(&subset), Ok(true));
+        assert_eq!(subset.contains(&superset), Ok(false));
+
+        let other_len = BitList::<2048>::with_bits(8, &[0]);
+        assert_eq!(
+            superset.contains(&other_len),
+            Err(BitfieldError::DifferentLength)
+        );
+    }
+
+    #[test]
+    fn bitlist_or() {
+        let a = BitList::<2048>::with_bits(4, &[0]);
+        let b = BitList::<2048>::with_bits(4, &[1, 3]);
+        assert_eq!(a.or(&b).unwrap().bit_indices(), vec![0, 1, 3]);
+
+        let other_len = BitList::<2048>::with_bits(8, &[0]);
+        assert_eq!(a.or(&other_len), Err(BitfieldError::DifferentLength));
+    }
+
+    #[test]
+    fn bitvector_bit_ops() {
+        let mut bv = BitVector::<64>::with_bits(&[0, 2]);
+        assert!(bv.bit_at(0));
+        assert!(!bv.bit_at(1));
+        assert_eq!(bv.bit_indices(), vec![0, 2]);
+
+        bv.set_bit_at(1, true);
+        assert_eq!(bv.bit_indices(), vec![0, 1, 2]);
+
+        // Out-of-range access is a no-op / reads as unset.
+        bv.set_bit_at(64, true);
+        assert!(!bv.bit_at(64));
+        assert_eq!(bv.bit_indices(), vec![0, 1, 2]);
     }
 }

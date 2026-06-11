@@ -143,17 +143,16 @@ pub struct AttestationDataResponse {
 #[derive(Debug, Clone)]
 pub struct Validator {}
 
-/// Versioned unsigned proposal payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct VersionedProposal {}
+/// Versioned unsigned proposal payload — alias of the signeddata wrapper.
+pub use crate::signeddata::VersionedProposal;
 
-/// Versioned signed proposal payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct VersionedSignedProposal {}
+/// Versioned signed proposal payload — alias of the signeddata wrapper.
+pub use crate::signeddata::VersionedSignedProposal;
 
-/// Versioned signed blinded proposal payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct VersionedSignedBlindedProposal {}
+/// Versioned signed blinded proposal payload — alias of the eth2api versioned
+/// wrapper, the same shape consumed by Go's
+/// `SubmitBlindedProposalOpts.Proposal`.
+pub use pluto_eth2api::versioned::VersionedSignedBlindedProposal;
 
 /// Versioned attestation payload. Placeholder.
 #[derive(Debug, Clone)]

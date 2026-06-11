@@ -25,6 +25,8 @@ For each file in scope:
 
 Do not guess. If behavior is unclear, ask.
 
+For DKG, sync, reshare, FetchDefinition, or peer-indexed broadcast code, still use Charon v1.7.1 as the porting baseline, but load `.claude/skills/pluto-review/references/trail-of-bits-charon-v2-audit.md` and apply those fixes where v1.7.1 behavior is known vulnerable.
+
 ---
 
 ## Step 2 — Identify missing dependencies

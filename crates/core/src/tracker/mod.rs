@@ -27,6 +27,9 @@ pub mod metrics;
 /// Reporters that consume analysis results and emit metrics/logs.
 pub mod reporters;
 
+/// On-chain inclusion checking for broadcast duties.
+pub mod inclusion;
+
 use std::{collections::HashMap, future::Future, sync::Arc};
 
 use tokio::sync::mpsc;

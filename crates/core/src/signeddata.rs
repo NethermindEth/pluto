@@ -1,5 +1,6 @@
 //! Signed data types and helpers.
 
+use alloy::primitives::U256;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tree_hash::TreeHash;
 
@@ -1333,6 +1334,14 @@ impl ProposalBlock {
 pub struct VersionedProposal {
     /// Unsigned block payload.
     pub block: ProposalBlock,
+    /// Consensus block reward, in Wei. The pipeline does not persist the
+    /// upstream v3 produce-block reward; the validatorapi `Proposal`
+    /// handler overrides this to `1` before returning so the value is
+    /// unified across nodes.
+    pub consensus_block_value: U256,
+    /// Execution payload value, in Wei. See
+    /// [`Self::consensus_block_value`] for the override rationale.
+    pub execution_payload_value: U256,
 }
 
 impl VersionedProposal {
