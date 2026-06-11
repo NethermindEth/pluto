@@ -26,10 +26,7 @@ use libp2p::{
         },
     },
 };
-use tokio::{
-    sync::mpsc,
-    time::{error::Elapsed, timeout},
-};
+use tokio::{sync::mpsc, time::timeout};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
@@ -79,6 +76,50 @@ pub enum Error {
     BehaviourClosed,
 }
 
+/// Inbound QBFT stream read or admission failure.
+#[derive(Debug, thiserror::Error)]
+pub enum InboundError {
+    /// Reading the framed protobuf message failed.
+    #[error("read qbft frame: {0}")]
+    Read(#[source] std::io::Error),
+
+    /// Consensus admission rejected the message.
+    #[error("admit qbft message: {0}")]
+    Admit(#[source] super::component::Error),
+
+    /// The inbound stream exceeded the receive timeout.
+    #[error("inbound stream timed out")]
+    Timeout,
+}
+
+/// Outbound QBFT stream write, upgrade, or dial failure.
+#[derive(Debug, thiserror::Error)]
+pub enum SendError {
+    /// Writing the framed protobuf message to the stream failed.
+    #[error("write qbft frame: {0}")]
+    Write(#[source] std::io::Error),
+
+    /// Closing the outbound stream after writing failed.
+    #[error("close qbft stream: {0}")]
+    Close(#[source] std::io::Error),
+
+    /// The outbound stream exceeded the send timeout.
+    #[error("outbound stream timed out")]
+    Timeout,
+
+    /// Negotiating the QBFT protocol on the outbound stream failed.
+    #[error("protocol negotiation failed")]
+    NegotiationFailed,
+
+    /// Upgrading the outbound stream failed.
+    #[error("outbound stream upgrade failed: {0}")]
+    Upgrade(String),
+
+    /// Dialing the peer failed before a stream could open.
+    #[error("dial failed: {0}")]
+    Dial(String),
+}
+
 /// Event emitted by the QBFT libp2p adapter.
 #[derive(Debug)]
 pub enum Event {
@@ -103,7 +144,7 @@ pub enum Event {
         /// Connection that carried the stream.
         connection: ConnectionId,
         /// Failure reason.
-        error: String,
+        error: InboundError,
     },
     /// Outbound stream write completed.
     Sent {
@@ -119,7 +160,7 @@ pub enum Event {
         /// Target peer.
         peer: PeerId,
         /// Failure reason.
-        error: String,
+        error: SendError,
     },
 }
 
@@ -168,9 +209,9 @@ pub enum ToHandler {
 #[derive(Debug)]
 pub enum FromHandler {
     Received,
-    InboundError(String),
+    InboundError(InboundError),
     Sent { request_id: u64 },
-    SendError { request_id: u64, error: String },
+    SendError { request_id: u64, error: SendError },
 }
 
 type ActiveFuture = futures::future::BoxFuture<'static, Option<FromHandler>>;
@@ -230,7 +271,7 @@ impl Handler {
         self.active_futures.push(
             async move {
                 Some(
-                    match write_outbound(&mut stream, request_id, &msg, SEND_TIMEOUT).await {
+                    match write_outbound(&mut stream, &msg, SEND_TIMEOUT).await {
                         Ok(()) => FromHandler::Sent { request_id },
                         Err(error) => FromHandler::SendError { request_id, error },
                     },
@@ -246,10 +287,10 @@ impl Handler {
         E: std::error::Error + Send + Sync + 'static,
     {
         let error = match error {
-            StreamUpgradeError::NegotiationFailed => "protocol negotiation failed".to_string(),
-            StreamUpgradeError::Timeout => "operation timed out".to_string(),
-            StreamUpgradeError::Io(error) => error.to_string(),
-            StreamUpgradeError::Apply(error) => error.to_string(),
+            StreamUpgradeError::NegotiationFailed => SendError::NegotiationFailed,
+            StreamUpgradeError::Timeout => SendError::Timeout,
+            StreamUpgradeError::Io(error) => SendError::Upgrade(error.to_string()),
+            StreamUpgradeError::Apply(error) => SendError::Upgrade(error.to_string()),
         };
         self.active_futures
             .push(async move { Some(FromHandler::SendError { request_id, error }) }.boxed());
@@ -332,7 +373,7 @@ async fn read_and_handle_inbound<S>(
     consensus: Arc<Consensus>,
     cancellation: CancellationToken,
     receive_timeout: Duration,
-) -> Result<(), String>
+) -> Result<(), InboundError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -343,12 +384,12 @@ where
                 pluto_p2p::proto::MAX_MESSAGE_SIZE,
             )
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(InboundError::Read)?;
 
         consensus
             .handle(msg, &cancellation)
             .await
-            .map_err(|error| error.to_string())
+            .map_err(InboundError::Admit)
     })
     .await;
 
@@ -356,36 +397,34 @@ where
 
     match result {
         Ok(result) => result,
-        Err(error) => Err(timeout_error(error)),
+        Err(_elapsed) => Err(InboundError::Timeout),
     }
 }
 
 /// Writes one outbound protobuf frame and closes the stream.
 async fn write_outbound<S>(
     stream: &mut S,
-    request_id: u64,
     msg: &pbconsensus::QbftConsensusMsg,
     send_timeout: Duration,
-) -> Result<(), String>
+) -> Result<(), SendError>
 where
     S: AsyncWrite + Unpin,
 {
     let result = timeout(send_timeout, async {
         pluto_p2p::proto::write_protobuf(stream, msg)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(SendError::Write)?;
         match stream.close().await {
             Ok(()) => Ok(()),
             Err(error) if is_ignorable_close_error(&error) => Ok(()),
-            Err(error) => Err(error.to_string()),
+            Err(error) => Err(SendError::Close(error)),
         }
     })
     .await;
 
     match result {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(error)) => Err(error),
-        Err(error) => Err(format!("request {request_id}: {}", timeout_error(error))),
+        Ok(result) => result,
+        Err(_elapsed) => Err(SendError::Timeout),
     }
 }
 
@@ -404,11 +443,6 @@ where
     if let Err(error) = stream.close().await {
         debug!(%error, "failed to close qbft p2p stream");
     }
-}
-
-/// Formats libp2p timeout errors consistently.
-fn timeout_error(_error: Elapsed) -> String {
-    "operation timed out".to_string()
 }
 
 #[derive(Debug)]
@@ -550,7 +584,7 @@ impl Behaviour {
     }
 
     /// Converts queued sends for an unreachable peer into send errors.
-    fn fail_pending_for_peer(&mut self, peer_id: PeerId, error: String) {
+    fn fail_pending_for_peer(&mut self, peer_id: PeerId, error: &DialError) {
         let Some(pending) = self.pending_by_peer.remove(&peer_id) else {
             return;
         };
@@ -560,7 +594,7 @@ impl Behaviour {
                 .push_back(ToSwarm::GenerateEvent(Event::SendError {
                     request_id: pending.request_id,
                     peer: peer_id,
-                    error: error.clone(),
+                    error: SendError::Dial(error.to_string()),
                 }));
         }
     }
@@ -577,7 +611,7 @@ impl Behaviour {
             return;
         }
 
-        self.fail_pending_for_peer(peer_id, error.to_string());
+        self.fail_pending_for_peer(peer_id, error);
     }
 }
 
