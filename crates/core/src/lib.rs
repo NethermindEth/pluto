@@ -42,6 +42,9 @@ pub mod sigagg;
 /// Implementations of AggSigDB.
 pub mod aggsigdb;
 
+/// Broadcaster for aggregate signed duty data.
+pub mod bcast;
+
 mod parsigex_codec;
 
 // SSZ codec operates on compile-time-constant byte sizes and offsets.
