@@ -36,7 +36,8 @@ pub struct Config {
     pub local_peer_idx: i64,
     /// Local secp256k1 private key.
     pub privkey: SecretKey,
-    /// Duty deadline scheduler.
+    /// Duty deadline scheduler. Name it `"consensus.qbft"` to match Go's
+    /// internally-built deadliner for log parity.
     pub deadliner: DeadlinerHandle,
     /// Expired-duty receiver paired with `deadliner`.
     pub expired_rx: mpsc::Receiver<Duty>,
@@ -108,6 +109,10 @@ impl ConsensusController {
             return Ok(());
         }
 
+        // TODO: When introducing non-default consensus protocols, mirror Go's
+        // deferred wrapped-context cancellation here: cancel the previous
+        // non-default impl, build a `"consensus.<proto>"` deadliner, set the
+        // new impl, and start it under a fresh cancellation token.
         Err(Error::UnsupportedProtocolId)
     }
 }

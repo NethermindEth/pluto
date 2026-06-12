@@ -421,6 +421,10 @@ impl Consensus {
     }
 
     /// Runs the internal expired-duty cleanup loop until cancellation.
+    ///
+    /// Must be called exactly once: it `take()`s `expired_rx`, so any later
+    /// call spawns a task that returns immediately and the cleanup loop
+    /// never runs.
     pub fn start(&self, ct: CancellationToken) -> JoinHandle<()> {
         let expired_rx = self
             .expired_rx
