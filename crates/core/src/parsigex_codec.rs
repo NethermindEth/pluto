@@ -31,6 +31,10 @@ pub enum ParSigExCodecError {
     #[error("invalid partial signed data set proto fields")]
     InvalidParSignedDataSetFields,
 
+    /// Invalid unsigned data set proto.
+    #[error("invalid unsigned data set fields")]
+    InvalidUnsignedDataSetFields,
+
     /// Invalid partial signed proto.
     #[error("invalid partial signed proto")]
     InvalidParSignedProto,
@@ -66,6 +70,10 @@ pub enum ParSigExCodecError {
     /// Signed data construction error.
     #[error("signed data: {0}")]
     SignedData(String),
+
+    /// Unsigned data construction error.
+    #[error("unsigned data: {0}")]
+    UnsignedData(String),
 
     /// Failed to extract the signature from signed data.
     #[error("invalid signature: {0}")]

@@ -149,15 +149,20 @@ pub struct Definition<T: QbftTypes> {
     pub fifo_limit: i64,
 }
 
+/// Quorum count for `nodes` participants.
+/// See IBFT 2.0 paper for correct formula: <https://arxiv.org/pdf/1909.10194.pdf>
+pub fn quorum(nodes: i64) -> i64 {
+    nodes
+        .checked_mul(2)
+        .and_then(|nodes| nodes.checked_add(2))
+        .and_then(|nodes| nodes.checked_div(3))
+        .expect("node count permits quorum calculation")
+}
+
 impl<T: QbftTypes> Definition<T> {
     /// Quorum count for the system.
-    /// See IBFT 2.0 paper for correct formula: <https://arxiv.org/pdf/1909.10194.pdf>
     pub fn quorum(&self) -> i64 {
-        self.nodes
-            .checked_mul(2)
-            .and_then(|nodes| nodes.checked_add(2))
-            .and_then(|nodes| nodes.checked_div(3))
-            .expect("node count permits quorum calculation")
+        quorum(self.nodes)
     }
 
     /// Maximum number of faulty/byzantine nodes supported in the system.
