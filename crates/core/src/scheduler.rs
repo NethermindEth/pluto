@@ -63,6 +63,9 @@ pub enum SchedulerError {
     EpochNotResolved {
         /// The unresolved epoch.
         epoch: u64,
+
+        /// Duty attempted to be accessed
+        duty: types::Duty,
     },
 
     /// Duty definition not found for a resolved epoch.
@@ -201,7 +204,7 @@ impl SchedulerBuilder {
             .await
             .ok_or(SchedulerError::Terminated)??;
 
-        let slot_rx = new_slot_ticker(&client.clone(), ct.clone()).await?;
+        let slot_rx = new_slot_ticker(&client, ct.clone()).await?;
 
         let actor = SchedulerActor {
             client: client.clone(),
@@ -346,7 +349,7 @@ impl SchedulerActor {
             .expect("non-zero");
 
         if !self.is_epoch_resolved(epoch) {
-            return Err(SchedulerError::EpochNotResolved { epoch });
+            return Err(SchedulerError::EpochNotResolved { epoch, duty });
         }
 
         if self.is_epoch_trimmed(epoch) {
@@ -1283,7 +1286,7 @@ mod tests {
         let att = types::Duty::new_attester_duty(slot0);
         assert!(matches!(
             actor.get_duty_definition(att.clone()).await,
-            Err(SchedulerError::EpochNotResolved { epoch: 0 })
+            Err(SchedulerError::EpochNotResolved { epoch: 0, .. })
         ));
 
         // Resolved but no duty stored.
