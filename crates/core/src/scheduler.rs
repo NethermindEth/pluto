@@ -1135,6 +1135,20 @@ mod tests {
         }
     }
 
+    /// A [`types::Slot`] dated at `now` with a short slot duration, so
+    /// `delay_slot_offset` still has a live wait pending when the duty task is
+    /// spawned (unlike [`test_past_slot`], whose deadline has already elapsed).
+    /// The sync-committee contribution offset is 2/3 of the slot duration
+    /// (~600ms here), leaving a window to cancel before the broadcast fires.
+    fn test_future_slot(slot: u64, slots_per_epoch: u64) -> types::Slot {
+        types::Slot {
+            slot: types::SlotNumber::new(slot),
+            time: chrono::Utc::now(),
+            slot_duration: chrono::Duration::milliseconds(900),
+            slots_per_epoch,
+        }
+    }
+
     /// Builds an attester duty definition for tests.
     fn test_attester_def(pubkey: types::PubKey, v_idx: u64, slot: u64) -> types::DutyDefinition {
         let datum = pluto_eth2api::types::GetAttesterDutiesResponseResponseDatum {
@@ -1524,5 +1538,44 @@ mod tests {
         ));
 
         h.ct.cancel();
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_slot_offset_suppresses_duty_broadcast() {
+        let mock = duties_mock(16).await;
+        mount_head_validators(&mock, validator_set_a_datums()).await;
+        let mut h = spawn_actor(&mock);
+
+        // A mid-epoch slot triggers only the sync-committee contribution duty,
+        // whose broadcast is delayed by 2/3 of the slot duration (~600ms here).
+        // Dated at `now`, the offset deadline is still in the future when the
+        // duty task is spawned, so it parks on the live `delay_slot_offset` wait
+        // inside `with_cancellation_token_owned`.
+        h.slot_tx
+            .send(test_future_slot(5, 16))
+            .await
+            .expect("send slot");
+
+        // The slot itself broadcasts immediately, before the offset wait.
+        let slot = tokio::time::timeout(Duration::from_secs(2), h.slot_sub.recv())
+            .await
+            .expect("slot broadcast within timeout")
+            .expect("slot value");
+        assert_eq!(slot.slot.inner(), 5);
+
+        // Cancel while the duty task is still waiting on the offset.
+        h.ct.cancel();
+
+        // No duty value must ever arrive: the offset wait is cancelled before
+        // its deadline. Wait past the ~600ms deadline to catch a regression
+        // where cancellation is not wired into `delay_slot_offset`. A timeout or
+        // a closed channel (the actor shut down and dropped its sender) both
+        // mean no broadcast fired; only a received duty (`Ok(Ok(_))`) is a
+        // failure.
+        let next = tokio::time::timeout(Duration::from_secs(1), h.duty_sub.recv()).await;
+        assert!(
+            !matches!(next, Ok(Ok(_))),
+            "expected no duty broadcast after cancellation, got {next:?}"
+        );
     }
 }
