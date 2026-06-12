@@ -147,8 +147,7 @@ pub struct Component {
     eth2_cl: Arc<EthBeaconNodeApiClient>,
     /// Per-epoch active-validators cache. Submit handlers consult this to
     /// translate a validator-client-supplied `validator_index` into the
-    /// cluster's DV root public key. Mirrors Go's `eth2Cl.ActiveValidators`,
-    /// which is itself backed by the beacon-node validator cache.
+    /// cluster's DV root public key. Backed by the beacon-node validator cache.
     #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     validator_cache: Arc<dyn CachedValidatorsProvider>,
     /// In-memory DutyDB used to await consensus output (e.g. attestation
@@ -252,9 +251,7 @@ impl Component {
 
     /// Returns the cluster's active validators (`validator_index -> DV root
     /// public key`) from the registered [`CachedValidatorsProvider`],
-    /// bounded by [`UPSTREAM_REQUEST_TIMEOUT`]. Mirrors Go's
-    /// `c.eth2Cl.ActiveValidators(ctx)`, which is itself implemented via the
-    /// beacon-node validator cache.
+    /// bounded by [`UPSTREAM_REQUEST_TIMEOUT`].
     #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     async fn fetch_active_validators(&self) -> Result<ActiveValidators, ApiError> {
         tokio::time::timeout(
@@ -456,14 +453,11 @@ impl Component {
     }
 
     /// Verifies and fans out a single builder-registration. Factored out so
-    /// [`Self::submit_validator_registrations`] iterates over its input in
-    /// the same shape as Go's `SubmitValidatorRegistrations`. The
-    /// `slot_duration`, `genesis_time`, and `builder_domain` arguments are
+    /// [`Self::submit_validator_registrations`] can iterate over its input.
+    /// The `slot_duration`, `genesis_time`, and `builder_domain` arguments are
     /// hoisted out of the loop so a batched request issues at most one
     /// `fetch_slots_config`, one `fetch_genesis_time`, and one builder-domain
-    /// resolution upstream call, regardless of input size — Charon achieves
-    /// the same effect via `eth2wrap` caching, which the Pluto eth2 client
-    /// does not yet provide.
+    /// resolution upstream call, regardless of input size.
     async fn submit_one_registration(
         &self,
         registration: SignedValidatorRegistration,
@@ -471,11 +465,10 @@ impl Component {
         genesis_time: chrono::DateTime<chrono::Utc>,
         builder_domain: Domain,
     ) -> Result<(), ApiError> {
-        // Go: validatorapi.go:676-690 — pull the group pubkey out of the
-        // wrapped registration and gate on it being a DV pubkey on this
-        // node. Non-DV pubkeys are silently swallowed (matches Go's
-        // `swallowRegFilter` debug-log behaviour) so a vouch-style VC that
-        // also registers its proposer key does not get a non-200 from us.
+        // Pull the group pubkey out of the wrapped registration and gate on it
+        // being a DV pubkey on this node. Non-DV pubkeys are silently swallowed
+        // so a vouch-style VC that also registers its proposer key does not get
+        // a non-200 from us.
         let v1 = registration.0.v1.as_ref().ok_or_else(|| {
             ApiError::new(
                 StatusCode::BAD_REQUEST,
@@ -494,13 +487,11 @@ impl Component {
 
         let timestamp = v1.message.timestamp;
 
-        // Go: validatorapi.go:693-703 — derive the slot the registration
-        // belongs to.
+        // Derive the slot the registration belongs to.
         let registration_slot = slot_from_timestamp(genesis_time, slot_duration, timestamp);
         let duty = Duty::new_builder_registration_duty(SlotNumber::new(registration_slot));
 
-        // Go: validatorapi.go:706 — wrap as ParSignedData via the canonical
-        // partial-sig constructor.
+        // Wrap as ParSignedData via the canonical partial-sig constructor.
         let par_signed = VersionedSignedValidatorRegistrationWrapper::new_partial(
             registration.0.clone(),
             self.share_idx,
@@ -513,9 +504,8 @@ impl Component {
             .with_source(err)
         })?;
 
-        // Go: validatorapi.go:712 — partial-signature verification. The
-        // application-builder domain ignores the epoch (Go's
-        // `Epoch()` returns 0); we mirror that here. Uses the hoisted
+        // Partial-signature verification. The application-builder domain
+        // ignores the epoch (the epoch is always 0). Uses the hoisted
         // `builder_domain` so a batched submission resolves the signing
         // domain once instead of N times.
         let message_root = v1.message.message_root();
@@ -997,24 +987,21 @@ impl Handler for Component {
     /// Fan-out is per-entry and **not transactional**: registrations are
     /// processed sequentially and the loop returns on the first error.
     /// Earlier entries that already fanned out remain published downstream
-    /// when a later entry fails, matching Go's `SubmitValidatorRegistrations`
-    /// (validatorapi.go:731-749).
+    /// when a later entry fails.
     #[instrument(skip_all)]
     async fn submit_validator_registrations(
         &self,
         registrations: Vec<SignedValidatorRegistration>,
     ) -> Result<(), ApiError> {
-        // Go: validatorapi.go:732-734 — empty input is a no-op.
+        // Empty input is a no-op.
         if registrations.is_empty() {
             return Ok(());
         }
 
-        // Go: validatorapi.go:736-739 — builder-mode gate. When builder mode
-        // is disabled the registrations are accepted (no client-visible
-        // error) but never fanned out. Mirrors the swallow-on-disable
-        // behaviour Go inherited from Vouch. Logged at `debug!` to match
-        // Charon's `log.Debug` — VCs like Vouch send registrations every
-        // slot, so a higher level would be noisy in non-builder configs.
+        // Builder-mode gate. When builder mode is disabled the registrations
+        // are accepted (no client-visible error) but never fanned out. Logged
+        // at `debug!` because VCs like Vouch send registrations every slot, so
+        // a higher level would be noisy in non-builder configs.
         if !self.builder_enabled {
             tracing::debug!(
                 count = registrations.len(),
@@ -1024,8 +1011,7 @@ impl Handler for Component {
         }
 
         // Hoisted out of the per-registration loop so a batched submission
-        // issues at most one upstream call per kind (Pluto's eth2 client is
-        // not cached the way Charon's `eth2wrap` is). All entries share the
+        // issues at most one upstream call per kind. All entries share the
         // same `DomainName::ApplicationBuilder` signing domain at epoch 0,
         // so we resolve it once here too rather than letting
         // `verify_partial_sig` fan out 2N domain-lookup calls.
@@ -1057,22 +1043,18 @@ impl Handler for Component {
 
     #[instrument(skip_all)]
     async fn submit_voluntary_exit(&self, exit: SignedVoluntaryExit) -> Result<(), ApiError> {
-        // Go: validatorapi.go:753-761 — resolve the DV root pubkey for the
-        // validator index carried by the exit. The Pluto-side lookup runs
-        // through the per-epoch validator cache (mirrors the Go
-        // `eth2Cl.ActiveValidators` indirection, which is itself backed by
-        // `app/eth2wrap`'s cache).
+        // Resolve the DV root pubkey for the validator index carried by the
+        // exit. The lookup runs through the per-epoch validator cache.
         let active = self.fetch_active_validators().await?;
 
         let validator_index = exit.0.message.validator_index;
         let root_pubkey = active.get(&validator_index).copied().ok_or_else(|| {
-            // Go: `errors.New("validator not found")` — bubble up as 400 so a
-            // misbehaving VC sees a non-retriable rejection without leaking
-            // upstream details.
+            // Bubble up as 400 so a misbehaving VC sees a non-retriable
+            // rejection without leaking upstream details.
             ApiError::new(StatusCode::BAD_REQUEST, "validator not found")
         })?;
 
-        // Go: validatorapi.go:768-773 — duty slot = slots_per_epoch * epoch.
+        // Duty slot = slots_per_epoch * epoch.
         let (_, slots_per_epoch) =
             tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.fetch_slots_config())
                 .await
@@ -1083,11 +1065,11 @@ impl Handler for Component {
         let duty_slot = slots_per_epoch.saturating_mul(exit_epoch);
         let duty = Duty::new_voluntary_exit_duty(SlotNumber::new(duty_slot));
 
-        // Go: validatorapi.go:776 — build the ParSignedData via the canonical
-        // partial-sig constructor for voluntary exits.
+        // Build the ParSignedData via the canonical partial-sig constructor
+        // for voluntary exits.
         let par_signed = SignedVoluntaryExitWrapper::new_partial(exit.0.clone(), self.share_idx);
 
-        // Go: validatorapi.go:779 — partial-signature verification.
+        // Partial-signature verification.
         let message_root = exit.0.message_root();
         self.verify_partial_sig(
             &root_pubkey,
@@ -1343,11 +1325,10 @@ fn subscriber_error_to_api_error(err: CallbackError) -> ApiError {
     .with_boxed_source(err)
 }
 
-/// Computes the slot a timestamp belongs to, mirroring Go's
-/// `SlotFromTimestamp` at `validatorapi.go:41-70`. When the timestamp is
-/// before genesis (testing scenarios), Go falls back to "now"; here we fall
-/// back to slot 0 to keep the helper pure — the only consumer is the
-/// `Duty` key, where any deterministic placeholder is acceptable.
+/// Computes the slot a timestamp belongs to. When the timestamp is before
+/// genesis (testing scenarios), falls back to slot 0 to keep the helper pure —
+/// the only consumer is the `Duty` key, where any deterministic placeholder is
+/// acceptable.
 fn slot_from_timestamp(
     genesis_time: chrono::DateTime<chrono::Utc>,
     slot_duration: std::time::Duration,
@@ -2276,8 +2257,8 @@ mod tests {
         assert!(component.subs.is_empty());
     }
 
-    /// Mirrors signing-fixture spec from `pluto_eth2util::signing` tests so
-    /// `verify_partial_sig` can resolve a real beacon-attester domain.
+    /// Uses the same signing-fixture spec as the `pluto_eth2util::signing`
+    /// tests so `verify_partial_sig` can resolve a real beacon-attester domain.
     fn signing_spec_fixture() -> serde_json::Value {
         json!({
             "DOMAIN_BEACON_PROPOSER": "0x00000000",
@@ -2425,8 +2406,7 @@ mod tests {
     // ====================================================================
 
     /// `fetch_active_validators` returns whatever the registered
-    /// `CachedValidatorsProvider` yields, untouched. Mirrors Go's
-    /// `c.eth2Cl.ActiveValidators(ctx)` return shape.
+    /// `CachedValidatorsProvider` yields, untouched.
     #[tokio::test]
     async fn fetch_active_validators_returns_cache_contents() {
         let cancel = CancellationToken::new();
@@ -2584,9 +2564,8 @@ mod tests {
         })
     }
 
-    /// Captures every `(duty, set)` tuple a subscriber receives. Mirrors the
-    /// pattern used by the `subscribe_fanouts_clones_to_every_subscriber`
-    /// test above.
+    /// Captures every `(duty, set)` tuple a subscriber receives. Same pattern
+    /// as the `subscribe_fanouts_clones_to_every_subscriber` test above.
     type CapturedFanouts = Arc<Mutex<Vec<(Duty, ParSignedDataSet)>>>;
 
     fn install_capture(component: &mut Component) -> CapturedFanouts {
@@ -2640,8 +2619,7 @@ mod tests {
     }
 
     /// `submit_voluntary_exit` rejects with a 400 when the validator index is
-    /// not present in the active set (Go: `errors.New("validator not
-    /// found")`).
+    /// not present in the active set.
     #[tokio::test]
     async fn submit_voluntary_exit_rejects_unknown_validator() {
         let (component, _mock) =
@@ -2695,8 +2673,7 @@ mod tests {
     }
 
     /// `submit_validator_registrations` returns Ok without fanout when
-    /// builder mode is disabled. Mirrors Go's
-    /// `validatorapi.go:737-739` swallow-on-disable branch.
+    /// builder mode is disabled.
     #[tokio::test]
     async fn submit_validator_registrations_swallows_when_builder_disabled() {
         let dv_root = dv_pubkey(0xDD);
@@ -2720,8 +2697,7 @@ mod tests {
     }
 
     /// `submit_validator_registrations` returns Ok with no fanout on an
-    /// empty input list — even with builder mode enabled. Mirrors Go's
-    /// `validatorapi.go:732-734` early return.
+    /// empty input list — even with builder mode enabled.
     #[tokio::test]
     async fn submit_validator_registrations_no_op_on_empty_input() {
         let (mut component, _mock) =
@@ -2737,8 +2713,7 @@ mod tests {
     }
 
     /// `submit_validator_registrations` silently skips entries whose pubkey
-    /// is not a DV root key on this node — same as Go's per-pubkey
-    /// `swallowRegFilter` branch (`validatorapi.go:686-691`).
+    /// is not a DV root key on this node.
     #[tokio::test]
     async fn submit_validator_registrations_swallows_non_dv_pubkey() {
         let dv_root = dv_pubkey(0x55);

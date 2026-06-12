@@ -151,8 +151,7 @@ pub use crate::signeddata::VersionedProposal;
 pub use crate::signeddata::VersionedSignedProposal;
 
 /// Versioned signed blinded proposal payload — alias of the eth2api versioned
-/// wrapper, the same shape consumed by Go's
-/// `SubmitBlindedProposalOpts.Proposal`.
+/// wrapper.
 pub use pluto_eth2api::versioned::VersionedSignedBlindedProposal;
 
 /// Versioned attestation payload. Placeholder.
