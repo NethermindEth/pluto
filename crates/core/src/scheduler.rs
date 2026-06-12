@@ -233,6 +233,7 @@ impl Default for SchedulerBuilder {
         Self::new()
     }
 }
+
 enum SchedulerMessage {
     GetDutyDefinition {
         duty: types::Duty,
@@ -341,6 +342,7 @@ impl SchedulerActor {
             return Err(SchedulerError::DeprecatedDutyBuilderProposer);
         }
 
+        // TODO: `client.fetch_slots_config` should be cached.
         let (_, slots_per_epoch) = self.client.fetch_slots_config().await?;
         let epoch = duty
             .slot
