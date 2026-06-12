@@ -74,10 +74,6 @@ pub enum SchedulerError {
         /// Duty attempted to be accessed
         duty: types::Duty,
     },
-    /// Timed out while waiting for the scheduler to respond with a duty
-    /// definition.
-    #[error("Timed out while waiting for a duty definition")]
-    TimeoutError,
 
     /// The underlying scheduler actor has been terminated.
     #[error("Scheduler actor has been terminated")]
@@ -253,8 +249,6 @@ pub struct SchedulerHandle {
 impl SchedulerHandle {
     /// Returns the definition for a duty if a definition exists for a resolved
     /// epoch.
-    ///
-    /// NOTE: this operation has a default timeout of 100 ms.
     pub async fn get_duty_definition(&self, duty: types::Duty) -> Result<types::DutyDefinitionSet> {
         let (tx, rx) = sync::oneshot::channel();
         let msg = SchedulerMessage::GetDutyDefinition { duty, resp: tx };
@@ -264,12 +258,7 @@ impl SchedulerHandle {
             .await
             .map_err(|_| SchedulerError::Terminated)?;
 
-        // This has to be very rare event, when the requested epoch is being resolved.
-        // We wait for the epoch to be resolved before returning the duty definition.
-        tokio::time::timeout(Duration::from_millis(100), rx)
-            .await
-            .map_err(|_| SchedulerError::TimeoutError)?
-            .map_err(|_| SchedulerError::Terminated)?
+        rx.await.map_err(|_| SchedulerError::Terminated)?
     }
 }
 
