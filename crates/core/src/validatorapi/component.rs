@@ -157,8 +157,7 @@ pub struct Component {
     eth2_cl: Arc<EthBeaconNodeApiClient>,
     /// Per-epoch active-validators cache. Submit handlers consult this to
     /// translate a validator-client-supplied `validator_index` into the
-    /// cluster's DV root public key. Mirrors Go's `eth2Cl.ActiveValidators`,
-    /// which is itself backed by the beacon-node validator cache.
+    /// cluster's DV root public key. Backed by the beacon-node validator cache.
     #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     validator_cache: Arc<dyn CachedValidatorsProvider>,
     /// In-memory DutyDB used to await consensus output (e.g. attestation
@@ -264,9 +263,7 @@ impl Component {
 
     /// Returns the cluster's active validators (`validator_index -> DV root
     /// public key`) from the registered [`CachedValidatorsProvider`],
-    /// bounded by [`UPSTREAM_REQUEST_TIMEOUT`]. Mirrors Go's
-    /// `c.eth2Cl.ActiveValidators(ctx)`, which is itself implemented via the
-    /// beacon-node validator cache.
+    /// bounded by [`UPSTREAM_REQUEST_TIMEOUT`].
     #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     async fn fetch_active_validators(&self) -> Result<ActiveValidators, ApiError> {
         tokio::time::timeout(
@@ -425,8 +422,7 @@ impl Component {
 
     /// Fans out a validated [`ParSignedDataSet`] to every registered
     /// subscriber. Each subscriber receives its own clone (the wrapper
-    /// stored in `subs` already does the clone-before-fanout, mirroring
-    /// Go's `Subscribe`).
+    /// stored in `subs` already does the clone-before-fanout).
     async fn fanout(&self, duty: &Duty, set: ParSignedDataSet) -> Result<(), ApiError> {
         for sub in &self.subs {
             sub(duty, &set).await.map_err(|err| {
@@ -989,10 +985,9 @@ impl Handler for Component {
         &self,
         opts: SyncCommitteeContributionOpts,
     ) -> Result<EthResponse<SyncCommitteeContribution>, ApiError> {
-        // Port of Go `SyncCommitteeContribution` at
-        // `core/validatorapi/validatorapi.go:948`. Delegates to the registered
-        // `awaitSyncContributionFunc`, bounded by a hard timeout so a missing
-        // contribution cannot park the handler indefinitely.
+        // Delegates to the registered sync-contribution hook, bounded by a
+        // hard timeout so a missing contribution cannot park the handler
+        // indefinitely.
         let await_fn = self.await_sync_contribution_fn.as_ref().ok_or_else(|| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1026,11 +1021,9 @@ impl Handler for Component {
         &self,
         contributions: Vec<SignedContributionAndProof>,
     ) -> Result<(), ApiError> {
-        // Port of Go `SubmitSyncCommitteeContributions` at
-        // `core/validatorapi/validatorapi.go:1009`. Verifies the inner
-        // selection proof against the root pubkey, the outer partial
-        // signature against this node's share, groups by slot, and fans
-        // out to every subscriber.
+        // Verifies the inner selection proof against the root pubkey, the
+        // outer partial signature against this node's share, groups by slot,
+        // and fans out to every subscriber.
         let vals = self.fetch_active_validators().await?;
 
         let mut psigs_by_slot: HashMap<u64, ParSignedDataSet> = HashMap::new();
@@ -1039,9 +1032,8 @@ impl Handler for Component {
             let v_idx = contrib.message.aggregator_index;
 
             let eth2_pubkey = vals.get(&v_idx).copied().ok_or_else(|| {
-                // Mirrors Go's `errors.New("validator not found")` —
-                // the VC submitted a contribution whose aggregator index
-                // is not part of the active validator set.
+                // The VC submitted a contribution whose aggregator index is
+                // not part of the active validator set.
                 ApiError::new(StatusCode::BAD_REQUEST, "validator not found")
             })?;
 
@@ -1053,11 +1045,10 @@ impl Handler for Component {
                 .with_source(std::io::Error::other(format!("{err:?}")))
             })?;
 
-            // Inner selection-proof verification. Mirrors Go's
-            // `core.VerifyEth2SignedData(... NewSyncContributionAndProof ...)`
-            // — checked against the **root** pubkey (`eth2Pubkey`), not the
-            // share, because the VC builds the selection proof with the
-            // root-level secret. Skipped in `insecure_test`.
+            // Inner selection-proof verification — checked against the
+            // **root** pubkey (`eth2Pubkey`), not the share, because the VC
+            // builds the selection proof with the root-level secret. Skipped
+            // in `insecure_test`.
             if !self.insecure_test {
                 let inner = SyncContributionAndProof::new(contrib.message.clone());
                 let epoch = epoch_from_slot(&self.eth2_cl, slot).await.map_err(|err| {
@@ -1126,10 +1117,8 @@ impl Handler for Component {
         &self,
         messages: Vec<SyncCommitteeMessage>,
     ) -> Result<(), ApiError> {
-        // Port of Go `SubmitSyncCommitteeMessages` at
-        // `core/validatorapi/validatorapi.go:958`. Builds a partial
-        // `SignedSyncMessage` per validator, verifies the partial sig
-        // against this node's share, then fans out grouped by slot.
+        // Builds a partial `SignedSyncMessage` per validator, verifies the
+        // partial sig against this node's share, then fans out grouped by slot.
         let vals = self.fetch_active_validators().await?;
 
         let mut psigs_by_slot: HashMap<u64, ParSignedDataSet> = HashMap::new();
@@ -1258,9 +1247,7 @@ fn map_dutydb_error(err: DutyDbError) -> ApiError {
 /// through `register_await_*` instead of calling `dutydb` directly) into the
 /// `ApiError` returned to the client. If the boxed error is a typed
 /// [`DutyDbError`] we recover the same status mapping as [`map_dutydb_error`].
-/// Otherwise we mirror Charon's `writeError` (core/validatorapi/router.go:1674)
-/// and surface a generic 500 — Charon does the same when the hook bubbles a
-/// non-`apiError` value.
+/// Otherwise we surface a generic 500 when the hook bubbles an untyped value.
 fn map_hook_dutydb_error(err: CallbackError) -> ApiError {
     if let Some(dutydb_err) = err.downcast_ref::<DutyDbError>() {
         let (status, message) = match dutydb_err {
@@ -2308,8 +2295,8 @@ mod tests {
         assert!(component.subs.is_empty());
     }
 
-    /// Mirrors signing-fixture spec from `pluto_eth2util::signing` tests so
-    /// `verify_partial_sig` can resolve a real beacon-attester domain.
+    /// Uses the same signing-fixture spec as the `pluto_eth2util::signing`
+    /// tests so `verify_partial_sig` can resolve a real beacon-attester domain.
     /// Each fork has a distinct epoch so `resolve_fork_version` is
     /// deterministic (the fork_schedule HashMap iteration order does not
     /// affect the result).
@@ -2465,8 +2452,7 @@ mod tests {
     // ====================================================================
 
     /// `fetch_active_validators` returns whatever the registered
-    /// `CachedValidatorsProvider` yields, untouched. Mirrors Go's
-    /// `c.eth2Cl.ActiveValidators(ctx)` return shape.
+    /// `CachedValidatorsProvider` yields, untouched.
     #[tokio::test]
     async fn fetch_active_validators_returns_cache_contents() {
         let cancel = CancellationToken::new();
@@ -2638,10 +2624,9 @@ mod tests {
     }
 
     /// `sync_committee_contribution` returns 500 when the registered hook
-    /// fails with a generic (non-`DutyDbError`) error. Mirrors Charon's
-    /// `writeError` (core/validatorapi/router.go:1674) which maps any
-    /// non-`apiError` to 500. The 408 branch is reserved for `Elapsed`
-    /// (handler-level timeout) and for typed `DutyDbError::AwaitDutyExpired`.
+    /// fails with a generic (non-`DutyDbError`) error. The 408 branch is
+    /// reserved for `Elapsed` (handler-level timeout) and for typed
+    /// `DutyDbError::AwaitDutyExpired`.
     #[tokio::test]
     async fn sync_committee_contribution_returns_500_on_generic_hook_error() {
         let (_captured, mut component) = make_sync_component(HashMap::new());
@@ -2783,8 +2768,7 @@ mod tests {
     }
 
     /// `submit_sync_committee_messages` rejects with 400 when the
-    /// validator-index lookup misses. Mirrors Go's
-    /// `errors.New("validator not found")`.
+    /// validator-index lookup misses.
     #[tokio::test]
     async fn submit_sync_committee_messages_rejects_unknown_validator_index() {
         let (_captured, component) = make_sync_component(HashMap::new());
@@ -2797,8 +2781,7 @@ mod tests {
     }
 
     /// `submit_sync_committee_messages` propagates a 502 when the
-    /// active-validators cache errors. Mirrors Go's bubble-through of
-    /// `c.eth2Cl.ActiveValidators` errors.
+    /// active-validators cache errors.
     #[tokio::test]
     async fn submit_sync_committee_messages_502_on_active_validators_error() {
         struct FailingCache;
@@ -2887,10 +2870,9 @@ mod tests {
 
     /// `submit_sync_committee_messages` rejects with 400 when verification
     /// runs (i.e. `insecure_test = false`) and the share map has no entry
-    /// for the validator's root pubkey. Mirrors Go's
-    /// `getVerifyShareFunc -> errors.New("unknown public key")` path —
-    /// surfaced to the client as a 400. Confirms `verify_partial_sig_for`
-    /// is actually invoked from the submit handler.
+    /// for the validator's root pubkey — an unknown public key is surfaced to
+    /// the client as a 400. Confirms `verify_partial_sig_for` is actually
+    /// invoked from the submit handler.
     #[tokio::test]
     async fn submit_sync_committee_messages_rejects_invalid_partial_sig() {
         let dv_root = [0xEE_u8; 48];
@@ -3090,10 +3072,8 @@ mod tests {
     /// `SignedContributionAndProof` where the **inner** selection proof is
     /// signed by the root secret under `SyncCommitteeSelectionProof` and
     /// the **outer** partial signature is signed by the share secret under
-    /// `ContributionAndProof`. Mirrors Charon's
-    /// `TestComponent_SubmitSyncCommitteeContributionsVerify` and proves
-    /// both verify steps agree on domain / epoch / message-root with the
-    /// shared mock-beacon spec fixture.
+    /// `ContributionAndProof`. Proves both verify steps agree on domain /
+    /// epoch / message-root with the shared mock-beacon spec fixture.
     #[tokio::test]
     async fn submit_sync_committee_contributions_accepts_valid_partial_sig() {
         // Root secret signs the inner selection proof; share secret signs
