@@ -8,8 +8,8 @@ use std::{any::Any, error::Error as StdError, time::Duration as StdDuration};
 use chrono::{DateTime, Duration, Utc};
 use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
 use pluto_eth2api::{
-    AttesterDuty, BeaconNodeClient, EthBeaconNodeApiClient, GetStateValidatorsResponseResponseDatum,
-    ValidatorStatus, data_version_is_before_electra,
+    AttesterDuty, BeaconNodeClient, EthBeaconNodeApiClient,
+    GetStateValidatorsResponseResponseDatum, ValidatorStatus, data_version_is_before_electra,
     spec::{altair, phase0},
     versioned,
 };

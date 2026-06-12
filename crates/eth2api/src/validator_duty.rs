@@ -127,7 +127,10 @@ impl EthBeaconNodeApiClient {
         &self,
         proposal: versioned::VersionedSignedProposal,
     ) -> Result<()> {
-        let version = proposal.version.to_consensus_version().map_err(error_message)?;
+        let version = proposal
+            .version
+            .to_consensus_version()
+            .map_err(error_message)?;
         let body = proposal_request_body(proposal)?;
         let request = crate::PublishBlockV2Request {
             query: crate::PublishBlockV2RequestQuery {
@@ -154,7 +157,10 @@ impl EthBeaconNodeApiClient {
         &self,
         proposal: versioned::VersionedSignedBlindedProposal,
     ) -> Result<()> {
-        let version = proposal.version.to_consensus_version().map_err(error_message)?;
+        let version = proposal
+            .version
+            .to_consensus_version()
+            .map_err(error_message)?;
         let body = blinded_proposal_request_body(proposal)?;
         let request = crate::PublishBlindedBlockV2Request {
             query: crate::PublishBlindedBlockV2RequestQuery {
@@ -549,20 +555,24 @@ fn aggregate_and_proofs_request_body(
         crate::AggregateAndProofRequestBody::Array(
             envelopes
                 .into_iter()
-                .map(|(message, signature)| crate::AggregateAndProofRequestBodyArray {
-                    message,
-                    signature,
-                })
+                .map(
+                    |(message, signature)| crate::AggregateAndProofRequestBodyArray {
+                        message,
+                        signature,
+                    },
+                )
                 .collect(),
         )
     } else {
         crate::AggregateAndProofRequestBody::Array2(
             envelopes
                 .into_iter()
-                .map(|(message, signature)| crate::AggregateAndProofRequestBodyArray2 {
-                    message,
-                    signature,
-                })
+                .map(
+                    |(message, signature)| crate::AggregateAndProofRequestBodyArray2 {
+                        message,
+                        signature,
+                    },
+                )
                 .collect(),
         )
     })

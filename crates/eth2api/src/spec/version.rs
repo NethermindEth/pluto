@@ -79,7 +79,8 @@ impl DataVersion {
         }
     }
 
-    /// Maps to the equivalent beacon API [`ConsensusVersion`](crate::ConsensusVersion).
+    /// Maps to the equivalent beacon API
+    /// [`ConsensusVersion`](crate::ConsensusVersion).
     pub const fn to_consensus_version(self) -> Result<crate::ConsensusVersion, VersionError> {
         use crate::ConsensusVersion;
         match self {
