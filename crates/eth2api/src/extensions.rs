@@ -36,6 +36,8 @@ pub enum EthBeaconNodeApiClientError {
     DomainTypeNotFound(String),
 }
 
+// Ordered oldest-to-newest. `resolve_fork_version` relies on this order to
+// break equal-epoch ties (the latest fork wins), so keep it chronological.
 const FORKS: [ConsensusVersion; 6] = [
     ConsensusVersion::Altair,
     ConsensusVersion::Bellatrix,
@@ -74,7 +76,7 @@ fn parse_u64_field(
         .map_err(|_| EthBeaconNodeApiClientError::ParseError(format!("parse {field}")))
 }
 
-fn decode_fixed_hex<const N: usize, F: Fn() -> String>(
+pub(crate) fn decode_fixed_hex<const N: usize, F: Fn() -> String>(
     value: &str,
     step: F,
 ) -> Result<[u8; N], EthBeaconNodeApiClientError> {
@@ -186,12 +188,17 @@ pub fn resolve_fork_version(
     genesis_fork_version: phase0::Version,
     fork_schedule: &HashMap<ConsensusVersion, ForkSchedule>,
 ) -> phase0::Version {
-    fork_schedule
-        .values()
-        .filter(|fork| fork.epoch <= epoch)
-        .max_by_key(|fork| fork.epoch)
-        .map(|fork| fork.version)
-        .unwrap_or(genesis_fork_version)
+    let mut active_version = genesis_fork_version;
+    for fork in FORKS {
+        let Some(schedule) = fork_schedule.get(&fork) else {
+            continue;
+        };
+        if schedule.epoch <= epoch {
+            active_version = schedule.version;
+        }
+    }
+
+    active_version
 }
 
 fn resolve_domain(
@@ -408,6 +415,31 @@ mod tests {
         assert_eq!(
             resolve_fork_version(25, genesis_fork_version, &fork_schedule),
             [0x02, 0x03, 0x04, 0x05]
+        );
+    }
+
+    #[test]
+    fn resolve_fork_version_breaks_equal_epoch_ties_by_fork_order() {
+        let spec = json!({
+            "ALTAIR_FORK_VERSION": "0x01020304",
+            "ALTAIR_FORK_EPOCH": "0",
+            "BELLATRIX_FORK_VERSION": "0x02030405",
+            "BELLATRIX_FORK_EPOCH": "0",
+            "CAPELLA_FORK_VERSION": "0x03040506",
+            "CAPELLA_FORK_EPOCH": "0",
+            "DENEB_FORK_VERSION": "0x04050607",
+            "DENEB_FORK_EPOCH": "0",
+            "ELECTRA_FORK_VERSION": "0x05060708",
+            "ELECTRA_FORK_EPOCH": "2048",
+            "FULU_FORK_VERSION": "0x06070809",
+            "FULU_FORK_EPOCH": u64::MAX.to_string(),
+        });
+        let fork_schedule = fork_schedule_from_spec(&spec).unwrap();
+        let genesis_fork_version = [0x11, 0x22, 0x33, 0x44];
+
+        assert_eq!(
+            resolve_fork_version(0, genesis_fork_version, &fork_schedule),
+            [0x04, 0x05, 0x06, 0x07]
         );
     }
 
