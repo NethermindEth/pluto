@@ -633,7 +633,15 @@ async fn new_slot_ticker(
                 .signed_duration_since(chrono::Utc::now())
                 .to_std()
                 .unwrap_or_default();
-            tokio::time::sleep(wait).await;
+
+            if tokio::time::sleep(wait)
+                .with_cancellation_token(&ct)
+                .await
+                .is_none()
+            {
+                // Cancelled early
+                return;
+            };
 
             // Avoid "thundering herd" problem by skipping slots if missed due
             // to pause-the-world events (i.e. resources are already constrained).
