@@ -327,10 +327,8 @@ async fn run_instance_inner(
                 leader_name,
                 "QBFT consensus decided"
             );
-            if !qcommit.is_empty() {
-                let _ = decided_at_tx.try_send(Instant::now());
-                metrics::record_qbft_decision(&duty, timer_type, round, leader_index);
-            }
+            let _ = decided_at_tx.try_send(Instant::now());
+            metrics::record_qbft_decision(&duty, timer_type, round, leader_index);
             decided.store(true, Ordering::Relaxed);
             instance_ct.cancel();
             core_cts.cancel();
