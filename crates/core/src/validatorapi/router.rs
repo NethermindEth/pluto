@@ -215,9 +215,9 @@ async fn attestation_data(
     Ok(Json(response))
 }
 
-/// Wraps a `POST` handler with a body-size cap and the Charon-parity
-/// content-type policy. The cap is local to the route so unrelated POST
-/// handlers (e.g. `submit_attestations`) keep axum's default 2 MiB.
+/// Wraps a `POST` handler with a body-size cap and the JSON content-type
+/// policy. The cap is local to the route so unrelated POST handlers (e.g.
+/// `submit_attestations`) keep axum's default 2 MiB.
 fn bounded_post<H, T, S>(handler: H, body_limit: usize) -> MethodRouter<S>
 where
     H: axum::handler::Handler<T, S>,
@@ -229,14 +229,14 @@ where
         .route_layer(middleware::from_fn(enforce_json_content_type))
 }
 
-/// Matches Charon's content-type handling at `core/validatorapi/router.go:365`:
-/// a missing `Content-Type` is treated as `application/json`; an unrecognized
-/// content type is rejected with `415 Unsupported Media Type`. SSZ is not
-/// supported yet — when it lands, this is the right seam to extend.
+/// Content-type handling: a missing `Content-Type` is treated as
+/// `application/json`; an unrecognized content type is rejected with `415
+/// Unsupported Media Type`. SSZ is not supported yet — when it lands, this is
+/// the right seam to extend.
 ///
 /// Without this layer, axum's `Json` extractor would reject a missing header
-/// with `MissingJsonContentType`, which our envelope normalises to `400` —
-/// diverging from Charon, which lets VCs that don't set the header through.
+/// with `MissingJsonContentType`, which our envelope normalises to `400`. We
+/// instead let VCs that don't set the header through.
 async fn enforce_json_content_type(mut req: Request, next: Next) -> Result<Response, ApiError> {
     match req.headers().get(header::CONTENT_TYPE) {
         None => {
@@ -271,8 +271,8 @@ fn query_rejection_to_api_error(rejection: QueryRejection) -> ApiError {
 /// instead of axum's default plain-text response.
 ///
 /// Genuine parse failures — malformed JSON (`400`) and wrong element type
-/// (`422`) — are normalised to a uniform `400`, matching Charon's `unmarshal`,
-/// which returns `400` for all body unmarshal failures. Content-Type rejections
+/// (`422`) — are normalised to a uniform `400` for all body unmarshal
+/// failures. Content-Type rejections
 /// no longer reach this function: [`enforce_json_content_type`] intercepts
 /// them upstream so missing/JSON requests pass through and non-JSON requests
 /// return `415`. The body-size-limit rejection from [`DefaultBodyLimit`]
@@ -633,8 +633,7 @@ mod tests {
     /// A malformed duties body emits the same `{ code, message }` envelope and
     /// uniform 400 as the rest of the router, rather than axum's default
     /// plain-text rejection (which would be 400 for a syntax error but 422 for
-    /// a type error). Mirrors Charon's `unmarshal`, which returns 400 for every
-    /// body parse failure.
+    /// a type error).
     #[tokio::test]
     async fn attester_duties_returns_api_error_shape_on_bad_body() {
         use axum::{
@@ -661,11 +660,10 @@ mod tests {
         assert!(json["message"].is_string());
     }
 
-    /// Charon-parity: a duties request that omits `Content-Type` is
-    /// treated as `application/json` rather than rejected — the
+    /// A duties request that omits `Content-Type` is treated as
+    /// `application/json` rather than rejected — the
     /// `enforce_json_content_type` middleware injects the header before
-    /// the `Json` extractor sees the request. See `core/validatorapi/
-    /// router.go:365` (`if contentHeader == "" || ...`).
+    /// the `Json` extractor sees the request.
     #[tokio::test]
     async fn attester_duties_accepts_missing_content_type() {
         use axum::{
@@ -691,9 +689,9 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
-    /// Charon-parity: a duties request with a non-JSON `Content-Type`
-    /// returns `415 Unsupported Media Type`, not the `400` that the
-    /// generic body-parse normaliser would produce.
+    /// A duties request with a non-JSON `Content-Type` returns `415
+    /// Unsupported Media Type`, not the `400` that the generic body-parse
+    /// normaliser would produce.
     #[tokio::test]
     async fn attester_duties_rejects_non_json_content_type() {
         use axum::{
@@ -761,10 +759,9 @@ mod tests {
     }
 
     /// Verifies the router wraps the `Handler::beacon_committee_selections`
-    /// payload into the `{ "data": [...] }` shape Charon's wire format uses
-    /// (`beaconCommitteeSelectionsJSON` in `core/validatorapi/router.go`),
-    /// dropping the `execution_optimistic` / `finalized` / `dependent_root`
-    /// metadata that the trait method carries internally.
+    /// payload into the `{ "data": [...] }` wire shape, dropping the
+    /// `execution_optimistic` / `finalized` / `dependent_root` metadata that
+    /// the trait method carries internally.
     #[tokio::test]
     async fn beacon_committee_selections_wraps_handler_value() {
         let selection = BeaconCommitteeSelection {
@@ -878,8 +875,8 @@ mod tests {
 
     /// Malformed JSON on the selection POST routes is normalised into the
     /// router's standard `{ code, message }` envelope rather than axum's
-    /// default plain-text 400 / 422 / 415 — matching Charon's `unmarshal`
-    /// which surfaces every body unmarshal failure as a uniform `400`. The
+    /// default plain-text 400 / 422 / 415 — every body unmarshal failure
+    /// surfaces as a uniform `400`. The
     /// same plumbing covers the duties endpoints; see
     /// [`attester_duties_returns_api_error_shape_on_malformed_body`] for the
     /// duties variant.

@@ -29,14 +29,12 @@ pub use pluto_eth2api::{
 };
 
 /// Beacon-committee selection payload. Aliases the consensus-spec
-/// `v1::BeaconCommitteeSelection` so the handler can operate on the same
-/// validator-index / slot / selection-proof tuple Go uses at
-/// `core/validatorapi/validatorapi.go:798`.
+/// `v1::BeaconCommitteeSelection` so the handler can operate on the
+/// validator-index / slot / selection-proof tuple directly.
 pub type BeaconCommitteeSelection = V1BeaconCommitteeSelection;
 
 /// Sync-committee selection payload. Aliases the consensus-spec
-/// `v1::SyncCommitteeSelection`, matching Go's
-/// `core/validatorapi/validatorapi.go:1072` input shape.
+/// `v1::SyncCommitteeSelection`.
 pub type SyncCommitteeSelection = V1SyncCommitteeSelection;
 
 /// Attestation data alias for the consensus-spec phase0 type.
@@ -154,8 +152,7 @@ pub struct AttestationDataResponse {
     pub data: AttestationData,
 }
 
-/// Response envelope for the `beacon_committee_selections` endpoint.
-/// Matches Charon's `beaconCommitteeSelectionsJSON` wire shape — a `data`
+/// Response envelope for the `beacon_committee_selections` endpoint — a `data`
 /// array of aggregated selection proofs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BeaconCommitteeSelectionsResponse {
@@ -163,8 +160,7 @@ pub struct BeaconCommitteeSelectionsResponse {
     pub data: Vec<BeaconCommitteeSelection>,
 }
 
-/// Response envelope for the `sync_committee_selections` endpoint.
-/// Matches Charon's `syncCommitteeSelectionsJSON` wire shape — a `data`
+/// Response envelope for the `sync_committee_selections` endpoint — a `data`
 /// array of aggregated selection proofs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncCommitteeSelectionsResponse {
@@ -183,8 +179,7 @@ pub use crate::signeddata::VersionedProposal;
 pub use crate::signeddata::VersionedSignedProposal;
 
 /// Versioned signed blinded proposal payload — alias of the eth2api versioned
-/// wrapper, the same shape consumed by Go's
-/// `SubmitBlindedProposalOpts.Proposal`.
+/// wrapper.
 pub use pluto_eth2api::versioned::VersionedSignedBlindedProposal;
 
 /// Versioned attestation payload. Placeholder.

@@ -132,11 +132,10 @@ const ATTESTATION_DATA_TIMEOUT: Duration = Duration::from_secs(24);
 /// Hard deadline for the *whole* fan-out + AggSigDB phase of the selection
 /// handlers — the per-slot subscriber calls plus every blocking
 /// `await_agg_sig_db_fn` lookup share a single budget anchored at this
-/// duration after the phase begins. The Go reference relies on the request
-/// context timeout; here we set an explicit bound so neither a stalled
-/// subscriber nor a stalled AggSigDB can pin a selections request forever,
-/// and the worst-case wall time scales with the duration rather than with
-/// the per-selection count. Sized to roughly two slots so a real
+/// duration after the phase begins. An explicit bound ensures neither a
+/// stalled subscriber nor a stalled AggSigDB can pin a selections request
+/// forever, and the worst-case wall time scales with the duration rather than
+/// with the per-selection count. Sized to roughly two slots so a real
 /// `PrepareAggregator` / `PrepareSyncContribution` duty has time to reach
 /// the AggSigDB.
 const SELECTIONS_PHASE_TIMEOUT: Duration = Duration::from_secs(24);
@@ -173,8 +172,7 @@ pub struct Component {
     eth2_cl: Arc<EthBeaconNodeApiClient>,
     /// Per-epoch active-validators cache. Submit handlers consult this to
     /// translate a validator-client-supplied `validator_index` into the
-    /// cluster's DV root public key. Mirrors Go's `eth2Cl.ActiveValidators`,
-    /// which is itself backed by the beacon-node validator cache.
+    /// cluster's DV root public key. Backed by the beacon-node validator cache.
     #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     validator_cache: Arc<dyn CachedValidatorsProvider>,
     /// In-memory DutyDB used to await consensus output (e.g. attestation
@@ -284,9 +282,7 @@ impl Component {
 
     /// Returns the cluster's active validators (`validator_index -> DV root
     /// public key`) from the registered [`CachedValidatorsProvider`],
-    /// bounded by [`UPSTREAM_REQUEST_TIMEOUT`]. Mirrors Go's
-    /// `c.eth2Cl.ActiveValidators(ctx)`, which is itself implemented via the
-    /// beacon-node validator cache.
+    /// bounded by [`UPSTREAM_REQUEST_TIMEOUT`].
     #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     async fn fetch_active_validators(&self) -> Result<ActiveValidators, ApiError> {
         tokio::time::timeout(
@@ -489,10 +485,9 @@ impl Component {
     }
 
     /// Looks up the DV root pubkey for a selection's `validator_index`.
-    /// Mirrors Go's `vals[selection.ValidatorIndex]` / `core.PubKeyFromBytes`
-    /// pair at the top of each selection loop. Returns both representations
-    /// the handler needs: the `BLSPubKey` for signature verification and the
-    /// `core::PubKey` for use as a `ParSignedDataSet` key.
+    /// Returns both representations the handler needs: the `BLSPubKey` for
+    /// signature verification and the `core::PubKey` for use as a
+    /// `ParSignedDataSet` key.
     fn resolve_validator(
         &self,
         validator_index: ValidatorIndex,
@@ -500,8 +495,7 @@ impl Component {
         endpoint: &'static str,
     ) -> Result<(BLSPubKey, PubKey), ApiError> {
         let root = active_validators.get(&validator_index).ok_or_else(|| {
-            // Mirrors Go's `errors.New("validator not found")` branch — the
-            // caller asked us to sign for a validator that is not part of
+            // The caller asked us to sign for a validator that is not part of
             // the cluster. 400 (not 502): the failure is request-level, not
             // gateway-level.
             ApiError::new(
@@ -514,9 +508,7 @@ impl Component {
 
     /// Verifies a selection's partial signature. Bundles slot → epoch
     /// resolution alongside the underlying `verify_partial_sig` call and
-    /// surfaces the failure as a 400 with a generic message (matching the
-    /// Go path where `verifyPartialSig` returns an error that propagates
-    /// out of the handler).
+    /// surfaces the failure as a 400 with a generic message.
     async fn verify_selection_partial_sig(
         &self,
         root_pubkey: &BLSPubKey,
@@ -958,13 +950,10 @@ impl Handler for Component {
         &self,
         selections: Vec<BeaconCommitteeSelection>,
     ) -> Result<EthResponse<Vec<BeaconCommitteeSelection>>, ApiError> {
-        // Port of `BeaconCommitteeSelections` in
-        // `core/validatorapi/validatorapi.go` (lines 798–864).
         let active_validators = self.fetch_active_validators().await?;
 
-        // psigs_by_slot mirrors Go's `psigsBySlot[slot]ParSignedDataSet` —
-        // keyed by `(slot, pubkey)` so the per-slot fanout below produces one
-        // `PrepareAggregator` duty per slot covering every selection from
+        // psigs_by_slot is keyed by slot so the per-slot fanout below produces
+        // one `PrepareAggregator` duty per slot covering every selection from
         // that slot.
         let mut psigs_by_slot: HashMap<Slot, ParSignedDataSet> = HashMap::new();
         for selection in &selections {
@@ -1094,8 +1083,6 @@ impl Handler for Component {
         &self,
         selections: Vec<SyncCommitteeSelection>,
     ) -> Result<EthResponse<Vec<SyncCommitteeSelection>>, ApiError> {
-        // Port of `SyncCommitteeSelections` in
-        // `core/validatorapi/validatorapi.go` (lines 1072–1138).
         let active_validators = self.fetch_active_validators().await?;
 
         let mut psigs_by_slot: HashMap<Slot, ParSignedDataSet> = HashMap::new();
@@ -1111,10 +1098,8 @@ impl Handler for Component {
 
             // Sync committee selection proofs sign over a
             // `SyncAggregatorSelectionData` root under
-            // `DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF`. The Rust selection
-            // wrapper's `message_root()` already computes this exactly the
-            // way Go's `SyncCommitteeSelection.MessageRoot()` does — see
-            // `crates/eth2api/src/v1.rs`.
+            // `DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF`. The selection wrapper's
+            // `message_root()` computes this — see `crates/eth2api/src/v1.rs`.
             self.verify_selection_partial_sig(
                 &root_pubkey,
                 DomainName::SyncCommitteeSelectionProof,
@@ -1401,10 +1386,9 @@ fn swap_sync_committee_pubshares(
 }
 
 /// Downcasts the aggregated signed data from the AggSigDB to a
-/// `BeaconCommitteeSelection`. Mirrors Go's
-/// `s.(core.BeaconCommitteeSelection)` type assertion. A mismatch indicates
-/// a wiring bug — the cluster stored the wrong duty type under the
-/// `PrepareAggregator` duty — so it surfaces as 500 rather than 4xx.
+/// `BeaconCommitteeSelection`. A mismatch indicates a wiring bug — the cluster
+/// stored the wrong duty type under the `PrepareAggregator` duty — so it
+/// surfaces as 500 rather than 4xx.
 fn downcast_beacon_committee_selection(
     signed: &dyn SignedData,
 ) -> Result<&signeddata::BeaconCommitteeSelection, ApiError> {
@@ -2541,8 +2525,7 @@ mod tests {
     // ====================================================================
 
     /// `fetch_active_validators` returns whatever the registered
-    /// `CachedValidatorsProvider` yields, untouched. Mirrors Go's
-    /// `c.eth2Cl.ActiveValidators(ctx)` return shape.
+    /// `CachedValidatorsProvider` yields, untouched.
     #[tokio::test]
     async fn fetch_active_validators_returns_cache_contents() {
         let cancel = CancellationToken::new();
@@ -2693,8 +2676,7 @@ mod tests {
     }
 
     /// Happy-path beacon committee selections: one selection in, one
-    /// aggregated selection out. Mirrors the per-validator-index flow in
-    /// Go's `BeaconCommitteeSelections` at `validatorapi.go:798-864`.
+    /// aggregated selection out.
     #[tokio::test]
     async fn beacon_committee_selections_happy_path() {
         const SLOT: Slot = 12;
@@ -2822,8 +2804,7 @@ mod tests {
     }
 
     /// A selection whose validator index is not part of the cluster's
-    /// active set fails the lookup short-circuit with `400 Bad Request`,
-    /// mirroring Go's `errors.New("validator not found")` branch.
+    /// active set fails the lookup short-circuit with `400 Bad Request`.
     #[tokio::test]
     async fn beacon_committee_selections_rejects_unknown_validator_index() {
         let (mut component, _mock) = make_selections_component_insecure(HashMap::new()).await;
@@ -3149,8 +3130,7 @@ mod tests {
 
     /// An empty selections array is a well-defined no-op: the handler runs
     /// the active-validators lookup, finds nothing to fan out, never queries
-    /// the AggSigDB, and returns an empty `data` array. Mirrors Go's
-    /// behaviour where `wrapResponse(nil)` returns `data: []`.
+    /// the AggSigDB, and returns an empty `data` array.
     #[tokio::test]
     async fn beacon_committee_selections_empty_input_returns_empty_data() {
         let (mut component, _mock) = make_selections_component_insecure(HashMap::new()).await;
