@@ -317,7 +317,7 @@ impl SchedulerActor {
     /// In case of a reorg of an already resolved epoch trim all duties.
     ///
     /// Duties will be resolved again in the nex slot.
-    pub async fn handle_chain_reorg(&mut self, epoch: u64) {
+    async fn handle_chain_reorg(&mut self, epoch: u64) {
         let resolved_epoch = self.resolved_epoch;
         if epoch < resolved_epoch {
             self.trim_duties(resolved_epoch);
