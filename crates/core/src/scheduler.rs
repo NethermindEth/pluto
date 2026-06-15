@@ -17,6 +17,9 @@ mod metrics;
 // now-32 slot duties.
 const TRIM_EPOCH_OFFSET: u64 = 3;
 
+// Default buffer size for the channels used in the [`SchedulerActor`]
+const CHANNEL_BUFFER_SIZE: usize = 100;
+
 /// Errors that can occur during the scheduling process.
 #[derive(Debug, thiserror::Error)]
 pub enum SchedulerError {
@@ -101,9 +104,9 @@ impl SchedulerBuilder {
     /// Construct a default [`SchedulerBuilder`] with no chain reorg handling.
     pub fn new() -> Self {
         SchedulerBuilder {
-            slot_broadcast: sync::broadcast::channel(100).0,
-            duty_broadcast: sync::broadcast::channel(100).0,
-            reorg_rx: sync::mpsc::channel(100).1, // A channel that never receives
+            slot_broadcast: sync::broadcast::channel(CHANNEL_BUFFER_SIZE).0,
+            duty_broadcast: sync::broadcast::channel(CHANNEL_BUFFER_SIZE).0,
+            reorg_rx: sync::mpsc::channel(CHANNEL_BUFFER_SIZE).1, // A channel that never receives
         }
     }
 
@@ -220,7 +223,7 @@ impl SchedulerBuilder {
             duties_by_epoch: HashMap::new(),
         };
 
-        let (msg_tx, msg_rx) = sync::mpsc::channel(100);
+        let (msg_tx, msg_rx) = sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
         let handle = SchedulerHandle { sender: msg_tx };
         tokio::spawn(actor.run(slot_rx, msg_rx, self.reorg_rx, ct));
 
@@ -617,7 +620,7 @@ async fn new_slot_ticker(
         }
     };
 
-    let (tx, rx) = sync::mpsc::channel(100);
+    let (tx, rx) = sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
     tokio::spawn(async move {
         let mut slot = current_slot();
 
@@ -1114,8 +1117,8 @@ mod tests {
         SchedulerActor {
             client: client.clone(),
             valcache: valcache::ValidatorCache::new(client, Vec::new()),
-            slot_broadcast: sync::broadcast::channel(100).0,
-            duty_broadcast: sync::broadcast::channel(100).0,
+            slot_broadcast: sync::broadcast::channel(CHANNEL_BUFFER_SIZE).0,
+            duty_broadcast: sync::broadcast::channel(CHANNEL_BUFFER_SIZE).0,
             resolved_epoch: u64::MAX,
             duties: HashMap::new(),
             duties_by_epoch: HashMap::new(),
@@ -1173,8 +1176,8 @@ mod tests {
 
     fn spawn_actor(mock: &BeaconMock) -> TestHarness {
         let client = mock.client().clone();
-        let slot_broadcast = sync::broadcast::channel(100).0;
-        let duty_broadcast = sync::broadcast::channel(100).0;
+        let slot_broadcast = sync::broadcast::channel(CHANNEL_BUFFER_SIZE).0;
+        let duty_broadcast = sync::broadcast::channel(CHANNEL_BUFFER_SIZE).0;
         let slot_sub = slot_broadcast.subscribe();
         let duty_sub = duty_broadcast.subscribe();
 
@@ -1188,9 +1191,9 @@ mod tests {
             duties_by_epoch: HashMap::new(),
         };
 
-        let (slot_tx, slot_rx) = sync::mpsc::channel(100);
-        let (msg_tx, msg_rx) = sync::mpsc::channel(100);
-        let (reorg_tx, reorg_rx) = sync::mpsc::channel(100);
+        let (slot_tx, slot_rx) = sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
+        let (msg_tx, msg_rx) = sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
+        let (reorg_tx, reorg_rx) = sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
         let ct = CancellationToken::new();
 
         tokio::spawn(actor.run(slot_rx, msg_rx, reorg_rx, ct.clone()));
