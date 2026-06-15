@@ -860,8 +860,8 @@ async fn fetch_attester_duties(
 
     let mut remaining = validators
         .iter()
-        .map(|v| (v.v_idx, true))
-        .collect::<std::collections::HashMap<_, _>>();
+        .map(|v| v.v_idx)
+        .collect::<std::collections::HashSet<_>>();
 
     let mut result = vec![];
     for att_duty in att_duties.into_iter() {
