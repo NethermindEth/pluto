@@ -24,6 +24,9 @@ pub enum BeaconNodeClientError {
 #[derive(Clone)]
 pub struct BeaconNodeClient {
     api: EthBeaconNodeApiClient,
+    // TODO: Find the concrete usages of the `validator_cache` and consider if we can make it
+    // immutable, that is, set it once at construction and not have to deal with the possibility of
+    // it being unset later.
     validator_cache: Arc<RwLock<Option<ValidatorCache>>>,
 }
 
@@ -58,7 +61,8 @@ impl BeaconNodeClient {
         Ok(complete)
     }
 
-    async fn validator_cache(&self) -> Result<ValidatorCache> {
+    /// Get the validator cache, or an error if it has not been set.
+    pub async fn validator_cache(&self) -> Result<ValidatorCache> {
         self.validator_cache
             .read()
             .await
