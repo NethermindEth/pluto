@@ -243,9 +243,9 @@ fn handle_swarm_event(
         }
         SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(relay::Event::ReservationReqDenied {
             src_peer_id,
-            ..
+            status,
         })) => {
-            warn!(peer = %peer_name(src_peer_id), "relay reservation denied");
+            warn!(peer = %peer_name(src_peer_id), ?status, "relay reservation denied");
             AddrUpdate::None
         }
         SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(relay::Event::ReservationTimedOut {
