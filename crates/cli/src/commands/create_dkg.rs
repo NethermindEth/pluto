@@ -11,7 +11,7 @@ use pluto_cluster::{
     definition::{Creator, Definition},
     operator::Operator,
 };
-use pluto_core::consensus::protocols::is_supported_protocol_name;
+use pluto_consensus::protocols::is_supported_protocol_name;
 use pluto_eth2util::{
     deposit::{eths_to_gweis, verify_deposit_amounts},
     enr::Record,

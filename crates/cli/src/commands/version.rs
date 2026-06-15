@@ -40,7 +40,7 @@ fn run_with_writer<W: Write>(args: VersionArgs, writer: &mut W) -> Result<()> {
     }
 
     writeln!(writer, "Consensus protocols:")?;
-    for protocol in pluto_core::consensus::protocols::protocols() {
+    for protocol in pluto_consensus::protocols::protocols() {
         writeln!(writer, "\t{}", protocol)?;
     }
 
@@ -132,7 +132,7 @@ mod tests {
         );
 
         // Check that the first protocol is listed
-        let protocols = pluto_core::consensus::protocols::protocols();
+        let protocols = pluto_consensus::protocols::protocols();
         assert!(!protocols.is_empty(), "Should have at least one protocol");
         let first_protocol = protocols[0].to_string();
         assert!(

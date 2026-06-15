@@ -10,7 +10,7 @@
 #
 # Use the external Obol relay instead of the internal one:
 #
-#   RELAY_URL=https://0.relay.obol.tech \
+#   RELAY_URL=https://pluto-relay-0.ovh.dev-nethermind.xyz \
 #     docker compose -f docker-compose.mixed-dkg-test.yml up
 #
 # Network topology — relay bridges isolated node networks; nodes share

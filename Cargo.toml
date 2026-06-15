@@ -5,6 +5,7 @@ members = [
     "crates/build-proto",
     "crates/cli",
     "crates/cluster",
+    "crates/consensus",
     "crates/core",
     "crates/crypto",
     "crates/dkg",
@@ -116,6 +117,7 @@ pluto-parsigex = { path = "crates/parsigex" }
 pluto-build-proto = { path = "crates/build-proto" }
 pluto-cli = { path = "crates/cli" }
 pluto-cluster = { path = "crates/cluster" }
+pluto-consensus = { path = "crates/consensus" }
 pluto-core = { path = "crates/core" }
 pluto-crypto = { path = "crates/crypto" }
 pluto-dkg = { path = "crates/dkg" }

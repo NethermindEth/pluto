@@ -8,11 +8,11 @@ pub mod qbft;
 /// Types for the Charon core.
 pub mod types;
 
+/// Unsigned duty data decoding.
+pub mod unsigneddata;
+
 /// Signed data wrappers and helpers.
 pub mod signeddata;
-
-/// Consensus-related functionality.
-pub mod consensus;
 
 /// Protobuf definitions.
 pub mod corepb;
@@ -22,6 +22,9 @@ pub mod version;
 
 /// Duty deadline tracking and notification.
 pub mod deadline;
+
+/// Clock abstraction over the current time.
+pub mod clock;
 
 /// parsigdb
 pub mod parsigdb;
@@ -36,7 +39,11 @@ pub mod validatorapi;
 /// SigAgg — threshold BLS signature aggregation.
 pub mod sigagg;
 
+/// Implementations of AggSigDB.
+pub mod aggsigdb;
+
 mod parsigex_codec;
+
 // SSZ codec operates on compile-time-constant byte sizes and offsets.
 // Arithmetic is bounded and casts from `usize` to `u32` are safe because all
 // sizes are well below `u32::MAX`.

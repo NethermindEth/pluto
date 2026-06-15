@@ -15,7 +15,7 @@
 #   PLUTO_BIN=./target/debug/pluto
 #   CHARON_BIN=charon
 #   WORK_DIR=/tmp/dkg-run
-#   RELAY_URL=https://0.relay.obol.tech
+#   RELAY_URL=https://pluto-relay-0.ovh.dev-nethermind.xyz
 
 set -euo pipefail
 

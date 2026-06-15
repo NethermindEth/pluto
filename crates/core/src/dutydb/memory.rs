@@ -2,7 +2,7 @@
 //!
 //! Equivalent to charon/core/dutydb/memory.go.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use pluto_eth2api::{
     spec::{altair, phase0},
@@ -19,6 +19,7 @@ use crate::{
         AttestationData, SyncContribution, VersionedAggregatedAttestation, VersionedProposal,
     },
     types::{Duty, DutyType, PubKey},
+    unsigneddata::{UnsignedDataSet, UnsignedDutyData},
 };
 
 /// Error type for DutyDB operations.
@@ -135,23 +136,6 @@ pub enum Error {
 /// Result type for DutyDB operations.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Unsigned duty data variant — matches Go's `core.UnsignedData` interface.
-#[derive(Debug, Clone)]
-pub enum UnsignedDutyData {
-    /// Unsigned proposal (DutyProposer).
-    Proposal(Box<VersionedProposal>),
-    /// Unsigned attestation data (DutyAttester).
-    Attestation(AttestationData),
-    /// Unsigned aggregated attestation (DutyAggregator).
-    AggAttestation(VersionedAggregatedAttestation),
-    /// Unsigned sync contribution (DutySyncContribution).
-    SyncContribution(SyncContribution),
-}
-
-/// Map from public key to unsigned duty data, equivalent to Go's
-/// `core.UnsignedDataSet`.
-pub type UnsignedDataSet = HashMap<PubKey, UnsignedDutyData>;
-
 /// Lookup key for attestation data: (slot, committee index).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct AttKey {
@@ -207,18 +191,27 @@ struct State {
     contrib_duties: HashMap<ContribKey, altair::SyncCommitteeContribution>,
     contrib_keys_by_slot: HashMap<u64, Vec<ContribKey>>,
 
-    /// Slots whose attester duty has been evicted by the deadliner. Lets
-    /// `await_attestation` return `AwaitDutyExpired` immediately when the
-    /// awaited slot is gone, rather than spinning on every `store()` until
-    /// the request-level timeout fires.
-    evicted_attestation_slots: HashSet<u64>,
-    /// Slots whose proposer duty has been evicted.
-    evicted_proposer_slots: HashSet<u64>,
-    /// Aggregation roots whose duty has been evicted.
-    evicted_aggregation_keys: HashSet<AggKey>,
-    /// Sync contribution keys whose duty has been evicted.
-    evicted_contrib_keys: HashSet<ContribKey>,
-
+    /// Highest slot whose attester duty has been evicted by the deadliner.
+    /// Because the deadliner expires duties in non-decreasing slot order and
+    /// `store()` refuses already-expired duties (`AddOutcome::AlreadyExpired`),
+    /// any awaited slot `<=` this mark that is not currently stored will never
+    /// be stored. Tracking only the high-water mark — rather than the set of
+    /// every evicted slot, which would grow without bound for the lifetime of
+    /// the node — lets `await_attestation` return `AwaitDutyExpired`
+    /// immediately for a gone duty while keeping the bookkeeping O(1) in
+    /// memory.
+    max_evicted_attestation_slot: Option<u64>,
+    /// Highest slot whose proposer duty has been evicted. See
+    /// [`max_evicted_attestation_slot`](Self::max_evicted_attestation_slot).
+    max_evicted_proposer_slot: Option<u64>,
+    /// Highest slot whose sync-contribution duty has been evicted. See
+    /// [`max_evicted_attestation_slot`](Self::max_evicted_attestation_slot).
+    max_evicted_contrib_slot: Option<u64>,
+    // NB: there is no eviction mark for aggregated attestations. They are
+    // awaited by root only (`await_agg_attestation` has no slot), so there is
+    // no slot to compare against a high-water mark; an evicted root relies on
+    // the caller's request timeout instead, matching Charon's Go dutydb which
+    // keeps no eviction record at all.
     deadliner_rx: tokio::sync::mpsc::Receiver<Duty>,
 }
 
@@ -254,10 +247,9 @@ impl MemDB {
                 aggregation_keys_by_slot: HashMap::new(),
                 contrib_duties: HashMap::new(),
                 contrib_keys_by_slot: HashMap::new(),
-                evicted_attestation_slots: HashSet::new(),
-                evicted_proposer_slots: HashSet::new(),
-                evicted_aggregation_keys: HashSet::new(),
-                evicted_contrib_keys: HashSet::new(),
+                max_evicted_attestation_slot: None,
+                max_evicted_proposer_slot: None,
+                max_evicted_contrib_slot: None,
                 deadliner_rx,
             }),
             attestation_notify: Notify::new(),
@@ -373,7 +365,7 @@ impl MemDB {
         self.await_data(&self.proposer_notify, |s| {
             if let Some(v) = s.proposer_duties.get(&slot) {
                 Lookup::Found(v.clone())
-            } else if s.evicted_proposer_slots.contains(&slot) {
+            } else if s.max_evicted_proposer_slot.is_some_and(|hw| slot <= hw) {
                 Lookup::Evicted
             } else {
                 Lookup::Pending
@@ -396,7 +388,10 @@ impl MemDB {
         self.await_data(&self.attestation_notify, |s| {
             if let Some(v) = s.attestation_duties.get(&key) {
                 Lookup::Found(v.clone())
-            } else if s.evicted_attestation_slots.contains(&key.slot) {
+            } else if s
+                .max_evicted_attestation_slot
+                .is_some_and(|hw| key.slot <= hw)
+            {
                 Lookup::Evicted
             } else {
                 Lookup::Pending
@@ -415,10 +410,11 @@ impl MemDB {
             root: attestation_root,
         };
         self.await_data(&self.aggregation_notify, |s| {
+            // Awaited by root only, so there is no slot to test against an
+            // eviction high-water mark: an evicted root relies on the caller's
+            // request timeout to terminate (matching Charon's Go dutydb).
             if let Some(v) = s.aggregation_duties.get(&key) {
                 Lookup::Found(v.0.clone())
-            } else if s.evicted_aggregation_keys.contains(&key) {
-                Lookup::Evicted
             } else {
                 Lookup::Pending
             }
@@ -442,7 +438,7 @@ impl MemDB {
         self.await_data(&self.contrib_notify, |s| {
             if let Some(v) = s.contrib_duties.get(&key) {
                 Lookup::Found(v.clone())
-            } else if s.evicted_contrib_keys.contains(&key) {
+            } else if s.max_evicted_contrib_slot.is_some_and(|hw| slot <= hw) {
                 Lookup::Evicted
             } else {
                 Lookup::Pending
@@ -657,13 +653,20 @@ impl State {
         Ok(())
     }
 
+    /// Raises an eviction high-water mark to `slot` if `slot` is newer (or the
+    /// mark is unset). The deadliner expires duties in non-decreasing slot
+    /// order, so in practice this only ever moves the mark forward.
+    fn bump_high_water(mark: &mut Option<u64>, slot: u64) {
+        *mark = Some(mark.map_or(slot, |current| current.max(slot)));
+    }
+
     fn delete_duty(&mut self, duty: Duty) -> Result<()> {
         let slot = duty.slot.inner();
         info!(slot, duty_type = %duty.duty_type, "dutydb: deleting expired duty");
         match duty.duty_type {
             DutyType::Proposer => {
                 self.proposer_duties.remove(&slot);
-                self.evicted_proposer_slots.insert(slot);
+                Self::bump_high_water(&mut self.max_evicted_proposer_slot, slot);
             }
             DutyType::BuilderProposer => return Err(Error::DeprecatedDutyBuilderProposer),
             DutyType::Attester => {
@@ -676,23 +679,24 @@ impl State {
                         });
                     }
                 }
-                self.evicted_attestation_slots.insert(slot);
+                Self::bump_high_water(&mut self.max_evicted_attestation_slot, slot);
             }
             DutyType::Aggregator => {
+                // No eviction mark: aggregated attestations are awaited by root
+                // only, so there is nothing for a slot high-water mark to gate.
                 if let Some(keys) = self.aggregation_keys_by_slot.remove(&slot) {
-                    for key in &keys {
-                        self.aggregation_duties.remove(key);
+                    for key in keys {
+                        self.aggregation_duties.remove(&key);
                     }
-                    self.evicted_aggregation_keys.extend(keys);
                 }
             }
             DutyType::SyncContribution => {
                 if let Some(keys) = self.contrib_keys_by_slot.remove(&slot) {
-                    for key in &keys {
-                        self.contrib_duties.remove(key);
+                    for key in keys {
+                        self.contrib_duties.remove(&key);
                     }
-                    self.evicted_contrib_keys.extend(keys);
                 }
+                Self::bump_high_water(&mut self.max_evicted_contrib_slot, slot);
             }
             _ => return Err(Error::UnknownDutyType),
         }
@@ -802,6 +806,8 @@ mod tests {
         };
         VersionedProposal {
             block: ProposalBlock::Phase0(block),
+            consensus_block_value: alloy::primitives::U256::ZERO,
+            execution_payload_value: alloy::primitives::U256::ZERO,
         }
     }
 
@@ -1254,6 +1260,67 @@ mod tests {
 
         // Should no longer be findable.
         assert!(db.pub_key_by_attestation(SLOT, 0, 0).await.is_err());
+    }
+
+    /// After a slot is evicted, `await_attestation` must return
+    /// `AwaitDutyExpired` immediately (not park until the request timeout) for
+    /// that slot AND for any older slot — the eviction state is a single
+    /// high-water mark, so it stays O(1) in memory rather than accumulating one
+    /// entry per evicted slot for the lifetime of the node.
+    #[tokio::test]
+    async fn await_attestation_expired_after_eviction_high_water() {
+        let deadliner = far_future_handle();
+        let (trim_tx, trim_rx) = channel::<Duty>(64);
+        let db = make_db_with_deadliner(deadliner, trim_rx);
+
+        const SLOT: u64 = 123;
+
+        let mut set = UnsignedDataSet::new();
+        set.insert(
+            random_core_pub_key(),
+            UnsignedDutyData::Attestation(att_data(SLOT, 0, 0)),
+        );
+        db.store(Duty::new(SlotNumber::new(SLOT), DutyType::Attester), set)
+            .await
+            .unwrap();
+
+        // Evict SLOT, then trigger expiry processing with an unrelated store.
+        trim_tx
+            .send(Duty::new(SlotNumber::new(SLOT), DutyType::Attester))
+            .await
+            .expect("trim_tx should be open");
+        let mut set2 = UnsignedDataSet::new();
+        set2.insert(
+            random_core_pub_key(),
+            UnsignedDutyData::Proposal(Box::new(phase0_proposal(SLOT.saturating_add(1), 0))),
+        );
+        db.store(
+            Duty::new(SlotNumber::new(SLOT.saturating_add(1)), DutyType::Proposer),
+            set2,
+        )
+        .await
+        .unwrap();
+
+        // The evicted slot resolves to AwaitDutyExpired without parking.
+        let timeout = std::time::Duration::from_secs(5);
+        let evicted = tokio::time::timeout(timeout, db.await_attestation(SLOT, 0))
+            .await
+            .expect("await must not park for an evicted slot");
+        assert!(
+            matches!(evicted, Err(Error::AwaitDutyExpired)),
+            "evicted slot: expected AwaitDutyExpired, got {evicted:?}"
+        );
+
+        // An older, never-stored slot is also below the high-water mark: its
+        // deadline has necessarily passed too, so it must fail fast rather than
+        // park — and we keep no per-slot record to answer this.
+        let older = tokio::time::timeout(timeout, db.await_attestation(SLOT.saturating_sub(1), 0))
+            .await
+            .expect("await must not park for a slot below the eviction high-water");
+        assert!(
+            matches!(older, Err(Error::AwaitDutyExpired)),
+            "older slot: expected AwaitDutyExpired, got {older:?}"
+        );
     }
 
     #[tokio::test]
