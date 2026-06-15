@@ -597,7 +597,7 @@ async fn new_slot_ticker(
 ) -> Result<sync::mpsc::Receiver<types::Slot>> {
     let genesis_time = client.fetch_genesis_time().await?;
     let (slot_duration, slots_per_epoch) = client.fetch_slots_config().await?;
-    let slot_duration = chrono::Duration::from_std(slot_duration).expect("withing range");
+    let slot_duration = chrono::Duration::from_std(slot_duration).expect("within range");
 
     let current_slot = move || {
         let chain_age = chrono::Utc::now().signed_duration_since(genesis_time);
