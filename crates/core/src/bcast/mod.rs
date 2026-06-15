@@ -190,9 +190,14 @@ impl DelayCalculator {
                     context: "attester delay",
                 })?
         } else if matches!(duty_type, DutyType::Aggregator | DutyType::SyncContribution) {
-            let third = div_duration(self.slot_duration, 3, "aggregation delay")?;
+            // Multiply before dividing to match Go's `slotDuration * 2 / 3` rounding.
+            let two_thirds = div_duration(
+                mul_duration(self.slot_duration, 2, "aggregation delay")?,
+                3,
+                "aggregation delay",
+            )?;
             slot_start
-                .checked_add_signed(mul_duration(third, 2, "aggregation delay")?)
+                .checked_add_signed(two_thirds)
                 .ok_or(Error::ArithmeticOverflow {
                     context: "aggregation delay",
                 })?

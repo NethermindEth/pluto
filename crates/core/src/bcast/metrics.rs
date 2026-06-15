@@ -41,7 +41,7 @@ pub(crate) fn instrument_duty(duty: &Duty, delay: Option<Duration>) {
     let duty_type = duty.duty_type.to_string();
     BCAST_METRICS.broadcast_total[&duty_type].inc();
 
-   if let Some(delay) = delay {
+    if let Some(delay) = delay {
         // Delays never approach f64's 2^53 ms exact range, so the cast is exact.
         #[allow(clippy::cast_precision_loss)]
         let seconds = delay.num_milliseconds() as f64 / 1_000.0;
