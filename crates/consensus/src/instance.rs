@@ -32,7 +32,7 @@ use std::{
 };
 
 use prost_types::Any;
-use tokio::{sync::mpsc, time::Instant};
+use tokio::sync::mpsc;
 
 /// Receive-buffer channel capacity.
 pub const RECV_BUFFER_SIZE: usize = 100;
@@ -72,8 +72,6 @@ pub type RunnerResult = std::result::Result<(), RunnerError>;
 /// Sender fields are crate-visible so component code can enqueue directly.
 /// Receiver fields stay private because each receiver must move exactly once to
 /// the task that owns that stream.
-// TODO: Remove once the instance runner wires these senders.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct InstanceIo<T> {
     // Lifecycle flags are duplicate/start guards only. They do not publish or
@@ -107,10 +105,6 @@ pub struct InstanceIo<T> {
     /// Publishes the runner completion result.
     pub(crate) err_tx: mpsc::Sender<RunnerResult>,
     err_rx: ReceiverSlot<RunnerResult>,
-
-    /// Publishes the decision timestamp.
-    pub(crate) decided_at_tx: mpsc::Sender<Instant>,
-    decided_at_rx: ReceiverSlot<Instant>,
 }
 
 impl<T> InstanceIo<T> {
@@ -121,7 +115,6 @@ impl<T> InstanceIo<T> {
         let (value_tx, value_rx) = mpsc::channel(1);
         let (verify_tx, verify_rx) = mpsc::channel(1);
         let (err_tx, err_rx) = mpsc::channel(1);
-        let (decided_at_tx, decided_at_rx) = mpsc::channel(1);
 
         Self {
             participated: AtomicBool::new(false),
@@ -137,8 +130,6 @@ impl<T> InstanceIo<T> {
             verify_rx: Mutex::new(Some(verify_rx)),
             err_tx,
             err_rx: Mutex::new(Some(err_rx)),
-            decided_at_tx,
-            decided_at_rx: Mutex::new(Some(decided_at_rx)),
         }
     }
 
@@ -171,6 +162,11 @@ impl<T> InstanceIo<T> {
             .is_ok()
     }
 
+    /// Returns true once this instance's runner has been started.
+    pub fn has_started(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
+    }
+
     /// Transfers receive-buffer ownership to the runner.
     pub fn take_recv_rx(&self) -> Result<mpsc::Receiver<T>> {
         take_receiver(&self.recv_rx, "recv")
@@ -195,19 +191,16 @@ impl<T> InstanceIo<T> {
     pub fn take_err_rx(&self) -> Result<mpsc::Receiver<RunnerResult>> {
         take_receiver(&self.err_rx, "err")
     }
-
-    /// Transfers decision timestamp ownership to the waiting task.
-    pub fn take_decided_at_rx(&self) -> Result<mpsc::Receiver<Instant>> {
-        take_receiver(&self.decided_at_rx, "decided_at")
-    }
 }
 
 impl<T> Default for InstanceIo<T> {
+    /// Creates a fresh instance I/O state.
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// Takes exclusive ownership of a single-consumer receiver slot.
 fn take_receiver<T>(
     receiver: &Mutex<Option<mpsc::Receiver<T>>>,
     channel: &'static str,
@@ -297,13 +290,6 @@ mod tests {
             io.err_tx.try_send(Err(Box::new(TestError))),
             Err(TrySendError::Full(Err(_)))
         ));
-
-        let decided_at = Instant::now();
-        assert!(io.decided_at_tx.try_send(decided_at).is_ok());
-        assert!(matches!(
-            io.decided_at_tx.try_send(decided_at),
-            Err(TrySendError::Full(_))
-        ));
     }
 
     #[test]
@@ -333,9 +319,6 @@ mod tests {
 
         assert!(io.take_err_rx().is_ok());
         assert_receiver_already_taken(io.take_err_rx(), "err");
-
-        assert!(io.take_decided_at_rx().is_ok());
-        assert_receiver_already_taken(io.take_decided_at_rx(), "decided_at");
     }
 
     #[test]

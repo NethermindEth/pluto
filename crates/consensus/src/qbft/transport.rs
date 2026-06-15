@@ -1,8 +1,5 @@
 //! QBFT consensus transport adapter.
 
-// TODO: Remove once the consensus runner wires this transport.
-#![allow(dead_code)]
-
 use std::sync::{self, Mutex, PoisonError};
 
 use futures::future::BoxFuture;
@@ -11,7 +8,7 @@ use prost_types::Any;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::{
+use pluto_core::{
     corepb::v1::{consensus as pbconsensus, core as pbcore},
     qbft::{self, SomeMsg},
     types::{Duty, DutyTypeError},
@@ -68,6 +65,10 @@ pub(crate) enum Error {
     /// Inner receive buffer was closed.
     #[error("receive buffer closed")]
     ReceiveBufferClosed,
+
+    /// External broadcaster failed.
+    #[error("broadcast: {0}")]
+    Broadcast(String),
 
     /// Consensus message wrapping/signing failed.
     #[error("{0}")]
@@ -240,7 +241,12 @@ impl Transport {
             tokio::select! {
                 () = ct.cancelled() => return Ok(()),
                 result = self.recv_tx.send(inner_msg) => {
-                    result.map_err(|_| Error::ReceiveBufferClosed)?;
+                    if result.is_err() {
+                        if ct.is_cancelled() {
+                            return Ok(());
+                        }
+                        return Err(Error::ReceiveBufferClosed);
+                    }
                     self.sniffer.add(consensus_msg);
                 }
             }
@@ -267,6 +273,10 @@ struct CreateMsgRequest<'a> {
 }
 
 /// Creates a signed consensus QBFT message wrapper.
+///
+/// This is the final boundary before the generic core message becomes a wire
+/// message: it maps the domain duty, signs the raw protobuf, and preserves raw
+/// justification protobufs for transport.
 fn create_msg(request: CreateMsgRequest<'_>) -> Result<msg::Msg> {
     let CreateMsgRequest {
         type_,
@@ -312,8 +322,8 @@ fn create_msg(request: CreateMsgRequest<'_>) -> Result<msg::Msg> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        consensus::qbft::{msg::hash_proto, sniffer::Sniffer},
+    use crate::qbft::{msg::hash_proto, sniffer::Sniffer};
+    use pluto_core::{
         corepb::v1::consensus::QbftMsg,
         qbft::SomeMsg,
         types::{DutyType, SlotNumber},
@@ -404,19 +414,21 @@ mod tests {
         let key = secret_key();
         let duty = duty();
         let nested = QbftMsg {
-            r#type: 3,
+            r#type: i64::from(qbft::MSG_ROUND_CHANGE),
             round: 9,
             ..Default::default()
         };
+        let value_hash = value_hash(1);
         let raw_justification = QbftMsg {
-            r#type: 2,
+            r#type: i64::from(qbft::MSG_PREPARE),
             round: 4,
+            value_hash: value_hash.to_vec().into(),
             ..Default::default()
         };
         let justification = msg::Msg::new(
             raw_justification.clone(),
             vec![nested],
-            sync::Arc::default(),
+            sync::Arc::new(value_map(vec![(value_hash, any_timestamp(1))])),
         )
         .unwrap();
         let justification: qbft::Msg<ConsensusQbftTypes> = sync::Arc::new(justification);
@@ -426,6 +438,7 @@ mod tests {
         request.peer_idx = 2;
         request.round = 5;
         request.justification = &justifications;
+        request.values = value_map(vec![(value_hash, any_timestamp(1))]);
 
         let msg = create_msg(request).unwrap();
 

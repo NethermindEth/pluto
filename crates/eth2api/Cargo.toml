@@ -13,6 +13,7 @@ ignored = ["bon", "http", "oas3-gen-support", "regex", "reqwest", "validator"]
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 bon.workspace = true
 http.workspace = true
 oas3-gen-support.workspace = true

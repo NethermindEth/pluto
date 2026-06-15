@@ -23,7 +23,7 @@ use pluto_cluster::{
     operator::Operator,
     registration::{BuilderRegistration, Registration},
 };
-use pluto_core::consensus::protocols;
+use pluto_consensus::protocols;
 use pluto_crypto::{
     blst_impl::BlstImpl,
     tbls::Tbls,
