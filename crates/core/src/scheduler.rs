@@ -425,12 +425,7 @@ impl SchedulerActor {
         // During this time the Scheduler actor is blocked.
         // This is the same behavior as in Charon, but it might not be desirable.
 
-        let valcache = self
-            .client
-            .validator_cache()
-            .await
-            // TODO: [`pluto_eth2api::valcache::ValidatorCache`] should always be available.
-            .expect("validator cache is available");
+        let valcache = self.client.validator_cache().await;
         let vals = resolve_active_validators(slot.epoch(), &valcache).await?;
 
         SCHEDULER_METRICS.validators_active.set(vals.len() as u64);
