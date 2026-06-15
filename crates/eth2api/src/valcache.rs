@@ -4,6 +4,7 @@ use crate::{
     PostStateValidatorsRequestPath, PostStateValidatorsResponse, ValidatorRequestBody,
     spec::phase0::{BLSPubKey as PubKey, ValidatorIndex},
 };
+use async_trait::async_trait;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 
@@ -42,6 +43,13 @@ impl std::ops::Deref for CompleteValidators {
 }
 
 impl ActiveValidators {
+    /// Builds an [`ActiveValidators`] from a `validator_index -> pubkey` map.
+    /// Lets consumers outside this crate (e.g. test doubles of
+    /// [`CachedValidatorsProvider`]) construct populated instances.
+    pub fn new(validators: HashMap<ValidatorIndex, PubKey>) -> Self {
+        Self(validators)
+    }
+
     /// An [`Iterator`] of active validator indices.
     pub fn indices(&self) -> impl Iterator<Item = ValidatorIndex> + '_ {
         self.0.keys().copied()
@@ -55,12 +63,29 @@ impl ActiveValidators {
 
 /// A provider of cached validator information for the current epoch,
 /// including both active validators and complete validator data.
-pub trait CachedValidatorsProvider {
+///
+/// Async so implementations may populate the underlying cache on demand —
+/// callers must not assume the call is non-blocking. Consumed via
+/// `Arc<dyn CachedValidatorsProvider>` (e.g. by the validator API), so the
+/// trait is object-safe and `Send + Sync`.
+#[async_trait]
+pub trait CachedValidatorsProvider: Send + Sync {
     /// Get the cached active validators.
-    fn active_validators(&self) -> Result<ActiveValidators>;
+    async fn active_validators(&self) -> Result<ActiveValidators>;
 
     /// Get all the cached validators.
-    fn complete_validators(&self) -> Result<CompleteValidators>;
+    async fn complete_validators(&self) -> Result<CompleteValidators>;
+}
+
+#[async_trait]
+impl CachedValidatorsProvider for ValidatorCache {
+    async fn active_validators(&self) -> Result<ActiveValidators> {
+        Ok(self.get_by_head().await?.0)
+    }
+
+    async fn complete_validators(&self) -> Result<CompleteValidators> {
+        Ok(self.get_by_head().await?.1)
+    }
 }
 
 /// A cache for active validators.
