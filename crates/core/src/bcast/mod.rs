@@ -190,7 +190,8 @@ impl DelayCalculator {
                     context: "attester delay",
                 })?
         } else if matches!(duty_type, DutyType::Aggregator | DutyType::SyncContribution) {
-            // Multiply before dividing to match Go's `slotDuration * 2 / 3` rounding.
+            // Two-thirds of the slot; multiply before dividing to avoid the extra
+            // rounding loss of (slot_duration / 3) * 2.
             let two_thirds = div_duration(
                 mul_duration(self.slot_duration, 2, "aggregation delay")?,
                 3,
@@ -367,6 +368,11 @@ impl Broadcaster {
     }
 
     async fn broadcast_exits(&self, duty: &Duty, set: &SignedDataSet) -> Result<()> {
+        // Two deliberate choices:
+        // 1. set_to_exits validates every item up front, so a wrong-typed set fails
+        //    before ANY exit is submitted (no partial submission on a bad set).
+        // 2. Submit every exit and return an error if ANY failed, so a partial failure
+        //    is always surfaced rather than masked by a later success.
         let mut last_error = None;
         for (pubkey, exit) in set_to_exits(set)? {
             match self.client.api().submit_voluntary_exit(exit).await {
