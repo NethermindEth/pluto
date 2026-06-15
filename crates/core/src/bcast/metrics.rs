@@ -37,14 +37,16 @@ pub struct BcastMetrics {
 #[vise::register]
 pub static BCAST_METRICS: Global<BcastMetrics> = Global::new();
 
-pub(crate) fn instrument_duty(duty: &Duty, delay: Duration) {
+pub(crate) fn instrument_duty(duty: &Duty, delay: Option<Duration>) {
     let duty_type = duty.duty_type.to_string();
     BCAST_METRICS.broadcast_total[&duty_type].inc();
 
-    let Some(delay) = delay.to_std().ok() else {
-        return;
-    };
-    BCAST_METRICS.broadcast_delay_seconds[&duty_type].observe(delay.as_secs_f64());
+   if let Some(delay) = delay {
+        // Delays never approach f64's 2^53 ms exact range, so the cast is exact.
+        #[allow(clippy::cast_precision_loss)]
+        let seconds = delay.num_milliseconds() as f64 / 1_000.0;
+        BCAST_METRICS.broadcast_delay_seconds[&duty_type].observe(seconds);
+    }
 }
 
 pub(crate) fn instrument_recast_registration(pubkey: PubKey) {

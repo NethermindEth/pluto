@@ -268,12 +268,16 @@ impl Broadcaster {
             }
         }
 
-        if let Ok(delay) = self
+        // Always count a successful broadcast; record the delay only when it is
+        // computable.
+        let delay = self
             .delay_calculator
             .delay(duty.slot.inner(), &duty.duty_type)
-        {
-            instrument_duty(&duty, delay);
-        }
+            .inspect_err(|error| {
+                tracing::warn!(%error, %duty, "Failed to compute broadcast delay");
+            })
+            .ok();
+        instrument_duty(&duty, delay);
 
         Ok(())
     }
