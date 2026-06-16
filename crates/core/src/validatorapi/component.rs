@@ -546,7 +546,7 @@ impl Component {
     async fn submit_one_registration(
         &self,
         registration: SignedValidatorRegistration,
-        slot_duration: std::time::Duration,
+        slot_duration: Duration,
         genesis_time: chrono::DateTime<chrono::Utc>,
         builder_domain: Domain,
     ) -> Result<(), ApiError> {
