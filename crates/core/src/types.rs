@@ -8,16 +8,11 @@ use dyn_eq::DynEq;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug as StdDebug;
 
-use pluto_eth2api::spec::phase0;
-
 use crate::{
     ParSigExCodecError,
     corepb::v1::core as pbcore,
     parsigex_codec::{deserialize_signed_data, serialize_signed_data},
-    signeddata::{
-        AttestationData, AttesterDuty, SignedDataError, SyncContribution,
-        VersionedAggregatedAttestation, VersionedProposal,
-    },
+    signeddata::SignedDataError,
 };
 
 /// The type of duty.
@@ -440,6 +435,14 @@ pub struct AttesterDutyDefinition {
     pub v_idx: u64,
     /// The slot at which the validator must attest.
     pub slot: SlotNumber,
+    /// Index of the committee the validator belongs to.
+    pub committee_index: u64,
+    /// Number of validators in the committee.
+    pub committee_length: u64,
+    /// Number of committees at this slot.
+    pub committees_at_slot: u64,
+    /// Index of the validator within its committee.
+    pub validator_committee_index: u64,
 }
 
 impl TryInto<AttesterDutyDefinition>
@@ -457,11 +460,30 @@ impl TryInto<AttesterDutyDefinition>
             SlotNumber::from(self.slot.parse::<u64>().map_err(|_| {
                 pluto_eth2api::EthBeaconNodeApiClientError::ParseError("slot".into())
             })?);
+        let committee_index = self.committee_index.parse::<u64>().map_err(|_| {
+            pluto_eth2api::EthBeaconNodeApiClientError::ParseError("committee_index".into())
+        })?;
+        let committee_length = self.committee_length.parse::<u64>().map_err(|_| {
+            pluto_eth2api::EthBeaconNodeApiClientError::ParseError("committee_length".into())
+        })?;
+        let committees_at_slot = self.committees_at_slot.parse::<u64>().map_err(|_| {
+            pluto_eth2api::EthBeaconNodeApiClientError::ParseError("committees_at_slot".into())
+        })?;
+        let validator_committee_index =
+            self.validator_committee_index.parse::<u64>().map_err(|_| {
+                pluto_eth2api::EthBeaconNodeApiClientError::ParseError(
+                    "validator_committee_index".into(),
+                )
+            })?;
 
         Ok(AttesterDutyDefinition {
             pubkey,
             v_idx,
             slot,
+            committee_index,
+            committee_length,
+            committees_at_slot,
+            validator_committee_index,
         })
     }
 }
@@ -556,6 +578,33 @@ pub enum DutyDefinition {
     SyncCommittee(SyncCommitteeDutyDefinition),
 }
 
+impl DutyDefinition {
+    /// Returns the attester definition, or `None` if this is a different duty.
+    pub fn as_attester(&self) -> Option<&AttesterDutyDefinition> {
+        match self {
+            Self::Attester(d) => Some(d),
+            _ => None,
+        }
+    }
+
+    /// Returns the proposer definition, or `None` if this is a different duty.
+    pub fn as_proposer(&self) -> Option<&ProposerDutyDefinition> {
+        match self {
+            Self::Proposer(d) => Some(d),
+            _ => None,
+        }
+    }
+
+    /// Returns the sync committee definition, or `None` if this is a different
+    /// duty.
+    pub fn as_sync_committee(&self) -> Option<&SyncCommitteeDutyDefinition> {
+        match self {
+            Self::SyncCommittee(d) => Some(d),
+            _ => None,
+        }
+    }
+}
+
 /// A set of duty definitions for all validators in a given epoch, indexed by
 /// public key.
 pub type DutyDefinitionSet = HashMap<PubKey, DutyDefinition>;
@@ -573,6 +622,8 @@ where
         Self(unsigned_data)
     }
 }
+
+// TODO: Delete `UnsignedDataSet`, use crates/core/src/unsigneddata.rs
 /// Unsigned data set
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnsignedDataSet<T>(HashMap<DutyType, UnsignedData<T>>)

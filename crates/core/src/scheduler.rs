@@ -1161,7 +1161,10 @@ mod tests {
             pubkey: pubkey.to_string(),
             validator_index: v_idx.to_string(),
             slot: slot.to_string(),
-            ..Default::default()
+            committee_index: "0".to_string(),
+            committee_length: "0".to_string(),
+            committees_at_slot: "0".to_string(),
+            validator_committee_index: "0".to_string(),
         };
         let def: types::AttesterDutyDefinition = datum.try_into().expect("valid attester datum");
         types::DutyDefinition::Attester(def)

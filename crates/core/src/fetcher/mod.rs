@@ -23,13 +23,12 @@ use tree_hash::TreeHash;
 
 use crate::{
     signeddata::{
-        AttestationData, BeaconCommitteeSelection, ProposalBlock, SignedSyncMessage,
+        AttestationData, AttesterDuty, BeaconCommitteeSelection, ProposalBlock, SignedSyncMessage,
         SyncCommitteeSelection, SyncContribution, VersionedAggregatedAttestation,
         VersionedProposal,
     },
-    types::{
-        Duty, DutyDefinitionSet, DutyType, PubKey, SignedData, UnsignedDataSet, UnsignedDutyData,
-    },
+    types::{AttesterDutyDefinition, Duty, DutyDefinitionSet, DutyType, PubKey, SignedData},
+    unsigneddata::{UnsignedDataSet, UnsignedDutyData},
 };
 
 /// Boxed error returned by injected callbacks (subscribers, AggSigDB, DutyDB).
@@ -136,6 +135,10 @@ pub enum FetcherError {
     /// A versioned proposal response was missing the `block` field.
     #[error("proposal response missing block field")]
     MissingBlockField,
+
+    /// A versioned proposal response carried an unparsable block value.
+    #[error("invalid proposal block value: {0}")]
+    InvalidBlockValue(&'static str),
 
     /// A signed data value could not produce a signature.
     #[error("signature: {0}")]
@@ -270,7 +273,7 @@ impl Fetcher {
                 .as_attester()
                 .ok_or(FetcherError::InvalidAttesterDefinition)?;
 
-            let mut comm_idx = att_def.duty().committee_index;
+            let mut comm_idx = att_def.committee_index;
 
             // Attestation data for Electra is not bound by committee index;
             // committee index is still persisted in the request but should be
@@ -292,7 +295,7 @@ impl Fetcher {
                 *pubkey,
                 UnsignedDutyData::Attestation(AttestationData {
                     data: eth2_att_data,
-                    duty: att_def.duty().clone(),
+                    duty: attester_duty(att_def),
                 }),
             );
         }
@@ -328,7 +331,7 @@ impl Fetcher {
 
             let is_aggregator = eth2exp::is_att_aggregator(
                 &self.eth2_cl,
-                att_def.duty().committee_length,
+                att_def.committee_length,
                 selection.0.selection_proof,
             )
             .await?;
@@ -339,7 +342,7 @@ impl Fetcher {
 
             tracker.add_resolved(pubkey.to_string());
 
-            let comm_idx = att_def.duty().committee_index;
+            let comm_idx = att_def.committee_index;
 
             if let Some(agg_att) = agg_att_by_comm_idx.get(&comm_idx) {
                 resp.insert(
@@ -604,6 +607,19 @@ fn downcast<T: 'static>(data: &dyn SignedData) -> Option<&T> {
     (data as &dyn Any).downcast_ref::<T>()
 }
 
+/// Builds the eth2 [`AttesterDuty`] carried by an attestation from a scheduler
+/// [`AttesterDutyDefinition`].
+fn attester_duty(def: &AttesterDutyDefinition) -> AttesterDuty {
+    AttesterDuty {
+        slot: def.slot.inner(),
+        validator_index: def.v_idx,
+        committee_index: def.committee_index,
+        committee_length: def.committee_length,
+        committees_at_slot: def.committees_at_slot,
+        validator_committee_index: def.validator_committee_index,
+    }
+}
+
 /// Formats bytes as a `0x`-prefixed lowercase hex string.
 fn hex_0x(bytes: &[u8]) -> String {
     format!("0x{}", hex::encode(bytes))
@@ -655,7 +671,20 @@ fn versioned_proposal_from_response(
         (ConsensusVersion::Fulu, true) => ProposalBlock::FuluBlinded(json_from(&data)?),
     };
 
-    Ok(VersionedProposal { block })
+    let consensus_block_value = resp
+        .consensus_block_value
+        .parse()
+        .map_err(|_| FetcherError::InvalidBlockValue("consensus_block_value"))?;
+    let execution_payload_value = resp
+        .execution_payload_value
+        .parse()
+        .map_err(|_| FetcherError::InvalidBlockValue("execution_payload_value"))?;
+
+    Ok(VersionedProposal {
+        block,
+        consensus_block_value,
+        execution_payload_value,
+    })
 }
 
 /// Maps a beacon node `ConsensusVersion` onto a `versioned::DataVersion`.
@@ -825,12 +854,8 @@ mod tests {
     use pluto_testutil::BeaconMock;
 
     use super::*;
-    use crate::{
-        signeddata::AttesterDuty,
-        types::{
-            AttesterDefinition, DutyDefinition, ProposerDefinition, ProposerDuty, SlotNumber,
-            SyncCommitteeDefinition, SyncCommitteeDuty,
-        },
+    use crate::types::{
+        DutyDefinition, ProposerDutyDefinition, SlotNumber, SyncCommitteeDutyDefinition,
     };
 
     /// 48-byte BLS public key length used to build distinct test pubkeys.
@@ -941,6 +966,8 @@ mod tests {
                 kzg_proofs: vec![],
                 blobs: vec![],
             },
+            consensus_block_value: alloy::primitives::U256::ZERO,
+            execution_payload_value: alloy::primitives::U256::ZERO,
         };
 
         // A different address is reported as a mismatch; the actual address
@@ -972,19 +999,19 @@ mod tests {
         let mut def_set = DutyDefinitionSet::new();
         def_set.insert(
             pk_a,
-            DutyDefinition::Proposer(ProposerDefinition::new(ProposerDuty {
-                pubkey: [0u8; 48],
-                slot: SLOT,
-                validator_index: 2,
-            })),
+            DutyDefinition::Proposer(ProposerDutyDefinition {
+                pubkey: pk_a,
+                v_idx: 2,
+                slot: SlotNumber::new(SLOT),
+            }),
         );
         def_set.insert(
             pk_b,
-            DutyDefinition::Proposer(ProposerDefinition::new(ProposerDuty {
-                pubkey: [0u8; 48],
-                slot: SLOT,
-                validator_index: 3,
-            })),
+            DutyDefinition::Proposer(ProposerDutyDefinition {
+                pubkey: pk_b,
+                v_idx: 3,
+                slot: SlotNumber::new(SLOT),
+            }),
         );
 
         let mock = BeaconMock::builder().build().await.expect("build mock");
@@ -1074,11 +1101,11 @@ mod tests {
         let mut def_set = DutyDefinitionSet::new();
         def_set.insert(
             pk_a,
-            DutyDefinition::Attester(AttesterDefinition::new(duty_a.clone())),
+            DutyDefinition::Attester(attester_duty_def(pk_a, &duty_a)),
         );
         def_set.insert(
             pk_b,
-            DutyDefinition::Attester(AttesterDefinition::new(duty_b.clone())),
+            DutyDefinition::Attester(attester_duty_def(pk_b, &duty_b)),
         );
 
         let duty = Duty::new_attester_duty(SlotNumber::new(SLOT));
@@ -1207,16 +1234,33 @@ mod tests {
             .await;
     }
 
+    /// Builds an attester duty definition from an eth2 [`AttesterDuty`], keyed
+    /// by the given public key.
+    fn attester_duty_def(pubkey: PubKey, duty: &AttesterDuty) -> AttesterDutyDefinition {
+        AttesterDutyDefinition {
+            pubkey,
+            v_idx: duty.validator_index,
+            slot: SlotNumber::new(duty.slot),
+            committee_index: duty.committee_index,
+            committee_length: duty.committee_length,
+            committees_at_slot: duty.committees_at_slot,
+            validator_committee_index: duty.validator_committee_index,
+        }
+    }
+
     /// Builds an attester definition with the given committee index/length.
     fn attester_def(comm_idx: u64, comm_len: u64) -> DutyDefinition {
-        DutyDefinition::Attester(AttesterDefinition::new(AttesterDuty {
-            slot: 1,
-            validator_index: 0,
-            committee_index: comm_idx,
-            committee_length: comm_len,
-            committees_at_slot: 1,
-            validator_committee_index: 0,
-        }))
+        DutyDefinition::Attester(attester_duty_def(
+            PubKey::new([0u8; PK_LEN]),
+            &AttesterDuty {
+                slot: 1,
+                validator_index: 0,
+                committee_index: comm_idx,
+                committee_length: comm_len,
+                committees_at_slot: 1,
+                validator_committee_index: 0,
+            },
+        ))
     }
 
     /// Wires AggSigDB to return a beacon committee selection and DutyDB to
@@ -1469,11 +1513,11 @@ mod tests {
         for pk in [pk_a, pk_b] {
             def_set.insert(
                 pk,
-                DutyDefinition::SyncCommittee(SyncCommitteeDefinition::new(SyncCommitteeDuty {
-                    pubkey: [0u8; 48],
+                DutyDefinition::SyncCommittee(SyncCommitteeDutyDefinition {
+                    pubkey: pk,
                     validator_index: 0,
                     validator_sync_committee_indices: vec![],
-                })),
+                }),
             );
         }
 
@@ -1542,11 +1586,11 @@ mod tests {
         for pk in [pk_a, pk_b] {
             def_set.insert(
                 pk,
-                DutyDefinition::SyncCommittee(SyncCommitteeDefinition::new(SyncCommitteeDuty {
-                    pubkey: [0u8; 48],
+                DutyDefinition::SyncCommittee(SyncCommitteeDutyDefinition {
+                    pubkey: pk,
                     validator_index: 0,
                     validator_sync_committee_indices: vec![],
-                })),
+                }),
             );
         }
 
@@ -1594,11 +1638,11 @@ mod tests {
         let mut def_set = DutyDefinitionSet::new();
         def_set.insert(
             pk_a,
-            DutyDefinition::SyncCommittee(SyncCommitteeDefinition::new(SyncCommitteeDuty {
-                pubkey: [0u8; 48],
+            DutyDefinition::SyncCommittee(SyncCommitteeDutyDefinition {
+                pubkey: pk_a,
                 validator_index: 0,
                 validator_sync_committee_indices: vec![],
-            })),
+            }),
         );
 
         let mock = BeaconMock::builder().build().await.expect("build mock");
