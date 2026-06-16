@@ -21,6 +21,7 @@ use crate::{
 use pluto_core::{
     corepb::v1::{consensus as pbconsensus, core as pbcore, priority as pbpriority},
     deadline::{AddOutcome, DeadlinerHandle},
+    gater::DutyGaterFn,
     qbft,
     types::{Duty, DutyType},
 };
@@ -40,9 +41,6 @@ pub type Broadcaster = Arc<
         + Sync
         + 'static,
 >;
-
-/// Duty admission gate.
-pub type DutyGater = Arc<dyn Fn(&Duty) -> bool + Send + Sync + 'static>;
 
 /// Sink for completed sniffer instances.
 pub type SnifferSink = Arc<dyn Fn(pbconsensus::SniffedConsensusInstance) + Send + Sync + 'static>;
@@ -77,7 +75,7 @@ pub struct Config {
     /// Duty deadline scheduler.
     pub deadliner: DeadlinerHandle,
     /// Duty admission gate.
-    pub duty_gater: DutyGater,
+    pub duty_gater: DutyGaterFn,
     /// External message broadcaster.
     pub broadcaster: Broadcaster,
     /// Completed sniffer sink.
@@ -263,7 +261,7 @@ pub struct Consensus {
     local_peer_idx: i64,
     privkey: SecretKey,
     deadliner: DeadlinerHandle,
-    duty_gater: DutyGater,
+    duty_gater: DutyGaterFn,
     broadcaster: Broadcaster,
     sniffer: SnifferSink,
     timer_func: RoundTimerFunc,

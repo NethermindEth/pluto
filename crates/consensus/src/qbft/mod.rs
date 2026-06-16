@@ -5,7 +5,7 @@ pub(crate) mod definition;
 pub(crate) mod runner;
 
 pub use component::{
-    BroadcastResult, Broadcaster, Config, Consensus, DutyGater, Error, Peer, Result, SnifferSink,
+    BroadcastResult, Broadcaster, Config, Consensus, Error, Peer, Result, SnifferSink,
     SubscriberResult,
 };
 pub use runner::{Error as RunnerError, Result as RunnerResult};

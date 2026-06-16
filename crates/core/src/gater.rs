@@ -11,9 +11,8 @@ use crate::{
     types::Duty,
 };
 
-/// Shared, callable duty-gating predicate. Structurally identical to
-/// `pluto_parsigex::DutyGater`, this is the value form that the wire components
-/// (parsigex, consensus) accept.
+/// Shared, callable duty-gating predicate: the value form that the wire
+/// components (parsigex, consensus) accept and invoke per duty.
 pub type DutyGaterFn = Arc<dyn Fn(&Duty) -> bool + Send + Sync + 'static>;
 
 /// Default number of epochs into the future for which duties are accepted.
