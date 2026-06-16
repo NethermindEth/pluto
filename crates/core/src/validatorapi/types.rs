@@ -21,7 +21,10 @@ pub use pluto_eth2api::{
     GetSyncCommitteeDutiesResponseResponseDatum as SyncCommitteeDuty,
     GetVersionResponseResponse as NodeVersionResponse,
     GetVersionResponseResponseData as NodeVersionData,
-    spec::phase0::{self, Epoch, Root, Slot, ValidatorIndex},
+    spec::{
+        altair::{SignedContributionAndProof, SyncCommitteeContribution, SyncCommitteeMessage},
+        phase0::{self, Epoch, Root, Slot, ValidatorIndex},
+    },
     v1::{
         BeaconCommitteeSelection as V1BeaconCommitteeSelection,
         SyncCommitteeSelection as V1SyncCommitteeSelection,
@@ -197,18 +200,6 @@ pub struct SignedValidatorRegistration {}
 /// Signed voluntary exit payload. Placeholder.
 #[derive(Debug, Clone)]
 pub struct SignedVoluntaryExit {}
-
-/// Sync-committee message payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct SyncCommitteeMessage {}
-
-/// Sync-committee contribution payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct SyncCommitteeContribution {}
-
-/// Signed contribution-and-proof payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct SignedContributionAndProof {}
 
 /// Validator-index request body for the `attester_duties` and
 /// `sync_committee_duties` endpoints.

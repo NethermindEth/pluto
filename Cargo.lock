@@ -5616,6 +5616,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "vise",
 ]
 
 [[package]]

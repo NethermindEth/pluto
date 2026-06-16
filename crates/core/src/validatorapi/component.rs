@@ -42,10 +42,14 @@ use crate::{
     dutydb::{Error as DutyDbError, MemDB},
     signeddata,
     signeddata::{
-        SignedDataError, SignedRandao, SyncContribution, VersionedAggregatedAttestation,
+        SignedDataError, SignedRandao, SignedSyncContributionAndProof, SignedSyncMessage,
+        SyncContribution, SyncContributionAndProof, VersionedAggregatedAttestation,
         VersionedProposal as UnsignedVersionedProposal,
     },
-    types::{Duty, DutyDefinitionSet, ParSignedDataSet, PubKey, Signature, SignedData, SlotNumber},
+    types::{
+        Duty, DutyDefinitionSet, ParSignedData, ParSignedDataSet, PubKey, Signature, SignedData,
+        SlotNumber,
+    },
     version,
 };
 
@@ -152,6 +156,11 @@ fn selections_deadline() -> tokio::time::Instant {
         .expect("Instant + SELECTIONS_PHASE_TIMEOUT does not overflow on a real clock")
 }
 
+/// Hard deadline for any local duty-await lookup (e.g. the sync committee
+/// contribution waiter). Sized identically to [`ATTESTATION_DATA_TIMEOUT`]
+/// — both bound a request whose slot may never produce data.
+const DUTY_AWAIT_TIMEOUT: Duration = Duration::from_secs(24);
+
 /// Hard deadline for the whole `proposal` / `submit_proposal` /
 /// `submit_blinded_proposal` handler body. Bounds every leg — proposer
 /// pubkey lookup, `epoch_from_slot`, partial-sig verification (which itself
@@ -206,10 +215,6 @@ pub struct Component {
     #[allow(dead_code, reason = "consumed by aggregate_attestation in later PRs")]
     await_agg_attestation_fn: Option<AwaitAggAttestationFn>,
     /// Looks up a sync committee contribution.
-    #[allow(
-        dead_code,
-        reason = "consumed by sync_committee_contribution in later PRs"
-    )]
     await_sync_contribution_fn: Option<AwaitSyncContributionFn>,
     /// Looks up aggregated signed data for a `(duty, pubkey)`.
     #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
@@ -378,6 +383,83 @@ impl Component {
         }));
     }
 
+    /// Verifies an outer partial signature on a [`ParSignedData`] against
+    /// this node's share for `root_pubkey`. Centralizes the
+    /// `message_root` / `signature` derivation so every submit handler
+    /// emits the same `ApiError` shape.
+    ///
+    /// `slot` is consumed to resolve the epoch for the domain lookup.
+    async fn verify_partial_sig_for(
+        &self,
+        par_sig: &ParSignedData,
+        root_pubkey: &BLSPubKey,
+        slot: u64,
+    ) -> Result<(), ApiError> {
+        if self.insecure_test {
+            return Ok(());
+        }
+
+        // The domain choice is hard-wired to the signed-data wrapper passed
+        // in. Each handler picks the right wrapper and we map here.
+        let signed: &dyn SignedData = par_sig.signed_data.as_ref();
+        let any_signed = signed as &dyn Any;
+        let domain_name = if any_signed.is::<SignedSyncMessage>() {
+            DomainName::SyncCommittee
+        } else if any_signed.is::<SignedSyncContributionAndProof>() {
+            DomainName::ContributionAndProof
+        } else {
+            return Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "unsupported signed-data wrapper for verify_partial_sig_for",
+            ));
+        };
+
+        let epoch = epoch_from_slot(&self.eth2_cl, slot).await.map_err(|err| {
+            ApiError::new(StatusCode::BAD_GATEWAY, "could not derive epoch from slot")
+                .with_source(std::io::Error::other(err.to_string()))
+        })?;
+        let message_root = signed.message_root().map_err(|err| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not derive signed-data message root",
+            )
+            .with_source(std::io::Error::other(err.to_string()))
+        })?;
+        let signature = signed.signature().map_err(|err| {
+            ApiError::new(StatusCode::BAD_REQUEST, "missing partial signature")
+                .with_source(std::io::Error::other(err.to_string()))
+        })?;
+
+        self.verify_partial_sig(root_pubkey, domain_name, epoch, message_root, &signature)
+            .await
+            .map_err(|err| match err {
+                VerifyPartialSigError::UnknownPubKey => ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "unknown validator public key for partial signature",
+                ),
+                VerifyPartialSigError::Signing(inner) => {
+                    ApiError::new(StatusCode::BAD_REQUEST, "invalid partial signature")
+                        .with_source(inner)
+                }
+            })
+    }
+
+    /// Fans out a validated [`ParSignedDataSet`] to every registered
+    /// subscriber. Each subscriber receives its own clone (the wrapper
+    /// stored in `subs` already does the clone-before-fanout).
+    async fn fanout(&self, duty: &Duty, set: ParSignedDataSet) -> Result<(), ApiError> {
+        for sub in &self.subs {
+            sub(duty, &set).await.map_err(|err| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "subscriber failed to process partial signed data",
+                )
+                .with_source(std::io::Error::other(err.to_string()))
+            })?;
+        }
+        Ok(())
+    }
+
     /// Resolves the proposer's DV root [`PubKey`] for the given proposer
     /// [`Duty`] via the registered `duty_def_fn`: ask for the definition
     /// set, require exactly one entry, and return its sole key.
@@ -450,7 +532,6 @@ impl Component {
     /// it is processing, then invokes this helper.
     ///
     /// Skipped entirely when [`Self::insecure_test`] is set.
-    #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     #[instrument(skip_all, fields(domain = ?domain_name, epoch))]
     pub async fn verify_partial_sig(
         &self,
@@ -1221,25 +1302,179 @@ impl Handler for Component {
     #[instrument(skip_all)]
     async fn sync_committee_contribution(
         &self,
-        _opts: SyncCommitteeContributionOpts,
+        opts: SyncCommitteeContributionOpts,
     ) -> Result<EthResponse<SyncCommitteeContribution>, ApiError> {
-        unimplemented!("sync_committee_contribution not yet ported")
+        // Delegates to the registered sync-contribution hook, bounded by a
+        // hard timeout so a missing contribution cannot park the handler
+        // indefinitely.
+        let await_fn = self.await_sync_contribution_fn.as_ref().ok_or_else(|| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "sync committee contribution lookup not registered",
+            )
+        })?;
+
+        let contrib = tokio::time::timeout(
+            DUTY_AWAIT_TIMEOUT,
+            await_fn(opts.slot, opts.subcommittee_index, opts.beacon_block_root),
+        )
+        .await
+        .map_err(|_: Elapsed| {
+            ApiError::new(
+                StatusCode::REQUEST_TIMEOUT,
+                "sync committee contribution not available before deadline",
+            )
+        })?
+        .map_err(map_hook_dutydb_error)?;
+
+        Ok(EthResponse {
+            data: contrib.0,
+            execution_optimistic: false,
+            finalized: false,
+            dependent_root: None,
+        })
     }
 
     #[instrument(skip_all)]
     async fn submit_sync_committee_contributions(
         &self,
-        _contributions: Vec<SignedContributionAndProof>,
+        contributions: Vec<SignedContributionAndProof>,
     ) -> Result<(), ApiError> {
-        unimplemented!("submit_sync_committee_contributions not yet ported")
+        // Verifies the inner selection proof against the root pubkey, the
+        // outer partial signature against this node's share, groups by slot,
+        // and fans out to every subscriber.
+        let vals = self.fetch_active_validators().await?;
+
+        let mut psigs_by_slot: HashMap<u64, ParSignedDataSet> = HashMap::new();
+        for contrib in contributions {
+            let slot = contrib.message.contribution.slot;
+            let v_idx = contrib.message.aggregator_index;
+
+            let eth2_pubkey = vals.get(&v_idx).copied().ok_or_else(|| {
+                // The VC submitted a contribution whose aggregator index is
+                // not part of the active validator set.
+                ApiError::new(StatusCode::BAD_REQUEST, "validator not found")
+            })?;
+
+            let pk = PubKey::try_from(eth2_pubkey.as_slice()).map_err(|err| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "invalid validator public key",
+                )
+                .with_source(std::io::Error::other(format!("{err:?}")))
+            })?;
+
+            // Inner selection-proof verification — checked against the
+            // **root** pubkey (`eth2Pubkey`), not the share, because the VC
+            // builds the selection proof with the root-level secret. Skipped
+            // in `insecure_test`.
+            if !self.insecure_test {
+                let inner = SyncContributionAndProof::new(contrib.message.clone());
+                let epoch = epoch_from_slot(&self.eth2_cl, slot).await.map_err(|err| {
+                    ApiError::new(
+                        StatusCode::BAD_GATEWAY,
+                        "could not derive epoch for sync contribution",
+                    )
+                    .with_source(std::io::Error::other(err.to_string()))
+                })?;
+                let message_root = inner.message_root().map_err(|err| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "could not derive sync selection proof root",
+                    )
+                    .with_source(std::io::Error::other(err.to_string()))
+                })?;
+                let signature = inner.signature().map_err(|err| {
+                    ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        "missing sync selection proof signature",
+                    )
+                    .with_source(std::io::Error::other(err.to_string()))
+                })?;
+                signing::verify(
+                    &self.eth2_cl,
+                    DomainName::SyncCommitteeSelectionProof,
+                    epoch,
+                    message_root,
+                    &signature,
+                    &eth2_pubkey,
+                )
+                .await
+                .map_err(|err| {
+                    ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        "invalid sync committee selection proof",
+                    )
+                    .with_source(err)
+                })?;
+            }
+
+            // Outer partial signature: verify against this node's share,
+            // then stash in the per-slot ParSignedDataSet.
+            let par_sig_data =
+                SignedSyncContributionAndProof::new_partial(contrib.clone(), self.share_idx);
+
+            self.verify_partial_sig_for(&par_sig_data, &eth2_pubkey, slot)
+                .await?;
+
+            psigs_by_slot
+                .entry(slot)
+                .or_default()
+                .insert(pk, par_sig_data);
+        }
+
+        for (slot, set) in psigs_by_slot {
+            let duty = Duty::new_sync_contribution_duty(SlotNumber::new(slot));
+            self.fanout(&duty, set).await?;
+        }
+
+        Ok(())
     }
 
     #[instrument(skip_all)]
     async fn submit_sync_committee_messages(
         &self,
-        _messages: Vec<SyncCommitteeMessage>,
+        messages: Vec<SyncCommitteeMessage>,
     ) -> Result<(), ApiError> {
-        unimplemented!("submit_sync_committee_messages not yet ported")
+        // Builds a partial `SignedSyncMessage` per validator, verifies the
+        // partial sig against this node's share, then fans out grouped by slot.
+        let vals = self.fetch_active_validators().await?;
+
+        let mut psigs_by_slot: HashMap<u64, ParSignedDataSet> = HashMap::new();
+        for msg in messages {
+            let slot = msg.slot;
+            let v_idx = msg.validator_index;
+
+            let eth2_pubkey = vals
+                .get(&v_idx)
+                .copied()
+                .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "validator not found"))?;
+
+            let pk = PubKey::try_from(eth2_pubkey.as_slice()).map_err(|err| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "invalid validator public key",
+                )
+                .with_source(std::io::Error::other(format!("{err:?}")))
+            })?;
+
+            let par_sig_data = SignedSyncMessage::new_partial(msg, self.share_idx);
+
+            self.verify_partial_sig_for(&par_sig_data, &eth2_pubkey, slot)
+                .await?;
+
+            psigs_by_slot
+                .entry(slot)
+                .or_default()
+                .insert(pk, par_sig_data);
+        }
+
+        for (slot, set) in psigs_by_slot {
+            let duty = Duty::new_sync_message_duty(SlotNumber::new(slot));
+            self.fanout(&duty, set).await?;
+        }
+
+        Ok(())
     }
 }
 
@@ -1325,6 +1560,34 @@ fn map_dutydb_error(err: DutyDbError) -> ApiError {
         ),
     };
     ApiError::new(status, message).with_source(err)
+}
+
+/// Maps a hook-returned [`CallbackError`] (used by handlers that delegate
+/// through `register_await_*` instead of calling `dutydb` directly) into the
+/// `ApiError` returned to the client. If the boxed error is a typed
+/// [`DutyDbError`] we recover the same status mapping as [`map_dutydb_error`].
+/// Otherwise we surface a generic 500 when the hook bubbles an untyped value.
+fn map_hook_dutydb_error(err: CallbackError) -> ApiError {
+    if let Some(dutydb_err) = err.downcast_ref::<DutyDbError>() {
+        let (status, message) = match dutydb_err {
+            DutyDbError::Shutdown => (StatusCode::SERVICE_UNAVAILABLE, "dutydb is shutting down"),
+            DutyDbError::AwaitDutyExpired => (
+                StatusCode::REQUEST_TIMEOUT,
+                "duty expired before data was stored",
+            ),
+            _ => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "registered hook returned a dutydb error",
+            ),
+        };
+        ApiError::new(status, message).with_source(std::io::Error::other(err.to_string()))
+    } else {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "registered hook returned an error",
+        )
+        .with_source(std::io::Error::other(err.to_string()))
+    }
 }
 
 /// Rewrites each duty's root public key to this node's public share. Duties
@@ -1689,6 +1952,12 @@ mod tests {
 
     use chrono::{DateTime, Utc};
     use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
+    use pluto_eth2api::spec::altair::{
+        ContributionAndProof, SignedContributionAndProof as AltairSignedContributionAndProof,
+        SyncCommitteeContribution as AltairSyncCommitteeContribution,
+        SyncCommitteeMessage as AltairSyncCommitteeMessage,
+    };
+    use pluto_ssz::BitVector;
     use pluto_testutil::BeaconMock;
     use serde_json::json;
     use tokio::sync::mpsc;
@@ -1704,7 +1973,9 @@ mod tests {
         testutils::random_core_pub_key,
         types::{Duty, DutyDefinition, DutyType, PubKey, SlotNumber},
         unsigneddata::{UnsignedDataSet, UnsignedDutyData},
-        validatorapi::types::AttestationDataOpts,
+        validatorapi::types::{
+            AttestationDataOpts, SyncCommitteeContributionOpts, SyncCommitteeMessage,
+        },
     };
     use pluto_eth2api::valcache::{CompleteValidators, ValidatorCacheError};
 
@@ -2377,15 +2648,23 @@ mod tests {
         assert!(component.subs.is_empty());
     }
 
-    /// Mirrors signing-fixture spec from `pluto_eth2util::signing` tests so
-    /// `verify_partial_sig` can resolve a real beacon-attester domain.
+    /// Uses the same signing-fixture spec as the `pluto_eth2util::signing`
+    /// tests so `verify_partial_sig` can resolve a real beacon-attester domain.
+    /// Each fork has a distinct epoch so `resolve_fork_version` is
+    /// deterministic (the fork_schedule HashMap iteration order does not
+    /// affect the result).
     fn signing_spec_fixture() -> serde_json::Value {
         json!({
+            "SECONDS_PER_SLOT": "12",
+            "SLOTS_PER_EPOCH": "16",
             "DOMAIN_BEACON_PROPOSER": "0x00000000",
             "DOMAIN_BEACON_ATTESTER": "0x01000000",
             "DOMAIN_RANDAO": "0x02000000",
             "DOMAIN_VOLUNTARY_EXIT": "0x04000000",
             "DOMAIN_APPLICATION_BUILDER": "0x00000001",
+            "DOMAIN_SYNC_COMMITTEE": "0x07000000",
+            "DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF": "0x08000000",
+            "DOMAIN_CONTRIBUTION_AND_PROOF": "0x09000000",
             "ALTAIR_FORK_VERSION": "0x01020304",
             "ALTAIR_FORK_EPOCH": "10",
             "BELLATRIX_FORK_VERSION": "0x02030405",
@@ -3233,6 +3512,674 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status_code, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // ====================================================================
+    // PR-5 — sync committee contribution + submit handlers
+    // ====================================================================
+
+    /// Channel-shaped capture buffer for subscribed fanout invocations.
+    type CapturedFanout = Arc<tokio::sync::Mutex<Vec<(Duty, ParSignedDataSet)>>>;
+
+    /// Builds an insecure (skip-partial-verify) component that resolves
+    /// sync-committee contributions via the supplied `await` closure and
+    /// active validators via the supplied map.
+    fn make_sync_component(
+        active: HashMap<ValidatorIndex, BLSPubKey>,
+    ) -> (CapturedFanout, Component) {
+        let cancel = CancellationToken::new();
+        let (deadliner, _deadliner_rx) = DeadlinerTask::start(
+            cancel.clone(),
+            "validatorapi-sync-tests",
+            FarFutureCalculator,
+        );
+        let (_evict_tx, evict_rx) = mpsc::channel(1);
+        let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
+        let eth2_cl =
+            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
+        let mut component =
+            Component::new_insecure(eth2_cl, dutydb, 7, TestValidatorCache::arc(active));
+
+        let captured: CapturedFanout = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        {
+            let captured = Arc::clone(&captured);
+            component.subscribe(move |duty, set| {
+                let captured = Arc::clone(&captured);
+                async move {
+                    captured.lock().await.push((duty, set));
+                    Ok(())
+                }
+            });
+        }
+
+        (captured, component)
+    }
+
+    fn dummy_sync_message(slot: u64, validator_index: u64) -> AltairSyncCommitteeMessage {
+        AltairSyncCommitteeMessage {
+            slot,
+            beacon_block_root: [0x10; 32],
+            validator_index,
+            signature: [0x20; 96],
+        }
+    }
+
+    fn dummy_sync_contribution(
+        slot: u64,
+        subcommittee_index: u64,
+    ) -> AltairSyncCommitteeContribution {
+        AltairSyncCommitteeContribution {
+            slot,
+            beacon_block_root: [0x30; 32],
+            subcommittee_index,
+            aggregation_bits: BitVector::<128>::with_bits(&[0]),
+            signature: [0x40; 96],
+        }
+    }
+
+    fn dummy_signed_contribution_and_proof(
+        slot: u64,
+        aggregator_index: u64,
+        subcommittee_index: u64,
+    ) -> AltairSignedContributionAndProof {
+        AltairSignedContributionAndProof {
+            message: ContributionAndProof {
+                aggregator_index,
+                contribution: dummy_sync_contribution(slot, subcommittee_index),
+                selection_proof: [0x50; 96],
+            },
+            signature: [0x60; 96],
+        }
+    }
+
+    /// `sync_committee_contribution` happy path: a registered hook resolves
+    /// the request and the wrapped `EthResponse` carries the inner data.
+    #[tokio::test]
+    async fn sync_committee_contribution_returns_data_from_hook() {
+        let (_captured, mut component) = make_sync_component(HashMap::new());
+
+        let expected = dummy_sync_contribution(99, 3);
+        let payload = expected.clone();
+        component.register_await_sync_contribution(move |_slot, _sub, _root| {
+            let payload = payload.clone();
+            async move { Ok(SyncContribution(payload)) }
+        });
+
+        let response = component
+            .sync_committee_contribution(SyncCommitteeContributionOpts {
+                slot: 99,
+                subcommittee_index: 3,
+                beacon_block_root: [0xAB; 32],
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(response.data, expected);
+    }
+
+    /// `sync_committee_contribution` returns 500 when the registered hook
+    /// fails with a generic (non-`DutyDbError`) error. The 408 branch is
+    /// reserved for `Elapsed` (handler-level timeout) and for typed
+    /// `DutyDbError::AwaitDutyExpired`.
+    #[tokio::test]
+    async fn sync_committee_contribution_returns_500_on_generic_hook_error() {
+        let (_captured, mut component) = make_sync_component(HashMap::new());
+
+        component.register_await_sync_contribution(|_slot, _sub, _root| async {
+            Err::<SyncContribution, _>("not available".into())
+        });
+
+        let err = component
+            .sync_committee_contribution(SyncCommitteeContributionOpts {
+                slot: 0,
+                subcommittee_index: 0,
+                beacon_block_root: [0; 32],
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// `sync_committee_contribution` returns 408 when the registered hook
+    /// bubbles a typed `DutyDbError::AwaitDutyExpired` — same shape as
+    /// `attestation_data`'s `map_dutydb_error` so an evicted duty is
+    /// distinguishable from a hung pipeline.
+    #[tokio::test]
+    async fn sync_committee_contribution_returns_408_on_dutydb_await_expired() {
+        let (_captured, mut component) = make_sync_component(HashMap::new());
+
+        component.register_await_sync_contribution(|_slot, _sub, _root| async {
+            Err::<SyncContribution, _>(Box::new(DutyDbError::AwaitDutyExpired) as CallbackError)
+        });
+
+        let err = component
+            .sync_committee_contribution(SyncCommitteeContributionOpts {
+                slot: 0,
+                subcommittee_index: 0,
+                beacon_block_root: [0; 32],
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::REQUEST_TIMEOUT);
+    }
+
+    /// `sync_committee_contribution` returns 503 when the registered hook
+    /// bubbles a typed `DutyDbError::Shutdown` — matches `map_dutydb_error`
+    /// so a shutting-down dutydb is visible to the VC as Service Unavailable
+    /// (retryable) rather than 408 (which suggests transient timeout only).
+    #[tokio::test]
+    async fn sync_committee_contribution_returns_503_on_dutydb_shutdown() {
+        let (_captured, mut component) = make_sync_component(HashMap::new());
+
+        component.register_await_sync_contribution(|_slot, _sub, _root| async {
+            Err::<SyncContribution, _>(Box::new(DutyDbError::Shutdown) as CallbackError)
+        });
+
+        let err = component
+            .sync_committee_contribution(SyncCommitteeContributionOpts {
+                slot: 0,
+                subcommittee_index: 0,
+                beacon_block_root: [0; 32],
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// `sync_committee_contribution` returns 408 when the hook never
+    /// resolves — verifies the hard timeout fires instead of hanging.
+    #[tokio::test(start_paused = true)]
+    async fn sync_committee_contribution_times_out_when_hook_never_resolves() {
+        let (_captured, mut component) = make_sync_component(HashMap::new());
+
+        component.register_await_sync_contribution(|_slot, _sub, _root| async {
+            // Park forever.
+            std::future::pending::<Result<SyncContribution, CallbackError>>().await
+        });
+
+        let err = component
+            .sync_committee_contribution(SyncCommitteeContributionOpts {
+                slot: 0,
+                subcommittee_index: 0,
+                beacon_block_root: [0; 32],
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::REQUEST_TIMEOUT);
+    }
+
+    /// `sync_committee_contribution` returns 500 when no hook is
+    /// registered. Distinguishes "missing wiring" from "hook errored".
+    #[tokio::test]
+    async fn sync_committee_contribution_500_when_no_hook_registered() {
+        let (_captured, component) = make_sync_component(HashMap::new());
+        let err = component
+            .sync_committee_contribution(SyncCommitteeContributionOpts {
+                slot: 0,
+                subcommittee_index: 0,
+                beacon_block_root: [0; 32],
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// `submit_sync_committee_messages` happy path: insecure mode skips
+    /// verify, set is grouped by slot and fanned out to subscribers.
+    #[tokio::test]
+    async fn submit_sync_committee_messages_groups_by_slot_and_fanouts() {
+        let pk_a = [0xAA_u8; 48];
+        let pk_b = [0xBB_u8; 48];
+        let pk_c = [0xCC_u8; 48];
+        let active: HashMap<ValidatorIndex, BLSPubKey> = HashMap::from([
+            (1, pk_a), // slot 10
+            (2, pk_b), // slot 10
+            (3, pk_c), // slot 11
+        ]);
+
+        let (captured, component) = make_sync_component(active);
+
+        let messages: Vec<SyncCommitteeMessage> = vec![
+            dummy_sync_message(10, 1),
+            dummy_sync_message(10, 2),
+            dummy_sync_message(11, 3),
+        ];
+
+        component
+            .submit_sync_committee_messages(messages)
+            .await
+            .unwrap();
+
+        let captured = captured.lock().await;
+        assert_eq!(captured.len(), 2, "two slots → two fanout invocations");
+        let mut by_slot: HashMap<u64, usize> = HashMap::new();
+        for (duty, set) in captured.iter() {
+            assert_eq!(duty.duty_type, crate::types::DutyType::SyncMessage);
+            by_slot.insert(duty.slot.inner(), set.inner().len());
+        }
+        assert_eq!(by_slot.get(&10), Some(&2));
+        assert_eq!(by_slot.get(&11), Some(&1));
+    }
+
+    /// `submit_sync_committee_messages` rejects with 400 when the
+    /// validator-index lookup misses.
+    #[tokio::test]
+    async fn submit_sync_committee_messages_rejects_unknown_validator_index() {
+        let (_captured, component) = make_sync_component(HashMap::new());
+        let err = component
+            .submit_sync_committee_messages(vec![dummy_sync_message(5, 99)])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+        assert!(err.message.contains("validator not found"));
+    }
+
+    /// `submit_sync_committee_messages` propagates a 502 when the
+    /// active-validators cache errors.
+    #[tokio::test]
+    async fn submit_sync_committee_messages_502_on_active_validators_error() {
+        struct FailingCache;
+
+        #[async_trait]
+        impl CachedValidatorsProvider for FailingCache {
+            async fn active_validators(&self) -> Result<ActiveValidators, ValidatorCacheError> {
+                Err(ValidatorCacheError::EthBeaconNodeApiClientError(
+                    pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse,
+                ))
+            }
+
+            async fn complete_validators(&self) -> Result<CompleteValidators, ValidatorCacheError> {
+                Err(ValidatorCacheError::EthBeaconNodeApiClientError(
+                    pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse,
+                ))
+            }
+        }
+
+        let cancel = CancellationToken::new();
+        let (deadliner, _deadliner_rx) = DeadlinerTask::start(
+            cancel.clone(),
+            "validatorapi-active-validator-error",
+            FarFutureCalculator,
+        );
+        let (_evict_tx, evict_rx) = mpsc::channel(1);
+        let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
+        let eth2_cl =
+            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
+        let component = Component::new_insecure(eth2_cl, dutydb, 1, Arc::new(FailingCache));
+
+        let err = component
+            .submit_sync_committee_messages(vec![dummy_sync_message(1, 1)])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_GATEWAY);
+    }
+
+    /// `submit_sync_committee_contributions` happy path: insecure mode
+    /// skips both the inner selection-proof verify and the outer partial
+    /// verify, set is grouped by slot and fanned out.
+    #[tokio::test]
+    async fn submit_sync_committee_contributions_groups_by_slot_and_fanouts() {
+        let pk_a = [0xAA_u8; 48];
+        let pk_b = [0xBB_u8; 48];
+        let active: HashMap<ValidatorIndex, BLSPubKey> = HashMap::from([(10, pk_a), (11, pk_b)]);
+
+        let (captured, component) = make_sync_component(active);
+
+        let contributions = vec![
+            dummy_signed_contribution_and_proof(20, 10, 1),
+            dummy_signed_contribution_and_proof(20, 11, 2),
+            dummy_signed_contribution_and_proof(21, 10, 1),
+        ];
+
+        component
+            .submit_sync_committee_contributions(contributions)
+            .await
+            .unwrap();
+
+        let captured = captured.lock().await;
+        assert_eq!(captured.len(), 2);
+        let mut by_slot: HashMap<u64, usize> = HashMap::new();
+        for (duty, set) in captured.iter() {
+            assert_eq!(duty.duty_type, crate::types::DutyType::SyncContribution);
+            by_slot.insert(duty.slot.inner(), set.inner().len());
+        }
+        assert_eq!(by_slot.get(&20), Some(&2));
+        assert_eq!(by_slot.get(&21), Some(&1));
+    }
+
+    /// `submit_sync_committee_contributions` rejects with 400 when the
+    /// aggregator's `validator_index` is not in the active set.
+    #[tokio::test]
+    async fn submit_sync_committee_contributions_rejects_unknown_aggregator() {
+        let (_captured, component) = make_sync_component(HashMap::new());
+        let err = component
+            .submit_sync_committee_contributions(vec![dummy_signed_contribution_and_proof(
+                1, 42, 0,
+            )])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+        assert!(err.message.contains("validator not found"));
+    }
+
+    /// `submit_sync_committee_messages` rejects with 400 when verification
+    /// runs (i.e. `insecure_test = false`) and the share map has no entry
+    /// for the validator's root pubkey — an unknown public key is surfaced to
+    /// the client as a 400. Confirms `verify_partial_sig_for` is actually
+    /// invoked from the submit handler.
+    #[tokio::test]
+    async fn submit_sync_committee_messages_rejects_invalid_partial_sig() {
+        let dv_root = [0xEE_u8; 48];
+        let mock = mock_beacon_for_signing().await;
+        let cancel = CancellationToken::new();
+        let (deadliner, _deadliner_rx) = DeadlinerTask::start(
+            cancel.clone(),
+            "validatorapi-sync-submit-reject",
+            FarFutureCalculator,
+        );
+        let (_evict_tx, evict_rx) = mpsc::channel(1);
+        let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        // Empty share map: lookup for `dv_root` will return
+        // `VerifyPartialSigError::UnknownPubKey`, which the handler maps
+        // to 400.
+        let active: HashMap<ValidatorIndex, BLSPubKey> = HashMap::from([(7, dv_root)]);
+        let component = Component::new(
+            eth2_cl,
+            dutydb,
+            1,
+            HashMap::new(),
+            false,
+            TestValidatorCache::arc(active),
+        );
+
+        let err = component
+            .submit_sync_committee_messages(vec![dummy_sync_message(1, 7)])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+    }
+
+    /// `submit_sync_committee_messages` happy path on a real beacon mock:
+    /// confirms that even with `insecure_test = false`, a correctly signed
+    /// share passes the outer partial-sig verify and the set fans out.
+    #[tokio::test]
+    async fn submit_sync_committee_messages_accepts_valid_partial_sig() {
+        let secret = BlstImpl
+            .generate_insecure_secret(rand::rngs::OsRng)
+            .unwrap();
+        let pubshare = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let dv_root = [0x77_u8; 48];
+
+        let slot: u64 = 1;
+        let beacon_block_root: Root = [0xDD; 32];
+
+        let mock = mock_beacon_for_signing().await;
+        // Resolve the same signing root the handler will compute (epoch=0
+        // since slot/SLOTS_PER_EPOCH=1/16=0).
+        let signing_root = pluto_eth2util::signing::get_data_root(
+            mock.client(),
+            DomainName::SyncCommittee,
+            0,
+            beacon_block_root,
+        )
+        .await
+        .unwrap();
+        let signature = BlstImpl.sign(&secret, &signing_root).unwrap();
+
+        let map = HashMap::from([(dv_root, pubshare)]);
+        let cancel = CancellationToken::new();
+        let (deadliner, _deadliner_rx) = DeadlinerTask::start(
+            cancel.clone(),
+            "validatorapi-sync-submit-accept",
+            FarFutureCalculator,
+        );
+        let (_evict_tx, evict_rx) = mpsc::channel(1);
+        let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let active: HashMap<ValidatorIndex, BLSPubKey> = HashMap::from([(7, dv_root)]);
+        let mut component = Component::new(
+            eth2_cl,
+            dutydb,
+            1,
+            map,
+            false,
+            TestValidatorCache::arc(active),
+        );
+        let captured: Arc<tokio::sync::Mutex<u32>> = Arc::new(tokio::sync::Mutex::new(0));
+        {
+            let captured = Arc::clone(&captured);
+            component.subscribe(move |_duty, _set| {
+                let captured = Arc::clone(&captured);
+                async move {
+                    *captured.lock().await += 1;
+                    Ok(())
+                }
+            });
+        }
+
+        let msg = AltairSyncCommitteeMessage {
+            slot,
+            beacon_block_root,
+            validator_index: 7,
+            signature,
+        };
+        component
+            .submit_sync_committee_messages(vec![msg])
+            .await
+            .expect("valid partial sig is accepted");
+
+        assert_eq!(*captured.lock().await, 1);
+    }
+
+    /// Round-trips a real BLS signature through `verify_partial_sig` for the
+    /// SyncCommittee domain. Confirms the default-spec beacon mock resolves
+    /// DOMAIN_SYNC_COMMITTEE correctly and that signing & verify agree on
+    /// the signing root.
+    #[tokio::test]
+    async fn verify_partial_sig_round_trips_sync_committee_domain() {
+        let secret = BlstImpl
+            .generate_insecure_secret(rand::rngs::OsRng)
+            .unwrap();
+        let pubshare = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let dv_root = [0xAB_u8; 48];
+        let map = HashMap::from([(dv_root, pubshare)]);
+
+        let mock = mock_beacon_for_signing().await;
+        let cancel = CancellationToken::new();
+        let (deadliner, _deadliner_rx) = DeadlinerTask::start(
+            cancel.clone(),
+            "validatorapi-sync-roundtrip",
+            FarFutureCalculator,
+        );
+        let (_evict_tx, evict_rx) = mpsc::channel(1);
+        let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let component = Component::new(eth2_cl, dutydb, 1, map, false, TestValidatorCache::empty());
+
+        let message_root: Root = [0xCD; 32];
+        let signing_root = pluto_eth2util::signing::get_data_root(
+            mock.client(),
+            DomainName::SyncCommittee,
+            0,
+            message_root,
+        )
+        .await
+        .unwrap();
+        let signature = BlstImpl.sign(&secret, &signing_root).unwrap();
+
+        component
+            .verify_partial_sig(
+                &dv_root,
+                DomainName::SyncCommittee,
+                0,
+                message_root,
+                &signature,
+            )
+            .await
+            .expect("valid SyncCommittee partial sig should verify");
+    }
+
+    /// `submit_sync_committee_contributions` rejects with 400 when the
+    /// outer partial-sig verify path runs (insecure_test=false) and the
+    /// share map has no entry for the aggregator's root pubkey. Confirms
+    /// `verify_partial_sig_for` is reached for the contribution path too.
+    #[tokio::test]
+    async fn submit_sync_committee_contributions_rejects_invalid_partial_sig() {
+        let dv_root = [0xCD_u8; 48];
+        let mock = mock_beacon_for_signing().await;
+        let cancel = CancellationToken::new();
+        let (deadliner, _deadliner_rx) = DeadlinerTask::start(
+            cancel.clone(),
+            "validatorapi-sync-contrib-reject",
+            FarFutureCalculator,
+        );
+        let (_evict_tx, evict_rx) = mpsc::channel(1);
+        let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        // `insecure_test = false` but no share registered for `dv_root`. The
+        // inner selection-proof verify runs first; because the selection
+        // proof is a zero-byte signature here it will be rejected with 400
+        // via `signing::verify` returning `ZeroSignature` / `VerifyFailed`.
+        let active: HashMap<ValidatorIndex, BLSPubKey> = HashMap::from([(7, dv_root)]);
+        let component = Component::new(
+            eth2_cl,
+            dutydb,
+            1,
+            HashMap::new(),
+            false,
+            TestValidatorCache::arc(active),
+        );
+
+        // The dummy fixture's `selection_proof` is `[0x50; 96]` — a random
+        // non-zero garbage signature, so `signing::verify` returns
+        // `VerifyFailed`, which we map to 400.
+        let err = component
+            .submit_sync_committee_contributions(vec![dummy_signed_contribution_and_proof(1, 7, 0)])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+    }
+
+    /// `submit_sync_committee_contributions` happy path with
+    /// `insecure_test=false`: build a real-BLS-signed
+    /// `SignedContributionAndProof` where the **inner** selection proof is
+    /// signed by the root secret under `SyncCommitteeSelectionProof` and
+    /// the **outer** partial signature is signed by the share secret under
+    /// `ContributionAndProof`. Proves both verify steps agree on domain /
+    /// epoch / message-root with the shared mock-beacon spec fixture.
+    #[tokio::test]
+    async fn submit_sync_committee_contributions_accepts_valid_partial_sig() {
+        // Root secret signs the inner selection proof; share secret signs
+        // the outer partial sig. Both pubkeys are derived from the BLS
+        // secret keys and wired through the per-validator share map.
+        let root_secret = BlstImpl
+            .generate_insecure_secret(rand::rngs::OsRng)
+            .unwrap();
+        let root_pubkey = BlstImpl.secret_to_public_key(&root_secret).unwrap();
+        let share_secret = BlstImpl
+            .generate_insecure_secret(rand::rngs::OsRng)
+            .unwrap();
+        let share_pubkey = BlstImpl.secret_to_public_key(&share_secret).unwrap();
+
+        let slot: u64 = 1;
+        let subcommittee_index: u64 = 3;
+        let aggregator_index: u64 = 11;
+
+        let mock = mock_beacon_for_signing().await;
+
+        // Inner: sign HTR(SyncAggregatorSelectionData) with the root secret
+        // under DomainName::SyncCommitteeSelectionProof.
+        let contribution = AltairSyncCommitteeContribution {
+            slot,
+            beacon_block_root: [0xEE; 32],
+            subcommittee_index,
+            aggregation_bits: BitVector::<128>::with_bits(&[0]),
+            signature: [0; 96],
+        };
+        let selection_proof_root = ContributionAndProof {
+            aggregator_index,
+            contribution: contribution.clone(),
+            selection_proof: [0; 96],
+        }
+        .selection_proof_message_root();
+        let selection_proof_signing_root = pluto_eth2util::signing::get_data_root(
+            mock.client(),
+            DomainName::SyncCommitteeSelectionProof,
+            0,
+            selection_proof_root,
+        )
+        .await
+        .unwrap();
+        let selection_proof = BlstImpl
+            .sign(&root_secret, &selection_proof_signing_root)
+            .unwrap();
+
+        // Outer: sign HTR(ContributionAndProof) — including the just-computed
+        // selection_proof — with the share secret under
+        // DomainName::ContributionAndProof.
+        let message = ContributionAndProof {
+            aggregator_index,
+            contribution,
+            selection_proof,
+        };
+        let outer_root = AltairSignedContributionAndProof {
+            message: message.clone(),
+            signature: [0; 96],
+        }
+        .message_root();
+        let outer_signing_root = pluto_eth2util::signing::get_data_root(
+            mock.client(),
+            DomainName::ContributionAndProof,
+            0,
+            outer_root,
+        )
+        .await
+        .unwrap();
+        let outer_signature = BlstImpl.sign(&share_secret, &outer_signing_root).unwrap();
+
+        let map = HashMap::from([(root_pubkey, share_pubkey)]);
+        let cancel = CancellationToken::new();
+        let (deadliner, _deadliner_rx) = DeadlinerTask::start(
+            cancel.clone(),
+            "validatorapi-sync-contrib-accept",
+            FarFutureCalculator,
+        );
+        let (_evict_tx, evict_rx) = mpsc::channel(1);
+        let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let active: HashMap<ValidatorIndex, BLSPubKey> =
+            HashMap::from([(aggregator_index, root_pubkey)]);
+        let mut component = Component::new(
+            eth2_cl,
+            dutydb,
+            1,
+            map,
+            false,
+            TestValidatorCache::arc(active),
+        );
+        let captured: Arc<tokio::sync::Mutex<u32>> = Arc::new(tokio::sync::Mutex::new(0));
+        {
+            let captured = Arc::clone(&captured);
+            component.subscribe(move |_duty, _set| {
+                let captured = Arc::clone(&captured);
+                async move {
+                    *captured.lock().await += 1;
+                    Ok(())
+                }
+            });
+        }
+
+        let signed = AltairSignedContributionAndProof {
+            message,
+            signature: outer_signature,
+        };
+        component
+            .submit_sync_committee_contributions(vec![signed])
+            .await
+            .expect("valid inner + outer signatures are accepted");
+
+        assert_eq!(*captured.lock().await, 1);
     }
 
     // ====================================================================
