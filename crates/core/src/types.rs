@@ -609,71 +609,6 @@ impl DutyDefinition {
 /// public key.
 pub type DutyDefinitionSet = HashMap<PubKey, DutyDefinition>;
 
-/// Unsigned data type
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnsignedData<T: Clone + Serialize + StdDebug>(T);
-
-impl<T> UnsignedData<T>
-where
-    T: Clone + Serialize + StdDebug,
-{
-    /// Create a new unsigned data.
-    pub fn new(unsigned_data: T) -> Self {
-        Self(unsigned_data)
-    }
-}
-
-// TODO: Delete `UnsignedDataSet`, use crates/core/src/unsigneddata.rs
-/// Unsigned data set
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnsignedDataSet<T>(HashMap<DutyType, UnsignedData<T>>)
-where
-    T: Clone + Serialize + StdDebug;
-
-impl<T> Default for UnsignedDataSet<T>
-where
-    T: Clone + Serialize + StdDebug,
-{
-    fn default() -> Self {
-        Self(HashMap::default())
-    }
-}
-
-impl<T> UnsignedDataSet<T>
-where
-    T: Clone + Serialize + StdDebug,
-{
-    /// Create a new unsigned data set.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Get an unsigned data by duty type.
-    pub fn get(&self, duty_type: &DutyType) -> Option<&UnsignedData<T>> {
-        self.0.get(duty_type)
-    }
-
-    /// Insert an unsigned data.
-    pub fn insert(&mut self, duty_type: DutyType, unsigned_data: UnsignedData<T>) {
-        self.0.insert(duty_type, unsigned_data);
-    }
-
-    /// Remove an unsigned data by duty type.
-    pub fn remove(&mut self, duty_type: &DutyType) -> Option<UnsignedData<T>> {
-        self.0.remove(duty_type)
-    }
-
-    /// Inner unsigned data set.
-    pub fn inner(&self) -> &HashMap<DutyType, UnsignedData<T>> {
-        &self.0
-    }
-
-    /// Inner unsigned data set.
-    pub fn inner_mut(&mut self) -> &mut HashMap<DutyType, UnsignedData<T>> {
-        &mut self.0
-    }
-}
-
 /// Signed data type
 pub trait SignedData: Any + DynClone + DynEq + StdDebug + Send + Sync {
     /// signature returns the signed duty data's signature.
@@ -1093,16 +1028,6 @@ mod tests {
     fn pub_key_abbreviated() {
         let pk = PubKey::new([42u8; PK_LEN]);
         assert_eq!(pk.abbreviated(), "2a2_a2a");
-    }
-
-    #[test]
-    fn unsigned_data_set() {
-        let mut unsigned_data_set = UnsignedDataSet::new();
-        unsigned_data_set.insert(DutyType::Proposer, UnsignedData::new(DutyType::Proposer));
-        assert_eq!(
-            unsigned_data_set.get(&DutyType::Proposer),
-            Some(&UnsignedData::new(DutyType::Proposer))
-        );
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
