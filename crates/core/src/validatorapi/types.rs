@@ -25,21 +25,9 @@ pub use pluto_eth2api::{
         altair::{SignedContributionAndProof, SyncCommitteeContribution, SyncCommitteeMessage},
         phase0::{self, Epoch, Root, Slot, ValidatorIndex},
     },
-    v1::{
-        BeaconCommitteeSelection as V1BeaconCommitteeSelection,
-        SyncCommitteeSelection as V1SyncCommitteeSelection,
-    },
+    v1::{BeaconCommitteeSelection, SyncCommitteeSelection},
     versioned,
 };
-
-/// Beacon-committee selection payload. Aliases the consensus-spec
-/// `v1::BeaconCommitteeSelection` so the handler can operate on the
-/// validator-index / slot / selection-proof tuple directly.
-pub type BeaconCommitteeSelection = V1BeaconCommitteeSelection;
-
-/// Sync-committee selection payload. Aliases the consensus-spec
-/// `v1::SyncCommitteeSelection`.
-pub type SyncCommitteeSelection = V1SyncCommitteeSelection;
 
 /// Attestation data alias for the consensus-spec phase0 type.
 pub type AttestationData = phase0::AttestationData;

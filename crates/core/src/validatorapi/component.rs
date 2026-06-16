@@ -135,29 +135,6 @@ const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// attestation duty has time to flow through the pipeline.
 const ATTESTATION_DATA_TIMEOUT: Duration = Duration::from_secs(24);
 
-/// Hard deadline for the *whole* fan-out + AggSigDB phase of the selection
-/// handlers — the per-slot subscriber calls plus every blocking
-/// `await_agg_sig_db_fn` lookup share a single budget anchored at this
-/// duration after the phase begins. An explicit bound ensures neither a
-/// stalled subscriber nor a stalled AggSigDB can pin a selections request
-/// forever, and the worst-case wall time scales with the duration rather than
-/// with the per-selection count. Sized to roughly two slots so a real
-/// `PrepareAggregator` / `PrepareSyncContribution` duty has time to reach
-/// the AggSigDB.
-const SELECTIONS_PHASE_TIMEOUT: Duration = Duration::from_secs(24);
-
-/// Returns the absolute deadline for the selections fan-out + AggSigDB
-/// phase, `SELECTIONS_PHASE_TIMEOUT` in the future. Factored out so both
-/// selection handlers anchor the deadline identically and so the
-/// `clippy::arithmetic_side_effects`-driven `checked_add(...).expect(...)`
-/// pattern lives in one place (and tracks the constant rather than a
-/// hard-coded string).
-fn selections_deadline() -> tokio::time::Instant {
-    tokio::time::Instant::now()
-        .checked_add(SELECTIONS_PHASE_TIMEOUT)
-        .expect("Instant + SELECTIONS_PHASE_TIMEOUT does not overflow on a real clock")
-}
-
 /// Hard deadline for any local duty-await lookup (e.g. the sync committee
 /// contribution waiter). Sized identically to [`ATTESTATION_DATA_TIMEOUT`]
 /// — both bound a request whose slot may never produce data.
@@ -1151,12 +1128,6 @@ impl Handler for Component {
                 self.share_idx,
             );
 
-            // The selection-proof signs the slot under
-            // `DOMAIN_SELECTION_PROOF`. `BeaconCommitteeSelection::message_root()`
-            // centralises this SSZ root computation (see
-            // `crates/eth2api/src/v1.rs`) — call it through the helper so the
-            // beacon and sync handlers share the same single source of truth
-            // for the per-variant signing root.
             self.verify_selection_partial_sig(
                 &root_pubkey,
                 DomainName::SelectionProof,
@@ -1173,80 +1144,50 @@ impl Handler for Component {
                 .insert(core_pubkey, par_sig);
         }
 
-        // Bound the entire fan-out + AggSigDB phase with a single deadline
-        // anchored here so total wall time scales with
-        // `SELECTIONS_PHASE_TIMEOUT`, not with the number of selections.
-        let deadline = selections_deadline();
-
         // Fanout every per-slot set to every subscriber. Subscribers receive
         // their own clone (the wrapper installed by `subscribe` clones the
         // set before each invocation).
         for (&slot, set) in &psigs_by_slot {
             let duty = Duty::new_prepare_aggregator_duty(SlotNumber::new(slot));
             for sub in &self.subs {
-                tokio::time::timeout_at(deadline, sub(&duty, set))
-                    .await
-                    .map_err(|_: Elapsed| {
-                        tracing::warn!(slot, "beacon_committee_selections: subscriber timed out");
-                        ApiError::new(
-                            StatusCode::REQUEST_TIMEOUT,
-                            "beacon committee selection subscriber timed out",
-                        )
-                    })?
-                    .map_err(|err| {
-                        tracing::error!(
-                            slot,
-                            error = %err,
-                            "beacon_committee_selections: subscriber failed"
-                        );
-                        ApiError::new(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "beacon committee selection subscriber failed",
-                        )
-                        .with_boxed_source(err)
-                    })?;
+                sub(&duty, set).await.map_err(|err| {
+                    tracing::error!(
+                        slot,
+                        error = %err,
+                        "beacon_committee_selections: subscriber failed"
+                    );
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "beacon committee selection subscriber failed",
+                    )
+                    .with_boxed_source(err)
+                })?;
             }
         }
 
-        // Pull every aggregated selection back out of the AggSigDB.
-        let await_fn = self.await_agg_sig_db_fn.as_ref().ok_or_else(|| {
-            tracing::error!(
-                "beacon_committee_selections: await_agg_sig_db hook not registered — Component is half-wired"
-            );
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "await_agg_sig_db hook not registered",
-            )
-        })?;
+        // Pull every aggregated selection back out of the AggSigDB. A missing
+        // hook is a wiring bug, not a runtime condition, so fail fast.
+        let await_fn = self
+            .await_agg_sig_db_fn
+            .as_ref()
+            .expect("await_agg_sig_db hook must be registered before serving requests");
 
         let mut resp: Vec<BeaconCommitteeSelection> = Vec::with_capacity(selections.len());
         for (&slot, set) in &psigs_by_slot {
             let duty = Duty::new_prepare_aggregator_duty(SlotNumber::new(slot));
             for pk in set.inner().keys() {
-                let signed = tokio::time::timeout_at(deadline, await_fn(duty.clone(), *pk))
-                    .await
-                    .map_err(|_: Elapsed| {
-                        tracing::warn!(
-                            slot,
-                            "beacon_committee_selections: aggsigdb await timed out"
-                        );
-                        ApiError::new(
-                            StatusCode::REQUEST_TIMEOUT,
-                            "aggregated beacon committee selection not available before deadline",
-                        )
-                    })?
-                    .map_err(|err| {
-                        tracing::error!(
-                            slot,
-                            error = %err,
-                            "beacon_committee_selections: aggsigdb lookup failed"
-                        );
-                        ApiError::new(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "aggregated beacon committee selection lookup failed",
-                        )
-                        .with_boxed_source(err)
-                    })?;
+                let signed = await_fn(duty.clone(), *pk).await.map_err(|err| {
+                    tracing::error!(
+                        slot,
+                        error = %err,
+                        "beacon_committee_selections: aggsigdb lookup failed"
+                    );
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "aggregated beacon committee selection lookup failed",
+                    )
+                    .with_boxed_source(err)
+                })?;
 
                 let selection = downcast_beacon_committee_selection(signed.as_ref())?;
                 resp.push(selection.0.clone());
@@ -1299,73 +1240,46 @@ impl Handler for Component {
                 .insert(core_pubkey, par_sig);
         }
 
-        // See `beacon_committee_selections` — bound the whole fan-out +
-        // AggSigDB phase against a single deadline so the per-selection
-        // count does not multiply the wall-time budget.
-        let deadline = selections_deadline();
-
         for (&slot, set) in &psigs_by_slot {
             let duty = Duty::new_prepare_sync_contribution_duty(SlotNumber::new(slot));
             for sub in &self.subs {
-                tokio::time::timeout_at(deadline, sub(&duty, set))
-                    .await
-                    .map_err(|_: Elapsed| {
-                        tracing::warn!(slot, "sync_committee_selections: subscriber timed out");
-                        ApiError::new(
-                            StatusCode::REQUEST_TIMEOUT,
-                            "sync committee selection subscriber timed out",
-                        )
-                    })?
-                    .map_err(|err| {
-                        tracing::error!(
-                            slot,
-                            error = %err,
-                            "sync_committee_selections: subscriber failed"
-                        );
-                        ApiError::new(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "sync committee selection subscriber failed",
-                        )
-                        .with_boxed_source(err)
-                    })?;
+                sub(&duty, set).await.map_err(|err| {
+                    tracing::error!(
+                        slot,
+                        error = %err,
+                        "sync_committee_selections: subscriber failed"
+                    );
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "sync committee selection subscriber failed",
+                    )
+                    .with_boxed_source(err)
+                })?;
             }
         }
 
-        let await_fn = self.await_agg_sig_db_fn.as_ref().ok_or_else(|| {
-            tracing::error!(
-                "sync_committee_selections: await_agg_sig_db hook not registered — Component is half-wired"
-            );
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "await_agg_sig_db hook not registered",
-            )
-        })?;
+        // A missing hook is a wiring bug, not a runtime condition, so fail fast.
+        let await_fn = self
+            .await_agg_sig_db_fn
+            .as_ref()
+            .expect("await_agg_sig_db hook must be registered before serving requests");
 
         let mut resp: Vec<SyncCommitteeSelection> = Vec::with_capacity(selections.len());
         for (&slot, set) in &psigs_by_slot {
             let duty = Duty::new_prepare_sync_contribution_duty(SlotNumber::new(slot));
             for pk in set.inner().keys() {
-                let signed = tokio::time::timeout_at(deadline, await_fn(duty.clone(), *pk))
-                    .await
-                    .map_err(|_: Elapsed| {
-                        tracing::warn!(slot, "sync_committee_selections: aggsigdb await timed out");
-                        ApiError::new(
-                            StatusCode::REQUEST_TIMEOUT,
-                            "aggregated sync committee selection not available before deadline",
-                        )
-                    })?
-                    .map_err(|err| {
-                        tracing::error!(
-                            slot,
-                            error = %err,
-                            "sync_committee_selections: aggsigdb lookup failed"
-                        );
-                        ApiError::new(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "aggregated sync committee selection lookup failed",
-                        )
-                        .with_boxed_source(err)
-                    })?;
+                let signed = await_fn(duty.clone(), *pk).await.map_err(|err| {
+                    tracing::error!(
+                        slot,
+                        error = %err,
+                        "sync_committee_selections: aggsigdb lookup failed"
+                    );
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "aggregated sync committee selection lookup failed",
+                    )
+                    .with_boxed_source(err)
+                })?;
 
                 let selection = downcast_sync_committee_selection(signed.as_ref())?;
                 resp.push(selection.0.clone());
@@ -3375,30 +3289,6 @@ mod tests {
         assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
     }
 
-    /// A stalled `await_agg_sig_db` hook trips
-    /// [`SELECTIONS_PHASE_TIMEOUT`] and the handler returns 408.
-    #[tokio::test(start_paused = true)]
-    async fn beacon_committee_selections_await_agg_sig_db_times_out() {
-        let dv_root = dv_pubkey(0xD1);
-        let (mut component, _mock) =
-            make_selections_component_insecure(HashMap::from([(1u64, dv_root)])).await;
-
-        // Closure that never completes.
-        component.register_await_agg_sig_db(|_duty, _pk| async {
-            std::future::pending::<Result<Box<dyn SignedData>, CallbackError>>().await
-        });
-
-        let err = component
-            .beacon_committee_selections(vec![V1BeaconCommitteeSelection {
-                slot: 1,
-                validator_index: 1,
-                selection_proof: [0xDD; 96],
-            }])
-            .await
-            .unwrap_err();
-        assert_eq!(err.status_code, StatusCode::REQUEST_TIMEOUT);
-    }
-
     /// Happy-path sync committee selections.
     #[tokio::test]
     async fn sync_committee_selections_happy_path() {
@@ -3564,84 +3454,6 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
-    }
-
-    /// Sync committee selection times out on a stalled AggSigDB.
-    #[tokio::test(start_paused = true)]
-    async fn sync_committee_selections_await_agg_sig_db_times_out() {
-        let dv_root = dv_pubkey(0xD2);
-        let (mut component, _mock) =
-            make_selections_component_insecure(HashMap::from([(1u64, dv_root)])).await;
-
-        component.register_await_agg_sig_db(|_duty, _pk| async {
-            std::future::pending::<Result<Box<dyn SignedData>, CallbackError>>().await
-        });
-
-        let err = component
-            .sync_committee_selections(vec![V1SyncCommitteeSelection {
-                slot: 1,
-                validator_index: 1,
-                subcommittee_index: 0,
-                selection_proof: [0xDD; 96],
-            }])
-            .await
-            .unwrap_err();
-        assert_eq!(err.status_code, StatusCode::REQUEST_TIMEOUT);
-    }
-
-    /// A stalled subscriber must not pin the handler indefinitely — the
-    /// per-request deadline applies to subscriber fan-out as well as the
-    /// AggSigDB await. The handler returns 408.
-    #[tokio::test(start_paused = true)]
-    async fn beacon_committee_selections_subscriber_timeout() {
-        let dv_root = dv_pubkey(0xF1);
-        let (mut component, _mock) =
-            make_selections_component_insecure(HashMap::from([(1u64, dv_root)])).await;
-
-        // Subscriber that never completes.
-        component.subscribe(|_duty, _set| async {
-            std::future::pending::<Result<(), CallbackError>>().await
-        });
-        // `await_agg_sig_db` must NOT be reached if the subscriber blocks.
-        component.register_await_agg_sig_db(|_duty, _pk| async {
-            panic!("await_agg_sig_db must not be reached when the subscriber stalls");
-        });
-
-        let err = component
-            .beacon_committee_selections(vec![V1BeaconCommitteeSelection {
-                slot: 1,
-                validator_index: 1,
-                selection_proof: [0xAA; 96],
-            }])
-            .await
-            .unwrap_err();
-        assert_eq!(err.status_code, StatusCode::REQUEST_TIMEOUT);
-    }
-
-    /// Counterpart of [`beacon_committee_selections_subscriber_timeout`].
-    #[tokio::test(start_paused = true)]
-    async fn sync_committee_selections_subscriber_timeout() {
-        let dv_root = dv_pubkey(0xF2);
-        let (mut component, _mock) =
-            make_selections_component_insecure(HashMap::from([(1u64, dv_root)])).await;
-
-        component.subscribe(|_duty, _set| async {
-            std::future::pending::<Result<(), CallbackError>>().await
-        });
-        component.register_await_agg_sig_db(|_duty, _pk| async {
-            panic!("await_agg_sig_db must not be reached when the subscriber stalls");
-        });
-
-        let err = component
-            .sync_committee_selections(vec![V1SyncCommitteeSelection {
-                slot: 1,
-                validator_index: 1,
-                subcommittee_index: 0,
-                selection_proof: [0xBB; 96],
-            }])
-            .await
-            .unwrap_err();
-        assert_eq!(err.status_code, StatusCode::REQUEST_TIMEOUT);
     }
 
     /// An empty selections array is a well-defined no-op: the handler runs
