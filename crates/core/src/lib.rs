@@ -26,6 +26,10 @@ pub mod deadline;
 /// Clock abstraction over the current time.
 pub mod clock;
 
+/// Duty gater — rejects duties whose type is invalid or that are too far in the
+/// future.
+pub mod gater;
+
 /// parsigdb
 pub mod parsigdb;
 
