@@ -22,7 +22,10 @@ use libp2p::{
 };
 use tokio::sync::{RwLock, mpsc, oneshot};
 
-use pluto_core::{gater::DutyGaterFn, types::{Duty, ParSignedData, ParSignedDataSet, PubKey}};
+use pluto_core::{
+    gater::DutyGaterFn,
+    types::{Duty, ParSignedData, ParSignedDataSet, PubKey},
+};
 use pluto_p2p::p2p_context::P2PContext;
 
 use super::{Handler, encode_message};

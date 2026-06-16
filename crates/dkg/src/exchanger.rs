@@ -330,7 +330,9 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
-    use super::{Exchanger, SIG_DEPOSIT_DATA, SIG_LOCK, SIG_VALIDATOR_REG, SigTypeStore};
+    use super::{
+        DutyGaterFn, Exchanger, SIG_DEPOSIT_DATA, SIG_LOCK, SIG_VALIDATOR_REG, SigTypeStore,
+    };
 
     fn available_tcp_port() -> anyhow::Result<u16> {
         let listener = TcpListener::bind("127.0.0.1:0")?;

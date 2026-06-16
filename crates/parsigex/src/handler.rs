@@ -19,7 +19,10 @@ use libp2p::{
 };
 use tokio::time::timeout;
 
-use pluto_core::{gater::DutyGaterFn, types::{Duty, ParSignedDataSet}};
+use pluto_core::{
+    gater::DutyGaterFn,
+    types::{Duty, ParSignedDataSet},
+};
 
 use super::{PROTOCOL_NAME, Verifier, protocol};
 use crate::error::Failure;
