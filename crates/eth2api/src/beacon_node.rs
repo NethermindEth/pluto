@@ -10,10 +10,6 @@ type Result<T> = std::result::Result<T, BeaconNodeClientError>;
 /// Errors returned by [`BeaconNodeClient`].
 #[derive(Debug, thiserror::Error)]
 pub enum BeaconNodeClientError {
-    /// Validator cache has not been configured.
-    #[error("no active validator cache")]
-    NoActiveValidatorCache,
-
     /// Validator cache failed.
     #[error(transparent)]
     ValidatorCache(#[from] ValidatorCacheError),
@@ -24,15 +20,18 @@ pub enum BeaconNodeClientError {
 #[derive(Clone)]
 pub struct BeaconNodeClient {
     api: EthBeaconNodeApiClient,
-    validator_cache: Arc<RwLock<Option<ValidatorCache>>>,
+    // TODO: Find the concrete usages of the `validator_cache` and consider if we can make it
+    // immutable, that is, set it once at construction and not have to deal with the possibility of
+    // it being unset later.
+    validator_cache: Arc<RwLock<ValidatorCache>>,
 }
 
 impl BeaconNodeClient {
     /// Creates a new beacon node client.
     pub fn new(api: EthBeaconNodeApiClient) -> Self {
         Self {
-            api,
-            validator_cache: Arc::new(RwLock::new(None)),
+            api: api.clone(),
+            validator_cache: Arc::new(RwLock::new(ValidatorCache::new(api, Vec::new()))),
         }
     }
 
@@ -43,27 +42,24 @@ impl BeaconNodeClient {
 
     /// Sets the validator cache used by cached validator methods.
     pub async fn set_validator_cache(&self, validator_cache: ValidatorCache) {
-        *self.validator_cache.write().await = Some(validator_cache);
+        *self.validator_cache.write().await = validator_cache;
     }
 
     /// Returns active validators for `head`.
     pub async fn active_validators(&self) -> Result<ActiveValidators> {
-        let (active, _) = self.validator_cache().await?.get_by_head().await?;
+        let (active, _) = self.validator_cache().await.get_by_head().await?;
         Ok(active)
     }
 
     /// Returns complete validators for `head`.
     pub async fn complete_validators(&self) -> Result<CompleteValidators> {
-        let (_, complete) = self.validator_cache().await?.get_by_head().await?;
+        let (_, complete) = self.validator_cache().await.get_by_head().await?;
         Ok(complete)
     }
 
-    async fn validator_cache(&self) -> Result<ValidatorCache> {
-        self.validator_cache
-            .read()
-            .await
-            .clone()
-            .ok_or(BeaconNodeClientError::NoActiveValidatorCache)
+    /// Get the validator cache.
+    pub async fn validator_cache(&self) -> ValidatorCache {
+        self.validator_cache.read().await.clone()
     }
 }
 
@@ -116,16 +112,6 @@ mod tests {
 
         assert_eq!(active.len(), 1);
         assert_eq!(complete.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn active_validators_errors_without_cache() {
-        let mock = MockServer::start().await;
-        let client = BeaconNodeClient::new(test_client(&mock));
-
-        let err = client.active_validators().await.unwrap_err();
-
-        assert_eq!(err.to_string(), "no active validator cache");
     }
 
     fn test_client(server: &MockServer) -> EthBeaconNodeApiClient {

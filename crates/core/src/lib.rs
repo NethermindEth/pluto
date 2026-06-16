@@ -39,6 +39,10 @@ pub mod validatorapi;
 /// SigAgg — threshold BLS signature aggregation.
 pub mod sigagg;
 
+/// Resolves beacon-chain duties per epoch, ticks the slot clock, and fans
+/// duties out to downstream components.
+pub mod scheduler;
+
 /// Implementations of AggSigDB.
 pub mod aggsigdb;
 

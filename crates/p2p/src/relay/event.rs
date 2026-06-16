@@ -31,9 +31,8 @@ pub enum RelayManagerEvent {
     /// circuits. From here libp2p owns the connection; this event exists for
     /// telemetry only.
     PeerRoutedConnected(PeerId),
-    /// A dial attempt failed. The underlying [`super::dial::RelayDialState`]
-    /// self-rearms with exponential backoff, so consumers don't need to
-    /// take any action.
+    /// A dial attempt failed. The underlying `RelayDialState` self-rearms
+    /// with exponential backoff, so consumers don't need to take any action.
     DialFailed {
         /// Target peer id (a relay server, or a routed cluster peer).
         peer_id: PeerId,
@@ -100,8 +99,8 @@ impl From<&DialError> for RelayDialError {
     }
 }
 
-/// Whether a [`super::dial::RelayDialState`] is targeting a relay server or a
-/// cluster peer reached through reserved relay circuits.
+/// Whether a `RelayDialState` is targeting a relay server or a cluster peer
+/// reached through reserved relay circuits.
 #[derive(Debug, Clone, Copy)]
 pub enum RelayDialType {
     /// Dial a known cluster peer via reserved relay circuits.

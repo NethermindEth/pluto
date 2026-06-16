@@ -150,6 +150,27 @@ pub async fn verify(
     Ok(())
 }
 
+/// Verifies a signature using a pre-resolved [`Domain`], so callers that
+/// repeat signature checks under the same domain (e.g. a batch of builder
+/// registrations) can hoist the upstream `/eth/v1/config/spec` and
+/// `/eth/v1/beacon/genesis` calls out of their loop.
+pub fn verify_with_domain(
+    domain: Domain,
+    message_root: Root,
+    signature: &Signature,
+    pubkey: &PublicKey,
+) -> Result<()> {
+    if *signature == [0; 96] {
+        return Err(SigningError::ZeroSignature);
+    }
+
+    let signing_root = compute_signing_root(message_root, domain);
+
+    BlstImpl.verify(pubkey, &signing_root, signature)?;
+
+    Ok(())
+}
+
 /// Verifies the selection proof embedded in an aggregate-and-proof payload.
 pub async fn verify_aggregate_and_proof_selection(
     client: &EthBeaconNodeApiClient,
@@ -380,6 +401,37 @@ mod tests {
         )
         .await
         .unwrap_err();
+
+        assert!(matches!(err, SigningError::ZeroSignature));
+    }
+
+    #[tokio::test]
+    async fn verify_with_domain_accepts_valid_signature() {
+        let mock = mock_beacon_client().await;
+        let client = mock.client();
+
+        let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
+        let pubkey = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let message_root = [0x55; 32];
+        let domain = get_domain(client, DomainName::ApplicationBuilder, 0)
+            .await
+            .unwrap();
+        let signing_root = compute_signing_root(message_root, domain);
+        let signature = BlstImpl.sign(&secret, &signing_root).unwrap();
+
+        verify_with_domain(domain, message_root, &signature, &pubkey).unwrap();
+    }
+
+    #[tokio::test]
+    async fn verify_with_domain_rejects_zero_signature() {
+        let mock = mock_beacon_client().await;
+        let client = mock.client();
+        let domain = get_domain(client, DomainName::ApplicationBuilder, 0)
+            .await
+            .unwrap();
+        let pubkey = [0x11; 48];
+
+        let err = verify_with_domain(domain, [0x22; 32], &[0; 96], &pubkey).unwrap_err();
 
         assert!(matches!(err, SigningError::ZeroSignature));
     }
