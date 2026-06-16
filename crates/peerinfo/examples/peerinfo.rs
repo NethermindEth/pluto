@@ -19,6 +19,7 @@ use libp2p::{
 };
 use pluto_cluster::lock::Lock;
 use pluto_core::version::{VERSION, git_commit};
+use pluto_eth2util::enr::{EnrEntry, Record};
 use pluto_p2p::{
     behaviours::pluto::PlutoBehaviourEvent,
     config::P2PConfig,
@@ -256,12 +257,12 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let enr = pluto_eth2util::enr::Record::new(
+    let enr = Record::new(
         &key,
         vec![
-            pluto_eth2util::enr::with_ip_impl(Ipv4Addr::from([0, 0, 0, 0])),
-            pluto_eth2util::enr::with_tcp_impl(args.port),
-            pluto_eth2util::enr::with_udp_impl(args.port),
+            EnrEntry::Ipv4(Ipv4Addr::from([0, 0, 0, 0])),
+            EnrEntry::Tcp(args.port),
+            EnrEntry::Udp(args.port),
         ],
     )?;
 

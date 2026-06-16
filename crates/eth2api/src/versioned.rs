@@ -9,6 +9,22 @@ use crate::{
     v1,
 };
 
+/// Graffiti string used to mark synthetic blocks that must never be submitted.
+pub const SYNTHETIC_BLOCK_GRAFFITI: &str = "SYNTHETIC BLOCK: DO NOT SUBMIT";
+
+/// 32-byte graffiti used to mark synthetic blocks, left-aligned with zero
+/// padding.
+pub const SYNTHETIC_GRAFFITI: phase0::Root = {
+    let mut graffiti = [0u8; 32];
+    let src = SYNTHETIC_BLOCK_GRAFFITI.as_bytes();
+    let mut i = 0;
+    while i < src.len() {
+        graffiti[i] = src[i];
+        i += 1;
+    }
+    graffiti
+};
+
 /// Signed proposal wrapper across all supported forks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionedSignedProposal {
@@ -87,6 +103,24 @@ impl SignedProposalBlock {
         }
     }
 
+    /// Returns the graffiti embedded in this proposal's block body.
+    pub fn graffiti(&self) -> phase0::Root {
+        match self {
+            Self::Phase0(block) => block.message.body.graffiti,
+            Self::Altair(block) => block.message.body.graffiti,
+            Self::Bellatrix(block) => block.message.body.graffiti,
+            Self::BellatrixBlinded(block) => block.message.body.graffiti,
+            Self::Capella(block) => block.message.body.graffiti,
+            Self::CapellaBlinded(block) => block.message.body.graffiti,
+            Self::Deneb(block) => block.signed_block.message.body.graffiti,
+            Self::DenebBlinded(block) => block.message.body.graffiti,
+            Self::Electra(block) => block.signed_block.message.body.graffiti,
+            Self::ElectraBlinded(block) => block.message.body.graffiti,
+            Self::Fulu(block) => block.signed_block.message.body.graffiti,
+            Self::FuluBlinded(block) => block.message.body.graffiti,
+        }
+    }
+
     /// Converts blinded payload variants into blinded-wrapper payloads.
     pub fn into_blinded(self) -> Option<SignedBlindedProposalBlock> {
         match self {
@@ -103,6 +137,18 @@ impl SignedProposalBlock {
             | Self::Electra(_)
             | Self::Fulu(_) => None,
         }
+    }
+}
+
+impl VersionedSignedProposal {
+    /// Returns `true` if this is a synthetic proposal, i.e. its block body
+    /// graffiti matches [`SYNTHETIC_GRAFFITI`].
+    ///
+    /// Unifies Go's separate blinded/full checks: the payload enum already
+    /// carries both blinded and full variants, so a single graffiti comparison
+    /// covers every case.
+    pub fn is_synthetic(&self) -> bool {
+        self.block.graffiti() == SYNTHETIC_GRAFFITI
     }
 }
 
@@ -400,6 +446,14 @@ impl VersionedSignedValidatorRegistration {
 mod tests {
     use super::*;
     use crate::test_fixtures;
+
+    #[test]
+    fn synthetic_graffiti_layout() {
+        let marker = SYNTHETIC_BLOCK_GRAFFITI.as_bytes();
+        assert_eq!(&SYNTHETIC_GRAFFITI[..marker.len()], marker);
+        // Remaining bytes are zero-padded.
+        assert!(SYNTHETIC_GRAFFITI[marker.len()..].iter().all(|&b| b == 0));
+    }
 
     #[test]
     fn versioned_signed_aggregate_and_proof_message_root_delegates_to_payload() {

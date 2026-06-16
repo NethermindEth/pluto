@@ -2428,9 +2428,9 @@ dependencies = [
 
 [[package]]
 name = "either"
-version = "1.15.0"
+version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
+checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
 dependencies = [
  "serde",
 ]
@@ -5521,6 +5521,7 @@ dependencies = [
  "libp2p",
  "pluto-app",
  "pluto-cluster",
+ "pluto-consensus",
  "pluto-core",
  "pluto-crypto",
  "pluto-dkg",
@@ -5584,11 +5585,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "pluto-consensus"
+version = "1.7.1"
+dependencies = [
+ "anyhow",
+ "cancellation",
+ "chrono",
+ "clap",
+ "crossbeam",
+ "either",
+ "ethereum_ssz",
+ "futures",
+ "hex",
+ "k256",
+ "libp2p",
+ "pluto-cluster",
+ "pluto-core",
+ "pluto-eth2api",
+ "pluto-eth2util",
+ "pluto-featureset",
+ "pluto-k1util",
+ "pluto-p2p",
+ "pluto-ssz",
+ "pluto-tracing",
+ "prost 0.14.3",
+ "prost-types 0.14.3",
+ "serde_json",
+ "test-case",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "vise",
+]
+
+[[package]]
 name = "pluto-core"
 version = "1.7.1"
 dependencies = [
  "alloy",
  "anyhow",
+ "async-trait",
+ "axum",
+ "backon",
  "base64",
  "built",
  "cancellation",
@@ -5599,15 +5638,12 @@ dependencies = [
  "dyn-eq",
  "ethereum_ssz",
  "hex",
- "k256",
- "libp2p",
  "pluto-build-proto",
  "pluto-cluster",
  "pluto-crypto",
  "pluto-eth2api",
  "pluto-eth2util",
  "pluto-featureset",
- "pluto-p2p",
  "pluto-ssz",
  "pluto-testutil",
  "pluto-tracing",
@@ -5621,6 +5657,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
+ "tower",
  "tracing",
  "tree_hash",
  "vise",
@@ -5702,6 +5739,7 @@ version = "1.7.1"
 dependencies = [
  "alloy",
  "anyhow",
+ "async-trait",
  "bon",
  "chrono",
  "ethereum_ssz",
@@ -5722,6 +5760,7 @@ dependencies = [
  "tree_hash",
  "tree_hash_derive",
  "validator",
+ "wiremock",
 ]
 
 [[package]]

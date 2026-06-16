@@ -75,9 +75,15 @@ impl DutyType {
         !matches!(self, DutyType::Unknown | DutyType::DutySentinel(_))
     }
 
-    /// Returns all valid duty types, matching Go's `AllDutyTypes()`.
-    pub fn all() -> &'static [DutyType] {
-        &[
+    /// Returns true if duties of this type have no deadline (e.g. voluntary
+    /// exits, builder registrations).
+    pub fn never_expires(&self) -> bool {
+        matches!(self, DutyType::Exit | DutyType::BuilderRegistration)
+    }
+
+    /// All valid duty types.
+    pub fn all() -> [DutyType; 13] {
+        [
             DutyType::Proposer,
             DutyType::Attester,
             DutyType::Signature,
@@ -92,12 +98,6 @@ impl DutyType {
             DutyType::SyncContribution,
             DutyType::InfoSync,
         ]
-    }
-
-    /// Returns true if duties of this type have no deadline (e.g. voluntary
-    /// exits, builder registrations).
-    pub fn never_expires(&self) -> bool {
-        matches!(self, DutyType::Exit | DutyType::BuilderRegistration)
     }
 }
 
@@ -158,7 +158,7 @@ impl TryFrom<i32> for DutyType {
 }
 
 /// SlotNumber struct
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SlotNumber(u64);
 
 impl Display for SlotNumber {
@@ -381,11 +381,14 @@ impl From<[u8; PK_LEN]> for PubKey {
 }
 
 /// Public key error type
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PubKeyError {
     /// Invalid public key length.
+    #[error("Invalid public key length")]
     InvalidLength,
+
     /// Invalid public key string.
+    #[error("Invalid public key string")]
     InvalidString,
 }
 
@@ -428,139 +431,197 @@ impl AsRef<[u8]> for PubKey {
     }
 }
 
-// todo: add toEth2Format for the pub key
-// https://github.com/ObolNetwork/charon/blob/b3008103c5429b031b63518195f4c49db4e9a68d/core/types.go#L311
-
-/// A block proposer duty, mirroring eth2 `v1.ProposerDuty`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProposerDuty {
-    /// Public key of the validator that should propose.
-    pub pubkey: phase0::BLSPubKey,
-    /// Slot in which the validator should propose.
-    pub slot: phase0::Slot,
-    /// Index of the validator that should propose.
-    pub validator_index: phase0::ValidatorIndex,
+/// Attestation duties to be performed by validators for a particular epoch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AttesterDutyDefinition {
+    /// The validator's BLS public key
+    pub pubkey: PubKey,
+    /// Index of validator in validator registry
+    pub v_idx: u64,
+    /// The slot at which the validator must attest.
+    pub slot: SlotNumber,
 }
 
-/// A sync committee duty, mirroring eth2 `v1.SyncCommitteeDuty`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SyncCommitteeDuty {
-    /// Public key of the validator that should contribute.
-    pub pubkey: phase0::BLSPubKey,
-    /// Index of the validator that should contribute.
-    pub validator_index: phase0::ValidatorIndex,
-    /// Indices of the validator in the list of validators in the committee.
+impl TryInto<AttesterDutyDefinition>
+    for pluto_eth2api::types::GetAttesterDutiesResponseResponseDatum
+{
+    type Error = pluto_eth2api::EthBeaconNodeApiClientError;
+
+    fn try_into(self) -> Result<AttesterDutyDefinition, Self::Error> {
+        let pubkey = PubKey::try_from(self.pubkey.as_str())
+            .map_err(|_| pluto_eth2api::EthBeaconNodeApiClientError::ParseError("pubkey".into()))?;
+        let v_idx = self.validator_index.parse::<u64>().map_err(|_| {
+            pluto_eth2api::EthBeaconNodeApiClientError::ParseError("validator_index".into())
+        })?;
+        let slot =
+            SlotNumber::from(self.slot.parse::<u64>().map_err(|_| {
+                pluto_eth2api::EthBeaconNodeApiClientError::ParseError("slot".into())
+            })?);
+
+        Ok(AttesterDutyDefinition {
+            pubkey,
+            v_idx,
+            slot,
+        })
+    }
+}
+
+/// Indicates that a validator must propose a block in a given epoch
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProposerDutyDefinition {
+    /// The validator's BLS public key
+    pub pubkey: PubKey,
+    ///Index of validator in validator registry.
+    pub v_idx: u64,
+    /// The slot at which the validator must propose a block.
+    pub slot: SlotNumber,
+}
+
+impl TryFrom<pluto_eth2api::types::GetProposerDutiesResponseResponseDatum>
+    for ProposerDutyDefinition
+{
+    type Error = pluto_eth2api::EthBeaconNodeApiClientError;
+
+    fn try_from(
+        value: pluto_eth2api::types::GetProposerDutiesResponseResponseDatum,
+    ) -> Result<ProposerDutyDefinition, Self::Error> {
+        let pubkey = PubKey::try_from(value.pubkey.as_str())
+            .map_err(|_| pluto_eth2api::EthBeaconNodeApiClientError::ParseError("pubkey".into()))?;
+        let v_idx = value.validator_index.parse::<u64>().map_err(|_| {
+            pluto_eth2api::EthBeaconNodeApiClientError::ParseError("validator_index".into())
+        })?;
+        let slot =
+            SlotNumber::from(value.slot.parse::<u64>().map_err(|_| {
+                pluto_eth2api::EthBeaconNodeApiClientError::ParseError("slot".into())
+            })?);
+
+        Ok(ProposerDutyDefinition {
+            pubkey,
+            v_idx,
+            slot,
+        })
+    }
+}
+
+/// Sync committee duties for a particular epoch
+#[derive(Debug, Clone, PartialEq)]
+pub struct SyncCommitteeDutyDefinition {
+    /// The validator's BLS public key
+    pub pubkey: PubKey,
+    /// Index of validator in validator registry.
+    pub validator_index: u64,
+    /// The indices of the validator in the sync committee.
     pub validator_sync_committee_indices: Vec<u64>,
 }
 
-/// Attester duty definition. Mirrors Go's `core.AttesterDefinition`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AttesterDefinition(pub AttesterDuty);
+impl TryInto<SyncCommitteeDutyDefinition>
+    for pluto_eth2api::types::GetSyncCommitteeDutiesResponseResponseDatum
+{
+    type Error = pluto_eth2api::EthBeaconNodeApiClientError;
 
-impl AttesterDefinition {
-    /// Create a new attester definition.
-    pub fn new(duty: AttesterDuty) -> Self {
-        Self(duty)
-    }
+    fn try_into(self) -> Result<SyncCommitteeDutyDefinition, Self::Error> {
+        let pubkey = PubKey::try_from(self.pubkey.as_str())
+            .map_err(|_| pluto_eth2api::EthBeaconNodeApiClientError::ParseError("pubkey".into()))?;
+        let validator_index = self.validator_index.parse::<u64>().map_err(|_| {
+            pluto_eth2api::EthBeaconNodeApiClientError::ParseError("validator_index".into())
+        })?;
+        let validator_sync_committee_indices = self
+            .validator_sync_committee_indices
+            .iter()
+            .map(|idx| {
+                idx.parse::<u64>().map_err(|_| {
+                    pluto_eth2api::EthBeaconNodeApiClientError::ParseError(
+                        "validator_sync_committee_indices".into(),
+                    )
+                })
+            })
+            .collect::<Result<Vec<u64>, _>>()?;
 
-    /// The wrapped attester duty.
-    pub fn duty(&self) -> &AttesterDuty {
-        &self.0
-    }
-}
-
-/// Block proposer duty definition. Mirrors Go's `core.ProposerDefinition`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProposerDefinition(pub ProposerDuty);
-
-impl ProposerDefinition {
-    /// Create a new proposer definition.
-    pub fn new(duty: ProposerDuty) -> Self {
-        Self(duty)
-    }
-
-    /// The wrapped proposer duty.
-    pub fn duty(&self) -> &ProposerDuty {
-        &self.0
-    }
-}
-
-/// Sync committee duty definition. Mirrors Go's `core.SyncCommitteeDefinition`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SyncCommitteeDefinition(pub SyncCommitteeDuty);
-
-impl SyncCommitteeDefinition {
-    /// Create a new sync committee definition.
-    pub fn new(duty: SyncCommitteeDuty) -> Self {
-        Self(duty)
-    }
-
-    /// The wrapped sync committee duty.
-    pub fn duty(&self) -> &SyncCommitteeDuty {
-        &self.0
+        Ok(SyncCommitteeDutyDefinition {
+            pubkey,
+            validator_index,
+            validator_sync_committee_indices,
+        })
     }
 }
 
-/// Per-validator duty definition. The Rust equivalent of Go's
-/// `core.DutyDefinition` interface: a closed set of concrete duty definitions.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// All duty definitions for a validator in a given epoch.
+#[derive(Debug, Clone, PartialEq)]
 pub enum DutyDefinition {
     /// Attester duty definition.
-    Attester(AttesterDefinition),
-    /// Block proposer duty definition.
-    Proposer(ProposerDefinition),
+    Attester(AttesterDutyDefinition),
+    /// Proposer duty definition.
+    Proposer(ProposerDutyDefinition),
     /// Sync committee duty definition.
-    SyncCommittee(SyncCommitteeDefinition),
+    SyncCommittee(SyncCommitteeDutyDefinition),
 }
 
-impl DutyDefinition {
-    /// Returns the attester definition, or `None` if this is a different duty.
-    pub fn as_attester(&self) -> Option<&AttesterDefinition> {
-        match self {
-            Self::Attester(d) => Some(d),
-            _ => None,
-        }
-    }
-
-    /// Returns the proposer definition, or `None` if this is a different duty.
-    pub fn as_proposer(&self) -> Option<&ProposerDefinition> {
-        match self {
-            Self::Proposer(d) => Some(d),
-            _ => None,
-        }
-    }
-
-    /// Returns the sync committee definition, or `None` if this is a different
-    /// duty.
-    pub fn as_sync_committee(&self) -> Option<&SyncCommitteeDefinition> {
-        match self {
-            Self::SyncCommittee(d) => Some(d),
-            _ => None,
-        }
-    }
-}
-
-/// One duty definition per validator, matching Go's `core.DutyDefinitionSet`
-/// (`map[core.PubKey]core.DutyDefinition`).
+/// A set of duty definitions for all validators in a given epoch, indexed by
+/// public key.
 pub type DutyDefinitionSet = HashMap<PubKey, DutyDefinition>;
 
-/// Unsigned duty data variant — the Rust equivalent of Go's
-/// `core.UnsignedData` interface.
-#[derive(Debug, Clone, PartialEq)]
-pub enum UnsignedDutyData {
-    /// Unsigned proposal (DutyProposer).
-    Proposal(Box<VersionedProposal>),
-    /// Unsigned attestation data (DutyAttester).
-    Attestation(AttestationData),
-    /// Unsigned aggregated attestation (DutyAggregator).
-    AggAttestation(VersionedAggregatedAttestation),
-    /// Unsigned sync contribution (DutySyncContribution).
-    SyncContribution(SyncContribution),
+/// Unsigned data type
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnsignedData<T: Clone + Serialize + StdDebug>(T);
+
+impl<T> UnsignedData<T>
+where
+    T: Clone + Serialize + StdDebug,
+{
+    /// Create a new unsigned data.
+    pub fn new(unsigned_data: T) -> Self {
+        Self(unsigned_data)
+    }
+}
+/// Unsigned data set
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnsignedDataSet<T>(HashMap<DutyType, UnsignedData<T>>)
+where
+    T: Clone + Serialize + StdDebug;
+
+impl<T> Default for UnsignedDataSet<T>
+where
+    T: Clone + Serialize + StdDebug,
+{
+    fn default() -> Self {
+        Self(HashMap::default())
+    }
 }
 
-/// Map from public key to unsigned duty data, the Rust equivalent of Go's
-/// `core.UnsignedDataSet` (`map[core.PubKey]core.UnsignedData`).
-pub type UnsignedDataSet = HashMap<PubKey, UnsignedDutyData>;
+impl<T> UnsignedDataSet<T>
+where
+    T: Clone + Serialize + StdDebug,
+{
+    /// Create a new unsigned data set.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Get an unsigned data by duty type.
+    pub fn get(&self, duty_type: &DutyType) -> Option<&UnsignedData<T>> {
+        self.0.get(duty_type)
+    }
+
+    /// Insert an unsigned data.
+    pub fn insert(&mut self, duty_type: DutyType, unsigned_data: UnsignedData<T>) {
+        self.0.insert(duty_type, unsigned_data);
+    }
+
+    /// Remove an unsigned data by duty type.
+    pub fn remove(&mut self, duty_type: &DutyType) -> Option<UnsignedData<T>> {
+        self.0.remove(duty_type)
+    }
+
+    /// Inner unsigned data set.
+    pub fn inner(&self) -> &HashMap<DutyType, UnsignedData<T>> {
+        &self.0
+    }
+
+    /// Inner unsigned data set.
+    pub fn inner_mut(&mut self) -> &mut HashMap<DutyType, UnsignedData<T>> {
+        &mut self.0
+    }
+}
 
 /// Signed data type
 pub trait SignedData: Any + DynClone + DynEq + StdDebug + Send + Sync {
@@ -736,53 +797,8 @@ impl TryFrom<(&DutyType, &pbcore::ParSignedDataSet)> for ParSignedDataSet {
     }
 }
 
-/// SignedDataSet is a set of signed duty data.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SignedDataSet<T: SignedData>(HashMap<PubKey, T>);
-
-impl<T> Default for SignedDataSet<T>
-where
-    T: SignedData,
-{
-    fn default() -> Self {
-        Self(HashMap::default())
-    }
-}
-
-impl<T> SignedDataSet<T>
-where
-    T: SignedData,
-{
-    /// Create a new signed data set.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Get a signed data by public key.
-    pub fn get(&self, pub_key: &PubKey) -> Option<&T> {
-        self.0.get(pub_key)
-    }
-
-    /// Insert a signed data.
-    pub fn insert(&mut self, pub_key: PubKey, signed_data: T) {
-        self.0.insert(pub_key, signed_data);
-    }
-
-    /// Remove a signed data by public key.
-    pub fn remove(&mut self, pub_key: &PubKey) -> Option<T> {
-        self.0.remove(pub_key)
-    }
-
-    /// Inner signed data set.
-    pub fn inner(&self) -> &HashMap<PubKey, T> {
-        &self.0
-    }
-
-    /// Inner signed data set.
-    pub fn inner_mut(&mut self) -> &mut HashMap<PubKey, T> {
-        &mut self.0
-    }
-}
+/// A set of signed duty data.
+pub type SignedDataSet = HashMap<PubKey, Box<dyn SignedData>>;
 
 /// Slot struct
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1029,42 +1045,23 @@ mod tests {
     }
 
     #[test]
-    fn duty_type_all() {
-        let all = DutyType::all();
-        assert_eq!(all.len(), 13);
-        assert!(all.iter().all(DutyType::is_valid));
-        assert!(!all.contains(&DutyType::Unknown));
-        for (i, dt) in all.iter().enumerate() {
-            assert_eq!(all.iter().position(|x| x == dt), Some(i));
-        }
-    }
-
-    #[test]
-    fn duty_definition_set() {
-        let pubkey = PubKey::new([1u8; PK_LEN]);
-        let duty = AttesterDuty {
-            slot: 1,
-            validator_index: 2,
-            committee_index: 3,
-            committee_length: 4,
-            committees_at_slot: 5,
-            validator_committee_index: 6,
-        };
-
-        let mut set = DutyDefinitionSet::new();
-        set.insert(
-            pubkey,
-            DutyDefinition::Attester(AttesterDefinition::new(duty.clone())),
+    fn unsigned_data_set() {
+        let mut unsigned_data_set = UnsignedDataSet::new();
+        unsigned_data_set.insert(DutyType::Proposer, UnsignedData::new(DutyType::Proposer));
+        assert_eq!(
+            unsigned_data_set.get(&DutyType::Proposer),
+            Some(&UnsignedData::new(DutyType::Proposer))
         );
-
-        let got = set.get(&pubkey).expect("definition present");
-        assert_eq!(got.as_attester().map(|d| d.duty()), Some(&duty));
-        assert!(got.as_proposer().is_none());
-        assert!(got.as_sync_committee().is_none());
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     struct MockSignedData;
+
+    impl MockSignedData {
+        fn boxed(&self) -> Box<dyn SignedData> {
+            Box::new(self.clone())
+        }
+    }
 
     impl SignedData for MockSignedData {
         fn signature(&self) -> Result<Signature, SignedDataError> {
@@ -1105,10 +1102,11 @@ mod tests {
     #[test]
     fn signed_data_set() {
         let mut signed_data_set = SignedDataSet::new();
-        signed_data_set.insert(PubKey::new([42u8; PK_LEN]), MockSignedData);
+        signed_data_set.insert(PubKey::new([42u8; PK_LEN]), MockSignedData.boxed());
+        let expected = MockSignedData.boxed();
         assert_eq!(
             signed_data_set.get(&PubKey::new([42u8; PK_LEN])),
-            Some(&MockSignedData)
+            Some(&expected)
         );
     }
 

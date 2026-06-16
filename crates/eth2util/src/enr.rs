@@ -105,28 +105,26 @@ pub struct Record {
     kvs: HashMap<String, Vec<u8>>,
 }
 
-/// OptionFn is a function that sets an option in the record.
-pub type OptionFn = Box<dyn Fn(&mut HashMap<String, Vec<u8>>)>;
-
-/// with_ip_impl is a function that sets the IP address in the record.
-pub fn with_ip_impl(ip: Ipv4Addr) -> OptionFn {
-    Box::new(move |kvs: &mut HashMap<String, Vec<u8>>| {
-        kvs.insert(KEY_IP.to_string(), ip.octets().to_vec());
-    })
+/// A single entry to set when creating a record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnrEntry {
+    /// Sets the IP address.
+    Ipv4(Ipv4Addr),
+    /// Sets the TCP port.
+    Tcp(u16),
+    /// Sets the UDP port.
+    Udp(u16),
 }
 
-/// with_tcp_impl is a function that sets the TCP port in the record.
-pub fn with_tcp_impl(tcp: u16) -> OptionFn {
-    Box::new(move |kvs: &mut HashMap<String, Vec<u8>>| {
-        kvs.insert(KEY_TCP.to_string(), tcp.to_be_bytes().to_vec());
-    })
-}
-
-/// with_udp_impl is a function that sets the UDP port in the record.
-pub fn with_udp_impl(udp: u16) -> OptionFn {
-    Box::new(move |kvs: &mut HashMap<String, Vec<u8>>| {
-        kvs.insert(KEY_UDP.to_string(), udp.to_be_bytes().to_vec());
-    })
+impl EnrEntry {
+    /// Writes this entry into the record's key-value pairs.
+    fn apply(self, kvs: &mut HashMap<String, Vec<u8>>) {
+        let _ = match self {
+            Self::Ipv4(ip) => kvs.insert(KEY_IP.to_string(), ip.octets().to_vec()),
+            Self::Tcp(tcp) => kvs.insert(KEY_TCP.to_string(), tcp.to_be_bytes().to_vec()),
+            Self::Udp(udp) => kvs.insert(KEY_UDP.to_string(), udp.to_be_bytes().to_vec()),
+        };
+    }
 }
 
 impl Record {
@@ -137,7 +135,7 @@ impl Record {
     }
 
     /// Creates a new record.
-    pub fn new(secret_key: &SecretKey, opts: Vec<OptionFn>) -> Result<Self, RecordError> {
+    pub fn new(secret_key: &SecretKey, opts: Vec<EnrEntry>) -> Result<Self, RecordError> {
         let mut kvs: HashMap<String, Vec<u8>> = HashMap::new();
 
         kvs.insert(KEY_ID.to_string(), VAL_ID.as_bytes().to_vec());
@@ -147,7 +145,7 @@ impl Record {
         );
 
         for opt in opts {
-            opt(&mut kvs);
+            opt.apply(&mut kvs);
         }
 
         let signature = sign(secret_key, &encode_elements(&[], &kvs))?;
@@ -394,9 +392,9 @@ mod tests {
         let r1 = Record::new(
             &secret_key,
             vec![
-                with_ip_impl(expect_ip),
-                with_tcp_impl(expect_tcp),
-                with_udp_impl(expect_udp),
+                EnrEntry::Ipv4(expect_ip),
+                EnrEntry::Tcp(expect_tcp),
+                EnrEntry::Udp(expect_udp),
             ],
         )
         .expect("Failed to create record");

@@ -6,6 +6,7 @@ description: Pluto-specific code review guidelines. Use as a general guideline w
 Principles:
 
 - Functional equivalence first; document and justify deviations.
+- Use Charon v1.7.1 as the Go parity baseline. For DKG, sync, reshare, FetchDefinition, and peer-indexed broadcast code, load `references/trail-of-bits-charon-v2-audit.md` and apply it as a required security overlay when v1.7.1 behavior conflicts with the audit.
 - Evidence-based: prefer tests, outputs, and file/line references over guesses.
 - Minimal change bias; avoid scope creep.
 - No time estimates in review output.

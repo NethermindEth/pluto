@@ -33,7 +33,7 @@ use std::{
 use pluto_featureset::{Feature, GLOBAL_STATE};
 use tokio::time::{Instant, sleep_until};
 
-use crate::types::{Duty, DutyType};
+use pluto_core::types::{Duty, DutyType};
 
 /// Increasing timer round-1 base timeout.
 pub const INC_ROUND_START: Duration = Duration::from_millis(750);
@@ -291,6 +291,7 @@ pub fn get_round_timer_func() -> RoundTimerFunc {
     }
 }
 
+/// Returns whether a consensus timer feature is enabled globally.
 fn feature_enabled(feature: Feature) -> bool {
     GLOBAL_STATE
         .read()
@@ -298,10 +299,12 @@ fn feature_enabled(feature: Feature) -> bool {
         .enabled(feature)
 }
 
+/// Returns true for duties that use the proposer-specific timer path.
 fn is_proposer(duty: &Duty) -> bool {
     matches!(&duty.duty_type, DutyType::Proposer)
 }
 
+/// Returns proposer round-one override duration when enabled.
 fn proposal_timeout_duration(duty: Option<&Duty>, round: i64) -> Option<Duration> {
     if round == 1 && duty.is_some_and(is_proposer) && feature_enabled(Feature::ProposalTimeout) {
         Some(PROPOSAL_TIMEOUT)
@@ -310,7 +313,7 @@ fn proposal_timeout_duration(duty: Option<&Duty>, round: i64) -> Option<Duration
     }
 }
 
-// Returns `INC_ROUND_START + INC_ROUND_INCREASE * round` duration for a round.
+/// Returns `INC_ROUND_START + INC_ROUND_INCREASE * round`.
 fn increasing_round_timeout(round: i64) -> Result<Duration> {
     ensure_non_negative_round(round)?;
 
@@ -323,7 +326,7 @@ fn increasing_round_timeout(round: i64) -> Result<Duration> {
         .ok_or(Error::DurationOverflow { round })
 }
 
-// Returns `LINEAR_ROUND_INC * round` duration for a round.
+/// Returns `LINEAR_ROUND_INC * round`.
 fn linear_round_timeout(round: i64) -> Result<Duration> {
     ensure_non_negative_round(round)?;
 
@@ -333,6 +336,7 @@ fn linear_round_timeout(round: i64) -> Result<Duration> {
         .ok_or(Error::DurationOverflow { round })
 }
 
+/// Returns the reduced timeout used after linear round one.
 fn linear_subsequent_round_timeout(round: i64) -> Result<Duration> {
     ensure_non_negative_round(round)?;
 
@@ -353,6 +357,7 @@ fn linear_subsequent_round_timeout(round: i64) -> Result<Duration> {
     Ok(Duration::from_millis(timeout_millis))
 }
 
+/// Rejects negative consensus rounds before duration arithmetic.
 fn ensure_non_negative_round(round: i64) -> Result<()> {
     if round < 0 {
         return Err(Error::InvalidRound { round });
@@ -361,12 +366,14 @@ fn ensure_non_negative_round(round: i64) -> Result<()> {
     Ok(())
 }
 
+/// Returns a timeout future scheduled relative to current Tokio time.
 fn timeout_from_now(timeout: Duration, round: i64) -> Result<RoundTimerFuture> {
     let deadline = checked_deadline(Instant::now(), timeout, round)?;
 
     Ok(timeout_for_deadline(deadline))
 }
 
+/// Returns a future that resolves at an absolute Tokio deadline.
 fn timeout_for_deadline(deadline: Instant) -> RoundTimerFuture {
     Box::pin(async move {
         sleep_until(deadline).await;
@@ -374,6 +381,7 @@ fn timeout_for_deadline(deadline: Instant) -> RoundTimerFuture {
     })
 }
 
+/// Adds a timeout to an absolute start time with overflow reporting.
 fn checked_deadline(start: Instant, timeout: Duration, round: i64) -> Result<Instant> {
     start
         .checked_add(timeout)
@@ -393,7 +401,7 @@ mod tests {
     use tokio::{task::JoinHandle, time::advance};
 
     use super::*;
-    use crate::types::SlotNumber;
+    use pluto_core::types::SlotNumber;
 
     // Feature state is process-global.
     static FEATURESET_TEST_LOCK: StdMutex<()> = StdMutex::new(());

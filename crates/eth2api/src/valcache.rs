@@ -1,10 +1,10 @@
-use pluto_core::types::PubKey;
-use pluto_eth2api::{
+use crate::{
     EthBeaconNodeApiClient, EthBeaconNodeApiClientError, GetStateValidatorsResponseResponse,
     GetStateValidatorsResponseResponseDatum, PostStateValidatorsRequest,
     PostStateValidatorsRequestPath, PostStateValidatorsResponse, ValidatorRequestBody,
-    spec::phase0::ValidatorIndex,
+    spec::phase0::{BLSPubKey as PubKey, ValidatorIndex},
 };
+use async_trait::async_trait;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 
@@ -43,6 +43,13 @@ impl std::ops::Deref for CompleteValidators {
 }
 
 impl ActiveValidators {
+    /// Builds an [`ActiveValidators`] from a `validator_index -> pubkey` map.
+    /// Lets consumers outside this crate (e.g. test doubles of
+    /// [`CachedValidatorsProvider`]) construct populated instances.
+    pub fn new(validators: HashMap<ValidatorIndex, PubKey>) -> Self {
+        Self(validators)
+    }
+
     /// An [`Iterator`] of active validator indices.
     pub fn indices(&self) -> impl Iterator<Item = ValidatorIndex> + '_ {
         self.0.keys().copied()
@@ -56,12 +63,29 @@ impl ActiveValidators {
 
 /// A provider of cached validator information for the current epoch,
 /// including both active validators and complete validator data.
-pub trait CachedValidatorsProvider {
+///
+/// Async so implementations may populate the underlying cache on demand —
+/// callers must not assume the call is non-blocking. Consumed via
+/// `Arc<dyn CachedValidatorsProvider>` (e.g. by the validator API), so the
+/// trait is object-safe and `Send + Sync`.
+#[async_trait]
+pub trait CachedValidatorsProvider: Send + Sync {
     /// Get the cached active validators.
-    fn active_validators(&self) -> Result<ActiveValidators>;
+    async fn active_validators(&self) -> Result<ActiveValidators>;
 
     /// Get all the cached validators.
-    fn complete_validators(&self) -> Result<CompleteValidators>;
+    async fn complete_validators(&self) -> Result<CompleteValidators>;
+}
+
+#[async_trait]
+impl CachedValidatorsProvider for ValidatorCache {
+    async fn active_validators(&self) -> Result<ActiveValidators> {
+        Ok(self.get_by_head().await?.0)
+    }
+
+    async fn complete_validators(&self) -> Result<CompleteValidators> {
+        Ok(self.get_by_head().await?.1)
+    }
 }
 
 /// A cache for active validators.
@@ -108,7 +132,7 @@ impl ValidatorCache {
                 state_id: "head".into(),
             },
             body: ValidatorRequestBody {
-                ids: Some(inner.pubkeys.iter().map(|pk| pk.to_string()).collect()),
+                ids: Some(inner.pubkeys.iter().map(format_pubkey).collect()),
                 ..Default::default()
             },
         };
@@ -148,7 +172,7 @@ impl ValidatorCache {
                 state_id: slot.to_string(),
             },
             body: ValidatorRequestBody {
-                ids: Some(inner.pubkeys.iter().map(|pk| pk.to_string()).collect()),
+                ids: Some(inner.pubkeys.iter().map(format_pubkey).collect()),
                 ..Default::default()
             },
         };
@@ -203,12 +227,7 @@ fn validators_from_response(
         .iter()
         .filter(|(_, v)| v.status.is_active())
         .map(|(&index, v)| {
-            let pubkey = v
-                .validator
-                .pubkey
-                .as_str()
-                .try_into()
-                .map_err(|_| EthBeaconNodeApiClientError::UnexpectedType)?;
+            let pubkey = parse_pubkey(&v.validator.pubkey)?;
 
             Ok((index, pubkey))
         })
@@ -220,16 +239,29 @@ fn validators_from_response(
     ))
 }
 
+fn format_pubkey(pubkey: &PubKey) -> String {
+    format!("0x{}", hex::encode(pubkey))
+}
+
+fn parse_pubkey(pubkey: &str) -> Result<PubKey> {
+    let bytes = hex::decode(pubkey.strip_prefix("0x").unwrap_or(pubkey))
+        .map_err(|_| EthBeaconNodeApiClientError::UnexpectedType)?;
+
+    bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| EthBeaconNodeApiClientError::UnexpectedType.into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pluto_eth2api::{
+    use crate::{
         BlindedBlock400Response, GetStateValidatorsResponseResponseDatum,
         ValidatorResponseValidator, ValidatorStatus,
     };
-    use pluto_testutil::BeaconMock;
     use wiremock::{
-        Mock, ResponseTemplate,
+        Mock, MockServer, ResponseTemplate,
         matchers::{method, path},
     };
 
@@ -262,23 +294,20 @@ mod tests {
             .iter()
             .filter(|(_, datum)| datum.status.is_active())
             .map(|(&index, datum)| {
-                let pubkey: PubKey = datum.validator.pubkey.as_str().try_into().unwrap();
+                let pubkey = parse_pubkey(&datum.validator.pubkey).unwrap();
                 (index, pubkey)
             })
             .collect::<HashMap<ValidatorIndex, PubKey>>();
 
         // Create a mock server that tracks request count
-        let mock = BeaconMock::builder()
-            .build()
-            .await
-            .expect("should create beacon mock");
+        let mock = MockServer::start().await;
         post_state_validators_success("head", datums.to_vec())
             .expect(2) // Should be called exactly twice (once before trim, once after)
-            .mount(mock.server())
+            .mount(&mock)
             .await;
 
         // Create a cache.
-        let cache = ValidatorCache::new(mock.client().clone(), pubkeys);
+        let cache = ValidatorCache::new(test_client(&mock), pubkeys.clone());
 
         // Check cache is populated.
         let (actual_active, actual_complete) =
@@ -311,16 +340,13 @@ mod tests {
     #[tokio::test]
     async fn get_by_head_fail_fetch() {
         // Create a mock server that returns a 404 error
-        let mock = BeaconMock::builder()
-            .build()
-            .await
-            .expect("should create beacon mock");
+        let mock = MockServer::start().await;
 
         post_state_validators_not_found("head")
             .expect(1)
-            .mount(mock.server())
+            .mount(&mock)
             .await;
-        let cache = ValidatorCache::new(mock.client().clone(), vec![test_pubkey(1)]);
+        let cache = ValidatorCache::new(test_client(&mock), vec![test_pubkey(1)]);
 
         // Verify cache is initially empty
         {
@@ -346,10 +372,7 @@ mod tests {
         let pubkeys = vec![test_pubkey(0), test_pubkey(1)];
 
         // Set up mock server with different responses based on slot
-        let mock = BeaconMock::builder()
-            .build()
-            .await
-            .expect("should create beacon mock");
+        let mock = MockServer::start().await;
 
         post_state_validators_success(
             "1",
@@ -358,7 +381,7 @@ mod tests {
                 test_validator_datum(1, &pubkeys[1], ValidatorStatus::ActiveOngoing),
             ],
         )
-        .mount(mock.server())
+        .mount(&mock)
         .await;
 
         post_state_validators_success(
@@ -368,7 +391,7 @@ mod tests {
                 test_validator_datum(1, &pubkeys[1], ValidatorStatus::ActiveOngoing),
             ],
         )
-        .mount(mock.server())
+        .mount(&mock)
         .await;
 
         post_state_validators_success(
@@ -378,18 +401,14 @@ mod tests {
                 test_validator_datum(1, &pubkeys[1], ValidatorStatus::PendingQueued),
             ],
         )
-        .mount(mock.server())
+        .mount(&mock)
         .await;
 
-        post_state_validators_not_found("3")
-            .mount(mock.server())
-            .await;
-        post_state_validators_not_found("head")
-            .mount(mock.server())
-            .await;
+        post_state_validators_not_found("3").mount(&mock).await;
+        post_state_validators_not_found("head").mount(&mock).await;
 
         // Create a cache.
-        let cache = ValidatorCache::new(mock.client().clone(), pubkeys.clone());
+        let cache = ValidatorCache::new(test_client(&mock), pubkeys.clone());
 
         // Test slot 1: 1 active validator (index 1), 2 complete, refreshed_by_slot=true
         let (active, complete, refreshed_by_slot) = cache
@@ -431,14 +450,9 @@ mod tests {
         let pubkeys = vec![test_pubkey(0), test_pubkey(1)];
 
         // Set up mock server: slot requests fail, but head succeeds
-        let mock = BeaconMock::builder()
-            .build()
-            .await
-            .expect("should create beacon mock");
+        let mock = MockServer::start().await;
 
-        post_state_validators_not_found("1")
-            .mount(mock.server())
-            .await;
+        post_state_validators_not_found("1").mount(&mock).await;
 
         post_state_validators_success(
             "head",
@@ -447,10 +461,10 @@ mod tests {
                 test_validator_datum(1, &pubkeys[1], ValidatorStatus::ActiveOngoing),
             ],
         )
-        .mount(mock.server())
+        .mount(&mock)
         .await;
 
-        let cache = ValidatorCache::new(mock.client().clone(), pubkeys);
+        let cache = ValidatorCache::new(test_client(&mock), pubkeys);
 
         // Test slot 1: fails, falls back to head, returns 2 active, 2 complete,
         // refreshed_by_slot=false
@@ -466,7 +480,7 @@ mod tests {
     fn test_pubkey(seed: u8) -> PubKey {
         let mut bytes = [0u8; 48];
         bytes[0] = seed;
-        PubKey::new(bytes)
+        bytes
     }
 
     fn test_validator_datum(
@@ -480,7 +494,7 @@ mod tests {
             balance: "32000000000".to_string(),
             status,
             validator: ValidatorResponseValidator {
-                pubkey: pubkey.to_string(),
+                pubkey: format_pubkey(pubkey),
                 withdrawal_credentials:
                     "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
                 effective_balance: "32000000000".to_string(),
@@ -524,5 +538,9 @@ mod tests {
                     stacktraces: None,
                 }),
             )
+    }
+
+    fn test_client(server: &MockServer) -> EthBeaconNodeApiClient {
+        EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid mock server URL")
     }
 }
