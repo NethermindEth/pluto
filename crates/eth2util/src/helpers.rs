@@ -42,6 +42,10 @@ pub enum HelperError {
     /// Failed to fetch the slots configuration from the beacon node.
     #[error("fetch slots config: {0}")]
     FetchSlotsConfig(String),
+
+    /// Slot computation failed (overflow or a degenerate slot duration).
+    #[error("slot computation: {0}")]
+    SlotComputation(String),
 }
 
 type Result<T> = std::result::Result<T, HelperError>;
@@ -148,18 +152,18 @@ pub async fn slot_from_timestamp(
     let delta_nanos = timestamp
         .signed_duration_since(genesis_time)
         .num_nanoseconds()
-        .ok_or(HelperError::FetchSlotsConfig("delta overflow".to_owned()))?;
+        .ok_or(HelperError::SlotComputation("delta overflow".to_owned()))?;
     let delta_nanos = u128::try_from(delta_nanos)
-        .map_err(|_| HelperError::FetchSlotsConfig("negative delta".to_owned()))?;
+        .map_err(|_| HelperError::SlotComputation("negative delta".to_owned()))?;
 
     let slot_nanos = slot_duration.as_nanos();
     let slot = delta_nanos
         .checked_div(slot_nanos)
-        .ok_or(HelperError::FetchSlotsConfig(
+        .ok_or(HelperError::SlotComputation(
             "zero slot duration".to_owned(),
         ))?;
 
-    u64::try_from(slot).map_err(|_| HelperError::FetchSlotsConfig("slot overflow".to_owned()))
+    u64::try_from(slot).map_err(|_| HelperError::SlotComputation("slot overflow".to_owned()))
 }
 
 /// Returns epoch calculated from given slot.
@@ -204,11 +208,18 @@ mod tests {
     #[tokio::test]
     async fn slot_from_timestamp_before_genesis_falls_back_to_now() {
         let mock = slot_mock().await;
-        // A timestamp before genesis falls back to the current wall clock,
-        // which is far past genesis, so the slot is large and non-zero.
+        // A timestamp before genesis (genesis = 0) falls back to the current
+        // wall clock. With genesis at epoch 0 and a 12s slot, the returned
+        // slot should approximate `now / 12`, well within a few slots.
         let ts = DateTime::<Utc>::from_timestamp(-100, 0).unwrap();
+        let before = Utc::now().timestamp();
         let slot = slot_from_timestamp(mock.client(), ts).await.unwrap();
-        assert!(slot > 0);
+        let expected = u64::try_from(before).unwrap().checked_div(12).unwrap();
+        let diff = slot.abs_diff(expected);
+        assert!(
+            diff <= 5,
+            "slot {slot} should be within 5 of expected {expected}"
+        );
     }
 
     #[test]

@@ -47,6 +47,20 @@ use crate::signeddata::{ProposalBlock, VersionedSignedProposal};
 /// well above any plausible workload.
 const DUTIES_BODY_LIMIT: usize = 64 * 1024;
 
+/// Hard cap on the number of validator registrations accepted in a single
+/// `register_validator` request. A realistic cluster manages at most a few
+/// hundred validators; the cap is set generously above that. Each accepted
+/// registration triggers upstream beacon-node calls and a BLS verification,
+/// so bounding the count bounds the per-request fan-out a single caller can
+/// induce.
+const REGISTRATIONS_MAX_LEN: usize = 8192;
+
+/// Cap on the `POST /eth/v1/validator/register_validator` request body. Sized
+/// at [`REGISTRATIONS_MAX_LEN`] SSZ objects (each 180 bytes) so the byte limit
+/// and the count limit agree, plus headroom for the more verbose JSON
+/// encoding of the same number of entries.
+const REGISTRATIONS_BODY_LIMIT: usize = REGISTRATIONS_MAX_LEN * 512;
+
 /// Response/request header carrying the consensus fork name (e.g. `deneb`).
 const VERSION_HEADER: &str = "Eth-Consensus-Version";
 /// Response header signalling whether the returned proposal is blinded.
@@ -135,7 +149,8 @@ pub fn new_router(
         .route("/eth/v2/beacon/blinded_blocks", post(submit_blinded_block))
         .route(
             "/eth/v1/validator/register_validator",
-            post(submit_validator_registrations),
+            post(submit_validator_registrations)
+                .route_layer(DefaultBodyLimit::max(REGISTRATIONS_BODY_LIMIT)),
         )
         .route("/eth/v1/beacon/pool/voluntary_exits", post(submit_exit))
         .route("/teku_proposer_config", get(respond_404))
@@ -492,7 +507,7 @@ async fn submit_blinded_block(
 /// Decodes an array of signed builder validator registrations (JSON or SSZ
 /// per content type) and forwards them to the handler. The SSZ body is a bare
 /// concatenation of fixed-size `SignedValidatorRegistration` objects; the JSON
-/// body is a plain array. Mirrors `submitValidatorRegistrations`.
+/// body is a plain array.
 async fn submit_validator_registrations(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -511,14 +526,15 @@ async fn submit_validator_registrations(
 /// `POST /eth/v1/beacon/pool/voluntary_exits`.
 ///
 /// Decodes a single signed voluntary exit (JSON only) and forwards it to the
-/// handler. Mirrors `submitExit`.
+/// handler.
 async fn submit_exit(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    // JSON-only endpoint: an SSZ or otherwise unrecognised content type is
-    // rejected with 415, mirroring Charon's per-route encoding negotiation.
+    // JSON-only endpoint: the beacon API does not define an SSZ encoding for
+    // voluntary exits, so an SSZ or otherwise unrecognised content type is
+    // rejected with 415.
     if request_is_ssz(&headers)? {
         return Err(ApiError::new(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -530,7 +546,7 @@ async fn submit_exit(
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "empty request body"));
     }
     let exit = serde_json::from_slice(&body).map_err(|err| {
-        ApiError::new(StatusCode::BAD_REQUEST, "invalid request body").with_source(err)
+        ApiError::new(StatusCode::BAD_REQUEST, "failed parsing json request body").with_source(err)
     })?;
 
     state.handler.submit_voluntary_exit(exit).await?;
@@ -929,8 +945,11 @@ fn request_is_ssz(headers: &HeaderMap) -> Result<bool, ApiError> {
 
 /// Decodes the `register_validator` request body into a list of signed
 /// validator registrations. JSON bodies are a plain array; SSZ bodies are a
-/// bare concatenation of fixed-size objects. Empty/JSON failures surface as
-/// `400`; SSZ failures as `415`, mirroring Charon's `unmarshal`.
+/// bare concatenation of fixed-size objects. An empty body or a JSON parse
+/// failure surfaces as `400`; an SSZ parse failure as `415`. The decoded list
+/// is capped at [`REGISTRATIONS_MAX_LEN`] entries (`400` when exceeded) so a
+/// single caller cannot drive an unbounded per-request fan-out of upstream
+/// calls and BLS verifications.
 fn decode_signed_validator_registrations(
     body: &[u8],
     ssz: bool,
@@ -939,19 +958,29 @@ fn decode_signed_validator_registrations(
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "empty request body"));
     }
 
-    if ssz {
-        return crate::ssz_codec::decode_signed_validator_registrations(body).map_err(|err| {
+    let registrations = if ssz {
+        crate::ssz_codec::decode_signed_validator_registrations(body).map_err(|err| {
             ApiError::new(
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
                 "failed parsing ssz request body",
             )
             .with_source(err)
-        });
+        })?
+    } else {
+        serde_json::from_slice(body).map_err(|err| {
+            ApiError::new(StatusCode::BAD_REQUEST, "failed parsing json request body")
+                .with_source(err)
+        })?
+    };
+
+    if registrations.len() > REGISTRATIONS_MAX_LEN {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("too many validator registrations (max {REGISTRATIONS_MAX_LEN})"),
+        ));
     }
 
-    serde_json::from_slice(body).map_err(|err| {
-        ApiError::new(StatusCode::BAD_REQUEST, "invalid request body").with_source(err)
-    })
+    Ok(registrations)
 }
 
 /// Decodes a submitted full signed proposal block (JSON or SSZ) for the given

@@ -22,7 +22,7 @@ use pluto_eth2api::{
 };
 use pluto_eth2util::signing::{self, DomainName, SigningError};
 use tokio::time::error::Elapsed;
-use tracing::{debug, instrument};
+use tracing::{debug, info, instrument};
 
 use super::{
     error::ApiError,
@@ -424,7 +424,6 @@ impl Component {
     /// it is processing, then invokes this helper.
     ///
     /// Skipped entirely when [`Self::insecure_test`] is set.
-    #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     #[instrument(skip_all, fields(domain = ?domain_name, epoch))]
     pub async fn verify_partial_sig(
         &self,
@@ -493,15 +492,19 @@ impl Component {
         )
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid registration timestamp"))?;
 
-        let slot = pluto_eth2util::helpers::slot_from_timestamp(&self.eth2_cl, timestamp)
-            .await
-            .map_err(|err| {
-                ApiError::new(
-                    StatusCode::BAD_GATEWAY,
-                    "could not resolve slot from timestamp",
-                )
-                .with_source(err)
-            })?;
+        let slot = tokio::time::timeout(
+            UPSTREAM_REQUEST_TIMEOUT,
+            pluto_eth2util::helpers::slot_from_timestamp(&self.eth2_cl, timestamp),
+        )
+        .await
+        .map_err(|_: Elapsed| upstream_timeout("slot from timestamp"))?
+        .map_err(|err| {
+            ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                "could not resolve slot from timestamp",
+            )
+            .with_source(err)
+        })?;
         let duty = Duty::new_builder_registration_duty(SlotNumber::new(slot));
 
         let versioned = RawVersionedSignedValidatorRegistration {
@@ -516,6 +519,8 @@ impl Component {
         // uses epoch 0.
         self.verify_par_signed_registration(&pubkey, &par_sig)
             .await?;
+
+        debug!(pubkey = %pubkey, slot, "Builder registration submitted by validator client");
 
         let mut set = ParSignedDataSet::new();
         set.insert(pubkey, par_sig);
@@ -1126,9 +1131,14 @@ impl Handler for Component {
             .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "validator not found"))?;
         let pubkey = pubkey_from_bls(eth2_pubkey);
 
-        let (_, slots_per_epoch) = self.eth2_cl.fetch_slots_config().await.map_err(|err| {
-            ApiError::new(StatusCode::BAD_GATEWAY, "could not fetch slots config").with_source(err)
-        })?;
+        let (_, slots_per_epoch) =
+            tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.fetch_slots_config())
+                .await
+                .map_err(|_: Elapsed| upstream_timeout("slots config"))?
+                .map_err(|err| {
+                    ApiError::new(StatusCode::BAD_GATEWAY, "could not fetch slots config")
+                        .with_source(err)
+                })?;
 
         let exit_slot = slots_per_epoch.checked_mul(epoch).ok_or_else(|| {
             ApiError::new(StatusCode::BAD_REQUEST, "voluntary exit slot overflow")
@@ -1141,7 +1151,7 @@ impl Handler for Component {
         self.verify_par_signed_exit(&pubkey, epoch, &par_sig)
             .await?;
 
-        debug!("Voluntary exit submitted by validator client");
+        info!("Voluntary exit submitted by validator client");
 
         let mut set = ParSignedDataSet::new();
         set.insert(pubkey, par_sig);
@@ -1445,21 +1455,6 @@ async fn verify_par_signed_proposal(
     slot: u64,
     par_sig: &crate::types::ParSignedData,
 ) -> Result<(), ApiError> {
-    let signature = par_sig.signed_data.signature().map_err(|err| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "could not extract partial signature",
-        )
-        .with_source(err)
-    })?;
-    let message_root = par_sig.signed_data.message_root().map_err(|err| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "could not derive message root",
-        )
-        .with_source(err)
-    })?;
-
     let epoch = pluto_eth2util::helpers::epoch_from_slot(&component.eth2_cl, slot)
         .await
         .map_err(|err| {
@@ -1467,17 +1462,9 @@ async fn verify_par_signed_proposal(
                 .with_source(err)
         })?;
 
-    let pubkey_bytes = pubkey_to_bls(pubkey);
     component
-        .verify_partial_sig(
-            &pubkey_bytes,
-            DomainName::BeaconProposer,
-            epoch,
-            message_root,
-            &signature,
-        )
+        .verify_par_signed(pubkey, DomainName::BeaconProposer, epoch, par_sig)
         .await
-        .map_err(verify_partial_sig_error)
 }
 
 /// Cross-checks a VC-submitted proposal against the consensus proposal that
@@ -1686,7 +1673,6 @@ mod tests {
         }
 
         /// A cache pre-populated with `validators`.
-        #[allow(dead_code, reason = "consumed by submit_* handler tests in later PRs")]
         pub(super) fn arc(
             validators: HashMap<ValidatorIndex, BLSPubKey>,
         ) -> Arc<dyn CachedValidatorsProvider> {
@@ -4011,5 +3997,82 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+    }
+
+    /// A batch of two valid DV registrations is processed in order and each is
+    /// broadcast.
+    #[tokio::test]
+    async fn submit_validator_registrations_processes_batch_in_order() {
+        let (secret_a, pubshare_a) = new_share();
+        let (secret_b, pubshare_b) = new_share();
+        let dv_a = dv_pubkey(0xD0);
+        let dv_b = dv_pubkey(0xD1);
+        let map = HashMap::from([(dv_a, pubshare_a), (dv_b, pubshare_b)]);
+        let (component, mock, recorder) = make_lifecycle_component(true, HashMap::new(), map).await;
+
+        let mut regs = Vec::new();
+        for (dv, secret) in [(dv_a, &secret_a), (dv_b, &secret_b)] {
+            let message = registration_message(dv, 600);
+            let message_root = message.message_root();
+            let signature = sign_for(
+                &mock,
+                secret,
+                DomainName::ApplicationBuilder,
+                0,
+                message_root,
+            )
+            .await;
+            regs.push(v1::SignedValidatorRegistration { message, signature });
+        }
+
+        component
+            .submit_validator_registrations(regs)
+            .await
+            .unwrap();
+
+        let recorded = recorder.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 2);
+        assert!(recorded[0].1.inner().contains_key(&core_pubkey(0xD0)));
+        assert!(recorded[1].1.inner().contains_key(&core_pubkey(0xD1)));
+    }
+
+    /// A batch halts on the first failing registration: the valid first entry
+    /// is broadcast, then the bad-signature second entry aborts the loop.
+    #[tokio::test]
+    async fn submit_validator_registrations_batch_halts_on_error() {
+        let (secret_a, pubshare_a) = new_share();
+        let (secret_b, pubshare_b) = new_share();
+        let dv_a = dv_pubkey(0xD2);
+        let dv_b = dv_pubkey(0xD3);
+        let map = HashMap::from([(dv_a, pubshare_a), (dv_b, pubshare_b)]);
+        let (component, mock, recorder) = make_lifecycle_component(true, HashMap::new(), map).await;
+
+        let message_a = registration_message(dv_a, 600);
+        let root_a = message_a.message_root();
+        let sig_a = sign_for(&mock, &secret_a, DomainName::ApplicationBuilder, 0, root_a).await;
+        let reg_a = v1::SignedValidatorRegistration {
+            message: message_a,
+            signature: sig_a,
+        };
+
+        let message_b = registration_message(dv_b, 600);
+        let root_b = message_b.message_root();
+        let mut sig_b = sign_for(&mock, &secret_b, DomainName::ApplicationBuilder, 0, root_b).await;
+        sig_b[0] ^= 0xFF;
+        let reg_b = v1::SignedValidatorRegistration {
+            message: message_b,
+            signature: sig_b,
+        };
+
+        let err = component
+            .submit_validator_registrations(vec![reg_a, reg_b])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+
+        // The first (valid) registration was broadcast before the second failed.
+        let recorded = recorder.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 1);
+        assert!(recorded[0].1.inner().contains_key(&core_pubkey(0xD2)));
     }
 }
