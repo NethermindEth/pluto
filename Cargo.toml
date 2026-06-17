@@ -21,6 +21,7 @@ members = [
     "crates/tracing",
     "crates/peerinfo",
     "crates/frost",
+    "crates/priority",
 ]
 resolver = "3"
 

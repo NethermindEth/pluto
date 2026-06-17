@@ -1,5 +1,7 @@
 //! Deadline calculator trait and beacon-node-derived implementation.
 
+use std::sync::Arc;
+
 use chrono::{DateTime, Duration, Utc};
 use pluto_eth2api::EthBeaconNodeApiClient;
 
@@ -84,6 +86,14 @@ pub trait DeadlineCalculator: Send + Sync + 'static {
     /// Computes the deadline for the given duty. See trait docs for return
     /// semantics.
     fn deadline(&self, duty: &Duty) -> Result<Option<DateTime<Utc>>>;
+}
+
+/// Lets a shared (`Arc`-wrapped) calculator satisfy the trait, so a single
+/// calculator instance can back both a deadliner task and other consumers.
+impl<T: DeadlineCalculator + ?Sized> DeadlineCalculator for Arc<T> {
+    fn deadline(&self, duty: &Duty) -> Result<Option<DateTime<Utc>>> {
+        (**self).deadline(duty)
+    }
 }
 
 /// Calculator that reports every duty as never expiring. Useful for

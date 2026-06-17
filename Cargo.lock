@@ -5930,6 +5930,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "pluto-priority"
+version = "1.7.1"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ethereum_ssz",
+ "futures",
+ "k256",
+ "libp2p",
+ "pluto-consensus",
+ "pluto-core",
+ "pluto-k1util",
+ "pluto-p2p",
+ "pluto-ssz",
+ "pluto-testutil",
+ "prost 0.14.3",
+ "prost-types 0.14.3",
+ "rand 0.8.6",
+ "test-case",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "pluto-relay-server"
 version = "1.7.1"
 dependencies = [
