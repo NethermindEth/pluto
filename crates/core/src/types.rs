@@ -450,9 +450,10 @@ impl TryInto<AttesterDutyDefinition>
         let validator_index = self.validator_index.parse::<u64>().map_err(|_| {
             pluto_eth2api::EthBeaconNodeApiClientError::ParseError("validator_index".into())
         })?;
-        let slot = self.slot.parse::<u64>().map_err(|_| {
-            pluto_eth2api::EthBeaconNodeApiClientError::ParseError("slot".into())
-        })?;
+        let slot = self
+            .slot
+            .parse::<u64>()
+            .map_err(|_| pluto_eth2api::EthBeaconNodeApiClientError::ParseError("slot".into()))?;
         let committee_index = self.committee_index.parse::<u64>().map_err(|_| {
             pluto_eth2api::EthBeaconNodeApiClientError::ParseError("committee_index".into())
         })?;
