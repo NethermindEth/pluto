@@ -11,10 +11,11 @@ use std::{any::Any, collections::HashMap, future::Future, pin::Pin, sync::Arc};
 use pluto_eth2api::{
     ConsensusVersion, EthBeaconNodeApiClient, EthBeaconNodeApiClientError,
     GetAggregatedAttestationV2Request, GetAggregatedAttestationV2Response,
-    ProduceAttestationDataRequest, ProduceAttestationDataResponse, ProduceBlockV3Request,
-    ProduceBlockV3Response, ProduceBlockV3ResponseResponse,
-    ProduceSyncCommitteeContributionRequest, ProduceSyncCommitteeContributionResponse,
-    spec::{altair, phase0},
+    GetAggregatedAttestationV2ResponseResponseData, ProduceAttestationDataRequest,
+    ProduceAttestationDataResponse, ProduceBlockV3Request, ProduceBlockV3Response,
+    ProduceBlockV3ResponseResponse, ProduceSyncCommitteeContributionRequest,
+    ProduceSyncCommitteeContributionResponse,
+    spec::{ConversionError, altair, phase0},
     versioned,
 };
 use pluto_eth2util::eth2exp::{self, Eth2ExpError};
@@ -119,6 +120,10 @@ pub enum FetcherError {
     /// JSON (de)serialization error while decoding a beacon node response.
     #[error("decode beacon node response: {0}")]
     Json(#[from] serde_json::Error),
+
+    /// Failed to convert a loosely-typed beacon node value into a spec type.
+    #[error("convert beacon node response: {0}")]
+    Conversion(#[from] ConversionError),
 
     /// A versioned proposal had an unsupported fork version.
     #[error("unsupported proposal version: {0:?}")]
@@ -467,7 +472,9 @@ impl Fetcher {
             .await
             .map_err(EthBeaconNodeApiClientError::RequestError)?
         {
-            ProduceAttestationDataResponse::Ok(ok) => round_trip(&ok.data),
+            ProduceAttestationDataResponse::Ok(ok) => {
+                Ok(phase0::AttestationData::try_from(&ok.data)?)
+            }
             _ => Err(FetcherError::NilAttestationData),
         }
     }
@@ -526,7 +533,9 @@ impl Fetcher {
             .await
             .map_err(EthBeaconNodeApiClientError::RequestError)?
         {
-            ProduceSyncCommitteeContributionResponse::Ok(payload) => round_trip(&payload.data),
+            ProduceSyncCommitteeContributionResponse::Ok(payload) => {
+                Ok(altair::SyncCommitteeContribution::try_from(&payload.data)?)
+            }
             _ => Err(FetcherError::SyncContributionNotFound),
         }
     }
@@ -563,17 +572,6 @@ fn downcast<T: 'static>(data: &dyn SignedData) -> Option<&T> {
 /// Formats bytes as a `0x`-prefixed lowercase hex string.
 fn hex_0x(bytes: &[u8]) -> String {
     format!("0x{}", hex::encode(bytes))
-}
-
-/// Round-trips a loosely-typed beacon node response value into a strongly-typed
-/// target via JSON.
-fn round_trip<T, S>(value: &S) -> Result<T>
-where
-    T: serde::de::DeserializeOwned,
-    S: serde::Serialize,
-{
-    let value = serde_json::to_value(value)?;
-    Ok(serde_json::from_value(value)?)
 }
 
 /// Converts a `produce_block_v3` response into an unsigned
@@ -641,23 +639,32 @@ fn consensus_to_data_version(version: &ConsensusVersion) -> versioned::DataVersi
     }
 }
 
-/// Builds a versioned attestation payload from a loosely-typed response value.
-fn attestation_payload<S: serde::Serialize>(
+/// Builds a versioned attestation payload from the beacon node's aggregate
+/// attestation response.
+///
+/// The response carries the attestation as an untagged union: `Object2` is the
+/// phase0-style attestation returned up to Deneb, `Object` is the
+/// committee-aware Electra shape returned from Electra onwards.
+fn attestation_payload(
     version: versioned::DataVersion,
-    data: &S,
+    data: &GetAggregatedAttestationV2ResponseResponseData,
 ) -> Result<versioned::AttestationPayload> {
+    use GetAggregatedAttestationV2ResponseResponseData as GenData;
     use versioned::{AttestationPayload as AP, DataVersion as DV};
-    Ok(match version {
-        DV::Phase0 => AP::Phase0(round_trip(data)?),
-        DV::Altair => AP::Altair(round_trip(data)?),
-        DV::Bellatrix => AP::Bellatrix(round_trip(data)?),
-        DV::Capella => AP::Capella(round_trip(data)?),
-        DV::Deneb => AP::Deneb(round_trip(data)?),
-        DV::Electra => AP::Electra(round_trip(data)?),
-        DV::Fulu => AP::Fulu(round_trip(data)?),
-        // `version` is always derived from a `ConsensusVersion` via
-        // `consensus_to_data_version`, which never yields `Unknown`.
-        DV::Unknown => unreachable!("attestation payload version cannot be unknown"),
+
+    Ok(match (version, data) {
+        (DV::Phase0, GenData::Object2(att)) => AP::Phase0(att.try_into()?),
+        (DV::Altair, GenData::Object2(att)) => AP::Altair(att.try_into()?),
+        (DV::Bellatrix, GenData::Object2(att)) => AP::Bellatrix(att.try_into()?),
+        (DV::Capella, GenData::Object2(att)) => AP::Capella(att.try_into()?),
+        (DV::Deneb, GenData::Object2(att)) => AP::Deneb(att.try_into()?),
+        (DV::Electra, GenData::Object(att)) => AP::Electra(att.try_into()?),
+        (DV::Fulu, GenData::Object(att)) => AP::Fulu(att.try_into()?),
+        // A spec-compliant beacon node never pairs a fork version with the
+        // other fork's attestation shape (e.g. an Electra version reporting a
+        // phase0-style body), and `version` is derived from a
+        // `ConsensusVersion`, so it is never `Unknown`.
+        _ => return Err(FetcherError::UnexpectedResponse),
     })
 }
 
