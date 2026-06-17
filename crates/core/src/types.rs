@@ -12,7 +12,7 @@ use crate::{
     ParSigExCodecError,
     corepb::v1::core as pbcore,
     parsigex_codec::{deserialize_signed_data, serialize_signed_data},
-    signeddata::SignedDataError,
+    signeddata::{AttesterDuty, SignedDataError},
 };
 
 /// The type of duty.
@@ -427,22 +427,16 @@ impl AsRef<[u8]> for PubKey {
 }
 
 /// Attestation duties to be performed by validators for a particular epoch.
+///
+/// Mirrors Charon's `core.AttesterDefinition`, which embeds the eth2
+/// `v1.AttesterDuty`. Pluto's [`AttesterDuty`] omits the validator public key,
+/// so it is carried alongside the embedded duty.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AttesterDutyDefinition {
-    /// The validator's BLS public key
+    /// The validator's BLS public key.
     pub pubkey: PubKey,
-    /// Index of validator in validator registry
-    pub v_idx: u64,
-    /// The slot at which the validator must attest.
-    pub slot: SlotNumber,
-    /// Index of the committee the validator belongs to.
-    pub committee_index: u64,
-    /// Number of validators in the committee.
-    pub committee_length: u64,
-    /// Number of committees at this slot.
-    pub committees_at_slot: u64,
-    /// Index of the validator within its committee.
-    pub validator_committee_index: u64,
+    /// The attester duty to perform.
+    pub duty: AttesterDuty,
 }
 
 impl TryInto<AttesterDutyDefinition>
@@ -453,13 +447,12 @@ impl TryInto<AttesterDutyDefinition>
     fn try_into(self) -> Result<AttesterDutyDefinition, Self::Error> {
         let pubkey = PubKey::try_from(self.pubkey.as_str())
             .map_err(|_| pluto_eth2api::EthBeaconNodeApiClientError::ParseError("pubkey".into()))?;
-        let v_idx = self.validator_index.parse::<u64>().map_err(|_| {
+        let validator_index = self.validator_index.parse::<u64>().map_err(|_| {
             pluto_eth2api::EthBeaconNodeApiClientError::ParseError("validator_index".into())
         })?;
-        let slot =
-            SlotNumber::from(self.slot.parse::<u64>().map_err(|_| {
-                pluto_eth2api::EthBeaconNodeApiClientError::ParseError("slot".into())
-            })?);
+        let slot = self.slot.parse::<u64>().map_err(|_| {
+            pluto_eth2api::EthBeaconNodeApiClientError::ParseError("slot".into())
+        })?;
         let committee_index = self.committee_index.parse::<u64>().map_err(|_| {
             pluto_eth2api::EthBeaconNodeApiClientError::ParseError("committee_index".into())
         })?;
@@ -478,12 +471,14 @@ impl TryInto<AttesterDutyDefinition>
 
         Ok(AttesterDutyDefinition {
             pubkey,
-            v_idx,
-            slot,
-            committee_index,
-            committee_length,
-            committees_at_slot,
-            validator_committee_index,
+            duty: AttesterDuty {
+                slot,
+                validator_index,
+                committee_index,
+                committee_length,
+                committees_at_slot,
+                validator_committee_index,
+            },
         })
     }
 }

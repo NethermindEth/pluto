@@ -23,11 +23,11 @@ use tree_hash::TreeHash;
 
 use crate::{
     signeddata::{
-        AttestationData, AttesterDuty, BeaconCommitteeSelection, ProposalBlock, SignedSyncMessage,
+        AttestationData, BeaconCommitteeSelection, ProposalBlock, SignedSyncMessage,
         SyncCommitteeSelection, SyncContribution, VersionedAggregatedAttestation,
         VersionedProposal,
     },
-    types::{AttesterDutyDefinition, Duty, DutyDefinitionSet, DutyType, PubKey, SignedData},
+    types::{Duty, DutyDefinitionSet, DutyType, PubKey, SignedData},
     unsigneddata::{UnsignedDataSet, UnsignedDutyData},
 };
 
@@ -273,7 +273,7 @@ impl Fetcher {
                 .as_attester()
                 .ok_or(FetcherError::InvalidAttesterDefinition)?;
 
-            let mut comm_idx = att_def.committee_index;
+            let mut comm_idx = att_def.duty.committee_index;
 
             // Attestation data for Electra is not bound by committee index;
             // committee index is still persisted in the request but should be
@@ -295,7 +295,7 @@ impl Fetcher {
                 *pubkey,
                 UnsignedDutyData::Attestation(AttestationData {
                     data: eth2_att_data,
-                    duty: attester_duty(att_def),
+                    duty: att_def.duty.clone(),
                 }),
             );
         }
@@ -331,7 +331,7 @@ impl Fetcher {
 
             let is_aggregator = eth2exp::is_att_aggregator(
                 &self.eth2_cl,
-                att_def.committee_length,
+                att_def.duty.committee_length,
                 selection.0.selection_proof,
             )
             .await?;
@@ -342,7 +342,7 @@ impl Fetcher {
 
             tracker.add_resolved(pubkey.to_string());
 
-            let comm_idx = att_def.committee_index;
+            let comm_idx = att_def.duty.committee_index;
 
             if let Some(agg_att) = agg_att_by_comm_idx.get(&comm_idx) {
                 resp.insert(
@@ -607,19 +607,6 @@ fn downcast<T: 'static>(data: &dyn SignedData) -> Option<&T> {
     (data as &dyn Any).downcast_ref::<T>()
 }
 
-/// Builds the eth2 [`AttesterDuty`] carried by an attestation from a scheduler
-/// [`AttesterDutyDefinition`].
-fn attester_duty(def: &AttesterDutyDefinition) -> AttesterDuty {
-    AttesterDuty {
-        slot: def.slot.inner(),
-        validator_index: def.v_idx,
-        committee_index: def.committee_index,
-        committee_length: def.committee_length,
-        committees_at_slot: def.committees_at_slot,
-        validator_committee_index: def.validator_committee_index,
-    }
-}
-
 /// Formats bytes as a `0x`-prefixed lowercase hex string.
 fn hex_0x(bytes: &[u8]) -> String {
     format!("0x{}", hex::encode(bytes))
@@ -854,8 +841,12 @@ mod tests {
     use pluto_testutil::BeaconMock;
 
     use super::*;
-    use crate::types::{
-        DutyDefinition, ProposerDutyDefinition, SlotNumber, SyncCommitteeDutyDefinition,
+    use crate::{
+        signeddata::AttesterDuty,
+        types::{
+            AttesterDutyDefinition, DutyDefinition, ProposerDutyDefinition, SlotNumber,
+            SyncCommitteeDutyDefinition,
+        },
     };
 
     /// 48-byte BLS public key length used to build distinct test pubkeys.
@@ -1239,12 +1230,7 @@ mod tests {
     fn attester_duty_def(pubkey: PubKey, duty: &AttesterDuty) -> AttesterDutyDefinition {
         AttesterDutyDefinition {
             pubkey,
-            v_idx: duty.validator_index,
-            slot: SlotNumber::new(duty.slot),
-            committee_index: duty.committee_index,
-            committee_length: duty.committee_length,
-            committees_at_slot: duty.committees_at_slot,
-            validator_committee_index: duty.validator_committee_index,
+            duty: duty.clone(),
         }
     }
 
