@@ -623,11 +623,27 @@ fn fee_recipient_mismatch(
 
     // Unblinded blocks carry `execution_payload`; blinded blocks carry
     // `execution_payload_header`. Both expose `fee_recipient`.
-    let actual_addr = value
+    let Some(actual_addr) = value
         .get("execution_payload")
         .or_else(|| value.get("execution_payload_header"))
         .and_then(|payload| payload.get("fee_recipient"))
-        .and_then(|addr| addr.as_str())?;
+        .and_then(|addr| addr.as_str())
+    else {
+        // Every Bellatrix+ proposal carries a fee recipient, so reaching here
+        // means the payload shape changed (e.g. a renamed key) and the
+        // traversal above silently stopped matching. Fail loudly in dev/test
+        // and warn in production rather than reporting a false "no mismatch".
+        debug_assert!(
+            false,
+            "Bellatrix+ proposal yielded no fee recipient address; \
+             execution payload shape may have changed"
+        );
+        tracing::warn!(
+            version = ?proposal.version(),
+            "Bellatrix+ proposal yielded no extractable fee recipient address"
+        );
+        return None;
+    };
 
     if actual_addr.eq_ignore_ascii_case(fee_recipient_address) {
         None
@@ -779,6 +795,13 @@ mod tests {
         "../../testdata/signeddata/TestJSONSerialisation_VersionedProposal.json.golden"
     );
 
+    /// Blinded proposal (`{slot, .., body}`) whose body carries an
+    /// `execution_payload_header` with the Deneb-era blob fields. Reused to
+    /// build blinded proposals across forks in [`verify_fee_recipient`].
+    const BLINDED_BLOCK_GOLDEN: &str = include_str!(
+        "../../testdata/signeddata/TestJSONSerialisation_VersionedBlindedProposal.json.golden"
+    );
+
     /// Mounts a `produce_block_v3` responder that returns the golden Electra
     /// block contents with the request's slot, randao reveal and graffiti
     /// echoed back and a zero fee recipient.
@@ -829,31 +852,154 @@ mod tests {
             .await;
     }
 
+    /// Empties the variable-shape list fields of a block body JSON so it
+    /// deserializes into any fork's block type, regardless of per-fork element
+    /// shapes (e.g. Electra's committee-aware attestations vs. phase0's).
+    fn empty_block_body_lists(body: &mut serde_json::Value) {
+        for field in [
+            "proposer_slashings",
+            "attester_slashings",
+            "attestations",
+            "deposits",
+            "voluntary_exits",
+        ] {
+            body[field] = serde_json::json!([]);
+        }
+    }
+
+    /// Mirrors Go's `TestVerifyFeeRecipient`: every fork/blinded combination
+    /// from Bellatrix onwards must extract a fee recipient. A matching address
+    /// (case-insensitively) yields no mismatch; a different one is flagged.
     #[test]
     fn verify_fee_recipient() {
-        use pluto_eth2api::spec::electra;
-
-        // Electra proposal from the golden block contents.
-        let golden: serde_json::Value =
-            serde_json::from_str(BLOCK_CONTENTS_GOLDEN).expect("parse golden");
-        let block: electra::BeaconBlock =
-            serde_json::from_value(golden["block"]["block"].clone()).expect("parse block");
-        let proposal = VersionedProposal {
-            block: ProposalBlock::Electra {
-                block: Box::new(block),
-                kzg_proofs: vec![],
-                blobs: vec![],
-            },
-            consensus_block_value: alloy::primitives::U256::ZERO,
-            execution_payload_value: alloy::primitives::U256::ZERO,
+        // The unblinded golden is the richest fork shape (Electra), whose body
+        // is a field-superset of every earlier fork. Since the spec types
+        // ignore unknown fields it deserializes into each fork's `BeaconBlock`.
+        let unblinded_block = {
+            let golden: serde_json::Value =
+                serde_json::from_str(BLOCK_CONTENTS_GOLDEN).expect("parse unblinded golden");
+            let mut block = golden["block"]["block"].clone();
+            empty_block_body_lists(&mut block["body"]);
+            block
         };
 
-        // A different address is reported as a mismatch; the actual address
-        // matches itself (case-insensitively).
-        let (_, actual) =
-            fee_recipient_mismatch(&proposal, "0xdead").expect("mismatch against wrong address");
-        assert!(fee_recipient_mismatch(&proposal, &actual).is_none());
-        assert!(fee_recipient_mismatch(&proposal, &actual.to_uppercase()).is_none());
+        // The blinded golden's `execution_payload_header` already carries the
+        // Deneb-era blob fields, so it deserializes into Bellatrix..Deneb
+        // blinded blocks directly.
+        let blinded_block = {
+            let golden: serde_json::Value =
+                serde_json::from_str(BLINDED_BLOCK_GOLDEN).expect("parse blinded golden");
+            let mut block = golden["block"].clone();
+            empty_block_body_lists(&mut block["body"]);
+            block
+        };
+
+        // Electra+ blinded blocks additionally require `execution_requests`.
+        let blinded_block_electra = {
+            let mut block = blinded_block.clone();
+            block["body"]["execution_requests"] = serde_json::json!({
+                "deposits": [],
+                "withdrawals": [],
+                "consolidations": [],
+            });
+            block
+        };
+
+        let kzg_proofs = Vec::new();
+        let blobs = Vec::new();
+        let cases: Vec<(&str, ProposalBlock)> = vec![
+            (
+                "bellatrix",
+                ProposalBlock::Bellatrix(
+                    serde_json::from_value(unblinded_block.clone()).expect("bellatrix"),
+                ),
+            ),
+            (
+                "bellatrix blinded",
+                ProposalBlock::BellatrixBlinded(
+                    serde_json::from_value(blinded_block.clone()).expect("bellatrix b"),
+                ),
+            ),
+            (
+                "capella",
+                ProposalBlock::Capella(
+                    serde_json::from_value(unblinded_block.clone()).expect("capella"),
+                ),
+            ),
+            (
+                "capella blinded",
+                ProposalBlock::CapellaBlinded(
+                    serde_json::from_value(blinded_block.clone()).expect("capella b"),
+                ),
+            ),
+            (
+                "deneb",
+                ProposalBlock::Deneb {
+                    block: Box::new(
+                        serde_json::from_value(unblinded_block.clone()).expect("deneb"),
+                    ),
+                    kzg_proofs: kzg_proofs.clone(),
+                    blobs: blobs.clone(),
+                },
+            ),
+            (
+                "deneb blinded",
+                ProposalBlock::DenebBlinded(
+                    serde_json::from_value(blinded_block.clone()).expect("deneb b"),
+                ),
+            ),
+            (
+                "electra",
+                ProposalBlock::Electra {
+                    block: Box::new(
+                        serde_json::from_value(unblinded_block.clone()).expect("electra"),
+                    ),
+                    kzg_proofs: kzg_proofs.clone(),
+                    blobs: blobs.clone(),
+                },
+            ),
+            (
+                "electra blinded",
+                ProposalBlock::ElectraBlinded(
+                    serde_json::from_value(blinded_block_electra.clone()).expect("electra b"),
+                ),
+            ),
+            (
+                "fulu",
+                ProposalBlock::Fulu {
+                    block: Box::new(serde_json::from_value(unblinded_block.clone()).expect("fulu")),
+                    kzg_proofs: kzg_proofs.clone(),
+                    blobs: blobs.clone(),
+                },
+            ),
+            (
+                "fulu blinded",
+                ProposalBlock::FuluBlinded(
+                    serde_json::from_value(blinded_block_electra.clone()).expect("fulu b"),
+                ),
+            ),
+        ];
+
+        for (name, block) in cases {
+            let proposal = VersionedProposal {
+                block,
+                consensus_block_value: alloy::primitives::U256::ZERO,
+                execution_payload_value: alloy::primitives::U256::ZERO,
+            };
+
+            // A different address is reported as a mismatch; the proposal's own
+            // fee recipient matches itself (case-insensitively).
+            let (_, actual) = fee_recipient_mismatch(&proposal, "0xdead")
+                .unwrap_or_else(|| panic!("{name}: expected a mismatch against 0xdead"));
+            assert!(
+                fee_recipient_mismatch(&proposal, &actual).is_none(),
+                "{name}: should match its own fee recipient",
+            );
+            assert!(
+                fee_recipient_mismatch(&proposal, &actual.to_uppercase()).is_none(),
+                "{name}: should match case-insensitively",
+            );
+        }
     }
 
     #[tokio::test]
