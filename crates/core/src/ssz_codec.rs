@@ -449,19 +449,19 @@ fn encode_proposal_block(block: &versioned::SignedProposalBlock) -> Result<Vec<u
     })
 }
 
-/// Decodes a bare per-fork signed proposal block body from SSZ binary,
-/// selecting the variant by `(version, blinded)`.
+/// Decodes a bare per-fork full (non-blinded) signed proposal block body from
+/// SSZ binary, selecting the variant by `version`.
 ///
 /// Unlike [`decode_versioned_signed_proposal`], this expects the raw
 /// beacon-API SSZ block body with no Charon versioned header — the format a
 /// validator client posts to `/eth/v{1,2}/beacon/blocks`. The fork is taken
-/// from the `Eth-Consensus-Version` request header, not from the bytes.
+/// from the `Eth-Consensus-Version` request header, not from the bytes. The
+/// blinded endpoint uses [`decode_signed_blinded_proposal_block_body`].
 pub fn decode_signed_proposal_block_body(
     version: DataVersion,
-    blinded: bool,
     bytes: &[u8],
 ) -> Result<versioned::SignedProposalBlock, SszCodecError> {
-    decode_proposal_block(version, blinded, bytes)
+    decode_proposal_block(version, false, bytes)
 }
 
 /// Decodes a bare per-fork blinded signed proposal block body from SSZ binary,

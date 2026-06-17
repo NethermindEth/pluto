@@ -28,6 +28,19 @@ use pluto_eth2api::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::{
+    error::ApiError,
+    handler::Handler,
+    metrics::{ApiLatencyTimer, ProxyLatencyTimer},
+    types::{
+        AttestationDataOpts, AttestationDataResponse, AttesterDutiesOpts, AttesterDutiesResponse,
+        CommitteeIndex, NodeVersionResponse, ProposalOpts, ProposerDutiesOpts,
+        ProposerDutiesResponse, SyncCommitteeDutiesOpts, SyncCommitteeDutiesResponse, ValIndexes,
+        ValidatorsOpts,
+    },
+};
+use crate::signeddata::{ProposalBlock, VersionedSignedProposal};
+
 /// Cap on the `POST /eth/v1/validator/duties/{attester,sync}/{epoch}` request
 /// bodies. A realistic cluster ships at most a few thousand validator indices;
 /// 64 KiB still allows ~10k indices in either numeric or string encoding,
@@ -42,19 +55,6 @@ const EXECUTION_PAYLOAD_BLINDED_HEADER: &str = "Eth-Execution-Payload-Blinded";
 const EXECUTION_PAYLOAD_VALUE_HEADER: &str = "Eth-Execution-Payload-Value";
 /// Response header carrying the consensus block value, in Wei.
 const CONSENSUS_BLOCK_VALUE_HEADER: &str = "Eth-Consensus-Block-Value";
-
-use super::{
-    error::ApiError,
-    handler::Handler,
-    metrics::{ApiLatencyTimer, ProxyLatencyTimer},
-    types::{
-        AttestationDataOpts, AttestationDataResponse, AttesterDutiesOpts, AttesterDutiesResponse,
-        CommitteeIndex, NodeVersionResponse, ProposalOpts, ProposerDutiesOpts,
-        ProposerDutiesResponse, SyncCommitteeDutiesOpts, SyncCommitteeDutiesResponse, ValIndexes,
-        ValidatorsOpts,
-    },
-};
-use crate::signeddata::{ProposalBlock, VersionedSignedProposal};
 
 /// Query parameters for `GET /eth/v1/validator/attestation_data`.
 #[derive(Debug, Clone, Deserialize)]
@@ -323,9 +323,8 @@ async fn submit_attestations() {
 /// Validator ids arrive as repeated/CSV `id` query parameters; when the query
 /// carries none and the request has a JSON body, the body's `ids` array is
 /// used instead. The whole id batch is dispatched on the first element's
-/// `0x` prefix exactly as Charon's `getValidatorsByID` does
-/// (`core/validatorapi/router.go:1930`, v1.7.1): all-pubkeys if `ids[0]`
-/// begins `0x`, otherwise all decimal indices.
+/// `0x` prefix exactly as Charon's `getValidatorsByID` does: all-pubkeys if
+/// `ids[0]` begins `0x`, otherwise all decimal indices.
 async fn get_validators(
     State(state): State<Arc<AppState>>,
     Path(state_id): Path<String>,
@@ -395,8 +394,10 @@ async fn propose_block_v3(
     let randao_reveal = hex_query_fixed::<96>(&params, "randao_reveal")?;
     let graffiti = graffiti_query(&params, "graffiti")?;
 
-    // Maximum priority to builder blocks when builder mode is enabled.
-    let builder_boost_factor = state.builder_enabled.then_some(u64::MAX);
+    // Builder mode gives maximum priority to builder blocks (`u64::MAX`);
+    // otherwise the factor is `0`. Charon always sends the factor (it is never
+    // omitted), so use `Some` in both branches.
+    let builder_boost_factor = Some(if state.builder_enabled { u64::MAX } else { 0 });
 
     let response = state
         .handler
@@ -549,10 +550,13 @@ async fn respond_404() -> impl IntoResponse {
 ///
 /// Basic-auth credentials in the upstream URL's `userinfo` are applied to the
 /// proxied request and the `Host` header is rewritten to the upstream host,
-/// matching Charon's reverse-proxy director. Charon clones the request with
-/// the lifecycle context so in-flight proxied requests are cancelled on soft
-/// shutdown; here the proxied request inherits the axum request's own
-/// lifetime, which is cancelled when the connection/server is torn down.
+/// matching Charon's reverse-proxy director. The upstream response body is
+/// streamed straight through (not buffered), so long-lived endpoints such as
+/// the SSE `/eth/v1/events` stream proxy incrementally. Charon clones the
+/// request with the lifecycle context so in-flight proxied requests are
+/// cancelled on soft shutdown; here the proxied request inherits the axum
+/// request's own lifetime, which is cancelled when the connection/server is
+/// torn down.
 async fn proxy_handler(
     State(state): State<Arc<AppState>>,
     method: Method,
@@ -582,13 +586,24 @@ async fn proxy_handler(
     let mut request = state
         .proxy_client
         .request(reqwest_method, target.clone())
-        .body(body.to_vec());
+        .body(reqwest::Body::from(body));
+
+    // When the upstream URL carries credentials we own the auth, so the
+    // client's own Authorization header must not be relayed (it would produce
+    // a second, conflicting Authorization header on the proxied request).
+    let upstream_user = state.upstream_base_url.username();
+    let has_upstream_auth = !upstream_user.is_empty();
 
     // Forward request headers, skipping the Host (rewritten below),
-    // Content-Length (reqwest sets it from the body), and the hop-by-hop
-    // headers a proxy must not relay.
+    // Content-Length (reqwest sets it from the body), the hop-by-hop headers a
+    // proxy must not relay, and — when we apply our own basic auth — the
+    // client Authorization header.
     for (name, value) in &headers {
-        if name == header::HOST || name == header::CONTENT_LENGTH || is_hop_by_hop_header(name) {
+        if name == header::HOST
+            || name == header::CONTENT_LENGTH
+            || is_hop_by_hop_header(name)
+            || (has_upstream_auth && name == header::AUTHORIZATION)
+        {
             continue;
         }
         request = request.header(name.as_str(), value.as_bytes());
@@ -602,9 +617,8 @@ async fn proxy_handler(
     }
 
     // Apply basic auth from the upstream URL's userinfo, if present.
-    let user = state.upstream_base_url.username();
-    if !user.is_empty() {
-        request = request.basic_auth(user, state.upstream_base_url.password());
+    if has_upstream_auth {
+        request = request.basic_auth(upstream_user, state.upstream_base_url.password());
     }
 
     let upstream = request.send().await.map_err(|err| {
@@ -618,8 +632,8 @@ async fn proxy_handler(
     let status = StatusCode::from_u16(upstream.status().as_u16())
         .map_err(|err| internal_error("invalid upstream status", err))?;
 
-    // Re-emit upstream response headers, dropping Content-Length (axum sets it
-    // from the buffered body) and hop-by-hop headers.
+    // Re-emit upstream response headers, dropping Content-Length (axum derives
+    // it from the streamed body) and hop-by-hop headers.
     let mut response_headers = HeaderMap::new();
     for (name, value) in upstream.headers() {
         if let (Ok(name), Ok(value)) = (
@@ -633,15 +647,13 @@ async fn proxy_handler(
         }
     }
 
-    let bytes = upstream.bytes().await.map_err(|err| {
-        ApiError::new(
-            StatusCode::BAD_GATEWAY,
-            "reading beacon node response failed",
-        )
-        .with_source(err)
-    })?;
+    // Stream the body straight through rather than buffering it, so
+    // long-lived/streaming endpoints (e.g. the SSE `/eth/v1/events`) are
+    // proxied incrementally. Charon achieves the same with a flushing reverse
+    // proxy writer.
+    let body = axum::body::Body::from_stream(upstream.bytes_stream());
 
-    Ok((status, response_headers, bytes).into_response())
+    Ok((status, response_headers, body).into_response())
 }
 
 /// Reports whether `name` is an HTTP hop-by-hop header that a proxy must not
@@ -707,10 +719,9 @@ fn validator_ids_from_json_body(body: &[u8]) -> Result<Vec<String>, ApiError> {
 /// Builds [`ValidatorsOpts`] from a state id and a batch of validator ids.
 ///
 /// The whole batch is dispatched on `ids[0]`'s `0x` prefix exactly as Charon's
-/// `getValidatorsByID` does (`core/validatorapi/router.go:1930`, v1.7.1): if
-/// the first id is `0x`-prefixed every id is parsed as a public key, otherwise
-/// every id is parsed as a decimal validator index. An empty batch forwards no
-/// filter.
+/// `getValidatorsByID` does: if the first id is `0x`-prefixed every id is
+/// parsed as a public key, otherwise every id is parsed as a decimal validator
+/// index. An empty batch forwards no filter.
 fn validators_opts(state: String, ids: &[String]) -> Result<ValidatorsOpts, ApiError> {
     let mut pubkeys = Vec::new();
     let mut indices = Vec::new();
@@ -853,7 +864,15 @@ fn request_is_ssz(headers: &HeaderMap) -> Result<bool, ApiError> {
     let Some(value) = headers.get(header::CONTENT_TYPE) else {
         return Ok(false);
     };
-    let value = value.to_str().unwrap_or("");
+    // A present but non-ASCII header is unrecognised, not JSON: surface it as
+    // 415 like any other unsupported type rather than silently defaulting.
+    let unsupported = || {
+        ApiError::new(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            format!("unsupported media type {value:?}"),
+        )
+    };
+    let value = value.to_str().map_err(|_| unsupported())?;
     if value.is_empty() || value.contains("application/json") {
         Ok(false)
     } else if value.contains("application/octet-stream") {
@@ -882,7 +901,7 @@ fn decode_signed_proposal_block(
     };
 
     if ssz {
-        return crate::ssz_codec::decode_signed_proposal_block_body(version, false, body)
+        return crate::ssz_codec::decode_signed_proposal_block_body(version, body)
             .map_err(|err| invalid(Box::new(err)));
     }
 
@@ -1632,8 +1651,8 @@ mod tests {
         let mut expected = [0u8; 32];
         expected[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
         assert_eq!(opts.graffiti, expected);
-        // builder disabled → no boost factor.
-        assert_eq!(opts.builder_boost_factor, None);
+        // builder disabled → boost factor 0 (always sent, never omitted).
+        assert_eq!(opts.builder_boost_factor, Some(0));
     }
 
     /// Missing `randao_reveal` is a 400.
@@ -1677,6 +1696,34 @@ mod tests {
         let got = submitted.lock().unwrap().clone().unwrap();
         assert_eq!(got.0.version, DataVersion::Phase0);
         assert!(!got.0.blinded);
+    }
+
+    /// `submit_proposal` decodes an SSZ (`application/octet-stream`) body via
+    /// the bare per-fork block codec keyed by the version header.
+    #[tokio::test]
+    async fn submit_proposal_decodes_ssz_body() {
+        use ssz::Encode;
+
+        let handler = TestHandler::default();
+        let submitted = handler.submitted_proposal.clone();
+        let app = test_router(Arc::new(handler), false);
+
+        // The SSZ body is the bare per-fork block, not the Charon versioned
+        // wire format.
+        let body = phase0_signed_block(9).as_ssz_bytes();
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/beacon/blocks")
+            .header("content-type", "application/octet-stream")
+            .header(VERSION_HEADER, "phase0")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let got = submitted.lock().unwrap().clone().unwrap();
+        assert_eq!(got.0.version, DataVersion::Phase0);
+        assert!(matches!(got.0.block, SignedProposalBlock::Phase0(_)));
     }
 
     /// A capitalised version header is accepted (case-insensitive, mirroring
