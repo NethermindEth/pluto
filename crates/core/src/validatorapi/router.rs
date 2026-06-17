@@ -19,27 +19,34 @@ use axum::{
 };
 use pluto_crypto::types::PublicKey as BlsPubKey;
 use pluto_eth2api::{
-    spec::DataVersion,
+    spec::{DataVersion, electra, phase0},
     versioned::{
-        SignedBlindedProposalBlock, SignedProposalBlock, VersionedSignedBlindedProposal,
-        VersionedSignedProposal as RawVersionedSignedProposal,
+        AttestationPayload, SignedAggregateAndProofPayload, SignedBlindedProposalBlock,
+        SignedProposalBlock, VersionedAttestation,
+        VersionedSignedAggregateAndProof as RawVersionedSignedAggregateAndProof,
+        VersionedSignedBlindedProposal, VersionedSignedProposal as RawVersionedSignedProposal,
     },
 };
+use pluto_ssz::{BitList, BitVector};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use ssz::Decode;
 
 use super::{
     error::ApiError,
     handler::Handler,
     metrics::{ApiLatencyTimer, ProxyLatencyTimer},
     types::{
-        AttestationDataOpts, AttestationDataResponse, AttesterDutiesOpts, AttesterDutiesResponse,
-        CommitteeIndex, NodeVersionResponse, ProposalOpts, ProposerDutiesOpts,
-        ProposerDutiesResponse, SyncCommitteeDutiesOpts, SyncCommitteeDutiesResponse, ValIndexes,
-        ValidatorsOpts,
+        AggregateAttestationOpts, AttestationDataOpts, AttestationDataResponse, AttesterDutiesOpts,
+        AttesterDutiesResponse, BeaconCommitteeSelection, CommitteeIndex, NodeVersionResponse,
+        ProposalOpts, ProposerDutiesOpts, ProposerDutiesResponse, SyncCommitteeDutiesOpts,
+        SyncCommitteeDutiesResponse, ValIndexes, ValidatorsOpts,
     },
 };
-use crate::signeddata::{ProposalBlock, VersionedSignedProposal};
+use crate::signeddata::{
+    ProposalBlock, VersionedAttestation as SignedVersionedAttestation,
+    VersionedSignedAggregateAndProof as SignedVersionedAggregateAndProof, VersionedSignedProposal,
+};
 
 /// Cap on the `POST /eth/v1/validator/duties/{attester,sync}/{epoch}` request
 /// bodies. A realistic cluster ships at most a few thousand validator indices;
@@ -314,8 +321,130 @@ fn json_rejection_to_api_error(rejection: JsonRejection) -> ApiError {
     ApiError::new(status, message).with_source(std::io::Error::other(rejection.body_text()))
 }
 
-async fn submit_attestations() {
-    todo!("vapi: submit_attestations");
+/// `POST /eth/v2/beacon/pool/attestations`.
+///
+/// Decodes a versioned array of attestations (JSON or SSZ, fork selected by the
+/// `Eth-Consensus-Version` header). Pre-Electra forks carry a bare
+/// `phase0::Attestation`; Electra and Fulu carry a `SingleAttestation` that is
+/// lifted into the versioned wrapper with its committee index encoded in the
+/// committee bitfield and the attester index recorded as the validator index.
+/// Mirrors `submitAttestations`.
+async fn submit_attestations(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let version = consensus_version_header(&headers)?;
+    let ssz = request_is_ssz(&headers)?;
+
+    let attestations = decode_versioned_attestations(version, &body, ssz)?;
+
+    state.handler.submit_attestations(attestations).await?;
+    Ok(StatusCode::OK.into_response())
+}
+
+/// Decodes a submitted versioned attestation array for the given fork.
+fn decode_versioned_attestations(
+    version: DataVersion,
+    body: &[u8],
+    ssz: bool,
+) -> Result<Vec<SignedVersionedAttestation>, ApiError> {
+    let invalid = |source: Box<dyn std::error::Error + Send + Sync>| {
+        ApiError::new(StatusCode::BAD_REQUEST, "invalid submitted attestations")
+            .with_boxed_source(source)
+    };
+
+    match version {
+        DataVersion::Phase0
+        | DataVersion::Altair
+        | DataVersion::Bellatrix
+        | DataVersion::Capella
+        | DataVersion::Deneb => {
+            let atts: Vec<phase0::Attestation> = if ssz {
+                Vec::<phase0::Attestation>::from_ssz_bytes(body)
+                    .map_err(|err| invalid(format!("ssz: {err:?}").into()))?
+            } else {
+                serde_json::from_slice(body).map_err(|err| invalid(Box::new(err)))?
+            };
+
+            atts.into_iter()
+                .map(|att| {
+                    build_versioned_attestation(VersionedAttestation {
+                        version,
+                        validator_index: None,
+                        attestation: Some(AttestationPayload_phase0(version, att)),
+                    })
+                })
+                .collect()
+        }
+        DataVersion::Electra | DataVersion::Fulu => {
+            let atts: Vec<electra::SingleAttestation> = if ssz {
+                Vec::<electra::SingleAttestation>::from_ssz_bytes(body)
+                    .map_err(|err| invalid(format!("ssz: {err:?}").into()))?
+            } else {
+                serde_json::from_slice(body).map_err(|err| invalid(Box::new(err)))?
+            };
+
+            atts.into_iter()
+                .map(|single| {
+                    // SingleAttestation disregards aggregation bits once it is
+                    // converted back, so an empty bitlist is safe; the committee
+                    // index is carried in the committee bitfield.
+                    let committee_bit = usize::try_from(single.committee_index)
+                        .ok()
+                        .filter(|&idx| idx < 64)
+                        .ok_or_else(|| {
+                            ApiError::new(
+                                StatusCode::BAD_REQUEST,
+                                "committee index out of range for committee bits",
+                            )
+                        })?;
+                    let committee_bits = BitVector::<64>::with_bits(&[committee_bit]);
+                    let attestation = electra::Attestation {
+                        aggregation_bits: BitList::<131_072>::with_bits(0, &[]),
+                        data: single.data,
+                        signature: single.signature,
+                        committee_bits,
+                    };
+                    let payload = match version {
+                        DataVersion::Electra => AttestationPayload::Electra(attestation),
+                        _ => AttestationPayload::Fulu(attestation),
+                    };
+                    build_versioned_attestation(VersionedAttestation {
+                        version,
+                        validator_index: Some(single.attester_index),
+                        attestation: Some(payload),
+                    })
+                })
+                .collect()
+        }
+        DataVersion::Unknown => Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid attestations version",
+        )),
+    }
+}
+
+/// Selects the per-fork pre-Electra `AttestationPayload` variant.
+#[allow(non_snake_case)]
+fn AttestationPayload_phase0(version: DataVersion, att: phase0::Attestation) -> AttestationPayload {
+    match version {
+        DataVersion::Phase0 => AttestationPayload::Phase0(att),
+        DataVersion::Altair => AttestationPayload::Altair(att),
+        DataVersion::Bellatrix => AttestationPayload::Bellatrix(att),
+        DataVersion::Capella => AttestationPayload::Capella(att),
+        _ => AttestationPayload::Deneb(att),
+    }
+}
+
+/// Wraps a raw versioned attestation as the validated signeddata type, mapping
+/// a construction failure to `400`.
+fn build_versioned_attestation(
+    att: VersionedAttestation,
+) -> Result<SignedVersionedAttestation, ApiError> {
+    SignedVersionedAttestation::new(att).map_err(|err| {
+        ApiError::new(StatusCode::BAD_REQUEST, "invalid submitted attestation").with_source(err)
+    })
 }
 
 /// `GET,POST /eth/v1/beacon/states/{state_id}/validators`.
@@ -495,16 +624,229 @@ async fn submit_exit() {
     todo!("vapi: submit_exit");
 }
 
-async fn beacon_committee_selections() {
-    todo!("vapi: beacon_committee_selections");
+/// `POST /eth/v1/validator/beacon_committee_selections`.
+///
+/// Decodes a JSON array of partially-signed beacon committee selections,
+/// forwards them to the handler, and returns the aggregated selections.
+/// Mirrors `beaconCommitteeSelections`.
+async fn beacon_committee_selections(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    // Selections are JSON-only upstream; reject SSZ with 415 like Charon's
+    // `unmarshal` content negotiation.
+    if request_is_ssz(&headers)? {
+        return Err(ApiError::new(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "beacon committee selections must be JSON",
+        ));
+    }
+
+    let selections: Vec<BeaconCommitteeSelection> =
+        serde_json::from_slice(&body).map_err(|err| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "unmarshal beacon committee selections",
+            )
+            .with_source(err)
+        })?;
+
+    let response = state
+        .handler
+        .beacon_committee_selections(selections)
+        .await?;
+
+    Ok(Json(json!({ "data": response.data })).into_response())
 }
 
-async fn aggregate_attestation() {
-    todo!("vapi: aggregate_attestation");
+/// `GET /eth/v2/validator/aggregate_attestation`.
+///
+/// Reads the `slot`, `attestation_data_root`, and `committee_index` query
+/// parameters, asks the handler for the aggregated attestation, and returns it
+/// as a versioned response carrying the `Eth-Consensus-Version` header.
+/// Mirrors `aggregateAttestation`.
+async fn aggregate_attestation(
+    State(state): State<Arc<AppState>>,
+    RawQuery(query): RawQuery,
+) -> Result<Response, ApiError> {
+    let params = parse_query(query.as_deref());
+
+    let slot = uint_query(&params, "slot")?;
+    let attestation_data_root = hex_query_fixed::<32>(&params, "attestation_data_root")?;
+    let committee_index = uint_query(&params, "committee_index")?;
+
+    let response = state
+        .handler
+        .aggregate_attestation(AggregateAttestationOpts {
+            slot,
+            attestation_data_root,
+            committee_index,
+        })
+        .await?;
+
+    let version = response.data.0.version;
+    let data = serialize_aggregate_attestation(&response.data)?;
+    let body = json!({
+        "version": version.as_str(),
+        "data": data,
+    });
+
+    let mut headers = HeaderMap::new();
+    insert_header(&mut headers, VERSION_HEADER, version.as_str())?;
+
+    Ok((headers, Json(body)).into_response())
 }
 
-async fn submit_aggregate_attestations() {
-    todo!("vapi: submit_aggregate_attestations");
+/// `POST /eth/v2/validator/aggregate_and_proofs`.
+///
+/// Decodes a versioned array of signed aggregate-and-proofs (JSON or SSZ, fork
+/// selected by the `Eth-Consensus-Version` header) and forwards them to the
+/// handler. Mirrors `submitAggregateAttestations`.
+async fn submit_aggregate_attestations(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let version = consensus_version_header(&headers)?;
+    let ssz = request_is_ssz(&headers)?;
+
+    let aggregates = decode_versioned_aggregate_and_proofs(version, &body, ssz)?;
+
+    state
+        .handler
+        .submit_aggregate_attestations(aggregates)
+        .await?;
+    Ok(StatusCode::OK.into_response())
+}
+
+/// Decodes a submitted versioned signed aggregate-and-proof array for the given
+/// fork. Pre-Electra forks carry a `phase0::SignedAggregateAndProof`; Electra
+/// and Fulu carry an `electra::SignedAggregateAndProof`.
+fn decode_versioned_aggregate_and_proofs(
+    version: DataVersion,
+    body: &[u8],
+    ssz: bool,
+) -> Result<Vec<SignedVersionedAggregateAndProof>, ApiError> {
+    let invalid = |source: Box<dyn std::error::Error + Send + Sync>| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid submitted aggregate and proofs",
+        )
+        .with_boxed_source(source)
+    };
+
+    let aggregate_and_proof = match version {
+        DataVersion::Phase0
+        | DataVersion::Altair
+        | DataVersion::Bellatrix
+        | DataVersion::Capella
+        | DataVersion::Deneb => {
+            let aggs: Vec<phase0::SignedAggregateAndProof> = if ssz {
+                Vec::<phase0::SignedAggregateAndProof>::from_ssz_bytes(body)
+                    .map_err(|err| invalid(format!("ssz: {err:?}").into()))?
+            } else {
+                serde_json::from_slice(body).map_err(|err| invalid(Box::new(err)))?
+            };
+            aggs.into_iter()
+                .map(|agg| build_versioned_aggregate(version, phase0_agg_payload(version, agg)))
+                .collect::<Result<Vec<_>, _>>()?
+        }
+        DataVersion::Electra | DataVersion::Fulu => {
+            let aggs: Vec<electra::SignedAggregateAndProof> = if ssz {
+                Vec::<electra::SignedAggregateAndProof>::from_ssz_bytes(body)
+                    .map_err(|err| invalid(format!("ssz: {err:?}").into()))?
+            } else {
+                serde_json::from_slice(body).map_err(|err| invalid(Box::new(err)))?
+            };
+            aggs.into_iter()
+                .map(|agg| {
+                    let payload = match version {
+                        DataVersion::Electra => SignedAggregateAndProofPayload::Electra(agg),
+                        _ => SignedAggregateAndProofPayload::Fulu(agg),
+                    };
+                    build_versioned_aggregate(version, payload)
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        }
+        DataVersion::Unknown => {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid aggregate and proofs version",
+            ));
+        }
+    };
+
+    Ok(aggregate_and_proof)
+}
+
+/// Selects the per-fork pre-Electra signed aggregate-and-proof payload variant.
+fn phase0_agg_payload(
+    version: DataVersion,
+    agg: phase0::SignedAggregateAndProof,
+) -> SignedAggregateAndProofPayload {
+    match version {
+        DataVersion::Phase0 => SignedAggregateAndProofPayload::Phase0(agg),
+        DataVersion::Altair => SignedAggregateAndProofPayload::Altair(agg),
+        DataVersion::Bellatrix => SignedAggregateAndProofPayload::Bellatrix(agg),
+        DataVersion::Capella => SignedAggregateAndProofPayload::Capella(agg),
+        _ => SignedAggregateAndProofPayload::Deneb(agg),
+    }
+}
+
+/// Wraps a raw versioned signed aggregate-and-proof as the signeddata type.
+fn build_versioned_aggregate(
+    version: DataVersion,
+    payload: SignedAggregateAndProofPayload,
+) -> Result<SignedVersionedAggregateAndProof, ApiError> {
+    Ok(SignedVersionedAggregateAndProof::new(
+        RawVersionedSignedAggregateAndProof {
+            version,
+            aggregate_and_proof: payload,
+        },
+    ))
+}
+
+/// Serializes an aggregated attestation to the bare per-fork payload Charon's
+/// `createAggregateAttestation` puts in the `data` field.
+fn serialize_aggregate_attestation(att: &SignedVersionedAttestation) -> Result<Value, ApiError> {
+    let payload = att.0.attestation.as_ref().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "no aggregate attestation",
+        )
+    })?;
+    let to_value = |value: Result<Value, serde_json::Error>| {
+        value.map_err(|err| internal_error("could not serialize aggregate attestation", err))
+    };
+    match payload {
+        AttestationPayload::Phase0(a)
+        | AttestationPayload::Altair(a)
+        | AttestationPayload::Bellatrix(a)
+        | AttestationPayload::Capella(a)
+        | AttestationPayload::Deneb(a) => to_value(serde_json::to_value(a)),
+        AttestationPayload::Electra(a) | AttestationPayload::Fulu(a) => {
+            to_value(serde_json::to_value(a))
+        }
+    }
+}
+
+/// Decodes a required decimal `u64` query parameter. Mirrors Charon's
+/// `uintQuery`.
+fn uint_query(params: &[(String, String)], name: &str) -> Result<u64, ApiError> {
+    let value = query_value(params, name).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("missing query parameter {name}"),
+        )
+    })?;
+    value.parse::<u64>().map_err(|err| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("invalid query parameter {name} [{value}]"),
+        )
+        .with_source(err)
+    })
 }
 
 async fn submit_sync_committee_messages() {
@@ -2037,5 +2379,366 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // -----------------------------------------------------------------------
+    // PR 2: attestation + aggregation handler tests
+    // -----------------------------------------------------------------------
+
+    /// Phase0 attestation at `slot` with committee `index` and a single
+    /// aggregation bit set at position `bit`.
+    fn phase0_attestation(slot: u64, index: u64, bit: usize) -> p0::Attestation {
+        p0::Attestation {
+            aggregation_bits: BitList::<2048>::with_bits(64, &[bit]),
+            data: p0::AttestationData {
+                slot,
+                index,
+                beacon_block_root: [0; 32],
+                source: p0::Checkpoint {
+                    epoch: 0,
+                    root: [0; 32],
+                },
+                target: p0::Checkpoint {
+                    epoch: 1,
+                    root: [0; 32],
+                },
+            },
+            signature: [0; 96],
+        }
+    }
+
+    /// Phase0 signed aggregate-and-proof at `slot` for `aggregator_index`.
+    fn phase0_aggregate(slot: u64, aggregator_index: u64) -> p0::SignedAggregateAndProof {
+        p0::SignedAggregateAndProof {
+            message: p0::AggregateAndProof {
+                aggregator_index,
+                aggregate: phase0_attestation(slot, 0, 0),
+                selection_proof: [0; 96],
+            },
+            signature: [0; 96],
+        }
+    }
+
+    /// `submit_attestations` decodes a phase0 JSON array and forwards it.
+    #[tokio::test]
+    async fn submit_attestations_decodes_phase0_json() {
+        let handler = TestHandler::default();
+        let recorded = handler.submitted_attestations.clone();
+        let app = test_router(Arc::new(handler), false);
+
+        let body = serde_json::to_vec(&vec![phase0_attestation(9, 3, 1)]).unwrap();
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v2/beacon/pool/attestations")
+            .header("content-type", "application/json")
+            .header(VERSION_HEADER, "phase0")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let got = recorded.lock().unwrap().clone().unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0.version, DataVersion::Phase0);
+    }
+
+    /// `submit_attestations` decodes a phase0 SSZ array body.
+    #[tokio::test]
+    async fn submit_attestations_decodes_phase0_ssz() {
+        use ssz::Encode;
+
+        let handler = TestHandler::default();
+        let recorded = handler.submitted_attestations.clone();
+        let app = test_router(Arc::new(handler), false);
+
+        let body = vec![phase0_attestation(9, 3, 1)].as_ssz_bytes();
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v2/beacon/pool/attestations")
+            .header("content-type", "application/octet-stream")
+            .header(VERSION_HEADER, "phase0")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let got = recorded.lock().unwrap().clone().unwrap();
+        assert_eq!(got.len(), 1);
+    }
+
+    /// `submit_attestations` lifts an Electra `SingleAttestation` into the
+    /// versioned wrapper: committee index in the committee bits, attester index
+    /// recorded as the validator index.
+    #[tokio::test]
+    async fn submit_attestations_decodes_electra_single_attestation() {
+        let handler = TestHandler::default();
+        let recorded = handler.submitted_attestations.clone();
+        let app = test_router(Arc::new(handler), false);
+
+        let single = electra::SingleAttestation {
+            committee_index: 5,
+            attester_index: 42,
+            data: phase0_attestation(9, 0, 0).data,
+            signature: [0; 96],
+        };
+        let body = serde_json::to_vec(&vec![single]).unwrap();
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v2/beacon/pool/attestations")
+            .header("content-type", "application/json")
+            .header(VERSION_HEADER, "electra")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let got = recorded.lock().unwrap().clone().unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0.version, DataVersion::Electra);
+        assert_eq!(got[0].0.validator_index, Some(42));
+    }
+
+    /// Missing version header → 400.
+    #[tokio::test]
+    async fn submit_attestations_rejects_missing_version_header() {
+        let app = test_router(Arc::new(TestHandler::default()), false);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v2/beacon/pool/attestations")
+            .header("content-type", "application/json")
+            .body(Body::from("[]"))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// An unsupported content type → 415.
+    #[tokio::test]
+    async fn submit_attestations_rejects_unsupported_content_type() {
+        let app = test_router(Arc::new(TestHandler::default()), false);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v2/beacon/pool/attestations")
+            .header("content-type", "text/plain")
+            .header(VERSION_HEADER, "phase0")
+            .body(Body::from("[]"))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    /// A malformed body → 400.
+    #[tokio::test]
+    async fn submit_attestations_rejects_bad_body() {
+        let app = test_router(Arc::new(TestHandler::default()), false);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v2/beacon/pool/attestations")
+            .header("content-type", "application/json")
+            .header(VERSION_HEADER, "phase0")
+            .body(Body::from(r#"[{"not":"an attestation"}]"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// The legacy v1 attestation route is still a 404.
+    #[tokio::test]
+    async fn submit_attestations_v1_route_is_404() {
+        let app = test_router(Arc::new(TestHandler::default()), false);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/beacon/pool/attestations")
+            .header("content-type", "application/json")
+            .body(Body::from("[]"))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// `submit_aggregate_attestations` decodes a phase0 JSON array and
+    /// forwards.
+    #[tokio::test]
+    async fn submit_aggregate_attestations_decodes_phase0_json() {
+        let handler = TestHandler::default();
+        let recorded = handler.submitted_aggregates.clone();
+        let app = test_router(Arc::new(handler), false);
+
+        let body = serde_json::to_vec(&vec![phase0_aggregate(9, 7)]).unwrap();
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v2/validator/aggregate_and_proofs")
+            .header("content-type", "application/json")
+            .header(VERSION_HEADER, "phase0")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let got = recorded.lock().unwrap().clone().unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0.slot(), Some(9));
+    }
+
+    /// Missing version header → 400.
+    #[tokio::test]
+    async fn submit_aggregate_attestations_rejects_missing_version_header() {
+        let app = test_router(Arc::new(TestHandler::default()), false);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v2/validator/aggregate_and_proofs")
+            .header("content-type", "application/json")
+            .body(Body::from("[]"))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// The legacy v1 aggregate route is still a 404.
+    #[tokio::test]
+    async fn submit_aggregate_attestations_v1_route_is_404() {
+        let app = test_router(Arc::new(TestHandler::default()), false);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/validator/aggregate_and_proofs")
+            .header("content-type", "application/json")
+            .body(Body::from("[]"))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// `aggregate_attestation` reads the query params, calls the handler, and
+    /// returns the versioned aggregate with the consensus-version header.
+    #[tokio::test]
+    async fn aggregate_attestation_returns_versioned_response() {
+        let att = SignedVersionedAttestation::new(VersionedAttestation {
+            version: DataVersion::Phase0,
+            validator_index: None,
+            attestation: Some(AttestationPayload::Phase0(phase0_attestation(9, 3, 1))),
+        })
+        .unwrap();
+        let handler = TestHandler::default().with_aggregate_attestation(EthResponse {
+            data: att,
+            execution_optimistic: false,
+            finalized: false,
+            dependent_root: None,
+        });
+        let recorded = handler.aggregate_attestation_opts.clone();
+        let app = test_router(Arc::new(handler), false);
+
+        let root_hex = format!("0x{}", "11".repeat(32));
+        let uri = format!(
+            "/eth/v2/validator/aggregate_attestation?slot=9&committee_index=3&attestation_data_root={root_hex}"
+        );
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get(VERSION_HEADER).unwrap(), "phase0",);
+
+        let opts = recorded.lock().unwrap().clone().unwrap();
+        assert_eq!(opts.slot, 9);
+        assert_eq!(opts.committee_index, 3);
+        assert_eq!(opts.attestation_data_root, [0x11; 32]);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["version"], "phase0");
+        assert!(json["data"].is_object());
+    }
+
+    /// A missing required query parameter → 400.
+    #[tokio::test]
+    async fn aggregate_attestation_rejects_missing_query() {
+        let app = test_router(Arc::new(TestHandler::default()), false);
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/eth/v2/validator/aggregate_attestation?slot=9")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// The legacy v1 aggregate_attestation route is still a 404.
+    #[tokio::test]
+    async fn aggregate_attestation_v1_route_is_404() {
+        let app = test_router(Arc::new(TestHandler::default()), false);
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/eth/v1/validator/aggregate_attestation?slot=9")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// `beacon_committee_selections` decodes the JSON selections, forwards
+    /// them, and returns the aggregated selections in a `{ "data": [...] }`
+    /// envelope.
+    #[tokio::test]
+    async fn beacon_committee_selections_round_trips() {
+        let selection = BeaconCommitteeSelection {
+            slot: 9,
+            validator_index: 3,
+            selection_proof: [0; 96],
+        };
+        let handler = TestHandler::default().with_beacon_committee_selections(EthResponse {
+            data: vec![selection.clone()],
+            execution_optimistic: false,
+            finalized: false,
+            dependent_root: None,
+        });
+        let recorded = handler.beacon_committee_selections_opts.clone();
+        let app = test_router(Arc::new(handler), false);
+
+        let body = serde_json::to_vec(&vec![selection]).unwrap();
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/validator/beacon_committee_selections")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let opts = recorded.lock().unwrap().clone().unwrap();
+        assert_eq!(opts.len(), 1);
+        assert_eq!(opts[0].validator_index, 3);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["data"].as_array().unwrap().len(), 1);
+        assert_eq!(json["data"][0]["validator_index"], "3");
+    }
+
+    /// A malformed selections body → 400.
+    #[tokio::test]
+    async fn beacon_committee_selections_rejects_bad_body() {
+        let app = test_router(Arc::new(TestHandler::default()), false);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/validator/beacon_committee_selections")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"[{"bad":"selection"}]"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// An SSZ content type on the selections route → 415 (JSON-only endpoint).
+    #[tokio::test]
+    async fn beacon_committee_selections_rejects_ssz() {
+        let app = test_router(Arc::new(TestHandler::default()), false);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/validator/beacon_committee_selections")
+            .header("content-type", "application/octet-stream")
+            .body(Body::from(vec![0u8; 4]))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
 }

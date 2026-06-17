@@ -1176,7 +1176,7 @@ impl SignedSyncContributionAndProof {
 }
 
 /// Attester duty metadata associated with an attestation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttesterDuty {
     /// Slot for the duty.
     pub slot: phase0::Slot,

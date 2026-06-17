@@ -151,13 +151,13 @@ pub use crate::signeddata::VersionedSignedProposal;
 /// `SubmitBlindedProposalOpts.Proposal`.
 pub use pluto_eth2api::versioned::VersionedSignedBlindedProposal;
 
-/// Versioned attestation payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct VersionedAttestation {}
+/// Versioned attestation payload — alias of the signeddata wrapper. Carries a
+/// VC-submitted attestation across all supported forks.
+pub use crate::signeddata::VersionedAttestation;
 
-/// Versioned signed aggregate-and-proof payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct VersionedSignedAggregateAndProof {}
+/// Versioned signed aggregate-and-proof payload — alias of the signeddata
+/// wrapper.
+pub use crate::signeddata::VersionedSignedAggregateAndProof;
 
 /// Signed validator registration payload. Placeholder.
 #[derive(Debug, Clone)]
@@ -179,9 +179,9 @@ pub struct SyncCommitteeContribution {}
 #[derive(Debug, Clone)]
 pub struct SignedContributionAndProof {}
 
-/// Beacon-committee selection payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct BeaconCommitteeSelection {}
+/// Beacon-committee selection payload — alias of the eth2api v1 wrapper, the
+/// same shape carried by Go's `BeaconCommitteeSelectionsOpts.Selections`.
+pub use pluto_eth2api::v1::BeaconCommitteeSelection;
 
 /// Sync-committee selection payload. Placeholder.
 #[derive(Debug, Clone)]
