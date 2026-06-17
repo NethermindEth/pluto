@@ -6,7 +6,7 @@ mod graffiti;
 
 pub use graffiti::{GraffitiBuilder, GraffitiError, client_graffiti_mappings};
 
-use std::{any::Any, collections::HashMap, future::Future, pin::Pin, sync::Arc};
+use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use pluto_eth2api::{
     ConsensusVersion, EthBeaconNodeApiClient, EthBeaconNodeApiClientError,
@@ -562,7 +562,7 @@ fn wrap(context: &'static str) -> impl Fn(FetcherError) -> FetcherError {
 
 /// Downcasts a `&dyn SignedData` to a concrete signed-data type.
 fn downcast<T: 'static>(data: &dyn SignedData) -> Option<&T> {
-    (data as &dyn Any).downcast_ref::<T>()
+    (data as &dyn std::any::Any).downcast_ref::<T>()
 }
 
 /// Formats bytes as a `0x`-prefixed lowercase hex string.
