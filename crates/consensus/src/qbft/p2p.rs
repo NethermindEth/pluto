@@ -878,7 +878,7 @@ mod tests {
         let mut varint = Vec::new();
         let mut remaining = MAX_CONSENSUS_MSG_SIZE + 1;
         loop {
-            let mut byte = (remaining & 0x7f) as u8;
+            let mut byte = u8::try_from(remaining & 0x7f).expect("7-bit masked value fits in u8");
             remaining >>= 7;
             if remaining != 0 {
                 byte |= 0x80;
