@@ -496,7 +496,7 @@ impl Fetcher {
             _ => return Err(FetcherError::AggregateAttestationNotFound),
         };
 
-        let version = consensus_to_data_version(&ok.version);
+        let version = versioned::DataVersion::from(&ok.version);
         Ok(versioned::VersionedAttestation {
             version,
             validator_index: None,
@@ -563,20 +563,6 @@ fn downcast<T: 'static>(data: &dyn SignedData) -> Option<&T> {
 /// Formats bytes as a `0x`-prefixed lowercase hex string.
 fn hex_0x(bytes: &[u8]) -> String {
     format!("0x{}", hex::encode(bytes))
-}
-
-/// Maps a beacon node `ConsensusVersion` onto a `versioned::DataVersion`.
-fn consensus_to_data_version(version: &ConsensusVersion) -> versioned::DataVersion {
-    use versioned::DataVersion as DV;
-    match version {
-        ConsensusVersion::Phase0 => DV::Phase0,
-        ConsensusVersion::Altair => DV::Altair,
-        ConsensusVersion::Bellatrix => DV::Bellatrix,
-        ConsensusVersion::Capella => DV::Capella,
-        ConsensusVersion::Deneb => DV::Deneb,
-        ConsensusVersion::Electra => DV::Electra,
-        ConsensusVersion::Fulu => DV::Fulu,
-    }
 }
 
 /// Builds a versioned attestation payload from the beacon node's aggregate
