@@ -27,7 +27,7 @@ use crate::{
         SyncCommitteeSelection, SyncContribution, VersionedAggregatedAttestation,
         VersionedProposal,
     },
-    types::{Duty, DutyDefinitionSet, DutyType, PubKey, SignedData},
+    types::{Duty, DutyDefinition, DutyDefinitionSet, DutyType, PubKey, SignedData},
     unsigneddata::{UnsignedDataSet, UnsignedDutyData},
 };
 
@@ -269,9 +269,9 @@ impl Fetcher {
 
         let mut resp = UnsignedDataSet::new();
         for (pubkey, def) in def_set {
-            let att_def = def
-                .as_attester()
-                .ok_or(FetcherError::InvalidAttesterDefinition)?;
+            let DutyDefinition::Attester(att_def) = def else {
+                return Err(FetcherError::InvalidAttesterDefinition);
+            };
 
             let mut comm_idx = att_def.duty.committee_index;
 
@@ -317,9 +317,9 @@ impl Fetcher {
 
         let mut resp = UnsignedDataSet::new();
         for (pubkey, def) in def_set {
-            let att_def = def
-                .as_attester()
-                .ok_or(FetcherError::InvalidAttesterDefinition)?;
+            let DutyDefinition::Attester(att_def) = def else {
+                return Err(FetcherError::InvalidAttesterDefinition);
+            };
 
             // Query AggSigDB for DutyPrepareAggregator to get beacon committee
             // selections.
@@ -844,8 +844,7 @@ mod tests {
     use crate::{
         signeddata::AttesterDuty,
         types::{
-            AttesterDutyDefinition, DutyDefinition, ProposerDutyDefinition, SlotNumber,
-            SyncCommitteeDutyDefinition,
+            AttesterDutyDefinition, ProposerDutyDefinition, SlotNumber, SyncCommitteeDutyDefinition,
         },
     };
 

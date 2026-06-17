@@ -573,33 +573,6 @@ pub enum DutyDefinition {
     SyncCommittee(SyncCommitteeDutyDefinition),
 }
 
-impl DutyDefinition {
-    /// Returns the attester definition, or `None` if this is a different duty.
-    pub fn as_attester(&self) -> Option<&AttesterDutyDefinition> {
-        match self {
-            Self::Attester(d) => Some(d),
-            _ => None,
-        }
-    }
-
-    /// Returns the proposer definition, or `None` if this is a different duty.
-    pub fn as_proposer(&self) -> Option<&ProposerDutyDefinition> {
-        match self {
-            Self::Proposer(d) => Some(d),
-            _ => None,
-        }
-    }
-
-    /// Returns the sync committee definition, or `None` if this is a different
-    /// duty.
-    pub fn as_sync_committee(&self) -> Option<&SyncCommitteeDutyDefinition> {
-        match self {
-            Self::SyncCommittee(d) => Some(d),
-            _ => None,
-        }
-    }
-}
-
 /// A set of duty definitions for all validators in a given epoch, indexed by
 /// public key.
 pub type DutyDefinitionSet = HashMap<PubKey, DutyDefinition>;
