@@ -433,29 +433,32 @@ impl Component {
             | DataVersion::Deneb => {
                 let def_set = self.lookup_attester_definitions(att_data.slot).await?;
 
-                let indices = attestation_aggregation_bit_indices(att)?;
-                if indices.len() != 1 {
-                    return Err(ApiError::new(
-                        StatusCode::BAD_REQUEST,
-                        "unexpected number of aggregation bits",
-                    ));
-                }
-                let single_bit = indices[0] as u64;
-
+                // Match the attestation to an attester duty by committee index
+                // and the single aggregation bit. When no duty matches, the
+                // validator index stays 0 and the subsequent pubkey lookup
+                // fails — matching Go, which does not error at this point.
+                let mut val_idx = 0;
                 for def in def_set.inner().values() {
                     let duty = def.inner();
                     if duty.committee_index != att_data.index {
                         continue;
                     }
-                    if duty.validator_committee_index == single_bit {
-                        return Ok(duty.validator_index);
+
+                    let indices = attestation_aggregation_bit_indices(att)?;
+                    let [single_bit] = indices.as_slice() else {
+                        return Err(ApiError::new(
+                            StatusCode::BAD_REQUEST,
+                            "unexpected number of aggregation bits",
+                        ));
+                    };
+
+                    if duty.validator_committee_index == *single_bit as u64 {
+                        val_idx = duty.validator_index;
+                        break;
                     }
                 }
 
-                Err(ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    "could not match attestation to an attester duty",
-                ))
+                Ok(val_idx)
             }
             DataVersion::Electra | DataVersion::Fulu => att.0.validator_index.ok_or_else(|| {
                 ApiError::new(
@@ -1108,6 +1111,15 @@ impl Handler for Component {
         &self,
         selections: Vec<BeaconCommitteeSelection>,
     ) -> Result<EthResponse<Vec<BeaconCommitteeSelection>>, ApiError> {
+        // Resolve the AggSigDB hook up front so a misconfigured component fails
+        // before any partial selections are broadcast into the pipeline.
+        let await_agg_sig_db = self.await_agg_sig_db_fn.as_ref().ok_or_else(|| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "await aggregated signed data not registered",
+            )
+        })?;
+
         let vals = self.fetch_active_validators().await?;
 
         let mut psigs_by_slot: HashMap<u64, ParSignedDataSet> = HashMap::new();
@@ -1158,16 +1170,10 @@ impl Handler for Component {
         // Await the aggregated selection from the AggSigDB for each (duty,
         // pubkey) and return them. This is a blocking query.
         let mut resp: Vec<BeaconCommitteeSelection> = Vec::new();
-        let f = self.await_agg_sig_db_fn.as_ref().ok_or_else(|| {
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "await aggregated signed data not registered",
-            )
-        })?;
         for (slot, data) in &psigs_by_slot {
             let duty = Duty::new_prepare_aggregator_duty(SlotNumber::new(*slot));
             for pk in data.inner().keys() {
-                let signed = f(duty.clone(), *pk).await.map_err(|err| {
+                let signed = await_agg_sig_db(duty.clone(), *pk).await.map_err(|err| {
                     ApiError::new(
                         StatusCode::SERVICE_UNAVAILABLE,
                         "await aggregated beacon committee selection failed",
@@ -4201,18 +4207,32 @@ mod tests {
         assert!(sets[0].1.get(&core_pubkey(0xAB)).is_some());
     }
 
-    /// `submit_attestations` rejects when the aggregation bits do not select
-    /// exactly one validator.
+    /// `submit_attestations` rejects when a matching attester duty exists but
+    /// the aggregation bits do not select exactly one validator.
     #[tokio::test]
     async fn submit_attestations_rejects_multiple_aggregation_bits() {
+        const COMM_IDX: u64 = 3;
         let (mut component, _mock) = make_attestation_component(HashMap::new()).await;
-        component.register_get_duty_definition(|_duty| async move {
-            Ok(Box::new(DutyDefinitionSet::<SignedAttesterDuty>::new())
-                as Box<dyn Any + Send + Sync>)
+        // A duty whose committee index matches the attestation, so the
+        // single-bit check is reached.
+        component.register_get_duty_definition(move |_duty| async move {
+            let mut set: DutyDefinitionSet<SignedAttesterDuty> = DutyDefinitionSet::new();
+            set.insert(
+                core_pubkey(0x01),
+                DutyDefinition::new(SignedAttesterDuty {
+                    slot: 9,
+                    validator_index: 1,
+                    committee_index: COMM_IDX,
+                    committee_length: 64,
+                    committees_at_slot: 1,
+                    validator_committee_index: 0,
+                }),
+            );
+            Ok(Box::new(set) as Box<dyn Any + Send + Sync>)
         });
         component.register_pub_key_by_attestation(|_, _, _| async { Ok(core_pubkey(0x01)) });
 
-        let mut att = phase0_attestation(9, 3, 0);
+        let mut att = phase0_attestation(9, COMM_IDX, 0);
         att.aggregation_bits = pluto_ssz::BitList::<2048>::with_bits(64, &[0, 1]);
         let err = component
             .submit_attestations(vec![phase0_versioned_attestation(att)])
@@ -4422,7 +4442,12 @@ mod tests {
     /// the active-validator set.
     #[tokio::test]
     async fn beacon_committee_selections_rejects_unknown_validator() {
-        let (component, _mock) = make_attestation_component(HashMap::new()).await;
+        let (mut component, _mock) = make_attestation_component(HashMap::new()).await;
+        // The AggSigDB hook is checked first; register it so the test reaches
+        // the validator-not-found path.
+        component.register_await_agg_sig_db(|_duty, _pk| async {
+            Err::<Box<dyn SignedData>, _>("unused".into())
+        });
         let selection = Eth2BeaconCommitteeSelection {
             slot: 9,
             validator_index: 1,
@@ -4433,5 +4458,52 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+    }
+
+    /// `beacon_committee_selections` groups selections by slot and broadcasts a
+    /// distinct prepare-aggregator duty per slot.
+    #[tokio::test]
+    async fn beacon_committee_selections_broadcasts_per_slot() {
+        let cache = HashMap::from([(7, dv_pubkey(0xE1)), (8, dv_pubkey(0xE2))]);
+        let (mut component, _mock) = make_attestation_component(cache).await;
+        let recorded = record_subscriber(&mut component);
+
+        component.register_await_agg_sig_db(|_duty, pk| async move {
+            // Echo back a selection keyed by the requested pubkey's slot is not
+            // available here; return a fixed aggregated selection.
+            let _ = pk;
+            Ok(Box::new(SignedBeaconCommitteeSelection::new(
+                Eth2BeaconCommitteeSelection {
+                    slot: 0,
+                    validator_index: 0,
+                    selection_proof: [0xCD; 96],
+                },
+            )) as Box<dyn SignedData>)
+        });
+
+        let selections = vec![
+            Eth2BeaconCommitteeSelection {
+                slot: 7,
+                validator_index: 7,
+                selection_proof: [0; 96],
+            },
+            Eth2BeaconCommitteeSelection {
+                slot: 8,
+                validator_index: 8,
+                selection_proof: [0; 96],
+            },
+        ];
+        let response = component
+            .beacon_committee_selections(selections)
+            .await
+            .unwrap();
+        assert_eq!(response.data.len(), 2);
+
+        // Two distinct prepare-aggregator duties broadcast, one per slot.
+        let sets = recorded.lock().unwrap();
+        assert_eq!(sets.len(), 2);
+        let mut slots: Vec<u64> = sets.iter().map(|(duty, _)| duty.slot.inner()).collect();
+        slots.sort_unstable();
+        assert_eq!(slots, vec![7, 8]);
     }
 }

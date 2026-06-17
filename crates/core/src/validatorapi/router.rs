@@ -372,7 +372,7 @@ fn decode_versioned_attestations(
                     build_versioned_attestation(VersionedAttestation {
                         version,
                         validator_index: None,
-                        attestation: Some(AttestationPayload_phase0(version, att)),
+                        attestation: Some(phase0_attestation_payload(version, att)),
                     })
                 })
                 .collect()
@@ -426,8 +426,10 @@ fn decode_versioned_attestations(
 }
 
 /// Selects the per-fork pre-Electra `AttestationPayload` variant.
-#[allow(non_snake_case)]
-fn AttestationPayload_phase0(version: DataVersion, att: phase0::Attestation) -> AttestationPayload {
+fn phase0_attestation_payload(
+    version: DataVersion,
+    att: phase0::Attestation,
+) -> AttestationPayload {
     match version {
         DataVersion::Phase0 => AttestationPayload::Phase0(att),
         DataVersion::Altair => AttestationPayload::Altair(att),
@@ -2578,6 +2580,91 @@ mod tests {
         let got = recorded.lock().unwrap().clone().unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].0.slot(), Some(9));
+    }
+
+    /// `submit_aggregate_attestations` decodes a phase0 SSZ array body.
+    #[tokio::test]
+    async fn submit_aggregate_attestations_decodes_phase0_ssz() {
+        use ssz::Encode;
+
+        let handler = TestHandler::default();
+        let recorded = handler.submitted_aggregates.clone();
+        let app = test_router(Arc::new(handler), false);
+
+        let body = vec![phase0_aggregate(9, 7)].as_ssz_bytes();
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v2/validator/aggregate_and_proofs")
+            .header("content-type", "application/octet-stream")
+            .header(VERSION_HEADER, "phase0")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let got = recorded.lock().unwrap().clone().unwrap();
+        assert_eq!(got.len(), 1);
+    }
+
+    /// `submit_aggregate_attestations` decodes an Electra
+    /// `SignedAggregateAndProof` array.
+    #[tokio::test]
+    async fn submit_aggregate_attestations_decodes_electra_json() {
+        let handler = TestHandler::default();
+        let recorded = handler.submitted_aggregates.clone();
+        let app = test_router(Arc::new(handler), false);
+
+        let agg = electra::SignedAggregateAndProof {
+            message: electra::AggregateAndProof {
+                aggregator_index: 7,
+                aggregate: electra::Attestation {
+                    aggregation_bits: BitList::<131_072>::with_bits(8, &[0]),
+                    data: phase0_attestation(9, 0, 0).data,
+                    signature: [0; 96],
+                    committee_bits: BitVector::<64>::with_bits(&[0]),
+                },
+                selection_proof: [0; 96],
+            },
+            signature: [0; 96],
+        };
+        let body = serde_json::to_vec(&vec![agg]).unwrap();
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v2/validator/aggregate_and_proofs")
+            .header("content-type", "application/json")
+            .header(VERSION_HEADER, "electra")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let got = recorded.lock().unwrap().clone().unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0.version, DataVersion::Electra);
+        assert_eq!(got[0].0.slot(), Some(9));
+    }
+
+    /// An Electra `SingleAttestation` with a committee index outside the
+    /// 64-committee bitfield → 400 (rather than a panic).
+    #[tokio::test]
+    async fn submit_attestations_rejects_out_of_range_committee_index() {
+        let app = test_router(Arc::new(TestHandler::default()), false);
+        let single = electra::SingleAttestation {
+            committee_index: 64,
+            attester_index: 1,
+            data: phase0_attestation(9, 0, 0).data,
+            signature: [0; 96],
+        };
+        let body = serde_json::to_vec(&vec![single]).unwrap();
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v2/beacon/pool/attestations")
+            .header("content-type", "application/json")
+            .header(VERSION_HEADER, "electra")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     /// Missing version header → 400.
