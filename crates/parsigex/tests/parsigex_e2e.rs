@@ -8,12 +8,11 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    future::Future,
     sync::Arc,
     time::Duration,
 };
 
-use anyhow::{Context as _, Result, ensure};
+use anyhow::{Context as _, Result, bail, ensure};
 use futures::StreamExt as _;
 use libp2p::{Multiaddr, PeerId, swarm::SwarmEvent};
 use pluto_core::{
@@ -34,19 +33,21 @@ use pluto_p2p::{
 };
 use pluto_parsigex::{self as parsigex, DutyGater, Event, Handle, Verifier};
 use pluto_testutil::random::{generate_insecure_k1_key, generate_test_bls_key};
-use tokio::{
-    spawn,
-    sync::{mpsc, oneshot},
-    task::JoinHandle,
-    time::timeout,
-};
+use tokio::{sync::mpsc, task::JoinSet, time};
+use tokio_util::sync::CancellationToken;
 
 const NODES: usize = 4;
 const THRESHOLD: usize = 3;
 const EPOCH: u64 = 1;
 const SLOT: u64 = 32;
 const MSG: &[u8] = b"pluto parsigex e2e partial signature";
-const TEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Per-operation timeouts. Loopback libp2p settles quickly, so these stay tight
+/// to keep a stuck test from hanging for minutes rather than seconds.
+const LISTEN_TIMEOUT: Duration = Duration::from_secs(5);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const COLLECT_TIMEOUT: Duration = Duration::from_secs(10);
+const BROADCAST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Threshold key material dealt for the test cluster.
 struct ClusterKey {
@@ -91,8 +92,6 @@ struct RunningNode {
     share_idx: u64,
     share_priv: PrivateKey,
     dial_tx: mpsc::UnboundedSender<Vec<Multiaddr>>,
-    stop_tx: oneshot::Sender<()>,
-    join: JoinHandle<Result<()>>,
 }
 
 /// A partial signature observed on the wire: (receiving node, share,
@@ -109,11 +108,6 @@ async fn parsigex_threshold_round_trip() -> Result<()> {
     // partials purely from the network before it can aggregate.
     let received = harness.collect_partials(0).await?;
     ensure!(
-        received.len() == THRESHOLD,
-        "node 0 should receive exactly {THRESHOLD} partials, got {}",
-        received.len()
-    );
-    ensure!(
         !received.contains_key(&1),
         "node 0 must not receive its own share (index 1)"
     );
@@ -128,6 +122,8 @@ struct Harness {
     cluster: ClusterKey,
     peer_ids: Vec<PeerId>,
     running: Vec<RunningNode>,
+    swarms: JoinSet<Result<()>>,
+    cancel: CancellationToken,
     conn_rx: mpsc::UnboundedReceiver<(usize, PeerId)>,
     listen_rx: mpsc::UnboundedReceiver<(usize, Multiaddr)>,
     recv_rx: mpsc::UnboundedReceiver<ReceivedPartial>,
@@ -147,12 +143,16 @@ impl Harness {
             listen_tx,
             recv_tx,
         };
-        let running = spawn_nodes(bundles, &sinks);
+
+        let cancel = CancellationToken::new();
+        let (running, swarms) = spawn_nodes(bundles, &sinks, &cancel);
 
         Ok(Self {
             cluster,
             peer_ids,
             running,
+            swarms,
+            cancel,
             conn_rx,
             listen_rx,
             recv_rx,
@@ -161,17 +161,13 @@ impl Harness {
 
     /// Connects every node to every peer over a full mesh.
     async fn connect(&mut self) -> Result<()> {
-        let listen_addrs = with_timeout(
-            self.recv_listen_addrs(),
-            "timed out waiting for listen addresses",
-        )
-        .await?;
+        let listen_addrs = time::timeout(LISTEN_TIMEOUT, self.recv_listen_addrs())
+            .await
+            .context("timed out waiting for listen addresses")??;
         self.dial_full_mesh(&listen_addrs)?;
-        with_timeout(
-            self.recv_connections(),
-            "timed out waiting for libp2p connections",
-        )
-        .await
+        time::timeout(CONNECT_TIMEOUT, self.recv_connections())
+            .await
+            .context("timed out waiting for libp2p connections")?
     }
 
     /// Drains listen-address events until every node has reported one.
@@ -232,9 +228,9 @@ impl Harness {
     }
 
     /// Each node signs [`MSG`] with its share and broadcasts it via ParSigEx.
-    fn broadcast_all(&self) -> Result<Vec<JoinHandle<parsigex::Result<u64>>>> {
+    fn broadcast_all(&self) -> Result<JoinSet<parsigex::Result<u64>>> {
         let duty = Duty::new(SlotNumber::new(SLOT), DutyType::Randao);
-        let mut tasks = Vec::with_capacity(self.running.len());
+        let mut tasks = JoinSet::new();
 
         for node in &self.running {
             let signature = BlstImpl
@@ -244,37 +240,38 @@ impl Harness {
             let mut data_set = ParSignedDataSet::new();
             data_set.insert(self.cluster.group_pub_core, partial);
 
-            let task = broadcast_partial(node.handle.clone(), duty.clone(), data_set);
-            tasks.push(spawn(task));
+            let handle = node.handle.clone();
+            let duty = duty.clone();
+            tasks.spawn(async move { handle.broadcast_and_wait(duty, data_set).await });
         }
 
         Ok(tasks)
     }
 
-    /// Collects partials addressed to `receiver` until the threshold is met.
+    /// Collects partials addressed to `receiver` until [`THRESHOLD`] are
+    /// gathered, failing with the count seen so far if [`COLLECT_TIMEOUT`]
+    /// elapses first.
     async fn collect_partials(&mut self, receiver: usize) -> Result<HashMap<u64, Signature>> {
-        with_timeout(
-            self.recv_threshold_partials(receiver),
-            "timed out collecting partial signatures",
-        )
-        .await
-    }
-
-    /// Drains received partials addressed to `receiver` until the threshold is
-    /// met.
-    async fn recv_threshold_partials(
-        &mut self,
-        receiver: usize,
-    ) -> Result<HashMap<u64, Signature>> {
         let mut partials = HashMap::new();
+        let deadline = time::sleep(COLLECT_TIMEOUT);
+        tokio::pin!(deadline);
+
         while partials.len() < THRESHOLD {
-            let (index, share_idx, signature) = self
-                .recv_rx
-                .recv()
-                .await
-                .context("received partial channel closed")?;
-            if index == receiver {
-                partials.insert(share_idx, signature);
+            tokio::select! {
+                () = &mut deadline => {
+                    bail!(
+                        "timed out collecting partials for node {receiver}: \
+                         got {} of {THRESHOLD}",
+                        partials.len()
+                    );
+                }
+                received = self.recv_rx.recv() => {
+                    let (index, share_idx, signature) =
+                        received.context("received partial channel closed")?;
+                    if index == receiver {
+                        partials.insert(share_idx, signature);
+                    }
+                }
             }
         }
 
@@ -291,26 +288,15 @@ impl Harness {
             .context("aggregated signature did not verify against the group public key")
     }
 
-    /// Stops every node and waits for its swarm task to finish.
-    async fn shutdown(self) -> Result<()> {
-        for node in self.running {
-            node.stop_tx
-                .send(())
-                .ok()
-                .context("failed to signal node to stop")?;
-            node.join.await.context("swarm task panicked")??;
+    /// Cancels every swarm loop and waits for its task to finish.
+    async fn shutdown(mut self) -> Result<()> {
+        self.cancel.cancel();
+        while let Some(result) = self.swarms.join_next().await {
+            result.context("swarm task panicked")??;
         }
 
         Ok(())
     }
-}
-
-/// Awaits `future`, mapping an elapsed [`TEST_TIMEOUT`] to `msg`.
-async fn with_timeout<F, T>(future: F, msg: &'static str) -> Result<T>
-where
-    F: Future<Output = Result<T>>,
-{
-    timeout(TEST_TIMEOUT, future).await.context(msg)?
 }
 
 /// Builds [`NODES`] parsigex nodes over loopback TCP that share one cluster
@@ -397,19 +383,24 @@ struct EventSinks {
     recv_tx: mpsc::UnboundedSender<ReceivedPartial>,
 }
 
-/// Spawns each node's swarm loop, forwarding listen/connection/receive events.
-fn spawn_nodes(bundles: Vec<NodeBundle>, sinks: &EventSinks) -> Vec<RunningNode> {
+/// Spawns each node's swarm loop into a [`JoinSet`], forwarding
+/// listen/connection/receive events and stopping when `cancel` fires.
+fn spawn_nodes(
+    bundles: Vec<NodeBundle>,
+    sinks: &EventSinks,
+    cancel: &CancellationToken,
+) -> (Vec<RunningNode>, JoinSet<Result<()>>) {
     let mut running = Vec::with_capacity(bundles.len());
+    let mut swarms = JoinSet::new();
 
     for (index, bundle) in bundles.into_iter().enumerate() {
         let (dial_tx, dial_rx) = mpsc::unbounded_channel::<Vec<Multiaddr>>();
-        let (stop_tx, stop_rx) = oneshot::channel();
-        let join = spawn(run_swarm(
+        swarms.spawn(run_swarm(
             bundle.node,
             index,
             sinks.clone(),
             dial_rx,
-            stop_rx,
+            cancel.clone(),
         ));
 
         running.push(RunningNode {
@@ -417,28 +408,26 @@ fn spawn_nodes(bundles: Vec<NodeBundle>, sinks: &EventSinks) -> Vec<RunningNode>
             share_idx: bundle.share_idx,
             share_priv: bundle.share_priv,
             dial_tx,
-            stop_tx,
-            join,
         });
     }
 
-    running
+    (running, swarms)
 }
 
-/// Drives one node's swarm until stopped, dialing on request and forwarding
+/// Drives one node's swarm until cancelled, dialing on request and forwarding
 /// listen, connection and received-partial events to `sinks`.
 async fn run_swarm(
     mut node: Node<parsigex::Behaviour>,
     index: usize,
     sinks: EventSinks,
     mut dial_rx: mpsc::UnboundedReceiver<Vec<Multiaddr>>,
-    mut stop_rx: oneshot::Receiver<()>,
+    cancel: CancellationToken,
 ) -> Result<()> {
     node.listen_on("/ip4/127.0.0.1/tcp/0".parse()?)?;
 
     loop {
         tokio::select! {
-            _ = &mut stop_rx => break,
+            () = cancel.cancelled() => break,
             Some(targets) = dial_rx.recv() => {
                 for target in targets {
                     node.dial(target)?;
@@ -457,9 +446,11 @@ async fn run_swarm(
                         ..
                     })) => {
                         for data in data_set.inner().values() {
-                            if let Ok(signature) = data.signed_data.signature() {
-                                let _ = sinks.recv_tx.send((index, data.share_idx, signature));
-                            }
+                            let signature = data
+                                .signed_data
+                                .signature()
+                                .context("failed to read received partial signature")?;
+                            let _ = sinks.recv_tx.send((index, data.share_idx, signature));
                         }
                     }
                     _ => {}
@@ -471,24 +462,15 @@ async fn run_swarm(
     Ok(())
 }
 
-/// Broadcasts one partial signature set through ParSigEx and waits for the
-/// terminal outcome.
-async fn broadcast_partial(
-    handle: Handle,
-    duty: Duty,
-    data_set: ParSignedDataSet,
-) -> parsigex::Result<u64> {
-    handle.broadcast_and_wait(duty, data_set).await
-}
-
 /// Waits for every broadcast task to report a successful ParSigEx send.
-async fn await_broadcasts(tasks: Vec<JoinHandle<parsigex::Result<u64>>>) -> Result<()> {
-    for (idx, task) in tasks.into_iter().enumerate() {
-        let result = timeout(TEST_TIMEOUT, task)
-            .await
-            .with_context(|| format!("broadcast task {idx} timed out"))?
-            .with_context(|| format!("broadcast task {idx} panicked"))?;
-        result.with_context(|| format!("node {idx} broadcast failed"))?;
+async fn await_broadcasts(mut tasks: JoinSet<parsigex::Result<u64>>) -> Result<()> {
+    while let Some(joined) = time::timeout(BROADCAST_TIMEOUT, tasks.join_next())
+        .await
+        .context("timed out waiting for broadcast tasks")?
+    {
+        joined
+            .context("broadcast task panicked")?
+            .context("broadcast failed")?;
     }
 
     Ok(())
