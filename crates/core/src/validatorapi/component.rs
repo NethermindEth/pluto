@@ -431,12 +431,11 @@ impl Component {
     /// against this node's public share for the given DV root pubkey.
     ///
     /// The BLS domain / epoch / message-root are passed directly rather
-    /// than projected through a signed-data trait — each submit handler in
-    /// later PRs derives the triple from the concrete signed-data wrapper
-    /// it is processing, then invokes this helper.
+    /// than projected through a signed-data trait — each submit handler
+    /// derives the triple from the concrete signed-data wrapper it is
+    /// processing, then invokes this helper.
     ///
     /// Skipped entirely when [`Self::insecure_test`] is set.
-    #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     #[instrument(skip_all, fields(domain = ?domain_name, epoch))]
     pub async fn verify_partial_sig(
         &self,
@@ -4137,5 +4136,133 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status_code, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// Two aggregators in the same slot land in one `SyncContribution` duty
+    /// keyed by both DV root pubkeys — exercises the grouping map-merge path
+    /// for the contributions handler.
+    #[tokio::test]
+    async fn submit_sync_contributions_groups_two_validators_in_one_slot() {
+        let root_a = dv_pubkey(0xC1);
+        let root_b = dv_pubkey(0xC2);
+        let vals = HashMap::from([(7_u64, root_a), (8_u64, root_b)]);
+
+        let (mut component, _mock) = make_sync_component(vals).await;
+        let recorded = recording_sub(&mut component);
+
+        component
+            .submit_sync_committee_contributions(vec![
+                signed_contribution(9, 7),
+                signed_contribution(9, 8),
+            ])
+            .await
+            .expect("submit succeeds");
+
+        let events = recorded.lock().unwrap().clone();
+        assert_eq!(events.len(), 1, "single slot -> single duty");
+        assert_eq!(events[0].0.duty_type, DutyType::SyncContribution);
+        assert_eq!(events[0].0.slot.inner(), 9);
+        assert_eq!(events[0].1.inner().len(), 2, "both aggregators in the set");
+    }
+
+    /// A subscriber failure aborts the fan-out and surfaces as `500`, and no
+    /// further subscriber is invoked after the first error — matching Go's
+    /// return-on-first-error.
+    #[tokio::test]
+    async fn submit_sync_messages_subscriber_failure_is_500_and_aborts() {
+        let root = dv_pubkey(0xA9);
+        let vals = HashMap::from([(10_u64, root)]);
+        let (mut component, _mock) = make_sync_component(vals).await;
+
+        let second_called = Arc::new(Mutex::new(false));
+        component.subscribe(|_duty, _set| async { Err("boom".into()) });
+        {
+            let flag = Arc::clone(&second_called);
+            component.subscribe(move |_duty, _set| {
+                let flag = Arc::clone(&flag);
+                async move {
+                    *flag.lock().unwrap() = true;
+                    Ok(())
+                }
+            });
+        }
+
+        let err = component
+            .submit_sync_committee_messages(vec![sync_message(5, 10)])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            !*second_called.lock().unwrap(),
+            "fan-out aborts after the first subscriber error"
+        );
+    }
+
+    /// Empty input arrays are valid: no duty is broadcast, and selections
+    /// returns an empty `data` set.
+    #[tokio::test]
+    async fn empty_inputs_broadcast_nothing() {
+        let (mut component, _mock) = make_sync_component(HashMap::new()).await;
+        let recorded = recording_sub(&mut component);
+        component.register_await_agg_sig_db(|_duty, _pk| async {
+            Err::<Box<dyn SignedData>, _>("aggsigdb must not be queried".into())
+        });
+
+        component
+            .submit_sync_committee_messages(vec![])
+            .await
+            .expect("empty messages ok");
+        component
+            .submit_sync_committee_contributions(vec![])
+            .await
+            .expect("empty contributions ok");
+        let response = component
+            .sync_committee_selections(vec![])
+            .await
+            .expect("empty selections ok");
+
+        assert!(response.data.is_empty());
+        assert!(
+            recorded.lock().unwrap().is_empty(),
+            "no duties broadcast for empty inputs"
+        );
+    }
+
+    /// Two validators across two slots: each `(duty, pubkey)` is collected
+    /// from the aggsigdb (keyed on pubkey here) and returned. Sorted before
+    /// asserting since the response order is HashMap-nondeterministic.
+    #[tokio::test]
+    async fn sync_committee_selections_collects_multiple_entries() {
+        let root_a = dv_pubkey(0xD1);
+        let root_b = dv_pubkey(0xD2);
+        let vals = HashMap::from([(3_u64, root_a), (4_u64, root_b)]);
+
+        let (mut component, _mock) = make_sync_component(vals).await;
+        let _recorded = recording_sub(&mut component);
+
+        // The aggsigdb echoes a selection whose validator_index encodes which
+        // pubkey was queried, so the test can assert both were collected.
+        component.register_await_agg_sig_db(move |_duty, pk| {
+            let v_idx = if pk == core_pubkey(0xD1) { 3 } else { 4 };
+            async move {
+                Ok(
+                    Box::new(SyncCommitteeSelectionData::new(SyncCommitteeSelection {
+                        slot: 1,
+                        validator_index: v_idx,
+                        subcommittee_index: 2,
+                        selection_proof: [0; 96],
+                    })) as Box<dyn SignedData>,
+                )
+            }
+        });
+
+        let response = component
+            .sync_committee_selections(vec![selection(1, 3), selection(2, 4)])
+            .await
+            .expect("selections succeed");
+
+        let mut indices: Vec<u64> = response.data.iter().map(|s| s.validator_index).collect();
+        indices.sort_unstable();
+        assert_eq!(indices, vec![3, 4]);
     }
 }

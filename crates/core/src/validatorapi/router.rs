@@ -942,12 +942,17 @@ fn parse_json_array<T: serde::de::DeserializeOwned>(
     what: &'static str,
 ) -> Result<Vec<T>, ApiError> {
     if let Some(value) = headers.get(header::CONTENT_TYPE) {
-        let s = value.to_str().unwrap_or("");
-        if !s.contains("application/json") {
-            return Err(ApiError::new(
+        // A present but non-ASCII header is unrecognised, not JSON: surface it
+        // as 415 rather than silently defaulting to JSON.
+        let unsupported = || {
+            ApiError::new(
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                format!("unsupported media type {s}"),
-            ));
+                format!("unsupported media type {value:?}"),
+            )
+        };
+        let s = value.to_str().map_err(|_| unsupported())?;
+        if !s.contains("application/json") {
+            return Err(unsupported());
         }
     }
 
