@@ -108,14 +108,6 @@ pub enum FetcherError {
     #[error("{0}")]
     Callback(BoxError),
 
-    /// AggSigDB was queried but no resolver was registered.
-    #[error("AggSigDB function not registered")]
-    AggSigDbNotRegistered,
-
-    /// DutyDB was queried but no resolver was registered.
-    #[error("AwaitAttData function not registered")]
-    AwaitAttDataNotRegistered,
-
     /// Error from the beacon node API client.
     #[error(transparent)]
     BeaconNode(#[from] EthBeaconNodeApiClientError),
@@ -149,63 +141,32 @@ pub enum FetcherError {
 type Result<T> = std::result::Result<T, FetcherError>;
 
 /// Fetches proposed duty data from the beacon node.
+#[derive(bon::Builder)]
 pub struct Fetcher {
-    eth2_cl: EthBeaconNodeApiClient,
-    fee_recipient_func: Option<FeeRecipientFunc>,
+    /// Subscribers invoked for each fetched duty data set. Appended via the
+    /// builder's `subscribe` method (zero or more times).
+    #[builder(field)]
     subs: Vec<Subscriber>,
-    agg_sig_db_func: Option<AggSigDbFunc>,
-    await_att_data_func: Option<AwaitAttDataFunc>,
+    eth2_cl: EthBeaconNodeApiClient,
+    fee_recipient: FeeRecipientFunc,
+    agg_sig_db: AggSigDbFunc,
+    await_att_data: AwaitAttDataFunc,
     builder_enabled: bool,
     graffiti_builder: GraffitiBuilder,
     electra_slot: phase0::Slot,
     fetch_only_comm_idx0: bool,
 }
 
-impl Fetcher {
-    /// Returns a new fetcher instance.
-    pub fn new(
-        eth2_cl: EthBeaconNodeApiClient,
-        fee_recipient_func: Option<FeeRecipientFunc>,
-        builder_enabled: bool,
-        graffiti_builder: GraffitiBuilder,
-        electra_slot: phase0::Slot,
-        fetch_only_comm_idx0: bool,
-    ) -> Self {
-        Self {
-            eth2_cl,
-            fee_recipient_func,
-            subs: Vec::new(),
-            agg_sig_db_func: None,
-            await_att_data_func: None,
-            builder_enabled,
-            graffiti_builder,
-            electra_slot,
-            fetch_only_comm_idx0,
-        }
-    }
-
-    /// Registers a callback for fetched duties.
-    ///
-    /// Note: this is not thread safe and should be called *before* `fetch`.
-    pub fn subscribe(&mut self, sub: Subscriber) {
+impl<S: fetcher_builder::State> FetcherBuilder<S> {
+    /// Registers a callback for fetched duties. May be called multiple times to
+    /// register several subscribers.
+    pub fn subscribe(mut self, sub: Subscriber) -> Self {
         self.subs.push(sub);
+        self
     }
+}
 
-    /// Registers a function to get resolved aggregated signed data from
-    /// AggSigDB.
-    ///
-    /// Note: this is not thread safe and should be called *before* `fetch`.
-    pub fn register_agg_sig_db(&mut self, func: AggSigDbFunc) {
-        self.agg_sig_db_func = Some(func);
-    }
-
-    /// Registers a function to get attestation data from DutyDB.
-    ///
-    /// Note: this is not thread safe and should be called *before* `fetch`.
-    pub fn register_await_att_data(&mut self, func: AwaitAttDataFunc) {
-        self.await_att_data_func = Some(func);
-    }
-
+impl Fetcher {
     /// Triggers fetching of a proposed duty data set.
     pub async fn fetch(&self, duty: Duty, def_set: DutyDefinitionSet) -> Result<()> {
         let slot = duty.slot.inner();
@@ -324,7 +285,7 @@ impl Fetcher {
             // Query AggSigDB for DutyPrepareAggregator to get beacon committee
             // selections.
             let prep_agg_data = self
-                .agg_sig_db(Duty::new_prepare_aggregator_duty(slot.into()), *pubkey)
+                .query_agg_sig_db(Duty::new_prepare_aggregator_duty(slot.into()), *pubkey)
                 .await?;
             let selection = downcast::<BeaconCommitteeSelection>(prep_agg_data.as_ref())
                 .ok_or(FetcherError::InvalidBeaconCommitteeSelection)?;
@@ -357,7 +318,7 @@ impl Fetcher {
             }
 
             // Query DutyDB for attestation data to get the attestation data root.
-            let att_data = self.await_att_data(slot, comm_idx).await?;
+            let att_data = self.query_att_data(slot, comm_idx).await?;
             let data_root = att_data.tree_hash_root().0;
 
             // Query BN for aggregate attestation.
@@ -387,7 +348,7 @@ impl Fetcher {
         for pubkey in def_set.keys() {
             // Fetch previously aggregated randao reveal from AggSigDB.
             let randao_data = self
-                .agg_sig_db(Duty::new_randao_duty(slot.into()), *pubkey)
+                .query_agg_sig_db(Duty::new_randao_duty(slot.into()), *pubkey)
                 .await?;
             let randao = randao_data
                 .signature()
@@ -421,11 +382,7 @@ impl Fetcher {
             // Builders set the fee recipient to themselves, so it always differs
             // from the validator's; only verify when the builder is disabled.
             if !self.builder_enabled {
-                let fee_recipient = self
-                    .fee_recipient_func
-                    .as_ref()
-                    .map(|f| f(pubkey))
-                    .unwrap_or_default();
+                let fee_recipient = (self.fee_recipient)(pubkey);
                 verify_fee_recipient(&proposal, &fee_recipient);
             }
 
@@ -448,7 +405,7 @@ impl Fetcher {
             // Query AggSigDB for DutyPrepareSyncContribution to get the sync
             // committee selection.
             let selection_data = self
-                .agg_sig_db(
+                .query_agg_sig_db(
                     Duty::new_prepare_sync_contribution_duty(slot.into()),
                     *pubkey,
                 )
@@ -469,7 +426,7 @@ impl Fetcher {
 
             // Query AggSigDB for DutySyncMessage to get the beacon block root.
             let sync_msg_data = self
-                .agg_sig_db(Duty::new_sync_message_duty(slot.into()), *pubkey)
+                .query_agg_sig_db(Duty::new_sync_message_duty(slot.into()), *pubkey)
                 .await?;
             let msg = downcast::<SignedSyncMessage>(sync_msg_data.as_ref())
                 .ok_or(FetcherError::InvalidSyncCommitteeMessage)?;
@@ -494,7 +451,7 @@ impl Fetcher {
         Ok(resp)
     }
 
-    // --- beacon node helpers -------------------------------------------------
+    // Beacon node helpers
 
     /// Queries the beacon node for attestation data.
     async fn attestation_data(&self, slot: u64, comm_idx: u64) -> Result<phase0::AttestationData> {
@@ -574,22 +531,18 @@ impl Fetcher {
         }
     }
 
-    /// Invokes the registered AggSigDB resolver.
-    async fn agg_sig_db(&self, duty: Duty, pubkey: PubKey) -> Result<Box<dyn SignedData>> {
-        let func = self
-            .agg_sig_db_func
-            .as_ref()
-            .ok_or(FetcherError::AggSigDbNotRegistered)?;
-        func(duty, pubkey).await.map_err(FetcherError::Callback)
+    /// Invokes the AggSigDB resolver.
+    async fn query_agg_sig_db(&self, duty: Duty, pubkey: PubKey) -> Result<Box<dyn SignedData>> {
+        (self.agg_sig_db)(duty, pubkey)
+            .await
+            .map_err(FetcherError::Callback)
     }
 
-    /// Invokes the registered DutyDB attestation-data resolver.
-    async fn await_att_data(&self, slot: u64, comm_idx: u64) -> Result<phase0::AttestationData> {
-        let func = self
-            .await_att_data_func
-            .as_ref()
-            .ok_or(FetcherError::AwaitAttDataNotRegistered)?;
-        func(slot, comm_idx).await.map_err(FetcherError::Callback)
+    /// Invokes the DutyDB attestation-data resolver.
+    async fn query_att_data(&self, slot: u64, comm_idx: u64) -> Result<phase0::AttestationData> {
+        (self.await_att_data)(slot, comm_idx)
+            .await
+            .map_err(FetcherError::Callback)
     }
 }
 
@@ -867,6 +820,22 @@ mod tests {
         })
     }
 
+    /// Fee-recipient stub for tests that don't exercise fee-recipient
+    /// verification.
+    fn stub_fee_recipient() -> FeeRecipientFunc {
+        Arc::new(|_| String::new())
+    }
+
+    /// AggSigDB stub for tests whose duty path never queries it.
+    fn stub_agg_sig_db() -> AggSigDbFunc {
+        Arc::new(|_, _| Box::pin(async { unreachable!("AggSigDB not expected in this test") }))
+    }
+
+    /// DutyDB attestation-data stub for tests whose duty path never queries it;
+    fn stub_await_att_data() -> AwaitAttDataFunc {
+        Arc::new(|_, _| Box::pin(async { unreachable!("AwaitAttData not expected in this test") }))
+    }
+
     /// Spec fields required by `is_sync_comm_aggregator` /
     /// `is_att_aggregator`, matching the values the prysm selection-proof test
     /// vectors were generated against.
@@ -988,23 +957,24 @@ mod tests {
         let mut graffiti_b = [0u8; 32];
         graffiti_b[..5].copy_from_slice(b"testB");
 
-        let mut def_set = DutyDefinitionSet::new();
-        def_set.insert(
-            pk_a,
-            DutyDefinition::Proposer(ProposerDutyDefinition {
-                pubkey: pk_a,
-                v_idx: 2,
-                slot: SlotNumber::new(SLOT),
-            }),
-        );
-        def_set.insert(
-            pk_b,
-            DutyDefinition::Proposer(ProposerDutyDefinition {
-                pubkey: pk_b,
-                v_idx: 3,
-                slot: SlotNumber::new(SLOT),
-            }),
-        );
+        let def_set = DutyDefinitionSet::from([
+            (
+                pk_a,
+                DutyDefinition::Proposer(ProposerDutyDefinition {
+                    pubkey: pk_a,
+                    v_idx: 2,
+                    slot: SlotNumber::new(SLOT),
+                }),
+            ),
+            (
+                pk_b,
+                DutyDefinition::Proposer(ProposerDutyDefinition {
+                    pubkey: pk_b,
+                    v_idx: 3,
+                    slot: SlotNumber::new(SLOT),
+                }),
+            ),
+        ]);
 
         let mock = BeaconMock::builder().build().await.expect("build mock");
         mount_produce_block(mock.server()).await;
@@ -1018,29 +988,30 @@ mod tests {
         .await
         .expect("build graffiti");
 
-        let mut fetch = Fetcher::new(
-            mock.client().clone(),
-            None,
-            true,
-            graffiti_builder,
-            5,
-            false,
-        );
-
         let randaos = randao_by_pubkey.clone();
-        fetch.register_agg_sig_db(Arc::new(move |_duty: Duty, pubkey: PubKey| {
+        let agg_sig_db: AggSigDbFunc = Arc::new(move |_duty: Duty, pubkey: PubKey| {
             let sig = randaos[&pubkey];
             Box::pin(async move {
                 let data: Box<dyn SignedData> = Box::new(sig);
                 Ok(data)
             })
-        }));
+        });
 
         let captured: Captured = Arc::new(Mutex::new(None));
-        fetch.subscribe(capturing_subscriber(captured.clone()));
+        let fetcher = Fetcher::builder()
+            .eth2_cl(mock.client().clone())
+            .fee_recipient(stub_fee_recipient())
+            .agg_sig_db(agg_sig_db)
+            .await_att_data(stub_await_att_data())
+            .builder_enabled(true)
+            .graffiti_builder(graffiti_builder)
+            .electra_slot(5)
+            .fetch_only_comm_idx0(false)
+            .subscribe(capturing_subscriber(captured.clone()))
+            .build();
 
         let duty = Duty::new_proposer_duty(SlotNumber::new(SLOT));
-        fetch.fetch(duty, def_set).await.expect("fetch");
+        fetcher.fetch(duty, def_set).await.expect("fetch");
 
         let (_, res_set) = captured.lock().unwrap().take().expect("subscriber called");
         assert_eq!(res_set.len(), 2);
@@ -1090,32 +1061,34 @@ mod tests {
             validator_committee_index: 0,
         };
 
-        let mut def_set = DutyDefinitionSet::new();
-        def_set.insert(
-            pk_a,
-            DutyDefinition::Attester(attester_duty_def(pk_a, &duty_a)),
-        );
-        def_set.insert(
-            pk_b,
-            DutyDefinition::Attester(attester_duty_def(pk_b, &duty_b)),
-        );
+        let def_set = DutyDefinitionSet::from([
+            (
+                pk_a,
+                DutyDefinition::Attester(attester_duty_def(pk_a, &duty_a)),
+            ),
+            (
+                pk_b,
+                DutyDefinition::Attester(attester_duty_def(pk_b, &duty_b)),
+            ),
+        ]);
 
         let duty = Duty::new_attester_duty(SlotNumber::new(SLOT));
         let mock = BeaconMock::builder().build().await.expect("build mock");
 
-        let mut fetch = Fetcher::new(
-            mock.client().clone(),
-            None,
-            true,
-            GraffitiBuilder::default(),
-            5,
-            false,
-        );
-
         let captured: Captured = Arc::new(Mutex::new(None));
-        fetch.subscribe(capturing_subscriber(captured.clone()));
+        let fetcher = Fetcher::builder()
+            .eth2_cl(mock.client().clone())
+            .fee_recipient(stub_fee_recipient())
+            .agg_sig_db(stub_agg_sig_db())
+            .await_att_data(stub_await_att_data())
+            .builder_enabled(true)
+            .graffiti_builder(GraffitiBuilder::default())
+            .electra_slot(5)
+            .fetch_only_comm_idx0(false)
+            .subscribe(capturing_subscriber(captured.clone()))
+            .build();
 
-        fetch.fetch(duty.clone(), def_set).await.expect("fetch");
+        fetcher.fetch(duty.clone(), def_set).await.expect("fetch");
 
         let (res_duty, res_set) = captured.lock().unwrap().take().expect("subscriber called");
         assert_eq!(res_duty, duty);
@@ -1250,12 +1223,15 @@ mod tests {
         ))
     }
 
-    /// Wires AggSigDB to return a beacon committee selection and DutyDB to
-    /// return the attestation data for each committee index.
-    fn wire_aggregator(fetch: &mut Fetcher, atts: &[phase0::Attestation]) {
+    /// Builds the AggSigDB (returns a beacon committee selection) and DutyDB
+    /// (returns the attestation data for each committee index) callbacks used
+    /// by the aggregator tests.
+    fn aggregator_funcs(
+        atts: impl AsRef<[phase0::Attestation]>,
+    ) -> (AggSigDbFunc, AwaitAttDataFunc) {
         use pluto_eth2api::v1;
 
-        fetch.register_agg_sig_db(Arc::new(move |_duty: Duty, _pubkey: PubKey| {
+        let agg_sig_db: AggSigDbFunc = Arc::new(move |_duty: Duty, _pubkey: PubKey| {
             Box::pin(async move {
                 let selection = BeaconCommitteeSelection::new(v1::BeaconCommitteeSelection {
                     slot: 1,
@@ -1265,16 +1241,19 @@ mod tests {
                 let data: Box<dyn SignedData> = Box::new(selection);
                 Ok(data)
             })
-        }));
+        });
 
         let by_idx: HashMap<u64, phase0::AttestationData> = atts
+            .as_ref()
             .iter()
             .map(|a| (a.data.index, a.data.clone()))
             .collect();
-        fetch.register_await_att_data(Arc::new(move |_slot: u64, comm_idx: u64| {
+        let await_att_data: AwaitAttDataFunc = Arc::new(move |_slot: u64, comm_idx: u64| {
             let data = by_idx.get(&comm_idx).cloned();
             Box::pin(async move { data.ok_or_else(|| "missing attestation data".into()) })
-        }));
+        });
+
+        (agg_sig_db, await_att_data)
     }
 
     #[tokio::test]
@@ -1286,9 +1265,10 @@ mod tests {
         let att_a = build_attestation(2);
         let att_b = build_attestation(3);
 
-        let mut def_set = DutyDefinitionSet::new();
-        def_set.insert(pk_a, attester_def(att_a.data.index, 0));
-        def_set.insert(pk_b, attester_def(att_b.data.index, 0));
+        let def_set = DutyDefinitionSet::from([
+            (pk_a, attester_def(att_a.data.index, 0)),
+            (pk_b, attester_def(att_b.data.index, 0)),
+        ]);
 
         let by_root = HashMap::from([
             (hex_0x(&att_a.data.tree_hash_root().0), att_a.clone()),
@@ -1302,18 +1282,20 @@ mod tests {
             .expect("build mock");
         mount_aggregate(mock.server(), by_root).await;
 
-        let mut fetch = Fetcher::new(
-            mock.client().clone(),
-            None,
-            true,
-            GraffitiBuilder::default(),
-            5,
-            false,
-        );
-        wire_aggregator(&mut fetch, &[att_a.clone(), att_b.clone()]);
+        let (agg_sig_db, await_att_data) = aggregator_funcs(&[att_a.clone(), att_b.clone()]);
 
         let captured: Captured = Arc::new(Mutex::new(None));
-        fetch.subscribe(capturing_subscriber(captured.clone()));
+        let fetch = Fetcher::builder()
+            .eth2_cl(mock.client().clone())
+            .fee_recipient(stub_fee_recipient())
+            .agg_sig_db(agg_sig_db)
+            .await_att_data(await_att_data)
+            .builder_enabled(true)
+            .graffiti_builder(GraffitiBuilder::default())
+            .electra_slot(5)
+            .fetch_only_comm_idx0(false)
+            .subscribe(capturing_subscriber(captured.clone()))
+            .build();
 
         let duty = Duty::new_aggregator_duty(SlotNumber::new(SLOT));
         fetch.fetch(duty, def_set).await.expect("fetch");
@@ -1338,9 +1320,10 @@ mod tests {
         // Both validators belong to the same committee; the aggregate is fetched
         // once and reused for the second validator.
         let att = build_attestation(2);
-        let mut def_set = DutyDefinitionSet::new();
-        def_set.insert(pk_a, attester_def(att.data.index, 0));
-        def_set.insert(pk_b, attester_def(att.data.index, 0));
+        let def_set = DutyDefinitionSet::from([
+            (pk_a, attester_def(att.data.index, 0)),
+            (pk_b, attester_def(att.data.index, 0)),
+        ]);
 
         let by_root = HashMap::from([(hex_0x(&att.data.tree_hash_root().0), att.clone())]);
 
@@ -1351,18 +1334,20 @@ mod tests {
             .expect("build mock");
         mount_aggregate(mock.server(), by_root).await;
 
-        let mut fetch = Fetcher::new(
-            mock.client().clone(),
-            None,
-            true,
-            GraffitiBuilder::default(),
-            5,
-            false,
-        );
-        wire_aggregator(&mut fetch, std::slice::from_ref(&att));
+        let (agg_sig_db, await_att_data) = aggregator_funcs(std::slice::from_ref(&att));
 
         let captured: Captured = Arc::new(Mutex::new(None));
-        fetch.subscribe(capturing_subscriber(captured.clone()));
+        let fetch = Fetcher::builder()
+            .eth2_cl(mock.client().clone())
+            .fee_recipient(stub_fee_recipient())
+            .agg_sig_db(agg_sig_db)
+            .await_att_data(await_att_data)
+            .builder_enabled(true)
+            .graffiti_builder(GraffitiBuilder::default())
+            .electra_slot(5)
+            .fetch_only_comm_idx0(false)
+            .subscribe(capturing_subscriber(captured.clone()))
+            .build();
 
         let duty = Duty::new_aggregator_duty(SlotNumber::new(SLOT));
         fetch.fetch(duty, def_set).await.expect("fetch");
@@ -1395,22 +1380,24 @@ mod tests {
             .expect("build mock");
         mount_aggregate(mock.server(), HashMap::new()).await;
 
-        let mut fetch = Fetcher::new(
-            mock.client().clone(),
-            None,
-            true,
-            GraffitiBuilder::default(),
-            5,
-            false,
-        );
-        wire_aggregator(&mut fetch, std::slice::from_ref(&att_a));
+        let (agg_sig_db, await_att_data) = aggregator_funcs([att_a]);
 
         let captured: Captured = Arc::new(Mutex::new(None));
-        fetch.subscribe(capturing_subscriber(captured.clone()));
+        let fetcher = Fetcher::builder()
+            .eth2_cl(mock.client().clone())
+            .fee_recipient(stub_fee_recipient())
+            .agg_sig_db(agg_sig_db)
+            .await_att_data(await_att_data)
+            .builder_enabled(true)
+            .graffiti_builder(GraffitiBuilder::default())
+            .electra_slot(5)
+            .fetch_only_comm_idx0(false)
+            .subscribe(capturing_subscriber(captured.clone()))
+            .build();
 
         let duty = Duty::new_aggregator_duty(SlotNumber::new(SLOT));
         // No aggregators found -> empty set -> Ok and subscriber not invoked.
-        fetch.fetch(duty, def_set).await.expect("fetch");
+        fetcher.fetch(duty, def_set).await.expect("fetch");
         assert!(captured.lock().unwrap().is_none());
     }
 
@@ -1431,18 +1418,21 @@ mod tests {
         // Empty map -> responder returns 404 for every root.
         mount_aggregate(mock.server(), HashMap::new()).await;
 
-        let mut fetch = Fetcher::new(
-            mock.client().clone(),
-            None,
-            true,
-            GraffitiBuilder::default(),
-            5,
-            false,
-        );
-        wire_aggregator(&mut fetch, std::slice::from_ref(&att_a));
+        let (agg_sig_db, await_att_data) = aggregator_funcs(std::slice::from_ref(&att_a));
+
+        let fetcher = Fetcher::builder()
+            .eth2_cl(mock.client().clone())
+            .fee_recipient(stub_fee_recipient())
+            .agg_sig_db(agg_sig_db)
+            .await_att_data(await_att_data)
+            .builder_enabled(true)
+            .graffiti_builder(GraffitiBuilder::default())
+            .electra_slot(5)
+            .fetch_only_comm_idx0(false)
+            .build();
 
         let duty = Duty::new_aggregator_duty(SlotNumber::new(SLOT));
-        let err = fetch
+        let err = fetcher
             .fetch(duty, def_set)
             .await
             .expect_err("expected error");
@@ -1515,18 +1505,9 @@ mod tests {
             .expect("build mock");
         mount_sync_contribution(mock.server()).await;
 
-        let mut fetch = Fetcher::new(
-            mock.client().clone(),
-            None,
-            true,
-            GraffitiBuilder::default(),
-            5,
-            false,
-        );
-
         let sels = selections.clone();
         let msgs = messages.clone();
-        fetch.register_agg_sig_db(Arc::new(move |duty: Duty, pubkey: PubKey| {
+        let agg_sig_db: AggSigDbFunc = Arc::new(move |duty: Duty, pubkey: PubKey| {
             let sels = sels.clone();
             let msgs = msgs.clone();
             Box::pin(async move {
@@ -1537,13 +1518,23 @@ mod tests {
                 };
                 Ok(data)
             })
-        }));
+        });
 
         let captured: Captured = Arc::new(Mutex::new(None));
-        fetch.subscribe(capturing_subscriber(captured.clone()));
+        let fetcher = Fetcher::builder()
+            .eth2_cl(mock.client().clone())
+            .fee_recipient(stub_fee_recipient())
+            .agg_sig_db(agg_sig_db)
+            .await_att_data(stub_await_att_data())
+            .builder_enabled(true)
+            .graffiti_builder(GraffitiBuilder::default())
+            .electra_slot(5)
+            .fetch_only_comm_idx0(false)
+            .subscribe(capturing_subscriber(captured.clone()))
+            .build();
 
         let duty = Duty::new_sync_contribution_duty(SlotNumber::new(SLOT));
-        fetch.fetch(duty, def_set).await.expect("fetch");
+        fetcher.fetch(duty, def_set).await.expect("fetch");
 
         let (_, res_set) = captured.lock().unwrap().take().expect("subscriber called");
         assert_eq!(res_set.len(), 2);
@@ -1587,16 +1578,7 @@ mod tests {
             .await
             .expect("build mock");
 
-        let mut fetch = Fetcher::new(
-            mock.client().clone(),
-            None,
-            true,
-            GraffitiBuilder::default(),
-            5,
-            false,
-        );
-
-        fetch.register_agg_sig_db(Arc::new(move |duty: Duty, _pubkey: PubKey| {
+        let agg_sig_db: AggSigDbFunc = Arc::new(move |duty: Duty, _pubkey: PubKey| {
             Box::pin(async move {
                 if duty.duty_type == DutyType::PrepareSyncContribution {
                     let selection = SyncCommitteeSelection::new(v1::SyncCommitteeSelection {
@@ -1610,11 +1592,22 @@ mod tests {
                 }
                 Err("unsupported duty".into())
             })
-        }));
+        });
+
+        let fetcher = Fetcher::builder()
+            .eth2_cl(mock.client().clone())
+            .fee_recipient(stub_fee_recipient())
+            .agg_sig_db(agg_sig_db)
+            .await_att_data(stub_await_att_data())
+            .builder_enabled(true)
+            .graffiti_builder(GraffitiBuilder::default())
+            .electra_slot(5)
+            .fetch_only_comm_idx0(false)
+            .build();
 
         let duty = Duty::new_sync_contribution_duty(SlotNumber::new(SLOT));
         // Non-aggregators are skipped, producing an empty set and no error.
-        fetch.fetch(duty, def_set).await.expect("fetch");
+        fetcher.fetch(duty, def_set).await.expect("fetch");
     }
 
     #[tokio::test]
@@ -1633,21 +1626,23 @@ mod tests {
         );
 
         let mock = BeaconMock::builder().build().await.expect("build mock");
-        let mut fetch = Fetcher::new(
-            mock.client().clone(),
-            None,
-            true,
-            GraffitiBuilder::default(),
-            5,
-            false,
-        );
-
-        fetch.register_agg_sig_db(Arc::new(move |_duty: Duty, _pubkey: PubKey| {
+        let agg_sig_db: AggSigDbFunc = Arc::new(move |_duty: Duty, _pubkey: PubKey| {
             Box::pin(async move { Err("error".into()) })
-        }));
+        });
+
+        let fetcher = Fetcher::builder()
+            .eth2_cl(mock.client().clone())
+            .fee_recipient(stub_fee_recipient())
+            .agg_sig_db(agg_sig_db)
+            .await_att_data(stub_await_att_data())
+            .builder_enabled(true)
+            .graffiti_builder(GraffitiBuilder::default())
+            .electra_slot(5)
+            .fetch_only_comm_idx0(false)
+            .build();
 
         let duty = Duty::new_sync_contribution_duty(SlotNumber::new(SLOT));
-        let err = fetch
+        let err = fetcher
             .fetch(duty, def_set)
             .await
             .expect_err("expected error");
