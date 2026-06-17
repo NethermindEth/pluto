@@ -252,12 +252,21 @@ impl Broadcaster {
     }
 
     /// Broadcasts aggregated signed duty data to the beacon node.
+    /// Routes a duty's aggregated signed data to the matching submit handler.
+    ///
+    /// Dispatch on the duty type to a `broadcast_*` handler, then on
+    /// success record the broadcast count and submission delay. Internal-only
+    /// duties (randao, prepare-aggregator, prepare-sync-contribution) are
+    /// no-ops; deprecated and unknown duty types return an error.
     pub async fn broadcast(&self, mut duty: Duty, set: SignedDataSet) -> Result<()> {
         match duty.duty_type {
             DutyType::Attester => self.broadcast_attester(&duty, &set).await?,
             DutyType::Proposer => self.broadcast_proposer(&duty, &set).await?,
             DutyType::BuilderProposer => return Err(Error::DeprecatedDutyBuilderProposer),
             DutyType::BuilderRegistration => {
+                // Use first slot in current epoch for accurate delay calculations while
+                // submitting builder registrations. This is because builder
+                // registrations are submitted in first slot of every epoch.
                 duty.slot = first_slot_in_current_epoch(self.client.api()).await?;
                 self.broadcast_builder_registration(&duty, &set).await?;
             }
@@ -288,9 +297,28 @@ impl Broadcaster {
         Ok(())
     }
 
+    /// Submits attestations.
+    ///
+    /// Convert the set to attestations; if an Electra attestation is
+    /// missing its validator index, backfill it via
+    /// `populate_missing_validator_indices`; submit. A `PriorAttestationKnown`
+    /// response is treated as success (non-idempotent beacon node).
     async fn broadcast_attester(&self, duty: &Duty, set: &SignedDataSet) -> Result<()> {
         let mut attestations = set_to_attestations(set)?;
 
+        // This has been introduced because of a bug in electra for versions v1.3.0,
+        // v1.3.1, v1.4.0 and v1.4.1. The code block below will be triggered
+        // only if:
+        // - there is a charon node in the cluster at one of the above mentioned
+        //   versions;
+        // - the current charon node has received partially signed attestations ONLY
+        //   from such nodes.
+        //
+        // As long as charon has received at least one partially signed attestation in
+        // its threshold signatures from either:
+        // - its own VC;
+        // - another charon node at version v1.3.2, v1.4.2 or newer
+        // this (expensive) code block will not be triggered.
         if attestations_need_validator_indices(&attestations) {
             tracing::warn!(
                 error = "peer version causes slowdown",
@@ -318,6 +346,10 @@ impl Broadcaster {
         Ok(())
     }
 
+    /// Submits a block proposal.
+    ///
+    /// Take the single set entry as a proposal; if blinded, convert and
+    /// submit via the blinded endpoint, otherwise submit the full proposal.
     async fn broadcast_proposer(&self, duty: &Duty, set: &SignedDataSet) -> Result<()> {
         let (pubkey, agg_data) = set_to_one(set)?;
         let block =
@@ -352,6 +384,9 @@ impl Broadcaster {
         Ok(())
     }
 
+    /// Submits builder validator registrations.
+    ///
+    /// Convert the set to registrations; submit them in one request.
     async fn broadcast_builder_registration(&self, duty: &Duty, set: &SignedDataSet) -> Result<()> {
         let registrations = set_to_registrations(set)?;
         self.client
@@ -367,6 +402,10 @@ impl Broadcaster {
         Ok(())
     }
 
+    /// Submits voluntary exits, one request per exit.
+    ///
+    /// Convert the whole set up front, then submit each exit; see the
+    /// inline notes for the validate-first and surface-any-failure semantics.
     async fn broadcast_exits(&self, duty: &Duty, set: &SignedDataSet) -> Result<()> {
         // Two deliberate choices:
         // 1. set_to_exits validates every item up front, so a wrong-typed set fails
@@ -393,6 +432,9 @@ impl Broadcaster {
         Ok(())
     }
 
+    /// Submits aggregate-and-proofs.
+    ///
+    /// Convert the set to aggregate-and-proofs; submit them.
     async fn broadcast_aggregator(&self, duty: &Duty, set: &SignedDataSet) -> Result<()> {
         let aggregate_and_proofs = set_to_agg_and_proof(set)?;
         self.client
@@ -408,6 +450,9 @@ impl Broadcaster {
         Ok(())
     }
 
+    /// Submits sync committee messages.
+    ///
+    /// Convert the set to sync committee messages; submit them.
     async fn broadcast_sync_messages(&self, duty: &Duty, set: &SignedDataSet) -> Result<()> {
         let messages = set_to_sync_messages(set)?;
         self.client
@@ -423,6 +468,9 @@ impl Broadcaster {
         Ok(())
     }
 
+    /// Submits sync committee contributions.
+    ///
+    /// Convert the set to sync committee contributions; submit them.
     async fn broadcast_sync_contributions(&self, duty: &Duty, set: &SignedDataSet) -> Result<()> {
         let contributions = set_to_sync_contributions(set)?;
         self.client
@@ -438,6 +486,13 @@ impl Broadcaster {
         Ok(())
     }
 
+    /// Backfills missing Electra attestation validator indices in place.
+    ///
+    /// Read the epoch/slot from the first attestation; resolve the active
+    /// validator indices for that epoch; fetch their attester duties and the
+    /// beacon-attester signing domain; then for each duty at the attestation's
+    /// slot, find the attestation whose aggregate signature verifies against
+    /// the duty's pubkey and stamp in that `validator_index`.
     async fn populate_missing_validator_indices(
         &self,
         attestations: &mut [versioned::VersionedAttestation],
@@ -470,6 +525,10 @@ impl Broadcaster {
                 source: boxed(source),
             })?;
 
+        // Try to find the matching attester duty and attestation by verifying the full
+        // aggregated signature of the attestation with the pubkey found in the attester
+        // duty. Once match is found, update the attestation's validator index
+        // with the one from the attester duty.
         for attester_duty in duties {
             if attester_duty.slot != slot {
                 continue;
