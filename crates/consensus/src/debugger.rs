@@ -81,11 +81,8 @@ pub enum Error {
     #[error("marshal proto: {0}")]
     MarshalProto(#[from] prost::EncodeError),
     /// Gzip writer failed.
-    #[error("zip proto: {0}")]
-    ZipProto(std::io::Error),
-    /// Gzip writer close failed.
-    #[error("close gzip writer: {0}")]
-    CloseGzipWriter(std::io::Error),
+    #[error("gzip: {0}")]
+    Gzip(std::io::Error),
 }
 
 impl Debugger {
@@ -135,8 +132,8 @@ impl Debugger {
         .encode(&mut encoded)?;
 
         let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
-        encoder.write_all(&encoded).map_err(Error::ZipProto)?;
-        encoder.finish().map_err(Error::CloseGzipWriter)
+        encoder.write_all(&encoded).map_err(Error::Gzip)?;
+        encoder.finish().map_err(Error::Gzip)
     }
 
     /// Returns an HTTP response containing the gzipped protobuf payload.

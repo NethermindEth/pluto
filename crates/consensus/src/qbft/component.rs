@@ -422,22 +422,20 @@ impl Consensus {
 
     /// Runs the internal expired-duty cleanup loop until cancellation.
     ///
-    /// Must be called exactly once: it `take()`s `expired_rx`, so any later
-    /// call spawns a task that returns immediately and the cleanup loop
-    /// never runs.
+    /// Must be called exactly once: it `take()`s `expired_rx` and panics on a
+    /// second call, since multiple starts signal bad wiring. A future redesign
+    /// separating construction from starting would make this a compile-time
+    /// guarantee.
     pub fn start(&self, ct: CancellationToken) -> JoinHandle<()> {
-        let expired_rx = self
+        let mut expired_rx = self
             .expired_rx
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .take();
+            .take()
+            .expect("start must be called exactly once");
         let instances = Arc::clone(&self.instances);
 
         tokio::spawn(async move {
-            let Some(mut expired_rx) = expired_rx else {
-                return;
-            };
-
             loop {
                 tokio::select! {
                     () = ct.cancelled() => return,
