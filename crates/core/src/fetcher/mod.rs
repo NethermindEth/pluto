@@ -338,8 +338,6 @@ impl Fetcher {
             );
         }
 
-        tracker.log();
-
         Ok(resp)
     }
 
@@ -450,8 +448,6 @@ impl Fetcher {
                 UnsignedDutyData::SyncContribution(SyncContribution(contribution)),
             );
         }
-
-        tracker.log();
 
         Ok(resp)
     }
@@ -793,6 +789,13 @@ impl PubkeysTracker {
                 "resolved pubkeys"
             );
         }
+    }
+}
+
+impl Drop for PubkeysTracker {
+    fn drop(&mut self) {
+        // Log at the end of scope
+        self.log();
     }
 }
 
