@@ -13,8 +13,7 @@ use pluto_eth2api::{
     GetAggregatedAttestationV2Request, GetAggregatedAttestationV2Response,
     GetAggregatedAttestationV2ResponseResponseData, ProduceAttestationDataRequest,
     ProduceAttestationDataResponse, ProduceBlockV3Request, ProduceBlockV3Response,
-    ProduceBlockV3ResponseResponse, ProduceSyncCommitteeContributionRequest,
-    ProduceSyncCommitteeContributionResponse,
+    ProduceSyncCommitteeContributionRequest, ProduceSyncCommitteeContributionResponse,
     spec::{ConversionError, altair, phase0},
     versioned,
 };
@@ -24,9 +23,9 @@ use tree_hash::TreeHash;
 
 use crate::{
     signeddata::{
-        AttestationData, BeaconCommitteeSelection, ProposalBlock, SignedSyncMessage,
-        SyncCommitteeSelection, SyncContribution, VersionedAggregatedAttestation,
-        VersionedProposal,
+        AttestationData, BeaconCommitteeSelection, ProposalBlock, SignedDataError,
+        SignedSyncMessage, SyncCommitteeSelection, SyncContribution,
+        VersionedAggregatedAttestation, VersionedProposal,
     },
     types::{Duty, DutyDefinition, DutyDefinitionSet, DutyType, PubKey, SignedData},
     unsigneddata::{UnsignedDataSet, UnsignedDutyData},
@@ -125,17 +124,13 @@ pub enum FetcherError {
     #[error("convert beacon node response: {0}")]
     Conversion(#[from] ConversionError),
 
+    /// Failed to decode a beacon node response into a signed-data type.
+    #[error("decode proposal: {0}")]
+    SignedData(#[from] SignedDataError),
+
     /// A versioned proposal had an unsupported fork version.
     #[error("unsupported proposal version: {0:?}")]
     UnsupportedProposalVersion(ConsensusVersion),
-
-    /// A versioned proposal response was missing the `block` field.
-    #[error("proposal response missing block field")]
-    MissingBlockField,
-
-    /// A versioned proposal response carried an unparsable block value.
-    #[error("invalid proposal block value: {0}")]
-    InvalidBlockValue(&'static str),
 
     /// A signed data value could not produce a signature.
     #[error("signature: {0}")]
@@ -380,7 +375,7 @@ impl Fetcher {
                 _ => return Err(FetcherError::UnexpectedResponse),
             };
 
-            let proposal = versioned_proposal_from_response(&response)?;
+            let proposal = VersionedProposal::try_from(&response)?;
 
             // Builders set the fee recipient to themselves, so it always differs
             // from the validator's; only verify when the builder is disabled.
@@ -570,57 +565,6 @@ fn hex_0x(bytes: &[u8]) -> String {
     format!("0x{}", hex::encode(bytes))
 }
 
-/// Converts a `produce_block_v3` response into an unsigned
-/// [`VersionedProposal`].
-fn versioned_proposal_from_response(
-    resp: &ProduceBlockV3ResponseResponse,
-) -> Result<VersionedProposal> {
-    let data = serde_json::to_value(&resp.data)?;
-    let blinded = resp.execution_payload_blinded;
-
-    let block = match (&resp.version, blinded) {
-        (ConsensusVersion::Phase0, _) => ProposalBlock::Phase0(json_from(&data)?),
-        (ConsensusVersion::Altair, _) => ProposalBlock::Altair(json_from(&data)?),
-        (ConsensusVersion::Bellatrix, false) => ProposalBlock::Bellatrix(json_from(&data)?),
-        (ConsensusVersion::Bellatrix, true) => ProposalBlock::BellatrixBlinded(json_from(&data)?),
-        (ConsensusVersion::Capella, false) => ProposalBlock::Capella(json_from(&data)?),
-        (ConsensusVersion::Capella, true) => ProposalBlock::CapellaBlinded(json_from(&data)?),
-        (ConsensusVersion::Deneb, false) => ProposalBlock::Deneb {
-            block: Box::new(json_from(block_field(&data)?)?),
-            kzg_proofs: json_from_field(&data, "kzg_proofs")?,
-            blobs: json_from_field(&data, "blobs")?,
-        },
-        (ConsensusVersion::Deneb, true) => ProposalBlock::DenebBlinded(json_from(&data)?),
-        (ConsensusVersion::Electra, false) => ProposalBlock::Electra {
-            block: Box::new(json_from(block_field(&data)?)?),
-            kzg_proofs: json_from_field(&data, "kzg_proofs")?,
-            blobs: json_from_field(&data, "blobs")?,
-        },
-        (ConsensusVersion::Electra, true) => ProposalBlock::ElectraBlinded(json_from(&data)?),
-        (ConsensusVersion::Fulu, false) => ProposalBlock::Fulu {
-            block: Box::new(json_from(block_field(&data)?)?),
-            kzg_proofs: json_from_field(&data, "kzg_proofs")?,
-            blobs: json_from_field(&data, "blobs")?,
-        },
-        (ConsensusVersion::Fulu, true) => ProposalBlock::FuluBlinded(json_from(&data)?),
-    };
-
-    let consensus_block_value = resp
-        .consensus_block_value
-        .parse()
-        .map_err(|_| FetcherError::InvalidBlockValue("consensus_block_value"))?;
-    let execution_payload_value = resp
-        .execution_payload_value
-        .parse()
-        .map_err(|_| FetcherError::InvalidBlockValue("execution_payload_value"))?;
-
-    Ok(VersionedProposal {
-        block,
-        consensus_block_value,
-        execution_payload_value,
-    })
-}
-
 /// Maps a beacon node `ConsensusVersion` onto a `versioned::DataVersion`.
 fn consensus_to_data_version(version: &ConsensusVersion) -> versioned::DataVersion {
     use versioned::DataVersion as DV;
@@ -662,28 +606,6 @@ fn attestation_payload(
         // `ConsensusVersion`, so it is never `Unknown`.
         _ => return Err(FetcherError::UnexpectedResponse),
     })
-}
-
-/// Deserializes a JSON value into `T`.
-fn json_from<T: serde::de::DeserializeOwned>(value: &serde_json::Value) -> Result<T> {
-    Ok(serde_json::from_value(value.clone())?)
-}
-
-/// Returns the `block` field of a Deneb+ versioned block contents object.
-fn block_field(value: &serde_json::Value) -> Result<&serde_json::Value> {
-    value.get("block").ok_or(FetcherError::MissingBlockField)
-}
-
-/// Deserializes the named field of `value` into `T`, defaulting to `T::default`
-/// when absent.
-fn json_from_field<T: serde::de::DeserializeOwned + Default>(
-    value: &serde_json::Value,
-    field: &str,
-) -> Result<T> {
-    match value.get(field) {
-        Some(v) => Ok(serde_json::from_value(v.clone())?),
-        None => Ok(T::default()),
-    }
 }
 
 /// Logs a warning when the fee recipient is not correctly populated in the
