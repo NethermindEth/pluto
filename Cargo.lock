@@ -5795,6 +5795,7 @@ dependencies = [
  "test-case",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
  "tree_hash",
  "tree_hash_derive",
  "unicode-normalization",

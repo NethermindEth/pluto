@@ -34,6 +34,14 @@ pub enum HelperError {
     /// Failed to fetch a required value from the spec
     #[error("fetch slots per epoch")]
     FetchSlotsPerEpoch,
+
+    /// Failed to fetch the genesis time from the beacon node.
+    #[error("fetch genesis time: {0}")]
+    FetchGenesisTime(String),
+
+    /// Failed to fetch the slots configuration from the beacon node.
+    #[error("fetch slots config: {0}")]
+    FetchSlotsConfig(String),
 }
 
 type Result<T> = std::result::Result<T, HelperError>;
@@ -101,6 +109,59 @@ pub(crate) fn verify_address(address: &str) -> Result<Address> {
         .map_err(|_| HelperError::InvalidAddress(address.to_string()))
 }
 
+/// Returns the slot a wall-clock `timestamp` falls in, computed from the
+/// beacon-node genesis time and slot duration.
+///
+/// When `timestamp` precedes genesis — which can happen in test scenarios
+/// where there is no strict validation on the value — it falls back to the
+/// current wall-clock time, matching the reference implementation.
+pub async fn slot_from_timestamp(
+    client: &pluto_eth2api::client::EthBeaconNodeApiClient,
+    timestamp: chrono::DateTime<chrono::Utc>,
+) -> Result<u64> {
+    let genesis_time = client
+        .fetch_genesis_time()
+        .await
+        .map_err(|e| HelperError::FetchGenesisTime(e.to_string()))?;
+
+    let (slot_duration, _) = client
+        .fetch_slots_config()
+        .await
+        .map_err(|e| HelperError::FetchSlotsConfig(e.to_string()))?;
+
+    let timestamp = if timestamp < genesis_time {
+        let now = chrono::Utc::now();
+        tracing::info!(
+            genesis_timestamp = genesis_time.timestamp(),
+            overridden_timestamp = timestamp.timestamp(),
+            new_timestamp = now.timestamp(),
+            "timestamp before genesis, defaulting to current timestamp",
+        );
+        now
+    } else {
+        timestamp
+    };
+
+    // `timestamp >= genesis_time` holds here, so the signed delta is
+    // non-negative and the conversion to nanoseconds cannot overflow for any
+    // realistic chain timestamp.
+    let delta_nanos = timestamp
+        .signed_duration_since(genesis_time)
+        .num_nanoseconds()
+        .ok_or(HelperError::FetchSlotsConfig("delta overflow".to_owned()))?;
+    let delta_nanos = u128::try_from(delta_nanos)
+        .map_err(|_| HelperError::FetchSlotsConfig("negative delta".to_owned()))?;
+
+    let slot_nanos = slot_duration.as_nanos();
+    let slot = delta_nanos
+        .checked_div(slot_nanos)
+        .ok_or(HelperError::FetchSlotsConfig(
+            "zero slot duration".to_owned(),
+        ))?;
+
+    u64::try_from(slot).map_err(|_| HelperError::FetchSlotsConfig("slot overflow".to_owned()))
+}
+
 /// Returns epoch calculated from given slot.
 pub async fn epoch_from_slot(
     client: &pluto_eth2api::client::EthBeaconNodeApiClient,
@@ -118,7 +179,37 @@ pub async fn epoch_from_slot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{DateTime, Utc};
     use k256::SecretKey;
+    use pluto_testutil::BeaconMock;
+
+    async fn slot_mock() -> BeaconMock {
+        BeaconMock::builder()
+            .genesis_time(DateTime::from_timestamp(0, 0).unwrap())
+            .slot_duration(std::time::Duration::from_secs(12))
+            .build()
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn slot_from_timestamp_divides_delta_by_slot_duration() {
+        let mock = slot_mock().await;
+        // genesis = 0, slot_duration = 12s → timestamp 600 ⇒ slot 50.
+        let ts = DateTime::<Utc>::from_timestamp(600, 0).unwrap();
+        let slot = slot_from_timestamp(mock.client(), ts).await.unwrap();
+        assert_eq!(slot, 50);
+    }
+
+    #[tokio::test]
+    async fn slot_from_timestamp_before_genesis_falls_back_to_now() {
+        let mock = slot_mock().await;
+        // A timestamp before genesis falls back to the current wall clock,
+        // which is far past genesis, so the slot is large and non-zero.
+        let ts = DateTime::<Utc>::from_timestamp(-100, 0).unwrap();
+        let slot = slot_from_timestamp(mock.client(), ts).await.unwrap();
+        assert!(slot > 0);
+    }
 
     #[test]
     fn checksummed_address() {

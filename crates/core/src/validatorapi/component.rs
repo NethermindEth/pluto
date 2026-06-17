@@ -15,7 +15,10 @@ use pluto_eth2api::{
     PostStateValidatorsRequestPath, PostStateValidatorsResponse, ValidatorRequestBody,
     spec::phase0::{BLSPubKey, Epoch, Root, ValidatorIndex},
     valcache::{ActiveValidators, CachedValidatorsProvider},
-    versioned::{DataVersion, SignedBlindedProposalBlock, SignedProposalBlock},
+    versioned::{
+        BuilderVersion, DataVersion, SignedBlindedProposalBlock, SignedProposalBlock,
+        VersionedSignedValidatorRegistration as RawVersionedSignedValidatorRegistration,
+    },
 };
 use pluto_eth2util::signing::{self, DomainName, SigningError};
 use tokio::time::error::Elapsed;
@@ -39,8 +42,10 @@ use super::{
 use crate::{
     dutydb::{Error as DutyDbError, MemDB},
     signeddata::{
-        SignedDataError, SignedRandao, SyncContribution, VersionedAggregatedAttestation,
+        SignedDataError, SignedRandao, SignedVoluntaryExit as SignedVoluntaryExitData,
+        SyncContribution, VersionedAggregatedAttestation,
         VersionedProposal as UnsignedVersionedProposal,
+        VersionedSignedValidatorRegistration as VersionedSignedValidatorRegistrationData,
     },
     types::{Duty, DutyDefinitionSet, ParSignedDataSet, PubKey, Signature, SignedData, SlotNumber},
     version,
@@ -148,13 +153,11 @@ pub struct Component {
     /// translate a validator-client-supplied `validator_index` into the
     /// cluster's DV root public key. Mirrors Go's `eth2Cl.ActiveValidators`,
     /// which is itself backed by the beacon-node validator cache.
-    #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     validator_cache: Arc<dyn CachedValidatorsProvider>,
     /// In-memory DutyDB used to await consensus output (e.g. attestation
     /// data) produced by the rest of the pipeline.
     dutydb: Arc<MemDB>,
     /// Threshold BLS share index assigned to this node (1-indexed).
-    #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     share_idx: u64,
     /// Maps DV root public keys to this node's public share. Used to rewrite
     /// validator-client-facing endpoints (proposer/attester duties, etc.) so
@@ -162,17 +165,12 @@ pub struct Component {
     pub_share_by_pubkey: HashMap<BLSPubKey, BLSPubKey>,
     /// Whether builder mode is enabled. Read by `propose_block_v3` and the
     /// validator-registration submitter.
-    #[allow(
-        dead_code,
-        reason = "consumed by propose_block_v3 / submit_validator_registrations"
-    )]
     builder_enabled: bool,
     /// Skip signature verification on partial-signed submissions. Test-only.
     insecure_test: bool,
     /// Subscribers invoked by submit endpoints once a partial-signed-data set
     /// has been validated. Each entry clones the set before invoking the
     /// user-provided callback.
-    #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     subs: Vec<SubscriberFn>,
     /// Looks up an unsigned beacon proposal for a slot.
     #[allow(dead_code, reason = "consumed by proposal handler in later PRs")]
@@ -260,7 +258,6 @@ impl Component {
     /// bounded by [`UPSTREAM_REQUEST_TIMEOUT`]. Mirrors Go's
     /// `c.eth2Cl.ActiveValidators(ctx)`, which is itself implemented via the
     /// beacon-node validator cache.
-    #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     async fn fetch_active_validators(&self) -> Result<ActiveValidators, ApiError> {
         tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
@@ -459,6 +456,133 @@ impl Component {
         .await?;
 
         Ok(())
+    }
+
+    /// Processes a single builder validator registration: resolves the group
+    /// public key, skips non-distributed-validator keys, maps the registration
+    /// timestamp to a slot, verifies the partial signature, and broadcasts the
+    /// partial-signed registration to subscribers.
+    #[instrument(skip_all)]
+    async fn submit_registration(
+        &self,
+        registration: SignedValidatorRegistration,
+    ) -> Result<(), ApiError> {
+        // This is the group (DV root) public key, not a per-share key.
+        let eth2_pubkey = registration.message.pubkey;
+        let pubkey = pubkey_from_bls(&eth2_pubkey);
+
+        // Swallow non-DV registrations: many validator clients submit
+        // registrations for every key they know, including ones this cluster
+        // does not manage.
+        if !self.pub_share_by_pubkey.contains_key(&eth2_pubkey) {
+            debug!(
+                pubkey = %pubkey,
+                "Swallowing non-dv registration, this is a known limitation for many validator clients",
+            );
+            return Ok(());
+        }
+
+        let timestamp = chrono::DateTime::from_timestamp(
+            i64::try_from(registration.message.timestamp).map_err(|_| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "registration timestamp out of range",
+                )
+            })?,
+            0,
+        )
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid registration timestamp"))?;
+
+        let slot = pluto_eth2util::helpers::slot_from_timestamp(&self.eth2_cl, timestamp)
+            .await
+            .map_err(|err| {
+                ApiError::new(
+                    StatusCode::BAD_GATEWAY,
+                    "could not resolve slot from timestamp",
+                )
+                .with_source(err)
+            })?;
+        let duty = Duty::new_builder_registration_duty(SlotNumber::new(slot));
+
+        let versioned = RawVersionedSignedValidatorRegistration {
+            version: BuilderVersion::V1,
+            v1: Some(registration),
+        };
+        let par_sig =
+            VersionedSignedValidatorRegistrationData::new_partial(versioned, self.share_idx)
+                .map_err(map_signed_data_error)?;
+
+        // Verify registration signature. The application-builder domain always
+        // uses epoch 0.
+        self.verify_par_signed_registration(&pubkey, &par_sig)
+            .await?;
+
+        let mut set = ParSignedDataSet::new();
+        set.insert(pubkey, par_sig);
+        for sub in &self.subs {
+            sub(&duty, &set).await.map_err(|err| {
+                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "subscriber failed")
+                    .with_boxed_source(err)
+            })?;
+        }
+
+        Ok(())
+    }
+
+    /// Verifies the partial signature of a wrapped voluntary exit against this
+    /// node's public share. The voluntary-exit domain uses the exit message's
+    /// own epoch.
+    async fn verify_par_signed_exit(
+        &self,
+        pubkey: &PubKey,
+        epoch: Epoch,
+        par_sig: &crate::types::ParSignedData,
+    ) -> Result<(), ApiError> {
+        self.verify_par_signed(pubkey, DomainName::VoluntaryExit, epoch, par_sig)
+            .await
+    }
+
+    /// Verifies the partial signature of a wrapped validator registration
+    /// against this node's public share. The application-builder domain always
+    /// uses epoch 0.
+    async fn verify_par_signed_registration(
+        &self,
+        pubkey: &PubKey,
+        par_sig: &crate::types::ParSignedData,
+    ) -> Result<(), ApiError> {
+        self.verify_par_signed(pubkey, DomainName::ApplicationBuilder, 0, par_sig)
+            .await
+    }
+
+    /// Extracts the signature and message root from a [`ParSignedData`]
+    /// wrapper and verifies them against this node's public share under the
+    /// given signing domain and epoch.
+    async fn verify_par_signed(
+        &self,
+        pubkey: &PubKey,
+        domain: DomainName,
+        epoch: Epoch,
+        par_sig: &crate::types::ParSignedData,
+    ) -> Result<(), ApiError> {
+        let signature = par_sig.signed_data.signature().map_err(|err| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not extract partial signature",
+            )
+            .with_source(err)
+        })?;
+        let message_root = par_sig.signed_data.message_root().map_err(|err| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not derive message root",
+            )
+            .with_source(err)
+        })?;
+
+        let pubkey_bytes = pubkey_to_bls(pubkey);
+        self.verify_partial_sig(&pubkey_bytes, domain, epoch, message_root, &signature)
+            .await
+            .map_err(verify_partial_sig_error)
     }
 }
 
@@ -972,14 +1096,63 @@ impl Handler for Component {
     #[instrument(skip_all)]
     async fn submit_validator_registrations(
         &self,
-        _registrations: Vec<SignedValidatorRegistration>,
+        registrations: Vec<SignedValidatorRegistration>,
     ) -> Result<(), ApiError> {
-        unimplemented!("submit_validator_registrations not yet ported")
+        if registrations.is_empty() {
+            return Ok(());
+        }
+
+        // Swallow unexpected validator registrations from VCs (e.g. vouch)
+        // when builder mode is disabled — they are not actionable.
+        if !self.builder_enabled {
+            return Ok(());
+        }
+
+        for registration in registrations {
+            self.submit_registration(registration).await?;
+        }
+
+        Ok(())
     }
 
     #[instrument(skip_all)]
-    async fn submit_voluntary_exit(&self, _exit: SignedVoluntaryExit) -> Result<(), ApiError> {
-        unimplemented!("submit_voluntary_exit not yet ported")
+    async fn submit_voluntary_exit(&self, exit: SignedVoluntaryExit) -> Result<(), ApiError> {
+        let validator_index = exit.message.validator_index;
+        let epoch = exit.message.epoch;
+
+        let vals = self.fetch_active_validators().await?;
+        let eth2_pubkey = vals
+            .get(&validator_index)
+            .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "validator not found"))?;
+        let pubkey = pubkey_from_bls(eth2_pubkey);
+
+        let (_, slots_per_epoch) = self.eth2_cl.fetch_slots_config().await.map_err(|err| {
+            ApiError::new(StatusCode::BAD_GATEWAY, "could not fetch slots config").with_source(err)
+        })?;
+
+        let exit_slot = slots_per_epoch.checked_mul(epoch).ok_or_else(|| {
+            ApiError::new(StatusCode::BAD_REQUEST, "voluntary exit slot overflow")
+        })?;
+        let duty = Duty::new_voluntary_exit_duty(SlotNumber::new(exit_slot));
+
+        let par_sig = SignedVoluntaryExitData::new_partial(exit, self.share_idx);
+
+        // Verify voluntary exit signature against this node's public share.
+        self.verify_par_signed_exit(&pubkey, epoch, &par_sig)
+            .await?;
+
+        debug!("Voluntary exit submitted by validator client");
+
+        let mut set = ParSignedDataSet::new();
+        set.insert(pubkey, par_sig);
+        for sub in &self.subs {
+            sub(&duty, &set).await.map_err(|err| {
+                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "subscriber failed")
+                    .with_boxed_source(err)
+            })?;
+        }
+
+        Ok(())
     }
 
     #[instrument(skip_all)]
@@ -1226,6 +1399,12 @@ fn pubkey_to_bls(pk: &PubKey) -> BLSPubKey {
     let mut out = [0_u8; 48];
     out.copy_from_slice(pk.as_ref());
     out
+}
+
+/// Re-interprets a [`BLSPubKey`] byte-array as a Pluto [`PubKey`]. Both are
+/// 48-byte arrays, so this is infallible.
+fn pubkey_from_bls(pk: &BLSPubKey) -> PubKey {
+    PubKey::from(*pk)
 }
 
 /// Maps a [`VerifyPartialSigError`] back to an [`ApiError`]. `UnknownPubKey`
@@ -1487,7 +1666,12 @@ mod tests {
         unsigneddata::{UnsignedDataSet, UnsignedDutyData},
         validatorapi::types::AttestationDataOpts,
     };
-    use pluto_eth2api::valcache::{CompleteValidators, ValidatorCacheError};
+    use pluto_crypto::types::PrivateKey;
+    use pluto_eth2api::{
+        spec::phase0,
+        v1,
+        valcache::{CompleteValidators, ValidatorCacheError},
+    };
 
     /// In-memory [`CachedValidatorsProvider`] for tests. Holds a fixed
     /// `validator_index -> DV root pubkey` map. `complete_validators` is not
@@ -3523,5 +3707,309 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
         assert!(!err.message.contains("secret"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Validator lifecycle: voluntary exit + validator registrations
+    // -----------------------------------------------------------------------
+
+    /// Records every `(duty, set)` pair a submit handler fans out to its
+    /// subscriber, so lifecycle tests can assert the broadcast contents.
+    type RecordedBroadcasts = Arc<Mutex<Vec<(Duty, ParSignedDataSet)>>>;
+
+    /// Builds a fully-signing lifecycle component: a beacon mock that serves
+    /// the signing domains plus `SLOTS_PER_EPOCH`/`SECONDS_PER_SLOT`/genesis
+    /// time, a populated `validator_index -> root pubkey` cache, a
+    /// `root -> public-share` map, and a recording subscriber. Returns the
+    /// component, the held mock, and the broadcast recorder.
+    async fn make_lifecycle_component(
+        builder_enabled: bool,
+        validators: HashMap<ValidatorIndex, BLSPubKey>,
+        pub_share_by_pubkey: HashMap<BLSPubKey, BLSPubKey>,
+    ) -> (Component, BeaconMock, RecordedBroadcasts) {
+        let mock = BeaconMock::builder()
+            .spec(signing_spec_fixture())
+            .slots_per_epoch(16)
+            .slot_duration(std::time::Duration::from_secs(12))
+            .genesis_time(DateTime::from_timestamp(0, 0).unwrap())
+            .genesis_validators_root([0; 32])
+            .build()
+            .await
+            .unwrap();
+
+        let cancel = CancellationToken::new();
+        let (deadliner, _deadliner_rx) = DeadlinerTask::start(
+            cancel.clone(),
+            "validatorapi-lifecycle-tests",
+            FarFutureCalculator,
+        );
+        let (_evict_tx, evict_rx) = mpsc::channel(1);
+        let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let mut component = Component::new(
+            eth2_cl,
+            dutydb,
+            1,
+            pub_share_by_pubkey,
+            builder_enabled,
+            TestValidatorCache::arc(validators),
+        );
+
+        let recorder: RecordedBroadcasts = Arc::new(Mutex::new(Vec::new()));
+        {
+            let recorder = Arc::clone(&recorder);
+            component.subscribe(move |duty, set| {
+                let recorder = Arc::clone(&recorder);
+                async move {
+                    recorder.lock().unwrap().push((duty, set));
+                    Ok(())
+                }
+            });
+        }
+
+        (component, mock, recorder)
+    }
+
+    /// Signs `message_root` under `domain`/`epoch` with `secret` exactly as
+    /// `signing::verify` reconstructs it, yielding a partial signature the
+    /// component will accept.
+    async fn sign_for(
+        mock: &BeaconMock,
+        secret: &PrivateKey,
+        domain: DomainName,
+        epoch: Epoch,
+        message_root: Root,
+    ) -> Signature {
+        let signing_root =
+            pluto_eth2util::signing::get_data_root(mock.client(), domain, epoch, message_root)
+                .await
+                .unwrap();
+        BlstImpl.sign(secret, &signing_root).unwrap()
+    }
+
+    /// Generates a BLS keypair to act as this node's public share.
+    fn new_share() -> (PrivateKey, BLSPubKey) {
+        let secret = BlstImpl
+            .generate_insecure_secret(rand::rngs::OsRng)
+            .unwrap();
+        let pubshare = BlstImpl.secret_to_public_key(&secret).unwrap();
+        (secret, pubshare)
+    }
+
+    /// A correctly-signed voluntary exit is verified and broadcast as an
+    /// `Exit` duty at slot `slots_per_epoch * epoch`.
+    #[tokio::test]
+    async fn submit_voluntary_exit_verifies_and_broadcasts() {
+        let (secret, pubshare) = new_share();
+        let dv_root = dv_pubkey(0xAA);
+        let validator_index: ValidatorIndex = 7;
+        let epoch: Epoch = 3;
+
+        let validators = HashMap::from([(validator_index, dv_root)]);
+        let map = HashMap::from([(dv_root, pubshare)]);
+        let (component, mock, recorder) = make_lifecycle_component(false, validators, map).await;
+
+        let mut exit = phase0::SignedVoluntaryExit {
+            message: phase0::VoluntaryExit {
+                epoch,
+                validator_index,
+            },
+            signature: [0; 96],
+        };
+        let message_root = exit.message_root();
+        exit.signature = sign_for(
+            &mock,
+            &secret,
+            DomainName::VoluntaryExit,
+            epoch,
+            message_root,
+        )
+        .await;
+
+        component.submit_voluntary_exit(exit).await.unwrap();
+
+        let recorded = recorder.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 1);
+        let (duty, set) = &recorded[0];
+        assert_eq!(duty.duty_type, DutyType::Exit);
+        // slot = slots_per_epoch (16) * epoch (3)
+        assert_eq!(duty.slot.inner(), 48);
+        assert!(set.inner().contains_key(&core_pubkey(0xAA)));
+    }
+
+    /// An exit for an unknown validator index → 400 "validator not found".
+    #[tokio::test]
+    async fn submit_voluntary_exit_rejects_unknown_validator() {
+        let (_secret, _pubshare) = new_share();
+        let (component, _mock, _recorder) =
+            make_lifecycle_component(false, HashMap::new(), HashMap::new()).await;
+
+        let exit = phase0::SignedVoluntaryExit {
+            message: phase0::VoluntaryExit {
+                epoch: 1,
+                validator_index: 99,
+            },
+            signature: [0; 96],
+        };
+        let err = component.submit_voluntary_exit(exit).await.unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+        assert_eq!(err.message, "validator not found");
+    }
+
+    /// A tampered exit signature is rejected at the verify step.
+    #[tokio::test]
+    async fn submit_voluntary_exit_rejects_bad_signature() {
+        let (secret, pubshare) = new_share();
+        let dv_root = dv_pubkey(0xAB);
+        let validators = HashMap::from([(1, dv_root)]);
+        let map = HashMap::from([(dv_root, pubshare)]);
+        let (component, mock, _recorder) = make_lifecycle_component(false, validators, map).await;
+
+        let mut exit = phase0::SignedVoluntaryExit {
+            message: phase0::VoluntaryExit {
+                epoch: 1,
+                validator_index: 1,
+            },
+            signature: [0; 96],
+        };
+        let message_root = exit.message_root();
+        let mut sig = sign_for(&mock, &secret, DomainName::VoluntaryExit, 1, message_root).await;
+        sig[0] ^= 0xFF;
+        exit.signature = sig;
+
+        let err = component.submit_voluntary_exit(exit).await.unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+    }
+
+    /// Builds an unsigned `v1::ValidatorRegistration` for `pubkey`.
+    fn registration_message(pubkey: BLSPubKey, timestamp: u64) -> v1::ValidatorRegistration {
+        v1::ValidatorRegistration {
+            fee_recipient: [0x11; 20],
+            gas_limit: 30_000_000,
+            timestamp,
+            pubkey,
+        }
+    }
+
+    /// With builder mode disabled, registrations are swallowed: no broadcast,
+    /// no validator/spec lookups.
+    #[tokio::test]
+    async fn submit_validator_registrations_swallowed_when_builder_disabled() {
+        let (_secret, pubshare) = new_share();
+        let dv_root = dv_pubkey(0xC0);
+        let map = HashMap::from([(dv_root, pubshare)]);
+        let (component, _mock, recorder) =
+            make_lifecycle_component(false, HashMap::new(), map).await;
+
+        let reg = v1::SignedValidatorRegistration {
+            message: registration_message(dv_root, 600),
+            signature: [0; 96],
+        };
+        component
+            .submit_validator_registrations(vec![reg])
+            .await
+            .unwrap();
+
+        assert!(recorder.lock().unwrap().is_empty());
+    }
+
+    /// An empty registration list is a no-op even with builder mode enabled.
+    #[tokio::test]
+    async fn submit_validator_registrations_empty_is_noop() {
+        let (_secret, _pubshare) = new_share();
+        let (component, _mock, recorder) =
+            make_lifecycle_component(true, HashMap::new(), HashMap::new()).await;
+
+        component
+            .submit_validator_registrations(vec![])
+            .await
+            .unwrap();
+        assert!(recorder.lock().unwrap().is_empty());
+    }
+
+    /// A registration for a non-distributed-validator key is swallowed
+    /// (builder enabled, but the pubkey has no public share registered).
+    #[tokio::test]
+    async fn submit_validator_registrations_swallows_non_dv_key() {
+        let (_secret, _pubshare) = new_share();
+        // pub_share map is empty, so any pubkey is "non-DV".
+        let (component, _mock, recorder) =
+            make_lifecycle_component(true, HashMap::new(), HashMap::new()).await;
+
+        let reg = v1::SignedValidatorRegistration {
+            message: registration_message(dv_pubkey(0xC1), 600),
+            signature: [0; 96],
+        };
+        component
+            .submit_validator_registrations(vec![reg])
+            .await
+            .unwrap();
+        assert!(recorder.lock().unwrap().is_empty());
+    }
+
+    /// With builder mode enabled and a known DV key, a correctly-signed
+    /// registration is verified and broadcast as a `BuilderRegistration` duty
+    /// whose slot derives from the registration timestamp.
+    #[tokio::test]
+    async fn submit_validator_registrations_verifies_and_broadcasts() {
+        let (secret, pubshare) = new_share();
+        let dv_root = dv_pubkey(0xC2);
+        let map = HashMap::from([(dv_root, pubshare)]);
+        let (component, mock, recorder) = make_lifecycle_component(true, HashMap::new(), map).await;
+
+        // genesis = 0, slot_duration = 12s → timestamp 600 ⇒ slot 50.
+        let message = registration_message(dv_root, 600);
+        let message_root = message.message_root();
+        // Builder domain always uses epoch 0.
+        let signature = sign_for(
+            &mock,
+            &secret,
+            DomainName::ApplicationBuilder,
+            0,
+            message_root,
+        )
+        .await;
+        let reg = v1::SignedValidatorRegistration { message, signature };
+
+        component
+            .submit_validator_registrations(vec![reg])
+            .await
+            .unwrap();
+
+        let recorded = recorder.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 1);
+        let (duty, set) = &recorded[0];
+        assert_eq!(duty.duty_type, DutyType::BuilderRegistration);
+        assert_eq!(duty.slot.inner(), 50);
+        assert!(set.inner().contains_key(&core_pubkey(0xC2)));
+    }
+
+    /// A tampered registration signature is rejected at the verify step.
+    #[tokio::test]
+    async fn submit_validator_registrations_rejects_bad_signature() {
+        let (secret, pubshare) = new_share();
+        let dv_root = dv_pubkey(0xC3);
+        let map = HashMap::from([(dv_root, pubshare)]);
+        let (component, mock, _recorder) =
+            make_lifecycle_component(true, HashMap::new(), map).await;
+
+        let message = registration_message(dv_root, 600);
+        let message_root = message.message_root();
+        let mut signature = sign_for(
+            &mock,
+            &secret,
+            DomainName::ApplicationBuilder,
+            0,
+            message_root,
+        )
+        .await;
+        signature[0] ^= 0xFF;
+        let reg = v1::SignedValidatorRegistration { message, signature };
+
+        let err = component
+            .submit_validator_registrations(vec![reg])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
     }
 }

@@ -487,12 +487,54 @@ async fn submit_blinded_block(
     Ok(StatusCode::OK.into_response())
 }
 
-async fn submit_validator_registrations() {
-    todo!("vapi: submit_validator_registrations");
+/// `POST /eth/v1/validator/register_validator`.
+///
+/// Decodes an array of signed builder validator registrations (JSON or SSZ
+/// per content type) and forwards them to the handler. The SSZ body is a bare
+/// concatenation of fixed-size `SignedValidatorRegistration` objects; the JSON
+/// body is a plain array. Mirrors `submitValidatorRegistrations`.
+async fn submit_validator_registrations(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let ssz = request_is_ssz(&headers)?;
+    let registrations = decode_signed_validator_registrations(&body, ssz)?;
+
+    state
+        .handler
+        .submit_validator_registrations(registrations)
+        .await?;
+    Ok(StatusCode::OK.into_response())
 }
 
-async fn submit_exit() {
-    todo!("vapi: submit_exit");
+/// `POST /eth/v1/beacon/pool/voluntary_exits`.
+///
+/// Decodes a single signed voluntary exit (JSON only) and forwards it to the
+/// handler. Mirrors `submitExit`.
+async fn submit_exit(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    // JSON-only endpoint: an SSZ or otherwise unrecognised content type is
+    // rejected with 415, mirroring Charon's per-route encoding negotiation.
+    if request_is_ssz(&headers)? {
+        return Err(ApiError::new(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Cannot read the supplied content type.",
+        ));
+    }
+
+    if body.is_empty() {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "empty request body"));
+    }
+    let exit = serde_json::from_slice(&body).map_err(|err| {
+        ApiError::new(StatusCode::BAD_REQUEST, "invalid request body").with_source(err)
+    })?;
+
+    state.handler.submit_voluntary_exit(exit).await?;
+    Ok(StatusCode::OK.into_response())
 }
 
 async fn beacon_committee_selections() {
@@ -883,6 +925,33 @@ fn request_is_ssz(headers: &HeaderMap) -> Result<bool, ApiError> {
             format!("unsupported media type {value}"),
         ))
     }
+}
+
+/// Decodes the `register_validator` request body into a list of signed
+/// validator registrations. JSON bodies are a plain array; SSZ bodies are a
+/// bare concatenation of fixed-size objects. Empty/JSON failures surface as
+/// `400`; SSZ failures as `415`, mirroring Charon's `unmarshal`.
+fn decode_signed_validator_registrations(
+    body: &[u8],
+    ssz: bool,
+) -> Result<Vec<crate::validatorapi::types::SignedValidatorRegistration>, ApiError> {
+    if body.is_empty() {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "empty request body"));
+    }
+
+    if ssz {
+        return crate::ssz_codec::decode_signed_validator_registrations(body).map_err(|err| {
+            ApiError::new(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "failed parsing ssz request body",
+            )
+            .with_source(err)
+        });
+    }
+
+    serde_json::from_slice(body).map_err(|err| {
+        ApiError::new(StatusCode::BAD_REQUEST, "invalid request body").with_source(err)
+    })
 }
 
 /// Decodes a submitted full signed proposal block (JSON or SSZ) for the given
@@ -2037,5 +2106,199 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // -------------------------------------------------------------------
+    // Validator lifecycle: register_validator + voluntary_exits
+    // -------------------------------------------------------------------
+
+    /// Builds a single signed builder validator registration with the given
+    /// pubkey first byte, for use as test JSON/SSZ array input.
+    fn signed_registration(byte: u8) -> pluto_eth2api::v1::SignedValidatorRegistration {
+        pluto_eth2api::v1::SignedValidatorRegistration {
+            message: pluto_eth2api::v1::ValidatorRegistration {
+                fee_recipient: [0x11; 20],
+                gas_limit: 30_000_000,
+                timestamp: 1_700_000_000,
+                pubkey: [byte; 48],
+            },
+            signature: [byte; 96],
+        }
+    }
+
+    /// A JSON array body to `register_validator` is decoded and forwarded to
+    /// the handler.
+    #[tokio::test]
+    async fn submit_validator_registrations_decodes_json_array() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let handler = TestHandler::default();
+        let recorded = handler.submitted_registrations.clone();
+        let app = test_router(Arc::new(handler), true);
+
+        let regs = vec![signed_registration(0xA1), signed_registration(0xA2)];
+        let body = serde_json::to_vec(&regs).unwrap();
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/validator/register_validator")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let got = recorded.lock().unwrap().clone().unwrap();
+        assert_eq!(got, regs);
+    }
+
+    /// An SSZ body to `register_validator` is decoded from a bare
+    /// concatenation of fixed-size objects and forwarded to the handler.
+    #[tokio::test]
+    async fn submit_validator_registrations_decodes_ssz_array() {
+        use axum::body::Body;
+        use ssz::Encode;
+        use tower::ServiceExt;
+
+        let handler = TestHandler::default();
+        let recorded = handler.submitted_registrations.clone();
+        let app = test_router(Arc::new(handler), true);
+
+        let regs = vec![signed_registration(0xB1), signed_registration(0xB2)];
+        let mut body = Vec::new();
+        for reg in &regs {
+            body.extend_from_slice(&reg.as_ssz_bytes());
+        }
+        // Each object is exactly 180 bytes.
+        assert_eq!(body.len(), 360);
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/validator/register_validator")
+            .header("content-type", "application/octet-stream")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let got = recorded.lock().unwrap().clone().unwrap();
+        assert_eq!(got, regs);
+    }
+
+    /// An SSZ body that is not a whole multiple of the object size → 415.
+    #[tokio::test]
+    async fn submit_validator_registrations_rejects_misaligned_ssz() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let app = test_router(Arc::new(TestHandler::default()), true);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/validator/register_validator")
+            .header("content-type", "application/octet-stream")
+            .body(Body::from(vec![0u8; 181]))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    /// An empty `register_validator` body → 400.
+    #[tokio::test]
+    async fn submit_validator_registrations_rejects_empty_body() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let app = test_router(Arc::new(TestHandler::default()), true);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/validator/register_validator")
+            .header("content-type", "application/json")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// A JSON voluntary exit is decoded and forwarded to the handler.
+    #[tokio::test]
+    async fn submit_exit_decodes_json() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let handler = TestHandler::default();
+        let recorded = handler.submitted_exit.clone();
+        let app = test_router(Arc::new(handler), false);
+
+        let exit = phase0::SignedVoluntaryExit {
+            message: phase0::VoluntaryExit {
+                epoch: 5,
+                validator_index: 42,
+            },
+            signature: [0x33; 96],
+        };
+        let body = serde_json::to_vec(&exit).unwrap();
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/beacon/pool/voluntary_exits")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let got = recorded.lock().unwrap().clone().unwrap();
+        assert_eq!(got, exit);
+    }
+
+    /// An empty voluntary-exit body → 400.
+    #[tokio::test]
+    async fn submit_exit_rejects_empty_body() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let app = test_router(Arc::new(TestHandler::default()), false);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/beacon/pool/voluntary_exits")
+            .header("content-type", "application/json")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// A voluntary exit submitted with an SSZ content type → 415, since the
+    /// endpoint is JSON-only.
+    #[tokio::test]
+    async fn submit_exit_rejects_ssz_content_type() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let app = test_router(Arc::new(TestHandler::default()), false);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/beacon/pool/voluntary_exits")
+            .header("content-type", "application/octet-stream")
+            .body(Body::from(vec![0u8; 112]))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    /// A malformed voluntary-exit JSON body → 400.
+    #[tokio::test]
+    async fn submit_exit_rejects_invalid_json() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let app = test_router(Arc::new(TestHandler::default()), false);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/beacon/pool/voluntary_exits")
+            .header("content-type", "application/json")
+            .body(Body::from("{not json"))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }

@@ -159,13 +159,14 @@ pub struct VersionedAttestation {}
 #[derive(Debug, Clone)]
 pub struct VersionedSignedAggregateAndProof {}
 
-/// Signed validator registration payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct SignedValidatorRegistration {}
+/// Signed validator registration payload — the bare builder-API v1 object the
+/// validator client submits to `register_validator`. The component wraps each
+/// entry as a `BuilderVersion::V1` versioned registration before broadcasting.
+pub use pluto_eth2api::v1::SignedValidatorRegistration;
 
-/// Signed voluntary exit payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct SignedVoluntaryExit {}
+/// Signed voluntary exit payload — the phase0 object the validator client
+/// submits to `voluntary_exits`.
+pub use pluto_eth2api::spec::phase0::SignedVoluntaryExit;
 
 /// Sync-committee message payload. Placeholder.
 #[derive(Debug, Clone)]

@@ -38,6 +38,7 @@ uuid.workspace = true
 rand.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 url.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 assert-json-diff.workspace = true

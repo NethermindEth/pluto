@@ -49,6 +49,11 @@ pub struct TestHandler {
     pub submitted_blinded_proposal: Arc<Mutex<Option<VersionedSignedBlindedProposal>>>,
     /// Records the last [`ValidatorsOpts`] passed to [`Handler::validators`].
     pub validators_opts: Arc<Mutex<Option<ValidatorsOpts>>>,
+    /// Records the last registrations submitted via
+    /// [`Handler::submit_validator_registrations`].
+    pub submitted_registrations: Arc<Mutex<Option<Vec<SignedValidatorRegistration>>>>,
+    /// Records the last exit submitted via [`Handler::submit_voluntary_exit`].
+    pub submitted_exit: Arc<Mutex<Option<SignedVoluntaryExit>>>,
 }
 
 impl TestHandler {
@@ -225,13 +230,18 @@ impl Handler for TestHandler {
 
     async fn submit_validator_registrations(
         &self,
-        _registrations: Vec<SignedValidatorRegistration>,
+        registrations: Vec<SignedValidatorRegistration>,
     ) -> Result<(), ApiError> {
-        unimplemented!("submit_validator_registrations not stubbed in TestHandler")
+        *self
+            .submitted_registrations
+            .lock()
+            .expect("submitted_registrations lock") = Some(registrations);
+        Ok(())
     }
 
-    async fn submit_voluntary_exit(&self, _exit: SignedVoluntaryExit) -> Result<(), ApiError> {
-        unimplemented!("submit_voluntary_exit not stubbed in TestHandler")
+    async fn submit_voluntary_exit(&self, exit: SignedVoluntaryExit) -> Result<(), ApiError> {
+        *self.submitted_exit.lock().expect("submitted_exit lock") = Some(exit);
+        Ok(())
     }
 
     async fn sync_committee_contribution(
