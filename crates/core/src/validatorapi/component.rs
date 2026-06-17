@@ -39,7 +39,9 @@ use super::{
 use crate::{
     dutydb::{Error as DutyDbError, MemDB},
     signeddata::{
-        SignedDataError, SignedRandao, SyncContribution, VersionedAggregatedAttestation,
+        SignedDataError, SignedRandao, SignedSyncContributionAndProof, SignedSyncMessage,
+        SyncCommitteeSelection as SyncCommitteeSelectionData, SyncContribution,
+        SyncContributionAndProof, VersionedAggregatedAttestation,
         VersionedProposal as UnsignedVersionedProposal,
     },
     types::{Duty, DutyDefinitionSet, ParSignedDataSet, PubKey, Signature, SignedData, SlotNumber},
@@ -133,6 +135,13 @@ const ATTESTATION_DATA_TIMEOUT: Duration = Duration::from_secs(24);
 /// and the dutydb await — so a hung upstream beacon or slow subscriber
 /// cannot park a tokio task indefinitely.
 const PROPOSAL_TIMEOUT: Duration = Duration::from_secs(24);
+
+/// Hard deadline for the sync-committee submit / selection handler bodies.
+/// Bounds the active-validators lookup, per-item partial-signature
+/// verification (each calling upstream `signing::verify`), the synchronous
+/// subscriber fan-out, and — for selections — the aggsigdb await, so a hung
+/// upstream or slow subscriber cannot park a tokio task indefinitely.
+const SYNC_TIMEOUT: Duration = Duration::from_secs(24);
 
 /// Validator API [`Handler`] implementation.
 ///
@@ -458,6 +467,49 @@ impl Component {
         )
         .await?;
 
+        Ok(())
+    }
+
+    /// Verifies the BLS signature carried by `par_sig` against `pubkey`
+    /// directly (not a share), for the given domain and epoch.
+    ///
+    /// Used by `submit_sync_committee_contributions` to check the inner
+    /// selection-proof against the aggregator's full validator public key.
+    /// Skipped entirely when [`Self::insecure_test`] is set.
+    async fn verify_full_pubkey_sig(
+        &self,
+        pubkey: &BLSPubKey,
+        domain_name: DomainName,
+        epoch: Epoch,
+        message_root: Root,
+        signature: &Signature,
+    ) -> Result<(), SigningError> {
+        if self.insecure_test {
+            return Ok(());
+        }
+
+        signing::verify(
+            &self.eth2_cl,
+            domain_name,
+            epoch,
+            message_root,
+            signature,
+            pubkey,
+        )
+        .await
+    }
+
+    /// Fans the validated partial-signed-data `set` out to every registered
+    /// subscriber for `duty`. Each subscriber receives its own clone of the
+    /// set (the registered wrapper clones once). A subscriber failure aborts
+    /// the fan-out and surfaces as `500`.
+    async fn broadcast(&self, duty: &Duty, set: &ParSignedDataSet) -> Result<(), ApiError> {
+        for sub in &self.subs {
+            sub(duty, set).await.map_err(|err| {
+                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "subscriber failed")
+                    .with_boxed_source(err)
+            })?;
+        }
         Ok(())
     }
 }
@@ -874,9 +926,98 @@ impl Handler for Component {
     #[instrument(skip_all)]
     async fn sync_committee_selections(
         &self,
-        _selections: Vec<SyncCommitteeSelection>,
+        selections: Vec<SyncCommitteeSelection>,
     ) -> Result<EthResponse<Vec<SyncCommitteeSelection>>, ApiError> {
-        unimplemented!("sync_committee_selections not yet ported")
+        tokio::time::timeout(SYNC_TIMEOUT, async {
+            let vals = self.fetch_active_validators().await?;
+
+            let await_agg_sig_db = self.await_agg_sig_db_fn.as_ref().ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "await aggsigdb hook not registered",
+                )
+            })?;
+
+            let mut psigs_by_slot: HashMap<u64, ParSignedDataSet> = HashMap::new();
+            for selection in selections {
+                let slot = selection.slot;
+
+                let (pubkey, root_bls) =
+                    resolve_active_validator(&vals, selection.validator_index)?;
+
+                let epoch = pluto_eth2util::helpers::epoch_from_slot(&self.eth2_cl, slot)
+                    .await
+                    .map_err(epoch_lookup_error)?;
+
+                let par_sig = SyncCommitteeSelectionData::new_partial(selection, self.share_idx);
+                let signature = par_sig
+                    .signed_data
+                    .signature()
+                    .map_err(message_root_error)?;
+                let message_root = par_sig
+                    .signed_data
+                    .message_root()
+                    .map_err(message_root_error)?;
+                self.verify_partial_sig(
+                    &root_bls,
+                    DomainName::SyncCommitteeSelectionProof,
+                    epoch,
+                    message_root,
+                    &signature,
+                )
+                .await
+                .map_err(verify_partial_sig_error)?;
+
+                psigs_by_slot
+                    .entry(slot)
+                    .or_default()
+                    .insert(pubkey, par_sig);
+            }
+
+            for (slot, set) in &psigs_by_slot {
+                let duty = Duty::new_prepare_sync_contribution_duty(SlotNumber::new(*slot));
+                self.broadcast(&duty, set).await?;
+            }
+
+            // Collect the aggregated selection for each (duty, pubkey) from the
+            // aggsigdb. Each await blocks until the threshold aggregation lands.
+            let mut resp: Vec<SyncCommitteeSelection> = Vec::new();
+            for (slot, set) in &psigs_by_slot {
+                let duty = Duty::new_prepare_sync_contribution_duty(SlotNumber::new(*slot));
+                for pubkey in set.inner().keys() {
+                    let aggregated =
+                        await_agg_sig_db(duty.clone(), *pubkey)
+                            .await
+                            .map_err(|err| {
+                                ApiError::new(
+                                    StatusCode::SERVICE_UNAVAILABLE,
+                                    "await aggsigdb hook failed",
+                                )
+                                .with_boxed_source(err)
+                            })?;
+
+                    let selection = (&*aggregated as &dyn Any)
+                        .downcast_ref::<SyncCommitteeSelectionData>()
+                        .ok_or_else(|| {
+                            ApiError::new(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "invalid sync committee selection",
+                            )
+                        })?;
+
+                    resp.push(selection.0.clone());
+                }
+            }
+
+            Ok(EthResponse {
+                data: resp,
+                execution_optimistic: false,
+                finalized: false,
+                dependent_root: None,
+            })
+        })
+        .await
+        .map_err(|_: Elapsed| sync_timeout())?
     }
 
     #[instrument(skip_all)]
@@ -982,28 +1123,169 @@ impl Handler for Component {
         unimplemented!("submit_voluntary_exit not yet ported")
     }
 
-    #[instrument(skip_all)]
+    #[instrument(skip_all, fields(slot = opts.slot, subcommittee_index = opts.subcommittee_index))]
     async fn sync_committee_contribution(
         &self,
-        _opts: SyncCommitteeContributionOpts,
+        opts: SyncCommitteeContributionOpts,
     ) -> Result<EthResponse<SyncCommitteeContribution>, ApiError> {
-        unimplemented!("sync_committee_contribution not yet ported")
+        let f = self.await_sync_contribution_fn.as_ref().ok_or_else(|| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "await sync contribution hook not registered",
+            )
+        })?;
+
+        let contribution = tokio::time::timeout(
+            SYNC_TIMEOUT,
+            f(opts.slot, opts.subcommittee_index, opts.beacon_block_root),
+        )
+        .await
+        .map_err(|_: Elapsed| sync_timeout())?
+        .map_err(|err| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "await sync contribution hook failed",
+            )
+            .with_boxed_source(err)
+        })?;
+
+        Ok(EthResponse {
+            data: contribution.0,
+            execution_optimistic: false,
+            finalized: false,
+            dependent_root: None,
+        })
     }
 
     #[instrument(skip_all)]
     async fn submit_sync_committee_contributions(
         &self,
-        _contributions: Vec<SignedContributionAndProof>,
+        contributions: Vec<SignedContributionAndProof>,
     ) -> Result<(), ApiError> {
-        unimplemented!("submit_sync_committee_contributions not yet ported")
+        tokio::time::timeout(SYNC_TIMEOUT, async {
+            let vals = self.fetch_active_validators().await?;
+
+            let mut psigs_by_slot: HashMap<u64, ParSignedDataSet> = HashMap::new();
+            for contrib in contributions {
+                let slot = contrib.message.contribution.slot;
+                let v_idx = contrib.message.aggregator_index;
+
+                let (pubkey, root_bls) = resolve_active_validator(&vals, v_idx)?;
+
+                let epoch = pluto_eth2util::helpers::epoch_from_slot(&self.eth2_cl, slot)
+                    .await
+                    .map_err(epoch_lookup_error)?;
+
+                // Verify the inner selection proof against the aggregator's
+                // full validator public key (not this node's share).
+                let inner = SyncContributionAndProof::new(contrib.message.clone());
+                let inner_sig = inner.signature().map_err(message_root_error)?;
+                let inner_root = inner.message_root().map_err(message_root_error)?;
+                self.verify_full_pubkey_sig(
+                    &root_bls,
+                    DomainName::SyncCommitteeSelectionProof,
+                    epoch,
+                    inner_root,
+                    &inner_sig,
+                )
+                .await
+                .map_err(|err| {
+                    ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        "sync contribution selection proof verification failed",
+                    )
+                    .with_source(err)
+                })?;
+
+                // Verify the outer partial signature against this node's share.
+                let par_sig = SignedSyncContributionAndProof::new_partial(contrib, self.share_idx);
+                let outer_sig = par_sig
+                    .signed_data
+                    .signature()
+                    .map_err(message_root_error)?;
+                let outer_root = par_sig
+                    .signed_data
+                    .message_root()
+                    .map_err(message_root_error)?;
+                self.verify_partial_sig(
+                    &root_bls,
+                    DomainName::ContributionAndProof,
+                    epoch,
+                    outer_root,
+                    &outer_sig,
+                )
+                .await
+                .map_err(verify_partial_sig_error)?;
+
+                psigs_by_slot
+                    .entry(slot)
+                    .or_default()
+                    .insert(pubkey, par_sig);
+            }
+
+            for (slot, set) in psigs_by_slot {
+                let duty = Duty::new_sync_contribution_duty(SlotNumber::new(slot));
+                self.broadcast(&duty, &set).await?;
+            }
+
+            Ok(())
+        })
+        .await
+        .map_err(|_: Elapsed| sync_timeout())?
     }
 
     #[instrument(skip_all)]
     async fn submit_sync_committee_messages(
         &self,
-        _messages: Vec<SyncCommitteeMessage>,
+        messages: Vec<SyncCommitteeMessage>,
     ) -> Result<(), ApiError> {
-        unimplemented!("submit_sync_committee_messages not yet ported")
+        tokio::time::timeout(SYNC_TIMEOUT, async {
+            let vals = self.fetch_active_validators().await?;
+
+            let mut psigs_by_slot: HashMap<u64, ParSignedDataSet> = HashMap::new();
+            for msg in messages {
+                let slot = msg.slot;
+
+                let (pubkey, root_bls) = resolve_active_validator(&vals, msg.validator_index)?;
+
+                let epoch = pluto_eth2util::helpers::epoch_from_slot(&self.eth2_cl, slot)
+                    .await
+                    .map_err(epoch_lookup_error)?;
+
+                let par_sig = SignedSyncMessage::new_partial(msg, self.share_idx);
+                let signature = par_sig
+                    .signed_data
+                    .signature()
+                    .map_err(message_root_error)?;
+                let message_root = par_sig
+                    .signed_data
+                    .message_root()
+                    .map_err(message_root_error)?;
+                self.verify_partial_sig(
+                    &root_bls,
+                    DomainName::SyncCommittee,
+                    epoch,
+                    message_root,
+                    &signature,
+                )
+                .await
+                .map_err(verify_partial_sig_error)?;
+
+                psigs_by_slot
+                    .entry(slot)
+                    .or_default()
+                    .insert(pubkey, par_sig);
+            }
+
+            for (slot, set) in psigs_by_slot {
+                let duty = Duty::new_sync_message_duty(SlotNumber::new(slot));
+                self.broadcast(&duty, &set).await?;
+            }
+
+            Ok(())
+        })
+        .await
+        .map_err(|_: Elapsed| sync_timeout())?
     }
 }
 
@@ -1023,6 +1305,51 @@ fn proposal_timeout() -> ApiError {
         StatusCode::REQUEST_TIMEOUT,
         "proposal not available before deadline",
     )
+}
+
+/// Builds the `ApiError` returned when a sync-committee handler elapses past
+/// [`SYNC_TIMEOUT`].
+fn sync_timeout() -> ApiError {
+    ApiError::new(
+        StatusCode::REQUEST_TIMEOUT,
+        "sync committee request not completed before deadline",
+    )
+}
+
+/// Resolves a validator index against the active-validators map, returning the
+/// DV root [`PubKey`] (the partial-signed-data set key) alongside the same key
+/// as a [`BLSPubKey`] for signature verification. Mirrors Go's
+/// `vals[idx]` lookup followed by `core.PubKeyFromBytes`; an unknown index
+/// surfaces the exact Go error string "validator not found".
+fn resolve_active_validator(
+    vals: &ActiveValidators,
+    validator_index: ValidatorIndex,
+) -> Result<(PubKey, BLSPubKey), ApiError> {
+    let root_bls = *vals
+        .get(&validator_index)
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "validator not found"))?;
+    // `root_bls` is a fixed 48-byte `BLSPubKey`, so the length-checked
+    // conversion to the core `PubKey` cannot fail.
+    let pubkey = PubKey::try_from(root_bls.as_slice())
+        .expect("BLSPubKey is always 48 bytes, the PubKey length");
+    Ok((pubkey, root_bls))
+}
+
+/// Builds the `ApiError` returned when `epoch_from_slot` fails for a
+/// sync-committee handler.
+fn epoch_lookup_error(err: pluto_eth2util::helpers::HelperError) -> ApiError {
+    ApiError::new(StatusCode::BAD_GATEWAY, "could not resolve epoch from slot").with_source(err)
+}
+
+/// Builds the `ApiError` returned when a signed-data projection
+/// (signature / message root extraction) fails inside a sync-committee
+/// handler. Such failures reflect a malformed VC-supplied payload.
+fn message_root_error(err: SignedDataError) -> ApiError {
+    ApiError::new(
+        StatusCode::BAD_REQUEST,
+        "could not project sync committee signed data",
+    )
+    .with_source(err)
 }
 
 /// Builds the `ApiError` returned when an upstream beacon-node call returns a
@@ -3523,5 +3850,292 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
         assert!(!err.message.contains("secret"));
+    }
+
+    // ====================================================================
+    // sync committee: submit_sync_committee_messages /
+    // submit_sync_committee_contributions / sync_committee_selections /
+    // sync_committee_contribution
+    // ====================================================================
+
+    use pluto_eth2api::spec::altair;
+
+    /// Build an insecure-test component pinned to the proposal beacon mock
+    /// (so `epoch_from_slot` resolves) with the given active-validators cache.
+    /// BLS verification is skipped, so these tests exercise lookup, grouping,
+    /// and subscriber fan-out rather than signature crypto.
+    async fn make_sync_component(
+        validators: HashMap<ValidatorIndex, BLSPubKey>,
+    ) -> (Component, BeaconMock) {
+        let mock = mock_beacon_for_proposal().await;
+        let cancel = CancellationToken::new();
+        let (deadliner, _deadliner_rx) = DeadlinerTask::start(
+            cancel.clone(),
+            "validatorapi-sync-tests",
+            FarFutureCalculator,
+        );
+        let (_evict_tx, evict_rx) = mpsc::channel(1);
+        let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let component = Component::new_insecure(
+            eth2_cl,
+            Arc::clone(&dutydb),
+            1,
+            TestValidatorCache::arc(validators),
+        );
+        (component, mock)
+    }
+
+    /// Records every `(duty, set)` a subscriber observes, so tests can assert
+    /// on duty type and per-slot grouping.
+    fn recording_sub(component: &mut Component) -> Arc<Mutex<Vec<(Duty, ParSignedDataSet)>>> {
+        let recorded: Arc<Mutex<Vec<(Duty, ParSignedDataSet)>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&recorded);
+        component.subscribe(move |duty, set| {
+            let sink = Arc::clone(&sink);
+            async move {
+                sink.lock().unwrap().push((duty, set));
+                Ok(())
+            }
+        });
+        recorded
+    }
+
+    fn sync_message(slot: u64, validator_index: u64) -> altair::SyncCommitteeMessage {
+        altair::SyncCommitteeMessage {
+            slot,
+            beacon_block_root: [0x11; 32],
+            validator_index,
+            signature: [0; 96],
+        }
+    }
+
+    /// Messages for two validators in the same slot land in one duty/set
+    /// keyed by their DV root pubkeys; messages in distinct slots produce
+    /// distinct `SyncMessage` duties.
+    #[tokio::test]
+    async fn submit_sync_messages_groups_by_slot_and_broadcasts() {
+        let root_a = dv_pubkey(0xA1);
+        let root_b = dv_pubkey(0xB2);
+        let vals = HashMap::from([(10_u64, root_a), (20_u64, root_b)]);
+
+        let (mut component, _mock) = make_sync_component(vals).await;
+        let recorded = recording_sub(&mut component);
+
+        component
+            .submit_sync_committee_messages(vec![
+                sync_message(5, 10),
+                sync_message(5, 20),
+                sync_message(6, 10),
+            ])
+            .await
+            .expect("submit succeeds");
+
+        let mut events = recorded.lock().unwrap().clone();
+        events.sort_by_key(|(duty, _)| duty.slot.inner());
+
+        assert_eq!(events.len(), 2, "two distinct slots -> two duties");
+        for (duty, _) in &events {
+            assert_eq!(duty.duty_type, DutyType::SyncMessage);
+        }
+        // Slot 5 carries both validators; slot 6 carries one.
+        assert_eq!(events[0].0.slot.inner(), 5);
+        assert_eq!(events[0].1.inner().len(), 2);
+        assert_eq!(events[1].0.slot.inner(), 6);
+        assert_eq!(events[1].1.inner().len(), 1);
+    }
+
+    /// An unknown validator index surfaces the Go-parity "validator not
+    /// found" error as `400`.
+    #[tokio::test]
+    async fn submit_sync_messages_rejects_unknown_validator() {
+        let (component, _mock) = make_sync_component(HashMap::new()).await;
+        let err = component
+            .submit_sync_committee_messages(vec![sync_message(5, 99)])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+        assert_eq!(err.message, "validator not found");
+    }
+
+    fn signed_contribution(slot: u64, aggregator_index: u64) -> altair::SignedContributionAndProof {
+        altair::SignedContributionAndProof {
+            message: altair::ContributionAndProof {
+                aggregator_index,
+                contribution: altair::SyncCommitteeContribution {
+                    slot,
+                    beacon_block_root: [0x22; 32],
+                    subcommittee_index: 3,
+                    aggregation_bits: pluto_ssz::BitVector::new(),
+                    signature: [0; 96],
+                },
+                selection_proof: [0; 96],
+            },
+            signature: [0; 96],
+        }
+    }
+
+    /// Contributions group by `Contribution.Slot` into `SyncContribution`
+    /// duties keyed by the aggregator's DV root pubkey.
+    #[tokio::test]
+    async fn submit_sync_contributions_groups_by_slot_and_broadcasts() {
+        let root = dv_pubkey(0xC3);
+        let vals = HashMap::from([(7_u64, root)]);
+
+        let (mut component, _mock) = make_sync_component(vals).await;
+        let recorded = recording_sub(&mut component);
+
+        component
+            .submit_sync_committee_contributions(vec![signed_contribution(9, 7)])
+            .await
+            .expect("submit succeeds");
+
+        let events = recorded.lock().unwrap().clone();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0.duty_type, DutyType::SyncContribution);
+        assert_eq!(events[0].0.slot.inner(), 9);
+        assert_eq!(events[0].1.inner().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn submit_sync_contributions_rejects_unknown_validator() {
+        let (component, _mock) = make_sync_component(HashMap::new()).await;
+        let err = component
+            .submit_sync_committee_contributions(vec![signed_contribution(9, 42)])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+        assert_eq!(err.message, "validator not found");
+    }
+
+    fn selection(slot: u64, validator_index: u64) -> SyncCommitteeSelection {
+        SyncCommitteeSelection {
+            slot,
+            validator_index,
+            subcommittee_index: 2,
+            selection_proof: [0; 96],
+        }
+    }
+
+    /// `sync_committee_selections` broadcasts a `PrepareSyncContribution`
+    /// duty, then collects the aggregated selection per `(duty, pubkey)` from
+    /// the aggsigdb hook.
+    #[tokio::test]
+    async fn sync_committee_selections_broadcasts_and_collects_aggregated() {
+        let root = dv_pubkey(0xD4);
+        let vals = HashMap::from([(3_u64, root)]);
+
+        let (mut component, _mock) = make_sync_component(vals).await;
+        let recorded = recording_sub(&mut component);
+
+        // The aggsigdb returns an aggregated selection (selection_proof set to
+        // a recognisable non-zero value) for the (duty, pubkey) await.
+        let aggregated = SyncCommitteeSelection {
+            slot: 1,
+            validator_index: 3,
+            subcommittee_index: 2,
+            selection_proof: [0x7E; 96],
+        };
+        let agg_for_hook = aggregated.clone();
+        component.register_await_agg_sig_db(move |_duty, _pk| {
+            let agg = agg_for_hook.clone();
+            async move { Ok(Box::new(SyncCommitteeSelectionData::new(agg)) as Box<dyn SignedData>) }
+        });
+
+        let response = component
+            .sync_committee_selections(vec![selection(1, 3)])
+            .await
+            .expect("selections succeed");
+
+        assert_eq!(response.data.len(), 1);
+        assert_eq!(response.data[0].selection_proof, [0x7E; 96]);
+
+        let events = recorded.lock().unwrap().clone();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0.duty_type, DutyType::PrepareSyncContribution);
+        assert_eq!(events[0].0.slot.inner(), 1);
+    }
+
+    /// When the aggsigdb returns a non-selection signed-data, the handler
+    /// rejects with the Go-parity "invalid sync committee selection" message.
+    #[tokio::test]
+    async fn sync_committee_selections_rejects_wrong_aggregated_type() {
+        let root = dv_pubkey(0xE5);
+        let vals = HashMap::from([(4_u64, root)]);
+
+        let (mut component, _mock) = make_sync_component(vals).await;
+        let _recorded = recording_sub(&mut component);
+
+        // Return a SignedRandao instead of a SyncCommitteeSelection.
+        component.register_await_agg_sig_db(|_duty, _pk| async {
+            Ok(Box::new(SignedRandao::new(0, [0; 96])) as Box<dyn SignedData>)
+        });
+
+        let err = component
+            .sync_committee_selections(vec![selection(2, 4)])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(err.message, "invalid sync committee selection");
+    }
+
+    /// `sync_committee_selections` without a registered aggsigdb hook is a
+    /// `503` (not wired up).
+    #[tokio::test]
+    async fn sync_committee_selections_without_hook_is_unavailable() {
+        let root = dv_pubkey(0xF6);
+        let vals = HashMap::from([(5_u64, root)]);
+        let (component, _mock) = make_sync_component(vals).await;
+        let err = component
+            .sync_committee_selections(vec![selection(3, 5)])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// `sync_committee_contribution` forwards the registered hook's result.
+    #[tokio::test]
+    async fn sync_committee_contribution_returns_hook_result() {
+        let (mut component, _mock) = make_sync_component(HashMap::new()).await;
+
+        let contribution = altair::SyncCommitteeContribution {
+            slot: 12,
+            beacon_block_root: [0x33; 32],
+            subcommittee_index: 1,
+            aggregation_bits: pluto_ssz::BitVector::new(),
+            signature: [0xAB; 96],
+        };
+        let hook_value = contribution.clone();
+        component.register_await_sync_contribution(move |_slot, _subcomm, _root| {
+            let value = hook_value.clone();
+            async move { Ok(SyncContribution(value)) }
+        });
+
+        let response = component
+            .sync_committee_contribution(SyncCommitteeContributionOpts {
+                slot: 12,
+                subcommittee_index: 1,
+                beacon_block_root: [0x33; 32],
+            })
+            .await
+            .expect("contribution returned");
+
+        assert_eq!(response.data.slot, 12);
+        assert_eq!(response.data.signature, [0xAB; 96]);
+    }
+
+    /// `sync_committee_contribution` without a registered hook is a `503`.
+    #[tokio::test]
+    async fn sync_committee_contribution_without_hook_is_unavailable() {
+        let (component, _mock) = make_sync_component(HashMap::new()).await;
+        let err = component
+            .sync_committee_contribution(SyncCommitteeContributionOpts {
+                slot: 1,
+                subcommittee_index: 0,
+                beacon_block_root: [0; 32],
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::SERVICE_UNAVAILABLE);
     }
 }

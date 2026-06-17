@@ -167,25 +167,22 @@ pub struct SignedValidatorRegistration {}
 #[derive(Debug, Clone)]
 pub struct SignedVoluntaryExit {}
 
-/// Sync-committee message payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct SyncCommitteeMessage {}
+/// Sync-committee message submitted by the validator client. The validator
+/// signs the beacon block root with its sync-committee share.
+pub type SyncCommitteeMessage = pluto_eth2api::spec::altair::SyncCommitteeMessage;
 
-/// Sync-committee contribution payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct SyncCommitteeContribution {}
+/// Aggregated sync-committee contribution returned to the validator client.
+pub type SyncCommitteeContribution = pluto_eth2api::spec::altair::SyncCommitteeContribution;
 
-/// Signed contribution-and-proof payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct SignedContributionAndProof {}
+/// Signed contribution-and-proof submitted by the validator client.
+pub type SignedContributionAndProof = pluto_eth2api::spec::altair::SignedContributionAndProof;
 
 /// Beacon-committee selection payload. Placeholder.
 #[derive(Debug, Clone)]
 pub struct BeaconCommitteeSelection {}
 
-/// Sync-committee selection payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct SyncCommitteeSelection {}
+/// Sync-committee selection proof exchanged with the validator client.
+pub type SyncCommitteeSelection = pluto_eth2api::v1::SyncCommitteeSelection;
 
 /// Validator-index request body for the `attester_duties` and
 /// `sync_committee_duties` endpoints.

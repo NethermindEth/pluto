@@ -35,8 +35,9 @@ use super::{
     types::{
         AttestationDataOpts, AttestationDataResponse, AttesterDutiesOpts, AttesterDutiesResponse,
         CommitteeIndex, NodeVersionResponse, ProposalOpts, ProposerDutiesOpts,
-        ProposerDutiesResponse, SyncCommitteeDutiesOpts, SyncCommitteeDutiesResponse, ValIndexes,
-        ValidatorsOpts,
+        ProposerDutiesResponse, SignedContributionAndProof, SyncCommitteeContributionOpts,
+        SyncCommitteeDutiesOpts, SyncCommitteeDutiesResponse, SyncCommitteeMessage,
+        SyncCommitteeSelection, ValIndexes, ValidatorsOpts,
     },
 };
 use crate::signeddata::{ProposalBlock, VersionedSignedProposal};
@@ -507,16 +508,77 @@ async fn submit_aggregate_attestations() {
     todo!("vapi: submit_aggregate_attestations");
 }
 
-async fn submit_sync_committee_messages() {
-    todo!("vapi: submit_sync_committee_messages");
+/// `POST /eth/v1/beacon/pool/sync_committees`.
+///
+/// Decodes the JSON array of sync-committee messages and forwards them to the
+/// handler. JSON-only, matching Charon's `submitSyncCommitteeMessages`.
+async fn submit_sync_committee_messages(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let messages: Vec<SyncCommitteeMessage> =
+        parse_json_array(&headers, &body, "sync committee messages")?;
+    state
+        .handler
+        .submit_sync_committee_messages(messages)
+        .await?;
+    Ok(StatusCode::OK.into_response())
 }
 
-async fn sync_committee_contribution() {
-    todo!("vapi: sync_committee_contribution");
+/// Query parameters for `GET /eth/v1/validator/sync_committee_contribution`.
+struct SyncCommitteeContributionQuery {
+    slot: u64,
+    subcommittee_index: u64,
+    beacon_block_root: [u8; 32],
 }
 
-async fn submit_contribution_and_proofs() {
-    todo!("vapi: submit_contribution_and_proofs");
+/// `GET /eth/v1/validator/sync_committee_contribution`.
+///
+/// Reads `slot`, `subcommittee_index` and the `0x`-hex `beacon_block_root`
+/// query parameters, then returns the aggregated contribution. Mirrors
+/// `syncCommitteeContribution`.
+async fn sync_committee_contribution(
+    State(state): State<Arc<AppState>>,
+    RawQuery(query): RawQuery,
+) -> Result<Response, ApiError> {
+    let params = parse_query(query.as_deref());
+    let query = SyncCommitteeContributionQuery {
+        slot: uint_query(&params, "slot")?,
+        subcommittee_index: uint_query(&params, "subcommittee_index")?,
+        beacon_block_root: hex_query_fixed::<32>(&params, "beacon_block_root")?,
+    };
+
+    let response = state
+        .handler
+        .sync_committee_contribution(SyncCommitteeContributionOpts {
+            slot: query.slot,
+            subcommittee_index: query.subcommittee_index,
+            beacon_block_root: query.beacon_block_root,
+        })
+        .await?;
+
+    let data = serde_json::to_value(&response.data)
+        .map_err(|err| internal_error("could not serialize sync committee contribution", err))?;
+    Ok(Json(json!({ "data": data })).into_response())
+}
+
+/// `POST /eth/v1/validator/contribution_and_proofs`.
+///
+/// Decodes the JSON array of signed contribution-and-proofs and forwards them
+/// to the handler. JSON-only, matching Charon's `submitContributionAndProofs`.
+async fn submit_contribution_and_proofs(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let contributions: Vec<SignedContributionAndProof> =
+        parse_json_array(&headers, &body, "signed contribution and proofs")?;
+    state
+        .handler
+        .submit_sync_committee_contributions(contributions)
+        .await?;
+    Ok(StatusCode::OK.into_response())
 }
 
 /// `POST /eth/v1/validator/prepare_beacon_proposer`.
@@ -528,8 +590,24 @@ async fn submit_proposal_preparations() -> impl IntoResponse {
     StatusCode::OK
 }
 
-async fn sync_committee_selections() {
-    todo!("vapi: sync_committee_selections");
+/// `POST /eth/v1/validator/sync_committee_selections`.
+///
+/// Decodes the JSON array of partial sync-committee selections, forwards them
+/// to the handler, and returns the aggregated selections as `{ "data": [...]
+/// }`. Mirrors `syncCommitteeSelections`.
+async fn sync_committee_selections(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let selections: Vec<SyncCommitteeSelection> =
+        parse_json_array(&headers, &body, "sync committee selections")?;
+
+    let response = state.handler.sync_committee_selections(selections).await?;
+
+    let data = serde_json::to_value(&response.data)
+        .map_err(|err| internal_error("could not serialize sync committee selections", err))?;
+    Ok(Json(json!({ "data": data })).into_response())
 }
 
 async fn node_version(
@@ -833,6 +911,55 @@ fn graffiti_query(params: &[(String, String)], name: &str) -> Result<[u8; 32], A
     Ok(graffiti)
 }
 
+/// Decodes a required unsigned-integer query parameter. Mirrors Charon's
+/// `uintQuery`: a missing parameter is a `400`, as is a non-numeric value.
+fn uint_query(params: &[(String, String)], name: &str) -> Result<u64, ApiError> {
+    let value = query_value(params, name).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("missing query parameter {name}"),
+        )
+    })?;
+    value.parse::<u64>().map_err(|err| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("invalid uint query parameter {name} [{value}]"),
+        )
+        .with_source(err)
+    })
+}
+
+/// Decodes a JSON array request body, enforcing Charon's JSON-only content-type
+/// policy for the sync-committee endpoints (`Encodings: [JSON]`).
+///
+/// A missing `Content-Type` is treated as JSON (matching Charon's default); any
+/// other content type is rejected with `415`. An empty body is a `400`
+/// ("empty request body"), and a JSON parse failure is a `400`, both mirroring
+/// Charon's `unmarshal`.
+fn parse_json_array<T: serde::de::DeserializeOwned>(
+    headers: &HeaderMap,
+    body: &[u8],
+    what: &'static str,
+) -> Result<Vec<T>, ApiError> {
+    if let Some(value) = headers.get(header::CONTENT_TYPE) {
+        let s = value.to_str().unwrap_or("");
+        if !s.contains("application/json") {
+            return Err(ApiError::new(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                format!("unsupported media type {s}"),
+            ));
+        }
+    }
+
+    if body.is_empty() {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "empty request body"));
+    }
+
+    serde_json::from_slice(body).map_err(|err| {
+        ApiError::new(StatusCode::BAD_REQUEST, format!("failed to parse {what}")).with_source(err)
+    })
+}
+
 /// Parses the `Eth-Consensus-Version` request header into a [`DataVersion`].
 ///
 /// The header is matched case-insensitively (lowercased before lookup) to
@@ -1056,7 +1183,8 @@ mod tests {
         testutils::TestHandler,
         types::{
             AttestationDataResponse, AttesterDutiesResponse, AttesterDuty, ProposerDutiesResponse,
-            ProposerDuty, SyncCommitteeDutiesResponse, SyncCommitteeDuty, ValIndexes,
+            ProposerDuty, SyncCommitteeDutiesResponse, SyncCommitteeDuty, SyncCommitteeSelection,
+            ValIndexes,
         },
     };
 
@@ -2037,5 +2165,207 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ====================================================================
+    // sync committee endpoints
+    // ====================================================================
+
+    /// A well-formed sync-committee messages array is parsed and forwarded to
+    /// the handler, which records it; the route returns `200`.
+    #[tokio::test]
+    async fn submit_sync_committee_messages_forwards_array() {
+        use axum::{
+            body::Body,
+            http::{Method, Request},
+        };
+        use tower::ServiceExt;
+
+        let handler = Arc::new(TestHandler::default());
+        let recorder = Arc::clone(&handler.submitted_sync_messages);
+        let app = test_router(handler, false);
+
+        let body = r#"[{
+            "slot": "5",
+            "beacon_block_root": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "validator_index": "9",
+            "signature": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        }]"#;
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/beacon/pool/sync_committees")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let recorded = recorder.lock().unwrap().clone().expect("messages recorded");
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].slot, 5);
+        assert_eq!(recorded[0].validator_index, 9);
+    }
+
+    /// A non-JSON content type on a sync-committee submit is rejected with
+    /// `415`, matching the JSON-only encoding declared by Charon.
+    #[tokio::test]
+    async fn submit_sync_committee_messages_rejects_non_json() {
+        use axum::{
+            body::Body,
+            http::{Method, Request},
+        };
+        use tower::ServiceExt;
+
+        let app = test_router(Arc::new(TestHandler::default()), false);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/beacon/pool/sync_committees")
+            .header("content-type", "application/octet-stream")
+            .body(Body::from("[]"))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    /// An empty body on a sync-committee submit is a `400`, mirroring Charon's
+    /// `unmarshal` "empty request body".
+    #[tokio::test]
+    async fn submit_contribution_and_proofs_rejects_empty_body() {
+        use axum::{
+            body::Body,
+            http::{Method, Request},
+        };
+        use tower::ServiceExt;
+
+        let app = test_router(Arc::new(TestHandler::default()), false);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/validator/contribution_and_proofs")
+            .header("content-type", "application/json")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// `GET /sync_committee_contribution` reads the query parameters and
+    /// returns the handler's contribution under a `data` envelope.
+    #[tokio::test]
+    async fn sync_committee_contribution_returns_data_envelope() {
+        use axum::{
+            body::{Body, to_bytes},
+            http::{Method, Request},
+        };
+        use pluto_eth2api::spec::altair;
+        use tower::ServiceExt;
+
+        let contribution = altair::SyncCommitteeContribution {
+            slot: 12,
+            beacon_block_root: [0x33; 32],
+            subcommittee_index: 1,
+            aggregation_bits: pluto_ssz::BitVector::new(),
+            signature: [0xAB; 96],
+        };
+        let handler = TestHandler::default().with_sync_committee_contribution(EthResponse {
+            data: contribution,
+            execution_optimistic: false,
+            finalized: false,
+            dependent_root: None,
+        });
+        let opts_recorder = Arc::clone(&handler.sync_committee_contribution_opts);
+        let app = test_router(Arc::new(handler), false);
+
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/eth/v1/validator/sync_committee_contribution?slot=12&subcommittee_index=1&beacon_block_root=0x3333333333333333333333333333333333333333333333333333333333333333")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["data"]["slot"], "12");
+        assert_eq!(json["data"]["subcommittee_index"], "1");
+
+        let opts = opts_recorder
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("opts recorded");
+        assert_eq!(opts.slot, 12);
+        assert_eq!(opts.subcommittee_index, 1);
+        assert_eq!(opts.beacon_block_root, [0x33; 32]);
+    }
+
+    /// A missing required query parameter on the contribution GET is a `400`.
+    #[tokio::test]
+    async fn sync_committee_contribution_rejects_missing_query() {
+        use axum::{
+            body::Body,
+            http::{Method, Request},
+        };
+        use tower::ServiceExt;
+
+        let app = test_router(Arc::new(TestHandler::default()), false);
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/eth/v1/validator/sync_committee_contribution?slot=12")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// `POST /sync_committee_selections` forwards the parsed array and returns
+    /// the aggregated selections under a `data` envelope.
+    #[tokio::test]
+    async fn sync_committee_selections_returns_data_envelope() {
+        use axum::{
+            body::{Body, to_bytes},
+            http::{Method, Request},
+        };
+        use tower::ServiceExt;
+
+        let aggregated = SyncCommitteeSelection {
+            slot: 1,
+            validator_index: 3,
+            subcommittee_index: 2,
+            selection_proof: [0x7E; 96],
+        };
+        let handler = TestHandler::default().with_sync_committee_selections(EthResponse {
+            data: vec![aggregated],
+            execution_optimistic: false,
+            finalized: false,
+            dependent_root: None,
+        });
+        let recorder = Arc::clone(&handler.submitted_sync_selections);
+        let app = test_router(Arc::new(handler), false);
+
+        let body = r#"[{
+            "slot": "1",
+            "validator_index": "3",
+            "subcommittee_index": "2",
+            "selection_proof": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        }]"#;
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/validator/sync_committee_selections")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["data"][0]["validator_index"], "3");
+        assert_eq!(json["data"][0]["subcommittee_index"], "2");
+
+        let recorded = recorder
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("selections recorded");
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].validator_index, 3);
     }
 }
