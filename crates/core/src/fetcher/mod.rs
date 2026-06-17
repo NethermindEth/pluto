@@ -4,7 +4,7 @@
 
 mod graffiti;
 
-pub use graffiti::{GraffitiBuilder, GraffitiError, client_graffiti_mappings};
+use graffiti::GraffitiBuilder;
 
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
@@ -18,7 +18,6 @@ use pluto_eth2api::{
     versioned,
 };
 use pluto_eth2util::eth2exp::{self, Eth2ExpError};
-use tracing::{debug, info, warn};
 use tree_hash::TreeHash;
 
 use crate::{
@@ -598,7 +597,7 @@ fn attestation_payload(
 /// proposal. Fee recipient is unavailable in forks earlier than Bellatrix.
 fn verify_fee_recipient(proposal: &VersionedProposal, fee_recipient_address: &str) {
     if let Some((expected, actual)) = fee_recipient_mismatch(proposal, fee_recipient_address) {
-        warn!(
+        tracing::warn!(
             expected = %expected,
             actual = %actual,
             "Proposal with unexpected fee recipient address"
@@ -683,7 +682,7 @@ impl PubkeysTracker {
 
     fn log(&self) {
         if !self.not_selected_pubkeys.is_empty() {
-            debug!(
+            tracing::debug!(
                 title = self.title,
                 pubkeys = self.not_selected_pubkeys.join(","),
                 "not selected pubkeys"
@@ -691,7 +690,7 @@ impl PubkeysTracker {
         }
 
         if !self.resolved_pubkeys.is_empty() {
-            info!(
+            tracing::info!(
                 title = self.title,
                 pubkeys = self.resolved_pubkeys.join(","),
                 "resolved pubkeys"

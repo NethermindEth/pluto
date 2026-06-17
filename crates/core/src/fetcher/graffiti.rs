@@ -1,6 +1,4 @@
 //! Graffiti construction for block proposals.
-//!
-//! Ported from `charon/core/fetcher/graffiti.go`.
 
 use std::collections::HashMap;
 
