@@ -702,7 +702,9 @@ fn attestation_payload<S: serde::Serialize>(
         DV::Deneb => AP::Deneb(round_trip(data)?),
         DV::Electra => AP::Electra(round_trip(data)?),
         DV::Fulu => AP::Fulu(round_trip(data)?),
-        DV::Unknown => return Err(FetcherError::AggregateAttestationNotFound),
+        // `version` is always derived from a `ConsensusVersion` via
+        // `consensus_to_data_version`, which never yields `Unknown`.
+        DV::Unknown => unreachable!("attestation payload version cannot be unknown"),
     })
 }
 
