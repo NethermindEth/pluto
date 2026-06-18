@@ -27,7 +27,6 @@ use tokio::sync::{mpsc, oneshot};
 
 pub use behaviour::{Behaviour, Event};
 pub use handler::{FromBehaviour, Handler, OutboundRequest};
-pub use protocol::PriorityProtocol;
 
 use crate::error::Error;
 

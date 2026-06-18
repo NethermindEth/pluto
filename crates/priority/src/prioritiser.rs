@@ -36,8 +36,13 @@ use crate::{
     p2p::{self, Behaviour, InboundHandler, Sender, protocol::RECEIVE_TIMEOUT},
 };
 
-/// Supported priority protocol identifier.
-pub const PROTOCOL_ID: &str = "charon/priority/2.0.0";
+/// Supported priority protocol identifier (the libp2p-negotiated wire token).
+///
+/// The leading `/` is mandatory: multistream-select rejects slash-less tokens.
+/// The reference implementation negotiates the slash-less
+/// `charon/priority/2.0.0`, so this does NOT interop cross-implementation — the
+/// wire tokens differ by that byte.
+pub const PROTOCOL_ID: &str = "/charon/priority/2.0.0";
 
 /// A received peer request paired with a channel to deliver this peer's reply.
 struct Request {

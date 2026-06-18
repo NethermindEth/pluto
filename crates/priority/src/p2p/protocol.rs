@@ -6,58 +6,20 @@
 
 use std::time::Duration;
 
-use libp2p::{core::upgrade::ReadyUpgrade, swarm::Stream};
+use libp2p::{
+    core::upgrade::ReadyUpgrade,
+    swarm::{Stream, StreamProtocol},
+};
 use pluto_core::corepb::v1::priority::PriorityMsg;
 
 use crate::PROTOCOL_ID;
 
-/// Wire token negotiated for the priority protocol.
-///
-/// The canonical protocol identifier is the slug-less [`PROTOCOL_ID`]. The
-/// negotiated token derives from it directly, so [`PROTOCOL_ID`] is the single
-/// source of truth.
-///
-/// `libp2p`'s multistream-select requires every negotiated protocol token to
-/// begin with `/` and rejects any other form before it reaches the wire, so the
-/// token offered for negotiation is [`PROTOCOL_ID`] with a leading `/`. This is
-/// the one place where the wire form differs from the canonical identifier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PriorityProtocol;
-
-/// Negotiated wire token: the canonical identifier with the leading `/` that
-/// multistream-select mandates. Tied to [`PROTOCOL_ID`] by a compile-time
-/// assertion below, keeping the canonical identifier the single source of
-/// truth.
-const WIRE_TOKEN: &str = "/charon/priority/2.0.0";
-
-/// The wire token must be the canonical identifier prefixed with `/`.
-const _: () = {
-    let id = PROTOCOL_ID.as_bytes();
-    let wire = WIRE_TOKEN.as_bytes();
-    assert!(
-        wire.len() == id.len() + 1,
-        "wire token must be /<protocol id>"
-    );
-    assert!(wire[0] == b'/', "wire token must start with /");
-    let mut i = 0;
-    while i < id.len() {
-        assert!(wire[i + 1] == id[i], "wire token must equal /<protocol id>");
-        i += 1;
-    }
-};
-
-impl AsRef<str> for PriorityProtocol {
-    fn as_ref(&self) -> &str {
-        WIRE_TOKEN
-    }
-}
-
 /// Upgrade negotiating the priority protocol on inbound and outbound streams.
-pub(crate) type PriorityUpgrade = ReadyUpgrade<PriorityProtocol>;
+pub(crate) type PriorityUpgrade = ReadyUpgrade<StreamProtocol>;
 
 /// Returns the upgrade used to negotiate the priority protocol.
 pub(crate) fn upgrade() -> PriorityUpgrade {
-    ReadyUpgrade::new(PriorityProtocol)
+    ReadyUpgrade::new(StreamProtocol::new(PROTOCOL_ID))
 }
 
 /// Maximum protobuf message size (128MB).
@@ -122,20 +84,12 @@ mod tests {
 
     use super::*;
 
-    /// The canonical protocol identifier carries no leading slug, exactly as
-    /// the reference implementation registers it.
+    /// The protocol identifier is the libp2p-negotiated wire token, which
+    /// multistream-select requires to begin with `/`.
     #[test]
-    fn canonical_protocol_id_has_no_leading_slash() {
-        assert_eq!(PROTOCOL_ID, "charon/priority/2.0.0");
-        assert!(!PROTOCOL_ID.starts_with('/'));
-    }
-
-    /// The token offered for negotiation is the canonical identifier with the
-    /// leading `/` that multistream-select mandates; no other divergence.
-    #[test]
-    fn wire_token_is_canonical_id_with_leading_slash() {
-        assert_eq!(PriorityProtocol.as_ref(), "/charon/priority/2.0.0");
-        assert_eq!(PriorityProtocol.as_ref(), format!("/{PROTOCOL_ID}"));
+    fn protocol_id_is_wire_token() {
+        assert_eq!(PROTOCOL_ID, "/charon/priority/2.0.0");
+        assert!(PROTOCOL_ID.starts_with('/'));
     }
 
     fn any() -> Any {
