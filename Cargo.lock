@@ -5488,6 +5488,7 @@ dependencies = [
  "reqwest 0.13.3",
  "serde",
  "serde_json",
+ "serde_with",
  "tar",
  "tempfile",
  "test-case",

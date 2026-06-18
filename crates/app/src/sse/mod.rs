@@ -220,18 +220,10 @@ impl SseListenerActor {
     }
 
     fn handle_head(&self, event: &SseEvent) {
-        // CLAUDE:
-        // 1. On error there is nothing being raised or logged (uses immediate return).
-        //    What does Charon do here?
-        // 2. The parsing is split in two steps; can we do a single parse of all the
-        //    fields at once? If not, why?
         let Some(head) = parse_payload::<HeadEventData>(HEAD_EVENT, &event.data, &self.addr) else {
             return;
         };
-
-        let Some(slot) = parse_u64("slot", &head.slot, &self.addr) else {
-            return;
-        };
+        let slot = head.slot;
 
         if i64::try_from(slot).is_err() {
             tracing::warn!(addr = %self.addr, slot, "Head slot value exceeds i64 range");
@@ -265,20 +257,12 @@ impl SseListenerActor {
     }
 
     fn handle_chain_reorg(&mut self, event: &SseEvent) {
-        // CLAUDE: Same situation as in `handle_head`; check other similar instances in
-        // other methods (I skipped adding comments to those)
         let Some(reorg) =
             parse_payload::<ChainReorgEventData>(CHAIN_REORG_EVENT, &event.data, &self.addr)
         else {
             return;
         };
-
-        let Some(slot) = parse_u64("slot", &reorg.slot, &self.addr) else {
-            return;
-        };
-        let Some(depth) = parse_u64("depth", &reorg.depth, &self.addr) else {
-            return;
-        };
+        let (slot, depth) = (reorg.slot, reorg.depth);
 
         if slot < depth {
             tracing::warn!(addr = %self.addr, slot, depth, "Invalid chain reorg event: depth exceeds slot");
@@ -316,10 +300,7 @@ impl SseListenerActor {
         else {
             return;
         };
-
-        let Some(slot) = parse_u64("slot", &gossip.slot, &self.addr) else {
-            return;
-        };
+        let slot = gossip.slot;
 
         // A block should be received via gossip between 0/3 and 1/3 of the slot.
         let third = self.slot_duration.checked_div(3).expect("non-zero divisor");
@@ -341,10 +322,7 @@ impl SseListenerActor {
         else {
             return;
         };
-
-        let Some(slot) = parse_u64("slot", &block.slot, &self.addr) else {
-            return;
-        };
+        let slot = block.slot;
 
         // A block should be imported into fork choice between 0/3 and 1/3 of the
         // slot.
@@ -538,26 +516,13 @@ fn reconnect_backoff() -> ExponentialBuilder {
         .with_jitter()
 }
 
-/// Parses an SSE event's JSON payload, logging and discarding malformed events.
+/// Deserializes an SSE event's JSON payload (numeric fields and all) in a
+/// single pass, logging and discarding malformed events.
 fn parse_payload<T: serde::de::DeserializeOwned>(topic: &str, data: &str, addr: &str) -> Option<T> {
-    // CLAUDE: I'm not sure about having this function alltogether. Explore removing
-    // this helper altogether with a simplified parsing logic that parses everything
-    // in one pass without resorting to additional functions (ex `parse_u64`).
     match serde_json::from_str(data) {
         Ok(payload) => Some(payload),
         Err(err) => {
-            tracing::warn!(err = ?err, addr = %addr, topic, "Failed to unmarshal SSE event");
-            None
-        }
-    }
-}
-
-/// Parses a stringified `u64` field, logging and discarding on failure.
-fn parse_u64(field: &str, value: &str, addr: &str) -> Option<u64> {
-    match value.parse::<u64>() {
-        Ok(parsed) => Some(parsed),
-        Err(err) => {
-            tracing::warn!(err = ?err, addr = %addr, field, value, "Failed to parse SSE numeric field");
+            tracing::warn!(err = ?err, addr = %addr, topic, "Failed to parse SSE event");
             None
         }
     }

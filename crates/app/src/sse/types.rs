@@ -3,9 +3,11 @@
 //! Only the fields consumed by the listener (for metrics, reorg detection, and
 //! debug logging) are modelled; serde ignores any other fields the beacon node
 //! sends. `#[serde(default)]` keeps deserialization lenient when a field is
-//! absent.
+//! absent. Numeric fields are sent by the beacon node as quoted strings and are
+//! parsed directly into integers via [`serde_with::DisplayFromStr`].
 
 use chrono::{DateTime, Utc};
+use serde_with::{DisplayFromStr, serde_as};
 
 /// SSE topic for `head` events.
 pub const HEAD_EVENT: &str = "head";
@@ -31,11 +33,13 @@ pub struct SseEvent {
 }
 
 /// Payload of a `head` event.
+#[serde_as]
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default)]
 pub struct HeadEventData {
     /// The slot of the new head.
-    pub slot: String,
+    #[serde_as(as = "DisplayFromStr")]
+    pub slot: u64,
     /// The block root of the new head.
     pub block: String,
     /// The previous duty dependent root.
@@ -45,13 +49,16 @@ pub struct HeadEventData {
 }
 
 /// Payload of a `chain_reorg` event.
+#[serde_as]
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default)]
 pub struct ChainReorgEventData {
     /// The slot at which the reorg occurred.
-    pub slot: String,
+    #[serde_as(as = "DisplayFromStr")]
+    pub slot: u64,
     /// The depth of the reorg in slots.
-    pub depth: String,
+    #[serde_as(as = "DisplayFromStr")]
+    pub depth: u64,
     /// The epoch at which the reorg occurred.
     pub epoch: String,
     /// The block root of the old head.
@@ -61,21 +68,25 @@ pub struct ChainReorgEventData {
 }
 
 /// Payload of a `block_gossip` event.
+#[serde_as]
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default)]
 pub struct BlockGossipEventData {
     /// The slot of the gossiped block.
-    pub slot: String,
+    #[serde_as(as = "DisplayFromStr")]
+    pub slot: u64,
     /// The block root.
     pub block: String,
 }
 
 /// Payload of a `block` event.
+#[serde_as]
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default)]
 pub struct BlockEventData {
     /// The slot of the imported block.
-    pub slot: String,
+    #[serde_as(as = "DisplayFromStr")]
+    pub slot: u64,
     /// The block root.
     pub block: String,
 }
