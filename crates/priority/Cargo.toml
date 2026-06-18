@@ -27,7 +27,11 @@ tracing.workspace = true
 pluto-testutil.workspace = true
 rand.workspace = true
 test-case.workspace = true
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util", "rt-multi-thread", "macros", "net", "time", "io-util"] }
+# Interop proof: drive the patched multistream-select negotiation over real TCP.
+multistream-select = "0.13"
+tokio-util = { workspace = true, features = ["compat"] }
+futures.workspace = true
 
 [lints]
 workspace = true

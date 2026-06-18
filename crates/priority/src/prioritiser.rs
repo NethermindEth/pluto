@@ -38,11 +38,11 @@ use crate::{
 
 /// Supported priority protocol identifier (the libp2p-negotiated wire token).
 ///
-/// The leading `/` is mandatory: multistream-select rejects slash-less tokens.
-/// The reference implementation negotiates the slash-less
-/// `charon/priority/2.0.0`, so this does NOT interop cross-implementation — the
-/// wire tokens differ by that byte.
-pub const PROTOCOL_ID: &str = "/charon/priority/2.0.0";
+/// Slash-less, to match the reference implementation's wire token exactly for
+/// cross-implementation interop. Stock rust-libp2p multistream-select rejects
+/// slash-less names; the workspace patches it (see
+/// third_party/multistream-select) so this exact token negotiates.
+pub const PROTOCOL_ID: &str = "charon/priority/2.0.0";
 
 /// A received peer request paired with a channel to deliver this peer's reply.
 struct Request {

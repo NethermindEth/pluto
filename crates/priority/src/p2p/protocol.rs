@@ -6,20 +6,23 @@
 
 use std::time::Duration;
 
-use libp2p::{
-    core::upgrade::ReadyUpgrade,
-    swarm::{Stream, StreamProtocol},
-};
+use libp2p::{core::upgrade::ReadyUpgrade, swarm::Stream};
 use pluto_core::corepb::v1::priority::PriorityMsg;
 
 use crate::PROTOCOL_ID;
 
 /// Upgrade negotiating the priority protocol on inbound and outbound streams.
-pub(crate) type PriorityUpgrade = ReadyUpgrade<StreamProtocol>;
+///
+/// Uses `&'static str` rather than `StreamProtocol`: the latter is sealed and
+/// rejects [`PROTOCOL_ID`]'s slash-less token, while `ReadyUpgrade` only
+/// requires `AsRef<str> + Clone`. Negotiation of the slash-less token is
+/// enabled by the patched multistream-select (see
+/// third_party/multistream-select).
+pub(crate) type PriorityUpgrade = ReadyUpgrade<&'static str>;
 
 /// Returns the upgrade used to negotiate the priority protocol.
 pub(crate) fn upgrade() -> PriorityUpgrade {
-    ReadyUpgrade::new(StreamProtocol::new(PROTOCOL_ID))
+    ReadyUpgrade::new(PROTOCOL_ID)
 }
 
 /// Maximum protobuf message size (128MB).
@@ -84,12 +87,12 @@ mod tests {
 
     use super::*;
 
-    /// The protocol identifier is the libp2p-negotiated wire token, which
-    /// multistream-select requires to begin with `/`.
+    /// The protocol identifier is the slash-less wire token, matching the
+    /// reference implementation exactly for cross-implementation interop.
     #[test]
-    fn protocol_id_is_wire_token() {
-        assert_eq!(PROTOCOL_ID, "/charon/priority/2.0.0");
-        assert!(PROTOCOL_ID.starts_with('/'));
+    fn protocol_id_matches_reference_wire_token() {
+        assert_eq!(PROTOCOL_ID, "charon/priority/2.0.0");
+        assert!(!PROTOCOL_ID.starts_with('/'));
     }
 
     fn any() -> Any {
