@@ -131,6 +131,11 @@ pub enum Error {
     #[error("compute deadline: {0}")]
     Deadline(#[source] DeadlineError),
 
+    /// The deadliner could not compute the duty's deadline (computation error
+    /// or shutdown), as distinct from the duty being expired.
+    #[error("deadline computation failed")]
+    DeadlineComputeFailed,
+
     /// The prioritise instance's context was cancelled.
     #[error("context canceled")]
     Cancelled,

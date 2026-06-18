@@ -171,8 +171,12 @@ impl Inner {
         let proto_duty = msg.duty.as_ref().ok_or(Error::InvalidMsgProtoFields)?;
         let duty = duty_from_proto(proto_duty);
 
-        if self.deadliner.add(duty.clone()).await != AddOutcome::Scheduled {
-            return Err(Error::DutyExpired);
+        match self.deadliner.add(duty.clone()).await {
+            AddOutcome::Scheduled => {}
+            AddOutcome::FailedToCompute => return Err(Error::DeadlineComputeFailed),
+            AddOutcome::AlreadyExpired | AddOutcome::NoDeadline => {
+                return Err(Error::DutyExpired);
+            }
         }
 
         let buffer = self.get_req_buffer(duty);
@@ -328,9 +332,13 @@ impl Prioritiser {
         let proto_duty = msg.duty.as_ref().ok_or(Error::InvalidMsgProtoFields)?;
         let duty = duty_from_proto(proto_duty);
 
-        if self.inner.deadliner.add(duty.clone()).await != AddOutcome::Scheduled {
-            tracing::warn!(%duty, "Dropping priority protocol instance for expired duty");
-            return Ok(());
+        match self.inner.deadliner.add(duty.clone()).await {
+            AddOutcome::Scheduled => {}
+            AddOutcome::FailedToCompute => return Err(Error::DeadlineComputeFailed),
+            AddOutcome::AlreadyExpired | AddOutcome::NoDeadline => {
+                tracing::warn!(%duty, "Dropping priority protocol instance for expired duty");
+                return Ok(());
+            }
         }
 
         let requests = self
