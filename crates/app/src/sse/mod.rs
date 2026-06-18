@@ -69,6 +69,10 @@ type Result<T> = std::result::Result<T, SseListenerError>;
 /// Allows setting up chain reorg subscriptions before the listener is started.
 /// The listener is started by calling [`SseListenerBuilder::build`].
 pub struct SseListenerBuilder {
+    // CLAUDE: Instead of using a vector of subscribers, prefer to use a
+    // broadcast channel. This simplifies the logic since we don't need to
+    // keep a vector of senders, instead a single sender that broadcasts to all
+    // subscribers.
     reorg_subs: Vec<sync::mpsc::Sender<u64>>,
 }
 
@@ -216,6 +220,11 @@ impl SseListenerActor {
     }
 
     fn handle_head(&self, event: &SseEvent) {
+        // CLAUDE:
+        // 1. On error there is nothing being raised or logged (uses immediate return).
+        //    What does Charon do here?
+        // 2. The parsing is split in two steps; can we do a single parse of all the
+        //    fields at once? If not, why?
         let Some(head) = parse_payload::<HeadEventData>(HEAD_EVENT, &event.data, &self.addr) else {
             return;
         };
@@ -256,6 +265,8 @@ impl SseListenerActor {
     }
 
     fn handle_chain_reorg(&mut self, event: &SseEvent) {
+        // CLAUDE: Same situation as in `handle_head`; check other similar instances in
+        // other methods (I skipped adding comments to those)
         let Some(reorg) =
             parse_payload::<ChainReorgEventData>(CHAIN_REORG_EVENT, &event.data, &self.addr)
         else {
@@ -360,6 +371,9 @@ impl SseListenerActor {
         }
         self.last_reorg_epoch = epoch;
 
+        // CLAUDE: By using tokio's broadcast channel, we can simply send the message
+        // and let the channel handle the subscribers, instead of manually iterating and
+        // pruning them.
         let addr = &self.addr;
         self.reorg_subs.retain(|tx| match tx.try_send(epoch) {
             Ok(()) => true,
@@ -440,7 +454,9 @@ async fn run_pump(
                 backoff = reconnect_backoff().build();
             }
             StreamOutcome::Error => {
-                let delay = backoff.next().unwrap_or(DEFAULT_RETRY);
+                let delay = backoff
+                    .next()
+                    .expect("reconnect backoff is configured without a retry limit");
                 tokio::select! {
                     biased;
                     _ = ct.cancelled() => break,
@@ -499,6 +515,8 @@ async fn stream_once(
     }
 }
 
+// CLAUDE: Check if these backoff configurations already exist in other modules in Pluto
+
 /// Backoff used while waiting for the beacon node configuration.
 fn fast_backoff() -> ExponentialBuilder {
     ExponentialBuilder::default()
@@ -519,8 +537,10 @@ fn reconnect_backoff() -> ExponentialBuilder {
         .with_jitter()
 }
 
+
 /// Parses an SSE event's JSON payload, logging and discarding malformed events.
 fn parse_payload<T: serde::de::DeserializeOwned>(topic: &str, data: &str, addr: &str) -> Option<T> {
+    // CLAUDE: I'm not sure about having this function alltogether. Explore removing this helper altogether with a simplified parsing logic that parses everything in one pass without resorting to additional functions (ex `parse_u64`).
     match serde_json::from_str(data) {
         Ok(payload) => Some(payload),
         Err(err) => {
@@ -544,6 +564,7 @@ fn parse_u64(field: &str, value: &str, addr: &str) -> Option<u64> {
 /// Converts a [`std::time::Duration`] to a [`chrono::Duration`], saturating on
 /// overflow.
 fn to_chrono(duration: Duration) -> chrono::Duration {
+    // CLAUDE: Inline this function
     chrono::Duration::from_std(duration).unwrap_or(chrono::Duration::MAX)
 }
 
