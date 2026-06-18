@@ -91,7 +91,6 @@ async fn qbft_consensus_with_silent_round_one_leader_decides() {
     let (decided_tx, mut decided_rx) = mpsc::unbounded_channel();
     let ct = CancellationToken::new();
     let start_ct = CancellationToken::new();
-    let mut expired_txs = Vec::with_capacity(active_nodes.len());
     let mut start_tasks = Vec::with_capacity(active_nodes.len());
 
     for (node_idx, node) in active_nodes.iter().enumerate() {
@@ -101,9 +100,7 @@ async fn qbft_consensus_with_silent_round_one_leader_decides() {
             Ok(())
         });
 
-        let (expired_tx, expired_rx) = mpsc::channel(1);
-        expired_txs.push(expired_tx);
-        start_tasks.push(Arc::clone(node).start(expired_rx, start_ct.clone()));
+        start_tasks.push(node.start(start_ct.clone()));
     }
     drop(decided_tx);
 
@@ -140,7 +137,6 @@ async fn qbft_consensus_with_silent_round_one_leader_decides() {
 
     ct.cancel();
     start_ct.cancel();
-    drop(expired_txs);
     for task in start_tasks {
         task.await.unwrap();
     }
@@ -155,7 +151,6 @@ async fn qbft_priority_consensus() {
     let duty = Duty::new(SlotNumber::new(1), DutyType::InfoSync);
     let ct = CancellationToken::new();
     let start_ct = CancellationToken::new();
-    let mut expired_txs = Vec::with_capacity(active_nodes.len());
     let mut start_tasks = Vec::with_capacity(active_nodes.len());
 
     for (node_idx, node) in active_nodes.iter().enumerate() {
@@ -165,9 +160,7 @@ async fn qbft_priority_consensus() {
             Ok(())
         });
 
-        let (expired_tx, expired_rx) = mpsc::channel(1);
-        expired_txs.push(expired_tx);
-        start_tasks.push(Arc::clone(node).start(expired_rx, start_ct.clone()));
+        start_tasks.push(node.start(start_ct.clone()));
     }
     drop(decided_tx);
 
@@ -200,7 +193,6 @@ async fn qbft_priority_consensus() {
 
     ct.cancel();
     start_ct.cancel();
-    drop(expired_txs);
     for task in start_tasks {
         task.await.unwrap();
     }
@@ -216,7 +208,6 @@ async fn qbft_consensus_participate_then_late_propose() {
     let duty = Duty::new(SlotNumber::new(1), DutyType::Attester);
     let ct = CancellationToken::new();
     let start_ct = CancellationToken::new();
-    let mut expired_txs = Vec::with_capacity(active_nodes.len());
     let mut start_tasks = Vec::with_capacity(active_nodes.len());
 
     for (node_idx, node) in active_nodes.iter().enumerate() {
@@ -226,9 +217,7 @@ async fn qbft_consensus_participate_then_late_propose() {
             Ok(())
         });
 
-        let (expired_tx, expired_rx) = mpsc::channel(1);
-        expired_txs.push(expired_tx);
-        start_tasks.push(Arc::clone(node).start(expired_rx, start_ct.clone()));
+        start_tasks.push(node.start(start_ct.clone()));
     }
     drop(decided_tx);
 
@@ -278,7 +267,6 @@ async fn qbft_consensus_participate_then_late_propose() {
 
     ct.cancel();
     start_ct.cancel();
-    drop(expired_txs);
     for task in start_tasks {
         task.await.unwrap();
     }
@@ -299,7 +287,6 @@ async fn qbft_consensus_attester_compare_mismatch_does_not_decide() {
     let duty = Duty::new(SlotNumber::new(1), DutyType::Attester);
     let ct = CancellationToken::new();
     let start_ct = CancellationToken::new();
-    let mut expired_txs = Vec::with_capacity(active_nodes.len());
     let mut start_tasks = Vec::with_capacity(active_nodes.len());
 
     for (node_idx, node) in active_nodes.iter().enumerate() {
@@ -309,9 +296,7 @@ async fn qbft_consensus_attester_compare_mismatch_does_not_decide() {
             Ok(())
         });
 
-        let (expired_tx, expired_rx) = mpsc::channel(1);
-        expired_txs.push(expired_tx);
-        start_tasks.push(Arc::clone(node).start(expired_rx, start_ct.clone()));
+        start_tasks.push(node.start(start_ct.clone()));
     }
     drop(decided_tx);
 
@@ -333,7 +318,6 @@ async fn qbft_consensus_attester_compare_mismatch_does_not_decide() {
     assert!(decided_rx.try_recv().is_err());
 
     start_ct.cancel();
-    drop(expired_txs);
     for task in start_tasks {
         task.await.unwrap();
     }
@@ -356,7 +340,6 @@ async fn run_qbft_consensus(
     let duty = Duty::new(SlotNumber::new(1), DutyType::Attester);
     let ct = CancellationToken::new();
     let start_ct = CancellationToken::new();
-    let mut expired_txs = Vec::with_capacity(active_nodes.len());
     let mut start_tasks = Vec::with_capacity(active_nodes.len());
 
     for (node_idx, node) in active_nodes.iter().enumerate() {
@@ -366,9 +349,7 @@ async fn run_qbft_consensus(
             Ok(())
         });
 
-        let (expired_tx, expired_rx) = mpsc::channel(1);
-        expired_txs.push(expired_tx);
-        start_tasks.push(Arc::clone(node).start(expired_rx, start_ct.clone()));
+        start_tasks.push(node.start(start_ct.clone()));
     }
     drop(decided_tx);
 
@@ -404,7 +385,6 @@ async fn run_qbft_consensus(
 
     ct.cancel();
     start_ct.cancel();
-    drop(expired_txs);
     for task in start_tasks {
         task.await.unwrap();
     }
