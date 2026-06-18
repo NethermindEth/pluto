@@ -331,7 +331,7 @@ impl Prioritiser {
         let requests = self
             .inner
             .take_req_receiver(duty.clone())
-            .expect("one prioritise instance per duty");
+            .ok_or_else(|| Error::DuplicateInstance(duty.clone()))?;
         run_instance(ctx, &self.inner, duty, msg, requests).await
     }
 }
@@ -580,6 +580,40 @@ mod tests {
             signature: Default::default(),
         };
         sign_msg(&msg, key).expect("sign")
+    }
+
+    /// A second `prioritise` for a duty whose instance already holds the
+    /// receiver surfaces [`Error::DuplicateInstance`] rather than panicking.
+    #[tokio::test]
+    async fn duplicate_instance_returns_error() {
+        let (key, peer) = key_and_peer(0);
+        let peers = vec![peer];
+        let validator = new_msg_verifier(&peers).expect("verifier");
+        let consensus = Arc::new(MockConsensus::default());
+        let ct = CancellationToken::new();
+        let (deadliner, _expired) = DeadlinerTask::start(ct.clone(), "test", FutureCalculator);
+        let (prio, _behaviour) = Prioritiser::new_internal(
+            peer,
+            peers,
+            1,
+            consensus,
+            validator,
+            Duration::from_secs(3600),
+            deadliner,
+        );
+
+        let msg = build_msg(&key, peer, "v1");
+        let duty = duty_from_proto(msg.duty.as_ref().expect("duty"));
+
+        // Simulate a running instance that already took the duty's receiver.
+        let _rx = prio
+            .inner
+            .take_req_receiver(duty.clone())
+            .expect("first take");
+
+        // The duplicate is rejected after the (passing) deadliner gate.
+        let res = prio.prioritise(ct, msg).await;
+        assert!(matches!(res, Err(Error::DuplicateInstance(d)) if d == duty));
     }
 
     /// Single-node instance reaches consensus on the exchange timeout and

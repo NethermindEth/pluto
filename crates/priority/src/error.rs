@@ -33,6 +33,10 @@ pub enum Error {
     #[error("duplicate priority")]
     DuplicatePriority,
 
+    /// A prioritise instance is already running for this duty.
+    #[error("duplicate priority instance for duty {0}")]
+    DuplicateInstance(Duty),
+
     /// Hashing a topic or priority protobuf failed.
     #[error("hash proto: {0}")]
     HashProto(#[source] pluto_consensus::qbft::msg::Error),
