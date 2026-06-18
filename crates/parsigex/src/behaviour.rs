@@ -22,7 +22,10 @@ use libp2p::{
 };
 use tokio::sync::{RwLock, mpsc, oneshot};
 
-use pluto_core::types::{Duty, ParSignedData, ParSignedDataSet, PubKey};
+use pluto_core::{
+    gater::DutyGaterFn,
+    types::{Duty, ParSignedData, ParSignedDataSet, PubKey},
+};
 use pluto_p2p::p2p_context::P2PContext;
 
 use super::{Handler, encode_message};
@@ -38,9 +41,6 @@ pub type VerifyFuture =
 /// Verifier callback type.
 pub type Verifier =
     Arc<dyn Fn(Duty, PubKey, ParSignedData) -> VerifyFuture + Send + Sync + 'static>;
-
-/// Duty gate callback type.
-pub type DutyGater = Arc<dyn Fn(&Duty) -> bool + Send + Sync + 'static>;
 
 /// Future returned by received subscriber callbacks.
 pub type ReceivedSubFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
@@ -187,7 +187,7 @@ pub struct Config {
     peer_id: PeerId,
     p2p_context: P2PContext,
     verifier: Verifier,
-    duty_gater: DutyGater,
+    duty_gater: DutyGaterFn,
     timeout: Duration,
 }
 
@@ -197,7 +197,7 @@ impl Config {
         peer_id: PeerId,
         p2p_context: P2PContext,
         verifier: Verifier,
-        duty_gater: DutyGater,
+        duty_gater: DutyGaterFn,
     ) -> Self {
         Self {
             peer_id,
