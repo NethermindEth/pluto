@@ -5471,6 +5471,7 @@ dependencies = [
  "bon",
  "chrono",
  "flate2",
+ "futures",
  "hex",
  "k256",
  "pluto-build-proto",
@@ -5495,6 +5496,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+ "vise",
  "wiremock",
 ]
 
@@ -5745,6 +5747,8 @@ dependencies = [
  "chrono",
  "ethereum_ssz",
  "ethereum_ssz_derive",
+ "eventsource-stream",
+ "futures",
  "hex",
  "http",
  "oas3-gen-support",
