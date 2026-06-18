@@ -96,10 +96,10 @@ use libp2p::{
     Multiaddr, PeerId, Swarm, SwarmBuilder, autonat, identify,
     identity::Keypair,
     noise, ping, relay,
-    swarm::{NetworkBehaviour, SwarmEvent},
+    swarm::{ListenError, NetworkBehaviour, SwarmEvent},
     tcp, yamux,
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     behaviours::pluto::{PlutoBehaviour, PlutoBehaviourBuilder, PlutoBehaviourEvent},
@@ -640,7 +640,16 @@ impl<B: NetworkBehaviour> Node<B> {
                 }
             }
             SwarmEvent::IncomingConnectionError { error, .. } => {
-                warn!(%error, "incoming connection failed");
+                // Sockets from health probes, port scanners and incompatible
+                // clients that never complete the libp2p transport upgrade show
+                // up as `Transport` errors. That is routine noise on any
+                // publicly-reachable node, so log it at debug; keep other listen
+                // errors (wrong peer id, denied, aborted, ...) at warn.
+                if matches!(error, ListenError::Transport(_)) {
+                    debug!(%error, "incoming connection failed");
+                } else {
+                    warn!(%error, "incoming connection failed");
+                }
             }
 
             // Listen address changes

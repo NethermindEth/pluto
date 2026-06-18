@@ -34,6 +34,10 @@ pub struct TestHandler {
     pub sync_committee_duties_response: Option<SyncCommitteeDutiesResponse>,
     /// Value returned by [`Handler::attestation_data`].
     pub attestation_data_response: Option<AttestationDataResponse>,
+    /// Value returned by [`Handler::beacon_committee_selections`].
+    pub beacon_committee_selections_response: Option<EthResponse<Vec<BeaconCommitteeSelection>>>,
+    /// Value returned by [`Handler::sync_committee_selections`].
+    pub sync_committee_selections_response: Option<EthResponse<Vec<SyncCommitteeSelection>>>,
 }
 
 impl TestHandler {
@@ -68,6 +72,24 @@ impl TestHandler {
         self.attestation_data_response = Some(response);
         self
     }
+
+    /// Sets the response returned by [`Handler::beacon_committee_selections`].
+    pub fn with_beacon_committee_selections(
+        mut self,
+        response: EthResponse<Vec<BeaconCommitteeSelection>>,
+    ) -> Self {
+        self.beacon_committee_selections_response = Some(response);
+        self
+    }
+
+    /// Sets the response returned by [`Handler::sync_committee_selections`].
+    pub fn with_sync_committee_selections(
+        mut self,
+        response: EthResponse<Vec<SyncCommitteeSelection>>,
+    ) -> Self {
+        self.sync_committee_selections_response = Some(response);
+        self
+    }
 }
 
 #[async_trait]
@@ -84,40 +106,40 @@ impl Handler for TestHandler {
         &self,
         _opts: AttesterDutiesOpts,
     ) -> Result<AttesterDutiesResponse, ApiError> {
-        Ok(self
-            .attester_duties_response
-            .clone()
-            .expect("attester_duties not stubbed in TestHandler"))
+        match self.attester_duties_response.as_ref() {
+            Some(r) => Ok(r.clone()),
+            None => unimplemented!("attester_duties not stubbed in TestHandler"),
+        }
     }
 
     async fn proposer_duties(
         &self,
         _opts: ProposerDutiesOpts,
     ) -> Result<ProposerDutiesResponse, ApiError> {
-        Ok(self
-            .proposer_duties_response
-            .clone()
-            .expect("proposer_duties not stubbed in TestHandler"))
+        match self.proposer_duties_response.as_ref() {
+            Some(r) => Ok(r.clone()),
+            None => unimplemented!("proposer_duties not stubbed in TestHandler"),
+        }
     }
 
     async fn sync_committee_duties(
         &self,
         _opts: SyncCommitteeDutiesOpts,
     ) -> Result<SyncCommitteeDutiesResponse, ApiError> {
-        Ok(self
-            .sync_committee_duties_response
-            .clone()
-            .expect("sync_committee_duties not stubbed in TestHandler"))
+        match self.sync_committee_duties_response.as_ref() {
+            Some(r) => Ok(r.clone()),
+            None => unimplemented!("sync_committee_duties not stubbed in TestHandler"),
+        }
     }
 
     async fn attestation_data(
         &self,
         _opts: AttestationDataOpts,
     ) -> Result<AttestationDataResponse, ApiError> {
-        Ok(self
-            .attestation_data_response
-            .clone()
-            .expect("attestation_data not stubbed in TestHandler"))
+        match self.attestation_data_response.as_ref() {
+            Some(r) => Ok(r.clone()),
+            None => unimplemented!("attestation_data not stubbed in TestHandler"),
+        }
     }
 
     async fn submit_attestations(
@@ -163,14 +185,20 @@ impl Handler for TestHandler {
         &self,
         _selections: Vec<BeaconCommitteeSelection>,
     ) -> Result<EthResponse<Vec<BeaconCommitteeSelection>>, ApiError> {
-        unimplemented!("beacon_committee_selections not stubbed in TestHandler")
+        match self.beacon_committee_selections_response.as_ref() {
+            Some(r) => Ok(r.clone()),
+            None => unimplemented!("beacon_committee_selections not stubbed in TestHandler"),
+        }
     }
 
     async fn sync_committee_selections(
         &self,
         _selections: Vec<SyncCommitteeSelection>,
     ) -> Result<EthResponse<Vec<SyncCommitteeSelection>>, ApiError> {
-        unimplemented!("sync_committee_selections not stubbed in TestHandler")
+        match self.sync_committee_selections_response.as_ref() {
+            Some(r) => Ok(r.clone()),
+            None => unimplemented!("sync_committee_selections not stubbed in TestHandler"),
+        }
     }
 
     async fn validators(

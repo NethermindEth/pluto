@@ -82,6 +82,31 @@ Rules:
 
 ---
 
+## Conversion Traits
+
+When **implementing** a conversion, implement `TryFrom` (not `TryInto`) and `From` (not `Into`):
+
+```rust
+// Bad - implementing TryInto directly
+impl TryInto<Foo> for Bar {
+    type Error = Error;
+    fn try_into(self) -> Result<Foo, Error> { /* ... */ }
+}
+
+// Good - implement TryFrom; the matching TryInto comes for free
+impl TryFrom<Bar> for Foo {
+    type Error = Error;
+    fn try_from(value: Bar) -> Result<Foo, Error> { /* ... */ }
+}
+```
+
+Rules:
+
+- Implement `TryFrom<A> for B` / `From<A> for B`. The standard library's blanket impls then provide `TryInto`/`Into` automatically; the reverse is not true.
+- When specifying trait **bounds** on a generic function, the preference flips: bound on `TryInto`/`Into` so callers that implement only those traits still work.
+
+---
+
 ## Async / Tokio
 
 - Prefer `async`/`await` for I/O and network-bound code; use Tokio as the runtime.
@@ -186,3 +211,5 @@ Apply when reviewing or porting code:
 - [ ] `use` declarations appear before all other items in each file.
 - [ ] No dead payload in error variants (every captured field appears in the
       `#[error("...")]` string).
+- [ ] Conversions implement `TryFrom`/`From` rather than `TryInto`/`Into`
+      (not caught by Clippy for `TryInto`).
