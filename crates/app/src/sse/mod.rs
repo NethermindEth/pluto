@@ -69,10 +69,6 @@ type Result<T> = std::result::Result<T, SseListenerError>;
 /// Allows setting up chain reorg subscriptions before the listener is started.
 /// The listener is started by calling [`SseListenerBuilder::build`].
 pub struct SseListenerBuilder {
-    // CLAUDE: Instead of using a vector of subscribers, prefer to use a
-    // broadcast channel. This simplifies the logic since we don't need to
-    // keep a vector of senders, instead a single sender that broadcasts to all
-    // subscribers.
     reorg_subs: Vec<sync::mpsc::Sender<u64>>,
 }
 
@@ -349,9 +345,6 @@ impl SseListenerActor {
         }
         self.last_reorg_epoch = epoch;
 
-        // CLAUDE: By using tokio's broadcast channel, we can simply send the message
-        // and let the channel handle the subscribers, instead of manually iterating and
-        // pruning them.
         let addr = &self.addr;
         self.reorg_subs.retain(|tx| match tx.try_send(epoch) {
             Ok(()) => true,
@@ -492,9 +485,6 @@ async fn stream_once(
         }
     }
 }
-
-// CLAUDE: Check if these backoff configurations already exist in other modules
-// in Pluto
 
 /// Backoff used while waiting for the beacon node configuration.
 fn fast_backoff() -> ExponentialBuilder {
