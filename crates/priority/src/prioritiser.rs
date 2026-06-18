@@ -13,7 +13,7 @@
 //! signalled by a [`CancellationToken`].
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
@@ -369,7 +369,7 @@ async fn run_instance(
     // `calculate_result` as a duplicate-peer error rather than being silently
     // swallowed.
     let mut msgs: Vec<PriorityMsg> = vec![own.clone()];
-    let mut dedup_peers: HashMap<String, ()> = HashMap::new();
+    let mut dedup_peers: HashSet<String> = HashSet::new();
 
     let mut cons_started = false;
 
@@ -418,11 +418,11 @@ async fn run_instance(
 }
 
 /// Adds the first message seen from each peer to `msgs`.
-fn add_msg(msgs: &mut Vec<PriorityMsg>, dedup: &mut HashMap<String, ()>, msg: PriorityMsg) {
-    if dedup.contains_key(&msg.peer_id) {
+fn add_msg(msgs: &mut Vec<PriorityMsg>, dedup: &mut HashSet<String>, msg: PriorityMsg) {
+    if dedup.contains(&msg.peer_id) {
         return;
     }
-    dedup.insert(msg.peer_id.clone(), ());
+    dedup.insert(msg.peer_id.clone());
     msgs.push(msg);
 }
 

@@ -6,7 +6,7 @@
 //! exists.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     task::{Context, Poll},
 };
 
@@ -30,7 +30,7 @@ pub struct Behaviour {
     inbound_handler: InboundHandler,
     command_rx: mpsc::UnboundedReceiver<Command>,
     /// Peers with at least one established connection.
-    connected: HashMap<PeerId, ()>,
+    connected: HashSet<PeerId>,
     /// Outbound requests waiting for a connection to the target peer.
     awaiting_connection: HashMap<PeerId, Vec<OutboundRequest>>,
     pending_events: VecDeque<ToSwarm<Event, THandlerInEvent<Self>>>,
@@ -47,7 +47,7 @@ impl Behaviour {
         Self {
             inbound_handler,
             command_rx,
-            connected: HashMap::new(),
+            connected: HashSet::new(),
             awaiting_connection: HashMap::new(),
             pending_events: VecDeque::new(),
         }
@@ -60,7 +60,7 @@ impl Behaviour {
     }
 
     fn send_receive(&mut self, peer: PeerId, request: OutboundRequest) {
-        if self.connected.contains_key(&peer) {
+        if self.connected.contains(&peer) {
             self.notify_handler(peer, request);
             return;
         }
@@ -131,7 +131,7 @@ impl NetworkBehaviour for Behaviour {
     fn on_swarm_event(&mut self, event: FromSwarm) {
         match event {
             FromSwarm::ConnectionEstablished(event) => {
-                self.connected.insert(event.peer_id, ());
+                self.connected.insert(event.peer_id);
                 self.flush_awaiting(event.peer_id);
             }
             FromSwarm::ConnectionClosed(event) if event.remaining_established == 0 => {
