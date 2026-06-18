@@ -1,6 +1,6 @@
 //! Error types for the priority protocol.
 
-use pluto_core::types::Duty;
+use pluto_core::{deadline::DeadlineError, types::Duty};
 use thiserror::Error;
 
 /// Result alias for the priority crate.
@@ -126,6 +126,10 @@ pub enum Error {
     /// The duty has no future deadline when a prioritise instance was started.
     #[error("duty already expired")]
     DutyAlreadyExpired,
+
+    /// Computing the duty's deadline failed.
+    #[error("compute deadline: {0}")]
+    Deadline(#[source] DeadlineError),
 
     /// The prioritise instance's context was cancelled.
     #[error("context canceled")]

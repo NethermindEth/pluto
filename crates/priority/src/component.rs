@@ -331,8 +331,7 @@ impl Component {
         let deadline = self
             .calculator
             .deadline(&duty)
-            .ok()
-            .flatten()
+            .map_err(Error::Deadline)?
             .ok_or(Error::DutyAlreadyExpired)?;
 
         let msg = PriorityMsg {
