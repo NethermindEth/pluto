@@ -15,7 +15,7 @@ use pluto_core::{
     deadline::{DeadlineCalculator, DeadlinerTask},
     types::Duty,
 };
-use pluto_p2p::peer::peer_id_to_public_key;
+use pluto_p2p::peer::{peer_id_from_key, peer_id_to_public_key};
 use prost::Message;
 use prost_types::{Any, Value, value::Kind};
 use tokio_util::sync::CancellationToken;
@@ -236,14 +236,17 @@ pub struct Component {
 /// Constructs a priority [`Component`] and the libp2p [`Behaviour`] to register
 /// with the swarm.
 ///
+/// The local peer id is derived from `privkey`, so the `peer_id` carried in
+/// outgoing messages and the signature over them cannot diverge. `privkey` must
+/// be the same key the caller builds its libp2p swarm from, so the on-wire peer
+/// id matches the message peer id.
+///
 /// Builds the message verifier from `peers`, spawns a deadliner driven by
 /// `calculator`, and wires the prioritiser. The caller must register the
 /// returned behaviour with its swarm and call [`Component::start`] exactly
 /// once.
-#[allow(clippy::too_many_arguments)]
 pub fn new_component(
     ctx: CancellationToken,
-    local_id: PeerId,
     peers: Vec<PeerId>,
     min_required: i64,
     consensus: Arc<dyn Consensus>,
@@ -251,6 +254,10 @@ pub fn new_component(
     privkey: SecretKey,
     calculator: impl DeadlineCalculator,
 ) -> Result<(Component, Behaviour)> {
+    // Derive the local peer id from the signing key so the message `peer_id`
+    // and its signature always agree (peers verify the two against each other).
+    let local_id = peer_id_from_key(privkey.public_key()).map_err(Error::PeerKey)?;
+
     let verifier = new_msg_verifier(&peers)?;
     let calculator: Arc<dyn DeadlineCalculator> = Arc::new(calculator);
 
