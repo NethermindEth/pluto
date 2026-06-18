@@ -176,9 +176,20 @@ impl NetworkBehaviour for Behaviour {
 /// Only transport/unsupported variants reach this path; both are cheaply
 /// reconstructable from their displayed form without losing parity-relevant
 /// detail.
+/// Clones the subset of [`crate::Error`] that can reach the awaiting-connection
+/// path (dial/negotiation outcomes), which is not `Clone` as a whole.
+///
+/// Only `Unsupported` and `Transport` are expected here; any other variant is a
+/// bug (caught in debug) and is flattened to `Transport` rather than re-wrapped
+/// — re-wrapping a `Transport` via `to_string()` would duplicate its Display
+/// prefix.
 fn clone_error(error: &crate::Error) -> crate::Error {
     match error {
         crate::Error::Unsupported => crate::Error::Unsupported,
-        other => crate::Error::Transport(other.to_string()),
+        crate::Error::Transport(msg) => crate::Error::Transport(msg.clone()),
+        other => {
+            debug_assert!(false, "unexpected error on awaiting path: {other}");
+            crate::Error::Transport(other.to_string())
+        }
     }
 }
