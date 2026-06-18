@@ -69,6 +69,8 @@ type Result<T> = std::result::Result<T, SseListenerError>;
 /// Allows setting up chain reorg subscriptions before the listener is started.
 /// The listener is started by calling [`SseListenerBuilder::build`].
 pub struct SseListenerBuilder {
+    // TODO: Prefer to use a `broadcast` channel here to simplify the subscription management.
+    // Requires revisiting the potential subscribers.
     reorg_subs: Vec<sync::mpsc::Sender<u64>>,
 }
 
@@ -485,6 +487,8 @@ async fn stream_once(
         }
     }
 }
+
+// TODO: Extract these backoff configurations into a shared module.
 
 /// Backoff used while waiting for the beacon node configuration.
 fn fast_backoff() -> ExponentialBuilder {
