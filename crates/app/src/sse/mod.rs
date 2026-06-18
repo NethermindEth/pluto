@@ -240,9 +240,9 @@ impl SseListenerActor {
 
         // The chain's head is updated once a majority of the chain votes for a
         // block, which realistically happens between 2/3 and 3/3 of the slot.
-        let (delay, ok) = self.compute_delay(slot, event.timestamp, |delay| {
-            delay < to_chrono(self.slot_duration)
-        });
+        let window =
+            chrono::Duration::from_std(self.slot_duration).unwrap_or(chrono::Duration::MAX);
+        let (delay, ok) = self.compute_delay(slot, event.timestamp, |delay| delay < window);
         let delay_s = delay_secs(delay);
 
         if ok {
@@ -323,8 +323,8 @@ impl SseListenerActor {
 
         // A block should be received via gossip between 0/3 and 1/3 of the slot.
         let third = self.slot_duration.checked_div(3).expect("non-zero divisor");
-        let (delay, ok) =
-            self.compute_delay(slot, event.timestamp, |delay| delay < to_chrono(third));
+        let window = chrono::Duration::from_std(third).unwrap_or(chrono::Duration::MAX);
+        let (delay, ok) = self.compute_delay(slot, event.timestamp, |delay| delay < window);
         let delay_s = delay_secs(delay);
 
         if !ok {
@@ -349,8 +349,8 @@ impl SseListenerActor {
         // A block should be imported into fork choice between 0/3 and 1/3 of the
         // slot.
         let third = self.slot_duration.checked_div(3).expect("non-zero divisor");
-        let (delay, ok) =
-            self.compute_delay(slot, event.timestamp, |delay| delay < to_chrono(third));
+        let window = chrono::Duration::from_std(third).unwrap_or(chrono::Duration::MAX);
+        let (delay, ok) = self.compute_delay(slot, event.timestamp, |delay| delay < window);
         let delay_s = delay_secs(delay);
 
         if !ok {
@@ -515,7 +515,8 @@ async fn stream_once(
     }
 }
 
-// CLAUDE: Check if these backoff configurations already exist in other modules in Pluto
+// CLAUDE: Check if these backoff configurations already exist in other modules
+// in Pluto
 
 /// Backoff used while waiting for the beacon node configuration.
 fn fast_backoff() -> ExponentialBuilder {
@@ -537,10 +538,11 @@ fn reconnect_backoff() -> ExponentialBuilder {
         .with_jitter()
 }
 
-
 /// Parses an SSE event's JSON payload, logging and discarding malformed events.
 fn parse_payload<T: serde::de::DeserializeOwned>(topic: &str, data: &str, addr: &str) -> Option<T> {
-    // CLAUDE: I'm not sure about having this function alltogether. Explore removing this helper altogether with a simplified parsing logic that parses everything in one pass without resorting to additional functions (ex `parse_u64`).
+    // CLAUDE: I'm not sure about having this function alltogether. Explore removing
+    // this helper altogether with a simplified parsing logic that parses everything
+    // in one pass without resorting to additional functions (ex `parse_u64`).
     match serde_json::from_str(data) {
         Ok(payload) => Some(payload),
         Err(err) => {
@@ -559,13 +561,6 @@ fn parse_u64(field: &str, value: &str, addr: &str) -> Option<u64> {
             None
         }
     }
-}
-
-/// Converts a [`std::time::Duration`] to a [`chrono::Duration`], saturating on
-/// overflow.
-fn to_chrono(duration: Duration) -> chrono::Duration {
-    // CLAUDE: Inline this function
-    chrono::Duration::from_std(duration).unwrap_or(chrono::Duration::MAX)
 }
 
 /// Returns the delay in fractional seconds for metrics and logging.
@@ -628,14 +623,13 @@ mod tests {
     fn compute_delay_inside_and_outside_window() {
         let actor = test_actor(vec![]);
         let slot = 10;
+        let window = chrono::Duration::from_std(SLOT_DURATION).unwrap();
 
-        let (delay, ok) =
-            actor.compute_delay(slot, slot_time(slot, 5), |d| d < to_chrono(SLOT_DURATION));
+        let (delay, ok) = actor.compute_delay(slot, slot_time(slot, 5), |d| d < window);
         assert_eq!(delay, chrono::Duration::seconds(5));
         assert!(ok);
 
-        let (delay, ok) =
-            actor.compute_delay(slot, slot_time(slot, 13), |d| d < to_chrono(SLOT_DURATION));
+        let (delay, ok) = actor.compute_delay(slot, slot_time(slot, 13), |d| d < window);
         assert_eq!(delay, chrono::Duration::seconds(13));
         assert!(!ok);
     }
