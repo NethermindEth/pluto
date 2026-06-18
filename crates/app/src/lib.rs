@@ -22,5 +22,8 @@ pub mod eth2wrap;
 /// Private key locking service.
 pub mod privkeylock;
 
+/// Listen for SSE from Beacon Node
+pub mod sse;
+
 /// Utility helpers for archiving, extracting, and comparing files/directories.
 pub mod utils;
