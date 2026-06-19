@@ -48,6 +48,17 @@ use crate::signeddata::{ProposalBlock, VersionedSignedProposal};
 /// well above any plausible workload.
 const DUTIES_BODY_LIMIT: usize = 64 * 1024;
 
+/// Cap on the block-submission bodies (`POST /eth/v{1,2}/beacon/blocks` and
+/// `.../blinded_blocks`). These carry a full `SignedBlockContents`, which for
+/// Electra/Fulu bundles up to `MAX_BLOBS_PER_BLOCK_FULU` (12) blobs of 128 KiB
+/// each alongside the block. Blobs are `0x`-hex in the JSON encoding (~2× their
+/// binary size), so 12 blobs alone are ~3 MiB of JSON and a blob-carrying block
+/// comfortably exceeds axum's 2 MiB default `body: Bytes` limit — missing those
+/// proposals. 16 MiB gives several× headroom over a realistic max-blob block
+/// while still bounding per-request memory; the Go reference (`router.go`,
+/// `submitProposal`) reads the body uncapped via `io.ReadAll`.
+const PROPOSAL_BODY_LIMIT: usize = 16 * 1024 * 1024;
+
 /// Response/request header carrying the consensus fork name (e.g. `deneb`).
 const VERSION_HEADER: &str = "Eth-Consensus-Version";
 /// Response header signalling whether the returned proposal is blinded.
@@ -138,10 +149,22 @@ pub fn new_router(
         .route("/eth/v2/validator/blocks/{slot}", get(respond_404))
         .route("/eth/v1/validator/blinded_blocks/{slot}", get(respond_404))
         .route("/eth/v3/validator/blocks/{slot}", get(propose_block_v3))
-        .route("/eth/v1/beacon/blocks", post(submit_proposal))
-        .route("/eth/v2/beacon/blocks", post(submit_proposal))
-        .route("/eth/v1/beacon/blinded_blocks", post(submit_blinded_block))
-        .route("/eth/v2/beacon/blinded_blocks", post(submit_blinded_block))
+        .route(
+            "/eth/v1/beacon/blocks",
+            sized_post(submit_proposal, PROPOSAL_BODY_LIMIT),
+        )
+        .route(
+            "/eth/v2/beacon/blocks",
+            sized_post(submit_proposal, PROPOSAL_BODY_LIMIT),
+        )
+        .route(
+            "/eth/v1/beacon/blinded_blocks",
+            sized_post(submit_blinded_block, PROPOSAL_BODY_LIMIT),
+        )
+        .route(
+            "/eth/v2/beacon/blinded_blocks",
+            sized_post(submit_blinded_block, PROPOSAL_BODY_LIMIT),
+        )
         .route(
             "/eth/v1/validator/register_validator",
             post(submit_validator_registrations),
@@ -262,6 +285,20 @@ where
     post(handler)
         .route_layer(DefaultBodyLimit::max(body_limit))
         .route_layer(middleware::from_fn(enforce_json_content_type))
+}
+
+/// `POST` route with an explicit body-size limit but no content-type
+/// enforcement, for endpoints that accept either JSON or SSZ
+/// (`application/octet-stream`) bodies — i.e. the block-submission routes.
+/// Without the limit these inherit axum's 2 MiB default, which a blob-carrying
+/// Electra/Fulu block exceeds (see [`PROPOSAL_BODY_LIMIT`]).
+fn sized_post<H, T, S>(handler: H, body_limit: usize) -> MethodRouter<S>
+where
+    H: axum::handler::Handler<T, S>,
+    T: 'static,
+    S: Clone + Send + Sync + 'static,
+{
+    post(handler).route_layer(DefaultBodyLimit::max(body_limit))
 }
 
 /// Content-type handling: a missing `Content-Type` is treated as
@@ -1750,6 +1787,48 @@ mod tests {
         let got = submitted.lock().unwrap().clone().unwrap();
         assert_eq!(got.0.version, DataVersion::Phase0);
         assert!(matches!(got.0.block, SignedProposalBlock::Phase0(_)));
+    }
+
+    /// A block-submission body larger than axum's 2 MiB default (a realistic
+    /// blob-carrying Electra/Fulu block) reaches the decoder instead of being
+    /// rejected up front with `413`. The garbage body then fails to decode as
+    /// `400`, but the point is that the body-limit layer let it through — with
+    /// the default limit this would have been `413` and the proposal missed.
+    #[tokio::test]
+    async fn submit_proposal_accepts_body_over_default_limit() {
+        let app = test_router(Arc::new(TestHandler::default()), false);
+
+        let big = vec![0u8; 3 * 1024 * 1024];
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/beacon/blocks")
+            .header("content-type", "application/octet-stream")
+            .header(VERSION_HEADER, "deneb")
+            .header("content-length", big.len())
+            .body(Body::from(big))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_ne!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// A body beyond [`PROPOSAL_BODY_LIMIT`] is still rejected with `413`,
+    /// bounding per-request memory.
+    #[tokio::test]
+    async fn submit_proposal_rejects_body_over_limit() {
+        let app = test_router(Arc::new(TestHandler::default()), false);
+
+        let big = vec![0u8; PROPOSAL_BODY_LIMIT + 1];
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/beacon/blocks")
+            .header("content-type", "application/octet-stream")
+            .header(VERSION_HEADER, "deneb")
+            .header("content-length", big.len())
+            .body(Body::from(big))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     /// A capitalised version header is accepted (case-insensitive, mirroring
