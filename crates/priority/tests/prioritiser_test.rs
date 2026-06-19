@@ -7,12 +7,12 @@
 //! (proposed by all three) with score `n*1000`.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
     time::Duration,
 };
 
-use futures::StreamExt as _;
+use futures::{FutureExt as _, StreamExt as _, future::select_all};
 use libp2p::{
     Multiaddr, PeerId, Swarm,
     core::{Transport as _, transport::MemoryTransport, upgrade::Version},
@@ -284,6 +284,29 @@ async fn three_host_prioritiser() {
                 host.swarm.dial(addr.clone()).expect("dial");
             }
         }
+    }
+
+    // Wait until every host is connected to all its peers before exchanging.
+    // The priority exchange opens substreams on existing connections; launching
+    // it before the mesh is up would race connection setup and could drop an
+    // exchange, stalling a duty's consensus.
+    {
+        let mut connected: Vec<HashSet<PeerId>> = vec![HashSet::new(); N];
+        let mesh = async {
+            while connected.iter().any(|peers| peers.len() < N - 1) {
+                let next = hosts
+                    .iter_mut()
+                    .map(|h| h.swarm.select_next_some().boxed())
+                    .collect::<Vec<_>>();
+                let (event, idx, _) = select_all(next).await;
+                if let SwarmEvent::ConnectionEstablished { peer_id, .. } = event {
+                    connected[idx].insert(peer_id);
+                }
+            }
+        };
+        timeout(Duration::from_secs(30), mesh)
+            .await
+            .expect("full connection mesh within timeout");
     }
 
     // Extract per-host prioritisers (with their key/peer id) and drive each

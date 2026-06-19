@@ -334,7 +334,15 @@ impl Prioritiser {
 
         match self.inner.deadliner.add(duty.clone()).await {
             AddOutcome::Scheduled => {}
-            AddOutcome::FailedToCompute => return Err(Error::DeadlineComputeFailed),
+            AddOutcome::FailedToCompute => {
+                // The deadliner shares the engine/instance cancellation token, so
+                // a failure while shutting down is a cancellation, not a genuine
+                // compute error — report it like the run-loop cancel path.
+                if ctx.is_cancelled() || self.inner.quit.is_cancelled() {
+                    return Err(Error::Cancelled);
+                }
+                return Err(Error::DeadlineComputeFailed);
+            }
             AddOutcome::AlreadyExpired | AddOutcome::NoDeadline => {
                 tracing::warn!(%duty, "Dropping priority protocol instance for expired duty");
                 return Ok(());
