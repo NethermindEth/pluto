@@ -9,11 +9,11 @@ use graffiti::GraffitiBuilder;
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, EthBeaconNodeApiClientError,
-    GetAggregatedAttestationV2Request, GetAggregatedAttestationV2Response,
-    GetAggregatedAttestationV2ResponseResponseData, ProduceAttestationDataRequest,
-    ProduceAttestationDataResponse, ProduceBlockV3Request, ProduceBlockV3Response,
-    ProduceSyncCommitteeContributionRequest, ProduceSyncCommitteeContributionResponse,
+    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, GetAggregatedAttestationV2Request,
+    GetAggregatedAttestationV2Response, GetAggregatedAttestationV2ResponseResponseData,
+    ProduceAttestationDataRequest, ProduceAttestationDataResponse, ProduceBlockV3Request,
+    ProduceBlockV3Response, ProduceSyncCommitteeContributionRequest,
+    ProduceSyncCommitteeContributionResponse,
     spec::{ConversionError, altair, phase0},
     versioned,
 };
@@ -352,8 +352,8 @@ impl Fetcher {
 
             let request = ProduceBlockV3Request::builder()
                 .slot(slot.to_string())
-                .randao_reveal(hex_0x(&randao))
-                .graffiti(hex_0x(&graffiti))
+                .randao_reveal(format!("0x{}", hex::encode(randao)))
+                .graffiti(format!("0x{}", hex::encode(graffiti)))
                 .builder_boost_factor(builder_boost_factor.to_string())
                 .build()
                 .map_err(EthBeaconNodeApiClientError::RequestError)?;
@@ -471,7 +471,7 @@ impl Fetcher {
         data_root: phase0::Root,
     ) -> Result<versioned::VersionedAttestation> {
         let request = GetAggregatedAttestationV2Request::builder()
-            .attestation_data_root(hex_0x(&data_root))
+            .attestation_data_root(format!("0x{}", hex::encode(data_root)))
             .slot(slot.to_string())
             .committee_index(comm_idx.to_string())
             .build()
@@ -507,7 +507,7 @@ impl Fetcher {
         let request = ProduceSyncCommitteeContributionRequest::builder()
             .slot(slot.to_string())
             .subcommittee_index(subcomm_idx.to_string())
-            .beacon_block_root(hex_0x(&block_root))
+            .beacon_block_root(format!("0x{}", hex::encode(block_root)))
             .build()
             .map_err(EthBeaconNodeApiClientError::RequestError)?;
 
@@ -551,11 +551,6 @@ fn wrap(context: &'static str) -> impl Fn(FetcherError) -> FetcherError {
 /// Downcasts a `&dyn SignedData` to a concrete signed-data type.
 fn downcast<T: 'static>(data: &dyn SignedData) -> Option<&T> {
     (data as &dyn std::any::Any).downcast_ref::<T>()
-}
-
-/// Formats bytes as a `0x`-prefixed lowercase hex string.
-fn hex_0x(bytes: &[u8]) -> String {
-    format!("0x{}", hex::encode(bytes))
 }
 
 /// Builds a versioned attestation payload from the beacon node's aggregate
@@ -1328,8 +1323,14 @@ mod tests {
         ]);
 
         let by_root = HashMap::from([
-            (hex_0x(&att_a.data.tree_hash_root().0), att_a.clone()),
-            (hex_0x(&att_b.data.tree_hash_root().0), att_b.clone()),
+            (
+                format!("0x{}", hex::encode(att_a.data.tree_hash_root().0)),
+                att_a.clone(),
+            ),
+            (
+                format!("0x{}", hex::encode(att_b.data.tree_hash_root().0)),
+                att_b.clone(),
+            ),
         ]);
 
         let mock = BeaconMock::builder()
@@ -1382,7 +1383,10 @@ mod tests {
             (pk_b, attester_def(att.data.index, 0)),
         ]);
 
-        let by_root = HashMap::from([(hex_0x(&att.data.tree_hash_root().0), att.clone())]);
+        let by_root = HashMap::from([(
+            format!("0x{}", hex::encode(att.data.tree_hash_root().0)),
+            att.clone(),
+        )]);
 
         let mock = BeaconMock::builder()
             .spec(aggregator_spec())
