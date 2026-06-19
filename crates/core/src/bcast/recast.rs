@@ -9,7 +9,7 @@ use pluto_eth2api::BeaconNodeClient;
 
 use crate::{
     bcast::{
-        Error, Result, boxed,
+        Error, Result,
         metrics::{instrument_recast, instrument_recast_error, instrument_recast_registration},
     },
     types::{Duty, DutyType, PubKey, SignedData, SignedDataSet, Slot},
@@ -103,7 +103,7 @@ impl Recaster {
             .await
             .map_err(|source| Error::Client {
                 context: "get active validator",
-                source: boxed(source),
+                source: Box::new(source),
             })?
             .pubkeys()
             .map(|pubkey| PubKey::from(*pubkey))

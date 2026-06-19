@@ -3,7 +3,7 @@
 mod metrics;
 mod recast;
 
-use std::{any::Any, error::Error as StdError, time::Duration as StdDuration};
+use std::{any::Any, error::Error as StdError};
 
 use chrono::{DateTime, Duration, Utc};
 use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
@@ -168,7 +168,13 @@ struct DelayCalculator {
 
 impl DelayCalculator {
     fn delay(&self, slot: u64, duty_type: &DutyType) -> Result<Duration> {
-        let slot_duration = duration_to_std(self.slot_duration, "slot duration")?;
+        let slot_duration = self
+            .slot_duration
+            .to_std()
+            .map_err(|_| Error::InvalidTime {
+                context: "slot duration",
+                value: self.slot_duration.num_milliseconds(),
+            })?;
         let slot_count =
             u32::try_from(slot).map_err(|_| Error::ArithmeticOverflow { context: "slot" })?;
         let elapsed = slot_duration
@@ -178,7 +184,11 @@ impl DelayCalculator {
             })?;
         let slot_start = self
             .genesis_time
-            .checked_add_signed(duration_from_std(elapsed, "slot elapsed")?)
+            .checked_add_signed(Duration::from_std(elapsed).map_err(|_| {
+                Error::ArithmeticOverflow {
+                    context: "slot elapsed",
+                }
+            })?)
             .ok_or(Error::ArithmeticOverflow {
                 context: "slot start",
             })?;
@@ -226,7 +236,7 @@ impl Broadcaster {
                 .await
                 .map_err(|source| Error::Client {
                     context: "fetch genesis time",
-                    source: boxed(source),
+                    source: Box::new(source),
                 })?;
         let (slot_duration, _) =
             client
@@ -235,7 +245,7 @@ impl Broadcaster {
                 .await
                 .map_err(|source| Error::Client {
                     context: "fetch slots config",
-                    source: boxed(source),
+                    source: Box::new(source),
                 })?;
         let slot_duration =
             Duration::from_std(slot_duration).map_err(|_| Error::ArithmeticOverflow {
@@ -338,7 +348,7 @@ impl Broadcaster {
             Err(source) if source.to_string().contains("PriorAttestationKnown") => Ok(()),
             Err(source) => Err(Error::Client {
                 context: "submit attestations",
-                source: boxed(source),
+                source: Box::new(source),
             }),
         }?;
 
@@ -367,7 +377,7 @@ impl Broadcaster {
                 .await
                 .map_err(|source| Error::Client {
                     context: "submit blinded proposal",
-                    source: boxed(source),
+                    source: Box::new(source),
                 })?;
         } else {
             self.client
@@ -376,7 +386,7 @@ impl Broadcaster {
                 .await
                 .map_err(|source| Error::Client {
                     context: "submit proposal",
-                    source: boxed(source),
+                    source: Box::new(source),
                 })?;
         }
 
@@ -395,7 +405,7 @@ impl Broadcaster {
             .await
             .map_err(|source| Error::Client {
                 context: "submit validator registrations",
-                source: boxed(source),
+                source: Box::new(source),
             })?;
 
         tracing::info!(%duty, "Successfully submitted validator registrations to beacon node");
@@ -425,7 +435,7 @@ impl Broadcaster {
         if let Some(source) = last_error {
             return Err(Error::Client {
                 context: "submit voluntary exit",
-                source: boxed(source),
+                source: Box::new(source),
             });
         }
 
@@ -443,7 +453,7 @@ impl Broadcaster {
             .await
             .map_err(|source| Error::Client {
                 context: "submit aggregate attestations",
-                source: boxed(source),
+                source: Box::new(source),
             })?;
 
         tracing::info!(%duty, "Successfully submitted v2 attestation aggregations to beacon node");
@@ -461,7 +471,7 @@ impl Broadcaster {
             .await
             .map_err(|source| Error::Client {
                 context: "submit sync committee messages",
-                source: boxed(source),
+                source: Box::new(source),
             })?;
 
         tracing::info!(%duty, "Successfully submitted sync committee messages to beacon node");
@@ -479,7 +489,7 @@ impl Broadcaster {
             .await
             .map_err(|source| Error::Client {
                 context: "submit sync committee contributions",
-                source: boxed(source),
+                source: Box::new(source),
             })?;
 
         tracing::info!(%duty, "Successfully submitted sync committee contributions to beacon node");
@@ -513,7 +523,7 @@ impl Broadcaster {
             .await
             .map_err(|source| Error::Client {
                 context: "fetch attester duties",
-                source: boxed(source),
+                source: Box::new(source),
             })?;
         let domain = self
             .client
@@ -522,7 +532,7 @@ impl Broadcaster {
             .await
             .map_err(|source| Error::Client {
                 context: "fetch beacon attester domain",
-                source: boxed(source),
+                source: Box::new(source),
             })?;
 
         // Try to find the matching attester duty and attestation by verifying the full
@@ -658,7 +668,7 @@ async fn resolve_active_validators_indices(
         .await
         .map_err(|source| Error::Client {
             context: "complete validators",
-            source: boxed(source),
+            source: Box::new(source),
         })?;
     let mut indices = Vec::new();
 
@@ -713,7 +723,7 @@ async fn first_slot_in_current_epoch(
         .await
         .map_err(|source| Error::Client {
             context: "fetch genesis time",
-            source: boxed(source),
+            source: Box::new(source),
         })?;
     let (slot_duration, slots_per_epoch) =
         client
@@ -721,7 +731,7 @@ async fn first_slot_in_current_epoch(
             .await
             .map_err(|source| Error::Client {
                 context: "fetch slots config",
-                source: boxed(source),
+                source: Box::new(source),
             })?;
     let slot_duration =
         Duration::from_std(slot_duration).map_err(|_| Error::ArithmeticOverflow {
@@ -761,21 +771,6 @@ async fn first_slot_in_current_epoch(
             })?;
 
     Ok(crate::types::SlotNumber::new(first_slot))
-}
-
-fn boxed(source: impl StdError + Send + Sync + 'static) -> BoxError {
-    Box::new(source)
-}
-
-fn duration_to_std(duration: Duration, context: &'static str) -> Result<StdDuration> {
-    duration.to_std().map_err(|_| Error::InvalidTime {
-        context,
-        value: duration.num_milliseconds(),
-    })
-}
-
-fn duration_from_std(duration: StdDuration, context: &'static str) -> Result<Duration> {
-    Duration::from_std(duration).map_err(|_| Error::ArithmeticOverflow { context })
 }
 
 fn div_duration(duration: Duration, divisor: i32, context: &'static str) -> Result<Duration> {
