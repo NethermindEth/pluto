@@ -78,6 +78,23 @@ impl DataVersion {
             _ => Err(VersionError::UnknownDataVersion),
         }
     }
+
+    /// Maps to the equivalent beacon API
+    /// [`ConsensusVersion`](crate::ConsensusVersion).
+    // TODO: change to From<&ConsensusVersion> after PR #454
+    pub const fn to_consensus_version(self) -> Result<crate::ConsensusVersion, VersionError> {
+        use crate::ConsensusVersion;
+        match self {
+            DataVersion::Phase0 => Ok(ConsensusVersion::Phase0),
+            DataVersion::Altair => Ok(ConsensusVersion::Altair),
+            DataVersion::Bellatrix => Ok(ConsensusVersion::Bellatrix),
+            DataVersion::Capella => Ok(ConsensusVersion::Capella),
+            DataVersion::Deneb => Ok(ConsensusVersion::Deneb),
+            DataVersion::Electra => Ok(ConsensusVersion::Electra),
+            DataVersion::Fulu => Ok(ConsensusVersion::Fulu),
+            DataVersion::Unknown => Err(VersionError::UnknownDataVersion),
+        }
+    }
 }
 
 impl fmt::Display for DataVersion {
@@ -266,6 +283,26 @@ mod tests {
         expected_err: Option<VersionError>,
     ) {
         match (version.to_legacy_u64(), expected, expected_err) {
+            (Ok(actual), Some(expected), None) => assert_eq!(actual, expected),
+            (Err(err), None, Some(expected_err)) => assert_eq!(err, expected_err),
+            _ => panic!("unexpected conversion result"),
+        }
+    }
+
+    #[test_case(DataVersion::Unknown, None, Some(VersionError::UnknownDataVersion); "unknown")]
+    #[test_case(DataVersion::Phase0, Some(crate::ConsensusVersion::Phase0), None; "phase0")]
+    #[test_case(DataVersion::Altair, Some(crate::ConsensusVersion::Altair), None; "altair")]
+    #[test_case(DataVersion::Bellatrix, Some(crate::ConsensusVersion::Bellatrix), None; "bellatrix")]
+    #[test_case(DataVersion::Capella, Some(crate::ConsensusVersion::Capella), None; "capella")]
+    #[test_case(DataVersion::Deneb, Some(crate::ConsensusVersion::Deneb), None; "deneb")]
+    #[test_case(DataVersion::Electra, Some(crate::ConsensusVersion::Electra), None; "electra")]
+    #[test_case(DataVersion::Fulu, Some(crate::ConsensusVersion::Fulu), None; "fulu")]
+    fn data_version_to_consensus_version(
+        version: DataVersion,
+        expected: Option<crate::ConsensusVersion>,
+        expected_err: Option<VersionError>,
+    ) {
+        match (version.to_consensus_version(), expected, expected_err) {
             (Ok(actual), Some(expected), None) => assert_eq!(actual, expected),
             (Err(err), None, Some(expected_err)) => assert_eq!(err, expected_err),
             _ => panic!("unexpected conversion result"),

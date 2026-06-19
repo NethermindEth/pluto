@@ -1,8 +1,11 @@
 //! QBFT consensus runner bridge.
 
-use std::sync::{
-    Arc, Mutex, PoisonError,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Instant,
 };
 
 use cancellation::CancellationTokenSource;
@@ -16,7 +19,11 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::instance::{self, InstanceIo, RunnerError, RunnerResult};
+use crate::{
+    instance::{self, InstanceIo, RunnerError, RunnerResult},
+    metrics,
+    timer::TimerType,
+};
 use pluto_core::{
     corepb::v1::{core as pbcore, priority as pbpriority},
     deadline::AddOutcome,
@@ -143,11 +150,19 @@ where
         return Err(Error::InputChannelFull);
     }
 
-    if !inst.maybe_start() {
-        return wait_instance_result(&inst).await;
-    }
+    let proposed_at = Instant::now();
+    let mut decided_at_rx = inst.take_decided_at_rx()?;
+    let timer_type = consensus.round_timer(duty.clone()).timer_type();
 
-    run_instance(consensus, duty, inst, ct).await
+    let result = if !inst.maybe_start() {
+        wait_instance_result(&inst).await
+    } else {
+        run_instance(consensus, duty.clone(), inst, ct).await
+    };
+
+    observe_qbft_consensus_duration(&mut decided_at_rx, &duty, timer_type, proposed_at);
+
+    result
 }
 
 /// Starts participating in a duty without a local proposal value.
@@ -211,12 +226,13 @@ async fn run_instance_inner(
     let peer_idx = consensus.get_peer_idx();
     let peer_names = consensus.peer_names();
     let round_timer = consensus.round_timer(duty.clone());
+    let timer_type = round_timer.timer_type();
 
     tracing::debug!(
         duty = %duty,
         peer = peer_idx,
         peers = ?consensus.peer_labels(),
-        timer = round_timer.timer_type().as_str(),
+        timer = timer_type.as_str(),
         "QBFT consensus instance starting"
     );
 
@@ -294,6 +310,7 @@ async fn run_instance_inner(
         let duty = duty.clone();
         let instance_ct = instance_ct.clone();
         let core_cts = Arc::clone(&core_cts);
+        let decided_at_tx = inst.decided_at_tx.clone();
         Arc::new(move |qcommit| {
             let round = qcommit.first().map_or(0, |msg| msg.round());
             let leader_index = definition::leader(&duty, round, nodes_i64);
@@ -310,6 +327,8 @@ async fn run_instance_inner(
                 leader_name,
                 "QBFT consensus decided"
             );
+            let _ = decided_at_tx.try_send(Instant::now());
+            metrics::record_qbft_decision(&duty, timer_type, round, leader_index);
             decided.store(true, Ordering::Relaxed);
             instance_ct.cancel();
             core_cts.cancel();
@@ -360,12 +379,13 @@ async fn run_instance_inner(
     };
 
     let core_ct_for_run = core_ct.clone();
+    let core_duty = duty.clone();
     let core_result = tokio::task::spawn_blocking(move || {
         qbft::run(
             &core_ct_for_run,
             &def,
             &core_transport,
-            &duty,
+            &core_duty,
             peer_idx,
             core_hash_rx,
             core_verify_rx,
@@ -388,6 +408,7 @@ async fn run_instance_inner(
         .unwrap_or_else(PoisonError::into_inner)
         .take()
     {
+        metrics::inc_qbft_consensus_error();
         return Err(Error::Transport(err));
     }
 
@@ -396,11 +417,18 @@ async fn run_instance_inner(
     match core_result {
         Ok(()) => Ok(()),
         Err(qbft::QbftError::ContextCanceled) if decided.load(Ordering::Relaxed) => Ok(()),
-        Err(qbft::QbftError::ContextCanceled) => Err(Error::ConsensusTimeout),
-        Err(qbft::QbftError::ChannelError(_)) if canceled_before_teardown => {
+        Err(qbft::QbftError::ContextCanceled) => {
+            metrics::inc_qbft_consensus_timeout(&duty, timer_type);
             Err(Error::ConsensusTimeout)
         }
-        Err(err) => Err(Error::Core(err)),
+        Err(qbft::QbftError::ChannelError(_)) if canceled_before_teardown => {
+            metrics::inc_qbft_consensus_timeout(&duty, timer_type);
+            Err(Error::ConsensusTimeout)
+        }
+        Err(err) => {
+            metrics::inc_qbft_consensus_error();
+            Err(Error::Core(err))
+        }
     }
 }
 
@@ -433,6 +461,29 @@ async fn wait_instance_result(inst: &InstanceIo<msg::Msg>) -> Result<()> {
         Some(Err(err)) => Err(Error::RunnerResult(err)),
         None => Err(Error::RunnerResultChannelClosed),
     }
+}
+
+/// Observes duration only for callers that supplied a local proposal value.
+fn observe_qbft_consensus_duration(
+    decided_at_rx: &mut mpsc::Receiver<Instant>,
+    duty: &Duty,
+    timer_type: TimerType,
+    proposed_at: Instant,
+) {
+    if let Ok(decided_at) = decided_at_rx.try_recv() {
+        metrics::observe_qbft_consensus_duration(
+            duty,
+            timer_type,
+            duration_seconds(decided_at, proposed_at),
+        );
+    }
+}
+
+fn duration_seconds(decided_at: Instant, proposed_at: Instant) -> f64 {
+    decided_at.checked_duration_since(proposed_at).map_or_else(
+        || -proposed_at.duration_since(decided_at).as_secs_f64(),
+        |duration| duration.as_secs_f64(),
+    )
 }
 
 /// Bridges Tokio channels into the crossbeam channels expected by core QBFT.
@@ -498,6 +549,16 @@ mod tests {
     use super::*;
     use crate::qbft::component::{self, Config};
     use pluto_core::{corepb::v1::core as pbcore, types::SlotNumber};
+
+    #[test]
+    fn duration_seconds_preserves_signed_order() {
+        let proposed_at = Instant::now();
+        let decided_after = proposed_at + Duration::from_millis(250);
+        let decided_before = proposed_at - Duration::from_millis(250);
+
+        assert_eq!(duration_seconds(decided_after, proposed_at), 0.25);
+        assert_eq!(duration_seconds(decided_before, proposed_at), -0.25);
+    }
 
     #[tokio::test]
     async fn propose_when_instance_already_running_fills_value_hash_and_verify_channels() {

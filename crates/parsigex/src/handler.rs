@@ -19,9 +19,12 @@ use libp2p::{
 };
 use tokio::time::timeout;
 
-use pluto_core::types::{Duty, ParSignedDataSet};
+use pluto_core::{
+    gater::DutyGaterFn,
+    types::{Duty, ParSignedDataSet},
+};
 
-use super::{DutyGater, PROTOCOL_NAME, Verifier, protocol};
+use super::{PROTOCOL_NAME, Verifier, protocol};
 use crate::error::Failure;
 
 /// Command sent from the behaviour to a handler.
@@ -78,14 +81,14 @@ type ActiveFuture = BoxFuture<'static, Option<FromHandler>>;
 pub struct Handler {
     timeout: Duration,
     verifier: Verifier,
-    duty_gater: DutyGater,
+    duty_gater: DutyGaterFn,
     pending_open: VecDeque<PendingOpen>,
     active_futures: FuturesUnordered<ActiveFuture>,
 }
 
 impl Handler {
     /// Creates a new handler for one connection.
-    pub fn new(timeout: Duration, verifier: Verifier, duty_gater: DutyGater) -> Self {
+    pub fn new(timeout: Duration, verifier: Verifier, duty_gater: DutyGaterFn) -> Self {
         Self {
             timeout,
             verifier,
@@ -247,7 +250,7 @@ impl ConnectionHandler for Handler {
 async fn do_recv(
     mut stream: libp2p::swarm::Stream,
     verifier: Verifier,
-    duty_gater: DutyGater,
+    duty_gater: DutyGaterFn,
 ) -> Result<(Duty, ParSignedDataSet), Failure> {
     let bytes = protocol::recv_message(&mut stream)
         .await
