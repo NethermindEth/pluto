@@ -608,6 +608,11 @@ fn fee_recipient_mismatch(
         return None;
     }
 
+    // NOTE: serialization errors here (and `proposal_body`'s `unwrap_or(Null)`)
+    // are deliberately swallowed — this is best-effort, warn-only verification
+    // mirroring Go's `verifyFeeRecipient`. A failure collapses to a value that
+    // carries no `fee_recipient`, which falls through to the guard below and
+    // surfaces as a `debug_assert!`/`warn!`, so a regression is not invisible.
     let value = serde_json::to_value(proposal_body(&proposal.block)).ok()?;
 
     // Unblinded blocks carry `execution_payload`; blinded blocks carry
