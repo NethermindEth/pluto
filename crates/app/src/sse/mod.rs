@@ -200,8 +200,15 @@ impl SseListenerActor {
                     }
                 },
 
-                Some(event) = events_rx.recv() => {
-                    self.handle_event(&event);
+                event = events_rx.recv() => match event {
+                    Some(event) => self.handle_event(&event),
+                    // The pump dropped its sender (e.g. it returned early or
+                    // panicked). Stop instead of parking forever on a disabled
+                    // branch with no events and no reconnection.
+                    None => {
+                        tracing::error!(addr = %self.addr, "SSE event channel closed; stopping listener");
+                        break;
+                    }
                 },
             }
         }
