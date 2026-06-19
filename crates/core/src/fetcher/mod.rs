@@ -9,7 +9,7 @@ use graffiti::GraffitiBuilder;
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use pluto_eth2api::{
-    ConsensusVersion, EthBeaconNodeApiClient, EthBeaconNodeApiClientError,
+    EthBeaconNodeApiClient, EthBeaconNodeApiClientError,
     GetAggregatedAttestationV2Request, GetAggregatedAttestationV2Response,
     GetAggregatedAttestationV2ResponseResponseData, ProduceAttestationDataRequest,
     ProduceAttestationDataResponse, ProduceBlockV3Request, ProduceBlockV3Response,
@@ -126,10 +126,6 @@ pub enum FetcherError {
     /// Failed to decode a beacon node response into a signed-data type.
     #[error("decode proposal: {0}")]
     SignedData(#[from] SignedDataError),
-
-    /// A versioned proposal had an unsupported fork version.
-    #[error("unsupported proposal version: {0:?}")]
-    UnsupportedProposalVersion(ConsensusVersion),
 
     /// A signed data value could not produce a signature.
     #[error("signature: {0}")]
