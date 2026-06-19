@@ -404,10 +404,13 @@ async fn fetch_config(client: &EthBeaconNodeApiClient) -> Result<(DateTime<Utc>,
 
 /// Outcome of a single SSE stream connection.
 enum StreamOutcome {
-    /// The stream ended cleanly (server closed the connection).
-    Ended,
+    /// The stream ended cleanly (server closed the connection). `productive`
+    /// is true if at least one event was forwarded before the close.
+    Ended { productive: bool },
     /// A connection or read error occurred; the caller should back off.
-    Error,
+    /// `productive` is true if at least one event was forwarded before the
+    /// error.
+    Error { productive: bool },
     /// The actor's event channel was closed; the pump should stop.
     ChannelClosed,
     /// The cancellation token fired.
@@ -427,11 +430,14 @@ async fn run_pump(
     loop {
         match stream_once(&client, &addr, &events_tx, &ct).await {
             StreamOutcome::Cancelled | StreamOutcome::ChannelClosed => break,
-            StreamOutcome::Ended => {
-                // Clean disconnect: reset the backoff and reconnect promptly.
-                backoff = reconnect_backoff().build();
-            }
-            StreamOutcome::Error => {
+            StreamOutcome::Ended { productive } | StreamOutcome::Error { productive } => {
+                // Reset the backoff only after a productive connection (one that
+                // forwarded at least one event). Otherwise a server that accepts
+                // and immediately closes the connection — or fails to connect —
+                // would drive a tight reconnect loop with no rate limiting.
+                if productive {
+                    backoff = reconnect_backoff().build();
+                }
                 let delay = backoff
                     .next()
                     .expect("reconnect backoff is configured without a retry limit");
@@ -461,11 +467,12 @@ async fn stream_once(
         Ok(stream) => stream,
         Err(err) => {
             tracing::warn!(err = %err, addr = %addr, "Failed to connect to SSE stream");
-            return StreamOutcome::Error;
+            return StreamOutcome::Error { productive: false };
         }
     };
     futures::pin_mut!(stream);
 
+    let mut productive = false;
     loop {
         tokio::select! {
             biased;
@@ -473,10 +480,10 @@ async fn stream_once(
             _ = ct.cancelled() => return StreamOutcome::Cancelled,
 
             item = stream.next() => match item {
-                None => return StreamOutcome::Ended,
+                None => return StreamOutcome::Ended { productive },
                 Some(Err(err)) => {
                     tracing::warn!(err = %err, addr = %addr, "SSE stream read error");
-                    return StreamOutcome::Error;
+                    return StreamOutcome::Error { productive };
                 }
                 Some(Ok(BeaconNodeEvent { topic, data })) => {
                     if data.is_empty() {
@@ -487,6 +494,7 @@ async fn stream_once(
                     if events_tx.send(event).await.is_err() {
                         return StreamOutcome::ChannelClosed;
                     }
+                    productive = true;
                 }
             },
         }
