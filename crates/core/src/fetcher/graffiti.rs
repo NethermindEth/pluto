@@ -249,16 +249,21 @@ mod tests {
         assert_eq!(builder.get_graffiti(&pubkeys[2]), super::default_graffiti());
     }
 
-    #[tokio::test]
-    async fn new_graffiti_builder() {
-        let pubkeys = [
+    /// Three distinct pubkeys used across the `GraffitiBuilder::new` tests.
+    fn test_pubkeys() -> [PubKey; 3] {
+        [
             PubKey::new([1u8; PK_LEN]),
             PubKey::new([2u8; PK_LEN]),
             PubKey::new([3u8; PK_LEN]),
-        ];
+        ]
+    }
+
+    #[tokio::test]
+    async fn new_rejects_mismatched_graffiti_length() {
+        let pubkeys = test_pubkeys();
+        let mock = BeaconMock::builder().build().await.expect("build mock");
 
         // graffiti length greater than pubkeys.
-        let mock = BeaconMock::builder().build().await.expect("build mock");
         let graffiti = vec![
             "a".repeat(10),
             "b".repeat(15),
@@ -272,14 +277,24 @@ mod tests {
         let graffiti = vec!["a".repeat(10), "b".repeat(15)];
         let result = GraffitiBuilder::new(&pubkeys, Some(&graffiti), false, mock.client()).await;
         assert!(matches!(result, Err(GraffitiError::LengthMismatch)));
+    }
 
-        // nil graffiti.
+    #[tokio::test]
+    async fn new_with_nil_graffiti_uses_default() {
+        let pubkeys = test_pubkeys();
+        let mock = BeaconMock::builder().build().await.expect("build mock");
+
         let builder = GraffitiBuilder::new(&pubkeys, None, false, mock.client())
             .await
             .expect("build builder");
         for pubkey in &pubkeys {
             assert_eq!(builder.get_graffiti(pubkey), super::default_graffiti());
         }
+    }
+
+    #[tokio::test]
+    async fn new_single_graffiti_with_append() {
+        let pubkeys = test_pubkeys();
 
         // single graffiti with append (Grandine -> GD).
         let mock = mock_with_version("Grandine/v2.1.4 (Linux x86_64)").await;
@@ -296,8 +311,12 @@ mod tests {
         for pubkey in &pubkeys {
             assert_eq!(builder.get_graffiti(pubkey), expected);
         }
+    }
 
-        // single graffiti without append.
+    #[tokio::test]
+    async fn new_single_graffiti_without_append() {
+        let pubkeys = test_pubkeys();
+
         let mock = mock_with_version("Teku/v4.2.1 (Linux x86_64)").await;
         let graffiti = "y".repeat(GRAFFITI_LEN);
         let builder = GraffitiBuilder::new(
@@ -312,6 +331,11 @@ mod tests {
         for pubkey in &pubkeys {
             assert_eq!(builder.get_graffiti(pubkey), expected);
         }
+    }
+
+    #[tokio::test]
+    async fn new_multiple_graffiti_with_append() {
+        let pubkeys = test_pubkeys();
 
         // multiple graffiti with append (Prysm -> PY).
         let mock = mock_with_version("Prysm/v0.2.7 (Linux x86_64)").await;
@@ -327,6 +351,11 @@ mod tests {
             let expected = graffiti_bytes(&format!("{}{OBOL_TOKEN}PY", graffiti[idx]));
             assert_eq!(builder.get_graffiti(pubkey), expected);
         }
+    }
+
+    #[tokio::test]
+    async fn new_multiple_graffiti_without_append() {
+        let pubkeys = test_pubkeys();
 
         // multiple graffiti without append (empty version -> empty token).
         let mock = mock_with_version("").await;
