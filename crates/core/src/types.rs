@@ -439,36 +439,41 @@ pub struct AttesterDutyDefinition {
     pub duty: AttesterDuty,
 }
 
-impl TryInto<AttesterDutyDefinition>
-    for pluto_eth2api::types::GetAttesterDutiesResponseResponseDatum
+impl TryFrom<pluto_eth2api::types::GetAttesterDutiesResponseResponseDatum>
+    for AttesterDutyDefinition
 {
     type Error = pluto_eth2api::EthBeaconNodeApiClientError;
 
-    fn try_into(self) -> Result<AttesterDutyDefinition, Self::Error> {
-        let pubkey = PubKey::try_from(self.pubkey.as_str())
+    fn try_from(
+        value: pluto_eth2api::types::GetAttesterDutiesResponseResponseDatum,
+    ) -> Result<Self, Self::Error> {
+        let pubkey = PubKey::try_from(value.pubkey.as_str())
             .map_err(|_| pluto_eth2api::EthBeaconNodeApiClientError::ParseError("pubkey".into()))?;
-        let validator_index = self.validator_index.parse::<u64>().map_err(|_| {
+        let validator_index = value.validator_index.parse::<u64>().map_err(|_| {
             pluto_eth2api::EthBeaconNodeApiClientError::ParseError("validator_index".into())
         })?;
-        let slot = self
+        let slot = value
             .slot
             .parse::<u64>()
             .map_err(|_| pluto_eth2api::EthBeaconNodeApiClientError::ParseError("slot".into()))?;
-        let committee_index = self.committee_index.parse::<u64>().map_err(|_| {
+        let committee_index = value.committee_index.parse::<u64>().map_err(|_| {
             pluto_eth2api::EthBeaconNodeApiClientError::ParseError("committee_index".into())
         })?;
-        let committee_length = self.committee_length.parse::<u64>().map_err(|_| {
+        let committee_length = value.committee_length.parse::<u64>().map_err(|_| {
             pluto_eth2api::EthBeaconNodeApiClientError::ParseError("committee_length".into())
         })?;
-        let committees_at_slot = self.committees_at_slot.parse::<u64>().map_err(|_| {
+        let committees_at_slot = value.committees_at_slot.parse::<u64>().map_err(|_| {
             pluto_eth2api::EthBeaconNodeApiClientError::ParseError("committees_at_slot".into())
         })?;
         let validator_committee_index =
-            self.validator_committee_index.parse::<u64>().map_err(|_| {
-                pluto_eth2api::EthBeaconNodeApiClientError::ParseError(
-                    "validator_committee_index".into(),
-                )
-            })?;
+            value
+                .validator_committee_index
+                .parse::<u64>()
+                .map_err(|_| {
+                    pluto_eth2api::EthBeaconNodeApiClientError::ParseError(
+                        "validator_committee_index".into(),
+                    )
+                })?;
 
         Ok(AttesterDutyDefinition {
             pubkey,
@@ -532,18 +537,20 @@ pub struct SyncCommitteeDutyDefinition {
     pub validator_sync_committee_indices: Vec<u64>,
 }
 
-impl TryInto<SyncCommitteeDutyDefinition>
-    for pluto_eth2api::types::GetSyncCommitteeDutiesResponseResponseDatum
+impl TryFrom<pluto_eth2api::types::GetSyncCommitteeDutiesResponseResponseDatum>
+    for SyncCommitteeDutyDefinition
 {
     type Error = pluto_eth2api::EthBeaconNodeApiClientError;
 
-    fn try_into(self) -> Result<SyncCommitteeDutyDefinition, Self::Error> {
-        let pubkey = PubKey::try_from(self.pubkey.as_str())
+    fn try_from(
+        value: pluto_eth2api::types::GetSyncCommitteeDutiesResponseResponseDatum,
+    ) -> Result<Self, Self::Error> {
+        let pubkey = PubKey::try_from(value.pubkey.as_str())
             .map_err(|_| pluto_eth2api::EthBeaconNodeApiClientError::ParseError("pubkey".into()))?;
-        let validator_index = self.validator_index.parse::<u64>().map_err(|_| {
+        let validator_index = value.validator_index.parse::<u64>().map_err(|_| {
             pluto_eth2api::EthBeaconNodeApiClientError::ParseError("validator_index".into())
         })?;
-        let validator_sync_committee_indices = self
+        let validator_sync_committee_indices = value
             .validator_sync_committee_indices
             .iter()
             .map(|idx| {
