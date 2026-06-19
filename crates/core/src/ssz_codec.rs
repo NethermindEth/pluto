@@ -449,6 +449,57 @@ fn encode_proposal_block(block: &versioned::SignedProposalBlock) -> Result<Vec<u
     })
 }
 
+/// Decodes a bare per-fork full (non-blinded) signed proposal block body from
+/// SSZ binary, selecting the variant by `version`.
+///
+/// Unlike [`decode_versioned_signed_proposal`], this expects the raw
+/// beacon-API SSZ block body with no Charon versioned header — the format a
+/// validator client posts to `/eth/v{1,2}/beacon/blocks`. The fork is taken
+/// from the `Eth-Consensus-Version` request header, not from the bytes. The
+/// blinded endpoint uses [`decode_signed_blinded_proposal_block_body`].
+pub fn decode_signed_proposal_block_body(
+    version: DataVersion,
+    bytes: &[u8],
+) -> Result<versioned::SignedProposalBlock, SszCodecError> {
+    decode_proposal_block(version, false, bytes)
+}
+
+/// Decodes a bare per-fork blinded signed proposal block body from SSZ binary,
+/// selecting the variant by `version`.
+///
+/// The raw beacon-API SSZ block body posted to
+/// `/eth/v{1,2}/beacon/blinded_blocks`; the fork is taken from the
+/// `Eth-Consensus-Version` request header.
+pub fn decode_signed_blinded_proposal_block_body(
+    version: DataVersion,
+    bytes: &[u8],
+) -> Result<versioned::SignedBlindedProposalBlock, SszCodecError> {
+    use versioned::SignedBlindedProposalBlock;
+    Ok(match version {
+        DataVersion::Bellatrix => SignedBlindedProposalBlock::Bellatrix(
+            bellatrix::SignedBlindedBeaconBlock::from_ssz_bytes(bytes)?,
+        ),
+        DataVersion::Capella => SignedBlindedProposalBlock::Capella(
+            capella::SignedBlindedBeaconBlock::from_ssz_bytes(bytes)?,
+        ),
+        DataVersion::Deneb => SignedBlindedProposalBlock::Deneb(
+            deneb::SignedBlindedBeaconBlock::from_ssz_bytes(bytes)?,
+        ),
+        DataVersion::Electra => SignedBlindedProposalBlock::Electra(
+            electra::SignedBlindedBeaconBlock::from_ssz_bytes(bytes)?,
+        ),
+        // Fulu blinded blocks share the Electra layout.
+        DataVersion::Fulu => SignedBlindedProposalBlock::Fulu(
+            electra::SignedBlindedBeaconBlock::from_ssz_bytes(bytes)?,
+        ),
+        DataVersion::Phase0 | DataVersion::Altair | DataVersion::Unknown => {
+            return Err(SszCodecError::UnknownVersion(
+                version.to_legacy_u64().unwrap_or(u64::MAX),
+            ));
+        }
+    })
+}
+
 fn decode_proposal_block(
     version: DataVersion,
     blinded: bool,

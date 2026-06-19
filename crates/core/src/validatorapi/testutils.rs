@@ -4,6 +4,8 @@
 //! every method. As each router endpoint is ported, the relevant method is
 //! overridden here so the route's unit test can drive it.
 
+use std::sync::{Arc, Mutex};
+
 use async_trait::async_trait;
 
 use super::{
@@ -34,6 +36,19 @@ pub struct TestHandler {
     pub sync_committee_duties_response: Option<SyncCommitteeDutiesResponse>,
     /// Value returned by [`Handler::attestation_data`].
     pub attestation_data_response: Option<AttestationDataResponse>,
+    /// Value returned by [`Handler::proposal`].
+    pub proposal_response: Option<EthResponse<VersionedProposal>>,
+    /// Value returned by [`Handler::validators`].
+    pub validators_response: Option<EthResponse<Vec<Validator>>>,
+    /// Records the last [`ProposalOpts`] passed to [`Handler::proposal`].
+    pub proposal_opts: Arc<Mutex<Option<ProposalOpts>>>,
+    /// Records the last proposal submitted via [`Handler::submit_proposal`].
+    pub submitted_proposal: Arc<Mutex<Option<VersionedSignedProposal>>>,
+    /// Records the last proposal submitted via
+    /// [`Handler::submit_blinded_proposal`].
+    pub submitted_blinded_proposal: Arc<Mutex<Option<VersionedSignedBlindedProposal>>>,
+    /// Records the last [`ValidatorsOpts`] passed to [`Handler::validators`].
+    pub validators_opts: Arc<Mutex<Option<ValidatorsOpts>>>,
     /// Value returned by [`Handler::beacon_committee_selections`].
     pub beacon_committee_selections_response: Option<EthResponse<Vec<BeaconCommitteeSelection>>>,
     /// Value returned by [`Handler::sync_committee_selections`].
@@ -47,6 +62,18 @@ impl TestHandler {
             version: version.into(),
             ..Self::default()
         }
+    }
+
+    /// Sets the response returned by [`Handler::proposal`].
+    pub fn with_proposal(mut self, response: EthResponse<VersionedProposal>) -> Self {
+        self.proposal_response = Some(response);
+        self
+    }
+
+    /// Sets the response returned by [`Handler::validators`].
+    pub fn with_validators(mut self, response: EthResponse<Vec<Validator>>) -> Self {
+        self.validators_response = Some(response);
+        self
     }
 
     /// Sets the response returned by [`Handler::proposer_duties`].
@@ -151,20 +178,32 @@ impl Handler for TestHandler {
 
     async fn proposal(
         &self,
-        _opts: ProposalOpts,
+        opts: ProposalOpts,
     ) -> Result<EthResponse<VersionedProposal>, ApiError> {
-        unimplemented!("proposal not stubbed in TestHandler")
+        *self.proposal_opts.lock().expect("proposal_opts lock") = Some(opts);
+        Ok(self
+            .proposal_response
+            .clone()
+            .expect("proposal not stubbed in TestHandler"))
     }
 
-    async fn submit_proposal(&self, _proposal: VersionedSignedProposal) -> Result<(), ApiError> {
-        unimplemented!("submit_proposal not stubbed in TestHandler")
+    async fn submit_proposal(&self, proposal: VersionedSignedProposal) -> Result<(), ApiError> {
+        *self
+            .submitted_proposal
+            .lock()
+            .expect("submitted_proposal lock") = Some(proposal);
+        Ok(())
     }
 
     async fn submit_blinded_proposal(
         &self,
-        _proposal: VersionedSignedBlindedProposal,
+        proposal: VersionedSignedBlindedProposal,
     ) -> Result<(), ApiError> {
-        unimplemented!("submit_blinded_proposal not stubbed in TestHandler")
+        *self
+            .submitted_blinded_proposal
+            .lock()
+            .expect("submitted_blinded_proposal lock") = Some(proposal);
+        Ok(())
     }
 
     async fn aggregate_attestation(
@@ -203,9 +242,13 @@ impl Handler for TestHandler {
 
     async fn validators(
         &self,
-        _opts: ValidatorsOpts,
+        opts: ValidatorsOpts,
     ) -> Result<EthResponse<Vec<Validator>>, ApiError> {
-        unimplemented!("validators not stubbed in TestHandler")
+        *self.validators_opts.lock().expect("validators_opts lock") = Some(opts);
+        Ok(self
+            .validators_response
+            .clone()
+            .expect("validators not stubbed in TestHandler"))
     }
 
     async fn submit_validator_registrations(

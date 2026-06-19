@@ -17,6 +17,7 @@ pub use pluto_eth2api::{
     GetAttesterDutiesResponseResponseDatum as AttesterDuty,
     GetProposerDutiesResponseResponse as ProposerDutiesResponse,
     GetProposerDutiesResponseResponseDatum as ProposerDuty,
+    GetStateValidatorsResponseResponseDatum as Validator,
     GetSyncCommitteeDutiesResponseResponse as SyncCommitteeDutiesResponse,
     GetSyncCommitteeDutiesResponseResponseDatum as SyncCommitteeDuty,
     GetVersionResponseResponse as NodeVersionResponse,
@@ -159,10 +160,6 @@ pub struct SyncCommitteeSelectionsResponse {
     /// Aggregated sync-committee selection proofs.
     pub data: Vec<SyncCommitteeSelection>,
 }
-
-/// Validator payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct Validator {}
 
 /// Versioned unsigned proposal payload — alias of the signeddata wrapper.
 pub use crate::signeddata::VersionedProposal;

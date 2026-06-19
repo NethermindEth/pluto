@@ -39,6 +39,11 @@ pub mod versioned;
 /// Cache of Validators retrieved from the Beacon node.
 pub mod valcache;
 
+/// Beacon API helpers used by validator duty flows.
+pub mod validator_duty;
+
+pub use validator_duty::*;
+
 #[cfg(test)]
 pub(crate) mod test_fixtures;
 

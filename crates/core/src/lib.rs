@@ -50,6 +50,9 @@ pub mod scheduler;
 /// Implementations of AggSigDB.
 pub mod aggsigdb;
 
+/// Broadcaster for aggregate signed duty data.
+pub mod bcast;
+
 /// Fetcher — fetches unsigned duty data from the beacon node.
 pub mod fetcher;
 
