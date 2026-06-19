@@ -257,18 +257,16 @@ impl SseListenerActor {
             // we at least log?
             return;
         };
-        // CLAUDE: Inline these variables
-        let (slot, depth) = (reorg.slot, reorg.depth);
-
-        if slot < depth {
-            tracing::warn!(addr = %self.addr, slot, depth, "Invalid chain reorg event: depth exceeds slot");
+        if reorg.slot < reorg.depth {
+            tracing::warn!(addr = %self.addr, slot = reorg.slot, depth = reorg.depth, "Invalid chain reorg event: depth exceeds slot");
             return;
         }
 
         // `slot >= depth` is guaranteed above and `slots_per_epoch` is non-zero
         // (validated by `fetch_slots_config`).
-        let reorg_epoch = slot
-            .checked_sub(depth)
+        let reorg_epoch = reorg
+            .slot
+            .checked_sub(reorg.depth)
             .expect("slot >= depth")
             .checked_div(self.slots_per_epoch)
             .expect("non-zero slots per epoch");
@@ -276,17 +274,17 @@ impl SseListenerActor {
 
         tracing::debug!(
             addr = %self.addr,
-            slot,
+            slot = reorg.slot,
             epoch = %reorg.epoch,
             reorg_epoch,
-            depth,
+            depth = reorg.depth,
             old_head_block = %reorg.old_head_block,
             new_head_block = %reorg.new_head_block,
             "SSE chain reorg event"
         );
 
         // Reorg depths fit comfortably in a `u32`; `f64::from` is lossless.
-        let depth_f64 = f64::from(u32::try_from(depth).unwrap_or(u32::MAX));
+        let depth_f64 = f64::from(u32::try_from(reorg.depth).unwrap_or(u32::MAX));
         SSE_METRICS.sse_chain_reorg_depth[&self.addr].observe(depth_f64);
     }
 
