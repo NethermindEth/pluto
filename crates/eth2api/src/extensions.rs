@@ -38,9 +38,14 @@ pub enum EthBeaconNodeApiClientError {
     #[error("Domain type not found: {0}")]
     DomainTypeNotFound(String),
 
-    /// Error while opening or reading the beacon node SSE event stream.
-    #[error("Event stream error: {0}")]
-    EventStream(String),
+    /// Error while opening the beacon node SSE event stream (request send or
+    /// non-success status).
+    #[error("Event stream request error: {0}")]
+    EventStreamRequest(#[from] reqwest::Error),
+
+    /// Error while reading from the beacon node SSE event stream.
+    #[error("Event stream read error: {0}")]
+    EventStreamRead(#[from] eventsource_stream::EventStreamError<reqwest::Error>),
 }
 
 /// A single Server-Sent Event from a beacon node: the event topic (the SSE
@@ -395,7 +400,11 @@ impl EthBeaconNodeApiClient {
     > {
         let mut url = self.base_url.clone();
         url.path_segments_mut()
-            .map_err(|()| EthBeaconNodeApiClientError::EventStream("URL cannot be a base".into()))?
+            .map_err(|()| {
+                EthBeaconNodeApiClientError::RequestError(anyhow::anyhow!(
+                    "base URL cannot be a base"
+                ))
+            })?
             .push("eth")
             .push("v1")
             .push("events");
@@ -412,17 +421,15 @@ impl EthBeaconNodeApiClient {
             .query(&query)
             .header(reqwest::header::ACCEPT, "text/event-stream")
             .send()
-            .await
-            .map_err(|err| EthBeaconNodeApiClientError::EventStream(err.to_string()))?
-            .error_for_status()
-            .map_err(|err| EthBeaconNodeApiClientError::EventStream(err.to_string()))?;
+            .await?
+            .error_for_status()?;
 
         let stream = response.bytes_stream().eventsource().map(|item| {
             item.map(|event| BeaconNodeEvent {
                 topic: event.event,
                 data: event.data,
             })
-            .map_err(|err| EthBeaconNodeApiClientError::EventStream(err.to_string()))
+            .map_err(EthBeaconNodeApiClientError::EventStreamRead)
         });
 
         Ok(stream)
