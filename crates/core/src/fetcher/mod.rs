@@ -129,7 +129,7 @@ pub enum FetcherError {
 
     /// A signed data value could not produce a signature.
     #[error("signature: {0}")]
-    Signature(String),
+    Signature(#[source] SignedDataError),
 }
 
 /// Result alias for fetcher operations.
@@ -343,9 +343,7 @@ impl Fetcher {
             let randao_data = self
                 .query_agg_sig_db(Duty::new_randao_duty(slot.into()), *pubkey)
                 .await?;
-            let randao = randao_data
-                .signature()
-                .map_err(|e| FetcherError::Signature(e.to_string()))?;
+            let randao = randao_data.signature().map_err(FetcherError::Signature)?;
 
             // Maximum priority to builder blocks when the builder is enabled.
             let builder_boost_factor: u64 = if self.builder_enabled { u64::MAX } else { 0 };
