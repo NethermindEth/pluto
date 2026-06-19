@@ -218,8 +218,12 @@ impl SseListenerActor {
     }
 
     fn handle_head(&self, event: &SseEvent) {
-        let Some(head) = parse_payload::<HeadEventData>(HEAD_EVENT, &event.data, &self.addr) else {
-            return;
+        let head: HeadEventData = match serde_json::from_str(&event.data) {
+            Ok(head) => head,
+            Err(err) => {
+                tracing::warn!(err = ?err, addr = %self.addr, topic = HEAD_EVENT, "Failed to parse SSE event");
+                return;
+            }
         };
         let slot = head.slot;
 
@@ -250,12 +254,12 @@ impl SseListenerActor {
     }
 
     fn handle_chain_reorg(&mut self, event: &SseEvent) {
-        let Some(reorg) =
-            parse_payload::<ChainReorgEventData>(CHAIN_REORG_EVENT, &event.data, &self.addr)
-        else {
-            // CLAUDE: On failed parsing we don't do anything. What does Charon do? Should
-            // we at least log?
-            return;
+        let reorg: ChainReorgEventData = match serde_json::from_str(&event.data) {
+            Ok(reorg) => reorg,
+            Err(err) => {
+                tracing::warn!(err = ?err, addr = %self.addr, topic = CHAIN_REORG_EVENT, "Failed to parse SSE event");
+                return;
+            }
         };
         if reorg.slot < reorg.depth {
             tracing::warn!(addr = %self.addr, slot = reorg.slot, depth = reorg.depth, "Invalid chain reorg event: depth exceeds slot");
@@ -289,10 +293,12 @@ impl SseListenerActor {
     }
 
     fn handle_block_gossip(&self, event: &SseEvent) {
-        let Some(gossip) =
-            parse_payload::<BlockGossipEventData>(BLOCK_GOSSIP_EVENT, &event.data, &self.addr)
-        else {
-            return;
+        let gossip: BlockGossipEventData = match serde_json::from_str(&event.data) {
+            Ok(gossip) => gossip,
+            Err(err) => {
+                tracing::warn!(err = ?err, addr = %self.addr, topic = BLOCK_GOSSIP_EVENT, "Failed to parse SSE event");
+                return;
+            }
         };
         let slot = gossip.slot;
 
@@ -312,9 +318,12 @@ impl SseListenerActor {
     }
 
     fn handle_block(&self, event: &SseEvent) {
-        let Some(block) = parse_payload::<BlockEventData>(BLOCK_EVENT, &event.data, &self.addr)
-        else {
-            return;
+        let block: BlockEventData = match serde_json::from_str(&event.data) {
+            Ok(block) => block,
+            Err(err) => {
+                tracing::warn!(err = ?err, addr = %self.addr, topic = BLOCK_EVENT, "Failed to parse SSE event");
+                return;
+            }
         };
         let slot = block.slot;
 
@@ -504,18 +513,6 @@ fn reconnect_backoff() -> ExponentialBuilder {
         .with_factor(1.6)
         .without_max_times()
         .with_jitter()
-}
-
-/// Deserializes an SSE event's JSON payload (numeric fields and all) in a
-/// single pass, logging and discarding malformed events.
-fn parse_payload<T: serde::de::DeserializeOwned>(topic: &str, data: &str, addr: &str) -> Option<T> {
-    match serde_json::from_str(data) {
-        Ok(payload) => Some(payload),
-        Err(err) => {
-            tracing::warn!(err = ?err, addr = %addr, topic, "Failed to parse SSE event");
-            None
-        }
-    }
 }
 
 /// Returns the delay in fractional seconds for metrics and logging.
