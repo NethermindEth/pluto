@@ -14,7 +14,7 @@ use pluto_eth2api::{
     ProduceAttestationDataRequest, ProduceAttestationDataResponse, ProduceBlockV3Request,
     ProduceBlockV3Response, ProduceSyncCommitteeContributionRequest,
     ProduceSyncCommitteeContributionResponse,
-    spec::{ConversionError, altair, phase0},
+    spec::{ConversionError, altair, bellatrix::ExecutionAddress, phase0},
     versioned,
 };
 use pluto_eth2util::eth2exp::{self, Eth2ExpError};
@@ -48,7 +48,7 @@ pub type AwaitAttDataFunc =
     Arc<dyn Fn(u64, u64) -> CallbackFuture<phase0::AttestationData> + Send + Sync>;
 
 /// Fee recipient resolver: returns the configured fee recipient for a pubkey.
-pub type FeeRecipientFunc = Arc<dyn Fn(&PubKey) -> String + Send + Sync>;
+pub type FeeRecipientFunc = Arc<dyn Fn(&PubKey) -> ExecutionAddress + Send + Sync>;
 
 /// Errors returned while fetching duty data.
 #[derive(Debug, thiserror::Error)]
@@ -584,85 +584,48 @@ fn attestation_payload(
 
 /// Logs a warning when the fee recipient is not correctly populated in the
 /// proposal. Fee recipient is unavailable in forks earlier than Bellatrix.
-fn verify_fee_recipient(proposal: &VersionedProposal, fee_recipient_address: &str) {
+fn verify_fee_recipient(proposal: &VersionedProposal, fee_recipient_address: &ExecutionAddress) {
     if let Some((expected, actual)) = fee_recipient_mismatch(proposal, fee_recipient_address) {
         tracing::warn!(
-            expected = %expected,
-            actual = %actual,
+            expected = format!("0x{}", hex::encode(expected)),
+            actual = format!("0x{}", hex::encode(actual)),
             "Proposal with unexpected fee recipient address"
         );
     }
 }
 
 /// Returns `Some((expected, actual))` when the proposal's fee recipient differs
-/// (case-insensitively) from `fee_recipient_address`. Returns `None` for forks
+/// from `fee_recipient_address`. Returns `None` for forks
 /// without a fee recipient (pre-Bellatrix) or when the addresses match.
 fn fee_recipient_mismatch(
     proposal: &VersionedProposal,
-    fee_recipient_address: &str,
-) -> Option<(String, String)> {
-    if matches!(
-        proposal.version(),
-        versioned::DataVersion::Phase0 | versioned::DataVersion::Altair
-    ) {
-        return None;
-    }
+    fee_recipient_address: &ExecutionAddress,
+) -> Option<(ExecutionAddress, ExecutionAddress)> {
+    let actual_addr = proposal_block_fee_recipient(&proposal.block)?;
 
-    // NOTE: serialization errors here (and `proposal_body`'s `unwrap_or(Null)`)
-    // are deliberately swallowed — this is best-effort, warn-only verification
-    // mirroring Go's `verifyFeeRecipient`. A failure collapses to a value that
-    // carries no `fee_recipient`, which falls through to the guard below and
-    // surfaces as a `debug_assert!`/`warn!`, so a regression is not invisible.
-    let value = serde_json::to_value(proposal_body(&proposal.block)).ok()?;
-
-    // Unblinded blocks carry `execution_payload`; blinded blocks carry
-    // `execution_payload_header`. Both expose `fee_recipient`.
-    let Some(actual_addr) = value
-        .get("execution_payload")
-        .or_else(|| value.get("execution_payload_header"))
-        .and_then(|payload| payload.get("fee_recipient"))
-        .and_then(|addr| addr.as_str())
-    else {
-        // Every Bellatrix+ proposal carries a fee recipient, so reaching here
-        // means the payload shape changed (e.g. a renamed key) and the
-        // traversal above silently stopped matching. Fail loudly in dev/test
-        // and warn in production rather than reporting a false "no mismatch".
-        debug_assert!(
-            false,
-            "Bellatrix+ proposal yielded no fee recipient address; \
-             execution payload shape may have changed"
-        );
-        tracing::warn!(
-            version = ?proposal.version(),
-            "Bellatrix+ proposal yielded no extractable fee recipient address"
-        );
-        return None;
-    };
-
-    if actual_addr.eq_ignore_ascii_case(fee_recipient_address) {
+    if actual_addr == *fee_recipient_address {
         None
     } else {
-        Some((fee_recipient_address.to_string(), actual_addr.to_string()))
+        Some((*fee_recipient_address, actual_addr))
     }
 }
 
-/// Returns the block body as a JSON value, used by [`verify_fee_recipient`].
-fn proposal_body(block: &ProposalBlock) -> serde_json::Value {
-    let body = match block {
-        ProposalBlock::Phase0(b) => serde_json::to_value(&b.body),
-        ProposalBlock::Altair(b) => serde_json::to_value(&b.body),
-        ProposalBlock::Bellatrix(b) => serde_json::to_value(&b.body),
-        ProposalBlock::BellatrixBlinded(b) => serde_json::to_value(&b.body),
-        ProposalBlock::Capella(b) => serde_json::to_value(&b.body),
-        ProposalBlock::CapellaBlinded(b) => serde_json::to_value(&b.body),
-        ProposalBlock::Deneb { block, .. } => serde_json::to_value(&block.body),
-        ProposalBlock::DenebBlinded(b) => serde_json::to_value(&b.body),
-        ProposalBlock::Electra { block, .. } => serde_json::to_value(&block.body),
-        ProposalBlock::ElectraBlinded(b) => serde_json::to_value(&b.body),
-        ProposalBlock::Fulu { block, .. } => serde_json::to_value(&block.body),
-        ProposalBlock::FuluBlinded(b) => serde_json::to_value(&b.body),
-    };
-    body.unwrap_or(serde_json::Value::Null)
+/// Extracts the fee recipient from a proposal block, if available. Returns
+/// `None` for pre-Bellatrix blocks or if the fee recipient cannot be extracted.
+fn proposal_block_fee_recipient(block: &ProposalBlock) -> Option<[u8; 20]> {
+    match block {
+        ProposalBlock::Bellatrix(b) => Some(b.body.execution_payload.fee_recipient),
+        ProposalBlock::BellatrixBlinded(b) => Some(b.body.execution_payload_header.fee_recipient),
+        ProposalBlock::Capella(b) => Some(b.body.execution_payload.fee_recipient),
+        ProposalBlock::CapellaBlinded(b) => Some(b.body.execution_payload_header.fee_recipient),
+        ProposalBlock::Deneb { block, .. } => Some(block.body.execution_payload.fee_recipient),
+        ProposalBlock::DenebBlinded(b) => Some(b.body.execution_payload_header.fee_recipient),
+        ProposalBlock::Electra { block, .. } => Some(block.body.execution_payload.fee_recipient),
+        ProposalBlock::ElectraBlinded(b) => Some(b.body.execution_payload_header.fee_recipient),
+        ProposalBlock::Fulu { block, .. } => Some(block.body.execution_payload.fee_recipient),
+        ProposalBlock::FuluBlinded(b) => Some(b.body.execution_payload_header.fee_recipient),
+        _ => None,
+    }
 }
 
 /// Tracks which pubkeys were selected/resolved for aggregation duties so the
@@ -750,7 +713,7 @@ mod tests {
     /// Fee-recipient stub for tests that don't exercise fee-recipient
     /// verification.
     fn stub_fee_recipient() -> FeeRecipientFunc {
-        Arc::new(|_| String::new())
+        Arc::new(|_| ExecutionAddress::default())
     }
 
     /// AggSigDB stub for tests whose duty path never queries it.
@@ -981,17 +944,14 @@ mod tests {
                 execution_payload_value: alloy::primitives::U256::ZERO,
             };
 
-            // A different address is reported as a mismatch; the proposal's own
-            // fee recipient matches itself (case-insensitively).
-            let (_, actual) = fee_recipient_mismatch(&proposal, "0xdead")
-                .unwrap_or_else(|| panic!("{name}: expected a mismatch against 0xdead"));
+            // A different address is reported as a mismatch.
+            // the proposal's own fee recipient matches itself.
+            let some_fee_recipient = [0xFF; 20];
+            let (_, actual) = fee_recipient_mismatch(&proposal, &some_fee_recipient)
+                .unwrap_or_else(|| panic!("{name}: expected a mismatch"));
             assert!(
                 fee_recipient_mismatch(&proposal, &actual).is_none(),
                 "{name}: should match its own fee recipient",
-            );
-            assert!(
-                fee_recipient_mismatch(&proposal, &actual.to_uppercase()).is_none(),
-                "{name}: should match case-insensitively",
             );
         }
     }
