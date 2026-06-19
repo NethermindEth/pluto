@@ -9,11 +9,6 @@
 //! a reconnecting stream "pump") that live until a [`CancellationToken`] fires,
 //! and the returned [`SseListenerHandle`] allows interacting with the running
 //! actor.
-//!
-//! The actor is single-threaded: it owns all of its state and processes one
-//! event at a time, so no locking is required. The event source is decoupled
-//! from the actor via an mpsc channel — in production a pump task forwards
-//! beacon node events into it; tests push [`SseEvent`]s directly.
 
 use std::time::Duration;
 
@@ -37,7 +32,7 @@ pub mod metrics;
 pub mod types;
 
 /// Default buffer size for the channels used by the listener.
-const CHANNEL_BUFFER_SIZE: usize = 100;
+const CHANNEL_BUFFER_SIZE: usize = 1024;
 
 /// Base delay between SSE reconnection attempts.
 const DEFAULT_RETRY: Duration = Duration::from_secs(1);
