@@ -223,11 +223,6 @@ impl SseListenerActor {
         };
         let slot = head.slot;
 
-        if i64::try_from(slot).is_err() {
-            tracing::warn!(addr = %self.addr, slot, "Head slot value exceeds i64 range");
-            return;
-        }
-
         // The chain's head is updated once a majority of the chain votes for a
         // block, which realistically happens between 2/3 and 3/3 of the slot.
         let window =
@@ -258,8 +253,11 @@ impl SseListenerActor {
         let Some(reorg) =
             parse_payload::<ChainReorgEventData>(CHAIN_REORG_EVENT, &event.data, &self.addr)
         else {
+            // CLAUDE: On failed parsing we don't do anything. What does Charon do? Should
+            // we at least log?
             return;
         };
+        // CLAUDE: Inline these variables
         let (slot, depth) = (reorg.slot, reorg.depth);
 
         if slot < depth {
