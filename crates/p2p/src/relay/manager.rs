@@ -43,8 +43,8 @@ const ESTABLISHED_WATCHDOG_TICK: Duration = Duration::from_secs(15);
 
 /// Lifecycle of a relay reservation.
 ///
-/// - `Dialing`: a [`RelayDialState`] is in flight; no transport connection to
-///   the relay yet.
+/// - `Dialing`: a `RelayDialState` is in flight; no transport connection to the
+///   relay yet.
 /// - `Established`: transport connection to the relay is up; the swarm has been
 ///   asked to listen on the circuit address(es) but no reservation has been
 ///   confirmed yet.
@@ -515,10 +515,9 @@ impl RelayManager {
         }
     }
 
-    /// Reacts to a dial failure by logging and emitting a
-    /// [`RelayManagerEvent::DialFailed`] event. The underlying
-    /// [`RelayDialState`] self-rearms with exponential backoff on the next
-    /// swarm poll, so by default no state change is needed here.
+    /// Reacts to a dial failure by logging and emitting a `DialFailed` event.
+    /// The underlying `RelayDialState` self-rearms with exponential backoff
+    /// on the next swarm poll, so by default no state change is needed here.
     ///
     /// One special case: `DialError::DialPeerConditionFalse` means libp2p
     /// refused the dial because we're already connected to (or dialing) the

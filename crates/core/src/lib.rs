@@ -26,6 +26,10 @@ pub mod deadline;
 /// Clock abstraction over the current time.
 pub mod clock;
 
+/// Duty gater — rejects duties whose type is invalid or that are too far in the
+/// future.
+pub mod gater;
+
 /// parsigdb
 pub mod parsigdb;
 
@@ -39,8 +43,15 @@ pub mod validatorapi;
 /// SigAgg — threshold BLS signature aggregation.
 pub mod sigagg;
 
+/// Resolves beacon-chain duties per epoch, ticks the slot clock, and fans
+/// duties out to downstream components.
+pub mod scheduler;
+
 /// Implementations of AggSigDB.
 pub mod aggsigdb;
+
+/// Broadcaster for aggregate signed duty data.
+pub mod bcast;
 
 mod parsigex_codec;
 

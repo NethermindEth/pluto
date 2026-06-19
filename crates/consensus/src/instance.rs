@@ -29,6 +29,7 @@ use std::{
         Mutex, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
+    time::Instant,
 };
 
 use prost_types::Any;
@@ -105,6 +106,10 @@ pub struct InstanceIo<T> {
     /// Publishes the runner completion result.
     pub(crate) err_tx: mpsc::Sender<RunnerResult>,
     err_rx: ReceiverSlot<RunnerResult>,
+
+    /// Publishes the local decision timestamp.
+    pub(crate) decided_at_tx: mpsc::Sender<Instant>,
+    decided_at_rx: ReceiverSlot<Instant>,
 }
 
 impl<T> InstanceIo<T> {
@@ -115,6 +120,7 @@ impl<T> InstanceIo<T> {
         let (value_tx, value_rx) = mpsc::channel(1);
         let (verify_tx, verify_rx) = mpsc::channel(1);
         let (err_tx, err_rx) = mpsc::channel(1);
+        let (decided_at_tx, decided_at_rx) = mpsc::channel(1);
 
         Self {
             participated: AtomicBool::new(false),
@@ -130,6 +136,8 @@ impl<T> InstanceIo<T> {
             verify_rx: Mutex::new(Some(verify_rx)),
             err_tx,
             err_rx: Mutex::new(Some(err_rx)),
+            decided_at_tx,
+            decided_at_rx: Mutex::new(Some(decided_at_rx)),
         }
     }
 
@@ -190,6 +198,11 @@ impl<T> InstanceIo<T> {
     /// Transfers runner result ownership to the waiting task.
     pub fn take_err_rx(&self) -> Result<mpsc::Receiver<RunnerResult>> {
         take_receiver(&self.err_rx, "err")
+    }
+
+    /// Transfers decided timestamp ownership to the proposer.
+    pub fn take_decided_at_rx(&self) -> Result<mpsc::Receiver<Instant>> {
+        take_receiver(&self.decided_at_rx, "decided_at")
     }
 }
 
@@ -290,6 +303,12 @@ mod tests {
             io.err_tx.try_send(Err(Box::new(TestError))),
             Err(TrySendError::Full(Err(_)))
         ));
+
+        assert!(io.decided_at_tx.try_send(Instant::now()).is_ok());
+        assert!(matches!(
+            io.decided_at_tx.try_send(Instant::now()),
+            Err(TrySendError::Full(_))
+        ));
     }
 
     #[test]
@@ -319,6 +338,9 @@ mod tests {
 
         assert!(io.take_err_rx().is_ok());
         assert_receiver_already_taken(io.take_err_rx(), "err");
+
+        assert!(io.take_decided_at_rx().is_ok());
+        assert_receiver_already_taken(io.take_decided_at_rx(), "decided_at");
     }
 
     #[test]

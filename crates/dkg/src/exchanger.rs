@@ -49,6 +49,7 @@ use tracing::warn;
 
 use pluto_core::{
     deadline::{DeadlinerTask, NeverExpiringCalculator},
+    gater::DutyGaterFn,
     parsigdb::memory::{
         InternalSubscriberError, MemDB, MemDBError, internal_subscriber, threshold_subscriber,
     },
@@ -100,8 +101,6 @@ impl Default for DataByPubkey {
         }
     }
 }
-
-type DutyGaterFn = Arc<dyn Fn(&Duty) -> bool + Send + Sync + 'static>;
 
 /// Errors returned by exchanger operations.
 #[derive(Debug, thiserror::Error)]
@@ -331,7 +330,9 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
-    use super::{Exchanger, SIG_DEPOSIT_DATA, SIG_LOCK, SIG_VALIDATOR_REG, SigTypeStore};
+    use super::{
+        DutyGaterFn, Exchanger, SIG_DEPOSIT_DATA, SIG_LOCK, SIG_VALIDATOR_REG, SigTypeStore,
+    };
 
     fn available_tcp_port() -> anyhow::Result<u16> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
@@ -375,7 +376,7 @@ mod tests {
         let p2p_context = P2PContext::new(peer_ids.to_vec());
         let verifier: pluto_parsigex::Verifier =
             Arc::new(|_duty, _pk, _psig| Box::pin(async { Ok(()) }));
-        let duty_gater: pluto_parsigex::DutyGater =
+        let duty_gater: DutyGaterFn =
             Arc::new(|duty: &pluto_core::types::Duty| duty.duty_type == DutyType::Signature);
 
         ParsexBehaviour::new(ParsexConfig::new(
@@ -515,7 +516,7 @@ mod tests {
 
             let verifier: pluto_parsigex::Verifier =
                 Arc::new(|_duty, _pk, _psig| Box::pin(async { Ok(()) }));
-            let duty_gater: pluto_parsigex::DutyGater =
+            let duty_gater: DutyGaterFn =
                 Arc::new(|duty: &pluto_core::types::Duty| duty.duty_type == DutyType::Signature);
 
             let config = ParsexConfig::new(peer_ids[i], p2p_context.clone(), verifier, duty_gater);
