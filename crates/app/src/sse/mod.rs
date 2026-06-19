@@ -286,7 +286,7 @@ impl SseListenerActor {
         tracing::debug!(
             addr = %self.addr,
             slot = reorg.slot,
-            epoch = %reorg.epoch,
+            epoch = reorg.epoch,
             reorg_epoch,
             depth = reorg.depth,
             old_head_block = %reorg.old_head_block,

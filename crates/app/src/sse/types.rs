@@ -60,7 +60,8 @@ pub struct ChainReorgEventData {
     #[serde_as(as = "DisplayFromStr")]
     pub depth: u64,
     /// The epoch at which the reorg occurred.
-    pub epoch: String,
+    #[serde_as(as = "DisplayFromStr")]
+    pub epoch: u64,
     /// The block root of the old head.
     pub old_head_block: String,
     /// The block root of the new head.
