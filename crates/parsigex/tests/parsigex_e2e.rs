@@ -16,6 +16,7 @@ use anyhow::{Context as _, Result, bail, ensure};
 use futures::StreamExt as _;
 use libp2p::{Multiaddr, PeerId, swarm::SwarmEvent};
 use pluto_core::{
+    gater::DutyGaterFn,
     signeddata::SignedRandao,
     types::{Duty, DutyType, ParSignedDataSet, PubKey, SlotNumber},
 };
@@ -31,7 +32,7 @@ use pluto_p2p::{
     p2p_context::P2PContext,
     peer::peer_id_from_key,
 };
-use pluto_parsigex::{self as parsigex, DutyGater, Event, Handle, Verifier};
+use pluto_parsigex::{self as parsigex, Event, Handle, Verifier};
 use pluto_testutil::random::{generate_insecure_k1_key, generate_test_bls_key};
 use tokio::{sync::mpsc, task::JoinSet, time};
 use tokio_util::sync::CancellationToken;
@@ -332,7 +333,7 @@ impl<'a> NodeBuilder<'a> {
         let p2p_context = P2PContext::new(self.peer_ids.clone());
 
         let verifier: Verifier = Arc::new(|_duty, _pubkey, _data| Box::pin(async { Ok(()) }));
-        let duty_gater: DutyGater = Arc::new(|duty: &Duty| duty.duty_type != DutyType::Unknown);
+        let duty_gater: DutyGaterFn = Arc::new(|duty: &Duty| duty.duty_type != DutyType::Unknown);
         let config = parsigex::Config::new(peer_id, p2p_context.clone(), verifier, duty_gater)
             .with_timeout(Duration::from_secs(10));
         let (behaviour, handle) = parsigex::Behaviour::new(config);
