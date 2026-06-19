@@ -725,4 +725,136 @@ mod tests {
 
         ct.cancel();
     }
+
+    const HEAD_EVENT_BODY: &str = "event: head\ndata: {\"slot\":\"10\"}\n\n";
+
+    /// Starts a mock beacon node serving the given SSE body (and status) at
+    /// `/eth/v1/events` and returns a client pointed at it. The returned
+    /// `MockServer` must be kept alive for the duration of the test.
+    async fn mock_sse(status: u16, body: &str) -> (wiremock::MockServer, EthBeaconNodeApiClient) {
+        use wiremock::{
+            Mock, ResponseTemplate,
+            matchers::{method, path},
+        };
+
+        let server = wiremock::MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/eth/v1/events"))
+            .respond_with(
+                ResponseTemplate::new(status).set_body_raw(body.to_owned(), "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid url");
+        (server, client)
+    }
+
+    #[tokio::test]
+    async fn run_loop_stops_when_event_channel_closes() {
+        // The pump dropping its sender must stop the actor, not leave it parked
+        // forever with no events and no reconnection (the token is never fired).
+        let ct = CancellationToken::new();
+        let (events_tx, events_rx) = sync::mpsc::channel(8);
+        let (_msg_tx, msg_rx) = sync::mpsc::channel(8);
+
+        let actor = test_actor(vec![]);
+        let handle = tokio::spawn(actor.run(events_rx, msg_rx, ct.clone()));
+
+        drop(events_tx);
+
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("actor did not stop after the event channel closed")
+            .expect("actor task panicked");
+        assert!(
+            !ct.is_cancelled(),
+            "actor stopped on its own, without cancellation"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_once_forwards_event_and_reports_productive() {
+        let (_server, client) = mock_sse(200, HEAD_EVENT_BODY).await;
+        let (events_tx, mut events_rx) = sync::mpsc::channel(8);
+        let ct = CancellationToken::new();
+
+        let outcome = stream_once(&client, "test", &events_tx, &ct).await;
+
+        assert!(matches!(outcome, StreamOutcome::Ended { productive: true }));
+        let event = events_rx.try_recv().expect("event forwarded");
+        assert_eq!(event.topic, HEAD_EVENT);
+    }
+
+    #[tokio::test]
+    async fn stream_once_reports_unproductive_on_immediate_eof() {
+        // A connection that accepts and immediately closes with no events must
+        // report `productive: false` so the pump backs off instead of looping.
+        let (_server, client) = mock_sse(200, "").await;
+        let (events_tx, _events_rx) = sync::mpsc::channel(8);
+        let ct = CancellationToken::new();
+
+        let outcome = stream_once(&client, "test", &events_tx, &ct).await;
+
+        assert!(matches!(
+            outcome,
+            StreamOutcome::Ended { productive: false }
+        ));
+    }
+
+    #[tokio::test]
+    async fn stream_once_reports_error_on_non_success_status() {
+        let (_server, client) = mock_sse(500, "").await;
+        let (events_tx, _events_rx) = sync::mpsc::channel(8);
+        let ct = CancellationToken::new();
+
+        let outcome = stream_once(&client, "test", &events_tx, &ct).await;
+
+        assert!(matches!(
+            outcome,
+            StreamOutcome::Error { productive: false }
+        ));
+    }
+
+    #[tokio::test]
+    async fn stream_once_returns_cancelled_when_token_fires() {
+        let (_server, client) = mock_sse(200, HEAD_EVENT_BODY).await;
+        let (events_tx, _events_rx) = sync::mpsc::channel(8);
+        let ct = CancellationToken::new();
+        ct.cancel();
+
+        let outcome = stream_once(&client, "test", &events_tx, &ct).await;
+
+        assert!(matches!(outcome, StreamOutcome::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn stream_once_returns_channel_closed_when_receiver_dropped() {
+        let (_server, client) = mock_sse(200, HEAD_EVENT_BODY).await;
+        let (events_tx, events_rx) = sync::mpsc::channel(8);
+        drop(events_rx);
+        let ct = CancellationToken::new();
+
+        let outcome = stream_once(&client, "test", &events_tx, &ct).await;
+
+        assert!(matches!(outcome, StreamOutcome::ChannelClosed));
+    }
+
+    #[tokio::test]
+    async fn run_pump_forwards_events_and_stops_on_cancellation() {
+        let (_server, client) = mock_sse(200, HEAD_EVENT_BODY).await;
+        let (events_tx, mut events_rx) = sync::mpsc::channel(8);
+        let ct = CancellationToken::new();
+
+        let pump = tokio::spawn(run_pump(client, "test".to_string(), events_tx, ct.clone()));
+
+        let event = events_rx.recv().await.expect("event forwarded");
+        assert_eq!(event.topic, HEAD_EVENT);
+
+        ct.cancel();
+        tokio::time::timeout(Duration::from_secs(5), pump)
+            .await
+            .expect("pump did not stop after cancellation")
+            .expect("pump task panicked");
+    }
 }
