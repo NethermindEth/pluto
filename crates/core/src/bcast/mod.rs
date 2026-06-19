@@ -281,6 +281,7 @@ impl Broadcaster {
                 self.broadcast_builder_registration(&duty, &set).await?;
             }
             DutyType::Exit => self.broadcast_exits(&duty, &set).await?,
+            // Internal DVT duties; nothing is submitted to the beacon node.
             DutyType::Randao | DutyType::PrepareAggregator | DutyType::PrepareSyncContribution => {}
             DutyType::Aggregator => self.broadcast_aggregator(&duty, &set).await?,
             DutyType::SyncMessage => self.broadcast_sync_messages(&duty, &set).await?,

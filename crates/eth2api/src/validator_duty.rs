@@ -383,14 +383,12 @@ fn attestations_request_body(
                 "missing payload",
             ));
         };
-        let value = match payload {
+        let attestation = match payload {
             versioned::AttestationPayload::Phase0(attestation)
             | versioned::AttestationPayload::Altair(attestation)
             | versioned::AttestationPayload::Bellatrix(attestation)
             | versioned::AttestationPayload::Capella(attestation)
-            | versioned::AttestationPayload::Deneb(attestation) => {
-                serde_json::to_value(attestation).map_err(error_message)?
-            }
+            | versioned::AttestationPayload::Deneb(attestation) => attestation,
             versioned::AttestationPayload::Electra(_) | versioned::AttestationPayload::Fulu(_) => {
                 return Err(unexpected_response(
                     "attestation request body",
@@ -398,7 +396,11 @@ fn attestations_request_body(
                 ));
             }
         };
-        items.push(serde_json::from_value(value).map_err(error_message)?);
+        items.push(crate::GetBlockAttestationsV2ResponseResponseDataArray2 {
+            aggregation_bits: hex0x(attestation.aggregation_bits.to_ssz_bytes()),
+            data: data_request_body(&attestation.data)?,
+            signature: hex0x(attestation.signature),
+        });
     }
 
     Ok(crate::AttestationRequestBody2::Array2(items))
