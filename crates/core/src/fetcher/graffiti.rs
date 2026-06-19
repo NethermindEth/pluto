@@ -24,17 +24,19 @@ pub enum GraffitiError {
     LengthMismatch,
 }
 
-/// Maps beacon node product tokens (the first `/`-separated component of the
-/// node version string) to their two-letter graffiti code.
-pub fn client_graffiti_mappings() -> HashMap<&'static str, &'static str> {
-    HashMap::from([
-        ("teku", "TK"),
-        ("Lighthouse", "LH"),
-        ("Lodestar", "LS"),
-        ("Prysm", "PY"),
-        ("Nimbus", "NB"),
-        ("Grandine", "GD"),
-    ])
+/// Maps a beacon node product token (the first `/`-separated component of the
+/// node version string) to its two-letter graffiti code, returning an empty
+/// string for an unrecognized client.
+pub fn client_graffiti_token(product_token: &str) -> &'static str {
+    match product_token {
+        "teku" => "TK",
+        "Lighthouse" => "LH",
+        "Lodestar" => "LS",
+        "Prysm" => "PY",
+        "Nimbus" => "NB",
+        "Grandine" => "GD",
+        _ => "",
+    }
 }
 
 /// Builds per-validator graffiti used when proposing blocks.
@@ -144,10 +146,7 @@ async fn fetch_beacon_node_token(eth2_cl: &EthBeaconNodeApiClient) -> String {
 
     let product_token = version.split('/').next().unwrap_or_default();
 
-    client_graffiti_mappings()
-        .get(product_token)
-        .map(|token| (*token).to_string())
-        .unwrap_or_default()
+    client_graffiti_token(product_token).to_string()
 }
 
 /// Fetches the beacon node version string (e.g. `Lighthouse/v0.1.5 (Linux
