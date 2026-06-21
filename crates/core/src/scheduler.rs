@@ -441,7 +441,7 @@ impl SchedulerActor {
             let att_duties = fetch_attester_duties(&slot, &vals, &self.client).await?;
             for att_duty in att_duties.into_iter() {
                 if !self.set_duty_definition(
-                    types::Duty::new_attester_duty(att_duty.slot),
+                    types::Duty::new_attester_duty(att_duty.duty.slot.into()),
                     slot.epoch(),
                     att_duty.pubkey,
                     types::DutyDefinition::Attester(att_duty.clone()),
@@ -450,15 +450,15 @@ impl SchedulerActor {
                 }
 
                 tracing::info!(
-                    slot = %att_duty.slot,
-                    vidx = %att_duty.v_idx,
+                    slot = %att_duty.duty.slot,
+                    vidx = %att_duty.duty.validator_index,
                     pubkey = %att_duty.pubkey,
                     epoch = %slot.epoch(),
                     "Resolved attester duty"
                 );
 
                 // Schedule Aggregator duty as well
-                let agg_duty = types::Duty::new_aggregator_duty(att_duty.slot);
+                let agg_duty = types::Duty::new_aggregator_duty(att_duty.duty.slot.into());
                 self.set_duty_definition(
                     agg_duty,
                     slot.epoch(),
@@ -870,20 +870,20 @@ async fn fetch_attester_duties(
 
     let mut result = vec![];
     for att_duty in att_duties.into_iter() {
-        remaining.remove(&att_duty.v_idx);
+        remaining.remove(&att_duty.duty.validator_index);
 
-        if att_duty.slot < slot.slot {
+        if att_duty.duty.slot < slot.slot.inner() {
             // Skip duties for earlier slots in initial epoch.
             continue;
         }
 
         let Some(pubkey) = validators
             .iter()
-            .find(|v| v.v_idx == att_duty.v_idx)
+            .find(|v| v.v_idx == att_duty.duty.validator_index)
             .map(|v| v.pubkey)
         else {
             tracing::warn!(
-                vidx = att_duty.v_idx,
+                vidx = att_duty.duty.validator_index,
                 slot = %slot.slot,
                 "Ignoring unexpected attester duty"
             );
@@ -1161,7 +1161,10 @@ mod tests {
             pubkey: pubkey.to_string(),
             validator_index: v_idx.to_string(),
             slot: slot.to_string(),
-            ..Default::default()
+            committee_index: "0".to_string(),
+            committee_length: "0".to_string(),
+            committees_at_slot: "0".to_string(),
+            validator_committee_index: "0".to_string(),
         };
         let def: types::AttesterDutyDefinition = datum.try_into().expect("valid attester datum");
         types::DutyDefinition::Attester(def)

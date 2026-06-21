@@ -10,8 +10,9 @@ use async_trait::async_trait;
 use axum::http::StatusCode;
 use pluto_eth2api::{
     EthBeaconNodeApiClient, GetAttesterDutiesRequest, GetAttesterDutiesResponse,
-    GetProposerDutiesRequest, GetProposerDutiesResponse, GetSyncCommitteeDutiesRequest,
-    GetSyncCommitteeDutiesResponse,
+    GetProposerDutiesRequest, GetProposerDutiesResponse, GetStateValidatorsResponseResponse,
+    GetSyncCommitteeDutiesRequest, GetSyncCommitteeDutiesResponse, PostStateValidatorsRequest,
+    PostStateValidatorsRequestPath, PostStateValidatorsResponse, ValidatorRequestBody,
     spec::phase0::{BLSPubKey, Domain, Epoch, Root, Slot, ValidatorIndex},
     valcache::{ActiveValidators, CachedValidatorsProvider},
     versioned::{DataVersion, SignedBlindedProposalBlock, SignedProposalBlock},
@@ -1295,9 +1296,91 @@ impl Handler for Component {
     #[instrument(skip_all)]
     async fn validators(
         &self,
-        _opts: ValidatorsOpts,
+        opts: ValidatorsOpts,
     ) -> Result<EthResponse<Vec<Validator>>, ApiError> {
-        unimplemented!("validators not yet ported")
+        // The VC sends share pubkeys (one per DV root). Translate each share
+        // back to the cluster's root pubkey before forwarding upstream, since
+        // the beacon node only knows the root keys. An empty `pubkeys` is
+        // forwarded as `None` so the upstream is not artificially narrowed.
+        //
+        // Port of `Validators` in
+        // `core/validatorapi/validatorapi.go` (lines 1218–1296).
+        let pubkey_by_share = invert_pub_share_map(&self.pub_share_by_pubkey);
+
+        let mut root_pubkeys: Vec<String> = Vec::with_capacity(opts.pubkeys.len());
+        for share in &opts.pubkeys {
+            let root = pubkey_by_share.get(share).ok_or_else(|| {
+                // Mirrors the Go `getPubKeyFunc` "unknown public key" branch.
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "unknown validator public key in request",
+                )
+            })?;
+            root_pubkeys.push(format_bls_pubkey(root));
+        }
+
+        // Upstream's `id` field accepts either a pubkey hex string or a
+        // decimal validator-index string — both go in the same `ids` array.
+        let mut ids: Vec<String> = root_pubkeys;
+        ids.extend(opts.indices.iter().map(|idx| idx.to_string()));
+
+        let request = PostStateValidatorsRequest {
+            path: PostStateValidatorsRequestPath {
+                state_id: opts.state.clone(),
+            },
+            body: ValidatorRequestBody {
+                ids: if ids.is_empty() { None } else { Some(ids) },
+                // Status filter is not exposed by Pluto's `ValidatorsOpts`; the
+                // Go reference also omits it from the upstream call.
+                statuses: None,
+            },
+        };
+
+        let response = tokio::time::timeout(
+            UPSTREAM_REQUEST_TIMEOUT,
+            self.eth2_cl.post_state_validators(request),
+        )
+        .await
+        .map_err(|_| upstream_timeout("validators"))?
+        .map_err(|err| upstream_call_failed("validators", err.into()))?;
+
+        let payload: GetStateValidatorsResponseResponse = match response {
+            PostStateValidatorsResponse::Ok(payload) => payload,
+            PostStateValidatorsResponse::BadRequest(body) => {
+                return Err(upstream_status_error(
+                    StatusCode::BAD_REQUEST,
+                    "validators",
+                    body,
+                ));
+            }
+            PostStateValidatorsResponse::NotFound(body) => {
+                return Err(upstream_status_error(
+                    StatusCode::NOT_FOUND,
+                    "validators",
+                    body,
+                ));
+            }
+            other @ (PostStateValidatorsResponse::InternalServerError(_)
+            | PostStateValidatorsResponse::Unknown) => {
+                return Err(upstream_unexpected("validators", other));
+            }
+        };
+
+        // `ignore_not_found` mirrors the Go `len(opts.Indices) == 0` contract:
+        // when indices were provided, every returned validator must belong to
+        // this cluster's share map, so an unknown pubkey is rejected as a
+        // configuration error. When no indices were provided (pubkey-only or
+        // an unfiltered "fetch all"), validators outside the share map pass
+        // through with their root pubkey untouched.
+        let ignore_not_found = opts.indices.is_empty();
+        let data = convert_validators(payload.data, &self.pub_share_by_pubkey, ignore_not_found)?;
+
+        Ok(EthResponse {
+            data,
+            execution_optimistic: payload.execution_optimistic,
+            finalized: payload.finalized,
+            dependent_root: None,
+        })
     }
 
     /// Fan-out is per-entry and **not transactional**: registrations are
@@ -1761,6 +1844,57 @@ fn swap_sync_committee_pubshares(
         duty.pubkey = format_bls_pubkey(share);
     }
     Ok(())
+}
+
+/// Replaces the root public key on each upstream validator entry with this
+/// node's public share. Port of `convertValidators` in
+/// `core/validatorapi/validatorapi.go` (lines 1305–1332).
+///
+/// When `ignore_not_found` is `true` (the caller passed no indices),
+/// validators whose root pubkey is not part of this cluster's share map are
+/// passed through with their original root pubkey — e.g. an unfiltered
+/// "fetch all" returns validators we do not own and those entries are kept.
+/// When `false` (indices were provided), an unknown pubkey is rejected, so
+/// every returned entry must belong to this cluster's share map.
+fn convert_validators(
+    upstream: Vec<Validator>,
+    pub_share_by_pubkey: &HashMap<BLSPubKey, BLSPubKey>,
+    ignore_not_found: bool,
+) -> Result<Vec<Validator>, ApiError> {
+    let mut out = Vec::with_capacity(upstream.len());
+    for mut validator in upstream {
+        let pubkey = parse_bls_pubkey(&validator.validator.pubkey)?;
+        match pub_share_by_pubkey.get(&pubkey) {
+            Some(share) => {
+                validator.validator.pubkey = format_bls_pubkey(share);
+            }
+            None if ignore_not_found => {
+                // Validator does not belong to this cluster — keep the
+                // entry with its root pubkey unchanged. Mirrors the Go
+                // `convertValidators` `else if ok` branch.
+            }
+            None => {
+                return Err(ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "pubshare not found for validator",
+                ));
+            }
+        }
+        out.push(validator);
+    }
+    Ok(out)
+}
+
+/// Builds the share → root pubkey map by inverting `pub_share_by_pubkey`.
+/// Used by the `validators` handler to translate VC-side share pubkeys back
+/// into the cluster's root pubkeys before forwarding upstream.
+fn invert_pub_share_map(
+    pub_share_by_pubkey: &HashMap<BLSPubKey, BLSPubKey>,
+) -> HashMap<BLSPubKey, BLSPubKey> {
+    pub_share_by_pubkey
+        .iter()
+        .map(|(root, share)| (*share, *root))
+        .collect()
 }
 
 /// Downcasts the aggregated signed data from the AggSigDB to a
@@ -5421,5 +5555,378 @@ mod tests {
             .submit_proposal(VersionedSignedProposal(signed))
             .await
             .unwrap();
+    }
+
+    // ----------------------------------------------------------------------
+    // `validators` tests
+    // ----------------------------------------------------------------------
+
+    use pluto_eth2api::{ValidatorResponseValidator, ValidatorStatus};
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
+
+    /// Builds a `Validator` (i.e. `GetStateValidatorsResponseResponseDatum`)
+    /// with the given index and pubkey. Other fields are filled with
+    /// placeholder values acceptable to the eth2api type.
+    fn make_validator_datum(index: u64, pubkey: &BLSPubKey) -> Validator {
+        Validator {
+            balance: "32000000000".to_owned(),
+            index: index.to_string(),
+            status: ValidatorStatus::ActiveOngoing,
+            validator: ValidatorResponseValidator {
+                pubkey: format_bls_pubkey(pubkey),
+                withdrawal_credentials:
+                    "0x0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
+                effective_balance: "32000000000".to_owned(),
+                slashed: false,
+                activation_eligibility_epoch: "0".to_owned(),
+                activation_epoch: "0".to_owned(),
+                exit_epoch: "18446744073709551615".to_owned(),
+                withdrawable_epoch: "18446744073709551615".to_owned(),
+            },
+        }
+    }
+
+    /// Builds a `Component` whose upstream client points at the given
+    /// `MockServer`, with the supplied root → share map. The dutydb is the
+    /// usual never-expiring stub since the `validators` handler does not
+    /// consult it.
+    fn make_component_with_upstream(
+        server: &MockServer,
+        pub_share_by_pubkey: HashMap<BLSPubKey, BLSPubKey>,
+    ) -> Component {
+        let cancel = CancellationToken::new();
+        let (deadliner, _deadliner_rx) =
+            DeadlinerTask::start(cancel.clone(), "validatorapi-tests", FarFutureCalculator);
+        let (_evict_tx, evict_rx) = mpsc::channel(1);
+        let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(server.uri()).unwrap());
+        Component::new(
+            eth2_cl,
+            dutydb,
+            1,
+            pub_share_by_pubkey,
+            false,
+            TestValidatorCache::empty(),
+        )
+    }
+
+    /// Happy path: every upstream entry has a known root pubkey, so each
+    /// inner `validator.pubkey` is rewritten to this node's share. Mirrors
+    /// the `else if ok` branch of `convertValidators`.
+    #[test]
+    fn convert_validators_rewrites_known_pubkeys() {
+        let root = [0xAA_u8; 48];
+        let share = [0xBB_u8; 48];
+        let map = HashMap::from([(root, share)]);
+
+        let upstream = vec![make_validator_datum(7, &root)];
+        let out = convert_validators(upstream, &map, false).unwrap();
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].validator.pubkey, format_bls_pubkey(&share));
+        assert_eq!(out[0].index, "7");
+    }
+
+    /// With `ignore_not_found = true`, an unknown pubkey is passed through
+    /// unchanged (Go: `else if ok` — the entry is still appended to `resp`
+    /// with the original root pubkey).
+    #[test]
+    fn convert_validators_ignore_not_found_keeps_entry_unchanged() {
+        let known_root = [0x11_u8; 48];
+        let share = [0x22_u8; 48];
+        let unknown = [0x33_u8; 48];
+        let map = HashMap::from([(known_root, share)]);
+
+        let upstream = vec![
+            make_validator_datum(1, &known_root),
+            make_validator_datum(2, &unknown),
+        ];
+        let out = convert_validators(upstream, &map, true).unwrap();
+
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].validator.pubkey, format_bls_pubkey(&share));
+        // Unknown entry is preserved verbatim.
+        assert_eq!(out[1].validator.pubkey, format_bls_pubkey(&unknown));
+        assert_eq!(out[1].index, "2");
+    }
+
+    /// With `ignore_not_found = false`, an unknown pubkey is rejected.
+    /// Mirrors Go: `if !ok && !ignoreNotFound { return nil, errors.New(...) }`.
+    #[test]
+    fn convert_validators_rejects_unknown_when_not_ignoring() {
+        let known_root = [0x44_u8; 48];
+        let share = [0x55_u8; 48];
+        let unknown = [0x66_u8; 48];
+        let map = HashMap::from([(known_root, share)]);
+
+        let upstream = vec![make_validator_datum(3, &unknown)];
+        let err = convert_validators(upstream, &map, false).unwrap_err();
+        assert_eq!(err.status_code, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// A malformed pubkey from the upstream is surfaced as 502 — the
+    /// gateway returned data we cannot interpret.
+    #[test]
+    fn convert_validators_rejects_malformed_upstream_pubkey() {
+        let mut datum = make_validator_datum(0, &[0; 48]);
+        datum.validator.pubkey = "0xnothex".to_owned();
+        let err = convert_validators(vec![datum], &HashMap::new(), true).unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_GATEWAY);
+    }
+
+    /// `invert_pub_share_map` is the share → root direction needed when
+    /// translating VC-supplied pubshares back into root pubkeys before the
+    /// upstream call.
+    #[test]
+    fn invert_pub_share_map_round_trips() {
+        let root = [0x77_u8; 48];
+        let share = [0x88_u8; 48];
+        let forward = HashMap::from([(root, share)]);
+
+        let inverted = invert_pub_share_map(&forward);
+        assert_eq!(inverted.get(&share), Some(&root));
+        assert_eq!(inverted.len(), 1);
+    }
+
+    /// End-to-end happy path: the upstream returns one validator keyed by
+    /// the cluster's root pubkey; the handler rewrites it to the VC's
+    /// share pubkey before returning.
+    #[tokio::test]
+    async fn validators_rewrites_root_pubkeys_to_shares() {
+        let server = MockServer::start().await;
+        let root = [0xCA_u8; 48];
+        let share = [0xFE_u8; 48];
+        let body = GetStateValidatorsResponseResponse {
+            data: vec![make_validator_datum(42, &root)],
+            execution_optimistic: false,
+            finalized: true,
+        };
+        Mock::given(method("POST"))
+            .and(path("/eth/v1/beacon/states/head/validators"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let component = make_component_with_upstream(&server, HashMap::from([(root, share)]));
+        let response = component
+            .validators(ValidatorsOpts {
+                state: "head".to_owned(),
+                // VC sends the share pubkey it knows.
+                pubkeys: vec![share],
+                indices: vec![],
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(response.data.len(), 1);
+        assert_eq!(response.data[0].validator.pubkey, format_bls_pubkey(&share));
+        assert_eq!(response.data[0].index, "42");
+        assert!(response.finalized);
+        assert!(!response.execution_optimistic);
+        assert!(response.dependent_root.is_none());
+    }
+
+    /// When the caller filters by pubkey only (no indices), `ignoreNotFound`
+    /// is `true` per the Go reference, so an upstream entry whose pubkey is
+    /// not part of this cluster's share map passes through with its root
+    /// pubkey unchanged. Mirrors `len(opts.Indices) == 0` in
+    /// `validatorapi.go:1288`.
+    #[tokio::test]
+    async fn validators_passes_through_unknown_when_filtering_by_pubkey_only() {
+        let server = MockServer::start().await;
+        let known_root = [0x10_u8; 48];
+        let share = [0x20_u8; 48];
+        let stranger = [0x30_u8; 48];
+        let body = GetStateValidatorsResponseResponse {
+            data: vec![
+                make_validator_datum(1, &known_root),
+                make_validator_datum(2, &stranger),
+            ],
+            execution_optimistic: false,
+            finalized: true,
+        };
+        Mock::given(method("POST"))
+            .and(path("/eth/v1/beacon/states/head/validators"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let component = make_component_with_upstream(&server, HashMap::from([(known_root, share)]));
+        let response = component
+            .validators(ValidatorsOpts {
+                state: "head".to_owned(),
+                pubkeys: vec![share],
+                indices: vec![],
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(response.data.len(), 2);
+        assert_eq!(response.data[0].validator.pubkey, format_bls_pubkey(&share));
+        // Stranger entry is preserved with the upstream's root pubkey.
+        assert_eq!(
+            response.data[1].validator.pubkey,
+            format_bls_pubkey(&stranger)
+        );
+    }
+
+    /// When the caller filters by index (any non-empty `Indices`),
+    /// `ignoreNotFound` is `false` per the Go reference, so an upstream
+    /// validator that does not belong to this cluster surfaces as
+    /// `INTERNAL_SERVER_ERROR`. Mirrors `len(opts.Indices) == 0 == false` in
+    /// `validatorapi.go:1288`.
+    #[tokio::test]
+    async fn validators_rejects_unknown_pubkey_when_index_filter_used() {
+        let server = MockServer::start().await;
+        let known_root = [0x40_u8; 48];
+        let share = [0x50_u8; 48];
+        let stranger = [0x60_u8; 48];
+        let body = GetStateValidatorsResponseResponse {
+            // The upstream returned a validator we did not ask for — its
+            // pubkey is not in our share map.
+            data: vec![make_validator_datum(99, &stranger)],
+            execution_optimistic: false,
+            finalized: false,
+        };
+        Mock::given(method("POST"))
+            .and(path("/eth/v1/beacon/states/head/validators"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let component = make_component_with_upstream(&server, HashMap::from([(known_root, share)]));
+        let err = component
+            .validators(ValidatorsOpts {
+                state: "head".to_owned(),
+                pubkeys: vec![],
+                indices: vec![99],
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// A pubkey from the VC that is not part of this cluster's share map is
+    /// rejected as `BAD_REQUEST` before any upstream call. Mirrors Go's
+    /// `getPubKeyFunc` "unknown public key" error.
+    #[tokio::test]
+    async fn validators_rejects_unknown_input_pubshare() {
+        let server = MockServer::start().await;
+        // No mock mounted — if the handler reaches the upstream, the call
+        // will surface as a different (non-400) error.
+        let root = [0x70_u8; 48];
+        let share = [0x80_u8; 48];
+        let unknown_share = [0x90_u8; 48];
+        let component = make_component_with_upstream(&server, HashMap::from([(root, share)]));
+        let err = component
+            .validators(ValidatorsOpts {
+                state: "head".to_owned(),
+                pubkeys: vec![unknown_share],
+                indices: vec![],
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+    }
+
+    /// Upstream stall longer than [`UPSTREAM_REQUEST_TIMEOUT`] surfaces as
+    /// 504.
+    #[tokio::test(start_paused = true)]
+    async fn validators_upstream_timeout_returns_504() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/eth/v1/beacon/states/head/validators"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(UPSTREAM_REQUEST_TIMEOUT * 2)
+                    .set_body_json(GetStateValidatorsResponseResponse {
+                        data: vec![],
+                        execution_optimistic: false,
+                        finalized: false,
+                    }),
+            )
+            .mount(&server)
+            .await;
+
+        let component = make_component_with_upstream(&server, HashMap::new());
+        let err = component
+            .validators(ValidatorsOpts {
+                state: "head".to_owned(),
+                pubkeys: vec![],
+                indices: vec![],
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::GATEWAY_TIMEOUT);
+    }
+
+    /// A malformed pubkey from the upstream surfaces as 502.
+    #[tokio::test]
+    async fn validators_malformed_upstream_pubkey_returns_502() {
+        let server = MockServer::start().await;
+        let root = [0xA1_u8; 48];
+        let share = [0xA2_u8; 48];
+        let mut bad = make_validator_datum(1, &root);
+        bad.validator.pubkey = "not-a-hex-pubkey".to_owned();
+        Mock::given(method("POST"))
+            .and(path("/eth/v1/beacon/states/head/validators"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                GetStateValidatorsResponseResponse {
+                    data: vec![bad],
+                    execution_optimistic: false,
+                    finalized: false,
+                },
+            ))
+            .mount(&server)
+            .await;
+
+        let component = make_component_with_upstream(&server, HashMap::from([(root, share)]));
+        let err = component
+            .validators(ValidatorsOpts {
+                state: "head".to_owned(),
+                pubkeys: vec![],
+                indices: vec![1],
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_GATEWAY);
+    }
+
+    /// Upstream 400 propagates faithfully; the upstream body must not leak
+    /// into the client-visible message.
+    #[tokio::test]
+    async fn validators_propagates_upstream_400() {
+        use pluto_eth2api::BlindedBlock400Response;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/eth/v1/beacon/states/head/validators"))
+            .respond_with(
+                ResponseTemplate::new(400).set_body_json(BlindedBlock400Response {
+                    code: 400.0,
+                    message: "secret upstream message".to_owned(),
+                    stacktraces: None,
+                }),
+            )
+            .mount(&server)
+            .await;
+
+        let component = make_component_with_upstream(&server, HashMap::new());
+        let err = component
+            .validators(ValidatorsOpts {
+                state: "head".to_owned(),
+                pubkeys: vec![],
+                indices: vec![],
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+        assert!(!err.message.contains("secret"));
     }
 }
