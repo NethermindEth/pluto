@@ -25,6 +25,7 @@ use pluto_core::{
     deadline::{AddOutcome, DeadlinerHandle},
     types::{Duty, DutyType, SlotNumber},
 };
+use pluto_p2p::p2p_context::P2PContext;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -223,6 +224,13 @@ impl Prioritiser {
     /// Returns the [`Prioritiser`] plus the [`Behaviour`] the caller must
     /// register with the swarm. The behaviour's inbound handler dispatches into
     /// [`Inner::handle_request`].
+    ///
+    /// `p2p_context`'s known-peer set must cover every entry in `peers`
+    /// (enforced by [`new_component`](crate::new_component)). Exchanges target
+    /// `peers`; a target the context does not recognise is gated to a no-op
+    /// handler and its exchange silently skipped, so the instance could
+    /// otherwise reach consensus on a partial message set. Callers using this
+    /// seam directly must uphold that invariant.
     #[allow(clippy::too_many_arguments)]
     pub fn new_internal(
         local_id: PeerId,
@@ -232,6 +240,7 @@ impl Prioritiser {
         msg_validator: MsgVerifier,
         exchange_timeout: Duration,
         deadliner: DeadlinerHandle,
+        p2p_context: P2PContext,
     ) -> (Self, Behaviour) {
         // The transport's inbound handler needs the engine state, which in turn
         // needs the transport's outbound `Sender`. Break the cycle with a slot
@@ -251,7 +260,7 @@ impl Prioritiser {
             .boxed()
         });
 
-        let (behaviour, sender) = p2p::new(inbound);
+        let (behaviour, sender) = p2p::new(inbound, p2p_context);
 
         let inner = Arc::new(Inner {
             local_id,
@@ -621,6 +630,7 @@ mod tests {
             validator,
             Duration::from_secs(3600),
             deadliner,
+            P2PContext::default(),
         );
 
         let msg = build_msg(&key, peer, "v1");
@@ -663,6 +673,7 @@ mod tests {
             validator,
             Duration::from_millis(100),
             deadliner,
+            P2PContext::default(),
         );
 
         let (result_tx, mut result_rx) = mpsc::unbounded_channel();
@@ -723,6 +734,7 @@ mod tests {
             validator,
             exchange_timeout,
             deadliner,
+            P2PContext::default(),
         );
         prio.start(ct.clone(), expired);
 
@@ -767,6 +779,7 @@ mod tests {
             validator,
             Duration::from_secs(3600),
             deadliner,
+            P2PContext::default(),
         );
 
         // No prioritise instance runs for this duty, so the buffered request's
@@ -802,6 +815,7 @@ mod tests {
             validator,
             Duration::from_secs(3600),
             deadliner,
+            P2PContext::default(),
         );
 
         let msg = build_msg(&key, peer, "v1");
@@ -849,6 +863,7 @@ mod tests {
             validator,
             Duration::from_secs(3600),
             deadliner,
+            P2PContext::default(),
         );
 
         let msg = build_msg(&key, peer, "v1");
@@ -883,6 +898,7 @@ mod tests {
             validator,
             Duration::from_secs(3600),
             deadliner,
+            P2PContext::default(),
         );
         prio.start(ct.clone(), expired_rx);
 

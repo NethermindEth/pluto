@@ -1,5 +1,6 @@
 //! Error types for the priority protocol.
 
+use libp2p::PeerId;
 use pluto_core::{deadline::DeadlineError, types::Duty};
 use thiserror::Error;
 
@@ -93,6 +94,18 @@ pub enum Error {
     /// A peer does not support the priority protocol.
     #[error("priority protocol not supported")]
     Unsupported,
+
+    /// A configured cluster peer is absent from the shared `P2PContext`'s
+    /// known-peer set. Such a peer would be gated to a no-op handler, so its
+    /// exchange would be silently skipped and consensus could proceed on a
+    /// partial message set. Rejected at construction so a mis-wired context
+    /// fails fast instead of degrading silently.
+    #[error("peer {peer} not in p2p context known peers")]
+    PeerNotInContext {
+        /// The peer present in the prioritiser's peer set but missing from the
+        /// context.
+        peer: PeerId,
+    },
 
     /// A libp2p stream or dial error occurred during an exchange.
     #[error("priority transport: {0}")]

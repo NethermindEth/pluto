@@ -32,7 +32,7 @@ use prost_types::Any;
 use tokio::{sync::mpsc, time::timeout};
 use tokio_util::sync::CancellationToken;
 
-use pluto_p2p::{peer::peer_id_from_key, utils::keypair_from_secret_key};
+use pluto_p2p::{p2p_context::P2PContext, peer::peer_id_from_key, utils::keypair_from_secret_key};
 use pluto_priority::p2p::Behaviour;
 use pluto_testutil::random::generate_insecure_k1_key;
 
@@ -148,6 +148,10 @@ fn build_host(
         validator,
         Duration::from_secs(3600),
         deadliner,
+        // Cluster context for known-peer gating. Addresses are unused here: the
+        // test pre-dials a full mesh by address, so exchanges reuse existing
+        // connections rather than dialing by peer id.
+        P2PContext::new(peers.clone()),
     );
 
     let swarm = libp2p::SwarmBuilder::with_existing_identity(keypair)

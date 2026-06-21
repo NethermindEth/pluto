@@ -15,7 +15,10 @@ use pluto_core::{
     deadline::{DeadlineCalculator, DeadlinerTask},
     types::Duty,
 };
-use pluto_p2p::peer::{peer_id_from_key, peer_id_to_public_key};
+use pluto_p2p::{
+    p2p_context::P2PContext,
+    peer::{peer_id_from_key, peer_id_to_public_key},
+};
 use prost::Message;
 use prost_types::{Any, Value, value::Kind};
 use tokio_util::sync::CancellationToken;
@@ -245,6 +248,16 @@ pub struct Component {
 /// `calculator`, and wires the prioritiser. The caller must register the
 /// returned behaviour with its swarm and call [`Component::start`] exactly
 /// once.
+///
+/// `p2p_context` must be the node-wide shared context (the same instance other
+/// behaviours use), so the priority behaviour gates against the cluster's known
+/// peers and resolves outbound dial addresses from the identify-populated peer
+/// store. Its known-peer set must cover every peer in `peers`; this is enforced
+/// here — a `peers` entry the context does not recognise returns
+/// [`Error::PeerNotInContext`]. (Without this check such a peer would be gated
+/// to a no-op handler, its exchange silently skipped, and the instance could
+/// reach consensus on a partial message set after the exchange timeout.)
+#[allow(clippy::too_many_arguments)]
 pub fn new_component(
     ctx: CancellationToken,
     peers: Vec<PeerId>,
@@ -253,7 +266,15 @@ pub fn new_component(
     exchange_timeout: Duration,
     privkey: SecretKey,
     calculator: impl DeadlineCalculator,
+    p2p_context: P2PContext,
 ) -> Result<(Component, Behaviour)> {
+    // Fail fast on a context that does not cover every exchange target, rather
+    // than letting the transport gate silently drop those peers (which would
+    // surface only as a degraded, partial-quorum result after the timeout).
+    if let Some(&peer) = peers.iter().find(|p| !p2p_context.is_known_peer(p)) {
+        return Err(Error::PeerNotInContext { peer });
+    }
+
     // Derive the local peer id from the signing key so the message `peer_id`
     // and its signature always agree (peers verify the two against each other).
     let local_id = peer_id_from_key(privkey.public_key()).map_err(Error::PeerKey)?;
@@ -271,6 +292,7 @@ pub fn new_component(
         verifier,
         exchange_timeout,
         deadliner,
+        p2p_context,
     );
 
     let component = Component {
@@ -581,6 +603,55 @@ mod tests {
             TopicResult::try_from(&result_proto),
             Err(Error::AnypbPriority(_))
         ));
+    }
+
+    /// A peer in the prioritiser's `peers` set but absent from the shared
+    /// `P2PContext` is rejected at construction, rather than later degrading to
+    /// a partial-quorum consensus result (that peer would be gated to a no-op
+    /// handler and its exchange silently skipped).
+    #[test]
+    fn new_component_rejects_peer_absent_from_context() {
+        struct NoopConsensus;
+        #[async_trait::async_trait]
+        impl Consensus for NoopConsensus {
+            async fn propose_priority(
+                &self,
+                _duty: pluto_core::types::Duty,
+                _result: pluto_core::corepb::v1::priority::PriorityResult,
+                _ct: &CancellationToken,
+            ) -> std::result::Result<(), crate::consensus::ConsensusError> {
+                Ok(())
+            }
+
+            fn subscribe_priority(&self, _callback: crate::consensus::PrioritySubscriber) {}
+        }
+
+        let key = random_key();
+        let local = peer_id_from_secret(&key);
+        let absent = peer_id_from_secret(&random_key());
+
+        // `absent` is an exchange target but is not in the context's known set.
+        let peers = vec![local, absent];
+        let p2p_context = P2PContext::new(vec![local]);
+
+        let consensus: Arc<dyn Consensus> = Arc::new(NoopConsensus);
+        // `(Component, Behaviour)` is not `Debug`, so match the result directly
+        // rather than via `expect_err`.
+        let result = new_component(
+            CancellationToken::new(),
+            peers,
+            2,
+            consensus,
+            Duration::from_secs(3600),
+            key,
+            pluto_core::deadline::NeverExpiringCalculator,
+            p2p_context,
+        );
+
+        assert!(
+            matches!(result, Err(Error::PeerNotInContext { peer }) if peer == absent),
+            "a peer absent from the context must be rejected with PeerNotInContext",
+        );
     }
 
     /// Derives a libp2p `PeerId` from a secp256k1 secret key.
