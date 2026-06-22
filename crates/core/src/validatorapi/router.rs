@@ -34,10 +34,11 @@ use super::{
     metrics::{ApiLatencyTimer, ProxyLatencyTimer},
     types::{
         AttestationDataOpts, AttestationDataResponse, AttesterDutiesOpts, AttesterDutiesResponse,
-        CommitteeIndex, NodeVersionResponse, ProposalOpts, ProposerDutiesOpts,
-        ProposerDutiesResponse, SignedContributionAndProof, SyncCommitteeContributionOpts,
-        SyncCommitteeDutiesOpts, SyncCommitteeDutiesResponse, SyncCommitteeMessage,
-        SyncCommitteeSelection, ValIndexes, ValidatorsOpts,
+        BeaconCommitteeSelection, BeaconCommitteeSelectionsResponse, CommitteeIndex,
+        NodeVersionResponse, ProposalOpts, ProposerDutiesOpts, ProposerDutiesResponse,
+        SignedContributionAndProof, SyncCommitteeContributionOpts, SyncCommitteeDutiesOpts,
+        SyncCommitteeDutiesResponse, SyncCommitteeMessage, SyncCommitteeSelection,
+        SyncCommitteeSelectionsResponse, ValIndexes, ValidatorsOpts,
     },
 };
 use crate::signeddata::{ProposalBlock, VersionedSignedProposal};
@@ -48,6 +49,17 @@ use crate::signeddata::{ProposalBlock, VersionedSignedProposal};
 /// well above any plausible workload.
 const DUTIES_BODY_LIMIT: usize = 64 * 1024;
 
+/// Cap on the block-submission bodies (`POST /eth/v{1,2}/beacon/blocks` and
+/// `.../blinded_blocks`). These carry a full `SignedBlockContents`, which for
+/// Electra/Fulu bundles up to `MAX_BLOBS_PER_BLOCK_FULU` (12) blobs of 128 KiB
+/// each alongside the block. Blobs are `0x`-hex in the JSON encoding (~2× their
+/// binary size), so 12 blobs alone are ~3 MiB of JSON and a blob-carrying block
+/// comfortably exceeds axum's 2 MiB default `body: Bytes` limit — missing those
+/// proposals. 16 MiB gives several× headroom over a realistic max-blob block
+/// while still bounding per-request memory; the Go reference (`router.go`,
+/// `submitProposal`) reads the body uncapped via `io.ReadAll`.
+const PROPOSAL_BODY_LIMIT: usize = 16 * 1024 * 1024;
+
 /// Response/request header carrying the consensus fork name (e.g. `deneb`).
 const VERSION_HEADER: &str = "Eth-Consensus-Version";
 /// Response header signalling whether the returned proposal is blinded.
@@ -56,6 +68,14 @@ const EXECUTION_PAYLOAD_BLINDED_HEADER: &str = "Eth-Execution-Payload-Blinded";
 const EXECUTION_PAYLOAD_VALUE_HEADER: &str = "Eth-Execution-Payload-Value";
 /// Response header carrying the consensus block value, in Wei.
 const CONSENSUS_BLOCK_VALUE_HEADER: &str = "Eth-Consensus-Block-Value";
+
+/// Cap on the `POST /eth/v1/validator/{beacon,sync}_committee_selections`
+/// request bodies. Each selection is ~210-250 bytes of JSON (slot, validator
+/// index, optional subcommittee index, 96-byte BLS proof in `0x` hex), so
+/// 64 KiB admits ~250-300 entries — far more than a realistic cluster while
+/// bounding the per-request CPU cost of the BLS verifications and AggSigDB
+/// awaits the handler performs.
+const SELECTIONS_BODY_LIMIT: usize = 64 * 1024;
 
 /// Query parameters for `GET /eth/v1/validator/attestation_data`.
 #[derive(Debug, Clone, Deserialize)]
@@ -103,7 +123,7 @@ pub fn new_router(
     Router::new()
         .route(
             "/eth/v1/validator/duties/attester/{epoch}",
-            duties_post(attester_duties),
+            bounded_post(attester_duties, DUTIES_BODY_LIMIT),
         )
         .route(
             "/eth/v1/validator/duties/proposer/{epoch}",
@@ -111,7 +131,7 @@ pub fn new_router(
         )
         .route(
             "/eth/v1/validator/duties/sync/{epoch}",
-            duties_post(sync_committee_duties),
+            bounded_post(sync_committee_duties, DUTIES_BODY_LIMIT),
         )
         .route("/eth/v1/validator/attestation_data", get(attestation_data))
         .route("/eth/v1/beacon/pool/attestations", post(respond_404))
@@ -130,10 +150,22 @@ pub fn new_router(
         .route("/eth/v2/validator/blocks/{slot}", get(respond_404))
         .route("/eth/v1/validator/blinded_blocks/{slot}", get(respond_404))
         .route("/eth/v3/validator/blocks/{slot}", get(propose_block_v3))
-        .route("/eth/v1/beacon/blocks", post(submit_proposal))
-        .route("/eth/v2/beacon/blocks", post(submit_proposal))
-        .route("/eth/v1/beacon/blinded_blocks", post(submit_blinded_block))
-        .route("/eth/v2/beacon/blinded_blocks", post(submit_blinded_block))
+        .route(
+            "/eth/v1/beacon/blocks",
+            sized_post(submit_proposal, PROPOSAL_BODY_LIMIT),
+        )
+        .route(
+            "/eth/v2/beacon/blocks",
+            sized_post(submit_proposal, PROPOSAL_BODY_LIMIT),
+        )
+        .route(
+            "/eth/v1/beacon/blinded_blocks",
+            sized_post(submit_blinded_block, PROPOSAL_BODY_LIMIT),
+        )
+        .route(
+            "/eth/v2/beacon/blinded_blocks",
+            sized_post(submit_blinded_block, PROPOSAL_BODY_LIMIT),
+        )
         .route(
             "/eth/v1/validator/register_validator",
             post(submit_validator_registrations),
@@ -143,7 +175,7 @@ pub fn new_router(
         .route("/proposer_config", get(respond_404))
         .route(
             "/eth/v1/validator/beacon_committee_selections",
-            post(beacon_committee_selections),
+            bounded_post(beacon_committee_selections, SELECTIONS_BODY_LIMIT),
         )
         .route("/eth/v1/validator/aggregate_attestation", get(respond_404))
         .route(
@@ -173,7 +205,7 @@ pub fn new_router(
         )
         .route(
             "/eth/v1/validator/sync_committee_selections",
-            post(sync_committee_selections),
+            bounded_post(sync_committee_selections, SELECTIONS_BODY_LIMIT),
         )
         .route("/eth/v1/node/version", get(node_version))
         .fallback(proxy_handler)
@@ -242,29 +274,42 @@ async fn attestation_data(
     Ok(Json(response))
 }
 
-/// Wraps a `POST /eth/v1/validator/duties/*` handler with a body-size cap
-/// and the Charon-parity content-type policy. The cap is local to these
-/// two routes so unrelated POST handlers (e.g. `submit_attestations`) keep
-/// axum's default 2 MiB.
-fn duties_post<H, T, S>(handler: H) -> MethodRouter<S>
+/// Wraps a `POST` handler with a body-size cap and the JSON content-type
+/// policy. The cap is local to the route so unrelated POST handlers (e.g.
+/// `submit_attestations`) keep axum's default 2 MiB.
+fn bounded_post<H, T, S>(handler: H, body_limit: usize) -> MethodRouter<S>
 where
     H: axum::handler::Handler<T, S>,
     T: 'static,
     S: Clone + Send + Sync + 'static,
 {
     post(handler)
-        .route_layer(DefaultBodyLimit::max(DUTIES_BODY_LIMIT))
+        .route_layer(DefaultBodyLimit::max(body_limit))
         .route_layer(middleware::from_fn(enforce_json_content_type))
 }
 
-/// Matches Charon's content-type handling at `core/validatorapi/router.go:365`:
-/// a missing `Content-Type` is treated as `application/json`; an unrecognized
-/// content type is rejected with `415 Unsupported Media Type`. SSZ is not
-/// supported yet — when it lands, this is the right seam to extend.
+/// `POST` route with an explicit body-size limit but no content-type
+/// enforcement, for endpoints that accept either JSON or SSZ
+/// (`application/octet-stream`) bodies — i.e. the block-submission routes.
+/// Without the limit these inherit axum's 2 MiB default, which a blob-carrying
+/// Electra/Fulu block exceeds (see [`PROPOSAL_BODY_LIMIT`]).
+fn sized_post<H, T, S>(handler: H, body_limit: usize) -> MethodRouter<S>
+where
+    H: axum::handler::Handler<T, S>,
+    T: 'static,
+    S: Clone + Send + Sync + 'static,
+{
+    post(handler).route_layer(DefaultBodyLimit::max(body_limit))
+}
+
+/// Content-type handling: a missing `Content-Type` is treated as
+/// `application/json`; an unrecognized content type is rejected with `415
+/// Unsupported Media Type`. SSZ is not supported yet — when it lands, this is
+/// the right seam to extend.
 ///
 /// Without this layer, axum's `Json` extractor would reject a missing header
-/// with `MissingJsonContentType`, which our envelope normalises to `400` —
-/// diverging from Charon, which lets VCs that don't set the header through.
+/// with `MissingJsonContentType`, which our envelope normalises to `400`. We
+/// instead let VCs that don't set the header through.
 async fn enforce_json_content_type(mut req: Request, next: Next) -> Result<Response, ApiError> {
     match req.headers().get(header::CONTENT_TYPE) {
         None => {
@@ -299,8 +344,8 @@ fn query_rejection_to_api_error(rejection: QueryRejection) -> ApiError {
 /// instead of axum's default plain-text response.
 ///
 /// Genuine parse failures — malformed JSON (`400`) and wrong element type
-/// (`422`) — are normalised to a uniform `400`, matching Charon's `unmarshal`,
-/// which returns `400` for all body unmarshal failures. Content-Type rejections
+/// (`422`) — are normalised to a uniform `400` for all body unmarshal
+/// failures. Content-Type rejections
 /// no longer reach this function: [`enforce_json_content_type`] intercepts
 /// them upstream so missing/JSON requests pass through and non-JSON requests
 /// return `415`. The body-size-limit rejection from [`DefaultBodyLimit`]
@@ -496,8 +541,19 @@ async fn submit_exit() {
     todo!("vapi: submit_exit");
 }
 
-async fn beacon_committee_selections() {
-    todo!("vapi: beacon_committee_selections");
+async fn beacon_committee_selections(
+    State(state): State<Arc<AppState>>,
+    selections: Result<Json<Vec<BeaconCommitteeSelection>>, JsonRejection>,
+) -> Result<Json<BeaconCommitteeSelectionsResponse>, ApiError> {
+    let Json(selections) = selections.map_err(json_rejection_to_api_error)?;
+    let response = state
+        .handler
+        .beacon_committee_selections(selections)
+        .await?;
+
+    Ok(Json(BeaconCommitteeSelectionsResponse {
+        data: response.data,
+    }))
 }
 
 async fn aggregate_attestation() {
@@ -590,24 +646,16 @@ async fn submit_proposal_preparations() -> impl IntoResponse {
     StatusCode::OK
 }
 
-/// `POST /eth/v1/validator/sync_committee_selections`.
-///
-/// Decodes the JSON array of partial sync-committee selections, forwards them
-/// to the handler, and returns the aggregated selections as `{ "data": [...]
-/// }`. Mirrors `syncCommitteeSelections`.
 async fn sync_committee_selections(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<Response, ApiError> {
-    let selections: Vec<SyncCommitteeSelection> =
-        parse_json_array(&headers, &body, "sync committee selections")?;
-
+    selections: Result<Json<Vec<SyncCommitteeSelection>>, JsonRejection>,
+) -> Result<Json<SyncCommitteeSelectionsResponse>, ApiError> {
+    let Json(selections) = selections.map_err(json_rejection_to_api_error)?;
     let response = state.handler.sync_committee_selections(selections).await?;
 
-    let data = serde_json::to_value(&response.data)
-        .map_err(|err| internal_error("could not serialize sync committee selections", err))?;
-    Ok(Json(json!({ "data": data })).into_response())
+    Ok(Json(SyncCommitteeSelectionsResponse {
+        data: response.data,
+    }))
 }
 
 async fn node_version(
@@ -1187,9 +1235,9 @@ mod tests {
     use crate::validatorapi::{
         testutils::TestHandler,
         types::{
-            AttestationDataResponse, AttesterDutiesResponse, AttesterDuty, ProposerDutiesResponse,
-            ProposerDuty, SyncCommitteeDutiesResponse, SyncCommitteeDuty, SyncCommitteeSelection,
-            ValIndexes,
+            AttestationDataResponse, AttesterDutiesResponse, AttesterDuty,
+            BeaconCommitteeSelection, EthResponse, ProposerDutiesResponse, ProposerDuty,
+            SyncCommitteeDutiesResponse, SyncCommitteeDuty, SyncCommitteeSelection, ValIndexes,
         },
     };
 
@@ -1433,8 +1481,7 @@ mod tests {
     /// A malformed duties body emits the same `{ code, message }` envelope and
     /// uniform 400 as the rest of the router, rather than axum's default
     /// plain-text rejection (which would be 400 for a syntax error but 422 for
-    /// a type error). Mirrors Charon's `unmarshal`, which returns 400 for every
-    /// body parse failure.
+    /// a type error).
     #[tokio::test]
     async fn attester_duties_returns_api_error_shape_on_bad_body() {
         use axum::{
@@ -1461,11 +1508,10 @@ mod tests {
         assert!(json["message"].is_string());
     }
 
-    /// Charon-parity: a duties request that omits `Content-Type` is
-    /// treated as `application/json` rather than rejected — the
+    /// A duties request that omits `Content-Type` is treated as
+    /// `application/json` rather than rejected — the
     /// `enforce_json_content_type` middleware injects the header before
-    /// the `Json` extractor sees the request. See `core/validatorapi/
-    /// router.go:365` (`if contentHeader == "" || ...`).
+    /// the `Json` extractor sees the request.
     #[tokio::test]
     async fn attester_duties_accepts_missing_content_type() {
         use axum::{
@@ -1491,9 +1537,9 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
-    /// Charon-parity: a duties request with a non-JSON `Content-Type`
-    /// returns `415 Unsupported Media Type`, not the `400` that the
-    /// generic body-parse normaliser would produce.
+    /// A duties request with a non-JSON `Content-Type` returns `415
+    /// Unsupported Media Type`, not the `400` that the generic body-parse
+    /// normaliser would produce.
     #[tokio::test]
     async fn attester_duties_rejects_non_json_content_type() {
         use axum::{
@@ -1578,7 +1624,7 @@ mod tests {
 
     // `ProposalBlock`, `SignedProposalBlock`, `SignedBlindedProposalBlock` and
     // `DataVersion` come in via `super::*`.
-    use crate::{signeddata::VersionedProposal, validatorapi::types::EthResponse};
+    use crate::signeddata::VersionedProposal;
 
     fn empty_sync_bits() -> pluto_ssz::BitVector<512> {
         pluto_ssz::BitVector::new()
@@ -1857,6 +1903,48 @@ mod tests {
         let got = submitted.lock().unwrap().clone().unwrap();
         assert_eq!(got.0.version, DataVersion::Phase0);
         assert!(matches!(got.0.block, SignedProposalBlock::Phase0(_)));
+    }
+
+    /// A block-submission body larger than axum's 2 MiB default (a realistic
+    /// blob-carrying Electra/Fulu block) reaches the decoder instead of being
+    /// rejected up front with `413`. The garbage body then fails to decode as
+    /// `400`, but the point is that the body-limit layer let it through — with
+    /// the default limit this would have been `413` and the proposal missed.
+    #[tokio::test]
+    async fn submit_proposal_accepts_body_over_default_limit() {
+        let app = test_router(Arc::new(TestHandler::default()), false);
+
+        let big = vec![0u8; 3 * 1024 * 1024];
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/beacon/blocks")
+            .header("content-type", "application/octet-stream")
+            .header(VERSION_HEADER, "deneb")
+            .header("content-length", big.len())
+            .body(Body::from(big))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_ne!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// A body beyond [`PROPOSAL_BODY_LIMIT`] is still rejected with `413`,
+    /// bounding per-request memory.
+    #[tokio::test]
+    async fn submit_proposal_rejects_body_over_limit() {
+        let app = test_router(Arc::new(TestHandler::default()), false);
+
+        let big = vec![0u8; PROPOSAL_BODY_LIMIT + 1];
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/beacon/blocks")
+            .header("content-type", "application/octet-stream")
+            .header(VERSION_HEADER, "deneb")
+            .header("content-length", big.len())
+            .body(Body::from(big))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     /// A capitalised version header is accepted (case-insensitive, mirroring
@@ -2172,6 +2260,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
+
     // ====================================================================
     // sync committee endpoints
     // ====================================================================
@@ -2372,5 +2461,203 @@ mod tests {
             .expect("selections recorded");
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].validator_index, 3);
+    }
+
+    /// Verifies the router wraps the `Handler::beacon_committee_selections`
+    /// payload into the `{ "data": [...] }` wire shape, dropping the
+    /// `execution_optimistic` / `finalized` / `dependent_root` metadata that
+    /// the trait method carries internally.
+    #[tokio::test]
+    async fn beacon_committee_selections_wraps_handler_value() {
+        let selection = BeaconCommitteeSelection {
+            slot: 10,
+            validator_index: 5,
+            selection_proof: [0xAA; 96],
+        };
+        let handler = TestHandler::default().with_beacon_committee_selections(EthResponse {
+            data: vec![selection],
+            execution_optimistic: false,
+            finalized: false,
+            dependent_root: None,
+        });
+        let state = test_state(Arc::new(handler));
+
+        let Json(body) = beacon_committee_selections(State(state), Ok(Json(vec![])))
+            .await
+            .unwrap();
+
+        let json = serde_json::to_value(&body).unwrap();
+        assert!(json.get("execution_optimistic").is_none());
+        assert!(json.get("finalized").is_none());
+        assert!(json.get("dependent_root").is_none());
+        assert_eq!(json["data"][0]["slot"], "10");
+        assert_eq!(json["data"][0]["validator_index"], "5");
+    }
+
+    /// Counterpart of [`beacon_committee_selections_wraps_handler_value`] for
+    /// the sync-committee variant.
+    #[tokio::test]
+    async fn sync_committee_selections_wraps_handler_value() {
+        let selection = SyncCommitteeSelection {
+            slot: 20,
+            validator_index: 7,
+            subcommittee_index: 2,
+            selection_proof: [0xBB; 96],
+        };
+        let handler = TestHandler::default().with_sync_committee_selections(EthResponse {
+            data: vec![selection],
+            execution_optimistic: false,
+            finalized: false,
+            dependent_root: None,
+        });
+        let state = test_state(Arc::new(handler));
+
+        let Json(body) = sync_committee_selections(State(state), Ok(Json(vec![])))
+            .await
+            .unwrap();
+
+        let json = serde_json::to_value(&body).unwrap();
+        assert!(json.get("execution_optimistic").is_none());
+        assert_eq!(json["data"][0]["slot"], "20");
+        assert_eq!(json["data"][0]["validator_index"], "7");
+        assert_eq!(json["data"][0]["subcommittee_index"], "2");
+    }
+
+    /// Verifies the body-limit layer on the selection POST routes rejects
+    /// oversized bodies before any BLS verification work happens.
+    #[tokio::test]
+    async fn beacon_committee_selections_rejects_oversized_body() {
+        use axum::{
+            body::Body,
+            http::{Method, Request},
+        };
+        use tower::ServiceExt;
+
+        let handler = TestHandler::default();
+        let app = test_router(Arc::new(handler), false);
+
+        let big = vec![b'0'; SELECTIONS_BODY_LIMIT * 2];
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/validator/beacon_committee_selections")
+            .header("content-type", "application/json")
+            .header("content-length", big.len())
+            .body(Body::from(big))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    /// Counterpart of [`beacon_committee_selections_rejects_oversized_body`].
+    #[tokio::test]
+    async fn sync_committee_selections_rejects_oversized_body() {
+        use axum::{
+            body::Body,
+            http::{Method, Request},
+        };
+        use tower::ServiceExt;
+
+        let handler = TestHandler::default();
+        let app = test_router(Arc::new(handler), false);
+
+        let big = vec![b'0'; SELECTIONS_BODY_LIMIT * 2];
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/validator/sync_committee_selections")
+            .header("content-type", "application/json")
+            .header("content-length", big.len())
+            .body(Body::from(big))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    /// Malformed JSON on the selection POST routes is normalised into the
+    /// router's standard `{ code, message }` envelope rather than axum's
+    /// default plain-text 400 / 422 / 415 — every body unmarshal failure
+    /// surfaces as a uniform `400`. The
+    /// same plumbing covers the duties endpoints; see
+    /// [`attester_duties_returns_api_error_shape_on_malformed_body`] for the
+    /// duties variant.
+    #[tokio::test]
+    async fn beacon_committee_selections_returns_api_error_shape_on_malformed_body() {
+        use axum::{
+            body::{Body, to_bytes},
+            http::{Method, Request},
+        };
+        use tower::ServiceExt;
+
+        let handler = TestHandler::default();
+        let app = test_router(Arc::new(handler), false);
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/validator/beacon_committee_selections")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{ "not": "an array" }"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], 400);
+        assert!(json["message"].is_string());
+    }
+
+    /// Counterpart of
+    /// [`beacon_committee_selections_returns_api_error_shape_on_malformed_body`].
+    #[tokio::test]
+    async fn sync_committee_selections_returns_api_error_shape_on_malformed_body() {
+        use axum::{
+            body::{Body, to_bytes},
+            http::{Method, Request},
+        };
+        use tower::ServiceExt;
+
+        let handler = TestHandler::default();
+        let app = test_router(Arc::new(handler), false);
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/validator/sync_committee_selections")
+            .header("content-type", "application/json")
+            .body(Body::from("not-json-at-all"))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], 400);
+        assert!(json["message"].is_string());
+    }
+
+    /// Duties POST endpoints share the same `json_rejection_to_api_error`
+    /// plumbing as the selection routes — this test locks the envelope
+    /// contract on the duties side so a future refactor that re-introduces
+    /// bare `Json<ValIndexes>` extraction is caught by a failing test rather
+    /// than only by manual review.
+    #[tokio::test]
+    async fn attester_duties_returns_api_error_shape_on_malformed_body() {
+        use axum::{
+            body::{Body, to_bytes},
+            http::{Method, Request},
+        };
+        use tower::ServiceExt;
+
+        let handler = TestHandler::default();
+        let app = test_router(Arc::new(handler), false);
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/eth/v1/validator/duties/attester/42")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{ "not": "an array" }"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], 400);
+        assert!(json["message"].is_string());
     }
 }

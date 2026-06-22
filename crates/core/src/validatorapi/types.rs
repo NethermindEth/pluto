@@ -22,7 +22,12 @@ pub use pluto_eth2api::{
     GetSyncCommitteeDutiesResponseResponseDatum as SyncCommitteeDuty,
     GetVersionResponseResponse as NodeVersionResponse,
     GetVersionResponseResponseData as NodeVersionData,
-    spec::phase0::{self, Epoch, Root, Slot, ValidatorIndex},
+    spec::{
+        altair::{SignedContributionAndProof, SyncCommitteeContribution, SyncCommitteeMessage},
+        phase0::{self, Epoch, Root, Slot, ValidatorIndex},
+    },
+    v1::{BeaconCommitteeSelection, SyncCommitteeSelection},
+    versioned,
 };
 
 /// Attestation data alias for the consensus-spec phase0 type.
@@ -140,6 +145,22 @@ pub struct AttestationDataResponse {
     pub data: AttestationData,
 }
 
+/// Response envelope for the `beacon_committee_selections` endpoint — a `data`
+/// array of aggregated selection proofs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BeaconCommitteeSelectionsResponse {
+    /// Aggregated beacon-committee selection proofs.
+    pub data: Vec<BeaconCommitteeSelection>,
+}
+
+/// Response envelope for the `sync_committee_selections` endpoint — a `data`
+/// array of aggregated selection proofs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncCommitteeSelectionsResponse {
+    /// Aggregated sync-committee selection proofs.
+    pub data: Vec<SyncCommitteeSelection>,
+}
+
 /// Versioned unsigned proposal payload — alias of the signeddata wrapper.
 pub use crate::signeddata::VersionedProposal;
 
@@ -147,8 +168,7 @@ pub use crate::signeddata::VersionedProposal;
 pub use crate::signeddata::VersionedSignedProposal;
 
 /// Versioned signed blinded proposal payload — alias of the eth2api versioned
-/// wrapper, the same shape consumed by Go's
-/// `SubmitBlindedProposalOpts.Proposal`.
+/// wrapper.
 pub use pluto_eth2api::versioned::VersionedSignedBlindedProposal;
 
 /// Versioned attestation payload. Placeholder.
@@ -159,30 +179,31 @@ pub struct VersionedAttestation {}
 #[derive(Debug, Clone)]
 pub struct VersionedSignedAggregateAndProof {}
 
-/// Signed validator registration payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct SignedValidatorRegistration {}
+/// Signed validator (builder) registration payload.
+///
+/// Wraps the versioned eth2api registration so the
+/// [`Handler::submit_validator_registrations`](super::handler::Handler::submit_validator_registrations)
+/// implementation has access to the same data the Go
+/// `*eth2api.VersionedSignedValidatorRegistration` carries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SignedValidatorRegistration(
+    /// Wrapped versioned registration.
+    pub versioned::VersionedSignedValidatorRegistration,
+);
 
-/// Signed voluntary exit payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct SignedVoluntaryExit {}
-
-/// Sync-committee message submitted by the validator client. The validator
-/// signs the beacon block root with its sync-committee share.
-pub type SyncCommitteeMessage = pluto_eth2api::spec::altair::SyncCommitteeMessage;
-
-/// Aggregated sync-committee contribution returned to the validator client.
-pub type SyncCommitteeContribution = pluto_eth2api::spec::altair::SyncCommitteeContribution;
-
-/// Signed contribution-and-proof submitted by the validator client.
-pub type SignedContributionAndProof = pluto_eth2api::spec::altair::SignedContributionAndProof;
-
-/// Beacon-committee selection payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct BeaconCommitteeSelection {}
-
-/// Sync-committee selection proof exchanged with the validator client.
-pub type SyncCommitteeSelection = pluto_eth2api::v1::SyncCommitteeSelection;
+/// Signed voluntary exit payload.
+///
+/// Wraps `phase0::SignedVoluntaryExit` so the
+/// [`Handler::submit_voluntary_exit`](super::handler::Handler::submit_voluntary_exit)
+/// implementation has access to the same data the Go
+/// `*eth2p0.SignedVoluntaryExit` carries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SignedVoluntaryExit(
+    /// Wrapped phase0 signed voluntary exit.
+    pub phase0::SignedVoluntaryExit,
+);
 
 /// Validator-index request body for the `attester_duties` and
 /// `sync_committee_duties` endpoints.

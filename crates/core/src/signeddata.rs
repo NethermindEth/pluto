@@ -5,6 +5,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tree_hash::TreeHash;
 
 use pluto_eth2api::{
+    ConsensusVersion, ProduceBlockV3ResponseResponse,
     spec::{
         altair, bellatrix, capella, deneb, electra, phase0, serde_legacy_builder_version,
         serde_legacy_data_version,
@@ -51,6 +52,12 @@ pub enum SignedDataError {
     /// Invalid attestation wrapper JSON.
     #[error("unmarshal attestation")]
     AttestationJson,
+    /// A proposal response carried an unparsable block reward value.
+    #[error("invalid proposal block value: {0}")]
+    InvalidBlockValue(&'static str),
+    /// A versioned proposal response was missing the `block` field.
+    #[error("proposal response missing block field")]
+    MissingBlockField,
     /// Custom error.
     #[error("{0}")]
     Custom(Box<dyn std::error::Error + Send + Sync>),
@@ -1364,6 +1371,85 @@ impl VersionedProposal {
     /// Returns the tree-hash root of the proposal block.
     pub fn root(&self) -> phase0::Root {
         self.block.root()
+    }
+}
+
+impl TryFrom<&ProduceBlockV3ResponseResponse> for VersionedProposal {
+    type Error = SignedDataError;
+
+    /// Builds an unsigned proposal from a `produce_block_v3` response,
+    /// selecting the block variant by `(version, blinded)`.
+    fn try_from(resp: &ProduceBlockV3ResponseResponse) -> Result<Self, Self::Error> {
+        let data = serde_json::to_value(&resp.data)?;
+        let blinded = resp.execution_payload_blinded;
+
+        let block = match (&resp.version, blinded) {
+            (ConsensusVersion::Phase0, _) => ProposalBlock::Phase0(json_from(&data)?),
+            (ConsensusVersion::Altair, _) => ProposalBlock::Altair(json_from(&data)?),
+            (ConsensusVersion::Bellatrix, false) => ProposalBlock::Bellatrix(json_from(&data)?),
+            (ConsensusVersion::Bellatrix, true) => {
+                ProposalBlock::BellatrixBlinded(json_from(&data)?)
+            }
+            (ConsensusVersion::Capella, false) => ProposalBlock::Capella(json_from(&data)?),
+            (ConsensusVersion::Capella, true) => ProposalBlock::CapellaBlinded(json_from(&data)?),
+            (ConsensusVersion::Deneb, false) => ProposalBlock::Deneb {
+                block: Box::new(json_from(block_field(&data)?)?),
+                kzg_proofs: json_from_field(&data, "kzg_proofs")?,
+                blobs: json_from_field(&data, "blobs")?,
+            },
+            (ConsensusVersion::Deneb, true) => ProposalBlock::DenebBlinded(json_from(&data)?),
+            (ConsensusVersion::Electra, false) => ProposalBlock::Electra {
+                block: Box::new(json_from(block_field(&data)?)?),
+                kzg_proofs: json_from_field(&data, "kzg_proofs")?,
+                blobs: json_from_field(&data, "blobs")?,
+            },
+            (ConsensusVersion::Electra, true) => ProposalBlock::ElectraBlinded(json_from(&data)?),
+            (ConsensusVersion::Fulu, false) => ProposalBlock::Fulu {
+                block: Box::new(json_from(block_field(&data)?)?),
+                kzg_proofs: json_from_field(&data, "kzg_proofs")?,
+                blobs: json_from_field(&data, "blobs")?,
+            },
+            (ConsensusVersion::Fulu, true) => ProposalBlock::FuluBlinded(json_from(&data)?),
+        };
+
+        let consensus_block_value = resp
+            .consensus_block_value
+            .parse()
+            .map_err(|_| SignedDataError::InvalidBlockValue("consensus_block_value"))?;
+        let execution_payload_value = resp
+            .execution_payload_value
+            .parse()
+            .map_err(|_| SignedDataError::InvalidBlockValue("execution_payload_value"))?;
+
+        Ok(VersionedProposal {
+            block,
+            consensus_block_value,
+            execution_payload_value,
+        })
+    }
+}
+
+/// Deserializes a JSON value into `T`.
+fn json_from<T: serde::de::DeserializeOwned>(
+    value: &serde_json::Value,
+) -> Result<T, SignedDataError> {
+    Ok(serde_json::from_value(value.clone())?)
+}
+
+/// Returns the `block` field of a Deneb+ versioned block contents object.
+fn block_field(value: &serde_json::Value) -> Result<&serde_json::Value, SignedDataError> {
+    value.get("block").ok_or(SignedDataError::MissingBlockField)
+}
+
+/// Deserializes the named field of `value` into `T`, defaulting to `T::default`
+/// when absent.
+fn json_from_field<T: serde::de::DeserializeOwned + Default>(
+    value: &serde_json::Value,
+    field: &str,
+) -> Result<T, SignedDataError> {
+    match value.get(field) {
+        Some(v) => Ok(serde_json::from_value(v.clone())?),
+        None => Ok(T::default()),
     }
 }
 
@@ -2824,5 +2910,26 @@ mod tests {
             assert_eq!(Some(&data), wrapped.data());
             assert_eq!(Some(aggregation_bits.clone()), wrapped.aggregation_bits());
         }
+    }
+
+    #[test]
+    fn versioned_proposal_from_produce_block_response() {
+        // Electra block contents `{block, kzg_proofs, blobs}` from the golden
+        // fixture, wrapped as a `produce_block_v3` response.
+        let golden = load_signeddata_fixture("TestJSONSerialisation_VersionedProposal.json.golden");
+        let resp: ProduceBlockV3ResponseResponse = serde_json::from_value(serde_json::json!({
+            "version": "electra",
+            "execution_payload_blinded": false,
+            "execution_payload_value": "11",
+            "consensus_block_value": "22",
+            "data": golden["block"],
+        }))
+        .expect("deserialize produce_block_v3 response");
+
+        let proposal = VersionedProposal::try_from(&resp).expect("convert");
+        assert!(matches!(proposal.block, ProposalBlock::Electra { .. }));
+        assert_eq!(proposal.version(), versioned::DataVersion::Electra);
+        assert_eq!(proposal.execution_payload_value, U256::from(11));
+        assert_eq!(proposal.consensus_block_value, U256::from(22));
     }
 }
