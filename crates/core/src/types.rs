@@ -314,6 +314,20 @@ pub enum ProposalType {
     Synthetic,
 }
 
+impl ProposalType {
+    /// Returns the wire-format string for this proposal type.
+    ///
+    /// These strings MUST NOT change: they are exchanged on the wire (e.g. by
+    /// the priority/infosync protocols) and changing them breaks compatibility.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ProposalType::Full => "full",
+            ProposalType::Builder => "builder",
+            ProposalType::Synthetic => "synthetic",
+        }
+    }
+}
+
 // In golang implementation they use pk_len = 98, which is 0x + [48 bytes]
 // We use pk_len = 48, which is [48 bytes], the main difference is that we store
 // the pub key as [u8; 48] instead of string.
@@ -973,6 +987,13 @@ mod tests {
         );
         assert_eq!(DutyType::SyncContribution.to_string(), "sync_contribution");
         assert_eq!(DutyType::InfoSync.to_string(), "info_sync");
+    }
+
+    #[test]
+    fn proposal_type_as_str() {
+        assert_eq!(ProposalType::Full.as_str(), "full");
+        assert_eq!(ProposalType::Builder.as_str(), "builder");
+        assert_eq!(ProposalType::Synthetic.as_str(), "synthetic");
     }
 
     #[test]

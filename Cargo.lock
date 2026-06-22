@@ -5817,6 +5817,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pluto-infosync"
+version = "1.7.1"
+dependencies = [
+ "pluto-core",
+ "pluto-featureset",
+ "pluto-priority",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "pluto-k1util"
 version = "1.7.1"
 dependencies = [
