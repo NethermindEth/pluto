@@ -2,6 +2,8 @@ use core::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::ConsensusVersion;
+
 /// Error returned when converting unknown data or builder versions.
 #[derive(Debug, thiserror::Error, Clone, Copy, PartialEq, Eq)]
 pub enum VersionError {
@@ -100,6 +102,22 @@ impl DataVersion {
 impl fmt::Display for DataVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.as_str())
+    }
+}
+
+impl From<&ConsensusVersion> for DataVersion {
+    /// Maps a beacon-node `ConsensusVersion` onto the corresponding data
+    /// version. Total: `ConsensusVersion` has no `Unknown` variant.
+    fn from(version: &ConsensusVersion) -> Self {
+        match version {
+            ConsensusVersion::Phase0 => DataVersion::Phase0,
+            ConsensusVersion::Altair => DataVersion::Altair,
+            ConsensusVersion::Bellatrix => DataVersion::Bellatrix,
+            ConsensusVersion::Capella => DataVersion::Capella,
+            ConsensusVersion::Deneb => DataVersion::Deneb,
+            ConsensusVersion::Electra => DataVersion::Electra,
+            ConsensusVersion::Fulu => DataVersion::Fulu,
+        }
     }
 }
 
@@ -226,6 +244,17 @@ pub mod serde_legacy_builder_version {
 mod tests {
     use super::*;
     use test_case::test_case;
+
+    #[test_case(ConsensusVersion::Phase0, DataVersion::Phase0 ; "phase0")]
+    #[test_case(ConsensusVersion::Altair, DataVersion::Altair ; "altair")]
+    #[test_case(ConsensusVersion::Bellatrix, DataVersion::Bellatrix ; "bellatrix")]
+    #[test_case(ConsensusVersion::Capella, DataVersion::Capella ; "capella")]
+    #[test_case(ConsensusVersion::Deneb, DataVersion::Deneb ; "deneb")]
+    #[test_case(ConsensusVersion::Electra, DataVersion::Electra ; "electra")]
+    #[test_case(ConsensusVersion::Fulu, DataVersion::Fulu ; "fulu")]
+    fn data_version_from_consensus_version(consensus: ConsensusVersion, expected: DataVersion) {
+        assert_eq!(DataVersion::from(&consensus), expected);
+    }
 
     #[test_case(DataVersion::Phase0, "\"phase0\"" ; "phase0")]
     #[test_case(DataVersion::Deneb, "\"deneb\"" ; "deneb")]

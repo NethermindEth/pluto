@@ -53,6 +53,9 @@ pub mod aggsigdb;
 /// Broadcaster for aggregate signed duty data.
 pub mod bcast;
 
+/// Fetcher — fetches unsigned duty data from the beacon node.
+pub mod fetcher;
+
 mod parsigex_codec;
 
 // SSZ codec operates on compile-time-constant byte sizes and offsets.

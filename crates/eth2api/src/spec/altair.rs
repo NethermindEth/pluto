@@ -8,7 +8,10 @@ use tree_hash_derive::TreeHash;
 
 use pluto_ssz::BitVector;
 
-use crate::spec::phase0;
+use crate::spec::{
+    phase0,
+    serde_utils::{ConversionError, decode_hex_fixed, decode_hex_var, parse_u64},
+};
 
 /// Sync aggregate included in Altair+ block bodies.
 ///
@@ -129,6 +132,33 @@ pub struct SyncCommitteeContribution {
     /// Contribution signature.
     #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
     pub signature: phase0::BLSSignature,
+}
+
+impl TryFrom<&crate::Contribution> for SyncCommitteeContribution {
+    type Error = ConversionError;
+
+    fn try_from(value: &crate::Contribution) -> Result<Self, Self::Error> {
+        const BITS_FIELD: &str = "sync_committee_contribution.aggregation_bits";
+        let aggregation_bits = <BitVector<128> as ssz::Decode>::from_ssz_bytes(&decode_hex_var(
+            &value.aggregation_bits,
+            BITS_FIELD,
+        )?)
+        .map_err(|_| ConversionError::DecodeHex { field: BITS_FIELD })?;
+
+        Ok(Self {
+            slot: parse_u64(&value.slot, "sync_committee_contribution.slot")?,
+            beacon_block_root: decode_hex_fixed(
+                &value.beacon_block_root,
+                "sync_committee_contribution.beacon_block_root",
+            )?,
+            subcommittee_index: parse_u64(
+                &value.subcommittee_index,
+                "sync_committee_contribution.subcommittee_index",
+            )?,
+            aggregation_bits,
+            signature: decode_hex_fixed(&value.signature, "sync_committee_contribution.signature")?,
+        })
+    }
 }
 
 /// Contribution-and-proof payload.
@@ -276,5 +306,49 @@ mod tests {
     )]
     fn tree_hash_matches_vector(actual: String, expected: &'static str) {
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn sync_committee_contribution_try_from_matches_json_roundtrip() {
+        let wire = serde_json::json!({
+            "slot": "9",
+            "beacon_block_root": format!("0x{}", "66".repeat(32)),
+            "subcommittee_index": "3",
+            "aggregation_bits": format!("0x{}", "00".repeat(16)),
+            "signature": format!("0x{}", "77".repeat(96)),
+        });
+        let generated: crate::Contribution =
+            serde_json::from_value(wire.clone()).expect("deserialize generated Contribution");
+
+        // Direct conversion must equal the loosely-typed JSON round-trip it
+        // replaces.
+        let direct = SyncCommitteeContribution::try_from(&generated).expect("convert");
+        let via_json: SyncCommitteeContribution =
+            serde_json::from_value(wire).expect("json round-trip");
+        assert_eq!(direct, via_json);
+
+        assert_eq!(direct.slot, 9);
+        assert_eq!(direct.subcommittee_index, 3);
+        assert_eq!(direct.beacon_block_root, [0x66; 32]);
+        assert_eq!(direct.signature, [0x77; 96]);
+    }
+
+    #[test]
+    fn sync_committee_contribution_try_from_rejects_bad_bits_length() {
+        let wire = serde_json::json!({
+            "slot": "9",
+            "beacon_block_root": format!("0x{}", "66".repeat(32)),
+            "subcommittee_index": "3",
+            // BitVector<128> requires exactly 16 bytes.
+            "aggregation_bits": "0x0102",
+            "signature": format!("0x{}", "77".repeat(96)),
+        });
+        let generated: crate::Contribution = serde_json::from_value(wire).expect("deserialize");
+        assert!(matches!(
+            SyncCommitteeContribution::try_from(&generated),
+            Err(ConversionError::DecodeHex {
+                field: "sync_committee_contribution.aggregation_bits"
+            })
+        ));
     }
 }

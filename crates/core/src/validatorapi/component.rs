@@ -518,9 +518,10 @@ impl Component {
                 // fails — this is not an error at this point.
                 let mut val_idx = 0;
                 for def in def_set.values() {
-                    let DutyDefinition::Attester(duty) = def else {
+                    let DutyDefinition::Attester(attester) = def else {
                         continue;
                     };
+                    let duty = &attester.duty;
                     if duty.committee_index != att_data.index {
                         continue;
                     }
@@ -534,7 +535,7 @@ impl Component {
                     };
 
                     if duty.validator_committee_index == *single_bit as u64 {
-                        val_idx = duty.v_idx;
+                        val_idx = duty.validator_index;
                         break;
                     }
                 }
@@ -6472,12 +6473,14 @@ mod tests {
                 core_pubkey(0x01),
                 DutyDefinition::Attester(AttesterDutyDefinition {
                     pubkey: core_pubkey(0x01),
-                    slot: SlotNumber::new(SLOT),
-                    v_idx: VAL_IDX,
-                    committee_index: COMM_IDX,
-                    committee_length: 64,
-                    committees_at_slot: 1,
-                    validator_committee_index: BIT as u64,
+                    duty: signeddata::AttesterDuty {
+                        slot: SLOT,
+                        validator_index: VAL_IDX,
+                        committee_index: COMM_IDX,
+                        committee_length: 64,
+                        committees_at_slot: 1,
+                        validator_committee_index: BIT as u64,
+                    },
                 }),
             );
             Ok(Box::new(set) as Box<dyn Any + Send + Sync>)
@@ -6514,12 +6517,14 @@ mod tests {
                 core_pubkey(0x01),
                 DutyDefinition::Attester(AttesterDutyDefinition {
                     pubkey: core_pubkey(0x01),
-                    slot: SlotNumber::new(9),
-                    v_idx: 1,
-                    committee_index: COMM_IDX,
-                    committee_length: 64,
-                    committees_at_slot: 1,
-                    validator_committee_index: 0,
+                    duty: signeddata::AttesterDuty {
+                        slot: 9,
+                        validator_index: 1,
+                        committee_index: COMM_IDX,
+                        committee_length: 64,
+                        committees_at_slot: 1,
+                        validator_committee_index: 0,
+                    },
                 }),
             );
             Ok(Box::new(set) as Box<dyn Any + Send + Sync>)
