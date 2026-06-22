@@ -42,7 +42,7 @@ struct InfoResult {
     slot: SlotNumber,
     versions: Vec<String>,
     protocols: Vec<String>,
-    proposals: Vec<String>,
+    proposals: Vec<ProposalType>,
 }
 
 /// Shared store of agreed-upon results, accessed by both the public getters and
@@ -67,11 +67,10 @@ impl ResultStore {
 
     /// Folds a decided priority result into a stored [`InfoResult`].
     ///
-    /// All three topics are stored as their raw agreed wire strings; the closed
-    /// [`ProposalType`] enum is applied only on the proposing side. This
-    /// preserves cluster-agreed values this binary may not recognise (proposal
-    /// types are an open wire set). The result is only stored when at least one
-    /// version was agreed upon.
+    /// Versions and protocols are stored as their raw agreed wire strings;
+    /// proposals are parsed into [`ProposalType`], with unrecognised values
+    /// preserved as [`ProposalType::Unknown`] rather than dropped. The result
+    /// is only stored when at least one version was agreed upon.
     fn handle_results(&self, duty: &Duty, results: &[TopicResult]) {
         let mut res = InfoResult {
             slot: duty.slot,
@@ -85,7 +84,7 @@ impl ResultStore {
                 match result.topic.as_str() {
                     TOPIC_VERSION => res.versions.push(prio),
                     TOPIC_PROTOCOL => res.protocols.push(prio),
-                    TOPIC_PROPOSAL => res.proposals.push(prio),
+                    TOPIC_PROPOSAL => res.proposals.push(ProposalType::from(prio)),
                     _ => {}
                 }
             }
@@ -138,16 +137,16 @@ impl ResultStore {
         resp
     }
 
-    /// Latest cluster-wide supported proposal types at or before `slot`, as raw
-    /// wire strings, falling back to the default `["full"]` when no earlier
+    /// Latest cluster-wide supported proposal types at or before `slot`,
+    /// falling back to the default `[ProposalType::Full]` when no earlier
     /// result exists.
-    fn proposals(&self, slot: SlotNumber) -> Vec<String> {
+    fn proposals(&self, slot: SlotNumber) -> Vec<ProposalType> {
         let results = self
             .results
             .lock()
             .expect("infosync results mutex poisoned");
 
-        let mut resp = vec![ProposalType::Full.as_str().to_owned()];
+        let mut resp = vec![ProposalType::Full];
         for result in results.iter() {
             if result.slot > slot {
                 break;
@@ -207,12 +206,12 @@ impl Component {
     }
 
     /// Returns the latest cluster-wide supported proposal types at or before
-    /// `slot`, as raw wire strings (e.g. `"full"`).
+    /// `slot`.
     ///
-    /// Returns the default `["full"]` if no earlier results are available.
-    /// Strings rather than [`ProposalType`] are returned so cluster-agreed
-    /// values this binary may not recognise are preserved.
-    pub fn proposals(&self, slot: SlotNumber) -> Vec<String> {
+    /// Returns the default `[ProposalType::Full]` if no earlier results are
+    /// available. Values this binary does not recognise are preserved as
+    /// [`ProposalType::Unknown`] rather than dropped.
+    pub fn proposals(&self, slot: SlotNumber) -> Vec<ProposalType> {
         self.store.proposals(slot)
     }
 
@@ -330,7 +329,7 @@ mod tests {
             slot: slot(s),
             versions: versions.iter().map(|v| (*v).to_owned()).collect(),
             protocols: protocols.iter().map(|p| (*p).to_owned()).collect(),
-            proposals: proposals.iter().map(|p| (*p).to_owned()).collect(),
+            proposals: proposals.iter().map(|p| ProposalType::from(*p)).collect(),
         }
     }
 
@@ -390,7 +389,7 @@ mod tests {
     #[test]
     fn proposals_defaults_to_full() {
         let store = ResultStore::new(Vec::new());
-        assert_eq!(store.proposals(slot(10)), vec!["full"]);
+        assert_eq!(store.proposals(slot(10)), vec![ProposalType::Full]);
     }
 
     #[test]
@@ -401,15 +400,15 @@ mod tests {
 
         // Before any result: local default / full default.
         assert_eq!(store.protocols(slot(4)), vec!["local"]);
-        assert_eq!(store.proposals(slot(4)), vec!["full"]);
+        assert_eq!(store.proposals(slot(4)), vec![ProposalType::Full]);
 
         // At/after slot 5 but before 10: the slot-5 result.
         assert_eq!(store.protocols(slot(5)), vec!["p5"]);
-        assert_eq!(store.proposals(slot(9)), vec!["builder"]);
+        assert_eq!(store.proposals(slot(9)), vec![ProposalType::Builder]);
 
         // At/after slot 10: the slot-10 result.
         assert_eq!(store.protocols(slot(10)), vec!["p10"]);
-        assert_eq!(store.proposals(slot(100)), vec!["synthetic"]);
+        assert_eq!(store.proposals(slot(100)), vec![ProposalType::Synthetic]);
     }
 
     #[test]
@@ -461,7 +460,10 @@ mod tests {
         store.handle_results(&duty, &results);
 
         assert_eq!(store.protocols(slot(7)), vec!["proto-a", "proto-b"]);
-        assert_eq!(store.proposals(slot(7)), vec!["builder", "full"]);
+        assert_eq!(
+            store.proposals(slot(7)),
+            vec![ProposalType::Builder, ProposalType::Full]
+        );
     }
 
     #[test]
@@ -476,11 +478,15 @@ mod tests {
 
         store.handle_results(&duty, &results);
 
-        // Unknown proposal strings are preserved verbatim (proposal types are an
-        // open wire set); only the unrecognised topic is ignored.
+        // Unknown proposal types are preserved as `Unknown` (not dropped); only
+        // the unrecognised topic is ignored.
         assert_eq!(
             store.proposals(slot(1)),
-            vec!["builder", "future_type", "full"]
+            vec![
+                ProposalType::Builder,
+                ProposalType::Unknown("future_type".to_owned()),
+                ProposalType::Full,
+            ]
         );
     }
 
