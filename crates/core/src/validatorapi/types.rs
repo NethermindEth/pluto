@@ -22,7 +22,12 @@ pub use pluto_eth2api::{
     GetSyncCommitteeDutiesResponseResponseDatum as SyncCommitteeDuty,
     GetVersionResponseResponse as NodeVersionResponse,
     GetVersionResponseResponseData as NodeVersionData,
-    spec::phase0::{self, Epoch, Root, Slot, ValidatorIndex},
+    spec::{
+        altair::{SignedContributionAndProof, SyncCommitteeContribution, SyncCommitteeMessage},
+        phase0::{self, Epoch, Root, Slot, ValidatorIndex},
+    },
+    v1::{BeaconCommitteeSelection, SyncCommitteeSelection},
+    versioned,
 };
 
 /// Attestation data alias for the consensus-spec phase0 type.
@@ -140,6 +145,22 @@ pub struct AttestationDataResponse {
     pub data: AttestationData,
 }
 
+/// Response envelope for the `beacon_committee_selections` endpoint — a `data`
+/// array of aggregated selection proofs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BeaconCommitteeSelectionsResponse {
+    /// Aggregated beacon-committee selection proofs.
+    pub data: Vec<BeaconCommitteeSelection>,
+}
+
+/// Response envelope for the `sync_committee_selections` endpoint — a `data`
+/// array of aggregated selection proofs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncCommitteeSelectionsResponse {
+    /// Aggregated sync-committee selection proofs.
+    pub data: Vec<SyncCommitteeSelection>,
+}
+
 /// Versioned unsigned proposal payload — alias of the signeddata wrapper.
 pub use crate::signeddata::VersionedProposal;
 
@@ -147,46 +168,40 @@ pub use crate::signeddata::VersionedProposal;
 pub use crate::signeddata::VersionedSignedProposal;
 
 /// Versioned signed blinded proposal payload — alias of the eth2api versioned
-/// wrapper, the same shape consumed by Go's
-/// `SubmitBlindedProposalOpts.Proposal`.
+/// wrapper.
 pub use pluto_eth2api::versioned::VersionedSignedBlindedProposal;
 
-/// Versioned attestation payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct VersionedAttestation {}
+/// Versioned attestation payload — alias of the signeddata wrapper. Carries a
+/// VC-submitted attestation across all supported forks.
+pub use crate::signeddata::VersionedAttestation;
 
-/// Versioned signed aggregate-and-proof payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct VersionedSignedAggregateAndProof {}
+/// Versioned signed aggregate-and-proof payload — alias of the signeddata
+/// wrapper.
+pub use crate::signeddata::VersionedSignedAggregateAndProof;
 
-/// Signed validator registration payload — the bare builder-API v1 object the
-/// validator client submits to `register_validator`. The component wraps each
-/// entry as a `BuilderVersion::V1` versioned registration before broadcasting.
-pub use pluto_eth2api::v1::SignedValidatorRegistration;
+/// Signed validator (builder) registration payload.
+///
+/// Wraps the versioned eth2api registration so the
+/// [`Handler::submit_validator_registrations`](super::handler::Handler::submit_validator_registrations)
+/// implementation has access to the full registration data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SignedValidatorRegistration(
+    /// Wrapped versioned registration.
+    pub versioned::VersionedSignedValidatorRegistration,
+);
 
-/// Signed voluntary exit payload — the phase0 object the validator client
-/// submits to `voluntary_exits`.
-pub use pluto_eth2api::spec::phase0::SignedVoluntaryExit;
-
-/// Sync-committee message payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct SyncCommitteeMessage {}
-
-/// Sync-committee contribution payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct SyncCommitteeContribution {}
-
-/// Signed contribution-and-proof payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct SignedContributionAndProof {}
-
-/// Beacon-committee selection payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct BeaconCommitteeSelection {}
-
-/// Sync-committee selection payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct SyncCommitteeSelection {}
+/// Signed voluntary exit payload.
+///
+/// Wraps `phase0::SignedVoluntaryExit` so the
+/// [`Handler::submit_voluntary_exit`](super::handler::Handler::submit_voluntary_exit)
+/// implementation has access to the full signed voluntary exit data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SignedVoluntaryExit(
+    /// Wrapped phase0 signed voluntary exit.
+    pub phase0::SignedVoluntaryExit,
+);
 
 /// Validator-index request body for the `attester_duties` and
 /// `sync_committee_duties` endpoints.

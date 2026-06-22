@@ -8,13 +8,16 @@ publish.workspace = true
 
 [dependencies]
 alloy.workspace = true
+backon.workspace = true
 async-trait.workspace = true
+bon.workspace = true
 axum.workspace = true
 cancellation.workspace = true
 chrono.workspace = true
 crossbeam.workspace = true
 dyn-clone.workspace = true
 dyn-eq.workspace = true
+futures.workspace = true
 hex.workspace = true
 vise.workspace = true
 pluto-crypto.workspace = true

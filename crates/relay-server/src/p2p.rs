@@ -243,9 +243,9 @@ fn handle_swarm_event(
         }
         SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(relay::Event::ReservationReqDenied {
             src_peer_id,
-            ..
+            status,
         })) => {
-            warn!(peer = %peer_name(src_peer_id), "relay reservation denied");
+            warn!(peer = %peer_name(src_peer_id), ?status, "relay reservation denied");
             AddrUpdate::None
         }
         SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(relay::Event::ReservationTimedOut {
@@ -268,13 +268,28 @@ fn handle_swarm_event(
         SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(relay::Event::CircuitReqDenied {
             src_peer_id,
             dst_peer_id,
-            ..
+            status,
         })) => {
-            warn!(
-                src = %peer_name(src_peer_id),
-                dst = %peer_name(dst_peer_id),
-                "relay circuit denied"
-            );
+            // `NoReservation` is the common, benign case: a peer optimistically
+            // dials a circuit to a destination that has not (yet) reserved on
+            // this relay (e.g. during cluster startup/reconnect). Log it at
+            // debug so real capacity issues (`ResourceLimitExceeded`) remain
+            // visible at warn.
+            if matches!(status, relay::StatusCode::NoReservation) {
+                debug!(
+                    src = %peer_name(src_peer_id),
+                    dst = %peer_name(dst_peer_id),
+                    ?status,
+                    "relay circuit denied"
+                );
+            } else {
+                warn!(
+                    src = %peer_name(src_peer_id),
+                    dst = %peer_name(dst_peer_id),
+                    ?status,
+                    "relay circuit denied"
+                );
+            }
             AddrUpdate::None
         }
         SwarmEvent::Behaviour(PlutoBehaviourEvent::Inner(relay::Event::CircuitClosed {
