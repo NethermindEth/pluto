@@ -161,8 +161,7 @@ pub struct Component {
     eth2_cl: Arc<EthBeaconNodeApiClient>,
     /// Per-epoch active-validators cache. Submit handlers consult this to
     /// translate a validator-client-supplied `validator_index` into the
-    /// cluster's DV root public key. Mirrors Go's `eth2Cl.ActiveValidators`,
-    /// which is itself backed by the beacon-node validator cache.
+    /// cluster's DV root public key.
     validator_cache: Arc<dyn CachedValidatorsProvider>,
     /// In-memory DutyDB used to await consensus output (e.g. attestation
     /// data) produced by the rest of the pipeline.
@@ -333,7 +332,7 @@ impl Component {
         self.await_agg_sig_db_fn = Some(Arc::new(move |duty, pubkey| Box::pin(f(duty, pubkey))));
     }
 
-    /// Registers (and overwrites any prior) `dutyDefFunc`.
+    /// Registers (and overwrites any prior) duty-definition callback.
     pub fn register_get_duty_definition<F, Fut>(&mut self, f: F)
     where
         F: Fn(Duty) -> Fut + Send + Sync + 'static,
@@ -516,7 +515,7 @@ impl Component {
                 // Match the attestation to an attester duty by committee index
                 // and the single aggregation bit. When no duty matches, the
                 // validator index stays 0 and the subsequent pubkey lookup
-                // fails — matching Go, which does not error at this point.
+                // fails — this is not an error at this point.
                 let mut val_idx = 0;
                 for def in def_set.values() {
                     let DutyDefinition::Attester(duty) = def else {
@@ -557,7 +556,7 @@ impl Component {
 
     /// Looks up the attester-duty definition set for a slot via the registered
     /// `duty_def_fn`, downcasting the type-erased result to the attester-duty
-    /// shape. Mirrors Go's `dutyDefFunc(ctx, Duty{Slot, DutyAttester})`.
+    /// shape.
     async fn lookup_attester_definitions(&self, slot: u64) -> Result<DutyDefinitionSet, ApiError> {
         let f = self.duty_def_fn.as_ref().ok_or_else(|| {
             ApiError::new(
@@ -1304,7 +1303,7 @@ impl Handler for Component {
             let pubkey = PubKey::new(*eth2_pubkey);
 
             // Verify the inner selection proof (the outcome of
-            // DutyPrepareAggregator). Skipped under insecure_test, matching Go.
+            // DutyPrepareAggregator). Skipped under insecure_test.
             if !self.insecure_test {
                 signing::verify_aggregate_and_proof_selection(&self.eth2_cl, eth2_pubkey, &agg.0)
                     .await
@@ -1323,9 +1322,8 @@ impl Handler for Component {
             );
 
             // Verify the outer partial signature over the aggregate-and-proof.
-            // Gated on `insecure_test` to mirror Go's `verifyPartialSig`, which
-            // returns early before resolving the signing domain/epoch — so in
-            // test mode we likewise skip the upstream `epoch_from_slot` call.
+            // Skipped (along with the upstream `epoch_from_slot` lookup it
+            // needs) entirely in insecure-test mode.
             if !self.insecure_test {
                 let epoch = pluto_eth2util::helpers::epoch_from_slot(&self.eth2_cl, slot)
                     .await
@@ -1553,15 +1551,11 @@ impl Handler for Component {
         // back to the cluster's root pubkey before forwarding upstream, since
         // the beacon node only knows the root keys. An empty `pubkeys` is
         // forwarded as `None` so the upstream is not artificially narrowed.
-        //
-        // Port of `Validators` in
-        // `core/validatorapi/validatorapi.go` (lines 1218–1296).
         let pubkey_by_share = invert_pub_share_map(&self.pub_share_by_pubkey);
 
         let mut root_pubkeys: Vec<String> = Vec::with_capacity(opts.pubkeys.len());
         for share in &opts.pubkeys {
             let root = pubkey_by_share.get(share).ok_or_else(|| {
-                // Mirrors the Go `getPubKeyFunc` "unknown public key" branch.
                 ApiError::new(
                     StatusCode::BAD_REQUEST,
                     "unknown validator public key in request",
@@ -1581,8 +1575,8 @@ impl Handler for Component {
             },
             body: ValidatorRequestBody {
                 ids: if ids.is_empty() { None } else { Some(ids) },
-                // Status filter is not exposed by Pluto's `ValidatorsOpts`; the
-                // Go reference also omits it from the upstream call.
+                // Status filter is not exposed by Pluto's `ValidatorsOpts`, so
+                // it is omitted from the upstream call.
                 statuses: None,
             },
         };
@@ -1617,7 +1611,7 @@ impl Handler for Component {
             }
         };
 
-        // `ignore_not_found` mirrors the Go `len(opts.Indices) == 0` contract:
+        // `ignore_not_found` follows the `indices is empty` contract:
         // when indices were provided, every returned validator must belong to
         // this cluster's share map, so an unknown pubkey is rejected as a
         // configuration error. When no indices were provided (pubkey-only or
@@ -2098,8 +2092,7 @@ fn swap_sync_committee_pubshares(
 }
 
 /// Replaces the root public key on each upstream validator entry with this
-/// node's public share. Port of `convertValidators` in
-/// `core/validatorapi/validatorapi.go` (lines 1305–1332).
+/// node's public share.
 ///
 /// When `ignore_not_found` is `true` (the caller passed no indices),
 /// validators whose root pubkey is not part of this cluster's share map are
@@ -2121,8 +2114,7 @@ fn convert_validators(
             }
             None if ignore_not_found => {
                 // Validator does not belong to this cluster — keep the
-                // entry with its root pubkey unchanged. Mirrors the Go
-                // `convertValidators` `else if ok` branch.
+                // entry with its root pubkey unchanged.
             }
             None => {
                 return Err(ApiError::new(
@@ -2397,8 +2389,7 @@ fn attestation_data(att: &VersionedAttestation) -> Result<AttestationData, ApiEr
     Ok(payload.data().clone())
 }
 
-/// Returns the committee index of a VC-submitted versioned attestation,
-/// mirroring go-eth2-client's `VersionedAttestation.CommitteeIndex`: for
+/// Returns the committee index of a VC-submitted versioned attestation: for
 /// pre-Electra forks it is the attestation data's `index`; for Electra and Fulu
 /// it is the single set bit of the committee bitfield.
 fn attestation_committee_index(att: &VersionedAttestation) -> Result<u64, ApiError> {
@@ -6051,8 +6042,7 @@ mod tests {
     }
 
     /// Happy path: every upstream entry has a known root pubkey, so each
-    /// inner `validator.pubkey` is rewritten to this node's share. Mirrors
-    /// the `else if ok` branch of `convertValidators`.
+    /// inner `validator.pubkey` is rewritten to this node's share.
     #[test]
     fn convert_validators_rewrites_known_pubkeys() {
         let root = [0xAA_u8; 48];
@@ -6068,8 +6058,7 @@ mod tests {
     }
 
     /// With `ignore_not_found = true`, an unknown pubkey is passed through
-    /// unchanged (Go: `else if ok` — the entry is still appended to `resp`
-    /// with the original root pubkey).
+    /// unchanged — the entry is still returned with the original root pubkey.
     #[test]
     fn convert_validators_ignore_not_found_keeps_entry_unchanged() {
         let known_root = [0x11_u8; 48];
@@ -6091,7 +6080,6 @@ mod tests {
     }
 
     /// With `ignore_not_found = false`, an unknown pubkey is rejected.
-    /// Mirrors Go: `if !ok && !ignoreNotFound { return nil, errors.New(...) }`.
     #[test]
     fn convert_validators_rejects_unknown_when_not_ignoring() {
         let known_root = [0x44_u8; 48];
@@ -6167,11 +6155,9 @@ mod tests {
         assert!(response.dependent_root.is_none());
     }
 
-    /// When the caller filters by pubkey only (no indices), `ignoreNotFound`
-    /// is `true` per the Go reference, so an upstream entry whose pubkey is
-    /// not part of this cluster's share map passes through with its root
-    /// pubkey unchanged. Mirrors `len(opts.Indices) == 0` in
-    /// `validatorapi.go:1288`.
+    /// When the caller filters by pubkey only (no indices), `ignore_not_found`
+    /// is `true`, so an upstream entry whose pubkey is not part of this
+    /// cluster's share map passes through with its root pubkey unchanged.
     #[tokio::test]
     async fn validators_passes_through_unknown_when_filtering_by_pubkey_only() {
         let server = MockServer::start().await;
@@ -6212,11 +6198,9 @@ mod tests {
         );
     }
 
-    /// When the caller filters by index (any non-empty `Indices`),
-    /// `ignoreNotFound` is `false` per the Go reference, so an upstream
-    /// validator that does not belong to this cluster surfaces as
-    /// `INTERNAL_SERVER_ERROR`. Mirrors `len(opts.Indices) == 0 == false` in
-    /// `validatorapi.go:1288`.
+    /// When the caller filters by index (any non-empty `indices`),
+    /// `ignore_not_found` is `false`, so an upstream validator that does not
+    /// belong to this cluster surfaces as `INTERNAL_SERVER_ERROR`.
     #[tokio::test]
     async fn validators_rejects_unknown_pubkey_when_index_filter_used() {
         let server = MockServer::start().await;
@@ -6250,8 +6234,7 @@ mod tests {
     }
 
     /// A pubkey from the VC that is not part of this cluster's share map is
-    /// rejected as `BAD_REQUEST` before any upstream call. Mirrors Go's
-    /// `getPubKeyFunc` "unknown public key" error.
+    /// rejected as `BAD_REQUEST` before any upstream call.
     #[tokio::test]
     async fn validators_rejects_unknown_input_pubshare() {
         let server = MockServer::start().await;

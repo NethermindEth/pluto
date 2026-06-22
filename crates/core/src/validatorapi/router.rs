@@ -62,8 +62,7 @@ const DUTIES_BODY_LIMIT: usize = 64 * 1024;
 /// binary size), so 12 blobs alone are ~3 MiB of JSON and a blob-carrying block
 /// comfortably exceeds axum's 2 MiB default `body: Bytes` limit — missing those
 /// proposals. 16 MiB gives several× headroom over a realistic max-blob block
-/// while still bounding per-request memory; the Go reference (`router.go`,
-/// `submitProposal`) reads the body uncapped via `io.ReadAll`.
+/// while still bounding per-request memory.
 const PROPOSAL_BODY_LIMIT: usize = 16 * 1024 * 1024;
 
 /// Response/request header carrying the consensus fork name (e.g. `deneb`).
@@ -372,7 +371,6 @@ fn json_rejection_to_api_error(rejection: JsonRejection) -> ApiError {
 /// `phase0::Attestation`; Electra and Fulu carry a `SingleAttestation` that is
 /// lifted into the versioned wrapper with its committee index encoded in the
 /// committee bitfield and the attester index recorded as the validator index.
-/// Mirrors `submitAttestations`.
 async fn submit_attestations(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -498,8 +496,8 @@ fn build_versioned_attestation(
 /// Validator ids arrive as repeated/CSV `id` query parameters; when the query
 /// carries none and the request has a JSON body, the body's `ids` array is
 /// used instead. The whole id batch is dispatched on the first element's
-/// `0x` prefix exactly as Charon's `getValidatorsByID` does: all-pubkeys if
-/// `ids[0]` begins `0x`, otherwise all decimal indices.
+/// `0x` prefix: all-pubkeys if `ids[0]` begins `0x`, otherwise all decimal
+/// indices.
 async fn get_validators(
     State(state): State<Arc<AppState>>,
     Path(state_id): Path<String>,
@@ -526,7 +524,7 @@ async fn get_validators(
 /// `GET /eth/v1/beacon/states/{state_id}/validators/{validator_id}`.
 ///
 /// Returns a single validator; `404` when the upstream has none and `500`
-/// when it unexpectedly returns more than one. Mirrors `getValidator`.
+/// when it unexpectedly returns more than one.
 async fn get_validator(
     State(state): State<Arc<AppState>>,
     Path((state_id, validator_id)): Path<(String, String)>,
@@ -558,7 +556,7 @@ async fn get_validator(
 /// Produces an unsigned (possibly blinded) beacon block. `builder_enabled`
 /// maximises the builder boost factor so builder payloads win. The block is
 /// returned as JSON with the consensus-version / payload-blinded / value
-/// headers Charon sets in `proposeBlockV3`.
+/// headers.
 async fn propose_block_v3(
     State(state): State<Arc<AppState>>,
     Path(slot): Path<u64>,
@@ -570,8 +568,8 @@ async fn propose_block_v3(
     let graffiti = graffiti_query(&params, "graffiti")?;
 
     // Builder mode gives maximum priority to builder blocks (`u64::MAX`);
-    // otherwise the factor is `0`. Charon always sends the factor (it is never
-    // omitted), so use `Some` in both branches.
+    // otherwise the factor is `0`. The factor is always sent (never omitted),
+    // so use `Some` in both branches.
     let builder_boost_factor = Some(if state.builder_enabled { u64::MAX } else { 0 });
 
     let response = state
@@ -619,7 +617,7 @@ async fn propose_block_v3(
 ///
 /// Decodes the submitted full signed block, selecting the fork from the
 /// `Eth-Consensus-Version` header (JSON or SSZ body per content type), then
-/// forwards it to the handler. Mirrors `submitProposal`.
+/// forwards it to the handler.
 async fn submit_proposal(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -646,7 +644,6 @@ async fn submit_proposal(
 ///
 /// Decodes the submitted blinded signed block, selecting the fork from the
 /// `Eth-Consensus-Version` header, then forwards it to the handler.
-/// Mirrors `submitBlindedBlock`.
 async fn submit_blinded_block(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -674,7 +671,7 @@ async fn submit_exit() {
 ///
 /// Decodes a JSON array of partially-signed beacon committee selections,
 /// forwards them to the handler, and returns the aggregated selections in a
-/// `{ "data": [...] }` envelope. Mirrors `beaconCommitteeSelections`.
+/// `{ "data": [...] }` envelope.
 async fn beacon_committee_selections(
     State(state): State<Arc<AppState>>,
     selections: Result<Json<Vec<BeaconCommitteeSelection>>, JsonRejection>,
@@ -695,7 +692,6 @@ async fn beacon_committee_selections(
 /// Reads the `slot`, `attestation_data_root`, and `committee_index` query
 /// parameters, asks the handler for the aggregated attestation, and returns it
 /// as a versioned response carrying the `Eth-Consensus-Version` header.
-/// Mirrors `aggregateAttestation`.
 async fn aggregate_attestation(
     State(state): State<Arc<AppState>>,
     RawQuery(query): RawQuery,
@@ -732,7 +728,7 @@ async fn aggregate_attestation(
 ///
 /// Decodes a versioned array of signed aggregate-and-proofs (JSON or SSZ, fork
 /// selected by the `Eth-Consensus-Version` header) and forwards them to the
-/// handler. Mirrors `submitAggregateAttestations`.
+/// handler.
 async fn submit_aggregate_attestations(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -837,8 +833,8 @@ fn build_versioned_aggregate(
     ))
 }
 
-/// Serializes an aggregated attestation to the bare per-fork payload Charon's
-/// `createAggregateAttestation` puts in the `data` field.
+/// Serializes an aggregated attestation to the bare per-fork payload placed in
+/// the `data` field.
 fn serialize_aggregate_attestation(att: &SignedVersionedAttestation) -> Result<Value, ApiError> {
     let payload = att.0.attestation.as_ref().ok_or_else(|| {
         ApiError::new(
@@ -861,8 +857,7 @@ fn serialize_aggregate_attestation(att: &SignedVersionedAttestation) -> Result<V
     }
 }
 
-/// Decodes a required decimal `u64` query parameter. Mirrors Charon's
-/// `uintQuery`.
+/// Decodes a required decimal `u64` query parameter.
 fn uint_query(params: &[(String, String)], name: &str) -> Result<u64, ApiError> {
     let value = query_value(params, name).ok_or_else(|| {
         ApiError::new(
@@ -893,9 +888,9 @@ async fn submit_contribution_and_proofs() {
 
 /// `POST /eth/v1/validator/prepare_beacon_proposer`.
 ///
-/// Swallows the fee-recipient preparation: Charon derives the fee recipient
-/// from `cluster-lock.json`, so the validator client need not be configured
-/// with one. Returns `200` with no body. Mirrors `submitProposalPreparations`.
+/// Swallows the fee-recipient preparation: the fee recipient is derived from
+/// `cluster-lock.json`, so the validator client need not be configured with
+/// one. Returns `200` with no body.
 async fn submit_proposal_preparations() -> impl IntoResponse {
     StatusCode::OK
 }
@@ -925,18 +920,14 @@ async fn respond_404() -> impl IntoResponse {
 }
 
 /// Reverse-proxy fallback: forwards every request not handled by a registered
-/// distributed-validator route to the upstream beacon node. Mirrors
-/// `proxyHandler`.
+/// distributed-validator route to the upstream beacon node.
 ///
 /// Basic-auth credentials in the upstream URL's `userinfo` are applied to the
-/// proxied request and the `Host` header is rewritten to the upstream host,
-/// matching Charon's reverse-proxy director. The upstream response body is
-/// streamed straight through (not buffered), so long-lived endpoints such as
-/// the SSE `/eth/v1/events` stream proxy incrementally. Charon clones the
-/// request with the lifecycle context so in-flight proxied requests are
-/// cancelled on soft shutdown; here the proxied request inherits the axum
-/// request's own lifetime, which is cancelled when the connection/server is
-/// torn down.
+/// proxied request and the `Host` header is rewritten to the upstream host.
+/// The upstream response body is streamed straight through (not buffered), so
+/// long-lived endpoints such as the SSE `/eth/v1/events` stream proxy
+/// incrementally. The proxied request inherits the axum request's own
+/// lifetime, which is cancelled when the connection/server is torn down.
 async fn proxy_handler(
     State(state): State<Arc<AppState>>,
     method: Method,
@@ -950,8 +941,8 @@ async fn proxy_handler(
 
     // Build the target URL: upstream base + request path (+ query). The
     // userinfo is stripped from the URL and applied as a basic-auth header
-    // instead (below), mirroring Charon's reverse-proxy director and avoiding
-    // a duplicate Authorization header from URL-embedded credentials.
+    // instead (below), avoiding a duplicate Authorization header from
+    // URL-embedded credentials.
     let mut target = state.upstream_base_url.clone();
     target.set_path(uri.path());
     target.set_query(uri.query());
@@ -1029,8 +1020,7 @@ async fn proxy_handler(
 
     // Stream the body straight through rather than buffering it, so
     // long-lived/streaming endpoints (e.g. the SSE `/eth/v1/events`) are
-    // proxied incrementally. Charon achieves the same with a flushing reverse
-    // proxy writer.
+    // proxied incrementally.
     let body = axum::body::Body::from_stream(upstream.bytes_stream());
 
     Ok((status, response_headers, body).into_response())
@@ -1065,7 +1055,7 @@ fn parse_query(query: Option<&str>) -> Vec<(String, String)> {
 }
 
 /// Collects validator ids from the `id` query parameter, splitting CSV values
-/// and trimming each, mirroring Charon's `getQueryArrayParameter`.
+/// and trimming each.
 fn validator_ids_from_query(query: Option<&str>) -> Vec<String> {
     parse_query(query)
         .into_iter()
@@ -1079,8 +1069,7 @@ fn validator_ids_from_query(query: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-/// Validator-ids POST body: `{ "ids": [...] }`. Mirrors
-/// `getValidatorIDsFromJSON`.
+/// Validator-ids POST body: `{ "ids": [...] }`.
 #[derive(Debug, Deserialize)]
 struct ValidatorIdsBody {
     #[serde(default)]
@@ -1088,7 +1077,7 @@ struct ValidatorIdsBody {
 }
 
 /// Extracts validator ids from a JSON POST body. A parse failure surfaces as
-/// `400`, matching Charon's wrapped "failed to parse request body" error.
+/// `400`.
 fn validator_ids_from_json_body(body: &[u8]) -> Result<Vec<String>, ApiError> {
     let parsed: ValidatorIdsBody = serde_json::from_slice(body).map_err(|err| {
         ApiError::new(StatusCode::BAD_REQUEST, "failed to parse request body").with_source(err)
@@ -1098,10 +1087,9 @@ fn validator_ids_from_json_body(body: &[u8]) -> Result<Vec<String>, ApiError> {
 
 /// Builds [`ValidatorsOpts`] from a state id and a batch of validator ids.
 ///
-/// The whole batch is dispatched on `ids[0]`'s `0x` prefix exactly as Charon's
-/// `getValidatorsByID` does: if the first id is `0x`-prefixed every id is
-/// parsed as a public key, otherwise every id is parsed as a decimal validator
-/// index. An empty batch forwards no filter.
+/// The whole batch is dispatched on `ids[0]`'s `0x` prefix: if the first id is
+/// `0x`-prefixed every id is parsed as a public key, otherwise every id is
+/// parsed as a decimal validator index. An empty batch forwards no filter.
 fn validators_opts(state: String, ids: &[String]) -> Result<ValidatorsOpts, ApiError> {
     let mut pubkeys = Vec::new();
     let mut indices = Vec::new();
@@ -1149,7 +1137,7 @@ fn query_value<'a>(params: &'a [(String, String)], name: &str) -> Option<&'a str
 }
 
 /// Decodes a required fixed-length `0x`-hex query parameter into an `N`-byte
-/// array. Mirrors Charon's `hexQueryFixed`.
+/// array.
 fn hex_query_fixed<const N: usize>(
     params: &[(String, String)],
     name: &str,
@@ -1163,8 +1151,7 @@ fn hex_query_fixed<const N: usize>(
 }
 
 /// Decodes an optional fixed-length `0x`-hex query parameter into an `N`-byte
-/// array. Returns `None` when absent; rejects wrong lengths. Mirrors Charon's
-/// `hexQuery` + `hexQueryFixed` length check.
+/// array. Returns `None` when absent; rejects wrong lengths.
 fn optional_hex_query_fixed<const N: usize>(
     params: &[(String, String)],
     name: &str,
@@ -1191,10 +1178,9 @@ fn optional_hex_query_fixed<const N: usize>(
 
 /// Decodes the optional `graffiti` query parameter into a 32-byte array.
 ///
-/// Graffiti is lenient on length, mirroring Charon's `getProposeBlockParams`
-/// (`hexQuery` + `copy(graffiti[:], graffitiBytes)`): any-length hex is
-/// accepted, then left-aligned into 32 bytes — longer input is truncated and
-/// shorter input is zero-padded. An absent parameter yields all-zero graffiti.
+/// Graffiti is lenient on length: any-length hex is accepted, then
+/// left-aligned into 32 bytes — longer input is truncated and shorter input is
+/// zero-padded. An absent parameter yields all-zero graffiti.
 fn graffiti_query(params: &[(String, String)], name: &str) -> Result<[u8; 32], ApiError> {
     let Some(value) = query_value(params, name) else {
         return Ok([0u8; 32]);
@@ -1215,10 +1201,8 @@ fn graffiti_query(params: &[(String, String)], name: &str) -> Result<[u8; 32], A
 
 /// Parses the `Eth-Consensus-Version` request header into a [`DataVersion`].
 ///
-/// The header is matched case-insensitively (lowercased before lookup) to
-/// mirror go-eth2-client's `DataVersion.UnmarshalJSON`. A missing or
-/// unrecognised value is a `400`, matching Charon's "missing consensus version
-/// header".
+/// The header is matched case-insensitively (lowercased before lookup). A
+/// missing or unrecognised value is a `400`.
 fn consensus_version_header(headers: &HeaderMap) -> Result<DataVersion, ApiError> {
     let missing = || ApiError::new(StatusCode::BAD_REQUEST, "missing consensus version header");
     let raw = headers.get(VERSION_HEADER).ok_or_else(missing)?;
@@ -1235,8 +1219,7 @@ fn consensus_version_header(headers: &HeaderMap) -> Result<DataVersion, ApiError
     }
 }
 
-/// Classifies the request body encoding from its `Content-Type`, mirroring
-/// Charon's `wrap` content negotiation for JSON+SSZ endpoints: a missing or
+/// Classifies the request body encoding from its `Content-Type`: a missing or
 /// `application/json` header is JSON, `application/octet-stream` is SSZ, and
 /// anything else is rejected with `415 Unsupported Media Type` carrying the
 /// offending content type. Returns `true` for SSZ.
@@ -1266,8 +1249,7 @@ fn request_is_ssz(headers: &HeaderMap) -> Result<bool, ApiError> {
 }
 
 /// Decodes a submitted full signed proposal block (JSON or SSZ) for the given
-/// fork. A decode failure surfaces as `400`, mirroring Charon's
-/// "invalid submitted <fork> block".
+/// fork. A decode failure surfaces as `400`.
 fn decode_signed_proposal_block(
     version: DataVersion,
     body: &[u8],
@@ -1290,7 +1272,7 @@ fn decode_signed_proposal_block(
 }
 
 /// Selects the per-fork (non-blinded) `SignedProposalBlock` variant and parses
-/// the JSON block body into it. Mirrors the `submitProposal` version switch.
+/// the JSON block body into it.
 fn decode_signed_proposal_block_json(
     version: DataVersion,
     value: Value,
@@ -1308,7 +1290,7 @@ fn decode_signed_proposal_block_json(
 }
 
 /// Decodes a submitted blinded signed proposal block (JSON or SSZ) for the
-/// given fork. Mirrors `submitBlindedBlock`.
+/// given fork.
 fn decode_signed_blinded_proposal_block(
     version: DataVersion,
     body: &[u8],
@@ -1332,8 +1314,7 @@ fn decode_signed_blinded_proposal_block(
 }
 
 /// Selects the per-fork blinded variant and parses the JSON block body into
-/// it. Mirrors the `submitBlindedBlock` version switch; pre-Bellatrix forks
-/// have no blinded form and are rejected.
+/// it. Pre-Bellatrix forks have no blinded form and are rejected.
 fn decode_signed_blinded_proposal_block_json(
     version: DataVersion,
     value: Value,
@@ -1353,10 +1334,10 @@ fn decode_signed_blinded_proposal_block_json(
     })
 }
 
-/// Serializes an unsigned [`ProposalBlock`] to the JSON shape Charon's
-/// `createProposeBlockResponse` puts in the `data` field: the bare block for
-/// pre-Deneb forks (and all blinded forks), and the `BlockContents` object
-/// (`{ block, kzg_proofs, blobs }`) for Deneb, Electra, and Fulu full blocks.
+/// Serializes an unsigned [`ProposalBlock`] to the JSON shape placed in the
+/// `data` field: the bare block for pre-Deneb forks (and all blinded forks),
+/// and the `BlockContents` object (`{ block, kzg_proofs, blobs }`) for Deneb,
+/// Electra, and Fulu full blocks.
 fn serialize_proposal_block(block: &ProposalBlock) -> Result<Value, ApiError> {
     let to_value = |value: Result<Value, serde_json::Error>| {
         value.map_err(|err| internal_error("could not serialize proposal block", err))
@@ -1391,8 +1372,7 @@ fn serialize_proposal_block(block: &ProposalBlock) -> Result<Value, ApiError> {
 }
 
 /// Builds the `BlockContents` JSON object (`{ block, kzg_proofs, blobs }`) for
-/// a Deneb-or-later full proposal, matching go-eth2-client's
-/// `apiv1<fork>.BlockContents` wire shape.
+/// a Deneb-or-later full proposal.
 fn block_contents_value<B: serde::Serialize>(
     block: &B,
     kzg_proofs: &[pluto_eth2api::spec::deneb::KZGProof],
@@ -2003,7 +1983,7 @@ mod tests {
     }
 
     /// Graffiti is length-lenient: a short value is zero-padded into the
-    /// 32-byte array, matching Charon's `copy(graffiti[:], graffitiBytes)`.
+    /// 32-byte array.
     #[tokio::test]
     async fn propose_block_v3_pads_short_graffiti() {
         let handler = TestHandler::default().with_proposal(EthResponse {
@@ -2086,8 +2066,8 @@ mod tests {
         let submitted = handler.submitted_proposal.clone();
         let app = test_router(Arc::new(handler), false);
 
-        // The SSZ body is the bare per-fork block, not the Charon versioned
-        // wire format.
+        // The SSZ body is the bare per-fork block, not a versioned wire
+        // format.
         let body = phase0_signed_block(9).as_ssz_bytes();
         let req = Request::builder()
             .method(Method::POST)
@@ -2146,8 +2126,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
-    /// A capitalised version header is accepted (case-insensitive, mirroring
-    /// go-eth2-client's UnmarshalJSON).
+    /// A capitalised version header is accepted (case-insensitive).
     #[tokio::test]
     async fn submit_proposal_accepts_capitalised_version_header() {
         let handler = TestHandler::default();
@@ -2180,7 +2159,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
-    /// An unsupported content type → 415, mirroring Charon's `wrap`.
+    /// An unsupported content type → 415.
     #[tokio::test]
     async fn submit_proposal_rejects_unsupported_content_type() {
         let app = test_router(Arc::new(TestHandler::default()), false);
@@ -2278,8 +2257,8 @@ mod tests {
         assert!(opts.pubkeys.is_empty());
     }
 
-    /// A `0x`-prefixed first id routes the whole batch as pubkeys, per Go's
-    /// `getValidatorsByID` first-element dispatch.
+    /// A `0x`-prefixed first id routes the whole batch as pubkeys via the
+    /// first-element dispatch.
     #[tokio::test]
     async fn get_validators_by_pubkey_dispatch_on_first_id() {
         let pubkey_hex = format!("0x{}", "11".repeat(48));

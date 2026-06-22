@@ -183,8 +183,7 @@ pub use crate::signeddata::VersionedSignedAggregateAndProof;
 ///
 /// Wraps the versioned eth2api registration so the
 /// [`Handler::submit_validator_registrations`](super::handler::Handler::submit_validator_registrations)
-/// implementation has access to the same data the Go
-/// `*eth2api.VersionedSignedValidatorRegistration` carries.
+/// implementation has access to the full registration data.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SignedValidatorRegistration(
@@ -196,8 +195,7 @@ pub struct SignedValidatorRegistration(
 ///
 /// Wraps `phase0::SignedVoluntaryExit` so the
 /// [`Handler::submit_voluntary_exit`](super::handler::Handler::submit_voluntary_exit)
-/// implementation has access to the same data the Go
-/// `*eth2p0.SignedVoluntaryExit` carries.
+/// implementation has access to the full signed voluntary exit data.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SignedVoluntaryExit(
