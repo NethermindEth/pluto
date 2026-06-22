@@ -258,9 +258,7 @@ impl Component {
 
     /// Returns the cluster's active validators (`validator_index -> DV root
     /// public key`) from the registered [`CachedValidatorsProvider`],
-    /// bounded by [`UPSTREAM_REQUEST_TIMEOUT`]. Mirrors Go's
-    /// `c.eth2Cl.ActiveValidators(ctx)`, which is itself implemented via the
-    /// beacon-node validator cache.
+    /// bounded by [`UPSTREAM_REQUEST_TIMEOUT`].
     async fn fetch_active_validators(&self) -> Result<ActiveValidators, ApiError> {
         tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
@@ -1303,7 +1301,7 @@ impl Handler for Component {
             let eth2_pubkey = vals
                 .get(&aggregator_index)
                 .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "validator not found"))?;
-            let pubkey = pubkey_from_bls(eth2_pubkey);
+            let pubkey = PubKey::new(*eth2_pubkey);
 
             // Verify the inner selection proof (the outcome of
             // DutyPrepareAggregator). Skipped under insecure_test, matching Go.
@@ -1325,13 +1323,18 @@ impl Handler for Component {
             );
 
             // Verify the outer partial signature over the aggregate-and-proof.
-            let epoch = pluto_eth2util::helpers::epoch_from_slot(&self.eth2_cl, slot)
-                .await
-                .map_err(|err| {
-                    ApiError::new(StatusCode::BAD_GATEWAY, "could not resolve epoch from slot")
-                        .with_source(err)
-                })?;
-            verify_par_signed_aggregate(self, &pubkey, epoch, &par_sig_data).await?;
+            // Gated on `insecure_test` to mirror Go's `verifyPartialSig`, which
+            // returns early before resolving the signing domain/epoch — so in
+            // test mode we likewise skip the upstream `epoch_from_slot` call.
+            if !self.insecure_test {
+                let epoch = pluto_eth2util::helpers::epoch_from_slot(&self.eth2_cl, slot)
+                    .await
+                    .map_err(|err| {
+                        ApiError::new(StatusCode::BAD_GATEWAY, "could not resolve epoch from slot")
+                            .with_source(err)
+                    })?;
+                verify_par_signed_aggregate(self, &pubkey, epoch, &par_sig_data).await?;
+            }
 
             sets_by_slot
                 .entry(slot)
@@ -2382,11 +2385,6 @@ async fn verify_par_sig_with_domain(
         .verify_partial_sig(&pubkey_bytes, domain, epoch, message_root, &signature)
         .await
         .map_err(verify_partial_sig_error)
-}
-
-/// Builds a core [`PubKey`] from a 48-byte BLS public key.
-fn pubkey_from_bls(pubkey: &BLSPubKey) -> PubKey {
-    PubKey::new(*pubkey)
 }
 
 /// Returns the attestation data of a VC-submitted versioned attestation.
