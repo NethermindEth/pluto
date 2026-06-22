@@ -34,18 +34,6 @@ pub enum HelperError {
     /// Failed to fetch a required value from the spec
     #[error("fetch slots per epoch")]
     FetchSlotsPerEpoch,
-
-    /// Failed to fetch the genesis time from the beacon node.
-    #[error("fetch genesis time: {0}")]
-    FetchGenesisTime(String),
-
-    /// Failed to fetch the slots configuration from the beacon node.
-    #[error("fetch slots config: {0}")]
-    FetchSlotsConfig(String),
-
-    /// Slot computation failed (overflow or a degenerate slot duration).
-    #[error("slot computation: {0}")]
-    SlotComputation(String),
 }
 
 type Result<T> = std::result::Result<T, HelperError>;
@@ -113,25 +101,31 @@ pub(crate) fn verify_address(address: &str) -> Result<Address> {
         .map_err(|_| HelperError::InvalidAddress(address.to_string()))
 }
 
-/// Returns the slot a wall-clock `timestamp` falls in, computed from the
-/// beacon-node genesis time and slot duration.
+/// Returns the slot a unix-seconds `timestamp` falls in, given the beacon-node
+/// genesis time and slot duration.
 ///
-/// When `timestamp` precedes genesis — which can happen in test scenarios
-/// where there is no strict validation on the value — it falls back to the
-/// current wall-clock time, matching the reference implementation.
-pub async fn slot_from_timestamp(
-    client: &pluto_eth2api::client::EthBeaconNodeApiClient,
-    timestamp: chrono::DateTime<chrono::Utc>,
-) -> Result<u64> {
-    let genesis_time = client
-        .fetch_genesis_time()
-        .await
-        .map_err(|e| HelperError::FetchGenesisTime(e.to_string()))?;
-
-    let (slot_duration, _) = client
-        .fetch_slots_config()
-        .await
-        .map_err(|e| HelperError::FetchSlotsConfig(e.to_string()))?;
+/// Mirrors Charon's `SlotFromTimestamp`: when `timestamp` precedes genesis —
+/// which can happen in test scenarios where the value is not strictly
+/// validated — it falls back to the current wall-clock time. The genesis time
+/// and slot duration are passed in (rather than fetched here) so a batched
+/// caller can resolve them once and reuse them across many registrations.
+///
+/// Degenerate inputs (a zero slot duration, or a timestamp that cannot be
+/// represented as a wall-clock instant) yield slot `0` rather than erroring,
+/// keeping the call infallible on the registration fan-out path.
+pub fn slot_from_timestamp(
+    genesis_time: chrono::DateTime<chrono::Utc>,
+    slot_duration: std::time::Duration,
+    timestamp: u64,
+) -> u64 {
+    // Resolve the unix-seconds timestamp into a wall-clock instant. An
+    // out-of-range value can never arise from a real registration, so it falls
+    // back to `now()` just like the pre-genesis case below.
+    let timestamp = chrono::DateTime::<chrono::Utc>::from_timestamp(
+        i64::try_from(timestamp).unwrap_or(i64::MAX),
+        0,
+    )
+    .unwrap_or_else(chrono::Utc::now);
 
     let timestamp = if timestamp < genesis_time {
         let now = chrono::Utc::now();
@@ -147,23 +141,23 @@ pub async fn slot_from_timestamp(
     };
 
     // `timestamp >= genesis_time` holds here, so the signed delta is
-    // non-negative and the conversion to nanoseconds cannot overflow for any
-    // realistic chain timestamp.
-    let delta_nanos = timestamp
+    // non-negative.
+    let Some(delta_nanos) = timestamp
         .signed_duration_since(genesis_time)
         .num_nanoseconds()
-        .ok_or(HelperError::SlotComputation("delta overflow".to_owned()))?;
-    let delta_nanos = u128::try_from(delta_nanos)
-        .map_err(|_| HelperError::SlotComputation("negative delta".to_owned()))?;
+    else {
+        return 0;
+    };
+    let Ok(delta_nanos) = u128::try_from(delta_nanos) else {
+        return 0;
+    };
 
-    let slot_nanos = slot_duration.as_nanos();
-    let slot = delta_nanos
-        .checked_div(slot_nanos)
-        .ok_or(HelperError::SlotComputation(
-            "zero slot duration".to_owned(),
-        ))?;
+    // `checked_div` yields `None` for a degenerate zero slot duration.
+    let Some(slot) = delta_nanos.checked_div(slot_duration.as_nanos()) else {
+        return 0;
+    };
 
-    u64::try_from(slot).map_err(|_| HelperError::SlotComputation("slot overflow".to_owned()))
+    u64::try_from(slot).unwrap_or(u64::MAX)
 }
 
 /// Returns epoch calculated from given slot.
@@ -183,38 +177,31 @@ pub async fn epoch_from_slot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
     use chrono::{DateTime, Utc};
     use k256::SecretKey;
-    use pluto_testutil::BeaconMock;
 
-    async fn slot_mock() -> BeaconMock {
-        BeaconMock::builder()
-            .genesis_time(DateTime::from_timestamp(0, 0).unwrap())
-            .slot_duration(std::time::Duration::from_secs(12))
-            .build()
-            .await
-            .unwrap()
-    }
-
-    #[tokio::test]
-    async fn slot_from_timestamp_divides_delta_by_slot_duration() {
-        let mock = slot_mock().await;
+    #[test]
+    fn slot_from_timestamp_divides_delta_by_slot_duration() {
         // genesis = 0, slot_duration = 12s → timestamp 600 ⇒ slot 50.
-        let ts = DateTime::<Utc>::from_timestamp(600, 0).unwrap();
-        let slot = slot_from_timestamp(mock.client(), ts).await.unwrap();
+        let genesis = DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+        let slot = slot_from_timestamp(genesis, Duration::from_secs(12), 600);
         assert_eq!(slot, 50);
     }
 
-    #[tokio::test]
-    async fn slot_from_timestamp_before_genesis_falls_back_to_now() {
-        let mock = slot_mock().await;
-        // A timestamp before genesis (genesis = 0) falls back to the current
-        // wall clock. With genesis at epoch 0 and a 12s slot, the returned
-        // slot should approximate `now / 12`, well within a few slots.
-        let ts = DateTime::<Utc>::from_timestamp(-100, 0).unwrap();
+    #[test]
+    fn slot_from_timestamp_before_genesis_falls_back_to_now() {
+        // A timestamp before genesis falls back to the current wall clock
+        // (Charon parity). With genesis at unix 1_000 and a 12s slot, the
+        // returned slot should approximate `(now - 1_000) / 12`.
+        let genesis = DateTime::<Utc>::from_timestamp(1_000, 0).unwrap();
         let before = Utc::now().timestamp();
-        let slot = slot_from_timestamp(mock.client(), ts).await.unwrap();
-        let expected = u64::try_from(before).unwrap().checked_div(12).unwrap();
+        let slot = slot_from_timestamp(genesis, Duration::from_secs(12), 100);
+        let expected = u64::try_from(before - 1_000)
+            .unwrap()
+            .checked_div(12)
+            .unwrap();
         let diff = slot.abs_diff(expected);
         assert!(
             diff <= 5,

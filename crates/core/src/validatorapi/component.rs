@@ -747,7 +747,8 @@ impl Component {
         let timestamp = v1.message.timestamp;
 
         // Derive the slot the registration belongs to.
-        let registration_slot = slot_from_timestamp(genesis_time, slot_duration, timestamp);
+        let registration_slot =
+            pluto_eth2util::helpers::slot_from_timestamp(genesis_time, slot_duration, timestamp);
         let duty = Duty::new_builder_registration_duty(SlotNumber::new(registration_slot));
 
         // Wrap as ParSignedData via the canonical partial-sig constructor.
@@ -2233,27 +2234,6 @@ fn subscriber_error_to_api_error(err: CallbackError) -> ApiError {
         "downstream subscriber failed",
     )
     .with_boxed_source(err)
-}
-
-/// Computes the slot a timestamp belongs to. When the timestamp is before
-/// genesis (testing scenarios), falls back to slot 0 to keep the helper pure —
-/// the only consumer is the `Duty` key, where any deterministic placeholder is
-/// acceptable.
-fn slot_from_timestamp(
-    genesis_time: chrono::DateTime<chrono::Utc>,
-    slot_duration: std::time::Duration,
-    timestamp_secs: u64,
-) -> u64 {
-    let genesis_secs = match u64::try_from(genesis_time.timestamp()) {
-        Ok(value) => value,
-        Err(_) => return 0,
-    };
-    if timestamp_secs < genesis_secs {
-        return 0;
-    }
-    let elapsed = timestamp_secs.saturating_sub(genesis_secs);
-    let secs_per_slot = slot_duration.as_secs().max(1);
-    elapsed.checked_div(secs_per_slot).unwrap_or(0)
 }
 
 /// Maps a [`SignedDataError`] coming from a `new_partial` constructor to the
