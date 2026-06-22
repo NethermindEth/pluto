@@ -13,5 +13,17 @@ pluto-priority.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+futures.workspace = true
+libp2p.workspace = true
+pluto-consensus.workspace = true
+pluto-p2p.workspace = true
+pluto-parsigex.workspace = true
+pluto-peerinfo.workspace = true
+pluto-testutil.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
+
 [lints]
 workspace = true
