@@ -699,8 +699,25 @@ async fn proxy_handler(
     // instead (below), mirroring Charon's reverse-proxy director and avoiding
     // a duplicate Authorization header from URL-embedded credentials.
     let mut target = state.upstream_base_url.clone();
-    target.set_path(uri.path());
-    target.set_query(uri.query());
+    // Join the upstream base path with the request path (single-slash), mirroring
+    // Go's `httputil.NewSingleHostReverseProxy` director (`joinURLPath` /
+    // `singleJoiningSlash`). A bare `set_path` would *replace* the base path,
+    // dropping any prefix the operator configured: with base `http://beacon/internal`
+    // and request `/eth/v1/events`, the upstream target must be
+    // `http://beacon/internal/eth/v1/events`, not `http://beacon/eth/v1/events`.
+    let joined_path = join_single_slash(state.upstream_base_url.path(), uri.path());
+    target.set_path(&joined_path);
+    // Combine the base query with the request query the same way the Go director
+    // does: base first, then the request query joined with `&`.
+    let combined_query = match (state.upstream_base_url.query(), uri.query()) {
+        (Some(base), Some(req)) if !base.is_empty() && !req.is_empty() => {
+            Some(format!("{base}&{req}"))
+        }
+        (Some(base), _) if !base.is_empty() => Some(base.to_owned()),
+        (_, Some(req)) if !req.is_empty() => Some(req.to_owned()),
+        _ => None,
+    };
+    target.set_query(combined_query.as_deref());
     // These setters only fail on cannot-be-a-base URLs, which an HTTP(S) base
     // URL never is; ignore the result to keep the proxy infallible here.
     let _ = target.set_username("");
@@ -789,6 +806,9 @@ fn is_hop_by_hop_header(name: &HeaderName) -> bool {
     matches!(
         name.as_str(),
         "connection"
+            // Non-standard, but still sent by libcurl and rejected by some
+            // upstreams; Go's `httputil` `hopHeaders` strips it too.
+            | "proxy-connection"
             | "keep-alive"
             | "proxy-authenticate"
             | "proxy-authorization"
@@ -797,6 +817,19 @@ fn is_hop_by_hop_header(name: &HeaderName) -> bool {
             | "transfer-encoding"
             | "upgrade"
     )
+}
+
+/// Joins two URL path segments with exactly one separating slash, mirroring
+/// Go's `singleJoiningSlash` used by `httputil.NewSingleHostReverseProxy`. This
+/// preserves any base-path prefix configured on the upstream URL.
+fn join_single_slash(base: &str, req: &str) -> String {
+    let base_slash = base.ends_with('/');
+    let req_slash = req.starts_with('/');
+    match (base_slash, req_slash) {
+        (true, true) => format!("{base}{}", &req[1..]),
+        (false, false) => format!("{base}/{req}"),
+        _ => format!("{base}{req}"),
+    }
 }
 
 /// Parses a raw URL query string into decoded `(key, value)` pairs, preserving
@@ -887,11 +920,30 @@ fn parse_pubkey_id(id: &str) -> Result<BlsPubKey, ApiError> {
 }
 
 /// Returns the value of the first query parameter named `name`, if present.
+///
+/// Matches Charon's `uintQuery`, which reads the parameter with
+/// `url.Values.Get` (first occurrence) after a `Has` presence check, so a
+/// duplicated parameter falls back to its first value.
 fn query_value<'a>(params: &'a [(String, String)], name: &str) -> Option<&'a str> {
     params
         .iter()
         .find(|(key, _)| key == name)
         .map(|(_, value)| value.as_str())
+}
+
+/// Returns the value of `name` only when it appears exactly once.
+///
+/// Mirrors Charon's `hexQuery`, which checks `len(valueA) != 1` and treats both
+/// a missing *and* a duplicated parameter as absent (`nil, false, nil`). A
+/// duplicated `0x`-hex parameter therefore surfaces as the usual "missing"
+/// error rather than silently using the first value.
+fn single_query_value<'a>(params: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    let mut matches = params.iter().filter(|(key, _)| key == name);
+    let (_, value) = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(value.as_str())
 }
 
 /// Decodes a required fixed-length `0x`-hex query parameter into an `N`-byte
@@ -915,7 +967,7 @@ fn optional_hex_query_fixed<const N: usize>(
     params: &[(String, String)],
     name: &str,
 ) -> Result<Option<[u8; N]>, ApiError> {
-    let Some(value) = query_value(params, name) else {
+    let Some(value) = single_query_value(params, name) else {
         return Ok(None);
     };
     let stripped = value.strip_prefix("0x").unwrap_or(value);
@@ -942,7 +994,8 @@ fn optional_hex_query_fixed<const N: usize>(
 /// accepted, then left-aligned into 32 bytes — longer input is truncated and
 /// shorter input is zero-padded. An absent parameter yields all-zero graffiti.
 fn graffiti_query(params: &[(String, String)], name: &str) -> Result<[u8; 32], ApiError> {
-    let Some(value) = query_value(params, name) else {
+    // `hexQuery` semantics: a duplicated parameter is treated as absent.
+    let Some(value) = single_query_value(params, name) else {
         return Ok([0u8; 32]);
     };
     let stripped = value.strip_prefix("0x").unwrap_or(value);
@@ -2260,6 +2313,84 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
+    /// The reverse proxy joins the upstream base path with the request path
+    /// rather than replacing it, matching Go's
+    /// `httputil.NewSingleHostReverseProxy` director. With a base URL carrying
+    /// a `/internal` prefix, a request for `/eth/v1/events` must reach the
+    /// upstream as `/internal/eth/v1/events`.
+    #[tokio::test]
+    async fn proxy_preserves_upstream_base_path() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/internal/eth/v1/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("joined-ok"))
+            .mount(&server)
+            .await;
+
+        let mut upstream: reqwest::Url = server.uri().parse().unwrap();
+        upstream.set_path("/internal");
+        let app = new_router(Arc::new(TestHandler::default()), false, upstream);
+        let req = Request::builder()
+            .uri("/eth/v1/events")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        assert_eq!(&bytes[..], b"joined-ok");
+    }
+
+    /// `Proxy-Connection` is a hop-by-hop header that the proxy must strip, as
+    /// Go's `httputil` `hopHeaders` does. Comparison is case-insensitive.
+    #[test]
+    fn proxy_connection_is_hop_by_hop() {
+        assert!(is_hop_by_hop_header(&HeaderName::from_static(
+            "proxy-connection"
+        )));
+        assert!(is_hop_by_hop_header(
+            &HeaderName::from_bytes(b"Proxy-Connection").unwrap()
+        ));
+    }
+
+    /// A duplicated `0x`-hex query parameter is treated as absent (Charon's
+    /// `hexQuery` rejects `len(valueA) != 1`), so the required-variant surfaces
+    /// the standard "missing" 400. A `uint` parameter, mirroring `uintQuery`'s
+    /// `url.Values.Get`, still resolves to its first value.
+    #[test]
+    fn hex_query_rejects_duplicate_but_uint_takes_first() {
+        let dup = vec![
+            (
+                "beacon_block_root".to_owned(),
+                format!("0x{}", "11".repeat(32)),
+            ),
+            (
+                "beacon_block_root".to_owned(),
+                format!("0x{}", "22".repeat(32)),
+            ),
+        ];
+        let err = hex_query_fixed::<32>(&dup, "beacon_block_root").unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+
+        let single = vec![(
+            "beacon_block_root".to_owned(),
+            format!("0x{}", "11".repeat(32)),
+        )];
+        assert_eq!(
+            hex_query_fixed::<32>(&single, "beacon_block_root").unwrap(),
+            [0x11; 32]
+        );
+
+        let uint_dup = vec![
+            ("slot".to_owned(), "5".to_owned()),
+            ("slot".to_owned(), "9".to_owned()),
+        ];
+        assert_eq!(uint_query(&uint_dup, "slot").unwrap(), 5);
+    }
 
     // ====================================================================
     // sync committee endpoints
