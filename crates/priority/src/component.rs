@@ -151,11 +151,13 @@ fn string_to_any(s: &str) -> Any {
     }
 }
 
-/// Returns the proto form of a topic proposal.
-pub(crate) fn topic_proposal_to_proto(p: &TopicProposal) -> PriorityTopicProposal {
-    PriorityTopicProposal {
-        topic: Some(string_to_any(&p.topic)),
-        priorities: p.priorities.iter().map(|s| string_to_any(s)).collect(),
+impl From<&TopicProposal> for PriorityTopicProposal {
+    /// Returns the proto form of a topic proposal.
+    fn from(p: &TopicProposal) -> Self {
+        Self {
+            topic: Some(string_to_any(&p.topic)),
+            priorities: p.priorities.iter().map(|s| string_to_any(s)).collect(),
+        }
     }
 }
 
@@ -353,7 +355,7 @@ impl Component {
         duty: Duty,
         proposals: &[TopicProposal],
     ) -> Result<()> {
-        let topics = proposals.iter().map(topic_proposal_to_proto).collect();
+        let topics = proposals.iter().map(PriorityTopicProposal::from).collect();
 
         // Derive a per-instance deadline context. A future deadline is
         // required; absent or past means the duty already expired.
@@ -410,7 +412,7 @@ mod tests {
     fn unsigned_msg(peer_id: &str) -> PriorityMsg {
         PriorityMsg {
             duty: Some(Duty { slot: 1, r#type: 0 }),
-            topics: vec![topic_proposal_to_proto(&TopicProposal {
+            topics: vec![PriorityTopicProposal::from(&TopicProposal {
                 topic: "versions".to_owned(),
                 priorities: vec!["v1".to_owned(), "v2".to_owned()],
             })],
@@ -510,7 +512,7 @@ mod tests {
             topic: "versions".to_owned(),
             priorities: vec!["v1".to_owned(), "v2".to_owned()],
         };
-        let proto = topic_proposal_to_proto(&proposal);
+        let proto = PriorityTopicProposal::from(&proposal);
 
         // Build a topic result from the proposal to exercise unpacking.
         let result_proto = PriorityTopicResult {

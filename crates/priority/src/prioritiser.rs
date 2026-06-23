@@ -527,13 +527,13 @@ mod tests {
 
     use chrono::{Duration as ChronoDuration, Utc};
     use pluto_core::{
-        corepb::v1::priority::PriorityResult,
+        corepb::v1::priority::{PriorityResult, PriorityTopicProposal},
         deadline::{DeadlineCalculator, DeadlinerTask},
     };
 
     use super::*;
     use crate::{
-        component::{TopicProposal, new_msg_verifier, sign_msg, topic_proposal_to_proto},
+        component::{TopicProposal, new_msg_verifier, sign_msg},
         consensus::ConsensusError,
     };
 
@@ -602,7 +602,7 @@ mod tests {
                 slot: 97,
                 r#type: 0,
             }),
-            topics: vec![topic_proposal_to_proto(&TopicProposal {
+            topics: vec![PriorityTopicProposal::from(&TopicProposal {
                 topic: "topic".to_owned(),
                 priorities: vec![prio.to_owned()],
             })],
