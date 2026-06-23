@@ -390,7 +390,7 @@ impl Component {
             }
         };
 
-        // A cancelled instance — parent context or deadline — is a graceful stop.
+        // A cancelled instance — parent token or deadline — is a graceful stop.
         if instance_ct.is_cancelled() {
             return Ok(());
         }

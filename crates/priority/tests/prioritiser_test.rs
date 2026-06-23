@@ -392,7 +392,7 @@ async fn three_host_prioritiser() {
             .expect("error delivered");
         assert!(
             matches!(res, Err(pluto_priority::Error::Cancelled)),
-            "cancelled prioritise returns context-canceled, got {res:?}"
+            "cancelled prioritise returns Error::Cancelled, got {res:?}"
         );
     }
 
