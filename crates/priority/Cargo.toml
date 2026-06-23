@@ -17,6 +17,7 @@ pluto-consensus.workspace = true
 pluto-core.workspace = true
 pluto-k1util.workspace = true
 pluto-p2p.workspace = true
+pluto-ssz.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 thiserror.workspace = true

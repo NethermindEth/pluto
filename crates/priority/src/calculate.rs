@@ -7,6 +7,7 @@ use pluto_consensus::qbft::msg::hash_proto_bytes;
 use pluto_core::corepb::v1::priority::{
     PriorityMsg, PriorityResult, PriorityScoredResult, PriorityTopicProposal, PriorityTopicResult,
 };
+use pluto_ssz::HashRoot;
 use prost::Message;
 use prost_types::Any;
 
@@ -28,7 +29,7 @@ const COUNT_WEIGHT: i64 = MAX_PRIORITIES as i64;
 /// The priority protocol treats topics and priorities as opaque `Any` values
 /// and binds equality to the encoded envelope (`type_url` + `value`), so the
 /// envelope bytes are hashed directly rather than the inner concrete message.
-fn hash_any(any: &Any) -> Result<[u8; 32]> {
+fn hash_any(any: &Any) -> Result<HashRoot> {
     let encoded = any.encode_to_vec();
     hash_proto_bytes(&encoded).map_err(Error::HashProto)
 }
@@ -44,7 +45,7 @@ pub(crate) fn calculate_result(msgs: &[PriorityMsg], min_required: i64) -> Resul
     // Group all priority sets by topic. Grouping order is irrelevant: each
     // topic is scored independently and `order_topic_results` sorts the final
     // results by topic hash, so determinism rests on that final sort.
-    let mut proposals_by_topic: HashMap<[u8; 32], Vec<&PriorityTopicProposal>> = HashMap::new();
+    let mut proposals_by_topic: HashMap<HashRoot, Vec<&PriorityTopicProposal>> = HashMap::new();
 
     for msg in sort_input(msgs) {
         for topic in &msg.topics {
@@ -64,9 +65,9 @@ pub(crate) fn calculate_result(msgs: &[PriorityMsg], min_required: i64) -> Resul
     for proposals in proposals_by_topic.values() {
         // Accumulate overall score per priority, ordering by count then by
         // relative priority. First-seen order is preserved for tie breaking.
-        let mut all_priorities: Vec<[u8; 32]> = Vec::new();
-        let mut scores: HashMap<[u8; 32], i64> = HashMap::new();
-        let mut priorities: HashMap<[u8; 32], Any> = HashMap::new();
+        let mut all_priorities: Vec<HashRoot> = Vec::new();
+        let mut scores: HashMap<HashRoot, i64> = HashMap::new();
+        let mut priorities: HashMap<HashRoot, Any> = HashMap::new();
 
         for proposal in proposals {
             for (order, prio) in proposal.priorities.iter().enumerate() {
@@ -120,7 +121,7 @@ pub(crate) fn calculate_result(msgs: &[PriorityMsg], min_required: i64) -> Resul
 
 /// Returns topic results ordered by topic hash for deterministic output.
 fn order_topic_results(values: Vec<PriorityTopicResult>) -> Result<Vec<PriorityTopicResult>> {
-    let mut tuples: Vec<([u8; 32], PriorityTopicResult)> = Vec::with_capacity(values.len());
+    let mut tuples: Vec<(HashRoot, PriorityTopicResult)> = Vec::with_capacity(values.len());
     for value in values {
         let hash = hash_any(topic_result_any(&value))?;
         tuples.push((hash, value));
@@ -164,7 +165,7 @@ fn validate_msgs(msgs: &[PriorityMsg]) -> Result<()> {
             return Err(Error::DuplicatePeer);
         }
 
-        let mut dedup_topics: HashSet<[u8; 32]> = HashSet::new();
+        let mut dedup_topics: HashSet<HashRoot> = HashSet::new();
 
         for topic in &msg.topics {
             let topic_hash = hash_any(topic_any(topic))?;
@@ -175,7 +176,7 @@ fn validate_msgs(msgs: &[PriorityMsg]) -> Result<()> {
                 return Err(Error::MaxPriorityReached);
             }
 
-            let mut dedup_priority: HashSet<[u8; 32]> = HashSet::new();
+            let mut dedup_priority: HashSet<HashRoot> = HashSet::new();
 
             for priority in &topic.priorities {
                 let prio_hash = hash_any(priority)?;

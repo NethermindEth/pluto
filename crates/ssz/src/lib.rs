@@ -19,6 +19,9 @@ pub use helpers::{
 /// Generic SSZ list, vector, and bitfield wrappers.
 pub use types::{BitList, BitVector, BitfieldError, SszList, SszVector};
 
+/// An SSZ hash tree root: the 32-byte output of SSZ merkleization.
+pub type HashRoot = [u8; 32];
+
 /// Error type for SSZ binary encode/decode operations.
 #[derive(Debug, thiserror::Error)]
 pub enum SszBinaryError {
