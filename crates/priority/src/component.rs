@@ -232,10 +232,6 @@ pub struct Component {
     privkey: SecretKey,
     prioritiser: Prioritiser,
     calculator: Arc<dyn DeadlineCalculator>,
-    /// Drives the deadliner's expired-duty channel; consumed once by [`start`].
-    ///
-    /// [`start`]: Component::start
-    expired: std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<Duty>>>,
 }
 
 /// Constructs a priority [`Component`] and the libp2p [`Behaviour`] to register
@@ -248,8 +244,8 @@ pub struct Component {
 ///
 /// Builds the message verifier from `peers`, spawns a deadliner driven by
 /// `calculator`, and wires the prioritiser. The caller must register the
-/// returned behaviour with its swarm and call [`Component::start`] exactly
-/// once.
+/// returned behaviour with its swarm and pass the returned expired-duty
+/// receiver to [`Component::start`].
 ///
 /// `p2p_context` must be the node-wide shared context (the same instance other
 /// behaviours use), so the priority behaviour gates against the cluster's known
@@ -269,7 +265,7 @@ pub fn new_component(
     calculator: impl DeadlineCalculator,
     p2p_context: P2PContext,
     ct: CancellationToken,
-) -> Result<(Component, Behaviour)> {
+) -> Result<(Component, Behaviour, tokio::sync::mpsc::Receiver<Duty>)> {
     // Fail fast on a context that does not cover every exchange target, rather
     // than letting the transport gate silently drop those peers (which would
     // surface only as a degraded, partial-quorum result after the timeout).
@@ -302,28 +298,18 @@ pub fn new_component(
         privkey,
         prioritiser,
         calculator,
-        expired: std::sync::Mutex::new(Some(expired)),
     };
 
-    Ok((component, behaviour))
+    Ok((component, behaviour, expired))
 }
 
 impl Component {
-    /// Starts the prioritiser's state-cleanup loop. Must be called exactly
-    /// once.
+    /// Starts the prioritiser's state-cleanup loop, driven by the deadliner's
+    /// expired-duty receiver returned from [`new_component`].
     ///
-    /// Consumes the deadliner's expired-duty receiver, which can only be taken
-    /// once.
-    ///
-    /// # Panics
-    /// Panics if called more than once.
-    pub fn start(&self, ct: CancellationToken) {
-        let expired = self
-            .expired
-            .lock()
-            .expect("expired receiver mutex poisoned")
-            .take()
-            .expect("Component::start called more than once");
+    /// `expired` is move-only, so the type system enforces this is called at
+    /// most once (there is exactly one receiver, and it is consumed here).
+    pub fn start(&self, expired: tokio::sync::mpsc::Receiver<Duty>, ct: CancellationToken) {
         self.prioritiser.start(expired, ct);
     }
 
