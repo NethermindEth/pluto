@@ -2208,7 +2208,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 2.0.118",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -5453,6 +5453,7 @@ dependencies = [
  "bon",
  "chrono",
  "flate2",
+ "futures",
  "hex",
  "k256",
  "pluto-build-proto",
@@ -5469,6 +5470,7 @@ dependencies = [
  "reqwest 0.13.4",
  "serde",
  "serde_json",
+ "serde_with",
  "tar",
  "tempfile",
  "test-case",
@@ -5477,6 +5479,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+ "vise",
  "wiremock",
 ]
 
@@ -5731,6 +5734,8 @@ dependencies = [
  "chrono",
  "ethereum_ssz",
  "ethereum_ssz_derive",
+ "eventsource-stream",
+ "futures",
  "hex",
  "http",
  "oas3-gen-support",
@@ -5957,6 +5962,7 @@ dependencies = [
  "pluto-core",
  "pluto-k1util",
  "pluto-p2p",
+ "pluto-ssz",
  "pluto-testutil",
  "prost 0.14.4",
  "prost-types 0.14.4",
@@ -6383,9 +6389,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.14"
+version = "0.11.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
+checksum = "4fcb935c5bec503c2f0e306bdd3e58bb9029dcb14fa8d9ac76e3a5256ac0763e"
 dependencies = [
  "aws-lc-rs",
  "bytes",

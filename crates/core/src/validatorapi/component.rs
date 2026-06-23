@@ -13,7 +13,7 @@ use pluto_eth2api::{
     GetProposerDutiesRequest, GetProposerDutiesResponse, GetStateValidatorsResponseResponse,
     GetSyncCommitteeDutiesRequest, GetSyncCommitteeDutiesResponse, PostStateValidatorsRequest,
     PostStateValidatorsRequestPath, PostStateValidatorsResponse, ValidatorRequestBody,
-    spec::phase0::{BLSPubKey, Domain, Epoch, Root, Slot, ValidatorIndex},
+    spec::phase0::{AttestationData, BLSPubKey, Domain, Epoch, Root, Slot, ValidatorIndex},
     valcache::{ActiveValidators, CachedValidatorsProvider},
     versioned::{DataVersion, SignedBlindedProposalBlock, SignedProposalBlock},
 };
@@ -50,8 +50,8 @@ use crate::{
         VersionedSignedValidatorRegistration as VersionedSignedValidatorRegistrationWrapper,
     },
     types::{
-        Duty, DutyDefinitionSet, ParSignedData, ParSignedDataSet, PubKey, Signature, SignedData,
-        SlotNumber,
+        Duty, DutyDefinition, DutyDefinitionSet, ParSignedData, ParSignedDataSet, PubKey,
+        Signature, SignedData, SlotNumber,
     },
     version,
 };
@@ -161,8 +161,7 @@ pub struct Component {
     eth2_cl: Arc<EthBeaconNodeApiClient>,
     /// Per-epoch active-validators cache. Submit handlers consult this to
     /// translate a validator-client-supplied `validator_index` into the
-    /// cluster's DV root public key. Backed by the beacon-node validator cache.
-    #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
+    /// cluster's DV root public key.
     validator_cache: Arc<dyn CachedValidatorsProvider>,
     /// In-memory DutyDB used to await consensus output (e.g. attestation
     /// data) produced by the rest of the pipeline.
@@ -186,19 +185,16 @@ pub struct Component {
     #[allow(dead_code, reason = "consumed by proposal handler in later PRs")]
     await_proposal_fn: Option<AwaitProposalFn>,
     /// Looks up an aggregated attestation by `(slot, attestation_root)`.
-    #[allow(dead_code, reason = "consumed by aggregate_attestation in later PRs")]
     await_agg_attestation_fn: Option<AwaitAggAttestationFn>,
     /// Looks up a sync committee contribution.
     await_sync_contribution_fn: Option<AwaitSyncContributionFn>,
     /// Looks up aggregated signed data for a `(duty, pubkey)`.
-    #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     await_agg_sig_db_fn: Option<AwaitAggSigDbFn>,
     /// Looks up the duty-definition set for a duty. The proposal /
     /// submit_proposal / submit_blinded_proposal handlers consult this to
     /// resolve the proposer's DV root pubkey.
     duty_def_fn: Option<DutyDefFn>,
     /// Looks up the root pubkey for an `(slot, commIdx, valIdx)` triple.
-    #[allow(dead_code, reason = "consumed by submit_attestations in later PRs")]
     pub_key_by_att_fn: Option<PubKeyByAttFn>,
 }
 
@@ -262,7 +258,6 @@ impl Component {
     /// Returns the cluster's active validators (`validator_index -> DV root
     /// public key`) from the registered [`CachedValidatorsProvider`],
     /// bounded by [`UPSTREAM_REQUEST_TIMEOUT`].
-    #[allow(dead_code, reason = "consumed by submit_* handlers in later PRs")]
     async fn fetch_active_validators(&self) -> Result<ActiveValidators, ApiError> {
         tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
@@ -337,7 +332,7 @@ impl Component {
         self.await_agg_sig_db_fn = Some(Arc::new(move |duty, pubkey| Box::pin(f(duty, pubkey))));
     }
 
-    /// Registers (and overwrites any prior) `dutyDefFunc`.
+    /// Registers (and overwrites any prior) duty-definition callback.
     pub fn register_get_duty_definition<F, Fut>(&mut self, f: F)
     where
         F: Fn(Duty) -> Fut + Send + Sync + 'static,
@@ -495,13 +490,133 @@ impl Component {
             .map_err(map_dutydb_error)
     }
 
+    /// Resolves the validator index for a VC-submitted attestation.
+    ///
+    /// For Electra and Fulu the validator index is carried explicitly in the
+    /// payload; a missing index is rejected. For all earlier forks the index is
+    /// not part of the attestation, so it is recovered by matching the
+    /// attestation's committee index and its single aggregation bit against the
+    /// scheduler's attester-duty definitions for the slot.
+    async fn resolve_attestation_validator_index(
+        &self,
+        att: &VersionedAttestation,
+        att_data: &AttestationData,
+    ) -> Result<u64, ApiError> {
+        use pluto_eth2api::versioned::DataVersion;
+
+        match att.0.version {
+            DataVersion::Phase0
+            | DataVersion::Altair
+            | DataVersion::Bellatrix
+            | DataVersion::Capella
+            | DataVersion::Deneb => {
+                let def_set = self.lookup_attester_definitions(att_data.slot).await?;
+
+                // Match the attestation to an attester duty by committee index
+                // and the single aggregation bit. When no duty matches, the
+                // validator index stays 0 and the subsequent pubkey lookup
+                // fails — this is not an error at this point.
+                let mut val_idx = 0;
+                for def in def_set.values() {
+                    let DutyDefinition::Attester(attester) = def else {
+                        continue;
+                    };
+                    let duty = &attester.duty;
+                    if duty.committee_index != att_data.index {
+                        continue;
+                    }
+
+                    let indices = attestation_aggregation_bit_indices(att)?;
+                    let [single_bit] = indices.as_slice() else {
+                        return Err(ApiError::new(
+                            StatusCode::BAD_REQUEST,
+                            "unexpected number of aggregation bits",
+                        ));
+                    };
+
+                    if duty.validator_committee_index == *single_bit as u64 {
+                        val_idx = duty.validator_index;
+                        break;
+                    }
+                }
+
+                Ok(val_idx)
+            }
+            DataVersion::Electra | DataVersion::Fulu => att.0.validator_index.ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "missing attestation validator index",
+                )
+            }),
+            DataVersion::Unknown => Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid attestations version",
+            )),
+        }
+    }
+
+    /// Looks up the attester-duty definition set for a slot via the registered
+    /// `duty_def_fn`, downcasting the type-erased result to the attester-duty
+    /// shape.
+    async fn lookup_attester_definitions(&self, slot: u64) -> Result<DutyDefinitionSet, ApiError> {
+        let f = self.duty_def_fn.as_ref().ok_or_else(|| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "duty definition lookup not registered",
+            )
+        })?;
+
+        let duty = Duty::new_attester_duty(SlotNumber::new(slot));
+        let boxed = f(duty).await.map_err(|err| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "duty definition lookup failed",
+            )
+            .with_boxed_source(err)
+        })?;
+
+        boxed
+            .downcast::<DutyDefinitionSet>()
+            .map(|boxed| *boxed)
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "duty definition lookup returned unexpected type",
+                )
+            })
+    }
+
+    /// Resolves the DV root pubkey responsible for an attestation `(slot,
+    /// committee_index, validator_index)` triple via the registered
+    /// `pub_key_by_att_fn`.
+    async fn pub_key_by_attestation(
+        &self,
+        slot: u64,
+        committee_index: u64,
+        validator_index: u64,
+    ) -> Result<PubKey, ApiError> {
+        let f = self.pub_key_by_att_fn.as_ref().ok_or_else(|| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "pubkey-by-attestation lookup not registered",
+            )
+        })?;
+
+        f(slot, committee_index, validator_index)
+            .await
+            .map_err(|err| {
+                ApiError::new(StatusCode::BAD_REQUEST, "failed to find pubkey")
+                    .with_boxed_source(err)
+            })
+    }
+
     /// Verifies a partial BLS signature produced by the validator client
     /// against this node's public share for the given DV root pubkey.
     ///
     /// The BLS domain / epoch / message-root are passed directly rather
-    /// than projected through a signed-data trait — each submit handler in
-    /// later PRs derives the triple from the concrete signed-data wrapper
-    /// it is processing, then invokes this helper.
+    /// than projected through a signed-data trait — each submit handler
+    /// derives the triple from the concrete signed-data wrapper it is
+    /// processing, then invokes this helper.
     ///
     /// Skipped entirely when [`Self::insecure_test`] is set.
     #[instrument(skip_all, fields(domain = ?domain_name, epoch))]
@@ -908,9 +1023,51 @@ impl Handler for Component {
     #[instrument(skip_all)]
     async fn submit_attestations(
         &self,
-        _attestations: Vec<VersionedAttestation>,
+        attestations: Vec<VersionedAttestation>,
     ) -> Result<(), ApiError> {
-        unimplemented!("submit_attestations not yet ported")
+        let mut sets_by_slot: HashMap<u64, ParSignedDataSet> = HashMap::new();
+
+        for att in attestations {
+            let att_data = attestation_data(&att)?;
+            let slot = att_data.slot;
+            let committee_index = attestation_committee_index(&att)?;
+
+            let val_idx = self
+                .resolve_attestation_validator_index(&att, &att_data)
+                .await?;
+
+            let pubkey = self
+                .pub_key_by_attestation(slot, committee_index, val_idx)
+                .await?;
+
+            let par_sig_data =
+                crate::signeddata::VersionedAttestation::new_partial(att.0.clone(), self.share_idx)
+                    .map_err(map_attestation_signed_data_error)?;
+
+            // Verify attestation signature. Domain is DOMAIN_BEACON_ATTESTER and
+            // the epoch comes from the attestation's own target checkpoint
+            // (not derived from the slot).
+            verify_par_signed_attestation(self, &pubkey, att_data.target.epoch, &par_sig_data)
+                .await?;
+
+            sets_by_slot
+                .entry(slot)
+                .or_default()
+                .insert(pubkey, par_sig_data);
+        }
+
+        // Send sets to subscriptions.
+        for (slot, set) in sets_by_slot {
+            let duty = Duty::new_attester_duty(SlotNumber::new(slot));
+            for sub in &self.subs {
+                sub(&duty, &set).await.map_err(|err| {
+                    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "subscriber failed")
+                        .with_boxed_source(err)
+                })?;
+            }
+        }
+
+        Ok(())
     }
 
     #[instrument(skip_all, fields(slot = opts.slot))]
@@ -1088,20 +1245,113 @@ impl Handler for Component {
         .map_err(|_: Elapsed| proposal_timeout())?
     }
 
-    #[instrument(skip_all)]
+    #[instrument(skip_all, fields(slot = opts.slot))]
     async fn aggregate_attestation(
         &self,
-        _opts: AggregateAttestationOpts,
+        opts: AggregateAttestationOpts,
     ) -> Result<EthResponse<VersionedAttestation>, ApiError> {
-        unimplemented!("aggregate_attestation not yet ported")
+        let f = self.await_agg_attestation_fn.as_ref().ok_or_else(|| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "await aggregate attestation not registered",
+            )
+        })?;
+
+        let agg_att = f(opts.slot, opts.attestation_data_root)
+            .await
+            .map_err(|err| {
+                ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "await aggregate attestation failed",
+                )
+                .with_boxed_source(err)
+            })?;
+
+        // The await hook yields an unsigned aggregated attestation; the response
+        // type is the same versioned-attestation wrapper.
+        let data = crate::signeddata::VersionedAttestation::new(agg_att.0)
+            .map_err(map_attestation_signed_data_error)?;
+
+        Ok(EthResponse {
+            data,
+            execution_optimistic: false,
+            finalized: false,
+            dependent_root: None,
+        })
     }
 
     #[instrument(skip_all)]
     async fn submit_aggregate_attestations(
         &self,
-        _aggregates: Vec<VersionedSignedAggregateAndProof>,
+        aggregates: Vec<VersionedSignedAggregateAndProof>,
     ) -> Result<(), ApiError> {
-        unimplemented!("submit_aggregate_attestations not yet ported")
+        let vals = self.fetch_active_validators().await?;
+
+        let mut sets_by_slot: HashMap<u64, ParSignedDataSet> = HashMap::new();
+
+        for agg in aggregates {
+            let slot = agg.0.slot().ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "invalid aggregate-and-proof version",
+                )
+            })?;
+            let aggregator_index = aggregate_aggregator_index(&agg)?;
+
+            let eth2_pubkey = vals
+                .get(&aggregator_index)
+                .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "validator not found"))?;
+            let pubkey = PubKey::new(*eth2_pubkey);
+
+            // Verify the inner selection proof (the outcome of
+            // DutyPrepareAggregator). Skipped under insecure_test.
+            if !self.insecure_test {
+                signing::verify_aggregate_and_proof_selection(&self.eth2_cl, eth2_pubkey, &agg.0)
+                    .await
+                    .map_err(|err| {
+                        ApiError::new(
+                            StatusCode::BAD_REQUEST,
+                            "aggregate selection proof verification failed",
+                        )
+                        .with_source(err)
+                    })?;
+            }
+
+            let par_sig_data = crate::signeddata::VersionedSignedAggregateAndProof::new_partial(
+                agg.0.clone(),
+                self.share_idx,
+            );
+
+            // Verify the outer partial signature over the aggregate-and-proof.
+            // Skipped (along with the upstream `epoch_from_slot` lookup it
+            // needs) entirely in insecure-test mode.
+            if !self.insecure_test {
+                let epoch = pluto_eth2util::helpers::epoch_from_slot(&self.eth2_cl, slot)
+                    .await
+                    .map_err(|err| {
+                        ApiError::new(StatusCode::BAD_GATEWAY, "could not resolve epoch from slot")
+                            .with_source(err)
+                    })?;
+                verify_par_signed_aggregate(self, &pubkey, epoch, &par_sig_data).await?;
+            }
+
+            sets_by_slot
+                .entry(slot)
+                .or_default()
+                .insert(pubkey, par_sig_data);
+        }
+
+        for (slot, set) in sets_by_slot {
+            let duty = Duty::new_aggregator_duty(SlotNumber::new(slot));
+            for sub in &self.subs {
+                sub(&duty, &set).await.map_err(|err| {
+                    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "subscriber failed")
+                        .with_boxed_source(err)
+                })?;
+            }
+        }
+
+        Ok(())
     }
 
     #[instrument(skip_all)]
@@ -1302,15 +1552,11 @@ impl Handler for Component {
         // back to the cluster's root pubkey before forwarding upstream, since
         // the beacon node only knows the root keys. An empty `pubkeys` is
         // forwarded as `None` so the upstream is not artificially narrowed.
-        //
-        // Port of `Validators` in
-        // `core/validatorapi/validatorapi.go` (lines 1218–1296).
         let pubkey_by_share = invert_pub_share_map(&self.pub_share_by_pubkey);
 
         let mut root_pubkeys: Vec<String> = Vec::with_capacity(opts.pubkeys.len());
         for share in &opts.pubkeys {
             let root = pubkey_by_share.get(share).ok_or_else(|| {
-                // Mirrors the Go `getPubKeyFunc` "unknown public key" branch.
                 ApiError::new(
                     StatusCode::BAD_REQUEST,
                     "unknown validator public key in request",
@@ -1330,8 +1576,8 @@ impl Handler for Component {
             },
             body: ValidatorRequestBody {
                 ids: if ids.is_empty() { None } else { Some(ids) },
-                // Status filter is not exposed by Pluto's `ValidatorsOpts`; the
-                // Go reference also omits it from the upstream call.
+                // Status filter is not exposed by Pluto's `ValidatorsOpts`, so
+                // it is omitted from the upstream call.
                 statuses: None,
             },
         };
@@ -1366,7 +1612,7 @@ impl Handler for Component {
             }
         };
 
-        // `ignore_not_found` mirrors the Go `len(opts.Indices) == 0` contract:
+        // `ignore_not_found` follows the `indices is empty` contract:
         // when indices were provided, every returned validator must belong to
         // this cluster's share map, so an unknown pubkey is rejected as a
         // configuration error. When no indices were provided (pubkey-only or
@@ -1847,8 +2093,7 @@ fn swap_sync_committee_pubshares(
 }
 
 /// Replaces the root public key on each upstream validator entry with this
-/// node's public share. Port of `convertValidators` in
-/// `core/validatorapi/validatorapi.go` (lines 1305–1332).
+/// node's public share.
 ///
 /// When `ignore_not_found` is `true` (the caller passed no indices),
 /// validators whose root pubkey is not part of this cluster's share map are
@@ -1870,8 +2115,7 @@ fn convert_validators(
             }
             None if ignore_not_found => {
                 // Validator does not belong to this cluster — keep the
-                // entry with its root pubkey unchanged. Mirrors the Go
-                // `convertValidators` `else if ok` branch.
+                // entry with its root pubkey unchanged.
             }
             None => {
                 return Err(ApiError::new(
@@ -2064,6 +2308,191 @@ async fn verify_par_signed_proposal(
         )
         .await
         .map_err(verify_partial_sig_error)
+}
+
+/// Verifies the partial signature embedded in an attestation `ParSignedData`
+/// against this node's public share for `pubkey`. The domain is
+/// `DOMAIN_BEACON_ATTESTER` and the epoch is the attestation's own target
+/// epoch (passed by the caller).
+async fn verify_par_signed_attestation(
+    component: &Component,
+    pubkey: &PubKey,
+    epoch: Epoch,
+    par_sig: &crate::types::ParSignedData,
+) -> Result<(), ApiError> {
+    verify_par_sig_with_domain(
+        component,
+        pubkey,
+        DomainName::BeaconAttester,
+        epoch,
+        par_sig,
+    )
+    .await
+}
+
+/// Verifies the outer partial signature embedded in an aggregate-and-proof
+/// `ParSignedData`. The domain is `DOMAIN_AGGREGATE_AND_PROOF`.
+async fn verify_par_signed_aggregate(
+    component: &Component,
+    pubkey: &PubKey,
+    epoch: Epoch,
+    par_sig: &crate::types::ParSignedData,
+) -> Result<(), ApiError> {
+    verify_par_sig_with_domain(
+        component,
+        pubkey,
+        DomainName::AggregateAndProof,
+        epoch,
+        par_sig,
+    )
+    .await
+}
+
+/// Extracts the signature + message root from a `ParSignedData` and verifies it
+/// against this node's public share for `pubkey` under the supplied BLS domain
+/// and epoch.
+async fn verify_par_sig_with_domain(
+    component: &Component,
+    pubkey: &PubKey,
+    domain: DomainName,
+    epoch: Epoch,
+    par_sig: &crate::types::ParSignedData,
+) -> Result<(), ApiError> {
+    let signature = par_sig.signed_data.signature().map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "could not extract partial signature",
+        )
+        .with_source(err)
+    })?;
+    let message_root = par_sig.signed_data.message_root().map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "could not derive message root",
+        )
+        .with_source(err)
+    })?;
+
+    let pubkey_bytes = pubkey_to_bls(pubkey);
+    component
+        .verify_partial_sig(&pubkey_bytes, domain, epoch, message_root, &signature)
+        .await
+        .map_err(verify_partial_sig_error)
+}
+
+/// Returns the attestation data of a VC-submitted versioned attestation.
+fn attestation_data(att: &VersionedAttestation) -> Result<AttestationData, ApiError> {
+    let payload = att
+        .0
+        .attestation
+        .as_ref()
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "missing attestation payload"))?;
+    Ok(payload.data().clone())
+}
+
+/// Returns the committee index of a VC-submitted versioned attestation: for
+/// pre-Electra forks it is the attestation data's `index`; for Electra and Fulu
+/// it is the single set bit of the committee bitfield.
+fn attestation_committee_index(att: &VersionedAttestation) -> Result<u64, ApiError> {
+    use pluto_eth2api::versioned::{AttestationPayload, DataVersion};
+
+    let payload = att
+        .0
+        .attestation
+        .as_ref()
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "missing attestation payload"))?;
+
+    match att.0.version {
+        DataVersion::Phase0
+        | DataVersion::Altair
+        | DataVersion::Bellatrix
+        | DataVersion::Capella
+        | DataVersion::Deneb => Ok(payload.data().index),
+        DataVersion::Electra | DataVersion::Fulu => {
+            let (AttestationPayload::Electra(att) | AttestationPayload::Fulu(att)) = payload else {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "electra attestation payload mismatch",
+                ));
+            };
+            let bits = att.committee_bits.bit_indices();
+            match bits.as_slice() {
+                [single] => Ok(*single as u64),
+                [] => Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "no committee index found in committee bits",
+                )),
+                _ => Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "multiple committee indices found in committee bits",
+                )),
+            }
+        }
+        DataVersion::Unknown => Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid attestations version",
+        )),
+    }
+}
+
+/// Returns the aggregator validator index of a VC-submitted versioned signed
+/// aggregate-and-proof.
+fn aggregate_aggregator_index(agg: &VersionedSignedAggregateAndProof) -> Result<u64, ApiError> {
+    use pluto_eth2api::versioned::{DataVersion, SignedAggregateAndProofPayload};
+
+    if agg.0.version == DataVersion::Unknown {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid aggregate-and-proof version",
+        ));
+    }
+
+    Ok(match &agg.0.aggregate_and_proof {
+        SignedAggregateAndProofPayload::Phase0(p)
+        | SignedAggregateAndProofPayload::Altair(p)
+        | SignedAggregateAndProofPayload::Bellatrix(p)
+        | SignedAggregateAndProofPayload::Capella(p)
+        | SignedAggregateAndProofPayload::Deneb(p) => p.message.aggregator_index,
+        SignedAggregateAndProofPayload::Electra(p) | SignedAggregateAndProofPayload::Fulu(p) => {
+            p.message.aggregator_index
+        }
+    })
+}
+
+/// Returns the set-bit indices of a pre-Electra attestation's aggregation
+/// bitfield. Only the per-validator forks that reach the pre-Electra branch of
+/// `submit_attestations` (Phase0/Altair/Bellatrix/Capella/Deneb) are handled;
+/// they all carry a `phase0::Attestation`.
+fn attestation_aggregation_bit_indices(att: &VersionedAttestation) -> Result<Vec<usize>, ApiError> {
+    use pluto_eth2api::versioned::AttestationPayload;
+
+    let payload = att
+        .0
+        .attestation
+        .as_ref()
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "missing attestation payload"))?;
+
+    match payload {
+        AttestationPayload::Phase0(a)
+        | AttestationPayload::Altair(a)
+        | AttestationPayload::Bellatrix(a)
+        | AttestationPayload::Capella(a)
+        | AttestationPayload::Deneb(a) => Ok(a.aggregation_bits.bit_indices()),
+        AttestationPayload::Electra(a) | AttestationPayload::Fulu(a) => {
+            Ok(a.aggregation_bits.bit_indices())
+        }
+    }
+}
+
+/// Maps a [`SignedDataError`] from an attestation `new_partial`/`new`
+/// constructor to the `ApiError` returned on submit. These fire only when the
+/// VC-supplied attestation is malformed (missing payload, unknown version).
+fn map_attestation_signed_data_error(err: SignedDataError) -> ApiError {
+    ApiError::new(
+        StatusCode::BAD_REQUEST,
+        "could not wrap VC attestation as signed data",
+    )
+    .with_source(err)
 }
 
 /// Cross-checks a VC-submitted proposal against the consensus proposal that
@@ -5614,8 +6043,7 @@ mod tests {
     }
 
     /// Happy path: every upstream entry has a known root pubkey, so each
-    /// inner `validator.pubkey` is rewritten to this node's share. Mirrors
-    /// the `else if ok` branch of `convertValidators`.
+    /// inner `validator.pubkey` is rewritten to this node's share.
     #[test]
     fn convert_validators_rewrites_known_pubkeys() {
         let root = [0xAA_u8; 48];
@@ -5631,8 +6059,7 @@ mod tests {
     }
 
     /// With `ignore_not_found = true`, an unknown pubkey is passed through
-    /// unchanged (Go: `else if ok` — the entry is still appended to `resp`
-    /// with the original root pubkey).
+    /// unchanged — the entry is still returned with the original root pubkey.
     #[test]
     fn convert_validators_ignore_not_found_keeps_entry_unchanged() {
         let known_root = [0x11_u8; 48];
@@ -5654,7 +6081,6 @@ mod tests {
     }
 
     /// With `ignore_not_found = false`, an unknown pubkey is rejected.
-    /// Mirrors Go: `if !ok && !ignoreNotFound { return nil, errors.New(...) }`.
     #[test]
     fn convert_validators_rejects_unknown_when_not_ignoring() {
         let known_root = [0x44_u8; 48];
@@ -5730,11 +6156,9 @@ mod tests {
         assert!(response.dependent_root.is_none());
     }
 
-    /// When the caller filters by pubkey only (no indices), `ignoreNotFound`
-    /// is `true` per the Go reference, so an upstream entry whose pubkey is
-    /// not part of this cluster's share map passes through with its root
-    /// pubkey unchanged. Mirrors `len(opts.Indices) == 0` in
-    /// `validatorapi.go:1288`.
+    /// When the caller filters by pubkey only (no indices), `ignore_not_found`
+    /// is `true`, so an upstream entry whose pubkey is not part of this
+    /// cluster's share map passes through with its root pubkey unchanged.
     #[tokio::test]
     async fn validators_passes_through_unknown_when_filtering_by_pubkey_only() {
         let server = MockServer::start().await;
@@ -5775,11 +6199,9 @@ mod tests {
         );
     }
 
-    /// When the caller filters by index (any non-empty `Indices`),
-    /// `ignoreNotFound` is `false` per the Go reference, so an upstream
-    /// validator that does not belong to this cluster surfaces as
-    /// `INTERNAL_SERVER_ERROR`. Mirrors `len(opts.Indices) == 0 == false` in
-    /// `validatorapi.go:1288`.
+    /// When the caller filters by index (any non-empty `indices`),
+    /// `ignore_not_found` is `false`, so an upstream validator that does not
+    /// belong to this cluster surfaces as `INTERNAL_SERVER_ERROR`.
     #[tokio::test]
     async fn validators_rejects_unknown_pubkey_when_index_filter_used() {
         let server = MockServer::start().await;
@@ -5813,8 +6235,7 @@ mod tests {
     }
 
     /// A pubkey from the VC that is not part of this cluster's share map is
-    /// rejected as `BAD_REQUEST` before any upstream call. Mirrors Go's
-    /// `getPubKeyFunc` "unknown public key" error.
+    /// rejected as `BAD_REQUEST` before any upstream call.
     #[tokio::test]
     async fn validators_rejects_unknown_input_pubshare() {
         let server = MockServer::start().await;
@@ -5928,5 +6349,460 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
         assert!(!err.message.contains("secret"));
+    }
+
+    // ====================================================================
+    // submit_attestations / aggregate_attestation /
+    // submit_aggregate_attestations / beacon_committee_selections
+    // ====================================================================
+
+    use pluto_eth2api::{
+        spec::electra,
+        v1::BeaconCommitteeSelection as Eth2BeaconCommitteeSelection,
+        versioned::{
+            AttestationPayload, SignedAggregateAndProofPayload,
+            VersionedAttestation as Eth2VersionedAttestation,
+            VersionedSignedAggregateAndProof as Eth2VersionedSignedAggregateAndProof,
+        },
+    };
+
+    use crate::{
+        signeddata::{
+            VersionedAttestation as SignedVersionedAttestation,
+            VersionedSignedAggregateAndProof as SignedVersionedAggregateAndProof,
+        },
+        types::AttesterDutyDefinition,
+    };
+
+    /// Build an insecure component (skips BLS verify) pinned to a proposal-spec
+    /// beacon mock (so `epoch_from_slot` resolves) with a populated validator
+    /// cache. Returns the component and the mock (held to keep it alive).
+    async fn make_attestation_component(
+        cache: HashMap<ValidatorIndex, BLSPubKey>,
+    ) -> (Component, BeaconMock) {
+        let mock = mock_beacon_for_proposal().await;
+        let cancel = CancellationToken::new();
+        let (deadliner, _deadliner_rx) = DeadlinerTask::start(
+            cancel.clone(),
+            "validatorapi-attestation-tests",
+            FarFutureCalculator,
+        );
+        let (_evict_tx, evict_rx) = mpsc::channel(1);
+        let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let component = Component {
+            eth2_cl,
+            dutydb,
+            share_idx: 1,
+            pub_share_by_pubkey: HashMap::new(),
+            builder_enabled: false,
+            validator_cache: TestValidatorCache::arc(cache),
+            insecure_test: true,
+            subs: Vec::new(),
+            await_proposal_fn: None,
+            await_agg_attestation_fn: None,
+            await_sync_contribution_fn: None,
+            await_agg_sig_db_fn: None,
+            duty_def_fn: None,
+            pub_key_by_att_fn: None,
+        };
+        (component, mock)
+    }
+
+    /// Records the `(duty, set)` pairs a submit handler broadcasts.
+    type RecordedSets = Arc<Mutex<Vec<(Duty, ParSignedDataSet)>>>;
+
+    /// Registers a subscriber that records every broadcast `(duty, set)`.
+    fn record_subscriber(component: &mut Component) -> RecordedSets {
+        let recorded: RecordedSets = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&recorded);
+        component.subscribe(move |duty, set| {
+            let sink = Arc::clone(&sink);
+            async move {
+                sink.lock().unwrap().push((duty, set));
+                Ok(())
+            }
+        });
+        recorded
+    }
+
+    fn phase0_attestation(slot: u64, index: u64, bit: usize) -> p0::Attestation {
+        p0::Attestation {
+            aggregation_bits: pluto_ssz::BitList::<2048>::with_bits(64, &[bit]),
+            data: p0::AttestationData {
+                slot,
+                index,
+                beacon_block_root: [0; 32],
+                source: p0::Checkpoint::default(),
+                target: p0::Checkpoint {
+                    epoch: 1,
+                    root: [0; 32],
+                },
+            },
+            signature: [0; 96],
+        }
+    }
+
+    fn phase0_versioned_attestation(att: p0::Attestation) -> SignedVersionedAttestation {
+        SignedVersionedAttestation::new(Eth2VersionedAttestation {
+            version: DataVersion::Phase0,
+            validator_index: None,
+            attestation: Some(AttestationPayload::Phase0(att)),
+        })
+        .unwrap()
+    }
+
+    /// `submit_attestations` resolves a pre-Electra validator index from the
+    /// attester duty set, looks up the pubkey, and broadcasts under an attester
+    /// duty.
+    #[tokio::test]
+    async fn submit_attestations_pre_electra_resolves_and_broadcasts() {
+        const SLOT: u64 = 9;
+        const COMM_IDX: u64 = 3;
+        const VAL_IDX: u64 = 42;
+        const BIT: usize = 2;
+
+        let (mut component, _mock) = make_attestation_component(HashMap::new()).await;
+        let recorded = record_subscriber(&mut component);
+
+        // Attester duty set: one duty whose committee index and committee
+        // position match the submitted attestation.
+        component.register_get_duty_definition(move |_duty| async move {
+            let mut set = DutyDefinitionSet::new();
+            set.insert(
+                core_pubkey(0x01),
+                DutyDefinition::Attester(AttesterDutyDefinition {
+                    pubkey: core_pubkey(0x01),
+                    duty: signeddata::AttesterDuty {
+                        slot: SLOT,
+                        validator_index: VAL_IDX,
+                        committee_index: COMM_IDX,
+                        committee_length: 64,
+                        committees_at_slot: 1,
+                        validator_committee_index: BIT as u64,
+                    },
+                }),
+            );
+            Ok(Box::new(set) as Box<dyn Any + Send + Sync>)
+        });
+
+        let returned = core_pubkey(0xAB);
+        component.register_pub_key_by_attestation(move |slot, comm, val| async move {
+            assert_eq!(slot, SLOT);
+            assert_eq!(comm, COMM_IDX);
+            assert_eq!(val, VAL_IDX);
+            Ok(returned)
+        });
+
+        let att = phase0_versioned_attestation(phase0_attestation(SLOT, COMM_IDX, BIT));
+        component.submit_attestations(vec![att]).await.unwrap();
+
+        let sets = recorded.lock().unwrap();
+        assert_eq!(sets.len(), 1);
+        assert_eq!(sets[0].0, Duty::new_attester_duty(SlotNumber::new(SLOT)));
+        assert!(sets[0].1.get(&core_pubkey(0xAB)).is_some());
+    }
+
+    /// `submit_attestations` rejects when a matching attester duty exists but
+    /// the aggregation bits do not select exactly one validator.
+    #[tokio::test]
+    async fn submit_attestations_rejects_multiple_aggregation_bits() {
+        const COMM_IDX: u64 = 3;
+        let (mut component, _mock) = make_attestation_component(HashMap::new()).await;
+        // A duty whose committee index matches the attestation, so the
+        // single-bit check is reached.
+        component.register_get_duty_definition(move |_duty| async move {
+            let mut set = DutyDefinitionSet::new();
+            set.insert(
+                core_pubkey(0x01),
+                DutyDefinition::Attester(AttesterDutyDefinition {
+                    pubkey: core_pubkey(0x01),
+                    duty: signeddata::AttesterDuty {
+                        slot: 9,
+                        validator_index: 1,
+                        committee_index: COMM_IDX,
+                        committee_length: 64,
+                        committees_at_slot: 1,
+                        validator_committee_index: 0,
+                    },
+                }),
+            );
+            Ok(Box::new(set) as Box<dyn Any + Send + Sync>)
+        });
+        component.register_pub_key_by_attestation(|_, _, _| async { Ok(core_pubkey(0x01)) });
+
+        let mut att = phase0_attestation(9, COMM_IDX, 0);
+        att.aggregation_bits = pluto_ssz::BitList::<2048>::with_bits(64, &[0, 1]);
+        let err = component
+            .submit_attestations(vec![phase0_versioned_attestation(att)])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+    }
+
+    /// `submit_attestations` reads the validator index straight from an Electra
+    /// payload (no duty-set lookup) and broadcasts.
+    #[tokio::test]
+    async fn submit_attestations_electra_uses_explicit_validator_index() {
+        const SLOT: u64 = 9;
+        const COMM_IDX: u64 = 5;
+        const VAL_IDX: u64 = 77;
+
+        let (mut component, _mock) = make_attestation_component(HashMap::new()).await;
+        let recorded = record_subscriber(&mut component);
+
+        component.register_pub_key_by_attestation(move |slot, comm, val| async move {
+            assert_eq!(slot, SLOT);
+            assert_eq!(comm, COMM_IDX);
+            assert_eq!(val, VAL_IDX);
+            Ok(core_pubkey(0xCD))
+        });
+
+        let committee_bits =
+            pluto_ssz::BitVector::<64>::with_bits(&[usize::try_from(COMM_IDX).unwrap()]);
+        let att = SignedVersionedAttestation::new(Eth2VersionedAttestation {
+            version: DataVersion::Electra,
+            validator_index: Some(VAL_IDX),
+            attestation: Some(AttestationPayload::Electra(electra::Attestation {
+                aggregation_bits: pluto_ssz::BitList::<131_072>::with_bits(0, &[]),
+                data: phase0_attestation(SLOT, COMM_IDX, 0).data,
+                signature: [0; 96],
+                committee_bits,
+            })),
+        })
+        .unwrap();
+
+        component.submit_attestations(vec![att]).await.unwrap();
+        assert_eq!(recorded.lock().unwrap().len(), 1);
+    }
+
+    /// `aggregate_attestation` returns the attestation produced by the
+    /// registered await hook.
+    #[tokio::test]
+    async fn aggregate_attestation_returns_hook_result() {
+        let (mut component, _mock) = make_attestation_component(HashMap::new()).await;
+
+        let att = Eth2VersionedAttestation {
+            version: DataVersion::Phase0,
+            validator_index: None,
+            attestation: Some(AttestationPayload::Phase0(phase0_attestation(9, 3, 1))),
+        };
+        component.register_await_agg_attestation(move |slot, _root| {
+            let att = att.clone();
+            async move {
+                assert_eq!(slot, 9);
+                Ok(VersionedAggregatedAttestation(att))
+            }
+        });
+
+        let response = component
+            .aggregate_attestation(AggregateAttestationOpts {
+                slot: 9,
+                attestation_data_root: [0x11; 32],
+                committee_index: 3,
+            })
+            .await
+            .unwrap();
+        assert_eq!(response.data.0.version, DataVersion::Phase0);
+    }
+
+    /// `aggregate_attestation` returns 503 when no await hook is registered.
+    #[tokio::test]
+    async fn aggregate_attestation_rejects_when_hook_missing() {
+        let (component, _mock) = make_attestation_component(HashMap::new()).await;
+        let err = component
+            .aggregate_attestation(AggregateAttestationOpts {
+                slot: 9,
+                attestation_data_root: [0; 32],
+                committee_index: 0,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// `submit_aggregate_attestations` resolves the aggregator pubkey from the
+    /// validator cache and broadcasts under an aggregator duty.
+    #[tokio::test]
+    async fn submit_aggregate_attestations_resolves_and_broadcasts() {
+        const SLOT: u64 = 9;
+        const AGG_IDX: u64 = 7;
+
+        let root = dv_pubkey(0xEE);
+        let cache = HashMap::from([(AGG_IDX, root)]);
+        let (mut component, _mock) = make_attestation_component(cache).await;
+        let recorded = record_subscriber(&mut component);
+
+        let agg = Eth2VersionedSignedAggregateAndProof {
+            version: DataVersion::Phase0,
+            aggregate_and_proof: SignedAggregateAndProofPayload::Phase0(
+                p0::SignedAggregateAndProof {
+                    message: p0::AggregateAndProof {
+                        aggregator_index: AGG_IDX,
+                        aggregate: phase0_attestation(SLOT, 0, 0),
+                        selection_proof: [0; 96],
+                    },
+                    signature: [0; 96],
+                },
+            ),
+        };
+
+        component
+            .submit_aggregate_attestations(vec![SignedVersionedAggregateAndProof::new(agg)])
+            .await
+            .unwrap();
+
+        let sets = recorded.lock().unwrap();
+        assert_eq!(sets.len(), 1);
+        assert_eq!(sets[0].0, Duty::new_aggregator_duty(SlotNumber::new(SLOT)));
+        assert!(sets[0].1.get(&core_pubkey(0xEE)).is_some());
+    }
+
+    /// `submit_aggregate_attestations` rejects when the aggregator index is not
+    /// in the active-validator set.
+    #[tokio::test]
+    async fn submit_aggregate_attestations_rejects_unknown_validator() {
+        let (component, _mock) = make_attestation_component(HashMap::new()).await;
+
+        let agg = Eth2VersionedSignedAggregateAndProof {
+            version: DataVersion::Phase0,
+            aggregate_and_proof: SignedAggregateAndProofPayload::Phase0(
+                p0::SignedAggregateAndProof {
+                    message: p0::AggregateAndProof {
+                        aggregator_index: 99,
+                        aggregate: phase0_attestation(9, 0, 0),
+                        selection_proof: [0; 96],
+                    },
+                    signature: [0; 96],
+                },
+            ),
+        };
+
+        let err = component
+            .submit_aggregate_attestations(vec![SignedVersionedAggregateAndProof::new(agg)])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+    }
+
+    /// `beacon_committee_selections` verifies + broadcasts each selection under
+    /// a prepare-aggregator duty, then returns the aggregated selection awaited
+    /// from the AggSigDB hook.
+    #[tokio::test]
+    async fn beacon_committee_selections_broadcasts_and_returns_aggregated() {
+        const SLOT: u64 = 9;
+        const VAL_IDX: u64 = 7;
+
+        let root = dv_pubkey(0xEE);
+        let cache = HashMap::from([(VAL_IDX, root)]);
+        let (mut component, _mock) = make_attestation_component(cache).await;
+        let recorded = record_subscriber(&mut component);
+
+        // The AggSigDB hook returns an aggregated beacon committee selection.
+        let aggregated = Eth2BeaconCommitteeSelection {
+            slot: SLOT,
+            validator_index: VAL_IDX,
+            selection_proof: [0xAB; 96],
+        };
+        component.register_await_agg_sig_db(move |duty, _pk| {
+            let aggregated = aggregated.clone();
+            async move {
+                assert_eq!(
+                    duty,
+                    Duty::new_prepare_aggregator_duty(SlotNumber::new(SLOT))
+                );
+                Ok(Box::new(SignedBeaconCommitteeSelection::new(aggregated))
+                    as Box<dyn SignedData>)
+            }
+        });
+
+        let selection = Eth2BeaconCommitteeSelection {
+            slot: SLOT,
+            validator_index: VAL_IDX,
+            selection_proof: [0; 96],
+        };
+        let response = component
+            .beacon_committee_selections(vec![selection])
+            .await
+            .unwrap();
+
+        assert_eq!(response.data.len(), 1);
+        assert_eq!(response.data[0].selection_proof, [0xAB; 96]);
+
+        let sets = recorded.lock().unwrap();
+        assert_eq!(sets.len(), 1);
+        assert_eq!(
+            sets[0].0,
+            Duty::new_prepare_aggregator_duty(SlotNumber::new(SLOT))
+        );
+    }
+
+    /// `beacon_committee_selections` rejects when the validator index is not in
+    /// the active-validator set.
+    #[tokio::test]
+    async fn beacon_committee_selections_rejects_unknown_validator() {
+        let (mut component, _mock) = make_attestation_component(HashMap::new()).await;
+        // The AggSigDB hook is checked first; register it so the test reaches
+        // the validator-not-found path.
+        component.register_await_agg_sig_db(|_duty, _pk| async {
+            Err::<Box<dyn SignedData>, _>("unused".into())
+        });
+        let selection = Eth2BeaconCommitteeSelection {
+            slot: 9,
+            validator_index: 1,
+            selection_proof: [0; 96],
+        };
+        let err = component
+            .beacon_committee_selections(vec![selection])
+            .await
+            .unwrap_err();
+        assert_eq!(err.status_code, StatusCode::BAD_REQUEST);
+    }
+
+    /// `beacon_committee_selections` groups selections by slot and broadcasts a
+    /// distinct prepare-aggregator duty per slot.
+    #[tokio::test]
+    async fn beacon_committee_selections_broadcasts_per_slot() {
+        let cache = HashMap::from([(7, dv_pubkey(0xE1)), (8, dv_pubkey(0xE2))]);
+        let (mut component, _mock) = make_attestation_component(cache).await;
+        let recorded = record_subscriber(&mut component);
+
+        component.register_await_agg_sig_db(|_duty, pk| async move {
+            // Echo back a selection keyed by the requested pubkey's slot is not
+            // available here; return a fixed aggregated selection.
+            let _ = pk;
+            Ok(Box::new(SignedBeaconCommitteeSelection::new(
+                Eth2BeaconCommitteeSelection {
+                    slot: 0,
+                    validator_index: 0,
+                    selection_proof: [0xCD; 96],
+                },
+            )) as Box<dyn SignedData>)
+        });
+
+        let selections = vec![
+            Eth2BeaconCommitteeSelection {
+                slot: 7,
+                validator_index: 7,
+                selection_proof: [0; 96],
+            },
+            Eth2BeaconCommitteeSelection {
+                slot: 8,
+                validator_index: 8,
+                selection_proof: [0; 96],
+            },
+        ];
+        let response = component
+            .beacon_committee_selections(selections)
+            .await
+            .unwrap();
+        assert_eq!(response.data.len(), 2);
+
+        // Two distinct prepare-aggregator duties broadcast, one per slot.
+        let sets = recorded.lock().unwrap();
+        assert_eq!(sets.len(), 2);
+        let mut slots: Vec<u64> = sets.iter().map(|(duty, _)| duty.slot.inner()).collect();
+        slots.sort_unstable();
+        assert_eq!(slots, vec![7, 8]);
     }
 }

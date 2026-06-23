@@ -149,8 +149,8 @@ pub enum Error {
     #[error("deadline computation failed")]
     DeadlineComputeFailed,
 
-    /// The prioritise instance's context was cancelled.
-    #[error("context canceled")]
+    /// The prioritise instance was cancelled via its `CancellationToken`.
+    #[error("prioritise cancelled")]
     Cancelled,
 
     /// A prioritise instance failed for a non-cancelled reason.

@@ -171,20 +171,19 @@ pub use crate::signeddata::VersionedSignedProposal;
 /// wrapper.
 pub use pluto_eth2api::versioned::VersionedSignedBlindedProposal;
 
-/// Versioned attestation payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct VersionedAttestation {}
+/// Versioned attestation payload — alias of the signeddata wrapper. Carries a
+/// VC-submitted attestation across all supported forks.
+pub use crate::signeddata::VersionedAttestation;
 
-/// Versioned signed aggregate-and-proof payload. Placeholder.
-#[derive(Debug, Clone)]
-pub struct VersionedSignedAggregateAndProof {}
+/// Versioned signed aggregate-and-proof payload — alias of the signeddata
+/// wrapper.
+pub use crate::signeddata::VersionedSignedAggregateAndProof;
 
 /// Signed validator (builder) registration payload.
 ///
 /// Wraps the versioned eth2api registration so the
 /// [`Handler::submit_validator_registrations`](super::handler::Handler::submit_validator_registrations)
-/// implementation has access to the same data the Go
-/// `*eth2api.VersionedSignedValidatorRegistration` carries.
+/// implementation has access to the full registration data.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SignedValidatorRegistration(
@@ -196,8 +195,7 @@ pub struct SignedValidatorRegistration(
 ///
 /// Wraps `phase0::SignedVoluntaryExit` so the
 /// [`Handler::submit_voluntary_exit`](super::handler::Handler::submit_voluntary_exit)
-/// implementation has access to the same data the Go
-/// `*eth2p0.SignedVoluntaryExit` carries.
+/// implementation has access to the full signed voluntary exit data.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SignedVoluntaryExit(

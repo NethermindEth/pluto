@@ -152,8 +152,7 @@ fn build_host(
     let key = generate_insecure_k1_key(seed);
     let keypair = keypair_from_secret_key(key.clone()).expect("keypair");
 
-    let (prio, behaviour) = new_component(
-        ct.clone(),
+    let (prio, behaviour, expired) = new_component(
         peers.clone(),
         i64::try_from(peers.len()).expect("peer count fits i64"),
         consensus,
@@ -161,6 +160,7 @@ fn build_host(
         key,
         FutureCalculator,
         P2PContext::new(peers),
+        ct.clone(),
     )
     .expect("new_component");
     let prio = Arc::new(prio);
@@ -188,7 +188,7 @@ fn build_host(
         .expect("behaviour")
         .build();
 
-    prio.start(ct.clone());
+    prio.start(expired, ct.clone());
 
     Host {
         swarm,

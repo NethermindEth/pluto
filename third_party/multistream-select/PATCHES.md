@@ -52,3 +52,8 @@ On a libp2p bump, re-vendor the matching multistream-select version and
 re-apply these three edits. The `[patch]` requires the version to stay
 semver-compatible with what libp2p depends on (`^0.13.0`), else cargo silently
 ignores the patch.
+
+This is enforced in CI: the `test` workflow (`.github/workflows/test.yml`)
+fails if any registry-sourced `multistream-select` enters the dependency graph,
+so a dropped patch surfaces as a build failure rather than a silent interop
+regression.

@@ -229,7 +229,7 @@ impl Component {
             slot,
         );
 
-        self.prioritiser.prioritise(ctx, duty, &proposals).await
+        self.prioritiser.prioritise(duty, &proposals, ctx).await
     }
 }
 
