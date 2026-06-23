@@ -300,15 +300,15 @@ impl Prioritiser {
     /// Starts the background loop that drops request buffers for expired
     /// duties.
     ///
-    /// Must be called exactly once. The returned task runs until `ctx` is
+    /// Must be called exactly once. The returned task runs until `ct` is
     /// cancelled, then signals engine shutdown via the internal quit token.
     /// `expired` is the deadliner's expired-duty receiver.
-    pub fn start(&self, ctx: CancellationToken, mut expired: mpsc::Receiver<Duty>) {
+    pub fn start(&self, mut expired: mpsc::Receiver<Duty>, ct: CancellationToken) {
         let inner = self.inner.clone();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    () = ctx.cancelled() => break,
+                    () = ct.cancelled() => break,
                     maybe = expired.recv() => match maybe {
                         Some(duty) => inner.delete_recv_buffer(duty),
                         None => break,
@@ -335,9 +335,9 @@ impl Prioritiser {
     /// completion.
     ///
     /// Drops the instance silently (returns `Ok`) if the duty has already
-    /// expired. Otherwise blocks until consensus is proposed and `ctx` is
+    /// expired. Otherwise blocks until consensus is proposed and `ct` is
     /// cancelled, returning [`Error::Cancelled`] on cancellation.
-    pub async fn prioritise(&self, ctx: CancellationToken, msg: PriorityMsg) -> Result<()> {
+    pub async fn prioritise(&self, msg: PriorityMsg, ct: CancellationToken) -> Result<()> {
         let proto_duty = msg.duty.as_ref().ok_or(Error::InvalidMsgProtoFields)?;
         let duty = duty_from_proto(proto_duty);
 
@@ -347,7 +347,7 @@ impl Prioritiser {
                 // The deadliner shares the engine/instance cancellation token, so
                 // a failure while shutting down is a cancellation, not a genuine
                 // compute error — report it like the run-loop cancel path.
-                if ctx.is_cancelled() || self.inner.quit.is_cancelled() {
+                if ct.is_cancelled() || self.inner.quit.is_cancelled() {
                     return Err(Error::Cancelled);
                 }
                 return Err(Error::DeadlineComputeFailed);
@@ -362,7 +362,7 @@ impl Prioritiser {
             .inner
             .take_req_receiver(duty.clone())
             .ok_or_else(|| Error::DuplicateInstance(duty.clone()))?;
-        run_instance(ctx, &self.inner, duty, msg, requests).await
+        run_instance(&self.inner, duty, msg, requests, ct).await
     }
 }
 
@@ -370,14 +370,14 @@ impl Prioritiser {
 /// requests, and start consensus once all messages are collected or the
 /// exchange timeout elapses.
 ///
-/// Blocks until `ctx` is cancelled (returning [`Error::Cancelled`]) or a
+/// Blocks until `ct` is cancelled (returning [`Error::Cancelled`]) or a
 /// consensus calculation fails.
 async fn run_instance(
-    ctx: CancellationToken,
     inner: &Inner,
     duty: Duty,
     own: PriorityMsg,
     mut request_rx: mpsc::Receiver<Request>,
+    ct: CancellationToken,
 ) -> Result<()> {
     tracing::debug!(%duty, "Priority protocol instance started");
 
@@ -395,13 +395,13 @@ async fn run_instance(
     let exchange_timeout = tokio::time::sleep(inner.exchange_timeout);
     tokio::pin!(exchange_timeout);
 
-    exchange(&ctx, inner, responses_tx, own.clone());
+    exchange(inner, responses_tx, own.clone(), &ct);
 
     loop {
         let mut should_start_consensus = false;
 
         tokio::select! {
-            () = ctx.cancelled() => return Err(Error::Cancelled),
+            () = ct.cancelled() => return Err(Error::Cancelled),
             // Matching-pattern arms: when every sender drops the channel
             // closes, recv resolves to None, and the arm is disabled rather
             // than completing the select and re-looping. A disabled arm behaves
@@ -423,13 +423,13 @@ async fn run_instance(
 
         if should_start_consensus {
             cons_started = true;
-            start_consensus(&ctx, inner, &duty, &msgs)?;
+            start_consensus(inner, &duty, &msgs, &ct)?;
         }
 
         if !cons_started && msgs.len() == inner.peers.len() {
             tracing::debug!(%duty, "Priority protocol instance messages exchanged, starting consensus");
             cons_started = true;
-            start_consensus(&ctx, inner, &duty, &msgs)?;
+            start_consensus(inner, &duty, &msgs, &ct)?;
         }
     }
 }
@@ -449,17 +449,17 @@ fn add_msg(msgs: &mut Vec<PriorityMsg>, dedup: &mut HashSet<String>, msg: Priori
 /// response's peer id and signature, then forward it to the run loop. Failures
 /// are dropped silently (the transport logs them).
 fn exchange(
-    ctx: &CancellationToken,
     inner: &Inner,
     responses: mpsc::Sender<PriorityMsg>,
     own: PriorityMsg,
+    ct: &CancellationToken,
 ) {
     for &peer in &inner.peers {
         if peer == inner.local_id {
             continue;
         }
 
-        let ctx = ctx.clone();
+        let ct = ct.clone();
         let sender = inner.sender.clone();
         let validator = inner.msg_validator.clone();
         let responses = responses.clone();
@@ -468,7 +468,7 @@ fn exchange(
         tokio::spawn(async move {
             let send = sender.send_receive(peer, own);
             let response = tokio::select! {
-                () = ctx.cancelled() => return,
+                () = ct.cancelled() => return,
                 res = send => match res {
                     Ok(resp) => resp,
                     Err(_) => return, // Transport already logged.
@@ -486,7 +486,7 @@ fn exchange(
             }
 
             tokio::select! {
-                () = ctx.cancelled() => {}
+                () = ct.cancelled() => {}
                 _ = responses.send(response) => {}
             }
         });
@@ -498,22 +498,22 @@ fn exchange(
 /// Consensus runs in a spawned task because it blocks until agreement while the
 /// instance must keep servicing peer requests.
 fn start_consensus(
-    ctx: &CancellationToken,
     inner: &Inner,
     duty: &Duty,
     msgs: &[PriorityMsg],
+    ct: &CancellationToken,
 ) -> Result<()> {
     let result = calculate_result(msgs, inner.min_required)
         .map_err(|e| Error::CalculateResult(Box::new(e)))?;
 
     let consensus = inner.consensus.clone();
     let duty = duty.clone();
-    let ctx = ctx.clone();
+    let ct = ct.clone();
     tokio::spawn(async move {
         // Fire-and-forget so the instance keeps servicing peer requests while
         // consensus runs. The instance token reaches consensus, so cancellation
         // tears the proposal down; a propose failure is unexpected.
-        if let Err(err) = consensus.propose_priority(duty, result, &ctx).await {
+        if let Err(err) = consensus.propose_priority(duty, result, &ct).await {
             tracing::warn!(%err, "Priority protocol consensus");
         }
     });
@@ -643,7 +643,7 @@ mod tests {
             .expect("first take");
 
         // The duplicate is rejected after the (passing) deadliner gate.
-        let res = prio.prioritise(ct, msg).await;
+        let res = prio.prioritise(msg, ct).await;
         assert!(matches!(res, Err(Error::DuplicateInstance(d)) if d == duty));
     }
 
@@ -681,11 +681,11 @@ mod tests {
             let _ = result_tx.send((duty, result));
             Ok(())
         }));
-        prio.start(ct.clone(), expired);
+        prio.start(expired, ct.clone());
 
         let msg = build_msg(&key, peer, "v1");
         let run_ct = ct.clone();
-        let handle = tokio::spawn(async move { prio.prioritise(run_ct, msg).await });
+        let handle = tokio::spawn(async move { prio.prioritise(msg, run_ct).await });
 
         let (duty, result) = tokio::time::timeout(Duration::from_secs(5), result_rx.recv())
             .await
@@ -736,11 +736,11 @@ mod tests {
             deadliner,
             P2PContext::default(),
         );
-        prio.start(ct.clone(), expired);
+        prio.start(expired, ct.clone());
 
         let msg = build_msg(&key, peer, "v1");
         let run_ct = ct.clone();
-        let handle = tokio::spawn(async move { prio.prioritise(run_ct, msg).await });
+        let handle = tokio::spawn(async move { prio.prioritise(msg, run_ct).await });
 
         // Before the exchange timeout the empty exchange yields no event, so no
         // consensus is proposed. The clock only advances here because the loop
@@ -900,7 +900,7 @@ mod tests {
             deadliner,
             P2PContext::default(),
         );
-        prio.start(ct.clone(), expired_rx);
+        prio.start(expired_rx, ct.clone());
 
         let duty = Duty::new(SlotNumber::new(42), DutyType::Unknown);
         let _ = prio.inner.get_req_buffer(duty.clone());

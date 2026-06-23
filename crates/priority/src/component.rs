@@ -261,7 +261,6 @@ pub struct Component {
 /// reach consensus on a partial message set after the exchange timeout.)
 #[allow(clippy::too_many_arguments)]
 pub fn new_component(
-    ctx: CancellationToken,
     peers: Vec<PeerId>,
     min_required: i64,
     consensus: Arc<dyn Consensus>,
@@ -269,6 +268,7 @@ pub fn new_component(
     privkey: SecretKey,
     calculator: impl DeadlineCalculator,
     p2p_context: P2PContext,
+    ct: CancellationToken,
 ) -> Result<(Component, Behaviour)> {
     // Fail fast on a context that does not cover every exchange target, rather
     // than letting the transport gate silently drop those peers (which would
@@ -284,7 +284,7 @@ pub fn new_component(
     let verifier = new_msg_verifier(&peers)?;
     let calculator: Arc<dyn DeadlineCalculator> = Arc::new(calculator);
 
-    let (deadliner, expired) = DeadlinerTask::start(ctx, "priority", calculator.clone());
+    let (deadliner, expired) = DeadlinerTask::start(ct, "priority", calculator.clone());
 
     let (prioritiser, behaviour) = Prioritiser::new_internal(
         local_id,
@@ -317,14 +317,14 @@ impl Component {
     ///
     /// # Panics
     /// Panics if called more than once.
-    pub fn start(&self, ctx: CancellationToken) {
+    pub fn start(&self, ct: CancellationToken) {
         let expired = self
             .expired
             .lock()
             .expect("expired receiver mutex poisoned")
             .take()
             .expect("Component::start called more than once");
-        self.prioritiser.start(ctx, expired);
+        self.prioritiser.start(expired, ct);
     }
 
     /// Registers a friendly output subscriber.
@@ -347,13 +347,13 @@ impl Component {
     /// Starts a prioritisation instance for `duty` with the given proposals.
     ///
     /// Returns [`Error::DutyAlreadyExpired`] if the duty has no future
-    /// deadline. Returns `Ok(())` when `ctx` is cancelled, otherwise
+    /// deadline. Returns `Ok(())` when `ct` is cancelled, otherwise
     /// propagates a prioritiser error.
     pub async fn prioritise(
         &self,
-        ctx: CancellationToken,
         duty: Duty,
         proposals: &[TopicProposal],
+        ct: CancellationToken,
     ) -> Result<()> {
         let topics = proposals.iter().map(PriorityTopicProposal::from).collect();
 
@@ -376,22 +376,22 @@ impl Component {
         // Bound the instance by the duty deadline. The token is cancelled (not
         // merely dropped) on elapse so the prioritiser's detached consensus task,
         // which holds a clone of it, also tears down.
-        let instance_ctx = ctx.child_token();
+        let instance_ct = ct.child_token();
         let remaining = deadline
             .signed_duration_since(Utc::now())
             .to_std()
             .unwrap_or(Duration::ZERO);
 
         let res = tokio::select! {
-            res = self.prioritiser.prioritise(instance_ctx.clone(), msg) => res,
+            res = self.prioritiser.prioritise(msg, instance_ct.clone()) => res,
             () = tokio::time::sleep(remaining) => {
-                instance_ctx.cancel();
+                instance_ct.cancel();
                 return Ok(());
             }
         };
 
         // A cancelled instance — parent context or deadline — is a graceful stop.
-        if instance_ctx.is_cancelled() {
+        if instance_ct.is_cancelled() {
             return Ok(());
         }
         // A non-cancelled failure carries the duty as context.
@@ -640,7 +640,6 @@ mod tests {
         // `(Component, Behaviour)` is not `Debug`, so match the result directly
         // rather than via `expect_err`.
         let result = new_component(
-            CancellationToken::new(),
             peers,
             2,
             consensus,
@@ -648,6 +647,7 @@ mod tests {
             key,
             pluto_core::deadline::NeverExpiringCalculator,
             p2p_context,
+            CancellationToken::new(),
         );
 
         assert!(

@@ -262,7 +262,7 @@ async fn three_host_prioritiser() {
             keepalive_senders.push(tx);
             rx
         });
-        host.prioritiser.start(ct.clone(), rx);
+        host.prioritiser.start(rx, ct.clone());
     }
 
     // Begin listening, then full-mesh dial.
@@ -357,7 +357,7 @@ async fn three_host_prioritiser() {
             let ct = ct.clone();
             let err_tx = err_tx.clone();
             prioritise_tasks.push(tokio::spawn(async move {
-                let res = prio.prioritise(ct, msg).await;
+                let res = prio.prioritise(msg, ct).await;
                 let _ = err_tx.send(res);
             }));
         }
