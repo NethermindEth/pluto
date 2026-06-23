@@ -72,5 +72,19 @@ jobs:
       - name: Build (all features)
         run: cargo test --locked --workspace --all-features --no-run
 
+      # Slash-less `charon/priority/2.0.0` Charon interop relies on the vendored
+      # multistream-select fork ([patch.crates-io] -> third_party/). If a libp2p
+      # bump moves the required version off the fork's, cargo only warns and
+      # silently falls back to the registry copy, regressing interop. Fail loudly
+      # instead: assert no registry-sourced multistream-select is in the graph.
+      - name: Verify multistream-select fork patch is applied
+        run: |
+          if ! cargo metadata --locked --format-version 1 \
+            | jq -e '[.packages[] | select(.name == "multistream-select" and .source != null)] | length == 0' > /dev/null; then
+            echo "::error::multistream-select fork patch not applied — a registry copy is in the dependency graph (likely a libp2p bump). Re-vendor third_party/multistream-select to the matching version (see its PATCHES.md)."
+            exit 1
+          fi
+          echo "multistream-select fork patch applied ✓"
+
       - name: Run tests (all features)
         run: cargo test --locked --workspace --all-features
