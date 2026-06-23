@@ -14,7 +14,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -87,21 +87,15 @@ pub(crate) fn duty_to_proto(duty: &Duty) -> ProtoDuty {
     }
 }
 
-/// Shared, immutable engine state referenced by both the public API and the
-/// inbound request handler.
-struct Inner {
-    /// Local peer id; excluded when exchanging with peers.
-    local_id: PeerId,
-    /// Outbound request/response transport (the p2p send-receive seam).
-    sender: Sender,
-    /// Minimum number of peers that must propose a priority to include it.
-    min_required: i64,
-    /// Per-instance exchange timeout before falling back to consensus.
-    exchange_timeout: Duration,
+/// Engine state shared with the inbound request handler.
+///
+/// Holds everything `handle_request` needs and — deliberately — nothing that
+/// depends on the transport `Sender`. Being `Sender`-free is what lets it be
+/// built before the `Sender` exists, so the inbound handler can capture it
+/// directly rather than through a lazily filled slot (no construction cycle).
+struct Shared {
     /// Cluster peers participating in the protocol.
     peers: Vec<PeerId>,
-    /// Cluster consensus over priority results.
-    consensus: Arc<dyn Consensus>,
     /// Validates received messages (peer membership + signature).
     msg_validator: Arc<MsgVerifier>,
     /// Cancelled when the engine shuts down, signalling instances to stop.
@@ -112,7 +106,23 @@ struct Inner {
     req_buffers: Mutex<HashMap<Duty, BufferEntry>>,
 }
 
-impl Inner {
+/// Engine state for the owner-driven paths (`prioritise` / `run_instance`).
+struct Inner {
+    /// State also shared with the inbound request handler.
+    shared: Arc<Shared>,
+    /// Local peer id; excluded when exchanging with peers.
+    local_id: PeerId,
+    /// Outbound request/response transport (the p2p send-receive seam).
+    sender: Sender,
+    /// Minimum number of peers that must propose a priority to include it.
+    min_required: i64,
+    /// Per-instance exchange timeout before falling back to consensus.
+    exchange_timeout: Duration,
+    /// Cluster consensus over priority results.
+    consensus: Arc<dyn Consensus>,
+}
+
+impl Shared {
     /// Request buffer capacity: `2 * peers` so neither peer requests nor our
     /// responses block the run loop.
     fn buffer_capacity(&self) -> usize {
@@ -213,9 +223,9 @@ impl Inner {
 pub struct Prioritiser {
     inner: Arc<Inner>,
     /// Output subscribers; appended via [`Prioritiser::subscribe`] before
-    /// [`Prioritiser::start`]. Wrapped so the consensus subscription can read
-    /// the current set without sharing ownership at construction time.
-    subs: Arc<Mutex<Vec<Arc<Subscriber>>>>,
+    /// [`Prioritiser::start`]. `Arc<Mutex<_>>` so the consensus subscription,
+    /// wired at construction, can read the set populated later by `subscribe`.
+    subs: Arc<Mutex<Vec<Subscriber>>>,
 }
 
 impl Prioritiser {
@@ -223,7 +233,7 @@ impl Prioritiser {
     ///
     /// Returns the [`Prioritiser`] plus the [`Behaviour`] the caller must
     /// register with the swarm. The behaviour's inbound handler dispatches into
-    /// [`Inner::handle_request`].
+    /// [`Shared::handle_request`].
     ///
     /// `p2p_context`'s known-peer set must cover every entry in `peers`
     /// (enforced by [`new_component`](crate::new_component)). Exchanges target
@@ -242,53 +252,46 @@ impl Prioritiser {
         deadliner: DeadlinerHandle,
         p2p_context: P2PContext,
     ) -> (Self, Behaviour) {
-        // The transport's inbound handler needs the engine state, which in turn
-        // needs the transport's outbound `Sender`. Break the cycle with a slot
-        // the handler reads lazily; it is filled before the behaviour can
-        // receive any request (the swarm is not yet driving it).
-        let inner_slot: Arc<OnceLock<Arc<Inner>>> = Arc::new(OnceLock::new());
-        let handler_slot = inner_slot.clone();
-
-        let inbound: InboundHandler = Arc::new(move |peer, msg| {
-            let slot = handler_slot.clone();
-            async move {
-                let inner = slot
-                    .get()
-                    .expect("inbound handler invoked before engine initialised");
-                inner.handle_request(peer, msg).await.map(Some)
-            }
-            .boxed()
-        });
-
-        let (behaviour, sender) = p2p::new(inbound, p2p_context);
-
-        let inner = Arc::new(Inner {
-            local_id,
-            sender,
-            min_required,
-            exchange_timeout,
+        // The inbound handler needs engine state, but only the `Sender`-free
+        // subset (`Shared`). Build that first so the handler can capture it
+        // directly; the `Sender` (which itself depends on the handler) then
+        // feeds the remaining `Inner` fields — no construction cycle.
+        let shared = Arc::new(Shared {
             peers,
-            consensus: consensus.clone(),
             msg_validator: Arc::new(msg_validator),
             quit: CancellationToken::new(),
             deadliner,
             req_buffers: Mutex::new(HashMap::new()),
         });
-        inner_slot
-            .set(inner.clone())
-            .unwrap_or_else(|_| unreachable!("inner slot set once"));
 
-        let subs: Arc<Mutex<Vec<Arc<Subscriber>>>> = Arc::new(Mutex::new(Vec::new()));
+        let handler_shared = shared.clone();
+        let inbound: InboundHandler = Arc::new(move |peer, msg| {
+            let shared = handler_shared.clone();
+            async move { shared.handle_request(peer, msg).await.map(Some) }.boxed()
+        });
 
-        // Wire consensus output to our subscribers: invoke each in order,
+        let (behaviour, sender) = p2p::new(inbound, p2p_context);
+
+        let inner = Arc::new(Inner {
+            shared,
+            local_id,
+            sender,
+            min_required,
+            exchange_timeout,
+            consensus: consensus.clone(),
+        });
+
+        let subs: Arc<Mutex<Vec<Subscriber>>> = Arc::new(Mutex::new(Vec::new()));
+
+        // Wire consensus output to our subscribers: invoke each in order under
+        // the lock (subscribers are synchronous and registered before `start`),
         // returning on the first error.
         let subs_for_consensus = subs.clone();
         consensus.subscribe_priority(Box::new(move |duty, result| {
             let subs = subs_for_consensus
                 .lock()
-                .expect("subscribers mutex poisoned")
-                .clone();
-            for sub in &subs {
+                .expect("subscribers mutex poisoned");
+            for sub in subs.iter() {
                 sub(duty.clone(), result.clone())?;
             }
             Ok(())
@@ -304,19 +307,19 @@ impl Prioritiser {
     /// cancelled, then signals engine shutdown via the internal quit token.
     /// `expired` is the deadliner's expired-duty receiver.
     pub fn start(&self, mut expired: mpsc::Receiver<Duty>, ct: CancellationToken) {
-        let inner = self.inner.clone();
+        let shared = self.inner.shared.clone();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
                     () = ct.cancelled() => break,
                     maybe = expired.recv() => match maybe {
-                        Some(duty) => inner.delete_recv_buffer(duty),
+                        Some(duty) => shared.delete_recv_buffer(duty),
                         None => break,
                     },
                 }
             }
             // Cancelling `quit` on exit unblocks any in-flight `handle_request`.
-            inner.quit.cancel();
+            shared.quit.cancel();
         });
     }
 
@@ -328,7 +331,7 @@ impl Prioritiser {
         self.subs
             .lock()
             .expect("subscribers mutex poisoned")
-            .push(Arc::new(sub));
+            .push(sub);
     }
 
     /// Starts a new prioritisation instance for `msg` and runs it to
@@ -341,13 +344,13 @@ impl Prioritiser {
         let proto_duty = msg.duty.as_ref().ok_or(Error::InvalidMsgProtoFields)?;
         let duty = duty_from_proto(proto_duty);
 
-        match self.inner.deadliner.add(duty.clone()).await {
+        match self.inner.shared.deadliner.add(duty.clone()).await {
             AddOutcome::Scheduled => {}
             AddOutcome::FailedToCompute => {
                 // The deadliner shares the engine/instance cancellation token, so
                 // a failure while shutting down is a cancellation, not a genuine
                 // compute error — report it like the run-loop cancel path.
-                if ct.is_cancelled() || self.inner.quit.is_cancelled() {
+                if ct.is_cancelled() || self.inner.shared.quit.is_cancelled() {
                     return Err(Error::Cancelled);
                 }
                 return Err(Error::DeadlineComputeFailed);
@@ -360,6 +363,7 @@ impl Prioritiser {
 
         let requests = self
             .inner
+            .shared
             .take_req_receiver(duty.clone())
             .ok_or_else(|| Error::DuplicateInstance(duty.clone()))?;
         run_instance(&self.inner, duty, msg, requests, ct).await
@@ -390,7 +394,8 @@ async fn run_instance(
 
     let mut cons_started = false;
 
-    let (responses_tx, mut responses_rx) = mpsc::channel::<PriorityMsg>(inner.peers.len().max(1));
+    let (responses_tx, mut responses_rx) =
+        mpsc::channel::<PriorityMsg>(inner.shared.peers.len().max(1));
 
     let exchange_timeout = tokio::time::sleep(inner.exchange_timeout);
     tokio::pin!(exchange_timeout);
@@ -426,7 +431,7 @@ async fn run_instance(
             start_consensus(inner, &duty, &msgs, &ct)?;
         }
 
-        if !cons_started && msgs.len() == inner.peers.len() {
+        if !cons_started && msgs.len() == inner.shared.peers.len() {
             tracing::debug!(%duty, "Priority protocol instance messages exchanged, starting consensus");
             cons_started = true;
             start_consensus(inner, &duty, &msgs, &ct)?;
@@ -454,14 +459,14 @@ fn exchange(
     own: PriorityMsg,
     ct: &CancellationToken,
 ) {
-    for &peer in &inner.peers {
+    for &peer in &inner.shared.peers {
         if peer == inner.local_id {
             continue;
         }
 
         let ct = ct.clone();
         let sender = inner.sender.clone();
-        let validator = inner.msg_validator.clone();
+        let validator = inner.shared.msg_validator.clone();
         let responses = responses.clone();
         let own = own.clone();
 
@@ -639,6 +644,7 @@ mod tests {
         // Simulate a running instance that already took the duty's receiver.
         let _rx = prio
             .inner
+            .shared
             .take_req_receiver(duty.clone())
             .expect("first take");
 
@@ -787,7 +793,7 @@ mod tests {
         let msg = build_msg(&key, peer, "v1");
         let err = tokio::time::timeout(
             RECEIVE_TIMEOUT + Duration::from_secs(1),
-            prio.inner.handle_request(peer, msg),
+            prio.inner.shared.handle_request(peer, msg),
         )
         .await
         .expect("handle_request returns within the receive timeout")
@@ -823,6 +829,7 @@ mod tests {
         let other = PeerId::random();
         let err = prio
             .inner
+            .shared
             .handle_request(other, msg)
             .await
             .expect_err("peer id mismatch");
@@ -869,6 +876,7 @@ mod tests {
         let msg = build_msg(&key, peer, "v1");
         let err = prio
             .inner
+            .shared
             .handle_request(peer, msg)
             .await
             .expect_err("duty expired");
@@ -903,9 +911,10 @@ mod tests {
         prio.start(expired_rx, ct.clone());
 
         let duty = Duty::new(SlotNumber::new(42), DutyType::Unknown);
-        let _ = prio.inner.get_req_buffer(duty.clone());
+        let _ = prio.inner.shared.get_req_buffer(duty.clone());
         assert!(
             prio.inner
+                .shared
                 .req_buffers
                 .lock()
                 .expect("lock")
@@ -919,6 +928,7 @@ mod tests {
             loop {
                 if !prio
                     .inner
+                    .shared
                     .req_buffers
                     .lock()
                     .expect("lock")
