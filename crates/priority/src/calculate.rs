@@ -4,12 +4,8 @@
 use std::collections::{HashMap, HashSet};
 
 use pluto_consensus::qbft::msg::hash_proto_bytes;
-use pluto_core::corepb::v1::{
-    core::Duty,
-    priority::{
-        PriorityMsg, PriorityResult, PriorityScoredResult, PriorityTopicProposal,
-        PriorityTopicResult,
-    },
+use pluto_core::corepb::v1::priority::{
+    PriorityMsg, PriorityResult, PriorityScoredResult, PriorityTopicProposal, PriorityTopicResult,
 };
 use prost::Message;
 use prost_types::Any;
@@ -154,19 +150,14 @@ fn validate_msgs(msgs: &[PriorityMsg]) -> Result<()> {
         return Err(Error::MessagesEmpty);
     }
 
-    let mut duty: Option<Duty> = None;
+    // All messages must carry the same duty; compare each against the first
+    // (`msgs` is non-empty, checked above).
+    let duty = &msgs[0].duty;
     let mut dedup_peers: HashSet<String> = HashSet::new();
 
     for msg in msgs {
-        // The reference duty is taken from the first message and stays unset
-        // while early messages carry no duty; once set, every subsequent duty
-        // must be proto-equal to the reference.
-        match duty {
-            None => duty = msg.duty,
-            Some(d) if Some(d) != msg.duty => {
-                return Err(Error::MismatchingDuties);
-            }
-            Some(_) => {}
+        if msg.duty != *duty {
+            return Err(Error::MismatchingDuties);
         }
 
         if !dedup_peers.insert(msg.peer_id.clone()) {
@@ -219,7 +210,7 @@ static EMPTY_ANY: Any = Any {
 
 #[cfg(test)]
 mod tests {
-    use pluto_core::corepb::v1::core::ParSignedData;
+    use pluto_core::corepb::v1::core::{Duty, ParSignedData};
     use rand::seq::SliceRandom;
     use test_case::test_case;
 
