@@ -34,6 +34,12 @@ pub enum HelperError {
     /// Failed to fetch a required value from the spec
     #[error("fetch slots per epoch")]
     FetchSlotsPerEpoch,
+
+    /// The slot for a timestamp could not be computed from the genesis time and
+    /// slot duration (out-of-range timestamp, overflow, or a zero slot
+    /// duration).
+    #[error("slot computation failed")]
+    SlotComputation,
 }
 
 type Result<T> = std::result::Result<T, HelperError>;
@@ -101,6 +107,55 @@ pub(crate) fn verify_address(address: &str) -> Result<Address> {
         .map_err(|_| HelperError::InvalidAddress(address.to_string()))
 }
 
+/// Returns the slot a unix-seconds `timestamp` falls in, given the beacon-node
+/// genesis time and slot duration.
+///
+/// Mirrors Charon's `SlotFromTimestamp`: when `timestamp` precedes genesis —
+/// which can happen in test scenarios where the value is not strictly
+/// validated — it falls back to the current wall-clock time. The genesis time
+/// and slot duration are passed in (rather than fetched here) so a batched
+/// caller can resolve them once and reuse them across many registrations.
+///
+/// Returns [`HelperError::SlotComputation`] for inputs that cannot yield a
+/// slot — a timestamp outside the representable range, an overflowing delta,
+/// or a zero slot duration — so the caller decides how to handle them rather
+/// than silently receiving slot `0`.
+pub fn slot_from_timestamp(
+    genesis_time: chrono::DateTime<chrono::Utc>,
+    slot_duration: std::time::Duration,
+    timestamp: u64,
+) -> Result<u64> {
+    // Resolve the unix-seconds timestamp into a wall-clock instant.
+    let timestamp = i64::try_from(timestamp)
+        .ok()
+        .and_then(|secs| chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0))
+        .ok_or(HelperError::SlotComputation)?;
+
+    let timestamp = if timestamp < genesis_time {
+        let now = chrono::Utc::now();
+        tracing::info!(
+            genesis_timestamp = genesis_time.timestamp(),
+            overridden_timestamp = timestamp.timestamp(),
+            new_timestamp = now.timestamp(),
+            "timestamp before genesis, defaulting to current timestamp",
+        );
+        now
+    } else {
+        timestamp
+    };
+
+    // `timestamp >= genesis_time` holds here, so the signed delta is
+    // non-negative; `checked_div` rejects a degenerate zero slot duration.
+    let slot = timestamp
+        .signed_duration_since(genesis_time)
+        .num_nanoseconds()
+        .and_then(|delta| u128::try_from(delta).ok())
+        .and_then(|delta| delta.checked_div(slot_duration.as_nanos()))
+        .ok_or(HelperError::SlotComputation)?;
+
+    u64::try_from(slot).map_err(|_| HelperError::SlotComputation)
+}
+
 /// Returns epoch calculated from given slot.
 pub async fn epoch_from_slot(
     client: &pluto_eth2api::client::EthBeaconNodeApiClient,
@@ -118,7 +173,41 @@ pub async fn epoch_from_slot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    use chrono::{DateTime, Utc};
     use k256::SecretKey;
+
+    #[test]
+    fn slot_from_timestamp_divides_delta_by_slot_duration() {
+        // genesis = 0, slot_duration = 12s → timestamp 600 ⇒ slot 50.
+        let genesis = DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+        let slot = slot_from_timestamp(genesis, Duration::from_secs(12), 600).unwrap();
+        assert_eq!(slot, 50);
+    }
+
+    #[test]
+    fn slot_from_timestamp_before_genesis_falls_back_to_now() {
+        // A timestamp before genesis falls back to the current wall clock
+        // (Charon parity), so the slot is the current slot. Bound it by the
+        // wall clock captured either side of the call rather than a fuzzy
+        // tolerance.
+        let genesis = DateTime::<Utc>::from_timestamp(1_000, 0).unwrap();
+        let lower = u64::try_from(Utc::now().timestamp() - 1_000).unwrap() / 12;
+        let slot = slot_from_timestamp(genesis, Duration::from_secs(12), 100).unwrap();
+        let upper = u64::try_from(Utc::now().timestamp() - 1_000).unwrap() / 12;
+        assert!(
+            (lower..=upper).contains(&slot),
+            "slot {slot} not in [{lower}, {upper}]"
+        );
+    }
+
+    #[test]
+    fn slot_from_timestamp_rejects_zero_slot_duration() {
+        let genesis = DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+        let result = slot_from_timestamp(genesis, Duration::from_secs(0), 600);
+        assert!(matches!(result, Err(HelperError::SlotComputation)));
+    }
 
     #[test]
     fn checksummed_address() {

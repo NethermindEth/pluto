@@ -129,7 +129,7 @@ pub(crate) fn default_swarm_config(cfg: libp2p::swarm::Config) -> libp2p::swarm:
 }
 
 /// Converts a secret key to a libp2p keypair.
-pub(crate) fn keypair_from_secret_key(key: k256::SecretKey) -> crate::p2p::Result<Keypair> {
+pub fn keypair_from_secret_key(key: k256::SecretKey) -> crate::p2p::Result<Keypair> {
     let mut der = key.to_sec1_der()?;
     let keypair = Keypair::secp256k1_from_der(&mut der)?;
     Ok(keypair)

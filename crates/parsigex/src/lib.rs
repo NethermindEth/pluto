@@ -6,8 +6,7 @@ mod handler;
 mod protocol;
 
 pub use behaviour::{
-    Behaviour, Config, DutyGater, Event, Handle, ReceivedSub, ReceivedSubFuture, Verifier,
-    received_subscriber,
+    Behaviour, Config, Event, Handle, ReceivedSub, ReceivedSubFuture, Verifier, received_subscriber,
 };
 pub use error::{Error, Failure, Result, VerifyError};
 pub use handler::Handler;

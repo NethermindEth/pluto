@@ -1,8 +1,11 @@
 use crate::{
-    ConsensusVersion, EthBeaconNodeApiClient, GetGenesisRequest, GetGenesisResponse,
-    GetGenesisResponseResponseData, GetSpecRequest, GetSpecResponse, ValidatorStatus, spec::phase0,
+    ConsensusVersion, EthBeaconNodeApiClient, EventstreamRequestQueryTopic, GetGenesisRequest,
+    GetGenesisResponse, GetGenesisResponseResponseData, GetSpecRequest, GetSpecResponse,
+    ValidatorStatus, spec::phase0,
 };
 use chrono::{DateTime, Utc};
+use eventsource_stream::Eventsource;
+use futures::{Stream, StreamExt};
 use std::{collections::HashMap, time};
 use tree_hash::TreeHash;
 
@@ -34,8 +37,30 @@ pub enum EthBeaconNodeApiClientError {
     /// Domain type not found in the beacon spec response
     #[error("Domain type not found: {0}")]
     DomainTypeNotFound(String),
+
+    /// Error while opening the beacon node SSE event stream (request send or
+    /// non-success status).
+    #[error("Event stream request error: {0}")]
+    EventStreamRequest(#[from] reqwest::Error),
+
+    /// Error while reading from the beacon node SSE event stream.
+    #[error("Event stream read error: {0}")]
+    EventStreamRead(#[from] eventsource_stream::EventStreamError<reqwest::Error>),
 }
 
+/// A single Server-Sent Event from a beacon node: the event topic (the SSE
+/// `event:` field, e.g. `head` or `chain_reorg`) and its raw, unparsed JSON
+/// `data` payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BeaconNodeEvent {
+    /// The SSE event topic.
+    pub topic: String,
+    /// The raw JSON data payload.
+    pub data: String,
+}
+
+// Ordered oldest-to-newest. `resolve_fork_version` relies on this order to
+// break equal-epoch ties (the latest fork wins), so keep it chronological.
 const FORKS: [ConsensusVersion; 6] = [
     ConsensusVersion::Altair,
     ConsensusVersion::Bellatrix,
@@ -74,7 +99,7 @@ fn parse_u64_field(
         .map_err(|_| EthBeaconNodeApiClientError::ParseError(format!("parse {field}")))
 }
 
-fn decode_fixed_hex<const N: usize, F: Fn() -> String>(
+pub(crate) fn decode_fixed_hex<const N: usize, F: Fn() -> String>(
     value: &str,
     step: F,
 ) -> Result<[u8; N], EthBeaconNodeApiClientError> {
@@ -186,12 +211,17 @@ pub fn resolve_fork_version(
     genesis_fork_version: phase0::Version,
     fork_schedule: &HashMap<ConsensusVersion, ForkSchedule>,
 ) -> phase0::Version {
-    fork_schedule
-        .values()
-        .filter(|fork| fork.epoch <= epoch)
-        .max_by_key(|fork| fork.epoch)
-        .map(|fork| fork.version)
-        .unwrap_or(genesis_fork_version)
+    let mut active_version = genesis_fork_version;
+    for fork in FORKS {
+        let Some(schedule) = fork_schedule.get(&fork) else {
+            continue;
+        };
+        if schedule.epoch <= epoch {
+            active_version = schedule.version;
+        }
+    }
+
+    active_version
 }
 
 fn resolve_domain(
@@ -360,6 +390,57 @@ impl EthBeaconNodeApiClient {
             epoch,
         ))
     }
+
+    /// Subscribes to the beacon node SSE stream (`GET /eth/v1/events`) for the
+    /// given topics.
+    ///
+    /// Unlike the generated [`Self::eventstream`], the returned stream
+    /// preserves each event's topic and yields its raw JSON `data`
+    /// unparsed, so callers can dispatch on the topic and deserialize the
+    /// payload themselves.
+    pub async fn event_stream(
+        &self,
+        topics: &[EventstreamRequestQueryTopic],
+    ) -> Result<
+        impl Stream<Item = Result<BeaconNodeEvent, EthBeaconNodeApiClientError>> + Send,
+        EthBeaconNodeApiClientError,
+    > {
+        let mut url = self.base_url.clone();
+        url.path_segments_mut()
+            .map_err(|()| {
+                EthBeaconNodeApiClientError::RequestError(anyhow::anyhow!(
+                    "base URL cannot be a base"
+                ))
+            })?
+            .push("eth")
+            .push("v1")
+            .push("events");
+
+        // Topics are sent as repeated `topics=<value>` query pairs.
+        let query: Vec<(&str, String)> = topics
+            .iter()
+            .map(|topic| ("topics", topic.to_string()))
+            .collect();
+
+        let response = self
+            .client
+            .get(url)
+            .query(&query)
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .send()
+            .await?
+            .error_for_status()?;
+
+        let stream = response.bytes_stream().eventsource().map(|item| {
+            item.map(|event| BeaconNodeEvent {
+                topic: event.event,
+                data: event.data,
+            })
+            .map_err(EthBeaconNodeApiClientError::EventStreamRead)
+        });
+
+        Ok(stream)
+    }
 }
 
 #[cfg(test)]
@@ -412,6 +493,31 @@ mod tests {
     }
 
     #[test]
+    fn resolve_fork_version_breaks_equal_epoch_ties_by_fork_order() {
+        let spec = json!({
+            "ALTAIR_FORK_VERSION": "0x01020304",
+            "ALTAIR_FORK_EPOCH": "0",
+            "BELLATRIX_FORK_VERSION": "0x02030405",
+            "BELLATRIX_FORK_EPOCH": "0",
+            "CAPELLA_FORK_VERSION": "0x03040506",
+            "CAPELLA_FORK_EPOCH": "0",
+            "DENEB_FORK_VERSION": "0x04050607",
+            "DENEB_FORK_EPOCH": "0",
+            "ELECTRA_FORK_VERSION": "0x05060708",
+            "ELECTRA_FORK_EPOCH": "2048",
+            "FULU_FORK_VERSION": "0x06070809",
+            "FULU_FORK_EPOCH": u64::MAX.to_string(),
+        });
+        let fork_schedule = fork_schedule_from_spec(&spec).unwrap();
+        let genesis_fork_version = [0x11, 0x22, 0x33, 0x44];
+
+        assert_eq!(
+            resolve_fork_version(0, genesis_fork_version, &fork_schedule),
+            [0x04, 0x05, 0x06, 0x07]
+        );
+    }
+
+    #[test]
     fn compute_builder_domain_stays_constant() {
         let genesis_fork_version = [0x01, 0x01, 0x70, 0x00];
 
@@ -451,5 +557,48 @@ mod tests {
                 genesis_validators_root,
             )
         );
+    }
+
+    #[tokio::test]
+    async fn event_stream_preserves_topic_and_raw_data() {
+        use crate::EventstreamRequestQueryTopic;
+        use futures::StreamExt;
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+
+        let server = MockServer::start().await;
+
+        let body = "event: head\ndata: {\"slot\":\"10\"}\n\n\
+                    event: chain_reorg\ndata: {\"slot\":\"20\",\"depth\":\"2\"}\n\n";
+
+        Mock::given(method("GET"))
+            .and(path("/eth/v1/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+            .mount(&server)
+            .await;
+
+        let client = EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid url");
+        let stream = client
+            .event_stream(&[
+                EventstreamRequestQueryTopic::Head,
+                EventstreamRequestQueryTopic::ChainReorg,
+            ])
+            .await
+            .expect("open stream");
+        futures::pin_mut!(stream);
+
+        let first = stream.next().await.expect("first event").expect("ok event");
+        assert_eq!(first.topic, "head");
+        assert_eq!(first.data, r#"{"slot":"10"}"#);
+
+        let second = stream
+            .next()
+            .await
+            .expect("second event")
+            .expect("ok event");
+        assert_eq!(second.topic, "chain_reorg");
+        assert_eq!(second.data, r#"{"slot":"20","depth":"2"}"#);
     }
 }

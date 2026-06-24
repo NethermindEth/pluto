@@ -68,6 +68,7 @@ use libp2p::{
 };
 use pluto_cluster::lock::Lock;
 use pluto_core::{
+    gater::DutyGaterFn,
     signeddata::SignedRandao,
     types::{Duty, DutyType, ParSignedDataSet, PubKey, SlotNumber},
 };
@@ -81,7 +82,7 @@ use pluto_p2p::{
     peer::peer_id_from_key,
     relay::{RelayManager, RelayManagerEvent},
 };
-use pluto_parsigex::{self as parsigex, DutyGater, Event, Handle, Verifier};
+use pluto_parsigex::{self as parsigex, Event, Handle, Verifier};
 use pluto_tracing::TracingConfig;
 use tokio::fs;
 use tokio_util::sync::CancellationToken;
@@ -247,7 +248,7 @@ async fn main() -> Result<()> {
 
     let verifier: Verifier =
         std::sync::Arc::new(|_duty, _pubkey, _data| Box::pin(async { Ok(()) }));
-    let duty_gater: DutyGater = std::sync::Arc::new(|duty| duty.duty_type != DutyType::Unknown);
+    let duty_gater: DutyGaterFn = std::sync::Arc::new(|duty| duty.duty_type != DutyType::Unknown);
     let handle_slot = std::sync::Arc::new(tokio::sync::Mutex::new(1_u64));
 
     let p2p_config = P2PConfig {

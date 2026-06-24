@@ -7,6 +7,7 @@
 
 use pluto_eth2api::{
     spec::{altair, bellatrix, capella, deneb, electra, fulu, phase0},
+    v1,
     versioned::{self, AttestationPayload, DataVersion, SignedAggregateAndProofPayload},
 };
 use pluto_ssz::{
@@ -41,6 +42,10 @@ pub enum SszCodecError {
     /// Unknown or unsupported data version.
     #[error("ssz unknown version: {0}")]
     UnknownVersion(u64),
+    /// A fixed-size array body length is not a whole multiple of the element
+    /// size.
+    #[error("invalid buffer size")]
+    InvalidBufferSize,
     /// Inner SSZ binary decoding failed.
     #[error("ssz decode: {0}")]
     Decode(String),
@@ -142,6 +147,35 @@ pub fn decode_signed_contribution_and_proof(
     bytes: &[u8],
 ) -> Result<altair::SignedContributionAndProof, SszCodecError> {
     Ok(altair::SignedContributionAndProof::from_ssz_bytes(bytes)?)
+}
+
+/// SSZ-serialized byte length of a single `v1::SignedValidatorRegistration`:
+/// `fee_recipient`(20) + `gas_limit`(8) + `timestamp`(8) + `pubkey`(48) +
+/// `signature`(96). The register-validator endpoint accepts a bare
+/// concatenation of these fixed-size objects (no length prefix), so the body
+/// must be a whole multiple of this size.
+const SIGNED_VALIDATOR_REGISTRATION_SSZ_SIZE: usize = 180;
+
+/// Decodes an array of `v1::SignedValidatorRegistration` from a bare SSZ
+/// concatenation. The body must be a whole multiple of
+/// [`SIGNED_VALIDATOR_REGISTRATION_SSZ_SIZE`]; otherwise
+/// [`SszCodecError::InvalidBufferSize`] is returned.
+pub fn decode_signed_validator_registrations(
+    bytes: &[u8],
+) -> Result<Vec<v1::SignedValidatorRegistration>, SszCodecError> {
+    if !bytes
+        .len()
+        .is_multiple_of(SIGNED_VALIDATOR_REGISTRATION_SSZ_SIZE)
+    {
+        return Err(SszCodecError::InvalidBufferSize);
+    }
+
+    let mut out = Vec::with_capacity(bytes.len() / SIGNED_VALIDATOR_REGISTRATION_SSZ_SIZE);
+    for chunk in bytes.chunks_exact(SIGNED_VALIDATOR_REGISTRATION_SSZ_SIZE) {
+        out.push(v1::SignedValidatorRegistration::from_ssz_bytes(chunk)?);
+    }
+
+    Ok(out)
 }
 
 // ===========================================================================
@@ -449,6 +483,57 @@ fn encode_proposal_block(block: &versioned::SignedProposalBlock) -> Result<Vec<u
     })
 }
 
+/// Decodes a bare per-fork full (non-blinded) signed proposal block body from
+/// SSZ binary, selecting the variant by `version`.
+///
+/// Unlike [`decode_versioned_signed_proposal`], this expects the raw
+/// beacon-API SSZ block body with no Charon versioned header — the format a
+/// validator client posts to `/eth/v{1,2}/beacon/blocks`. The fork is taken
+/// from the `Eth-Consensus-Version` request header, not from the bytes. The
+/// blinded endpoint uses [`decode_signed_blinded_proposal_block_body`].
+pub fn decode_signed_proposal_block_body(
+    version: DataVersion,
+    bytes: &[u8],
+) -> Result<versioned::SignedProposalBlock, SszCodecError> {
+    decode_proposal_block(version, false, bytes)
+}
+
+/// Decodes a bare per-fork blinded signed proposal block body from SSZ binary,
+/// selecting the variant by `version`.
+///
+/// The raw beacon-API SSZ block body posted to
+/// `/eth/v{1,2}/beacon/blinded_blocks`; the fork is taken from the
+/// `Eth-Consensus-Version` request header.
+pub fn decode_signed_blinded_proposal_block_body(
+    version: DataVersion,
+    bytes: &[u8],
+) -> Result<versioned::SignedBlindedProposalBlock, SszCodecError> {
+    use versioned::SignedBlindedProposalBlock;
+    Ok(match version {
+        DataVersion::Bellatrix => SignedBlindedProposalBlock::Bellatrix(
+            bellatrix::SignedBlindedBeaconBlock::from_ssz_bytes(bytes)?,
+        ),
+        DataVersion::Capella => SignedBlindedProposalBlock::Capella(
+            capella::SignedBlindedBeaconBlock::from_ssz_bytes(bytes)?,
+        ),
+        DataVersion::Deneb => SignedBlindedProposalBlock::Deneb(
+            deneb::SignedBlindedBeaconBlock::from_ssz_bytes(bytes)?,
+        ),
+        DataVersion::Electra => SignedBlindedProposalBlock::Electra(
+            electra::SignedBlindedBeaconBlock::from_ssz_bytes(bytes)?,
+        ),
+        // Fulu blinded blocks share the Electra layout.
+        DataVersion::Fulu => SignedBlindedProposalBlock::Fulu(
+            electra::SignedBlindedBeaconBlock::from_ssz_bytes(bytes)?,
+        ),
+        DataVersion::Phase0 | DataVersion::Altair | DataVersion::Unknown => {
+            return Err(SszCodecError::UnknownVersion(
+                version.to_legacy_u64().unwrap_or(u64::MAX),
+            ));
+        }
+    })
+}
+
 fn decode_proposal_block(
     version: DataVersion,
     blinded: bool,
@@ -519,6 +604,50 @@ mod tests {
                 root: [0xcc; 32],
             },
         }
+    }
+
+    fn sample_signed_registration(byte: u8) -> v1::SignedValidatorRegistration {
+        v1::SignedValidatorRegistration {
+            message: v1::ValidatorRegistration {
+                fee_recipient: [byte; 20],
+                gas_limit: 30_000_000,
+                timestamp: 1_700_000_000,
+                pubkey: [byte; 48],
+            },
+            signature: [byte; 96],
+        }
+    }
+
+    #[test]
+    fn roundtrip_signed_validator_registrations() {
+        use ssz::Encode;
+
+        let regs = vec![
+            sample_signed_registration(0x1A),
+            sample_signed_registration(0x2B),
+        ];
+        let mut body = Vec::new();
+        for reg in &regs {
+            body.extend_from_slice(&reg.as_ssz_bytes());
+        }
+        // Each object is exactly 180 bytes.
+        assert_eq!(body.len(), 2 * SIGNED_VALIDATOR_REGISTRATION_SSZ_SIZE);
+
+        let decoded = decode_signed_validator_registrations(&body).unwrap();
+        assert_eq!(decoded, regs);
+    }
+
+    #[test]
+    fn decode_signed_validator_registrations_rejects_misaligned_buffer() {
+        let err = decode_signed_validator_registrations(&[0u8; 181]).unwrap_err();
+        assert!(matches!(err, SszCodecError::InvalidBufferSize));
+        assert_eq!(err.to_string(), "invalid buffer size");
+    }
+
+    #[test]
+    fn decode_signed_validator_registrations_empty_is_empty() {
+        let decoded = decode_signed_validator_registrations(&[]).unwrap();
+        assert!(decoded.is_empty());
     }
 
     #[test]

@@ -602,6 +602,7 @@ fn build_consensus(
         local_peer_idx: i64::try_from(fixture.local_index)?,
         privkey: fixture.key.clone(),
         deadliner,
+        expired_rx,
         duty_gater: Arc::new(|duty| duty.duty_type == DutyType::Attester),
         broadcaster,
         sniffer: Arc::new(move |instance| {
@@ -623,7 +624,7 @@ fn build_consensus(
         });
         Ok(())
     });
-    let lifecycle_task = Arc::clone(&component).start(expired_rx, cancel.child_token());
+    let lifecycle_task = component.start(cancel.child_token());
 
     Ok((component, lifecycle_task))
 }

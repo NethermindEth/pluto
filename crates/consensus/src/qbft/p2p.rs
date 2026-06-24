@@ -36,6 +36,14 @@ use pluto_p2p::p2p_context::P2PContext;
 
 use super::Consensus;
 
+/// Caps the wire size of an incoming `QbftConsensusMsg`, well below the 128 MB
+/// default p2p frame limit. A legitimate message carries at most a handful of
+/// small justification sub-messages (bounded in `handle`) plus its values, the
+/// largest of which is a single block proposal (a few MB on mainnet); 32 MB
+/// leaves ample margin while bounding the receive/decode/allocation cost a
+/// malicious peer can inflict per message.
+pub const MAX_CONSENSUS_MSG_SIZE: usize = 32 * 1024 * 1024;
+
 /// Charon-compatible inbound receive timeout.
 pub const RECEIVE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Charon-compatible outbound send timeout.
@@ -380,7 +388,7 @@ where
         let msg =
             pluto_p2p::proto::read_protobuf_with_max_size::<pbconsensus::QbftConsensusMsg, _>(
                 stream,
-                pluto_p2p::proto::MAX_MESSAGE_SIZE,
+                MAX_CONSENSUS_MSG_SIZE,
             )
             .await
             .map_err(InboundError::Read)?;
@@ -859,6 +867,42 @@ mod tests {
             .await?
             .ok_or_else(|| std::io::Error::other("receive buffer closed"))?;
         assert_eq!(received.msg().peer_idx, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn inbound_rejects_message_exceeding_max_consensus_size() -> TestResult<()> {
+        // Frame declaring one byte over the cap; read_length_delimited rejects on
+        // the varint length prefix before allocating or reading the body, so no
+        // oversized payload is needed.
+        let mut varint = Vec::new();
+        let mut remaining = MAX_CONSENSUS_MSG_SIZE + 1;
+        loop {
+            let mut byte = u8::try_from(remaining & 0x7f).expect("7-bit masked value fits in u8");
+            remaining >>= 7;
+            if remaining != 0 {
+                byte |= 0x80;
+            }
+            varint.push(byte);
+            if remaining == 0 {
+                break;
+            }
+        }
+        let mut stream = Cursor::new(varint);
+
+        let error = read_and_handle_inbound(
+            &mut stream,
+            Arc::new(consensus(0, true)),
+            CancellationToken::new(),
+            RECEIVE_TIMEOUT,
+        )
+        .await
+        .expect_err("oversized inbound message must be rejected");
+
+        assert!(
+            matches!(&error, InboundError::Read(io) if io.to_string().contains("too large")),
+            "expected read size error, got {error:?}"
+        );
         Ok(())
     }
 
