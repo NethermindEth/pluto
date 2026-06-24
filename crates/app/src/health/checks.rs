@@ -1,63 +1,62 @@
-//! The fixed set of health checks and the query function over scraped metrics.
+//! Health checks: severity, cluster metadata, the check type, the fixed list of
+//! 9 checks, and the label-pair helper.
 
 use super::{
-    Metadata, Severity,
-    error::{Error, Result},
-    model::{LabelPair, MetricFamily},
-    reducers::{Reducer, gauge_max, increase},
-    select::{Selector, count_labels, count_non_zero_labels, no_labels, sum_labels},
+    checker::QueryFunc,
+    error::Result,
+    model::LabelPair,
+    reducers::{gauge_max, increase},
+    select::{count_labels, count_non_zero_labels, no_labels, sum_labels},
 };
+
+/// Severity of a health check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Severity {
+    /// Critical: the node is likely not performing its duties.
+    Critical,
+    /// Warning: something needs attention.
+    Warning,
+    /// Info: informational only.
+    Info,
+}
+
+impl Severity {
+    /// Returns the lowercase string used as the `severity` label value.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Critical => "critical",
+            Self::Warning => "warning",
+            Self::Info => "info",
+        }
+    }
+}
+
+/// Metadata about the cluster, used by the health checks.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Metadata {
+    /// Number of validators in the cluster.
+    pub num_validators: i64,
+    /// Number of peers in the cluster.
+    pub num_peers: i64,
+    /// Number of peers required for quorum.
+    pub quorum_peers: i64,
+}
 
 /// A health check.
 pub(crate) struct Check {
     /// Name of the check (also the `name` label value).
     pub(crate) name: &'static str,
-    /// Human-readable description.
-    ///
-    /// Retained for parity with Charon's `check.Description`; not yet surfaced
-    /// (Charon does not consume it within the package either).
-    #[allow(dead_code, reason = "ported for parity; surfaced by future tooling")]
+    /// Human-readable description. Not yet surfaced anywhere; retained for
+    /// completeness.
+    #[allow(
+        dead_code,
+        reason = "retained for completeness; surfaced by future tooling"
+    )]
     pub(crate) description: &'static str,
     /// Severity.
     pub(crate) severity: Severity,
     /// Returns true if the check is failing.
     pub(crate) func: fn(&QueryFunc<'_>, &Metadata) -> Result<bool>,
-}
-
-/// Query function bound to a rolling window of scrapes.
-pub(crate) struct QueryFunc<'a> {
-    metrics: &'a [Vec<MetricFamily>],
-}
-
-/// Returns a query function over `metrics` (a rolling window of scrapes).
-pub(crate) fn new_query_func(metrics: &[Vec<MetricFamily>]) -> QueryFunc<'_> {
-    QueryFunc { metrics }
-}
-
-impl QueryFunc<'_> {
-    /// For each scrape, finds the first family matching `name` with at least
-    /// one series, applies `selector` to it, and collects the resulting
-    /// samples; then reduces them with `reducer`.
-    pub(crate) fn query(&self, name: &str, selector: Selector, reducer: Reducer) -> Result<f64> {
-        let mut selected = Vec::new();
-
-        for scrape in self.metrics {
-            for family in scrape {
-                if family.name != name || family.metrics.is_empty() {
-                    continue;
-                }
-                match selector(family).map_err(|e| Error::LabelSelector(Box::new(e)))? {
-                    None => continue,
-                    Some(metric) => {
-                        selected.push(metric);
-                        break;
-                    }
-                }
-            }
-        }
-
-        reducer(&selected).map_err(|e| Error::SeriesReducer(Box::new(e)))
-    }
 }
 
 /// Convenience constructor for a label pair.
@@ -84,8 +83,11 @@ fn high_error_log_rate(q: &QueryFunc<'_>, m: &Metadata) -> Result<bool> {
 }
 
 fn high_warning_log_rate(q: &QueryFunc<'_>, m: &Metadata) -> Result<bool> {
+    // Deviation from Charon: Charon's check queries `app_log_warning_total`,
+    // but the warn counter is emitted as `app_log_warn_total`, so Charon's own
+    // check never matches it. We query the emitted name so this check fires.
     // Allow 2 warnings per validator.
-    let value = q.query("app_log_warning_total", sum_labels(Vec::new()), increase)?;
+    let value = q.query("app_log_warn_total", sum_labels(Vec::new()), increase)?;
     Ok(value > 2.0 * to_f64(m.num_validators))
 }
 
@@ -141,71 +143,71 @@ fn using_fallback_beacon_nodes(q: &QueryFunc<'_>, _m: &Metadata) -> Result<bool>
     Ok(max_val > 0.0)
 }
 
-/// Returns the full set of health checks, in Charon order.
-pub(crate) fn all_checks() -> Vec<Check> {
-    vec![
-        Check {
-            name: "high_error_log_rate",
-            description: "High rate of error logs. Please check the logs for more details.",
-            severity: Severity::Warning,
-            func: high_error_log_rate,
-        },
-        Check {
-            name: "high_warning_log_rate",
-            description: "High rate of warning logs. Please check the logs for more details.",
-            severity: Severity::Warning,
-            func: high_warning_log_rate,
-        },
-        Check {
-            name: "beacon_node_syncing",
-            description: "Beacon Node in syncing state.",
-            severity: Severity::Critical,
-            func: beacon_node_syncing,
-        },
-        Check {
-            name: "insufficient_connected_peers",
-            description: "Not connected to at least quorum peers. Check logs for networking issue or coordinate with peers.",
-            severity: Severity::Critical,
-            func: insufficient_connected_peers,
-        },
-        Check {
-            name: "pending_validators",
-            description: "Pending validators detected. Activate them to start validating.",
-            severity: Severity::Info,
-            func: pending_validators,
-        },
-        Check {
-            name: "proposal_failures",
-            description: "Proposal failures detected. See <link to troubleshoot proposal failures>.",
-            severity: Severity::Warning,
-            func: proposal_failures,
-        },
-        Check {
-            name: "high_registration_failures_rate",
-            description: "High rate of failed validator registrations. Please check the logs for more details.",
-            severity: Severity::Warning,
-            func: high_registration_failures_rate,
-        },
-        Check {
-            name: "metrics_high_cardinality",
-            description: "Metrics reached high cardinality threshold. Please check metrics reported by app_health_metrics_high_cardinality.",
-            severity: Severity::Warning,
-            func: metrics_high_cardinality,
-        },
-        Check {
-            name: "using_fallback_beacon_nodes",
-            description: "Using fallback beacon nodes. Please check primary beacon nodes health.",
-            severity: Severity::Warning,
-            func: using_fallback_beacon_nodes,
-        },
-    ]
-}
+/// The full set of health checks.
+pub(crate) const CHECKS: [Check; 9] = [
+    Check {
+        name: "high_error_log_rate",
+        description: "High rate of error logs. Please check the logs for more details.",
+        severity: Severity::Warning,
+        func: high_error_log_rate,
+    },
+    Check {
+        name: "high_warning_log_rate",
+        description: "High rate of warning logs. Please check the logs for more details.",
+        severity: Severity::Warning,
+        func: high_warning_log_rate,
+    },
+    Check {
+        name: "beacon_node_syncing",
+        description: "Beacon Node in syncing state.",
+        severity: Severity::Critical,
+        func: beacon_node_syncing,
+    },
+    Check {
+        name: "insufficient_connected_peers",
+        description: "Not connected to at least quorum peers. Check logs for networking issue or coordinate with peers.",
+        severity: Severity::Critical,
+        func: insufficient_connected_peers,
+    },
+    Check {
+        name: "pending_validators",
+        description: "Pending validators detected. Activate them to start validating.",
+        severity: Severity::Info,
+        func: pending_validators,
+    },
+    Check {
+        name: "proposal_failures",
+        description: "Proposal failures detected. See <link to troubleshoot proposal failures>.",
+        severity: Severity::Warning,
+        func: proposal_failures,
+    },
+    Check {
+        name: "high_registration_failures_rate",
+        description: "High rate of failed validator registrations. Please check the logs for more details.",
+        severity: Severity::Warning,
+        func: high_registration_failures_rate,
+    },
+    Check {
+        name: "metrics_high_cardinality",
+        description: "Metrics reached high cardinality threshold. Please check metrics reported by app_health_metrics_high_cardinality.",
+        severity: Severity::Warning,
+        func: metrics_high_cardinality,
+    },
+    Check {
+        name: "using_fallback_beacon_nodes",
+        description: "Using fallback beacon nodes. Please check primary beacon nodes health.",
+        severity: Severity::Warning,
+        func: using_fallback_beacon_nodes,
+    },
+];
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    //! Tests for the checks and the query function.
+
+    use super::{CHECKS, Metadata};
     use crate::health::{
-        Metadata,
+        checker::new_query_func,
         model::{LabelPair, Metric, MetricFamily, MetricType},
     };
 
@@ -246,7 +248,7 @@ mod tests {
     }
 
     /// Transposes a set of series (series × time) into per-scrape families
-    /// (time × family), mirroring Charon's `genFam`.
+    /// (time × family).
     fn gen_fam(name: &str, series: &[Vec<Metric>]) -> Vec<MetricFamily> {
         let metric_type = if series
             .first()
@@ -277,9 +279,8 @@ mod tests {
         resp
     }
 
-    /// Mirrors Charon's `testCheck`: interleaves the check's per-scrape
-    /// families with two noise families, runs the named check, and asserts
-    /// the outcome.
+    /// Interleaves the check's per-scrape families with two noise families,
+    /// runs the named check, and asserts the outcome.
     fn test_check(m: &Metadata, check_name: &str, expect: bool, metrics: Vec<MetricFamily>) {
         let random_foo = gen_fam(
             "foo",
@@ -313,8 +314,8 @@ mod tests {
         }
 
         let query = new_query_func(&multi);
-        let check = all_checks()
-            .into_iter()
+        let check = CHECKS
+            .iter()
             .find(|c| c.name == check_name)
             .expect("check not found");
         let failed = (check.func)(&query, m).expect("check should not error");
@@ -666,7 +667,7 @@ mod tests {
             ..Metadata::default()
         };
         let name = "high_warning_log_rate";
-        let metric = "app_log_warning_total";
+        let metric = "app_log_warn_total";
 
         let topic_a = gen_labels(&["topic", "a"]);
         let topic_b = gen_labels(&["topic", "b"]);

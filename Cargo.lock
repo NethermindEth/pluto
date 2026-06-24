@@ -5496,6 +5496,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+ "vise",
  "wiremock",
 ]
 

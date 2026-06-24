@@ -1,9 +1,8 @@
 //! In-memory Prometheus metric model used by the health checks.
 //!
-//! This mirrors the subset of the Prometheus protobuf model that Charon's
-//! health checks rely on. Per-sample timestamps are intentionally omitted: the
-//! reducers never read them — the time dimension comes from the checker storing
-//! successive scrapes.
+//! A minimal subset of the Prometheus metric model the checks rely on.
+//! Per-sample timestamps are intentionally omitted: the reducers never read
+//! them — the time dimension comes from the checker storing successive scrapes.
 
 /// Type of a metric family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,13 +41,12 @@ pub struct Metric {
 }
 
 impl Metric {
-    /// Counter value, defaulting to `0.0` when absent (mirrors protobuf nil →
-    /// 0).
+    /// Counter value, defaulting to `0.0` when absent.
     pub fn counter_value(&self) -> f64 {
         self.counter.unwrap_or(0.0)
     }
 
-    /// Gauge value, defaulting to `0.0` when absent (mirrors protobuf nil → 0).
+    /// Gauge value, defaulting to `0.0` when absent.
     pub fn gauge_value(&self) -> f64 {
         self.gauge.unwrap_or(0.0)
     }

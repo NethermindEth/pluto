@@ -8,8 +8,8 @@ use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 
 use crate::metrics::TRACING_METRICS;
 
-/// Metrics layer: counts error/warn log events, labelled by `topic`
-/// (mirroring Charon's `app_log_{error,warn}_total{topic}`).
+/// Metrics layer: counts error/warn log events, labelled by `topic`, into
+/// `app_log_{error,warn}_total{topic}`.
 pub struct MetricsLayer;
 
 /// The `topic` field value recorded for a span.
@@ -32,8 +32,8 @@ impl Visit for TopicVisitor {
     }
 }
 
-/// Returns the `topic` of the nearest enclosing span, or empty when none is set
-/// (mirroring Charon's `metricsTopicFromCtx`, which defaults to empty).
+/// Returns the `topic` of the nearest enclosing span, or empty when none is
+/// set.
 fn event_topic<S>(ctx: &Context<'_, S>, event: &tracing::Event<'_>) -> String
 where
     S: tracing::Subscriber + for<'a> LookupSpan<'a>,

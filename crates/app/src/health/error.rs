@@ -3,8 +3,6 @@
 use super::gatherer::GatherError;
 
 /// Errors produced while evaluating health checks or gathering metrics.
-///
-/// The leaf message strings match Charon's `app/health` error strings exactly.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// A metric family expected to contain exactly one series did not.
@@ -35,6 +33,10 @@ pub enum Error {
     /// Gathering metrics from the registry failed.
     #[error("gather metrics")]
     GatherMetrics(#[source] GatherError),
+
+    /// An integer conversion overflowed.
+    #[error("conversion error")]
+    ConversionError(#[from] std::num::TryFromIntError),
 }
 
 /// Result type for health operations.

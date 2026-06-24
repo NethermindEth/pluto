@@ -78,8 +78,7 @@ pub(crate) fn sum_labels(labels: Vec<LabelPair>) -> Selector {
 
 /// Returns true if every pair in `contain` matches some label in `labels`:
 /// names must be equal and the `contain` value is matched as a regex against
-/// the label value. A regex that fails to compile is treated as no match
-/// (matching Charon, which swallows the compile error).
+/// the label value. A regex that fails to compile is treated as no match.
 pub(crate) fn labels_contain(labels: &[LabelPair], contain: &[LabelPair]) -> bool {
     for c in contain {
         let mut found = false;

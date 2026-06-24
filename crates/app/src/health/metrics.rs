@@ -6,7 +6,7 @@ use vise::{Gauge, Global, LabeledFamily, Metrics};
 ///
 /// Emitted (after vise's `_total`-strip / Prometheus naming) as
 /// `app_health_checks{severity,name}` and
-/// `app_health_metrics_high_cardinality{name}`, matching Charon.
+/// `app_health_metrics_high_cardinality{name}`.
 #[derive(Debug, Metrics)]
 #[metrics(prefix = "app_health")]
 pub struct HealthMetrics {

@@ -24,3 +24,8 @@ pub mod privkeylock;
 
 /// Utility helpers for archiving, extracting, and comparing files/directories.
 pub mod utils;
+
+/// Application health checks: periodically scrapes process metrics, evaluates a
+/// fixed set of checks over a rolling window, and publishes per-check pass/fail
+/// state as the `app_health_checks` gauge.
+pub mod health;

@@ -6,13 +6,24 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use super::{
-    LABELS_CARDINALITY_THRESHOLD, MAX_SCRAPES, Metadata, SCRAPE_PERIOD,
-    checks::{Check, all_checks, new_query_func},
+    checks::{CHECKS, Metadata},
     error::{Error, Result},
     gatherer::Gatherer,
     metrics::HEALTH_METRICS,
-    model::MetricFamily,
+    model::{MetricFamily, MetricType},
+    reducers::Reducer,
+    select::Selector,
 };
+
+/// Period between metric scrapes.
+const SCRAPE_PERIOD: Duration = Duration::from_secs(30);
+
+/// Maximum number of scrapes retained in the rolling window.
+const MAX_SCRAPES: usize = 10;
+
+/// High-cardinality threshold for a single validator; for `n` validators the
+/// effective threshold is `LABELS_CARDINALITY_THRESHOLD * n`.
+const LABELS_CARDINALITY_THRESHOLD: usize = 100;
 
 /// Name of the high-cardinality metric, skipped during the cardinality scan.
 const HIGH_CARDINALITY_METRIC: &str = "app_health_metrics_high_cardinality";
@@ -20,24 +31,21 @@ const HIGH_CARDINALITY_METRIC: &str = "app_health_metrics_high_cardinality";
 /// Health checker: periodically scrapes metrics and publishes check results.
 pub struct Checker {
     metadata: Metadata,
-    checks: Vec<Check>,
     metrics: Vec<Vec<MetricFamily>>,
     gatherer: Box<dyn Gatherer>,
     scrape_period: Duration,
     max_scrapes: usize,
-    num_validators: i64,
+    num_validators: usize,
 }
 
 impl Checker {
     /// Returns a new health checker.
     ///
     /// `num_validators` is used for the high-cardinality threshold and is
-    /// distinct from [`Metadata::num_validators`] (which the checks use),
-    /// mirroring Charon's `NewChecker`.
-    pub fn new(metadata: Metadata, gatherer: Box<dyn Gatherer>, num_validators: i64) -> Self {
+    /// distinct from [`Metadata::num_validators`] (which the checks use).
+    pub fn new(metadata: Metadata, gatherer: Box<dyn Gatherer>, num_validators: usize) -> Self {
         Self {
             metadata,
-            checks: all_checks(),
             metrics: Vec::new(),
             gatherer,
             scrape_period: SCRAPE_PERIOD,
@@ -46,25 +54,24 @@ impl Checker {
         }
     }
 
-    /// Runs the checker until `quit` is cancelled. All logs emitted while
-    /// running carry the `health` topic, mirroring Charon's
-    /// `log.WithTopic(ctx, "health")`.
-    pub async fn run(mut self, quit: CancellationToken) {
+    /// Runs the checker until `ct` is cancelled. All logs emitted while
+    /// running carry the `health` topic.
+    pub async fn run(mut self, ct: CancellationToken) {
         let span = tracing::debug_span!("health", topic = "health");
         // Full-path trait call so it doesn't shadow the inherent `instrument`.
-        tracing::Instrument::instrument(self.run_loop(quit), span).await;
+        tracing::Instrument::instrument(self.run_loop(ct), span).await;
     }
 
     /// The scrape/instrument loop, ticking every [`Checker::scrape_period`].
-    async fn run_loop(&mut self, quit: CancellationToken) {
+    async fn run_loop(&mut self, ct: CancellationToken) {
         let mut interval = tokio::time::interval(self.scrape_period);
         // Skip the immediate first tick so the first scrape happens after one
-        // full period, matching Charon's `time.NewTicker` semantics.
+        // full period rather than immediately.
         interval.tick().await;
 
         loop {
             tokio::select! {
-                () = quit.cancelled() => return,
+                () = ct.cancelled() => return,
                 _ = interval.tick() => {
                     if let Err(error) = self.scrape() {
                         warn!(?error, "Failed to scrape metrics");
@@ -81,8 +88,7 @@ impl Checker {
     fn scrape(&mut self) -> Result<()> {
         let mut scrape = self.gatherer.gather().map_err(Error::GatherMetrics)?;
 
-        let threshold = LABELS_CARDINALITY_THRESHOLD
-            .saturating_mul(usize::try_from(self.num_validators).unwrap_or(0));
+        let threshold = LABELS_CARDINALITY_THRESHOLD.saturating_mul(self.num_validators);
         let mut gather_again = false;
 
         for family in &scrape {
@@ -90,16 +96,11 @@ impl Checker {
                 continue;
             }
 
-            let max_labels = family
-                .metrics
-                .iter()
-                .map(|metric| metric.labels.len())
-                .max()
-                .unwrap_or(0);
+            let max_labels = max_label_count(family);
 
             if max_labels > threshold {
                 HEALTH_METRICS.metrics_high_cardinality[&family.name]
-                    .set(i64::try_from(max_labels).unwrap_or(i64::MAX));
+                    .set(i64::try_from(max_labels)?);
                 gather_again = true;
             }
         }
@@ -119,13 +120,12 @@ impl Checker {
     /// Runs all checks against the rolling window and updates the gauge.
     fn instrument(&self) {
         let query = new_query_func(&self.metrics);
-        for check in &self.checks {
+        for check in &CHECKS {
             let failing = match (check.func)(&query, &self.metadata) {
                 Ok(failing) => failing,
                 Err(error) => {
-                    // Charon rate-limits this warning via log.Filter(); Pluto
-                    // has no equivalent, so it is logged each tick. The gauge is
-                    // still cleared (set to 0) on error, matching Charon.
+                    // Logged every tick (no rate-limiting). The gauge is still
+                    // cleared (set to 0) when the check errors.
                     warn!(check = check.name, ?error, "Health check failed");
                     false
                 }
@@ -135,6 +135,66 @@ impl Checker {
             HEALTH_METRICS.checks[&(check.severity.as_str().to_owned(), check.name.to_owned())]
                 .set(value);
         }
+    }
+}
+
+/// Maximum label count across a family's series, used for high-cardinality
+/// detection. For histograms the synthetic `le` bucket label is excluded so the
+/// count matches the protobuf model, where `le` is bucket structure rather than
+/// a label.
+fn max_label_count(family: &MetricFamily) -> usize {
+    let exclude_le = family.metric_type == MetricType::Histogram;
+    family
+        .metrics
+        .iter()
+        .map(|metric| {
+            if exclude_le {
+                metric
+                    .labels
+                    .iter()
+                    .filter(|label| label.name != "le")
+                    .count()
+            } else {
+                metric.labels.len()
+            }
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// Query function bound to a rolling window of scrapes.
+pub(crate) struct QueryFunc<'a> {
+    metrics: &'a [Vec<MetricFamily>],
+}
+
+/// Returns a query function over `metrics` (a rolling window of scrapes).
+pub(crate) fn new_query_func(metrics: &[Vec<MetricFamily>]) -> QueryFunc<'_> {
+    QueryFunc { metrics }
+}
+
+impl QueryFunc<'_> {
+    /// For each scrape, finds the first family matching `name` with at least
+    /// one series, applies `selector` to it, and collects the resulting
+    /// samples; then reduces them with `reducer`.
+    pub(crate) fn query(&self, name: &str, selector: Selector, reducer: Reducer) -> Result<f64> {
+        let mut selected = Vec::new();
+
+        for scrape in self.metrics {
+            for family in scrape {
+                if family.name != name || family.metrics.is_empty() {
+                    continue;
+                }
+                match selector(family).map_err(|e| Error::LabelSelector(Box::new(e)))? {
+                    None => continue,
+                    Some(metric) => {
+                        selected.push(metric);
+                        break;
+                    }
+                }
+            }
+        }
+
+        reducer(&selected).map_err(|e| Error::SeriesReducer(Box::new(e)))
     }
 }
 
@@ -179,7 +239,7 @@ mod tests {
         }
     }
 
-    fn empty_checker(responder: Responder, num_validators: i64) -> (Checker, Arc<AtomicUsize>) {
+    fn empty_checker(responder: Responder, num_validators: usize) -> (Checker, Arc<AtomicUsize>) {
         let (mock, calls) = MockGatherer::new(responder);
         let checker = Checker::new(Metadata::default(), Box::new(mock), num_validators);
         (checker, calls)
@@ -241,8 +301,8 @@ mod tests {
         let (mut checker, calls) = empty_checker(Box::new(|_| Ok(Vec::new())), 1);
         checker.scrape_period = Duration::from_millis(5);
 
-        let quit = CancellationToken::new();
-        let handle = tokio::spawn(checker.run(quit.clone()));
+        let ct = CancellationToken::new();
+        let handle = tokio::spawn(checker.run(ct.clone()));
 
         let deadline = tokio::time::Instant::now()
             .checked_add(Duration::from_secs(2))
@@ -255,7 +315,37 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
 
-        quit.cancel();
+        ct.cancel();
         handle.await.expect("join run task");
+    }
+
+    #[test]
+    fn max_label_count_excludes_le_only_for_histograms() {
+        let series = |metric_type, labels: &[&str]| MetricFamily {
+            name: "x".to_owned(),
+            metric_type,
+            metrics: vec![Metric {
+                labels: labels
+                    .iter()
+                    .map(|&name| LabelPair {
+                        name: name.to_owned(),
+                        value: "v".to_owned(),
+                    })
+                    .collect(),
+                counter: None,
+                gauge: Some(1.0),
+            }],
+        };
+
+        // Histogram bucket series: `le` is bucket structure, not counted.
+        assert_eq!(
+            max_label_count(&series(MetricType::Histogram, &["peer", "le"])),
+            1
+        );
+        // Non-histogram: a literal `le` label is counted (matches the protobuf model).
+        assert_eq!(
+            max_label_count(&series(MetricType::Gauge, &["peer", "le"])),
+            2
+        );
     }
 }

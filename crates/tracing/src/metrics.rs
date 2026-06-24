@@ -1,11 +1,9 @@
 use vise::{Counter, LabeledFamily, Metrics};
 
-/// Metrics for the tracing.
+/// Metrics for the tracing layer.
 ///
-/// Emitted as `app_log_error_total{topic}` / `app_log_warn_total{topic}`,
-/// matching Charon's `app/log` metrics (name, `_total` suffix, and `topic`
-/// label), so Charon's Grafana dashboards and the health checker pick them up
-/// by their Charon names.
+/// Emitted as `app_log_error_total{topic}` / `app_log_warn_total{topic}` so the
+/// monitoring dashboards and the health checker pick them up by these names.
 #[derive(Debug, Metrics)]
 #[metrics(prefix = "app_log")]
 pub struct TracingMetrics {
