@@ -90,13 +90,29 @@ const SELECTIONS_BODY_LIMIT: usize = 64 * 1024;
 /// registration triggers upstream beacon-node calls and a BLS verification,
 /// so bounding the count bounds the per-request fan-out a single caller can
 /// induce.
+///
+/// Deviation from Charon: Charon imposes no count limit on this endpoint. The
+/// cap is a Pluto-specific guard against unbounded per-request work.
 const REGISTRATIONS_MAX_LEN: usize = 8192;
 
 /// Cap on the `POST /eth/v1/validator/register_validator` request body. Sized
 /// at [`REGISTRATIONS_MAX_LEN`] SSZ objects (each 180 bytes) so the byte limit
 /// and the count limit agree, plus headroom for the more verbose JSON
 /// encoding of the same number of entries.
+///
+/// Deviation from Charon: Charon imposes no explicit body-size limit on this
+/// endpoint. The cap is a Pluto-specific guard against oversized request
+/// bodies.
 const REGISTRATIONS_BODY_LIMIT: usize = REGISTRATIONS_MAX_LEN * 512;
+
+/// Cap on the `POST /eth/v1/beacon/pool/voluntary_exits` request body. A signed
+/// voluntary exit is a single small object (epoch, validator index, 96-byte BLS
+/// signature), so a few hundred bytes of JSON; 16 KiB is generous headroom.
+///
+/// Deviation from Charon: Charon imposes no explicit body-size limit on this
+/// endpoint. The cap is a Pluto-specific guard against oversized request
+/// bodies.
+const EXIT_BODY_LIMIT: usize = 16 * 1024;
 
 /// Query parameters for `GET /eth/v1/validator/attestation_data`.
 #[derive(Debug, Clone, Deserialize)]
@@ -191,7 +207,10 @@ pub fn new_router(
             "/eth/v1/validator/register_validator",
             sized_post(submit_validator_registrations, REGISTRATIONS_BODY_LIMIT),
         )
-        .route("/eth/v1/beacon/pool/voluntary_exits", post(submit_exit))
+        .route(
+            "/eth/v1/beacon/pool/voluntary_exits",
+            bounded_post(submit_exit, EXIT_BODY_LIMIT),
+        )
         .route("/teku_proposer_config", get(respond_404))
         .route("/proposer_config", get(respond_404))
         .route(
@@ -703,19 +722,12 @@ async fn submit_validator_registrations(
 /// handler.
 async fn submit_exit(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
     // JSON-only endpoint: the beacon API does not define an SSZ encoding for
-    // voluntary exits, so an SSZ or otherwise unrecognised content type is
-    // rejected with 415.
-    if request_is_ssz(&headers)? {
-        return Err(ApiError::new(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "Cannot read the supplied content type.",
-        ));
-    }
-
+    // voluntary exits. The route's `enforce_json_content_type` layer directly
+    // admits only `application/json` (or a missing header), rejecting any other
+    // content type with 415 before this handler runs.
     if body.is_empty() {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "empty request body"));
     }

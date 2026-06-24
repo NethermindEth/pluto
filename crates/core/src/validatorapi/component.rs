@@ -748,7 +748,14 @@ impl Component {
 
         // Derive the slot the registration belongs to.
         let registration_slot =
-            pluto_eth2util::helpers::slot_from_timestamp(genesis_time, slot_duration, timestamp);
+            pluto_eth2util::helpers::slot_from_timestamp(genesis_time, slot_duration, timestamp)
+                .map_err(|err| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "register_validator: slot computation failed",
+                    )
+                    .with_source(err)
+                })?;
         let duty = Duty::new_builder_registration_duty(SlotNumber::new(registration_slot));
 
         // Wrap as ParSignedData via the canonical partial-sig constructor.
