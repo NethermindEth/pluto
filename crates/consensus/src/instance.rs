@@ -32,6 +32,7 @@ use std::{
     time::Instant,
 };
 
+use pluto_ssz::HashRoot;
 use prost_types::Any;
 use tokio::sync::mpsc;
 
@@ -86,8 +87,8 @@ pub struct InstanceIo<T> {
     recv_rx: ReceiverSlot<T>,
 
     /// Supplies the local proposal hash.
-    pub(crate) hash_tx: mpsc::Sender<[u8; 32]>,
-    hash_rx: ReceiverSlot<[u8; 32]>,
+    pub(crate) hash_tx: mpsc::Sender<HashRoot>,
+    hash_rx: ReceiverSlot<HashRoot>,
 
     /// Supplies the local proposal value.
     ///
@@ -181,7 +182,7 @@ impl<T> InstanceIo<T> {
     }
 
     /// Transfers local proposal hash ownership to the runner.
-    pub fn take_hash_rx(&self) -> Result<mpsc::Receiver<[u8; 32]>> {
+    pub fn take_hash_rx(&self) -> Result<mpsc::Receiver<HashRoot>> {
         take_receiver(&self.hash_rx, "hash")
     }
 

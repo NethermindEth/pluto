@@ -4,6 +4,7 @@ use std::sync::{self, Mutex, PoisonError};
 
 use futures::future::BoxFuture;
 use k256::SecretKey;
+use pluto_ssz::HashRoot;
 use prost_types::Any;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -36,9 +37,9 @@ pub(crate) struct BroadcastRequest {
     pub(crate) duty: Duty,
     pub(crate) peer_idx: i64,
     pub(crate) round: i64,
-    pub(crate) value_hash: [u8; 32],
+    pub(crate) value_hash: HashRoot,
     pub(crate) prepared_round: i64,
-    pub(crate) prepared_value_hash: [u8; 32],
+    pub(crate) prepared_value_hash: HashRoot,
     pub(crate) justification: Vec<qbft::Msg<ConsensusQbftTypes>>,
 }
 
@@ -130,7 +131,7 @@ impl Transport {
     }
 
     /// Returns a cached value by hash, after draining at most one local value.
-    pub(crate) fn get_value(&self, hash: [u8; 32]) -> Result<Any> {
+    pub(crate) fn get_value(&self, hash: HashRoot) -> Result<Any> {
         let mut store = self.values.lock().unwrap_or_else(PoisonError::into_inner);
         if let Ok(local) = store.value_rx.try_recv() {
             // Any::value is hashable here because the local producer must pack
@@ -264,9 +265,9 @@ struct CreateMsgRequest<'a> {
     duty: &'a Duty,
     peer_idx: i64,
     round: i64,
-    value_hash: [u8; 32],
+    value_hash: HashRoot,
     prepared_round: i64,
-    prepared_value_hash: [u8; 32],
+    prepared_value_hash: HashRoot,
     values: ValueMap,
     justification: &'a [qbft::Msg<ConsensusQbftTypes>],
     privkey: &'a SecretKey,
@@ -621,7 +622,7 @@ mod tests {
             1
         }
 
-        fn value(&self) -> [u8; 32] {
+        fn value(&self) -> HashRoot {
             [0u8; 32]
         }
 
@@ -633,7 +634,7 @@ mod tests {
             0
         }
 
-        fn prepared_value(&self) -> [u8; 32] {
+        fn prepared_value(&self) -> HashRoot {
             [0u8; 32]
         }
 
@@ -704,7 +705,7 @@ mod tests {
         }
     }
 
-    fn broadcast_request(value_hash: [u8; 32]) -> BroadcastRequest {
+    fn broadcast_request(value_hash: HashRoot) -> BroadcastRequest {
         BroadcastRequest {
             ct: CancellationToken::new(),
             type_: qbft::MSG_PRE_PREPARE,
@@ -723,7 +724,7 @@ mod tests {
         rx
     }
 
-    fn local_value_rx(hash: [u8; 32], value: Any) -> mpsc::Receiver<Any> {
+    fn local_value_rx(hash: HashRoot, value: Any) -> mpsc::Receiver<Any> {
         let (tx, rx) = mpsc::channel(1);
         assert_eq!(msg::hash_proto_bytes(&value.value).unwrap(), hash);
         tx.try_send(value).unwrap();
@@ -732,8 +733,8 @@ mod tests {
 
     fn wrapped_msg(
         type_: qbft::MessageType,
-        value_hash: [u8; 32],
-        prepared_value_hash: [u8; 32],
+        value_hash: HashRoot,
+        prepared_value_hash: HashRoot,
         justification: Vec<QbftMsg>,
     ) -> msg::Msg {
         let mut values = ValueMap::new();
@@ -761,11 +762,11 @@ mod tests {
         .unwrap()
     }
 
-    fn value_map(values: Vec<([u8; 32], Any)>) -> ValueMap {
+    fn value_map(values: Vec<(HashRoot, Any)>) -> ValueMap {
         values.into_iter().collect()
     }
 
-    fn value_hash(seconds: i64) -> [u8; 32] {
+    fn value_hash(seconds: i64) -> HashRoot {
         hash_proto(&timestamp(seconds)).unwrap()
     }
 

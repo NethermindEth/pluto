@@ -13,6 +13,7 @@ use pluto_core::{
     types::{Duty, DutyType, SlotNumber},
 };
 use pluto_eth2api::spec::phase0;
+use pluto_ssz::HashRoot;
 use prost::bytes::Bytes;
 use prost_types::Any;
 use test_case::test_case;
@@ -499,7 +500,7 @@ async fn replay_sniffed_instance_decides(instance: pbconsensus::SniffedConsensus
     );
 }
 
-fn sniffed_input_hash(instance: &pbconsensus::SniffedConsensusInstance) -> [u8; 32] {
+fn sniffed_input_hash(instance: &pbconsensus::SniffedConsensusInstance) -> HashRoot {
     instance
         .msgs
         .iter()
@@ -521,8 +522,8 @@ fn sniffed_input_source(instance: &pbconsensus::SniffedConsensusInstance) -> Any
         .expect("sniffed instance has value source")
 }
 
-fn hash32(value: &[u8]) -> Option<[u8; 32]> {
-    let hash: [u8; 32] = value.try_into().ok()?;
+fn hash32(value: &[u8]) -> Option<HashRoot> {
+    let hash: HashRoot = value.try_into().ok()?;
     (hash != [0; 32]).then_some(hash)
 }
 

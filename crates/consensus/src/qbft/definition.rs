@@ -488,6 +488,7 @@ mod tests {
     };
 
     use pluto_eth2api::spec::phase0;
+    use pluto_ssz::HashRoot;
     use prost::{Message, bytes::Bytes};
     use prost_types::Any;
     use ssz::Encode;
@@ -1003,7 +1004,7 @@ mod tests {
         return_err_rx.recv().unwrap()
     }
 
-    fn commit_msg(duty: Duty, hash: [u8; 32], value: Any) -> qbft::Msg<ConsensusQbftTypes> {
+    fn commit_msg(duty: Duty, hash: HashRoot, value: Any) -> qbft::Msg<ConsensusQbftTypes> {
         qcommit_for_hash(duty, hash, value)
     }
 
@@ -1013,7 +1014,7 @@ mod tests {
         qcommit_for_hash(duty, hash, value)
     }
 
-    fn qcommit_for_hash(duty: Duty, hash: [u8; 32], value: Any) -> qbft::Msg<ConsensusQbftTypes> {
+    fn qcommit_for_hash(duty: Duty, hash: HashRoot, value: Any) -> qbft::Msg<ConsensusQbftTypes> {
         let values = Arc::new(HashMap::from([(hash, value)]));
         Arc::new(
             msg::Msg::new(
@@ -1059,7 +1060,7 @@ mod tests {
         )
     }
 
-    fn test_value_parts(type_: qbft::MessageType) -> (Bytes, Arc<HashMap<[u8; 32], Any>>) {
+    fn test_value_parts(type_: qbft::MessageType) -> (Bytes, Arc<HashMap<HashRoot, Any>>) {
         if type_ == qbft::MSG_ROUND_CHANGE || !type_.valid() {
             return (Bytes::new(), Arc::default());
         }
