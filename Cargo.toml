@@ -21,7 +21,12 @@ members = [
     "crates/tracing",
     "crates/peerinfo",
     "crates/frost",
+    "crates/priority",
 ]
+# Vendored fork consumed only via [patch.crates-io]; excluded so it builds/tests
+# standalone (its upstream code isn't written to this workspace's lints) without
+# cargo treating it as a member.
+exclude = ["third_party/multistream-select"]
 resolver = "3"
 
 [workspace.package]
@@ -46,6 +51,7 @@ crossbeam = "0.8.4"
 dyn-clone = "1.0"
 dyn-eq = "0.1.3"
 either = "1.13"
+eventsource-stream = "0.2"
 futures = "0.3"
 futures-timer = "3.0"
 backon = "1.6.0"
@@ -162,3 +168,10 @@ opt-level = 3
 
 [profile.test.package.aes]
 opt-level = 3
+
+# Forked multistream-select that accepts slash-less protocol names, required for
+# the priority protocol to interoperate with Charon's "charon/priority/2.0.0"
+# (no leading slash). Upstream rejects such names; the only delta is relaxing
+# that check. See third_party/multistream-select/PATCHES.md.
+[patch.crates-io]
+multistream-select = { path = "third_party/multistream-select" }

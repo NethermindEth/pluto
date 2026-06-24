@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use ssz_derive::{Decode, Encode};
 use tree_hash::TreeHash;
 use tree_hash_derive::TreeHash;
 
@@ -14,7 +15,7 @@ use crate::spec::{
 ///
 /// Spec: <https://github.com/ethereum/builder-specs/blob/main/specs/bellatrix/builder.md#validatorregistrationv1>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct ValidatorRegistration {
     /// Fee recipient address (20 bytes).
     #[serde(with = "crate::spec::bellatrix::execution_address_serde")]
@@ -34,7 +35,7 @@ pub struct ValidatorRegistration {
 ///
 /// Spec: <https://github.com/ethereum/builder-specs/blob/main/specs/bellatrix/builder.md#signedvalidatorregistration>
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, TreeHash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 pub struct SignedValidatorRegistration {
     /// Unsigned validator registration message.
     pub message: ValidatorRegistration,

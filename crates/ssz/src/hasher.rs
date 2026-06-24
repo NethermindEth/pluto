@@ -4,6 +4,8 @@ use std::sync::LazyLock;
 
 use k256::sha2::{Digest, Sha256};
 
+use crate::HashRoot;
+
 const fn calculate_bool_bytes(b: bool) -> [u8; 32] {
     if b {
         let mut res = ZERO_BYTES;
@@ -38,7 +40,7 @@ pub trait HashWalker {
     type Error: std::error::Error;
 
     /// Finalize and return the current hash result.
-    fn hash(&self) -> Result<[u8; 32], Self::Error>;
+    fn hash(&self) -> Result<HashRoot, Self::Error>;
     /// Append a single byte.
     fn append_u8(&mut self, i: u8) -> Result<(), Self::Error>;
     /// Append a `u32`.
@@ -213,7 +215,7 @@ impl Hasher {
     }
 
     /// Computes the SSZ hash root of the current buffer.
-    pub fn hash_root(&self) -> Result<[u8; 32], HasherError> {
+    pub fn hash_root(&self) -> Result<HashRoot, HasherError> {
         if self.buf.len() != 32 {
             return Err(HasherError::InvalidBufferLength);
         }
@@ -229,7 +231,7 @@ impl Hasher {
 impl HashWalker for Hasher {
     type Error = HasherError;
 
-    fn hash(&self) -> Result<[u8; 32], Self::Error> {
+    fn hash(&self) -> Result<HashRoot, Self::Error> {
         if self.buf.len() < 32 {
             return Err(HasherError::InvalidBufferLength);
         }

@@ -51,6 +51,24 @@ pub struct TestHandler {
     pub validators_opts: Arc<Mutex<Option<ValidatorsOpts>>>,
     /// Value returned by [`Handler::sync_committee_contribution`].
     pub sync_committee_contribution_response: Option<EthResponse<SyncCommitteeContribution>>,
+    /// Records the last registrations submitted via
+    /// [`Handler::submit_validator_registrations`].
+    pub submitted_registrations: Arc<Mutex<Option<Vec<SignedValidatorRegistration>>>>,
+    /// Records the last exit submitted via [`Handler::submit_voluntary_exit`].
+    pub submitted_exit: Arc<Mutex<Option<SignedVoluntaryExit>>>,
+    /// Records the attestations submitted via [`Handler::submit_attestations`].
+    pub submitted_attestations: Arc<Mutex<Option<Vec<VersionedAttestation>>>>,
+    /// Records the aggregate-and-proofs submitted via
+    /// [`Handler::submit_aggregate_attestations`].
+    pub submitted_aggregates: Arc<Mutex<Option<Vec<VersionedSignedAggregateAndProof>>>>,
+    /// Records the selections passed to
+    /// [`Handler::beacon_committee_selections`].
+    pub beacon_committee_selections_opts: Arc<Mutex<Option<Vec<BeaconCommitteeSelection>>>>,
+    /// Value returned by [`Handler::aggregate_attestation`].
+    pub aggregate_attestation_response: Option<EthResponse<VersionedAttestation>>,
+    /// Records the last [`AggregateAttestationOpts`] passed to
+    /// [`Handler::aggregate_attestation`].
+    pub aggregate_attestation_opts: Arc<Mutex<Option<AggregateAttestationOpts>>>,
     /// Value returned by [`Handler::beacon_committee_selections`].
     pub beacon_committee_selections_response: Option<EthResponse<Vec<BeaconCommitteeSelection>>>,
     /// Value returned by [`Handler::sync_committee_selections`].
@@ -120,6 +138,15 @@ impl TestHandler {
         response: EthResponse<SyncCommitteeContribution>,
     ) -> Self {
         self.sync_committee_contribution_response = Some(response);
+        self
+    }
+
+    /// Sets the response returned by [`Handler::aggregate_attestation`].
+    pub fn with_aggregate_attestation(
+        mut self,
+        response: EthResponse<VersionedAttestation>,
+    ) -> Self {
+        self.aggregate_attestation_response = Some(response);
         self
     }
 
@@ -194,9 +221,13 @@ impl Handler for TestHandler {
 
     async fn submit_attestations(
         &self,
-        _attestations: Vec<VersionedAttestation>,
+        attestations: Vec<VersionedAttestation>,
     ) -> Result<(), ApiError> {
-        unimplemented!("submit_attestations not stubbed in TestHandler")
+        *self
+            .submitted_attestations
+            .lock()
+            .expect("submitted_attestations lock") = Some(attestations);
+        Ok(())
     }
 
     async fn proposal(
@@ -231,26 +262,41 @@ impl Handler for TestHandler {
 
     async fn aggregate_attestation(
         &self,
-        _opts: AggregateAttestationOpts,
+        opts: AggregateAttestationOpts,
     ) -> Result<EthResponse<VersionedAttestation>, ApiError> {
-        unimplemented!("aggregate_attestation not stubbed in TestHandler")
+        *self
+            .aggregate_attestation_opts
+            .lock()
+            .expect("aggregate_attestation_opts lock") = Some(opts);
+        Ok(self
+            .aggregate_attestation_response
+            .clone()
+            .expect("aggregate_attestation not stubbed in TestHandler"))
     }
 
     async fn submit_aggregate_attestations(
         &self,
-        _aggregates: Vec<VersionedSignedAggregateAndProof>,
+        aggregates: Vec<VersionedSignedAggregateAndProof>,
     ) -> Result<(), ApiError> {
-        unimplemented!("submit_aggregate_attestations not stubbed in TestHandler")
+        *self
+            .submitted_aggregates
+            .lock()
+            .expect("submitted_aggregates lock") = Some(aggregates);
+        Ok(())
     }
 
     async fn beacon_committee_selections(
         &self,
-        _selections: Vec<BeaconCommitteeSelection>,
+        selections: Vec<BeaconCommitteeSelection>,
     ) -> Result<EthResponse<Vec<BeaconCommitteeSelection>>, ApiError> {
-        match self.beacon_committee_selections_response.as_ref() {
-            Some(r) => Ok(r.clone()),
-            None => unimplemented!("beacon_committee_selections not stubbed in TestHandler"),
-        }
+        *self
+            .beacon_committee_selections_opts
+            .lock()
+            .expect("beacon_committee_selections_opts lock") = Some(selections);
+        Ok(self
+            .beacon_committee_selections_response
+            .clone()
+            .expect("beacon_committee_selections not stubbed in TestHandler"))
     }
 
     async fn sync_committee_selections(
@@ -280,13 +326,18 @@ impl Handler for TestHandler {
 
     async fn submit_validator_registrations(
         &self,
-        _registrations: Vec<SignedValidatorRegistration>,
+        registrations: Vec<SignedValidatorRegistration>,
     ) -> Result<(), ApiError> {
-        unimplemented!("submit_validator_registrations not stubbed in TestHandler")
+        *self
+            .submitted_registrations
+            .lock()
+            .expect("submitted_registrations lock") = Some(registrations);
+        Ok(())
     }
 
-    async fn submit_voluntary_exit(&self, _exit: SignedVoluntaryExit) -> Result<(), ApiError> {
-        unimplemented!("submit_voluntary_exit not stubbed in TestHandler")
+    async fn submit_voluntary_exit(&self, exit: SignedVoluntaryExit) -> Result<(), ApiError> {
+        *self.submitted_exit.lock().expect("submitted_exit lock") = Some(exit);
+        Ok(())
     }
 
     async fn sync_committee_contribution(

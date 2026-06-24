@@ -67,6 +67,26 @@ pub struct Attestation {
     pub committee_bits: BitVector<64>,
 }
 
+/// Electra single attestation, the wire form a validator client submits to
+/// `POST /eth/v2/beacon/pool/attestations` for Electra and Fulu.
+///
+/// Spec: <https://github.com/ethereum/consensus-specs/blob/master/specs/electra/beacon-chain.md#singleattestation>
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
+pub struct SingleAttestation {
+    /// Committee index.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub committee_index: u64,
+    /// Attesting validator index.
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub attester_index: phase0::ValidatorIndex,
+    /// Attestation data.
+    pub data: phase0::AttestationData,
+    /// Validator signature.
+    #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
+    pub signature: phase0::BLSSignature,
+}
+
 impl TryFrom<&crate::GetBlockAttestationsV2ResponseResponseDataArray> for Attestation {
     type Error = ConversionError;
 

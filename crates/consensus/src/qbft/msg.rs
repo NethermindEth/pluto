@@ -269,7 +269,7 @@ impl SomeMsg<ConsensusQbftTypes> for Msg {
 /// The hash input is deterministic protobuf encoding, then SSZ `PutBytes`
 /// merkleization. `Any` is rejected because the consensus value hash must bind
 /// to the inner message bytes, not the transport envelope.
-pub(crate) fn hash_proto<M>(msg: &M) -> Result<[u8; 32]>
+pub fn hash_proto<M>(msg: &M) -> Result<[u8; 32]>
 where
     M: prost::Message + prost::Name,
 {
@@ -288,7 +288,7 @@ where
 /// This helper hashes the bytes exactly as provided; it does not decode or
 /// canonicalize a protobuf envelope. Callers must pass bytes produced from the
 /// concrete inner message with deterministic field/map ordering.
-pub(crate) fn hash_proto_bytes(encoded: &[u8]) -> Result<[u8; 32]> {
+pub fn hash_proto_bytes(encoded: &[u8]) -> Result<[u8; 32]> {
     let mut hasher = Hasher::default();
     let index = hasher.index();
     hasher.put_bytes(encoded).map_err(Error::HashProto)?;
