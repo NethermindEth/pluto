@@ -90,12 +90,12 @@ impl EthBeaconNodeApiClient {
         &self,
         attestations: Vec<versioned::VersionedAttestation>,
     ) -> Result<()> {
-        let version = attestations
+        let data_version = attestations
             .first()
             .map(|attestation| attestation.version)
-            .unwrap_or(versioned::DataVersion::Phase0)
-            .to_consensus_version()
-            .map_err(error_message)?;
+            .unwrap_or(versioned::DataVersion::Phase0);
+        let version: crate::ConsensusVersion =
+            crate::ConsensusVersion::try_from(&data_version).map_err(error_message)?;
         let body = attestations_request_body(attestations)?;
         let request = crate::SubmitPoolAttestationsV2Request {
             header: crate::SubmitPoolAttestationsV2RequestHeader {
@@ -127,10 +127,8 @@ impl EthBeaconNodeApiClient {
         &self,
         proposal: versioned::VersionedSignedProposal,
     ) -> Result<()> {
-        let version = proposal
-            .version
-            .to_consensus_version()
-            .map_err(error_message)?;
+        let version =
+            crate::ConsensusVersion::try_from(&proposal.version).map_err(error_message)?;
         let body = proposal_request_body(proposal)?;
         let request = crate::PublishBlockV2Request {
             query: crate::PublishBlockV2RequestQuery {
@@ -157,10 +155,8 @@ impl EthBeaconNodeApiClient {
         &self,
         proposal: versioned::VersionedSignedBlindedProposal,
     ) -> Result<()> {
-        let version = proposal
-            .version
-            .to_consensus_version()
-            .map_err(error_message)?;
+        let version =
+            crate::ConsensusVersion::try_from(&proposal.version).map_err(error_message)?;
         let body = blinded_proposal_request_body(proposal)?;
         let request = crate::PublishBlindedBlockV2Request {
             query: crate::PublishBlindedBlockV2RequestQuery {
@@ -233,12 +229,11 @@ impl EthBeaconNodeApiClient {
         &self,
         aggregate_and_proofs: Vec<versioned::VersionedSignedAggregateAndProof>,
     ) -> Result<()> {
-        let version = aggregate_and_proofs
+        let data_version = aggregate_and_proofs
             .first()
             .map(|aggregate| aggregate.version)
-            .unwrap_or(versioned::DataVersion::Phase0)
-            .to_consensus_version()
-            .map_err(error_message)?;
+            .unwrap_or(versioned::DataVersion::Phase0);
+        let version = crate::ConsensusVersion::try_from(&data_version).map_err(error_message)?;
         let body = aggregate_and_proofs_request_body(aggregate_and_proofs)?;
         let request = crate::PublishAggregateAndProofsV2Request {
             header: crate::PublishAggregateAndProofsV2RequestHeader {
