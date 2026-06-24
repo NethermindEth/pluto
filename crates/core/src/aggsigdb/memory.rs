@@ -206,6 +206,7 @@ mod tests {
         signeddata::SignedDataError,
         types::{Duty, PubKey, Signature, SignedData, SignedDataSet, SlotNumber},
     };
+    use pluto_ssz::HashRoot;
     use tokio::sync;
     use tokio_util::sync::CancellationToken;
 
@@ -229,7 +230,7 @@ mod tests {
             Ok(Box::new(self.set_signature(signature)?))
         }
 
-        fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
+        fn message_root(&self) -> Result<HashRoot, SignedDataError> {
             Ok([self.0; 32])
         }
     }

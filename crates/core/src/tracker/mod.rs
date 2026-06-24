@@ -505,6 +505,7 @@ mod tests {
     use std::{collections::HashMap, sync::Mutex, time::Duration};
 
     use chrono::{DateTime, Utc};
+    use pluto_ssz::HashRoot;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
@@ -668,7 +669,7 @@ mod tests {
             Ok(Box::new(self.set_signature(sig)?))
         }
 
-        fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
+        fn message_root(&self) -> Result<HashRoot, SignedDataError> {
             Ok([0u8; 32])
         }
     }

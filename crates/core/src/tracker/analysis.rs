@@ -8,6 +8,7 @@ use std::{
 
 use pluto_eth2api::EthBeaconNodeApiClientError;
 use pluto_featureset::{Feature, GLOBAL_STATE};
+use pluto_ssz::HashRoot;
 
 use crate::{
     tracker::{
@@ -34,7 +35,7 @@ use crate::{
 };
 
 /// Partial signatures grouped by message root, grouped by pubkey.
-pub type ParSigsByMsg = HashMap<PubKey, HashMap<[u8; 32], Vec<ParSignedData>>>;
+pub type ParSigsByMsg = HashMap<PubKey, HashMap<HashRoot, Vec<ParSignedData>>>;
 
 /// Returns true if every pubkey has at most one distinct message root.
 pub(crate) fn msg_roots_consistent(parsigs: &ParSigsByMsg) -> bool {
@@ -650,7 +651,7 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct TestSignedData {
-        id: [u8; 32],
+        id: HashRoot,
         sig: [u8; SIGNATURE_LENGTH],
     }
 
@@ -682,7 +683,7 @@ mod tests {
             Ok(Box::new(self.set_signature(sig)?))
         }
 
-        fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
+        fn message_root(&self) -> Result<HashRoot, SignedDataError> {
             Ok(self.id)
         }
     }

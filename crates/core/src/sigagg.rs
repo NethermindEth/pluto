@@ -241,6 +241,7 @@ mod tests {
     use std::{fs, sync::Mutex};
 
     use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
+    use pluto_ssz::HashRoot;
 
     use super::*;
     use crate::{
@@ -279,7 +280,7 @@ mod tests {
             Ok(Box::new(self.set_signature(signature)?))
         }
 
-        fn message_root(&self) -> std::result::Result<[u8; 32], SignedDataError> {
+        fn message_root(&self) -> std::result::Result<HashRoot, SignedDataError> {
             Ok([0u8; 32])
         }
     }
@@ -306,7 +307,7 @@ mod tests {
             Ok(Box::new(self.set_signature(sig)?))
         }
 
-        fn message_root(&self) -> std::result::Result<[u8; 32], SignedDataError> {
+        fn message_root(&self) -> std::result::Result<HashRoot, SignedDataError> {
             Ok([0u8; 32])
         }
     }
@@ -335,7 +336,7 @@ mod tests {
             Err(SignedDataError::UnknownType)
         }
 
-        fn message_root(&self) -> std::result::Result<[u8; 32], SignedDataError> {
+        fn message_root(&self) -> std::result::Result<HashRoot, SignedDataError> {
             Ok([0u8; 32])
         }
     }

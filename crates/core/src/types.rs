@@ -5,6 +5,7 @@ use std::{any::Any, collections::HashMap, fmt::Display, iter};
 use chrono::{DateTime, Duration, Utc};
 use dyn_clone::DynClone;
 use dyn_eq::DynEq;
+use pluto_ssz::HashRoot;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug as StdDebug;
 
@@ -602,7 +603,7 @@ pub trait SignedData: Any + DynClone + DynEq + StdDebug + Send + Sync {
     ) -> Result<Box<dyn SignedData>, SignedDataError>;
 
     /// message_root returns the message root for the unsigned data.
-    fn message_root(&self) -> Result<[u8; 32], SignedDataError>;
+    fn message_root(&self) -> Result<HashRoot, SignedDataError>;
 }
 
 dyn_eq::eq_trait_object!(SignedData);
@@ -1031,7 +1032,7 @@ mod tests {
             Ok(Box::new(self.set_signature(signature)?))
         }
 
-        fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
+        fn message_root(&self) -> Result<HashRoot, SignedDataError> {
             Ok([42u8; 32])
         }
     }

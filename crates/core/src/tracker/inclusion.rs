@@ -18,7 +18,7 @@
 use std::{any::Any, collections::HashMap, sync::Arc, time::Duration};
 
 use pluto_eth2api::versioned;
-use pluto_ssz::BitList;
+use pluto_ssz::{BitList, HashRoot};
 use tree_hash::TreeHash;
 
 use crate::{
@@ -106,7 +106,7 @@ pub struct Submission {
     /// The signed data broadcast to the beacon node.
     pub data: Box<dyn SignedData>,
     /// Hash-tree-root of the attestation data (zero for proposals).
-    pub att_data_root: [u8; 32],
+    pub att_data_root: HashRoot,
     /// Delay between slot start and broadcast.
     pub delay: Duration,
 }
@@ -136,7 +136,7 @@ pub struct Block {
     /// Attester duties relevant to this slot (used for Electra inclusion).
     pub att_duties: Vec<AttesterDuty>,
     /// Block attestations keyed by their attestation-data root.
-    pub attestations_by_data_root: HashMap<[u8; 32], versioned::VersionedAttestation>,
+    pub attestations_by_data_root: HashMap<HashRoot, versioned::VersionedAttestation>,
     /// Beacon committees for the slot, ordered by committee index.
     pub beacon_committees: Vec<BeaconCommittee>,
 }
@@ -666,7 +666,7 @@ mod tests {
         .expect("golden proposal deserialises")
     }
 
-    fn submission(duty: Duty, data: Box<dyn SignedData>, att_data_root: [u8; 32]) -> Submission {
+    fn submission(duty: Duty, data: Box<dyn SignedData>, att_data_root: HashRoot) -> Submission {
         Submission {
             duty,
             pubkey: pubkey(),
