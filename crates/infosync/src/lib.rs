@@ -16,7 +16,7 @@ use pluto_core::{
     types::{Duty, ProposalType, SlotNumber},
     version::SemVer,
 };
-use pluto_featureset::Feature;
+use pluto_featureset::{Feature, FeatureSet};
 use pluto_priority::{Component as Prioritiser, TopicProposal, TopicResult};
 use tokio_util::sync::CancellationToken;
 
@@ -169,10 +169,11 @@ impl Component {
         versions: Vec<SemVer>,
         protocols: Vec<String>,
         proposals: Vec<ProposalType>,
+        feature_set: &FeatureSet,
     ) -> Self {
         let store = Arc::new(ResultStore::new(augment_protocols(
             protocols,
-            mock_alpha_enabled(),
+            feature_set.enabled(Feature::MockAlpha),
         )));
 
         let cb_store = Arc::clone(&store);
@@ -271,14 +272,6 @@ fn augment_protocols(mut protocols: Vec<String>, mock_alpha: bool) -> Vec<String
     }
 
     protocols
-}
-
-/// Returns whether the `MockAlpha` feature is globally enabled.
-fn mock_alpha_enabled() -> bool {
-    pluto_featureset::GLOBAL_STATE
-        .read()
-        .expect("global feature set lock poisoned")
-        .enabled(Feature::MockAlpha)
 }
 
 #[cfg(test)]
