@@ -40,3 +40,8 @@ pub mod utils;
 /// fixed set of checks over a rolling window, and publishes per-check pass/fail
 /// state as the `app_health_checks` gauge.
 pub mod health;
+
+/// Distributed-validator node wiring: constructs and connects the core duty
+/// workflow components (scheduler, fetcher, consensus, dutydb, validatorapi,
+/// parsigdb, parsigex, sigagg, aggsigdb, broadcaster) into a runnable node.
+pub mod node;
