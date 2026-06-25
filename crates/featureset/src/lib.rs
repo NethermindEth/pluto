@@ -1,15 +1,28 @@
 //! # Featureset
 //!
-//! Defines a set of global features and their rollout status.
+//! Defines the set of features and their rollout status. Features are enabled
+//! or disabled via [`Config`], and [`Config::min_status`] gates which are on by
+//! default.
 //!
-//! Features can be enabled or disabled via configuration, and the minimum
-//! status determines which features are enabled by default.
+//! ## Usage: inject, don't globalize
+//!
+//! There is intentionally **no global feature state** (no `GLOBAL_STATE`).
+//! Build one [`FeatureSet`] during application wiring and **inject it as
+//! `Arc<FeatureSet>`** into every component that reads a feature (consensus,
+//! round timers, tracker, …); each reads it via [`FeatureSet::enabled`].
+//!
+//! Resolve it once at startup:
+//! 1. `FeatureSet::from_config(cfg)`.
+//! 2. For gnosis/chiado, `enable_gnosis_block_hotfix_if_not_disabled(&cfg)`
+//!    (needs `&mut`) — apply this *before* wrapping in `Arc`.
+//! 3. `Arc::new(fs)`, then share read-only.
+//!
+//! Feature state is configured once at startup and never mutated afterward. The
+//! immutable `Arc<FeatureSet>` encodes that invariant at the type level: no
+//! lock on the (hot) read path, and tests construct their own set instead of
+//! mutating shared state.
 
-use std::{
-    collections::HashMap,
-    fmt,
-    sync::{LazyLock, RwLock},
-};
+use std::{collections::HashMap, fmt};
 
 use thiserror::Error;
 
@@ -159,7 +172,8 @@ pub enum FeaturesetError {
 
 type Result<T> = std::result::Result<T, FeaturesetError>;
 
-/// Global state for feature statuses.
+/// Resolved feature statuses for a node, injected where features are read.
+#[derive(Debug, Clone)]
 pub struct FeatureSet {
     /// Defines the current rollout status of each feature.
     pub state: HashMap<Feature, Status>,
@@ -263,10 +277,6 @@ impl FeatureSet {
         custom_enabled_features
     }
 }
-
-/// Global feature set state.
-pub static GLOBAL_STATE: LazyLock<RwLock<FeatureSet>> =
-    LazyLock::new(|| RwLock::new(FeatureSet::new()));
 
 /// Config configures the feature set package.
 #[derive(Debug, Clone)]
