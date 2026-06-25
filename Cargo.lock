@@ -5462,6 +5462,8 @@ dependencies = [
 name = "pluto-app"
 version = "1.7.1"
 dependencies = [
+ "anyhow",
+ "axum",
  "backon",
  "bon",
  "chrono",
@@ -5469,12 +5471,14 @@ dependencies = [
  "futures",
  "hex",
  "k256",
+ "libp2p",
  "pluto-build-proto",
  "pluto-cluster",
  "pluto-core",
  "pluto-crypto",
  "pluto-eth2api",
  "pluto-k1util",
+ "pluto-p2p",
  "pluto-ssz",
  "pluto-testutil",
  "prost 0.14.4",
@@ -5490,6 +5494,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
+ "tower",
  "tracing",
  "url",
  "vise",
