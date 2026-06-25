@@ -5,7 +5,7 @@ use regex::Regex;
 
 use super::{
     error::{Error, Result},
-    model::{LabelPair, Metric, MetricFamily, MetricType},
+    model::{LabelPair, Metric, MetricFamily, MetricType, SampleValue},
 };
 
 /// Maps a metric family to at most one synthetic sample.
@@ -15,8 +15,7 @@ pub(crate) type Selector = Box<dyn Fn(&MetricFamily) -> Result<Option<Metric>>>;
 fn gauge_metric(value: f64) -> Metric {
     Metric {
         labels: Vec::new(),
-        counter: None,
-        gauge: Some(value),
+        value: Some(SampleValue::Gauge(value)),
     }
 }
 
@@ -25,7 +24,7 @@ pub(crate) fn count_non_zero_labels() -> Selector {
     Box::new(|fam: &MetricFamily| {
         let mut count = 0.0_f64;
         for metric in &fam.metrics {
-            if metric.gauge_value() != 0.0 || metric.counter_value() != 0.0 {
+            if metric.value_or_zero() != 0.0 {
                 count += 1.0;
             }
         }
@@ -52,7 +51,7 @@ pub(crate) fn count_labels(labels: Vec<LabelPair>) -> Selector {
         let mut sum = 0.0_f64;
         for metric in &fam.metrics {
             if labels_contain(&metric.labels, &labels) {
-                sum += metric.gauge_value() + metric.counter_value();
+                sum += metric.value_or_zero();
             }
         }
         Ok(Some(gauge_metric(sum)))
@@ -69,7 +68,7 @@ pub(crate) fn sum_labels(labels: Vec<LabelPair>) -> Selector {
         let mut sum = 0.0_f64;
         for metric in &fam.metrics {
             if labels_contain(&metric.labels, &labels) {
-                sum += metric.gauge_value() + metric.counter_value();
+                sum += metric.value_or_zero();
             }
         }
         Ok(Some(gauge_metric(sum)))

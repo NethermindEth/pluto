@@ -29,26 +29,39 @@ pub struct LabelPair {
     pub value: String,
 }
 
+/// The typed value carried by a sample. A sample is either a counter or a
+/// gauge; histogram/info/unknown samples carry no value (see
+/// [`Metric::value`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SampleValue {
+    /// A counter sample's value.
+    Counter(f64),
+    /// A gauge sample's value.
+    Gauge(f64),
+}
+
+impl SampleValue {
+    /// The underlying value, regardless of kind.
+    pub fn value(self) -> f64 {
+        match self {
+            Self::Counter(v) | Self::Gauge(v) => v,
+        }
+    }
+}
+
 /// A single metric sample (one time series at one scrape).
 #[derive(Debug, Clone)]
 pub struct Metric {
     /// Labels on this series.
     pub labels: Vec<LabelPair>,
-    /// Counter value, if this is a counter sample.
-    pub counter: Option<f64>,
-    /// Gauge value, if this is a gauge sample.
-    pub gauge: Option<f64>,
+    /// The sample's value, or `None` for histogram/info/unknown samples.
+    pub value: Option<SampleValue>,
 }
 
 impl Metric {
-    /// Counter value, defaulting to `0.0` when absent.
-    pub fn counter_value(&self) -> f64 {
-        self.counter.unwrap_or(0.0)
-    }
-
-    /// Gauge value, defaulting to `0.0` when absent.
-    pub fn gauge_value(&self) -> f64 {
-        self.gauge.unwrap_or(0.0)
+    /// The sample's value, defaulting to `0.0` when it carries none.
+    pub fn value_or_zero(&self) -> f64 {
+        self.value.map_or(0.0, SampleValue::value)
     }
 }
 

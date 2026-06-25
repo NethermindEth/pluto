@@ -208,7 +208,7 @@ mod tests {
     use super::*;
     use crate::health::{
         gatherer::GatherError,
-        model::{LabelPair, Metric, MetricType},
+        model::{LabelPair, Metric, MetricType, SampleValue},
     };
 
     type Responder =
@@ -254,8 +254,7 @@ mod tests {
                     name: "peer".to_owned(),
                     value: "1".to_owned(),
                 }],
-                counter: None,
-                gauge: Some(1.0),
+                value: Some(SampleValue::Gauge(1.0)),
             }],
         }
     }
@@ -332,8 +331,7 @@ mod tests {
                         value: "v".to_owned(),
                     })
                     .collect(),
-                counter: None,
-                gauge: Some(1.0),
+                value: Some(SampleValue::Gauge(1.0)),
             }],
         };
 
