@@ -3,10 +3,12 @@
 
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
-use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
+use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PublicKey};
+use pluto_eth2api::client::EthBeaconNodeApiClient;
 use tracing::{debug, error, info_span};
 
 use crate::{
+    eth2signeddata::{Eth2SignedDataError, as_eth2_signed_data, verify_eth2_signed_data},
     signeddata::{SignedDataError, VersionedAttestation},
     types::{Duty, ParSignedData, PubKey, Signature, SignedData},
 };
@@ -65,6 +67,23 @@ pub enum SigAggError {
         /// The underlying error.
         #[source]
         source: pluto_crypto::types::Error,
+    },
+
+    /// The aggregated payload is not eth2 signed data.
+    #[error("invalid eth2 signed data")]
+    InvalidEth2SignedData,
+
+    /// The core public key could not be converted to a BLS public key.
+    #[error("pubkey from core")]
+    PubkeyFromCore,
+
+    /// Verification of the aggregated signature against the beacon chain
+    /// failed.
+    #[error("aggregate signature verification failed: {source}")]
+    VerificationFailed {
+        /// The underlying error.
+        #[source]
+        source: Eth2SignedDataError,
     },
 }
 
@@ -228,12 +247,27 @@ impl Aggregator {
 
 /// Returns a [`VerifyFn`] that verifies the aggregated signature against the
 /// beacon chain.
-///
-/// TODO: implement once `Eth2SignedData` and beacon-client verification are
-/// ported (`core::types` has a placeholder — see types.rs TODO for
-/// `Eth2SignedData`). For now callers can use a no-op or BLS-only verifier.
-pub fn new_verifier() -> VerifyFn {
-    Arc::new(|_, _| Box::pin(async { Ok(()) }))
+pub fn new_verifier(eth2_cl: Arc<EthBeaconNodeApiClient>) -> VerifyFn {
+    Arc::new(move |pubkey: &PubKey, data: &dyn SignedData| {
+        let eth2_cl = eth2_cl.clone();
+        // The future must be `'static`, so clone the borrowed inputs out of the
+        // call frame before entering the async block.
+        let tbls_pubkey = PublicKey::try_from(pubkey.as_ref());
+        let owned: Box<dyn SignedData> = dyn_clone::clone_box(data);
+
+        Box::pin(async move {
+            let tbls_pubkey = tbls_pubkey.map_err(|_| SigAggError::PubkeyFromCore)?;
+
+            let eth2_signed =
+                as_eth2_signed_data(owned.as_ref()).ok_or(SigAggError::InvalidEth2SignedData)?;
+
+            verify_eth2_signed_data(&eth2_cl, eth2_signed, &tbls_pubkey)
+                .await
+                .map_err(|source| SigAggError::VerificationFailed { source })?;
+
+            Ok(())
+        })
+    })
 }
 
 #[cfg(test)]
@@ -254,6 +288,20 @@ mod tests {
 
     fn noop_verify() -> VerifyFn {
         Arc::new(|_, _| Box::pin(async { Ok(()) }))
+    }
+
+    #[tokio::test]
+    async fn new_verifier_rejects_non_eth2_data() {
+        let mock = pluto_testutil::BeaconMock::builder().build().await.unwrap();
+        let eth2_cl = Arc::new(mock.client().clone());
+        let verify = new_verifier(eth2_cl);
+
+        let data = MockSignedData {
+            sig: [0u8; SIGNATURE_LENGTH],
+        };
+        let err = verify(&PubKey::new([0x11; 48]), &data).await.unwrap_err();
+
+        assert!(matches!(err, SigAggError::InvalidEth2SignedData));
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]

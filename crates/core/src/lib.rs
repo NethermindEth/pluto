@@ -14,6 +14,9 @@ pub mod unsigneddata;
 /// Signed data wrappers and helpers.
 pub mod signeddata;
 
+/// Eth2 signed-data verification.
+pub mod eth2signeddata;
+
 /// Protobuf definitions.
 pub mod corepb;
 

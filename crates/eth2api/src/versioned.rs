@@ -121,6 +121,24 @@ impl SignedProposalBlock {
         }
     }
 
+    /// Returns the slot embedded in this proposal's block.
+    pub fn slot(&self) -> phase0::Slot {
+        match self {
+            Self::Phase0(block) => block.message.slot,
+            Self::Altair(block) => block.message.slot,
+            Self::Bellatrix(block) => block.message.slot,
+            Self::BellatrixBlinded(block) => block.message.slot,
+            Self::Capella(block) => block.message.slot,
+            Self::CapellaBlinded(block) => block.message.slot,
+            Self::Deneb(block) => block.signed_block.message.slot,
+            Self::DenebBlinded(block) => block.message.slot,
+            Self::Electra(block) => block.signed_block.message.slot,
+            Self::ElectraBlinded(block) => block.message.slot,
+            Self::Fulu(block) => block.signed_block.message.slot,
+            Self::FuluBlinded(block) => block.message.slot,
+        }
+    }
+
     /// Converts blinded payload variants into blinded-wrapper payloads.
     pub fn into_blinded(self) -> Option<SignedBlindedProposalBlock> {
         match self {
