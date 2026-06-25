@@ -126,15 +126,11 @@ impl ResultStore {
             .lock()
             .expect("infosync results mutex poisoned");
 
-        let mut resp = self.local_protocols.clone();
-        for result in results.iter() {
-            if result.slot > slot {
-                break;
-            }
-            resp = result.protocols.clone();
-        }
-
-        resp
+        let idx = results.partition_point(|r| r.slot <= slot);
+        idx.checked_sub(1)
+            .and_then(|i| results.get(i))
+            .map(|r| r.protocols.clone())
+            .unwrap_or_else(|| self.local_protocols.clone())
     }
 
     /// Latest cluster-wide supported proposal types at or before `slot`,
@@ -146,15 +142,11 @@ impl ResultStore {
             .lock()
             .expect("infosync results mutex poisoned");
 
-        let mut resp = vec![ProposalType::Full];
-        for result in results.iter() {
-            if result.slot > slot {
-                break;
-            }
-            resp = result.proposals.clone();
-        }
-
-        resp
+        let idx = results.partition_point(|r| r.slot <= slot);
+        idx.checked_sub(1)
+            .and_then(|i| results.get(i))
+            .map(|r| r.proposals.clone())
+            .unwrap_or_else(|| vec![ProposalType::Full])
     }
 }
 
