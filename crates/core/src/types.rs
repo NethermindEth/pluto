@@ -304,8 +304,15 @@ impl TryFrom<&pbcore::Duty> for Duty {
 }
 
 /// The type of proposal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+///
+/// An open set: values not recognised by this binary are preserved as
+/// [`ProposalType::Unknown`] rather than dropped, so cluster-agreed proposal
+/// types from newer peers survive round-trips.
+///
+/// (De)serialized as its wire-format string via the `String` conversions below,
+/// so unknown values round-trip verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
 pub enum ProposalType {
     /// Full proposal type.
     Full,
@@ -313,6 +320,55 @@ pub enum ProposalType {
     Builder,
     /// Synthetic proposal type.
     Synthetic,
+    /// A proposal type not recognised by this binary, holding its raw wire
+    /// string.
+    Unknown(String),
+}
+
+impl ProposalType {
+    /// Returns the wire-format string for this proposal type.
+    ///
+    /// The strings for the known variants MUST NOT change: they are exchanged
+    /// on the wire (e.g. by the priority/infosync protocols) and changing
+    /// them breaks compatibility.
+    pub fn as_str(&self) -> &str {
+        match self {
+            ProposalType::Full => "full",
+            ProposalType::Builder => "builder",
+            ProposalType::Synthetic => "synthetic",
+            ProposalType::Unknown(s) => s,
+        }
+    }
+}
+
+impl From<String> for ProposalType {
+    /// Parses a wire string, mapping unrecognised values to
+    /// [`ProposalType::Unknown`] and reusing the allocation.
+    fn from(value: String) -> Self {
+        match value.as_str() {
+            "full" => ProposalType::Full,
+            "builder" => ProposalType::Builder,
+            "synthetic" => ProposalType::Synthetic,
+            _ => ProposalType::Unknown(value),
+        }
+    }
+}
+
+impl From<&str> for ProposalType {
+    fn from(value: &str) -> Self {
+        ProposalType::from(value.to_owned())
+    }
+}
+
+impl From<ProposalType> for String {
+    /// Returns the wire-format string, reusing the [`ProposalType::Unknown`]
+    /// allocation.
+    fn from(value: ProposalType) -> Self {
+        match value {
+            ProposalType::Unknown(s) => s,
+            other => other.as_str().to_owned(),
+        }
+    }
 }
 
 // In golang implementation they use pk_len = 98, which is 0x + [48 bytes]
@@ -974,6 +1030,35 @@ mod tests {
         );
         assert_eq!(DutyType::SyncContribution.to_string(), "sync_contribution");
         assert_eq!(DutyType::InfoSync.to_string(), "info_sync");
+    }
+
+    #[test]
+    fn proposal_type_wire_round_trip() {
+        for (pt, s) in [
+            (ProposalType::Full, "full"),
+            (ProposalType::Builder, "builder"),
+            (ProposalType::Synthetic, "synthetic"),
+        ] {
+            assert_eq!(pt.as_str(), s);
+            assert_eq!(ProposalType::from(s), pt);
+        }
+
+        // Unrecognised wire strings are preserved as Unknown, not dropped.
+        let unknown = ProposalType::from("future_type");
+        assert_eq!(unknown, ProposalType::Unknown("future_type".to_owned()));
+        assert_eq!(unknown.as_str(), "future_type");
+    }
+
+    #[test]
+    fn proposal_type_serde_is_wire_string() {
+        assert_eq!(
+            serde_json::to_string(&ProposalType::Builder).expect("serialize"),
+            "\"builder\""
+        );
+        assert_eq!(
+            serde_json::from_str::<ProposalType>("\"future_type\"").expect("deserialize"),
+            ProposalType::Unknown("future_type".to_owned())
+        );
     }
 
     #[test]
