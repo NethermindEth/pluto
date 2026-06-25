@@ -6,8 +6,8 @@ use chrono::{DateTime, Utc};
 use pluto_cluster::helpers;
 use pluto_core::types::PubKey;
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, GetPeerCountRequest, GetPeerCountResponse, GetSyncingStatusRequest,
-    GetSyncingStatusResponse,
+    EthBeaconNodeApiClient, GetNodeVersionRequest, GetNodeVersionResponse, GetPeerCountRequest,
+    GetPeerCountResponse, GetSyncingStatusRequest, GetSyncingStatusResponse,
 };
 use pluto_p2p::p2p_context::P2PContext;
 use tokio::{sync::mpsc, time::MissedTickBehavior};
@@ -18,6 +18,7 @@ use super::{
     metrics::MONITORING_METRICS,
     readiness::{ReadinessError, ReadyResult, ReadyState},
 };
+use crate::eth2wrap::version::check_beacon_node_version;
 
 /// Slots behind head after which the beacon node is considered too far behind.
 const BN_FAR_BEHIND_SLOTS: u64 = 320;
@@ -26,6 +27,9 @@ const BN_FAR_BEHIND_SLOTS: u64 = 320;
 const MIN_NOT_CONNECTED_ROUNDS: u64 = 6;
 
 const PEER_COUNT_PERIOD: Duration = Duration::from_secs(60);
+
+/// Interval at which the upstream beacon node version metric is refreshed.
+const NODE_VERSION_PERIOD: Duration = Duration::from_secs(10 * 60);
 
 /// Charon-compatible `/readyz` metric code for a ready node.
 const READYZ_READY: i64 = 1;
@@ -53,8 +57,12 @@ pub fn start_ready_checker(
     ct: CancellationToken,
 ) -> ReadyState {
     let readiness = ReadyState::new();
-    // The checker task is detached; its lifecycle is bound to `ct` and it stops
-    // when the token is cancelled.
+    // Both background tasks are detached; their lifecycle is bound to `ct` and
+    // they stop when the token is cancelled.
+    let _version_task = tokio::spawn(run_beacon_node_version_metric(
+        beacon_node.clone(),
+        ct.clone(),
+    ));
     let _task = tokio::spawn(run_ready_checker(
         p2p_context,
         beacon_node,
@@ -66,6 +74,63 @@ pub fn start_ready_checker(
     ));
 
     readiness
+}
+
+/// Periodically refreshes the upstream beacon node version gauge and runs the
+/// version compatibility check, mirroring Charon's `beaconNodeVersionMetric`.
+///
+/// The first tick fires immediately, so the version is published on startup and
+/// then every [`NODE_VERSION_PERIOD`].
+async fn run_beacon_node_version_metric(
+    beacon_node: EthBeaconNodeApiClient,
+    ct: CancellationToken,
+) {
+    let mut interval = tokio::time::interval(NODE_VERSION_PERIOD);
+    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+    loop {
+        tokio::select! {
+            () = ct.cancelled() => return,
+            _ = interval.tick() => set_beacon_node_version(&beacon_node).await,
+        }
+    }
+}
+
+async fn set_beacon_node_version(beacon_node: &EthBeaconNodeApiClient) {
+    let version = match fetch_node_version(beacon_node).await {
+        Ok(version) => version,
+        Err(error) => {
+            error!(%error, "Failed to get beacon node version");
+            return;
+        }
+    };
+
+    // Emulate Charon's `beaconNodeVersionGauge.Reset`: vise's `Family` cannot
+    // delete series, so clear any previously-reported version before setting the
+    // current one.
+    for (previous, gauge) in MONITORING_METRICS.beacon_node_version.to_entries() {
+        if previous != version {
+            gauge.set(0);
+        }
+    }
+    MONITORING_METRICS.beacon_node_version[&version].set(1);
+
+    check_beacon_node_version(&version);
+}
+
+async fn fetch_node_version(
+    beacon_node: &EthBeaconNodeApiClient,
+) -> Result<String, ReadyCheckerError> {
+    match beacon_node
+        .get_node_version(GetNodeVersionRequest {})
+        .await
+        .map_err(ReadyCheckerError::BeaconNode)?
+    {
+        GetNodeVersionResponse::Ok(response) => Ok(response.data.version),
+        GetNodeVersionResponse::InternalServerError(_) | GetNodeVersionResponse::Unknown => {
+            Err(ReadyCheckerError::UnexpectedResponse("node_version"))
+        }
+    }
 }
 
 async fn run_ready_checker(
