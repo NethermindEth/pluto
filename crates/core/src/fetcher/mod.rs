@@ -4,10 +4,6 @@
 
 mod graffiti;
 
-// Re-exported so the `graffiti_builder` field (a required `Fetcher` bon-builder
-// field) can be supplied by out-of-crate wiring (e.g. `pluto-app`). Without
-// this the app crate cannot name/construct a `GraffitiBuilder` to build a
-// `Fetcher`.
 pub use graffiti::{GraffitiBuilder, GraffitiError};
 
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
