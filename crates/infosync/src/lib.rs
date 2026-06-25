@@ -7,13 +7,16 @@
 //! [`Component::trigger`]); the resulting cluster-agreed values are stored per
 //! slot and queried with [`Component::protocols`] and [`Component::proposals`].
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 
 use pluto_core::{
     types::{Duty, ProposalType, SlotNumber},
     version::SemVer,
 };
-use pluto_featureset::{Feature, GLOBAL_STATE};
+use pluto_featureset::Feature;
 use pluto_priority::{Component as Prioritiser, TopicProposal, TopicResult};
 use tokio_util::sync::CancellationToken;
 
@@ -50,19 +53,15 @@ struct InfoResult {
 /// [`ResultStore::protocols`] can fall back to it when no result applies.
 struct ResultStore {
     local_protocols: Vec<String>,
-    results: Mutex<Vec<InfoResult>>,
+    results: Mutex<VecDeque<InfoResult>>,
 }
 
 impl ResultStore {
     fn new(local_protocols: Vec<String>) -> Self {
         Self {
             local_protocols,
-            results: Mutex::new(Vec::new()),
+            results: Mutex::new(VecDeque::new()),
         }
-    }
-
-    fn local_protocols(&self) -> &[String] {
-        &self.local_protocols
     }
 
     /// Folds a decided priority result into a stored [`InfoResult`].
@@ -106,15 +105,15 @@ impl ResultStore {
             .lock()
             .expect("infosync results mutex poisoned");
 
-        if results.last() == Some(&result) {
+        if results.back() == Some(&result) {
             // Identical to previous, so don't add.
             return;
         }
 
-        results.push(result);
+        results.push_back(result);
 
         if results.len() >= MAX_RESULTS {
-            results.remove(0);
+            results.pop_front();
         }
     }
 
@@ -216,7 +215,7 @@ impl Component {
     ) -> pluto_priority::Result<()> {
         let (duty, proposals) = build_request(
             &self.versions,
-            self.store.local_protocols(),
+            &self.store.local_protocols,
             &self.proposals,
             slot,
         );
@@ -276,7 +275,7 @@ fn augment_protocols(mut protocols: Vec<String>, mock_alpha: bool) -> Vec<String
 
 /// Returns whether the `MockAlpha` feature is globally enabled.
 fn mock_alpha_enabled() -> bool {
-    GLOBAL_STATE
+    pluto_featureset::GLOBAL_STATE
         .read()
         .expect("global feature set lock poisoned")
         .enabled(Feature::MockAlpha)
@@ -436,7 +435,7 @@ mod tests {
             "history capped below MAX_RESULTS"
         );
         // Oldest entries were dropped; the newest slot (149) is retained.
-        assert_eq!(results.last().expect("non-empty").slot, slot(149));
+        assert_eq!(results.back().expect("non-empty").slot, slot(149));
     }
 
     #[test]

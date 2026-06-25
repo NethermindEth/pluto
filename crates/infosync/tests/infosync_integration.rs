@@ -33,7 +33,7 @@ use pluto_priority::{
     Consensus, ConsensusError, PrioritySubscriber, TopicResult, new_component, p2p::Behaviour,
 };
 use pluto_testutil::random::generate_insecure_k1_key;
-use tokio::{sync::mpsc, time::timeout};
+use tokio::{sync::mpsc, task::JoinSet, time::timeout};
 use tokio_util::sync::CancellationToken;
 
 /// Calculator that schedules every duty one hour out, so triggered infosync
@@ -156,7 +156,7 @@ fn build_host(
         peers.clone(),
         i64::try_from(peers.len()).expect("peer count fits i64"),
         consensus,
-        Duration::from_secs(3600),
+        Duration::from_secs(30),
         key,
         FutureCalculator,
         P2PContext::new(peers),
@@ -276,32 +276,32 @@ async fn three_host_infosync() {
                 }
             }
         };
-        timeout(Duration::from_secs(30), mesh)
+        timeout(Duration::from_secs(10), mesh)
             .await
             .expect("full connection mesh within timeout");
     }
 
     // Drive each swarm in the background; keep the infosync handles.
     let mut infosyncs: Vec<Arc<InfoSync>> = Vec::with_capacity(N);
-    let mut drivers = Vec::with_capacity(N);
+    let mut drivers = JoinSet::new();
     for host in hosts {
         infosyncs.push(host.infosync);
         let mut swarm = host.swarm;
-        drivers.push(tokio::spawn(async move {
+        drivers.spawn(async move {
             loop {
                 let _ = swarm.select_next_some().await;
             }
-        }));
+        });
     }
 
     // Trigger infosync on every host for the same slot. `trigger` blocks until
     // the duty deadline / cancellation, so it runs in the background while the
     // decision is observed via the capture channel.
-    let mut triggers = Vec::with_capacity(N);
+    let mut triggers = JoinSet::new();
     for isync in &infosyncs {
         let isync = isync.clone();
         let ct = ct.clone();
-        triggers.push(tokio::spawn(async move { isync.trigger(ct, slot).await }));
+        triggers.spawn(async move { isync.trigger(ct, slot).await });
     }
 
     // Expect one decided result per host (the single decision fans out to all).
@@ -347,10 +347,6 @@ async fn three_host_infosync() {
 
     // Teardown.
     ct.cancel();
-    for t in triggers {
-        t.abort();
-    }
-    for d in drivers {
-        d.abort();
-    }
+    triggers.abort_all();
+    drivers.abort_all();
 }
