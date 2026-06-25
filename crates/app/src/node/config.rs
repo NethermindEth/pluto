@@ -7,10 +7,9 @@ use pluto_p2p::config::P2PConfig;
 /// Application configuration for running a distributed-validator node.
 ///
 /// This is the Rust analog of Charon's `app.Config` (`app/app.go`), reduced to
-/// the minimal set required to wire and run the core duty workflow. Observability
-/// (monitoring/debug API, tracing/OTLP) and simnet/mock-only fields are
-/// intentionally omitted for the minimal-runnable wiring.
-///
+/// the minimal set required to wire and run the core duty workflow.
+/// Observability (monitoring/debug API, tracing/OTLP) and simnet/mock-only
+/// fields are intentionally omitted for the minimal-runnable wiring.
 // TODO(#402 part B): add monitoring/debug addrs, OTLP/Jaeger tracing config,
 // graffiti, simnet (beacon/validator mock) and `TestConfig`-style overrides.
 #[derive(Debug, Clone)]
@@ -28,8 +27,8 @@ pub struct AppConfig {
     /// Path to the node's secp256k1 P2P private key.
     pub priv_key_file: PathBuf,
 
-    /// Beacon node API endpoints. The first reachable endpoint is used; multiple
-    /// addresses enable fallback.
+    /// Beacon node API endpoints. The first reachable endpoint is used;
+    /// multiple addresses enable fallback.
     pub beacon_node_addrs: Vec<String>,
 
     /// Timeout for general beacon node requests.

@@ -54,6 +54,7 @@ pluto-testutil.workspace = true
 wiremock.workspace = true
 test-case.workspace = true
 tower = { workspace = true, features = ["util"] }
+rand.workspace = true
 
 [lints]
 workspace = true
