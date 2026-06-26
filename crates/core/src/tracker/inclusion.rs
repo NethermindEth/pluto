@@ -607,19 +607,19 @@ mod tests {
     /// Shared recorder of duties passed to a callback.
     type Rec = Arc<Mutex<Vec<Duty>>>;
 
-    /// Feature set with `AttestationInclusion` toggled, so the real
-    /// `submitted()` gate accepts attester/aggregator duties in tests.
-    fn featureset(attestation_inclusion: bool) -> FeatureSet {
+    fn featureset(attestation_inclusion: bool) -> Arc<FeatureSet> {
         let enabled = if attestation_inclusion {
             vec![Feature::AttestationInclusion]
         } else {
             vec![]
         };
-        FeatureSet::from_config(Config {
-            enabled,
-            ..Config::default()
-        })
-        .expect("test featureset is valid")
+        Arc::new(
+            FeatureSet::from_config(Config {
+                enabled,
+                ..Config::default()
+            })
+            .expect("test featureset is valid"),
+        )
     }
 
     fn pubkey() -> PubKey {
@@ -705,7 +705,7 @@ mod tests {
             Box::new(move |sub: &Submission, _b: &Block| {
                 inc.lock().unwrap().push(sub.duty.clone())
             }),
-            Arc::new(featureset(true)),
+            featureset(true),
         );
 
         let att1 = Attestation::new(phase0_attestation(1));
@@ -777,7 +777,7 @@ mod tests {
                 Box::new(|_d: &Duty, _pk, _err| {}),
                 Box::new(move |sub: &Submission| mis.lock().unwrap().push(sub.duty.clone())),
                 Box::new(|_s: &Submission, _b: &Block| {}),
-                Arc::new(featureset(false)),
+                featureset(false),
             );
 
             // The duty slot is independent of the proposal's internal slot;
@@ -813,7 +813,7 @@ mod tests {
             Box::new(move |_d: &Duty, _pk, err: Option<StepError>| res.lock().unwrap().push(err)),
             Box::new(move |sub: &Submission| mis.lock().unwrap().push(sub.duty.clone())),
             Box::new(|_s: &Submission, _b: &Block| {}),
-            Arc::new(featureset(false)),
+            featureset(false),
         );
 
         core.submitted(

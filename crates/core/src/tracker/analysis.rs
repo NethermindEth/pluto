@@ -588,13 +588,6 @@ mod tests {
         PubKey::from([byte; 48])
     }
 
-    /// Default feature set for analysis tests, matching the previous global
-    /// default (`AttestationInclusion` disabled ⇒ only proposers track chain
-    /// inclusion).
-    fn fs() -> FeatureSet {
-        FeatureSet::new()
-    }
-
     /// Computes the failed step for `duty` and runs the failure analysis,
     /// mirroring how `TrackerService::analyse` wires the two together.
     fn analyse_failed(
@@ -602,7 +595,7 @@ mod tests {
         events: &HashMap<Duty, Vec<Event>>,
         msg_root_consistent: bool,
     ) -> Option<DutyFailure> {
-        let fs = fs();
+        let fs = FeatureSet::new();
         let failed_step = duty_failed_step(events.get(duty).map(Vec::as_slice).unwrap_or(&[]), &fs);
         analyse_duty_failed(duty, events, &failed_step, msg_root_consistent, &fs)
     }
@@ -851,7 +844,7 @@ mod tests {
     #[test]
     fn analyse_duty_failed_attester_success() {
         let att = Duty::new_attester_duty(SlotNumber::new(1));
-        assert_eq!(last_step(&att.duty_type, &fs()), Step::Bcast);
+        assert_eq!(last_step(&att.duty_type, &FeatureSet::new()), Step::Bcast);
 
         // Events for every step up to (but not including) chainInclusion.
         let steps = [
@@ -892,12 +885,12 @@ mod tests {
         ];
         let events: Vec<Event> = steps.iter().map(|s| evt(att.clone(), *s)).collect();
 
-        let r = duty_failed_step(&events, &fs());
+        let r = duty_failed_step(&events, &FeatureSet::new());
         assert!(!r.failed);
         assert_eq!(r.step, Step::Zero);
         assert!(r.err.is_none());
 
-        let r = duty_failed_step(&[], &fs());
+        let r = duty_failed_step(&[], &FeatureSet::new());
         assert!(r.failed);
         assert_eq!(r.step, Step::Zero);
         assert!(r.err.is_none());
@@ -927,7 +920,7 @@ mod tests {
             }
         }
 
-        let r = duty_failed_step(&events, &fs());
+        let r = duty_failed_step(&events, &FeatureSet::new());
         assert!(r.failed);
         assert_eq!(r.step, Step::Bcast);
         assert!(r.err.is_some());
@@ -937,7 +930,7 @@ mod tests {
         for s in steps {
             events.push(evt(att.clone(), s));
         }
-        let r = duty_failed_step(&events, &fs());
+        let r = duty_failed_step(&events, &FeatureSet::new());
         assert!(!r.failed);
         assert_eq!(r.step, Step::Zero);
         assert!(r.err.is_none());
@@ -1248,7 +1241,7 @@ mod tests {
                 // slot) must surface as `Step::Fetcher` so the metrics reporter
                 // skips them rather than counting a success.
                 assert_eq!(
-                    duty_failed_step(&c.events[&c.duty], &fs()).step,
+                    duty_failed_step(&c.events[&c.duty], &FeatureSet::new()).step,
                     Step::Fetcher,
                     "{}: expected fetcher no-op step",
                     c.name
