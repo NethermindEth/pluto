@@ -182,6 +182,13 @@ fn snipe(proc_path: &Path) -> Vec<StackComponent> {
             continue;
         };
 
+        // Deduplicate by raw cmdline: the same process can appear multiple
+        // times (e.g. background threads under `task/`). Checking before the
+        // token work below skips that work for repeats.
+        if seen_cmdlines.contains(&cmdline_bytes) {
+            continue;
+        }
+
         // `/proc/<pid>/cmdline` is NUL-separated; drop empty tokens (including
         // the trailing NUL) and join with single spaces.
         let cli_tokens: Vec<String> = cmdline_bytes
@@ -190,18 +197,14 @@ fn snipe(proc_path: &Path) -> Vec<StackComponent> {
             .map(|token| String::from_utf8_lossy(token).into_owned())
             .collect();
 
-        // Deduplicate by raw cmdline: the same process can appear multiple
-        // times (e.g. background threads under `task/`). Moving the bytes into
-        // the set avoids cloning them.
-        if !seen_cmdlines.insert(cmdline_bytes) {
-            continue;
-        }
-
         if cli_tokens.is_empty() {
             continue;
         }
 
         let cli_params = cli_tokens.join(" ");
+
+        // Record the cmdline now that it's confirmed unique (moved, no clone).
+        seen_cmdlines.insert(cmdline_bytes);
 
         debug!(name, host_pid, cmdline = %cli_params, "Detected stack component");
 
@@ -216,6 +219,9 @@ fn snipe(proc_path: &Path) -> Vec<StackComponent> {
 
 /// Returns the first [`SUPPORTED_VCS`] name that appears as a substring of the
 /// raw command line, or `None` if none match.
+///
+/// When a command line matches several names, the first in `SUPPORTED_VCS`
+/// order wins, so the result is deterministic.
 fn vc_name(cmdline: &[u8]) -> Option<&'static str> {
     SUPPORTED_VCS.into_iter().find(|vc| {
         cmdline
