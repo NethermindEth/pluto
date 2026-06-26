@@ -665,9 +665,6 @@ pub trait SignedData: Any + DynClone + DynEq + StdDebug + Send + Sync {
 dyn_eq::eq_trait_object!(SignedData);
 dyn_clone::clone_trait_object!(SignedData);
 
-// todo: add Eth2SignedData type
-// https://github.com/ObolNetwork/charon/blob/b3008103c5429b031b63518195f4c49db4e9a68d/core/types.go#L396
-
 /// ParSignedData is a partially signed duty data only signed by a single
 /// threshold BLS share.
 #[derive(Debug)]

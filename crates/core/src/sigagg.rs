@@ -74,17 +74,17 @@ pub enum SigAggError {
     InvalidEth2SignedData,
 
     /// The core public key could not be converted to a BLS public key.
-    #[error("pubkey from core")]
-    PubkeyFromCore,
+    #[error("pubkey from core: {source}")]
+    PubkeyFromCore {
+        /// The underlying error.
+        #[source]
+        source: std::array::TryFromSliceError,
+    },
 
     /// Verification of the aggregated signature against the beacon chain
     /// failed.
-    #[error("aggregate signature verification failed: {source}")]
-    VerificationFailed {
-        /// The underlying error.
-        #[source]
-        source: Eth2SignedDataError,
-    },
+    #[error("aggregate signature verification failed: {0}")]
+    VerificationFailed(#[from] Eth2SignedDataError),
 }
 
 /// Convenience alias for [`std::result::Result`] with [`SigAggError`].
@@ -256,14 +256,13 @@ pub fn new_verifier(eth2_cl: Arc<EthBeaconNodeApiClient>) -> VerifyFn {
         let owned: Box<dyn SignedData> = dyn_clone::clone_box(data);
 
         Box::pin(async move {
-            let tbls_pubkey = tbls_pubkey.map_err(|_| SigAggError::PubkeyFromCore)?;
+            let tbls_pubkey =
+                tbls_pubkey.map_err(|source| SigAggError::PubkeyFromCore { source })?;
 
             let eth2_signed =
                 as_eth2_signed_data(owned.as_ref()).ok_or(SigAggError::InvalidEth2SignedData)?;
 
-            verify_eth2_signed_data(&eth2_cl, eth2_signed, &tbls_pubkey)
-                .await
-                .map_err(|source| SigAggError::VerificationFailed { source })?;
+            verify_eth2_signed_data(&eth2_cl, eth2_signed, &tbls_pubkey).await?;
 
             Ok(())
         })

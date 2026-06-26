@@ -62,9 +62,9 @@ pub async fn verify_eth2_signed_data(
     data: &dyn Eth2SignedData,
     pubkey: &PublicKey,
 ) -> Result<(), Eth2SignedDataError> {
-    let epoch = data.epoch(client).await?;
     let sig_root = data.message_root()?;
     let signature = data.signature()?;
+    let epoch = data.epoch(client).await?;
 
     signing::verify(
         client,
@@ -283,6 +283,7 @@ mod tests {
     use std::{fs, path::PathBuf};
 
     use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
+    use pluto_eth2api::spec::phase0;
     use pluto_testutil::BeaconMock;
     use serde::de::DeserializeOwned;
 
@@ -299,6 +300,32 @@ mod tests {
     fn load<T: DeserializeOwned>(name: &str) -> T {
         let json = fs::read_to_string(fixture_path(name)).unwrap();
         serde_json::from_str(&json).unwrap()
+    }
+
+    /// The non-versioned `Attestation`/`SignedAggregateAndProof` wrappers have
+    /// no golden JSON fixture, so build a phase0 sample by hand.
+    fn sample_attestation_data() -> phase0::AttestationData {
+        phase0::AttestationData {
+            slot: 1,
+            index: 2,
+            beacon_block_root: [0x11; 32],
+            source: phase0::Checkpoint {
+                epoch: 3,
+                root: [0x22; 32],
+            },
+            target: phase0::Checkpoint {
+                epoch: 4,
+                root: [0x33; 32],
+            },
+        }
+    }
+
+    fn sample_phase0_attestation() -> phase0::Attestation {
+        phase0::Attestation {
+            aggregation_bits: serde_json::from_str("\"0x0101\"").unwrap(),
+            data: sample_attestation_data(),
+            signature: [0x34; 96],
+        }
     }
 
     /// Mirrors Go's `TestVerifyEth2SignedData`: resolve the epoch and message
@@ -380,6 +407,27 @@ mod tests {
         let mock = BeaconMock::builder().build().await.unwrap();
         let data: VersionedSignedAggregateAndProof =
             load("TestJSONSerialisation_VersionedSignedAggregateAndProof.json.golden");
+        assert_verifies(mock.client(), data).await;
+    }
+
+    #[tokio::test]
+    async fn verify_phase0_attestation() {
+        let mock = BeaconMock::builder().build().await.unwrap();
+        let data = Attestation::new(sample_phase0_attestation());
+        assert_verifies(mock.client(), data).await;
+    }
+
+    #[tokio::test]
+    async fn verify_phase0_aggregate_and_proof() {
+        let mock = BeaconMock::builder().build().await.unwrap();
+        let data = SignedAggregateAndProof::new(phase0::SignedAggregateAndProof {
+            message: phase0::AggregateAndProof {
+                aggregator_index: 7,
+                aggregate: sample_phase0_attestation(),
+                selection_proof: [0x55; 96],
+            },
+            signature: [0x66; 96],
+        });
         assert_verifies(mock.client(), data).await;
     }
 
