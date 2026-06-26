@@ -25,6 +25,7 @@ use pluto_core::{
     qbft,
     types::{Duty, DutyType},
 };
+use pluto_featureset::{Feature, FeatureSet};
 
 use super::{
     msg::{self, ValueMap},
@@ -86,6 +87,8 @@ pub struct Config {
     pub compare_attestations: bool,
     /// Round timer factory.
     pub timer_func: RoundTimerFunc,
+    /// Injected feature set, resolved once at construction.
+    pub feature_set: Arc<FeatureSet>,
 }
 
 /// Decoded consensus value supported by this component.
@@ -269,6 +272,7 @@ pub struct Consensus {
     sniffer: SnifferSink,
     timer_func: RoundTimerFunc,
     compare_attestations: bool,
+    feature_set: Arc<FeatureSet>,
     subscribers: SubscriberSet,
     instances: Arc<Mutex<HashMap<Duty, Arc<InstanceIo<msg::Msg>>>>>,
 }
@@ -304,6 +308,7 @@ impl Consensus {
             sniffer: config.sniffer,
             timer_func: config.timer_func,
             compare_attestations: config.compare_attestations,
+            feature_set: config.feature_set,
             subscribers: SubscriberSet::default(),
             instances: Arc::new(Mutex::default()),
         })
@@ -312,6 +317,11 @@ impl Consensus {
     /// Returns the QBFT v2 protocol ID.
     pub fn protocol_id(&self) -> &'static str {
         QBFT_V2_PROTOCOL_ID
+    }
+
+    /// Returns whether `feature` is enabled for this consensus instance.
+    pub(crate) fn feature_enabled(&self, feature: Feature) -> bool {
+        self.feature_set.enabled(feature)
     }
 
     /// Registers a callback for decided unsigned duty data.
@@ -1289,10 +1299,23 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn consensus(local_peer_idx: i64, duty_allowed: bool) -> Consensus {
+        consensus_with_feature_set(
+            local_peer_idx,
+            duty_allowed,
+            Arc::new(pluto_featureset::FeatureSet::new()),
+        )
+    }
+
+    pub(crate) fn consensus_with_feature_set(
+        local_peer_idx: i64,
+        duty_allowed: bool,
+        feature_set: Arc<pluto_featureset::FeatureSet>,
+    ) -> Consensus {
         Consensus::new(Config {
             peers: peers(),
             local_peer_idx,
             duty_gater: Arc::new(move |_| duty_allowed),
+            feature_set,
             ..config_base(false)
         })
         .unwrap()
@@ -1310,6 +1333,7 @@ pub(crate) mod tests {
             DeadlinerTask::start(cancel, "qbft-test", FutureCalculator)
         };
 
+        let fs = Arc::new(pluto_featureset::FeatureSet::new());
         Config {
             peers: vec![],
             local_peer_idx: 0,
@@ -1320,7 +1344,8 @@ pub(crate) mod tests {
             broadcaster: Arc::new(|_, _| Box::pin(async { Ok(()) })),
             sniffer: Arc::new(|_| {}),
             compare_attestations: false,
-            timer_func: get_round_timer_func(),
+            timer_func: get_round_timer_func(fs.clone()),
+            feature_set: fs,
         }
     }
 

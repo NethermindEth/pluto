@@ -13,6 +13,7 @@ use pluto_core::{
     types::{Duty, DutyType, SlotNumber},
 };
 use pluto_eth2api::spec::phase0;
+use pluto_ssz::HashRoot;
 use prost::bytes::Bytes;
 use prost_types::Any;
 use test_case::test_case;
@@ -200,7 +201,6 @@ async fn qbft_priority_consensus() {
 
 #[tokio::test]
 async fn qbft_consensus_participate_then_late_propose() {
-    let _featureset_guard = super::FEATURESET_TEST_LOCK.lock().await;
     let threshold = 4;
     let (sniffed_tx, _sniffed_rx) = mpsc::unbounded_channel();
     let active_nodes = in_memory_network(threshold, threshold, false, None, sniffed_tx);
@@ -499,7 +499,7 @@ async fn replay_sniffed_instance_decides(instance: pbconsensus::SniffedConsensus
     );
 }
 
-fn sniffed_input_hash(instance: &pbconsensus::SniffedConsensusInstance) -> [u8; 32] {
+fn sniffed_input_hash(instance: &pbconsensus::SniffedConsensusInstance) -> HashRoot {
     instance
         .msgs
         .iter()
@@ -521,8 +521,8 @@ fn sniffed_input_source(instance: &pbconsensus::SniffedConsensusInstance) -> Any
         .expect("sniffed instance has value source")
 }
 
-fn hash32(value: &[u8]) -> Option<[u8; 32]> {
-    let hash: [u8; 32] = value.try_into().ok()?;
+fn hash32(value: &[u8]) -> Option<HashRoot> {
+    let hash: HashRoot = value.try_into().ok()?;
     (hash != [0; 32]).then_some(hash)
 }
 
@@ -740,7 +740,9 @@ fn in_memory_network(
                 compare_attestations,
                 timer_func: match round_timeout {
                     Some(timeout) => short_timer_func(timeout),
-                    None => crate::timer::get_round_timer_func(),
+                    None => crate::timer::get_round_timer_func(Arc::new(
+                        pluto_featureset::FeatureSet::new(),
+                    )),
                 },
                 sniffer: {
                     let sniffed_tx = sniffed_tx.clone();

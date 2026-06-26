@@ -1,6 +1,6 @@
 use pluto_ssz::{
-    Error as PlutoSszError, HashWalker, Hasher, HasherError, from_0x_hex_str, put_byte_list,
-    put_bytes_n, put_hex_bytes_n, to_0x_hex,
+    Error as PlutoSszError, HashRoot, HashWalker, Hasher, HasherError, from_0x_hex_str,
+    put_byte_list, put_bytes_n, put_hex_bytes_n, to_0x_hex,
 };
 
 use crate::{
@@ -134,7 +134,7 @@ fn get_definition_hash_func<H: HashWalker>(
 pub(crate) fn hash_definition(
     definition: &Definition,
     config_only: bool,
-) -> Result<[u8; 32], SSZError<Hasher>> {
+) -> Result<HashRoot, SSZError<Hasher>> {
     let hash_func = get_definition_hash_func::<Hasher>(&definition.version)?;
 
     let mut hh = Hasher::default();
@@ -609,7 +609,7 @@ pub(crate) fn hash_definition_v1x10<H: HashWalker>(
 
 // ==== Lock Hashing ====
 
-pub(crate) fn hash_lock(lock: &Lock) -> Result<[u8; 32], SSZError<Hasher>> {
+pub(crate) fn hash_lock(lock: &Lock) -> Result<HashRoot, SSZError<Hasher>> {
     let hash_func = match lock.version.as_str() {
         V1_0 | V1_1 | V1_2 => hash_lock_legacy,
         V1_3 | V1_4 | V1_5 | V1_6 | V1_7 | V1_8 | V1_9 | V1_10 => hash_lock_v1x3_or_later,

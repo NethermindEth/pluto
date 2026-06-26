@@ -1,3 +1,4 @@
+use pluto_ssz::HashRoot;
 use std::{collections::HashMap, error::Error as StdError, future::Future, pin::Pin, sync::Arc};
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
@@ -390,7 +391,7 @@ async fn get_threshold_matching(
     }
 
     // Group signatures by their message root
-    let mut sigs_by_msg_root: HashMap<[u8; 32], Vec<ParSignedData>> = HashMap::new();
+    let mut sigs_by_msg_root: HashMap<HashRoot, Vec<ParSignedData>> = HashMap::new();
 
     for sig in sigs {
         let root = sig

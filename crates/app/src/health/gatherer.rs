@@ -10,7 +10,7 @@
 
 use vise::{Format, MetricsCollection, Registry};
 
-use super::model::{LabelPair, Metric, MetricFamily, MetricType};
+use super::model::{LabelPair, Metric, MetricFamily, MetricType, SampleValue};
 
 /// Error returned by a [`Gatherer`].
 pub type GatherError = Box<dyn std::error::Error + Send + Sync + 'static>;
@@ -198,25 +198,15 @@ fn scan_labels(s: &str) -> Option<(Vec<LabelPair>, &str)> {
     }
 }
 
-/// Builds a [`Metric`] storing `value` in the slot for `metric_type`.
+/// Builds a [`Metric`] tagging `value` with the kind for `metric_type`.
+/// Histogram/info/unknown samples carry no value.
 fn make_metric(labels: Vec<LabelPair>, value: f64, metric_type: MetricType) -> Metric {
-    match metric_type {
-        MetricType::Counter => Metric {
-            labels,
-            counter: Some(value),
-            gauge: None,
-        },
-        MetricType::Gauge => Metric {
-            labels,
-            counter: None,
-            gauge: Some(value),
-        },
-        MetricType::Histogram | MetricType::Info | MetricType::Unknown => Metric {
-            labels,
-            counter: None,
-            gauge: None,
-        },
-    }
+    let value = match metric_type {
+        MetricType::Counter => Some(SampleValue::Counter(value)),
+        MetricType::Gauge => Some(SampleValue::Gauge(value)),
+        MetricType::Histogram | MetricType::Info | MetricType::Unknown => None,
+    };
+    Metric { labels, value }
 }
 
 #[cfg(test)]
@@ -271,17 +261,20 @@ mod tests {
         let log_fam = family(&families, "app_log_error_total");
         assert_eq!(log_fam.metric_type, MetricType::Counter);
         assert_eq!(log_fam.metrics.len(), 1);
-        assert_eq!(log_fam.metrics[0].counter_value(), 1.0);
+        assert_eq!(log_fam.metrics[0].value, Some(SampleValue::Counter(1.0)));
 
         let tracker_fam = family(&families, "core_tracker_failed_duties_total");
         assert_eq!(tracker_fam.metric_type, MetricType::Counter);
-        assert_eq!(tracker_fam.metrics[0].counter_value(), 1.0);
+        assert_eq!(
+            tracker_fam.metrics[0].value,
+            Some(SampleValue::Counter(1.0))
+        );
         assert_eq!(tracker_fam.metrics[0].labels[0].name, "duty");
         assert_eq!(tracker_fam.metrics[0].labels[0].value, "proposal");
 
         let p2p_fam = family(&families, "p2p_ping_success");
         assert_eq!(p2p_fam.metric_type, MetricType::Gauge);
-        assert_eq!(p2p_fam.metrics[0].gauge_value(), 1.0);
+        assert_eq!(p2p_fam.metrics[0].value, Some(SampleValue::Gauge(1.0)));
         assert_eq!(p2p_fam.metrics[0].labels[0].value, "peerA");
     }
 
@@ -303,13 +296,13 @@ app_log_error_total 7
         assert_eq!(status.metrics[0].labels.len(), 2);
         assert_eq!(status.metrics[0].labels[1].name, "status");
         assert_eq!(status.metrics[0].labels[1].value, "pending");
-        assert_eq!(status.metrics[0].gauge_value(), 1.0);
+        assert_eq!(status.metrics[0].value, Some(SampleValue::Gauge(1.0)));
 
         let errors = family(&families, "app_log_error_total");
         assert_eq!(errors.metric_type, MetricType::Counter);
         assert_eq!(errors.metrics.len(), 1);
         assert!(errors.metrics[0].labels.is_empty());
-        assert_eq!(errors.metrics[0].counter_value(), 7.0);
+        assert_eq!(errors.metrics[0].value, Some(SampleValue::Counter(7.0)));
     }
 
     #[test]
@@ -350,24 +343,20 @@ demo{path=\"a\\\"b\",note=\"x\\\\y\"} 3";
         let counter = family(&families, "demo_requests_total");
         assert_eq!(counter.metric_type, MetricType::Counter);
         assert_eq!(counter.metrics.len(), 1);
-        assert_eq!(counter.metrics[0].counter_value(), 2.0);
+        assert_eq!(counter.metrics[0].value, Some(SampleValue::Counter(2.0)));
 
         // Queried gauge family: exactly its own series.
         let gauge = family(&families, "demo_connected");
         assert_eq!(gauge.metric_type, MetricType::Gauge);
         assert_eq!(gauge.metrics.len(), 1);
-        assert_eq!(gauge.metrics[0].gauge_value(), 1.0);
+        assert_eq!(gauge.metrics[0].value, Some(SampleValue::Gauge(1.0)));
 
         // Histogram family is kept (for the cardinality scan); its sub-lines did
         // not leak into the families above and carry no counter/gauge value.
         let hist = family(&families, "demo_latency_seconds");
         assert_eq!(hist.metric_type, MetricType::Histogram);
         assert!(!hist.metrics.is_empty());
-        assert!(
-            hist.metrics
-                .iter()
-                .all(|metric| metric.counter.is_none() && metric.gauge.is_none())
-        );
+        assert!(hist.metrics.iter().all(|metric| metric.value.is_none()));
     }
 
     #[test]
@@ -381,7 +370,7 @@ app_log_error_total_bucket{le=\"1\"} 99";
         let families = parse_exposition(text);
         let errors = family(&families, "app_log_error_total");
         assert_eq!(errors.metrics.len(), 1);
-        assert_eq!(errors.metrics[0].counter_value(), 5.0);
+        assert_eq!(errors.metrics[0].value, Some(SampleValue::Counter(5.0)));
     }
 
     #[test]

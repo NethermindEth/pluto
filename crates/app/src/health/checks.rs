@@ -208,7 +208,7 @@ mod tests {
     use super::{CHECKS, Metadata};
     use crate::health::{
         checker::new_query_func,
-        model::{LabelPair, Metric, MetricFamily, MetricType},
+        model::{LabelPair, Metric, MetricFamily, MetricType, SampleValue},
     };
 
     fn gen_labels(name_vals: &[&str]) -> Vec<LabelPair> {
@@ -230,8 +230,7 @@ mod tests {
             .iter()
             .map(|&v| Metric {
                 labels: labels.to_vec(),
-                counter: Some(f64::from(v)),
-                gauge: None,
+                value: Some(SampleValue::Counter(f64::from(v))),
             })
             .collect()
     }
@@ -241,8 +240,7 @@ mod tests {
             .iter()
             .map(|&v| Metric {
                 labels: labels.to_vec(),
-                counter: None,
-                gauge: Some(f64::from(v)),
+                value: Some(SampleValue::Gauge(f64::from(v))),
             })
             .collect()
     }
@@ -253,7 +251,7 @@ mod tests {
         let metric_type = if series
             .first()
             .and_then(|s| s.first())
-            .map(|m| m.gauge.is_some())
+            .map(|m| matches!(m.value, Some(SampleValue::Gauge(_))))
             .unwrap_or(false)
         {
             MetricType::Gauge

@@ -22,6 +22,7 @@ members = [
     "crates/peerinfo",
     "crates/frost",
     "crates/priority",
+    "crates/infosync",
 ]
 # Vendored fork consumed only via [patch.crates-io]; excluded so it builds/tests
 # standalone (its upstream code isn't written to this workspace's lints) without
@@ -139,6 +140,8 @@ pluto-tracing = { path = "crates/tracing" }
 pluto-p2p = { path = "crates/p2p" }
 pluto-peerinfo = { path = "crates/peerinfo" }
 pluto-frost = { path = "crates/frost" }
+pluto-priority = { path = "crates/priority" }
+pluto-infosync = { path = "crates/infosync" }
 
 [workspace.lints.rust]
 missing_docs = "deny"

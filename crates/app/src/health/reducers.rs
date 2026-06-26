@@ -2,7 +2,7 @@
 
 use super::{
     error::{Error, Result},
-    model::Metric,
+    model::{Metric, SampleValue},
 };
 
 /// Reduces a time series of samples to a single value.
@@ -19,14 +19,11 @@ pub(crate) fn increase(samples: &[Metric]) -> Result<f64> {
         return Ok(0.0);
     };
 
-    if first.counter.is_none() && first.gauge.is_none() {
+    if first.value.is_none() {
         return Err(Error::UnsupportedMetricPassed);
     }
 
-    let first_val = first.counter_value() + first.gauge_value();
-    let last_val = last.counter_value() + last.gauge_value();
-
-    Ok(last_val - first_val)
+    Ok(last.value_or_zero() - first.value_or_zero())
 }
 
 /// Returns the maximum value across a gauge time series. Errors if any sample
@@ -35,11 +32,9 @@ pub(crate) fn gauge_max(samples: &[Metric]) -> Result<f64> {
     let mut max_val = 0.0_f64;
 
     for sample in samples {
-        if sample.gauge.is_none() {
+        let Some(SampleValue::Gauge(value)) = sample.value else {
             return Err(Error::NonGaugeMetricPassed);
-        }
-
-        let value = sample.gauge_value();
+        };
         if value > max_val {
             max_val = value;
         }

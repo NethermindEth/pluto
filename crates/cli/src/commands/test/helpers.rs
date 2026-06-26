@@ -13,7 +13,7 @@ use k256::SecretKey;
 use pluto_app::obolapi::{Client, ClientOptions};
 use pluto_eth2util::enr::Record;
 use pluto_k1util::{load, sign};
-use pluto_ssz::{HashWalker, Hasher};
+use pluto_ssz::{HashRoot, HashWalker, Hasher};
 use reqwest::{Method, StatusCode, header::CONTENT_TYPE};
 use serde_with::{base64::Base64, serde_as};
 use std::os::unix::fs::PermissionsExt as _;
@@ -567,7 +567,7 @@ async fn load_or_generate_key(path: &Path) -> CliResult<SecretKey> {
     }
 }
 
-pub(crate) fn hash_ssz(data: &[u8]) -> CliResult<[u8; 32]> {
+pub(crate) fn hash_ssz(data: &[u8]) -> CliResult<HashRoot> {
     if data.is_empty() {
         return Ok([0u8; 32]);
     }

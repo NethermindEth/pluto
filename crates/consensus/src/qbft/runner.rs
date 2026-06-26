@@ -178,11 +178,7 @@ pub(crate) async fn participate(
         return Ok(());
     }
 
-    if !pluto_featureset::GLOBAL_STATE
-        .read()
-        .expect("global feature set lock poisoned")
-        .enabled(pluto_featureset::Feature::ConsensusParticipate)
-    {
+    if !consensus.feature_enabled(pluto_featureset::Feature::ConsensusParticipate) {
         return Ok(());
     }
 
@@ -536,12 +532,11 @@ fn transport_broadcaster(broadcaster: super::component::Broadcaster) -> transpor
 #[cfg(test)]
 mod tests {
     use std::{
-        mem,
         sync::{Arc, Mutex},
         time::Duration,
     };
 
-    use pluto_featureset::{Config as FeatureConfig, Feature, FeatureSet, GLOBAL_STATE, Status};
+    use pluto_featureset::{Config as FeatureConfig, Feature, FeatureSet};
     use prost::bytes::Bytes;
     use prost_types::Any;
     use tokio::sync::mpsc;
@@ -660,13 +655,15 @@ mod tests {
 
     #[tokio::test]
     async fn participate_skips_when_feature_disabled() {
-        let _featureset_guard = crate::qbft::FEATURESET_TEST_LOCK.lock().await;
-        let consensus = component::tests::consensus(0, true);
+        let feature_set = Arc::new(
+            FeatureSet::from_config(FeatureConfig {
+                disabled: vec![Feature::ConsensusParticipate],
+                ..FeatureConfig::default()
+            })
+            .expect("test featureset is valid"),
+        );
+        let consensus = component::tests::consensus_with_feature_set(0, true, feature_set);
         let duty = component::tests::duty();
-        let _guard = FeatureSetGuard::new(FeatureConfig {
-            disabled: vec![Feature::ConsensusParticipate],
-            ..FeatureConfig::default()
-        });
 
         participate(&consensus, duty.clone(), &CancellationToken::new())
             .await
@@ -676,7 +673,6 @@ mod tests {
 
     #[tokio::test]
     async fn participate_rejects_duplicate_entrypoint() {
-        let _featureset_guard = crate::qbft::FEATURESET_TEST_LOCK.lock().await;
         let consensus = component::tests::consensus(0, true);
         let duty = component::tests::duty();
         let inst = consensus.get_instance_io(duty.clone());
@@ -869,38 +865,5 @@ mod tests {
             Bytes::from(format!("unsigned-{seed}")),
         );
         pbcore::UnsignedDataSet { set }
-    }
-
-    struct FeatureSetGuard {
-        previous: Option<FeatureSet>,
-    }
-
-    impl FeatureSetGuard {
-        fn new(config: FeatureConfig) -> Self {
-            let replacement = FeatureSet::from_config(FeatureConfig {
-                min_status: Status::Stable,
-                ..config
-            })
-            .expect("test featureset is valid");
-            let mut global = GLOBAL_STATE
-                .write()
-                .expect("global feature set lock poisoned");
-            let previous = mem::replace(&mut *global, replacement);
-            drop(global);
-
-            Self {
-                previous: Some(previous),
-            }
-        }
-    }
-
-    impl Drop for FeatureSetGuard {
-        fn drop(&mut self) {
-            if let Some(previous) = self.previous.take() {
-                *GLOBAL_STATE
-                    .write()
-                    .expect("global feature set lock poisoned") = previous;
-            }
-        }
     }
 }

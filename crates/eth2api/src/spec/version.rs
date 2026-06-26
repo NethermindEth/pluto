@@ -80,23 +80,6 @@ impl DataVersion {
             _ => Err(VersionError::UnknownDataVersion),
         }
     }
-
-    /// Maps to the equivalent beacon API
-    /// [`ConsensusVersion`](crate::ConsensusVersion).
-    // TODO: change to From<&ConsensusVersion> after PR #454
-    pub const fn to_consensus_version(self) -> Result<crate::ConsensusVersion, VersionError> {
-        use crate::ConsensusVersion;
-        match self {
-            DataVersion::Phase0 => Ok(ConsensusVersion::Phase0),
-            DataVersion::Altair => Ok(ConsensusVersion::Altair),
-            DataVersion::Bellatrix => Ok(ConsensusVersion::Bellatrix),
-            DataVersion::Capella => Ok(ConsensusVersion::Capella),
-            DataVersion::Deneb => Ok(ConsensusVersion::Deneb),
-            DataVersion::Electra => Ok(ConsensusVersion::Electra),
-            DataVersion::Fulu => Ok(ConsensusVersion::Fulu),
-            DataVersion::Unknown => Err(VersionError::UnknownDataVersion),
-        }
-    }
 }
 
 impl fmt::Display for DataVersion {
@@ -117,6 +100,25 @@ impl From<&ConsensusVersion> for DataVersion {
             ConsensusVersion::Deneb => DataVersion::Deneb,
             ConsensusVersion::Electra => DataVersion::Electra,
             ConsensusVersion::Fulu => DataVersion::Fulu,
+        }
+    }
+}
+
+impl TryFrom<&DataVersion> for ConsensusVersion {
+    type Error = VersionError;
+
+    /// Maps a data version onto the equivalent beacon-node `ConsensusVersion`.
+    /// Fallible: `DataVersion::Unknown` has no consensus-version equivalent.
+    fn try_from(version: &DataVersion) -> Result<Self, Self::Error> {
+        match version {
+            DataVersion::Phase0 => Ok(ConsensusVersion::Phase0),
+            DataVersion::Altair => Ok(ConsensusVersion::Altair),
+            DataVersion::Bellatrix => Ok(ConsensusVersion::Bellatrix),
+            DataVersion::Capella => Ok(ConsensusVersion::Capella),
+            DataVersion::Deneb => Ok(ConsensusVersion::Deneb),
+            DataVersion::Electra => Ok(ConsensusVersion::Electra),
+            DataVersion::Fulu => Ok(ConsensusVersion::Fulu),
+            DataVersion::Unknown => Err(VersionError::UnknownDataVersion),
         }
     }
 }
@@ -331,7 +333,7 @@ mod tests {
         expected: Option<crate::ConsensusVersion>,
         expected_err: Option<VersionError>,
     ) {
-        match (version.to_consensus_version(), expected, expected_err) {
+        match (ConsensusVersion::try_from(&version), expected, expected_err) {
             (Ok(actual), Some(expected), None) => assert_eq!(actual, expected),
             (Err(err), None, Some(expected_err)) => assert_eq!(err, expected_err),
             _ => panic!("unexpected conversion result"),

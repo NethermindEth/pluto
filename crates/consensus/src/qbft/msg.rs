@@ -28,7 +28,7 @@
 use std::{any, collections::HashMap, fmt, sync};
 
 use k256::{PublicKey, SecretKey};
-use pluto_ssz::{HashWalker, Hasher, HasherError};
+use pluto_ssz::{HashRoot, HashWalker, Hasher, HasherError};
 use prost_types::Any;
 
 use pluto_core::{
@@ -47,7 +47,7 @@ pub struct ConsensusQbftTypes;
 impl qbft::QbftTypes for ConsensusQbftTypes {
     type Compare = Any;
     type Instance = Duty;
-    type Value = [u8; 32];
+    type Value = HashRoot;
 }
 
 /// Concrete values carried beside QBFT hash messages.
@@ -55,7 +55,7 @@ impl qbft::QbftTypes for ConsensusQbftTypes {
 /// The key is the [`hash_proto`] result of the decoded inner protobuf message.
 /// The value remains the original `Any` envelope so later layers can forward or
 /// compare the same payload without losing type-url information.
-pub type ValueMap = HashMap<[u8; 32], Any>;
+pub type ValueMap = HashMap<HashRoot, Any>;
 
 type Result<T> = std::result::Result<T, Error>;
 
@@ -116,8 +116,8 @@ pub enum Error {
 #[derive(Clone)]
 pub struct Msg {
     msg: pbconsensus::QbftMsg,
-    value_hash: [u8; 32],
-    prepared_value_hash: [u8; 32],
+    value_hash: HashRoot,
+    prepared_value_hash: HashRoot,
     values: sync::Arc<ValueMap>,
     justification_protos: Vec<pbconsensus::QbftMsg>,
     justification: Vec<qbft::Msg<ConsensusQbftTypes>>,
@@ -231,7 +231,7 @@ impl SomeMsg<ConsensusQbftTypes> for Msg {
     }
 
     /// Returns the cached proposal value hash.
-    fn value(&self) -> [u8; 32] {
+    fn value(&self) -> HashRoot {
         self.value_hash
     }
 
@@ -249,7 +249,7 @@ impl SomeMsg<ConsensusQbftTypes> for Msg {
     }
 
     /// Returns the cached prepared value hash.
-    fn prepared_value(&self) -> [u8; 32] {
+    fn prepared_value(&self) -> HashRoot {
         self.prepared_value_hash
     }
 
@@ -269,7 +269,7 @@ impl SomeMsg<ConsensusQbftTypes> for Msg {
 /// The hash input is deterministic protobuf encoding, then SSZ `PutBytes`
 /// merkleization. `Any` is rejected because the consensus value hash must bind
 /// to the inner message bytes, not the transport envelope.
-pub fn hash_proto<M>(msg: &M) -> Result<[u8; 32]>
+pub fn hash_proto<M>(msg: &M) -> Result<HashRoot>
 where
     M: prost::Message + prost::Name,
 {
@@ -288,7 +288,7 @@ where
 /// This helper hashes the bytes exactly as provided; it does not decode or
 /// canonicalize a protobuf envelope. Callers must pass bytes produced from the
 /// concrete inner message with deterministic field/map ordering.
-pub fn hash_proto_bytes(encoded: &[u8]) -> Result<[u8; 32]> {
+pub fn hash_proto_bytes(encoded: &[u8]) -> Result<HashRoot> {
     let mut hasher = Hasher::default();
     let index = hasher.index();
     hasher.put_bytes(encoded).map_err(Error::HashProto)?;
@@ -335,8 +335,8 @@ pub(crate) fn verify_msg_sig(msg: &pbconsensus::QbftMsg, pubkey: &PublicKey) -> 
 }
 
 /// Converts a protobuf bytes field into a non-zero 32-byte hash.
-fn to_hash32(value: &[u8]) -> Option<[u8; 32]> {
-    let value: [u8; 32] = value.try_into().ok()?;
+fn to_hash32(value: &[u8]) -> Option<HashRoot> {
+    let value: HashRoot = value.try_into().ok()?;
     if value == [0u8; 32] {
         return None;
     }
@@ -344,7 +344,7 @@ fn to_hash32(value: &[u8]) -> Option<[u8; 32]> {
     Some(value)
 }
 
-fn value_hash(msg: &pbconsensus::QbftMsg, values: &ValueMap) -> Result<[u8; 32]> {
+fn value_hash(msg: &pbconsensus::QbftMsg, values: &ValueMap) -> Result<HashRoot> {
     let required = value_hash_required(MessageType::from_wire(msg.r#type));
     if msg.value_hash.is_empty() {
         return if required {
@@ -380,7 +380,7 @@ fn value_hash_required(type_: MessageType) -> bool {
         || type_ == qbft::MSG_DECIDED
 }
 
-fn prepared_value_hash(msg: &pbconsensus::QbftMsg, values: &ValueMap) -> Result<[u8; 32]> {
+fn prepared_value_hash(msg: &pbconsensus::QbftMsg, values: &ValueMap) -> Result<HashRoot> {
     if msg.prepared_value_hash.is_empty() {
         return if msg.prepared_round > 0 {
             Err(Error::InvalidPreparedValueHash)
@@ -855,7 +855,7 @@ mod tests {
         Any::from_msg(&timestamp(seconds)).unwrap()
     }
 
-    fn value_map(values: Vec<([u8; 32], Any)>) -> ValueMap {
+    fn value_map(values: Vec<(HashRoot, Any)>) -> ValueMap {
         values.into_iter().collect()
     }
 

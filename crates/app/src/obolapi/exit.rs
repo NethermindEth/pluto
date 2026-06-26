@@ -15,7 +15,7 @@ use pluto_cluster::{
 use pluto_eth2api::types::{
     GetPoolVoluntaryExitsResponseResponseDatum, Phase0SignedVoluntaryExitMessage,
 };
-use pluto_ssz::{HashWalker, Hasher, put_bytes_n};
+use pluto_ssz::{HashRoot, HashWalker, Hasher, put_bytes_n};
 
 use crate::obolapi::{
     client::Client,
@@ -32,7 +32,7 @@ pub trait SszHashable {
     fn hash_with(&self, hh: &mut Hasher) -> Result<()>;
 
     /// Computes the SSZ hash tree root of this value.
-    fn hash_tree_root(&self) -> Result<[u8; 32]> {
+    fn hash_tree_root(&self) -> Result<HashRoot> {
         let mut hh = Hasher::default();
         self.hash_with(&mut hh)?;
         Ok(hh.hash_root()?)
@@ -455,10 +455,10 @@ mod tests {
             hex::decode(s)
         }
 
-        fn decode_hex_32(s: &str) -> std::result::Result<[u8; 32], Box<dyn std::error::Error>> {
+        fn decode_hex_32(s: &str) -> std::result::Result<HashRoot, Box<dyn std::error::Error>> {
             let bytes = decode_hex(s)?;
             let len = bytes.len();
-            let arr: [u8; 32] = bytes
+            let arr: HashRoot = bytes
                 .try_into()
                 .map_err(|_| format!("expected 32 bytes, got {}", len))?;
             Ok(arr)

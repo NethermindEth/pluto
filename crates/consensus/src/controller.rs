@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use k256::SecretKey;
 use pluto_core::{deadline::DeadlinerHandle, gater::DutyGaterFn, types::Duty};
+use pluto_featureset::FeatureSet;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -51,6 +52,8 @@ pub struct Config {
     pub compare_attestations: bool,
     /// Round timer factory.
     pub timer_func: RoundTimerFunc,
+    /// Injected feature set, resolved once at construction.
+    pub feature_set: Arc<FeatureSet>,
 }
 
 /// Controls the active consensus protocol implementation.
@@ -73,6 +76,7 @@ impl ConsensusController {
             sniffer: config.debugger.sniffer(),
             compare_attestations: config.compare_attestations,
             timer_func: config.timer_func,
+            feature_set: config.feature_set,
         })?);
         let default_consensus: Arc<dyn Consensus> = qbft;
 
@@ -161,6 +165,7 @@ mod tests {
         let (deadliner, expired_rx) =
             DeadlinerTask::start(ct, "controller-test", NeverExpiringCalculator);
 
+        let fs = Arc::new(FeatureSet::new());
         Config {
             peers: peers(),
             local_peer_idx: 0,
@@ -171,7 +176,8 @@ mod tests {
             broadcaster: Arc::new(|_, _| Box::pin(async { Ok(()) })),
             debugger: Debugger::new(),
             compare_attestations: false,
-            timer_func: get_round_timer_func(),
+            timer_func: get_round_timer_func(fs.clone()),
+            feature_set: fs,
         }
     }
 

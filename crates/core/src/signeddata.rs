@@ -13,6 +13,7 @@ use pluto_eth2api::{
     v1, versioned,
 };
 use pluto_eth2util::types::SignedEpoch;
+use pluto_ssz::HashRoot;
 
 use crate::types::{ParSignedData, Signature, SignedData};
 
@@ -63,7 +64,7 @@ pub enum SignedDataError {
     Custom(Box<dyn std::error::Error + Send + Sync>),
 }
 
-fn hash_root<T: TreeHash>(value: &T) -> [u8; 32] {
+fn hash_root<T: TreeHash>(value: &T) -> HashRoot {
     value.tree_hash_root().0
 }
 
@@ -124,7 +125,7 @@ impl SignedData for Signature {
         Ok(Box::new(self.set_signature(signature)?))
     }
 
-    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
+    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         Err(SignedDataError::UnsupportedSignatureMessageRoot)
     }
 }
@@ -239,7 +240,7 @@ impl SignedData for VersionedSignedProposal {
         Ok(Box::new(self.set_signature(signature)?))
     }
 
-    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
+    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         let proposal = &self.0;
         if proposal.version == versioned::DataVersion::Unknown {
             return Err(SignedDataError::UnknownVersion);
@@ -384,7 +385,7 @@ impl SignedData for Attestation {
         Ok(Box::new(self.set_signature(signature)?))
     }
 
-    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
+    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         Ok(hash_root(&self.0.data))
     }
 }
@@ -469,7 +470,7 @@ impl SignedData for VersionedAttestation {
         Ok(Box::new(self.set_signature(signature)?))
     }
 
-    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
+    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         let version = self.0.version;
         if version == versioned::DataVersion::Unknown {
             return Err(SignedDataError::UnknownVersion);
@@ -591,7 +592,7 @@ impl SignedData for SignedVoluntaryExit {
         Ok(Box::new(self.set_signature(signature)?))
     }
 
-    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
+    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         Ok(self.0.message_root())
     }
 }
@@ -680,7 +681,7 @@ impl SignedData for VersionedSignedValidatorRegistration {
         Ok(Box::new(self.set_signature(signature)?))
     }
 
-    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
+    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         match self.0.version {
             versioned::BuilderVersion::V1 => self
                 .0
@@ -763,7 +764,7 @@ impl SignedData for SignedRandao {
         Ok(Box::new(self.set_signature(signature)?))
     }
 
-    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
+    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         Ok(self.0.message_root())
     }
 }
@@ -813,7 +814,7 @@ impl SignedData for BeaconCommitteeSelection {
         Ok(Box::new(self.set_signature(signature)?))
     }
 
-    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
+    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         Ok(self.0.message_root())
     }
 }
@@ -856,7 +857,7 @@ impl SignedData for SyncCommitteeSelection {
         Ok(Box::new(self.set_signature(signature)?))
     }
 
-    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
+    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         Ok(self.0.message_root())
     }
 }
@@ -899,7 +900,7 @@ impl SignedData for SignedAggregateAndProof {
         Ok(Box::new(self.set_signature(signature)?))
     }
 
-    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
+    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         Ok(hash_root(&self.0.message))
     }
 }
@@ -986,7 +987,7 @@ impl SignedData for VersionedSignedAggregateAndProof {
         Ok(Box::new(self.set_signature(signature)?))
     }
 
-    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
+    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         let version = self.0.version;
         if version == versioned::DataVersion::Unknown {
             return Err(SignedDataError::UnknownVersion);
@@ -1079,7 +1080,7 @@ impl SignedData for SignedSyncMessage {
         Ok(Box::new(self.set_signature(signature)?))
     }
 
-    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
+    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         Ok(self.0.message_root())
     }
 }
@@ -1122,7 +1123,7 @@ impl SignedData for SyncContributionAndProof {
         Ok(Box::new(self.set_signature(signature)?))
     }
 
-    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
+    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         Ok(self.0.selection_proof_message_root())
     }
 }
@@ -1165,7 +1166,7 @@ impl SignedData for SignedSyncContributionAndProof {
         Ok(Box::new(self.set_signature(signature)?))
     }
 
-    fn message_root(&self) -> Result<[u8; 32], SignedDataError> {
+    fn message_root(&self) -> Result<HashRoot, SignedDataError> {
         Ok(self.0.message_root())
     }
 }
@@ -1480,7 +1481,7 @@ mod tests {
     fn assert_golden_fixture<J>(
         fixture_name: &str,
         expected_root: &str,
-        hash_value: fn(&J) -> Result<[u8; 32], SignedDataError>,
+        hash_value: fn(&J) -> Result<HashRoot, SignedDataError>,
     ) where
         J: DeserializeOwned + PartialEq + std::fmt::Debug + Serialize,
     {
