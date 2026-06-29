@@ -818,9 +818,11 @@ impl TryFrom<RunUnsafeArgs> for RunConfig {
     }
 }
 
-/// Validates the optional p2p external hostname via `url::Host::parse`.
+/// Validates the optional p2p external hostname via `url::Host::parse`. An
+/// empty value means "no external host" (same as omitting the flag), so only a
+/// non-empty value is validated.
 fn validate_hostname(host: Option<&str>) -> Result<()> {
-    if let Some(host) = host {
+    if let Some(host) = host.filter(|h| !h.is_empty()) {
         url::Host::parse(host)
             .map_err(|err| CliError::Other(format!("invalid hostname: {host}: {err}")))?;
     }
@@ -1284,6 +1286,8 @@ mod tests {
         parse_run(&["--nickname", "validnickname"]).expect("valid nickname");
         parse_run(&["--graffiti", "validgraffiti"]).expect("valid graffiti");
         parse_run(&["--beacon-node-headers", "key1=value1,key2=value2"]).expect("valid headers");
+        // An explicit empty external hostname is treated as unset.
+        parse_run(&["--p2p-external-hostname", ""]).expect("empty external hostname");
     }
 
     #[test]
