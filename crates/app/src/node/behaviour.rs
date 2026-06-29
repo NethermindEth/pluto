@@ -46,28 +46,6 @@ pub(crate) struct P2PHandles {
     pub(crate) consensus: qbft::p2p::Handle,
 }
 
-/// Inputs required to compose and build the core P2P node.
-pub(crate) struct SetupP2PParams {
-    /// Local secp256k1 P2P key.
-    pub(crate) key: k256::SecretKey,
-    /// P2P listen/advertise configuration.
-    pub(crate) p2p_config: pluto_p2p::config::P2PConfig,
-    /// Cluster peers (from the lock file).
-    pub(crate) peers: Vec<Peer>,
-    /// Already-constructed consensus component, shared with the core stitch.
-    pub(crate) consensus: Arc<qbft::Consensus>,
-    /// Duty admission gate, shared with parsigex.
-    pub(crate) duty_gater: DutyGaterFn,
-    /// Cluster lock hash (peerinfo + relay namespace).
-    pub(crate) lock_hash: Vec<u8>,
-    /// Whether the builder API is enabled (peerinfo advertisement).
-    pub(crate) builder_enabled: bool,
-    /// Human-readable node nickname.
-    pub(crate) nickname: String,
-    /// Cancellation token for inbound admission.
-    pub(crate) cancellation: CancellationToken,
-}
-
 /// Composes the core behaviours and builds the libp2p [`Node`].
 ///
 /// Models Charon's `wireP2P`; the QBFT consensus component is constructed by
@@ -78,20 +56,16 @@ pub(crate) struct SetupP2PParams {
 // TODO(#402 part B): relay/NAT support (relay client + RelayManager), QUIC
 // transport, and bandwidth metrics — start with TCP + no relay.
 pub(crate) fn setup_p2p(
-    params: SetupP2PParams,
+    key: k256::SecretKey,
+    p2p_config: pluto_p2p::config::P2PConfig,
+    peers: Vec<Peer>,
+    consensus: Arc<qbft::Consensus>,
+    duty_gater: DutyGaterFn,
+    lock_hash: Vec<u8>,
+    builder_enabled: bool,
+    nickname: String,
+    cancellation: CancellationToken,
 ) -> Result<(Node<CoreBehaviour>, P2PHandles), AppError> {
-    let SetupP2PParams {
-        key,
-        p2p_config,
-        peers,
-        consensus,
-        duty_gater,
-        lock_hash,
-        builder_enabled,
-        nickname,
-        cancellation,
-    } = params;
-
     let peer_ids = peers.iter().map(|peer| peer.id).collect::<Vec<_>>();
     let local_peer_id = peer_id_from_key(key.public_key())?;
 

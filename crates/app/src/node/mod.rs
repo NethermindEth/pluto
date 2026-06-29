@@ -33,7 +33,7 @@ use pluto_p2p::peer::Peer;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use behaviour::{CoreBehaviour, P2PHandles, SetupP2PParams, setup_p2p};
+use behaviour::{CoreBehaviour, P2PHandles};
 use wire::{ParSigExSeam, ValidatorInfo, WireInputs, WiredComponents, wire_core_workflow};
 
 /// Errors raised while constructing or running a distributed-validator node.
@@ -235,17 +235,17 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     })?);
 
     // ---- P2P behaviours (parsigex + qbft + peerinfo) ----
-    let (node, handles) = setup_p2p(SetupP2PParams {
-        key: key.clone(),
-        p2p_config: config.p2p.clone(),
-        peers: peers.clone(),
-        consensus: Arc::clone(&consensus),
-        duty_gater: Arc::clone(&duty_gater),
-        lock_hash: lock.lock_hash.clone(),
-        builder_enabled: config.builder_api,
-        nickname: config.nickname.clone(),
-        cancellation: ct.clone(),
-    })?;
+    let (node, handles) = behaviour::setup_p2p(
+        key.clone(),
+        config.p2p.clone(),
+        peers.clone(),
+        Arc::clone(&consensus),
+        Arc::clone(&duty_gater),
+        lock.lock_hash.clone(),
+        config.builder_api,
+        config.nickname.clone(),
+        ct.clone(),
+    )?;
     // Complete the broadcaster<->behaviour cycle.
     handle_slot
         .set(handles.consensus.clone())
