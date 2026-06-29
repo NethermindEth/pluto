@@ -589,12 +589,10 @@ pub struct FeatureConfig {
 /// [`run`]); `p2p_fuzz` is the single test-only field, set only via the hidden
 /// `unsafe run` command.
 //
-// This is the parsed config surface; the run workflow that reads these fields
-// is not yet implemented (see module docs), so the fields are populated but not
-// yet consumed. The seam in [`run`] is where the future app entry will read
-// them.
+// The parsed config surface; the run workflow that reads these fields is not
+// yet implemented, so they are populated but not yet consumed.
 #[allow(dead_code)]
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RunConfig {
     /// P2P configuration built from [`RunP2PArgs`].
     pub p2p: pluto_p2p::config::P2PConfig,
@@ -898,7 +896,6 @@ pub async fn run(config: RunConfig, ct: CancellationToken) -> Result<()> {
     };
 
     info!("{LICENSE}");
-    info!(config = ?config);
 
     let result = run_workflow(config, ct).await;
 
