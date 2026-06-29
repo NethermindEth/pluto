@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use backon::{ExponentialBuilder, Retryable};
+use backon::Retryable;
 use libp2p::Multiaddr;
 use pluto_eth2util::enr::Record;
 use tokio_util::sync::CancellationToken;
@@ -11,11 +11,6 @@ use tracing::{info, warn};
 use crate::peer::{
     AddrInfo, MutablePeer, Peer, PeerError, addr_infos_from_p2p_addrs, peer_id_from_key,
 };
-
-/// Backoff configuration constants matching Go's expbackoff.FastConfig.
-const FAST_BASE_DELAY: Duration = Duration::from_millis(100);
-const FAST_MAX_DELAY: Duration = Duration::from_secs(5);
-const FAST_MULTIPLIER: f32 = 1.6;
 
 /// Polling interval for relay address updates.
 const RELAY_POLL_INTERVAL: Duration = Duration::from_secs(120); // 2 minutes
@@ -235,12 +230,9 @@ async fn query_relay_addrs(
         return Err(BootnodeError::InvalidRelayUrl);
     }
 
-    // Retry with exponential backoff
-    let backoff = ExponentialBuilder::default()
-        .with_min_delay(FAST_BASE_DELAY)
-        .with_max_delay(FAST_MAX_DELAY)
-        .with_factor(FAST_MULTIPLIER)
-        .with_jitter();
+    // Retry with exponential backoff until the cancel token fires, matching
+    // Go's `queryRelayAddrs` ("It retries until the context is cancelled").
+    let backoff = pluto_core::expbackoff::fast();
 
     let fetch = || async {
         if cancel.is_cancelled() {

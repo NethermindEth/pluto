@@ -392,12 +392,12 @@ impl SseListenerActor {
 /// failure.
 async fn fetch_config(client: &EthBeaconNodeApiClient) -> Result<(DateTime<Utc>, Duration, u64)> {
     let genesis_time = (|| client.fetch_genesis_time())
-        .retry(fast_backoff())
+        .retry(pluto_core::expbackoff::fast())
         .notify(|err, _| tracing::error!(err = ?err, "Failure fetching genesis time"))
         .await?;
 
     let (slot_duration, slots_per_epoch) = (|| client.fetch_slots_config())
-        .retry(fast_backoff())
+        .retry(pluto_core::expbackoff::fast())
         .notify(|err, _| tracing::error!(err = ?err, "Failure fetching slots config"))
         .await?;
 
@@ -501,18 +501,6 @@ async fn stream_once(
             },
         }
     }
-}
-
-// TODO: Extract these backoff configurations into a shared module.
-
-/// Backoff used while waiting for the beacon node configuration.
-fn fast_backoff() -> ExponentialBuilder {
-    ExponentialBuilder::default()
-        .with_min_delay(Duration::from_millis(100))
-        .with_max_delay(Duration::from_secs(5))
-        .with_factor(1.6)
-        .without_max_times()
-        .with_jitter()
 }
 
 /// Backoff used between SSE reconnection attempts.
