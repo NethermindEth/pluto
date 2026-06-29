@@ -27,6 +27,7 @@ use pluto_core::{
     types::{Duty, DutyType, ProposalType, SlotNumber},
     version::SUPPORTED,
 };
+use pluto_featureset::FeatureSet;
 use pluto_infosync::Component as InfoSync;
 use pluto_p2p::{p2p_context::P2PContext, peer::peer_id_from_key, utils::keypair_from_secret_key};
 use pluto_priority::{
@@ -166,7 +167,13 @@ fn build_host(
     let prio = Arc::new(prio);
 
     // infosync subscribes to the prioritiser inside `new`.
-    let infosync = Arc::new(InfoSync::new(prio.clone(), versions, protocols, proposals));
+    let infosync = Arc::new(InfoSync::new(
+        prio.clone(),
+        versions,
+        protocols,
+        proposals,
+        &FeatureSet::new(),
+    ));
 
     // Capture subscriber registered after infosync's (fan-out runs in
     // registration order, so a capture message implies infosync is updated).

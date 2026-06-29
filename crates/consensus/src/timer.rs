@@ -26,11 +26,11 @@ use std::{
     collections::{HashMap, hash_map::Entry},
     future::Future,
     pin::Pin,
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
-use pluto_featureset::{Feature, GLOBAL_STATE};
+use pluto_featureset::{Feature, FeatureSet};
 use tokio::time::{Instant, sleep_until};
 
 use pluto_core::types::{Duty, DutyType};
@@ -129,17 +129,24 @@ pub trait RoundTimer: Send + Sync {
 #[derive(Debug, Clone, Default)]
 pub struct IncreasingRoundTimer {
     duty: Option<Duty>,
+    feature_set: Arc<FeatureSet>,
 }
 
 impl IncreasingRoundTimer {
     /// Creates an increasing round timer.
     pub fn new() -> Self {
-        Self { duty: None }
+        Self {
+            duty: None,
+            feature_set: Arc::new(FeatureSet::new()),
+        }
     }
 
     /// Creates an increasing round timer for a duty.
-    pub fn with_duty(duty: Duty) -> Self {
-        Self { duty: Some(duty) }
+    pub fn with_duty(duty: Duty, feature_set: Arc<FeatureSet>) -> Self {
+        Self {
+            duty: Some(duty),
+            feature_set,
+        }
     }
 }
 
@@ -149,7 +156,8 @@ impl RoundTimer for IncreasingRoundTimer {
     }
 
     fn timer(&self, round: i64) -> Result<RoundTimerFuture> {
-        let timeout = match proposal_timeout_duration(self.duty.as_ref(), round) {
+        let timeout = match proposal_timeout_duration(self.duty.as_ref(), round, &self.feature_set)
+        {
             Some(timeout) => timeout,
             None => increasing_round_timeout(round)?,
         };
@@ -179,6 +187,7 @@ impl RoundTimer for IncreasingRoundTimer {
 #[derive(Debug, Default)]
 pub struct EagerDoubleLinearRoundTimer {
     duty: Option<Duty>,
+    feature_set: Arc<FeatureSet>,
     first_deadlines: Mutex<HashMap<i64, Instant>>,
 }
 
@@ -187,14 +196,16 @@ impl EagerDoubleLinearRoundTimer {
     pub fn new() -> Self {
         Self {
             duty: None,
+            feature_set: Arc::new(FeatureSet::new()),
             first_deadlines: Mutex::new(HashMap::new()),
         }
     }
 
     /// Creates an eager double linear round timer for a duty.
-    pub fn with_duty(duty: Duty) -> Self {
+    pub fn with_duty(duty: Duty, feature_set: Arc<FeatureSet>) -> Self {
         Self {
             duty: Some(duty),
+            feature_set,
             first_deadlines: Mutex::new(HashMap::new()),
         }
     }
@@ -206,7 +217,8 @@ impl RoundTimer for EagerDoubleLinearRoundTimer {
     }
 
     fn timer(&self, round: i64) -> Result<RoundTimerFuture> {
-        let timeout = match proposal_timeout_duration(self.duty.as_ref(), round) {
+        let timeout = match proposal_timeout_duration(self.duty.as_ref(), round, &self.feature_set)
+        {
             Some(timeout) => timeout,
             None => linear_round_timeout(round)?,
         };
@@ -240,17 +252,24 @@ impl RoundTimer for EagerDoubleLinearRoundTimer {
 #[derive(Debug, Clone, Default)]
 pub struct LinearRoundTimer {
     duty: Option<Duty>,
+    feature_set: Arc<FeatureSet>,
 }
 
 impl LinearRoundTimer {
     /// Creates a linear round timer.
     pub fn new() -> Self {
-        Self { duty: None }
+        Self {
+            duty: None,
+            feature_set: Arc::new(FeatureSet::new()),
+        }
     }
 
     /// Creates a linear round timer for a duty.
-    pub fn with_duty(duty: Duty) -> Self {
-        Self { duty: Some(duty) }
+    pub fn with_duty(duty: Duty, feature_set: Arc<FeatureSet>) -> Self {
+        Self {
+            duty: Some(duty),
+            feature_set,
+        }
     }
 }
 
@@ -260,7 +279,8 @@ impl RoundTimer for LinearRoundTimer {
     }
 
     fn timer(&self, round: i64) -> Result<RoundTimerFuture> {
-        let timeout = match proposal_timeout_duration(self.duty.as_ref(), round) {
+        let timeout = match proposal_timeout_duration(self.duty.as_ref(), round, &self.feature_set)
+        {
             Some(timeout) => timeout,
             None if round == 1 => Duration::from_secs(1),
             None => linear_subsequent_round_timeout(round)?,
@@ -271,32 +291,35 @@ impl RoundTimer for LinearRoundTimer {
 }
 
 /// Returns a timer function based on the enabled features.
-pub fn get_round_timer_func() -> RoundTimerFunc {
-    if feature_enabled(Feature::Linear) {
-        return Box::new(|duty| {
+///
+/// The injected `feature_set` is cloned into each built timer, which reads
+/// `ProposalTimeout` from it per round.
+pub fn get_round_timer_func(feature_set: Arc<FeatureSet>) -> RoundTimerFunc {
+    if feature_set.enabled(Feature::Linear) {
+        return Box::new(move |duty| {
             if is_proposer(&duty) {
-                Box::new(LinearRoundTimer::with_duty(duty))
-            } else if feature_enabled(Feature::EagerDoubleLinear) {
-                Box::new(EagerDoubleLinearRoundTimer::with_duty(duty))
+                Box::new(LinearRoundTimer::with_duty(duty, feature_set.clone()))
+            } else if feature_set.enabled(Feature::EagerDoubleLinear) {
+                Box::new(EagerDoubleLinearRoundTimer::with_duty(
+                    duty,
+                    feature_set.clone(),
+                ))
             } else {
-                Box::new(IncreasingRoundTimer::with_duty(duty))
+                Box::new(IncreasingRoundTimer::with_duty(duty, feature_set.clone()))
             }
         });
     }
 
-    if feature_enabled(Feature::EagerDoubleLinear) {
-        Box::new(|duty| Box::new(EagerDoubleLinearRoundTimer::with_duty(duty)))
+    if feature_set.enabled(Feature::EagerDoubleLinear) {
+        Box::new(move |duty| {
+            Box::new(EagerDoubleLinearRoundTimer::with_duty(
+                duty,
+                feature_set.clone(),
+            ))
+        })
     } else {
-        Box::new(|duty| Box::new(IncreasingRoundTimer::with_duty(duty)))
+        Box::new(move |duty| Box::new(IncreasingRoundTimer::with_duty(duty, feature_set.clone())))
     }
-}
-
-/// Returns whether a consensus timer feature is enabled globally.
-fn feature_enabled(feature: Feature) -> bool {
-    GLOBAL_STATE
-        .read()
-        .expect("global feature set lock poisoned")
-        .enabled(feature)
 }
 
 /// Returns true for duties that use the proposer-specific timer path.
@@ -304,9 +327,15 @@ fn is_proposer(duty: &Duty) -> bool {
     matches!(&duty.duty_type, DutyType::Proposer)
 }
 
-/// Returns proposer round-one override duration when enabled.
-fn proposal_timeout_duration(duty: Option<&Duty>, round: i64) -> Option<Duration> {
-    if round == 1 && duty.is_some_and(is_proposer) && feature_enabled(Feature::ProposalTimeout) {
+/// Returns the proposer round-one override duration, when `ProposalTimeout` is
+/// enabled and the duty is a proposer in round one.
+fn proposal_timeout_duration(
+    duty: Option<&Duty>,
+    round: i64,
+    feature_set: &FeatureSet,
+) -> Option<Duration> {
+    if round == 1 && duty.is_some_and(is_proposer) && feature_set.enabled(Feature::ProposalTimeout)
+    {
         Some(PROPOSAL_TIMEOUT)
     } else {
         None
@@ -390,11 +419,7 @@ fn checked_deadline(start: Instant, timeout: Duration, round: i64) -> Result<Ins
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        mem,
-        sync::{Mutex as StdMutex, MutexGuard},
-        time::Duration,
-    };
+    use std::{sync::Arc, time::Duration};
 
     use pluto_featureset::{Config, FeatureSet};
     use test_case::test_case;
@@ -402,9 +427,6 @@ mod tests {
 
     use super::*;
     use pluto_core::types::SlotNumber;
-
-    // Feature state is process-global.
-    static FEATURESET_TEST_LOCK: StdMutex<()> = StdMutex::new(());
 
     #[test_case(TimerType::Increasing, "inc" ; "increasing")]
     #[test_case(TimerType::EagerDoubleLinear, "eager_dlinear" ; "eager_double_linear")]
@@ -499,55 +521,42 @@ mod tests {
         let attester = Duty::new_attester_duty(SlotNumber::from(0));
         let proposer = Duty::new_proposer_duty(SlotNumber::from(0));
 
-        with_featureset(Config::default(), || {
-            let timer_func = get_round_timer_func();
-            assert_eq!(
-                TimerType::EagerDoubleLinear,
-                timer_func(attester.clone()).timer_type()
-            );
-        });
-
-        with_featureset(
-            features_config(vec![], vec![Feature::EagerDoubleLinear]),
-            || {
-                let timer_func = get_round_timer_func();
-                assert_eq!(
-                    TimerType::Increasing,
-                    timer_func(attester.clone()).timer_type()
-                );
-            },
+        let fs = FeatureSet::new();
+        let timer_func = get_round_timer_func(Arc::new(fs));
+        assert_eq!(
+            TimerType::EagerDoubleLinear,
+            timer_func(attester.clone()).timer_type()
         );
 
-        with_featureset(
-            features_config(vec![Feature::Linear], vec![Feature::EagerDoubleLinear]),
-            || {
-                let timer_func = get_round_timer_func();
-                assert_eq!(
-                    TimerType::Increasing,
-                    timer_func(attester.clone()).timer_type()
-                );
-            },
+        let fs = featureset(vec![], vec![Feature::EagerDoubleLinear]);
+        let timer_func = get_round_timer_func(Arc::new(fs));
+        assert_eq!(
+            TimerType::Increasing,
+            timer_func(attester.clone()).timer_type()
         );
 
-        with_featureset(features_config(vec![Feature::Linear], vec![]), || {
-            let timer_func = get_round_timer_func();
-            assert_eq!(
-                TimerType::EagerDoubleLinear,
-                timer_func(attester).timer_type()
-            );
-            assert_eq!(TimerType::Linear, timer_func(proposer).timer_type());
-        });
+        let fs = featureset(vec![Feature::Linear], vec![Feature::EagerDoubleLinear]);
+        let timer_func = get_round_timer_func(Arc::new(fs));
+        assert_eq!(
+            TimerType::Increasing,
+            timer_func(attester.clone()).timer_type()
+        );
+
+        let fs = featureset(vec![Feature::Linear], vec![]);
+        let timer_func = get_round_timer_func(Arc::new(fs));
+        assert_eq!(
+            TimerType::EagerDoubleLinear,
+            timer_func(attester).timer_type()
+        );
+        assert_eq!(TimerType::Linear, timer_func(proposer).timer_type());
     }
 
     #[tokio::test(start_paused = true)]
     async fn proposal_timeout_optimization_increasing_round_timer() {
         let duty = Duty::new_proposer_duty(SlotNumber::from(0));
-        let timer = IncreasingRoundTimer::with_duty(duty);
+        let timer = IncreasingRoundTimer::with_duty(duty, proposal_timeout_fs());
 
-        let timeout = with_featureset(
-            features_config(vec![Feature::ProposalTimeout], vec![]),
-            || must_timer(timer.timer(1)),
-        );
+        let timeout = must_timer(timer.timer(1));
         assert_fires_after(
             timeout,
             Duration::from_millis(1_500),
@@ -555,10 +564,7 @@ mod tests {
         )
         .await;
 
-        let timeout = with_featureset(
-            features_config(vec![Feature::ProposalTimeout], vec![]),
-            || must_timer(timer.timer(2)),
-        );
+        let timeout = must_timer(timer.timer(2));
         assert_fires_after(
             timeout,
             Duration::from_millis(1_250),
@@ -570,12 +576,9 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn proposal_timeout_optimization_double_eager_linear_round_timer() {
         let duty = Duty::new_proposer_duty(SlotNumber::from(0));
-        let timer = EagerDoubleLinearRoundTimer::with_duty(duty);
+        let timer = EagerDoubleLinearRoundTimer::with_duty(duty, proposal_timeout_fs());
 
-        let timeout = with_featureset(
-            features_config(vec![Feature::ProposalTimeout], vec![]),
-            || must_timer(timer.timer(1)),
-        );
+        let timeout = must_timer(timer.timer(1));
         assert_fires_after(
             timeout,
             Duration::from_millis(1_500),
@@ -583,10 +586,7 @@ mod tests {
         )
         .await;
 
-        let timeout = with_featureset(
-            features_config(vec![Feature::ProposalTimeout], vec![]),
-            || must_timer(timer.timer(2)),
-        );
+        let timeout = must_timer(timer.timer(2));
         assert_fires_after(
             timeout,
             Duration::from_millis(2_000),
@@ -598,15 +598,12 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn proposal_timeout_optimization_double_eager_linear_round_one_doubles() {
         let duty = Duty::new_proposer_duty(SlotNumber::from(0));
-        let timer = EagerDoubleLinearRoundTimer::with_duty(duty);
+        let timer = EagerDoubleLinearRoundTimer::with_duty(duty, proposal_timeout_fs());
 
-        let timeout = with_featureset(
-            features_config(vec![Feature::ProposalTimeout], vec![]),
-            || {
-                drop(must_timer(timer.timer(1)));
-                must_timer(timer.timer(1))
-            },
-        );
+        let timeout = {
+            drop(must_timer(timer.timer(1)));
+            must_timer(timer.timer(1))
+        };
         let timeout = spawn_timeout(timeout);
         advance(Duration::from_millis(2_500)).await;
         tokio::task::yield_now().await;
@@ -625,12 +622,9 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn proposal_timeout_optimization_linear_round_timer() {
         let duty = Duty::new_proposer_duty(SlotNumber::from(0));
-        let timer = LinearRoundTimer::with_duty(duty);
+        let timer = LinearRoundTimer::with_duty(duty, proposal_timeout_fs());
 
-        let timeout = with_featureset(
-            features_config(vec![Feature::ProposalTimeout], vec![]),
-            || must_timer(timer.timer(1)),
-        );
+        let timeout = must_timer(timer.timer(1));
         assert_fires_after(
             timeout,
             Duration::from_millis(1_500),
@@ -638,10 +632,7 @@ mod tests {
         )
         .await;
 
-        let timeout = with_featureset(
-            features_config(vec![Feature::ProposalTimeout], vec![]),
-            || must_timer(timer.timer(3)),
-        );
+        let timeout = must_timer(timer.timer(3));
         let want = Duration::from_millis(600);
         assert_eq!(want, must_duration(linear_subsequent_round_timeout(3)));
         assert_fires_after(timeout, want, "round 3 proposer timer did not fire").await;
@@ -779,42 +770,12 @@ mod tests {
         }
     }
 
-    fn with_featureset<T>(config: Config, test: impl FnOnce() -> T) -> T {
-        let _guard = FeatureSetGuard::new(config);
-        test()
+    fn featureset(enabled: Vec<Feature>, disabled: Vec<Feature>) -> FeatureSet {
+        FeatureSet::from_config(features_config(enabled, disabled))
+            .expect("test featureset is valid")
     }
 
-    struct FeatureSetGuard {
-        previous: Option<FeatureSet>,
-        _lock: MutexGuard<'static, ()>,
-    }
-
-    impl FeatureSetGuard {
-        fn new(config: Config) -> Self {
-            let lock = FEATURESET_TEST_LOCK
-                .lock()
-                .expect("featureset test lock poisoned");
-            let replacement = FeatureSet::from_config(config).expect("test featureset is valid");
-            let mut global = GLOBAL_STATE
-                .write()
-                .expect("global feature set lock poisoned");
-            let previous = mem::replace(&mut *global, replacement);
-            drop(global);
-
-            Self {
-                previous: Some(previous),
-                _lock: lock,
-            }
-        }
-    }
-
-    impl Drop for FeatureSetGuard {
-        fn drop(&mut self) {
-            if let Some(previous) = self.previous.take() {
-                *GLOBAL_STATE
-                    .write()
-                    .expect("global feature set lock poisoned") = previous;
-            }
-        }
+    fn proposal_timeout_fs() -> Arc<FeatureSet> {
+        Arc::new(featureset(vec![Feature::ProposalTimeout], vec![]))
     }
 }

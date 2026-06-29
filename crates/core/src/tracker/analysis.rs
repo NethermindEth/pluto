@@ -1,13 +1,10 @@
 //! Pure analysis functions for tracker duty failure detection and peer
 //! participation accounting.
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::OnceLock,
-};
+use std::collections::{HashMap, HashSet};
 
 use pluto_eth2api::EthBeaconNodeApiClientError;
-use pluto_featureset::{Feature, GLOBAL_STATE};
+use pluto_featureset::{Feature, FeatureSet};
 use pluto_ssz::HashRoot;
 
 use crate::{
@@ -42,30 +39,22 @@ pub(crate) fn msg_roots_consistent(parsigs: &ParSigsByMsg) -> bool {
     parsigs.values().all(|roots| roots.len() <= 1)
 }
 
-/// Set of duty types for which chain inclusion is supported.
-///
-/// The result is cached for the lifetime of the process. This assumes
-/// `GLOBAL_STATE` (and therefore `Feature::AttestationInclusion`) is
-/// configured once at startup and never mutated afterward — matching Go,
-/// which reads the flag on every call but relies on the same invariant.
-pub(crate) fn incl_supported() -> &'static HashSet<DutyType> {
-    static CACHE: OnceLock<HashSet<DutyType>> = OnceLock::new();
-    CACHE.get_or_init(|| {
-        let mut set = HashSet::new();
-        set.insert(DutyType::Proposer);
-        let state = GLOBAL_STATE.read().expect("featureset poisoned");
-        if state.enabled(Feature::AttestationInclusion) {
-            set.insert(DutyType::Attester);
-            set.insert(DutyType::Aggregator);
-        }
-        set
-    })
+/// Duty types for which on-chain inclusion is tracked: always proposers, plus
+/// attesters and aggregators when `AttestationInclusion` is enabled.
+pub(crate) fn incl_supported(fs: &FeatureSet) -> HashSet<DutyType> {
+    let mut set = HashSet::new();
+    set.insert(DutyType::Proposer);
+    if fs.enabled(Feature::AttestationInclusion) {
+        set.insert(DutyType::Attester);
+        set.insert(DutyType::Aggregator);
+    }
+    set
 }
 
 /// Returns the terminal step for a duty type — either `Bcast` or
 /// `ChainInclusion` depending on whether inclusion checks are supported.
-pub(crate) fn last_step(duty_type: &DutyType) -> Step {
-    if incl_supported().contains(duty_type) {
+pub(crate) fn last_step(duty_type: &DutyType, feature_set: &FeatureSet) -> Step {
+    if incl_supported(feature_set).contains(duty_type) {
         Step::ChainInclusion
     } else {
         Step::Bcast
@@ -108,7 +97,7 @@ pub(crate) struct DutyFailedStep {
 ///
 /// An empty event slice indicates a duty
 /// that failed before any event was recorded (returns `step = Zero`).
-pub(crate) fn duty_failed_step(events: &[Event]) -> DutyFailedStep {
+pub(crate) fn duty_failed_step(events: &[Event], feature_set: &FeatureSet) -> DutyFailedStep {
     if events.is_empty() {
         return DutyFailedStep {
             failed: true,
@@ -154,7 +143,7 @@ pub(crate) fn duty_failed_step(events: &[Event]) -> DutyFailedStep {
 
     // Determine if the final step was successful. Use the duty type from the
     // first event (all events in the slice share the same duty).
-    let last_for_duty = last_step(&events[0].duty.duty_type);
+    let last_for_duty = last_step(&events[0].duty.duty_type, feature_set);
     if last.step == last_for_duty && last.step_err.is_none() {
         return DutyFailedStep {
             failed: false,
@@ -176,6 +165,7 @@ pub(crate) fn analyse_duty_failed(
     all_events: &HashMap<Duty, Vec<Event>>,
     failed_step: &DutyFailedStep,
     msg_root_consistent: bool,
+    feature_set: &FeatureSet,
 ) -> Option<DutyFailure> {
     if !failed_step.failed {
         return None;
@@ -186,7 +176,7 @@ pub(crate) fn analyse_duty_failed(
     let mut err = failed_step.err.clone();
 
     match failed_step.step {
-        Step::Fetcher => return analyse_fetcher_failed(duty, all_events, err),
+        Step::Fetcher => return analyse_fetcher_failed(duty, all_events, err, feature_set),
         Step::Consensus => {
             if err.is_some() {
                 reason = REASON_NO_CONSENSUS;
@@ -266,12 +256,20 @@ pub(crate) fn analyse_fetcher_failed(
     duty: &Duty,
     all_events: &HashMap<Duty, Vec<Event>>,
     fetch_err: Option<StepError>,
+    feature_set: &FeatureSet,
 ) -> Option<DutyFailure> {
     match &duty.duty_type {
-        DutyType::Proposer => Some(analyse_fetcher_failed_proposer(duty, all_events, fetch_err)),
-        DutyType::Aggregator => analyse_fetcher_failed_aggregator(duty, all_events, fetch_err),
+        DutyType::Proposer => Some(analyse_fetcher_failed_proposer(
+            duty,
+            all_events,
+            fetch_err,
+            feature_set,
+        )),
+        DutyType::Aggregator => {
+            analyse_fetcher_failed_aggregator(duty, all_events, fetch_err, feature_set)
+        }
         DutyType::SyncContribution => {
-            analyse_fetcher_failed_sync_contribution(duty, all_events, fetch_err)
+            analyse_fetcher_failed_sync_contribution(duty, all_events, fetch_err, feature_set)
         }
         _ => {
             // TODO: when the fetcher is ported, add an `is_cancelled_error` check here
@@ -298,13 +296,14 @@ fn analyse_fetcher_failed_proposer(
     duty: &Duty,
     all_events: &HashMap<Duty, Vec<Event>>,
     fetch_err: Option<StepError>,
+    feature_set: &FeatureSet,
 ) -> DutyFailure {
     let randao_duty = Duty::new_randao_duty(duty.slot);
     let randao_events = all_events
         .get(&randao_duty)
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let randao = duty_failed_step(randao_events);
+    let randao = duty_failed_step(randao_events, feature_set);
 
     let reason = if randao.failed {
         match randao.step {
@@ -328,6 +327,7 @@ fn analyse_fetcher_failed_aggregator(
     duty: &Duty,
     all_events: &HashMap<Duty, Vec<Event>>,
     fetch_err: Option<StepError>,
+    feature_set: &FeatureSet,
 ) -> Option<DutyFailure> {
     fetch_err.as_ref()?;
 
@@ -336,7 +336,7 @@ fn analyse_fetcher_failed_aggregator(
         .get(&prep_agg_duty)
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let prep = duty_failed_step(prep_events);
+    let prep = duty_failed_step(prep_events, feature_set);
 
     if prep.failed {
         let reason = match prep.step {
@@ -357,7 +357,7 @@ fn analyse_fetcher_failed_aggregator(
         .get(&attester_duty)
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let att = duty_failed_step(att_events);
+    let att = duty_failed_step(att_events, feature_set);
 
     let reason = if att.failed && att.step <= Step::DutyDB {
         REASON_MISSING_AGGREGATOR_ATTESTATION
@@ -376,12 +376,13 @@ fn analyse_fetcher_failed_sync_contribution(
     duty: &Duty,
     all_events: &HashMap<Duty, Vec<Event>>,
     fetch_err: Option<StepError>,
+    feature_set: &FeatureSet,
 ) -> Option<DutyFailure> {
     fetch_err.as_ref()?;
 
     let prep_duty = Duty::new_prepare_sync_contribution_duty(duty.slot);
     let prep_events = all_events.get(&prep_duty).map(Vec::as_slice).unwrap_or(&[]);
-    let prep = duty_failed_step(prep_events);
+    let prep = duty_failed_step(prep_events, feature_set);
 
     if prep.failed {
         let reason = match prep.step {
@@ -402,7 +403,7 @@ fn analyse_fetcher_failed_sync_contribution(
         .get(&sync_msg_duty)
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let sync = duty_failed_step(sync_events);
+    let sync = duty_failed_step(sync_events, feature_set);
 
     let reason = if sync.failed && sync.step <= Step::AggSigDB {
         REASON_SYNC_CONTRIBUTION_NO_SYNC_MSG
@@ -594,8 +595,9 @@ mod tests {
         events: &HashMap<Duty, Vec<Event>>,
         msg_root_consistent: bool,
     ) -> Option<DutyFailure> {
-        let failed_step = duty_failed_step(events.get(duty).map(Vec::as_slice).unwrap_or(&[]));
-        analyse_duty_failed(duty, events, &failed_step, msg_root_consistent)
+        let fs = FeatureSet::new();
+        let failed_step = duty_failed_step(events.get(duty).map(Vec::as_slice).unwrap_or(&[]), &fs);
+        analyse_duty_failed(duty, events, &failed_step, msg_root_consistent, &fs)
     }
 
     fn evt(duty: Duty, step: Step) -> Event {
@@ -842,7 +844,7 @@ mod tests {
     #[test]
     fn analyse_duty_failed_attester_success() {
         let att = Duty::new_attester_duty(SlotNumber::new(1));
-        assert_eq!(last_step(&att.duty_type), Step::Bcast);
+        assert_eq!(last_step(&att.duty_type, &FeatureSet::new()), Step::Bcast);
 
         // Events for every step up to (but not including) chainInclusion.
         let steps = [
@@ -883,12 +885,12 @@ mod tests {
         ];
         let events: Vec<Event> = steps.iter().map(|s| evt(att.clone(), *s)).collect();
 
-        let r = duty_failed_step(&events);
+        let r = duty_failed_step(&events, &FeatureSet::new());
         assert!(!r.failed);
         assert_eq!(r.step, Step::Zero);
         assert!(r.err.is_none());
 
-        let r = duty_failed_step(&[]);
+        let r = duty_failed_step(&[], &FeatureSet::new());
         assert!(r.failed);
         assert_eq!(r.step, Step::Zero);
         assert!(r.err.is_none());
@@ -918,7 +920,7 @@ mod tests {
             }
         }
 
-        let r = duty_failed_step(&events);
+        let r = duty_failed_step(&events, &FeatureSet::new());
         assert!(r.failed);
         assert_eq!(r.step, Step::Bcast);
         assert!(r.err.is_some());
@@ -928,7 +930,7 @@ mod tests {
         for s in steps {
             events.push(evt(att.clone(), s));
         }
-        let r = duty_failed_step(&events);
+        let r = duty_failed_step(&events, &FeatureSet::new());
         assert!(!r.failed);
         assert_eq!(r.step, Step::Zero);
         assert!(r.err.is_none());
@@ -1239,7 +1241,7 @@ mod tests {
                 // slot) must surface as `Step::Fetcher` so the metrics reporter
                 // skips them rather than counting a success.
                 assert_eq!(
-                    duty_failed_step(&c.events[&c.duty]).step,
+                    duty_failed_step(&c.events[&c.duty], &FeatureSet::new()).step,
                     Step::Fetcher,
                     "{}: expected fetcher no-op step",
                     c.name

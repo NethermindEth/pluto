@@ -201,7 +201,6 @@ async fn qbft_priority_consensus() {
 
 #[tokio::test]
 async fn qbft_consensus_participate_then_late_propose() {
-    let _featureset_guard = super::FEATURESET_TEST_LOCK.lock().await;
     let threshold = 4;
     let (sniffed_tx, _sniffed_rx) = mpsc::unbounded_channel();
     let active_nodes = in_memory_network(threshold, threshold, false, None, sniffed_tx);
@@ -741,7 +740,9 @@ fn in_memory_network(
                 compare_attestations,
                 timer_func: match round_timeout {
                     Some(timeout) => short_timer_func(timeout),
-                    None => crate::timer::get_round_timer_func(),
+                    None => crate::timer::get_round_timer_func(Arc::new(
+                        pluto_featureset::FeatureSet::new(),
+                    )),
                 },
                 sniffer: {
                     let sniffed_tx = sniffed_tx.clone();

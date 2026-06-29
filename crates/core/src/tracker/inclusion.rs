@@ -18,6 +18,7 @@
 use std::{any::Any, collections::HashMap, sync::Arc, time::Duration};
 
 use pluto_eth2api::versioned;
+use pluto_featureset::FeatureSet;
 use pluto_ssz::{BitList, HashRoot};
 use tree_hash::TreeHash;
 
@@ -153,16 +154,18 @@ pub struct InclusionCore {
     tracker_incl_fn: TrackerInclFn,
     missed_fn: MissedFn,
     att_included_fn: AttIncludedFn,
+    feature_set: Arc<FeatureSet>,
 }
 
 impl InclusionCore {
     /// Creates a core with the production reporters ([`report_missed`] and
     /// [`report_att_inclusion`]) and the given tracker callback.
-    pub fn new(tracker_incl_fn: TrackerInclFn) -> Self {
+    pub fn new(tracker_incl_fn: TrackerInclFn, feature_set: Arc<FeatureSet>) -> Self {
         Self::with_handlers(
             tracker_incl_fn,
             Box::new(report_missed),
             Box::new(report_att_inclusion),
+            feature_set,
         )
     }
 
@@ -171,6 +174,7 @@ impl InclusionCore {
         tracker_incl_fn: TrackerInclFn,
         missed_fn: MissedFn,
         att_included_fn: AttIncludedFn,
+        feature_set: Arc<FeatureSet>,
     ) -> Self {
         Self {
             submissions: HashMap::new(),
@@ -178,6 +182,7 @@ impl InclusionCore {
             tracker_incl_fn,
             missed_fn,
             att_included_fn,
+            feature_set,
         }
     }
 
@@ -192,7 +197,7 @@ impl InclusionCore {
         data: Box<dyn SignedData>,
         delay: Duration,
     ) -> Result<(), InclusionError> {
-        if !incl_supported().contains(&duty.duty_type) {
+        if !incl_supported(&self.feature_set).contains(&duty.duty_type) {
             return Ok(());
         }
 
@@ -566,23 +571,6 @@ fn report_att_inclusion(sub: &Submission, block: &Block) {
     TRACKER_METRICS.inclusion_delay.set(inclusion_delay_f64);
 }
 
-#[cfg(test)]
-impl InclusionCore {
-    /// Inserts a submission directly, bypassing [`InclusionCore::submitted`]'s
-    /// `incl_supported` feature gate. Used by tests that exercise the inclusion
-    /// checks for attester/aggregator duties without toggling the (cached,
-    /// process-global) `AttestationInclusion` feature.
-    fn insert_submission(&mut self, sub: Submission) {
-        self.submissions.insert(
-            SubKey {
-                duty: sub.duty.clone(),
-                pubkey: sub.pubkey,
-            },
-            sub,
-        );
-    }
-}
-
 /// Logs that a proposer's block was included on-chain.
 fn log_block_included(sub: &Submission, block_slot: u64, blinded: bool) {
     let msg = if blinded {
@@ -611,11 +599,28 @@ mod tests {
     use pluto_testutil::random::random_deneb_versioned_attestation;
     use tree_hash::TreeHash;
 
+    use pluto_featureset::{Config, Feature};
+
     use super::*;
     use crate::types::SlotNumber;
 
     /// Shared recorder of duties passed to a callback.
     type Rec = Arc<Mutex<Vec<Duty>>>;
+
+    fn featureset(attestation_inclusion: bool) -> Arc<FeatureSet> {
+        let enabled = if attestation_inclusion {
+            vec![Feature::AttestationInclusion]
+        } else {
+            vec![]
+        };
+        Arc::new(
+            FeatureSet::from_config(Config {
+                enabled,
+                ..Config::default()
+            })
+            .expect("test featureset is valid"),
+        )
+    }
 
     fn pubkey() -> PubKey {
         PubKey::from([0u8; 48])
@@ -700,6 +705,7 @@ mod tests {
             Box::new(move |sub: &Submission, _b: &Block| {
                 inc.lock().unwrap().push(sub.duty.clone())
             }),
+            featureset(true),
         );
 
         let att1 = Attestation::new(phase0_attestation(1));
@@ -707,30 +713,37 @@ mod tests {
         let att3 = Attestation::new(phase0_attestation(3));
         let block4 = proposal();
 
-        let att1_root = att1.0.data.tree_hash_root().0;
+        // Seeded into the block below; the rest are recomputed inside `submitted`.
         let agg2_root = agg2.0.message.aggregate.data.tree_hash_root().0;
-        let att3_root = att3.0.data.tree_hash_root().0;
 
-        core.insert_submission(submission(
+        core.submitted(
             Duty::new_attester_duty(SlotNumber::new(1)),
+            pubkey(),
             Box::new(att1),
-            att1_root,
-        ));
-        core.insert_submission(submission(
+            Duration::ZERO,
+        )
+        .expect("submit attester 1");
+        core.submitted(
             Duty::new_aggregator_duty(SlotNumber::new(2)),
+            pubkey(),
             Box::new(agg2),
-            agg2_root,
-        ));
-        core.insert_submission(submission(
+            Duration::ZERO,
+        )
+        .expect("submit aggregator 2");
+        core.submitted(
             Duty::new_attester_duty(SlotNumber::new(3)),
+            pubkey(),
             Box::new(att3),
-            att3_root,
-        ));
-        core.insert_submission(submission(
+            Duration::ZERO,
+        )
+        .expect("submit attester 3");
+        core.submitted(
             Duty::new_proposer_duty(SlotNumber::new(100)),
+            pubkey(),
             Box::new(block4),
-            [0u8; 32],
-        ));
+            Duration::ZERO,
+        )
+        .expect("submit proposer 100");
 
         // The aggregator lookup must find a block attestation at its data root
         // before failing the versioned downcast, so seed one.
@@ -764,6 +777,7 @@ mod tests {
                 Box::new(|_d: &Duty, _pk, _err| {}),
                 Box::new(move |sub: &Submission| mis.lock().unwrap().push(sub.duty.clone())),
                 Box::new(|_s: &Submission, _b: &Block| {}),
+                featureset(false),
             );
 
             // The duty slot is independent of the proposal's internal slot;
@@ -799,6 +813,7 @@ mod tests {
             Box::new(move |_d: &Duty, _pk, err: Option<StepError>| res.lock().unwrap().push(err)),
             Box::new(move |sub: &Submission| mis.lock().unwrap().push(sub.duty.clone())),
             Box::new(|_s: &Submission, _b: &Block| {}),
+            featureset(false),
         );
 
         core.submitted(

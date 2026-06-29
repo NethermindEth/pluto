@@ -32,6 +32,7 @@ pub mod inclusion;
 
 use std::{collections::HashMap, future::Future, sync::Arc};
 
+use pluto_featureset::FeatureSet;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -341,6 +342,7 @@ pub struct TrackerService {
     failed_duty_reporter: Box<dyn DutyResultReporter>,
     participation_reporter: Box<dyn ParticipationReporter>,
     unsupported_ignorer: UnsupportedIgnorer,
+    feature_set: Arc<FeatureSet>,
 }
 
 impl TrackerService {
@@ -354,6 +356,7 @@ impl TrackerService {
     /// Both `analyser` and `deleter` must have been started with the same
     /// `cancel` token as passed here, so that all three components shut down
     /// together.
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         cancel: CancellationToken,
         analyser: DeadlinerHandle,
@@ -362,6 +365,7 @@ impl TrackerService {
         deleter_rx: DeleterRx,
         peers: Vec<PeerInfo>,
         from_slot: u64,
+        feature_set: Arc<FeatureSet>,
     ) -> Arc<TrackerHandle> {
         Self::start_with_buffer_and_sinks(
             cancel,
@@ -373,6 +377,7 @@ impl TrackerService {
             EVENT_BUFFER,
             Box::new(MetricsDutyReporter::new()),
             Box::new(MetricsParticipationReporter::new(peers)),
+            feature_set,
         )
     }
 
@@ -387,6 +392,7 @@ impl TrackerService {
         buffer: usize,
         failed_duty_reporter: Box<dyn DutyResultReporter>,
         participation_reporter: Box<dyn ParticipationReporter>,
+        feature_set: Arc<FeatureSet>,
     ) -> Arc<TrackerHandle> {
         let (input_tx, input_rx) = mpsc::channel(buffer);
 
@@ -401,6 +407,7 @@ impl TrackerService {
             failed_duty_reporter,
             participation_reporter,
             unsupported_ignorer: UnsupportedIgnorer::new(),
+            feature_set,
         };
 
         let task = tokio::spawn(task.run());
@@ -413,9 +420,14 @@ impl TrackerService {
         let parsigs = extract_par_sigs(duty_events);
         report_par_sigs(duty, &parsigs);
 
-        let failed_step = duty_failed_step(duty_events);
-        let outcome =
-            analyse_duty_failed(duty, events, &failed_step, msg_roots_consistent(&parsigs));
+        let failed_step = duty_failed_step(duty_events, &self.feature_set);
+        let outcome = analyse_duty_failed(
+            duty,
+            events,
+            &failed_step,
+            msg_roots_consistent(&parsigs),
+            &self.feature_set,
+        );
 
         if self.unsupported_ignorer.check(duty, outcome.as_ref()) {
             return;
@@ -632,6 +644,7 @@ mod tests {
             EVENT_BUFFER,
             failure_sink,
             participation_sink,
+            Arc::new(pluto_featureset::FeatureSet::new()),
         );
 
         (handle, analyser_tx, deleter_tx)
@@ -712,6 +725,7 @@ mod tests {
             DeleterRx(deleter_rx),
             vec![],
             from_slot,
+            Arc::new(pluto_featureset::FeatureSet::new()),
         )
     }
 
@@ -799,6 +813,7 @@ mod tests {
             DeleterRx(deleter_rx),
             vec![],
             0,
+            Arc::new(pluto_featureset::FeatureSet::new()),
         );
 
         let duty = attester(1);
