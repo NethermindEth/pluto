@@ -33,7 +33,7 @@ use pluto_p2p::peer::Peer;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use behaviour::{CoreBehaviour, P2PHandles};
+use behaviour::{CoreBehaviour, CoreHandles};
 use wire::{ParSigExSeam, ValidatorInfo, WireInputs, WiredComponents, wire_core_workflow};
 
 /// Errors raised while constructing or running a distributed-validator node.
@@ -238,7 +238,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     let (node, handles) = behaviour::wire_p2p(
         key.clone(),
         config.p2p.clone(),
-        peers.clone(),
+        peers,
         Arc::clone(&consensus),
         Arc::clone(&duty_gater),
         lock.lock_hash.clone(),
@@ -291,7 +291,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
 }
 
 /// Builds the production parsigex seam from the real `parsigex::Handle`.
-fn production_parsigex_seam(handles: &P2PHandles) -> ParSigExSeam {
+fn production_parsigex_seam(handles: &CoreHandles) -> ParSigExSeam {
     let broadcast_handle = handles.parsigex.clone();
     let subscribe_handle = handles.parsigex.clone();
     ParSigExSeam {
@@ -324,7 +324,7 @@ fn production_parsigex_seam(handles: &P2PHandles) -> ParSigExSeam {
 async fn run_lifecycle(
     node: pluto_p2p::p2p::Node<CoreBehaviour>,
     consensus: Arc<qbft::Consensus>,
-    _handles: P2PHandles,
+    _handles: CoreHandles,
     wired: WiredComponents,
     validator_api_addr: std::net::SocketAddr,
     ct: CancellationToken,

@@ -19,7 +19,7 @@ use pluto_p2p::{
     gater,
     p2p::{Node, NodeType},
     p2p_context::P2PContext,
-    peer::{Peer, peer_id_from_key, verify_p2p_key},
+    peer::{self, Peer},
 };
 use pluto_parsigex as parsigex;
 use pluto_peerinfo::{self as peerinfo, LocalPeerInfo};
@@ -31,26 +31,26 @@ use crate::node::AppError;
 #[derive(NetworkBehaviour)]
 pub(crate) struct CoreBehaviour {
     /// Partial signature exchange between cluster peers.
-    pub(crate) parsigex: parsigex::Behaviour,
+    pub parsigex: parsigex::Behaviour,
     /// QBFT consensus message transport.
-    pub(crate) consensus: qbft::p2p::Behaviour,
+    pub consensus: qbft::p2p::Behaviour,
     /// Peer metadata exchange.
-    pub(crate) peerinfo: peerinfo::Behaviour,
+    pub peerinfo: peerinfo::Behaviour,
 }
 
 /// Async handles for driving the composed behaviour from the core workflow.
-pub(crate) struct P2PHandles {
+pub struct CoreHandles {
     /// Outbound partial-signature broadcast + inbound subscription handle.
-    pub(crate) parsigex: parsigex::Handle,
+    pub parsigex: parsigex::Handle,
     /// Outbound QBFT broadcast handle.
-    pub(crate) consensus: qbft::p2p::Handle,
+    pub consensus: qbft::p2p::Handle,
 }
 
 /// Composes the core behaviours and builds the libp2p [`Node`].
 ///
 /// Models Charon's `wireP2P`; the QBFT consensus component is constructed by
 /// the caller (so it can also be used for the core stitch) and the
-/// broadcaster↔behaviour construction cycle is resolved by the caller via the
+/// broadcaster/behaviour construction cycle is resolved by the caller via the
 /// `Arc<OnceLock<Handle>>` pattern.
 //
 // TODO(#402 part B): relay/NAT support (relay client + RelayManager), QUIC
@@ -65,11 +65,11 @@ pub(crate) fn wire_p2p(
     builder_enabled: bool,
     nickname: String,
     cancellation: CancellationToken,
-) -> Result<(Node<CoreBehaviour>, P2PHandles), AppError> {
+) -> Result<(Node<CoreBehaviour>, CoreHandles), AppError> {
     let peer_ids = peers.iter().map(|peer| peer.id).collect::<Vec<_>>();
-    let local_peer_id = peer_id_from_key(key.public_key())?;
+    let local_peer_id = peer::peer_id_from_key(key.public_key())?;
 
-    verify_p2p_key(&peers, &key)?;
+    peer::verify_p2p_key(&peers, &key)?;
 
     // TODO(#402 part B): relay/NAT support — use `new_conn_gater(peer_ids, relays)`
     // once relays are resolved. For minimal TCP-only wiring an open gater suffices
@@ -128,7 +128,7 @@ pub(crate) fn wire_p2p(
         },
     )?;
 
-    let handles = P2PHandles {
+    let handles = CoreHandles {
         parsigex: parsigex_handle,
         consensus: consensus_handle,
     };
