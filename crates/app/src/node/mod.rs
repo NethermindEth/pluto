@@ -235,7 +235,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     })?);
 
     // ---- P2P behaviours (parsigex + qbft + peerinfo) ----
-    let (node, handles) = behaviour::setup_p2p(
+    let (node, handles) = behaviour::wire_p2p(
         key.clone(),
         config.p2p.clone(),
         peers.clone(),

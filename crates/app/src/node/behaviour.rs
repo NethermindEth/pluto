@@ -55,7 +55,7 @@ pub(crate) struct P2PHandles {
 //
 // TODO(#402 part B): relay/NAT support (relay client + RelayManager), QUIC
 // transport, and bandwidth metrics — start with TCP + no relay.
-pub(crate) fn setup_p2p(
+pub(crate) fn wire_p2p(
     key: k256::SecretKey,
     p2p_config: pluto_p2p::config::P2PConfig,
     peers: Vec<Peer>,
