@@ -29,9 +29,8 @@ pub enum ConsoleColor {
 /// (e.g. via `--loki-addresses`), and `None` for commands that only need
 /// console output.
 // TODO: wire `log-output-path` (file output) and `log-format` (logfmt/json)
-// into the tracing layers — Charon's `LogOutputPath` / `Format`.
-// `pluto_tracing` supports console + Loki only, so `run`/`dkg`/`relay` accept
-// these flags for CLI parity but do not yet apply them.
+// into the tracing layers. `pluto_tracing` supports console + Loki only, so
+// `run`/`dkg`/`relay` accept these flags but do not yet apply them.
 pub fn build_console_tracing_config(
     level: impl Into<String>,
     color: &ConsoleColor,

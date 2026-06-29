@@ -1,25 +1,29 @@
-//! `run` command implementation — starts the long-running Pluto middleware
-//! client.
+//! The `run` command — the entry point for the long-running Pluto middleware
+//! client that performs distributed validator duties for a cluster: connecting
+//! to beacon nodes, exposing a validator-facing API, and coordinating duties
+//! with the other cluster operators over libp2p.
 //!
-//! Ports the CLI surface of Charon's `cmd/run.go` (v1.7.1): `newRunCmd` and
-//! every `bind*Flags` helper it calls. Scope is the command surface only —
-//! flags, defaults, validation, and the [`RunConfig`] object the flags
-//! populate.
+//! Typical invocation:
 //!
-//! The actual run workflow (`app.Run`: lifecycle manager, scheduler, consensus,
-//! validatorapi, p2p host, beacon client, tracing/OTLP, simnet, …) is not yet
-//! ported. [`app_run_stub`] therefore panics via `unimplemented!` at the seam
-//! where the app entry will plug in: once `pluto_app` exposes a run entrypoint,
-//! [`app_run_stub`] is replaced by a call into it (converting [`RunConfig`]),
-//! and the injected-runner shape ([`run_with_runner`]) keeps the seam testable.
+//! ```text
+//! pluto run --beacon-node-endpoints https://beacon.example
+//! ```
 //!
-//! Known limitation (shared with `dkg`/`relay`): `--log-format` and
-//! `--log-output-path` are accepted for CLI parity but not yet applied —
-//! `pluto_tracing` supports console + Loki output only (see the `common.rs`
-//! TODO). Wiring logfmt/json formats and file output is a cross-cutting
-//! `pluto_tracing` change tracked separately.
+//! Use `--simnet-beacon-mock` to run against an internal mock instead of a real
+//! beacon node. Every flag also reads from its `CHARON_*` environment variable.
+//! The hidden `unsafe run` variant adds test-only flags (e.g. `--p2p-fuzz`) and
+//! must not be used in production.
+//!
+//! Flags are parsed and validated into [`RunConfig`]. The long-running workflow
+//! itself is not yet implemented: invoking the command currently panics at
+//! [`run_workflow`], the seam where the engine will be wired in.
+//!
+//! Limitations:
+//! - The run workflow is a stub; the command does not yet perform real duties.
+//! - `--log-format` and `--log-output-path` are accepted but not yet applied
+//!   (console and Loki output only).
 
-use std::{collections::HashMap, future::Future, path::Path, time::Duration as StdDuration};
+use std::{collections::HashMap, path::Path, time::Duration as StdDuration};
 
 use libp2p::multiaddr::Protocol;
 use pluto_eth2util::helpers::validate_http_headers;
@@ -32,21 +36,20 @@ use crate::{
     error::{CliError, Result},
 };
 
-/// Maximum graffiti length in bytes (Charon appends an `OB<CL_TYPE>` suffix).
+/// Maximum graffiti length in bytes when the `OB<CL_TYPE>` client suffix is
+/// appended.
 const MAX_GRAFFITI_BYTES: usize = 28;
 /// Maximum graffiti length in bytes when the client suffix is disabled.
 const MAX_GRAFFITI_BYTES_NO_APPEND: usize = 32;
 /// Maximum peer nickname length in bytes.
 const MAX_NICKNAME_BYTES: usize = 32;
-/// Grace period for the Loki background task to flush buffered logs on exit
-/// (mirrors `relay`'s budget).
+/// Grace period for the Loki background task to flush buffered logs on exit.
 const LOKI_FLUSH_TIMEOUT: StdDuration = StdDuration::from_secs(3);
 
 /// Arguments for the `run` command.
 ///
-/// Field order mirrors Charon's `newRunCmd` bind order (priv-key, run, debug/
-/// monitoring, no-verify, p2p, log, loki, feature); `--help` lists flags
-/// alphabetically regardless, matching cobra.
+/// Field order groups the flags (priv-key, run, debug/monitoring, no-verify,
+/// p2p, log, loki, feature); `--help` lists them alphabetically regardless.
 #[derive(clap::Args, Clone, Debug)]
 pub struct RunArgs {
     #[command(flatten)]
@@ -81,8 +84,7 @@ pub struct RunArgs {
 
 /// Arguments for the hidden `unsafe run` command, which adds the `--p2p-fuzz`
 /// flag on top of the regular [`RunArgs`]. Registered only under the hidden
-/// `unsafe` parent so `--p2p-fuzz` is rejected on the safe `run` command,
-/// matching Charon.
+/// `unsafe` parent so `--p2p-fuzz` is rejected on the safe `run` command.
 #[derive(clap::Args, Clone, Debug)]
 pub struct RunUnsafeArgs {
     #[command(flatten)]
@@ -97,7 +99,7 @@ pub struct RunUnsafeArgs {
     pub p2p_fuzz: bool,
 }
 
-/// Private key flags (`bindPrivKeyFlag`).
+/// Private key flags.
 #[derive(clap::Args, Clone, Debug)]
 pub struct RunPrivKeyArgs {
     #[arg(
@@ -117,7 +119,7 @@ pub struct RunPrivKeyArgs {
     pub private_key_file_lock: bool,
 }
 
-/// General run flags (`bindRunFlags`).
+/// General run flags.
 #[derive(clap::Args, Clone, Debug)]
 pub struct RunGeneralArgs {
     #[arg(
@@ -393,8 +395,8 @@ pub struct RunGeneralArgs {
     pub vc_tls_key_file: String,
 }
 
-/// Debug and monitoring flags (`bindDebugMonitoringFlags`); `run` passes the
-/// default monitoring address `127.0.0.1:3620`.
+/// Debug and monitoring flags; `run` defaults the monitoring address to
+/// `127.0.0.1:3620`.
 #[derive(clap::Args, Clone, Debug)]
 pub struct RunDebugMonitoringArgs {
     #[arg(
@@ -414,7 +416,7 @@ pub struct RunDebugMonitoringArgs {
     pub debug_addr: String,
 }
 
-/// P2P flags (`bindP2PFlags`).
+/// P2P flags.
 #[derive(clap::Args, Clone, Debug)]
 pub struct RunP2PArgs {
     #[arg(
@@ -465,7 +467,7 @@ pub struct RunP2PArgs {
     pub disable_reuseport: bool,
 }
 
-/// Logging flags (`bindLogFlags`).
+/// Logging flags.
 #[derive(clap::Args, Clone, Debug)]
 pub struct RunLogArgs {
     #[arg(
@@ -500,7 +502,7 @@ pub struct RunLogArgs {
     pub log_output_path: Option<std::path::PathBuf>,
 }
 
-/// Loki flags (`bindLokiFlags`).
+/// Loki flags.
 #[derive(clap::Args, Clone, Debug)]
 pub struct RunLokiArgs {
     #[arg(
@@ -520,7 +522,7 @@ pub struct RunLokiArgs {
     pub loki_service: String,
 }
 
-/// Feature set flags (`bindFeatureFlags`).
+/// Feature set flags.
 #[derive(clap::Args, Clone, Debug)]
 pub struct RunFeatureArgs {
     #[arg(
@@ -548,7 +550,7 @@ pub struct RunFeatureArgs {
     pub feature_set: String,
 }
 
-/// Custom test network configuration (mirrors Charon's `eth2util.Network`).
+/// Custom test network configuration.
 //
 // Populated from flags and consumed by the future app entry; until the run
 // workflow is wired (see module docs) these fields are written but not read.
@@ -567,7 +569,7 @@ pub struct TestnetConfig {
     pub capella_hard_fork: String,
 }
 
-/// Feature set configuration (mirrors Charon's `featureset.Config`).
+/// Feature set configuration.
 //
 // Populated from flags and consumed by the future app entry; until the run
 // workflow is wired (see module docs) these fields are written but not read.
@@ -582,15 +584,15 @@ pub struct FeatureConfig {
     pub disabled: Vec<String>,
 }
 
-/// Configuration for the `run` command — the flag-settable subset of Charon's
-/// `app.Config`. This is the object the future app entry consumes (see the seam
-/// in [`run`]); `p2p_fuzz` is the single test-only field, set only via the
-/// hidden `unsafe run` command.
+/// Configuration for the `run` command — the settings produced from the parsed
+/// flags. This is the object the future app entry consumes (see the seam in
+/// [`run`]); `p2p_fuzz` is the single test-only field, set only via the hidden
+/// `unsafe run` command.
 //
-// This is the parsed config surface (Charon parity); the run workflow that
-// reads these fields is not yet ported (see module docs), so the fields are
-// populated but not yet consumed. The seam in [`run`] is where the future app
-// entry will read them.
+// This is the parsed config surface; the run workflow that reads these fields
+// is not yet implemented (see module docs), so the fields are populated but not
+// yet consumed. The seam in [`run`] is where the future app entry will read
+// them.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RunConfig {
@@ -677,12 +679,8 @@ pub struct RunConfig {
 impl TryFrom<RunArgs> for RunConfig {
     type Error = CliError;
 
-    /// Validates the parsed flags (Charon's PreRunE equivalents) and builds the
-    /// run configuration.
-    ///
-    /// Validation order mirrors Charon's effective `wrapPreRunE` order: the p2p
-    /// checks (registered last, so they run first) before the run-level checks.
-    /// See `cmd/run.go` `bindP2PFlags` / `bindRunFlags`.
+    /// Validates the parsed flags and builds the run configuration. Validation
+    /// is grouped: p2p checks first, then the run-level checks.
     fn try_from(args: RunArgs) -> Result<Self> {
         let RunArgs {
             priv_key,
@@ -695,7 +693,7 @@ impl TryFrom<RunArgs> for RunConfig {
             feature,
         } = args;
 
-        // --- p2p validation (runs first in Charon) ---
+        // --- p2p validation ---
         validate_hostname(p2p.external_host.as_deref())?;
 
         let mut relays = Vec::with_capacity(p2p.relays.len());
@@ -718,9 +716,9 @@ impl TryFrom<RunArgs> for RunConfig {
         }
 
         if general.nickname.len() > MAX_NICKNAME_BYTES {
-            return Err(CliError::Other(
-                "flag 'nickname' can not exceed 32 characters".to_string(),
-            ));
+            return Err(CliError::Other(format!(
+                "flag 'nickname' can not exceed {MAX_NICKNAME_BYTES} characters"
+            )));
         }
 
         if !general.jaeger_address.is_empty() || !general.jaeger_service.is_empty() {
@@ -822,8 +820,7 @@ impl TryFrom<RunUnsafeArgs> for RunConfig {
     }
 }
 
-/// Validates the optional p2p external hostname, mirroring Charon's
-/// `idna.Lookup.ToASCII` check (Pluto uses `url::Host::parse`, as `dkg`).
+/// Validates the optional p2p external hostname via `url::Host::parse`.
 fn validate_hostname(host: Option<&str>) -> Result<()> {
     if let Some(host) = host {
         url::Host::parse(host)
@@ -833,8 +830,8 @@ fn validate_hostname(host: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Validates the validator-client TLS cert/key pairing and existence, matching
-/// Charon's `bindRunFlags` PreRunE checks.
+/// Validates the validator-client TLS cert/key pairing and existence: both must
+/// be set or both empty, and any provided path must exist.
 fn validate_vc_tls(cert: &str, key: &str) -> Result<()> {
     if cert.is_empty() != key.is_empty() {
         return Err(CliError::Other(
@@ -860,10 +857,9 @@ fn validate_vc_tls(cert: &str, key: &str) -> Result<()> {
 
 /// Builds the optional Loki tracing configuration from the loki flags.
 ///
-/// Charon fans logs out to every `--loki-addresses` entry, but
-/// `pluto_tracing::TracingConfig` only supports a single Loki layer today, so
-/// extra addresses are ignored with a warning (matching `relay`). The warning
-/// goes to stderr because no tracing subscriber is installed yet.
+/// Only a single Loki endpoint is supported today, so any extra
+/// `--loki-addresses` entries are ignored with a warning. The warning goes to
+/// stderr because no tracing subscriber is installed yet.
 fn build_loki_config(loki: &RunLokiArgs) -> Option<pluto_tracing::LokiConfig> {
     match loki.loki_addresses.as_slice() {
         [] => None,
@@ -886,25 +882,25 @@ fn build_loki_config(loki: &RunLokiArgs) -> Option<pluto_tracing::LokiConfig> {
 
 /// Runs the `run` command from an already-built configuration.
 ///
-/// Owns the tracing/Loki lifecycle like `relay::run`: because `run` exposes
-/// `--loki-addresses`, the Loki background task must be spawned here and
-/// drained on exit, otherwise no logs are delivered. (dkg can init-and-drop in
-/// `main` only because it has no Loki flags, so its `init` always returns
-/// `None`.) Init happens here rather than in `main` so the Loki worker is owned
-/// for the command's lifetime.
+/// Initializes tracing and owns the Loki lifecycle for the command's lifetime:
+/// when `--loki-addresses` is set, the background task is spawned here and
+/// drained on exit so buffered logs are delivered.
 pub async fn run(config: RunConfig, ct: CancellationToken) -> Result<()> {
     let loki_shutdown = match pluto_tracing::init(&config.log) {
         Ok(Some(loki)) => Some((loki.controller, tokio::spawn(loki.task))),
         Ok(None) => None,
         // In tests the global subscriber is shared across runs in the same
         // process, so reinitializing fails; treat that as "no Loki worker"
-        // rather than failing the command (mirrors `relay::run`).
+        // rather than failing the command.
         #[cfg(test)]
         Err(pluto_tracing::init::Error::Init(_)) => None,
         Err(err) => return Err(err.into()),
     };
 
-    let result = run_with_runner(config, ct, app_run_stub).await;
+    info!("{LICENSE}");
+    info!(config = ?config);
+
+    let result = run_workflow(config, ct).await;
 
     if let Err(err) = &result {
         // Surface the failure through the subscriber so it reaches Loki before
@@ -914,7 +910,7 @@ pub async fn run(config: RunConfig, ct: CancellationToken) -> Result<()> {
     }
 
     // Drain the Loki worker under a single budget so a hung endpoint cannot
-    // wedge process exit; hard-abort after the budget elapses (mirrors relay).
+    // wedge process exit; hard-abort after the budget elapses.
     if let Some((controller, handle)) = loki_shutdown {
         let abort_handle = handle.abort_handle();
         let _ = tokio::time::timeout(LOKI_FLUSH_TIMEOUT, async {
@@ -928,27 +924,9 @@ pub async fn run(config: RunConfig, ct: CancellationToken) -> Result<()> {
     result
 }
 
-/// Drives the run workflow through an injected `runner`, keeping the seam to
-/// the (not-yet-ported) app entry testable. Tracing/Loki init and drain are
-/// owned by [`run`]; this inner fn assumes the subscriber is already installed.
-async fn run_with_runner<Runner, Fut>(
-    config: RunConfig,
-    ct: CancellationToken,
-    runner: Runner,
-) -> Result<()>
-where
-    Runner: FnOnce(RunConfig, CancellationToken) -> Fut,
-    Fut: Future<Output = Result<()>>,
-{
-    info!("{LICENSE}");
-    info!(config = ?config);
-
-    runner(config, ct).await
-}
-
-/// Stub runner until `pluto_app` exposes the run workflow; panics via
-/// `unimplemented!`. See module docs.
-async fn app_run_stub(_config: RunConfig, _ct: CancellationToken) -> Result<()> {
+/// The long-running validator workflow. Not yet implemented: panics via
+/// `unimplemented!` at the seam where the app entry will be wired in.
+async fn run_workflow(_config: RunConfig, _ct: CancellationToken) -> Result<()> {
     unimplemented!("pluto run")
 }
 
@@ -957,13 +935,9 @@ mod tests {
     use super::*;
     use crate::cli::{Cli, Commands, UnsafeCommands};
     use clap::{CommandFactory, Parser};
-    use std::{
-        collections::BTreeSet,
-        sync::{Arc, Mutex},
-        time::Duration as StdDuration,
-    };
+    use std::{collections::BTreeSet, time::Duration as StdDuration};
 
-    /// Every flag the safe `run` command must expose (Charon parity).
+    /// Every flag the safe `run` command must expose.
     const EXPECTED_RUN_FLAGS: [&str; 54] = [
         // priv key
         "private-key-file",
@@ -1217,7 +1191,7 @@ mod tests {
         // No-verify.
         assert!(!args.no_verify);
 
-        // P2P (Pluto's 5-entry default; intentional divergence from Charon's 3).
+        // P2P uses Pluto's 5-entry default relay list.
         assert_eq!(
             args.p2p.relays,
             pluto_p2p::config::DEFAULT_RELAYS.map(String::from).to_vec(),
@@ -1269,7 +1243,7 @@ mod tests {
 
     #[test]
     fn run_rejects_invalid_inputs_with_charon_error_strings() {
-        // Mirrors Charon's `TestBindRunFlagsValidation` error cases, verbatim.
+        // Verbatim error string for each rejected input.
         assert_eq!(
             run_err(&["--nickname", "thisnicknameiswaytoolongandshouldfail"]),
             "flag 'nickname' can not exceed 32 characters",
@@ -1495,26 +1469,5 @@ mod tests {
     async fn run_stub_panics_unimplemented() {
         let config = parse_run(&[]).expect("config should build");
         let _ = run(config, CancellationToken::new()).await;
-    }
-
-    #[tokio::test]
-    async fn run_with_runner_passes_config_and_token() {
-        let config = parse_run(&["--nickname", "node-a"]).expect("config should build");
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let ct = CancellationToken::new();
-
-        run_with_runner(config, ct.clone(), {
-            let events = events.clone();
-            move |config, token| async move {
-                assert!(!token.is_cancelled());
-                assert_eq!(config.nickname, "node-a");
-                events.lock().expect("lock").push("runner");
-                Ok(())
-            }
-        })
-        .await
-        .expect("runner should succeed");
-
-        assert_eq!(*events.lock().expect("lock"), vec!["runner"]);
     }
 }

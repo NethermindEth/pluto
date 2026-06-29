@@ -87,8 +87,8 @@ async fn run() -> std::result::Result<(), CliError> {
         }
         Commands::Run(args) => {
             let config: commands::run::RunConfig = (*args).try_into()?;
-            // Tracing/Loki init is owned by `commands::run::run` (mirrors relay)
-            // so the Loki background worker is spawned and drained correctly.
+            // Tracing/Loki init is owned by `commands::run::run` so the Loki
+            // background worker is spawned and drained correctly.
             commands::run::run(config, ct).await
         }
         Commands::Unsafe(args) => match args.command {
