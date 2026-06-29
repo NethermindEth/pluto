@@ -222,6 +222,12 @@ async fn fetch_config(
         .await
         .map_err(|error| ReadyCheckerError::BeaconNode(error.into()))?;
 
+    // `tokio::time::interval` panics on a zero period, so reject a zero slot
+    // duration here rather than letting the checker loop panic.
+    if slot_duration.is_zero() {
+        return Err(ReadyCheckerError::ZeroSlotDuration);
+    }
+
     Ok(ChainConfig {
         genesis_time,
         slot_duration,
@@ -423,6 +429,9 @@ enum ReadyCheckerError {
 
     #[error("unexpected beacon node response from {0}")]
     UnexpectedResponse(&'static str),
+
+    #[error("beacon node reported a zero slot duration")]
+    ZeroSlotDuration,
 
     #[error("failed to parse beacon node {field}: {value}")]
     Parse { field: &'static str, value: String },
