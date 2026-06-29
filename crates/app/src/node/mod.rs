@@ -238,7 +238,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     let (node, handles) = setup_p2p(SetupP2PParams {
         key: key.clone(),
         p2p_config: config.p2p.clone(),
-        peers: &peers,
+        peers: peers.clone(),
         consensus: Arc::clone(&consensus),
         duty_gater: Arc::clone(&duty_gater),
         lock_hash: lock.lock_hash.clone(),

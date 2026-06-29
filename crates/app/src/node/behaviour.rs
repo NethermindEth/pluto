@@ -47,13 +47,13 @@ pub(crate) struct P2PHandles {
 }
 
 /// Inputs required to compose and build the core P2P node.
-pub(crate) struct SetupP2PParams<'a> {
+pub(crate) struct SetupP2PParams {
     /// Local secp256k1 P2P key.
     pub(crate) key: k256::SecretKey,
     /// P2P listen/advertise configuration.
     pub(crate) p2p_config: pluto_p2p::config::P2PConfig,
     /// Cluster peers (from the lock file).
-    pub(crate) peers: &'a [Peer],
+    pub(crate) peers: Vec<Peer>,
     /// Already-constructed consensus component, shared with the core stitch.
     pub(crate) consensus: Arc<qbft::Consensus>,
     /// Duty admission gate, shared with parsigex.
@@ -78,7 +78,7 @@ pub(crate) struct SetupP2PParams<'a> {
 // TODO(#402 part B): relay/NAT support (relay client + RelayManager), QUIC
 // transport, and bandwidth metrics — start with TCP + no relay.
 pub(crate) fn setup_p2p(
-    params: SetupP2PParams<'_>,
+    params: SetupP2PParams,
 ) -> Result<(Node<CoreBehaviour>, P2PHandles), AppError> {
     let SetupP2PParams {
         key,
@@ -95,7 +95,7 @@ pub(crate) fn setup_p2p(
     let peer_ids = peers.iter().map(|peer| peer.id).collect::<Vec<_>>();
     let local_peer_id = peer_id_from_key(key.public_key())?;
 
-    verify_p2p_key(peers, &key)?;
+    verify_p2p_key(&peers, &key)?;
 
     // TODO(#402 part B): relay/NAT support — use `new_conn_gater(peer_ids, relays)`
     // once relays are resolved. For minimal TCP-only wiring an open gater suffices
