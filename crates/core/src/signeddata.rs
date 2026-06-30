@@ -210,6 +210,33 @@ impl VersionedSignedProposal {
             share_idx,
         ))
     }
+
+    /// Returns the slot of the wrapped proposal block.
+    ///
+    /// Mirrors Charon's `VersionedSignedProposal.Slot()`, used by the
+    /// [`Eth2SignedData`](crate::eth2signeddata::Eth2SignedData)
+    /// implementation to derive the proposal's epoch.
+    pub fn slot(&self) -> Result<phase0::Slot, SignedDataError> {
+        let proposal = &self.0;
+        if proposal.version == versioned::DataVersion::Unknown {
+            return Err(SignedDataError::UnknownVersion);
+        }
+
+        Ok(match &proposal.block {
+            versioned::SignedProposalBlock::Phase0(block) => block.message.slot,
+            versioned::SignedProposalBlock::Altair(block) => block.message.slot,
+            versioned::SignedProposalBlock::Bellatrix(block) => block.message.slot,
+            versioned::SignedProposalBlock::BellatrixBlinded(block) => block.message.slot,
+            versioned::SignedProposalBlock::Capella(block) => block.message.slot,
+            versioned::SignedProposalBlock::CapellaBlinded(block) => block.message.slot,
+            versioned::SignedProposalBlock::Deneb(block) => block.signed_block.message.slot,
+            versioned::SignedProposalBlock::DenebBlinded(block) => block.message.slot,
+            versioned::SignedProposalBlock::Electra(block) => block.signed_block.message.slot,
+            versioned::SignedProposalBlock::ElectraBlinded(block) => block.message.slot,
+            versioned::SignedProposalBlock::Fulu(block) => block.signed_block.message.slot,
+            versioned::SignedProposalBlock::FuluBlinded(block) => block.message.slot,
+        })
+    }
 }
 
 impl SignedData for VersionedSignedProposal {

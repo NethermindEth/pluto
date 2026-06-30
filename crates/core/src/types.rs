@@ -665,7 +665,9 @@ pub trait SignedData: Any + DynClone + DynEq + StdDebug + Send + Sync {
 dyn_eq::eq_trait_object!(SignedData);
 dyn_clone::clone_trait_object!(SignedData);
 
-// todo: add Eth2SignedData type
+// The `Eth2SignedData` equivalent (domain name + epoch surface) and the
+// `verify_eth2_signed_data` helper live in [`crate::eth2signeddata`], porting
+// Charon's `core.Eth2SignedData` / `core.VerifyEth2SignedData`.
 // https://github.com/ObolNetwork/charon/blob/b3008103c5429b031b63518195f4c49db4e9a68d/core/types.go#L396
 
 /// ParSignedData is a partially signed duty data only signed by a single
