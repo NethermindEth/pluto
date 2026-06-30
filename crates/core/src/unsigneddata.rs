@@ -196,8 +196,11 @@ fn decode_aggregated_attestation(
     }
 
     // JSON fallback: versioned wrapper first, then non-versioned attestation.
-    if let Ok(decoded) = serde_json::from_slice::<VersionedAggregatedAttestationJson>(data) {
-        return decoded.into_versioned_aggregated_attestation();
+    // The versioned wrapper shares `signeddata::VersionedAttestation`'s
+    // `Deserialize` impl (same `{version, validator_index, attestation}` shape),
+    // which also validates the version/payload via `VersionedAttestation::new`.
+    if let Ok(decoded) = serde_json::from_slice::<crate::signeddata::VersionedAttestation>(data) {
+        return Ok(VersionedAggregatedAttestation(decoded.0));
     }
     let att: phase0::Attestation =
         serde_json::from_slice(data).map_err(ParSigExCodecError::from)?;
@@ -411,61 +414,6 @@ fn parse_default<T: serde::de::DeserializeOwned + Default>(
         return Ok(T::default());
     }
     serde_json::from_value(value).map_err(ParSigExCodecError::from)
-}
-
-/// JSON fallback wrapper for the unsigned [`VersionedAggregatedAttestation`],
-/// mirroring charon's `versionedRawAttestationJSON`
-/// (`{version, validator_index, attestation}`).
-#[derive(Deserialize)]
-struct VersionedAggregatedAttestationJson {
-    #[serde(with = "pluto_eth2api::spec::serde_legacy_data_version")]
-    version: pluto_eth2api::versioned::DataVersion,
-    #[serde(default)]
-    validator_index: Option<serde_json::Value>,
-    attestation: serde_json::Value,
-}
-
-impl VersionedAggregatedAttestationJson {
-    fn into_versioned_aggregated_attestation(
-        self,
-    ) -> Result<VersionedAggregatedAttestation, ParSigExCodecError> {
-        use pluto_eth2api::{
-            spec::{electra, phase0},
-            versioned::{AttestationPayload, DataVersion, VersionedAttestation},
-        };
-
-        let validator_index = match self.validator_index {
-            Some(serde_json::Value::String(s)) => Some(s.parse::<u64>().map_err(|_| {
-                ParSigExCodecError::UnsignedData("invalid validator index".to_string())
-            })?),
-            Some(serde_json::Value::Null) | None => None,
-            Some(other) => Some(serde_json::from_value(other).map_err(ParSigExCodecError::from)?),
-        };
-
-        let phase0_att = |value| -> Result<phase0::Attestation, _> { parse_json(value) };
-        let electra_att = |value| -> Result<electra::Attestation, _> { parse_json(value) };
-
-        let attestation = match self.version {
-            DataVersion::Phase0 => AttestationPayload::Phase0(phase0_att(self.attestation)?),
-            DataVersion::Altair => AttestationPayload::Altair(phase0_att(self.attestation)?),
-            DataVersion::Bellatrix => AttestationPayload::Bellatrix(phase0_att(self.attestation)?),
-            DataVersion::Capella => AttestationPayload::Capella(phase0_att(self.attestation)?),
-            DataVersion::Deneb => AttestationPayload::Deneb(phase0_att(self.attestation)?),
-            DataVersion::Electra => AttestationPayload::Electra(electra_att(self.attestation)?),
-            DataVersion::Fulu => AttestationPayload::Fulu(electra_att(self.attestation)?),
-            DataVersion::Unknown => {
-                return Err(ParSigExCodecError::UnsignedData(
-                    "unknown attestation version".to_string(),
-                ));
-            }
-        };
-
-        Ok(VersionedAggregatedAttestation(VersionedAttestation {
-            version: self.version,
-            validator_index,
-            attestation: Some(attestation),
-        }))
-    }
 }
 
 #[derive(Deserialize)]
