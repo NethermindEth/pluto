@@ -10,6 +10,7 @@ use ssz::{Decode, Encode};
 use crate::{
     ParSigExCodecError,
     corepb::v1::core as pbcore,
+    parsigex_codec::looks_like_json,
     signeddata::{
         AttestationData, AttesterDuty, SyncContribution, VersionedAggregatedAttestation,
         VersionedProposal,
@@ -146,13 +147,6 @@ fn unsigned_duty_data_from_proto(
     }
 }
 
-/// Returns `true` when the trimmed byte slice begins with `{`, indicating JSON
-/// — mirrors charon's `unmarshal`, which only attempts JSON when the SSZ decode
-/// fails *and* the payload has a JSON prefix.
-fn looks_like_json(data: &[u8]) -> bool {
-    data.iter().find(|b| !b.is_ascii_whitespace()).copied() == Some(b'{')
-}
-
 /// Decodes an unsigned [`VersionedProposal`], SSZ-first with JSON fallback
 /// (charon `DutyProposer` branch of `unmarshalUnsignedData`).
 fn decode_versioned_proposal(data: &[u8]) -> Result<VersionedProposal, ParSigExCodecError> {
@@ -242,7 +236,7 @@ fn decode_attestation_data(data: &[u8]) -> Result<AttestationData, ParSigExCodec
         return Ok(data);
     }
 
-    if data.iter().find(|b| !b.is_ascii_whitespace()).copied() == Some(b'{') {
+    if looks_like_json(data) {
         let decoded: AttestationDataJson =
             serde_json::from_slice(data).map_err(ParSigExCodecError::from)?;
         return Ok(AttestationData {

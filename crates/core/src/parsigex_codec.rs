@@ -165,16 +165,17 @@ pub(crate) fn serialize_signed_data(data: &dyn SignedData) -> Result<Vec<u8>, Pa
     Err(ParSigExCodecError::UnsupportedDutyType)
 }
 
+/// Returns `true` when the trimmed byte slice starts with `{`, indicating JSON
+/// data. Charon's `unmarshal` uses this prefix check to choose between the JSON
+/// and SSZ decode paths.
+pub(crate) fn looks_like_json(bytes: &[u8]) -> bool {
+    bytes.iter().find(|b| !b.is_ascii_whitespace()).copied() == Some(b'{')
+}
+
 pub(crate) fn deserialize_signed_data(
     duty_type: &DutyType,
     bytes: &[u8],
 ) -> Result<Box<dyn SignedData>, ParSigExCodecError> {
-    /// Returns `true` when the trimmed byte slice starts with `{`, indicating
-    /// JSON data.
-    fn looks_like_json(bytes: &[u8]) -> bool {
-        bytes.iter().find(|b| !b.is_ascii_whitespace()).copied() == Some(b'{')
-    }
-
     macro_rules! deserialize_json {
         ($ty:ty) => {
             serde_json::from_slice::<$ty>(bytes)
