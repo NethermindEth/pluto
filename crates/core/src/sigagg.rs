@@ -4,9 +4,11 @@
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
+use pluto_eth2api::EthBeaconNodeApiClient;
 use tracing::{debug, error, info_span};
 
 use crate::{
+    eth2signeddata::verify_eth2_signed_data,
     signeddata::{SignedDataError, VersionedAttestation},
     types::{Duty, ParSignedData, PubKey, Signature, SignedData},
 };
@@ -65,6 +67,25 @@ pub enum SigAggError {
         /// The underlying error.
         #[source]
         source: pluto_crypto::types::Error,
+    },
+
+    /// The core public key could not be converted into a crypto public key
+    /// (mirrors Charon's `tblsconv.PubkeyFromCore` failure in
+    /// `sigagg.NewVerifier`).
+    #[error("pubkey from core: {source}")]
+    PubkeyFromCore {
+        /// The underlying error.
+        #[source]
+        source: crate::types::PubKeyError,
+    },
+
+    /// The aggregate eth2 signature verification failed (mirrors Charon's
+    /// `aggregate signature verification failed` in `sigagg.NewVerifier`).
+    #[error("aggregate signature verification failed: {source}")]
+    AggregateVerification {
+        /// The underlying error.
+        #[source]
+        source: crate::eth2signeddata::Eth2SignedDataError,
     },
 }
 
@@ -234,6 +255,37 @@ impl Aggregator {
 /// `Eth2SignedData`). For now callers can use a no-op or BLS-only verifier.
 pub fn new_verifier() -> VerifyFn {
     Arc::new(|_, _| Box::pin(async { Ok(()) }))
+}
+
+/// Returns a [`VerifyFn`] that verifies an aggregated signed-data value against
+/// the validator's group public key using the beacon node.
+///
+/// Ports Charon's `sigagg.NewVerifier`: it converts the core [`PubKey`] to a
+/// crypto public key and delegates to
+/// [`verify_eth2_signed_data`](crate::eth2signeddata::verify_eth2_signed_data),
+/// which derives the signing domain/epoch from the [`SignedData`] and verifies
+/// the eth2 BLS signature.
+pub fn new_eth2_verifier(eth2_cl: Arc<EthBeaconNodeApiClient>) -> VerifyFn {
+    Arc::new(move |pubkey, data| {
+        let eth2_cl = eth2_cl.clone();
+        // Convert the core PubKey ([u8; 48] newtype) into the crypto PublicKey
+        // ([u8; 48]) via its byte view, mirroring `tblsconv.PubkeyFromCore`.
+        let crypto_pubkey =
+            pluto_crypto::types::PublicKey::try_from(pubkey.as_ref()).map_err(|_| {
+                SigAggError::PubkeyFromCore {
+                    source: crate::types::PubKeyError::InvalidLength,
+                }
+            });
+        // Clone the trait object so the future owns its data and stays 'static.
+        let data = dyn_clone::clone_box(data);
+
+        Box::pin(async move {
+            let crypto_pubkey = crypto_pubkey?;
+            verify_eth2_signed_data(&eth2_cl, data.as_ref(), crypto_pubkey)
+                .await
+                .map_err(|source| SigAggError::AggregateVerification { source })
+        })
+    })
 }
 
 #[cfg(test)]
@@ -830,5 +882,112 @@ mod tests {
             att.0.validator_index.is_some(),
             "output must preserve validator_index from template"
         );
+    }
+
+    mod eth2_verifier {
+        use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PrivateKey};
+        use pluto_eth2api::{EthBeaconNodeApiClient, spec::phase0};
+        use pluto_eth2util::signing::{DomainName, get_data_root};
+        use pluto_testutil::BeaconMock;
+
+        use super::*;
+        use crate::{
+            eth2signeddata::Eth2SignedDataError,
+            signeddata::Attestation,
+            types::{PubKey, SignedData},
+        };
+
+        fn secret_key(hex_value: &str) -> PrivateKey {
+            let bytes = hex::decode(hex_value).unwrap();
+            bytes.as_slice().try_into().unwrap()
+        }
+
+        fn sample_attestation(target_epoch: phase0::Epoch) -> Attestation {
+            let data = phase0::AttestationData {
+                slot: 32,
+                index: 2,
+                beacon_block_root: [0x11; 32],
+                source: phase0::Checkpoint {
+                    epoch: target_epoch.saturating_sub(1),
+                    root: [0x22; 32],
+                },
+                target: phase0::Checkpoint {
+                    epoch: target_epoch,
+                    root: [0x33; 32],
+                },
+            };
+
+            Attestation::new(phase0::Attestation {
+                aggregation_bits: serde_json::from_str("\"0x0101\"").unwrap(),
+                data,
+                signature: [0; 96],
+            })
+        }
+
+        /// Signs the eth2 signing root of `data` for the given domain/epoch
+        /// with `secret`, returning a copy of `data` carrying that
+        /// signature.
+        async fn sign<T>(
+            client: &EthBeaconNodeApiClient,
+            secret: &PrivateKey,
+            data: &T,
+            domain: DomainName,
+            epoch: phase0::Epoch,
+        ) -> T
+        where
+            T: SignedData + Sized,
+        {
+            let message_root = data.message_root().unwrap();
+            let signing_root = get_data_root(client, domain, epoch, message_root)
+                .await
+                .unwrap();
+            let signature = BlstImpl.sign(secret, &signing_root).unwrap();
+            data.set_signature(signature).unwrap()
+        }
+
+        #[tokio::test]
+        async fn accepts_valid_aggregate_signature() {
+            let mock = BeaconMock::builder().build().await.unwrap();
+            let eth2_cl = Arc::new(mock.client().clone());
+
+            let secret =
+                secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
+            let group_pubkey = BlstImpl.secret_to_public_key(&secret).unwrap();
+
+            let att = sample_attestation(4);
+            let signed = sign(&eth2_cl, &secret, &att, DomainName::BeaconAttester, 4).await;
+
+            let verify = new_eth2_verifier(eth2_cl);
+            verify(&PubKey::new(group_pubkey), &signed)
+                .await
+                .expect("valid aggregate signature verifies against the group key");
+        }
+
+        #[tokio::test]
+        async fn rejects_wrong_group_key() {
+            let mock = BeaconMock::builder().build().await.unwrap();
+            let eth2_cl = Arc::new(mock.client().clone());
+
+            let signer =
+                secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
+            let other =
+                secret_key("01477d4bfbbcebe1fef8d4d6f624ecbb6e3178558bb1b0d6286c816c66842a6d");
+            let wrong_pubkey = BlstImpl.secret_to_public_key(&other).unwrap();
+
+            let att = sample_attestation(4);
+            let signed = sign(&eth2_cl, &signer, &att, DomainName::BeaconAttester, 4).await;
+
+            let verify = new_eth2_verifier(eth2_cl);
+            let err = verify(&PubKey::new(wrong_pubkey), &signed)
+                .await
+                .expect_err("signature checked against the wrong group key is rejected");
+
+            assert!(matches!(
+                err,
+                SigAggError::AggregateVerification {
+                    source: Eth2SignedDataError::Signing(_)
+                }
+            ));
+        }
     }
 }
