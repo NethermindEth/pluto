@@ -163,9 +163,9 @@ fn decode_versioned_proposal(data: &[u8]) -> Result<VersionedProposal, ParSigExC
     }
 
     if looks_like_json(data) {
-        let decoded: VersionedProposalJson =
-            serde_json::from_slice(data).map_err(ParSigExCodecError::from)?;
-        return decoded.into_versioned_proposal();
+        // Reuses `VersionedProposal`'s `Deserialize` impl (shared per-fork JSON
+        // dispatch in `signeddata`).
+        return serde_json::from_slice(data).map_err(ParSigExCodecError::from);
     }
 
     Err(ParSigExCodecError::UnsignedData(
@@ -313,107 +313,6 @@ fn decode_attester_duty_ssz(data: &[u8]) -> Result<AttesterDuty, ParSigExCodecEr
         committees_at_slot: field(80, 88)?,
         validator_committee_index: field(88, 96)?,
     })
-}
-
-/// JSON fallback wrapper for the unsigned [`VersionedProposal`], mirroring
-/// charon's `versionedRawBlockJSON` (`{version, block, blinded}`). The legacy
-/// numeric data-version encoding is accepted via `serde_legacy_data_version`.
-#[derive(Deserialize)]
-struct VersionedProposalJson {
-    #[serde(with = "pluto_eth2api::spec::serde_legacy_data_version")]
-    version: pluto_eth2api::versioned::DataVersion,
-    block: serde_json::Value,
-    #[serde(default)]
-    blinded: bool,
-}
-
-impl VersionedProposalJson {
-    /// Dispatches the raw `block` JSON to the per-fork unsigned
-    /// [`crate::signeddata::ProposalBlock`] variant selected by
-    /// `(version, blinded)`, mirroring charon's
-    /// `VersionedProposal.UnmarshalJSON`.
-    fn into_versioned_proposal(self) -> Result<VersionedProposal, ParSigExCodecError> {
-        use alloy::primitives::U256;
-        use pluto_eth2api::versioned::DataVersion;
-
-        use crate::signeddata::ProposalBlock;
-
-        let block = match (self.version, self.blinded) {
-            (DataVersion::Phase0, false) => ProposalBlock::Phase0(parse_json(self.block)?),
-            (DataVersion::Altair, false) => ProposalBlock::Altair(parse_json(self.block)?),
-            (DataVersion::Bellatrix, false) => ProposalBlock::Bellatrix(parse_json(self.block)?),
-            (DataVersion::Bellatrix, true) => {
-                ProposalBlock::BellatrixBlinded(parse_json(self.block)?)
-            }
-            (DataVersion::Capella, false) => ProposalBlock::Capella(parse_json(self.block)?),
-            (DataVersion::Capella, true) => ProposalBlock::CapellaBlinded(parse_json(self.block)?),
-            (DataVersion::Deneb, false) => ProposalBlock::Deneb {
-                block: Box::new(parse_json(block_field(&self.block)?)?),
-                kzg_proofs: parse_default(field(&self.block, "kzg_proofs"))?,
-                blobs: parse_default(field(&self.block, "blobs"))?,
-            },
-            (DataVersion::Deneb, true) => ProposalBlock::DenebBlinded(parse_json(self.block)?),
-            (DataVersion::Electra, false) => ProposalBlock::Electra {
-                block: Box::new(parse_json(block_field(&self.block)?)?),
-                kzg_proofs: parse_default(field(&self.block, "kzg_proofs"))?,
-                blobs: parse_default(field(&self.block, "blobs"))?,
-            },
-            (DataVersion::Electra, true) => ProposalBlock::ElectraBlinded(parse_json(self.block)?),
-            (DataVersion::Fulu, false) => ProposalBlock::Fulu {
-                block: Box::new(parse_json(block_field(&self.block)?)?),
-                kzg_proofs: parse_default(field(&self.block, "kzg_proofs"))?,
-                blobs: parse_default(field(&self.block, "blobs"))?,
-            },
-            (DataVersion::Fulu, true) => ProposalBlock::FuluBlinded(parse_json(self.block)?),
-            (DataVersion::Phase0 | DataVersion::Altair, true) => {
-                return Err(ParSigExCodecError::UnsignedData(
-                    "pre-merge block cannot be blinded".to_string(),
-                ));
-            }
-            (DataVersion::Unknown, _) => {
-                return Err(ParSigExCodecError::UnsignedData(
-                    "unknown proposal version".to_string(),
-                ));
-            }
-        };
-
-        Ok(VersionedProposal {
-            block,
-            consensus_block_value: U256::ZERO,
-            execution_payload_value: U256::ZERO,
-        })
-    }
-}
-
-/// Deserializes a JSON value into `T`.
-fn parse_json<T: serde::de::DeserializeOwned>(
-    value: serde_json::Value,
-) -> Result<T, ParSigExCodecError> {
-    serde_json::from_value(value).map_err(ParSigExCodecError::from)
-}
-
-/// Returns the `block` field of a Deneb+ versioned block-contents object.
-fn block_field(value: &serde_json::Value) -> Result<serde_json::Value, ParSigExCodecError> {
-    value
-        .get("block")
-        .cloned()
-        .ok_or_else(|| ParSigExCodecError::UnsignedData("proposal missing block".to_string()))
-}
-
-/// Returns the named field as an owned value, defaulting to `null` when absent.
-fn field(value: &serde_json::Value, name: &str) -> serde_json::Value {
-    value.get(name).cloned().unwrap_or(serde_json::Value::Null)
-}
-
-/// Deserializes a JSON value into `T`, defaulting to `T::default` for `null`
-/// or missing fields (matches charon's optional `kzg_proofs`/`blobs`).
-fn parse_default<T: serde::de::DeserializeOwned + Default>(
-    value: serde_json::Value,
-) -> Result<T, ParSigExCodecError> {
-    if value.is_null() {
-        return Ok(T::default());
-    }
-    serde_json::from_value(value).map_err(ParSigExCodecError::from)
 }
 
 #[derive(Deserialize)]
