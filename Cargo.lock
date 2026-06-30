@@ -5683,6 +5683,7 @@ dependencies = [
  "rand_core 0.6.4",
  "test-case",
  "thiserror 2.0.18",
+ "zeroize",
 ]
 
 [[package]]

@@ -199,10 +199,43 @@ pub fn load(file: &Path) -> Result<SecretKey> {
 }
 
 /// Save saves a secret key to a file.
+///
+/// On unix the file is created with mode `0o600` (owner read/write only),
+/// matching Charon's `app/k1util/k1util.go` `Save` which writes via
+/// `os.WriteFile(file, ..., 0o600)`. This prevents the private key from being
+/// world-readable.
 pub fn save(key: &SecretKey, file: &Path) -> Result<()> {
     let encoded = hex::encode(key.to_bytes());
 
-    std::fs::write(file, encoded).map_err(K1UtilError::FailedToWriteFile)?;
+    #[cfg(unix)]
+    {
+        use std::{
+            io::Write as _,
+            os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _},
+        };
+
+        // Create with `0o600` so the key is never momentarily world-readable.
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(file)
+            .map_err(K1UtilError::FailedToWriteFile)?;
+
+        // `mode(0o600)` only applies on creation; force it for an existing file
+        // too so an overwrite can never leave looser permissions in place.
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(K1UtilError::FailedToWriteFile)?;
+
+        f.write_all(encoded.as_bytes())
+            .map_err(K1UtilError::FailedToWriteFile)?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        std::fs::write(file, encoded).map_err(K1UtilError::FailedToWriteFile)?;
+    }
 
     Ok(())
 }
@@ -280,6 +313,44 @@ mod tests {
             key.public_key(),
             "Recovered public key should match"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_writes_private_key_with_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let key = SecretKey::random(&mut OsRng);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("charon-enr-private-key");
+
+        save(&key, &path).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "private key file must be mode 0o600");
+
+        // The saved key must still round-trip through `load`.
+        assert_eq!(load(&path).unwrap(), key, "saved key should round-trip");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_tightens_permissions_when_overwriting_existing_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("charon-enr-private-key");
+
+        // Pre-create a world-readable file at the target path.
+        std::fs::write(&path, "stale").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let key = SecretKey::random(&mut OsRng);
+        save(&key, &path).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "overwrite must tighten to mode 0o600");
+        assert_eq!(load(&path).unwrap(), key);
     }
 
     #[test]

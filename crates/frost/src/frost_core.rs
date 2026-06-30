@@ -7,6 +7,7 @@
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
+    fmt,
 };
 
 use super::*;
@@ -138,8 +139,16 @@ impl VerifiableSecretSharingCommitment {
 /// A secret scalar value representing a signer's share of the group secret.
 ///
 /// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L82-L87
-#[derive(Clone, Debug, ZeroizeOnDrop)]
+#[derive(Clone, ZeroizeOnDrop)]
 pub struct SigningShare(Scalar);
+
+// Manual `Debug` so the secret scalar is never rendered. Mirrors the redacting
+// pattern used for `BlsSignature`/`BlsPartialSignature` in `kryptology.rs`.
+impl fmt::Debug for SigningShare {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("SigningShare").field(&"<redacted>").finish()
+    }
+}
 
 impl SigningShare {
     /// Create a signing share from a scalar.
@@ -263,7 +272,7 @@ impl SecretShare {
 /// A key package containing all key material for a participant.
 ///
 /// See: https://github.com/ZcashFoundation/frost/blob/3ffc19d8f473d5bc4e07ed41bc884bdb42d6c29f/frost-core/src/keys.rs#L617-L643
-#[derive(Debug, ZeroizeOnDrop)]
+#[derive(ZeroizeOnDrop)]
 pub struct KeyPackage {
     #[zeroize(skip)]
     identifier: Identifier,
@@ -274,6 +283,20 @@ pub struct KeyPackage {
     verifying_key: VerifyingKey,
     #[zeroize(skip)]
     min_signers: u16,
+}
+
+// Manual `Debug` that exposes the public fields but redacts the secret
+// `signing_share` so it cannot leak via logs/panics.
+impl fmt::Debug for KeyPackage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("KeyPackage")
+            .field("identifier", &self.identifier)
+            .field("signing_share", &"<redacted>")
+            .field("verifying_share", &self.verifying_share)
+            .field("verifying_key", &self.verifying_key)
+            .field("min_signers", &self.min_signers)
+            .finish()
+    }
 }
 
 impl KeyPackage {
@@ -524,6 +547,36 @@ mod tests {
             VerifyingKey::from_commitment(&empty_commitment),
             Err(FrostCoreError::IncorrectCommitment)
         ));
+    }
+
+    #[test]
+    fn signing_share_debug_redacts_secret_scalar() {
+        let share = SigningShare::new(Scalar::from(0x4142_4344_4546_4748));
+
+        let rendered = format!("{share:?}");
+
+        assert!(rendered.contains("<redacted>"));
+        // The unredacted form would render the inner `Scalar(...)`; it must not.
+        assert!(!rendered.contains("Scalar"));
+    }
+
+    #[test]
+    fn key_package_debug_redacts_signing_share() {
+        let id = Identifier::from_u32(1).unwrap();
+        let key_package = KeyPackage::new(
+            id,
+            SigningShare::new(Scalar::from(0x5152_5354_5556_5758)),
+            VerifyingShare::new(G1Projective::generator()),
+            VerifyingKey::new(G1Projective::generator()),
+            2,
+        );
+
+        let rendered = format!("{key_package:?}");
+
+        // The secret share field is redacted; public fields remain visible.
+        assert!(rendered.contains("signing_share: \"<redacted>\""));
+        assert!(rendered.contains("identifier"));
+        assert!(rendered.contains("verifying_key"));
     }
 
     #[test]

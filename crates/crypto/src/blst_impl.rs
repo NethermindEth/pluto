@@ -12,6 +12,7 @@ use blst::{
     min_pk::{PublicKey as BlstPublicKey, SecretKey as BlstSecretKey, Signature as BlstSignature},
 };
 use rand_core::{CryptoRng, RngCore};
+use zeroize::Zeroizing;
 
 use crate::{
     tbls::Tbls,
@@ -30,10 +31,12 @@ pub struct BlstImpl;
 
 impl Tbls for BlstImpl {
     fn generate_secret_key(&self, mut rng: impl RngCore + CryptoRng) -> Result<PrivateKey, Error> {
-        let mut ikm = [0u8; 32];
-        rng.fill_bytes(&mut ikm);
+        // `ikm` is secret input key material; wipe it on drop. (`BlstSecretKey`
+        // itself is `#[zeroize(drop)]`, so the derived `sk` is wiped too.)
+        let mut ikm = Zeroizing::new([0u8; 32]);
+        rng.fill_bytes(ikm.as_mut());
 
-        let sk = BlstSecretKey::key_gen(&ikm, &[])
+        let sk = BlstSecretKey::key_gen(ikm.as_ref(), &[])
             .map_err(|_| Error::InvalidSecretKey(BlsError::KeyGeneration))?;
 
         Ok(sk.to_bytes())
@@ -44,11 +47,13 @@ impl Tbls for BlstImpl {
         mut rng: impl RngCore + CryptoRng,
     ) -> Result<PrivateKey, Error> {
         for _ in 0..100 {
-            let mut bytes = [0u8; 32];
-            rng.fill_bytes(&mut bytes);
+            // Wipe the candidate buffer on every iteration; on success its value
+            // is copied into the returned key first.
+            let mut bytes = Zeroizing::new([0u8; 32]);
+            rng.fill_bytes(bytes.as_mut());
 
-            if BlstSecretKey::from_bytes(&bytes).is_ok() {
-                return Ok(bytes);
+            if BlstSecretKey::from_bytes(bytes.as_ref()).is_ok() {
+                return Ok(*bytes);
             }
         }
         Err(Error::InvalidSecretKey(BlsError::KeyGeneration))
@@ -75,14 +80,16 @@ impl Tbls for BlstImpl {
 
         let sk = BlstSecretKey::from_bytes(secret_key)?;
 
-        // Create polynomial coefficients: a_0 = secret, a_1..a_{t-1} = random
+        // Create polynomial coefficients: a_0 = secret, a_1..a_{t-1} = random.
+        // `poly` holds `BlstSecretKey`s, each `#[zeroize(drop)]`, so the secret
+        // coefficients are wiped when `poly` is dropped.
         let mut poly = Vec::with_capacity(threashlod);
         poly.push(sk);
 
         for _ in 1..threshold {
-            let mut ikm = [0u8; 32];
-            rng.fill_bytes(&mut ikm);
-            let coeff = BlstSecretKey::key_gen(&ikm, &[])
+            let mut ikm = Zeroizing::new([0u8; 32]);
+            rng.fill_bytes(ikm.as_mut());
+            let coeff = BlstSecretKey::key_gen(ikm.as_ref(), &[])
                 .map_err(|_| Error::InvalidSecretKey(BlsError::KeyGeneration))?;
             poly.push(coeff);
         }
@@ -116,6 +123,8 @@ impl Tbls for BlstImpl {
         // points)
         let share_points: Vec<Index> = shares.keys().copied().collect();
 
+        // The reconstructed master secret and the parsed share scalars are all
+        // `BlstSecretKey`s (`#[zeroize(drop)]`), so they are wiped on drop.
         let share_secrets: Vec<BlstSecretKey> = shares
             .values()
             .map(|bytes| {
