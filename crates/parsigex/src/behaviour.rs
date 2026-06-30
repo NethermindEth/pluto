@@ -52,7 +52,8 @@ pub type Verifier =
 /// For a partial signature received for `pubkey`, it looks up the validator's
 /// public shares (`pub_shares_by_key[pubkey]`), selects the share for the
 /// partial signature's [`share_idx`](ParSignedData::share_idx), and delegates
-/// to [`verify_eth2_signed_data`], which derives the signing domain/epoch from
+/// to [`verify_eth2_signed_data`](eth2signeddata::verify_eth2_signed_data),
+/// which derives the signing domain/epoch from
 /// the [`SignedData`](pluto_core::types::SignedData) and verifies the eth2 BLS
 /// signature.
 /// A missing public key or share index is rejected.
