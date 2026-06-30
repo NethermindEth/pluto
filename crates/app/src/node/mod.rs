@@ -34,7 +34,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use behaviour::{CoreBehaviour, CoreHandles};
-use wire::{ParSigExSeam, ValidatorInfo, WireInputs, WiredComponents, wire_core_workflow};
+use wire::{ParSigExSeam, ValidatorInfo, WireInputs, WiredComponents};
 
 /// Errors raised while constructing or running a distributed-validator node.
 #[derive(Debug, thiserror::Error)]
@@ -161,25 +161,16 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     let validators = build_validators(&lock, share_idx)?;
 
     // ---- (2/3) eth2 clients ----
-    let eth2_cl = build_api_client(
-        config
-            .beacon_node_addrs
-            .first()
-            .map(String::as_str)
-            .unwrap_or_default(),
-        config.beacon_node_timeout,
-    )?;
+    let beacon_node_addr = config
+        .beacon_node_addrs
+        .first()
+        .map(String::as_str)
+        .unwrap_or_default();
+    let eth2_cl = build_api_client(beacon_node_addr, config.beacon_node_timeout)?;
     let beacon_client = pluto_eth2api::BeaconNodeClient::new(eth2_cl.clone());
     // TODO(#402 part B): honor `beacon_node_submit_timeout` distinctly; a
     // separate submission client is built with the submit timeout here.
-    let submission_api = build_api_client(
-        config
-            .beacon_node_addrs
-            .first()
-            .map(String::as_str)
-            .unwrap_or_default(),
-        config.beacon_node_submit_timeout,
-    )?;
+    let submission_api = build_api_client(beacon_node_addr, config.beacon_node_submit_timeout)?;
     let submission_client = pluto_eth2api::BeaconNodeClient::new(submission_api);
 
     // Duty admission gate.
@@ -196,12 +187,11 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     //
     // Resolve the broadcaster<->behaviour construction cycle with the
     // `Arc<OnceLock<Handle>>` pattern (see qbft::p2p `build_consensus_nodes`).
-    let consensus_deadliner = pluto_core::deadline::DeadlinerTask::start(
+    let (cons_deadliner, cons_expired_rx) = pluto_core::deadline::DeadlinerTask::start(
         ct.clone(),
         "consensus.qbft",
         pluto_core::deadline::NeverExpiringCalculator,
     );
-    let (cons_deadliner, cons_expired_rx) = consensus_deadliner;
 
     let handle_slot = Arc::new(OnceLock::<qbft::p2p::Handle>::new());
     let broadcaster: qbft::Broadcaster = {
@@ -260,7 +250,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
 
     let parsigex_seam = production_parsigex_seam(&handles);
 
-    let wired = wire_core_workflow(
+    let wired = wire::wire_core_workflow(
         WireInputs {
             threshold,
             share_idx,

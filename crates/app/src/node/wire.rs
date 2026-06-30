@@ -38,7 +38,7 @@ use pluto_core::{
     scheduler::{SchedulerBuilder, SchedulerHandle},
     sigagg::Aggregator,
     types::{Duty, ParSignedData, ParSignedDataSet, PubKey, SignedData, SignedDataSet},
-    unsigneddata::{UnsignedDataSet, UnsignedDutyData, unsigned_data_set_from_proto},
+    unsigneddata::{self, UnsignedDataSet, UnsignedDutyData},
     validatorapi::{self, Component, Handler},
 };
 use pluto_eth2api::{
@@ -299,13 +299,14 @@ pub async fn wire_core_workflow(
         consensus.subscribe(move |duty: Duty, value: pbcore::UnsignedDataSet| {
             let dutydb = Arc::clone(&dutydb);
             tokio::spawn(async move {
-                let core_set = match unsigned_data_set_from_proto(&duty.duty_type, &value) {
-                    Ok(set) => set,
-                    Err(err) => {
-                        tracing::warn!(?err, "dutydb: decode unsigned data set");
-                        return;
-                    }
-                };
+                let core_set =
+                    match unsigneddata::unsigned_data_set_from_proto(&duty.duty_type, &value) {
+                        Ok(set) => set,
+                        Err(err) => {
+                            tracing::warn!(?err, "dutydb: decode unsigned data set");
+                            return;
+                        }
+                    };
                 if let Err(err) = dutydb.store(duty, core_set).await {
                     tracing::warn!(?err, "dutydb: store");
                 }
@@ -331,7 +332,7 @@ pub async fn wire_core_workflow(
                     async move {
                         broadcast(duty, set).await.map_err(|e| {
                             parsigdb::memory::InternalSubscriberError::ParsigexBroadcast {
-                                source: box_err(e),
+                                source: Box::new(e),
                             }
                             .into()
                         })
@@ -408,13 +409,13 @@ pub async fn wire_core_workflow(
                             Ok(Ok(())) => Ok(()),
                             Ok(Err(e)) => Err(
                                 parsigdb::memory::InternalSubscriberError::ParsigexBroadcast {
-                                    source: box_err(e),
+                                    source: Box::new(e),
                                 }
                                 .into(),
                             ),
                             Err(e) => Err(
                                 parsigdb::memory::InternalSubscriberError::ParsigexBroadcast {
-                                    source: box_err(e),
+                                    source: Box::new(e),
                                 }
                                 .into(),
                             ),
