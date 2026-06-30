@@ -63,7 +63,7 @@ pub fn new_eth2_verifier(
     pub_shares_by_key: HashMap<PubKey, HashMap<u64, PublicKey>>,
 ) -> Verifier {
     let pub_shares_by_key = Arc::new(pub_shares_by_key);
-    Arc::new(move |_duty, pubkey, par_signed_data| {
+    Arc::new(move |duty, pubkey, par_signed_data| {
         let eth2_cl = eth2_cl.clone();
         let pub_shares_by_key = pub_shares_by_key.clone();
         Box::pin(async move {
@@ -82,11 +82,9 @@ pub fn new_eth2_verifier(
                 eth2signeddata::as_eth2_signed_data(par_signed_data.signed_data.as_ref())
                     .ok_or(VerifyError::InvalidSignedDataFamily)?;
 
-            // Charon wraps the remaining `VerifyEth2SignedData` failure as
-            // "invalid signature".
             eth2signeddata::verify_eth2_signed_data(&eth2_cl, eth2_data, pubshare)
                 .await
-                .map_err(|err| VerifyError::Other(err.to_string()))
+                .map_err(|source| VerifyError::InvalidSignature { duty, source })
         })
     })
 }
@@ -724,7 +722,7 @@ mod eth2_verifier_tests {
             .await
             .expect_err("partial signature against the wrong public share is rejected");
 
-        assert!(matches!(err, VerifyError::Other(_)));
+        assert!(matches!(err, VerifyError::InvalidSignature { .. }));
     }
 
     #[tokio::test]
