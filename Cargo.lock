@@ -5923,6 +5923,8 @@ dependencies = [
  "pluto-cluster",
  "pluto-core",
  "pluto-crypto",
+ "pluto-eth2api",
+ "pluto-eth2util",
  "pluto-p2p",
  "pluto-testutil",
  "pluto-tracing",
