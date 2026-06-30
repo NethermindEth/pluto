@@ -23,7 +23,7 @@ use libp2p::{
 use tokio::sync::{RwLock, mpsc, oneshot};
 
 use pluto_core::{
-    eth2signeddata::{as_eth2_signed_data, verify_eth2_signed_data},
+    eth2signeddata,
     gater::DutyGaterFn,
     types::{Duty, ParSignedData, ParSignedDataSet, PubKey},
 };
@@ -49,14 +49,15 @@ pub type Verifier =
 /// the sending peer's public share, looked up by the partial signature's share
 /// index.
 ///
-/// Ports Charon's `parsigex.NewEth2Verifier`: for a partial signature received
-/// for `pubkey`, it looks up the validator's public shares
-/// (`pub_shares_by_key[pubkey]`), selects the share for the partial signature's
-/// [`share_idx`](ParSignedData::share_idx), and delegates to
-/// [`verify_eth2_signed_data`], which derives the signing domain/epoch from the
-/// [`SignedData`](pluto_core::types::SignedData) and verifies the eth2 BLS
-/// signature. A missing public key or share index is rejected, mirroring
-/// Charon.
+/// For a partial signature received for `pubkey`, it looks up the validator's
+/// public shares (`pub_shares_by_key[pubkey]`), selects the share for the
+/// partial signature's [`share_idx`](ParSignedData::share_idx), and delegates
+/// to [`verify_eth2_signed_data`], which derives the signing domain/epoch from
+/// the [`SignedData`](pluto_core::types::SignedData) and verifies the eth2 BLS
+/// signature.
+/// A missing public key or share index is rejected.
+///
+/// Ports Charon's `parsigex.NewEth2Verifier`
 pub fn new_eth2_verifier(
     eth2_cl: EthBeaconNodeApiClient,
     pub_shares_by_key: HashMap<PubKey, HashMap<u64, PublicKey>>,
@@ -77,12 +78,13 @@ pub fn new_eth2_verifier(
             // `&dyn Eth2SignedData`; the upcast failure (Charon's
             // `data.(core.Eth2SignedData)` type assertion) maps to the
             // "invalid signed data family" error.
-            let eth2_data = as_eth2_signed_data(par_signed_data.signed_data.as_ref())
-                .ok_or(VerifyError::InvalidSignedDataFamily)?;
+            let eth2_data =
+                eth2signeddata::as_eth2_signed_data(par_signed_data.signed_data.as_ref())
+                    .ok_or(VerifyError::InvalidSignedDataFamily)?;
 
             // Charon wraps the remaining `VerifyEth2SignedData` failure as
             // "invalid signature".
-            verify_eth2_signed_data(&eth2_cl, eth2_data, pubshare)
+            eth2signeddata::verify_eth2_signed_data(&eth2_cl, eth2_data, pubshare)
                 .await
                 .map_err(|err| VerifyError::Other(err.to_string()))
         })
