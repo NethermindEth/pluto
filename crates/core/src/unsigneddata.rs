@@ -80,6 +80,14 @@ fn marshal_unsigned_duty_data(data: &UnsignedDutyData) -> Result<Vec<u8>, ParSig
 /// leading pubkey is zeroed because pluto's [`AttesterDuty`] omits it (it is
 /// recovered from the aggregation bits downstream), matching the attester
 /// decode path.
+///
+/// This is hand-rolled rather than derived with `ssz_derive` on purpose: charon
+/// emits a two-slot offset table (`4 + 4`) here even though both
+/// `AttestationData` and `AttesterDuty` are *fixed*-size (`charon/core/ssz.go`
+/// `AttestationData.MarshalSSZTo`). `ssz_derive` omits offsets for all-fixed
+/// containers, so a derived `{data, duty}` struct would drop the 8-byte prefix
+/// and break wire-compat. (Contrast the Deneb+ block contents in `ssz_codec`,
+/// whose fields are all variable-length, so deriving is correct there.)
 fn encode_attestation_data_ssz(att: &AttestationData) -> Result<Vec<u8>, ParSigExCodecError> {
     let overflow = || ParSigExCodecError::UnsignedData("attestation data too large".to_string());
 
