@@ -542,6 +542,27 @@ impl<const SIZE: usize> BitVector<SIZE> {
     pub fn bit_indices(&self) -> Vec<usize> {
         (0..SIZE).filter(|&i| self.bit_at(i)).collect()
     }
+
+    /// Returns `true` when the high padding bits (positions
+    /// `SIZE..8*ceil(SIZE/8)`) of the final byte are all zero, as a valid
+    /// `Bitvector[SIZE]` encoding requires. Byte-aligned sizes have no padding.
+    fn padding_is_zero(bytes: &[u8]) -> bool {
+        let rem = SIZE % 8;
+        if rem == 0 {
+            return true;
+        }
+        // `rem` is in 1..=7, so the shift never overflows. A valid final byte
+        // has every bit at position >= rem (the padding region) cleared.
+        match bytes.last() {
+            Some(&last) => {
+                #[allow(clippy::arithmetic_side_effects)]
+                {
+                    last >> rem == 0
+                }
+            }
+            None => true,
+        }
+    }
 }
 
 impl<const SIZE: usize> Serialize for BitVector<SIZE> {
@@ -560,6 +581,11 @@ impl<'de, const SIZE: usize> Deserialize<'de> for BitVector<SIZE> {
                 "bitvector byte length {} does not match required {expected}",
                 bytes.len(),
             )));
+        }
+        if !Self::padding_is_zero(&bytes) {
+            return Err(D::Error::custom(
+                "bitvector has non-zero padding bits above SIZE",
+            ));
         }
         Ok(Self { bytes })
     }
@@ -599,6 +625,11 @@ impl<const SIZE: usize> Decode for BitVector<SIZE> {
                 len: bytes.len(),
                 expected,
             });
+        }
+        if !Self::padding_is_zero(bytes) {
+            return Err(DecodeError::BytesInvalid(
+                "bitvector has non-zero padding bits above SIZE".to_owned(),
+            ));
         }
         Ok(Self {
             bytes: bytes.to_vec(),
@@ -767,5 +798,17 @@ mod tests {
         bv.set_bit_at(64, true);
         assert!(!bv.bit_at(64));
         assert_eq!(bv.bit_indices(), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn bitvector_from_ssz_rejects_nonzero_padding() {
+        // `BitVector<12>` uses 2 bytes; bits 12..16 are padding and must be zero.
+        // Bit 15 set (0x80 in the final byte) is invalid padding.
+        assert!(<BitVector<12> as Decode>::from_ssz_bytes(&[0x00, 0x80]).is_err());
+        // Zero padding decodes; used bits (0..12) are preserved.
+        let bv = <BitVector<12> as Decode>::from_ssz_bytes(&[0xFF, 0x0F]).expect("valid padding");
+        assert_eq!(bv.bit_indices(), (0..12).collect::<Vec<_>>());
+        // Byte-aligned sizes have no padding constraint.
+        assert!(<BitVector<64> as Decode>::from_ssz_bytes(&[0xFF; 8]).is_ok());
     }
 }
