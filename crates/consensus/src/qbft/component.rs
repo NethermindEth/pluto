@@ -32,6 +32,15 @@ use super::{
     runner,
 };
 
+/// Maximum justification entries accepted per inbound consensus message,
+/// expressed as a multiple of the cluster node count. Honest QBFT produces at
+/// most one justification per peer per justified transition, so a small
+/// multiple of `node_count()` is a strict superset of every legitimate set
+/// while bounding per-message secp256k1 recovery work. Charon has no explicit
+/// cap (it is implicitly bounded by quorum/peer count + transport size); this
+/// is defensive hardening that cannot reject a legitimate justification set.
+const MAX_JUSTIFICATIONS_PER_NODE: usize = 4;
+
 /// Result returned by outbound QBFT broadcasting.
 pub type BroadcastResult = std::result::Result<(), Box<dyn StdError + Send + Sync + 'static>>;
 
@@ -163,6 +172,15 @@ pub enum Error {
     /// Justification duty differed from the outer message duty.
     #[error("qbft justification duty differs from message duty")]
     JustificationDutyDiffers,
+
+    /// Inbound message carried more justifications than the per-message cap.
+    #[error("too many justifications: {count} exceeds maximum {max}")]
+    TooManyJustifications {
+        /// Number of justifications in the message.
+        count: usize,
+        /// The enforced maximum (MAX_JUSTIFICATIONS_PER_NODE * node_count()).
+        max: usize,
+    },
 
     /// Inbound Any could not be decoded.
     #[error("unmarshal any")]
@@ -353,6 +371,17 @@ impl Consensus {
 
         if !(self.duty_gater)(&duty) {
             return Err(Error::InvalidDuty);
+        }
+
+        // Bound the number of justifications before any secp256k1 recovery runs:
+        // a 32MB message could otherwise pack a huge number of small entries,
+        // each forcing a recovery. Honest QBFT never exceeds O(node_count).
+        let max_justifications = MAX_JUSTIFICATIONS_PER_NODE.saturating_mul(self.node_count());
+        if pb_msg.justification.len() > max_justifications {
+            return Err(Error::TooManyJustifications {
+                count: pb_msg.justification.len(),
+                max: max_justifications,
+            });
         }
 
         for justification in &pb_msg.justification {
@@ -928,6 +957,51 @@ pub(crate) mod tests {
 
         let mut recv_rx = inst.take_recv_rx().unwrap();
         assert_eq!(recv_rx.try_recv().unwrap().justification().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn handle_rejects_too_many_justifications() {
+        let consensus = consensus(0, true);
+        let max = MAX_JUSTIFICATIONS_PER_NODE * consensus.node_count();
+
+        let mut justification = unsigned_msg(0);
+        justification.r#type = i64::from(qbft::MSG_ROUND_CHANGE);
+        justification.value_hash = Bytes::new();
+        let signed = sign_for_peer(justification, 0);
+
+        let mut outer = valid_consensus_msg(0);
+        outer.justification = std::iter::repeat_n(signed, max + 1).collect();
+
+        let err = consensus
+            .handle(outer, &CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::TooManyJustifications { .. }));
+        assert!(err.to_string().contains("too many justifications"));
+    }
+
+    #[tokio::test]
+    async fn handle_accepts_max_justifications() {
+        // Exactly `max` justifications must not trip the cap (guards `>` vs `>=`).
+        let consensus = consensus(0, true);
+        let inst = consensus.get_instance_io(duty());
+        let max = MAX_JUSTIFICATIONS_PER_NODE * consensus.node_count();
+
+        let mut justification = unsigned_msg(0);
+        justification.r#type = i64::from(qbft::MSG_ROUND_CHANGE);
+        justification.value_hash = Bytes::new();
+        let signed = sign_for_peer(justification, 0);
+
+        let mut outer = valid_consensus_msg(0);
+        outer.justification = std::iter::repeat_n(signed, max).collect();
+
+        consensus
+            .handle(outer, &CancellationToken::new())
+            .await
+            .unwrap();
+
+        let mut recv_rx = inst.take_recv_rx().unwrap();
+        assert_eq!(recv_rx.try_recv().unwrap().justification().len(), max);
     }
 
     #[test]
