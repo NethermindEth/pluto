@@ -12,6 +12,14 @@ use tracing::error;
 /// stored, bounding memory growth from connection churn by remote peers.
 const MAX_INACTIVE_PEERS: usize = 1024;
 
+/// Maximum number of listen addresses stored per peer (from the identify
+/// protocol). `listen_addrs` is attacker-controlled in both content and
+/// length; legitimate cluster peers advertise only a handful of addresses, so
+/// this cap drops nothing real while bounding per-peer memory. Excess
+/// addresses beyond the cap are discarded (the first `MAX_PEER_ADDRESSES` are
+/// kept).
+pub(crate) const MAX_PEER_ADDRESSES: usize = 32;
+
 /// Global context shared across P2P components.
 ///
 /// This struct provides thread-safe access to shared state including:
@@ -142,7 +150,7 @@ impl PeerStore {
         let mut scanned = 0usize;
         let max_scan = self.inactive_order.len();
         while self.inactive_peers.len() > MAX_INACTIVE_PEERS && scanned < max_scan {
-            scanned += 1;
+            scanned = scanned.saturating_add(1);
             let Some(candidate) = self.inactive_order.pop_front() else {
                 break;
             };
@@ -193,7 +201,13 @@ impl PeerStore {
     }
 
     /// Sets the known addresses for a peer (from identify protocol).
-    pub fn set_peer_addresses(&mut self, peer_id: PeerId, addrs: Vec<Multiaddr>) {
+    ///
+    /// The address list is truncated to [`MAX_PEER_ADDRESSES`] before storing,
+    /// because `addrs` is attacker-controlled and otherwise unbounded.
+    pub fn set_peer_addresses(&mut self, peer_id: PeerId, mut addrs: Vec<Multiaddr>) {
+        if addrs.len() > MAX_PEER_ADDRESSES {
+            addrs.truncate(MAX_PEER_ADDRESSES);
+        }
         self.peer_addresses.insert(peer_id, addrs);
     }
 
@@ -286,6 +300,34 @@ mod tests {
         store.remove_peer(peer.clone(), &known);
         assert_eq!(store.inactive_count(), 1);
         assert_eq!(store.inactive_order.len(), 1);
+    }
+
+    #[test]
+    fn set_peer_addresses_truncates_to_cap() {
+        let mut store = PeerStore::default();
+        let peer = PeerId::random();
+        let addrs: Vec<Multiaddr> = (0..(MAX_PEER_ADDRESSES + 50))
+            .map(|i| format!("/ip4/127.0.0.1/tcp/{}", 9000usize.saturating_add(i)).parse().unwrap())
+            .collect();
+
+        store.set_peer_addresses(peer, addrs.clone());
+
+        let stored = store.peer_addresses(&peer).unwrap();
+        assert_eq!(stored.len(), MAX_PEER_ADDRESSES);
+        // truncate keeps the prefix
+        assert_eq!(stored.as_slice(), &addrs[..MAX_PEER_ADDRESSES]);
+    }
+
+    #[test]
+    fn set_peer_addresses_keeps_under_cap() {
+        let mut store = PeerStore::default();
+        let peer = PeerId::random();
+        let addrs: Vec<Multiaddr> = (0..3)
+            .map(|i| format!("/ip4/127.0.0.1/tcp/{}", 9000usize.saturating_add(i)).parse().unwrap())
+            .collect();
+
+        store.set_peer_addresses(peer, addrs.clone());
+        assert_eq!(store.peer_addresses(&peer), Some(&addrs));
     }
 
     #[test]
