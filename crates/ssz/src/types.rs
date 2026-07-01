@@ -301,13 +301,17 @@ impl<const MAX: usize> BitList<MAX> {
     }
 
     /// Decodes SSZ-encoded bytes (with sentinel bit) into a `BitList`.
-    pub fn from_ssz_bytes(ssz: Vec<u8>) -> Self {
+    ///
+    /// Rejects encodings whose decoded bit length exceeds `MAX` (when `MAX >
+    /// 0`), per the SSZ `Bitlist[N]` rule that a decoded `bit_count > N` is
+    /// invalid.
+    pub fn from_ssz_bytes(ssz: Vec<u8>) -> Result<Self, DecodeError> {
         if ssz.is_empty() {
-            return Self::default();
+            return Ok(Self::default());
         }
         let last_byte = ssz[ssz.len().saturating_sub(1)];
         if last_byte == 0 {
-            return Self::default();
+            return Ok(Self::default());
         }
 
         let sentinel_pos = 7_u32.saturating_sub(last_byte.leading_zeros()) as usize;
@@ -316,6 +320,11 @@ impl<const MAX: usize> BitList<MAX> {
             .saturating_sub(1)
             .saturating_mul(8)
             .saturating_add(sentinel_pos);
+        if MAX > 0 && len > MAX {
+            return Err(DecodeError::BytesInvalid(format!(
+                "bitlist length {len} exceeds max {MAX}"
+            )));
+        }
         let data_byte_len = len.div_ceil(8);
         let mut bytes = ssz;
         bytes.truncate(data_byte_len);
@@ -325,7 +334,7 @@ impl<const MAX: usize> BitList<MAX> {
         {
             *last &= !BIT_MASK[rem];
         }
-        Self { bytes, len }
+        Ok(Self { bytes, len })
     }
 
     /// Encodes the `BitList` as SSZ bytes with sentinel bit appended.
@@ -425,7 +434,7 @@ impl<'de, const MAX: usize> Deserialize<'de> for BitList<MAX> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
         let ssz = decode_0x_hex::<D::Error>(s.as_str())?;
-        Ok(Self::from_ssz_bytes(ssz))
+        Self::from_ssz_bytes(ssz).map_err(|e| D::Error::custom(format!("{e:?}")))
     }
 }
 
@@ -449,7 +458,7 @@ impl<const MAX: usize> Decode for BitList<MAX> {
     }
 
     fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, DecodeError> {
-        Ok(Self::from_ssz_bytes(bytes.to_vec()))
+        Self::from_ssz_bytes(bytes.to_vec())
     }
 }
 
@@ -671,9 +680,23 @@ mod tests {
     fn bitlist_bit_at_matches_ssz_round_trip() {
         // SSZ byte 0x0D = sentinel at bit 3 ⇒ 3 data bits with bits 0 and 2 set,
         // matching the bytes returned by `aggregation_bits()`.
-        let bl = BitList::<2048>::from_ssz_bytes(vec![0x0D]);
+        let bl = BitList::<2048>::from_ssz_bytes(vec![0x0D]).expect("bitlist decode");
         assert_eq!(bl.len(), 3);
         assert_eq!(bl.bit_indices(), vec![0, 2]);
+    }
+
+    #[test]
+    fn bitlist_from_ssz_rejects_over_capacity() {
+        // 300 data bytes + sentinel byte ⇒ 2400 data bits, exceeding MAX 2048.
+        let mut oversized = vec![0xFF; 300];
+        oversized.push(0x01);
+        assert!(BitList::<2048>::from_ssz_bytes(oversized).is_err());
+
+        // Exactly MAX bits (256 data bytes + sentinel at bit 2048) decodes.
+        let mut at_cap = vec![0xFF; 256];
+        at_cap.push(0x01);
+        let bl = BitList::<2048>::from_ssz_bytes(at_cap).expect("at-capacity decode");
+        assert_eq!(bl.len(), 2048);
     }
 
     #[test]

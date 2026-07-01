@@ -83,6 +83,9 @@ pub enum InclusionError {
     /// A versioned attestation carried no payload.
     #[error("missing attestation payload")]
     MissingAttestation,
+    /// An aggregation-bits field could not be SSZ-decoded.
+    #[error("decode aggregation bits")]
+    DecodeAggregationBits,
     /// A bitfield comparison failed.
     #[error(transparent)]
     Bitfield(#[from] pluto_ssz::BitfieldError),
@@ -444,8 +447,10 @@ fn check_attestation_inclusion(sub: &Submission, block: &Block) -> Result<bool, 
         | versioned::DataVersion::Bellatrix
         | versioned::DataVersion::Capella
         | versioned::DataVersion::Deneb => {
-            let sub_bits = AggBits::from_ssz_bytes(payload.aggregation_bits());
-            let att_bits = AggBits::from_ssz_bytes(block_att_agg_bits(att)?);
+            let sub_bits = AggBits::from_ssz_bytes(payload.aggregation_bits())
+                .map_err(|_| InclusionError::DecodeAggregationBits)?;
+            let att_bits = AggBits::from_ssz_bytes(block_att_agg_bits(att)?)
+                .map_err(|_| InclusionError::DecodeAggregationBits)?;
             Ok(att_bits.contains(&sub_bits)?)
         }
         versioned::DataVersion::Electra | versioned::DataVersion::Fulu => {
@@ -459,7 +464,8 @@ fn check_attestation_inclusion(sub: &Submission, block: &Block) -> Result<bool, 
                 .find(|d| d.validator_index == validator_index)
                 .ok_or(InclusionError::NoAttesterDuty)?;
 
-            let att_bits = AggBits::from_ssz_bytes(block_att_agg_bits(att)?);
+            let att_bits = AggBits::from_ssz_bytes(block_att_agg_bits(att)?)
+                .map_err(|_| InclusionError::DecodeAggregationBits)?;
             let committee_index = electra_committee_index(payload)?;
 
             // Sum the validator counts of all committees preceding the
@@ -484,7 +490,8 @@ fn check_aggregation_inclusion(sub: &Submission, block: &Block) -> Result<bool, 
     let Some(att) = block.attestations_by_data_root.get(&sub.att_data_root) else {
         return Ok(false);
     };
-    let att_bits = AggBits::from_ssz_bytes(block_att_agg_bits(att)?);
+    let att_bits = AggBits::from_ssz_bytes(block_att_agg_bits(att)?)
+        .map_err(|_| InclusionError::DecodeAggregationBits)?;
 
     let any = &*sub.data as &dyn Any;
     let agg = any
@@ -493,7 +500,8 @@ fn check_aggregation_inclusion(sub: &Submission, block: &Block) -> Result<bool, 
     let sub_bits = AggBits::from_ssz_bytes(
         agg.aggregation_bits()
             .ok_or(InclusionError::ParseVersionedAggregate)?,
-    );
+    )
+    .map_err(|_| InclusionError::DecodeAggregationBits)?;
 
     Ok(att_bits.contains(&sub_bits)?)
 }
