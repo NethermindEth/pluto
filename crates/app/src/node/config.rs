@@ -54,8 +54,15 @@ pub struct AppConfig {
     /// Human-readable node nickname, surfaced via the peerinfo protocol.
     pub nickname: String,
 
-    /// Skip cluster lock signature verification.
+    /// Skip cluster lock hash + signature verification.
     pub no_verify: bool,
+
+    /// Execution-layer (eth1) JSON-RPC endpoint, used to verify operator
+    /// signatures (including EIP-1271 smart-contract signatures) in the cluster
+    /// lock. When `None`, lock verification runs without eth1 and such operator
+    /// signatures are not checked. Mirrors Charon's
+    /// `--execution-client-rpc-endpoint`.
+    pub eth1_endpoint: Option<String>,
 
     /// Graffiti included in proposed blocks. `None` gives every validator the
     /// default (client) graffiti; a single value applies to all validators; one

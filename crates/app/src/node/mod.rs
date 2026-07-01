@@ -64,6 +64,14 @@ pub enum AppError {
     #[error("distributed validator: {0}")]
     DistValidator(#[from] pluto_cluster::distvalidator::DistValidatorError),
 
+    /// Cluster lock hash or signature verification failed.
+    #[error("verify cluster lock: {0}")]
+    LockVerify(#[source] pluto_cluster::lock::LockError),
+
+    /// Execution-layer (eth1) client construction failed.
+    #[error("eth1 client: {0}")]
+    Eth1(#[source] pluto_eth1wrap::EthClientError),
+
     /// A distributed validator's public key was not 48 bytes.
     #[error("distributed validator pubkey is not 48 bytes")]
     InvalidValidatorPubKey,
@@ -153,6 +161,7 @@ impl App {
 async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     // ---- (1) Load cluster lock + key, derive peers and this node's index ----
     let lock = load_lock(&config.lock_file).await?;
+    verify_lock(&lock, &config).await?;
     let threshold = lock.threshold;
     let target_gas_limit = lock.target_gas_limit;
     let _ = target_gas_limit; // TODO(#402 part B): thread into validatorapi target gas limit.
@@ -476,6 +485,10 @@ async fn drive_network(mut node: pluto_p2p::p2p::Node<CoreBehaviour>, ct: Cancel
 
 /// Loads and deserializes a cluster [`Lock`](pluto_cluster::lock::Lock) from
 /// disk.
+//
+// TODO(#402 part B): honor `config.manifest_file` (prefer the manifest over the
+// lock, as Charon does) once pluto-cluster gains a manifest loader — there is
+// no manifest DAG loader in Pluto yet.
 async fn load_lock(path: &std::path::Path) -> Result<pluto_cluster::lock::Lock, AppError> {
     let buf = tokio::fs::read_to_string(path)
         .await
@@ -483,9 +496,30 @@ async fn load_lock(path: &std::path::Path) -> Result<pluto_cluster::lock::Lock, 
             path: path.display().to_string(),
             source,
         })?;
-    // TODO(#402 part B): honor `no_verify`/`manifest_file`; verify lock hashes +
-    // signatures (`lock.verify_hashes()` / `lock.verify_signatures(...)`).
     serde_json::from_str(&buf).map_err(AppError::ParseLock)
+}
+
+/// Verifies the cluster lock's hashes and signatures unless `no_verify` is set
+/// (Charon `app.Run` verification). Operator-signature verification uses the
+/// configured execution-layer client; without an `eth1_endpoint`, a no-op eth1
+/// client is used (BLS-aggregate and node signatures are still verified, but
+/// EIP-1271 smart-contract operator signatures are not).
+async fn verify_lock(lock: &pluto_cluster::lock::Lock, config: &AppConfig) -> Result<(), AppError> {
+    if config.no_verify {
+        tracing::warn!("cluster lock verification disabled (no_verify)");
+        return Ok(());
+    }
+
+    lock.verify_hashes().map_err(AppError::LockVerify)?;
+
+    let eth1 = pluto_eth1wrap::EthClient::new(config.eth1_endpoint.as_deref().unwrap_or_default())
+        .await
+        .map_err(AppError::Eth1)?;
+    lock.verify_signatures(&eth1)
+        .await
+        .map_err(AppError::LockVerify)?;
+
+    Ok(())
 }
 
 /// Builds the QBFT peer list (secp256k1 pubkeys) from the cluster peers.

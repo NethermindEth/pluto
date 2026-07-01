@@ -5136,6 +5136,7 @@ dependencies = [
  "pluto-consensus",
  "pluto-core",
  "pluto-crypto",
+ "pluto-eth1wrap",
  "pluto-eth2api",
  "pluto-featureset",
  "pluto-k1util",

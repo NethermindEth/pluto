@@ -15,6 +15,7 @@ futures.workspace = true
 libp2p.workspace = true
 pluto-core.workspace = true
 pluto-consensus.workspace = true
+pluto-eth1wrap.workspace = true
 pluto-featureset.workspace = true
 pluto-eth2api.workspace = true
 pluto-p2p.workspace = true
