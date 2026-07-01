@@ -85,12 +85,9 @@ pub(crate) fn create_relay_config(config: &Config) -> relay::Config {
     let per_ip_limit = u32::try_from(config.max_res_per_peer)
         .ok()
         .and_then(NonZeroU32::new)
-        .unwrap_or_else(|| {
-            NonZeroU32::new(RESERVATIONS_PER_IP_PER_MINUTE).expect("60 > 0")
-        });
+        .unwrap_or_else(|| NonZeroU32::new(RESERVATIONS_PER_IP_PER_MINUTE).expect("60 > 0"));
 
-    relay_config
-        .reservation_rate_per_ip(per_ip_limit, Duration::from_secs(ONE_MINUTE_SECONDS))
+    relay_config.reservation_rate_per_ip(per_ip_limit, Duration::from_secs(ONE_MINUTE_SECONDS))
 }
 
 #[cfg(test)]

@@ -129,7 +129,8 @@ async fn set_beacon_node_version(beacon_node: &EthBeaconNodeApiClient) {
 /// metric label. A real BN version (e.g. "Lighthouse/v5.1.3-...") is short.
 const MAX_METRIC_LABEL_LEN: usize = 64;
 
-/// Truncates a label value to [`MAX_METRIC_LABEL_LEN`] on a UTF-8 char boundary.
+/// Truncates a label value to [`MAX_METRIC_LABEL_LEN`] on a UTF-8 char
+/// boundary.
 fn truncate_label(s: &str) -> String {
     if s.len() <= MAX_METRIC_LABEL_LEN {
         return s.to_string();

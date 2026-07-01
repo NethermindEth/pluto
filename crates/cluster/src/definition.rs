@@ -256,7 +256,8 @@ pub enum DefinitionError {
     #[error("Failed to convert length")]
     FailedToConvertLength,
 
-    /// num_validators exceeds the maximum allowed validators (SSZ_MAX_VALIDATORS).
+    /// num_validators exceeds the maximum allowed validators
+    /// (SSZ_MAX_VALIDATORS).
     #[error("num_validators {num_validators} exceeds maximum {max}")]
     NumValidatorsTooLarge {
         /// The offending value from the definition.

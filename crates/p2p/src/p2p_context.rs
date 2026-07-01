@@ -128,8 +128,8 @@ impl PeerStore {
 
     /// Marks a peer connection as inactive.
     ///
-    /// `known_peers` is the set of cluster peer IDs; entries whose peer ID is in
-    /// this set are never evicted by the `MAX_INACTIVE_PEERS` cap.
+    /// `known_peers` is the set of cluster peer IDs; entries whose peer ID is
+    /// in this set are never evicted by the `MAX_INACTIVE_PEERS` cap.
     pub fn remove_peer(&mut self, peer: Peer, known_peers: &HashSet<PeerId>) {
         self.active_peers.remove(&peer);
 
@@ -142,8 +142,9 @@ impl PeerStore {
     }
 
     /// Evicts oldest inactive, non-known peers until `inactive_peers` is within
-    /// `MAX_INACTIVE_PEERS`. Known cluster peers are re-queued (kept) so they are
-    /// never dropped. Bounded: each call scans at most `inactive_order.len()` entries.
+    /// `MAX_INACTIVE_PEERS`. Known cluster peers are re-queued (kept) so they
+    /// are never dropped. Bounded: each call scans at most
+    /// `inactive_order.len()` entries.
     fn evict_inactive(&mut self, known_peers: &HashSet<PeerId>) {
         // Bound the number of scan iterations to the current queue length so a
         // queue made entirely of known peers cannot loop forever.
@@ -216,7 +217,8 @@ impl PeerStore {
         self.peer_addresses.get(peer_id)
     }
 
-    /// Removes the stored addresses for a peer. Returns the removed addresses, if any.
+    /// Removes the stored addresses for a peer. Returns the removed addresses,
+    /// if any.
     pub fn remove_peer_addresses(&mut self, peer_id: &PeerId) -> Option<Vec<Multiaddr>> {
         self.peer_addresses.remove(peer_id)
     }
@@ -307,7 +309,11 @@ mod tests {
         let mut store = PeerStore::default();
         let peer = PeerId::random();
         let addrs: Vec<Multiaddr> = (0..(MAX_PEER_ADDRESSES + 50))
-            .map(|i| format!("/ip4/127.0.0.1/tcp/{}", 9000usize.saturating_add(i)).parse().unwrap())
+            .map(|i| {
+                format!("/ip4/127.0.0.1/tcp/{}", 9000usize.saturating_add(i))
+                    .parse()
+                    .unwrap()
+            })
             .collect();
 
         store.set_peer_addresses(peer, addrs.clone());
@@ -323,7 +329,11 @@ mod tests {
         let mut store = PeerStore::default();
         let peer = PeerId::random();
         let addrs: Vec<Multiaddr> = (0..3)
-            .map(|i| format!("/ip4/127.0.0.1/tcp/{}", 9000usize.saturating_add(i)).parse().unwrap())
+            .map(|i| {
+                format!("/ip4/127.0.0.1/tcp/{}", 9000usize.saturating_add(i))
+                    .parse()
+                    .unwrap()
+            })
             .collect();
 
         store.set_peer_addresses(peer, addrs.clone());

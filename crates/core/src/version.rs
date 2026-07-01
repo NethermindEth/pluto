@@ -141,22 +141,15 @@ impl SemVer {
         // rather than panicking. NB: this is an intentional, safe divergence
         // from Charon's Parse (app/version/version.go @ v1.7.1), which discards
         // the strconv.Atoi error and silently yields 0 on overflow.
-        let major = matches[1]
-            .parse()
-            .map_err(|_| SemVerError::InvalidFormat)?;
-        let minor = matches[2]
-            .parse()
-            .map_err(|_| SemVerError::InvalidFormat)?;
+        let major = matches[1].parse().map_err(|_| SemVerError::InvalidFormat)?;
+        let minor = matches[2].parse().map_err(|_| SemVerError::InvalidFormat)?;
 
         let mut patch = 0;
         let mut pre_release = "";
         let mut sem_ver_type = SemVerType::Minor;
 
         if let Some(m) = matches.get(3) {
-            patch = m
-                .as_str()
-                .parse()
-                .map_err(|_| SemVerError::InvalidFormat)?;
+            patch = m.as_str().parse().map_err(|_| SemVerError::InvalidFormat)?;
             sem_ver_type = SemVerType::Patch;
         }
 

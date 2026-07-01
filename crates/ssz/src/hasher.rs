@@ -103,7 +103,8 @@ pub enum HasherError {
         /// Declared limit.
         limit: usize,
     },
-    /// Bitlist final (delimiter) byte is zero — missing the length sentinel bit.
+    /// Bitlist final (delimiter) byte is zero — missing the length sentinel
+    /// bit.
     #[error("Invalid bitlist: final byte is zero (missing length delimiter bit)")]
     InvalidBitlistDelimiter,
 }

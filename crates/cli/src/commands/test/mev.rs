@@ -35,8 +35,8 @@ fn http_client() -> reqwest::Client {
         .unwrap_or_default()
 }
 
-/// Reads a response body, rejecting bodies that exceed [`BN_MAX_BODY`]. Uses the
-/// advertised `Content-Length` for the fast-path reject; the client timeout
+/// Reads a response body, rejecting bodies that exceed [`BN_MAX_BODY`]. Uses
+/// the advertised `Content-Length` for the fast-path reject; the client timeout
 /// bounds a slow/absent-length body.
 async fn read_body_capped(resp: reqwest::Response) -> Result<Vec<u8>> {
     if let Some(len) = resp.content_length()

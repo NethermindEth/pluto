@@ -700,8 +700,8 @@ impl<B: NetworkBehaviour> FusedStream for Node<B> {
 /// Stores identify-reported listen addresses for a peer, gated to known cluster
 /// peers only. Addresses from unknown peers are dropped (and not cloned), since
 /// the only consumers of `peer_addresses` look up known peers exclusively — so
-/// storing them would be pure unbounded growth. The per-peer count is bounded by
-/// [`PeerStore::set_peer_addresses`].
+/// storing them would be pure unbounded growth. The per-peer count is bounded
+/// by [`PeerStore::set_peer_addresses`].
 fn store_identify_addrs(ctx: &P2PContext, peer_id: &PeerId, addrs: &[Multiaddr]) {
     if ctx.is_known_peer(peer_id) {
         // The peer addresses will be available in the next poll of the node.
@@ -722,7 +722,11 @@ mod tests {
 
     fn addrs(n: usize) -> Vec<Multiaddr> {
         (0..n)
-            .map(|i| format!("/ip4/127.0.0.1/tcp/{}", 9000usize.saturating_add(i)).parse().unwrap())
+            .map(|i| {
+                format!("/ip4/127.0.0.1/tcp/{}", 9000usize.saturating_add(i))
+                    .parse()
+                    .unwrap()
+            })
             .collect()
     }
 
@@ -753,7 +757,11 @@ mod tests {
         let known = random_peer_id();
         let ctx = P2PContext::new([known]);
 
-        store_identify_addrs(&ctx, &known, &addrs(crate::p2p_context::MAX_PEER_ADDRESSES + 1));
+        store_identify_addrs(
+            &ctx,
+            &known,
+            &addrs(crate::p2p_context::MAX_PEER_ADDRESSES + 1),
+        );
 
         let store = ctx.peer_store_lock();
         assert_eq!(
