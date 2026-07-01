@@ -304,14 +304,20 @@ impl<const MAX: usize> BitList<MAX> {
     ///
     /// Rejects encodings whose decoded bit length exceeds `MAX` (when `MAX >
     /// 0`), per the SSZ `Bitlist[N]` rule that a decoded `bit_count > N` is
-    /// invalid.
+    /// invalid. Also rejects malformed encodings with no delimiting bit — an
+    /// empty buffer or a zero final byte — since a valid `Bitlist` (including
+    /// the empty list, encoded as `0x01`) always has a non-zero final byte.
     pub fn from_ssz_bytes(ssz: Vec<u8>) -> Result<Self, DecodeError> {
         if ssz.is_empty() {
-            return Ok(Self::default());
+            return Err(DecodeError::BytesInvalid(
+                "bitlist encoding is empty (missing sentinel bit)".to_owned(),
+            ));
         }
         let last_byte = ssz[ssz.len().saturating_sub(1)];
         if last_byte == 0 {
-            return Ok(Self::default());
+            return Err(DecodeError::BytesInvalid(
+                "bitlist final byte is zero (missing sentinel bit)".to_owned(),
+            ));
         }
 
         let sentinel_pos = 7_u32.saturating_sub(last_byte.leading_zeros()) as usize;
@@ -697,6 +703,18 @@ mod tests {
         at_cap.push(0x01);
         let bl = BitList::<2048>::from_ssz_bytes(at_cap).expect("at-capacity decode");
         assert_eq!(bl.len(), 2048);
+    }
+
+    #[test]
+    fn bitlist_from_ssz_rejects_missing_sentinel() {
+        // Valid encodings always have a non-zero final (sentinel) byte; the
+        // empty list is `0x01`. Empty buffers and zero final bytes are invalid.
+        assert!(BitList::<2048>::from_ssz_bytes(vec![]).is_err());
+        assert!(BitList::<2048>::from_ssz_bytes(vec![0x00]).is_err());
+        assert!(BitList::<2048>::from_ssz_bytes(vec![0x00, 0x00]).is_err());
+        // The canonical empty bitlist still decodes to length 0.
+        let empty = BitList::<2048>::from_ssz_bytes(vec![0x01]).expect("empty bitlist");
+        assert_eq!(empty.len(), 0);
     }
 
     #[test]
