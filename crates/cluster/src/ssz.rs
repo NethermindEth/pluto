@@ -787,7 +787,7 @@ pub(crate) fn hash_lock_legacy<H: HashWalker>(lock: &Lock, hh: &mut H) -> Result
     // Field (1) 'ValidatorAddresses'
     {
         let sub_idx = hh.index();
-        let num = lock.validator_addresses.len();
+        let num = lock.distributed_validators.len();
 
         for validator in &lock.distributed_validators {
             hash_validator_legacy(validator, hh)?;

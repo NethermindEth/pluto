@@ -1029,6 +1029,31 @@ mod tests {
         assert!(lock.verify_hashes().is_ok());
     }
 
+    #[test]
+    fn legacy_lock_hash_uses_distributed_validator_count() {
+        let mut lock =
+            serde_json::from_str::<Lock>(include_str!("testdata/cluster_lock_v1_2_0.json"))
+                .unwrap();
+        assert!(lock.verify_hashes().is_ok());
+        let golden = lock.lock_hash.clone();
+
+        // Append an identical (so `legacy_validator_addresses` still collapses to a
+        // single address, keeping field (0) unchanged) extra address entry, making
+        // validator_addresses.len() != distributed_validators.len().
+        let extra = lock.definition.validator_addresses[0].clone();
+        lock.definition.validator_addresses.push(extra);
+        assert_ne!(
+            lock.definition.validator_addresses.len(),
+            lock.distributed_validators.len()
+        );
+
+        // Field (1) count must still track distributed_validators, so the legacy
+        // lock hash is unchanged. The buggy field (`validator_addresses.len()`)
+        // would diverge from this golden hash.
+        let recomputed = hash_lock(&lock).expect("hash_lock should not error");
+        assert_eq!(recomputed.to_vec(), golden);
+    }
+
     #[tokio::test]
     async fn verify_signatures_v1_0_allows_empty_aggregate() {
         let mut lock =
