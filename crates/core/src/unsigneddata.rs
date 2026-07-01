@@ -158,9 +158,7 @@ fn unsigned_duty_data_from_proto(
 /// Decodes an unsigned [`VersionedProposal`], SSZ-first with JSON fallback
 /// (charon `DutyProposer` branch of `unmarshalUnsignedData`).
 fn decode_versioned_proposal(data: &[u8]) -> Result<VersionedProposal, ParSigExCodecError> {
-    if !looks_like_json(data)
-        && let Ok(proposal) = ssz_codec::decode_versioned_proposal(data)
-    {
+    if let Ok(proposal) = ssz_codec::decode_versioned_proposal(data) {
         return Ok(proposal);
     }
 
@@ -184,29 +182,26 @@ fn decode_versioned_proposal(data: &[u8]) -> Result<VersionedProposal, ParSigExC
 fn decode_aggregated_attestation(
     data: &[u8],
 ) -> Result<VersionedAggregatedAttestation, ParSigExCodecError> {
-    if !looks_like_json(data) {
-        if let Ok(agg) = ssz_codec::decode_versioned_aggregated_attestation(data) {
-            return Ok(agg);
-        }
-        // Fallback: non-versioned `AggregatedAttestation` (raw phase0 SSZ).
-        if let Ok(att) = phase0::Attestation::from_ssz_bytes(data) {
-            return Ok(wrap_phase0_aggregated_attestation(att));
-        }
-        return Err(ParSigExCodecError::UnsignedData(
-            "unmarshal aggregated attestation".to_string(),
-        ));
+    if let Ok(agg) = ssz_codec::decode_versioned_aggregated_attestation(data) {
+        return Ok(agg);
+    }
+    if let Ok(att) = phase0::Attestation::from_ssz_bytes(data) {
+        return Ok(wrap_phase0_aggregated_attestation(att));
     }
 
-    // JSON fallback: versioned wrapper first, then non-versioned attestation.
-    // The versioned wrapper shares `signeddata::VersionedAttestation`'s
-    // `Deserialize` impl (same `{version, validator_index, attestation}` shape),
-    // which also validates the version/payload via `VersionedAttestation::new`.
-    if let Ok(decoded) = serde_json::from_slice::<crate::signeddata::VersionedAttestation>(data) {
-        return Ok(VersionedAggregatedAttestation(decoded.0));
+    if looks_like_json(data) {
+        if let Ok(decoded) = serde_json::from_slice::<crate::signeddata::VersionedAttestation>(data)
+        {
+            return Ok(VersionedAggregatedAttestation(decoded.0));
+        }
+        let att: phase0::Attestation =
+            serde_json::from_slice(data).map_err(ParSigExCodecError::from)?;
+        return Ok(wrap_phase0_aggregated_attestation(att));
     }
-    let att: phase0::Attestation =
-        serde_json::from_slice(data).map_err(ParSigExCodecError::from)?;
-    Ok(wrap_phase0_aggregated_attestation(att))
+
+    Err(ParSigExCodecError::UnsignedData(
+        "unmarshal aggregated attestation".to_string(),
+    ))
 }
 
 /// Wraps a non-versioned phase0 attestation as a phase0
@@ -223,9 +218,7 @@ fn wrap_phase0_aggregated_attestation(att: phase0::Attestation) -> VersionedAggr
 /// Decodes an unsigned [`SyncContribution`], SSZ-first with JSON fallback
 /// (charon `DutySyncContribution` branch).
 fn decode_sync_contribution(data: &[u8]) -> Result<SyncContribution, ParSigExCodecError> {
-    if !looks_like_json(data)
-        && let Ok(contribution) = ssz_codec::decode_sync_contribution(data)
-    {
+    if let Ok(contribution) = ssz_codec::decode_sync_contribution(data) {
         return Ok(contribution);
     }
 
@@ -625,6 +618,46 @@ mod tests {
             DutyType::SyncContribution,
             pubkey,
             UnsignedDutyData::SyncContribution(sample_sync_contribution()),
+        );
+    }
+
+    /// Regression: `SyncCommitteeContribution` is a fixed-size SSZ container
+    /// whose leading field is a little-endian `u64` slot, so its SSZ encoding
+    /// begins with `0x7B` (`{`) whenever `slot % 256 == 123`. A
+    /// `{`-prefix-first dispatch would misroute such a valid SSZ payload to
+    /// JSON and fail; charon tries SSZ first (`core/proto.go` `unmarshal`),
+    /// so this must round-trip.
+    #[test]
+    fn sync_contribution_ssz_leading_brace_round_trips() {
+        let contribution = SyncContribution(altair::SyncCommitteeContribution {
+            slot: 0x7B, // little-endian u64 → first SSZ byte is `{`
+            beacon_block_root: [0xab; 32],
+            subcommittee_index: 2,
+            aggregation_bits: BitVector::with_bits(&[0, 5]),
+            signature: [0xcd; 96],
+        });
+
+        // The SSZ encoding really does begin with `{` (the flaw's trigger).
+        let encoded = ssz_codec::encode_sync_contribution(&contribution).unwrap();
+        assert_eq!(
+            encoded.first(),
+            Some(&b'{'),
+            "leading SSZ byte should be 0x7B"
+        );
+
+        let pubkey = random_core_pub_key();
+        let mut set = UnsignedDataSet::new();
+        set.insert(
+            pubkey,
+            UnsignedDutyData::SyncContribution(contribution.clone()),
+        );
+
+        let proto = unsigned_data_set_to_proto(&set).unwrap();
+        let decoded = unsigned_data_set_from_proto(&DutyType::SyncContribution, &proto).unwrap();
+
+        assert_eq!(
+            decoded.get(&pubkey),
+            Some(&UnsignedDutyData::SyncContribution(contribution)),
         );
     }
 
