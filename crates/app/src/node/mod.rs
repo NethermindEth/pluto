@@ -163,8 +163,11 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     let lock = load_lock(&config.lock_file).await?;
     verify_lock(&lock, &config).await?;
     let threshold = lock.threshold;
-    let target_gas_limit = lock.target_gas_limit;
-    let _ = target_gas_limit; // TODO(#402 part B): thread into validatorapi target gas limit.
+    // TODO(#402 part B): honor the target gas limit (the `config.target_gas_limit`
+    // override, else `lock.target_gas_limit`) once `validatorapi::Component::new`
+    // accepts a target-gas-limit parameter — Charon passes it to `NewComponent`,
+    // but Pluto's validator-registration path has no such input yet.
+    let _ = (config.target_gas_limit, lock.target_gas_limit);
 
     let key = pluto_k1util::load(&config.priv_key_file)?;
     let peers = lock.peers()?;
@@ -185,6 +188,11 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     let validators = build_validators(&lock, share_idx)?;
 
     // ---- (2/3) eth2 clients ----
+    //
+    // TODO(#402 part B): support multiple `beacon_node_addrs` with per-request
+    // fallback — `EthBeaconNodeApiClient` is single-endpoint, so a failover
+    // (multi-endpoint) client in pluto-eth2api is required first; for now the
+    // first address is used.
     let beacon_node_addr = config
         .beacon_node_addrs
         .first()
@@ -192,8 +200,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         .unwrap_or_default();
     let eth2_cl = build_api_client(beacon_node_addr, config.beacon_node_timeout)?;
     let beacon_client = pluto_eth2api::BeaconNodeClient::new(eth2_cl.clone());
-    // TODO(#402 part B): honor `beacon_node_submit_timeout` distinctly; a
-    // separate submission client is built with the submit timeout here.
+    // Broadcasting uses a separate client with the (distinct) submit timeout.
     let submission_api = build_api_client(beacon_node_addr, config.beacon_node_submit_timeout)?;
     let submission_client = pluto_eth2api::BeaconNodeClient::new(submission_api);
 
