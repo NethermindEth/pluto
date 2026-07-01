@@ -93,6 +93,18 @@ pub enum AppError {
     #[error("beacon client: {0}")]
     BeaconClient(String),
 
+    /// Duty gater construction failed.
+    #[error("duty gater: {0}")]
+    Gater(#[source] pluto_core::gater::GaterError),
+
+    /// Deadline calculator construction failed.
+    #[error("deadline calculator: {0}")]
+    Deadline(#[source] pluto_core::deadline::DeadlineError),
+
+    /// Graffiti builder construction failed.
+    #[error("graffiti: {0}")]
+    Graffiti(#[source] pluto_core::fetcher::GraffitiError),
+
     /// Signature aggregator construction failed.
     #[error("sigagg: {0}")]
     SigAgg(#[source] pluto_core::sigagg::SigAggError),
@@ -173,12 +185,53 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     let submission_api = build_api_client(beacon_node_addr, config.beacon_node_submit_timeout)?;
     let submission_client = pluto_eth2api::BeaconNodeClient::new(submission_api);
 
-    // Duty admission gate.
-    //
-    // TODO(#402 part B): use `DutyGater::new(&eth2_cl).await?.into_fn()` (Charon's
-    // `core.NewDutyGater`) which validates against the beacon chain; the minimal
-    // wiring admits any structurally-valid duty type.
-    let duty_gater: DutyGaterFn = Arc::new(|duty| duty.duty_type.is_valid());
+    // ---- Beacon-derived duty-workflow inputs (Charon app.go:540-556) ----
+
+    // Duty admission gate: validates duties against the beacon chain
+    // (Charon `core.NewDutyGater`).
+    let duty_gater: DutyGaterFn = pluto_core::gater::DutyGater::new(&eth2_cl)
+        .await
+        .map_err(AppError::Gater)?
+        .into_fn();
+
+    // Per-component deadline calculator, shared as an `Arc<dyn ...>` so a single
+    // beacon-derived instance backs every component's deadliner.
+    let deadline_calc: Arc<dyn pluto_core::deadline::DeadlineCalculator> = Arc::new(
+        pluto_core::deadline::DutyDeadlineCalculator::from_client(&eth2_cl)
+            .await
+            .map_err(AppError::Deadline)?,
+    );
+
+    // Per-validator graffiti for proposed blocks.
+    let graffiti_pubkeys: Vec<pluto_core::types::PubKey> =
+        validators.iter().map(|v| v.pubkey).collect();
+    let graffiti_builder = pluto_core::fetcher::GraffitiBuilder::new(
+        &graffiti_pubkeys,
+        config.graffiti.as_deref(),
+        config.graffiti_disable_client_append,
+        &eth2_cl,
+    )
+    .await
+    .map_err(AppError::Graffiti)?;
+
+    // Electra activation slot = electra_fork_epoch * slots_per_epoch.
+    let (_, slots_per_epoch) = eth2_cl
+        .fetch_slots_config()
+        .await
+        .map_err(|e| AppError::BeaconClient(e.to_string()))?;
+    let fork_config = eth2_cl
+        .fetch_fork_config()
+        .await
+        .map_err(|e| AppError::BeaconClient(e.to_string()))?;
+    let electra_slot = fork_config
+        .get(&pluto_eth2api::ConsensusVersion::Electra)
+        .map(|schedule| schedule.epoch)
+        .unwrap_or(0)
+        .saturating_mul(slots_per_epoch);
+
+    // Feature set drives optional/alpha behaviors.
+    let feature_set = Arc::clone(&config.feature_set);
+    let fetch_only_comm_idx0 = feature_set.enabled(pluto_featureset::Feature::FetchOnlyCommIdx0);
 
     // ---- Consensus (built directly; shared with p2p behaviour + core stitch) ----
     //
@@ -190,7 +243,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     let (cons_deadliner, cons_expired_rx) = pluto_core::deadline::DeadlinerTask::start(
         ct.clone(),
         "consensus.qbft",
-        pluto_core::deadline::NeverExpiringCalculator,
+        Arc::clone(&deadline_calc),
     );
 
     let handle_slot = Arc::new(OnceLock::<qbft::p2p::Handle>::new());
@@ -208,10 +261,6 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         })
     };
 
-    // TODO(#402 part B): build this from the CLI feature-set config
-    // (`FeatureSet::from_config`) instead of the default set.
-    let feature_set = Arc::new(pluto_featureset::FeatureSet::new());
-
     let consensus = Arc::new(qbft::Consensus::new(qbft::Config {
         peers: qbft_peers,
         local_peer_idx: i64::try_from(local_idx).map_err(|_| AppError::LocalPeerNotFound)?,
@@ -221,12 +270,11 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         duty_gater: Arc::clone(&duty_gater),
         broadcaster,
         sniffer: Arc::new(|_| {}),
-        // Charon gates this on the `ChainSplitHalt` featureset flag, which is
-        // alpha (off by default).
-        // TODO(#402 part B): thread the featureset flag through instead of `false`.
-        compare_attestations: false,
+        // Charon gates duplicate-attestation comparison on the alpha
+        // `ChainSplitHalt` featureset flag (off by default).
+        compare_attestations: feature_set.enabled(pluto_featureset::Feature::ChainSplitHalt),
         feature_set: Arc::clone(&feature_set),
-        timer_func: pluto_consensus::timer::get_round_timer_func(feature_set),
+        timer_func: pluto_consensus::timer::get_round_timer_func(Arc::clone(&feature_set)),
     })?);
 
     // ---- P2P behaviours (parsigex + qbft + peerinfo) ----
@@ -272,6 +320,10 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             upstream_url,
             parsigex: parsigex_seam,
             sigagg_verifier,
+            deadline_calc,
+            graffiti_builder,
+            electra_slot,
+            fetch_only_comm_idx0,
         },
         Arc::clone(&duty_gater),
         ct.clone(),

@@ -130,6 +130,12 @@ fn wire_inputs(
         // path, not that BLS verification works (the partial sigs carry
         // arbitrary payloads). Real eth2 verification is exercised in part B.
         sigagg_verifier: Arc::new(|_pubkey, _data| Box::pin(async { Ok(()) })),
+        // Inert fetcher inputs: never-expiring deadlines (so driven slot-1
+        // duties are not trimmed), default graffiti, no Electra gating.
+        deadline_calc: Arc::new(pluto_core::deadline::NeverExpiringCalculator),
+        graffiti_builder: pluto_core::fetcher::GraffitiBuilder::default(),
+        electra_slot: 0,
+        fetch_only_comm_idx0: false,
     }
 }
 

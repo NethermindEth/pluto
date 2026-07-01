@@ -1,7 +1,8 @@
 //! Configuration for the distributed-validator node.
 
-use std::{net::SocketAddr, path::PathBuf, time::Duration};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
+use pluto_featureset::FeatureSet;
 use pluto_p2p::config::P2PConfig;
 
 /// Application configuration for running a distributed-validator node.
@@ -11,7 +12,7 @@ use pluto_p2p::config::P2PConfig;
 /// Observability (monitoring/debug API, tracing/OTLP) and simnet/mock-only
 /// fields are intentionally omitted for the minimal-runnable wiring.
 // TODO(#402 part B): add monitoring/debug addrs, OTLP/Jaeger tracing config,
-// graffiti, simnet (beacon/validator mock) and `TestConfig`-style overrides.
+// simnet (beacon/validator mock) and `TestConfig`-style overrides.
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     /// P2P networking configuration (listen/advertise addresses, relays, ...).
@@ -55,4 +56,18 @@ pub struct AppConfig {
 
     /// Skip cluster lock signature verification.
     pub no_verify: bool,
+
+    /// Graffiti included in proposed blocks. `None` gives every validator the
+    /// default (client) graffiti; a single value applies to all validators; one
+    /// value per validator otherwise. Mirrors Charon's `--graffiti`.
+    pub graffiti: Option<Vec<String>>,
+
+    /// Disable appending the client version/codex to graffiti. Mirrors Charon's
+    /// `--graffiti-disable-client-append`.
+    pub graffiti_disable_client_append: bool,
+
+    /// Feature set controlling optional/alpha behaviors (e.g.
+    /// `FetchOnlyCommIdx0`, `ChainSplitHalt`). Resolved from the CLI
+    /// feature flags (out of scope here).
+    pub feature_set: Arc<FeatureSet>,
 }

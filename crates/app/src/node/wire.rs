@@ -28,7 +28,7 @@ use pluto_core::{
     aggsigdb::{memory::MemoryDBHandle, types::AggSigDB},
     bcast::Broadcaster,
     corepb::v1::core as pbcore,
-    deadline::{DeadlinerTask, NeverExpiringCalculator},
+    deadline::{DeadlineCalculator, DeadlinerTask},
     dutydb,
     fetcher::{
         AggSigDbFunc, AwaitAttDataFunc, FeeRecipientFunc, Fetcher, GraffitiBuilder, Subscriber,
@@ -132,6 +132,21 @@ pub struct WireInputs {
     /// exercise the wiring without real BLS test vectors (mirrors Charon's
     /// `TestConfig`).
     pub sigagg_verifier: VerifyFn,
+    /// Per-component deadline calculator. Production injects a beacon-derived
+    /// [`DutyDeadlineCalculator`](pluto_core::deadline::DutyDeadlineCalculator);
+    /// tests inject `NeverExpiringCalculator` so driven duties are never
+    /// trimmed.
+    pub deadline_calc: Arc<dyn DeadlineCalculator>,
+    /// Per-validator graffiti builder for proposed blocks. Production injects a
+    /// beacon-derived builder; tests inject the default.
+    pub graffiti_builder: GraffitiBuilder,
+    /// Slot at which the Electra fork activates (`electra_epoch *
+    /// slots_per_epoch`); gates the `fetch_only_comm_idx0` committee-index
+    /// behavior.
+    pub electra_slot: u64,
+    /// Whether to fetch only committee index 0 at/after `electra_slot`
+    /// (`Feature::FetchOnlyCommIdx0`).
+    pub fetch_only_comm_idx0: bool,
 }
 
 /// The wired components and long-lived handles produced by
@@ -184,6 +199,10 @@ pub async fn wire_core_workflow(
         upstream_url,
         parsigex,
         sigagg_verifier,
+        deadline_calc,
+        graffiti_builder,
+        electra_slot,
+        fetch_only_comm_idx0,
     } = inputs;
 
     // Reserved for part B (gater is shared with parsigex via the caller's
@@ -209,15 +228,14 @@ pub async fn wire_core_workflow(
 
     // ---- Deadliners (one per component) ----
     //
-    // TODO(#402 part B): use `DutyDeadlineCalculator::from_client(&eth2_cl)` for
-    // real per-duty deadlines instead of `NeverExpiringCalculator`. The minimal
-    // wiring uses never-expiring deadlines so nothing is trimmed prematurely.
+    // Each component gets its own deadliner task sharing the injected calculator
+    // (an `Arc<dyn DeadlineCalculator>`, so a single instance backs all three).
     let (dutydb_deadliner, dutydb_deadliner_rx) =
-        DeadlinerTask::start(ct.clone(), "dutydb", NeverExpiringCalculator);
+        DeadlinerTask::start(ct.clone(), "dutydb", Arc::clone(&deadline_calc));
     let (parsigdb_deadliner, parsigdb_deadliner_rx) =
-        DeadlinerTask::start(ct.clone(), "parsigdb", NeverExpiringCalculator);
+        DeadlinerTask::start(ct.clone(), "parsigdb", Arc::clone(&deadline_calc));
     let (aggsigdb_deadliner, aggsigdb_deadliner_rx) =
-        DeadlinerTask::start(ct.clone(), "aggsigdb", NeverExpiringCalculator);
+        DeadlinerTask::start(ct.clone(), "aggsigdb", Arc::clone(&deadline_calc));
 
     // ---- (4) AggSigDB (built before fetcher: agg_sig_db back-edge target) ----
     let aggsigdb = MemoryDBHandle::new(aggsigdb_deadliner, aggsigdb_deadliner_rx, ct.clone());
@@ -276,12 +294,6 @@ pub async fn wire_core_workflow(
         })
     };
 
-    // TODO(#402 part B): build a real `GraffitiBuilder::new(pubkeys, graffiti,
-    // disable_client_append, &eth2_cl)`; the minimal wiring uses the default
-    // (zero) graffiti for every validator.
-    // TODO(#402 part B): set `electra_slot` from the fork schedule
-    // (`eth2wrap::FetchForkConfig`) and `fetch_only_comm_idx0` from the
-    // featureset; defaults (0 / false) are used here.
     let fetcher = Arc::new(
         Fetcher::builder()
             .eth2_cl(eth2_cl.clone())
@@ -289,9 +301,9 @@ pub async fn wire_core_workflow(
             .agg_sig_db(agg_sig_db_fn)
             .await_att_data(await_att_data_fn)
             .builder_enabled(builder_enabled)
-            .graffiti_builder(GraffitiBuilder::default())
-            .electra_slot(0)
-            .fetch_only_comm_idx0(false)
+            .graffiti_builder(graffiti_builder)
+            .electra_slot(electra_slot)
+            .fetch_only_comm_idx0(fetch_only_comm_idx0)
             .subscribe(fetch_subscriber)
             .build(),
     );
