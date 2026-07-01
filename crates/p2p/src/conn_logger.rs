@@ -249,11 +249,26 @@ impl<M: ConnectionLoggerMetrics + 'static> NetworkBehaviour for ConnectionLogger
                     }
                 };
                 // Update peer store
-                self.p2p_context.peer_store_write_lock().remove_peer(Peer {
-                    id: event.peer_id,
-                    connection_id: event.connection_id,
-                    remote_addr: addr.clone(),
-                });
+                {
+                    let known = self.p2p_context.known_peers().clone();
+                    let mut store = self.p2p_context.peer_store_write_lock();
+                    store.remove_peer(
+                        Peer {
+                            id: event.peer_id,
+                            connection_id: event.connection_id,
+                            remote_addr: addr.clone(),
+                        },
+                        &known,
+                    );
+                    // Drop cached identify addresses once the peer has no active
+                    // connections and is not a known cluster peer, to bound
+                    // `peer_addresses` growth.
+                    if store.connections_to_peer(&event.peer_id).is_empty()
+                        && !known.contains(&event.peer_id)
+                    {
+                        store.remove_peer_addresses(&event.peer_id);
+                    }
+                }
                 // Decrement the connection count based on the endpoint address
                 self.decrement_connection(event.peer_id, &addr);
             }
