@@ -36,7 +36,7 @@ use pluto_core::{
     gater::DutyGaterFn,
     parsigdb,
     scheduler::{SchedulerBuilder, SchedulerHandle},
-    sigagg::Aggregator,
+    sigagg::{Aggregator, VerifyFn},
     types::{Duty, ParSignedData, ParSignedDataSet, PubKey, SignedData, SignedDataSet},
     unsigneddata::{self, UnsignedDataSet, UnsignedDutyData},
     validatorapi::{self, Component, Handler},
@@ -127,6 +127,11 @@ pub struct WireInputs {
     pub upstream_url: reqwest::Url,
     /// Partial-signature exchange seam (production handle or test loopback).
     pub parsigex: ParSigExSeam,
+    /// Aggregated-signature verifier for SigAgg. Production injects the eth2
+    /// verifier (`sigagg::new_verifier`); tests may inject a permissive one to
+    /// exercise the wiring without real BLS test vectors (mirrors Charon's
+    /// `TestConfig`).
+    pub sigagg_verifier: VerifyFn,
 }
 
 /// The wired components and long-lived handles produced by
@@ -178,6 +183,7 @@ pub async fn wire_core_workflow(
         builder_enabled,
         upstream_url,
         parsigex,
+        sigagg_verifier,
     } = inputs;
 
     // Reserved for part B (gater is shared with parsigex via the caller's
@@ -344,10 +350,10 @@ pub async fn wire_core_workflow(
 
     // ---- (10) SigAgg (built before parsigdb.subscribe_threshold consumer) ----
     //
-    // TODO(#402 part B): use an eth2-based verifier instead of the no-op
-    // `new_verifier()` (which currently always accepts).
-    let mut aggregator =
-        Aggregator::new(threshold, pluto_core::sigagg::new_verifier()).map_err(AppError::SigAgg)?;
+    // The production verifier (injected via `sigagg_verifier`) reconstructs the
+    // group signature and verifies it against the beacon-node signing domain
+    // (Charon `sigagg.NewVerifier`).
+    let mut aggregator = Aggregator::new(threshold, sigagg_verifier).map_err(AppError::SigAgg)?;
     // Stitch: sigagg.subscribe(aggsigdb.store).
     //
     // SigAgg subscriber errors abort the whole aggregation, so downstream

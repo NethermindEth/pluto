@@ -58,6 +58,10 @@ pub struct CoreHandles {
 //
 // TODO(#402 part B): relay/NAT support (relay client + RelayManager), QUIC
 // transport, and bandwidth metrics — start with TCP + no relay.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "wireP2P aggregates independent inputs; a config struct is deferred to part B when relay/priority inputs are added"
+)]
 pub(crate) fn wire_p2p(
     key: k256::SecretKey,
     p2p_config: pluto_p2p::config::P2PConfig,

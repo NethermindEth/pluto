@@ -208,6 +208,10 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         })
     };
 
+    // TODO(#402 part B): build this from the CLI feature-set config
+    // (`FeatureSet::from_config`) instead of the default set.
+    let feature_set = Arc::new(pluto_featureset::FeatureSet::new());
+
     let consensus = Arc::new(qbft::Consensus::new(qbft::Config {
         peers: qbft_peers,
         local_peer_idx: i64::try_from(local_idx).map_err(|_| AppError::LocalPeerNotFound)?,
@@ -221,7 +225,8 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         // alpha (off by default).
         // TODO(#402 part B): thread the featureset flag through instead of `false`.
         compare_attestations: false,
-        timer_func: pluto_consensus::timer::get_round_timer_func(),
+        feature_set: Arc::clone(&feature_set),
+        timer_func: pluto_consensus::timer::get_round_timer_func(feature_set),
     })?);
 
     // ---- P2P behaviours (parsigex + qbft + peerinfo) ----
@@ -250,6 +255,10 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
 
     let parsigex_seam = production_parsigex_seam(&handles);
 
+    // Aggregated-signature verifier: verifies the reconstructed group signature
+    // against the beacon-node signing domain.
+    let sigagg_verifier = pluto_core::sigagg::new_verifier(Arc::new(eth2_cl.clone()));
+
     let wired = wire::wire_core_workflow(
         WireInputs {
             threshold,
@@ -262,6 +271,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             builder_enabled: config.builder_api,
             upstream_url,
             parsigex: parsigex_seam,
+            sigagg_verifier,
         },
         Arc::clone(&duty_gater),
         ct.clone(),

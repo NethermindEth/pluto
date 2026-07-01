@@ -126,6 +126,10 @@ fn wire_inputs(
         builder_enabled: false,
         upstream_url: reqwest::Url::parse("http://127.0.0.1:5052").expect("url"),
         parsigex: loopback_parsigex_seam(),
+        // Permissive verifier: this test proves the wiring connects the sign
+        // path, not that BLS verification works (the partial sigs carry
+        // arbitrary payloads). Real eth2 verification is exercised in part B.
+        sigagg_verifier: Arc::new(|_pubkey, _data| Box::pin(async { Ok(()) })),
     }
 }
 
@@ -150,6 +154,7 @@ fn build_consensus(ct: &CancellationToken) -> Arc<qbft::Consensus> {
         name: "node-0".to_string(),
         public_key: key.public_key(),
     };
+    let feature_set = Arc::new(pluto_featureset::FeatureSet::new());
     Arc::new(
         qbft::Consensus::new(qbft::Config {
             peers: vec![peer],
@@ -161,7 +166,8 @@ fn build_consensus(ct: &CancellationToken) -> Arc<qbft::Consensus> {
             broadcaster: Arc::new(|_ct, _msg| Box::pin(async { Ok(()) })),
             sniffer: Arc::new(|_| {}),
             compare_attestations: true,
-            timer_func: pluto_consensus::timer::get_round_timer_func(),
+            feature_set: Arc::clone(&feature_set),
+            timer_func: pluto_consensus::timer::get_round_timer_func(feature_set),
         })
         .expect("consensus"),
     )
