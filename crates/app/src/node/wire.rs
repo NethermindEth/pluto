@@ -39,7 +39,7 @@ use pluto_core::{
     sigagg::{Aggregator, VerifyFn},
     signeddata::{SyncContribution, VersionedAggregatedAttestation},
     types::{Duty, ParSignedData, ParSignedDataSet, PubKey, SignedData, SignedDataSet},
-    unsigneddata::{self, UnsignedDataSet, UnsignedDutyData},
+    unsigneddata::{self, UnsignedDataSet},
     validatorapi::{self, Component, Handler},
 };
 use pluto_eth2api::{
@@ -286,9 +286,7 @@ pub async fn wire_core_workflow(
             let consensus = Arc::clone(&consensus);
             let ct = ct.clone();
             Box::pin(async move {
-                // Bridge core `UnsignedDataSet` -> proto `pbcore::UnsignedDataSet`
-                // for the consensus value.
-                let value = unsigned_data_set_to_proto(&set)?;
+                let value = unsigneddata::unsigned_data_set_to_proto(&set).map_err(box_err)?;
                 consensus.propose(duty, value, &ct).await.map_err(box_err)?;
                 Ok(())
             })
@@ -603,46 +601,4 @@ pub async fn wire_core_workflow(
         fetcher,
         validator_api_router,
     })
-}
-
-/// Encodes a core [`UnsignedDataSet`] into the proto `pbcore::UnsignedDataSet`
-/// consumed by `consensus.propose`.
-///
-/// pluto-core only ships the *decode* path (`unsigned_data_set_from_proto`,
-/// attester-only) — there is no production encoder yet — so this local encoder
-/// mirrors the JSON-attestation form the decoder accepts.
-//
-// TODO(#402 part B): move a complete (all duty types, SSZ-canonical) encoder
-// into `pluto_core::unsigneddata` so this lives next to the decoder; today only
-// attester data round-trips (matching the decoder's supported variant).
-fn unsigned_data_set_to_proto(set: &UnsignedDataSet) -> Result<pbcore::UnsignedDataSet, BoxError> {
-    let mut out = std::collections::BTreeMap::new();
-    for (pubkey, data) in set {
-        let bytes = match data {
-            UnsignedDutyData::Attestation(att) => {
-                let value = serde_json::json!({
-                    "attestation_data": att.data,
-                    "attestation_duty": {
-                        "slot": att.duty.slot.to_string(),
-                        "validator_index": att.duty.validator_index.to_string(),
-                        "committee_index": att.duty.committee_index.to_string(),
-                        "committee_length": att.duty.committee_length.to_string(),
-                        "committees_at_slot": att.duty.committees_at_slot.to_string(),
-                        "validator_committee_index":
-                            att.duty.validator_committee_index.to_string(),
-                    },
-                });
-                serde_json::to_vec(&value).map_err(box_err)?
-            }
-            other => {
-                return Err(format!(
-                    "unsigned_data_set_to_proto: unsupported duty data {other:?} \
-                     (TODO #402 part B: encode all duty types in pluto-core)"
-                )
-                .into());
-            }
-        };
-        out.insert(pubkey.to_string(), bytes.into());
-    }
-    Ok(pbcore::UnsignedDataSet { set: out })
 }
