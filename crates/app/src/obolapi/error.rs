@@ -31,6 +31,13 @@ pub enum Error {
     #[error("HTTP client error: {0}")]
     Reqwest(#[from] reqwest::Error),
 
+    /// Response body exceeded the allowed size.
+    #[error("response body exceeds {limit} bytes")]
+    BodyTooLarge {
+        /// The enforced maximum body size in bytes.
+        limit: usize,
+    },
+
     /// JSON serialization/deserialization error.
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),

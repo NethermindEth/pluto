@@ -28,7 +28,7 @@ serde_json.workspace = true
 pluto-core.workspace = true
 backon.workspace = true
 pin-project.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
 unsigned-varint.workspace = true
 url.workspace = true
 

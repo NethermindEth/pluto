@@ -29,6 +29,18 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+/// Per-request timeout for beacon-node diagnostic HTTP calls, so a hostile or
+/// slow endpoint cannot stall a diagnostic indefinitely.
+const BEACON_HTTP_TIMEOUT: StdDuration = StdDuration::from_secs(10);
+
+/// Builds a diagnostic HTTP client with a request timeout.
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(BEACON_HTTP_TIMEOUT)
+        .build()
+        .unwrap_or_default()
+}
+
 const THRESHOLD_BEACON_MEASURE_AVG: StdDuration = StdDuration::from_millis(40);
 const THRESHOLD_BEACON_MEASURE_POOR: StdDuration = StdDuration::from_millis(100);
 const THRESHOLD_BEACON_LOAD_AVG: StdDuration = StdDuration::from_millis(40);
@@ -448,7 +460,7 @@ async fn beacon_version_test(
     let mut res = TestResult::new("Version");
     let url = format!("{target}/eth/v1/node/version");
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let resp = match client.get(&url).send().await {
         Ok(r) => r,
         Err(e) => return res.fail(e),
@@ -498,7 +510,7 @@ async fn beacon_is_synced_test(
     let mut res = TestResult::new("Synced");
     let url = format!("{target}/eth/v1/node/syncing");
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let resp = match client.get(&url).send().await {
         Ok(r) => r,
         Err(e) => return res.fail(e),
@@ -543,7 +555,7 @@ async fn beacon_peer_count_test(
     let mut res = TestResult::new("PeerCount");
     let url = format!("{target}/eth/v1/node/peers?state=connected");
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let resp = match client.get(&url).send().await {
         Ok(r) => r,
         Err(e) => return res.fail(e),
@@ -1551,7 +1563,7 @@ async fn sync_committee_message_duty(
 
 async fn get_current_slot(target: &str) -> CliResult<u64> {
     let url = format!("{target}/eth/v1/node/syncing");
-    let client = reqwest::Client::new();
+    let client = http_client();
     let resp = client.get(&url).send().await?;
 
     // More strict than the Charon check, which requires the status code to be >
