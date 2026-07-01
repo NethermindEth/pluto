@@ -24,7 +24,10 @@ pub mod wire;
 
 pub use config::AppConfig;
 
-use std::sync::{Arc, OnceLock};
+use std::{
+    collections::HashMap,
+    sync::{Arc, OnceLock},
+};
 
 use futures::StreamExt;
 use pluto_consensus::qbft;
@@ -277,6 +280,10 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         timer_func: pluto_consensus::timer::get_round_timer_func(Arc::clone(&feature_set)),
     })?);
 
+    // Full public-share map (DV root pubkey -> share index -> public share),
+    // used by the parsigex verifier to check each peer's partial signature.
+    let pub_shares_by_key = build_pub_shares_by_key(&lock)?;
+
     // ---- P2P behaviours (parsigex + qbft + peerinfo) ----
     let (node, handles) = behaviour::wire_p2p(
         key.clone(),
@@ -284,6 +291,8 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         peers,
         Arc::clone(&consensus),
         Arc::clone(&duty_gater),
+        eth2_cl.clone(),
+        pub_shares_by_key,
         lock.lock_hash.clone(),
         config.builder_api,
         config.nickname.clone(),
@@ -526,6 +535,39 @@ fn build_validators(
             pubshare,
             fee_recipient,
         });
+    }
+    Ok(out)
+}
+
+/// Builds the full public-share map for the cluster: for every distributed
+/// validator, its group (root) public key mapped to every operator's public
+/// share, keyed by 1-indexed share index.
+///
+/// The parsigex verifier uses this to check each inbound partial signature
+/// against the sender's public share (Charon's `pubSharesByKey`).
+fn build_pub_shares_by_key(
+    lock: &pluto_cluster::lock::Lock,
+) -> Result<
+    HashMap<pluto_core::types::PubKey, HashMap<u64, pluto_crypto::types::PublicKey>>,
+    AppError,
+> {
+    let mut out = HashMap::with_capacity(lock.distributed_validators.len());
+    for dv in &lock.distributed_validators {
+        let pubkey_bytes: [u8; 48] = dv
+            .pub_key
+            .clone()
+            .try_into()
+            .map_err(|_| AppError::InvalidValidatorPubKey)?;
+        let pubkey = pluto_core::types::PubKey::new(pubkey_bytes);
+
+        let mut shares = HashMap::with_capacity(dv.pub_shares.len());
+        for pos in 0..dv.pub_shares.len() {
+            // Share indices are 1-based (matching `ParSignedData::share_idx`);
+            // `public_share` takes the 0-based position.
+            let share_idx = (pos as u64).saturating_add(1);
+            shares.insert(share_idx, dv.public_share(pos)?);
+        }
+        out.insert(pubkey, shares);
     }
     Ok(out)
 }

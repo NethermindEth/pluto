@@ -10,11 +10,13 @@
 //! partial signatures), so the swarm drive loop body can be empty for
 //! correctness — see [`crate::node::drive_network`].
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use libp2p::swarm::NetworkBehaviour;
 use pluto_consensus::qbft;
-use pluto_core::gater::DutyGaterFn;
+use pluto_core::{gater::DutyGaterFn, types::PubKey};
+use pluto_crypto::types::PublicKey;
+use pluto_eth2api::EthBeaconNodeApiClient;
 use pluto_p2p::{
     gater,
     p2p::{Node, NodeType},
@@ -68,6 +70,8 @@ pub(crate) fn wire_p2p(
     peers: Vec<Peer>,
     consensus: Arc<qbft::Consensus>,
     duty_gater: DutyGaterFn,
+    eth2_cl: EthBeaconNodeApiClient,
+    pub_shares_by_key: HashMap<PubKey, HashMap<u64, PublicKey>>,
     lock_hash: Vec<u8>,
     builder_enabled: bool,
     nickname: String,
@@ -86,15 +90,13 @@ pub(crate) fn wire_p2p(
     let p2p_context = P2PContext::new(peer_ids.clone());
     p2p_context.set_local_peer_id(local_peer_id);
 
-    // Partial signature exchange.
-    //
-    // TODO(#402 part B): use an eth2-based verifier (`parsigex::NewEth2Verifier`
-    // equivalent) keyed by the cluster pubshares instead of the always-accept
-    // stub. No such constructor exists yet in pluto-parsigex.
+    // Partial signature exchange. Inbound partial signatures are verified
+    // against the sender's public share for the duty via the eth2 verifier
+    // (Charon `parsigex.NewEth2Verifier`).
     let parsigex_config = parsigex::Config::new(
         local_peer_id,
         p2p_context.clone(),
-        Arc::new(|_duty, _pk, _sig| Box::pin(async { Ok(()) })),
+        parsigex::new_eth2_verifier(eth2_cl, pub_shares_by_key),
         duty_gater,
     );
     let (parsigex_comp, parsigex_handle) = parsigex::Behaviour::new(parsigex_config);
