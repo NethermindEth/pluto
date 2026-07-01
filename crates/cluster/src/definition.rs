@@ -272,6 +272,10 @@ pub enum DefinitionError {
     #[error("Invalid compounding: the version does not support compounding")]
     InvalidCompounding,
 
+    /// Non-zero operator nonce (v1.0/v1.1 operators must have a zero nonce)
+    #[error("non-zero operator nonce not supported")]
+    NonZeroOperatorNonce,
+
     /// Peer not found
     #[error("Peer not in definition: {peer_id}")]
     PeerNotFound {
@@ -923,6 +927,12 @@ impl TryFrom<DefinitionV1x0or1> for Definition {
         let validator_addresses =
             repeat_v_addresses(validator_addresses, definition.num_validators);
 
+        let operators = definition
+            .operators
+            .into_iter()
+            .map(Operator::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+
         Ok(Self {
             name: definition.name,
             uuid: definition.uuid,
@@ -932,11 +942,7 @@ impl TryFrom<DefinitionV1x0or1> for Definition {
             threshold: definition.threshold,
             dkg_algorithm: definition.dkg_algorithm,
             fork_version: definition.fork_version,
-            operators: definition
-                .operators
-                .into_iter()
-                .map(Operator::from)
-                .collect(),
+            operators,
             creator: Creator::default(),
             validator_addresses,
             deposit_amounts: Vec::new(),
@@ -1780,6 +1786,23 @@ mod tests {
         let definition = serde_json::from_str::<Definition>(json_str).unwrap();
 
         assert!(definition.verify_hashes().is_ok());
+    }
+
+    #[test]
+    fn v1x0or1_definition_rejects_non_zero_operator_nonce() {
+        for fixture in [
+            include_str!("testdata/cluster_definition_v1_0_0.json"),
+            include_str!("testdata/cluster_definition_v1_1_0.json"),
+        ] {
+            let mut value: serde_json::Value = serde_json::from_str(fixture).unwrap();
+            value["operators"][0]["nonce"] = serde_json::json!(1);
+
+            let err = serde_json::from_value::<Definition>(value).unwrap_err();
+            assert!(
+                err.to_string().contains("NonZeroOperatorNonce"),
+                "unexpected error: {err}"
+            );
+        }
     }
 
     #[test]

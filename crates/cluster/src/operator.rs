@@ -1,4 +1,4 @@
-use crate::version::ZERO_NONCE;
+use crate::{definition::DefinitionError, version::ZERO_NONCE};
 use pluto_ssz::serde_utils::HexBytes;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -58,14 +58,20 @@ pub struct OperatorV1X2OrLater {
     enr_signature: Vec<u8>,
 }
 
-impl From<OperatorV1X1> for Operator {
-    fn from(operator: OperatorV1X1) -> Self {
-        Self {
+impl TryFrom<OperatorV1X1> for Operator {
+    type Error = DefinitionError;
+
+    fn try_from(operator: OperatorV1X1) -> Result<Self, Self::Error> {
+        if operator.nonce != 0 {
+            return Err(DefinitionError::NonZeroOperatorNonce);
+        }
+
+        Ok(Self {
             address: operator.address,
             enr: operator.enr,
             config_signature: operator.config_signature,
             enr_signature: operator.enr_signature,
-        }
+        })
     }
 }
 
