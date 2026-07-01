@@ -37,6 +37,7 @@ use pluto_core::{
     parsigdb,
     scheduler::{SchedulerBuilder, SchedulerHandle},
     sigagg::{Aggregator, VerifyFn},
+    signeddata::{SyncContribution, VersionedAggregatedAttestation},
     types::{Duty, ParSignedData, ParSignedDataSet, PubKey, SignedData, SignedDataSet},
     unsigneddata::{self, UnsignedDataSet, UnsignedDutyData},
     validatorapi::{self, Component, Handler},
@@ -458,54 +459,12 @@ pub async fn wire_core_workflow(
         (parsigex.subscribe)(received).await;
     }
 
-    // ---- (12) ValidatorAPI ----
+    // ---- (12) Scheduler ----
     //
-    // The validatorapi `Component` holds `dutydb` directly and queries it for
-    // await_proposal / await_attestation / etc. (so there is no
-    // register_await_attestation back-edge). The `register_*` setters override
-    // those defaults; for the minimal wiring we register the agg-sig-db await
-    // (back-edge into aggsigdb.wait_for) which has no dutydb default.
-    let validator_cache = Arc::new(ValidatorCache::new(eth2_cl.clone(), eth2_pubkeys.clone()));
-    let mut vapi = Component::new(
-        Arc::new(eth2_cl.clone()),
-        Arc::clone(&dutydb),
-        share_idx,
-        pub_share_by_pubkey,
-        builder_enabled,
-        validator_cache,
-    );
-    // Back-edge: vapi.register_await_agg_sig_db(aggsigdb.wait_for).
-    {
-        let aggsigdb = aggsigdb.clone();
-        vapi.register_await_agg_sig_db(move |duty: Duty, pubkey: PubKey| {
-            let aggsigdb = aggsigdb.clone();
-            async move { aggsigdb.wait_for(duty, pubkey).await.map_err(box_err) }
-        });
-    }
-    // Stitch: vapi.subscribe(parsigdb.store_internal).
-    {
-        let parsigdb = Arc::clone(&parsigdb);
-        vapi.subscribe(move |duty: Duty, set: ParSignedDataSet| {
-            let parsigdb = Arc::clone(&parsigdb);
-            async move { parsigdb.store_internal(&duty, &set).await.map_err(box_err) }
-        });
-    }
-    // TODO(#402 part B): register the remaining VAPI back-edges that override
-    // dutydb defaults (await_proposal, await_agg_attestation,
-    // await_sync_contribution, pub_key_by_attestation) and
-    // register_get_duty_definition(scheduler.get_duty_definition); the defaults
-    // (dutydb-backed) cover the minimal sign path.
-
-    let validator_api_router = validatorapi::new_router(
-        Arc::new(vapi) as Arc<dyn Handler>,
-        builder_enabled,
-        upstream_url,
-    );
-
-    // ---- (13) Scheduler (LAST) ----
-    //
-    // Stitches: scheduler.subscribe_duty(fetcher.fetch) and
-    // scheduler.subscribe_duty(consensus.participate). Registered on the builder
+    // Built before the validator API so its handle can back
+    // `register_get_duty_definition`. Stitches:
+    // scheduler.subscribe_duty(fetcher.fetch) and
+    // scheduler.subscribe_duty(consensus.participate), registered on the builder
     // before `.build()` (which blocks until chain start + sync).
     let mut sched_builder = SchedulerBuilder::new();
     {
@@ -537,6 +496,103 @@ pub async fn wire_core_workflow(
         .build(beacon_client, ct.clone())
         .await
         .map_err(AppError::Scheduler)?;
+
+    // ---- (13) ValidatorAPI ----
+    //
+    // The `Component` holds `dutydb` directly; `await_proposal` falls back to it
+    // when unregistered. The awaits with no fallback are registered here: the
+    // agg-sig-db await (back-edge into `aggsigdb.wait_for`), the dutydb-backed
+    // agg-attestation / sync-contribution / pubkey-by-attestation lookups, and
+    // the scheduler-backed duty-definition lookup.
+    let validator_cache = Arc::new(ValidatorCache::new(eth2_cl.clone(), eth2_pubkeys.clone()));
+    let mut vapi = Component::new(
+        Arc::new(eth2_cl.clone()),
+        Arc::clone(&dutydb),
+        share_idx,
+        pub_share_by_pubkey,
+        builder_enabled,
+        validator_cache,
+    );
+    // Back-edge: vapi.register_await_agg_sig_db(aggsigdb.wait_for).
+    {
+        let aggsigdb = aggsigdb.clone();
+        vapi.register_await_agg_sig_db(move |duty: Duty, pubkey: PubKey| {
+            let aggsigdb = aggsigdb.clone();
+            async move { aggsigdb.wait_for(duty, pubkey).await.map_err(box_err) }
+        });
+    }
+    // dutydb-backed aggregate-attestation lookup (awaited by attestation root;
+    // the VC-supplied slot is unused by the dutydb).
+    {
+        let dutydb = Arc::clone(&dutydb);
+        vapi.register_await_agg_attestation(move |_slot: u64, root| {
+            let dutydb = Arc::clone(&dutydb);
+            async move {
+                dutydb
+                    .await_agg_attestation(root)
+                    .await
+                    .map(VersionedAggregatedAttestation)
+                    .map_err(box_err)
+            }
+        });
+    }
+    // dutydb-backed sync-contribution lookup.
+    {
+        let dutydb = Arc::clone(&dutydb);
+        vapi.register_await_sync_contribution(move |slot: u64, subcomm: u64, root| {
+            let dutydb = Arc::clone(&dutydb);
+            async move {
+                dutydb
+                    .await_sync_contribution(slot, subcomm, root)
+                    .await
+                    .map(SyncContribution)
+                    .map_err(box_err)
+            }
+        });
+    }
+    // dutydb-backed pubkey-by-attestation lookup.
+    {
+        let dutydb = Arc::clone(&dutydb);
+        vapi.register_pub_key_by_attestation(move |slot: u64, comm: u64, val: u64| {
+            let dutydb = Arc::clone(&dutydb);
+            async move {
+                dutydb
+                    .pub_key_by_attestation(slot, comm, val)
+                    .await
+                    .map_err(box_err)
+            }
+        });
+    }
+    // scheduler-backed duty-definition lookup. The result is type-erased for the
+    // validatorapi callback boundary and downcast to `DutyDefinitionSet` by the
+    // component.
+    {
+        let scheduler = scheduler.clone();
+        vapi.register_get_duty_definition(move |duty: Duty| {
+            let scheduler = scheduler.clone();
+            async move {
+                scheduler
+                    .get_duty_definition(duty)
+                    .await
+                    .map(|set| Box::new(set) as Box<dyn std::any::Any + Send + Sync>)
+                    .map_err(box_err)
+            }
+        });
+    }
+    // Stitch: vapi.subscribe(parsigdb.store_internal).
+    {
+        let parsigdb = Arc::clone(&parsigdb);
+        vapi.subscribe(move |duty: Duty, set: ParSignedDataSet| {
+            let parsigdb = Arc::clone(&parsigdb);
+            async move { parsigdb.store_internal(&duty, &set).await.map_err(box_err) }
+        });
+    }
+
+    let validator_api_router = validatorapi::new_router(
+        Arc::new(vapi) as Arc<dyn Handler>,
+        builder_enabled,
+        upstream_url,
+    );
 
     Ok(WiredComponents {
         scheduler,
