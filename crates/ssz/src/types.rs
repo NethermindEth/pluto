@@ -35,10 +35,14 @@ fn minimum_leaf_count_for_bits(len: usize) -> usize {
     len.div_ceil(BYTES_PER_CHUNK * 8)
 }
 
-/// SSZ variable-length list wrapper with optional max length and `TreeHash`
-/// support.
+/// SSZ variable-length list wrapper with a mandatory `MAX` capacity and
+/// `TreeHash` support.
+///
+/// `MAX` is required (no default): the merkleization pads to `chunk_count(MAX)`
+/// before `mix_in_length`, so a spec-compliant root depends on the declared
+/// capacity. A `MAX` of `0` denotes the degenerate `List[T, 0]` type.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct SszList<T, const MAX: usize = 0>(
+pub struct SszList<T, const MAX: usize>(
     /// Elements in the SSZ list.
     pub Vec<T>,
 );
@@ -357,10 +361,17 @@ impl<const MAX: usize> BitList<MAX> {
     }
 
     /// Creates a `BitList` with the given capacity and specified bits set.
+    ///
+    /// # Panics
+    /// Panics if any index in `set_bits` is `>= capacity`.
     pub fn with_bits(capacity: usize, set_bits: &[usize]) -> Self {
         let byte_len = capacity.div_ceil(8);
         let mut bytes = vec![0u8; byte_len];
         for &bit in set_bits {
+            assert!(
+                bit < capacity,
+                "bit index {bit} out of range for capacity {capacity}"
+            );
             bytes[bit / 8] |= BIT_MASK[bit % 8];
         }
         Self {
@@ -510,9 +521,16 @@ impl<const SIZE: usize> BitVector<SIZE> {
     }
 
     /// Creates a `BitVector` with specified bits set.
+    ///
+    /// # Panics
+    /// Panics if any index in `set_bits` is `>= SIZE`.
     pub fn with_bits(set_bits: &[usize]) -> Self {
         let mut v = Self::new();
         for &bit in set_bits {
+            assert!(
+                bit < SIZE,
+                "bit index {bit} out of range for BitVector<{SIZE}>"
+            );
             v.bytes[bit / 8] |= BIT_MASK[bit % 8];
         }
         v
@@ -798,6 +816,18 @@ mod tests {
         bv.set_bit_at(64, true);
         assert!(!bv.bit_at(64));
         assert_eq!(bv.bit_indices(), vec![0, 1, 2]);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range for capacity")]
+    fn bitlist_with_bits_panics_on_out_of_range() {
+        let _ = BitList::<2048>::with_bits(8, &[8]);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range for BitVector")]
+    fn bitvector_with_bits_panics_on_out_of_range() {
+        let _ = BitVector::<64>::with_bits(&[64]);
     }
 
     #[test]
