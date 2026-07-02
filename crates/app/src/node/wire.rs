@@ -33,7 +33,6 @@ use pluto_core::{
     fetcher::{
         AggSigDbFunc, AwaitAttDataFunc, FeeRecipientFunc, Fetcher, GraffitiBuilder, Subscriber,
     },
-    gater::DutyGaterFn,
     parsigdb,
     scheduler::{SchedulerBuilder, SchedulerHandle},
     sigagg::{Aggregator, VerifyFn},
@@ -185,7 +184,6 @@ fn box_err<E: std::error::Error + Send + Sync + 'static>(e: E) -> BoxError {
 /// sigagg → broadcaster → parsigex → validatorapi → scheduler (last).
 pub async fn wire_core_workflow(
     inputs: WireInputs,
-    duty_gater: DutyGaterFn,
     ct: CancellationToken,
 ) -> Result<WiredComponents, AppError> {
     let WireInputs {
@@ -205,10 +203,6 @@ pub async fn wire_core_workflow(
         electra_slot,
         fetch_only_comm_idx0,
     } = inputs;
-
-    // Reserved for part B (gater is shared with parsigex via the caller's
-    // behaviour setup; not used in the in-process wiring here).
-    let _ = duty_gater;
 
     // ---- Derived validator maps (mirrors app.go:407-452) ----
     let mut eth2_pubkeys = Vec::with_capacity(validators.len());

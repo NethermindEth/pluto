@@ -35,6 +35,7 @@ use pluto_app::node::wire::{
 use pluto_consensus::qbft;
 use pluto_core::{
     aggsigdb::types::AggSigDB,
+    sigagg::VerifyFn,
     types::{
         Duty, DutyDefinition, DutyDefinitionSet, ParSignedDataSet, ProposerDutyDefinition, PubKey,
         SignedData, SignedDataSet, SlotNumber,
@@ -43,8 +44,8 @@ use pluto_core::{
 use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
 use pluto_eth2api::{
     BeaconNodeClient, EthBeaconNodeApiClient,
-    spec::phase0,
-    versioned::{self, AttestationPayload, VersionedAttestation},
+    spec::{altair, phase0},
+    versioned::{self, AttestationPayload, SignedProposalBlock, VersionedAttestation},
 };
 use pluto_testutil::BeaconMock;
 use tokio::sync::Mutex;
@@ -88,21 +89,79 @@ fn loopback_parsigex_seam() -> ParSigExSeam {
 
 /// Mounts a 200 OK on the attestation submit endpoint.
 async fn mount_attestation_submit(server: &MockServer) {
+    mount_submit(server, "/eth/v2/beacon/pool/attestations").await;
+}
+
+/// Mounts a 200 OK on an arbitrary POST submit endpoint.
+async fn mount_submit(server: &MockServer, submit_path: &str) {
     Mock::given(method("POST"))
-        .and(path("/eth/v2/beacon/pool/attestations"))
+        .and(path(submit_path.to_string()))
         .respond_with(ResponseTemplate::new(200))
         .mount(server)
         .await;
 }
 
+/// Polls the mock's request log until at least one POST hits `submit_path`,
+/// returning the count. Bounded by [`GUARD`].
+async fn wait_for_post(server: &MockServer, submit_path: &'static str) -> usize {
+    tokio::time::timeout(GUARD, async {
+        loop {
+            let posts = count_posts(server, submit_path).await;
+            if posts > 0 {
+                break posts;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("submit endpoint {submit_path} should be hit"))
+}
+
+/// Counts POSTs the mock has received for `submit_path`.
+async fn count_posts(server: &MockServer, submit_path: &str) -> usize {
+    server
+        .received_requests()
+        .await
+        .expect("requests")
+        .into_iter()
+        .filter(|r| r.method.as_str() == "POST" && r.url.path() == submit_path)
+        .count()
+}
+
 /// Builds the wiring inputs for a single-validator cluster with the given
-/// signature `threshold`.
+/// signature `threshold`, using a permissive SigAgg verifier (proves the sign
+/// path connects, not that BLS verification works).
 fn wire_inputs(
     eth2_cl: EthBeaconNodeApiClient,
     beacon_client: BeaconNodeClient,
     pubkey: PubKey,
     consensus: Arc<qbft::Consensus>,
     threshold: u64,
+) -> WireInputs {
+    // Permissive verifier: the partial sigs carry arbitrary payloads, so real
+    // eth2 verification is deliberately bypassed here (mirrors Charon's
+    // `TestConfig`). The bad-partial-signature test injects the real verifier.
+    let permissive_verifier: VerifyFn = Arc::new(|_pubkey, _data| Box::pin(async { Ok(()) }));
+    wire_inputs_with(
+        eth2_cl,
+        beacon_client,
+        pubkey,
+        consensus,
+        threshold,
+        permissive_verifier,
+    )
+}
+
+/// Builds the wiring inputs for a single-validator cluster with a caller-chosen
+/// SigAgg `verifier`. The validator's group pubkey is `pubkey` (which the real
+/// verifier parses and verifies the reconstructed group signature against).
+fn wire_inputs_with(
+    eth2_cl: EthBeaconNodeApiClient,
+    beacon_client: BeaconNodeClient,
+    pubkey: PubKey,
+    consensus: Arc<qbft::Consensus>,
+    threshold: u64,
+    sigagg_verifier: VerifyFn,
 ) -> WireInputs {
     let validators = vec![ValidatorInfo {
         pubkey,
@@ -126,10 +185,7 @@ fn wire_inputs(
         builder_enabled: false,
         upstream_url: reqwest::Url::parse("http://127.0.0.1:5052").expect("url"),
         parsigex: loopback_parsigex_seam(),
-        // Permissive verifier: this test proves the wiring connects the sign
-        // path, not that BLS verification works (the partial sigs carry
-        // arbitrary payloads). Real eth2 verification is exercised in part B.
-        sigagg_verifier: Arc::new(|_pubkey, _data| Box::pin(async { Ok(()) })),
+        sigagg_verifier,
         // Inert fetcher inputs: never-expiring deadlines (so driven slot-1
         // duties are not trimmed), default graffiti, no Electra gating.
         deadline_calc: Arc::new(pluto_core::deadline::NeverExpiringCalculator),
@@ -195,7 +251,6 @@ async fn wiring_exercises_fetcher_back_edges() {
         GUARD,
         wire_core_workflow(
             wire_inputs(eth2_cl, beacon_client, pubkey, consensus, 1),
-            Arc::new(|_| true),
             ct.clone(),
         ),
     )
@@ -297,13 +352,10 @@ async fn wiring_connects_sign_path() {
     const THRESHOLD: u64 = 2;
     let inputs = wire_inputs(eth2_cl, beacon_client, pubkey, consensus, THRESHOLD);
 
-    let wired = tokio::time::timeout(
-        GUARD,
-        wire_core_workflow(inputs, Arc::new(|_| true), ct.clone()),
-    )
-    .await
-    .expect("wire did not deadlock")
-    .expect("wire succeeded");
+    let wired = tokio::time::timeout(GUARD, wire_core_workflow(inputs, ct.clone()))
+        .await
+        .expect("wire did not deadlock")
+        .expect("wire succeeded");
 
     // Build two real BLS partial signatures (threshold 2 of 2) over the same
     // attestation so SigAgg's `threshold_aggregate` succeeds and the broadcaster
@@ -406,6 +458,324 @@ async fn wiring_connects_sign_path() {
     .await
     .expect("(c) attestation submit endpoint should be hit by the wired broadcaster");
     assert!(hit > 0, "(c) expected at least one attestation submission");
+
+    ct.cancel();
+}
+
+/// Builds a phase0 signed proposal wrapping the given block signature. The
+/// unsigned block payload is fixed so the two threshold partials group in
+/// ParSigDB; only the signature differs per share.
+fn phase0_proposal(signature: phase0::BLSSignature) -> versioned::VersionedSignedProposal {
+    versioned::VersionedSignedProposal {
+        version: versioned::DataVersion::Phase0,
+        blinded: false,
+        block: SignedProposalBlock::Phase0(phase0::SignedBeaconBlock {
+            message: phase0::BeaconBlock {
+                slot: 1,
+                proposer_index: 2,
+                parent_root: [3; 32],
+                state_root: [4; 32],
+                body: phase0::BeaconBlockBody {
+                    randao_reveal: [0; 96],
+                    eth1_data: phase0::ETH1Data {
+                        deposit_root: [0; 32],
+                        deposit_count: 0,
+                        block_hash: [0; 32],
+                    },
+                    graffiti: [0; 32],
+                    proposer_slashings: phase0::SszList::from(vec![]),
+                    attester_slashings: phase0::SszList::from(vec![]),
+                    attestations: phase0::SszList::from(vec![]),
+                    deposits: phase0::SszList::from(vec![]),
+                    voluntary_exits: phase0::SszList::from(vec![]),
+                },
+            },
+            signature,
+        }),
+    }
+}
+
+/// (c-proposer) The sign path is connected for block proposals: a partial
+/// `VersionedSignedProposal` submission flows ParSigDB → threshold → SigAgg →
+/// Broadcaster → `POST /eth/v2/beacon/blocks` (builder disabled).
+#[tokio::test]
+async fn wiring_connects_sign_path_proposer() {
+    let ct = CancellationToken::new();
+    let mock = BeaconMock::builder().build().await.expect("beacon mock");
+    mount_submit(mock.server(), "/eth/v2/beacon/blocks").await;
+    let eth2_cl = mock.client().clone();
+    let beacon_client = BeaconNodeClient::new(eth2_cl.clone());
+    let pubkey = PubKey::new([6u8; PK_LEN]);
+    let consensus = build_consensus(&ct);
+
+    const THRESHOLD: u64 = 2;
+    let inputs = wire_inputs(eth2_cl, beacon_client, pubkey, consensus, THRESHOLD);
+
+    let wired = tokio::time::timeout(GUARD, wire_core_workflow(inputs, ct.clone()))
+        .await
+        .expect("wire did not deadlock")
+        .expect("wire succeeded");
+
+    let tbls = BlstImpl;
+    let mut rng = rand::thread_rng();
+    let secret = tbls.generate_secret_key(&mut rng).expect("secret");
+    let shares = tbls.threshold_split(&secret, 2, 2).expect("split");
+
+    // Each partial signs an arbitrary message with its own share (permissive
+    // verifier), swapping only the block signature onto an identical unsigned
+    // block so ParSigDB's threshold-matching groups them.
+    let make_par = |share_idx: u64, share: &pluto_crypto::types::PrivateKey| {
+        let sig = tbls.sign(share, &[42u8; 32]).expect("sign");
+        pluto_core::signeddata::VersionedSignedProposal::new_partial(
+            phase0_proposal(sig),
+            share_idx,
+        )
+        .expect("partial proposal")
+    };
+
+    let proposer_duty = Duty::new_proposer_duty(SlotNumber::new(1));
+
+    let mut share_iter = shares.into_iter();
+    let (idx0, share0) = share_iter.next().expect("share 0");
+    let (idx1, share1) = share_iter.next().expect("share 1");
+
+    let mut internal_set = ParSignedDataSet::new();
+    internal_set.insert(pubkey, make_par(idx0, &share0));
+    tokio::time::timeout(
+        GUARD,
+        wired.parsigdb.store_internal(&proposer_duty, &internal_set),
+    )
+    .await
+    .expect("store_internal did not hang")
+    .expect("store_internal ok");
+
+    let mut external_set = ParSignedDataSet::new();
+    external_set.insert(pubkey, make_par(idx1, &share1));
+    tokio::time::timeout(
+        GUARD,
+        wired.parsigdb.store_external(&proposer_duty, &external_set),
+    )
+    .await
+    .expect("store_external did not hang")
+    .expect("store_external ok");
+
+    let hit = wait_for_post(mock.server(), "/eth/v2/beacon/blocks").await;
+    assert!(
+        hit > 0,
+        "(c-proposer) expected at least one block submission"
+    );
+
+    ct.cancel();
+}
+
+/// (c-sync) The sign path is connected for sync-committee contributions: a
+/// partial `SignedSyncContributionAndProof` submission flows ParSigDB →
+/// threshold → SigAgg → Broadcaster →
+/// `POST /eth/v1/validator/contribution_and_proofs`.
+#[tokio::test]
+async fn wiring_connects_sign_path_sync_contribution() {
+    let ct = CancellationToken::new();
+    let mock = BeaconMock::builder().build().await.expect("beacon mock");
+    mount_submit(mock.server(), "/eth/v1/validator/contribution_and_proofs").await;
+    let eth2_cl = mock.client().clone();
+    let beacon_client = BeaconNodeClient::new(eth2_cl.clone());
+    let pubkey = PubKey::new([8u8; PK_LEN]);
+    let consensus = build_consensus(&ct);
+
+    const THRESHOLD: u64 = 2;
+    let inputs = wire_inputs(eth2_cl, beacon_client, pubkey, consensus, THRESHOLD);
+
+    let wired = tokio::time::timeout(GUARD, wire_core_workflow(inputs, ct.clone()))
+        .await
+        .expect("wire did not deadlock")
+        .expect("wire succeeded");
+
+    let tbls = BlstImpl;
+    let mut rng = rand::thread_rng();
+    let secret = tbls.generate_secret_key(&mut rng).expect("secret");
+    let shares = tbls.threshold_split(&secret, 2, 2).expect("split");
+
+    // Identical unsigned contribution across shares; each partial swaps only the
+    // top-level signature (`set_signature`), preserving the payload so ParSigDB
+    // groups them.
+    let base_contribution = altair::SignedContributionAndProof {
+        message: altair::ContributionAndProof {
+            aggregator_index: 1,
+            contribution: altair::SyncCommitteeContribution {
+                slot: 1,
+                beacon_block_root: [3; 32],
+                subcommittee_index: 0,
+                aggregation_bits: Default::default(),
+                signature: [5; 96],
+            },
+            selection_proof: [6; 96],
+        },
+        signature: [0; 96],
+    };
+    let make_par = |share_idx: u64, share: &pluto_crypto::types::PrivateKey| {
+        let sig = tbls.sign(share, &[42u8; 32]).expect("sign");
+        let contribution = altair::SignedContributionAndProof {
+            signature: sig,
+            ..base_contribution.clone()
+        };
+        pluto_core::signeddata::SignedSyncContributionAndProof::new_partial(contribution, share_idx)
+    };
+
+    let sync_duty = Duty::new_sync_contribution_duty(SlotNumber::new(1));
+
+    let mut share_iter = shares.into_iter();
+    let (idx0, share0) = share_iter.next().expect("share 0");
+    let (idx1, share1) = share_iter.next().expect("share 1");
+
+    let mut internal_set = ParSignedDataSet::new();
+    internal_set.insert(pubkey, make_par(idx0, &share0));
+    tokio::time::timeout(
+        GUARD,
+        wired.parsigdb.store_internal(&sync_duty, &internal_set),
+    )
+    .await
+    .expect("store_internal did not hang")
+    .expect("store_internal ok");
+
+    let mut external_set = ParSignedDataSet::new();
+    external_set.insert(pubkey, make_par(idx1, &share1));
+    tokio::time::timeout(
+        GUARD,
+        wired.parsigdb.store_external(&sync_duty, &external_set),
+    )
+    .await
+    .expect("store_external did not hang")
+    .expect("store_external ok");
+
+    let hit = wait_for_post(mock.server(), "/eth/v1/validator/contribution_and_proofs").await;
+    assert!(
+        hit > 0,
+        "(c-sync) expected at least one sync-contribution submission"
+    );
+
+    ct.cancel();
+}
+
+/// (c-reject) With the REAL SigAgg verifier and the validator's REAL group
+/// pubkey, threshold partials that signed an arbitrary (non-eth2) message
+/// reconstruct a group signature that fails eth2 verification. SigAgg must
+/// therefore abort before broadcast, so the attestation submit endpoint is
+/// NEVER hit.
+#[tokio::test]
+async fn wiring_rejects_bad_partial_signature() {
+    let ct = CancellationToken::new();
+    let mock = BeaconMock::builder().build().await.expect("beacon mock");
+    mount_attestation_submit(mock.server()).await;
+    let eth2_cl = mock.client().clone();
+    let beacon_client = BeaconNodeClient::new(eth2_cl.clone());
+    let consensus = build_consensus(&ct);
+
+    // Real BLS group key: the verifier parses this pubkey and verifies the
+    // reconstructed group signature against the beacon attester signing domain.
+    let tbls = BlstImpl;
+    let mut rng = rand::thread_rng();
+    let secret = tbls.generate_secret_key(&mut rng).expect("secret");
+    let group_pubkey_bytes = tbls.secret_to_public_key(&secret).expect("group pubkey");
+    let pubkey = PubKey::new(group_pubkey_bytes);
+    let shares = tbls.threshold_split(&secret, 2, 2).expect("split");
+
+    // REAL eth2 verifier (mirrors production `run`): BeaconMock serves the
+    // signing domain via `/eth/v1/config/spec` + `/eth/v1/beacon/genesis`.
+    let verifier: VerifyFn = pluto_core::sigagg::new_verifier(Arc::new(eth2_cl.clone()));
+
+    const THRESHOLD: u64 = 2;
+    let inputs = wire_inputs_with(
+        eth2_cl,
+        beacon_client,
+        pubkey,
+        consensus,
+        THRESHOLD,
+        verifier,
+    );
+
+    let wired = tokio::time::timeout(GUARD, wire_core_workflow(inputs, ct.clone()))
+        .await
+        .expect("wire did not deadlock")
+        .expect("wire succeeded");
+
+    // Same shape as the happy-path attestation test, but the shares sign an
+    // arbitrary message (`&[42u8; 32]`), not the eth2 attestation signing root —
+    // so the reconstructed group signature will not verify.
+    let base_attestation = phase0::Attestation {
+        aggregation_bits: phase0::BitList::with_bits(8, &[0]),
+        data: phase0::AttestationData {
+            slot: 1,
+            index: 0,
+            beacon_block_root: [1u8; 32],
+            source: phase0::Checkpoint {
+                epoch: 0,
+                root: [0u8; 32],
+            },
+            target: phase0::Checkpoint {
+                epoch: 1,
+                root: [2u8; 32],
+            },
+        },
+        signature: [0u8; 96],
+    };
+    let attester_duty = Duty::new_attester_duty(SlotNumber::new(1));
+
+    let make_par = |share_idx: u64, share: &pluto_crypto::types::PrivateKey| {
+        let sig = tbls.sign(share, &[42u8; 32]).expect("sign");
+        let attestation = phase0::Attestation {
+            signature: sig,
+            ..base_attestation.clone()
+        };
+        let versioned_att = VersionedAttestation {
+            version: versioned::DataVersion::Deneb,
+            validator_index: Some(7),
+            attestation: Some(AttestationPayload::Deneb(attestation)),
+        };
+        pluto_core::signeddata::VersionedAttestation::new_partial(versioned_att, share_idx)
+            .expect("partial versioned attestation")
+    };
+
+    let mut share_iter = shares.into_iter();
+    let (idx0, share0) = share_iter.next().expect("share 0");
+    let (idx1, share1) = share_iter.next().expect("share 1");
+
+    let mut internal_set = ParSignedDataSet::new();
+    internal_set.insert(pubkey, make_par(idx0, &share0));
+    tokio::time::timeout(
+        GUARD,
+        wired.parsigdb.store_internal(&attester_duty, &internal_set),
+    )
+    .await
+    .expect("store_internal did not hang")
+    .expect("store_internal ok");
+
+    let mut external_set = ParSignedDataSet::new();
+    external_set.insert(pubkey, make_par(idx1, &share1));
+    // Crossing the threshold fires SigAgg synchronously through the threshold
+    // subscriber. Because the reconstructed group signature fails eth2
+    // verification, the aggregation errors out and `store_external` surfaces
+    // that error — which is exactly the rejection we are proving. The
+    // load-bearing assertion is that no broadcast reached the beacon node.
+    let store_result = tokio::time::timeout(
+        GUARD,
+        wired.parsigdb.store_external(&attester_duty, &external_set),
+    )
+    .await
+    .expect("store_external did not hang");
+    assert!(
+        store_result.is_err(),
+        "(c-reject) SigAgg verification should fail and propagate through store_external"
+    );
+
+    // Give the threshold → SigAgg → (rejected) pipeline ample time to run, then
+    // assert the broadcaster never submitted: SigAgg's verify_fn rejected the
+    // invalid reconstructed group signature and aborted before broadcast.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let posts = count_posts(mock.server(), "/eth/v2/beacon/pool/attestations").await;
+    assert_eq!(
+        posts, 0,
+        "(c-reject) SigAgg must reject the invalid group signature and not broadcast"
+    );
 
     ct.cancel();
 }

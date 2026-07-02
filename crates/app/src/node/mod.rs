@@ -39,6 +39,8 @@ use tokio_util::sync::CancellationToken;
 use behaviour::{CoreBehaviour, CoreHandles};
 use wire::{ParSigExSeam, ValidatorInfo, WireInputs, WiredComponents};
 
+use crate::privkeylock;
+
 /// Errors raised while constructing or running a distributed-validator node.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -83,6 +85,10 @@ pub enum AppError {
     /// The local P2P key does not match any cluster operator.
     #[error("local peer not found in cluster lock")]
     LocalPeerNotFound,
+
+    /// Private-key lock acquisition/maintenance failed.
+    #[error("privkey lock: {0}")]
+    PrivKeyLock(#[from] privkeylock::PrivKeyLockError),
 
     /// P2P peer derivation/verification failed.
     #[error("p2p peer: {0}")]
@@ -170,6 +176,20 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     let _ = (config.target_gas_limit, lock.target_gas_limit);
 
     let key = pluto_k1util::load(&config.priv_key_file)?;
+
+    // Guards against a second node running against the same key.
+    let priv_key_lock: Option<Arc<privkeylock::Service>> = if config.priv_key_locking {
+        Some(Arc::new(
+            privkeylock::Service::new(
+                format!("{}.lock", config.priv_key_file.display()),
+                "pluto run",
+            )
+            .await?,
+        ))
+    } else {
+        None
+    };
+
     let peers = lock.peers()?;
     pluto_p2p::peer::verify_p2p_key(&peers, &key)?;
 
@@ -320,11 +340,9 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         .map_err(|_| AppError::ConsensusP2P(qbft::p2p::Error::BehaviourClosed))?;
 
     // ---- Wire the core workflow ----
-    let upstream_url = config
-        .beacon_node_addrs
-        .first()
-        .and_then(|addr| reqwest::Url::parse(addr).ok())
-        .unwrap_or_else(|| reqwest::Url::parse("http://127.0.0.1:5052").expect("valid url"));
+    let upstream_url = reqwest::Url::parse(beacon_node_addr).map_err(|e| {
+        AppError::BeaconClient(format!("invalid beacon node url {beacon_node_addr:?}: {e}"))
+    })?;
 
     let parsigex_seam = production_parsigex_seam(&handles);
 
@@ -350,7 +368,6 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             electra_slot,
             fetch_only_comm_idx0,
         },
-        Arc::clone(&duty_gater),
         ct.clone(),
     )
     .await?;
@@ -361,6 +378,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         consensus,
         handles,
         wired,
+        priv_key_lock,
         config.validator_api_addr,
         ct,
     )
@@ -403,6 +421,7 @@ async fn run_lifecycle(
     consensus: Arc<qbft::Consensus>,
     _handles: CoreHandles,
     wired: WiredComponents,
+    priv_key_lock: Option<Arc<privkeylock::Service>>,
     validator_api_addr: std::net::SocketAddr,
     ct: CancellationToken,
 ) -> Result<(), AppError> {
@@ -429,6 +448,16 @@ async fn run_lifecycle(
         let parsigdb = Arc::clone(&parsigdb);
         tasks.spawn(async move {
             parsigdb.trim(parsigdb_deadliner_rx).await;
+        });
+    }
+
+    // Private-key lock maintenance loop. Only spawn `run` when locking is
+    // enabled — `Service::close()` blocks forever unless `run` was called, so
+    // spawn and close are guarded by the same `Option`.
+    if let Some(svc) = &priv_key_lock {
+        let svc = Arc::clone(svc);
+        tasks.spawn(async move {
+            let _ = svc.run().await;
         });
     }
 
@@ -463,6 +492,13 @@ async fn run_lifecycle(
     }
 
     // ---- Ordered shutdown ----
+    // Close the private-key lock (signals its `run` loop to delete the sentinel
+    // file and exit, so the drain below can join it cleanly). Only ever called
+    // when `run` was spawned above — otherwise `close()` would block forever.
+    if let Some(svc) = &priv_key_lock {
+        svc.close().await;
+    }
+
     // Brief drain for in-flight tasks.
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while tasks.join_next().await.is_some() {}

@@ -28,6 +28,11 @@ pub struct AppConfig {
     /// Path to the node's secp256k1 P2P private key.
     pub priv_key_file: PathBuf,
 
+    /// Enable private-key file locking. When set, a
+    /// `<priv_key_file>.lock`sentinel is maintained for the node's lifetime to
+    /// detect a second node started against the same key.
+    pub priv_key_locking: bool,
+
     /// Beacon node API endpoints. The first reachable endpoint is used;
     /// multiple addresses enable fallback.
     pub beacon_node_addrs: Vec<String>,
