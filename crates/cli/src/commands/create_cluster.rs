@@ -154,15 +154,6 @@ pub struct TestnetConfig {
     pub testnet_name: Option<String>,
 }
 
-impl TestnetConfig {
-    pub fn is_empty(&self) -> bool {
-        self.testnet_name.is_none()
-            && self.fork_version.is_none()
-            && self.chain_id.is_none()
-            && self.genesis_timestamp.is_none()
-    }
-}
-
 /// Arguments for the create cluster command
 #[derive(clap::Args)]
 pub struct CreateClusterArgs {
@@ -1127,10 +1118,11 @@ fn validate_network_config(args: &CreateClusterArgs) -> Result<()> {
         .into());
     }
 
-    // Check if custom testnet configuration is provided.
-    if !args.testnet_config.is_empty() {
+    // Check if a complete custom testnet configuration is provided.
+    let testnet_network: network::Network = args.testnet_config.clone().into();
+    if testnet_network.is_non_zero() {
         // Add testnet config to supported networks.
-        eth2util::network::add_test_network(args.testnet_config.clone().into())?;
+        eth2util::network::add_test_network(testnet_network)?;
 
         return Ok(());
     }
