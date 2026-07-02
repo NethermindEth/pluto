@@ -167,18 +167,32 @@ pub fn recover(hash: &[u8], sig: &[u8]) -> Result<PublicKey> {
         });
     }
 
-    let mut recovery_byte = sig[K1_REC_IDX];
+    let original_recovery_byte = sig[K1_REC_IDX];
 
-    if recovery_byte == 27 || recovery_byte == 28 {
-        recovery_byte = recovery_byte.wrapping_sub(27);
-    }
+    // Charon accepts only the Ethereum-format recovery ids {0, 1} and their
+    // Bitcoin-compact-format equivalents {27, 28}. Reject everything else
+    // (notably the x-reduced ids 2 and 3 that `RecoveryId::from_byte` would
+    // otherwise accept). See charon app/k1util/k1util.go Recover @ v1.7.1.
+    let recovery_byte = match original_recovery_byte {
+        0 | 1 => original_recovery_byte,
+        // 27/28 are the Bitcoin-compact-format equivalents of 0/1.
+        27 => 0,
+        28 => 1,
+        _ => {
+            return Err(K1UtilError::InvalidSignatureRecoveryId {
+                invalid_recovery_byte: original_recovery_byte,
+            });
+        }
+    };
 
     let signature =
         Signature::from_slice(&sig[..SIGNATURE_LEN - 1]).map_err(K1UtilError::InvalidSignature)?;
 
+    // `recovery_byte` is guaranteed to be 0 or 1 here, so `from_byte` cannot
+    // fail; keep the fallible call to avoid an unchecked construction.
     let recovery_id =
         RecoveryId::from_byte(recovery_byte).ok_or(K1UtilError::InvalidSignatureRecoveryId {
-            invalid_recovery_byte: recovery_byte,
+            invalid_recovery_byte: original_recovery_byte,
         })?;
 
     let pubkey = ecdsa::VerifyingKey::recover_from_prehash(hash, &signature, recovery_id)
@@ -313,6 +327,96 @@ mod tests {
             key.public_key(),
             "Recovered public key should match"
         );
+    }
+
+    #[test]
+    fn recover_recovery_id_domain() {
+        // Produce a known-valid 65-byte signature whose natural recovery byte is
+        // 0 or 1, then override the recovery byte to exercise the domain.
+        let key_bytes = hex::decode(PRIV_KEY_1).unwrap();
+        let key = SecretKey::from_slice(&key_bytes).unwrap();
+        let digest = hex::decode(DIGEST_1).unwrap();
+        let base_sig = sign(&key, &digest).unwrap();
+        let natural_v = base_sig[K1_REC_IDX]; // 0 or 1
+
+        // (recovery_byte, expect_ok). 27/28 are the Bitcoin-compact equivalents
+        // of 0/1. For domain validation we only assert accept/reject.
+        struct Case {
+            v: u8,
+            accepted: bool,
+        }
+        let cases = [
+            Case {
+                v: 0,
+                accepted: true,
+            },
+            Case {
+                v: 1,
+                accepted: true,
+            },
+            Case {
+                v: 27,
+                accepted: true,
+            },
+            Case {
+                v: 28,
+                accepted: true,
+            },
+            Case {
+                v: 2,
+                accepted: false,
+            }, // x-reduced id, accepted by k256 but rejected by Charon
+            Case {
+                v: 3,
+                accepted: false,
+            }, // x-reduced id
+            Case {
+                v: 4,
+                accepted: false,
+            },
+            Case {
+                v: 26,
+                accepted: false,
+            },
+            Case {
+                v: 29,
+                accepted: false,
+            },
+            Case {
+                v: 255,
+                accepted: false,
+            },
+        ];
+
+        for case in cases {
+            let mut sig = base_sig;
+            sig[K1_REC_IDX] = case.v;
+            let result = recover(&digest, &sig);
+            if case.accepted {
+                assert!(
+                    result.is_ok(),
+                    "recovery byte {} should be accepted",
+                    case.v
+                );
+            } else {
+                assert!(
+                    matches!(
+                        result,
+                        Err(K1UtilError::InvalidSignatureRecoveryId { invalid_recovery_byte })
+                            if invalid_recovery_byte == case.v
+                    ),
+                    "recovery byte {} should be rejected with InvalidSignatureRecoveryId carrying the original byte, got {:?}",
+                    case.v,
+                    result.map(|_| "Ok"),
+                );
+            }
+        }
+
+        // The recovery byte that equals the signature's true recovery id must
+        // recover the original public key (verify_65 inherits the fix).
+        let mut sig = base_sig;
+        sig[K1_REC_IDX] = natural_v;
+        assert!(verify_65(&key.public_key(), &digest, &sig).unwrap());
     }
 
     #[cfg(unix)]
