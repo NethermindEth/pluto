@@ -21,10 +21,6 @@ pub struct AppConfig {
     /// Path to the cluster lock file (`cluster-lock.json`).
     pub lock_file: PathBuf,
 
-    /// Optional path to the cluster manifest file. Takes precedence over
-    /// `lock_file` when present, mirroring Charon's `ManifestFile`.
-    pub manifest_file: Option<PathBuf>,
-
     /// Path to the node's secp256k1 P2P private key.
     pub priv_key_file: PathBuf,
 

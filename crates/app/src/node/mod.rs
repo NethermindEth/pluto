@@ -285,6 +285,8 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         Arc::clone(&deadline_calc),
     );
 
+    // TODO:
+    // The `Arc<OnceLock<Handle>>` pattern is a bit awkward; explore alternatives
     let handle_slot = Arc::new(OnceLock::<qbft::p2p::Handle>::new());
     let broadcaster: qbft::Broadcaster = {
         let handle_slot = Arc::clone(&handle_slot);
@@ -529,9 +531,9 @@ async fn drive_network(mut node: pluto_p2p::p2p::Node<CoreBehaviour>, ct: Cancel
 /// Loads and deserializes a cluster [`Lock`](pluto_cluster::lock::Lock) from
 /// disk.
 //
-// TODO(#402 part B): honor `config.manifest_file` (prefer the manifest over the
-// lock, as Charon does) once pluto-cluster gains a manifest loader — there is
-// no manifest DAG loader in Pluto yet.
+/// Loads and JSON-parses the cluster lock from disk.
+/// The manifest DAG was removed upstream (Charon #4130), so there is no
+/// manifest-file path.
 async fn load_lock(path: &std::path::Path) -> Result<pluto_cluster::lock::Lock, AppError> {
     let buf = tokio::fs::read_to_string(path)
         .await

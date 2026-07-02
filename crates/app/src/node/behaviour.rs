@@ -49,15 +49,6 @@ pub struct CoreHandles {
 }
 
 /// Composes the core behaviours and builds the libp2p [`Node`].
-///
-/// Models Charon's `wireP2P`; the QBFT consensus component is constructed by
-/// the caller (so it can also be used for the core stitch) and the
-/// broadcaster/behaviour construction cycle is resolved by the caller via the
-/// `Arc<OnceLock<Handle>>` pattern.
-///
-/// TODO: The `Arc<OnceLock<Handle>>` pattern is a bit awkward; explore
-/// alternatives
-//
 // TODO(#402 part B): relay/NAT support (relay client + RelayManager), QUIC
 // transport, and bandwidth metrics — start with TCP + no relay.
 #[allow(
