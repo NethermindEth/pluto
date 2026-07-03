@@ -37,6 +37,7 @@ tracing.workspace = true
 pluto-eth2util.workspace = true
 pluto-ssz.workspace = true
 ssz.workspace = true
+ssz_derive.workspace = true
 tree_hash.workspace = true
 url.workspace = true
 

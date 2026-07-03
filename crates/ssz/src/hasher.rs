@@ -134,7 +134,13 @@ impl Hasher {
     }
 
     /// Default SHA-256 pairwise hash function used during merkleization.
+    ///
+    /// `src` must be a whole number of 64-byte pairs; a length not divisible by
+    /// 64 is rejected with `InvalidBufferLength` rather than panicking.
     pub fn default_hash_fn(src: &[u8]) -> Result<Vec<u8>, HasherError> {
+        if !src.len().is_multiple_of(64) {
+            return Err(HasherError::InvalidBufferLength);
+        }
         let mut result = Vec::with_capacity(src.len() / 2);
 
         for pair in src.chunks(64) {
@@ -491,5 +497,30 @@ mod tests {
         let size = parse_bitlist(&mut tmp, &[0b0000_0001]).unwrap();
         assert_eq!(size, 0);
         assert!(tmp.is_empty());
+    }
+
+    #[test]
+    fn default_hash_fn_rejects_non_multiple_of_64() {
+        // 1..64 bytes (not a whole pair) must error rather than panic.
+        assert!(matches!(
+            Hasher::default_hash_fn(&[0u8; 32]),
+            Err(HasherError::InvalidBufferLength)
+        ));
+        assert!(matches!(
+            Hasher::default_hash_fn(&[0u8; 65]),
+            Err(HasherError::InvalidBufferLength)
+        ));
+        // Exact 64-byte pairs hash to 32 bytes each.
+        assert_eq!(Hasher::default_hash_fn(&[]).expect("empty").len(), 0);
+        assert_eq!(
+            Hasher::default_hash_fn(&[0u8; 64]).expect("one pair").len(),
+            32
+        );
+        assert_eq!(
+            Hasher::default_hash_fn(&[0u8; 128])
+                .expect("two pairs")
+                .len(),
+            64
+        );
     }
 }

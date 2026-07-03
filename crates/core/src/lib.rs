@@ -33,6 +33,9 @@ pub mod clock;
 /// future.
 pub mod gater;
 
+/// Exponential backoff builders mirroring Charon's `app/expbackoff`.
+pub mod expbackoff;
+
 /// parsigdb
 pub mod parsigdb;
 

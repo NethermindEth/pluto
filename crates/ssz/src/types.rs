@@ -35,10 +35,14 @@ fn minimum_leaf_count_for_bits(len: usize) -> usize {
     len.div_ceil(BYTES_PER_CHUNK * 8)
 }
 
-/// SSZ variable-length list wrapper with optional max length and `TreeHash`
-/// support.
+/// SSZ variable-length list wrapper with a mandatory `MAX` capacity and
+/// `TreeHash` support.
+///
+/// `MAX` is required (no default): the merkleization pads to `chunk_count(MAX)`
+/// before `mix_in_length`, so a spec-compliant root depends on the declared
+/// capacity. A `MAX` of `0` denotes the degenerate `List[T, 0]` type.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct SszList<T, const MAX: usize = 0>(
+pub struct SszList<T, const MAX: usize>(
     /// Elements in the SSZ list.
     pub Vec<T>,
 );
@@ -301,13 +305,23 @@ impl<const MAX: usize> BitList<MAX> {
     }
 
     /// Decodes SSZ-encoded bytes (with sentinel bit) into a `BitList`.
-    pub fn from_ssz_bytes(ssz: Vec<u8>) -> Self {
+    ///
+    /// Rejects encodings whose decoded bit length exceeds `MAX` (when `MAX >
+    /// 0`), per the SSZ `Bitlist[N]` rule that a decoded `bit_count > N` is
+    /// invalid. Also rejects malformed encodings with no delimiting bit — an
+    /// empty buffer or a zero final byte — since a valid `Bitlist` (including
+    /// the empty list, encoded as `0x01`) always has a non-zero final byte.
+    pub fn from_ssz_bytes(ssz: Vec<u8>) -> Result<Self, DecodeError> {
         if ssz.is_empty() {
-            return Self::default();
+            return Err(DecodeError::BytesInvalid(
+                "bitlist encoding is empty (missing sentinel bit)".to_owned(),
+            ));
         }
         let last_byte = ssz[ssz.len().saturating_sub(1)];
         if last_byte == 0 {
-            return Self::default();
+            return Err(DecodeError::BytesInvalid(
+                "bitlist final byte is zero (missing sentinel bit)".to_owned(),
+            ));
         }
 
         let sentinel_pos = 7_u32.saturating_sub(last_byte.leading_zeros()) as usize;
@@ -316,6 +330,11 @@ impl<const MAX: usize> BitList<MAX> {
             .saturating_sub(1)
             .saturating_mul(8)
             .saturating_add(sentinel_pos);
+        if MAX > 0 && len > MAX {
+            return Err(DecodeError::BytesInvalid(format!(
+                "bitlist length {len} exceeds max {MAX}"
+            )));
+        }
         let data_byte_len = len.div_ceil(8);
         let mut bytes = ssz;
         bytes.truncate(data_byte_len);
@@ -325,7 +344,7 @@ impl<const MAX: usize> BitList<MAX> {
         {
             *last &= !BIT_MASK[rem];
         }
-        Self { bytes, len }
+        Ok(Self { bytes, len })
     }
 
     /// Encodes the `BitList` as SSZ bytes with sentinel bit appended.
@@ -342,10 +361,17 @@ impl<const MAX: usize> BitList<MAX> {
     }
 
     /// Creates a `BitList` with the given capacity and specified bits set.
+    ///
+    /// # Panics
+    /// Panics if any index in `set_bits` is `>= capacity`.
     pub fn with_bits(capacity: usize, set_bits: &[usize]) -> Self {
         let byte_len = capacity.div_ceil(8);
         let mut bytes = vec![0u8; byte_len];
         for &bit in set_bits {
+            assert!(
+                bit < capacity,
+                "bit index {bit} out of range for capacity {capacity}"
+            );
             bytes[bit / 8] |= BIT_MASK[bit % 8];
         }
         Self {
@@ -425,7 +451,7 @@ impl<'de, const MAX: usize> Deserialize<'de> for BitList<MAX> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
         let ssz = decode_0x_hex::<D::Error>(s.as_str())?;
-        Ok(Self::from_ssz_bytes(ssz))
+        Self::from_ssz_bytes(ssz).map_err(|e| D::Error::custom(format!("{e:?}")))
     }
 }
 
@@ -449,7 +475,7 @@ impl<const MAX: usize> Decode for BitList<MAX> {
     }
 
     fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, DecodeError> {
-        Ok(Self::from_ssz_bytes(bytes.to_vec()))
+        Self::from_ssz_bytes(bytes.to_vec())
     }
 }
 
@@ -495,9 +521,16 @@ impl<const SIZE: usize> BitVector<SIZE> {
     }
 
     /// Creates a `BitVector` with specified bits set.
+    ///
+    /// # Panics
+    /// Panics if any index in `set_bits` is `>= SIZE`.
     pub fn with_bits(set_bits: &[usize]) -> Self {
         let mut v = Self::new();
         for &bit in set_bits {
+            assert!(
+                bit < SIZE,
+                "bit index {bit} out of range for BitVector<{SIZE}>"
+            );
             v.bytes[bit / 8] |= BIT_MASK[bit % 8];
         }
         v
@@ -527,6 +560,27 @@ impl<const SIZE: usize> BitVector<SIZE> {
     pub fn bit_indices(&self) -> Vec<usize> {
         (0..SIZE).filter(|&i| self.bit_at(i)).collect()
     }
+
+    /// Returns `true` when the high padding bits (positions
+    /// `SIZE..8*ceil(SIZE/8)`) of the final byte are all zero, as a valid
+    /// `Bitvector[SIZE]` encoding requires. Byte-aligned sizes have no padding.
+    fn padding_is_zero(bytes: &[u8]) -> bool {
+        let rem = SIZE % 8;
+        if rem == 0 {
+            return true;
+        }
+        // `rem` is in 1..=7, so the shift never overflows. A valid final byte
+        // has every bit at position >= rem (the padding region) cleared.
+        match bytes.last() {
+            Some(&last) => {
+                #[allow(clippy::arithmetic_side_effects)]
+                {
+                    last >> rem == 0
+                }
+            }
+            None => true,
+        }
+    }
 }
 
 impl<const SIZE: usize> Serialize for BitVector<SIZE> {
@@ -545,6 +599,11 @@ impl<'de, const SIZE: usize> Deserialize<'de> for BitVector<SIZE> {
                 "bitvector byte length {} does not match required {expected}",
                 bytes.len(),
             )));
+        }
+        if !Self::padding_is_zero(&bytes) {
+            return Err(D::Error::custom(
+                "bitvector has non-zero padding bits above SIZE",
+            ));
         }
         Ok(Self { bytes })
     }
@@ -584,6 +643,11 @@ impl<const SIZE: usize> Decode for BitVector<SIZE> {
                 len: bytes.len(),
                 expected,
             });
+        }
+        if !Self::padding_is_zero(bytes) {
+            return Err(DecodeError::BytesInvalid(
+                "bitvector has non-zero padding bits above SIZE".to_owned(),
+            ));
         }
         Ok(Self {
             bytes: bytes.to_vec(),
@@ -671,9 +735,35 @@ mod tests {
     fn bitlist_bit_at_matches_ssz_round_trip() {
         // SSZ byte 0x0D = sentinel at bit 3 ⇒ 3 data bits with bits 0 and 2 set,
         // matching the bytes returned by `aggregation_bits()`.
-        let bl = BitList::<2048>::from_ssz_bytes(vec![0x0D]);
+        let bl = BitList::<2048>::from_ssz_bytes(vec![0x0D]).expect("bitlist decode");
         assert_eq!(bl.len(), 3);
         assert_eq!(bl.bit_indices(), vec![0, 2]);
+    }
+
+    #[test]
+    fn bitlist_from_ssz_rejects_over_capacity() {
+        // 300 data bytes + sentinel byte ⇒ 2400 data bits, exceeding MAX 2048.
+        let mut oversized = vec![0xFF; 300];
+        oversized.push(0x01);
+        assert!(BitList::<2048>::from_ssz_bytes(oversized).is_err());
+
+        // Exactly MAX bits (256 data bytes + sentinel at bit 2048) decodes.
+        let mut at_cap = vec![0xFF; 256];
+        at_cap.push(0x01);
+        let bl = BitList::<2048>::from_ssz_bytes(at_cap).expect("at-capacity decode");
+        assert_eq!(bl.len(), 2048);
+    }
+
+    #[test]
+    fn bitlist_from_ssz_rejects_missing_sentinel() {
+        // Valid encodings always have a non-zero final (sentinel) byte; the
+        // empty list is `0x01`. Empty buffers and zero final bytes are invalid.
+        assert!(BitList::<2048>::from_ssz_bytes(vec![]).is_err());
+        assert!(BitList::<2048>::from_ssz_bytes(vec![0x00]).is_err());
+        assert!(BitList::<2048>::from_ssz_bytes(vec![0x00, 0x00]).is_err());
+        // The canonical empty bitlist still decodes to length 0.
+        let empty = BitList::<2048>::from_ssz_bytes(vec![0x01]).expect("empty bitlist");
+        assert_eq!(empty.len(), 0);
     }
 
     #[test]
@@ -726,5 +816,29 @@ mod tests {
         bv.set_bit_at(64, true);
         assert!(!bv.bit_at(64));
         assert_eq!(bv.bit_indices(), vec![0, 1, 2]);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range for capacity")]
+    fn bitlist_with_bits_panics_on_out_of_range() {
+        let _ = BitList::<2048>::with_bits(8, &[8]);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range for BitVector")]
+    fn bitvector_with_bits_panics_on_out_of_range() {
+        let _ = BitVector::<64>::with_bits(&[64]);
+    }
+
+    #[test]
+    fn bitvector_from_ssz_rejects_nonzero_padding() {
+        // `BitVector<12>` uses 2 bytes; bits 12..16 are padding and must be zero.
+        // Bit 15 set (0x80 in the final byte) is invalid padding.
+        assert!(<BitVector<12> as Decode>::from_ssz_bytes(&[0x00, 0x80]).is_err());
+        // Zero padding decodes; used bits (0..12) are preserved.
+        let bv = <BitVector<12> as Decode>::from_ssz_bytes(&[0xFF, 0x0F]).expect("valid padding");
+        assert_eq!(bv.bit_indices(), (0..12).collect::<Vec<_>>());
+        // Byte-aligned sizes have no padding constraint.
+        assert!(<BitVector<64> as Decode>::from_ssz_bytes(&[0xFF; 8]).is_ok());
     }
 }

@@ -582,6 +582,270 @@ fn decode_proposal_block(
 }
 
 // ===========================================================================
+// Unsigned duty data SSZ (mirrors charon/core/ssz.go for the unsigned types)
+// ===========================================================================
+
+// Helper containers for the unsigned Deneb/Electra/Fulu block contents.
+//
+// Charon's `eth2api.VersionedProposal` SSZ marshals the unsigned
+// `BlockContents` (`{block, kzg_proofs, blobs}`) for the Deneb+ forks. Pluto's
+// spec module only exposes the *signed* `BlockContents`, so we declare the
+// unsigned equivalents here. The SSZ derive produces the same variable-length
+// container layout (offsets + appended field bodies) as Go's fastssz, so the
+// bytes are interop-compatible. Field order must match `SignedBlockContents`:
+// `block`, `kzg_proofs`, `blobs`.
+
+/// Unsigned Deneb block contents (`{block, kzg_proofs, blobs}`).
+#[derive(Debug, Clone, PartialEq, Eq, ssz_derive::Encode, ssz_derive::Decode)]
+struct DenebBlockContents {
+    block: deneb::BeaconBlock,
+    kzg_proofs: Vec<deneb::KZGProof>,
+    blobs: Vec<deneb::Blob>,
+}
+
+/// Unsigned Electra/Fulu block contents (`{block, kzg_proofs, blobs}`). Fulu
+/// reuses the Electra beacon-block layout.
+#[derive(Debug, Clone, PartialEq, Eq, ssz_derive::Encode, ssz_derive::Decode)]
+struct ElectraBlockContents {
+    block: electra::BeaconBlock,
+    kzg_proofs: Vec<deneb::KZGProof>,
+    blobs: Vec<deneb::Blob>,
+}
+
+/// Encodes the SSZ body of an unsigned proposal block (no versioned header),
+/// selecting the per-fork layout from the [`UnsignedProposalBlock`] variant.
+fn encode_unsigned_proposal_block(
+    block: &crate::signeddata::ProposalBlock,
+) -> Result<Vec<u8>, SszCodecError> {
+    use crate::signeddata::ProposalBlock;
+    Ok(match block {
+        ProposalBlock::Phase0(b) => b.as_ssz_bytes(),
+        ProposalBlock::Altair(b) => b.as_ssz_bytes(),
+        ProposalBlock::Bellatrix(b) => b.as_ssz_bytes(),
+        ProposalBlock::BellatrixBlinded(b) => b.as_ssz_bytes(),
+        ProposalBlock::Capella(b) => b.as_ssz_bytes(),
+        ProposalBlock::CapellaBlinded(b) => b.as_ssz_bytes(),
+        ProposalBlock::Deneb {
+            block,
+            kzg_proofs,
+            blobs,
+        } => DenebBlockContents {
+            block: (**block).clone(),
+            kzg_proofs: kzg_proofs.clone(),
+            blobs: blobs.clone(),
+        }
+        .as_ssz_bytes(),
+        ProposalBlock::DenebBlinded(b) => b.as_ssz_bytes(),
+        ProposalBlock::Electra {
+            block,
+            kzg_proofs,
+            blobs,
+        } => ElectraBlockContents {
+            block: (**block).clone(),
+            kzg_proofs: kzg_proofs.clone(),
+            blobs: blobs.clone(),
+        }
+        .as_ssz_bytes(),
+        ProposalBlock::ElectraBlinded(b) => b.as_ssz_bytes(),
+        ProposalBlock::Fulu {
+            block,
+            kzg_proofs,
+            blobs,
+        } => ElectraBlockContents {
+            block: (**block).clone(),
+            kzg_proofs: kzg_proofs.clone(),
+            blobs: blobs.clone(),
+        }
+        .as_ssz_bytes(),
+        ProposalBlock::FuluBlinded(b) => b.as_ssz_bytes(),
+    })
+}
+
+/// Decodes the SSZ body of an unsigned proposal block (no versioned header),
+/// selecting the per-fork layout from `(version, blinded)`.
+fn decode_unsigned_proposal_block(
+    version: DataVersion,
+    blinded: bool,
+    bytes: &[u8],
+) -> Result<crate::signeddata::ProposalBlock, SszCodecError> {
+    use crate::signeddata::ProposalBlock;
+    Ok(match (version, blinded) {
+        (DataVersion::Phase0, _) => {
+            ProposalBlock::Phase0(phase0::BeaconBlock::from_ssz_bytes(bytes)?)
+        }
+        (DataVersion::Altair, _) => {
+            ProposalBlock::Altair(altair::BeaconBlock::from_ssz_bytes(bytes)?)
+        }
+        (DataVersion::Bellatrix, false) => {
+            ProposalBlock::Bellatrix(bellatrix::BeaconBlock::from_ssz_bytes(bytes)?)
+        }
+        (DataVersion::Bellatrix, true) => {
+            ProposalBlock::BellatrixBlinded(bellatrix::BlindedBeaconBlock::from_ssz_bytes(bytes)?)
+        }
+        (DataVersion::Capella, false) => {
+            ProposalBlock::Capella(capella::BeaconBlock::from_ssz_bytes(bytes)?)
+        }
+        (DataVersion::Capella, true) => {
+            ProposalBlock::CapellaBlinded(capella::BlindedBeaconBlock::from_ssz_bytes(bytes)?)
+        }
+        (DataVersion::Deneb, false) => {
+            let contents = DenebBlockContents::from_ssz_bytes(bytes)?;
+            ProposalBlock::Deneb {
+                block: Box::new(contents.block),
+                kzg_proofs: contents.kzg_proofs,
+                blobs: contents.blobs,
+            }
+        }
+        (DataVersion::Deneb, true) => {
+            ProposalBlock::DenebBlinded(deneb::BlindedBeaconBlock::from_ssz_bytes(bytes)?)
+        }
+        (DataVersion::Electra, false) => {
+            let contents = ElectraBlockContents::from_ssz_bytes(bytes)?;
+            ProposalBlock::Electra {
+                block: Box::new(contents.block),
+                kzg_proofs: contents.kzg_proofs,
+                blobs: contents.blobs,
+            }
+        }
+        (DataVersion::Electra, true) => {
+            ProposalBlock::ElectraBlinded(electra::BlindedBeaconBlock::from_ssz_bytes(bytes)?)
+        }
+        (DataVersion::Fulu, false) => {
+            let contents = ElectraBlockContents::from_ssz_bytes(bytes)?;
+            ProposalBlock::Fulu {
+                block: Box::new(contents.block),
+                kzg_proofs: contents.kzg_proofs,
+                blobs: contents.blobs,
+            }
+        }
+        // Fulu blinded blocks share the Electra blinded layout.
+        (DataVersion::Fulu, true) => {
+            ProposalBlock::FuluBlinded(electra::BlindedBeaconBlock::from_ssz_bytes(bytes)?)
+        }
+        (DataVersion::Unknown, _) => return Err(SszCodecError::UnknownVersion(u64::MAX)),
+    })
+}
+
+/// Encodes an unsigned
+/// [`VersionedProposal`](crate::signeddata::VersionedProposal) to SSZ binary
+/// with the Charon versioned-blinded header (`version(8) + blinded(1) +
+/// offset(4)`), matching `core.VersionedProposal.MarshalSSZ`.
+///
+/// The `consensus_block_value`/`execution_payload_value` fields are *not* part
+/// of the SSZ wire format (Charon's `eth2api.VersionedProposal` does not
+/// serialize them), so they are dropped here and defaulted on decode — exactly
+/// as in Charon.
+pub fn encode_versioned_proposal(
+    vp: &crate::signeddata::VersionedProposal,
+) -> Result<Vec<u8>, SszCodecError> {
+    let version = encode_version(vp.version())?;
+    let blinded: u8 = u8::from(vp.is_blinded());
+    let inner = encode_unsigned_proposal_block(&vp.block)?;
+
+    let mut buf = Vec::with_capacity(VERSIONED_SIGNED_PROPOSAL_HEADER as usize + inner.len());
+    buf.extend_from_slice(&version);
+    buf.push(blinded);
+    buf.extend_from_slice(&encode_u32(VERSIONED_SIGNED_PROPOSAL_HEADER));
+    buf.extend_from_slice(&inner);
+    Ok(buf)
+}
+
+/// Decodes an unsigned
+/// [`VersionedProposal`](crate::signeddata::VersionedProposal) from SSZ binary
+/// with the Charon versioned-blinded header.
+pub fn decode_versioned_proposal(
+    bytes: &[u8],
+) -> Result<crate::signeddata::VersionedProposal, SszCodecError> {
+    require(bytes, VERSIONED_SIGNED_PROPOSAL_HEADER as usize)?;
+    let version = decode_version(&bytes[0..8])?;
+    let blinded = bytes[8] != 0;
+    let offset = decode_u32(&bytes[9..13])?;
+    if offset != VERSIONED_SIGNED_PROPOSAL_HEADER {
+        return Err(SszCodecError::InvalidOffset {
+            expected: VERSIONED_SIGNED_PROPOSAL_HEADER,
+            got: offset,
+        });
+    }
+
+    let inner = &bytes[VERSIONED_SIGNED_PROPOSAL_HEADER as usize..];
+    let block = decode_unsigned_proposal_block(version, blinded, inner)?;
+
+    Ok(crate::signeddata::VersionedProposal {
+        block,
+        // Block values are not carried in the SSZ wire format; Charon defaults
+        // them to zero on decode (the validatorapi later overrides them).
+        consensus_block_value: alloy::primitives::U256::ZERO,
+        execution_payload_value: alloy::primitives::U256::ZERO,
+    })
+}
+
+/// Encodes an unsigned
+/// [`VersionedAggregatedAttestation`](crate::signeddata::VersionedAggregatedAttestation)
+/// to SSZ binary with the Charon versioned header (`version(8) + offset(4)`),
+/// matching `core.VersionedAggregatedAttestation.MarshalSSZ`
+/// (`marshalSSZVersionedTo` — no validator index, no blinded flag).
+pub fn encode_versioned_aggregated_attestation(
+    va: &crate::signeddata::VersionedAggregatedAttestation,
+) -> Result<Vec<u8>, SszCodecError> {
+    let version = encode_version(va.0.version)?;
+    let inner = encode_attestation_payload(va.0.attestation.as_ref())?;
+
+    let mut buf = Vec::with_capacity(VERSIONED_SIGNED_AGGREGATE_HEADER as usize + inner.len());
+    buf.extend_from_slice(&version);
+    buf.extend_from_slice(&encode_u32(VERSIONED_SIGNED_AGGREGATE_HEADER));
+    buf.extend_from_slice(&inner);
+    Ok(buf)
+}
+
+/// Decodes an unsigned
+/// [`VersionedAggregatedAttestation`](crate::signeddata::VersionedAggregatedAttestation)
+/// from SSZ binary with the Charon versioned header (`version(8) + offset(4)`).
+pub fn decode_versioned_aggregated_attestation(
+    bytes: &[u8],
+) -> Result<crate::signeddata::VersionedAggregatedAttestation, SszCodecError> {
+    require(bytes, VERSIONED_SIGNED_AGGREGATE_HEADER as usize)?;
+    let version = decode_version(&bytes[0..8])?;
+    let offset = decode_u32(&bytes[8..12])?;
+    if offset != VERSIONED_SIGNED_AGGREGATE_HEADER {
+        return Err(SszCodecError::InvalidOffset {
+            expected: VERSIONED_SIGNED_AGGREGATE_HEADER,
+            got: offset,
+        });
+    }
+
+    let inner = &bytes[VERSIONED_SIGNED_AGGREGATE_HEADER as usize..];
+    let attestation = decode_attestation_payload(version, inner)?;
+
+    Ok(crate::signeddata::VersionedAggregatedAttestation(
+        versioned::VersionedAttestation {
+            version,
+            validator_index: None,
+            attestation: Some(attestation),
+        },
+    ))
+}
+
+/// Encodes an unsigned
+/// [`SyncContribution`](crate::signeddata::SyncContribution) to SSZ binary. The
+/// inner `altair::SyncCommitteeContribution` is a fixed-size SSZ container with
+/// no Charon versioned header (matching `core.SyncContribution.MarshalSSZ`).
+pub fn encode_sync_contribution(
+    sc: &crate::signeddata::SyncContribution,
+) -> Result<Vec<u8>, SszCodecError> {
+    Ok(sc.0.as_ssz_bytes())
+}
+
+/// Decodes an unsigned
+/// [`SyncContribution`](crate::signeddata::SyncContribution) from SSZ binary.
+pub fn decode_sync_contribution(
+    bytes: &[u8],
+) -> Result<crate::signeddata::SyncContribution, SszCodecError> {
+    Ok(crate::signeddata::SyncContribution(
+        altair::SyncCommitteeContribution::from_ssz_bytes(bytes)?,
+    ))
+}
+
+// ===========================================================================
 // Tests
 // ===========================================================================
 

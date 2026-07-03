@@ -57,10 +57,13 @@ pub struct Network {
 }
 
 impl Network {
-    /// is_non_zero checks if each field in this struct is not equal to its zero
-    /// value.
+    /// is_non_zero checks that the identifying fields of this struct are all
+    /// set to a non-zero value. `capella_hard_fork` is intentionally excluded.
     pub fn is_non_zero(&self) -> bool {
-        self != &Network::default()
+        !self.name.is_empty()
+            && self.chain_id != 0
+            && self.genesis_timestamp != 0
+            && !self.genesis_fork_version_hex.is_empty()
     }
 }
 
@@ -328,6 +331,62 @@ mod tests {
             NetworkError::InvalidName {
                 name: INVALID_NETWORK.to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn is_non_zero_works() {
+        // A fully populated network is non-zero.
+        assert!(MAINNET.is_non_zero());
+
+        // The zero value is not non-zero.
+        assert!(!Network::default().is_non_zero());
+
+        // Every identifying field must be set: dropping any one makes it zero.
+        assert!(
+            !Network {
+                name: "",
+                ..MAINNET
+            }
+            .is_non_zero()
+        );
+        assert!(
+            !Network {
+                chain_id: 0,
+                ..MAINNET
+            }
+            .is_non_zero()
+        );
+        assert!(
+            !Network {
+                genesis_timestamp: 0,
+                ..MAINNET
+            }
+            .is_non_zero()
+        );
+        assert!(
+            !Network {
+                genesis_fork_version_hex: "",
+                ..MAINNET
+            }
+            .is_non_zero()
+        );
+
+        // capella_hard_fork is excluded: it alone does not make a zero value
+        // non-zero, and clearing it on an otherwise populated network is fine.
+        assert!(
+            !Network {
+                capella_hard_fork: "0x03000000",
+                ..Network::default()
+            }
+            .is_non_zero()
+        );
+        assert!(
+            Network {
+                capella_hard_fork: "",
+                ..MAINNET
+            }
+            .is_non_zero()
         );
     }
 

@@ -23,9 +23,12 @@ use libp2p::{
 use tokio::sync::{RwLock, mpsc, oneshot};
 
 use pluto_core::{
+    eth2signeddata,
     gater::DutyGaterFn,
     types::{Duty, ParSignedData, ParSignedDataSet, PubKey},
 };
+use pluto_crypto::types::PublicKey;
+use pluto_eth2api::EthBeaconNodeApiClient;
 use pluto_p2p::p2p_context::P2PContext;
 
 use super::{Handler, encode_message};
@@ -41,6 +44,51 @@ pub type VerifyFuture =
 /// Verifier callback type.
 pub type Verifier =
     Arc<dyn Fn(Duty, PubKey, ParSignedData) -> VerifyFuture + Send + Sync + 'static>;
+
+/// Returns a [`Verifier`] that verifies each inbound partial signature against
+/// the sending peer's public share, looked up by the partial signature's share
+/// index.
+///
+/// For a partial signature received for `pubkey`, it looks up the validator's
+/// public shares (`pub_shares_by_key[pubkey]`), selects the share for the
+/// partial signature's [`share_idx`](ParSignedData::share_idx), and delegates
+/// to [`verify_eth2_signed_data`](eth2signeddata::verify_eth2_signed_data),
+/// which derives the signing domain/epoch from
+/// the [`SignedData`](pluto_core::types::SignedData) and verifies the eth2 BLS
+/// signature.
+/// A missing public key or share index is rejected.
+///
+/// Ports Charon's `parsigex.NewEth2Verifier`
+pub fn new_eth2_verifier(
+    eth2_cl: EthBeaconNodeApiClient,
+    pub_shares_by_key: HashMap<PubKey, HashMap<u64, PublicKey>>,
+) -> Verifier {
+    let pub_shares_by_key = Arc::new(pub_shares_by_key);
+    Arc::new(move |duty, pubkey, par_signed_data| {
+        let eth2_cl = eth2_cl.clone();
+        let pub_shares_by_key = pub_shares_by_key.clone();
+        Box::pin(async move {
+            let pubshares = pub_shares_by_key
+                .get(&pubkey)
+                .ok_or(VerifyError::UnknownPubKey)?;
+            let pubshare = pubshares
+                .get(&par_signed_data.share_idx)
+                .ok_or(VerifyError::InvalidShareIndex)?;
+
+            // `verify_eth2_signed_data` takes an already-upcast
+            // `&dyn Eth2SignedData`; the upcast failure (Charon's
+            // `data.(core.Eth2SignedData)` type assertion) maps to the
+            // "invalid signed data family" error.
+            let eth2_data =
+                eth2signeddata::as_eth2_signed_data(par_signed_data.signed_data.as_ref())
+                    .ok_or(VerifyError::InvalidSignedDataFamily)?;
+
+            eth2signeddata::verify_eth2_signed_data(&eth2_cl, eth2_data, pubshare)
+                .await
+                .map_err(|source| VerifyError::InvalidSignature { duty, source })
+        })
+    })
+}
 
 /// Future returned by received subscriber callbacks.
 pub type ReceivedSubFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
@@ -531,5 +579,199 @@ impl NetworkBehaviour for Behaviour {
         }
 
         Poll::Pending
+    }
+}
+
+#[cfg(test)]
+mod eth2_verifier_tests {
+    use std::collections::HashMap;
+
+    use pluto_core::{
+        signeddata::Attestation,
+        types::{Duty, ParSignedData, PubKey, SignedData},
+    };
+    use pluto_crypto::{
+        blst_impl::BlstImpl,
+        tbls::Tbls,
+        types::{Index, PrivateKey, PublicKey},
+    };
+    use pluto_eth2api::{EthBeaconNodeApiClient, spec::phase0};
+    use pluto_eth2util::signing::{DomainName, get_data_root};
+    use pluto_testutil::BeaconMock;
+
+    use super::new_eth2_verifier;
+    use crate::error::VerifyError;
+
+    const TOTAL_SHARES: Index = 4;
+    const THRESHOLD: Index = 3;
+
+    fn secret_key(hex_value: &str) -> PrivateKey {
+        let bytes = hex::decode(hex_value).unwrap();
+        bytes.as_slice().try_into().unwrap()
+    }
+
+    fn sample_attestation(target_epoch: phase0::Epoch) -> Attestation {
+        let data = phase0::AttestationData {
+            slot: 32,
+            index: 2,
+            beacon_block_root: [0x11; 32],
+            source: phase0::Checkpoint {
+                epoch: target_epoch.saturating_sub(1),
+                root: [0x22; 32],
+            },
+            target: phase0::Checkpoint {
+                epoch: target_epoch,
+                root: [0x33; 32],
+            },
+        };
+
+        Attestation::new(phase0::Attestation {
+            aggregation_bits: serde_json::from_str("\"0x0101\"").unwrap(),
+            data,
+            signature: [0; 96],
+        })
+    }
+
+    /// Signs the eth2 signing root of `data` for the given domain/epoch with
+    /// `secret`, returning a copy of `data` carrying that signature.
+    async fn sign<T>(
+        client: &EthBeaconNodeApiClient,
+        secret: &PrivateKey,
+        data: &T,
+        domain: DomainName,
+        epoch: phase0::Epoch,
+    ) -> T
+    where
+        T: SignedData + Sized,
+    {
+        let message_root = data.message_root().unwrap();
+        let signing_root = get_data_root(client, domain, epoch, message_root)
+            .await
+            .unwrap();
+        let signature = BlstImpl.sign(secret, &signing_root).unwrap();
+        data.set_signature(signature).unwrap()
+    }
+
+    /// Splits `secret` into threshold BLS shares and returns each share's
+    /// private key alongside the public-share map keyed by 1-indexed share id.
+    fn split_shares(secret: &PrivateKey) -> (HashMap<Index, PrivateKey>, HashMap<u64, PublicKey>) {
+        let shares = BlstImpl
+            .threshold_split(secret, TOTAL_SHARES, THRESHOLD)
+            .unwrap();
+        let pub_shares = shares
+            .iter()
+            .map(|(idx, share)| (*idx, BlstImpl.secret_to_public_key(share).unwrap()))
+            .collect();
+        (shares, pub_shares)
+    }
+
+    fn attester_duty() -> Duty {
+        Duty::new_attester_duty(32.into())
+    }
+
+    #[tokio::test]
+    async fn accepts_partial_signature_against_correct_share() {
+        let mock = BeaconMock::builder().build().await.unwrap();
+        let client = mock.client();
+
+        let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
+        let group_pubkey = PubKey::new(BlstImpl.secret_to_public_key(&secret).unwrap());
+        let (shares, pub_shares) = split_shares(&secret);
+
+        // Sign the attestation with the private share for index 2.
+        let share_idx: Index = 2;
+        let att = sample_attestation(4);
+        let signed = sign(
+            client,
+            &shares[&share_idx],
+            &att,
+            DomainName::BeaconAttester,
+            4,
+        )
+        .await;
+        let par = ParSignedData::new(signed, share_idx);
+
+        let mut pub_shares_by_key = HashMap::new();
+        pub_shares_by_key.insert(group_pubkey, pub_shares);
+
+        let verifier = new_eth2_verifier(client.clone(), pub_shares_by_key);
+        verifier(attester_duty(), group_pubkey, par)
+            .await
+            .expect("partial signature against the correct public share verifies");
+    }
+
+    #[tokio::test]
+    async fn rejects_partial_signature_against_wrong_share() {
+        let mock = BeaconMock::builder().build().await.unwrap();
+        let client = mock.client();
+
+        let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
+        let group_pubkey = PubKey::new(BlstImpl.secret_to_public_key(&secret).unwrap());
+        let (shares, pub_shares) = split_shares(&secret);
+
+        // Sign with share 2's secret but claim share index 3, so the verifier
+        // looks up share 3's public key and the signature fails to verify.
+        let att = sample_attestation(4);
+        let signed = sign(client, &shares[&2], &att, DomainName::BeaconAttester, 4).await;
+        let par = ParSignedData::new(signed, 3);
+
+        let mut pub_shares_by_key = HashMap::new();
+        pub_shares_by_key.insert(group_pubkey, pub_shares);
+
+        let verifier = new_eth2_verifier(client.clone(), pub_shares_by_key);
+        let err = verifier(attester_duty(), group_pubkey, par)
+            .await
+            .expect_err("partial signature against the wrong public share is rejected");
+
+        assert!(matches!(err, VerifyError::InvalidSignature { .. }));
+    }
+
+    #[tokio::test]
+    async fn rejects_unknown_pubkey() {
+        let mock = BeaconMock::builder().build().await.unwrap();
+        let client = mock.client();
+
+        let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
+        let group_pubkey = PubKey::new(BlstImpl.secret_to_public_key(&secret).unwrap());
+        let (shares, _pub_shares) = split_shares(&secret);
+
+        let att = sample_attestation(4);
+        let signed = sign(client, &shares[&1], &att, DomainName::BeaconAttester, 4).await;
+        let par = ParSignedData::new(signed, 1);
+
+        // Empty map: the validator public key is not part of the cluster lock.
+        let pub_shares_by_key = HashMap::new();
+
+        let verifier = new_eth2_verifier(client.clone(), pub_shares_by_key);
+        let err = verifier(attester_duty(), group_pubkey, par)
+            .await
+            .expect_err("partial signature for an unknown pubkey is rejected");
+
+        assert!(matches!(err, VerifyError::UnknownPubKey));
+    }
+
+    #[tokio::test]
+    async fn rejects_missing_share_index() {
+        let mock = BeaconMock::builder().build().await.unwrap();
+        let client = mock.client();
+
+        let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
+        let group_pubkey = PubKey::new(BlstImpl.secret_to_public_key(&secret).unwrap());
+        let (shares, pub_shares) = split_shares(&secret);
+
+        let att = sample_attestation(4);
+        let signed = sign(client, &shares[&1], &att, DomainName::BeaconAttester, 4).await;
+        // Claim a share index that was never produced by the split.
+        let par = ParSignedData::new(signed, TOTAL_SHARES + 1);
+
+        let mut pub_shares_by_key = HashMap::new();
+        pub_shares_by_key.insert(group_pubkey, pub_shares);
+
+        let verifier = new_eth2_verifier(client.clone(), pub_shares_by_key);
+        let err = verifier(attester_duty(), group_pubkey, par)
+            .await
+            .expect_err("partial signature with an unknown share index is rejected");
+
+        assert!(matches!(err, VerifyError::InvalidShareIndex));
     }
 }

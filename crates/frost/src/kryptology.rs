@@ -14,7 +14,7 @@ use std::{collections::BTreeMap, fmt};
 use blst::*;
 use rand_core::{CryptoRng, RngCore};
 use sha2::{Digest, Sha256};
-use zeroize::ZeroizeOnDrop;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::*;
 
@@ -91,13 +91,24 @@ pub struct Round2Bcast {
 /// A Shamir secret share matching Go's `sharing.ShamirShare`.
 ///
 /// The `value` field is in **big-endian** byte order.
-#[derive(Clone, Debug, PartialEq, Eq, ZeroizeOnDrop)]
+#[derive(Clone, PartialEq, Eq, ZeroizeOnDrop)]
 pub struct ShamirShare {
     /// The share identifier (1-indexed participant ID).
     #[zeroize(skip)]
     pub id: u32,
     /// The share value as big-endian scalar bytes.
     pub value: [u8; 32],
+}
+
+// Manual `Debug` so the secret share `value` is never rendered; only the
+// (non-secret) `id` is shown.
+impl fmt::Debug for ShamirShare {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ShamirShare")
+            .field("id", &self.id)
+            .field("value", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Secret state held by a participant between round 1 and round 2.
@@ -327,7 +338,7 @@ pub fn round1<R: RngCore + CryptoRng>(
     };
 
     // Schnorr proof of knowledge: sample nonce k, compute R = k*G
-    let k = loop {
+    let mut k = loop {
         let s = Scalar::random(&mut *rng);
         if s != Scalar::ZERO {
             break s;
@@ -336,7 +347,10 @@ pub fn round1<R: RngCore + CryptoRng>(
     let r_point = G1Projective::generator() * k;
     let id_u8 = u8::try_from(id).expect("id <= max_signers <= u8::MAX validated above");
     let ci = kryptology_challenge(id_u8, ctx, &commitment_points[0], &r_point);
-    let wi = k + coefficients[0] * ci;
+    let mut wi = k + coefficients[0] * ci;
+    // The nonce `k` is secret (it would reveal `coefficients[0]` together with
+    // the broadcast `wi`); wipe it now that `wi` is computed.
+    k.zeroize();
 
     // Pre-compute Shamir shares for every other participant
     let mut shares = BTreeMap::new();
@@ -345,7 +359,7 @@ pub fn round1<R: RngCore + CryptoRng>(
             continue;
         }
         let j_id = Identifier::from_u32(j)?;
-        let share_scalar = SigningShare::from_coefficients(&coefficients, j_id).to_scalar();
+        let mut share_scalar = SigningShare::from_coefficients(&coefficients, j_id).to_scalar();
         shares.insert(
             j,
             ShamirShare {
@@ -353,6 +367,9 @@ pub fn round1<R: RngCore + CryptoRng>(
                 value: scalar_to_be(&share_scalar),
             },
         );
+        // The per-peer secret share has been copied into `ShamirShare.value`
+        // (itself zeroized on drop); wipe the bare scalar copy.
+        share_scalar.zeroize();
     }
 
     let bcast = Round1Bcast {
@@ -363,6 +380,8 @@ pub fn round1<R: RngCore + CryptoRng>(
         wi: scalar_to_be(&wi),
         ci: scalar_to_be(&ci),
     };
+    // `wi` is broadcast, but wipe the local copy as defense-in-depth.
+    wi.zeroize();
 
     let secret = Round1Secret {
         id,
@@ -405,7 +424,7 @@ pub fn round2(
     }
 
     let own_identifier = Identifier::from_u32(secret.id)?;
-    let own_share_scalar =
+    let mut own_share_scalar =
         SigningShare::from_coefficients(&secret.coefficients, own_identifier).to_scalar();
 
     let mut peer_commitments: BTreeMap<Identifier, VerifiableSecretSharingCommitment> =
@@ -444,7 +463,7 @@ pub fn round2(
         if share.id != secret.id {
             return Err(KryptologyError::InvalidShare { culprit: sender_id });
         }
-        let share_scalar = scalar_from_be(&share.value)?;
+        let mut share_scalar = scalar_from_be(&share.value)?;
 
         let signing_share = SigningShare::new(share_scalar);
         let secret_share =
@@ -454,16 +473,25 @@ pub fn round2(
             .map_err(|_| KryptologyError::InvalidShare { culprit: sender_id })?;
 
         share_sum = share_sum + share_scalar;
+        // The received secret share has been folded into `share_sum`; wipe the
+        // bare copy (the `SigningShare` above wipes itself on drop).
+        share_scalar.zeroize();
 
         let sender_identifier = Identifier::from_u32(sender_id)?;
         peer_commitments.insert(sender_identifier, sender_commitment);
     }
 
-    let total_scalar = own_share_scalar + share_sum;
+    let mut total_scalar = own_share_scalar + share_sum;
+    // The summands are no longer needed once the signing key is reconstructed.
+    own_share_scalar.zeroize();
+    share_sum.zeroize();
 
     let signing_share = SigningShare::new(total_scalar);
     let verifying_share_element = G1Projective::generator() * total_scalar;
     let verifying_share = VerifyingShare::new(verifying_share_element);
+    // `total_scalar` is the reconstructed signing key; it has been copied into
+    // `signing_share` (zeroized on drop). Wipe this bare copy.
+    total_scalar.zeroize();
 
     // Build PublicKeyPackage from all participants' commitments
     peer_commitments.insert(own_identifier, secret.commitment.clone());
@@ -671,6 +699,21 @@ mod tests {
     use rand::{SeedableRng, rngs::StdRng};
 
     use super::*;
+
+    #[test]
+    fn shamir_share_debug_redacts_value() {
+        let share = ShamirShare {
+            id: 7,
+            value: [0xAB; 32],
+        };
+
+        let rendered = format!("{share:?}");
+
+        // The id is visible; the secret value bytes are not.
+        assert!(rendered.contains("id: 7"));
+        assert!(rendered.contains("<redacted>"));
+        assert!(!rendered.contains("171")); // decimal of 0xAB
+    }
 
     #[test]
     fn scalar_from_be_rejects_invalid_scalar_encoding() {

@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, hash_map::Entry},
-    time::Duration,
-};
+use std::collections::{HashMap, hash_map::Entry};
 
 use backon::{BackoffBuilder, Retryable};
 use tokio::sync;
@@ -719,39 +716,10 @@ async fn resolve_active_validators(
     Ok(validators)
 }
 
-// TODO: Duplicated from `crates/p2p/src/bootnode.rs`
-fn fast_backoff() -> backon::ExponentialBuilder {
-    /// Backoff configuration constants matching Go's expbackoff.FastConfig.
-    const FAST_BASE_DELAY: Duration = Duration::from_millis(100);
-    const FAST_MAX_DELAY: Duration = Duration::from_secs(5);
-    const FAST_MULTIPLIER: f32 = 1.6;
-
-    backon::ExponentialBuilder::default()
-        .with_min_delay(FAST_BASE_DELAY)
-        .with_max_delay(FAST_MAX_DELAY)
-        .with_factor(FAST_MULTIPLIER)
-        .without_max_times()
-        .with_jitter()
-}
-
-fn default_backoff() -> backon::ExponentialBuilder {
-    /// Backoff configuration constants matching Go's expbackoff.DefaultConfig.
-    const DEFAULT_BASE_DELAY: Duration = Duration::from_secs(1);
-    const DEFAULT_MAX_DELAY: Duration = Duration::from_secs(120);
-    const DEFAULT_MULTIPLIER: f32 = 1.6;
-
-    backon::ExponentialBuilder::default()
-        .with_min_delay(DEFAULT_BASE_DELAY)
-        .with_max_delay(DEFAULT_MAX_DELAY)
-        .with_factor(DEFAULT_MULTIPLIER)
-        .without_max_times()
-        .with_jitter()
-}
-
 /// Blocks until the beacon chain has started.
 async fn wait_chain_start(client: &pluto_eth2api::BeaconNodeClient) -> Result<()> {
     let fetch = || client.api().fetch_genesis_time();
-    let backoff = fast_backoff();
+    let backoff = crate::expbackoff::fast();
     let genesis_time = fetch
         .retry(backoff)
         .notify(|err, _| tracing::error!(err = ?err, "Failure getting genesis"))
@@ -777,9 +745,9 @@ async fn wait_beacon_sync(client: &pluto_eth2api::BeaconNodeClient) -> Result<()
             .api()
             .get_syncing_status(pluto_eth2api::GetSyncingStatusRequest {})
     };
-    let fetch_backoff = fast_backoff();
+    let fetch_backoff = crate::expbackoff::fast();
 
-    let mut is_syncing_backoff = default_backoff().build();
+    let mut is_syncing_backoff = crate::expbackoff::default().build();
 
     loop {
         let response: pluto_eth2api::GetSyncingStatusResponse = fetch
@@ -1036,7 +1004,7 @@ async fn fetch_sync_committee_duties(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::{collections::HashSet, time::Duration};
 
     use pluto_eth2api::{
         BeaconNodeClient, GetStateValidatorsResponseResponse,
