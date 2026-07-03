@@ -62,7 +62,7 @@ pub struct TestBeaconArgs {
     #[arg(
         long = "load-test-duration",
         default_value = "5s",
-        value_parser = humantime::parse_duration,
+        value_parser = crate::duration::parse_go_duration,
         help = "Time to keep running the load tests. For each second a new continuous ping instance is spawned."
     )]
     pub load_test_duration: StdDuration,
