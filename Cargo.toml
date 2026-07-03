@@ -71,7 +71,24 @@ thiserror = "2.0"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = "0.7.11"
-libp2p = { version = "0.56", features = ["full", "secp256k1"] }
+# Explicit feature list (not "full"): only the protocols Pluto actually wires.
+# Dropping "full" removes unused stacks (floodsub/gossipsub/kad/mdns/dcutr/
+# websocket/webrtc/…) and, with them, `cuckoofilter`→`rand 0.7.3` (RUSTSEC-2026-0097).
+libp2p = { version = "0.56", features = [
+    "autonat",
+    "dns",
+    "identify",
+    "macros",
+    "mdns",
+    "noise",
+    "ping",
+    "quic",
+    "relay",
+    "secp256k1",
+    "tcp",
+    "tokio",
+    "yamux",
+] }
 url = "2.5"
 percent-encoding = "2.3"
 aes = "0.8.4"
@@ -116,7 +133,7 @@ flate2 = "1.1"
 wiremock = "0.6"
 tower = "0.5"
 sysinfo = "0.33"
-quick-xml = { version = "0.39", features = ["serialize"] }
+quick-xml = { version = "0.41", features = ["serialize"] }
 
 # Crates in the workspace
 pluto-app = { path = "crates/app" }
