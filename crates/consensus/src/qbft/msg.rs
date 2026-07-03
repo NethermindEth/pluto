@@ -432,10 +432,6 @@ mod tests {
     use prost_types::Timestamp;
     use test_case::test_case;
 
-    const UNSIGNED_DATASET_HASH: &str =
-        "d8f9bc3de8b0cb0e3eb1f773c14a96d58f7acaf0f09192ce6562d84ea315e67b";
-    const UNSIGNED_DATASET_KEY: &str = "0xe5301bb68d031b01ef7f35613a77f05f6134983fedd8b0107ec2e45c9bb480eb52accb3174a9a936f255f96410d2eb03";
-    const UNSIGNED_DATASET_VALUE_HEX: &str = "0800000088000000394651850fd4010078892ee285ec0100511455780875d64ee2d3d0d0de6bf8f9b44ce85ff044c6b1f83b8e883bbf857ac354f3ede2d61e0067cfe242cf3ccc4ea3ae5e88526a9f4a578bcb9ef2d4a65314768d6d299761ea045c3f000f8a1900ddcdd01d756bce6c512c3801aacaeedfad5b506664e8c0e4a771ece0b8b7c196a5512e043e9b9aa687907adf5dba61350991daef80dd5c470c90650aaf7b5fd90022215ae7966bb600191b1825f88d4273c86e4ff95f160062a5eee82abd14004a2d0b75fb180d0000010000000000000001000000000000e000000000000000";
     const TIMESTAMP_HASH: &str = "0880e2cfaa0610959aef3a000000000000000000000000000000000000000000";
     const QBFT_MSG_HASH: &str = "9423898db5f4fc224e07cd775a03d7dc89dafe6aedfda9f75cccb1f17c3ba803";
     const SIGNING_PRIVKEY: &str =
@@ -456,17 +452,67 @@ mod tests {
         assert_eq!(to_hash32(&[1u8; 32]), Some([1u8; 32]));
     }
 
+    /// Cross-impl golden vectors from charon v1.7.1 (the source of truth). For
+    /// each consensus duty, pluto must hash the exact `UnsignedDataSet` bytes
+    /// charon sends on the wire to the same 32-byte root, or QBFT never forms
+    /// quorum in a mixed cluster. The `attester_seed0` vector
+    /// equals charon's own `TestHashProto` golden, so a match also proves the
+    /// vectors were captured faithfully.
     #[test]
-    fn hash_proto_matches_seeded_unsigned_dataset() {
-        let mut set = std::collections::BTreeMap::new();
-        set.insert(
-            UNSIGNED_DATASET_KEY.to_string(),
-            Bytes::from(hex::decode(UNSIGNED_DATASET_VALUE_HEX).unwrap()),
+    fn hash_proto_matches_charon_golden_vectors() {
+        #[derive(serde::Deserialize)]
+        struct Entry {
+            pubkey: String,
+            data_hex: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct Vector {
+            name: String,
+            duty: String,
+            entries: Vec<Entry>,
+            hash_hex: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct File {
+            charon_ref: String,
+            vectors: Vec<Vector>,
+        }
+
+        let file: File =
+            serde_json::from_str(include_str!("../../testdata/vectors/hashproto.json")).unwrap();
+
+        // Drift guard: vectors are pinned to a specific charon release.
+        assert_eq!(
+            file.charon_ref, "v1.7.1",
+            "golden vectors are pinned to charon v1.7.1"
+        );
+        assert!(
+            !file.vectors.is_empty(),
+            "expected at least one golden vector"
         );
 
-        let hash = hash_proto(&pbcore::UnsignedDataSet { set }).unwrap();
+        for v in &file.vectors {
+            // Rebuild the exact {pubkey -> bytes} set charon serialised — 0..N
+            // entries covers single-DV, multi-DV cluster shape, and the empty
+            // boundary.
+            let mut set = std::collections::BTreeMap::new();
+            for e in &v.entries {
+                set.insert(
+                    e.pubkey.clone(),
+                    Bytes::from(hex::decode(&e.data_hex).unwrap()),
+                );
+            }
 
-        assert_eq!(hex::encode(hash), UNSIGNED_DATASET_HASH);
+            let hash = hash_proto(&pbcore::UnsignedDataSet { set }).unwrap();
+
+            assert_eq!(
+                hex::encode(hash),
+                v.hash_hex,
+                "hashProto mismatch for vector '{}' (duty={})",
+                v.name,
+                v.duty,
+            );
+        }
     }
 
     #[test]

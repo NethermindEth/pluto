@@ -5658,6 +5658,7 @@ dependencies = [
  "pluto-tracing",
  "prost 0.14.4",
  "prost-types 0.14.4",
+ "serde",
  "serde_json",
  "test-case",
  "thiserror 2.0.18",
