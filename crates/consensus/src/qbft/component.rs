@@ -976,42 +976,59 @@ pub(crate) mod tests {
         assert_eq!(err.to_string(), "value hash not found in values");
     }
 
+    // Parity with charon core/consensus/qbft/msg.go newMsg @ v1.7.1: an
+    // absent, all-zero, or non-32-byte value hash is admitted and collapses to
+    // the nil hash. Whether a nil value is acceptable for a given message type
+    // is decided by the generic core's justification rules, not at receive
+    // time.
     #[test_case(vec![] ; "empty")]
     #[test_case(vec![0; 32] ; "zero")]
     #[test_case(vec![1; 31] ; "short")]
     #[test_case(vec![1; 33] ; "long")]
     #[tokio::test]
-    async fn handle_rejects_invalid_value_hash(hash: Vec<u8>) {
+    async fn handle_admits_malformed_value_hash_as_nil(hash: Vec<u8>) {
+        let consensus = consensus(0, true);
         let mut msg = unsigned_msg(0);
         msg.value_hash = hash.into();
         let msg = sign_for_peer(msg, 0);
+        let inst = consensus.get_instance_io(duty());
 
-        let err = consensus(0, true)
+        consensus
             .handle(consensus_msg(msg), &CancellationToken::new())
             .await
-            .unwrap_err();
+            .unwrap();
 
-        assert_eq!(err.to_string(), "invalid value hash");
+        let mut recv_rx = inst.take_recv_rx().unwrap();
+        assert_eq!(recv_rx.try_recv().unwrap().value(), [0u8; 32]);
     }
 
+    // Parity with charon newMsg @ v1.7.1: the prepared hash is admitted on the
+    // same rule as value_hash and is independent of prepared_round, so even a
+    // ROUND-CHANGE claiming `prepared_round > 0` with a malformed prepared
+    // hash is received with the nil prepared value.
     #[test_case(vec![] ; "empty")]
     #[test_case(vec![0; 32] ; "zero")]
     #[test_case(vec![1; 31] ; "short")]
     #[test_case(vec![1; 33] ; "long")]
     #[tokio::test]
-    async fn handle_rejects_invalid_prepared_round_change_hash(hash: Vec<u8>) {
+    async fn handle_admits_malformed_prepared_round_change_hash_as_nil(hash: Vec<u8>) {
+        let consensus = consensus(0, true);
         let mut msg = unsigned_msg(0);
         msg.r#type = i64::from(qbft::MSG_ROUND_CHANGE);
         msg.prepared_round = 1;
         msg.prepared_value_hash = hash.into();
         let msg = sign_for_peer(msg, 0);
+        let inst = consensus.get_instance_io(duty());
 
-        let err = consensus(0, true)
+        consensus
             .handle(consensus_msg(msg), &CancellationToken::new())
             .await
-            .unwrap_err();
+            .unwrap();
 
-        assert_eq!(err.to_string(), "invalid prepared value hash");
+        let mut recv_rx = inst.take_recv_rx().unwrap();
+        let received = recv_rx.try_recv().unwrap();
+        assert_eq!(received.prepared_round(), 1);
+        assert_eq!(received.prepared_value(), [0u8; 32]);
     }
 
     #[tokio::test]

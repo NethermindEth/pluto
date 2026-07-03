@@ -212,8 +212,16 @@ fn compare_attester(
 fn local_compare_value(
     request: &qbft::CompareRequest<'_, ConsensusQbftTypes>,
 ) -> std::result::Result<Any, AttesterCompareError> {
-    // The generic QBFT core uses `T::Compare::default()` as the "not cached"
-    // sentinel. For this adapter that is `Any::default()`.
+    // Sentinel parity: charon core/consensus/qbft/qbft.go:120 @ v1.7.1 uses
+    // `inputValueSource == nil`. Rust's `T::Compare` is `Default`-able, not
+    // `Option`, and the generic core seeds it with `Any::default()`, so
+    // `Any::default()` IS this adapter's `nil`.
+    //
+    // Invariant: a genuinely cached compare value is always a marshalled
+    // `UnsignedDataSet` and therefore carries a non-empty `type_url`, so it can
+    // never equal `Any::default()` (empty type_url + empty value). Hence
+    // comparing against the default is a sound "not cached" test. See the
+    // sentinel invariant test in this module.
     if request.input_value_source != &Any::default() {
         return Ok(request.input_value_source.clone());
     }
@@ -796,6 +804,25 @@ mod tests {
         let result = run_compare_attester(leader, None, local);
 
         assert!(matches!(result, Ok(())));
+    }
+
+    /// Pins the `local_compare_value` sentinel invariant: a genuinely cached
+    /// compare value is a marshalled `UnsignedDataSet` carrying a non-empty
+    /// `type_url`, so it can never equal `Any::default()` — the adapter's
+    /// equivalent of Go's `inputValueSource == nil` "not cached" sentinel.
+    #[test]
+    fn any_default_is_distinct_from_marshalled_value() {
+        let set = unsigned_attestation_set(&pubkey(1), attestation_data());
+        let cached = any_unsigned(&set);
+
+        assert!(!cached.type_url.is_empty());
+        assert_ne!(cached, Any::default());
+
+        // An empty UnsignedDataSet still marshals with a type_url, so even a
+        // degenerate cached value cannot collide with the sentinel.
+        let empty = any_unsigned(&pbcore::UnsignedDataSet::default());
+        assert!(!empty.type_url.is_empty());
+        assert_ne!(empty, Any::default());
     }
 
     #[test]

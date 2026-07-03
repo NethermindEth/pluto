@@ -272,10 +272,22 @@ pub(crate) fn analyse_fetcher_failed(
             analyse_fetcher_failed_sync_contribution(duty, all_events, fetch_err, feature_set)
         }
         _ => {
-            // TODO: when the fetcher is ported, add an `is_cancelled_error` check here
-            // (similar to `is_eth2_api_error`) so cancellation/timeout errors map to the
-            // default reason rather than `REASON_BUG_FETCH_ERROR`, matching Go's three-tier
-            // logic in `analyseFetcherFailed` (tracker.go:299–305).
+            // Parity: charon core/tracker/tracker.go:296-324 @ v1.7.1
+            // classifies the fetch error in three tiers — (a) eth2 API error =>
+            // REASON_FETCH_BN_ERROR, (b) context.Canceled /
+            // context.DeadlineExceeded => the default reason, (c) otherwise =>
+            // REASON_BUG_FETCH_ERROR. Go computes this upfront for all duty
+            // types, but the proposer/aggregator/sync-contribution arms
+            // recompute their own reason, so the classification only affects
+            // this default arm.
+            //
+            // Accepted divergence (temporary): tiers (a) and (c) are
+            // implemented but NOT the cancellation tier (b), because the
+            // fetcher is not yet ported and there is no cancellation/timeout
+            // error variant to match against. When the fetcher lands, add an
+            // `is_cancelled_error(...)` check (mirroring `is_eth2_api_error`
+            // below) so cancellation/deadline errors map to the default reason
+            // rather than REASON_BUG_FETCH_ERROR.
             let reason = if let Some(e) = &fetch_err
                 && is_eth2_api_error(e.as_ref())
             {
