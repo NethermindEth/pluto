@@ -93,13 +93,13 @@ impl Instance {
     /// If the `/proc` path is empty, sniping is disabled and this returns
     /// immediately. All logs emitted while running carry the `stacksnipe`
     /// topic.
+    #[tracing::instrument(
+        name = "stacksnipe",
+        level = "debug",
+        skip_all,
+        fields(topic = "stacksnipe")
+    )]
     pub async fn run(self, ct: CancellationToken) {
-        let span = tracing::debug_span!("stacksnipe", topic = "stacksnipe");
-        // Full-path trait call so it doesn't shadow the inherent `instrument`.
-        tracing::Instrument::instrument(self.run_loop(ct), span).await;
-    }
-
-    async fn run_loop(&self, ct: CancellationToken) {
         if self.proc_path.as_os_str().is_empty() {
             info!("Stack component sniping disabled");
             return;
