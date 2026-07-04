@@ -140,6 +140,21 @@ mod tests {
             hex::decode("015036f659bd05894dfb531bf0ab3fdb32a05584ec037fc8262843d14e1aae60")
                 .unwrap()
         );
+        // Verify first operator
+        assert_eq!(
+            lock.operators[0].address.to_uppercase(),
+            "0x094279db1944ebd7a19d0f7bbacbe0255aa5b7d4".to_uppercase()
+        );
+        assert_eq!(
+            lock.operators[0].enr.to_uppercase(),
+            "enr://b0223beea5f4f74391f445d15afd4294040374f6924b98cbf8713f8d962d7c8d".to_uppercase()
+        );
+        // Verify first distributed validator
+        assert_eq!(
+            lock.distributed_validators[0].public_key_hex().unwrap().to_uppercase(),
+            "0x1814be823350eab13935f31d84484517e924aef78ae151c00755925836b7075885650c30ec29a3703934bf50a28da102".to_uppercase()
+        );
+        assert_eq!(lock.distributed_validators[0].pub_shares.len(), 2);
     }
 
     /// With verification enabled, a corrupted lock hash is rejected.
