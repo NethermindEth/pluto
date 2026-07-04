@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use pluto_eth1wrap::EthClient;
+use pluto_eth1wrap::{EthClient, EthClientError};
 use tracing::warn;
 
 use crate::lock::{Lock, LockError};
@@ -43,6 +43,10 @@ pub enum LoadError {
         "verify cluster lock signatures (run with no_verify to bypass verification at your own risk): {0}"
     )]
     VerifySignatures(#[source] LockError),
+
+    /// The execution-layer client could not be constructed.
+    #[error("build execution-layer client: {0}")]
+    Eth1(#[source] EthClientError),
 }
 
 /// Reads the cluster lock file at `lock_file_path`, JSON-decodes it into a
@@ -90,6 +94,23 @@ pub async fn load_cluster_lock(
     }
 
     Ok(lock)
+}
+
+/// Reads and verifies the cluster lock at `lock_file_path` with a default no-op
+/// execution-layer client (no configured endpoint) and verification enabled.
+///
+/// Convenient for standalone tools that only need a verified lock and have no
+/// execution-layer endpoint to inject. EIP-1271 smart-contract operator
+/// signatures are skipped; BLS-aggregate and node signatures are still
+/// verified.
+///
+/// Mirrors Charon's `cluster.LoadClusterLockAndVerify`.
+pub async fn load_cluster_lock_and_verify(
+    lock_file_path: impl AsRef<Path>,
+) -> Result<Lock, LoadError> {
+    let eth1 = EthClient::new("").await.map_err(LoadError::Eth1)?;
+
+    load_cluster_lock(lock_file_path, false, &eth1).await
 }
 
 #[cfg(test)]
@@ -222,6 +243,20 @@ mod tests {
         let eth1 = noop_eth1().await;
 
         let loaded = load_cluster_lock(file.path(), false, &eth1)
+            .await
+            .expect("generated lock should verify");
+
+        assert_eq!(loaded.lock_hash, lock.lock_hash);
+    }
+
+    /// The convenience wrapper reads and verifies a self-consistent lock using
+    /// its built-in no-op execution-layer client.
+    #[tokio::test]
+    async fn load_cluster_lock_and_verify_generated_lock() {
+        let (lock, ..) = crate::test_cluster::new_for_test(1, 2, 3, 1);
+        let file = write_lock(&serde_json::to_string(&lock).expect("serialize generated lock"));
+
+        let loaded = load_cluster_lock_and_verify(file.path())
             .await
             .expect("generated lock should verify");
 
