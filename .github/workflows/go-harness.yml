@@ -1,0 +1,88 @@
+name: Go simnet harness
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "test-infra/harness/**"
+      - ".github/workflows/go-harness.yml"
+  pull_request:
+    types: [synchronize, opened, reopened, ready_for_review]
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "test-infra/harness/**"
+      - ".github/workflows/go-harness.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Fast signal: all-charon simnet scenarios (in-process and via the beacon
+  # gateway). No Rust build required.
+  charon-simnet:
+    name: Charon simnet scenarios
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: test-infra/harness/go.mod
+          cache-dependency-path: test-infra/harness/go.sum
+
+      - name: Run charon simnet tests
+        working-directory: test-infra/harness
+        run: go test -v -timeout=12m -run 'TestSimnetAttesterCharon' ./...
+
+  # Full suite with the pluto binary available. The pluto/mixed scenarios
+  # self-skip until `pluto run` lands, then activate automatically.
+  pluto-simnet:
+    name: Pluto simnet scenarios
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: test-infra/harness/go.mod
+          cache-dependency-path: test-infra/harness/go.sum
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Update apt package list
+        run: sudo apt-get update
+
+      - name: Install protobuf
+        uses: awalsh128/cache-apt-pkgs-action@acb598e5ddbc6f68a970c5da0688d2f3a9f04d05 # v1.6.0
+        with:
+          packages: protobuf-compiler=3.21.12*
+          version: 3.21.12
+
+      - name: Install oas3-gen
+        run: cargo install oas3-gen@0.24.0
+
+      - name: Build pluto
+        run: cargo build -p pluto-cli
+
+      - name: Run simnet tests
+        working-directory: test-infra/harness
+        env:
+          PLUTO_BIN: ${{ github.workspace }}/target/debug/pluto
+        run: go test -v -timeout=20m ./...
