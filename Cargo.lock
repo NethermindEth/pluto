@@ -2236,7 +2236,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 2.0.118",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -5155,7 +5155,7 @@ dependencies = [
  "oas3",
  "prettyplease",
  "proc-macro2",
- "quick-xml 0.41.0",
+ "quick-xml",
  "quote",
  "regex",
  "reqwest 0.13.4",
@@ -5579,7 +5579,7 @@ dependencies = [
  "pluto-ssz",
  "pluto-testutil",
  "pluto-tracing",
- "quick-xml 0.39.4",
+ "quick-xml",
  "rand 0.8.6",
  "reqwest 0.13.4",
  "serde",
@@ -6412,16 +6412,6 @@ dependencies = [
  "quick-protobuf",
  "thiserror 1.0.69",
  "unsigned-varint 0.8.0",
-]
-
-[[package]]
-name = "quick-xml"
-version = "0.39.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdcc8dd4e2f670d309a5f0e83fe36dfdc05af317008fea29144da1a2ac858e5e"
-dependencies = [
- "memchr",
- "serde",
 ]
 
 [[package]]
