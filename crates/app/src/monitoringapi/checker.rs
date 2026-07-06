@@ -307,7 +307,7 @@ pub fn quorum_peers_connected(p2p_context: &P2PContext) -> bool {
     let connected = known_peers
         .iter()
         .filter(|peer_id| **peer_id != local_peer_id)
-        .filter(|peer_id| !peer_store.connections_to_peer(peer_id).is_empty())
+        .filter(|peer_id| peer_store.has_connection(peer_id))
         .count();
 
     connected >= required

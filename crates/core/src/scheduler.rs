@@ -1,4 +1,7 @@
-use std::collections::{HashMap, hash_map::Entry};
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    sync::{LazyLock, Mutex},
+};
 
 use backon::{BackoffBuilder, Retryable};
 use tokio::sync;
@@ -203,10 +206,16 @@ impl SchedulerBuilder {
             .await
             .ok_or(SchedulerError::Terminated)??;
 
+        // Fetch the chain constants once at build time (the node is synced at
+        // this point) and cache `slots_per_epoch` on the actor, mirroring
+        // Charon's memoized-spec behaviour.
+        let (_slot_duration, slots_per_epoch) = client.api().fetch_slots_config().await?;
+
         let slot_rx = new_slot_ticker(&client, ct.clone()).await?;
 
         let actor = SchedulerActor {
             client: client.clone(),
+            slots_per_epoch,
             // TODO: Figure out what to pass as `pub_keys`.
             // In Charon, these are not used (dead code)
             slot_broadcast: self.slot_broadcast,
@@ -265,6 +274,12 @@ impl SchedulerHandle {
 
 struct SchedulerActor {
     client: pluto_eth2api::BeaconNodeClient,
+
+    /// Cached chain constant: number of slots per epoch. Fetched once at build
+    /// time. Charon reads this from the memoized beacon-node spec; Pluto's
+    /// `fetch_slots_config` is not memoized, so we cache it here to avoid a
+    /// beacon-node round-trip on every duty lookup.
+    slots_per_epoch: u64,
 
     slot_broadcast: sync::broadcast::Sender<types::Slot>,
     duty_broadcast: sync::broadcast::Sender<(types::Duty, types::DutyDefinitionSet)>,
@@ -338,13 +353,11 @@ impl SchedulerActor {
             return Err(SchedulerError::DeprecatedDutyBuilderProposer);
         }
 
-        // TODO: `client.fetch_slots_config` should be cached.
-        let (_, slots_per_epoch) = self.client.api().fetch_slots_config().await?;
         let epoch = duty
             .slot
             .inner()
-            .checked_div(slots_per_epoch)
-            .expect("non-zero");
+            .checked_div(self.slots_per_epoch)
+            .expect("non-zero: slots_per_epoch is validated non-zero by fetch_slots_config");
 
         if !self.is_epoch_resolved(epoch) {
             return Err(SchedulerError::EpochNotResolved { epoch, duty });
@@ -662,6 +675,48 @@ struct Validator {
     v_idx: pluto_eth2api::spec::phase0::ValidatorIndex,
 }
 
+/// Last-reported `validator_status` label value per validator pubkey.
+///
+/// Mirrors Charon's `statusGauge.Reset(pubkey, ...)`: vise's `Family` cannot
+/// delete series, so we remember the previously-reported status per pubkey and
+/// zero exactly that one series before setting the current status to 1. This
+/// avoids the O(N) scan of the whole metric family on every validator.
+fn last_validator_status() -> &'static Mutex<HashMap<types::PubKey, String>> {
+    static MAP: LazyLock<Mutex<HashMap<types::PubKey, String>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    &MAP
+}
+
+/// Submits the `validator_status` gauge for `pubkey`, emulating Charon's
+/// `statusGauge.Reset(pubkey, ...)` + `Set(1)` in O(1) per validator: it zeroes
+/// only the previously-reported series for this pubkey (when the status
+/// changed) and sets the current one to 1.
+fn submit_validator_status_metric(pubkey: &types::PubKey, status: &str) {
+    let pubkey_full = pubkey.to_string();
+    let pubkey_abbrev = pubkey.abbreviated();
+
+    {
+        let mut last = last_validator_status()
+            .lock()
+            .expect("validator status map mutex poisoned");
+        match last.get(pubkey) {
+            // Unchanged: the current series is already 1, nothing to reset.
+            Some(prev) if prev == status => {}
+            // Status changed: zero the old series, then record the new one.
+            Some(prev) => {
+                SCHEDULER_METRICS.validator_status
+                    [&(pubkey_full.clone(), pubkey_abbrev.clone(), prev.clone())]
+                    .set(0);
+                last.insert(*pubkey, status.to_string());
+            }
+            None => {
+                last.insert(*pubkey, status.to_string());
+            }
+        }
+    }
+    SCHEDULER_METRICS.validator_status[&(pubkey_full, pubkey_abbrev, status.to_string())].set(1);
+}
+
 /// Returns the active validators (including their validator index) for the
 /// epoch.
 async fn resolve_active_validators(
@@ -682,17 +737,10 @@ async fn resolve_active_validators(
         SCHEDULER_METRICS.validator_balance_gwei[&(pubkey_full.clone(), pubkey_abbrev.clone())]
             .set(balance);
 
-        // Emulate Charon's `statusGauge.Reset`:
-        // Vise's `Family` cannot delete series, so instead set any previously-reported
-        // status for this validator to 0 and the current one to 1.
+        // Emulate Charon's `statusGauge.Reset(pubkey, ...)` in O(1) per
+        // validator (see `submit_validator_status_metric`).
         let status = val.status.to_string();
-        for ((full, abbrev, prev_status), gauge) in SCHEDULER_METRICS.validator_status.to_entries()
-        {
-            if full == pubkey_full && abbrev == pubkey_abbrev && prev_status != status {
-                gauge.set(0);
-            }
-        }
-        SCHEDULER_METRICS.validator_status[&(pubkey_full, pubkey_abbrev, status)].set(1);
+        submit_validator_status_metric(&pubkey, &status);
 
         // Check for active validators for the given epoch.
         // The activation epoch needs to be checked in cases where this function is
@@ -1088,6 +1136,7 @@ mod tests {
     fn test_actor(mock: &BeaconMock) -> SchedulerActor {
         SchedulerActor {
             client: pluto_eth2api::BeaconNodeClient::new(mock.client().clone()),
+            slots_per_epoch: 1,
             slot_broadcast: sync::broadcast::channel(CHANNEL_BUFFER_SIZE).0,
             duty_broadcast: sync::broadcast::channel(CHANNEL_BUFFER_SIZE).0,
             resolved_epoch: u64::MAX,
@@ -1148,14 +1197,24 @@ mod tests {
         ct: CancellationToken,
     }
 
-    fn spawn_actor(mock: &BeaconMock) -> TestHarness {
+    async fn spawn_actor(mock: &BeaconMock) -> TestHarness {
         let slot_broadcast = sync::broadcast::channel(CHANNEL_BUFFER_SIZE).0;
         let duty_broadcast = sync::broadcast::channel(CHANNEL_BUFFER_SIZE).0;
         let slot_sub = slot_broadcast.subscribe();
         let duty_sub = duty_broadcast.subscribe();
 
+        let client = pluto_eth2api::BeaconNodeClient::new(mock.client().clone());
+        // Cache slots_per_epoch from the mock's spec, mirroring `build`, so
+        // `get_duty_definition`'s epoch math matches the slots the test drives.
+        let (_slot_duration, slots_per_epoch) = client
+            .api()
+            .fetch_slots_config()
+            .await
+            .expect("mock exposes slots config");
+
         let actor = SchedulerActor {
-            client: pluto_eth2api::BeaconNodeClient::new(mock.client().clone()),
+            client,
+            slots_per_epoch,
             slot_broadcast,
             duty_broadcast,
             resolved_epoch: u64::MAX,
@@ -1305,6 +1364,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_duty_definition_uses_cached_slots_per_epoch() {
+        let mock = BeaconMock::builder().build().await.expect("build mock");
+        let mut actor = test_actor(&mock);
+        // Cached at build time, not fetched per lookup.
+        actor.slots_per_epoch = 32;
+
+        // Slot 64 → epoch 2 (64 / 32). resolved_epoch == u64::MAX, so the
+        // lookup fails with EpochNotResolved for epoch 2, proving the divisor
+        // is the cached field rather than any per-lookup network value.
+        let att = types::Duty::new_attester_duty(types::SlotNumber::new(64));
+        assert!(matches!(
+            actor.get_duty_definition(att).await,
+            Err(SchedulerError::EpochNotResolved { epoch: 2, .. })
+        ));
+    }
+
+    /// Reads the current value of a `validator_status` gauge series, or 0 if
+    /// the series has not been created.
+    fn status_gauge(pubkey: &types::PubKey, status: &str) -> u64 {
+        SCHEDULER_METRICS
+            .validator_status
+            .get(&(pubkey.to_string(), pubkey.abbreviated(), status.to_string()))
+            .map(|g| g.get())
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn submit_validator_status_first_report_sets_current() {
+        let pk = random_core_pub_key();
+        submit_validator_status_metric(&pk, "active_ongoing");
+        assert_eq!(status_gauge(&pk, "active_ongoing"), 1);
+    }
+
+    #[test]
+    fn submit_validator_status_change_zeros_old_sets_new() {
+        let pk = random_core_pub_key();
+        submit_validator_status_metric(&pk, "active_ongoing");
+        submit_validator_status_metric(&pk, "active_exiting");
+        assert_eq!(status_gauge(&pk, "active_ongoing"), 0);
+        assert_eq!(status_gauge(&pk, "active_exiting"), 1);
+    }
+
+    #[test]
+    fn submit_validator_status_unchanged_is_idempotent() {
+        let pk = random_core_pub_key();
+        submit_validator_status_metric(&pk, "active_ongoing");
+        submit_validator_status_metric(&pk, "active_ongoing");
+        assert_eq!(status_gauge(&pk, "active_ongoing"), 1);
+    }
+
+    #[test]
+    fn submit_validator_status_pubkeys_are_independent() {
+        let pk_a = random_core_pub_key();
+        let pk_b = random_core_pub_key();
+        submit_validator_status_metric(&pk_a, "active_ongoing");
+        submit_validator_status_metric(&pk_b, "active_ongoing");
+
+        // Changing A must not affect B's series.
+        submit_validator_status_metric(&pk_a, "active_exiting");
+        assert_eq!(status_gauge(&pk_a, "active_ongoing"), 0);
+        assert_eq!(status_gauge(&pk_a, "active_exiting"), 1);
+        assert_eq!(status_gauge(&pk_b, "active_ongoing"), 1);
+    }
+
+    #[tokio::test]
     async fn resolve_duties_stores_all_duty_types() {
         let mock = duties_mock(16).await;
         mount_head_validators(&mock, validator_set_a_datums()).await;
@@ -1396,7 +1520,7 @@ mod tests {
     async fn first_slot_broadcasts_slot_and_triggers_duties(slot_number: u64) {
         let mock = duties_mock(16).await;
         mount_head_validators(&mock, validator_set_a_datums()).await;
-        let mut h = spawn_actor(&mock);
+        let mut h = spawn_actor(&mock).await;
 
         h.slot_tx
             .send(test_past_slot(slot_number, 16))
@@ -1438,7 +1562,7 @@ mod tests {
     ) {
         let mock = duties_mock(16).await;
         mount_head_validators(&mock, validator_set_a_datums()).await;
-        let mut h = spawn_actor(&mock);
+        let mut h = spawn_actor(&mock).await;
 
         // Slot is mid-epoch (epoch 0 spans slots 0..=15). With the deterministic
         // Beacon setup:
@@ -1481,7 +1605,7 @@ mod tests {
     async fn get_duty_success_then_reorg_then_get_duty_fails() {
         let mock = duties_mock(16).await;
         mount_head_validators(&mock, validator_set_a_datums()).await;
-        let mut h = spawn_actor(&mock);
+        let mut h = spawn_actor(&mock).await;
 
         // Drive a slot in epoch 1 and wait for a duty broadcast, which only
         // happens once `resolve_duties` has completed for the epoch.
@@ -1519,7 +1643,7 @@ mod tests {
     async fn cancellation_during_slot_offset_suppresses_duty_broadcast() {
         let mock = duties_mock(16).await;
         mount_head_validators(&mock, validator_set_a_datums()).await;
-        let mut h = spawn_actor(&mock);
+        let mut h = spawn_actor(&mock).await;
 
         // A mid-epoch slot triggers only the sync-committee contribution duty,
         // whose broadcast is delayed by 2/3 of the slot duration (~600ms here).
