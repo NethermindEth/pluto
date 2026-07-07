@@ -98,6 +98,10 @@ pub enum AppError {
     #[error("p2p node: {0}")]
     P2P(#[from] pluto_p2p::p2p::P2PError),
 
+    /// Relay endpoint resolution failed.
+    #[error("relays: {0}")]
+    Relays(#[from] pluto_p2p::bootnode::BootnodeError),
+
     /// QBFT consensus construction failed.
     #[error("consensus: {0}")]
     Consensus(#[from] qbft::Error),
@@ -326,7 +330,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     // used by the parsigex verifier to check each peer's partial signature.
     let pub_shares_by_key = build_pub_shares_by_key(&lock)?;
 
-    // ---- P2P behaviours (parsigex + qbft + peerinfo) ----
+    // ---- P2P behaviours (relay + parsigex + qbft + peerinfo) ----
     let (node, handles) = behaviour::wire_p2p(
         key.clone(),
         config.p2p.clone(),
@@ -339,7 +343,8 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         config.builder_api,
         config.nickname.clone(),
         ct.clone(),
-    )?;
+    )
+    .await?;
     // Complete the broadcaster<->behaviour cycle.
     handle_slot
         .set(handles.consensus.clone())
