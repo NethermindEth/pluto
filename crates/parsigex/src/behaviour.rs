@@ -321,8 +321,6 @@ impl Behaviour {
                 return;
             }
         };
-        // Share a single refcounted buffer across all broadcast targets instead
-        // of deep-copying the encoded bytes once per peer.
         let message: Arc<[u8]> = Arc::from(message);
 
         let peers: Vec<_> = self
@@ -334,11 +332,9 @@ impl Behaviour {
             .collect();
         let mut pending_peers = HashSet::new();
         let mut failure = None;
-        // Acquire the peer-store read guard once for the whole broadcast rather
-        // than re-locking per peer. Clone the cheap `Arc`-backed context handle
-        // so the guard does not keep `self` borrowed while the loop mutably
-        // borrows other `self` fields (`pending_events`, via
-        // `emit_broadcast_error`).
+        // Clone the cheap `Arc`-backed context so the peer-store guard (held
+        // once for the whole broadcast) does not keep `self` borrowed while the
+        // loop mutably borrows other `self` fields via `emit_broadcast_error`.
         let p2p_context = self.config.p2p_context.clone();
         let peer_store = p2p_context.peer_store_lock();
         for peer in peers {

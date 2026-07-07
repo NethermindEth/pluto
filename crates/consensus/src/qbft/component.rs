@@ -186,9 +186,6 @@ pub enum Error {
 }
 
 /// Canonicalizes inbound `Any` values into the hash map used by QBFT messages.
-///
-/// Consumes `values` and moves each entry into the map instead of cloning,
-/// since the caller owns the values and discards the source vector afterwards.
 pub(crate) fn values_by_hash(values: Vec<Any>) -> Result<ValueMap> {
     let mut out = ValueMap::new();
 
@@ -349,7 +346,6 @@ impl Consensus {
         mut pb_msg: pbconsensus::QbftConsensusMsg,
         ct: &CancellationToken,
     ) -> Result<()> {
-        // Verify the inner message and derive its duty (borrow only).
         let inner = pb_msg.msg.as_ref().ok_or(Error::InvalidConsensusMessage)?;
 
         self.verify_msg(inner)?;
@@ -370,8 +366,6 @@ impl Consensus {
             }
         }
 
-        // Move the validated parts out of `pb_msg` (it is dropped after this),
-        // avoiding a clone of the message, justifications, and values.
         let msg = pb_msg.msg.take().ok_or(Error::InvalidConsensusMessage)?;
         let justification = std::mem::take(&mut pb_msg.justification);
         let values = values_by_hash(std::mem::take(&mut pb_msg.values))?;

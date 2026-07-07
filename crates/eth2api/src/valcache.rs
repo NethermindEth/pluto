@@ -98,11 +98,16 @@ impl CachedValidatorsProvider for ValidatorCache {
 
 /// A cache for active validators.
 #[derive(Clone)]
-pub struct ValidatorCache(Arc<RwLock<ValidatorCacheInner>>);
+pub struct ValidatorCache(Arc<ValidatorCacheInner>);
 
 struct ValidatorCacheInner {
     eth2_cl: EthBeaconNodeApiClient,
     pubkeys: Vec<PubKey>,
+    cached: RwLock<CachedValidators>,
+}
+
+#[derive(Default)]
+struct CachedValidators {
     active: Option<ActiveValidators>,
     complete: Option<CompleteValidators>,
 }
@@ -110,57 +115,49 @@ struct ValidatorCacheInner {
 impl ValidatorCache {
     /// Creates a new, empty validator cache.
     pub fn new(eth2_cl: EthBeaconNodeApiClient, pubkeys: Vec<PubKey>) -> Self {
-        Self(Arc::new(RwLock::new(ValidatorCacheInner {
+        Self(Arc::new(ValidatorCacheInner {
             eth2_cl,
             pubkeys,
-            active: None,
-            complete: None,
-        })))
+            cached: RwLock::new(CachedValidators::default()),
+        }))
     }
 
     /// Clears the cache. This should be called on epoch boundary.
     pub async fn trim(&self) {
-        let mut inner = self.0.write().await;
+        let mut cached = self.0.cached.write().await;
 
-        inner.active = None;
-        inner.complete = None;
+        cached.active = None;
+        cached.complete = None;
     }
 
     /// Returns the cached active validators and complete validators response,
     /// or fetches them if not available populating the cache.
     pub async fn get_by_head(&self) -> Result<(ActiveValidators, CompleteValidators)> {
-        // Fast path: cache already populated. Take only a read lock and return
-        // cheap `Arc` clones. Mirrors Charon's `activeCached()`/`cached()`
-        // `RLock` fast path in `app/eth2wrap/valcache.go`.
+        // Warm-cache fast path: a read lock is enough to serve cheap `Arc`
+        // clones without blocking concurrent readers.
         {
-            let inner = self.0.read().await;
-            if let (Some(active), Some(complete)) = (&inner.active, &inner.complete) {
+            let cached = self.0.cached.read().await;
+            if let (Some(active), Some(complete)) = (&cached.active, &cached.complete) {
                 return Ok((active.clone(), complete.clone()));
             }
-        } // read lock released here
+        }
 
-        // Slow path: cache miss. Snapshot the client + pubkeys we need, then
-        // release the lock so the beacon-node round-trip does not block
-        // concurrent readers. This improves on Charon, which holds the write
-        // lock across the fetch; observable behaviour is identical (a
-        // benign double-fetch race is collapsed by the re-check below).
-        let (eth2_cl, pubkeys) = {
-            let inner = self.0.read().await;
-            (inner.eth2_cl.clone(), inner.pubkeys.clone())
-        };
-
+        // Cache miss: fetch without holding any lock so the round-trip does
+        // not block concurrent readers. A cold-start burst may issue more than
+        // one fetch; the re-check below keeps a single stored value.
         let request = PostStateValidatorsRequest {
             path: PostStateValidatorsRequestPath {
                 state_id: "head".into(),
             },
             body: ValidatorRequestBody {
-                ids: Some(pubkeys.iter().map(format_pubkey).collect()),
+                ids: Some(self.0.pubkeys.iter().map(format_pubkey).collect()),
                 ..Default::default()
             },
         };
 
-        // Fetch WITHOUT holding the lock.
-        let response = eth2_cl
+        let response = self
+            .0
+            .eth2_cl
             .post_state_validators(request)
             .await
             .map_err(EthBeaconNodeApiClientError::RequestError)
@@ -171,17 +168,13 @@ impl ValidatorCache {
 
         let (active_validators, complete_validators) = validators_from_response(response)?;
 
-        // Re-acquire the write lock and re-check: another task may have
-        // populated the cache while we were fetching. If so, prefer the
-        // existing entry and discard our fetch (idempotent — both fetched
-        // "head").
-        let mut inner = self.0.write().await;
-        if let (Some(active), Some(complete)) = (&inner.active, &inner.complete) {
+        let mut cached = self.0.cached.write().await;
+        if let (Some(active), Some(complete)) = (&cached.active, &cached.complete) {
             return Ok((active.clone(), complete.clone()));
         }
 
-        inner.active = Some(active_validators.clone());
-        inner.complete = Some(complete_validators.clone());
+        cached.active = Some(active_validators.clone());
+        cached.complete = Some(complete_validators.clone());
 
         Ok((active_validators, complete_validators))
     }
@@ -196,26 +189,29 @@ impl ValidatorCache {
         &self,
         slot: u64,
     ) -> Result<(ActiveValidators, CompleteValidators, bool)> {
-        let mut inner = self.0.write().await;
+        // Held across the fetch so concurrent slot refreshes serialize, as
+        // before. The immutable client/pubkeys are read off the lock.
+        let mut cached = self.0.cached.write().await;
 
         let mut request = PostStateValidatorsRequest {
             path: PostStateValidatorsRequestPath {
                 state_id: slot.to_string(),
             },
             body: ValidatorRequestBody {
-                ids: Some(inner.pubkeys.iter().map(format_pubkey).collect()),
+                ids: Some(self.0.pubkeys.iter().map(format_pubkey).collect()),
                 ..Default::default()
             },
         };
 
         let (response, refreshed_by_slot) =
-            match inner.eth2_cl.post_state_validators(request.clone()).await {
+            match self.0.eth2_cl.post_state_validators(request.clone()).await {
                 Ok(PostStateValidatorsResponse::Ok(response)) => (response, true),
                 _ => {
                     // Failed to fetch by slot, fall back to head state
                     request.path.state_id = "head".into();
 
-                    let response = inner
+                    let response = self
+                        .0
                         .eth2_cl
                         .post_state_validators(request)
                         .await
@@ -231,8 +227,8 @@ impl ValidatorCache {
 
         let (active_validators, complete_validators) = validators_from_response(response)?;
 
-        inner.active = Some(active_validators.clone());
-        inner.complete = Some(complete_validators.clone());
+        cached.active = Some(active_validators.clone());
+        cached.complete = Some(complete_validators.clone());
 
         Ok((active_validators, complete_validators, refreshed_by_slot))
     }
@@ -436,9 +432,9 @@ mod tests {
 
         // Verify cache is initially empty
         {
-            let inner = cache.0.write().await;
-            assert!(inner.active.is_none());
-            assert!(inner.complete.is_none());
+            let cached = cache.0.cached.read().await;
+            assert!(cached.active.is_none());
+            assert!(cached.complete.is_none());
         }
 
         let result = cache.get_by_head().await;
@@ -446,9 +442,9 @@ mod tests {
 
         // Verify cache remains empty after failed request
         {
-            let inner = cache.0.write().await;
-            assert!(inner.active.is_none());
-            assert!(inner.complete.is_none());
+            let cached = cache.0.cached.read().await;
+            assert!(cached.active.is_none());
+            assert!(cached.complete.is_none());
         }
     }
 

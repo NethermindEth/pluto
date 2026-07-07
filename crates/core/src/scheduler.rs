@@ -206,9 +206,8 @@ impl SchedulerBuilder {
             .await
             .ok_or(SchedulerError::Terminated)??;
 
-        // Fetch the chain constants once at build time (the node is synced at
-        // this point) and cache `slots_per_epoch` on the actor, mirroring
-        // Charon's memoized-spec behaviour.
+        // Cached once here since the node is synced at this point; see the
+        // `slots_per_epoch` field on `SchedulerActor`.
         let (_slot_duration, slots_per_epoch) = client.api().fetch_slots_config().await?;
 
         let slot_rx = new_slot_ticker(&client, ct.clone()).await?;

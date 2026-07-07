@@ -185,9 +185,6 @@ impl Handle {
         self.cmd_tx
             .send(BroadcastCommand {
                 request_id,
-                // Wrap once so the fan-out shares a single allocation across all
-                // peers rather than deep-cloning the (potentially multi-MB)
-                // payload per target, matching Charon's shared-pointer broadcast.
                 msg: Arc::new(msg),
             })
             .map_err(|_| Box::new(Error::BehaviourClosed) as _)
@@ -206,6 +203,8 @@ impl Handle {
 #[derive(Debug)]
 struct BroadcastCommand {
     request_id: u64,
+    /// Shared so the per-peer fan-out clones a pointer rather than the
+    /// (potentially multi-MB) payload.
     msg: Arc<pbconsensus::QbftConsensusMsg>,
 }
 
@@ -543,7 +542,6 @@ impl Behaviour {
                 peer_id,
                 PendingSend {
                     request_id: command.request_id,
-                    // Cheap refcount bump; the payload buffer is shared.
                     msg: Arc::clone(&command.msg),
                 },
             );
