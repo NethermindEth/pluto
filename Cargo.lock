@@ -5194,6 +5194,7 @@ dependencies = [
  "pluto-dkg",
  "pluto-eth1wrap",
  "pluto-eth2util",
+ "pluto-featureset",
  "pluto-k1util",
  "pluto-p2p",
  "pluto-relay-server",
