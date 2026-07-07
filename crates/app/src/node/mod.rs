@@ -130,6 +130,10 @@ pub enum AppError {
     #[error("broadcaster: {0}")]
     Broadcaster(#[source] pluto_core::bcast::Error),
 
+    /// Partial-signature exchange broadcast failed.
+    #[error("parsigex: {0}")]
+    ParSigEx(#[from] pluto_parsigex::Error),
+
     /// Scheduler construction failed.
     #[error("scheduler: {0}")]
     Scheduler(#[source] pluto_core::scheduler::SchedulerError),
@@ -399,7 +403,7 @@ fn production_parsigex_seam(handles: &CoreHandles) -> ParSigExSeam {
                     .broadcast(duty, set)
                     .await
                     .map(|_| ())
-                    .map_err(|e| AppError::BeaconClient(e.to_string()))
+                    .map_err(AppError::ParSigEx)
             })
         }),
         subscribe: Box::new(move |received| {
@@ -544,27 +548,43 @@ async fn load_lock(path: &std::path::Path) -> Result<pluto_cluster::lock::Lock, 
     serde_json::from_str(&buf).map_err(AppError::ParseLock)
 }
 
-/// Verifies the cluster lock's hashes and signatures unless `no_verify` is set
-/// (Charon `app.Run` verification). Operator-signature verification uses the
-/// configured execution-layer client; without an `eth1_endpoint`, a no-op eth1
-/// client is used (BLS-aggregate and node signatures are still verified, but
-/// EIP-1271 smart-contract operator signatures are not).
+/// Verifies the cluster lock's hashes and signatures (Charon `app.Run`
+/// verification). With `no_verify` set, verification still runs but failures
+/// are downgraded to warnings (post-#4130 Charon `cluster/load.go` semantics).
+/// Operator-signature verification uses the configured execution-layer client;
+/// without an `eth1_endpoint`, a no-op eth1 client is used (BLS-aggregate and
+/// node signatures are still verified, but EIP-1271 smart-contract operator
+/// signatures are not).
 async fn verify_lock(lock: &pluto_cluster::lock::Lock, config: &AppConfig) -> Result<(), AppError> {
-    if config.no_verify {
-        tracing::warn!("cluster lock verification disabled (no_verify)");
-        return Ok(());
+    if let Err(err) = lock.verify_hashes().map_err(AppError::LockVerify) {
+        if !config.no_verify {
+            return Err(err);
+        }
+        tracing::warn!(%err, "ignoring failed cluster lock hash verification due to no_verify");
     }
 
-    lock.verify_hashes().map_err(AppError::LockVerify)?;
+    if let Err(err) = verify_lock_signatures(lock, config).await {
+        if !config.no_verify {
+            return Err(err);
+        }
+        tracing::warn!(%err, "ignoring failed cluster lock signature verification due to no_verify");
+    }
 
+    Ok(())
+}
+
+/// Verifies the lock's operator/node signatures against the configured
+/// execution-layer client.
+async fn verify_lock_signatures(
+    lock: &pluto_cluster::lock::Lock,
+    config: &AppConfig,
+) -> Result<(), AppError> {
     let eth1 = pluto_eth1wrap::EthClient::new(config.eth1_endpoint.as_deref().unwrap_or_default())
         .await
         .map_err(AppError::Eth1)?;
     lock.verify_signatures(&eth1)
         .await
-        .map_err(AppError::LockVerify)?;
-
-    Ok(())
+        .map_err(AppError::LockVerify)
 }
 
 /// Builds the QBFT peer list (secp256k1 pubkeys) from the cluster peers.

@@ -71,8 +71,6 @@ pub(crate) fn wire_p2p(
     let peer_ids = peers.iter().map(|peer| peer.id).collect::<Vec<_>>();
     let local_peer_id = peer::peer_id_from_key(key.public_key())?;
 
-    peer::verify_p2p_key(&peers, &key)?;
-
     // TODO(#402 part B): relay/NAT support — use `new_conn_gater(peer_ids, relays)`
     // once relays are resolved. For minimal TCP-only wiring an open gater suffices
     // since the conn gater is only meaningful with relays.
