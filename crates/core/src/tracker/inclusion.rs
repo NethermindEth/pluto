@@ -301,6 +301,14 @@ impl InclusionCore {
             .iter()
             .filter_map(|(key, sub)| match sub.duty.duty_type {
                 DutyType::Proposer => (sub.duty.slot.inner() == slot).then(|| key.clone()),
+                // Parity: charon core/tracker/inclusion.go:289-291 @ v1.7.1
+                // panics with "bug: unexpected type" here — CheckBlock (the
+                // non-attestation path) is only ever fed proposer submissions.
+                // `unreachable!` reproduces that panic with the same message.
+                // Accepted divergence in panic *site* only: Go panics while
+                // iterating the offending submission; Rust panics inside the
+                // `filter_map` closure on the same element — observably
+                // identical.
                 _ => unreachable!("bug: unexpected type"),
             })
             .collect();
@@ -807,6 +815,30 @@ mod tests {
         assert_eq!(scenario(0, false), 1, "block not found at slot -> missed");
         assert_eq!(scenario(1, true), 0, "slot mismatch -> skipped");
         assert_eq!(scenario(1, false), 0, "slot mismatch, not found -> skipped");
+    }
+
+    /// Pins the faithful parity with Go's `panic("bug: unexpected type")` in
+    /// `CheckBlock` (charon core/tracker/inclusion.go:289-291 @ v1.7.1): the
+    /// non-attestation path only ever expects proposer submissions.
+    #[test]
+    #[should_panic(expected = "bug: unexpected type")]
+    fn check_block_panics_on_non_proposer_submission() {
+        let mut core = InclusionCore::with_handlers(
+            Box::new(|_d: &Duty, _pk, _err| {}),
+            Box::new(|_s: &Submission| {}),
+            Box::new(|_s: &Submission, _b: &Block| {}),
+            featureset(true),
+        );
+
+        core.submitted(
+            Duty::new_attester_duty(SlotNumber::new(7)),
+            pubkey(),
+            Box::new(Attestation::new(phase0_attestation(7))),
+            Duration::ZERO,
+        )
+        .expect("submit attester");
+
+        core.check_block(7, true);
     }
 
     /// `trim` reports each removed submission as missed and never included,

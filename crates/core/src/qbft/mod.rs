@@ -959,9 +959,8 @@ fn is_justified_round_change<T: QbftTypes>(d: &Definition<T>, msg: &Msg<T>) -> b
     let pr = msg.prepared_round();
     let pv = msg.prepared_value();
 
-    // The IBFT paper requires ROUND-CHANGE prepared_round to be lower than the
-    // target round. Go core currently omits this check, but valid Charon traffic
-    // already satisfies it.
+    // Accepted hardening over Go: reject prepared rounds outside `0 <= pr < round`.
+    // See `valid_round_change_prepared_round` for the full parity note.
     if !valid_round_change_prepared_round(msg) {
         return false;
     }
@@ -999,6 +998,17 @@ fn is_justified_round_change<T: QbftTypes>(d: &Definition<T>, msg: &Msg<T>) -> b
     true
 }
 
+/// Returns true if a ROUND-CHANGE's prepared round is in the valid range
+/// `0 <= pr < round`.
+///
+/// Parity note (accepted hardening): charon core/qbft/qbft.go @ v1.7.1 does NOT
+/// perform this check in isJustifiedRoundChange / containsJustifiedQrc /
+/// getJustifiedQrc — it trusts that valid Charon traffic always satisfies
+/// `0 <= pr < round` (the IBFT paper requires the prepared round to be lower
+/// than the target round). Pluto adds the explicit bound to reject negative or
+/// not-yet-in-the-past prepared rounds from a buggy or byzantine peer. This is
+/// a stricter superset of Go: every message Go accepts here Pluto also accepts,
+/// so honest consensus is unaffected.
 fn valid_round_change_prepared_round<T: QbftTypes>(msg: &Msg<T>) -> bool {
     let pr = msg.prepared_round();
     pr >= 0 && pr < msg.round()
@@ -1072,7 +1082,7 @@ fn contains_justified_qrc<T: QbftTypes>(
 ) -> Option<T::Value> {
     let qrc = filter_round_change(justification, round)
         .into_iter()
-        .filter(valid_round_change_prepared_round)
+        .filter(valid_round_change_prepared_round) // accepted hardening; see helper doc
         .collect::<Vec<_>>();
     if qrc.len() < d.quorum_count() {
         return None;
@@ -1169,7 +1179,7 @@ fn get_justified_qrc<T: QbftTypes>(
 
     let round_changes = filter_round_change(all, round)
         .into_iter()
-        .filter(valid_round_change_prepared_round)
+        .filter(valid_round_change_prepared_round) // accepted hardening; see helper doc
         .collect::<Vec<_>>();
 
     for prepares in get_prepare_quorums(d, all) {

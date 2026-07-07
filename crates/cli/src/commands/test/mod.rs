@@ -46,7 +46,7 @@ pub struct TestConfigArgs {
     #[arg(
         long,
         default_value = "1h",
-        value_parser = humantime::parse_duration,
+        value_parser = crate::duration::parse_go_duration,
         help = "Execution timeout for all tests"
     )]
     pub timeout: StdDuration,

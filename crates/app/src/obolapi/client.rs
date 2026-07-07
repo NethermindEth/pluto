@@ -6,6 +6,7 @@
 use std::time::Duration;
 
 use bon::Builder;
+use futures::StreamExt;
 use pluto_cluster::lock::Lock;
 use reqwest::{Method, StatusCode};
 use url::Url;
@@ -14,6 +15,56 @@ use crate::obolapi::error::{Error, Result};
 
 /// Default HTTP request timeout if not specified.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Maximum body size read from a successful Obol API response (16 MB). A
+/// full-exit response holds up to `share_count` hex BLS signatures; 16 MB is
+/// orders of magnitude above any real cluster, so this never rejects a
+/// legitimate response while bounding memory against a hostile upstream.
+const OBOLAPI_MAX_BODY: usize = 16 * 1024 * 1024;
+
+/// Maximum body size read from an HTTP error response (diagnostics only).
+const OBOLAPI_MAX_ERROR_BODY: usize = 64 * 1024;
+
+/// Reads a response body, failing with [`Error::BodyTooLarge`] if it would
+/// exceed `max` bytes. Streams so the cap is enforced before full buffering.
+async fn read_body_capped(response: reqwest::Response, max: usize) -> Result<Vec<u8>> {
+    // Fast-path reject if the server advertised an oversized length.
+    if let Some(len) = response.content_length()
+        && len > max as u64
+    {
+        return Err(Error::BodyTooLarge { limit: max });
+    }
+
+    let mut buf = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if buf.len().saturating_add(chunk.len()) > max {
+            return Err(Error::BodyTooLarge { limit: max });
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
+}
+
+/// Reads an HTTP error body for diagnostics, truncating at `max` bytes so a
+/// hostile error response cannot exhaust memory. Never fails (best-effort).
+async fn read_error_body(response: reqwest::Response, max: usize) -> String {
+    let mut buf = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(Ok(chunk)) = stream.next().await {
+        let remaining = max.saturating_sub(buf.len());
+        if remaining == 0 {
+            break;
+        }
+        let take = remaining.min(chunk.len());
+        buf.extend_from_slice(&chunk[..take]);
+        if buf.len() >= max {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
 
 /// REST client for Obol API requests.
 #[derive(Debug, Clone)]
@@ -98,7 +149,7 @@ impl Client {
 
         let status = response.status();
         if !status.is_success() {
-            let body_text = response.text().await.unwrap_or_default();
+            let body_text = read_error_body(response, OBOLAPI_MAX_ERROR_BODY).await;
 
             return Err(Error::HttpError {
                 method: Method::POST,
@@ -133,7 +184,7 @@ impl Client {
                 return Err(Error::NoExit);
             }
 
-            let body_text = response.text().await.unwrap_or_default();
+            let body_text = read_error_body(response, OBOLAPI_MAX_ERROR_BODY).await;
 
             return Err(Error::HttpError {
                 method: Method::GET,
@@ -142,8 +193,7 @@ impl Client {
             });
         }
 
-        let body_bytes = response.bytes().await?.to_vec();
-        Ok(body_bytes)
+        read_body_capped(response, OBOLAPI_MAX_BODY).await
     }
 
     /// Makes an HTTP DELETE request.

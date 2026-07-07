@@ -13,6 +13,13 @@ sol!(
     "src/build/IERC1271.abi"
 );
 
+/// Per-call timeout (seconds) for the ERC-1271 `isValidSignature` request.
+///
+/// The provider carries a `RetryBackoffLayer` (`MAX_RETRY = 10`) but no request
+/// timeout, so a hostile/slow EL endpoint could otherwise stall the call
+/// indefinitely. `tokio::time::timeout` wraps the whole retried operation here.
+const ERC1271_CALL_TIMEOUT_SECS: u64 = 10;
+
 type Result<T> = std::result::Result<T, EthClientError>;
 
 /// Defines errors that can occur when interacting with the Ethereum client.
@@ -37,6 +44,10 @@ pub enum EthClientError {
     /// No execution engine endpoint was configured.
     #[error("execution engine endpoint is not set")]
     NoExecutionEngineAddr,
+
+    /// The ERC-1271 verification call did not complete within the timeout.
+    #[error("ERC-1271 call timed out")]
+    CallTimeout,
 }
 
 /// Defines the interface for the Ethereum EL RPC client.
@@ -95,10 +106,14 @@ impl EthClient {
 
         let instance = IERC1271::new(address, provider);
 
-        let call = instance
-            .isValidSignature(hash.into(), sig.to_vec().into())
-            .call()
-            .await?;
+        let call = tokio::time::timeout(
+            std::time::Duration::from_secs(ERC1271_CALL_TIMEOUT_SECS),
+            instance
+                .isValidSignature(hash.into(), sig.to_vec().into())
+                .call(),
+        )
+        .await
+        .map_err(|_| EthClientError::CallTimeout)??;
 
         Ok(call == MAGIC_VALUE)
     }

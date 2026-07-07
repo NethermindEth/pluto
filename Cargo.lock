@@ -2186,7 +2186,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 2.0.118",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -3208,12 +3208,6 @@ name = "httpdate"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
-
-[[package]]
-name = "humantime"
-version = "2.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "135b12329e5e3ce057a9f972339ea52bc954fe1e9358ef27f95e89716fbc5424"
 
 [[package]]
 name = "hybrid-array"
@@ -5071,6 +5065,7 @@ dependencies = [
  "tracing",
  "url",
  "vise",
+ "walkdir",
  "wiremock",
 ]
 
@@ -5091,7 +5086,6 @@ dependencies = [
  "clap",
  "futures",
  "hex",
- "humantime",
  "k256",
  "libp2p",
  "pluto-app",
@@ -5131,6 +5125,7 @@ name = "pluto-cluster"
 version = "1.7.1"
 dependencies = [
  "chrono",
+ "futures",
  "hex",
  "k256",
  "libp2p",
@@ -5188,6 +5183,7 @@ dependencies = [
  "pluto-tracing",
  "prost 0.14.4",
  "prost-types 0.14.4",
+ "serde",
  "serde_json",
  "test-case",
  "thiserror 2.0.18",
@@ -5372,6 +5368,7 @@ dependencies = [
  "regex",
  "reqwest 0.13.4",
  "scrypt",
+ "secrecy",
  "serde",
  "serde_json",
  "serde_with",
@@ -6690,6 +6687,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dcb913707158fadaf0d8702c2db0e857de66eb003ccfdda5924b5f5ac98efb38"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "secrecy"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e891af845473308773346dc847b2c23ee78fe442e0472ac50e22a18a93d3ae5a"
+dependencies = [
+ "zeroize",
 ]
 
 [[package]]

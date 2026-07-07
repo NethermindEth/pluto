@@ -209,22 +209,30 @@ impl Aggregator {
             }
         })?;
 
-        // Prefer a VersionedAttestation that has validator_index set — the local VC
-        // includes it, peers don't. Falling back to parSigs[0] is fine for all other
-        // duty types, and for attestations where no parSig carries a validator_index.
-        // All parSigs share the same unsigned payload (guaranteed by consensus), so
-        // any one works as a template.
-        let template = par_sigs
-            .iter()
-            .find_map(|ps| {
-                let att = ps
-                    .signed_data
-                    .as_any()
-                    .downcast_ref::<VersionedAttestation>()?;
-                att.0.validator_index?; // return an error if validator_index is not set
-                Some(ps.signed_data.as_ref())
-            })
-            .unwrap_or_else(|| par_sigs[0].signed_data.as_ref());
+        // Fix for validator index sent only by validator client and not peers
+        // (parity: charon core/sigagg/sigagg.go:118-134 @ v1.7.1).
+        // Mirror Go's loop exactly: the scan aborts on the first parSig that is
+        // not a VersionedAttestation (Go `break`s), so a non-attestation duty
+        // always uses parSigs[0]. Among attestations, prefer the first one
+        // whose validator_index is set — the local VC includes it, peers don't.
+        // All parSigs for one (pubkey, duty) share the same concrete type and
+        // unsigned payload (guaranteed by consensus), so the non-attestation
+        // slice is homogeneous and parSigs[0] is a valid template.
+        let mut full_sig: Option<&dyn SignedData> = None;
+        for ps in par_sigs {
+            let Some(att) = ps
+                .signed_data
+                .as_any()
+                .downcast_ref::<VersionedAttestation>()
+            else {
+                break; // first non-attestation aborts the scan, matching Go
+            };
+            if att.0.validator_index.is_some() {
+                full_sig = Some(ps.signed_data.as_ref());
+                break;
+            }
+        }
+        let template = full_sig.unwrap_or_else(|| par_sigs[0].signed_data.as_ref());
 
         let agg_signed = template.set_signature_boxed(agg_bytes).map_err(|e| {
             error!(parent: &span, error = %e, "set_signature failed");
@@ -876,6 +884,45 @@ mod tests {
         assert!(
             att.0.validator_index.is_some(),
             "output must preserve validator_index from template"
+        );
+    }
+
+    /// A homogeneous non-attestation set aborts the template scan on the first
+    /// element (Go `break`s in sigagg.go:118-134 @ v1.7.1), so `par_sigs[0]`
+    /// is used as the template and aggregation succeeds with the same concrete
+    /// type.
+    #[tokio::test]
+    async fn first_non_attestation_aborts_scan() {
+        let ctx = make_bls_context();
+        let par_sigs: Vec<ParSignedData> = ctx
+            .sigs
+            .iter()
+            .map(|(idx, sig)| ParSignedData::new(MockSignedData { sig: *sig }, *idx))
+            .collect();
+
+        let captured: Arc<Mutex<Option<Box<dyn SignedData>>>> = Arc::new(Mutex::new(None));
+        let captured_clone = captured.clone();
+
+        let mut agg = Aggregator::new(3, noop_verify()).unwrap();
+        agg.subscribe(Arc::new(move |_, set: &AggSignedDataSet| {
+            let captured_clone = captured_clone.clone();
+            let output = set.values().next().unwrap().clone();
+            Box::pin(async move {
+                *captured_clone.lock().unwrap() = Some(output);
+                Ok(())
+            })
+        }));
+
+        let mut set = HashMap::new();
+        set.insert(PubKey::new(ctx.pubkey), par_sigs);
+        agg.aggregate(&Duty::new_randao_duty(1.into()), &set)
+            .await
+            .unwrap();
+
+        let output = captured.lock().unwrap().take().unwrap();
+        assert!(
+            output.as_any().downcast_ref::<MockSignedData>().is_some(),
+            "output must keep the non-attestation template type (par_sigs[0])"
         );
     }
 }

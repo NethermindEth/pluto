@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     AllCategoriesResult, TestCategory, TestCategoryResult, TestConfigArgs, TestResult, TestVerdict,
+    must_output_to_file_on_quiet,
 };
 use crate::{
     duration::Duration as CliDuration,
@@ -75,7 +76,7 @@ pub struct TestValidatorArgs {
     #[arg(
         long = "load-test-duration",
         default_value = "5s",
-        value_parser = humantime::parse_duration,
+        value_parser = crate::duration::parse_go_duration,
         help = "Time to keep running the load tests. For each second a new continuous ping instance is spawned."
     )]
     pub load_test_duration: Duration,
@@ -87,6 +88,8 @@ pub async fn run(
     writer: &mut dyn Write,
     ct: CancellationToken,
 ) -> Result<TestCategoryResult> {
+    must_output_to_file_on_quiet(args.test_config.quiet, &args.test_config.output_json)?;
+
     tracing::info!("Starting validator client test");
 
     // Get and filter test cases
@@ -313,5 +316,45 @@ async fn ping_continuously(
         }
         let sleep_ms = rand::thread_rng().gen_range(0..100);
         tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration as StdDuration;
+
+    fn default_test_config() -> TestConfigArgs {
+        TestConfigArgs {
+            output_json: String::new(),
+            quiet: false,
+            test_cases: None,
+            timeout: StdDuration::from_secs(60),
+            publish: false,
+            publish_addr: String::new(),
+            publish_private_key_file: std::path::PathBuf::new(),
+        }
+    }
+
+    fn default_validator_args() -> TestValidatorArgs {
+        TestValidatorArgs {
+            test_config: default_test_config(),
+            api_address: "127.0.0.1:3600".to_string(),
+            load_test_duration: StdDuration::from_secs(1),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_quiet_without_output_json_returns_error() {
+        let mut args = default_validator_args();
+        args.test_config.quiet = true;
+        let mut output = Vec::new();
+        let err = run(args, &mut output, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("on --quiet, an --output-json is required")
+        );
     }
 }

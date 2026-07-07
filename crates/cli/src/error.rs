@@ -142,6 +142,10 @@ pub enum MevTestError {
     #[error("status code {0}")]
     HttpStatus(u16),
 
+    /// Response body exceeded the allowed size.
+    #[error("response body exceeds {0} bytes")]
+    BodyTooLarge(usize),
+
     /// Beacon node endpoint required but not provided.
     #[error("beacon-node-endpoint required when load-test enabled")]
     BeaconNodeEndpointRequired,

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ffi::OsStr, num::TryFromIntError, path, time::Duration};
+use std::{collections::HashMap, ffi::OsStr, fmt, num::TryFromIntError, path, time::Duration};
 
 use bon::Builder;
 use futures::StreamExt;
@@ -219,12 +219,21 @@ pub enum DkgError {
 }
 
 /// Keymanager configuration accepted by the entrypoint.
-#[derive(Debug, Clone, Default, Builder)]
+#[derive(Clone, Default, Builder)]
 pub struct KeymanagerConfig {
     /// The keymanager URL.
     pub address: String,
     /// Bearer token used for authentication.
     pub auth_token: String,
+}
+
+impl fmt::Debug for KeymanagerConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("KeymanagerConfig")
+            .field("address", &self.address)
+            .field("auth_token", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Publish configuration accepted by the entrypoint.
@@ -1285,5 +1294,26 @@ mod tests {
             err,
             DkgError::Disk(crate::disk::DiskError::MissingRequiredFiles { .. })
         ));
+    }
+
+    #[test]
+    fn keymanager_config_debug_redacts_auth_token() {
+        let cfg = KeymanagerConfig::builder()
+            .address("https://keymanager.example".to_string())
+            .auth_token("super-secret-token".to_string())
+            .build();
+        let rendered = format!("{cfg:?}");
+        assert!(
+            !rendered.contains("super-secret-token"),
+            "token leaked in Debug: {rendered}"
+        );
+        assert!(
+            rendered.contains("<redacted>"),
+            "expected <redacted> marker in Debug: {rendered}"
+        );
+        assert!(
+            rendered.contains("https://keymanager.example"),
+            "address should be visible"
+        );
     }
 }

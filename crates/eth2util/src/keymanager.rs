@@ -2,6 +2,7 @@
 //! (https://ethereum.github.io/keymanager-APIs/) functionalities.
 
 use crate::keystore::Keystore;
+use secrecy::{ExposeSecret, SecretString};
 use url::Url;
 
 /// Errors that can occur when using the keymanager client.
@@ -63,7 +64,7 @@ pub type Result<T> = std::result::Result<T, KeymanagerError>;
 #[derive(Debug, Clone)]
 pub struct Client {
     base_url: Url,
-    auth_token: String,
+    auth_token: SecretString,
     http_client: reqwest::Client,
 }
 
@@ -80,7 +81,7 @@ impl Client {
         };
         Ok(Self {
             base_url: Url::parse(&normalized)?,
-            auth_token: auth_token.as_ref().to_owned(),
+            auth_token: SecretString::from(auth_token.as_ref().to_owned()),
             http_client: reqwest::Client::new(),
         })
     }
@@ -143,7 +144,10 @@ impl Client {
             .http_client
             .post(addr)
             .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {}", self.auth_token))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.auth_token.expose_secret()),
+            )
             .body(req_bytes)
             .timeout(timeout)
             .send()
@@ -337,5 +341,19 @@ mod tests {
     fn parse_url_failures(input: &str) {
         let err = Client::new(input, AUTH_TOKEN).unwrap_err();
         assert!(matches!(err, KeymanagerError::ParseUrl(_)));
+    }
+
+    #[test]
+    fn client_debug_redacts_auth_token() {
+        let client = Client::new("http://localhost:9999", "super-secret-token").unwrap();
+        let rendered = format!("{client:?}");
+        assert!(
+            !rendered.contains("super-secret-token"),
+            "token leaked in Debug: {rendered}"
+        );
+        assert!(
+            rendered.contains("REDACTED"),
+            "expected REDACTED marker in Debug: {rendered}"
+        );
     }
 }

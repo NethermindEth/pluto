@@ -589,16 +589,19 @@ impl<B: NetworkBehaviour> Node<B> {
     /// Handles a swarm event to update metrics and logging.
     fn handle_event(&mut self, event: &SwarmEvent<PlutoBehaviourEvent<B>>) {
         match event {
-            // Identify - update peer addresses in the peer store
+            // Identify - update peer addresses in the peer store.
+            //
+            // Only store addresses for known cluster peers: the addresses are
+            // attacker-controlled and the only consumers (quic_upgrade,
+            // force_direct, qbft/p2p, priority) look up addresses for known
+            // peers exclusively, so storing addresses for unknown peers is pure
+            // unbounded growth.
             SwarmEvent::Behaviour(PlutoBehaviourEvent::Identify(identify::Event::Received {
                 peer_id,
                 info,
                 ..
             })) => {
-                // The peer addresses will be available in the next poll of the node.
-                self.p2p_context
-                    .peer_store_write_lock()
-                    .set_peer_addresses(*peer_id, info.listen_addrs.clone());
+                store_identify_addrs(&self.p2p_context, peer_id, &info.listen_addrs);
             }
 
             // Ping metrics
@@ -691,5 +694,79 @@ impl<B: NetworkBehaviour> Stream for Node<B> {
 impl<B: NetworkBehaviour> FusedStream for Node<B> {
     fn is_terminated(&self) -> bool {
         false
+    }
+}
+
+/// Stores identify-reported listen addresses for a peer, gated to known cluster
+/// peers only. Addresses from unknown peers are dropped (and not cloned), since
+/// the only consumers of `peer_addresses` look up known peers exclusively — so
+/// storing them would be pure unbounded growth. The per-peer count is bounded
+/// by [`PeerStore::set_peer_addresses`].
+fn store_identify_addrs(ctx: &P2PContext, peer_id: &PeerId, addrs: &[Multiaddr]) {
+    if ctx.is_known_peer(peer_id) {
+        // The peer addresses will be available in the next poll of the node.
+        ctx.peer_store_write_lock()
+            .set_peer_addresses(*peer_id, addrs.to_vec());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn random_peer_id() -> PeerId {
+        libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id()
+    }
+
+    fn addrs(n: usize) -> Vec<Multiaddr> {
+        (0..n)
+            .map(|i| {
+                format!("/ip4/127.0.0.1/tcp/{}", 9000usize.saturating_add(i))
+                    .parse()
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn identify_addrs_stored_for_known_peer() {
+        let known = random_peer_id();
+        let ctx = P2PContext::new([known]);
+
+        store_identify_addrs(&ctx, &known, &addrs(2));
+
+        let store = ctx.peer_store_lock();
+        assert_eq!(store.peer_addresses(&known).map(Vec::len), Some(2));
+    }
+
+    #[test]
+    fn identify_addrs_dropped_for_unknown_peer() {
+        let known = random_peer_id();
+        let unknown = random_peer_id();
+        let ctx = P2PContext::new([known]);
+
+        store_identify_addrs(&ctx, &unknown, &addrs(3));
+
+        assert!(ctx.peer_store_lock().peer_addresses(&unknown).is_none());
+    }
+
+    #[test]
+    fn identify_addrs_capped_for_known_peer() {
+        let known = random_peer_id();
+        let ctx = P2PContext::new([known]);
+
+        store_identify_addrs(
+            &ctx,
+            &known,
+            &addrs(crate::p2p_context::MAX_PEER_ADDRESSES + 1),
+        );
+
+        let store = ctx.peer_store_lock();
+        assert_eq!(
+            store.peer_addresses(&known).map(Vec::len),
+            Some(crate::p2p_context::MAX_PEER_ADDRESSES)
+        );
     }
 }

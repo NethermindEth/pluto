@@ -25,6 +25,11 @@ pub mod eth2wrap;
 /// Private key locking service.
 pub mod privkeylock;
 
+/// Validator-stack process sniper: periodically scans a `/proc`-like
+/// filesystem for running Ethereum validator stack processes and reports the
+/// detected component names and CLI parameters through a callback.
+pub mod stacksnipe;
+
 /// Listen for SSE from Beacon Node
 pub mod sse;
 

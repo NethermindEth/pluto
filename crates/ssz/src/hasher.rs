@@ -103,6 +103,10 @@ pub enum HasherError {
         /// Declared limit.
         limit: usize,
     },
+    /// Bitlist final (delimiter) byte is zero — missing the length sentinel
+    /// bit.
+    #[error("Invalid bitlist: final byte is zero (missing length delimiter bit)")]
+    InvalidBitlistDelimiter,
 }
 
 /// SSZ hasher for calculating Merkle roots.
@@ -414,6 +418,15 @@ fn parse_bitlist(tmp: &mut Vec<u8>, buf: &[u8]) -> Result<usize, HasherError> {
     }
 
     let last_byte = buf[buf.len().wrapping_sub(1)];
+    if last_byte == 0 {
+        // A valid SSZ bitlist's final byte carries the length-delimiter (sentinel)
+        // bit and is therefore always non-zero. A zero final byte would underflow
+        // `msb` to 255 and trigger `1u8 << 255` (debug panic / masked-shift in
+        // release), so reject it as malformed input.
+        return Err(HasherError::InvalidBitlistDelimiter);
+    }
+
+    // `last_byte != 0` => leading_zeros() in 0..=7 => msb in 0..=7, no overflow.
     let msb = 8u8
         .wrapping_sub(last_byte.leading_zeros() as u8)
         .wrapping_sub(1);
@@ -440,6 +453,51 @@ fn parse_bitlist(tmp: &mut Vec<u8>, buf: &[u8]) -> Result<usize, HasherError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_bitlist_rejects_zero_final_byte_single() {
+        // Single 0x00 byte: previously underflowed msb to 255 and panicked on
+        // `1u8 << 255` in debug builds. Must now return an error, never panic.
+        let mut tmp = Vec::new();
+        let err = parse_bitlist(&mut tmp, &[0x00]).unwrap_err();
+        assert!(matches!(err, HasherError::InvalidBitlistDelimiter));
+    }
+
+    #[test]
+    fn parse_bitlist_rejects_zero_final_byte_multibyte() {
+        // Multi-byte buffer whose *final* byte is zero is also malformed.
+        let mut tmp = Vec::new();
+        let err = parse_bitlist(&mut tmp, &[0x05, 0x00]).unwrap_err();
+        assert!(matches!(err, HasherError::InvalidBitlistDelimiter));
+    }
+
+    #[test]
+    fn parse_bitlist_empty_buffer_is_invalid_length() {
+        let mut tmp = Vec::new();
+        let err = parse_bitlist(&mut tmp, &[]).unwrap_err();
+        assert!(matches!(err, HasherError::InvalidBufferLength));
+    }
+
+    #[test]
+    fn parse_bitlist_valid_single_byte_ok() {
+        // 0b0000_0011 -> sentinel bit at index 1, one data bit set at index 0.
+        // msb = 1, size = 1; the sentinel bit is cleared, leaving 0b0000_0001,
+        // which is non-zero so not truncated away.
+        let mut tmp = Vec::new();
+        let size = parse_bitlist(&mut tmp, &[0b0000_0011]).unwrap();
+        assert_eq!(size, 1);
+        assert_eq!(tmp, vec![0b0000_0001]);
+    }
+
+    #[test]
+    fn parse_bitlist_valid_sentinel_only_truncates() {
+        // 0b0000_0001 -> sentinel at index 0, no data bits. msb = 0, size = 0,
+        // clearing the sentinel yields a trailing zero byte which is truncated.
+        let mut tmp = Vec::new();
+        let size = parse_bitlist(&mut tmp, &[0b0000_0001]).unwrap();
+        assert_eq!(size, 0);
+        assert!(tmp.is_empty());
+    }
 
     #[test]
     fn default_hash_fn_rejects_non_multiple_of_64() {
