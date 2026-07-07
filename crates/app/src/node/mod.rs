@@ -44,19 +44,9 @@ use crate::privkeylock;
 /// Errors raised while constructing or running a distributed-validator node.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
-    /// Failed to load the cluster lock file.
-    #[error("read cluster lock {path}: {source}")]
-    LoadLock {
-        /// Lock file path.
-        path: String,
-        /// Underlying IO error.
-        #[source]
-        source: std::io::Error,
-    },
-
-    /// Failed to deserialize the cluster lock file.
-    #[error("parse cluster lock: {0}")]
-    ParseLock(#[source] serde_json::Error),
+    /// Failed to load or verify the cluster lock.
+    #[error("cluster lock: {0}")]
+    LoadLock(#[from] pluto_cluster::load::LoadError),
 
     /// Failed to derive cluster peers from the lock.
     #[error("cluster definition: {0}")]
@@ -65,10 +55,6 @@ pub enum AppError {
     /// Failed to read distributed-validator data from the lock.
     #[error("distributed validator: {0}")]
     DistValidator(#[from] pluto_cluster::distvalidator::DistValidatorError),
-
-    /// Cluster lock hash or signature verification failed.
-    #[error("verify cluster lock: {0}")]
-    LockVerify(#[source] pluto_cluster::lock::LockError),
 
     /// Execution-layer (eth1) client construction failed.
     #[error("eth1 client: {0}")]
@@ -174,8 +160,17 @@ impl App {
 /// behaviours, wires the core workflow, and drives the node.
 async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     // ---- (1) Load cluster lock + key, derive peers and this node's index ----
-    let lock = load_lock(&config.lock_file).await?;
-    verify_lock(&lock, &config).await?;
+    //
+    // Operator-signature verification uses the configured execution-layer
+    // client; without an `eth1_endpoint`, a no-op client is used
+    // (BLS-aggregate and node signatures are still verified, but EIP-1271
+    // smart-contract operator signatures are not). With `no_verify`,
+    // verification still runs but failures are downgraded to warnings.
+    let eth1 = pluto_eth1wrap::EthClient::new(config.eth1_endpoint.as_deref().unwrap_or_default())
+        .await
+        .map_err(AppError::Eth1)?;
+    let lock =
+        pluto_cluster::load::load_cluster_lock(&config.lock_file, config.no_verify, &eth1).await?;
     let threshold = lock.threshold;
     // TODO(#402 part B): honor the target gas limit (the `config.target_gas_limit`
     // override, else `lock.target_gas_limit`) once `validatorapi::Component::new`
@@ -535,61 +530,6 @@ async fn drive_network(mut node: pluto_p2p::p2p::Node<CoreBehaviour>, ct: Cancel
             }
         }
     }
-}
-
-/// Loads and deserializes a cluster [`Lock`](pluto_cluster::lock::Lock) from
-/// disk.
-//
-/// Loads and JSON-parses the cluster lock from disk.
-/// The manifest DAG was removed upstream (Charon #4130), so there is no
-/// manifest-file path.
-async fn load_lock(path: &std::path::Path) -> Result<pluto_cluster::lock::Lock, AppError> {
-    let buf = tokio::fs::read_to_string(path)
-        .await
-        .map_err(|source| AppError::LoadLock {
-            path: path.display().to_string(),
-            source,
-        })?;
-    serde_json::from_str(&buf).map_err(AppError::ParseLock)
-}
-
-/// Verifies the cluster lock's hashes and signatures (Charon `app.Run`
-/// verification). With `no_verify` set, verification still runs but failures
-/// are downgraded to warnings (post-#4130 Charon `cluster/load.go` semantics).
-/// Operator-signature verification uses the configured execution-layer client;
-/// without an `eth1_endpoint`, a no-op eth1 client is used (BLS-aggregate and
-/// node signatures are still verified, but EIP-1271 smart-contract operator
-/// signatures are not).
-async fn verify_lock(lock: &pluto_cluster::lock::Lock, config: &AppConfig) -> Result<(), AppError> {
-    if let Err(err) = lock.verify_hashes().map_err(AppError::LockVerify) {
-        if !config.no_verify {
-            return Err(err);
-        }
-        tracing::warn!(%err, "ignoring failed cluster lock hash verification due to no_verify");
-    }
-
-    if let Err(err) = verify_lock_signatures(lock, config).await {
-        if !config.no_verify {
-            return Err(err);
-        }
-        tracing::warn!(%err, "ignoring failed cluster lock signature verification due to no_verify");
-    }
-
-    Ok(())
-}
-
-/// Verifies the lock's operator/node signatures against the configured
-/// execution-layer client.
-async fn verify_lock_signatures(
-    lock: &pluto_cluster::lock::Lock,
-    config: &AppConfig,
-) -> Result<(), AppError> {
-    let eth1 = pluto_eth1wrap::EthClient::new(config.eth1_endpoint.as_deref().unwrap_or_default())
-        .await
-        .map_err(AppError::Eth1)?;
-    lock.verify_signatures(&eth1)
-        .await
-        .map_err(AppError::LockVerify)
 }
 
 /// Builds the QBFT peer list (secp256k1 pubkeys) from the cluster peers.
