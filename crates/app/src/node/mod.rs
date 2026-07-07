@@ -172,11 +172,11 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     let lock =
         pluto_cluster::load::load_cluster_lock(&config.lock_file, config.no_verify, &eth1).await?;
     let threshold = lock.threshold;
-    // TODO(#402 part B): honor the target gas limit (the `config.target_gas_limit`
-    // override, else `lock.target_gas_limit`) once `validatorapi::Component::new`
-    // accepts a target-gas-limit parameter — Charon passes it to `NewComponent`,
-    // but Pluto's validator-registration path has no such input yet.
-    let _ = (config.target_gas_limit, lock.target_gas_limit);
+    // TODO(#402 part B): honor `lock.target_gas_limit` once
+    // `validatorapi::Component::new` accepts a target-gas-limit parameter —
+    // Charon passes the lock value to `NewComponent` (app.go:563), but Pluto's
+    // validator-registration path has no such input yet.
+    let _ = lock.target_gas_limit;
 
     let key = pluto_k1util::load(&config.priv_key_file)?;
 

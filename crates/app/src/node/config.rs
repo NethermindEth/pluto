@@ -42,15 +42,8 @@ pub struct AppConfig {
     /// Address the validator API HTTP server binds to.
     pub validator_api_addr: SocketAddr,
 
-    /// Data directory for node state.
-    pub data_dir: PathBuf,
-
     /// Whether the builder API (MEV-boost) is enabled.
     pub builder_api: bool,
-
-    /// Target gas limit advertised for validator registrations. When zero, the
-    /// value from the cluster lock is used.
-    pub target_gas_limit: u64,
 
     /// Human-readable node nickname, surfaced via the peerinfo protocol.
     pub nickname: String,
