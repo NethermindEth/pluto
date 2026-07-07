@@ -216,6 +216,21 @@ pub async fn wire_core_workflow(
         fee_recipient_by_pubkey.insert(val.pubkey, val.fee_recipient);
     }
 
+    // One pubkey-scoped validator cache shared by the scheduler's beacon
+    // client, the submission client, and the validator API, so every consumer
+    // resolves the same cluster validator set. Charon seeds a single cache
+    // into both clients (app.go:481-482 and app.go:598); without seeding, the
+    // scheduler would resolve duties against an empty (or unfiltered) set.
+    // `ValidatorCache` clones share state; the per-epoch trim + refresh
+    // subscriber is a planned follow-up.
+    let validator_cache = ValidatorCache::new(eth2_cl.clone(), eth2_pubkeys);
+    beacon_client
+        .set_validator_cache(validator_cache.clone())
+        .await;
+    submission_client
+        .set_validator_cache(validator_cache.clone())
+        .await;
+
     let fee_recipient_fn: FeeRecipientFunc = {
         let map = fee_recipient_by_pubkey.clone();
         Arc::new(move |pubkey: &PubKey| map.get(pubkey).copied().unwrap_or_default())
@@ -496,14 +511,13 @@ pub async fn wire_core_workflow(
     // agg-sig-db await (back-edge into `aggsigdb.wait_for`), the dutydb-backed
     // agg-attestation / sync-contribution / pubkey-by-attestation lookups, and
     // the scheduler-backed duty-definition lookup.
-    let validator_cache = Arc::new(ValidatorCache::new(eth2_cl.clone(), eth2_pubkeys.clone()));
     let mut vapi = Component::new(
         Arc::new(eth2_cl.clone()),
         Arc::clone(&dutydb),
         share_idx,
         pub_share_by_pubkey,
         builder_enabled,
-        validator_cache,
+        Arc::new(validator_cache),
     );
     // Back-edge: vapi.register_await_agg_sig_db(aggsigdb.wait_for).
     {
