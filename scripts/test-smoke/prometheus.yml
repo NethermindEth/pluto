@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+# The alert oracle (same file wired into test-infra). A firing alert = unhealthy.
+rule_files:
+  - /etc/prometheus/rules.yml
+
+scrape_configs:
+  - job_name: pluto-run-smoke
+    static_configs:
+      - targets: ['node0:3620', 'node1:3620', 'node2:3620', 'node3:3620']

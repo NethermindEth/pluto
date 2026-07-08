@@ -1,0 +1,189 @@
+# TestSmoke analog (bash + docker) — a docker cluster of `run --simnet-*` nodes
+# plus Prometheus loading the alert oracle (test-infra/rules.yml). The `run.sh`
+# harness drives it: wait ready -> hold a window -> fail if any alert fires or any
+# node exits. Mirrors charon's testutil/compose TestSmoke, minus the Go harness.
+#
+# All-charon by default (runnable today); swap any node to pluto per-image:
+#   NODE0_IMAGE=nethermindeth/pluto:main NODE1_IMAGE=nethermindeth/pluto:main \
+#     ./run.sh
+#
+# Reset: docker compose -f scripts/test-smoke/docker-compose.yml down -v
+name: pluto-run-smoke
+
+services:
+  # Docker named volumes are root-owned, but the charon/pluto images run as a
+  # non-root user — make the volume roots writable before anyone uses them.
+  init:
+    image: busybox
+    command: sh -c "chmod 777 /cluster /relay"
+    volumes:
+      - cluster-data:/cluster
+      - relay-data:/relay
+
+  # Centralized keygen (insecure keys) → /cluster/node{0..3}/{cluster-lock.json,
+  # charon-enr-private-key, validator_keys/}. The lock format is interop-compatible,
+  # so a single image can seed a mixed charon/pluto cluster.
+  setup:
+    image: ${SETUP_IMAGE:-obolnetwork/charon:v1.7.1}
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command:
+      - create
+      - cluster
+      - --nodes=4
+      - --threshold=3
+      - --num-validators=4
+      - --network=${NETWORK:-hoodi}
+      - --name=run-smoke
+      - --insecure-keys
+      - --fee-recipient-addresses=0x0000000000000000000000000000000000000001
+      - --withdrawal-addresses=0x0000000000000000000000000000000000000001
+      - --cluster-dir=/cluster
+    volumes:
+      - cluster-data:/cluster
+
+  # Make keys/locks read-write for whatever uid the (possibly different) node
+  # images run as.
+  fix-perms:
+    image: busybox
+    command: sh -c "chmod -R a+rwX /cluster"
+    volumes:
+      - cluster-data:/cluster
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+
+  relay:
+    image: ${RELAY_IMAGE:-obolnetwork/charon:v1.7.1}
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command:
+      - relay
+      - --http-address=0.0.0.0:3640
+      - --p2p-tcp-address=0.0.0.0:3610
+      - --data-dir=/relay
+      - --p2p-advertise-private-addresses
+    volumes:
+      - relay-data:/relay
+
+  node0:
+    image: ${NODE0_IMAGE:-obolnetwork/charon:v1.7.1}
+    command: &run_cmd
+      - run
+      - --lock-file=/cluster/node0/cluster-lock.json
+      - --private-key-file=/cluster/node0/charon-enr-private-key
+      - --simnet-beacon-mock
+      - --simnet-validator-mock
+      - --simnet-validator-keys-dir=/cluster/node0/validator_keys
+      - --simnet-slot-duration=${SLOT_DURATION:-1s}
+      - --monitoring-address=0.0.0.0:3620
+      - --validator-api-address=0.0.0.0:3600
+      - --p2p-tcp-address=0.0.0.0:3610
+      # node_down isolates node0 at startup by setting NODE0_RELAY="" -> renders
+      # `--p2p-relays=` (no relay -> cannot discover peers). No-colon `${VAR-default}`
+      # keeps an empty override empty (a `:-` default would treat empty as unset).
+      - --p2p-relays=${NODE0_RELAY-http://relay:3640}
+      - --feature-set=${FEATURE_SET:-stable}
+      - --synthetic-block-proposals=${SYNTHETIC_PROPOSALS:-true}
+      - --builder-api=${BUILDER_API:-false}
+      - --log-level=${LOG_LEVEL:-info}
+    depends_on:
+      fix-perms: { condition: service_completed_successfully }
+      relay: { condition: service_started }
+    volumes:
+      - cluster-data:/cluster
+
+  node1:
+    image: ${NODE1_IMAGE:-obolnetwork/charon:v1.7.1}
+    command:
+      - run
+      - --lock-file=/cluster/node1/cluster-lock.json
+      - --private-key-file=/cluster/node1/charon-enr-private-key
+      - --simnet-beacon-mock
+      - --simnet-validator-mock
+      - --simnet-validator-keys-dir=/cluster/node1/validator_keys
+      - --simnet-slot-duration=${SLOT_DURATION:-1s}
+      - --monitoring-address=0.0.0.0:3620
+      - --validator-api-address=0.0.0.0:3600
+      - --p2p-tcp-address=0.0.0.0:3610
+      - --p2p-relays=http://relay:3640
+      - --feature-set=${FEATURE_SET:-stable}
+      - --synthetic-block-proposals=${SYNTHETIC_PROPOSALS:-true}
+      - --builder-api=${BUILDER_API:-false}
+      - --log-level=${LOG_LEVEL:-info}
+    depends_on:
+      fix-perms: { condition: service_completed_successfully }
+      relay: { condition: service_started }
+    volumes:
+      - cluster-data:/cluster
+
+  node2:
+    image: ${NODE2_IMAGE:-obolnetwork/charon:v1.7.1}
+    command:
+      - run
+      - --lock-file=/cluster/node2/cluster-lock.json
+      - --private-key-file=/cluster/node2/charon-enr-private-key
+      - --simnet-beacon-mock
+      - --simnet-validator-mock
+      - --simnet-validator-keys-dir=/cluster/node2/validator_keys
+      - --simnet-slot-duration=${SLOT_DURATION:-1s}
+      - --monitoring-address=0.0.0.0:3620
+      - --validator-api-address=0.0.0.0:3600
+      - --p2p-tcp-address=0.0.0.0:3610
+      - --p2p-relays=http://relay:3640
+      - --feature-set=${FEATURE_SET:-stable}
+      - --synthetic-block-proposals=${SYNTHETIC_PROPOSALS:-true}
+      - --builder-api=${BUILDER_API:-false}
+      - --log-level=${LOG_LEVEL:-info}
+    depends_on:
+      fix-perms: { condition: service_completed_successfully }
+      relay: { condition: service_started }
+    volumes:
+      - cluster-data:/cluster
+
+  node3:
+    image: ${NODE3_IMAGE:-obolnetwork/charon:v1.7.1}
+    command:
+      - run
+      - --lock-file=/cluster/node3/cluster-lock.json
+      - --private-key-file=/cluster/node3/charon-enr-private-key
+      - --simnet-beacon-mock
+      - --simnet-validator-mock
+      - --simnet-validator-keys-dir=/cluster/node3/validator_keys
+      - --simnet-slot-duration=${SLOT_DURATION:-1s}
+      - --monitoring-address=0.0.0.0:3620
+      - --validator-api-address=0.0.0.0:3600
+      - --p2p-tcp-address=0.0.0.0:3610
+      - --p2p-relays=http://relay:3640
+      - --feature-set=${FEATURE_SET:-stable}
+      - --synthetic-block-proposals=${SYNTHETIC_PROPOSALS:-true}
+      - --builder-api=${BUILDER_API:-false}
+      - --log-level=${LOG_LEVEL:-info}
+    depends_on:
+      fix-perms: { condition: service_completed_successfully }
+      relay: { condition: service_started }
+    volumes:
+      - cluster-data:/cluster
+
+  # Scrapes each node's :3620 and evaluates the ported alert rules. The harness
+  # polls this container's alert API for the verdict.
+  prometheus:
+    image: prom/prometheus:${PROMETHEUS_VERSION:-v2.55.1}
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../../test-infra/rules.yml:/etc/prometheus/rules.yml:ro
+    ports:
+      - "${PROM_PORT:-9090}:9090"
+    depends_on:
+      - node0
+      - node1
+      - node2
+      - node3
+
+volumes:
+  cluster-data:
+  relay-data:
