@@ -5916,6 +5916,7 @@ dependencies = [
  "k256",
  "libp2p",
  "tempfile",
+ "test-case",
  "thiserror 2.0.18",
 ]
 
