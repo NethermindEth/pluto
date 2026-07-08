@@ -444,16 +444,23 @@ async fn run_lifecycle(
     // Self-spawning actor: consensus expired-duty pruner.
     let _consensus_task = consensus.start(ct.clone());
 
-    let mut tasks: JoinSet<()> = JoinSet::new();
+    let mut tasks: JoinSet<Result<(), AppError>> = JoinSet::new();
 
     // Swarm drive loop (push-based routing inside behaviours).
-    tasks.spawn(drive_network(node, ct.clone()));
+    {
+        let ct = ct.clone();
+        tasks.spawn(async move {
+            drive_network(node, ct).await;
+            Ok(())
+        });
+    }
 
     // ParSigDB trim task.
     {
         let parsigdb = Arc::clone(&parsigdb);
         tasks.spawn(async move {
             parsigdb.trim(parsigdb_deadliner_rx).await;
+            Ok(())
         });
     }
 
@@ -464,35 +471,33 @@ async fn run_lifecycle(
         let svc = Arc::clone(svc);
         tasks.spawn(async move {
             let _ = svc.run().await;
+            Ok(())
         });
     }
 
     // Validator API axum server.
-    {
-        let ct = ct.clone();
-        tasks.spawn(async move {
-            match tokio::net::TcpListener::bind(validator_api_addr).await {
-                Ok(listener) => {
-                    let serve = axum::serve(listener, validator_api_router)
-                        .with_graceful_shutdown(async move { ct.cancelled().await });
-                    if let Err(err) = serve.await {
-                        tracing::error!(?err, "validator api server");
-                    }
-                }
-                Err(err) => {
-                    tracing::error!(?err, %validator_api_addr, "validator api bind");
-                }
-            }
-        });
-    }
+    tasks.spawn(serve_validator_api(
+        validator_api_addr,
+        validator_api_router,
+        ct.clone(),
+    ));
 
-    // Supervise: stop on cancellation or first task completion.
+    // Supervise: stop on cancellation or first task completion. A failed task
+    // fails the whole run (Charon lifecycle: any start-hook error triggers
+    // shutdown and is returned from `Run`).
+    let mut task_err: Option<AppError> = None;
     tokio::select! {
         () = ct.cancelled() => {
             tracing::info!("node: cancellation requested");
         }
-        _ = tasks.join_next() => {
-            tracing::warn!("node: a long-lived task exited; shutting down");
+        joined = tasks.join_next() => {
+            match joined {
+                Some(Ok(Err(err))) => {
+                    tracing::error!(%err, "node: a long-lived task failed; shutting down");
+                    task_err = Some(err);
+                }
+                _ => tracing::warn!("node: a long-lived task exited; shutting down"),
+            }
             ct.cancel();
         }
     }
@@ -515,7 +520,27 @@ async fn run_lifecycle(
     // Stop dutydb (cancels its child token).
     dutydb.shutdown();
 
-    Ok(())
+    // Fail the run with the first task error (Charon: `lifecycle.Manager.Run`
+    // returns the first start-hook error).
+    task_err.map_or(Ok(()), Err)
+}
+
+/// Serves the validator API until `ct` fires (graceful shutdown, `Ok`). A bind
+/// or serve failure is returned and fails the run, matching Charon's
+/// `httpServeHook`, which swallows only `http.ErrServerClosed`.
+async fn serve_validator_api(
+    addr: std::net::SocketAddr,
+    router: axum::Router,
+    ct: CancellationToken,
+) -> Result<(), AppError> {
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(AppError::ValidatorApi)?;
+
+    axum::serve(listener, router)
+        .with_graceful_shutdown(async move { ct.cancelled().await })
+        .await
+        .map_err(AppError::ValidatorApi)
 }
 
 /// Drives the libp2p swarm. Routing is push-based inside the behaviours, so the
@@ -635,4 +660,41 @@ fn build_api_client(
         .map_err(|e| AppError::BeaconClient(e.to_string()))?;
     pluto_eth2api::EthBeaconNodeApiClient::with_client(base_url, http)
         .map_err(|e| AppError::BeaconClient(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A failed validator-API bind must fail the run (Charon: a start-hook
+    // error is returned from `lifecycle.Manager.Run`), not just log.
+    #[tokio::test]
+    async fn serve_validator_api_fails_when_addr_in_use() {
+        let occupied = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let addr = occupied.local_addr().expect("local addr");
+
+        let err = serve_validator_api(addr, axum::Router::new(), CancellationToken::new())
+            .await
+            .expect_err("bind on an occupied port should fail");
+
+        assert!(matches!(err, AppError::ValidatorApi(_)));
+    }
+
+    #[tokio::test]
+    async fn serve_validator_api_shuts_down_gracefully_on_cancel() {
+        let ct = CancellationToken::new();
+        ct.cancel();
+
+        // Graceful shutdown is a clean exit, mirroring Charon's swallowing of
+        // `http.ErrServerClosed`.
+        serve_validator_api(
+            "127.0.0.1:0".parse().expect("addr"),
+            axum::Router::new(),
+            ct,
+        )
+        .await
+        .expect("cancelled serve should exit cleanly");
+    }
 }
