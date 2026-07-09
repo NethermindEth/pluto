@@ -62,6 +62,9 @@ pub struct CoreHandles {
     pub parsigex: parsigex::Handle,
     /// Outbound QBFT broadcast handle.
     pub consensus: qbft::p2p::Handle,
+    /// Shared P2P runtime context (known peers + live connections), used by the
+    /// monitoring API's readiness checker to compute quorum connectivity.
+    pub p2p_context: P2PContext,
 }
 
 /// Composes the core behaviours and builds the libp2p [`Node`].
@@ -139,6 +142,10 @@ pub(crate) async fn wire_p2p(
     .with_peers(peer_ids.clone());
     let peerinfo_comp = peerinfo::Behaviour::new(local_peer_id, peerinfo_config);
 
+    // Clone the context before it is moved into the node so the readiness
+    // checker observes the same shared peer/connection state the swarm updates.
+    let p2p_context_for_handle = p2p_context.clone();
+
     let node = Node::new(
         p2p_config,
         key,
@@ -160,6 +167,7 @@ pub(crate) async fn wire_p2p(
     let handles = CoreHandles {
         parsigex: parsigex_handle,
         consensus: consensus_handle,
+        p2p_context: p2p_context_for_handle,
     };
 
     Ok((node, handles))
