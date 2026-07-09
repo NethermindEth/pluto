@@ -39,7 +39,7 @@ use pluto_core::{
     signeddata::{SyncContribution, VersionedAggregatedAttestation},
     types::{Duty, ParSignedData, ParSignedDataSet, PubKey, SignedData, SignedDataSet},
     unsigneddata::{self, UnsignedDataSet},
-    validatorapi::{self, Component, Handler},
+    validatorapi::{self, Component, Handler, SeenPubkeysFn},
 };
 use pluto_eth2api::{
     BeaconNodeClient, EthBeaconNodeApiClient,
@@ -147,6 +147,10 @@ pub struct WireInputs {
     /// Whether to fetch only committee index 0 at/after `electra_slot`
     /// (`Feature::FetchOnlyCommIdx0`).
     pub fetch_only_comm_idx0: bool,
+    /// Observer invoked with each DV root pubkey the validator client
+    /// references on the validator API, feeding the monitoring readiness
+    /// checker. `None` disables the signal (e.g. tests).
+    pub seen_pubkeys: Option<SeenPubkeysFn>,
 }
 
 /// The wired components and long-lived handles produced by
@@ -202,6 +206,7 @@ pub async fn wire_core_workflow(
         graffiti_builder,
         electra_slot,
         fetch_only_comm_idx0,
+        seen_pubkeys,
     } = inputs;
 
     // ---- Derived validator maps (mirrors app.go:407-452) ----
@@ -592,6 +597,11 @@ pub async fn wire_core_workflow(
             let parsigdb = Arc::clone(&parsigdb);
             async move { parsigdb.store_internal(&duty, &set).await.map_err(box_err) }
         });
+    }
+
+    // Feed the monitoring readiness checker the pubkeys the VC references.
+    if let Some(observer) = seen_pubkeys {
+        vapi.register_seen_pubkeys(observer);
     }
 
     let validator_api_router = validatorapi::new_router(
