@@ -25,8 +25,8 @@ pub mod wire;
 pub use config::AppConfig;
 
 use std::{
-    collections::HashMap,
-    sync::{Arc, OnceLock},
+    collections::{HashMap, HashSet},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use futures::StreamExt;
@@ -391,6 +391,21 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     // `eth2_cl` is moved into the workflow inputs below.
     let monitoring_beacon = eth2_cl.clone();
 
+    // Readiness observes which DV root pubkeys the validator client references
+    // on the validator API, so `/readyz` can tell whether the VC is exercising
+    // every validator. A deduped set (not a channel) keeps this bounded by the
+    // validator count on the request path: repeated validator-API calls just
+    // re-insert, and the ready checker drains the set each slot.
+    let seen_pubkeys: Arc<Mutex<HashSet<PubKey>>> = Arc::new(Mutex::new(HashSet::new()));
+    let seen_pubkeys_observer: pluto_core::validatorapi::SeenPubkeysFn = {
+        let seen_pubkeys = Arc::clone(&seen_pubkeys);
+        Arc::new(move |pubkey: PubKey| {
+            if let Ok(mut set) = seen_pubkeys.lock() {
+                set.insert(pubkey);
+            }
+        })
+    };
+
     let wired = wire::wire_core_workflow(
         WireInputs {
             threshold,
@@ -408,6 +423,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             graffiti_builder,
             electra_slot,
             fetch_only_comm_idx0,
+            seen_pubkeys: Some(seen_pubkeys_observer),
         },
         ct.clone(),
     )
@@ -428,6 +444,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             num_validators,
             num_peers,
             quorum_peers,
+            seen_pubkeys,
         },
         ct,
     )
@@ -449,6 +466,9 @@ struct MonitoringInputs {
     num_peers: i64,
     /// Peers required for quorum (health-checker metadata).
     quorum_peers: i64,
+    /// Shared, deduped set of DV root pubkeys observed on the validator API,
+    /// drained each slot by the readiness checker.
+    seen_pubkeys: Arc<Mutex<HashSet<PubKey>>>,
 }
 
 /// Builds the production parsigex seam from the real `parsigex::Handle`.
@@ -561,27 +581,21 @@ async fn run_lifecycle(
         num_validators,
         num_peers,
         quorum_peers,
+        seen_pubkeys,
     } = monitoring;
 
     // Every validator-API request feeds the readiness checker's "vc connected"
     // signal. Non-blocking sends drop when the buffer is full.
     let (vapi_calls_tx, vapi_calls_rx) = tokio::sync::mpsc::channel::<()>(VAPI_CALLS_BUFFER);
 
-    // The seen-pubkeys readiness signal is deferred: pluto's
-    // `validatorapi::Component` does not yet surface the pubkeys a VC queries.
-    // The sender is parked so the channel stays open (the checker keeps polling
-    // it) but never delivers, leaving readiness reporting "vc missing
-    // validators" until the signal is wired. No smoke-test alert depends on
-    // `/readyz`.
-    // TODO: surface observed pubkeys from `validatorapi::Component` and feed
-    // them here.
-    let (_seen_pubkeys_tx, seen_pubkeys_rx) = tokio::sync::mpsc::channel::<PubKey>(1);
-
+    // `seen_pubkeys` collects the DV root pubkeys the validator client
+    // references on the validator API (via the component's observer); the
+    // checker drains it each slot so readiness knows every validator is served.
     let readiness = monitoringapi::start_ready_checker(
         handles.p2p_context.clone(),
         monitoring_beacon,
         monitoring_pubkeys,
-        seen_pubkeys_rx,
+        seen_pubkeys,
         vapi_calls_rx,
         ct.clone(),
     );
