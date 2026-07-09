@@ -8,11 +8,11 @@ use pluto_p2p::config::P2PConfig;
 /// Application configuration for running a distributed-validator node.
 ///
 /// This is the Rust analog of Charon's `app.Config` (`app/app.go`), reduced to
-/// the minimal set required to wire and run the core duty workflow.
-/// Observability (monitoring/debug API, tracing/OTLP) and simnet/mock-only
+/// the minimal set required to wire and run the core duty workflow plus the
+/// monitoring API. Debug/pprof API, OTLP/Jaeger tracing and simnet/mock-only
 /// fields are intentionally omitted for the minimal-runnable wiring.
-// TODO(#402 part B): add monitoring/debug addrs, OTLP/Jaeger tracing config,
-// simnet (beacon/validator mock) and `TestConfig`-style overrides.
+// TODO(#402 part B): add debug/pprof addr, OTLP/Jaeger tracing config, simnet
+// (beacon/validator mock) and `TestConfig`-style overrides.
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     /// P2P networking configuration (listen/advertise addresses, relays, ...).
@@ -41,6 +41,11 @@ pub struct AppConfig {
 
     /// Address the validator API HTTP server binds to.
     pub validator_api_addr: SocketAddr,
+
+    /// Address the monitoring API HTTP server binds to. Serves the Prometheus
+    /// `/metrics` scrape endpoint plus the `/livez` and `/readyz` health
+    /// probes.
+    pub monitoring_addr: SocketAddr,
 
     /// Whether the builder API (MEV-boost) is enabled.
     pub builder_api: bool,

@@ -21,9 +21,11 @@
 //! Not every accepted flag is honored yet. Correctness-affecting flags with no
 //! implementation (simnet mocks, custom testnets, beacon-node headers, VC TLS,
 //! a preferred consensus protocol, synthetic block proposals) fail fast with a
-//! "not yet supported" error, while observability/availability-only flags
-//! (monitoring/debug addresses, OTLP, proc directory, fallback beacon
-//! endpoints) are ignored with a warning.
+//! "not yet supported" error, while the remaining observability/availability
+//! flags with no implementation (debug/pprof address, OTLP, proc directory,
+//! fallback beacon endpoints) are ignored with a warning. The monitoring API
+//! (`--monitoring-address`) is wired: the node serves Prometheus `/metrics`
+//! plus `/livez` and `/readyz` there.
 //!
 //! Limitations:
 //! - `--log-format` and `--log-output-path` are accepted but not yet applied
@@ -58,8 +60,7 @@ const MAX_GRAFFITI_BYTES_NO_APPEND: usize = 32;
 const MAX_NICKNAME_BYTES: usize = 32;
 /// Grace period for the Loki background task to flush buffered logs on exit.
 const LOKI_FLUSH_TIMEOUT: StdDuration = StdDuration::from_secs(3);
-/// Default `--monitoring-address`; shared by the flag definition and the
-/// ignored-flag warning so they cannot drift.
+/// Default `--monitoring-address`.
 const DEFAULT_MONITORING_ADDR: &str = "127.0.0.1:3620";
 /// Default `--simnet-validator-keys-dir`; shared by the flag definition and
 /// the unsupported-flag check so they cannot drift.
@@ -973,7 +974,9 @@ fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
     warn_ignored_flags(&config);
 
     let feature_set = build_feature_set(&config.feature)?;
-    let validator_api_addr = parse_validator_api_addr(&config.validator_api_addr)?;
+    let validator_api_addr =
+        parse_socket_addr("validator-api-address", &config.validator_api_addr)?;
+    let monitoring_addr = parse_socket_addr("monitoring-address", &config.monitoring_addr)?;
 
     // Exhaustive destructure: adding a `RunConfig` field without deciding its
     // bridge behavior fails to compile instead of being silently dropped.
@@ -1028,6 +1031,7 @@ fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
         beacon_node_timeout,
         beacon_node_submit_timeout,
         validator_api_addr,
+        monitoring_addr,
         builder_api,
         nickname,
         no_verify,
@@ -1090,12 +1094,6 @@ fn check_unsupported_flags(config: &RunConfig) -> Result<()> {
 /// Warns about observability/availability-only flags the run workflow ignores.
 /// Runs after tracing init (see [`run`]) so the warnings reach the subscriber.
 fn warn_ignored_flags(config: &RunConfig) {
-    if config.monitoring_addr != DEFAULT_MONITORING_ADDR {
-        warn!(
-            address = %config.monitoring_addr,
-            "the monitoring API is not yet supported by pluto run; ignoring --monitoring-address"
-        );
-    }
     if !config.debug_addr.is_empty() {
         warn!(
             address = %config.debug_addr,
@@ -1167,18 +1165,14 @@ fn build_feature_set(feature: &FeatureConfig) -> Result<Arc<FeatureSet>> {
     Ok(Arc::new(feature_set))
 }
 
-/// Parses the validator API listen address. Unlike a plain [`SocketAddr`]
-/// parse, [`ToSocketAddrs`] also resolves hostnames like `localhost:3600`,
-/// which Charon accepts (it defers to Go's `net.Listen`).
-fn parse_validator_api_addr(addr: &str) -> Result<SocketAddr> {
+/// Parses an HTTP listen address flag (`flag` names it for errors). Unlike a
+/// plain [`SocketAddr`] parse, [`ToSocketAddrs`] also resolves hostnames like
+/// `localhost:3600`, not just literal IPs.
+fn parse_socket_addr(flag: &str, addr: &str) -> Result<SocketAddr> {
     addr.to_socket_addrs()
-        .map_err(|err| CliError::Other(format!("invalid validator-api-address {addr:?}: {err}")))?
+        .map_err(|err| CliError::Other(format!("invalid {flag} {addr:?}: {err}")))?
         .next()
-        .ok_or_else(|| {
-            CliError::Other(format!(
-                "invalid validator-api-address {addr:?}: no addresses resolved"
-            ))
-        })
+        .ok_or_else(|| CliError::Other(format!("invalid {flag} {addr:?}: no addresses resolved")))
 }
 
 #[cfg(test)]
@@ -1880,13 +1874,36 @@ mod tests {
     fn build_app_config_ignores_observability_flags() {
         // Warn-and-continue: none of these may fail the bridge.
         app_config(&[
-            "--monitoring-address=127.0.0.1:9620",
             "--debug-address=127.0.0.1:9630",
             "--otlp-address=http://otlp.test:4317",
             "--proc-directory=/proc",
             "--fallback-beacon-node-endpoints=http://c.node",
         ])
         .expect("observability flags are ignored, not rejected");
+    }
+
+    #[test]
+    fn build_app_config_maps_monitoring_addr() {
+        // `--monitoring-address` is honored (the node serves /metrics, /livez
+        // and /readyz there), not ignored.
+        let config =
+            app_config(&["--monitoring-address=127.0.0.1:9620"]).expect("bridge should succeed");
+        assert_eq!(
+            config.monitoring_addr,
+            "127.0.0.1:9620".parse::<SocketAddr>().expect("socket addr")
+        );
+
+        // Default port when the flag is omitted.
+        let config = app_config(&[]).expect("bridge should succeed on defaults");
+        assert_eq!(
+            config.monitoring_addr,
+            "127.0.0.1:3620".parse::<SocketAddr>().expect("socket addr")
+        );
+
+        // Hostnames resolve, matching the validator-API address behaviour.
+        let config =
+            app_config(&["--monitoring-address=localhost:3620"]).expect("hostname resolves");
+        assert_eq!(config.monitoring_addr.port(), 3620);
     }
 
     #[test]

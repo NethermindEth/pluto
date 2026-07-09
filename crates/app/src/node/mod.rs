@@ -37,9 +37,15 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use behaviour::{CoreBehaviour, CoreHandles};
+use pluto_core::types::PubKey;
 use wire::{ParSigExSeam, ValidatorInfo, WireInputs, WiredComponents};
 
-use crate::privkeylock;
+use crate::{health, monitoringapi, privkeylock};
+
+/// Buffer for the validator-API-call channel feeding the readiness checker.
+/// Sends are non-blocking (dropped when full): the checker only needs to
+/// observe that calls happened, not count every one exactly.
+const VAPI_CALLS_BUFFER: usize = 128;
 
 /// Errors raised while constructing or running a distributed-validator node.
 #[derive(Debug, thiserror::Error)]
@@ -147,6 +153,10 @@ pub enum AppError {
     /// Validator API server failed.
     #[error("validator api: {0}")]
     ValidatorApi(#[source] std::io::Error),
+
+    /// Monitoring API server failed.
+    #[error("monitoring api: {0}")]
+    MonitoringApi(#[source] std::io::Error),
 }
 
 /// A wired, runnable distributed-validator node.
@@ -212,6 +222,14 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     let peers = lock.peers()?;
     pluto_p2p::peer::verify_p2p_key(&peers, &key)?;
 
+    // Cluster size + quorum for the health-checker metadata, captured before
+    // `peers` is moved into the P2P wiring.
+    let num_peers = i64::try_from(peers.len()).unwrap_or(i64::MAX);
+    let quorum_peers = i64::try_from(pluto_cluster::helpers::threshold(
+        u64::try_from(peers.len()).unwrap_or(u64::MAX),
+    ))
+    .unwrap_or(i64::MAX);
+
     let local_peer_id = pluto_p2p::peer::peer_id_from_key(key.public_key())?;
     let local_node = peers
         .iter()
@@ -225,6 +243,11 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
 
     // Per-validator data for this node (mirrors app.go:415-452).
     let validators = build_validators(&lock, share_idx)?;
+
+    // DV root pubkeys + count for the monitoring readiness + health checkers,
+    // captured before `validators` is moved into the core-workflow wiring.
+    let monitoring_pubkeys: Vec<PubKey> = validators.iter().map(|v| v.pubkey).collect();
+    let num_validators = validators.len();
 
     // ---- (2/3) eth2 clients ----
     //
@@ -364,6 +387,10 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     // against the beacon-node signing domain.
     let sigagg_verifier = pluto_core::sigagg::new_verifier(Arc::new(eth2_cl.clone()));
 
+    // The readiness checker uses its own beacon-client clone, taken before
+    // `eth2_cl` is moved into the workflow inputs below.
+    let monitoring_beacon = eth2_cl.clone();
+
     let wired = wire::wire_core_workflow(
         WireInputs {
             threshold,
@@ -394,9 +421,34 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         wired,
         priv_key_lock,
         config.validator_api_addr,
+        MonitoringInputs {
+            addr: config.monitoring_addr,
+            beacon_node: monitoring_beacon,
+            pubkeys: monitoring_pubkeys,
+            num_validators,
+            num_peers,
+            quorum_peers,
+        },
         ct,
     )
     .await
+}
+
+/// Inputs for wiring the monitoring API: the listen address plus everything the
+/// readiness and health checkers need.
+struct MonitoringInputs {
+    /// Address the monitoring HTTP server binds to.
+    addr: std::net::SocketAddr,
+    /// Beacon client the readiness checker queries for sync/peer/version state.
+    beacon_node: pluto_eth2api::EthBeaconNodeApiClient,
+    /// DV root public keys tracked by the readiness checker.
+    pubkeys: Vec<PubKey>,
+    /// Number of validators (health-checker cardinality + metadata).
+    num_validators: usize,
+    /// Number of cluster peers (health-checker metadata).
+    num_peers: i64,
+    /// Peers required for quorum (health-checker metadata).
+    quorum_peers: i64,
 }
 
 /// Builds the production parsigex seam from the real `parsigex::Handle`.
@@ -430,13 +482,18 @@ fn production_parsigex_seam(handles: &CoreHandles) -> ParSigExSeam {
 
 /// Spawns and supervises the node's long-lived tasks, then performs an ordered
 /// shutdown on cancellation or first-task failure.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "aggregates independent long-lived inputs (swarm, consensus, wired components, monitoring); a single config struct would just move the coupling"
+)]
 async fn run_lifecycle(
     node: pluto_p2p::p2p::Node<CoreBehaviour>,
     consensus: Arc<qbft::Consensus>,
-    _handles: CoreHandles,
+    handles: CoreHandles,
     wired: WiredComponents,
     priv_key_lock: Option<Arc<privkeylock::Service>>,
     validator_api_addr: std::net::SocketAddr,
+    monitoring: MonitoringInputs,
     ct: CancellationToken,
 ) -> Result<(), AppError> {
     let WiredComponents {
@@ -492,10 +549,82 @@ async fn run_lifecycle(
         tasks.spawn(async move { svc.run().await.map_err(AppError::PrivKeyLock) });
     }
 
-    // Validator API axum server.
+    // ---- Monitoring API ----
+    //
+    // Serves Prometheus `/metrics`, `/livez` and `/readyz` on the monitoring
+    // address (backed by the readiness checker), and runs the health checker
+    // that publishes `app_health_checks`.
+    let MonitoringInputs {
+        addr: monitoring_addr,
+        beacon_node: monitoring_beacon,
+        pubkeys: monitoring_pubkeys,
+        num_validators,
+        num_peers,
+        quorum_peers,
+    } = monitoring;
+
+    // Every validator-API request feeds the readiness checker's "vc connected"
+    // signal. Non-blocking sends drop when the buffer is full.
+    let (vapi_calls_tx, vapi_calls_rx) = tokio::sync::mpsc::channel::<()>(VAPI_CALLS_BUFFER);
+
+    // The seen-pubkeys readiness signal is deferred: pluto's
+    // `validatorapi::Component` does not yet surface the pubkeys a VC queries.
+    // The sender is parked so the channel stays open (the checker keeps polling
+    // it) but never delivers, leaving readiness reporting "vc missing
+    // validators" until the signal is wired. No smoke-test alert depends on
+    // `/readyz`.
+    // TODO: surface observed pubkeys from `validatorapi::Component` and feed
+    // them here.
+    let (_seen_pubkeys_tx, seen_pubkeys_rx) = tokio::sync::mpsc::channel::<PubKey>(1);
+
+    let readiness = monitoringapi::start_ready_checker(
+        handles.p2p_context.clone(),
+        monitoring_beacon,
+        monitoring_pubkeys,
+        seen_pubkeys_rx,
+        vapi_calls_rx,
+        ct.clone(),
+    );
+
+    // Health checker: periodic metric scrapes → `app_health_checks` gauge.
+    {
+        let ct = ct.clone();
+        let checker = health::Checker::new(
+            health::Metadata {
+                num_validators: i64::try_from(num_validators).unwrap_or(i64::MAX),
+                num_peers,
+                quorum_peers,
+            },
+            Box::new(health::ViseGatherer),
+            num_validators,
+        );
+        tasks.spawn(async move {
+            checker.run(ct).await;
+            Ok(())
+        });
+    }
+
+    // Validator API axum server. Each request bumps the readiness "vc
+    // connected" counter via middleware.
+    let validator_api_router = validator_api_router.layer(axum::middleware::from_fn(
+        move |request: axum::extract::Request, next: axum::middleware::Next| {
+            let vapi_calls = vapi_calls_tx.clone();
+            async move {
+                let _ = vapi_calls.try_send(());
+                next.run(request).await
+            }
+        },
+    ));
     tasks.spawn(serve_validator_api(
         validator_api_addr,
         validator_api_router,
+        ct.clone(),
+    ));
+
+    // Monitoring HTTP server (metrics + livez + readyz).
+    tasks.spawn(serve_monitoring_api(
+        monitoring_addr,
+        monitoringapi::router_with_state(monitoringapi::MonitoringState::new(readiness)),
         ct.clone(),
     ));
 
@@ -542,22 +671,41 @@ async fn run_lifecycle(
     task_err.map_or(Ok(()), Err)
 }
 
-/// Serves the validator API until `ct` fires (graceful shutdown, `Ok`). A bind
-/// or serve failure is returned and fails the run, matching Charon's
-/// `httpServeHook`, which swallows only `http.ErrServerClosed`.
+/// Serves an HTTP `router` on `addr` until `ct` fires. Graceful shutdown on
+/// cancellation is a clean exit (`Ok`); a bind or serve failure is mapped via
+/// `wrap_err` and fails the run.
+async fn serve_http(
+    addr: std::net::SocketAddr,
+    router: axum::Router,
+    ct: CancellationToken,
+    wrap_err: fn(std::io::Error) -> AppError,
+) -> Result<(), AppError> {
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(wrap_err)?;
+
+    axum::serve(listener, router)
+        .with_graceful_shutdown(async move { ct.cancelled().await })
+        .await
+        .map_err(wrap_err)
+}
+
+/// Serves the validator API (see [`serve_http`]).
 async fn serve_validator_api(
     addr: std::net::SocketAddr,
     router: axum::Router,
     ct: CancellationToken,
 ) -> Result<(), AppError> {
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .map_err(AppError::ValidatorApi)?;
+    serve_http(addr, router, ct, AppError::ValidatorApi).await
+}
 
-    axum::serve(listener, router)
-        .with_graceful_shutdown(async move { ct.cancelled().await })
-        .await
-        .map_err(AppError::ValidatorApi)
+/// Serves the monitoring API (see [`serve_http`]).
+async fn serve_monitoring_api(
+    addr: std::net::SocketAddr,
+    router: axum::Router,
+    ct: CancellationToken,
+) -> Result<(), AppError> {
+    serve_http(addr, router, ct, AppError::MonitoringApi).await
 }
 
 /// Drives the libp2p swarm. Routing is push-based inside the behaviours, so the
@@ -717,5 +865,102 @@ mod tests {
         )
         .await
         .expect("cancelled serve should exit cleanly");
+    }
+
+    // A failed monitoring-API bind must fail the run too, tagged as a
+    // monitoring (not validator API) error.
+    #[tokio::test]
+    async fn serve_monitoring_api_maps_bind_failure() {
+        let occupied = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let addr = occupied.local_addr().expect("local addr");
+
+        let err = serve_monitoring_api(addr, axum::Router::new(), CancellationToken::new())
+            .await
+            .expect_err("bind on an occupied port should fail");
+
+        assert!(matches!(err, AppError::MonitoringApi(_)));
+    }
+
+    // End-to-end: the wired monitoring server actually serves `/metrics`,
+    // `/livez` and `/readyz` over real TCP — the path Prometheus scrapes.
+    #[tokio::test]
+    async fn monitoring_server_serves_all_routes_over_tcp() {
+        // Reserve an ephemeral port, then release it so the server can bind it.
+        let addr = {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind ephemeral port");
+            listener.local_addr().expect("local addr")
+        };
+
+        // A ready readiness state so `/readyz` returns 200, and a touched gauge
+        // so `/metrics` has a series to expose.
+        monitoringapi::MONITORING_METRICS.monitoring_readyz.set(1);
+        let router = monitoringapi::router_with_state(monitoringapi::MonitoringState::new(
+            monitoringapi::ReadyState::ready(),
+        ));
+
+        let ct = CancellationToken::new();
+        let server = tokio::spawn(serve_monitoring_api(addr, router, ct.clone()));
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(1))
+            .build()
+            .expect("build client");
+        let base = format!("http://{addr}");
+
+        // Poll `/livez` until the server accepts connections (bounded).
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let livez = loop {
+            match client.get(format!("{base}/livez")).send().await {
+                Ok(response) => break response,
+                Err(_) => {
+                    assert!(
+                        tokio::time::Instant::now() < deadline,
+                        "monitoring server never came up"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            }
+        };
+        assert_eq!(livez.status(), reqwest::StatusCode::OK);
+        assert_eq!(livez.text().await.expect("livez body"), "ok");
+
+        let readyz = client
+            .get(format!("{base}/readyz"))
+            .send()
+            .await
+            .expect("readyz request");
+        assert_eq!(readyz.status(), reqwest::StatusCode::OK);
+
+        let metrics = client
+            .get(format!("{base}/metrics"))
+            .send()
+            .await
+            .expect("metrics request");
+        assert_eq!(metrics.status(), reqwest::StatusCode::OK);
+        let content_type = metrics
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        assert!(
+            content_type.contains("openmetrics-text"),
+            "unexpected content-type: {content_type}"
+        );
+        assert!(
+            metrics
+                .text()
+                .await
+                .expect("metrics body")
+                .contains("app_monitoring_readyz"),
+            "metrics exposition missing readyz gauge"
+        );
+
+        ct.cancel();
+        let _ = server.await;
     }
 }
