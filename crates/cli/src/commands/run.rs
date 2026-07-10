@@ -19,13 +19,15 @@
 //! driven via [`pluto_app::node::App::run`] until cancelled.
 //!
 //! Not every accepted flag is honored yet. Correctness-affecting flags with no
-//! implementation (simnet mocks, custom testnets, beacon-node headers, VC TLS,
-//! a preferred consensus protocol, synthetic block proposals) fail fast with a
-//! "not yet supported" error, while the remaining observability/availability
-//! flags with no implementation (debug/pprof address, OTLP, proc directory,
-//! fallback beacon endpoints) are ignored with a warning. The monitoring API
-//! (`--monitoring-address`) is wired: the node serves Prometheus `/metrics`
-//! plus `/livez` and `/readyz` there.
+//! implementation (custom testnets, beacon-node headers, VC TLS, a preferred
+//! consensus protocol, synthetic block proposals) fail fast with a "not yet
+//! supported" error, while the remaining observability/availability flags with
+//! no implementation (debug/pprof address, OTLP, proc directory, fallback
+//! beacon endpoints) are ignored with a warning. Simnet mode
+//! (`--simnet-beacon-mock` / `--simnet-validator-mock`) and the monitoring API
+//! (`--monitoring-address`) are wired: the node runs the in-process beacon /
+//! validator mocks, and serves Prometheus `/metrics` plus `/livez` and
+//! `/readyz` on the monitoring address.
 //!
 //! Limitations:
 //! - `--log-format` and `--log-output-path` are accepted but not yet applied
@@ -62,8 +64,7 @@ const MAX_NICKNAME_BYTES: usize = 32;
 const LOKI_FLUSH_TIMEOUT: StdDuration = StdDuration::from_secs(3);
 /// Default `--monitoring-address`.
 const DEFAULT_MONITORING_ADDR: &str = "127.0.0.1:3620";
-/// Default `--simnet-validator-keys-dir`; shared by the flag definition and
-/// the unsupported-flag check so they cannot drift.
+/// Default `--simnet-validator-keys-dir` (matches Charon).
 const DEFAULT_SIMNET_KEYS_DIR: &str = ".charon/validator_keys";
 
 /// Arguments for the `run` command.
@@ -670,9 +671,6 @@ pub struct RunConfig {
     /// Directory containing simnet validator key shares.
     pub simnet_validator_keys_dir: String,
     /// Simnet beacon mock slot duration.
-    // Accepted for Charon flag parity, inert until simnet is supported (the
-    // simnet mode flags themselves fail fast in `check_unsupported_flags`).
-    #[allow(dead_code)]
     pub simnet_slot_duration: StdDuration,
     /// Enables additional synthetic block proposal duties.
     pub synthetic_block_proposals: bool,
@@ -728,6 +726,14 @@ impl TryFrom<RunArgs> for RunConfig {
 
         let mut relays = Vec::with_capacity(p2p.relays.len());
         for relay in &p2p.relays {
+            // Charon's flag parser turns `--p2p-relays=""` into an empty list
+            // ("no relays"); clap's comma-delimited parser yields a single empty
+            // string instead, so skip empties to preserve that behavior (also
+            // covers stray empties like `--p2p-relays=a,,b`).
+            if relay.is_empty() {
+                continue;
+            }
+
             let multiaddr = parse_relay_addr(relay)?;
 
             if multiaddr.iter().any(|protocol| protocol == Protocol::Http) {
@@ -742,6 +748,15 @@ impl TryFrom<RunArgs> for RunConfig {
             return Err(CliError::Other(
                 "either flag 'beacon-node-endpoints' or flag 'simnet-beacon-mock=true' must be specified"
                     .to_string(),
+            ));
+        }
+
+        // The validator mock drives this node's own validator API, which is only
+        // usable when backed by the in-process beacon mock (Charon: "Requires
+        // simnet-beacon-mock").
+        if general.simnet_validator_mock && !general.simnet_beacon_mock {
+            return Err(CliError::Other(
+                "flag 'simnet-validator-mock' requires flag 'simnet-beacon-mock'".to_string(),
             ));
         }
 
@@ -1001,13 +1016,13 @@ fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
         otlp_headers: _,
         otlp_insecure: _,
         otlp_service_name: _,
-        simnet_beacon_mock: _,
-        simnet_validator_mock: _,
-        simnet_validator_keys_dir: _,
-        simnet_slot_duration: _,
+        simnet_beacon_mock,
+        simnet_validator_mock,
+        simnet_validator_keys_dir,
+        simnet_slot_duration,
         synthetic_block_proposals: _,
         builder_api,
-        simnet_beacon_mock_fuzz: _,
+        simnet_beacon_mock_fuzz,
         testnet: _,
         proc_directory: _,
         consensus_protocol: _,
@@ -1044,29 +1059,22 @@ fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
         graffiti: (!graffiti.is_empty()).then_some(graffiti),
         graffiti_disable_client_append,
         feature_set,
+        simnet_beacon_mock,
+        simnet_validator_mock,
+        simnet_beacon_mock_fuzz,
+        simnet_slot_duration,
+        simnet_validator_keys_dir: PathBuf::from(simnet_validator_keys_dir),
     })
 }
 
 /// Rejects correctness-affecting flags the run workflow does not support yet:
 /// silently ignoring any of these would change duty or operator-facing
-/// behavior (e.g. `--simnet-beacon-mock` permits empty beacon endpoints, which
-/// the real beacon client cannot handle).
+/// behavior (e.g. `--synthetic-block-proposals` changes which proposal duties
+/// are generated, which the current simnet/real-beacon wiring does not honor).
 fn check_unsupported_flags(config: &RunConfig) -> Result<()> {
     let unsupported =
         |flag: &str| CliError::Other(format!("flag '{flag}' is not yet supported by pluto run"));
 
-    if config.simnet_beacon_mock {
-        return Err(unsupported("--simnet-beacon-mock"));
-    }
-    if config.simnet_validator_mock {
-        return Err(unsupported("--simnet-validator-mock"));
-    }
-    if config.simnet_beacon_mock_fuzz {
-        return Err(unsupported("--simnet-beacon-mock-fuzz"));
-    }
-    if config.simnet_validator_keys_dir != DEFAULT_SIMNET_KEYS_DIR {
-        return Err(unsupported("--simnet-validator-keys-dir"));
-    }
     if config.synthetic_block_proposals {
         return Err(unsupported("--synthetic-block-proposals"));
     }
@@ -1472,6 +1480,19 @@ mod tests {
     }
 
     #[test]
+    fn run_empty_relays_flag_yields_no_relays() {
+        // `--p2p-relays=""` must mean "no relays" (Charon parity): clap yields a
+        // single empty string, which the bridge filters out so P2P ends up with
+        // none (used by the simnet smoke test to run isolated, relay-free nodes).
+        let config = parse_run(&["--p2p-relays="]).expect("empty relays should parse");
+        assert!(
+            config.p2p.relays.is_empty(),
+            "expected no relays, got {:?}",
+            config.p2p.relays
+        );
+    }
+
+    #[test]
     fn run_simnet_beacon_mock_satisfies_beacon_requirement() {
         let cli = Cli::try_parse_from(["pluto", "run", "--simnet-beacon-mock"])
             .expect("run command should parse");
@@ -1796,11 +1817,7 @@ mod tests {
     #[test]
     fn build_app_config_rejects_unsupported_flags() {
         for flags in [
-            ["--simnet-beacon-mock"].as_slice(),
-            &["--simnet-validator-mock"],
-            &["--simnet-beacon-mock-fuzz"],
-            &["--simnet-validator-keys-dir=/custom/keys"],
-            &["--synthetic-block-proposals"],
+            ["--synthetic-block-proposals"].as_slice(),
             &["--consensus-protocol=qbft"],
             &["--beacon-node-headers=key1=value1"],
         ] {
@@ -1810,6 +1827,33 @@ mod tests {
                 "flags {flags:?}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn build_app_config_threads_simnet_flags() {
+        // Simnet flags are now supported and must reach `AppConfig` unchanged.
+        let config = app_config(&[
+            "--simnet-beacon-mock",
+            "--simnet-validator-mock",
+            "--simnet-beacon-mock-fuzz",
+            "--simnet-slot-duration=2s",
+            "--simnet-validator-keys-dir=/custom/keys",
+        ])
+        .expect("simnet flags are supported");
+        assert!(config.simnet_beacon_mock);
+        assert!(config.simnet_validator_mock);
+        assert!(config.simnet_beacon_mock_fuzz);
+        assert_eq!(config.simnet_slot_duration, StdDuration::from_secs(2));
+        assert_eq!(
+            config.simnet_validator_keys_dir,
+            std::path::PathBuf::from("/custom/keys")
+        );
+    }
+
+    #[test]
+    fn run_simnet_validator_mock_requires_beacon_mock() {
+        let err = run_err(&["--simnet-validator-mock"]);
+        assert!(err.contains("requires flag 'simnet-beacon-mock'"), "{err}");
     }
 
     #[test]

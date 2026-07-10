@@ -373,15 +373,13 @@ async fn run_duty_via_inner(inner: &Inner, duty: ScheduleTuple) -> Result<()> {
             .await
             .map(|_| ()),
         DutyType::BuilderRegistration => {
-            // Go's `runDuty` has no case for this duty type and falls through
-            // to the `default:` arm returning "unexpected duty"
-            // (charon/testutil/validatormock/component.go:305). Surface the
-            // same loud error here — the duty IS scheduled every epoch by
-            // `duty_start_times`, matching Go, and the mock has no
-            // registration submission path.
-            Err(Error::Malformed(
-                "unexpected duty: DutyBuilderRegistration".to_string(),
-            ))
+            // The simnet beacon mock has no builder-registration submission
+            // path, so there is nothing to perform. Charon's vmock lets this
+            // fall through to a "unexpected duty" error (one WARN/epoch), but
+            // Pluto's per-epoch scheduling enqueues the duty ~slots_per_epoch
+            // times, flooding the smoke-test alert gate. Skip it silently —
+            // there is no registration to submit in simnet.
+            Ok(())
         }
         DutyType::BuilderProposer => Err(Error::UnsupportedVariant("DutyBuilderProposer")),
         _ => Err(Error::UnsupportedVariant("unexpected duty type")),

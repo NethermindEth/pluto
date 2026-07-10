@@ -56,7 +56,10 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
         server,
         "GET",
         "/eth/v1/node/version",
-        |_| json!({ "data": { "version": "charon/static_beacon_mock" } }),
+        // A parseable, known-client version so the node's beacon-version check
+        // stays quiet (a real BN reports like this; "charon/…" would fail the
+        // version parser and log a WARN that trips the simnet log-rate gate).
+        |_| json!({ "data": { "version": "Lighthouse/v9.0.0" } }),
     )
     .await;
 
@@ -146,6 +149,21 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
         move |_| validators_response(&state)
     })
     .await;
+    // Clients resolve validators via POST (`post_state_validators`) for any
+    // `state_id` (by-slot, then a `head` fallback) — see `valcache` and the
+    // validator mock's `active_validators`. A real beacon node serves both
+    // verbs; mount POST on the same responder so the seeded set is returned for
+    // any state id, not just the literal `head` GET above.
+    mount_json(
+        server,
+        "POST",
+        r"^/eth/v1/beacon/states/[^/]+/validators$",
+        {
+            let state = Arc::clone(&state);
+            move |_| validators_response(&state)
+        },
+    )
+    .await;
 
     mount_response(
         server,
@@ -174,11 +192,61 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
     })
     .await;
 
+    // Block production for the fetcher's proposer-data fetch (`produce_block_v3`
+    // → GET /eth/v3/validator/blocks/{slot}). Returns a deterministic Deneb
+    // proposal (identical across nodes for a given slot, so QBFT can agree on
+    // the proposer duty). Distinct from the signed-block *retrieval* endpoint
+    // above; without it the fetcher gets `UnexpectedResponse` and the proposer
+    // duty never decides.
+    mount_json(
+        server,
+        "GET",
+        r"^/eth/v3/validator/blocks/[0-9]+$",
+        |request| produce_block_response(last_path_segment_u64(request.url.path())),
+    )
+    .await;
+
     mount_json(server, "POST", r"^/eth/v1/validator/duties/sync/[0-9]+$", {
         let state = Arc::clone(&state);
         move |request| sync_committee_duties_response(&state, request)
     })
     .await;
+
+    // Block publish: the broadcaster POSTs the group-signed proposal here after
+    // proposer consensus decides. A real beacon node (and Charon's mock) just
+    // acks; without a mount the POST 404s and the broadcaster sees `Unknown`.
+    // The blinded variant is mounted for parity.
+    mount_status(server, "POST", "/eth/v2/beacon/blocks", 200).await;
+    mount_status(server, "POST", "/eth/v2/beacon/blinded_blocks", 200).await;
+
+    // Sync-committee submissions: the broadcaster POSTs sync-committee messages
+    // and (for aggregators) contribution-and-proofs after sync consensus. A real
+    // beacon node (and Charon's mock) just acks; without these the broadcaster
+    // sees `Unknown`.
+    mount_status(server, "POST", "/eth/v1/beacon/pool/sync_committees", 200).await;
+    mount_status(
+        server,
+        "POST",
+        "/eth/v1/validator/contribution_and_proofs",
+        200,
+    )
+    .await;
+
+    // Sync-committee contribution (aggregator fetch): the fetcher and validator
+    // mock GET this to build/aggregate sync contributions. Without it the fetch
+    // returns an empty body (EOF) — the sync analog of the validators gap.
+    mount_json(
+        server,
+        "GET",
+        "/eth/v1/validator/sync_committee_contribution",
+        sync_committee_contribution_response,
+    )
+    .await;
+
+    // Attestation pool submit: the node-side broadcaster POSTs the group-signed
+    // attestation to the beacon node after consensus (distinct from the
+    // validator-mock → validator-API submit). Ack.
+    mount_status(server, "POST", "/eth/v2/beacon/pool/attestations", 200).await;
 }
 
 pub(crate) async fn mount_json<F>(
@@ -274,6 +342,89 @@ fn validators_response(state: &MockState) -> Value {
         "data": data,
         "execution_optimistic": false,
         "finalized": false
+    })
+}
+
+/// Deterministic `produce_block_v3` response (Deneb) for the proposer-data
+/// fetch. Values are fixed (zero) so every node produces the identical block
+/// for a given slot, letting QBFT agree; only the slot varies. Mirrors the
+/// fuzzer's `proposal_response` shape without the randomness.
+fn produce_block_response(slot: u64) -> Value {
+    let zero_sig = format!("0x{}", "00".repeat(96));
+    json!({
+        "version": "deneb",
+        "execution_payload_blinded": false,
+        "execution_payload_value": "0",
+        "consensus_block_value": "0",
+        "data": {
+            "block": {
+                "slot": slot.to_string(),
+                "proposer_index": "0",
+                "parent_root": ZERO_ROOT,
+                "state_root": ZERO_ROOT,
+                "body": {
+                    "randao_reveal": zero_sig,
+                    "eth1_data": {
+                        "deposit_root": ZERO_ROOT,
+                        "deposit_count": "0",
+                        "block_hash": ZERO_ROOT,
+                    },
+                    "graffiti": ZERO_ROOT,
+                    "proposer_slashings": [],
+                    "attester_slashings": [],
+                    "attestations": [],
+                    "deposits": [],
+                    "voluntary_exits": [],
+                    "sync_aggregate": {
+                        "sync_committee_bits": format!("0x{}", "00".repeat(64)),
+                        "sync_committee_signature": zero_sig,
+                    },
+                    "execution_payload": {
+                        "parent_hash": ZERO_ROOT,
+                        "fee_recipient": format!("0x{}", "00".repeat(20)),
+                        "state_root": ZERO_ROOT,
+                        "receipts_root": ZERO_ROOT,
+                        "logs_bloom": format!("0x{}", "00".repeat(256)),
+                        "prev_randao": ZERO_ROOT,
+                        "block_number": "0",
+                        "gas_limit": "0",
+                        "gas_used": "0",
+                        "timestamp": "0",
+                        "extra_data": "0x",
+                        "base_fee_per_gas": "0",
+                        "block_hash": ZERO_ROOT,
+                        "transactions": [],
+                        "withdrawals": [],
+                        "blob_gas_used": "0",
+                        "excess_blob_gas": "0",
+                    },
+                    "bls_to_execution_changes": [],
+                    "blob_kzg_commitments": [],
+                }
+            },
+            "kzg_proofs": [],
+            "blobs": [],
+        }
+    })
+}
+
+/// Deterministic sync-committee contribution for the aggregator fetch: echoes
+/// the request's slot / subcommittee index / beacon block root with a fixed
+/// (zero) aggregation and signature (mirrors the fetcher's own test responder).
+fn sync_committee_contribution_response(request: &Request) -> Value {
+    let query: BTreeMap<String, String> = request.url.query_pairs().into_owned().collect();
+    let slot = query.get("slot").cloned().unwrap_or_default();
+    let subcommittee_index = query.get("subcommittee_index").cloned().unwrap_or_default();
+    let beacon_block_root = query.get("beacon_block_root").cloned().unwrap_or_default();
+
+    json!({
+        "data": {
+            "slot": slot,
+            "beacon_block_root": beacon_block_root,
+            "subcommittee_index": subcommittee_index,
+            "aggregation_bits": format!("0x{}", "00".repeat(16)),
+            "signature": format!("0x{}", "00".repeat(96)),
+        }
     })
 }
 

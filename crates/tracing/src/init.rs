@@ -49,6 +49,15 @@ pub fn init(config: &TracingConfig) -> Result<Option<LokiInit>> {
     } else {
         EnvFilter::try_from_env("RUST_LOG").unwrap_or_else(|_| default_env_filter())
     };
+    // Silence libp2p relay-client connection churn (e.g. "Dropping in-flight
+    // connect request because we are at capacity"), which would otherwise log at
+    // WARN under our global level. Charon runs go-libp2p at its default (ERROR),
+    // so these never surface there — keep ERROR and above.
+    let env_filter = env_filter.add_directive(
+        "libp2p_relay=error"
+            .parse()
+            .expect("static tracing directive is valid"),
+    );
 
     let console_config = config.console.clone().unwrap_or_default();
 

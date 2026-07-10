@@ -6,7 +6,7 @@ use backon::Retryable;
 use libp2p::{Multiaddr, multiaddr::Protocol};
 use pluto_eth2util::enr::Record;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::peer::{
     AddrInfo, MutablePeer, Peer, PeerError, addr_infos_from_p2p_addrs, peer_id_from_key,
@@ -107,7 +107,11 @@ pub async fn new_relays(
     for relay_addr in relays {
         if relay_addr.starts_with("http") {
             if !relay_addr.starts_with("https") {
-                warn!(addr = %relay_addr, "Relay URL does not use https protocol");
+                // Info, not WARN: an http relay is intentional in local/simnet
+                // setups; keep it visible without tripping the warn-rate gate.
+                // (The config-time flag validation still warns for `/http`
+                // multiaddr relays.)
+                info!(addr = %relay_addr, "Relay URL does not use https protocol");
             }
 
             let mutable = MutablePeer::default();

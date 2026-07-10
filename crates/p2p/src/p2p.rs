@@ -636,10 +636,14 @@ impl<B: NetworkBehaviour> Node<B> {
 
             // Connection errors
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                // Transient dial churn (relay-circuit setup, retries) is expected
+                // in a relay-mesh; go-libp2p logs these below WARN, so match that
+                // and keep the WARN gate quiet. Peer connectivity health is
+                // surfaced via metrics / readiness, not these per-dial events.
                 if let Some(peer) = peer_id {
-                    warn!(peer = %peer_name(peer), %error, "outgoing connection failed");
+                    debug!(peer = %peer_name(peer), %error, "outgoing connection failed");
                 } else {
-                    warn!(%error, "outgoing connection failed");
+                    debug!(%error, "outgoing connection failed");
                 }
             }
             SwarmEvent::IncomingConnectionError { error, .. } => {

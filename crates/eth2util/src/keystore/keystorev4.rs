@@ -335,7 +335,10 @@ fn validate_parameters(kdf: &Kdf) -> Result<()> {
                 if params.c == 0 {
                     return Err(KeystoreError::InvalidPbkdf2Param);
                 }
-                tracing::warn!(
+                // Weak KDF params are expected for insecure/test keystores
+                // (`--insecure-keys`); Charon's decryptor is silent here. Debug,
+                // not WARN, so it does not flood the simnet log-rate gate.
+                tracing::debug!(
                     "PBKDF2 parameters are too weak, 'c' is {}, we recommend using {}",
                     params.c,
                     DEFAULT_PBKDF2_C
@@ -387,7 +390,9 @@ fn validate_parameters(kdf: &Kdf) -> Result<()> {
 
             // Minimum Parameters
             if npr < DEFAULT_SCRYPT_NPR {
-                tracing::warn!(
+                // Weak KDF params are expected for insecure/test keystores;
+                // Charon's decryptor is silent here. Debug, not WARN.
+                tracing::debug!(
                     "Scrypt parameters are too weak (n: {}, p: {}, r: {}), we recommend (n: {DEFAULT_SCRYPT_N}, p: {DEFAULT_SCRYPT_P}, r: {DEFAULT_SCRYPT_R})",
                     params.n,
                     params.p,

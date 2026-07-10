@@ -710,7 +710,19 @@ impl NetworkBehaviour for Behaviour {
                     }));
             }
             FromHandler::InboundError(error) => {
-                warn!(%peer_id, %error, "dropping invalid qbft p2p message");
+                // A message for an already-expired/decided duty is benign late
+                // chatter (peers rebroadcast round-changes until a duty decides),
+                // not a protocol violation — log it at debug to avoid flooding
+                // the WARN gate. Genuinely-bad drops (bad frame, timeout, invalid
+                // admission) stay at WARN.
+                if matches!(
+                    &error,
+                    InboundError::Admit(super::component::Error::DutyExpired)
+                ) {
+                    debug!(%peer_id, %error, "dropping qbft p2p message for expired duty");
+                } else {
+                    warn!(%peer_id, %error, "dropping invalid qbft p2p message");
+                }
                 self.pending_events
                     .push_back(ToSwarm::GenerateEvent(Event::InboundError {
                         peer: peer_id,

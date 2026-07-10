@@ -50,9 +50,7 @@ use pluto_eth2util::{
     helpers::epoch_from_slot,
     signing::{DomainName, get_data_root},
 };
-use pluto_ssz::{BitList, BitVector};
 use serde::Serialize;
-use serde_with::serde_as;
 use tokio::sync::Mutex;
 use tree_hash::TreeHash;
 
@@ -419,7 +417,7 @@ async fn attest(
             .push(duty);
     }
 
-    let mut atts: Vec<VersionedAttestationJson> = Vec::new();
+    let mut atts: Vec<electra::SingleAttestation> = Vec::new();
     let mut datas: Vec<AttestationData> = Vec::new();
 
     for comm_idx in &comm_order {
@@ -457,27 +455,17 @@ async fn attest(
         for duty in duty_list {
             let sig = sign_func.sign(&duty.pubkey, &sig_data)?;
 
-            let agg_bits = BitList::<131_072>::with_bits(
-                usize_from_u64(duty.committee_length)?,
-                &[usize_from_u64(duty.validator_committee_index)?],
-            );
-            let comm_bits = BitVector::<64>::with_bits(&[usize_from_u64(duty.committee_index)?]);
-
-            atts.push(VersionedAttestationJson {
-                version: "fulu",
-                validator_index: duty.validator_index,
-                phase0: None,
-                altair: None,
-                bellatrix: None,
-                capella: None,
-                deneb: None,
-                electra: None,
-                fulu: Some(electra::Attestation {
-                    aggregation_bits: agg_bits,
-                    data: data.clone(),
-                    signature: sig,
-                    committee_bits: comm_bits,
-                }),
+            // Electra+ beacon nodes accept the wire-format `SingleAttestation`
+            // on `POST /eth/v2/beacon/pool/attestations` — go-eth2-client (and
+            // hence Charon) converts the internal versioned attestation to this
+            // before POSTing (`ToSingleAttestation`): committee index from the
+            // assigned committee, attester index from the validator, carrying the
+            // data + signature (aggregation bits are dropped for a single).
+            atts.push(electra::SingleAttestation {
+                committee_index: duty.committee_index,
+                attester_index: duty.validator_index,
+                data: data.clone(),
+                signature: sig,
             });
         }
     }
@@ -623,10 +611,11 @@ const ERROR_BODY_TRUNCATE: usize = 1024;
 
 async fn submit_attestations(
     eth2_cl: &EthBeaconNodeApiClient,
-    atts: &[VersionedAttestationJson],
+    atts: &[electra::SingleAttestation],
 ) -> Result<()> {
     const ENDPOINT: &str = "/eth/v2/beacon/pool/attestations";
-    submit_json(eth2_cl, ENDPOINT, atts).await
+    // Matches the versioned attestation payload (`version: "fulu"`).
+    submit_json(eth2_cl, ENDPOINT, "fulu", atts).await
 }
 
 async fn submit_aggregate_attestations(
@@ -638,12 +627,13 @@ async fn submit_aggregate_attestations(
         common: CommonOpts::default(),
         signed_aggregate_and_proofs: aggs,
     };
-    submit_json(eth2_cl, ENDPOINT, &body).await
+    submit_json(eth2_cl, ENDPOINT, "fulu", &body).await
 }
 
 async fn submit_json<T: Serialize + ?Sized>(
     eth2_cl: &EthBeaconNodeApiClient,
     endpoint: &'static str,
+    consensus_version: &str,
     body: &T,
 ) -> Result<()> {
     let mut url = eth2_cl.base_url.clone();
@@ -660,6 +650,11 @@ async fn submit_json<T: Serialize + ?Sized>(
     let response = eth2_cl
         .client
         .post(url)
+        // The v2 pool/aggregate submit endpoints require the consensus-version
+        // header; the validator API rejects the request without it (400
+        // "missing consensus version header"). Mirror a real VC (and Charon's
+        // client) by sending it, matching the versioned payload body.
+        .header("Eth-Consensus-Version", consensus_version)
         .json(body)
         .send()
         .await
@@ -694,37 +689,6 @@ async fn submit_json<T: Serialize + ?Sized>(
 // ---------------------------------------------------------------------------
 // Go-shaped JSON payloads
 // ---------------------------------------------------------------------------
-
-/// JSON shape matching Go's `*eth2spec.VersionedAttestation`.
-///
-/// Field names use Go's `PascalCase` for the version envelope, with
-/// per-fork inner payloads keyed by the fork name. The inner
-/// `electra::Attestation` serializes with snake_case fields
-/// (`aggregation_bits`, `committee_bits`, `data`, `signature`) which matches
-/// the Go output.
-#[serde_as]
-#[derive(Debug, Serialize)]
-struct VersionedAttestationJson {
-    #[serde(rename = "Version")]
-    version: &'static str,
-    #[serde(rename = "ValidatorIndex")]
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    validator_index: ValidatorIndex,
-    #[serde(rename = "Phase0")]
-    phase0: Option<()>,
-    #[serde(rename = "Altair")]
-    altair: Option<()>,
-    #[serde(rename = "Bellatrix")]
-    bellatrix: Option<()>,
-    #[serde(rename = "Capella")]
-    capella: Option<()>,
-    #[serde(rename = "Deneb")]
-    deneb: Option<()>,
-    #[serde(rename = "Electra")]
-    electra: Option<electra::Attestation>,
-    #[serde(rename = "Fulu")]
-    fulu: Option<electra::Attestation>,
-}
 
 /// JSON shape matching Go's `*eth2spec.VersionedSignedAggregateAndProof`.
 #[derive(Debug, Serialize)]
@@ -787,10 +751,6 @@ fn parse_signature(s: &str) -> Result<BLSSignature> {
 
 fn parse_u64(s: &str) -> Option<u64> {
     s.parse::<u64>().ok()
-}
-
-fn usize_from_u64(value: u64) -> Result<usize> {
-    usize::try_from(value).map_err(|_| malformed(format!("usize from u64 overflow: {value}")))
 }
 
 fn malformed(s: impl Into<String>) -> Error {
@@ -947,10 +907,10 @@ mod tests {
     }
 
     fn index_of_attestation(value: &Value) -> u64 {
+        // `SingleAttestation` is the wire shape; sort by attester index for a
+        // deterministic order.
         value
-            .get("Fulu")
-            .and_then(|f| f.get("data"))
-            .and_then(|d| d.get("index"))
+            .get("attester_index")
             .and_then(Value::as_str)
             .and_then(|s| s.parse().ok())
             .unwrap_or(u64::MAX)

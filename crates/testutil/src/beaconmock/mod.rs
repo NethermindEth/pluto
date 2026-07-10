@@ -354,7 +354,7 @@ mod tests {
         assert_eq!(syncing["data"]["is_syncing"], false);
 
         let version = get_json(&format!("{base}/eth/v1/node/version")).await;
-        assert_eq!(version["data"]["version"], "charon/static_beacon_mock");
+        assert_eq!(version["data"]["version"], "Lighthouse/v9.0.0");
     }
 
     /// Mirrors Go's `TestGenesisTimeOverride`: builder-provided genesis time
@@ -421,6 +421,70 @@ mod tests {
         assert_eq!(
             genesis["data"]["genesis_time"],
             expected.timestamp().to_string()
+        );
+    }
+
+    /// Regression for the simnet duty-flow blocker: validators are resolved via
+    /// POST `/eth/v1/beacon/states/{id}/validators` — by the core scheduler's
+    /// `ValidatorCache` and by the validator mock's `active_validators` (which
+    /// fronts every attester/proposer/sync-committee duty). The mock must serve
+    /// POST, not just the literal-`head` GET, or no validator is ever seen and
+    /// no duty flows.
+    #[tokio::test]
+    async fn post_state_validators_resolves_seeded_set() {
+        use pluto_eth2api::valcache::ValidatorCache;
+
+        let mut pk_a = [0u8; 48];
+        pk_a[0] = 0xaa;
+        let mut pk_b = [0u8; 48];
+        pk_b[0] = 0xbb;
+
+        let mock = BeaconMock::builder()
+            .validator_set(ValidatorSet::mock_dvs([pk_a, pk_b]))
+            .build()
+            .await
+            .expect("build mock");
+
+        // Core-scheduler path: `get_by_head` → `post_state_validators` (POST).
+        let cache = ValidatorCache::new(mock.client().clone(), Vec::new());
+        let (active, _complete) = cache
+            .get_by_head()
+            .await
+            .expect("valcache resolves validators via POST");
+        assert_eq!(active.pubkeys().count(), 2, "both seeded validators active");
+
+        // Validator-mock path: same POST endpoint, distinct caller.
+        let vmock_active = crate::validatormock::active_validators(mock.client())
+            .await
+            .expect("vmock active_validators resolves via POST");
+        assert_eq!(vmock_active.len(), 2);
+    }
+
+    /// The core fetcher fetches proposer data via `produce_block_v3` → GET
+    /// `/eth/v3/validator/blocks/{slot}`; without a mount it gets
+    /// `UnexpectedResponse` and the proposer duty never decides. Assert the
+    /// mock serves an `Ok` produce-block response the client parses.
+    #[tokio::test]
+    async fn produce_block_v3_serves_ok_proposal() {
+        use pluto_eth2api::{ProduceBlockV3Request, ProduceBlockV3Response};
+
+        let mock = BeaconMock::builder().build().await.expect("build mock");
+        let request = ProduceBlockV3Request::builder()
+            .slot("1".to_string())
+            .randao_reveal(format!("0x{}", "00".repeat(96)))
+            .graffiti(format!("0x{}", "00".repeat(32)))
+            .builder_boost_factor("0".to_string())
+            .build()
+            .expect("build produce-block request");
+
+        let resp = mock
+            .client()
+            .produce_block_v3(request)
+            .await
+            .expect("produce_block_v3 request succeeds");
+        assert!(
+            matches!(resp, ProduceBlockV3Response::Ok(_)),
+            "expected an Ok produce-block response (not UnexpectedResponse)"
         );
     }
 }

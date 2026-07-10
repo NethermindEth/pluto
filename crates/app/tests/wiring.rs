@@ -233,6 +233,7 @@ fn wire_inputs_with(
         electra_slot: 0,
         fetch_only_comm_idx0: false,
         seen_pubkeys: None,
+        slot_tick: None,
     }
 }
 

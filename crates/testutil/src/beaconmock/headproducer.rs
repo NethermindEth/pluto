@@ -283,6 +283,7 @@ async fn mount_block_root(server: &MockServer, state: Arc<SharedState>) {
 
             ResponseTemplate::new(200).set_body_json(json!({
                 "execution_optimistic": false,
+                "finalized": false,
                 "data": { "root": hex_0x(head.block) }
             }))
         })

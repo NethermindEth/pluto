@@ -122,7 +122,9 @@ impl ForceDirectBehaviour {
             };
 
             if connections.is_empty() {
-                warn!(
+                // Best-effort per-slot pass; a peer with no current connections is
+                // normal churn (Charon `continue`s here silently). Debug, not WARN.
+                debug!(
                     peer = %peer_name(peer),
                     "no connections to peer"
                 );
@@ -141,7 +143,9 @@ impl ForceDirectBehaviour {
             }
 
             let Some(addresses) = available_addresses else {
-                warn!(
+                // Relay-only peers have no direct addresses yet; expected churn,
+                // logged at debug (Charon continues here silently), not WARN.
+                debug!(
                     peer = %peer_name(peer),
                     "no known addresses for peer"
                 );

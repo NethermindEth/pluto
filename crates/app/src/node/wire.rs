@@ -37,7 +37,7 @@ use pluto_core::{
     scheduler::{SchedulerBuilder, SchedulerHandle},
     sigagg::{Aggregator, VerifyFn},
     signeddata::{SyncContribution, VersionedAggregatedAttestation},
-    types::{Duty, ParSignedData, ParSignedDataSet, PubKey, SignedData, SignedDataSet},
+    types::{Duty, ParSignedData, ParSignedDataSet, PubKey, SignedData, SignedDataSet, Slot},
     unsigneddata::{self, UnsignedDataSet},
     validatorapi::{self, Component, Handler, SeenPubkeysFn},
 };
@@ -85,6 +85,14 @@ pub struct ParSigExSeam {
     /// A loopback test may wire `broadcast` straight back into the subscriber.
     pub subscribe: ParSigExSubscribe,
 }
+
+/// Per-slot subscriber seam, registered on the scheduler's slot ticks.
+///
+/// Like the parsigex / seen-pubkeys seams, this is a boxed callback so the core
+/// wiring stays decoupled from what drives it: production leaves it `None` (a
+/// real validator client drives the validator API), while simnet supplies a
+/// callback forwarding each tick to the in-process validator mock.
+pub type SlotTickFn = Arc<dyn Fn(&Slot) -> BoxFuture<'static, Result<(), AppError>> + Send + Sync>;
 
 /// Per-validator data extracted from the cluster lock for this node.
 pub struct ValidatorInfo {
@@ -151,6 +159,12 @@ pub struct WireInputs {
     /// references on the validator API, feeding the monitoring readiness
     /// checker. `None` disables the signal (e.g. tests).
     pub seen_pubkeys: Option<SeenPubkeysFn>,
+    /// Optional per-slot subscriber. When present, it is registered on the
+    /// scheduler so each slot tick drives duties (mirrors Charon
+    /// `sched.SubscribeSlots(vmock.SlotTicked)`, `app/vmock.go:44`); simnet
+    /// wires the in-process validator mock here. `None` in production and
+    /// tests.
+    pub slot_tick: Option<SlotTickFn>,
 }
 
 /// The wired components and long-lived handles produced by
@@ -207,6 +221,7 @@ pub async fn wire_core_workflow(
         electra_slot,
         fetch_only_comm_idx0,
         seen_pubkeys,
+        slot_tick,
     } = inputs;
 
     // ---- Derived validator maps (mirrors app.go:407-452) ----
@@ -503,6 +518,11 @@ pub async fn wire_core_workflow(
             },
             "consensus",
         );
+    }
+    // Optional per-slot subscriber (simnet validator mock), registered on the
+    // builder before `.build()`.
+    if let Some(slot_tick) = slot_tick {
+        sched_builder.subscribe_slot(move |slot: &Slot| slot_tick(slot), "simnet.vmock");
     }
     let scheduler = sched_builder
         .build(beacon_client, ct.clone())
