@@ -116,7 +116,7 @@ flate2 = "1.1"
 wiremock = "0.6"
 tower = "0.5"
 sysinfo = "0.33"
-quick-xml = { version = "0.39", features = ["serialize"] }
+quick-xml = { version = "0.41", features = ["serialize"] }
 
 # Crates in the workspace
 pluto-app = { path = "crates/app" }
