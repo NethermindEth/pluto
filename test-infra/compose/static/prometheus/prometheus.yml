@@ -1,0 +1,25 @@
+global:
+  scrape_interval:     5s # Set the scrape interval to every 15 seconds. Default is every 1 minute.
+  evaluation_interval: 5s # Evaluate rules every 15 seconds. The default is every 1 minute.
+
+scrape_configs:
+  # Charon's compose scrapes a non-existent 'bootnode' target; the relay is
+  # the service actually exposing monitoring on 3620.
+  - job_name: 'relay'
+    static_configs:
+      - targets: [ 'relay:3620' ]
+  - job_name: 'node0'
+    static_configs:
+      - targets: ['node0:3620']
+  - job_name: 'node1'
+    static_configs:
+      - targets: ['node1:3620']
+  - job_name: 'node2'
+    static_configs:
+      - targets: ['node2:3620']
+  - job_name: 'node3'
+    static_configs:
+      - targets: ['node3:3620']
+
+rule_files:
+  - /etc/prometheus/rules.yml
