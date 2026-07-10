@@ -37,6 +37,12 @@ pub fn verify_sig(
     Ok(expected_addr == actual_addr)
 }
 
+/// Maximum cluster-definition response body read from a remote URI (16 MB). A
+/// definition with the SSZ-max 65536 validators is well under this, so the cap
+/// never rejects a legitimate definition while bounding memory against a
+/// hostile upstream.
+const DEFINITION_MAX_BODY: usize = 16 * 1024 * 1024;
+
 /// Error type returned by `fetch_definition`.
 #[derive(Debug, thiserror::Error)]
 pub enum FetchError {
@@ -47,6 +53,14 @@ pub enum FetchError {
     /// HTTP error while fetching the definition.
     #[error("HTTP error {0}")]
     Http(#[from] reqwest::Error),
+
+    /// Response body exceeded the allowed size.
+    #[error("definition body exceeds {0} bytes")]
+    BodyTooLarge(usize),
+
+    /// JSON decode error after the capped read.
+    #[error("decode definition: {0}")]
+    Decode(#[from] serde_json::Error),
 }
 
 /// Fetch cluster definition file from a remote URI.
@@ -55,11 +69,40 @@ pub async fn fetch_definition(
 ) -> std::result::Result<Definition, FetchError> {
     let definition = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         let response = reqwest::get(url).await?.error_for_status()?;
-        response.json::<Definition>().await
+        let buf = read_body_capped(response, DEFINITION_MAX_BODY).await?;
+        Ok::<Definition, FetchError>(serde_json::from_slice::<Definition>(&buf)?)
     })
     .await??;
 
     Ok(definition)
+}
+
+/// Reads a response body, failing with [`FetchError::BodyTooLarge`] if it would
+/// exceed `max` bytes. Streams so the cap bounds memory even without a
+/// trustworthy `Content-Length` header.
+async fn read_body_capped(
+    response: reqwest::Response,
+    max: usize,
+) -> std::result::Result<Vec<u8>, FetchError> {
+    use futures::StreamExt;
+
+    // Reject early if the server advertised an oversized body.
+    if let Some(len) = response.content_length()
+        && len > max as u64
+    {
+        return Err(FetchError::BodyTooLarge(max));
+    }
+
+    let mut buf = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if buf.len().saturating_add(chunk.len()) > max {
+            return Err(FetchError::BodyTooLarge(max));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
 }
 
 /// Creates a new directory for validator keys.
@@ -253,7 +296,26 @@ mod tests {
 
         let response = super::fetch_definition(format!("{}/invalidDef", &server.uri())).await;
 
-        assert!(matches!(response, Err(super::FetchError::Http(e)) if e.is_decode()));
+        assert!(matches!(response, Err(super::FetchError::Decode(_))));
+    }
+
+    #[tokio::test]
+    async fn read_body_capped_rejects_oversized() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/big"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_raw(vec![b'x'; 100], "application/json"),
+            )
+            .mount(&server)
+            .await;
+
+        let response = reqwest::get(format!("{}/big", &server.uri()))
+            .await
+            .unwrap();
+        let result = super::read_body_capped(response, 10).await;
+        assert!(matches!(result, Err(super::FetchError::BodyTooLarge(10))));
     }
 
     #[tokio::test]

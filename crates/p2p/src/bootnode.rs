@@ -21,6 +21,14 @@ const BOOTNODE_RESOLVE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Interval for checking bootnode resolution status.
 const BOOTNODE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Per-request timeout for relay address queries.
+const RELAY_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Maximum relay-address response body read from a relay (1 MB). The response
+/// is an ENR string or a small JSON list of multiaddrs; 1 MB is generous while
+/// bounding memory against a hostile relay.
+const RELAY_MAX_BODY: usize = 1024 * 1024;
+
 /// Bootnode error.
 #[derive(Debug, thiserror::Error)]
 pub enum BootnodeError {
@@ -75,6 +83,10 @@ pub enum BootnodeError {
     /// ENR does not have TCP nor UDP port.
     #[error("enr does not have TCP nor UDP port")]
     EnrNoPort,
+
+    /// Relay address response body exceeded the allowed size.
+    #[error("relay address body exceeds {0} bytes")]
+    BodyTooLarge(usize),
 }
 
 /// Result type for bootnode operations.
@@ -158,7 +170,10 @@ async fn resolve_relay(
     mutable: MutablePeer,
 ) {
     let mut prev_addrs = String::new();
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(RELAY_QUERY_TIMEOUT)
+        .build()
+        .unwrap_or_default();
 
     loop {
         if cancel.is_cancelled() {
@@ -257,10 +272,7 @@ async fn query_relay_addrs(
             return Err(BootnodeError::InvalidRelayUrl);
         }
 
-        let body = resp.text().await.map_err(|e| {
-            tracing::warn!(err = %e, "Failure reading relay addresses (will try again)");
-            BootnodeError::NewRequest(e)
-        })?;
+        let body = read_relay_body_capped(resp, RELAY_MAX_BODY).await?;
 
         if body.starts_with("enr:") {
             match multi_addr_from_enr_str(&body) {
@@ -297,6 +309,36 @@ async fn query_relay_addrs(
     };
 
     fetch.retry(backoff).when(retry_condition).await
+}
+
+/// Reads a relay response body as UTF-8, failing with
+/// [`BootnodeError::BodyTooLarge`] if it would exceed `max` bytes. Streams so
+/// the cap bounds memory even without a trustworthy `Content-Length` header.
+async fn read_relay_body_capped(resp: reqwest::Response, max: usize) -> Result<String> {
+    use futures::StreamExt;
+
+    if let Some(len) = resp.content_length()
+        && len > max as u64
+    {
+        tracing::warn!(len, max, "Relay address body too large (will try again)");
+        return Err(BootnodeError::BodyTooLarge(max));
+    }
+
+    let mut buf = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| {
+            tracing::warn!(err = %e, "Failure reading relay addresses (will try again)");
+            BootnodeError::NewRequest(e)
+        })?;
+        if buf.len().saturating_add(chunk.len()) > max {
+            tracing::warn!(max, "Relay address body too large (will try again)");
+            return Err(BootnodeError::BodyTooLarge(max));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+
+    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 /// Returns multiaddrs from an ENR string.

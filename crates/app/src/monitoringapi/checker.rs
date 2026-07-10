@@ -105,17 +105,41 @@ async fn set_beacon_node_version(beacon_node: &EthBeaconNodeApiClient) {
         }
     };
 
+    // The BN version string is upstream-controlled and unbounded in length;
+    // truncate it for the metric label (a hostile/buggy BN could return a
+    // multi-MB string). The reset loop compares against the same truncated form
+    // so the stale series is cleared correctly.
+    let label = truncate_label(&version);
+
     // Emulate Charon's `beaconNodeVersionGauge.Reset`: vise's `Family` cannot
     // delete series, so clear any previously-reported version before setting the
     // current one.
     for (previous, gauge) in MONITORING_METRICS.beacon_node_version.to_entries() {
-        if previous != version {
+        if previous != label {
             gauge.set(0);
         }
     }
-    MONITORING_METRICS.beacon_node_version[&version].set(1);
+    MONITORING_METRICS.beacon_node_version[&label].set(1);
 
+    // The semantic compatibility check uses the FULL (untruncated) version.
     check_beacon_node_version(&version);
+}
+
+/// Maximum length (in bytes) for the upstream-supplied beacon-node version
+/// metric label. A real BN version (e.g. "Lighthouse/v5.1.3-...") is short.
+const MAX_METRIC_LABEL_LEN: usize = 64;
+
+/// Truncates a label value to [`MAX_METRIC_LABEL_LEN`] on a UTF-8 char
+/// boundary.
+fn truncate_label(s: &str) -> String {
+    if s.len() <= MAX_METRIC_LABEL_LEN {
+        return s.to_string();
+    }
+    let mut end = MAX_METRIC_LABEL_LEN;
+    while end > 0 && !s.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    s[..end].to_string()
 }
 
 async fn fetch_node_version(
@@ -447,6 +471,16 @@ mod tests {
 
     fn peer_id() -> PeerId {
         Keypair::generate_secp256k1().public().to_peer_id()
+    }
+
+    #[test]
+    fn truncate_label_bounds_length() {
+        assert_eq!(truncate_label("Lighthouse/v5.1.3"), "Lighthouse/v5.1.3");
+        let long = "x".repeat(MAX_METRIC_LABEL_LEN + 500);
+        assert_eq!(truncate_label(&long).len(), MAX_METRIC_LABEL_LEN);
+        // Multibyte input truncates on a char boundary without panicking.
+        let mb = "é".repeat(MAX_METRIC_LABEL_LEN);
+        assert!(truncate_label(&mb).len() <= MAX_METRIC_LABEL_LEN);
     }
 
     fn pubkey(byte: u8) -> PubKey {

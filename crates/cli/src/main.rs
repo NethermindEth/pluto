@@ -6,7 +6,7 @@
 
 use crate::error::CliError;
 use clap::{CommandFactory, FromArgMatches};
-use cli::{AlphaCommands, Cli, Commands, CreateCommands, TestCommands};
+use cli::{AlphaCommands, Cli, Commands, CreateCommands, TestCommands, UnsafeCommands};
 use std::process::ExitCode;
 use tokio_util::sync::CancellationToken;
 
@@ -85,6 +85,17 @@ async fn run() -> std::result::Result<(), CliError> {
             let config: pluto_relay_server::config::Config = (*args).clone().try_into()?;
             commands::relay::run(config, ct).await
         }
+        Commands::Run(args) => {
+            let config: commands::run::RunConfig = (*args).try_into()?;
+            // Tracing/Loki init is owned by `commands::run::run`.
+            commands::run::run(config, ct).await
+        }
+        Commands::Unsafe(args) => match args.command {
+            UnsafeCommands::Run(args) => {
+                let config: commands::run::RunConfig = (*args).try_into()?;
+                commands::run::run(config, ct).await
+            }
+        },
         Commands::Alpha(args) => match args.command {
             AlphaCommands::Test(args) => {
                 pluto_tracing::init(&pluto_tracing::TracingConfig::default())

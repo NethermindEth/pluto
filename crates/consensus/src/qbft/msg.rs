@@ -66,18 +66,9 @@ pub enum Error {
     #[error("value hash not found in values")]
     ValueHashNotFound,
 
-    /// Value hash was absent, zero, or not exactly 32 bytes when required.
-    #[error("invalid value hash")]
-    InvalidValueHash,
-
     /// Prepared value hash did not exist in the values map.
     #[error("prepared value hash not found in values")]
     PreparedValueHashNotFound,
-
-    /// Prepared value hash was absent, zero, or not exactly 32 bytes when
-    /// required.
-    #[error("invalid prepared value hash")]
-    InvalidPreparedValueHash,
 
     /// Value did not exist in the values map.
     #[error("value not found")]
@@ -145,13 +136,15 @@ impl fmt::Debug for Msg {
 impl Msg {
     /// Wraps a raw QBFT protobuf message for the generic core.
     ///
-    /// Value-bearing messages must include a non-zero 32-byte `value_hash`
-    /// present in `values`. This is deliberately stricter than Charon's
-    /// current wrapper behavior, which collapses absent or malformed hashes to
-    /// nil; admitting that shape can let core progress on a value that cannot
-    /// be decoded at decision time.
-    ///
-    /// `prepared_value_hash` is optional only while `prepared_round` is zero.
+    /// Admission mirrors Charon's `newMsg`: a `value_hash` /
+    /// `prepared_value_hash` that is absent, all-zero, or not exactly 32 bytes
+    /// collapses to the nil hash `[0u8; 32]` with no error. A well-formed,
+    /// non-zero 32-byte hash must be present in `values`, otherwise this
+    /// returns [`Error::ValueHashNotFound`] /
+    /// [`Error::PreparedValueHashNotFound`]. There is no message-type or
+    /// prepared-round requirement here; round consistency and value presence
+    /// at decision time are enforced by the generic QBFT core's justification
+    /// rules.
     ///
     /// Justifications are raw protobuf messages from the same consensus
     /// envelope. They are recursively wrapped with the same shared value map.
@@ -345,25 +338,11 @@ fn to_hash32(value: &[u8]) -> Option<HashRoot> {
 }
 
 fn value_hash(msg: &pbconsensus::QbftMsg, values: &ValueMap) -> Result<HashRoot> {
-    let required = value_hash_required(MessageType::from_wire(msg.r#type));
-    if msg.value_hash.is_empty() {
-        return if required {
-            Err(Error::InvalidValueHash)
-        } else {
-            Ok([0u8; 32])
-        };
-    }
-
-    if msg.value_hash.len() != 32 {
-        return Err(Error::InvalidValueHash);
-    }
-
+    // Mirror Charon newMsg: an absent / zero / non-32-byte value_hash collapses
+    // to the nil hash with no error; a well-formed non-zero 32-byte hash must
+    // be present in `values`.
     let Some(hash) = to_hash32(&msg.value_hash) else {
-        return if required {
-            Err(Error::InvalidValueHash)
-        } else {
-            Ok([0u8; 32])
-        };
+        return Ok([0u8; 32]);
     };
 
     if values.contains_key(&hash) {
@@ -373,32 +352,11 @@ fn value_hash(msg: &pbconsensus::QbftMsg, values: &ValueMap) -> Result<HashRoot>
     Err(Error::ValueHashNotFound)
 }
 
-fn value_hash_required(type_: MessageType) -> bool {
-    type_ == qbft::MSG_PRE_PREPARE
-        || type_ == qbft::MSG_PREPARE
-        || type_ == qbft::MSG_COMMIT
-        || type_ == qbft::MSG_DECIDED
-}
-
 fn prepared_value_hash(msg: &pbconsensus::QbftMsg, values: &ValueMap) -> Result<HashRoot> {
-    if msg.prepared_value_hash.is_empty() {
-        return if msg.prepared_round > 0 {
-            Err(Error::InvalidPreparedValueHash)
-        } else {
-            Ok([0u8; 32])
-        };
-    }
-
-    if msg.prepared_value_hash.len() != 32 {
-        return Err(Error::InvalidPreparedValueHash);
-    }
-
+    // Mirror Charon newMsg: the prepared hash is admitted on the same rule as
+    // value_hash and is independent of prepared_round.
     let Some(hash) = to_hash32(&msg.prepared_value_hash) else {
-        return if msg.prepared_round > 0 {
-            Err(Error::InvalidPreparedValueHash)
-        } else {
-            Ok([0u8; 32])
-        };
+        return Ok([0u8; 32]);
     };
 
     if values.contains_key(&hash) {
@@ -624,12 +582,16 @@ mod tests {
         assert_eq!(msg.values().len(), 2);
     }
 
+    // Parity with charon core/consensus/qbft/msg.go newMsg @ v1.7.1: an
+    // absent, all-zero, or non-32-byte value hash is admitted and collapses to
+    // the nil hash for every message type — there is no type-gating and no
+    // malformed-length rejection in the reference wrapper.
     #[test_case(MSG_PRE_PREPARE, vec![] ; "pre_prepare_empty")]
     #[test_case(MSG_PREPARE, vec![0; 32] ; "prepare_zero")]
     #[test_case(MSG_COMMIT, vec![1; 31] ; "commit_short")]
     #[test_case(MSG_DECIDED, vec![1; 33] ; "decided_long")]
-    fn new_rejects_required_invalid_value_hash(type_: MessageType, hash: Vec<u8>) {
-        let err = Msg::new(
+    fn new_admits_malformed_value_hash_as_nil(type_: MessageType, hash: Vec<u8>) {
+        let msg = Msg::new(
             pbconsensus::QbftMsg {
                 r#type: i64::from(type_),
                 value_hash: hash.into(),
@@ -638,9 +600,9 @@ mod tests {
             vec![],
             sync::Arc::default(),
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert_eq!(err.to_string(), "invalid value hash");
+        assert_eq!(msg.value(), [0u8; 32]);
     }
 
     #[test_case(vec![] ; "empty")]
@@ -660,28 +622,23 @@ mod tests {
         assert_eq!(msg.value(), [0u8; 32]);
     }
 
-    #[test_case(vec![1; 31] ; "short")]
-    #[test_case(vec![1; 33] ; "long")]
-    fn new_rejects_malformed_optional_value_hash(hash: Vec<u8>) {
-        let err = Msg::new(
-            pbconsensus::QbftMsg {
-                r#type: i64::from(MSG_ROUND_CHANGE),
-                value_hash: hash.into(),
-                ..Default::default()
-            },
-            vec![],
-            sync::Arc::default(),
-        )
-        .unwrap_err();
-
-        assert_eq!(err.to_string(), "invalid value hash");
-    }
-
-    #[test_case(vec![] ; "empty")]
-    #[test_case(vec![0; 32] ; "zero_hash")]
-    fn new_allows_nil_prepared_value_hash_when_unprepared(hash: Vec<u8>) {
+    // Parity with charon newMsg @ v1.7.1: the prepared hash is admitted on the
+    // same rule as value_hash and is independent of prepared_round — even a
+    // ROUND-CHANGE claiming `prepared_round > 0` with an absent/zero/malformed
+    // prepared hash constructs with the nil hash. Round/prepared-round
+    // consistency is enforced by the generic core's justification rules.
+    #[test_case(0, vec![] ; "unprepared_empty")]
+    #[test_case(0, vec![0; 32] ; "unprepared_zero")]
+    #[test_case(0, vec![1; 31] ; "unprepared_short")]
+    #[test_case(0, vec![1; 33] ; "unprepared_long")]
+    #[test_case(1, vec![] ; "prepared_empty")]
+    #[test_case(1, vec![0; 32] ; "prepared_zero")]
+    #[test_case(1, vec![1; 31] ; "prepared_short")]
+    #[test_case(1, vec![1; 33] ; "prepared_long")]
+    fn new_admits_malformed_prepared_value_hash_as_nil(prepared_round: i64, hash: Vec<u8>) {
         let msg = Msg::new(
             pbconsensus::QbftMsg {
+                prepared_round,
                 prepared_value_hash: hash.into(),
                 ..Default::default()
             },
@@ -693,25 +650,39 @@ mod tests {
         assert_eq!(msg.prepared_value(), [0u8; 32]);
     }
 
-    #[test_case(0, vec![1; 31] ; "unprepared_short")]
-    #[test_case(0, vec![1; 33] ; "unprepared_long")]
-    #[test_case(1, vec![] ; "prepared_empty")]
-    #[test_case(1, vec![0; 32] ; "prepared_zero")]
-    #[test_case(1, vec![1; 31] ; "prepared_short")]
-    #[test_case(1, vec![1; 33] ; "prepared_long")]
-    fn new_rejects_invalid_prepared_value_hash(prepared_round: i64, hash: Vec<u8>) {
-        let err = Msg::new(
+    /// The two hash helpers are independent: a malformed `value_hash` collapses
+    /// to nil while a valid present `prepared_value_hash` still maps, and vice
+    /// versa.
+    #[test]
+    fn new_maps_valid_hash_beside_malformed_other_hash() {
+        let valid_hash = hash_proto(&timestamp(1)).unwrap();
+        let values = sync::Arc::new(value_map(vec![(valid_hash, any_timestamp(1))]));
+
+        let msg = Msg::new(
             pbconsensus::QbftMsg {
-                prepared_round,
-                prepared_value_hash: hash.into(),
+                value_hash: vec![1; 31].into(),
+                prepared_value_hash: valid_hash.to_vec().into(),
                 ..Default::default()
             },
             vec![],
-            sync::Arc::default(),
+            values.clone(),
         )
-        .unwrap_err();
+        .unwrap();
+        assert_eq!(msg.value(), [0u8; 32]);
+        assert_eq!(msg.prepared_value(), valid_hash);
 
-        assert_eq!(err.to_string(), "invalid prepared value hash");
+        let msg = Msg::new(
+            pbconsensus::QbftMsg {
+                value_hash: valid_hash.to_vec().into(),
+                prepared_value_hash: vec![1; 33].into(),
+                ..Default::default()
+            },
+            vec![],
+            values,
+        )
+        .unwrap();
+        assert_eq!(msg.value(), valid_hash);
+        assert_eq!(msg.prepared_value(), [0u8; 32]);
     }
 
     #[test]

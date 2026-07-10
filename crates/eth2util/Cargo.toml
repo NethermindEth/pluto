@@ -21,6 +21,7 @@ pbkdf2.workspace = true
 scrypt.workspace = true
 unicode-normalization.workspace = true
 zeroize.workspace = true
+secrecy.workspace = true
 pluto-k1util.workspace = true
 chrono.workspace = true
 regex.workspace = true

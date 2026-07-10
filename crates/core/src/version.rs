@@ -135,15 +135,21 @@ impl SemVer {
             .filter(|matches| matches.len() == 5)
             .ok_or(SemVerError::InvalidFormat)?;
 
-        let major = matches[1].parse().expect("invalid regex");
-        let minor = matches[2].parse().expect("invalid regex");
+        // The regex guarantees these capture groups are non-empty ASCII digits,
+        // so the only possible parse failure is integer overflow (e.g. a very
+        // long digit run from a malicious peer). Fail closed with InvalidFormat
+        // rather than panicking. NB: this is an intentional, safe divergence
+        // from Charon's Parse (app/version/version.go @ v1.7.1), which discards
+        // the strconv.Atoi error and silently yields 0 on overflow.
+        let major = matches[1].parse().map_err(|_| SemVerError::InvalidFormat)?;
+        let minor = matches[2].parse().map_err(|_| SemVerError::InvalidFormat)?;
 
         let mut patch = 0;
         let mut pre_release = "";
         let mut sem_ver_type = SemVerType::Minor;
 
         if let Some(m) = matches.get(3) {
-            patch = m.as_str().parse().expect("invalid regex");
+            patch = m.as_str().parse().map_err(|_| SemVerError::InvalidFormat)?;
             sem_ver_type = SemVerType::Patch;
         }
 
@@ -346,11 +352,35 @@ mod tests {
                 version: "12-dev",
                 expected: Err(SemVerError::InvalidFormat),
             },
+            ParseTestCase {
+                name: "Overflow major",
+                // 30 nines: far exceeds usize::MAX on any target, must not panic.
+                version: "v999999999999999999999999999999.0",
+                expected: Err(SemVerError::InvalidFormat),
+            },
         ];
 
         for test in tc {
             let actual = SemVer::parse(test.version);
             assert_eq!(actual, test.expected, "parse: `{}`", test.name);
+        }
+    }
+
+    #[test]
+    fn parse_overflow_is_fail_closed() {
+        // Long digit runs that overflow usize must return Err, never panic.
+        let overflow = "9".repeat(40);
+        for version in [
+            format!("v{overflow}.0"),       // major overflow
+            format!("v0.{overflow}"),       // minor overflow
+            format!("v0.0.{overflow}"),     // patch overflow
+            format!("v0.0.{overflow}-rc1"), // patch overflow with pre-release
+        ] {
+            assert_eq!(
+                SemVer::parse(&version),
+                Err(SemVerError::InvalidFormat),
+                "expected fail-closed for `{version}`"
+            );
         }
     }
 }

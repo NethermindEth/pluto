@@ -15,7 +15,6 @@ clap.workspace = true
 thiserror.workspace = true
 k256.workspace = true
 hex.workspace = true
-humantime.workspace = true
 tokio.workspace = true
 pluto-app.workspace = true
 pluto-eth1wrap.workspace = true

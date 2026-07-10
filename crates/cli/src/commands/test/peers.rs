@@ -121,7 +121,7 @@ pub struct TestPeersArgs {
     #[arg(
         long = "keep-alive",
         default_value = "30m",
-        value_parser = humantime::parse_duration
+        value_parser = crate::duration::parse_go_duration
     )]
     pub keep_alive: Duration,
 
@@ -130,7 +130,7 @@ pub struct TestPeersArgs {
     #[arg(
         long = "load-test-duration",
         default_value = "30s",
-        value_parser = humantime::parse_duration
+        value_parser = crate::duration::parse_go_duration
     )]
     pub load_test_duration: Duration,
 
@@ -138,7 +138,7 @@ pub struct TestPeersArgs {
     #[arg(
         long = "direct-connection-timeout",
         default_value = "2m",
-        value_parser = humantime::parse_duration
+        value_parser = crate::duration::parse_go_duration
     )]
     pub direct_connection_timeout: Duration,
 
