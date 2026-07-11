@@ -64,6 +64,14 @@ pub enum AppError {
     #[error("distributed validator pubkey is not 48 bytes")]
     InvalidValidatorPubKey,
 
+    /// A distributed validator's fee-recipient address was missing or not a
+    /// valid 20-byte execution address.
+    #[error("distributed validator {index} has an invalid fee recipient address")]
+    InvalidFeeRecipient {
+        /// Index of the offending distributed validator.
+        index: usize,
+    },
+
     /// Failed to load the P2P private key.
     #[error("load p2p key: {0}")]
     LoadKey(#[from] pluto_k1util::K1UtilError),
@@ -602,10 +610,14 @@ fn build_validators(
             .saturating_sub(1);
         let pubshare: [u8; 48] = dv.public_share(share_pos)?;
 
+        // A missing or malformed fee recipient is a misconfiguration, not a
+        // value to paper over: the zero address is semantically invalid, so
+        // fail loudly instead of defaulting (Charon errors when it hex-decodes
+        // the address, app.go:1178).
         let fee_recipient = fee_recipients
             .get(i)
             .and_then(|s| parse_execution_address(s))
-            .unwrap_or_default();
+            .ok_or(AppError::InvalidFeeRecipient { index: i })?;
 
         out.push(ValidatorInfo {
             pubkey,
