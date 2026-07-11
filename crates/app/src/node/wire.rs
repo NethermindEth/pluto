@@ -34,7 +34,7 @@ use pluto_core::{
         AggSigDbFunc, AwaitAttDataFunc, FeeRecipientFunc, Fetcher, GraffitiBuilder, Subscriber,
     },
     parsigdb,
-    scheduler::{SchedulerBuilder, SchedulerHandle},
+    scheduler::SchedulerBuilder,
     sigagg::{Aggregator, VerifyFn},
     signeddata::{SyncContribution, VersionedAggregatedAttestation},
     types::{Duty, ParSignedData, ParSignedDataSet, PubKey, SignedData, SignedDataSet},
@@ -153,8 +153,11 @@ pub struct WireInputs {
 /// [`wire_core_workflow`], returned so the caller (`run`) can drive their
 /// background tasks and shut them down in order.
 pub struct WiredComponents {
-    /// Scheduler handle (self-driving; also queried by the validator API).
-    pub scheduler: SchedulerHandle,
+    /// Background task driving the self-spawning scheduler actor, returned so
+    /// the caller can supervise its lifecycle (Charon registers `sched.Run`
+    /// as a lifecycle hook, `app.go:660`). The scheduler's query handle is held
+    /// directly by the validator API.
+    pub scheduler_task: tokio::task::JoinHandle<()>,
     /// In-memory duty database (shared; needs explicit shutdown).
     pub dutydb: Arc<dutydb::MemDB>,
     /// In-memory partial-signature database (its `trim` task must be spawned).
@@ -499,7 +502,7 @@ pub async fn wire_core_workflow(
             "consensus",
         );
     }
-    let scheduler = sched_builder
+    let (scheduler, scheduler_task) = sched_builder
         .build(beacon_client, ct.clone())
         .await
         .map_err(AppError::Scheduler)?;
@@ -601,7 +604,7 @@ pub async fn wire_core_workflow(
     );
 
     Ok(WiredComponents {
-        scheduler,
+        scheduler_task,
         dutydb,
         parsigdb,
         parsigdb_deadliner_rx,

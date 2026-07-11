@@ -432,7 +432,7 @@ async fn run_lifecycle(
     ct: CancellationToken,
 ) -> Result<(), AppError> {
     let WiredComponents {
-        scheduler: _scheduler,
+        scheduler_task,
         dutydb,
         parsigdb,
         parsigdb_deadliner_rx,
@@ -445,6 +445,15 @@ async fn run_lifecycle(
     let _consensus_task = consensus.start(ct.clone());
 
     let mut tasks: JoinSet<Result<(), AppError>> = JoinSet::new();
+
+    // Supervise the self-spawning scheduler actor alongside the other
+    // long-lived tasks so its exit triggers node shutdown (Charon registers
+    // `sched.Run` as a lifecycle hook, `app.go:660`). The actor returns `()`
+    // and only exits on cancellation.
+    tasks.extend([async move {
+        let _ = scheduler_task.await;
+        Ok::<(), AppError>(())
+    }]);
 
     // Swarm drive loop (push-based routing inside behaviours).
     {
