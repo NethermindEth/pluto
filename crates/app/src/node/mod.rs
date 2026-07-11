@@ -486,10 +486,10 @@ async fn run_lifecycle(
     // spawn and close are guarded by the same `Option`.
     if let Some(svc) = &priv_key_lock {
         let svc = Arc::clone(svc);
-        tasks.spawn(async move {
-            let _ = svc.run().await;
-            Ok(())
-        });
+        // Propagate a lock-maintenance failure so it fails the run, matching
+        // Charon which registers lockSvc.Run as a lifecycle hook whose error
+        // triggers shutdown (app.go:166). A graceful `close()` returns `Ok`.
+        tasks.spawn(async move { svc.run().await.map_err(AppError::PrivKeyLock) });
     }
 
     // Validator API axum server.
