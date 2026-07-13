@@ -50,9 +50,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::node::AppError;
 
-/// Boxed std error used by the various callback seams.
-type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
-
 /// A `Send + Sync` boxed future. The parsigdb subscriber seams require their
 /// futures to be `Sync` (see `internal_subscriber`/`threshold_subscriber`), so
 /// the broadcast seam future must be `Sync` too.
@@ -172,11 +169,6 @@ pub struct WiredComponents {
     pub validator_api_router: axum::Router,
 }
 
-/// Boxes any error into [`BoxError`].
-fn box_err<E: std::error::Error + Send + Sync + 'static>(e: E) -> BoxError {
-    Box::new(e)
-}
-
 /// Constructs and wires the ten core duty-workflow components.
 ///
 /// Reproduces the data-flow graph from `core/interfaces.go:337-357`. The 13
@@ -267,8 +259,7 @@ pub async fn wire_core_workflow(
         Arc::new(move |duty: Duty, pubkey: PubKey| {
             let aggsigdb = aggsigdb.clone();
             Box::pin(async move {
-                let signed: Box<dyn SignedData> =
-                    aggsigdb.wait_for(duty, pubkey).await.map_err(box_err)?;
+                let signed: Box<dyn SignedData> = aggsigdb.wait_for(duty, pubkey).await?;
                 Ok(signed)
             })
         })
@@ -280,10 +271,7 @@ pub async fn wire_core_workflow(
         Arc::new(move |slot: u64, comm_idx: u64| {
             let dutydb = Arc::clone(&dutydb);
             Box::pin(async move {
-                let data = dutydb
-                    .await_attestation(slot, comm_idx)
-                    .await
-                    .map_err(box_err)?;
+                let data = dutydb.await_attestation(slot, comm_idx).await?;
                 Ok(data)
             })
         })
@@ -296,8 +284,8 @@ pub async fn wire_core_workflow(
             let consensus = Arc::clone(&consensus);
             let ct = ct.clone();
             Box::pin(async move {
-                let value = unsigneddata::unsigned_data_set_to_proto(&set).map_err(box_err)?;
-                consensus.propose(duty, value, &ct).await.map_err(box_err)?;
+                let value = unsigneddata::unsigned_data_set_to_proto(&set)?;
+                consensus.propose(duty, value, &ct).await?;
                 Ok(())
             })
         })
@@ -525,7 +513,7 @@ pub async fn wire_core_workflow(
         let aggsigdb = aggsigdb.clone();
         vapi.register_await_agg_sig_db(move |duty: Duty, pubkey: PubKey| {
             let aggsigdb = aggsigdb.clone();
-            async move { aggsigdb.wait_for(duty, pubkey).await.map_err(box_err) }
+            async move { aggsigdb.wait_for(duty, pubkey).await.map_err(Into::into) }
         });
     }
     // dutydb-backed aggregate-attestation lookup (awaited by attestation root;
@@ -539,7 +527,7 @@ pub async fn wire_core_workflow(
                     .await_agg_attestation(root)
                     .await
                     .map(VersionedAggregatedAttestation)
-                    .map_err(box_err)
+                    .map_err(Into::into)
             }
         });
     }
@@ -553,7 +541,7 @@ pub async fn wire_core_workflow(
                     .await_sync_contribution(slot, subcomm, root)
                     .await
                     .map(SyncContribution)
-                    .map_err(box_err)
+                    .map_err(Into::into)
             }
         });
     }
@@ -566,7 +554,7 @@ pub async fn wire_core_workflow(
                 dutydb
                     .pub_key_by_attestation(slot, comm, val)
                     .await
-                    .map_err(box_err)
+                    .map_err(Into::into)
             }
         });
     }
@@ -582,7 +570,7 @@ pub async fn wire_core_workflow(
                     .get_duty_definition(duty)
                     .await
                     .map(|set| Box::new(set) as Box<dyn std::any::Any + Send + Sync>)
-                    .map_err(box_err)
+                    .map_err(Into::into)
             }
         });
     }
@@ -591,7 +579,12 @@ pub async fn wire_core_workflow(
         let parsigdb = Arc::clone(&parsigdb);
         vapi.subscribe(move |duty: Duty, set: ParSignedDataSet| {
             let parsigdb = Arc::clone(&parsigdb);
-            async move { parsigdb.store_internal(&duty, &set).await.map_err(box_err) }
+            async move {
+                parsigdb
+                    .store_internal(&duty, &set)
+                    .await
+                    .map_err(Into::into)
+            }
         });
     }
 
