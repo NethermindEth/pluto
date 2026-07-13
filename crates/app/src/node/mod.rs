@@ -104,9 +104,17 @@ pub enum AppError {
     #[error("consensus p2p: {0}")]
     ConsensusP2P(#[from] qbft::p2p::Error),
 
+    /// A beacon node API request failed.
+    #[error("beacon node api: {0}")]
+    BeaconApi(#[from] pluto_eth2api::EthBeaconNodeApiClientError),
+
+    /// The beacon node URL could not be parsed.
+    #[error("invalid beacon node url: {0}")]
+    BeaconUrl(#[from] url::ParseError),
+
     /// Beacon node client construction failed.
     #[error("beacon client: {0}")]
-    BeaconClient(String),
+    BeaconClient(#[source] anyhow::Error),
 
     /// Duty gater construction failed.
     #[error("duty gater: {0}")]
@@ -265,14 +273,8 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     .map_err(AppError::Graffiti)?;
 
     // Electra activation slot = electra_fork_epoch * slots_per_epoch.
-    let (_, slots_per_epoch) = eth2_cl
-        .fetch_slots_config()
-        .await
-        .map_err(|e| AppError::BeaconClient(e.to_string()))?;
-    let fork_config = eth2_cl
-        .fetch_fork_config()
-        .await
-        .map_err(|e| AppError::BeaconClient(e.to_string()))?;
+    let (_, slots_per_epoch) = eth2_cl.fetch_slots_config().await?;
+    let fork_config = eth2_cl.fetch_fork_config().await?;
     let electra_slot = fork_config
         .get(&pluto_eth2api::ConsensusVersion::Electra)
         .map(|schedule| schedule.epoch)
@@ -354,9 +356,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         .map_err(|_| AppError::ConsensusP2P(qbft::p2p::Error::BehaviourClosed))?;
 
     // ---- Wire the core workflow ----
-    let upstream_url = reqwest::Url::parse(beacon_node_addr).map_err(|e| {
-        AppError::BeaconClient(format!("invalid beacon node url {beacon_node_addr:?}: {e}"))
-    })?;
+    let upstream_url = reqwest::Url::parse(beacon_node_addr)?;
 
     let parsigex_seam = production_parsigex_seam(&handles);
 
@@ -678,9 +678,9 @@ fn build_api_client(
     let http = reqwest::Client::builder()
         .timeout(timeout)
         .build()
-        .map_err(|e| AppError::BeaconClient(e.to_string()))?;
+        .map_err(|e| AppError::BeaconClient(e.into()))?;
     pluto_eth2api::EthBeaconNodeApiClient::with_client(base_url, http)
-        .map_err(|e| AppError::BeaconClient(e.to_string()))
+        .map_err(AppError::BeaconClient)
 }
 
 #[cfg(test)]
