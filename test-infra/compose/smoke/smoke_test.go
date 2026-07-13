@@ -22,7 +22,6 @@ import (
 
 var (
 	integration = flag.Bool("integration", false, "Enable docker based integration test")
-	plutoRun    = flag.Bool("pluto-run", false, "Enable scenarios that run pluto nodes. Requires `pluto run` support and the PLUTO_REPO env var.")
 	sudoPerms   = flag.Bool("sudo-perms", false, "Enables changing all compose artefacts file permissions using sudo.")
 	logDir      = flag.String("log-dir", "", "Specifies the directory to store test docker-compose logs. Empty defaults to stdout.")
 )
@@ -30,23 +29,49 @@ var (
 // charonImageTag pins the charon reference version pluto is ported from.
 const charonImageTag = "v1.7.1"
 
-func TestSmoke(t *testing.T) {
-	if !*integration {
-		t.Skip("Skipping smoke integration test")
-	}
+// defaultTimeout bounds one scenario's alert collection: Prometheus readiness
+// (~10s) + the 60s cold-start warmup (compose/alert.go) + steady-state
+// polling time beyond it.
+const defaultTimeout = 2 * time.Minute
 
-	const defaultTimeout = time.Minute
+// smokeBaseConfig returns the config every scenario starts from.
+//
+// All scenarios run the mock validator client: charon v1.7.1's beaconmock
+// hardcodes `head_slot: "1"` in /eth/v1/node/syncing, so a real VC (e.g.
+// lighthouse) permanently considers the beacon node unsynced and performs no
+// duties — the cluster then never reaches the signing threshold and the
+// broadcast/error alerts fire by design. Upstream charon runs lighthouse VCs
+// in these scenarios but never noticed because its alert gate matches a
+// state ("active") that Prometheus never reports. The real-VC compose
+// services remain available for manual runs via `compose new
+// --validator-types`.
+func smokeBaseConfig() compose.Config {
+	conf := compose.NewDefaultConfig()
+	conf.Monitoring = false
+	conf.DisableMonitoringPorts = true
+	conf.ImageTag = charonImageTag
+	conf.InsecureKeys = true
+	conf.VCs = []compose.VCType{compose.VCMock}
 
-	tests := []struct {
-		Name            string
-		ConfigFunc      func(*compose.Config)
-		RunTmplFunc     func(*compose.TmplData)
-		DefineTmplFunc  func(*compose.TmplData)
-		PrintYML        bool
-		Timeout         time.Duration
-		RequirePluto    bool // Scenario needs the pluto docker image (PLUTO_REPO env var).
-		RequirePlutoRun bool // Scenario runs pluto nodes, which requires `pluto run` support (-pluto-run flag).
-	}{
+	return conf
+}
+
+// smokeScenario defines one smoke matrix entry.
+type smokeScenario struct {
+	Name           string
+	ConfigFunc     func(*compose.Config)
+	RunTmplFunc    func(*compose.TmplData)
+	DefineTmplFunc func(*compose.TmplData)
+	PrintYML       bool
+	Timeout        time.Duration
+	RequirePluto   bool // Scenario needs the pluto docker image (PLUTO_REPO env var).
+}
+
+// smokeScenarios returns the full scenario matrix. Every scenario runs when
+// -integration is set; the only skip condition is a pluto scenario without
+// the PLUTO_REPO env var.
+func smokeScenarios() []smokeScenario {
+	return []smokeScenario{
 		{
 			Name:     "default_alpha",
 			PrintYML: true,
@@ -75,7 +100,6 @@ func TestSmoke(t *testing.T) {
 			Name: "dkg",
 			ConfigFunc: func(conf *compose.Config) {
 				conf.KeyGen = compose.KeyGenDKG
-				conf.VCs = []compose.VCType{compose.VCMock}
 			},
 		},
 		{
@@ -85,14 +109,21 @@ func TestSmoke(t *testing.T) {
 				conf.Threshold = 7
 				conf.NumValidators = 100
 				conf.KeyGen = compose.KeyGenCreate
-				conf.VCs = []compose.VCType{compose.VCMock}
 				conf.SlotDuration = time.Second * 6
 				conf.SyntheticBlockProposals = false
 			},
-			Timeout: time.Minute * 2,
+			Timeout: time.Minute * 3,
 		},
 		{
+			// node0 keeps default p2p flags (public relays) so it runs but
+			// cannot reach the cluster: expected to log errors and stop
+			// broadcasting, hence exempted from the per-node behavioral
+			// alerts (not from "Pluto Down"). The other three nodes must
+			// stay clean.
 			Name: "1_of_4_down",
+			ConfigFunc: func(conf *compose.Config) {
+				conf.AlertExcludeJobs = []string{"node0"}
+			},
 			RunTmplFunc: func(data *compose.TmplData) {
 				node0 := data.Nodes[0]
 				for i := range len(node0.EnvVars) {
@@ -103,10 +134,23 @@ func TestSmoke(t *testing.T) {
 			},
 		},
 		{
+			// Unlike 1_of_4_down, the error gates are disabled cluster-wide:
+			// with 3 nodes the epoch-boundary proposer's round-1 leader
+			// rotates ((slot+type+round)%nodes, epoch slots are 0 mod 16),
+			// so every third proposer duty is led by the downed node0 and
+			// charon v1.7.1 cannot recover it — the linear round timer's
+			// post-round-1 timeouts are nanoseconds (upstream bug #4537) and
+			// the 1s-slot proposer deadline (~0.4s) expires regardless — so
+			// the HEALTHY nodes log the collateral consensus timeouts and
+			// failing vmock proposal requests. Broadcast liveness, warn
+			// rates, and scrape health stay gated. (4-node clusters dodge
+			// this: 16 % 4 == 0 keeps the round-1 leader fixed off node0.)
 			Name: "1_of_3_down",
 			ConfigFunc: func(conf *compose.Config) {
 				conf.NumNodes = 3
 				conf.Threshold = 2
+				conf.AlertExcludeJobs = []string{"node0"}
+				conf.AlertDisableRules = []string{"Error Log Rate", "Validator API Error Rate"}
 			},
 			RunTmplFunc: func(data *compose.TmplData) {
 				node0 := data.Nodes[0]
@@ -131,69 +175,65 @@ func TestSmoke(t *testing.T) {
 			ConfigFunc: func(conf *compose.Config) {
 				conf.KeyGen = compose.KeyGenCreate
 				conf.KeyGenImpl = compose.ImplPluto
-				conf.VCs = []compose.VCType{compose.VCMock}
 			},
 		},
 		{
-			Name:            "all_pluto",
-			RequirePluto:    true,
-			RequirePlutoRun: true,
+			Name:         "all_pluto",
+			RequirePluto: true,
 			ConfigFunc: func(conf *compose.Config) {
 				conf.KeyGen = compose.KeyGenCreate
 				conf.NodeImpls = []compose.NodeImpl{compose.ImplPluto}
-				conf.VCs = []compose.VCType{compose.VCMock}
 				// `pluto run` fails fast on --synthetic-block-proposals.
 				conf.SyntheticBlockProposals = false
 			},
 		},
 		{
 			// Threshold 3 of 4 forces both implementations to participate in every duty.
-			Name:            "mixed_2_charon_2_pluto",
-			RequirePluto:    true,
-			RequirePlutoRun: true,
+			Name:         "mixed_2_charon_2_pluto",
+			RequirePluto: true,
 			ConfigFunc: func(conf *compose.Config) {
 				conf.KeyGen = compose.KeyGenCreate
 				conf.NodeImpls = []compose.NodeImpl{
 					compose.ImplCharon, compose.ImplCharon,
 					compose.ImplPluto, compose.ImplPluto,
 				}
-				conf.VCs = []compose.VCType{compose.VCMock}
 				// `pluto run` fails fast on --synthetic-block-proposals.
 				conf.SyntheticBlockProposals = false
+				// Charon triggers infosync (/charon/priority/2.0.0) every
+				// epoch; pluto does not serve the protocol yet (#402B), so
+				// charon nodes warn "P2P sending failing" under topic=sched
+				// twice per epoch. Exempt that topic in mixed clusters until
+				// the protocol lands; drop this with #402B.
+				conf.AlertWarnExcludeTopics = []string{"sched"}
 			},
 		},
 		{
-			Name:            "pluto_dkg",
-			RequirePluto:    true,
-			RequirePlutoRun: true,
+			Name:         "pluto_dkg",
+			RequirePluto: true,
 			ConfigFunc: func(conf *compose.Config) {
 				conf.KeyGen = compose.KeyGenDKG
 				conf.NodeImpls = []compose.NodeImpl{compose.ImplPluto}
-				conf.VCs = []compose.VCType{compose.VCMock}
 				// `pluto run` fails fast on --synthetic-block-proposals.
 				conf.SyntheticBlockProposals = false
 			},
 		},
 	}
+}
 
-	for _, test := range tests {
+func TestSmoke(t *testing.T) {
+	if !*integration {
+		t.Skip("Skipping smoke integration test")
+	}
+
+	for _, test := range smokeScenarios() {
 		t.Run(test.Name, func(t *testing.T) {
 			if test.RequirePluto && os.Getenv("PLUTO_REPO") == "" {
 				t.Skip("Skipping pluto scenario since PLUTO_REPO env var is not set")
 			}
 
-			if test.RequirePlutoRun && !*plutoRun {
-				t.Skip("Skipping scenario running pluto nodes; enable with -pluto-run once `pluto run` is supported")
-			}
-
 			dir := t.TempDir()
 
-			conf := compose.NewDefaultConfig()
-			conf.Monitoring = false
-			conf.DisableMonitoringPorts = true
-			conf.ImageTag = charonImageTag
-
-			conf.InsecureKeys = true
+			conf := smokeBaseConfig()
 			if test.ConfigFunc != nil {
 				test.ConfigFunc(&conf)
 			}
@@ -222,5 +262,34 @@ func TestSmoke(t *testing.T) {
 			err := compose.Auto(context.Background(), autoConfig)
 			testutil.RequireNoError(t, err)
 		})
+	}
+}
+
+// TestScenarioMatrix guards the scenario table invariants without docker:
+// unique names, valid configs, and the RequirePluto gate matching the impls a
+// scenario actually uses — a pluto scenario without the gate would fail on
+// missing PLUTO_REPO (or silently run a stale pluto:local image), and a
+// charon-only scenario with the gate would skip for no reason.
+func TestScenarioMatrix(t *testing.T) {
+	seen := make(map[string]bool)
+
+	for _, test := range smokeScenarios() {
+		require.NotEmpty(t, test.Name)
+		require.False(t, seen[test.Name], "duplicate scenario name: %s", test.Name)
+		seen[test.Name] = true
+
+		conf := smokeBaseConfig()
+		if test.ConfigFunc != nil {
+			test.ConfigFunc(&conf)
+		}
+
+		require.Equal(t, test.RequirePluto, conf.UsesPluto(),
+			"RequirePluto must match the implementations scenario %q uses", test.Name)
+
+		// Every scenario config must survive the write/load validation boundary.
+		dir := t.TempDir()
+		require.NoError(t, compose.WriteConfig(dir, conf))
+		_, err := compose.LoadConfig(dir)
+		require.NoError(t, err)
 	}
 }

@@ -14,9 +14,14 @@ echo "0" > /tmp/testnet/deposit_contract_block.txt
 
 for f in /compose/"${NODE}"/validator_keys/keystore-*.json; do
   echo "Importing key ${f}"
-  cat "$(echo "${f}" | sed 's/json/txt/')" | lighthouse account validator import \
+  # --password-file instead of charon's stdin pipe: lighthouse v7 prompts on
+  # the tty and dies with "Error reading from tty" in a docker container,
+  # leaving the VC with zero validators.
+  lighthouse account validator import \
     --testnet-dir "/tmp/testnet" \
-    --keystore "${f}"
+    --keystore "${f}" \
+    --password-file "$(echo "${f}" | sed 's/json/txt/')" \
+    --reuse-password
 done
 
 

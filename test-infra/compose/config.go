@@ -3,8 +3,12 @@
 package compose
 
 import (
+	"fmt"
 	"strings"
 	"time"
+
+	"github.com/obolnetwork/charon/app/errors"
+	"github.com/obolnetwork/charon/app/z"
 )
 
 const (
@@ -150,6 +154,63 @@ type Config struct {
 
 	// BuilderAPI enables the builder API for the compose cluster.
 	BuilderAPI bool `json:"builder_api"`
+
+	// AlertExcludeJobs exempts prometheus jobs (nodes) from the per-node
+	// behavioral alert rules (log rates, validator API rates, broadcast
+	// liveness) — the "Pluto Down" scrape check still applies. Used by smoke
+	// scenarios that deliberately degrade a node (e.g. 1_of_4_down isolates
+	// node0 from the p2p network): the degraded node is expected to log
+	// errors and stop broadcasting, while the rest of the cluster must stay
+	// clean.
+	AlertExcludeJobs []string `json:"alert_exclude_jobs,omitempty"`
+
+	// AlertWarnExcludeTopics appends log topics to the Warn Log Rate
+	// exclusion list on top of the built-in charon mock noise (see
+	// writeAlertRules). Scenario-scoped escape hatch: e.g. mixed
+	// charon/pluto clusters exclude "sched" because charon's infosync warns
+	// each epoch until pluto serves /charon/priority/2.0.0 (#402B).
+	AlertWarnExcludeTopics []string `json:"alert_warn_exclude_topics,omitempty"`
+
+	// AlertDisableRules drops entire alert rules (by name, see
+	// alertRuleNames) from the generated rules. Last-resort scenario knob
+	// for cluster-wide degradation that per-job exclusion cannot express:
+	// e.g. 1_of_3_down disables the error-rate gates because every third
+	// epoch-boundary proposer duty is round-1-led by the downed node and
+	// charon v1.7.1 cannot recover it (linear-timer bug #4537 plus the
+	// 1s-slot proposer deadline), so the HEALTHY nodes log the collateral
+	// consensus timeouts.
+	AlertDisableRules []string `json:"alert_disable_rules,omitempty"`
+}
+
+// Validate rejects configs with unknown implementation names. It runs on
+// every config write and load so a typo (e.g. --node-impls=plutoo) fails
+// fast instead of silently selecting the charon image.
+func (c Config) Validate() error {
+	validImpl := func(impl NodeImpl) bool {
+		return impl == ImplCharon || impl == ImplPluto
+	}
+
+	for i, impl := range c.NodeImpls {
+		if !validImpl(impl) {
+			return errors.New("unknown node implementation; must be charon or pluto",
+				z.Str("impl", string(impl)), z.Int("index", i))
+		}
+	}
+
+	// Empty defaults to node0's implementation.
+	if c.KeyGenImpl != "" && !validImpl(c.KeyGenImpl) {
+		return errors.New("unknown keygen implementation; must be charon or pluto",
+			z.Str("impl", string(c.KeyGenImpl)))
+	}
+
+	for _, rule := range c.AlertDisableRules {
+		if !alertRuleNames[rule] {
+			return errors.New("unknown alert rule name in alert_disable_rules",
+				z.Str("rule", rule))
+		}
+	}
+
+	return nil
 }
 
 // VCStrings returns the VCs field as a slice of strings.
@@ -182,11 +243,16 @@ func (c Config) KeygenImpl() NodeImpl {
 
 // ImplImage returns the full docker image reference for the provided implementation.
 func (c Config) ImplImage(impl NodeImpl) string {
-	if impl == ImplPluto {
+	switch impl {
+	case ImplPluto:
 		return plutoImage + ":" + c.PlutoImageTag
+	case ImplCharon:
+		return charonImage + ":" + c.ImageTag
+	default:
+		// Impls are validated on config write and load (Validate); reaching
+		// here means a code path bypassed that boundary.
+		panic(fmt.Sprintf("bug: unvalidated node implementation %q", impl))
 	}
-
-	return charonImage + ":" + c.ImageTag
 }
 
 // ImageOverride returns the per-node image override for the provided implementation,

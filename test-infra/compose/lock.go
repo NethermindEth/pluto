@@ -180,5 +180,9 @@ func LoadConfig(dir string) (Config, error) {
 		return Config{}, errors.Wrap(err, "unmarshal Config")
 	}
 
+	if err := resp.Validate(); err != nil {
+		return Config{}, err
+	}
+
 	return resp, nil
 }
