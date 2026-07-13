@@ -142,20 +142,11 @@ impl ConnectionHandler for Handler {
         cx: &mut Context<'_>,
     ) -> Poll<ConnectionHandlerEvent<ReadyUpgrade<StreamProtocol>, (), Result<Success, Failure>>>
     {
-        match self.state {
-            State::Inactive { reported: true } => {
-                return Poll::Pending; // Nothing to do on this connection
-            }
-            State::Inactive { reported: false } => {
-                self.state = State::Inactive { reported: true };
-                return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(Err(
-                    Failure::Unsupported,
-                )));
-            }
-            State::Active => {}
-        }
-
-        // Handle inbound requests.
+        // Handle inbound requests BEFORE the state gate: `Inactive` only means the
+        // REMOTE does not serve peerinfo (our outbound negotiation failed), not that
+        // we should stop serving. The charon relay is exactly this peer — it polls
+        // peerinfo as a client without serving it — and must still get answers, else
+        // every relay poll times out with "Peerinfo failed: read response".
         if let Some(fut) = self.inbound.as_mut() {
             match fut.poll_unpin(cx) {
                 Poll::Pending => {}
@@ -170,6 +161,22 @@ impl ConnectionHandler for Handler {
                     self.inbound = None;
                 }
             }
+        }
+
+        // Outbound polling only on Active connections. Once the remote is known not
+        // to serve peerinfo (Inactive), stop dialing it and report Unsupported once —
+        // but keep answering its inbound requests above.
+        match self.state {
+            State::Inactive { reported: true } => {
+                return Poll::Pending; // Nothing to do on this connection
+            }
+            State::Inactive { reported: false } => {
+                self.state = State::Inactive { reported: true };
+                return Poll::Ready(ConnectionHandlerEvent::NotifyBehaviour(Err(
+                    Failure::Unsupported,
+                )));
+            }
+            State::Active => {}
         }
 
         loop {
@@ -305,4 +312,71 @@ async fn recv_peer_info(
     local_info: PeerInfo,
 ) -> Result<(Stream, PeerInfo), std::io::Error> {
     protocol.recv_peer_info(stream, &local_info).await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::atomic::{AtomicBool, Ordering},
+        task::Waker,
+    };
+
+    use futures::future::{self, FutureExt};
+
+    use super::*;
+    use crate::config::LocalPeerInfo;
+
+    fn test_handler() -> Handler {
+        let local_info = LocalPeerInfo::new("v1.0.0", vec![0u8; 32], "abc1234", false, "test");
+        Handler::new(Config::new(local_info), PeerId::random())
+    }
+
+    /// Regression test for the charon-relay peerinfo timeout.
+    ///
+    /// When our outbound peerinfo negotiation to a peer fails, the connection
+    /// goes `Inactive` — but that only means the *remote* doesn't serve
+    /// peerinfo, not that *we* should stop serving. The charon relay polls
+    /// peerinfo as a client without serving it, so our outbound to it always
+    /// goes `Inactive`; if the state gate short-circuits `poll` before inbound
+    /// is handled, we stop answering the relay and every relay poll times out.
+    ///
+    /// This asserts that an `Inactive` handler still drives its inbound future.
+    /// It fails on the pre-fix ordering (state gate before inbound) and passes
+    /// once inbound is handled first.
+    #[test]
+    fn inactive_handler_still_services_inbound() {
+        let mut handler = test_handler();
+
+        // Our outbound to the remote failed negotiation and we've already
+        // reported it: `poll` does no outbound work in this state, so whether
+        // the inbound future is driven is the only observable effect.
+        handler.state = State::Inactive { reported: true };
+
+        // Install a ready inbound future that records when it is polled. It
+        // resolves to `Err` so we don't need to construct a real `Stream`; the
+        // handler clears `self.inbound` on completion either way.
+        let polled = Arc::new(AtomicBool::new(false));
+        let polled_in_fut = polled.clone();
+        let inbound: InboundFuture = future::lazy(move |_| {
+            polled_in_fut.store(true, Ordering::SeqCst);
+            Err(std::io::Error::other("inbound test error"))
+        })
+        .boxed();
+        handler.inbound = Some(inbound);
+
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        let poll = handler.poll(&mut cx);
+
+        assert!(
+            polled.load(Ordering::SeqCst),
+            "inbound future must be polled even on an Inactive connection",
+        );
+        assert!(
+            handler.inbound.is_none(),
+            "the completed inbound future should have been cleared",
+        );
+        // Outbound is still gated by the Inactive state.
+        assert!(matches!(poll, Poll::Pending));
+    }
 }
