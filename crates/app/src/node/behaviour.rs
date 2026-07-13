@@ -87,12 +87,8 @@ pub(crate) async fn wire_p2p(
     let peer_ids = peers.iter().map(|peer| peer.id).collect::<Vec<_>>();
     let local_peer_id = peer::peer_id_from_key(key.public_key())?;
 
-    // Relay endpoints resolve in the background; the `Charon-Cluster` header
-    // carries the first 7 hex chars of the lock hash, matching Charon's
-    // `Hex7(cluster.GetInitialMutationHash())` (`app.go:224` -> `p2p.NewRelays`).
-    // Post-#4130 Charon additionally sends a `Cluster-Uuid` header for
-    // relay-side load balancing — a pending follow-up in pluto-p2p's
-    // `new_relays`.
+    // TODO: also send the post-#4130 `Cluster-Uuid` header (relay-side load
+    // balancing), pending in pluto-p2p's `new_relays`.
     let relay_addrs = bootnode::relay_addrs_for_resolution(&p2p_config.relays);
     let relays = bootnode::new_relays(
         cancellation.clone(),
