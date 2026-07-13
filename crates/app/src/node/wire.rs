@@ -227,12 +227,10 @@ pub async fn wire_core_workflow(
     // `ValidatorCache` clones share state; the per-epoch trim + refresh
     // subscriber is a planned follow-up.
     let validator_cache = ValidatorCache::new(eth2_cl.clone(), eth2_pubkeys);
-    beacon_client
-        .set_validator_cache(validator_cache.clone())
-        .await;
-    submission_client
-        .set_validator_cache(validator_cache.clone())
-        .await;
+    tokio::join!(
+        beacon_client.set_validator_cache(validator_cache.clone()),
+        submission_client.set_validator_cache(validator_cache.clone()),
+    );
 
     let fee_recipient_fn: FeeRecipientFunc = {
         let map = fee_recipient_by_pubkey.clone();
