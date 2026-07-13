@@ -7,7 +7,7 @@
 //! driving it. Relay reservation + routing is the cluster's only
 //! peer-discovery path (lock ENRs carry no addresses), mirroring Charon's
 //! `NewRelays` / `NewRelayReserver` / `NewRelayRouter` /
-//! `ForceDirectConnections` (`app.go:341-400`).
+//! `ForceDirectConnections`.
 //!
 //! Routing is push-based inside the individual behaviours (the QBFT p2p
 //! [`Handler`](pluto_consensus::qbft::p2p) holds an `Arc<Consensus>` and calls
