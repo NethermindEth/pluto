@@ -39,12 +39,14 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
     })
     .await;
 
-    // Signing domains resolve the fork from THIS endpoint (go-eth2-client
-    // `forkAtEpoch`), not the spec's fork keys, so this schedule is deliberately
-    // distinct from the spec overrides above: at simnet epochs the effective
-    // signing fork is deneb 0x05017000 even though the spec keys claim electra is
-    // active. The entries match charon's beaconmock verbatim — both sides must
-    // resolve the same fork per slot or cross-client signatures diverge.
+    // Signing domains resolve the fork from THIS endpoint via go-eth2-client
+    // `forkAtEpoch` (the last entry whose epoch <= the duty's epoch), not the
+    // spec's fork keys — and they disagree on purpose. These entries are
+    // charon's static.json verbatim: the fork is 0x03017000 (bellatrix) below
+    // epoch 256, 0x04017000 (capella) in 256..29696, and 0x05017000 (deneb) from
+    // 29696 on — while the spec overrides above put electra live from epoch
+    // 2048. Keep the entries byte-identical to charon or cross-client signing
+    // domains diverge.
     mount_json(server, "GET", "/eth/v1/config/fork_schedule", |_| {
         json!({
             "data": [
