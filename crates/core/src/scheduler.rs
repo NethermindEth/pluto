@@ -135,8 +135,17 @@ impl SchedulerBuilder {
                             }
                         });
                     }
-                    // NOTE: A lagging subscriber requires further analysis.
-                    // Log the error and terminate the subscription.
+                    // NOTE: Handlers are spawned per event above, so the
+                    // receive loop drains immediately. Lag therefore no longer
+                    // signals a slow handler — it can only fire if this loop
+                    // task itself is starved (runtime saturation). Log and
+                    // terminate the subscription.
+                    //
+                    // Trade-off of spawning: a permanently stuck handler now
+                    // leaks its detached task rather than eventually lagging and
+                    // terminating the subscription. Bounding that growth is a
+                    // follow-up, tracked with the consensus duty-deadline
+                    // cancellation that caps stuck-task lifetime.
                     Err(sync::broadcast::error::RecvError::Lagged(skipped)) => {
                         tracing::error!(
                             skipped,
