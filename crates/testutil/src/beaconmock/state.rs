@@ -16,6 +16,10 @@ use super::attestation::AttestationStore;
 pub(crate) const DEFAULT_WITHDRAWAL_CREDENTIALS: &str =
     "0x3132333435363738393031323334353637383930313233343536373839303132";
 
+/// Balance and effective balance (in gwei) for every simnet mock DV validator:
+/// `31.3 ETH`. (ref: charon `createMockValidators`, app.go:1067)
+pub(crate) const MOCK_DV_BALANCE_GWEI: u64 = 31_300_000_000;
+
 /// Minimal validator representation used by the beacon mock.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Validator {
@@ -32,8 +36,8 @@ pub struct Validator {
 impl Validator {
     /// Creates an active validator with the provided index and public key.
     ///
-    /// Mirrors Charon's `ValidatorSetA`: `exit_epoch` and `withdrawable_epoch`
-    /// are the Go zero value (`"0"`), not `FAR_FUTURE_EPOCH`.
+    /// `exit_epoch` and `withdrawable_epoch` are `"0"` (the Go zero value), not
+    /// `FAR_FUTURE_EPOCH`, matching the `ValidatorSetA` fixture.
     #[must_use]
     pub fn active(index: ValidatorIndex, pubkey: BLSPubKey) -> Self {
         let pubkey = hex_0x(pubkey);
@@ -54,6 +58,33 @@ impl Validator {
             },
         }
     }
+
+    /// Creates an active simnet DV validator: a fixed `31.3 ETH` balance and
+    /// effective balance, `active_ongoing` status, `exit_epoch`/
+    /// `withdrawable_epoch` of `u64::MAX` (`FAR_FUTURE_EPOCH`, i.e. "never"),
+    /// zero activation epochs, and the fixed 32-byte withdrawal credentials.
+    ///
+    /// Distinct from [`Validator::active`] (the `ValidatorSetA` fixture), which
+    /// derives balance/epochs from the index — the wrong shape for a running
+    /// simnet cluster. (ref: charon `createMockValidators`, app.go:1062)
+    #[must_use]
+    pub fn mock_dv(index: ValidatorIndex, pubkey: BLSPubKey) -> Self {
+        Self {
+            index,
+            balance: MOCK_DV_BALANCE_GWEI,
+            status: ValidatorStatus::ActiveOngoing,
+            validator: ValidatorResponseValidator {
+                activation_eligibility_epoch: "0".to_string(),
+                activation_epoch: "0".to_string(),
+                effective_balance: MOCK_DV_BALANCE_GWEI.to_string(),
+                exit_epoch: u64::MAX.to_string(),
+                pubkey: hex_0x(pubkey),
+                slashed: false,
+                withdrawable_epoch: u64::MAX.to_string(),
+                withdrawal_credentials: DEFAULT_WITHDRAWAL_CREDENTIALS.to_string(),
+            },
+        }
+    }
 }
 
 /// Validator set used to seed validator and duty endpoints.
@@ -61,8 +92,8 @@ impl Validator {
 pub struct ValidatorSet(BTreeMap<ValidatorIndex, Validator>);
 
 impl ValidatorSet {
-    /// Returns the small deterministic validator set from Charon's Go
-    /// beaconmock.
+    /// Returns the small deterministic validator set used across the mock's
+    /// duty tests (the `ValidatorSetA` fixture).
     #[must_use]
     pub fn validator_set_a() -> Self {
         [
@@ -86,6 +117,22 @@ impl ValidatorSet {
         .collect()
     }
 
+    /// Builds a validator set from distributed-validator root public keys:
+    /// validators are indexed `0..n` in the order the pubkeys are given, each
+    /// built via [`Validator::mock_dv`]. (ref: charon `createMockValidators`,
+    /// app.go:1062)
+    #[must_use]
+    pub fn mock_dvs(pubkeys: impl IntoIterator<Item = BLSPubKey>) -> Self {
+        pubkeys
+            .into_iter()
+            .enumerate()
+            .map(|(i, pubkey)| {
+                let index = ValidatorIndex::try_from(i).unwrap_or(ValidatorIndex::MAX);
+                (index, Validator::mock_dv(index, pubkey))
+            })
+            .collect()
+    }
+
     /// Inserts or replaces a validator.
     pub fn insert(&mut self, validator: Validator) {
         self.0.insert(validator.index, validator);
@@ -105,8 +152,7 @@ impl ValidatorSet {
 
     /// Returns the first validator matching the given BLS public key.
     ///
-    /// Mirrors `ValidatorSet.ByPublicKey` from Charon's Go beaconmock: a linear
-    /// scan over the set returning a clone of the matching validator.
+    /// A linear scan over the set, returning a clone of the match.
     #[must_use]
     pub fn by_public_key(&self, pubkey: &BLSPubKey) -> Option<Validator> {
         let needle = hex_0x(pubkey);
@@ -281,5 +327,39 @@ mod tests {
         for pubkey in pubkeys {
             assert!(set.by_public_key(&pubkey).is_some());
         }
+    }
+
+    #[test]
+    fn mock_dvs_matches_charon_create_mock_validators() {
+        // Two arbitrary, distinct pubkeys; indexing is positional (0..n).
+        let mut pk_a: BLSPubKey = [0u8; 48];
+        pk_a[0] = 0xaa;
+        let mut pk_b: BLSPubKey = [0u8; 48];
+        pk_b[0] = 0xbb;
+
+        let set = ValidatorSet::mock_dvs([pk_a, pk_b]);
+        let validators = set.validators();
+        assert_eq!(validators.len(), 2);
+
+        // Positional 0-based indexing, keyed by that index.
+        assert_eq!(validators[0].index, 0);
+        assert_eq!(validators[1].index, 1);
+        assert_eq!(set.by_public_key(&pk_b).expect("pk_b present").index, 1);
+
+        // Field values pinned to charon `createMockValidators` (app.go:1062).
+        let v = &validators[0];
+        assert_eq!(v.balance, 31_300_000_000);
+        assert_eq!(v.status, ValidatorStatus::ActiveOngoing);
+        assert_eq!(v.validator.effective_balance, "31300000000");
+        assert_eq!(v.validator.exit_epoch, "18446744073709551615");
+        assert_eq!(v.validator.withdrawable_epoch, "18446744073709551615");
+        assert_eq!(v.validator.activation_epoch, "0");
+        assert_eq!(v.validator.activation_eligibility_epoch, "0");
+        assert!(!v.validator.slashed);
+        assert_eq!(
+            v.validator.withdrawal_credentials,
+            DEFAULT_WITHDRAWAL_CREDENTIALS
+        );
+        assert_eq!(v.validator.pubkey, hex_0x(pk_a));
     }
 }

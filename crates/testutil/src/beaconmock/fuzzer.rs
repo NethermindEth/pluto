@@ -1,11 +1,11 @@
 //! Optional fuzz handlers that override default beacon endpoints with random
 //! JSON responses.
 //!
-//! Mirrors `WithBeaconMockFuzzer` from Charon's Go beaconmock
-//! (`testutil/beaconmock/beaconmock_fuzz.go`). Pluto's mock is HTTP-only, so
-//! instead of swapping out function dispatch fields we mount higher-priority
-//! wiremock routes that produce randomly-generated, schema-shaped JSON for the
-//! same set of endpoints consumed by Charon during fuzz testing.
+//! Pluto's mock is HTTP-only, so rather than swapping function dispatch fields
+//! (charon's `WithBeaconMockFuzzer` approach) it mounts higher-priority
+//! wiremock routes serving randomly-generated, schema-shaped JSON for the
+//! endpoints exercised during fuzz testing.
+//! (ref: charon `testutil/beaconmock/beaconmock_fuzz.go`)
 //!
 //! Mounted routes use a numerically lower priority than `mount_defaults` so
 //! they take precedence when both are registered on the same `MockServer`.
@@ -45,7 +45,7 @@ pub(super) async fn mount_fuzzer(server: &MockServer) {
     })
     .await;
 
-    // Both v2 and v3 endpoints for block production exist in Charon's flows.
+    // Block production is served on both the v2 and v3 endpoints.
     mount_fuzz_json(
         server,
         "GET",

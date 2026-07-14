@@ -39,14 +39,20 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
     })
     .await;
 
+    // Signing domains resolve the fork from THIS endpoint (go-eth2-client
+    // `forkAtEpoch`), not the spec's fork keys, so this schedule is deliberately
+    // distinct from the spec overrides above: at simnet epochs the effective
+    // signing fork is deneb 0x05017000 even though the spec keys claim electra is
+    // active. The entries match charon's beaconmock verbatim — both sides must
+    // resolve the same fork per slot or cross-client signatures diverge.
     mount_json(server, "GET", "/eth/v1/config/fork_schedule", |_| {
         json!({
             "data": [
                 { "previous_version": "0x01017000", "current_version": "0x01017000", "epoch": "0" },
                 { "previous_version": "0x01017000", "current_version": "0x02017000", "epoch": "0" },
                 { "previous_version": "0x02017000", "current_version": "0x03017000", "epoch": "0" },
-                { "previous_version": "0x03017000", "current_version": "0x04017000", "epoch": "0" },
-                { "previous_version": "0x04017000", "current_version": "0x05017000", "epoch": "0" }
+                { "previous_version": "0x03017000", "current_version": "0x04017000", "epoch": "256" },
+                { "previous_version": "0x04017000", "current_version": "0x05017000", "epoch": "29696" }
             ]
         })
     })
@@ -56,7 +62,18 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
         server,
         "GET",
         "/eth/v1/node/version",
-        |_| json!({ "data": { "version": "charon/static_beacon_mock" } }),
+        // Serve a real, parseable teku client string so the node's beacon-version
+        // check recognizes a known client — a mock-y "charon/…" fails the parser
+        // and WARNs, tripping the simnet log-rate gate. Uses pluto's minimum
+        // supported teku (v25.9.3, app `eth2wrap::version`); charon's own mock
+        // pins v25.4.1, which pluto would reject as too old.
+        |_| {
+            json!({
+                "data": {
+                    "version": "teku/v25.9.3/linux-x86_64/-ubuntu-openjdk64bitservervm-java-21"
+                }
+            })
+        },
     )
     .await;
 
@@ -146,6 +163,21 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
         move |_| validators_response(&state)
     })
     .await;
+    // Clients resolve validators via POST (`post_state_validators`) for any
+    // `state_id` (by-slot, then a `head` fallback) — see `valcache` and the
+    // validator mock's `active_validators`. A real beacon node serves both
+    // verbs; mount POST on the same responder so the seeded set is returned for
+    // any state id, not just the literal `head` GET above.
+    mount_json(
+        server,
+        "POST",
+        r"^/eth/v1/beacon/states/[^/]+/validators$",
+        {
+            let state = Arc::clone(&state);
+            move |_| validators_response(&state)
+        },
+    )
+    .await;
 
     mount_response(
         server,
@@ -174,10 +206,71 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
     })
     .await;
 
+    // Block production for the fetcher's proposer-data fetch (`produce_block_v3`
+    // → GET /eth/v3/validator/blocks/{slot}). Returns a deterministic Deneb
+    // proposal (identical across nodes for a given slot, so QBFT can agree on
+    // the proposer duty). Distinct from the signed-block *retrieval* endpoint
+    // above; without it the fetcher gets `UnexpectedResponse` and the proposer
+    // duty never decides.
+    mount_json(
+        server,
+        "GET",
+        r"^/eth/v3/validator/blocks/[0-9]+$",
+        |request| produce_block_response(last_path_segment_u64(request.url.path())),
+    )
+    .await;
+
     mount_json(server, "POST", r"^/eth/v1/validator/duties/sync/[0-9]+$", {
         let state = Arc::clone(&state);
         move |request| sync_committee_duties_response(&state, request)
     })
+    .await;
+
+    // Block publish: the broadcaster POSTs the group-signed proposal here after
+    // proposer consensus decides. A real beacon node just acks; without a mount
+    // the POST 404s and the broadcaster sees `Unknown`. The blinded variant is
+    // mounted for parity.
+    mount_status(server, "POST", "/eth/v2/beacon/blocks", 200).await;
+    mount_status(server, "POST", "/eth/v2/beacon/blinded_blocks", 200).await;
+
+    // Sync-committee submissions: the broadcaster POSTs sync-committee messages
+    // and (for aggregators) contribution-and-proofs after sync consensus. A real
+    // beacon node just acks; without these the broadcaster sees `Unknown`.
+    mount_status(server, "POST", "/eth/v1/beacon/pool/sync_committees", 200).await;
+    mount_status(
+        server,
+        "POST",
+        "/eth/v1/validator/contribution_and_proofs",
+        200,
+    )
+    .await;
+
+    // Sync-committee contribution (aggregator fetch): the fetcher and validator
+    // mock GET this to build/aggregate sync contributions. Without it the fetch
+    // returns an empty body (EOF) — the sync analog of the validators gap.
+    mount_json(
+        server,
+        "GET",
+        "/eth/v1/validator/sync_committee_contribution",
+        sync_committee_contribution_response,
+    )
+    .await;
+
+    // Attestation pool submit: the node-side broadcaster POSTs the group-signed
+    // attestation to the beacon node after consensus (distinct from the
+    // validator-mock → validator-API submit). Ack.
+    mount_status(server, "POST", "/eth/v2/beacon/pool/attestations", 200).await;
+
+    // Aggregate-and-proofs submit: same broadcaster path for the group-signed
+    // aggregate; a real beacon node just acks. Without this mount wiremock 404s
+    // and every aggregator duty's final broadcast fails with "submit aggregate
+    // attestations: Unknown".
+    mount_status(
+        server,
+        "POST",
+        "/eth/v2/validator/aggregate_and_proofs",
+        200,
+    )
     .await;
 }
 
@@ -193,8 +286,8 @@ pub(crate) async fn mount_json<F>(
 }
 
 /// Mounts a handler that returns a `ResponseTemplate` directly, used by
-/// handlers that need to vary the HTTP status (e.g. 500 on spec lookup
-/// failure, matching Charon's `SlotsPerEpochFunc` error propagation).
+/// handlers that need to vary the HTTP status (e.g. 500 on spec lookup failure,
+/// so a missing `SLOTS_PER_EPOCH` surfaces as an error instead of a default).
 pub(crate) async fn mount_response<F>(
     server: &MockServer,
     http_method: &'static str,
@@ -277,6 +370,90 @@ fn validators_response(state: &MockState) -> Value {
     })
 }
 
+/// Deterministic `produce_block_v3` response (Deneb) for the proposer-data
+/// fetch. Values are fixed (zero) so every node produces the identical block
+/// for a given slot, letting QBFT agree; only the slot varies. Same shape as
+/// the fuzzer's `proposal_response`, without the randomness.
+fn produce_block_response(slot: u64) -> Value {
+    let zero_sig = format!("0x{}", "00".repeat(96));
+    json!({
+        "version": "deneb",
+        "execution_payload_blinded": false,
+        "execution_payload_value": "0",
+        "consensus_block_value": "0",
+        "data": {
+            "block": {
+                "slot": slot.to_string(),
+                "proposer_index": "0",
+                "parent_root": ZERO_ROOT,
+                "state_root": ZERO_ROOT,
+                "body": {
+                    "randao_reveal": zero_sig,
+                    "eth1_data": {
+                        "deposit_root": ZERO_ROOT,
+                        "deposit_count": "0",
+                        "block_hash": ZERO_ROOT,
+                    },
+                    "graffiti": ZERO_ROOT,
+                    "proposer_slashings": [],
+                    "attester_slashings": [],
+                    "attestations": [],
+                    "deposits": [],
+                    "voluntary_exits": [],
+                    "sync_aggregate": {
+                        "sync_committee_bits": format!("0x{}", "00".repeat(64)),
+                        "sync_committee_signature": zero_sig,
+                    },
+                    "execution_payload": {
+                        "parent_hash": ZERO_ROOT,
+                        "fee_recipient": format!("0x{}", "00".repeat(20)),
+                        "state_root": ZERO_ROOT,
+                        "receipts_root": ZERO_ROOT,
+                        "logs_bloom": format!("0x{}", "00".repeat(256)),
+                        "prev_randao": ZERO_ROOT,
+                        "block_number": "0",
+                        "gas_limit": "0",
+                        "gas_used": "0",
+                        "timestamp": "0",
+                        "extra_data": "0x",
+                        "base_fee_per_gas": "0",
+                        "block_hash": ZERO_ROOT,
+                        "transactions": [],
+                        "withdrawals": [],
+                        "blob_gas_used": "0",
+                        "excess_blob_gas": "0",
+                    },
+                    "bls_to_execution_changes": [],
+                    "blob_kzg_commitments": [],
+                }
+            },
+            "kzg_proofs": [],
+            "blobs": [],
+        }
+    })
+}
+
+/// Deterministic sync-committee contribution for the aggregator fetch: echoes
+/// the request's slot / subcommittee index / beacon block root with a fixed
+/// (zero) aggregation and signature (same shape as the fetcher's test
+/// responder).
+fn sync_committee_contribution_response(request: &Request) -> Value {
+    let query: BTreeMap<String, String> = request.url.query_pairs().into_owned().collect();
+    let slot = query.get("slot").cloned().unwrap_or_default();
+    let subcommittee_index = query.get("subcommittee_index").cloned().unwrap_or_default();
+    let beacon_block_root = query.get("beacon_block_root").cloned().unwrap_or_default();
+
+    json!({
+        "data": {
+            "slot": slot,
+            "beacon_block_root": beacon_block_root,
+            "subcommittee_index": subcommittee_index,
+            "aggregation_bits": format!("0x{}", "00".repeat(16)),
+            "signature": format!("0x{}", "00".repeat(96)),
+        }
+    })
+}
+
 fn attester_duties_response(state: &MockState, request: &Request) -> ResponseTemplate {
     let Some(factor) = *read_lock(&state.deterministic_attester_duties) else {
         return ResponseTemplate::new(200).set_body_json(duties_response(Vec::new()));
@@ -330,9 +507,8 @@ fn proposer_duties_response(state: &MockState, request: &Request) -> ResponseTem
         Ok(value) => value,
         Err(message) => return error_response(500, message),
     };
-    // Mirrors Charon's `WithDeterministicProposerDuties`, which iterates over
-    // `mock.ActiveValidators(ctx)` — only validators with an Active* status
-    // are eligible to propose.
+    // Only validators with an Active* status are eligible to propose, so the
+    // deterministic assignment iterates active validators only.
     let validators: Vec<_> = read_lock(&state.validator_set)
         .validators()
         .into_iter()
@@ -499,10 +675,8 @@ fn epoch_from_path(path: &str) -> Epoch {
     last_path_segment_u64(path)
 }
 
-/// Reads `SLOTS_PER_EPOCH` from the spec, mirroring Charon's
-/// `SlotsPerEpochFunc` (testutil/beaconmock/options.go) which surfaces an
-/// error when the key is missing or not a positive integer instead of
-/// silently defaulting.
+/// Reads `SLOTS_PER_EPOCH` from the spec, surfacing an error when the key is
+/// missing or not a positive integer rather than silently defaulting.
 pub(crate) fn slots_per_epoch(state: &MockState) -> Result<u64, &'static str> {
     read_lock(&state.spec)
         .get("SLOTS_PER_EPOCH")
@@ -538,7 +712,7 @@ fn static_endpoint_data(endpoint: &str) -> serde_json::Map<String, Value> {
 
 pub(crate) fn default_spec() -> Value {
     // Start from the Holesky snapshot baseline (~80 mainnet keys) and overlay
-    // the Charon-simnet overrides used by tests.
+    // the simnet overrides used by tests.
     let mut spec = static_endpoint_data("/eth/v1/config/spec");
 
     let overrides: &[(&str, &str)] = &[
