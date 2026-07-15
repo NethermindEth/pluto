@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use backon::Retryable;
-use libp2p::Multiaddr;
+use libp2p::{Multiaddr, multiaddr::Protocol};
 use pluto_eth2util::enr::Record;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -389,4 +389,90 @@ fn addr_info_from_p2p_addr(addr: &Multiaddr) -> std::result::Result<AddrInfo, Pe
     let mut infos = addr_infos_from_p2p_addrs(std::slice::from_ref(addr))?;
 
     infos.pop().ok_or(PeerError::MissingPeerIdInMultiaddr)
+}
+
+/// Converts configured relay multiaddrs into the string form [`new_relays`]
+/// expects: HTTP(S) relay endpoints become `scheme://host[:port]` URLs (for
+/// background resolution), anything else falls back to the multiaddr string.
+pub fn relay_addrs_for_resolution(relays: &[Multiaddr]) -> Vec<String> {
+    relays.iter().map(relay_addr_for_resolution).collect()
+}
+
+/// Converts one relay multiaddr into the string form [`new_relays`] expects.
+///
+/// The default port for the scheme (80/443) is omitted from the URL.
+pub fn relay_addr_for_resolution(relay: &Multiaddr) -> String {
+    let mut scheme = None;
+    let mut host = None;
+    let mut port = None;
+
+    for protocol in relay.iter() {
+        match protocol {
+            Protocol::Http => scheme = Some("http"),
+            Protocol::Https => scheme = Some("https"),
+            Protocol::Dns(name)
+            | Protocol::Dns4(name)
+            | Protocol::Dns6(name)
+            | Protocol::Dnsaddr(name)
+                if host.is_none() =>
+            {
+                host = Some(name.to_string());
+            }
+            Protocol::Ip4(ip) if host.is_none() => {
+                host = Some(ip.to_string());
+            }
+            Protocol::Ip6(ip) if host.is_none() => {
+                host = Some(format!("[{ip}]"));
+            }
+            Protocol::Tcp(tcp_port) => port = Some(tcp_port),
+            _ => {}
+        }
+    }
+
+    if let (Some(scheme), Some(host)) = (scheme, host) {
+        let default_port = match scheme {
+            "https" => 443,
+            _ => 80,
+        };
+
+        return match port {
+            Some(port) if port != default_port => format!("{scheme}://{host}:{port}"),
+            _ => format!("{scheme}://{host}"),
+        };
+    }
+
+    relay.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relay_addr_resolution_forms() {
+        let cases = [
+            (
+                "/dns/relay.example.org/tcp/443/https",
+                "https://relay.example.org",
+            ),
+            (
+                "/dns/relay.example.org/tcp/8443/https",
+                "https://relay.example.org:8443",
+            ),
+            (
+                "/dns4/relay.example.org/tcp/80/http",
+                "http://relay.example.org",
+            ),
+            ("/ip4/10.0.0.1/tcp/3640/http", "http://10.0.0.1:3640"),
+            ("/ip6/::1/tcp/443/https", "https://[::1]"),
+        ];
+        for (addr, expected) in cases {
+            let addr: Multiaddr = addr.parse().expect("valid multiaddr");
+            assert_eq!(relay_addr_for_resolution(&addr), expected);
+        }
+
+        // Non-HTTP multiaddrs fall back to the multiaddr string.
+        let plain: Multiaddr = "/ip4/10.0.0.1/tcp/3610".parse().expect("valid multiaddr");
+        assert_eq!(relay_addr_for_resolution(&plain), plain.to_string());
+    }
 }

@@ -4,7 +4,7 @@ use std::{
 };
 
 use backon::{BackoffBuilder, Retryable};
-use tokio::sync;
+use tokio::{sync, task::JoinHandle};
 use tokio_util::{future::FutureExt, sync::CancellationToken};
 
 use crate::{scheduler::metrics::SCHEDULER_METRICS, types};
@@ -191,12 +191,14 @@ impl SchedulerBuilder {
     /// function.
     ///
     /// The returned [`SchedulerHandle`] can be used to query the scheduler for
-    /// duty definitions.
+    /// duty definitions. The returned [`JoinHandle`] tracks the background
+    /// actor task so callers can supervise its lifecycle (the actor runs until
+    /// `ct` is cancelled).
     pub async fn build(
         self,
         client: pluto_eth2api::BeaconNodeClient,
         ct: CancellationToken,
-    ) -> Result<SchedulerHandle> {
+    ) -> Result<(SchedulerHandle, JoinHandle<()>)> {
         wait_chain_start(&client)
             .with_cancellation_token(&ct)
             .await
@@ -227,9 +229,9 @@ impl SchedulerBuilder {
 
         let (msg_tx, msg_rx) = sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
         let handle = SchedulerHandle { sender: msg_tx };
-        tokio::spawn(actor.run(slot_rx, msg_rx, self.reorg_rx, ct));
+        let task = tokio::spawn(actor.run(slot_rx, msg_rx, self.reorg_rx, ct));
 
-        Ok(handle)
+        Ok((handle, task))
     }
 }
 

@@ -14,19 +14,32 @@
 //! The hidden `unsafe run` variant adds test-only flags (e.g. `--p2p-fuzz`) and
 //! must not be used in production.
 //!
-//! Flags are parsed and validated into [`RunConfig`]. The long-running workflow
-//! itself is not yet implemented: invoking the command currently panics at
-//! [`run_workflow`], the seam where the engine will be wired in.
+//! Flags are parsed and validated into [`RunConfig`], bridged into
+//! [`pluto_app::node::AppConfig`] by [`build_app_config`], and the node is
+//! driven via [`pluto_app::node::App::run`] until cancelled.
+//!
+//! Not every accepted flag is honored yet. Correctness-affecting flags with no
+//! implementation (simnet mocks, custom testnets, beacon-node headers, VC TLS,
+//! a preferred consensus protocol, synthetic block proposals) fail fast with a
+//! "not yet supported" error, while observability/availability-only flags
+//! (monitoring/debug addresses, OTLP, proc directory, fallback beacon
+//! endpoints) are ignored with a warning.
 //!
 //! Limitations:
-//! - The run workflow is a stub; the command does not yet perform real duties.
 //! - `--log-format` and `--log-output-path` are accepted but not yet applied
 //!   (console and Loki output only).
 
-use std::{collections::HashMap, path::Path, time::Duration as StdDuration};
+use std::{
+    collections::HashMap,
+    net::{SocketAddr, ToSocketAddrs},
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration as StdDuration,
+};
 
 use libp2p::multiaddr::Protocol;
 use pluto_eth2util::helpers::validate_http_headers;
+use pluto_featureset::{Feature, FeatureSet, FeaturesetError, Status};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
@@ -45,6 +58,12 @@ const MAX_GRAFFITI_BYTES_NO_APPEND: usize = 32;
 const MAX_NICKNAME_BYTES: usize = 32;
 /// Grace period for the Loki background task to flush buffered logs on exit.
 const LOKI_FLUSH_TIMEOUT: StdDuration = StdDuration::from_secs(3);
+/// Default `--monitoring-address`; shared by the flag definition and the
+/// ignored-flag warning so they cannot drift.
+const DEFAULT_MONITORING_ADDR: &str = "127.0.0.1:3620";
+/// Default `--simnet-validator-keys-dir`; shared by the flag definition and
+/// the unsupported-flag check so they cannot drift.
+const DEFAULT_SIMNET_KEYS_DIR: &str = ".charon/validator_keys";
 
 /// Arguments for the `run` command.
 ///
@@ -237,7 +256,7 @@ pub struct RunGeneralArgs {
     #[arg(
         long = "simnet-validator-keys-dir",
         env = "CHARON_SIMNET_VALIDATOR_KEYS_DIR",
-        default_value = ".charon/validator_keys",
+        default_value = DEFAULT_SIMNET_KEYS_DIR,
         help = "The directory containing the simnet validator key shares."
     )]
     pub simnet_validator_keys_dir: String,
@@ -402,7 +421,7 @@ pub struct RunDebugMonitoringArgs {
     #[arg(
         long = "monitoring-address",
         env = "CHARON_MONITORING_ADDRESS",
-        default_value = "127.0.0.1:3620",
+        default_value = DEFAULT_MONITORING_ADDR,
         help = "Listening address (ip and port) for the monitoring API (prometheus)."
     )]
     pub monitor_addr: String,
@@ -551,10 +570,6 @@ pub struct RunFeatureArgs {
 }
 
 /// Custom test network configuration.
-//
-// Populated from flags and consumed by the future app entry; until the run
-// workflow is wired (see module docs) these fields are written but not read.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct TestnetConfig {
     /// Name of the custom test network.
@@ -566,14 +581,25 @@ pub struct TestnetConfig {
     /// Genesis timestamp (unix seconds).
     pub genesis_timestamp: i64,
     /// Capella hard fork version.
+    // Accepted for Charon flag parity, inert until custom testnets are
+    // supported (Go's `Network.IsNonZero` excludes it too).
+    #[allow(dead_code)]
     pub capella_hard_fork: String,
 }
 
+impl TestnetConfig {
+    /// Reports whether a custom testnet is fully specified, mirroring Go's
+    /// `eth2util.Network.IsNonZero` (the capella hard fork is excluded there
+    /// too). Charon silently ignores partially-specified testnet flags.
+    fn is_non_zero(&self) -> bool {
+        !self.name.is_empty()
+            && self.chain_id != 0
+            && self.genesis_timestamp != 0
+            && !self.genesis_fork_version_hex.is_empty()
+    }
+}
+
 /// Feature set configuration.
-//
-// Populated from flags and consumed by the future app entry; until the run
-// workflow is wired (see module docs) these fields are written but not read.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct FeatureConfig {
     /// Minimum feature status to enable by default (alpha/beta/stable).
@@ -585,13 +611,9 @@ pub struct FeatureConfig {
 }
 
 /// Configuration for the `run` command — the settings produced from the parsed
-/// flags. This is the object the future app entry consumes (see the seam in
-/// [`run`]); `p2p_fuzz` is the single test-only field, set only via the hidden
-/// `unsafe run` command.
-//
-// The parsed config surface; the run workflow that reads these fields is not
-// yet implemented, so they are populated but not yet consumed.
-#[allow(dead_code)]
+/// flags, consumed by [`run`] (tracing/Loki) and bridged into
+/// [`pluto_app::node::AppConfig`] by [`build_app_config`]; `p2p_fuzz` is the
+/// single test-only field, set only via the hidden `unsafe run` command.
 #[derive(Debug)]
 pub struct RunConfig {
     /// P2P configuration built from [`RunP2PArgs`].
@@ -623,8 +645,14 @@ pub struct RunConfig {
     /// Beacon node submission request timeout.
     pub beacon_node_submit_timeout: StdDuration,
     /// [DISABLED] Jaeger tracing address.
+    // Accepted for Charon flag parity; `RunConfig::try_from` already warns
+    // when set, and the field is never read again.
+    #[allow(dead_code)]
     pub jaeger_addr: String,
     /// [DISABLED] Jaeger tracing service name.
+    // Accepted for Charon flag parity; `RunConfig::try_from` already warns
+    // when set, and the field is never read again.
+    #[allow(dead_code)]
     pub jaeger_service: String,
     /// OTLP gRPC tracing backend address.
     pub otlp_address: String,
@@ -641,6 +669,9 @@ pub struct RunConfig {
     /// Directory containing simnet validator key shares.
     pub simnet_validator_keys_dir: String,
     /// Simnet beacon mock slot duration.
+    // Accepted for Charon flag parity, inert until simnet is supported (the
+    // simnet mode flags themselves fail fast in `check_unsupported_flags`).
+    #[allow(dead_code)]
     pub simnet_slot_duration: StdDuration,
     /// Enables additional synthetic block proposal duties.
     pub synthetic_block_proposals: bool,
@@ -923,10 +954,231 @@ pub async fn run(config: RunConfig, ct: CancellationToken) -> Result<()> {
     result
 }
 
-/// The long-running validator workflow. Not yet implemented: panics via
-/// `unimplemented!` at the seam where the app entry will be wired in.
-async fn run_workflow(_config: RunConfig, _ct: CancellationToken) -> Result<()> {
-    unimplemented!("pluto run")
+/// The long-running validator workflow: bridges the parsed [`RunConfig`] into
+/// [`pluto_app::node::AppConfig`] and drives the node until `ct` fires (signal
+/// handling lives in `main`).
+async fn run_workflow(config: RunConfig, ct: CancellationToken) -> Result<()> {
+    let app_config = build_app_config(config)?;
+    pluto_app::node::App::new(app_config).run(ct).await?;
+    Ok(())
+}
+
+/// Bridges [`RunConfig`] into [`pluto_app::node::AppConfig`].
+///
+/// Flags the app does not support yet either fail fast
+/// ([`check_unsupported_flags`]) or are ignored with a warning
+/// ([`warn_ignored_flags`]); see the module docs for the split.
+fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
+    check_unsupported_flags(&config)?;
+    warn_ignored_flags(&config);
+
+    let feature_set = build_feature_set(&config.feature)?;
+    let validator_api_addr = parse_validator_api_addr(&config.validator_api_addr)?;
+
+    // Exhaustive destructure: adding a `RunConfig` field without deciding its
+    // bridge behavior fails to compile instead of being silently dropped.
+    let RunConfig {
+        p2p,
+        log: _,
+        feature: _,
+        lock_file,
+        manifest_file: _,
+        no_verify,
+        private_key_file,
+        private_key_locking,
+        monitoring_addr: _,
+        debug_addr: _,
+        validator_api_addr: _,
+        beacon_node_addrs,
+        beacon_node_timeout,
+        beacon_node_submit_timeout,
+        jaeger_addr: _,
+        jaeger_service: _,
+        otlp_address: _,
+        otlp_headers: _,
+        otlp_insecure: _,
+        otlp_service_name: _,
+        simnet_beacon_mock: _,
+        simnet_validator_mock: _,
+        simnet_validator_keys_dir: _,
+        simnet_slot_duration: _,
+        synthetic_block_proposals: _,
+        builder_api,
+        simnet_beacon_mock_fuzz: _,
+        testnet: _,
+        proc_directory: _,
+        consensus_protocol: _,
+        nickname,
+        beacon_node_headers: _,
+        fallback_beacon_node_addrs: _,
+        execution_engine_addr,
+        graffiti,
+        graffiti_disable_client_append,
+        vc_tls_cert_file: _,
+        vc_tls_key_file: _,
+        p2p_fuzz: _,
+    } = config;
+
+    Ok(pluto_app::node::AppConfig {
+        p2p,
+        lock_file: PathBuf::from(lock_file),
+        priv_key_file: PathBuf::from(private_key_file),
+        priv_key_locking: private_key_locking,
+        beacon_node_addrs,
+        beacon_node_timeout,
+        beacon_node_submit_timeout,
+        validator_api_addr,
+        builder_api,
+        nickname,
+        no_verify,
+        // An empty endpoint means "no eth1 verification" on both sides: Charon
+        // hands "" to eth1wrap and Pluto's `EthClient::new("")` is a no-op
+        // client, so `None` is exactly equivalent.
+        eth1_endpoint: (!execution_engine_addr.is_empty()).then_some(execution_engine_addr),
+        // Charon treats a nil graffiti list as "default client graffiti per
+        // validator" (`NewGraffitiBuilder`), matching `AppConfig`'s `None`.
+        graffiti: (!graffiti.is_empty()).then_some(graffiti),
+        graffiti_disable_client_append,
+        feature_set,
+    })
+}
+
+/// Rejects correctness-affecting flags the run workflow does not support yet:
+/// silently ignoring any of these would change duty or operator-facing
+/// behavior (e.g. `--simnet-beacon-mock` permits empty beacon endpoints, which
+/// the real beacon client cannot handle).
+fn check_unsupported_flags(config: &RunConfig) -> Result<()> {
+    let unsupported =
+        |flag: &str| CliError::Other(format!("flag '{flag}' is not yet supported by pluto run"));
+
+    if config.simnet_beacon_mock {
+        return Err(unsupported("--simnet-beacon-mock"));
+    }
+    if config.simnet_validator_mock {
+        return Err(unsupported("--simnet-validator-mock"));
+    }
+    if config.simnet_beacon_mock_fuzz {
+        return Err(unsupported("--simnet-beacon-mock-fuzz"));
+    }
+    if config.simnet_validator_keys_dir != DEFAULT_SIMNET_KEYS_DIR {
+        return Err(unsupported("--simnet-validator-keys-dir"));
+    }
+    if config.synthetic_block_proposals {
+        return Err(unsupported("--synthetic-block-proposals"));
+    }
+    if config.p2p_fuzz {
+        return Err(unsupported("--p2p-fuzz"));
+    }
+    // Partially-specified testnets are ignored, matching Charon's
+    // `IsNonZero`-gated registration.
+    if config.testnet.is_non_zero() {
+        return Err(unsupported("--testnet-*"));
+    }
+    if !config.beacon_node_headers.is_empty() {
+        return Err(unsupported("--beacon-node-headers"));
+    }
+    if !config.consensus_protocol.is_empty() {
+        return Err(unsupported("--consensus-protocol"));
+    }
+    if !config.vc_tls_cert_file.is_empty() || !config.vc_tls_key_file.is_empty() {
+        return Err(unsupported("--vc-tls-cert-file/--vc-tls-key-file"));
+    }
+
+    Ok(())
+}
+
+/// Warns about observability/availability-only flags the run workflow ignores.
+/// Runs after tracing init (see [`run`]) so the warnings reach the subscriber.
+fn warn_ignored_flags(config: &RunConfig) {
+    if config.monitoring_addr != DEFAULT_MONITORING_ADDR {
+        warn!(
+            address = %config.monitoring_addr,
+            "the monitoring API is not yet supported by pluto run; ignoring --monitoring-address"
+        );
+    }
+    if !config.debug_addr.is_empty() {
+        warn!(
+            address = %config.debug_addr,
+            "the debug API is not yet supported by pluto run; ignoring --debug-address"
+        );
+    }
+    if !config.otlp_address.is_empty() {
+        warn!(
+            address = %config.otlp_address,
+            headers = ?config.otlp_headers,
+            insecure = config.otlp_insecure,
+            service = %config.otlp_service_name,
+            "OTLP tracing is not yet supported by pluto run; ignoring the --otlp-* flags"
+        );
+    }
+    if !config.proc_directory.is_empty() {
+        warn!(
+            directory = %config.proc_directory,
+            "stack component detection is not yet supported by pluto run; ignoring --proc-directory"
+        );
+    }
+    if !config.fallback_beacon_node_addrs.is_empty() {
+        warn!(
+            "beacon node failover is not yet supported by pluto run; ignoring --fallback-beacon-node-endpoints"
+        );
+    }
+    // Post-#4130 Charon reads only the lock file and silently ignores an
+    // existing manifest; warn instead so migrated node directories cannot
+    // diverge unnoticed.
+    if Path::new(&config.manifest_file).exists() {
+        warn!(
+            path = %config.manifest_file,
+            "cluster manifest support was removed (Charon #4130); the cluster lock file is authoritative and the manifest file is ignored"
+        );
+    }
+}
+
+/// Resolves the feature-set flags into an injectable [`FeatureSet`].
+///
+/// Matches Charon's `featureset.Init`: an unknown min status is a hard error,
+/// while unknown enabled/disabled feature names are warned about and ignored.
+fn build_feature_set(feature: &FeatureConfig) -> Result<Arc<FeatureSet>> {
+    // `Status::try_from` also parses statuses like "enable" that are not valid
+    // *min* statuses; `FeatureSet::from_config` rejects those below, so both
+    // paths surface Charon's "unknown min status" error.
+    let min_status = Status::try_from(feature.min_status.as_str()).map_err(|_| {
+        FeaturesetError::UnknownMinStatus {
+            min_status: feature.min_status.clone(),
+        }
+    })?;
+
+    let parse_features = |names: &[String], context: &str| -> Vec<Feature> {
+        names
+            .iter()
+            .filter_map(|name| {
+                Feature::try_from(name.as_str())
+                    .inspect_err(|_| warn!(feature = %name, "Ignoring unknown {context} feature"))
+                    .ok()
+            })
+            .collect()
+    };
+
+    let feature_set = FeatureSet::from_config(pluto_featureset::Config {
+        min_status,
+        enabled: parse_features(&feature.enabled, "enabled"),
+        disabled: parse_features(&feature.disabled, "disabled"),
+    })?;
+
+    Ok(Arc::new(feature_set))
+}
+
+/// Parses the validator API listen address. Unlike a plain [`SocketAddr`]
+/// parse, [`ToSocketAddrs`] also resolves hostnames like `localhost:3600`,
+/// which Charon accepts (it defers to Go's `net.Listen`).
+fn parse_validator_api_addr(addr: &str) -> Result<SocketAddr> {
+    addr.to_socket_addrs()
+        .map_err(|err| CliError::Other(format!("invalid validator-api-address {addr:?}: {err}")))?
+        .next()
+        .ok_or_else(|| {
+            CliError::Other(format!(
+                "invalid validator-api-address {addr:?}: no addresses resolved"
+            ))
+        })
 }
 
 #[cfg(test)]
@@ -1465,10 +1717,231 @@ mod tests {
         assert_eq!(config.log.override_env_filter.as_deref(), Some("debug"));
     }
 
+    /// Builds the app config from safe `run` flags.
+    fn app_config(extra: &[&str]) -> Result<pluto_app::node::AppConfig> {
+        build_app_config(parse_run(extra).expect("run args should parse"))
+    }
+
+    /// Returns the `Display` string of the error from a failing `app_config`.
+    fn app_config_err(extra: &[&str]) -> String {
+        app_config(extra)
+            .expect_err("expected bridge error")
+            .to_string()
+    }
+
+    #[test]
+    fn build_app_config_maps_fields() {
+        let config = app_config(&[
+            "--lock-file=/tmp/lock.json",
+            "--private-key-file=/tmp/key",
+            "--private-key-file-lock",
+            "--beacon-node-timeout=5s",
+            "--beacon-node-submit-timeout=6s",
+            "--validator-api-address=127.0.0.1:7600",
+            "--builder-api",
+            "--nickname=node-a",
+            "--no-verify",
+            "--execution-client-rpc-endpoint=http://127.0.0.1:8545",
+            "--graffiti=hello",
+            "--graffiti-disable-client-append",
+            "--p2p-tcp-address=0.0.0.0:9000",
+        ])
+        .expect("bridge should succeed");
+
+        assert_eq!(config.lock_file, PathBuf::from("/tmp/lock.json"));
+        assert_eq!(config.priv_key_file, PathBuf::from("/tmp/key"));
+        assert!(config.priv_key_locking);
+        assert_eq!(
+            config.beacon_node_addrs,
+            vec!["http://beacon.node".to_string()]
+        );
+        assert_eq!(config.beacon_node_timeout, StdDuration::from_secs(5));
+        assert_eq!(config.beacon_node_submit_timeout, StdDuration::from_secs(6));
+        assert_eq!(
+            config.validator_api_addr,
+            "127.0.0.1:7600".parse::<SocketAddr>().expect("socket addr")
+        );
+        assert!(config.builder_api);
+        assert_eq!(config.nickname, "node-a");
+        assert!(config.no_verify);
+        assert_eq!(
+            config.eth1_endpoint.as_deref(),
+            Some("http://127.0.0.1:8545")
+        );
+        assert_eq!(config.graffiti, Some(vec!["hello".to_string()]));
+        assert!(config.graffiti_disable_client_append);
+        assert_eq!(config.p2p.tcp_addrs, vec!["0.0.0.0:9000".to_string()]);
+    }
+
+    #[test]
+    fn build_app_config_defaults_map_to_none() {
+        let config = app_config(&[]).expect("bridge should succeed on defaults");
+
+        // Empty flags mean "unset" on both sides: no eth1 verification and the
+        // default per-validator client graffiti.
+        assert_eq!(config.eth1_endpoint, None);
+        assert_eq!(config.graffiti, None);
+        assert_eq!(
+            config.validator_api_addr,
+            "127.0.0.1:3600".parse::<SocketAddr>().expect("socket addr")
+        );
+        // The default feature set enables stable features only.
+        assert!(config.feature_set.enabled(Feature::EagerDoubleLinear));
+        assert!(!config.feature_set.enabled(Feature::MockAlpha));
+    }
+
+    #[test]
+    fn build_app_config_resolves_hostname_validator_api_addr() {
+        // Charon accepts hostnames here (it defers to Go's net.Listen), so the
+        // bridge must resolve them instead of requiring a literal IP.
+        let config =
+            app_config(&["--validator-api-address=localhost:3600"]).expect("hostname resolves");
+        assert_eq!(config.validator_api_addr.port(), 3600);
+    }
+
+    #[test]
+    fn build_app_config_rejects_unsupported_flags() {
+        for flags in [
+            ["--simnet-beacon-mock"].as_slice(),
+            &["--simnet-validator-mock"],
+            &["--simnet-beacon-mock-fuzz"],
+            &["--simnet-validator-keys-dir=/custom/keys"],
+            &["--synthetic-block-proposals"],
+            &["--consensus-protocol=qbft"],
+            &["--beacon-node-headers=key1=value1"],
+        ] {
+            let err = app_config_err(flags);
+            assert!(
+                err.contains("is not yet supported by pluto run"),
+                "flags {flags:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_app_config_rejects_fully_specified_testnet() {
+        let err = app_config_err(&[
+            "--testnet-name=devnet",
+            "--testnet-fork-version=0x10000910",
+            "--testnet-chain-id=1234",
+            "--testnet-genesis-timestamp=42",
+        ]);
+        assert!(err.contains("is not yet supported by pluto run"), "{err}");
+    }
+
+    #[test]
+    fn build_app_config_ignores_partial_testnet() {
+        // Charon registers a custom testnet only when fully specified
+        // (`IsNonZero`); partial flags are silently ignored.
+        app_config(&["--testnet-name=devnet"]).expect("partial testnet should be ignored");
+    }
+
+    #[test]
+    fn build_app_config_rejects_vc_tls() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cert = dir.path().join("cert.pem");
+        let key = dir.path().join("cert.key");
+        std::fs::write(&cert, b"cert").expect("write cert");
+        std::fs::write(&key, b"key").expect("write key");
+
+        let err = app_config_err(&[
+            "--vc-tls-cert-file",
+            cert.to_str().expect("cert path"),
+            "--vc-tls-key-file",
+            key.to_str().expect("key path"),
+        ]);
+        assert!(err.contains("is not yet supported by pluto run"), "{err}");
+    }
+
+    #[test]
+    fn build_app_config_rejects_p2p_fuzz() {
+        let cli = Cli::try_parse_from([
+            "pluto",
+            "unsafe",
+            "run",
+            "--p2p-fuzz",
+            "--beacon-node-endpoints",
+            "http://beacon.node",
+        ])
+        .expect("unsafe run should parse");
+        let Commands::Unsafe(args) = cli.command else {
+            panic!("expected unsafe command");
+        };
+        let UnsafeCommands::Run(args) = args.command;
+        let config: RunConfig = (*args).try_into().expect("unsafe config should build");
+
+        let err = build_app_config(config)
+            .expect_err("p2p fuzz should be rejected")
+            .to_string();
+        assert!(err.contains("is not yet supported by pluto run"), "{err}");
+    }
+
+    #[test]
+    fn build_app_config_ignores_observability_flags() {
+        // Warn-and-continue: none of these may fail the bridge.
+        app_config(&[
+            "--monitoring-address=127.0.0.1:9620",
+            "--debug-address=127.0.0.1:9630",
+            "--otlp-address=http://otlp.test:4317",
+            "--proc-directory=/proc",
+            "--fallback-beacon-node-endpoints=http://c.node",
+        ])
+        .expect("observability flags are ignored, not rejected");
+    }
+
+    #[test]
+    fn build_app_config_ignores_existing_manifest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = dir.path().join("cluster-manifest.pb");
+        std::fs::write(&manifest, b"manifest").expect("write manifest");
+
+        // Post-#4130 semantics: the lock file is authoritative and an existing
+        // manifest is warned about, never fatal.
+        app_config(&["--manifest-file", manifest.to_str().expect("manifest path")])
+            .expect("existing manifest is ignored, not rejected");
+    }
+
+    #[test]
+    fn build_app_config_rejects_unknown_min_status_verbatim() {
+        // Charon's exact error string (featureset.Init).
+        assert_eq!(
+            app_config_err(&["--feature-set=foo"]),
+            "unknown min status: foo"
+        );
+    }
+
+    #[test]
+    fn build_app_config_resolves_feature_set() {
+        // Min status is parsed case-insensitively, like Charon.
+        let config = app_config(&["--feature-set=ALPHA"]).expect("alpha min status");
+        assert!(config.feature_set.enabled(Feature::MockAlpha));
+
+        let config =
+            app_config(&["--feature-set-enable=chain_split_halt"]).expect("explicit enable");
+        assert!(config.feature_set.enabled(Feature::ChainSplitHalt));
+
+        let config =
+            app_config(&["--feature-set-disable=eager_double_linear"]).expect("explicit disable");
+        assert!(!config.feature_set.enabled(Feature::EagerDoubleLinear));
+
+        // Unknown feature names are warned about and ignored, like Charon.
+        app_config(&["--feature-set-enable=not_a_feature"]).expect("unknown feature ignored");
+    }
+
     #[tokio::test]
-    #[should_panic(expected = "not implemented: pluto run")]
-    async fn run_stub_panics_unimplemented() {
-        let config = parse_run(&[]).expect("config should build");
-        let _ = run(config, CancellationToken::new()).await;
+    async fn run_reaches_app_and_fails_on_missing_lock() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing_lock = dir.path().join("missing-cluster-lock.json");
+
+        let config = parse_run(&["--lock-file", missing_lock.to_str().expect("lock path")])
+            .expect("config should build");
+        let err = run(config, CancellationToken::new())
+            .await
+            .expect_err("missing lock file should fail the run")
+            .to_string();
+
+        // The bridge reached `App::run`, whose first fallible step (loading
+        // the cluster lock) failed cleanly — no panic, no network access.
+        assert!(err.starts_with("cluster lock:"), "unexpected error: {err}");
     }
 }
