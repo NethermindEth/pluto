@@ -6,12 +6,12 @@ use std::{
 };
 
 use pluto_eth2api::{
-    ValidatorResponseValidator, ValidatorStatus,
+    ProposalPreparation, ValidatorResponseValidator, ValidatorStatus,
     spec::phase0::{BLSPubKey, ValidatorIndex},
 };
 use serde_json::Value;
 
-use super::attestation::AttestationStore;
+use super::{attestation::AttestationStore, proposal::ProposalPreparationStore};
 
 pub(crate) const DEFAULT_WITHDRAWAL_CREDENTIALS: &str =
     "0x3132333435363738393031323334353637383930313233343536373839303132";
@@ -152,6 +152,7 @@ pub struct MockState {
     pub(crate) deterministic_proposer_duties: RwLock<Option<u64>>,
     pub(crate) deterministic_sync_comm_duties: RwLock<Option<(u64, u64)>>,
     pub(crate) attestation_store: AttestationStore,
+    pub(crate) proposal_preparation_store: ProposalPreparationStore,
 }
 
 impl MockState {
@@ -164,6 +165,7 @@ impl MockState {
             deterministic_proposer_duties: RwLock::new(None),
             deterministic_sync_comm_duties: RwLock::new(None),
             attestation_store: AttestationStore::default(),
+            proposal_preparation_store: ProposalPreparationStore::default(),
         }
     }
 
@@ -200,6 +202,13 @@ impl MockState {
     /// Replaces the validator set served by validator-related endpoints.
     pub fn set_validator_set(&self, validator_set: ValidatorSet) {
         *write_lock(&self.validator_set) = validator_set;
+    }
+
+    /// Returns every proposal preparation recorded by the
+    /// `prepare_beacon_proposer` endpoint, in submission order.
+    #[must_use]
+    pub fn proposal_preparations(&self) -> Vec<ProposalPreparation> {
+        self.proposal_preparation_store.submissions()
     }
 }
 
