@@ -89,7 +89,7 @@ jobs:
 
       - name: Install oas3-gen
         if: matrix.pluto_nodes > 0
-        run: cargo install oas3-gen@0.24.0
+        run: cargo install oas3-gen@0.24.0 --locked
 
       - name: Build pluto
         if: matrix.pluto_nodes > 0
