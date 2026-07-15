@@ -403,6 +403,24 @@ impl EthBeaconNodeApiClient {
         }
     }
 
+    /// Fetches the `current_version` of every entry in the beacon node's fork
+    /// schedule (`/eth/v1/config/fork_schedule`), decoded and ordered
+    /// oldest-to-newest. The first entry is the genesis fork version, which
+    /// identifies the beacon node's network.
+    pub async fn fetch_fork_schedule_versions(
+        &self,
+    ) -> Result<Vec<phase0::Version>, EthBeaconNodeApiClientError> {
+        self.fetch_fork_schedule_data()
+            .await?
+            .iter()
+            .map(|fork| {
+                decode_fixed_hex(&fork.current_version, || {
+                    "decode fork schedule current_version".to_string()
+                })
+            })
+            .collect()
+    }
+
     /// Fetches the resolved beacon domain for the provided domain type and
     /// epoch. Non-exit domains resolve the fork version from the
     /// fork-schedule endpoint (go-eth2-client parity, see

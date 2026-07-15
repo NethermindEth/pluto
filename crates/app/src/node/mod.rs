@@ -131,6 +131,25 @@ pub enum AppError {
     #[error("invalid beacon node url: {0}")]
     BeaconUrl(#[from] url::ParseError),
 
+    /// The beacon node's fork schedule does not contain the cluster lock's fork
+    /// version — the beacon node is on a different network than the cluster.
+    #[error(
+        "mismatch between lock file fork version and beacon node fork schedule: \
+         lock file is for network {lock_network} (fork version {lock_fork_version}), \
+         but the beacon node is on network {beacon_node_network}; \
+         ensure the beacon node is on the correct network"
+    )]
+    ForkScheduleMismatch {
+        /// Network the cluster lock's fork version resolves to (or its hex
+        /// representation if it matches no known network).
+        lock_network: String,
+        /// The cluster lock's fork version, `0x`-prefixed hex.
+        lock_fork_version: String,
+        /// Network the beacon node's genesis fork version resolves to (or its
+        /// hex representation if it matches no known network).
+        beacon_node_network: String,
+    },
+
     /// Beacon node client construction failed.
     #[error("beacon client: {0}")]
     BeaconClient(#[source] anyhow::Error),
@@ -297,6 +316,19 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             .unwrap_or_default(),
     };
     let eth2_cl = build_api_client(&beacon_node_addr, config.beacon_node_timeout)?;
+
+    // Fail fast if the beacon node is on a different network than the cluster
+    // lock (Charon's `configureEth2Client`, app.go:1022-1053). Both eth2
+    // clients here target the same endpoint, so a single check suffices —
+    // unlike Charon, which checks each independently-constructed client.
+    //
+    // Skipped for the in-process simnet mock: it is derived from the lock's own
+    // fork version (`build_simnet_beacon_mock`), so a network mismatch is
+    // impossible by construction.
+    if simnet_beacon_mock.is_none() {
+        verify_fork_schedule(&eth2_cl, &lock.fork_version).await?;
+    }
+
     let beacon_client = pluto_eth2api::BeaconNodeClient::new(eth2_cl.clone());
     // Broadcasting uses a separate client with the (distinct) submit timeout.
     let submission_api = build_api_client(&beacon_node_addr, config.beacon_node_submit_timeout)?;
@@ -892,6 +924,40 @@ fn parse_execution_address(s: &str) -> Option<[u8; 20]> {
     bytes.try_into().ok()
 }
 
+/// Fails fast when the beacon node is on a different network than the cluster
+/// lock.
+///
+/// Mirrors Charon's `configureEth2Client` fork-schedule guard.
+async fn verify_fork_schedule(
+    eth2_cl: &pluto_eth2api::EthBeaconNodeApiClient,
+    lock_fork_version: &[u8],
+) -> Result<(), AppError> {
+    let versions = eth2_cl.fetch_fork_schedule_versions().await?;
+
+    if versions.iter().any(|v| v[..] == *lock_fork_version) {
+        return Ok(());
+    }
+
+    // Best-effort network names for the operator-facing error.
+    Err(AppError::ForkScheduleMismatch {
+        lock_network: network_name_or_hex(lock_fork_version),
+        lock_fork_version: format!("0x{}", hex::encode(lock_fork_version)),
+        beacon_node_network: versions
+            .first()
+            .map(|v| network_name_or_hex(v))
+            .unwrap_or_else(|| "unknown".to_string()),
+    })
+}
+
+/// Resolves a fork version to its network name, falling back to `0x`-prefixed
+/// hex when it matches no known network.
+fn network_name_or_hex(fork_version: &[u8]) -> String {
+    pluto_eth2util::network::fork_version_to_network(fork_version).unwrap_or_else(|_| {
+        let bytes: &[u8] = fork_version;
+        format!("0x{}", hex::encode(bytes))
+    })
+}
+
 /// Builds an [`EthBeaconNodeApiClient`](pluto_eth2api::EthBeaconNodeApiClient)
 /// for `base_url` with the given request timeout.
 fn build_api_client(
@@ -1225,5 +1291,51 @@ mod tests {
 
         ct.cancel();
         let _ = server.await;
+    }
+
+    // The default `BeaconMock` serves a Holesky fork schedule (genesis fork
+    // version `0x01017000`).
+    const HOLESKY_FORK_VERSION: [u8; 4] = [0x01, 0x01, 0x70, 0x00];
+    const MAINNET_FORK_VERSION: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
+
+    // A lock on the same network as the beacon node passes the startup guard.
+    #[tokio::test]
+    async fn verify_fork_schedule_accepts_matching_network() {
+        let mock = pluto_testutil::BeaconMock::builder()
+            .build()
+            .await
+            .expect("beacon mock");
+
+        verify_fork_schedule(mock.client(), &HOLESKY_FORK_VERSION)
+            .await
+            .expect("matching fork version should pass the startup guard");
+    }
+
+    // A lock on a different network than the beacon node fails the startup
+    // guard, naming both the lock's fork version/network and the beacon node's
+    // network (Charon `configureEth2Client`, app.go:1022-1053).
+    #[tokio::test]
+    async fn verify_fork_schedule_rejects_wrong_network() {
+        let mock = pluto_testutil::BeaconMock::builder()
+            .build()
+            .await
+            .expect("beacon mock");
+
+        let err = verify_fork_schedule(mock.client(), &MAINNET_FORK_VERSION)
+            .await
+            .expect_err("mismatched fork version should fail the startup guard");
+
+        match err {
+            AppError::ForkScheduleMismatch {
+                lock_network,
+                lock_fork_version,
+                beacon_node_network,
+            } => {
+                assert_eq!(lock_network, "mainnet");
+                assert_eq!(lock_fork_version, "0x00000000");
+                assert_eq!(beacon_node_network, "holesky");
+            }
+            other => panic!("expected ForkScheduleMismatch, got {other:?}"),
+        }
     }
 }
