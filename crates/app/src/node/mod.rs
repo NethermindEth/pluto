@@ -193,6 +193,10 @@ pub enum AppError {
     /// Simnet (beacon/validator mock) setup failed.
     #[error("simnet: {0}")]
     Simnet(String),
+
+    /// Feature set resolution failed (invalid minimum status).
+    #[error("feature set: {0}")]
+    FeatureSet(#[from] pluto_featureset::FeaturesetError),
 }
 
 /// A wired, runnable distributed-validator node.
@@ -232,6 +236,10 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     let lock =
         pluto_cluster::load::load_cluster_lock(&config.lock_file, config.no_verify, &eth1).await?;
     let threshold = lock.threshold;
+
+    // Resolve the injectable feature set now that the lock's fork version is
+    // known.
+    let feature_set = Arc::new(resolve_feature_set(&config.feature, &lock.fork_version)?);
 
     let key = pluto_k1util::load(&config.priv_key_file)?;
 
@@ -369,8 +377,6 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         .unwrap_or(0)
         .saturating_mul(slots_per_epoch);
 
-    // Feature set drives optional/alpha behaviors.
-    let feature_set = Arc::clone(&config.feature_set);
     let fetch_only_comm_idx0 = feature_set.enabled(pluto_featureset::Feature::FetchOnlyCommIdx0);
 
     // ---- Consensus (built directly; shared with p2p behaviour + core stitch) ----
@@ -952,6 +958,27 @@ fn network_name_or_hex(fork_version: &[u8]) -> String {
         .unwrap_or_else(|_| format!("0x{}", hex::encode(fork_version)))
 }
 
+/// Resolves the injectable feature set from its config and the cluster's fork
+/// version.
+///
+/// Performs the Rust analogs of Charon's `featureset.Init` and, for
+/// gnosis/chiado, `EnableGnosisBlockHotfixIfNotDisabled`.
+fn resolve_feature_set(
+    config: &pluto_featureset::Config,
+    fork_version: &[u8],
+) -> Result<pluto_featureset::FeatureSet, AppError> {
+    let mut feature_set = pluto_featureset::FeatureSet::from_config(config.clone())?;
+
+    if let Ok(network) = pluto_eth2util::network::fork_version_to_network(fork_version)
+        && (network == pluto_eth2util::network::GNOSIS.name
+            || network == pluto_eth2util::network::CHIADO.name)
+    {
+        feature_set.enable_gnosis_block_hotfix_if_not_disabled(config);
+    }
+
+    Ok(feature_set)
+}
+
 /// Builds an [`EthBeaconNodeApiClient`](pluto_eth2api::EthBeaconNodeApiClient)
 /// for `base_url` with the given request timeout.
 fn build_api_client(
@@ -1331,5 +1358,77 @@ mod tests {
             }
             other => panic!("expected ForkScheduleMismatch, got {other:?}"),
         }
+    }
+
+    /// Decodes a predefined network's genesis fork version into raw bytes.
+    fn fork_version_bytes(hex_str: &str) -> Vec<u8> {
+        hex::decode(hex_str.strip_prefix("0x").unwrap_or(hex_str)).expect("valid fork version hex")
+    }
+
+    #[test]
+    fn resolve_feature_set_auto_enables_gnosis_hotfix_for_gnosis_and_chiado() {
+        use pluto_eth2util::network::{CHIADO, GNOSIS};
+        use pluto_featureset::{Config, Feature};
+
+        // Default config leaves GnosisBlockHotfix at alpha (off under the stable
+        // minimum), so the auto-enable is what flips it on.
+        for network in [GNOSIS, CHIADO] {
+            let feature_set = resolve_feature_set(
+                &Config::default(),
+                &fork_version_bytes(network.genesis_fork_version_hex),
+            )
+            .expect("resolve should succeed");
+            assert!(
+                feature_set.enabled(Feature::GnosisBlockHotfix),
+                "GnosisBlockHotfix should be auto-enabled for {}",
+                network.name
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_feature_set_leaves_other_networks_untouched() {
+        use pluto_eth2util::network::MAINNET;
+        use pluto_featureset::{Config, Feature};
+
+        let feature_set = resolve_feature_set(
+            &Config::default(),
+            &fork_version_bytes(MAINNET.genesis_fork_version_hex),
+        )
+        .expect("resolve should succeed");
+
+        assert!(!feature_set.enabled(Feature::GnosisBlockHotfix));
+    }
+
+    #[test]
+    fn resolve_feature_set_respects_explicit_gnosis_hotfix_disable() {
+        use pluto_eth2util::network::GNOSIS;
+        use pluto_featureset::{Config, Feature, Status};
+
+        // Explicitly disabling the feature must win even on gnosis, matching
+        // Charon's `EnableGnosisBlockHotfixIfNotDisabled`.
+        let config = Config {
+            min_status: Status::Stable,
+            enabled: vec![],
+            disabled: vec![Feature::GnosisBlockHotfix],
+        };
+        let feature_set = resolve_feature_set(
+            &config,
+            &fork_version_bytes(GNOSIS.genesis_fork_version_hex),
+        )
+        .expect("resolve should succeed");
+
+        assert!(!feature_set.enabled(Feature::GnosisBlockHotfix));
+    }
+
+    #[test]
+    fn resolve_feature_set_skips_unrecognized_fork_version() {
+        use pluto_featureset::{Config, Feature};
+
+        // An unknown fork version must not panic and must not auto-enable.
+        let feature_set = resolve_feature_set(&Config::default(), &[0x01, 0x02, 0x03, 0x04])
+            .expect("resolve should succeed");
+
+        assert!(!feature_set.enabled(Feature::GnosisBlockHotfix));
     }
 }

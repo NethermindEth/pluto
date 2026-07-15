@@ -29,13 +29,12 @@ use std::{
     collections::HashMap,
     net::{SocketAddr, ToSocketAddrs},
     path::{Path, PathBuf},
-    sync::Arc,
     time::Duration as StdDuration,
 };
 
 use libp2p::multiaddr::Protocol;
 use pluto_eth2util::helpers::validate_http_headers;
-use pluto_featureset::{Feature, FeatureSet, FeaturesetError, Status};
+use pluto_featureset::{Feature, FeaturesetError, Status};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
@@ -999,7 +998,7 @@ fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
     check_unsupported_flags(&config)?;
     warn_ignored_flags(&config);
 
-    let feature_set = build_feature_set(&config.feature)?;
+    let feature_config = build_feature_config(&config.feature)?;
     let validator_api_addr =
         parse_socket_addr("validator-api-address", &config.validator_api_addr)?;
     let monitoring_addr = parse_socket_addr("monitoring-address", &config.monitoring_addr)?;
@@ -1077,7 +1076,7 @@ fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
         // validator" (`NewGraffitiBuilder`), matching `AppConfig`'s `None`.
         graffiti: (!graffiti.is_empty()).then_some(graffiti),
         graffiti_disable_client_append,
-        feature_set,
+        feature: feature_config,
         simnet_beacon_mock,
         simnet_validator_mock,
         simnet_beacon_mock_fuzz,
@@ -1152,14 +1151,16 @@ fn warn_ignored_flags(config: &RunConfig) {
     }
 }
 
-/// Resolves the feature-set flags into an injectable [`FeatureSet`].
+/// Parses the feature-set flags into a [`pluto_featureset::Config`].
 ///
-/// Matches Charon: an unknown min status is a hard error, while unknown
-/// enabled/disabled feature names are warned about and ignored.
-fn build_feature_set(feature: &FeatureConfig) -> Result<Arc<FeatureSet>> {
-    // `Status::try_from` also parses statuses like "enable" that are not valid
-    // *min* statuses; `FeatureSet::from_config` rejects those below, so both
-    // paths surface Charon's "unknown min status" error.
+/// The config is forwarded to the app and resolved into an injectable
+/// `FeatureSet` inside `App::run` (after lock load, so the gnosis/chiado
+/// `GnosisBlockHotfix` auto-enable can key off the fork version). Matches
+/// Charon's `featureset.Init`: an unknown min status string is a hard error
+/// here, while unknown enabled/disabled feature names are warned about and
+/// ignored. Statuses that parse but are not valid *minimum* statuses (e.g.
+/// `enable`) are rejected later by `FeatureSet::from_config`.
+fn build_feature_config(feature: &FeatureConfig) -> Result<pluto_featureset::Config> {
     let min_status = Status::try_from(feature.min_status.as_str()).map_err(|_| {
         FeaturesetError::UnknownMinStatus {
             min_status: feature.min_status.clone(),
@@ -1177,13 +1178,11 @@ fn build_feature_set(feature: &FeatureConfig) -> Result<Arc<FeatureSet>> {
             .collect()
     };
 
-    let feature_set = FeatureSet::from_config(pluto_featureset::Config {
+    Ok(pluto_featureset::Config {
         min_status,
         enabled: parse_features(&feature.enabled, "enabled"),
         disabled: parse_features(&feature.disabled, "disabled"),
-    })?;
-
-    Ok(Arc::new(feature_set))
+    })
 }
 
 /// Parses an HTTP listen address flag (`flag` names it for errors). Unlike a
@@ -1757,6 +1756,13 @@ mod tests {
             .to_string()
     }
 
+    /// Resolves the forwarded feature config into a `FeatureSet`, as `App::run`
+    /// does (the gnosis/chiado fork-version step is covered in the app crate).
+    fn resolved_feature_set(config: &pluto_app::node::AppConfig) -> pluto_featureset::FeatureSet {
+        pluto_featureset::FeatureSet::from_config(config.feature.clone())
+            .expect("feature config should resolve")
+    }
+
     #[test]
     fn build_app_config_maps_fields() {
         let config = app_config(&[
@@ -1814,8 +1820,9 @@ mod tests {
             "127.0.0.1:3600".parse::<SocketAddr>().expect("socket addr")
         );
         // The default feature set enables stable features only.
-        assert!(config.feature_set.enabled(Feature::EagerDoubleLinear));
-        assert!(!config.feature_set.enabled(Feature::MockAlpha));
+        let feature_set = resolved_feature_set(&config);
+        assert!(feature_set.enabled(Feature::EagerDoubleLinear));
+        assert!(!feature_set.enabled(Feature::MockAlpha));
     }
 
     #[test]
@@ -2042,18 +2049,21 @@ mod tests {
     }
 
     #[test]
-    fn build_app_config_resolves_feature_set() {
+    fn build_app_config_forwards_feature_config() {
+        // The bridge forwards a `featureset::Config`; `App::run` resolves it.
+        // Assert on the resolved set to keep the semantics observable here.
+
         // Min status is parsed case-insensitively, like Charon.
         let config = app_config(&["--feature-set=ALPHA"]).expect("alpha min status");
-        assert!(config.feature_set.enabled(Feature::MockAlpha));
+        assert!(resolved_feature_set(&config).enabled(Feature::MockAlpha));
 
         let config =
             app_config(&["--feature-set-enable=chain_split_halt"]).expect("explicit enable");
-        assert!(config.feature_set.enabled(Feature::ChainSplitHalt));
+        assert!(resolved_feature_set(&config).enabled(Feature::ChainSplitHalt));
 
         let config =
             app_config(&["--feature-set-disable=eager_double_linear"]).expect("explicit disable");
-        assert!(!config.feature_set.enabled(Feature::EagerDoubleLinear));
+        assert!(!resolved_feature_set(&config).enabled(Feature::EagerDoubleLinear));
 
         // Unknown feature names are warned about and ignored, like Charon.
         app_config(&["--feature-set-enable=not_a_feature"]).expect("unknown feature ignored");

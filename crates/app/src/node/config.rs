@@ -1,8 +1,7 @@
 //! Configuration for the distributed-validator node.
 
-use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
-use pluto_featureset::FeatureSet;
 use pluto_p2p::config::P2PConfig;
 
 /// Application configuration for running a distributed-validator node.
@@ -69,10 +68,10 @@ pub struct AppConfig {
     /// Disable appending the client version/codex to graffiti.
     pub graffiti_disable_client_append: bool,
 
-    /// Feature set controlling optional/alpha behaviors (e.g.
-    /// `FetchOnlyCommIdx0`, `ChainSplitHalt`). Resolved from the CLI
-    /// feature flags (out of scope here).
-    pub feature_set: Arc<FeatureSet>,
+    /// Feature set configuration controlling optional/alpha (e.g.
+    /// `FetchOnlyCommIdx0`, `ChainSplitHalt`) and chain specific behaviors
+    /// (ex. `GnosisBlockHotfix`) that gets resolved into a `FeatureSet`.
+    pub feature: pluto_featureset::Config,
 
     /// Enable the in-process simnet mock beacon node. When set, the beacon
     /// clients target an internal `BeaconMock` seeded with the cluster's
