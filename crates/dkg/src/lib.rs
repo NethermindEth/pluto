@@ -23,6 +23,10 @@ pub mod dkg;
 /// Kryptology-compatible FROST DKG orchestration.
 mod frost;
 
+/// In-memory FROST transport and ceremony driver for tests and benches.
+#[cfg(any(test, feature = "bench-util"))]
+pub mod frost_bench_util;
+
 /// FROST DKG P2P transport.
 mod frostp2p;
 

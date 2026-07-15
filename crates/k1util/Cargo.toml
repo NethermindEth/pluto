@@ -6,6 +6,9 @@ repository.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[lib]
+bench = false
+
 [dependencies]
 thiserror.workspace = true
 k256.workspace = true

@@ -1,0 +1,81 @@
+name: Perf vs Charon
+
+on:
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: "Benchmark tiers to run (1, 2, 12, or all; tier 3 needs relay connectivity)"
+        required: false
+        default: "12"
+      quick:
+        description: "Quick mode (reduced sample counts)"
+        type: boolean
+        required: false
+        default: false
+  schedule:
+    # Nightly at 03:17 UTC, tiers 1+2 only.
+    - cron: "17 3 * * *"
+
+env:
+  CHARON_VERSION: v1.7.1
+
+permissions:
+  contents: read
+
+jobs:
+  perf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Checkout charon source
+        uses: actions/checkout@v6
+        with:
+          repository: ObolNetwork/charon
+          ref: ${{ env.CHARON_VERSION }}
+          path: charon
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        # rust-toolchain.toml pins the actual toolchain; the action just
+        # bootstraps rustup.
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: charon/go.mod
+          cache-dependency-path: perf/go-bench/go.sum
+
+      - name: Run benchmarks
+        env:
+          TIER: ${{ inputs.tier || '12' }}
+          QUICK: ${{ inputs.quick && '1' || '' }}
+        run: |
+          # Gate on regressions once a blessed baseline is committed.
+          BASELINE=""
+          if [[ -f perf/baseline.json ]]; then
+            BASELINE="perf/baseline.json"
+          fi
+          ./perf/run.sh --tier "$TIER" ${QUICK:+--quick} \
+            ${BASELINE:+--baseline "$BASELINE"}
+
+      - name: Report to job summary
+        if: always()
+        run: |
+          if [[ -f perf/out/report.md ]]; then
+            cat perf/out/report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-results
+          path: |
+            perf/out/report.md
+            perf/out/results.json
+            perf/out/go-bench.txt
+          if-no-files-found: warn

@@ -6,6 +6,9 @@ repository.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[lib]
+bench = false
+
 [dependencies]
 blst.workspace = true
 hex.workspace = true
@@ -32,4 +35,10 @@ panicking_overflow_checks = "deny"
 unwrap_used = "deny"
 
 [dev-dependencies]
+criterion.workspace = true
 test-case.workspace = true
+
+[[bench]]
+name = "tbls"
+harness = false
+path = "benches/tbls.rs"

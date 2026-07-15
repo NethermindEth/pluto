@@ -7,8 +7,6 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use k256::{SecretKey, elliptic_curve::rand_core::OsRng};
-
-// Assuming your crate is named "charon" - adjust if different
 use pluto_k1util::{K1_HASH_LEN, SIGNATURE_LEN, recover, sign, verify_64};
 
 fn setup() -> (SecretKey, Vec<u8>, Vec<u8>) {
@@ -23,7 +21,7 @@ fn bench_sign(c: &mut Criterion) {
     let key = SecretKey::random(&mut OsRng);
     let digest = vec![0u8; K1_HASH_LEN];
 
-    c.bench_function("sign", |b| {
+    c.bench_function("tier1/k1/sign", |b| {
         b.iter(|| sign(black_box(&key), black_box(&digest)).expect("sign should succeed"))
     });
 }
@@ -32,7 +30,7 @@ fn bench_recover(c: &mut Criterion) {
     let (key, digest, sig) = setup();
     let pubkey = key.public_key();
 
-    c.bench_function("recover", |b| {
+    c.bench_function("tier1/k1/recover", |b| {
         b.iter(|| {
             let recovered =
                 recover(black_box(&digest), black_box(&sig)).expect("recover should succeed");
@@ -45,7 +43,7 @@ fn bench_verify(c: &mut Criterion) {
     let (key, digest, sig) = setup();
     let pubkey = key.public_key();
 
-    c.bench_function("verify", |b| {
+    c.bench_function("tier1/k1/verify", |b| {
         b.iter(|| {
             let ok = verify_64(
                 black_box(&pubkey),

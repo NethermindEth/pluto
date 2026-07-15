@@ -67,7 +67,12 @@ mod parsigex_codec;
 // SSZ codec operates on compile-time-constant byte sizes and offsets.
 // Arithmetic is bounded and casts from `usize` to `u32` are safe because all
 // sizes are well below `u32::MAX`.
+/// SSZ codec for duty payloads (public only for the criterion benches).
 #[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)]
+#[cfg(feature = "bench-util")]
+pub mod ssz_codec;
+#[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)]
+#[cfg(not(feature = "bench-util"))]
 pub(crate) mod ssz_codec;
 
 pub use parsigex_codec::ParSigExCodecError;

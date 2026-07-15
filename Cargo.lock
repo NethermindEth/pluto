@@ -5307,6 +5307,7 @@ dependencies = [
  "cancellation",
  "chrono",
  "clap",
+ "criterion",
  "crossbeam",
  "dyn-clone",
  "dyn-eq",
@@ -5347,6 +5348,7 @@ name = "pluto-crypto"
 version = "1.7.1"
 dependencies = [
  "blst",
+ "criterion",
  "hex",
  "pluto-eth2api",
  "rand 0.8.6",
@@ -5365,6 +5367,7 @@ dependencies = [
  "bon",
  "chrono",
  "clap",
+ "criterion",
  "either",
  "futures",
  "hex",
@@ -5501,6 +5504,7 @@ name = "pluto-frost"
 version = "1.7.1"
 dependencies = [
  "blst",
+ "criterion",
  "hex",
  "rand 0.8.6",
  "rand_core 0.6.4",

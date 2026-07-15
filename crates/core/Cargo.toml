@@ -6,6 +6,14 @@ repository.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[lib]
+bench = false
+
+[features]
+# Exposes internal modules and in-memory harnesses to the criterion benches.
+# Never enable in production builds.
+bench-util = []
+
 [dependencies]
 alloy.workspace = true
 backon.workspace = true
@@ -44,6 +52,7 @@ url.workspace = true
 [dev-dependencies]
 anyhow.workspace = true
 clap.workspace = true
+criterion.workspace = true
 rand.workspace = true
 prost.workspace = true
 prost-types.workspace = true
@@ -57,6 +66,21 @@ pluto-tracing.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 wiremock.workspace = true
 tower = { workspace = true, features = ["util"] }
+
+[[bench]]
+name = "ssz_codec"
+harness = false
+path = "benches/ssz_codec.rs"
+
+[[bench]]
+name = "corepb"
+harness = false
+path = "benches/corepb.rs"
+
+[[bench]]
+name = "qbft"
+harness = false
+path = "benches/qbft.rs"
 
 [build-dependencies]
 pluto-build-proto.workspace = true

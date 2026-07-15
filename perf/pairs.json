@@ -1,0 +1,166 @@
+{
+  "pairs": [
+    {
+      "id": "tier1/tbls/sign",
+      "tier": 1,
+      "go": "Tier1TblsSign",
+      "workload": "BLS sign, 32-byte msg"
+    },
+    {
+      "id": "tier1/tbls/verify",
+      "tier": 1,
+      "go": "Tier1TblsVerify",
+      "workload": "BLS verify, 32-byte msg"
+    },
+    {
+      "id": "tier1/tbls/verify_aggregate",
+      "tier": 1,
+      "go": "Tier1TblsVerifyAggregate",
+      "workload": "FastAggregateVerify, 4 pubkeys"
+    },
+    {
+      "id": "tier1/tbls/threshold_split/3of4",
+      "tier": 1,
+      "go": "Tier1TblsThresholdSplit/3of4",
+      "workload": "Shamir split 3-of-4"
+    },
+    {
+      "id": "tier1/tbls/threshold_split/7of10",
+      "tier": 1,
+      "go": "Tier1TblsThresholdSplit/7of10",
+      "workload": "Shamir split 7-of-10"
+    },
+    {
+      "id": "tier1/tbls/threshold_aggregate/3of4",
+      "tier": 1,
+      "go": "Tier1TblsThresholdAggregate/3of4",
+      "workload": "Lagrange-aggregate 3 partial sigs"
+    },
+    {
+      "id": "tier1/tbls/threshold_aggregate/7of10",
+      "tier": 1,
+      "go": "Tier1TblsThresholdAggregate/7of10",
+      "workload": "Lagrange-aggregate 7 partial sigs"
+    },
+    {
+      "id": "tier1/tbls/recover_secret/3of4",
+      "tier": 1,
+      "go": "Tier1TblsRecoverSecret/3of4",
+      "workload": "Recover secret from 3 shares"
+    },
+    {
+      "id": "tier1/tbls/recover_secret/7of10",
+      "tier": 1,
+      "go": "Tier1TblsRecoverSecret/7of10",
+      "workload": "Recover secret from 7 shares"
+    },
+    {
+      "id": "tier1/frost/round1",
+      "tier": 1,
+      "go": "Tier1FrostRound1",
+      "workload": "FROST DKG round 1, 3-of-4 (poly + Feldman commitments + PoK)"
+    },
+    {
+      "id": "tier1/frost/round2",
+      "tier": 1,
+      "go": "Tier1FrostRound2",
+      "workload": "FROST DKG round 2, 3-of-4 (verify commitments + PoKs, derive share)"
+    },
+    {
+      "id": "tier1/frost/partial_sign",
+      "tier": 1,
+      "go": "Tier1TblsSign",
+      "workload": "DKG partial sign, 32-byte msg (pluto kryptology-compat blst vs charon herumi tbls)"
+    },
+    {
+      "id": "tier1/frost/aggregate",
+      "tier": 1,
+      "go": "Tier1TblsThresholdAggregate/3of4",
+      "workload": "DKG combine 3 partial sigs (pluto kryptology-compat blst vs charon herumi tbls)"
+    },
+    {
+      "id": "tier1/ssz/att_encode",
+      "tier": 1,
+      "go": "Tier1SszAttEncode",
+      "workload": "SSZ encode phase0 attestation (261B fixture)"
+    },
+    {
+      "id": "tier1/ssz/att_decode",
+      "tier": 1,
+      "go": "Tier1SszAttDecode",
+      "workload": "SSZ decode phase0 attestation"
+    },
+    {
+      "id": "tier1/ssz/att_hash_root",
+      "tier": 1,
+      "go": "Tier1SszAttHashRoot",
+      "workload": "hash tree root of phase0 attestation"
+    },
+    {
+      "id": "tier1/ssz/proposal_encode",
+      "tier": 1,
+      "go": "Tier1SszProposalEncode",
+      "workload": "SSZ encode versioned signed deneb proposal"
+    },
+    {
+      "id": "tier1/ssz/proposal_decode",
+      "tier": 1,
+      "go": "Tier1SszProposalDecode",
+      "workload": "SSZ decode versioned signed deneb proposal"
+    },
+    {
+      "id": "tier1/proto/qbft_marshal",
+      "tier": 1,
+      "go": "Tier1ProtoQbftMarshal",
+      "workload": "protobuf marshal QBFTConsensusMsg (4 justifications + 1KiB value)"
+    },
+    {
+      "id": "tier1/proto/qbft_unmarshal",
+      "tier": 1,
+      "go": "Tier1ProtoQbftUnmarshal",
+      "workload": "protobuf unmarshal QBFTConsensusMsg"
+    },
+    {
+      "id": "tier2/qbft/decide_4of4",
+      "tier": 2,
+      "go": "Tier2QbftDecide/4of4",
+      "workload": "in-memory QBFT: 4 processes, happy path, spawn to all-decided"
+    },
+    {
+      "id": "tier2/qbft/decide_7of10",
+      "tier": 2,
+      "go": "Tier2QbftDecide/7of10",
+      "workload": "in-memory QBFT: 10 processes, happy path, spawn to all-decided"
+    },
+    {
+      "id": "tier2/dkg/mem_ceremony/1vals",
+      "tier": 2,
+      "go": null,
+      "workload": "in-memory FROST DKG ceremony, 3-of-4, 1 validator (Rust-only)"
+    },
+    {
+      "id": "tier2/dkg/mem_ceremony/10vals",
+      "tier": 2,
+      "go": null,
+      "workload": "in-memory FROST DKG ceremony, 3-of-4, 10 validators (Rust-only)"
+    },
+    {
+      "id": "tier1/k1/sign",
+      "tier": 1,
+      "go": "Tier1K1Sign",
+      "workload": "secp256k1 ECDSA sign, 32-byte digest"
+    },
+    {
+      "id": "tier1/k1/recover",
+      "tier": 1,
+      "go": "Tier1K1Recover",
+      "workload": "secp256k1 pubkey recovery"
+    },
+    {
+      "id": "tier1/k1/verify",
+      "tier": 1,
+      "go": "Tier1K1Verify",
+      "workload": "secp256k1 ECDSA verify (64-byte sig)"
+    }
+  ]
+}
