@@ -176,6 +176,12 @@ panicking_overflow_checks = "deny"
 redundant_test_prefix = "deny"
 unwrap_used = "deny"
 
+# Thin LTO + a single codegen unit measured ~6-12% faster on pure-Rust hot
+# paths (SSZ, k1util) with no effect on blst-bound ones; see perf/FINDINGS.md.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
 # Optimize crypto dependencies in test builds for faster tests
 [profile.test.package.scrypt]
 opt-level = 3

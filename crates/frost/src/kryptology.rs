@@ -18,6 +18,13 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::*;
 
+/// Byte length of a serialized BLS12-381 scalar.
+const SCALAR_BYTES: usize = 32;
+
+/// Bit width of BLS12-381 scalars as consumed by blst multi-scalar
+/// multiplication.
+const SCALAR_BITS: usize = 255;
+
 /// Errors from the kryptology-compatible FROST protocol.
 #[derive(Debug, thiserror::Error)]
 pub enum KryptologyError {
@@ -647,12 +654,12 @@ impl BlsSignature {
             .map(|ps| Scalar::from(u64::from(ps.identifier)))
             .collect();
 
-        let mut combined = blst_p2::default();
-
-        for (i, ps) in partial_sigs.iter().enumerate() {
-            // Lagrange coefficient: L_i(0) = prod_{j!=i} ( x_j / (x_j - x_i) )
+        // Lagrange coefficients: L_i(0) = prod_{j!=i} ( x_j / (x_j - x_i) ),
+        // serialized little-endian for blst multi-scalar multiplication.
+        let mut lambda_bytes = Vec::with_capacity(SCALAR_BYTES * partial_sigs.len());
+        for i in 0..partial_sigs.len() {
             let mut lambda = Scalar::ONE;
-            for (j, _) in partial_sigs.iter().enumerate() {
+            for j in 0..partial_sigs.len() {
                 if i == j {
                     continue;
                 }
@@ -663,13 +670,13 @@ impl BlsSignature {
                 let den_inv = den.invert().ok_or(KryptologyError::InvalidSignerCount)?;
                 lambda = lambda * num * den_inv;
             }
-
-            let weighted = p2_mult(&ps.point, &lambda);
-
-            let mut tmp = blst_p2::default();
-            unsafe { blst_p2_add_or_double(&mut tmp, &combined, &weighted) };
-            combined = tmp;
+            lambda_bytes.extend_from_slice(&lambda.to_bytes());
         }
+
+        // Multi-scalar multiplication (Pippenger) over all partials at once;
+        // `p2_affines::from` batch-converts to affine with a single inversion.
+        let points: Vec<blst_p2> = partial_sigs.iter().map(|ps| ps.point).collect();
+        let combined = p2_affines::from(&points).mult(&lambda_bytes, SCALAR_BITS);
 
         Ok(BlsSignature { point: combined })
     }
