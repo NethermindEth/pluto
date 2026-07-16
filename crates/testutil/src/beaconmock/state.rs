@@ -17,7 +17,7 @@ pub(crate) const DEFAULT_WITHDRAWAL_CREDENTIALS: &str =
     "0x3132333435363738393031323334353637383930313233343536373839303132";
 
 /// Balance and effective balance (in gwei) for every simnet mock DV validator:
-/// `31.3 ETH`. (ref: charon `createMockValidators`, app.go:1067)
+/// `31.3 ETH`.
 pub(crate) const MOCK_DV_BALANCE_GWEI: u64 = 31_300_000_000;
 
 /// Minimal validator representation used by the beacon mock.
@@ -66,7 +66,7 @@ impl Validator {
     ///
     /// Distinct from [`Validator::active`] (the `ValidatorSetA` fixture), which
     /// derives balance/epochs from the index — the wrong shape for a running
-    /// simnet cluster. (ref: charon `createMockValidators`, app.go:1062)
+    /// simnet cluster.
     #[must_use]
     pub fn mock_dv(index: ValidatorIndex, pubkey: BLSPubKey) -> Self {
         Self {
@@ -119,8 +119,7 @@ impl ValidatorSet {
 
     /// Builds a validator set from distributed-validator root public keys:
     /// validators are indexed `0..n` in the order the pubkeys are given, each
-    /// built via [`Validator::mock_dv`]. (ref: charon `createMockValidators`,
-    /// app.go:1062)
+    /// built via [`Validator::mock_dv`].
     #[must_use]
     pub fn mock_dvs(pubkeys: impl IntoIterator<Item = BLSPubKey>) -> Self {
         pubkeys
@@ -346,7 +345,7 @@ mod tests {
         assert_eq!(validators[1].index, 1);
         assert_eq!(set.by_public_key(&pk_b).expect("pk_b present").index, 1);
 
-        // Field values pinned to charon `createMockValidators` (app.go:1062).
+        // Exact field values for a simnet mock DV validator.
         let v = &validators[0];
         assert_eq!(v.balance, 31_300_000_000);
         assert_eq!(v.status, ValidatorStatus::ActiveOngoing);

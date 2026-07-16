@@ -6,17 +6,17 @@
 //! distributed validator must derive the same root per slot, or their partial
 //! signatures never aggregate.
 //!
-//! Nodes run their own in-process mocks and pluto shares clusters with charon,
-//! so the roots must be identical across both implementations. charon draws
-//! them from Go's `math/rand`, so matching it means reproducing that
+//! Nodes run their own in-process mocks, so in a mixed charon/pluto cluster the
+//! mocks must produce identical head roots per slot — down to the exact bytes.
+//! The roots come from Go's `math/rand`, so matching requires reproducing that
 //! generator's byte stream exactly: a portable RNG is deterministic but its
 //! bytes differ, and the two clients would then sign different roots. The
 //! stream is checked against real Go output by
 //! `tests::matches_go_math_rand_read_stream`.
 //!
-//! Ref: charon `testutil/beaconmock/headproducer.go` (`pseudoRandomHeadEvent`);
-//! Go 1.25 `math/rand/rng.go` — lagged-Fibonacci (len 607, tap 273) plus the
-//! `Rand.Read` fast path (7 low bytes per `Int63`, low byte first, carried).
+//! Ref: Go 1.25 `math/rand/rng.go` — lagged-Fibonacci (len 607, tap 273) plus
+//! the `Rand.Read` fast path (7 low bytes per `Int63`, low byte first,
+//! carried).
 
 // The fixed-width wrapping arithmetic and two's-complement casts below ARE the
 // specification, so the usual lint guidance (checked arithmetic, lossless

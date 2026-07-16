@@ -3,7 +3,6 @@
 //! Generates deterministic `AttestationData` for a `(slot, committee_index)`
 //! pair, keyed by the SSZ hash-tree-root of the generated data, and serves it
 //! back through the `aggregate_attestation` endpoint when queried by root.
-//! (ref: charon `testutil/beaconmock/attestation.go`)
 
 use std::{
     collections::BTreeMap,
@@ -72,14 +71,13 @@ fn epoch_from_slot(slot: Slot, slots_per_epoch: u64) -> Epoch {
 }
 
 /// Returns the SSZ hash root of a slot number (little-endian u64, right-padded
-/// to 32 bytes). (ref: charon `eth2util.SlotHashRoot`)
+/// to 32 bytes).
 fn slot_hash_root(num: u64) -> Root {
     num.tree_hash_root().0
 }
 
 fn build_attestation_data(epoch: Epoch, slot: Slot, committee_index: u64) -> AttestationData {
-    // At epoch 0, previous_epoch wraps to u64::MAX (matches charon's
-    // `newAttestationData`).
+    // At epoch 0, previous_epoch wraps to u64::MAX.
     let previous_epoch = epoch.wrapping_sub(1);
     AttestationData {
         slot,
@@ -163,8 +161,7 @@ fn aggregate_attestation_response(state: &MockState, request: &Request) -> Respo
 
 fn aggregate_attestation_body(data: &AttestationData) -> Value {
     // Returns a Fulu (Electra-shaped) attestation with a single committee bit
-    // set, an empty aggregation bitlist and a zeroed signature (matches charon's
-    // defaultMock).
+    // set, an empty aggregation bitlist and a zeroed signature.
     let mut committee_bits = [0u8; 8];
     committee_bits[0] = 0x01;
 
@@ -322,7 +319,7 @@ mod tests {
     #[test]
     fn slot_hash_root_matches_charon() {
         // SSZ hash of slot 2 is the little-endian uint64 right-padded to 32
-        // bytes. (ref: charon `eth2util/hash_test.go`)
+        // bytes.
         assert_eq!(
             hex::encode(slot_hash_root(2)),
             "0200000000000000000000000000000000000000000000000000000000000000",

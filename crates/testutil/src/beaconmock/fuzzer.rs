@@ -2,10 +2,8 @@
 //! JSON responses.
 //!
 //! Pluto's mock is HTTP-only, so rather than swapping function dispatch fields
-//! (charon's `WithBeaconMockFuzzer` approach) it mounts higher-priority
-//! wiremock routes serving randomly-generated, schema-shaped JSON for the
-//! endpoints exercised during fuzz testing.
-//! (ref: charon `testutil/beaconmock/beaconmock_fuzz.go`)
+//! it mounts higher-priority wiremock routes serving randomly-generated,
+//! schema-shaped JSON for the endpoints exercised during fuzz testing.
 //!
 //! Mounted routes use a numerically lower priority than `mount_defaults` so
 //! they take precedence when both are registered on the same `MockServer`.

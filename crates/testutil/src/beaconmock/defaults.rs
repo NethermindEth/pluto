@@ -41,12 +41,12 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
 
     // Signing domains resolve the fork from THIS endpoint via go-eth2-client
     // `forkAtEpoch` (the last entry whose epoch <= the duty's epoch), not the
-    // spec's fork keys — and they disagree on purpose. These entries are
-    // charon's static.json verbatim: the fork is 0x03017000 (bellatrix) below
-    // epoch 256, 0x04017000 (capella) in 256..29696, and 0x05017000 (deneb) from
-    // 29696 on — while the spec overrides above put electra live from epoch
-    // 2048. Keep the entries byte-identical to charon or cross-client signing
-    // domains diverge.
+    // spec's fork keys — and they disagree on purpose. These are the Holesky
+    // fork-schedule epochs: the fork is 0x03017000 (bellatrix) below epoch 256,
+    // 0x04017000 (capella) in 256..29696, and 0x05017000 (deneb) from 29696 on —
+    // while the spec overrides above put electra live from epoch 2048. Both
+    // clients in a mixed cluster must resolve the same fork per slot, so keep
+    // these bytes fixed.
     mount_json(server, "GET", "/eth/v1/config/fork_schedule", |_| {
         json!({
             "data": [
@@ -65,10 +65,9 @@ pub(crate) async fn mount_defaults(server: &MockServer, state: Arc<MockState>) {
         "GET",
         "/eth/v1/node/version",
         // Serve a real, parseable teku client string so the node's beacon-version
-        // check recognizes a known client — a mock-y "charon/…" fails the parser
-        // and WARNs, tripping the simnet log-rate gate. Uses pluto's minimum
-        // supported teku (v25.9.3, app `eth2wrap::version`); charon's own mock
-        // pins v25.4.1, which pluto would reject as too old.
+        // check recognizes a known client and stays quiet — an unparseable string
+        // WARNs and trips the simnet log-rate gate. Uses pluto's minimum
+        // supported teku (v25.9.3, app `eth2wrap::version`).
         |_| {
             json!({
                 "data": {

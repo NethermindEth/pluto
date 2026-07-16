@@ -2,7 +2,7 @@
 //!
 //! Ticks on every slot, generating deterministic block/state roots and
 //! exposing the resulting head over `/eth/v1/events` (SSE) and
-//! `/eth/v1/beacon/blocks/{block_id}/root`. (ref: charon `headproducer.go`)
+//! `/eth/v1/beacon/blocks/{block_id}/root`.
 //!
 //! Note on SSE: wiremock buffers a response body before sending, so events
 //! cannot be streamed continuously. Each request to `/eth/v1/events` returns
@@ -41,9 +41,8 @@ const TOPIC_BLOCK: &str = "block";
 /// Deterministic head event derived from a slot.
 ///
 /// Only one dependent root is meaningful, so we keep a single
-/// `duty_dependent_root` field rather than carry two identical values:
-/// charon's `headproducer.go` renders `PreviousDutyDependentRoot` from
-/// `CurrentDutyDependentRoot` (a typo in the reference).
+/// `duty_dependent_root` field rather than carry two identical values: the
+/// current and previous dependent roots are rendered from the same value.
 #[derive(Clone, Debug)]
 struct HeadEvent {
     slot: Slot,
@@ -209,9 +208,9 @@ fn update_head(state: &SharedState, slot: Slot) {
 }
 
 // Draws the head roots from one slot-seeded byte stream: block, state, and
-// duty_dependent_root are the first three 32-byte reads (charon draws a fourth
-// its head-event JSON never uses). The stream has to be byte-identical across a
-// mixed charon/pluto cluster or sync signatures don't aggregate — see `gorand`.
+// duty_dependent_root are the first three 32-byte reads. The stream has to be
+// byte-identical across a mixed charon/pluto cluster or sync signatures don't
+// aggregate — see `gorand`.
 fn pseudo_random_head_event(slot: Slot) -> HeadEvent {
     // Seed is the slot reinterpreted as i64 (two's-complement), as Go does.
     let mut rng = GoRand::new(slot.cast_signed());

@@ -224,10 +224,7 @@ mod tests {
         resp.json().await.expect("json")
     }
 
-    /// Asserts that `actual` equals the JSON in `golden`. The golden fixtures
-    /// are byte-for-byte copies of
-    /// `charon/testutil/beaconmock/testdata/*.golden`, so this locks the
-    /// mock's output to charon's.
+    /// Asserts that `actual` equals the JSON in `golden`.
     fn assert_golden_json(actual: &Value, golden: &str) {
         let expected: Value = serde_json::from_str(golden).expect("parse golden");
         assert_eq!(actual, &expected, "actual JSON does not match golden");
@@ -235,7 +232,6 @@ mod tests {
 
     /// Validator set A, deterministic factor 1, epoch 1, validator index 2 —
     /// response must match the shared golden fixture.
-    /// (charon `TestDeterministicAttesterDuties`)
     #[tokio::test]
     async fn deterministic_attester_duties() {
         let mock = BeaconMock::builder()
@@ -253,7 +249,6 @@ mod tests {
     /// Validator set A, deterministic factor 1, epoch 1. The mock ignores the
     /// indices filter and assigns all active validators round-robin — response
     /// must match the shared golden fixture.
-    /// (charon `TestDeterministicProposerDuties`)
     #[tokio::test]
     async fn deterministic_proposer_duties() {
         let mock = BeaconMock::builder()
@@ -315,7 +310,7 @@ mod tests {
 
     /// Golden assertion on `AttestationData` for slot=1, committee_index=2.
     /// Encodes the `previous_epoch = epoch - 1` wraparound at epoch 0
-    /// (source.epoch = u64::MAX). (charon `TestAttestationStore`)
+    /// (source.epoch = u64::MAX).
     #[tokio::test]
     async fn attestation_data_matches_golden() {
         let mock = BeaconMock::builder().build().await.expect("build mock");
@@ -328,7 +323,7 @@ mod tests {
     }
 
     /// Default mock serves genesis/spec/deposit-contract/syncing/version with
-    /// the expected baseline values. (charon `TestStatic`)
+    /// the expected baseline values.
     #[tokio::test]
     async fn static_endpoints() {
         let mock = BeaconMock::builder().build().await.expect("build mock");
@@ -361,7 +356,7 @@ mod tests {
     }
 
     /// A builder-provided genesis time flows through to the
-    /// `/eth/v1/beacon/genesis` endpoint. (charon `TestGenesisTimeOverride`)
+    /// `/eth/v1/beacon/genesis` endpoint.
     #[tokio::test]
     async fn genesis_time_override() {
         let t0 = Utc::now().with_nanosecond(0).expect("truncate nanoseconds");
@@ -380,7 +375,6 @@ mod tests {
     }
 
     /// A builder-set slots_per_epoch is reflected in the spec endpoint.
-    /// (charon `TestSlotsPerEpochOverride`)
     #[tokio::test]
     async fn slots_per_epoch_override() {
         let mock = BeaconMock::builder()
@@ -394,7 +388,7 @@ mod tests {
     }
 
     /// A builder-set slot_duration is reflected as SECONDS_PER_SLOT in the spec
-    /// endpoint. (charon `TestSlotsDurationOverride`)
+    /// endpoint.
     #[tokio::test]
     async fn slot_duration_override() {
         let mock = BeaconMock::builder()
@@ -408,8 +402,7 @@ mod tests {
     }
 
     /// With no builder options, the spec reports the simnet defaults and
-    /// genesis time matches the 2022-03-01 baseline. (charon
-    /// `TestDefaultOverrides`)
+    /// genesis time matches the 2022-03-01 baseline.
     #[tokio::test]
     async fn default_overrides() {
         let mock = BeaconMock::builder().build().await.expect("build mock");
