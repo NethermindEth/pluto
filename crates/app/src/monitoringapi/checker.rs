@@ -1,6 +1,10 @@
 //! Background readiness checker for `/readyz`.
 
-use std::{collections::HashSet, time::Duration};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use chrono::{DateTime, Utc};
 use pluto_cluster::helpers;
@@ -45,14 +49,16 @@ struct ChainConfig {
 /// Starts the background readiness checker and returns the shared readiness
 /// state served by `/readyz`.
 ///
-/// `seen_pubkeys` should receive validator public keys observed through the
-/// validator API. `validator_api_calls` should receive one item for each
-/// validator API call. The checker consumes both receivers until cancellation.
+/// `seen_pubkeys` is a shared, deduped set of DV root pubkeys the validator
+/// client has referenced through the validator API; the checker drains it each
+/// slot, so it stays bounded by the validator count regardless of request
+/// volume. `validator_api_calls` should receive one item for each validator API
+/// call. The checker consumes both until cancellation.
 pub fn start_ready_checker(
     p2p_context: P2PContext,
     beacon_node: EthBeaconNodeApiClient,
     pubkeys: Vec<PubKey>,
-    seen_pubkeys: mpsc::Receiver<PubKey>,
+    seen_pubkeys: Arc<Mutex<HashSet<PubKey>>>,
     validator_api_calls: mpsc::Receiver<()>,
     ct: CancellationToken,
 ) -> ReadyState {
@@ -161,7 +167,7 @@ async fn run_ready_checker(
     p2p_context: P2PContext,
     beacon_node: EthBeaconNodeApiClient,
     pubkeys: Vec<PubKey>,
-    mut seen_pubkeys: mpsc::Receiver<PubKey>,
+    seen_pubkeys: Arc<Mutex<HashSet<PubKey>>>,
     mut validator_api_calls: mpsc::Receiver<()>,
     ct: CancellationToken,
     readiness: ReadyState,
@@ -184,7 +190,6 @@ async fn run_ready_checker(
     slot_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut peer_count_interval = tokio::time::interval(PEER_COUNT_PERIOD);
     peer_count_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut seen_pubkeys_open = true;
     let mut validator_api_calls_open = true;
 
     slot_interval.tick().await;
@@ -206,6 +211,13 @@ async fn run_ready_checker(
                         None
                     }
                 };
+                // Fold in the pubkeys the VC referenced since the last tick.
+                // The set is deduped and drained every slot, so it stays
+                // bounded by the validator count regardless of request volume.
+                let observed = std::mem::take(&mut *seen_pubkeys.lock().expect("seen pubkeys mutex"));
+                for pubkey in observed {
+                    checker.observe_pubkey(pubkey);
+                }
                 let evaluated_epoch = current_epoch(&config, Utc::now());
                 let status = checker.evaluate_round(
                     quorum_peers_connected(&p2p_context),
@@ -216,12 +228,6 @@ async fn run_ready_checker(
                 match status {
                     Ok(()) => readiness.set_ready(),
                     Err(error) => readiness.set_error(error),
-                }
-            }
-            pubkey = seen_pubkeys.recv(), if seen_pubkeys_open => {
-                match pubkey {
-                    Some(pubkey) => checker.observe_pubkey(pubkey),
-                    None => seen_pubkeys_open = false,
                 }
             }
             call = validator_api_calls.recv(), if validator_api_calls_open => {
