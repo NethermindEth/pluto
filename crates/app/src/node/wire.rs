@@ -170,8 +170,7 @@ pub struct WiredComponents {
 }
 
 /// Per-epoch trim + refresh for the shared [`ValidatorCache`], the Rust analog
-/// of Charon's inline validator-cache refresh subscriber
-/// (`app/app.go:484-532`).
+/// of Charon's inline validator-cache refresh subscriber in `wireCoreWorkflow`.
 ///
 /// Registered as a scheduler slot subscriber by [`wire_core_workflow`]. The
 /// seeded cache is otherwise frozen at startup; this refresher re-fetches the
@@ -183,62 +182,62 @@ struct ValidatorCacheRefresher {
     bookkeeping: tokio::sync::Mutex<RefreshBookkeeping>,
 }
 
-/// Mirrors Charon's `firstValCacheRefresh` / `refreshedBySlot` locals
-/// (`app.go:484-485`), which the refresh closure reads and writes under a lock.
+/// Mirrors the `firstValCacheRefresh` / `refreshedBySlot` locals in Charon's
+/// `wireCoreWorkflow`, which the refresh closure reads and writes under a lock.
 struct RefreshBookkeeping {
     /// Whether the cache has never been refreshed. Forces the first tick to
     /// refresh regardless of the slot's position in the epoch.
-    first_refresh: bool,
+    first_val_cache_refresh: bool,
     /// Whether the previous refresh fetched by slot (`true`) or fell back to
     /// the head state (`false`). A head fallback forces the next tick to
     /// refresh and to re-fetch the epoch's first slot.
-    refreshed_by_slot: bool,
+    refresh_by_slot: bool,
 }
 
 impl ValidatorCacheRefresher {
     fn new(cache: ValidatorCache) -> Self {
         Self {
             cache,
-            // Charon initializes both flags to `true` (`app.go:484-485`).
+            // Charon initializes both flags to `true`.
             bookkeeping: tokio::sync::Mutex::new(RefreshBookkeeping {
-                first_refresh: true,
-                refreshed_by_slot: true,
+                first_val_cache_refresh: true,
+                refresh_by_slot: true,
             }),
         }
     }
 
     /// Trims and refreshes the cache for `slot` when required, mirroring
-    /// Charon's `shouldUpdateCache` gate (`app.go:489-498`) and the `GetBySlot`
-    /// head-fallback re-fetch (`app.go:512-529`).
+    /// Charon's `shouldUpdateCache` gate and the `GetBySlot` head-fallback
+    /// re-fetch.
     async fn refresh(&self, slot: &Slot) -> Result<(), ValidatorCacheError> {
         let mut bk = self.bookkeeping.lock().await;
 
         // shouldUpdateCache: skip mid-epoch slots once the cache has been
         // refreshed at least once by slot.
-        if !slot.first_in_epoch() && !bk.first_refresh && bk.refreshed_by_slot {
+        if !slot.first_in_epoch() && !bk.first_val_cache_refresh && bk.refresh_by_slot {
             return Ok(());
         }
 
         tracing::info!(
             slot = %slot.slot,
-            first_refresh = bk.first_refresh,
+            first_refresh = bk.first_val_cache_refresh,
             "Refreshing validator cache"
         );
 
         // If the previous refresh fell back to head, fetch the epoch's first
         // slot rather than the current slot. `epoch * slots_per_epoch <= slot`,
         // so the multiply never actually saturates.
-        let slot_to_fetch = if bk.refreshed_by_slot {
+        let slot_to_fetch = if bk.refresh_by_slot {
             slot.slot.inner()
         } else {
             slot.epoch().saturating_mul(slot.slots_per_epoch)
         };
 
         self.cache.trim().await;
-        let (_, _, refreshed_by_slot) = self.cache.get_by_slot(slot_to_fetch).await?;
+        let (_, _, refresh_by_slot) = self.cache.get_by_slot(slot_to_fetch).await?;
 
-        bk.refreshed_by_slot = refreshed_by_slot;
-        bk.first_refresh = false;
+        bk.refresh_by_slot = refresh_by_slot;
+        bk.first_val_cache_refresh = false;
 
         Ok(())
     }
@@ -292,8 +291,7 @@ pub async fn wire_core_workflow(
     // into both clients (app.go:481-482 and app.go:598); without seeding, the
     // scheduler would resolve duties against an empty (or unfiltered) set.
     // `ValidatorCache` clones share state, so the per-epoch trim + refresh
-    // subscriber registered below (Charon app.go:480-532) refreshes every
-    // consumer at once.
+    // subscriber registered below refreshes every consumer at once.
     let validator_cache = ValidatorCache::new(eth2_cl.clone(), eth2_pubkeys);
     tokio::join!(
         beacon_client.set_validator_cache(validator_cache.clone()),
@@ -564,12 +562,8 @@ pub async fn wire_core_workflow(
             "consensus",
         );
     }
-    // Slot subscriber: per-epoch validator cache trim + refresh (Charon
-    // app.go:480-532). The shared cache seeded above stays frozen at startup
-    // until this runs — it re-fetches the cluster validator set on each epoch's
-    // first slot so late-activating validators get scheduled and exited ones
-    // stop being resolved. A single refresh covers every consumer (scheduler,
-    // broadcaster, validator API) since they share this cache.
+    // Slot subscriber: per-epoch validator cache trim + refresh (Charon's
+    // `wireCoreWorkflow`).
     {
         let refresher = Arc::new(ValidatorCacheRefresher::new(validator_cache.clone()));
         sched_builder.subscribe_slot(
@@ -701,13 +695,6 @@ pub async fn wire_core_workflow(
 
 #[cfg(test)]
 mod tests {
-    //! Unit tests for the per-epoch [`ValidatorCacheRefresher`] (Charon
-    //! `app.go:484-532`). They drive the refresher directly against a
-    //! `wiremock`-backed [`ValidatorCache`] — the same cache the scheduler
-    //! reads via `get_by_head` when resolving duties — and assert the
-    //! refreshed active set, so they mirror what the scheduler would
-    //! observe.
-
     use super::*;
     use pluto_core::types::SlotNumber;
     use pluto_eth2api::{
@@ -933,9 +920,9 @@ mod tests {
         assert_eq!(active.len(), 1, "cache retained the slot-0 set");
     }
 
-    /// After a head fallback (`refreshed_by_slot == false`), the next tick is
+    /// After a head fallback (`refresh_by_slot == false`), the next tick is
     /// forced to refresh even mid-epoch, and it re-fetches the epoch's first
-    /// slot rather than the current slot (`slot.Epoch() * slot.SlotsPerEpoch`).
+    /// slot rather than the current slot.
     #[tokio::test]
     async fn refresh_refetches_epoch_first_slot_after_head_fallback() {
         let pk = test_pubkey(1);
