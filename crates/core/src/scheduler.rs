@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, hash_map::Entry},
-    sync::{LazyLock, Mutex},
+    sync::{Arc, LazyLock, Mutex},
 };
 
 use backon::{BackoffBuilder, Retryable};
@@ -120,20 +120,36 @@ impl SchedulerBuilder {
 
         // TODO: We might want to return a handle so clients can `.abort()` them to drop
         // the subscription
+        let label: Arc<str> = Arc::from(label.as_ref());
         tokio::spawn(async move {
             loop {
                 match rx.recv().await {
                     Ok(slot) => {
-                        if let Err(err) = f(&slot).await {
-                            tracing::error!(err = ?err, slot = %slot.slot, label = label.as_ref(), "Emit scheduled slot event");
-                        }
+                        // Spawn per event so a slow or hung handler cannot
+                        // delay later slots for this subscriber.
+                        let fut = f(&slot);
+                        let label = Arc::clone(&label);
+                        tokio::spawn(async move {
+                            if let Err(err) = fut.await {
+                                tracing::error!(err = ?err, slot = %slot.slot, label = &*label, "Emit scheduled slot event");
+                            }
+                        });
                     }
-                    // NOTE: A lagging subscriber requires further analysis.
-                    // Log the error and terminate the subscription.
+                    // NOTE: Handlers are spawned per event above, so the
+                    // receive loop drains immediately. Lag therefore no longer
+                    // signals a slow handler — it can only fire if this loop
+                    // task itself is starved (runtime saturation). Log and
+                    // terminate the subscription.
+                    //
+                    // Trade-off of spawning: a permanently stuck handler now
+                    // leaks its detached task rather than eventually lagging and
+                    // terminating the subscription. Bounding that growth is a
+                    // follow-up, tracked with the consensus duty-deadline
+                    // cancellation that caps stuck-task lifetime.
                     Err(sync::broadcast::error::RecvError::Lagged(skipped)) => {
                         tracing::error!(
                             skipped,
-                            label = label.as_ref(),
+                            label = &*label,
                             "Emit scheduled slot subscriber lagged"
                         );
                         break;
@@ -153,21 +169,27 @@ impl SchedulerBuilder {
     {
         let mut rx = self.duty_broadcast.subscribe();
 
+        let label: Arc<str> = Arc::from(label.as_ref());
         tokio::spawn(async move {
             loop {
                 match rx.recv().await {
                     Ok((duty, set)) => {
-                        if let Err(err) = f(&duty, &set).await {
-                            tracing::error!(err = ?err, label = label.as_ref(), "Trigger duty subscriber error");
-                        }
+                        // Spawn per event: a handler stuck on one duty (e.g. a
+                        // fetch awaiting an aggregation that never reaches
+                        // threshold, or a consensus instance that cannot
+                        // decide) must not starve every later duty for this
+                        // subscriber.
+                        let fut = f(&duty, &set);
+                        let label = Arc::clone(&label);
+                        tokio::spawn(async move {
+                            if let Err(err) = fut.await {
+                                tracing::error!(err = ?err, %duty, label = &*label, "Trigger duty subscriber error");
+                            }
+                        });
                     }
                     // NOTE: Same as in `subscribe_slot`
                     Err(sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                        tracing::error!(
-                            skipped,
-                            label = label.as_ref(),
-                            "Trigger duty subscriber lagged"
-                        );
+                        tracing::error!(skipped, label = &*label, "Trigger duty subscriber lagged");
                         break;
                     }
                     Err(sync::broadcast::error::RecvError::Closed) => break,
@@ -1676,6 +1698,108 @@ mod tests {
         assert!(
             !matches!(next, Ok(Ok(_))),
             "expected no duty broadcast after cancellation, got {next:?}"
+        );
+    }
+
+    // ---- 7. Async emission: a hung handler must not block later events ----
+
+    /// A hung handler for one slot must not block delivery of later slots to
+    /// the same subscriber. On the pre-change (inline `await`) version the
+    /// receive loop parks on the blocked handler and never reads the next
+    /// event; after the change each handler is spawned per event, so the loop
+    /// keeps draining the broadcast and the later slot is still delivered.
+    #[tokio::test]
+    async fn slow_slot_handler_does_not_block_later_slots() {
+        let mut builder = SchedulerBuilder::new();
+        let slot_tx = builder.slot_broadcast.clone();
+
+        // Each invocation records the slot number it is *entered* with. The
+        // slot-0 handler blocks forever after recording; the slot-1 handler
+        // records and returns.
+        let (entered_tx, mut entered_rx) = sync::mpsc::unbounded_channel::<u64>();
+        builder.subscribe_slot(
+            move |slot: &types::Slot| {
+                let entered_tx = entered_tx.clone();
+                let n = slot.slot.inner();
+                async move {
+                    let _ = entered_tx.send(n);
+                    if n == 0 {
+                        // Never completes: emulates a hung handler.
+                        std::future::pending::<()>().await;
+                    }
+                    Ok::<(), std::convert::Infallible>(())
+                }
+            },
+            "test-slot-sub",
+        );
+
+        // Emit A (blocks) then B directly onto the broadcast.
+        slot_tx.send(test_past_slot(0, 16)).expect("send slot A");
+        slot_tx.send(test_past_slot(1, 16)).expect("send slot B");
+
+        // Both handlers are entered even though A never completes. (Task
+        // scheduling order between the two spawned handlers is not fixed, so
+        // collect both rather than asserting an order.)
+        let mut seen = HashSet::new();
+        for _ in 0..2 {
+            let n = tokio::time::timeout(Duration::from_secs(2), entered_rx.recv())
+                .await
+                .expect("handler entered within timeout")
+                .expect("slot value");
+            seen.insert(n);
+        }
+        assert!(seen.contains(&0), "slot 0 handler should be entered");
+        assert!(
+            seen.contains(&1),
+            "slot 1 handler must be entered even though the slot 0 handler hung"
+        );
+    }
+
+    /// Same guarantee for `subscribe_duty`: a handler stuck on one duty must
+    /// not starve later duties for that subscriber.
+    #[tokio::test]
+    async fn slow_duty_handler_does_not_block_later_duties() {
+        let mut builder = SchedulerBuilder::new();
+        let duty_tx = builder.duty_broadcast.clone();
+
+        let (entered_tx, mut entered_rx) = sync::mpsc::unbounded_channel::<u64>();
+        builder.subscribe_duty(
+            move |duty: &types::Duty, _set: &types::DutyDefinitionSet| {
+                let entered_tx = entered_tx.clone();
+                let n = duty.slot.inner();
+                async move {
+                    let _ = entered_tx.send(n);
+                    if n == 0 {
+                        // Never completes: emulates a hung handler.
+                        std::future::pending::<()>().await;
+                    }
+                    Ok::<(), std::convert::Infallible>(())
+                }
+            },
+            "test-duty-sub",
+        );
+
+        let duty_a = types::Duty::new_attester_duty(types::SlotNumber::new(0));
+        let duty_b = types::Duty::new_attester_duty(types::SlotNumber::new(1));
+        duty_tx
+            .send((duty_a, types::DutyDefinitionSet::default()))
+            .expect("send duty A");
+        duty_tx
+            .send((duty_b, types::DutyDefinitionSet::default()))
+            .expect("send duty B");
+
+        let mut seen = HashSet::new();
+        for _ in 0..2 {
+            let n = tokio::time::timeout(Duration::from_secs(2), entered_rx.recv())
+                .await
+                .expect("handler entered within timeout")
+                .expect("slot value");
+            seen.insert(n);
+        }
+        assert!(seen.contains(&0), "duty 0 handler should be entered");
+        assert!(
+            seen.contains(&1),
+            "duty 1 handler must be entered even though the duty 0 handler hung"
         );
     }
 }
