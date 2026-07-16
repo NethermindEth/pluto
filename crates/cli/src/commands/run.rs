@@ -1152,14 +1152,6 @@ fn warn_ignored_flags(config: &RunConfig) {
 }
 
 /// Parses the feature-set flags into a [`pluto_featureset::Config`].
-///
-/// The config is forwarded to the app and resolved into an injectable
-/// `FeatureSet` inside `App::run` (after lock load, so the gnosis/chiado
-/// `GnosisBlockHotfix` auto-enable can key off the fork version). Matches
-/// Charon's `featureset.Init`: an unknown min status string is a hard error
-/// here, while unknown enabled/disabled feature names are warned about and
-/// ignored. Statuses that parse but are not valid *minimum* statuses (e.g.
-/// `enable`) are rejected later by `FeatureSet::from_config`.
 fn build_feature_config(feature: &FeatureConfig) -> Result<pluto_featureset::Config> {
     let min_status = Status::try_from(feature.min_status.as_str()).map_err(|_| {
         FeaturesetError::UnknownMinStatus {
