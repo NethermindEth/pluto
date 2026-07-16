@@ -4,7 +4,7 @@
 
 mod graffiti;
 
-use graffiti::GraffitiBuilder;
+pub use graffiti::{GraffitiBuilder, GraffitiError};
 
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 

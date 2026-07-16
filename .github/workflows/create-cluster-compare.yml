@@ -68,7 +68,7 @@ jobs:
           version: 3.21.12
 
       - name: Install oas3-gen
-        run: cargo install oas3-gen@0.24.0
+        run: cargo install oas3-gen@0.24.0 --locked
 
       - name: Build pluto
         run: cargo build -p pluto-cli

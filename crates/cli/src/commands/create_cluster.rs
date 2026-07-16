@@ -373,17 +373,33 @@ pub async fn run(w: &mut dyn Write, mut args: CreateClusterArgs) -> CliResult<()
             return Err(CreateClusterError::MissingExecutionEngineAddress.into());
         };
 
+        // Register a fully-specified custom testnet (from `--testnet-*` flags)
+        // before verifying the definition. `load_definition` runs EIP-712
+        // signature verification, which looks the definition's fork version up
+        // in the supported-networks allowlist; a custom fork version would
+        // otherwise be rejected as "Invalid fork version". The flag-driven
+        // config path registers via `validate_network_config`, but that runs
+        // after this block, so we must register here too (registration is
+        // idempotent).
+        let testnet_network: network::Network = args.testnet_config.clone().into();
+        if testnet_network.is_non_zero() {
+            eth2util::network::add_test_network(testnet_network)?;
+        }
+
         let eth1cl = eth1wrap::EthClient::new(addr.clone()).await?;
         let def = load_definition(definition_file, &eth1cl).await?;
 
         args.nodes = u64::try_from(def.operators.len()).expect("operators length is too large");
         args.threshold = Some(def.threshold);
 
+        // Only map the fork version onto the built-in `Network` enum for known
+        // networks. A custom testnet has no enum variant; it is already
+        // registered above and is validated via `testnet_config`, so leave
+        // `args.network` unset in that case.
         let network_name = eth2util::network::fork_version_to_network(&def.fork_version)?;
-        args.network = Some(
-            Network::try_from(network_name.as_str())
-                .map_err(CreateClusterError::InvalidNetworkConfig)?,
-        );
+        if let Ok(network) = Network::try_from(network_name.as_str()) {
+            args.network = Some(network);
+        }
 
         definition_input = Some((def, eth1cl));
     }
