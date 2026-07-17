@@ -1,24 +1,20 @@
 //! Core duty-workflow construction and wiring.
 //!
-//! This is the Rust analog of Charon's `wireCoreWorkflow` (`app/app.go:399`)
-//! and `core.Wire` (`core/interfaces.go:283`). It constructs the ten core duty
-//! workflow components and connects them into the data-flow graph that drives a
-//! single distributed-validator node.
+//! This constructs the ten core duty-workflow components and connects them into
+//! the data-flow graph that drives a single distributed-validator node.
 //!
 //! The construction order builds back-edge targets before their consumers (see
-//! [`wire_core_workflow`]), and — unlike Charon's split between a `wireFuncs`
-//! struct and the `Wire` call — Pluto interleaves construction and wiring
-//! because of its builder/service split:
+//! [`wire_core_workflow`]); Pluto interleaves construction and wiring because
+//! of its builder/service split:
 //!
 //! * scheduler subscribers are registered on the *builder* before `.build()`;
 //! * the fetcher's back-edges and subscribers are bon-builder fields;
 //! * consensus / parsigdb / sigagg subscribers are registered on the *service*.
 //!
-//! To mirror Charon's `Run` (loads) vs `wireCoreWorkflow` (wires) split — and
-//! Charon's `TestConfig.ParSigExFunc` injection — this function takes
-//! already-resolved inputs ([`WireInputs`]) and a [`ParSigExSeam`] for the
-//! partial-signature exchange, so tests can inject a `BeaconMock` and an
-//! in-memory (loopback) parsigex without a real libp2p swarm.
+//! Following the load-vs-wire split, this function takes already-resolved
+//! inputs ([`WireInputs`]) and a [`ParSigExSeam`] for the partial-signature
+//! exchange, so tests can inject a `BeaconMock` and an in-memory (loopback)
+//! parsigex without a real libp2p swarm.
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -37,7 +33,7 @@ use pluto_core::{
     scheduler::SchedulerBuilder,
     sigagg::{Aggregator, VerifyFn},
     signeddata::{SyncContribution, VersionedAggregatedAttestation},
-    types::{Duty, ParSignedData, ParSignedDataSet, PubKey, SignedData, SignedDataSet},
+    types::{Duty, ParSignedData, ParSignedDataSet, PubKey, SignedData, SignedDataSet, Slot},
     unsigneddata::{self, UnsignedDataSet},
     validatorapi::{self, Component, Handler, SeenPubkeysFn},
 };
@@ -72,9 +68,9 @@ pub type ParSigExSubscribe =
 
 /// Partial-signature exchange seam.
 ///
-/// Mirrors Charon's `TestConfig.ParSigExFunc`: the production path supplies a
-/// real `parsigex::Handle` (outbound broadcast) plus an inbound subscription;
-/// tests supply a loopback so partial signatures cross the threshold locally.
+/// The production path supplies a real `parsigex::Handle` (outbound broadcast)
+/// plus an inbound subscription; tests supply a loopback so partial signatures
+/// cross the threshold locally.
 pub struct ParSigExSeam {
     /// Outbound broadcast, wired into `parsigdb.subscribe_internal`.
     pub broadcast: ParSigExBroadcast,
@@ -82,6 +78,14 @@ pub struct ParSigExSeam {
     /// A loopback test may wire `broadcast` straight back into the subscriber.
     pub subscribe: ParSigExSubscribe,
 }
+
+/// Per-slot subscriber seam, registered on the scheduler's slot ticks.
+///
+/// Like the parsigex / seen-pubkeys seams, this is a boxed callback so the core
+/// wiring stays decoupled from what drives it: production leaves it `None` (a
+/// real validator client drives the validator API), while simnet supplies a
+/// callback forwarding each tick to the in-process validator mock.
+pub type SlotTickFn = Arc<dyn Fn(&Slot) -> BoxFuture<'static, Result<(), AppError>> + Send + Sync>;
 
 /// Per-validator data extracted from the cluster lock for this node.
 pub struct ValidatorInfo {
@@ -97,10 +101,10 @@ pub struct ValidatorInfo {
 
 /// Already-resolved inputs to [`wire_core_workflow`].
 ///
-/// These mirror what Charon's `wireCoreWorkflow` derives from the cluster
-/// manifest + config, but are passed in so that file-loading and P2P setup
-/// (in `run`) stay separate from construction-and-wiring (here) — enabling the
-/// Tier 1 test to inject a `BeaconMock` and in-memory parsigex.
+/// These are derived from the cluster manifest + config, but passed in so that
+/// file-loading and P2P setup (in `run`) stay separate from
+/// construction-and-wiring (here) — enabling the Tier 1 test to inject a
+/// `BeaconMock` and in-memory parsigex.
 pub struct WireInputs {
     /// Threshold of partial signatures required for aggregation.
     pub threshold: u64,
@@ -126,8 +130,7 @@ pub struct WireInputs {
     pub parsigex: ParSigExSeam,
     /// Aggregated-signature verifier for SigAgg. Production injects the eth2
     /// verifier (`sigagg::new_verifier`); tests may inject a permissive one to
-    /// exercise the wiring without real BLS test vectors (mirrors Charon's
-    /// `TestConfig`).
+    /// exercise the wiring without real BLS test vectors.
     pub sigagg_verifier: VerifyFn,
     /// Per-component deadline calculator. Production injects a beacon-derived
     /// [`DutyDeadlineCalculator`](pluto_core::deadline::DutyDeadlineCalculator);
@@ -148,6 +151,10 @@ pub struct WireInputs {
     /// references on the validator API, feeding the monitoring readiness
     /// checker. `None` disables the signal (e.g. tests).
     pub seen_pubkeys: Option<SeenPubkeysFn>,
+    /// Optional per-slot subscriber. When present, it is registered on the
+    /// scheduler so each slot tick drives duties; simnet wires the in-process
+    /// validator mock here. `None` in production and tests.
+    pub slot_tick: Option<SlotTickFn>,
 }
 
 /// The wired components and long-lived handles produced by
@@ -155,9 +162,8 @@ pub struct WireInputs {
 /// background tasks and shut them down in order.
 pub struct WiredComponents {
     /// Background task driving the self-spawning scheduler actor, returned so
-    /// the caller can supervise its lifecycle (Charon registers `sched.Run`
-    /// as a lifecycle hook, `app.go:660`). The scheduler's query handle is held
-    /// directly by the validator API.
+    /// the caller can supervise its lifecycle. The scheduler's query handle is
+    /// held directly by the validator API.
     pub scheduler_task: tokio::task::JoinHandle<()>,
     /// In-memory duty database (shared; needs explicit shutdown).
     pub dutydb: Arc<dutydb::MemDB>,
@@ -175,8 +181,8 @@ pub struct WiredComponents {
 
 /// Constructs and wires the ten core duty-workflow components.
 ///
-/// Reproduces the data-flow graph from `core/interfaces.go:337-357`. The 13
-/// stitches and 3 deadlock-critical back-edges are annotated inline.
+/// Reproduces the core duty-workflow data-flow graph. The 13 stitches and 3
+/// deadlock-critical back-edges are annotated inline.
 ///
 /// Construction order builds back-edge targets before their consumers:
 /// deadliners → aggsigdb → dutydb → fetcher → consensus.subscribe → parsigdb →
@@ -202,9 +208,10 @@ pub async fn wire_core_workflow(
         electra_slot,
         fetch_only_comm_idx0,
         seen_pubkeys,
+        slot_tick,
     } = inputs;
 
-    // ---- Derived validator maps (mirrors app.go:407-452) ----
+    // ---- Derived validator maps ----
     let mut eth2_pubkeys = Vec::with_capacity(validators.len());
     // DV root pubkey -> this node's public share (validatorapi wants this flat
     // map already collapsed for our share index).
@@ -218,11 +225,10 @@ pub async fn wire_core_workflow(
 
     // One pubkey-scoped validator cache shared by the scheduler's beacon
     // client, the submission client, and the validator API, so every consumer
-    // resolves the same cluster validator set. Charon seeds a single cache
-    // into both clients (app.go:481-482 and app.go:598); without seeding, the
-    // scheduler would resolve duties against an empty (or unfiltered) set.
-    // `ValidatorCache` clones share state; the per-epoch trim + refresh
-    // subscriber is a planned follow-up.
+    // resolves the same cluster validator set. Charon seeds a single cache into
+    // both clients; without seeding, the scheduler would resolve duties against
+    // an empty (or unfiltered) set. `ValidatorCache` clones share state; the
+    // per-epoch trim + refresh subscriber is a planned follow-up.
     let validator_cache = ValidatorCache::new(eth2_cl.clone(), eth2_pubkeys);
     tokio::join!(
         beacon_client.set_validator_cache(validator_cache.clone()),
@@ -281,16 +287,27 @@ pub async fn wire_core_workflow(
             })
         })
     };
-    // Stitch: fetcher.subscribe(consensus.propose).
+    // Stitch: fetcher.subscribe(consensus.propose), bounded by the duty deadline.
     let fetch_subscriber: Subscriber = {
         let consensus = Arc::clone(&consensus);
         let ct = ct.clone();
+        let deadline_calc = Arc::clone(&deadline_calc);
         Arc::new(move |duty: Duty, set: UnsignedDataSet| {
             let consensus = Arc::clone(&consensus);
             let ct = ct.clone();
+            let deadline_calc = Arc::clone(&deadline_calc);
             Box::pin(async move {
                 let value = unsigneddata::unsigned_data_set_to_proto(&set)?;
-                consensus.propose(duty, value, &ct).await?;
+                // Bound consensus by the duty deadline: an instance that cannot
+                // decide has its ctx cancelled at the deadline (-> ConsensusTimeout)
+                // instead of running until component shutdown.
+                run_bounded_by_duty_deadline(
+                    &deadline_calc,
+                    &ct,
+                    duty,
+                    move |duty, dct| async move { consensus.propose(duty, value, &dct).await },
+                )
+                .await?;
                 Ok(())
             })
         })
@@ -365,8 +382,7 @@ pub async fn wire_core_workflow(
     // ---- (10) SigAgg (built before parsigdb.subscribe_threshold consumer) ----
     //
     // The production verifier (injected via `sigagg_verifier`) reconstructs the
-    // group signature and verifies it against the beacon-node signing domain
-    // (Charon `sigagg.NewVerifier`).
+    // group signature and verifies it against the beacon-node signing domain.
     let mut aggregator = Aggregator::new(threshold, sigagg_verifier).map_err(AppError::SigAgg)?;
     // Stitch: sigagg.subscribe(aggsigdb.store).
     //
@@ -470,12 +486,25 @@ pub async fn wire_core_workflow(
     let mut sched_builder = SchedulerBuilder::new();
     {
         let fetcher = Arc::clone(&fetcher);
+        let ct = ct.clone();
         sched_builder.subscribe_duty(
             move |duty: &Duty, set: &pluto_core::types::DutyDefinitionSet| {
                 let fetcher = Arc::clone(&fetcher);
+                let ct = ct.clone();
                 let duty = duty.clone();
                 let set = set.clone();
-                async move { fetcher.fetch(duty, set).await }
+                async move {
+                    match fetcher.fetch(duty, set).await {
+                        // In-flight fetches racing shutdown fail against already
+                        // terminated components (e.g. the aggsigdb back-edge);
+                        // don't surface those as duty errors.
+                        Err(err) if ct.is_cancelled() => {
+                            tracing::debug!(?err, "fetch aborted by shutdown");
+                            Ok(())
+                        }
+                        res => res,
+                    }
+                }
             },
             "fetcher",
         );
@@ -483,15 +512,31 @@ pub async fn wire_core_workflow(
     {
         let consensus = Arc::clone(&consensus);
         let ct = ct.clone();
+        let deadline_calc = Arc::clone(&deadline_calc);
         sched_builder.subscribe_duty(
             move |duty: &Duty, _set: &pluto_core::types::DutyDefinitionSet| {
                 let consensus = Arc::clone(&consensus);
                 let ct = ct.clone();
+                let deadline_calc = Arc::clone(&deadline_calc);
                 let duty = duty.clone();
-                async move { consensus.participate(duty, &ct).await }
+                async move {
+                    // Bound consensus by the duty deadline (see fetch stitch).
+                    run_bounded_by_duty_deadline(
+                        &deadline_calc,
+                        &ct,
+                        duty,
+                        move |duty, dct| async move { consensus.participate(duty, &dct).await },
+                    )
+                    .await
+                }
             },
             "consensus",
         );
+    }
+    // Optional per-slot subscriber (simnet validator mock), registered on the
+    // builder before `.build()`.
+    if let Some(slot_tick) = slot_tick {
+        sched_builder.subscribe_slot(move |slot: &Slot| slot_tick(slot), "simnet.vmock");
     }
     let (scheduler, scheduler_task) = sched_builder
         .build(beacon_client, ct.clone())
@@ -613,4 +658,154 @@ pub async fn wire_core_workflow(
         fetcher,
         validator_api_router,
     })
+}
+
+/// Runs `f` under a child of `parent_ct` that is *also* cancelled at
+/// `deadline`.
+///
+/// Consensus `Propose`/`Participate` are bounded by the duty deadline, so an
+/// instance that cannot decide has its context cancelled at the deadline (→
+/// `Error::ConsensusTimeout`) instead of running until component shutdown. A
+/// `None` deadline leaves the call bounded only by `parent_ct` (component
+/// lifetime).
+async fn bounded_by_deadline<Fut>(
+    parent_ct: &CancellationToken,
+    deadline: Option<chrono::DateTime<chrono::Utc>>,
+    f: impl FnOnce(CancellationToken) -> Fut,
+) -> Fut::Output
+where
+    Fut: std::future::Future,
+{
+    let child = parent_ct.child_token();
+    // Cancel the child when we return, so the timer task exits promptly on the
+    // decided (happy) path — not only when the deadline elapses.
+    let _guard = child.clone().drop_guard();
+
+    if let Some(deadline) = deadline {
+        let until = deadline
+            .signed_duration_since(chrono::Utc::now())
+            .to_std()
+            .unwrap_or(std::time::Duration::ZERO);
+        let timer_ct = child.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                () = tokio::time::sleep(until) => timer_ct.cancel(),
+                () = timer_ct.cancelled() => {}
+            }
+        });
+    }
+
+    f(child).await
+}
+
+/// Failure driving a duty's consensus instance: either the deadline could not
+/// be computed or the consensus round itself failed.
+#[derive(Debug, thiserror::Error)]
+enum DutyConsensusError {
+    #[error(transparent)]
+    Deadline(#[from] pluto_core::deadline::DeadlineError),
+    #[error(transparent)]
+    Consensus(#[from] qbft::RunnerError),
+}
+
+/// Runs `run_consensus` for `duty`, bounded by the duty's deadline.
+///
+/// A deadline-calculator error is surfaced rather than silently downgraded to
+/// "no deadline"; otherwise a failing calculator would leave the QBFT instance
+/// bounded only by component lifetime instead of the intended deadline.
+async fn run_bounded_by_duty_deadline<F, Fut>(
+    deadline_calc: &Arc<dyn DeadlineCalculator>,
+    ct: &CancellationToken,
+    duty: Duty,
+    run_consensus: F,
+) -> Result<(), DutyConsensusError>
+where
+    F: FnOnce(Duty, CancellationToken) -> Fut,
+    Fut: std::future::Future<Output = qbft::RunnerResult<()>>,
+{
+    let deadline = deadline_calc.deadline(&duty)?;
+    bounded_by_deadline(ct, deadline, move |dct| run_consensus(duty, dct)).await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod deadline_bound_tests {
+    use super::*;
+
+    // A deadline at/before now cancels the child context promptly, so a bounded
+    // consensus call returns instead of running until shutdown.
+    #[tokio::test]
+    async fn bounded_by_deadline_past_deadline_cancels() {
+        let parent = CancellationToken::new();
+        let now = chrono::Utc::now();
+        let out = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            bounded_by_deadline(&parent, Some(now), |child| async move {
+                child.cancelled().await;
+                "cancelled"
+            }),
+        )
+        .await
+        .expect("child should cancel at the (elapsed) deadline");
+        assert_eq!(out, "cancelled");
+    }
+
+    // With no deadline the child is bound only by the parent token.
+    #[tokio::test]
+    async fn bounded_by_deadline_none_follows_parent() {
+        let parent = CancellationToken::new();
+        parent.cancel();
+        bounded_by_deadline(&parent, None, |child| async move {
+            // Child of an already-cancelled parent is cancelled immediately.
+            child.cancelled().await;
+        })
+        .await;
+    }
+
+    // A deadline-calculator error must surface and must skip consensus entirely
+    // (previously the error was swallowed as "no deadline", leaving the QBFT
+    // instance bounded only by component lifetime).
+    #[tokio::test]
+    async fn duty_deadline_error_surfaces_and_skips_consensus() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        use pluto_core::{
+            deadline::{DeadlineError, Result as DeadlineResult},
+            types::{DutyType, SlotNumber},
+        };
+
+        struct FailingCalc;
+        impl DeadlineCalculator for FailingCalc {
+            fn deadline(
+                &self,
+                _duty: &Duty,
+            ) -> DeadlineResult<Option<chrono::DateTime<chrono::Utc>>> {
+                Err(DeadlineError::ArithmeticOverflow)
+            }
+        }
+
+        let calc: Arc<dyn DeadlineCalculator> = Arc::new(FailingCalc);
+        let ct = CancellationToken::new();
+        let duty = Duty {
+            slot: SlotNumber::new(1),
+            duty_type: DutyType::Attester,
+        };
+        let ran = Arc::new(AtomicBool::new(false));
+        let ran_probe = Arc::clone(&ran);
+
+        let result = run_bounded_by_duty_deadline(&calc, &ct, duty, move |_duty, _dct| {
+            let ran_probe = Arc::clone(&ran_probe);
+            async move {
+                ran_probe.store(true, Ordering::SeqCst);
+                Ok::<(), qbft::RunnerError>(())
+            }
+        })
+        .await;
+
+        assert!(result.is_err(), "calculator error must surface");
+        assert!(
+            !ran.load(Ordering::SeqCst),
+            "consensus must not run when the deadline calculation fails"
+        );
+    }
 }

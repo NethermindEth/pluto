@@ -85,6 +85,12 @@ impl BeaconMock {
         let effective_genesis_time = genesis_time.unwrap_or_else(default_genesis_time);
 
         if let Some(slot_duration) = slot_duration {
+            // `SECONDS_PER_SLOT` is an integer, but the head ticker below runs at
+            // the exact `slot_duration` (sub-second granularity is used by
+            // head-production tests). Consumers that derive their clock from
+            // `SECONDS_PER_SLOT` therefore only stay aligned with the head ticker
+            // when callers pass a whole number of seconds — the simnet path does
+            // so via `normalize_simnet_slot_duration`.
             set_object_field(
                 &mut spec,
                 "SECONDS_PER_SLOT",

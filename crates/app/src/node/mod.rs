@@ -1,12 +1,9 @@
 //! Distributed-validator node wiring.
 //!
-//! This module is the Rust analog of Charon's `app/app.go`: it constructs every
-//! core duty-workflow component, connects them together (the analog of Charon's
-//! `core.Wire`), composes the P2P behaviours, and runs the node until
-//! cancelled.
+//! This module constructs every core duty-workflow component, connects them
+//! together, composes the P2P behaviours, and runs the node until cancelled.
 //!
-//! The work is split to mirror Charon's `Run` (loads config/lock/keys, sets up
-//! P2P) vs `wireCoreWorkflow` (constructs and wires the components):
+//! The work is split into a load phase and a wire phase:
 //!
 //! * [`run`] loads the cluster lock, P2P key, and beacon clients, constructs
 //!   the consensus component + P2P behaviours, then calls
@@ -27,18 +24,23 @@ pub use config::AppConfig;
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Mutex, OnceLock},
+    time::{Duration, SystemTime},
 };
 
 use futures::StreamExt;
 use pluto_consensus::qbft;
 use pluto_core::gater::DutyGaterFn;
 use pluto_p2p::peer::Peer;
+use pluto_testutil::{
+    BeaconMock, ValidatorSet,
+    validatormock::{Component as ValidatorMock, Signer, SpecMeta},
+};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use behaviour::{CoreBehaviour, CoreHandles};
 use pluto_core::types::PubKey;
-use wire::{ParSigExSeam, ValidatorInfo, WireInputs, WiredComponents};
+use wire::{ParSigExSeam, SlotTickFn, ValidatorInfo, WireInputs, WiredComponents};
 
 use crate::{health, monitoringapi, privkeylock};
 
@@ -46,6 +48,17 @@ use crate::{health, monitoringapi, privkeylock};
 /// Sends are non-blocking (dropped when full): the checker only needs to
 /// observe that calls happened, not count every one exactly.
 const VAPI_CALLS_BUFFER: usize = 128;
+
+/// Duty factor spreading simnet duties deterministically across an epoch.
+const SIMNET_DUTY_FACTOR: u64 = 100;
+
+/// Simnet deterministic sync-committee duty schedule: active in the first 2
+/// epochs of every 8.
+const SIMNET_SYNC_COMM_DUTIES: (u64, u64) = (2, 8);
+
+/// Timeout for the simnet validator mock's client calls to this node's own
+/// validator API.
+const SIMNET_VMOCK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Errors raised while constructing or running a distributed-validator node.
 #[derive(Debug, thiserror::Error)]
@@ -157,6 +170,10 @@ pub enum AppError {
     /// Monitoring API server failed.
     #[error("monitoring api: {0}")]
     MonitoringApi(#[source] std::io::Error),
+
+    /// Simnet (beacon/validator mock) setup failed.
+    #[error("simnet: {0}")]
+    Simnet(String),
 }
 
 /// A wired, runnable distributed-validator node.
@@ -175,8 +192,6 @@ impl App {
 
     /// Loads cluster state, wires the core workflow, and runs the node until
     /// `ct` is cancelled or a long-lived task fails.
-    ///
-    /// This is the Rust analog of Charon's `app.Run`.
     pub async fn run(self, ct: CancellationToken) -> Result<(), AppError> {
         run(self.config, ct).await
     }
@@ -200,7 +215,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     let threshold = lock.threshold;
     // TODO(#402 part B): honor `lock.target_gas_limit` once
     // `validatorapi::Component::new` accepts a target-gas-limit parameter —
-    // Charon passes the lock value to `NewComponent` (app.go:563), but Pluto's
+    // Charon threads the lock value into validator registration, but Pluto's
     // validator-registration path has no such input yet.
     let _ = lock.target_gas_limit;
 
@@ -241,7 +256,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     // qbft peers (secp256k1 pubkeys, in process-index order).
     let qbft_peers = build_qbft_peers(&peers)?;
 
-    // Per-validator data for this node (mirrors app.go:415-452).
+    // Per-validator data for this node.
     let validators = build_validators(&lock, share_idx)?;
 
     // DV root pubkeys + count for the monitoring readiness + health checkers,
@@ -251,25 +266,54 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
 
     // ---- (2/3) eth2 clients ----
     //
+    // Simnet: when `--simnet-beacon-mock` is set, the beacon clients target an
+    // in-process `BeaconMock` seeded with the cluster's validators instead of a
+    // real endpoint. The mock owns its HTTP server + slot ticker; it is held in
+    // `simnet_beacon_mock` for the node's lifetime (RAII: dropping it tears the
+    // mock down).
+    //
     // TODO(#402 part B): support multiple `beacon_node_addrs` with per-request
     // fallback — `EthBeaconNodeApiClient` is single-endpoint, so a failover
     // (multi-endpoint) client in pluto-eth2api is required first; for now the
     // first address is used.
-    let beacon_node_addr = config
-        .beacon_node_addrs
-        .first()
-        .map(String::as_str)
-        .unwrap_or_default();
-    let eth2_cl = build_api_client(beacon_node_addr, config.beacon_node_timeout)?;
+    //
+    // Normalize a zero simnet slot duration to 1s (Charon parity) for both the
+    // beacon mock and the validator mock below.
+    let simnet_slot_duration = normalize_simnet_slot_duration(config.simnet_slot_duration);
+    // Fuzz mode takes precedence and enables the beacon mock on its own. CLI
+    // validation still requires an endpoint or `--simnet-beacon-mock`, matching
+    // Charon — `--simnet-beacon-mock-fuzz` on its own is not a valid invocation.
+    let simnet_beacon_mock = if config.simnet_beacon_mock || config.simnet_beacon_mock_fuzz {
+        Some(
+            build_simnet_beacon_mock(
+                &lock.fork_version,
+                simnet_slot_duration,
+                config.simnet_beacon_mock_fuzz,
+                &validators,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    // Simnet uses the mock's URL for both the scheduling and submission clients.
+    let beacon_node_addr: String = match &simnet_beacon_mock {
+        Some(mock) => mock.uri(),
+        None => config
+            .beacon_node_addrs
+            .first()
+            .cloned()
+            .unwrap_or_default(),
+    };
+    let eth2_cl = build_api_client(&beacon_node_addr, config.beacon_node_timeout)?;
     let beacon_client = pluto_eth2api::BeaconNodeClient::new(eth2_cl.clone());
     // Broadcasting uses a separate client with the (distinct) submit timeout.
-    let submission_api = build_api_client(beacon_node_addr, config.beacon_node_submit_timeout)?;
+    let submission_api = build_api_client(&beacon_node_addr, config.beacon_node_submit_timeout)?;
     let submission_client = pluto_eth2api::BeaconNodeClient::new(submission_api);
 
-    // ---- Beacon-derived duty-workflow inputs (Charon app.go:540-556) ----
+    // ---- Beacon-derived duty-workflow inputs ----
 
-    // Duty admission gate: validates duties against the beacon chain
-    // (Charon `core.NewDutyGater`).
+    // Duty admission gate: validates duties against the beacon chain.
     let duty_gater: DutyGaterFn = pluto_core::gater::DutyGater::new(&eth2_cl)
         .await
         .map_err(AppError::Gater)?
@@ -295,8 +339,12 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     .await
     .map_err(AppError::Graffiti)?;
 
-    // Electra activation slot = electra_fork_epoch * slots_per_epoch.
-    let (_, slots_per_epoch) = eth2_cl.fetch_slots_config().await?;
+    // The mock echoes the slot timing it was built with (fuzz mode uses its own
+    // 12s default rather than the CLI value), so the validator mock must use this
+    // fetched duration — not the configured one — to keep its slot ticker aligned
+    // with the mock (Charon's vmock likewise fetches timing from its beacon
+    // client). `slots_per_epoch` also feeds the Electra activation slot below.
+    let (fetched_slot_duration, slots_per_epoch) = eth2_cl.fetch_slots_config().await?;
     let fork_config = eth2_cl.fetch_fork_config().await?;
     let electra_slot = fork_config
         .get(&pluto_eth2api::ConsensusVersion::Electra)
@@ -379,7 +427,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         .map_err(|_| AppError::ConsensusP2P(qbft::p2p::Error::BehaviourClosed))?;
 
     // ---- Wire the core workflow ----
-    let upstream_url = reqwest::Url::parse(beacon_node_addr)?;
+    let upstream_url = reqwest::Url::parse(&beacon_node_addr)?;
 
     let parsigex_seam = production_parsigex_seam(&handles);
 
@@ -406,6 +454,28 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         })
     };
 
+    // Simnet validator mock: drives this node's own validator API with the
+    // share keys. Built here — while `eth2_cl`/`validators` are still in scope —
+    // so `wire_core_workflow` can register its `slot_ticked` on the scheduler
+    // builder; the handle is also held past `run_lifecycle` for an explicit
+    // shutdown.
+    let vmock = if config.simnet_validator_mock {
+        Some(
+            build_simnet_validator_mock(
+                &config.simnet_validator_keys_dir,
+                config.validator_api_addr,
+                config.builder_api,
+                &validators,
+                &eth2_cl,
+                fetched_slot_duration,
+                slots_per_epoch,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+
     let wired = wire::wire_core_workflow(
         WireInputs {
             threshold,
@@ -424,6 +494,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             electra_slot,
             fetch_only_comm_idx0,
             seen_pubkeys: Some(seen_pubkeys_observer),
+            slot_tick: vmock.clone().map(|v| simnet_slot_tick(v, ct.clone())),
         },
         ct.clone(),
     )
@@ -436,6 +507,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         handles,
         wired,
         priv_key_lock,
+        vmock,
         config.validator_api_addr,
         MonitoringInputs {
             addr: config.monitoring_addr,
@@ -512,6 +584,7 @@ async fn run_lifecycle(
     handles: CoreHandles,
     wired: WiredComponents,
     priv_key_lock: Option<Arc<privkeylock::Service>>,
+    vmock: Option<Arc<ValidatorMock>>,
     validator_api_addr: std::net::SocketAddr,
     monitoring: MonitoringInputs,
     ct: CancellationToken,
@@ -532,9 +605,8 @@ async fn run_lifecycle(
     let mut tasks: JoinSet<Result<(), AppError>> = JoinSet::new();
 
     // Supervise the self-spawning scheduler actor alongside the other
-    // long-lived tasks so its exit triggers node shutdown (Charon registers
-    // `sched.Run` as a lifecycle hook, `app.go:660`). The actor returns `()`
-    // and only exits on cancellation.
+    // long-lived tasks so its exit triggers node shutdown. The actor returns
+    // `()` and only exits on cancellation.
     tasks.extend([async move {
         let _ = scheduler_task.await;
         Ok::<(), AppError>(())
@@ -564,8 +636,8 @@ async fn run_lifecycle(
     if let Some(svc) = &priv_key_lock {
         let svc = Arc::clone(svc);
         // Propagate a lock-maintenance failure so it fails the run, matching
-        // Charon which registers lockSvc.Run as a lifecycle hook whose error
-        // triggers shutdown (app.go:166). A graceful `close()` returns `Ok`.
+        // Charon where a lock-maintenance failure triggers shutdown. A graceful
+        // `close()` returns `Ok`.
         tasks.spawn(async move { svc.run().await.map_err(AppError::PrivKeyLock) });
     }
 
@@ -643,8 +715,8 @@ async fn run_lifecycle(
     ));
 
     // Supervise: stop on cancellation or first task completion. A failed task
-    // fails the whole run (Charon lifecycle: any start-hook error triggers
-    // shutdown and is returned from `Run`).
+    // fails the whole run, matching Charon where any start-hook error triggers
+    // shutdown.
     let mut task_err: Option<AppError> = None;
     tokio::select! {
         () = ct.cancelled() => {
@@ -663,6 +735,12 @@ async fn run_lifecycle(
     }
 
     // ---- Ordered shutdown ----
+    // Simnet validator mock: stop driving new duties and drain in-flight duty
+    // tasks first (its `Drop` only cancels best-effort, so shut down explicitly).
+    if let Some(vmock) = &vmock {
+        vmock.shutdown().await;
+    }
+
     // Close the private-key lock (signals its `run` loop to delete the sentinel
     // file and exit, so the drain below can join it cleanly). Only ever called
     // when `run` was spawned above — otherwise `close()` would block forever.
@@ -680,8 +758,8 @@ async fn run_lifecycle(
     // Stop dutydb (cancels its child token).
     dutydb.shutdown();
 
-    // Fail the run with the first task error (Charon: `lifecycle.Manager.Run`
-    // returns the first start-hook error).
+    // Fail the run with the first task error, matching Charon which returns the
+    // first start-hook error.
     task_err.map_or(Ok(()), Err)
 }
 
@@ -775,7 +853,7 @@ fn build_validators(
         // A missing or malformed fee recipient is a misconfiguration, not a
         // value to paper over: the zero address is semantically invalid, so
         // fail loudly instead of defaulting (Charon errors when it hex-decodes
-        // the address, app.go:1178).
+        // the address).
         let fee_recipient = fee_recipients
             .get(i)
             .and_then(|s| parse_execution_address(s))
@@ -796,7 +874,7 @@ fn build_validators(
 /// share, keyed by 1-indexed share index.
 ///
 /// The parsigex verifier uses this to check each inbound partial signature
-/// against the sender's public share (Charon's `pubSharesByKey`).
+/// against the sender's public share.
 fn build_pub_shares_by_key(
     lock: &pluto_cluster::lock::Lock,
 ) -> Result<
@@ -845,12 +923,205 @@ fn build_api_client(
         .map_err(AppError::BeaconClient)
 }
 
+/// Adapts the simnet validator mock into the abstract [`wire::SlotTickFn`] seam
+/// so the core wiring stays decoupled from the mock type (mirrors
+/// [`production_parsigex_seam`]).
+///
+/// The scheduler spawns slot callbacks detached, so the tick races `ct`: on
+/// shutdown the in-flight `slot_ticked` HTTP work is dropped promptly instead
+/// of outliving `run` until the mock client's timeout elapses.
+fn simnet_slot_tick(vmock: Arc<ValidatorMock>, ct: CancellationToken) -> SlotTickFn {
+    Arc::new(move |slot: &pluto_core::types::Slot| {
+        let vmock = Arc::clone(&vmock);
+        let ct = ct.clone();
+        let slot = u64::from(slot.slot);
+        Box::pin(async move {
+            tokio::select! {
+                biased;
+                () = ct.cancelled() => Ok(()),
+                res = vmock.slot_ticked(slot) => {
+                    res.map_err(|e| AppError::Simnet(e.to_string()))
+                }
+            }
+        })
+    })
+}
+
+/// Normalizes the simnet slot duration to a whole number of seconds (minimum
+/// 1s), warning when that rounds the requested value.
+///
+/// The beacon mock advertises `SECONDS_PER_SLOT` as an integer and every simnet
+/// clock derives from it (the mock's head ticker, the scheduler, and the
+/// validator mock), so a fractional or sub-second duration would desync the
+/// mock's head from its consumers. Truncating once here keeps them aligned
+/// (matching Charon).
+fn normalize_simnet_slot_duration(configured: Duration) -> Duration {
+    let secs = configured.as_secs().max(1);
+    let normalized = Duration::from_secs(secs);
+    if normalized != configured {
+        tracing::warn!(
+            requested = ?configured,
+            normalized_secs = secs,
+            "simnet slot duration rounded to whole seconds (SECONDS_PER_SLOT is integer)"
+        );
+    }
+    normalized
+}
+
+/// Builds the in-process simnet beacon mock. Non-fuzz mode seeds the cluster's
+/// distributed validators plus deterministic attester/proposer/sync-committee
+/// duties; fuzz mode returns randomized responses. The returned mock owns its
+/// HTTP server and slot ticker and must be held for the node's lifetime.
+async fn build_simnet_beacon_mock(
+    fork_version: &[u8],
+    slot_duration: Duration,
+    fuzz: bool,
+    validators: &[ValidatorInfo],
+) -> Result<BeaconMock, AppError> {
+    let fork_version = <[u8; 4]>::try_from(fork_version).map_err(|_| {
+        AppError::Simnet(format!(
+            "cluster fork version must be 4 bytes, got {}",
+            fork_version.len()
+        ))
+    })?;
+
+    if fuzz {
+        return BeaconMock::builder()
+            .fuzzer(true)
+            .fork_version(fork_version)
+            .build()
+            .await
+            .map_err(|e| AppError::Simnet(format!("build fuzz beacon mock: {e}")));
+    }
+
+    let genesis_time = pluto_eth2util::network::fork_version_to_genesis_time(&fork_version)
+        .map_err(|e| AppError::Simnet(format!("derive genesis time from fork version: {e}")))?;
+
+    BeaconMock::builder()
+        .validator_set(ValidatorSet::mock_dvs(
+            validators.iter().map(|v| v.eth2_pubkey),
+        ))
+        .slot_duration(slot_duration)
+        .genesis_time(genesis_time)
+        .deterministic_attester_duties(SIMNET_DUTY_FACTOR)
+        .deterministic_proposer_duties(SIMNET_DUTY_FACTOR)
+        .deterministic_sync_comm_duties(SIMNET_SYNC_COMM_DUTIES)
+        .build()
+        .await
+        .map_err(|e| AppError::Simnet(format!("build beacon mock: {e}")))
+}
+
+/// Builds the simnet validator mock: loads this node's BLS share secrets from
+/// `keys_dir`, targets this node's own validator API over HTTP, and aligns to
+/// the beacon mock's genesis so its scheduled duties line up with the node's
+/// scheduler. Charon validates every share pubkey has a matching key before
+/// starting.
+async fn build_simnet_validator_mock(
+    keys_dir: &std::path::Path,
+    validator_api_addr: std::net::SocketAddr,
+    builder_api: bool,
+    validators: &[ValidatorInfo],
+    eth2_cl: &pluto_eth2api::EthBeaconNodeApiClient,
+    slot_duration: Duration,
+    slots_per_epoch: u64,
+) -> Result<Arc<ValidatorMock>, AppError> {
+    // Load this node's share secret keys from the keystore directory.
+    let key_files = pluto_eth2util::keystore::load_files_unordered(keys_dir)
+        .await
+        .map_err(|e| {
+            AppError::Simnet(format!(
+                "load simnet validator keys from {}: {e}",
+                keys_dir.display()
+            ))
+        })?;
+    let secrets = key_files.keys();
+    let signer =
+        Signer::arc(&secrets).map_err(|e| AppError::Simnet(format!("build simnet signer: {e}")))?;
+
+    // This node's per-DV public shares are the identities the mock signs for;
+    // validate every share has a matching key.
+    let pubshares: Vec<_> = validators.iter().map(|v| v.pubshare).collect();
+    for (i, pubshare) in pubshares.iter().enumerate() {
+        signer.sign(pubshare, b"test signing").map_err(|e| {
+            AppError::Simnet(format!(
+                "simnet validator key missing for share index {i}: {e}"
+            ))
+        })?;
+    }
+
+    // Genesis fetched from the (mock) beacon client; slot config supplied by the
+    // caller (already fetched from the same client).
+    let genesis_time = eth2_cl
+        .fetch_genesis_time()
+        .await
+        .map_err(|e| AppError::Simnet(format!("fetch simnet genesis time: {e}")))?;
+    let meta = SpecMeta {
+        genesis_time: SystemTime::from(genesis_time),
+        slot_duration,
+        slots_per_epoch,
+    };
+
+    // The validator API may bind to an unspecified address (`0.0.0.0` / `[::]`);
+    // that is a bind target, not a routable dial target (connecting to it is
+    // unreliable). Dial loopback in that case, keeping the port.
+    let vapi_dial = if validator_api_addr.ip().is_unspecified() {
+        let loopback = match validator_api_addr.ip() {
+            std::net::IpAddr::V4(_) => std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            std::net::IpAddr::V6(_) => std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+        };
+        std::net::SocketAddr::new(loopback, validator_api_addr.port())
+    } else {
+        validator_api_addr
+    };
+    let vapi_url = format!("http://{vapi_dial}");
+    let vapi_client = build_api_client(&vapi_url, SIMNET_VMOCK_TIMEOUT)?;
+
+    Ok(Arc::new(
+        ValidatorMock::builder()
+            .eth2_cl(vapi_client)
+            .sign_func(signer)
+            .pubkeys(pubshares)
+            .meta(meta)
+            .builder_api(builder_api)
+            .build(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // A failed validator-API bind must fail the run (Charon: a start-hook
-    // error is returned from `lifecycle.Manager.Run`), not just log.
+    #[test]
+    fn simnet_slot_duration_normalizes_to_whole_seconds() {
+        // Zero and sub-second both floor up to the 1s minimum (a
+        // `SECONDS_PER_SLOT` of 0 would break the consumers' slot-config parsing).
+        assert_eq!(
+            normalize_simnet_slot_duration(Duration::ZERO),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            normalize_simnet_slot_duration(Duration::from_millis(500)),
+            Duration::from_secs(1)
+        );
+        // Fractional durations truncate to whole seconds so the mock's head
+        // ticker and the integer `SECONDS_PER_SLOT` its consumers read stay
+        // aligned.
+        assert_eq!(
+            normalize_simnet_slot_duration(Duration::from_millis(1500)),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            normalize_simnet_slot_duration(Duration::from_millis(2999)),
+            Duration::from_secs(2)
+        );
+        // Whole seconds pass through unchanged.
+        assert_eq!(
+            normalize_simnet_slot_duration(Duration::from_secs(3)),
+            Duration::from_secs(3)
+        );
+    }
+
+    // A failed validator-API bind must fail the run, not just log.
     #[tokio::test]
     async fn serve_validator_api_fails_when_addr_in_use() {
         let occupied = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -870,8 +1141,8 @@ mod tests {
         let ct = CancellationToken::new();
         ct.cancel();
 
-        // Graceful shutdown is a clean exit, mirroring Charon's swallowing of
-        // `http.ErrServerClosed`.
+        // Graceful shutdown is a clean exit, mirroring Charon which swallows the
+        // server-closed error.
         serve_validator_api(
             "127.0.0.1:0".parse().expect("addr"),
             axum::Router::new(),
