@@ -56,7 +56,10 @@ impl Server {
 
     /// Starts the server side of the protocol.
     pub fn start(&self) {
-        self.inner.started.store(true, Ordering::SeqCst);
+        // `started` is a standalone signal flag; it publishes no data of its
+        // own (server state lives behind the `RwLock`, wake-ups come from
+        // `Notify`), so `Relaxed` is sufficient.
+        self.inner.started.store(true, Ordering::Relaxed);
         self.inner.notify.notify_waiters();
     }
 
@@ -71,7 +74,7 @@ impl Server {
             let notified = self.inner.notify.notified();
             tokio::pin!(notified);
 
-            if !self.inner.started.load(Ordering::SeqCst) {
+            if !self.inner.started.load(Ordering::Relaxed) {
                 tokio::select! {
                     _ = cancellation.cancelled() => return Err(Error::Canceled),
                     _ = &mut notified => {}
@@ -176,7 +179,7 @@ impl Server {
     }
 
     pub(crate) fn is_started(&self) -> bool {
-        self.inner.started.load(Ordering::SeqCst)
+        self.inner.started.load(Ordering::Relaxed)
     }
 
     pub(crate) async fn set_connected(&self, peer_id: PeerId) -> (bool, usize) {
