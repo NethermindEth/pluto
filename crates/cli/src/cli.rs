@@ -9,6 +9,7 @@ use crate::commands::{
     dkg::DkgArgs,
     enr::EnrArgs,
     relay::RelayArgs,
+    run::{RunArgs, RunUnsafeArgs},
     test::{
         all::TestAllArgs, beacon::TestBeaconArgs, infra::TestInfraArgs, mev::TestMevArgs,
         peers::TestPeersArgs, validator::TestValidatorArgs,
@@ -65,6 +66,36 @@ pub enum Commands {
         long_about = "Alpha subcommands represent features that are currently under development. They're not yet released for general use, but offer a glimpse into future functionalities planned for the distributed cluster system."
     )]
     Alpha(AlphaArgs),
+
+    #[command(
+        about = "Run the pluto middleware client",
+        long_about = "Starts the long-running Pluto middleware process to perform distributed validator duties."
+    )]
+    Run(Box<RunArgs>),
+
+    #[command(
+        hide = true,
+        about = "Unsafe subcommands provides regular pluto commands for testing purposes",
+        long_about = "Unsafe subcommands is a group of subcommands that includes both normal and test flags. It is intended for internal testing of the Pluto client and should be used with caution."
+    )]
+    Unsafe(UnsafeArgs),
+}
+
+/// Arguments for the hidden unsafe command.
+#[derive(clap::Args)]
+pub struct UnsafeArgs {
+    #[command(subcommand)]
+    pub command: UnsafeCommands,
+}
+
+/// Unsafe subcommands (hidden; for internal testing).
+#[derive(Subcommand)]
+pub enum UnsafeCommands {
+    #[command(
+        about = "Run the pluto middleware client",
+        long_about = "Starts the long-running Pluto middleware process to perform distributed validator duties."
+    )]
+    Run(Box<RunUnsafeArgs>),
 }
 
 /// Arguments for the alpha command

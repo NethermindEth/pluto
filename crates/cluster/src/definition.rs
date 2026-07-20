@@ -9,7 +9,7 @@ use crate::{
     },
     helpers::from_0x_hex_str,
     operator::{Operator, OperatorV1X1, OperatorV1X2OrLater},
-    ssz::{SSZError, hash_definition},
+    ssz::{SSZ_MAX_VALIDATORS, SSZError, hash_definition},
     version::{CURRENT_VERSION, DKG_ALGO, versions::*},
 };
 use chrono::{DateTime, Timelike, Utc};
@@ -255,6 +255,16 @@ pub enum DefinitionError {
     /// Failed to convert length
     #[error("Failed to convert length")]
     FailedToConvertLength,
+
+    /// num_validators exceeds the maximum allowed validators
+    /// (SSZ_MAX_VALIDATORS).
+    #[error("num_validators {num_validators} exceeds maximum {max}")]
+    NumValidatorsTooLarge {
+        /// The offending value from the definition.
+        num_validators: u64,
+        /// The enforced maximum (SSZ_MAX_VALIDATORS).
+        max: u64,
+    },
 
     /// Failed to convert hex string
     #[error("Failed to convert hex string")]
@@ -925,7 +935,7 @@ impl TryFrom<DefinitionV1x0or1> for Definition {
         };
 
         let validator_addresses =
-            repeat_v_addresses(validator_addresses, definition.num_validators);
+            repeat_v_addresses(validator_addresses, definition.num_validators)?;
 
         let operators = definition
             .operators
@@ -1040,7 +1050,7 @@ impl TryFrom<DefinitionV1x2or3> for Definition {
         };
 
         let validator_addresses =
-            repeat_v_addresses(validator_addresses, definition.num_validators);
+            repeat_v_addresses(validator_addresses, definition.num_validators)?;
 
         Ok(Self {
             name: definition.name,
@@ -1159,7 +1169,7 @@ impl TryFrom<DefinitionV1x4> for Definition {
         };
 
         let validator_addresses =
-            repeat_v_addresses(validator_addresses, definition.num_validators);
+            repeat_v_addresses(validator_addresses, definition.num_validators)?;
 
         Ok(Self {
             name: definition.name,
@@ -1615,12 +1625,28 @@ impl From<DefinitionV1x10> for Definition {
     }
 }
 
-fn repeat_v_addresses(addr: ValidatorAddresses, num_validators: u64) -> Vec<ValidatorAddresses> {
+fn repeat_v_addresses(
+    addr: ValidatorAddresses,
+    num_validators: u64,
+) -> Result<Vec<ValidatorAddresses>, DefinitionError> {
+    // `num_validators` is an untrusted u64 from legacy-definition JSON. Cap it at
+    // SSZ_MAX_VALIDATORS (the CompositeList[65536] bound already enforced on the
+    // validator-addresses field) *before* the clone loop, so a value up to
+    // u64::MAX cannot drive an unbounded allocation / OOM. This is defensive
+    // hardening consistent with the SSZ bound Charon enforces; it cannot reject
+    // any definition that could round-trip through SSZ hashing.
+    if num_validators > SSZ_MAX_VALIDATORS as u64 {
+        return Err(DefinitionError::NumValidatorsTooLarge {
+            num_validators,
+            max: SSZ_MAX_VALIDATORS as u64,
+        });
+    }
+
     let mut validator_addresses = Vec::new();
     for _ in 0..num_validators {
         validator_addresses.push(addr.clone());
     }
-    validator_addresses
+    Ok(validator_addresses)
 }
 
 #[cfg(test)]
@@ -1657,6 +1683,61 @@ mod tests {
 
     async fn test_eth1_client() -> EthClient {
         EthClient::new("http://127.0.0.1:8545").await.unwrap()
+    }
+
+    fn legacy_definition_json(num_validators: u64) -> String {
+        format!(
+            r#"{{
+                "name": "test",
+                "operators": [],
+                "uuid": "0194fdc2-fa2f-4cc0-81d3-ff12045b73c8",
+                "version": "v1.0.0",
+                "timestamp": "",
+                "num_validators": {num_validators},
+                "threshold": 0,
+                "fee_recipient_address": "0x0000000000000000000000000000000000000000",
+                "withdrawal_address": "0x0000000000000000000000000000000000000000",
+                "dkg_algorithm": "default",
+                "fork_version": "0x00000000",
+                "config_hash": "",
+                "definition_hash": ""
+            }}"#
+        )
+    }
+
+    #[test]
+    fn legacy_definition_rejects_oversized_num_validators() {
+        // v1.0.0 definition with num_validators = u64::MAX must be rejected
+        // promptly (before the clone loop), never allocated.
+        let json = legacy_definition_json(u64::MAX);
+
+        let result = serde_json::from_str::<Definition>(&json);
+        assert!(
+            result.is_err(),
+            "u64::MAX num_validators must be rejected, not allocated"
+        );
+        // The deserialize dispatch renders the TryFrom error via Debug
+        // ("Conversion error: NumValidatorsTooLarge {{ .. }}"), so assert on the
+        // variant name and the enforced max, both of which appear in the Debug repr.
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("NumValidatorsTooLarge") && msg.contains("65536"),
+            "unexpected error message: {msg}"
+        );
+    }
+
+    #[test]
+    fn legacy_definition_num_validators_boundary() {
+        // Exactly the max is accepted.
+        let at_max = serde_json::from_str::<Definition>(&legacy_definition_json(65536));
+        assert!(at_max.is_ok(), "65536 must be accepted: {:?}", at_max.err());
+        assert_eq!(at_max.unwrap().validator_addresses.len(), 65536);
+
+        // One over the max is rejected (guards `>` vs `>=`).
+        assert!(
+            serde_json::from_str::<Definition>(&legacy_definition_json(65537)).is_err(),
+            "65537 must be rejected"
+        );
     }
 
     #[test]

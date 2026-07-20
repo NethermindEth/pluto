@@ -21,6 +21,32 @@ use crate::{
 };
 use clap::Args;
 
+/// Per-request timeout for MEV/beacon diagnostic HTTP calls.
+const MEV_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+/// Maximum diagnostic response body read from a beacon/relay endpoint (16 MB).
+const BN_MAX_BODY: usize = 16 * 1024 * 1024;
+
+/// Builds a diagnostic HTTP client with a request timeout so a hostile/slow
+/// endpoint cannot stall a diagnostic indefinitely.
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(MEV_HTTP_TIMEOUT)
+        .build()
+        .unwrap_or_default()
+}
+
+/// Reads a response body, rejecting bodies that exceed [`BN_MAX_BODY`]. Uses
+/// the advertised `Content-Length` for the fast-path reject; the client timeout
+/// bounds a slow/absent-length body.
+async fn read_body_capped(resp: reqwest::Response) -> Result<Vec<u8>> {
+    if let Some(len) = resp.content_length()
+        && len > BN_MAX_BODY as u64
+    {
+        return Err(MevTestError::BodyTooLarge(BN_MAX_BODY).into());
+    }
+    Ok(resp.bytes().await?.to_vec())
+}
+
 /// Thresholds for MEV ping measure test.
 const THRESHOLD_MEV_MEASURE_AVG: Duration = Duration::from_millis(40);
 /// Threshold for poor MEV ping measure.
@@ -233,7 +259,7 @@ async fn test_single_mev(
 async fn mev_ping_test(target: &str, _conf: &TestMevArgs) -> TestResult {
     let test_res = TestResult::new("Ping");
     let url = format!("{target}/eth/v1/builder/status");
-    let client = reqwest::Client::new();
+    let client = http_client();
 
     let resp = match client.get(&url).send().await {
         Ok(r) => r,
@@ -459,8 +485,8 @@ struct BuilderBidResponse {
 
 async fn latest_beacon_block(endpoint: &str) -> Result<BeaconBlockMessage> {
     let url = format!("{endpoint}/eth/v2/beacon/blocks/head");
-    let resp = reqwest::Client::new().get(&url).send().await?;
-    let body = resp.bytes().await?;
+    let resp = http_client().get(&url).send().await?;
+    let body = read_body_capped(resp).await?;
     let block: BeaconBlock = serde_json::from_slice(&body)?;
 
     Ok(block.data.message)
@@ -471,8 +497,8 @@ async fn fetch_proposers_for_epoch(
     epoch: i64,
 ) -> Result<Vec<ProposerDutiesData>> {
     let url = format!("{beacon_endpoint}/eth/v1/validator/duties/proposer/{epoch}");
-    let resp = reqwest::Client::new().get(&url).send().await?;
-    let body = resp.bytes().await?;
+    let resp = http_client().get(&url).send().await?;
+    let body = read_body_capped(resp).await?;
     let duties: ProposerDuties = serde_json::from_slice(&body)?;
 
     Ok(duties.data)
@@ -497,7 +523,7 @@ async fn get_block_header(
 
     let start = Instant::now();
 
-    let resp = reqwest::Client::new().get(&url).send().await?;
+    let resp = http_client().get(&url).send().await?;
 
     let rtt = start.elapsed();
 
@@ -505,7 +531,7 @@ async fn get_block_header(
         return Err(MevTestError::StatusCodeNot200.into());
     }
 
-    let body = resp.bytes().await?;
+    let body = read_body_capped(resp).await?;
 
     let bid: BuilderBidResponse = serde_json::from_slice(&body)?;
 

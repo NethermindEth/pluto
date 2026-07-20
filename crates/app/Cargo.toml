@@ -12,8 +12,15 @@ axum.workspace = true
 backon.workspace = true
 chrono.workspace = true
 futures.workspace = true
+libp2p.workspace = true
 pluto-core.workspace = true
+pluto-consensus.workspace = true
+pluto-eth1wrap.workspace = true
+pluto-featureset.workspace = true
 pluto-eth2api.workspace = true
+pluto-p2p.workspace = true
+pluto-parsigex.workspace = true
+pluto-peerinfo.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 vise.workspace = true
@@ -38,7 +45,6 @@ pluto-cluster.workspace = true
 pluto-k1util.workspace = true
 pluto-crypto.workspace = true
 pluto-ssz.workspace = true
-pluto-p2p.workspace = true
 
 [build-dependencies]
 pluto-build-proto.workspace = true
@@ -49,6 +55,7 @@ pluto-testutil.workspace = true
 wiremock.workspace = true
 test-case.workspace = true
 tower = { workspace = true, features = ["util"] }
+rand.workspace = true
 
 [lints]
 workspace = true

@@ -321,6 +321,7 @@ impl Behaviour {
                 return;
             }
         };
+        let message: Arc<[u8]> = Arc::from(message);
 
         let peers: Vec<_> = self
             .config
@@ -331,18 +332,17 @@ impl Behaviour {
             .collect();
         let mut pending_peers = HashSet::new();
         let mut failure = None;
+        // Clone the cheap `Arc`-backed context so the peer-store guard (held
+        // once for the whole broadcast) does not keep `self` borrowed while the
+        // loop mutably borrows other `self` fields via `emit_broadcast_error`.
+        let p2p_context = self.config.p2p_context.clone();
+        let peer_store = p2p_context.peer_store_lock();
         for peer in peers {
             if peer == self.config.peer_id {
                 continue;
             }
 
-            if self
-                .config
-                .p2p_context
-                .peer_store_lock()
-                .connections_to_peer(&peer)
-                .is_empty()
-            {
+            if !peer_store.has_connection(&peer) {
                 let error = Failure::Io(std::io::Error::other(format!(
                     "peer {peer} is not connected"
                 )));
@@ -363,6 +363,8 @@ impl Behaviour {
             });
             pending_peers.insert(peer);
         }
+        drop(peer_store);
+        drop(p2p_context);
 
         if pending_peers.is_empty() {
             self.pending_events
@@ -773,5 +775,113 @@ mod eth2_verifier_tests {
             .expect_err("partial signature with an unknown share index is rejected");
 
         assert!(matches!(err, VerifyError::InvalidShareIndex));
+    }
+}
+
+#[cfg(test)]
+mod broadcast_tests {
+    use libp2p::{Multiaddr, PeerId, swarm::ConnectionId};
+
+    use pluto_core::types::{Duty, ParSignedDataSet};
+    use pluto_p2p::p2p_context::{P2PContext, Peer};
+
+    use super::*;
+
+    fn trivial_verifier() -> Verifier {
+        Arc::new(|_duty, _pubkey, _par| Box::pin(async { Ok(()) }))
+    }
+
+    fn allow_all_gater() -> DutyGaterFn {
+        Arc::new(|_duty| true)
+    }
+
+    fn connected_peer(context: &P2PContext, id: PeerId) {
+        context.peer_store_write_lock().add_peer(Peer {
+            id,
+            connection_id: ConnectionId::new_unchecked(1),
+            remote_addr: Multiaddr::empty(),
+        });
+    }
+
+    /// A broadcast to multiple connected peers must share a single refcounted
+    /// payload buffer across every `ToHandler::Send` instead of deep-copying
+    /// the encoded bytes per target.
+    #[test]
+    fn broadcast_shares_single_payload_buffer() {
+        let local = PeerId::random();
+        let peer_a = PeerId::random();
+        let peer_b = PeerId::random();
+
+        let context = P2PContext::new([local, peer_a, peer_b]);
+        connected_peer(&context, peer_a);
+        connected_peer(&context, peer_b);
+
+        let config = Config::new(local, context, trivial_verifier(), allow_all_gater());
+        let (mut behaviour, _handle) = Behaviour::new(config);
+
+        behaviour.handle_command(BroadcastRequest {
+            request_id: 1,
+            duty: Duty::new_attester_duty(32.into()),
+            data_set: ParSignedDataSet::new(),
+            result_tx: None,
+        });
+
+        let payloads: Vec<Arc<[u8]>> = behaviour
+            .pending_events
+            .iter()
+            .filter_map(|event| match event {
+                ToSwarm::NotifyHandler {
+                    event: ToHandler::Send { payload, .. },
+                    ..
+                } => Some(payload.clone()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(payloads.len(), 2, "one send per connected non-self peer");
+        assert!(
+            Arc::ptr_eq(&payloads[0], &payloads[1]),
+            "all broadcast targets must share the same payload allocation"
+        );
+    }
+
+    /// A known peer with no active connection still yields a single
+    /// `BroadcastError` and is excluded from the pending broadcast.
+    #[test]
+    fn broadcast_reports_not_connected_peer() {
+        let local = PeerId::random();
+        let peer_a = PeerId::random();
+
+        let context = P2PContext::new([local, peer_a]);
+        // peer_a is known but never added to the peer store (not connected).
+
+        let config = Config::new(local, context, trivial_verifier(), allow_all_gater());
+        let (mut behaviour, _handle) = Behaviour::new(config);
+
+        behaviour.handle_command(BroadcastRequest {
+            request_id: 7,
+            duty: Duty::new_attester_duty(32.into()),
+            data_set: ParSignedDataSet::new(),
+            result_tx: None,
+        });
+
+        let errors = behaviour
+            .pending_events
+            .iter()
+            .filter(|event| matches!(event, ToSwarm::GenerateEvent(Event::BroadcastError { .. })))
+            .count();
+        assert_eq!(
+            errors, 1,
+            "the unconnected peer produces one BroadcastError"
+        );
+
+        // No send events, and the broadcast fails (no connected targets).
+        assert!(behaviour.pending_events.iter().all(|event| !matches!(
+            event,
+            ToSwarm::NotifyHandler {
+                event: ToHandler::Send { .. },
+                ..
+            }
+        )));
     }
 }

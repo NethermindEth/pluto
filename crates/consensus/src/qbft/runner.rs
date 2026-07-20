@@ -412,6 +412,9 @@ async fn run_instance_inner(
 
     match core_result {
         Ok(()) => Ok(()),
+        // `Relaxed` suffices: the store runs inside the `spawn_blocking` task
+        // above, whose completion (awaited via the join handle) synchronizes-with
+        // this load, so the write is already visible here.
         Err(qbft::QbftError::ContextCanceled) if decided.load(Ordering::Relaxed) => Ok(()),
         Err(qbft::QbftError::ContextCanceled) => {
             metrics::inc_qbft_consensus_timeout(&duty, timer_type);

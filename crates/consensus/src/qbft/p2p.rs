@@ -183,7 +183,10 @@ impl Handle {
     pub async fn broadcast(&self, msg: pbconsensus::QbftConsensusMsg) -> BroadcastResult {
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         self.cmd_tx
-            .send(BroadcastCommand { request_id, msg })
+            .send(BroadcastCommand {
+                request_id,
+                msg: Arc::new(msg),
+            })
             .map_err(|_| Box::new(Error::BehaviourClosed) as _)
     }
 
@@ -200,7 +203,9 @@ impl Handle {
 #[derive(Debug)]
 struct BroadcastCommand {
     request_id: u64,
-    msg: pbconsensus::QbftConsensusMsg,
+    /// Shared so the per-peer fan-out clones a pointer rather than the
+    /// (potentially multi-MB) payload.
+    msg: Arc<pbconsensus::QbftConsensusMsg>,
 }
 
 #[doc(hidden)]
@@ -208,7 +213,7 @@ struct BroadcastCommand {
 pub enum ToHandler {
     Send {
         request_id: u64,
-        msg: pbconsensus::QbftConsensusMsg,
+        msg: Arc<pbconsensus::QbftConsensusMsg>,
     },
 }
 
@@ -227,7 +232,7 @@ type ActiveFuture = futures::future::BoxFuture<'static, Option<FromHandler>>;
 pub struct Handler {
     consensus: Arc<Consensus>,
     cancellation: CancellationToken,
-    pending_open: VecDeque<(u64, pbconsensus::QbftConsensusMsg)>,
+    pending_open: VecDeque<(u64, Arc<pbconsensus::QbftConsensusMsg>)>,
     active_futures: futures::stream::FuturesUnordered<ActiveFuture>,
 }
 
@@ -272,7 +277,7 @@ impl Handler {
         &mut self,
         mut stream: Stream,
         request_id: u64,
-        msg: pbconsensus::QbftConsensusMsg,
+        msg: Arc<pbconsensus::QbftConsensusMsg>,
     ) {
         stream.ignore_for_keep_alive();
         self.active_futures.push(
@@ -308,7 +313,7 @@ impl ConnectionHandler for Handler {
     type FromBehaviour = ToHandler;
     type InboundOpenInfo = ();
     type InboundProtocol = ReadyUpgrade<StreamProtocol>;
-    type OutboundOpenInfo = (u64, pbconsensus::QbftConsensusMsg);
+    type OutboundOpenInfo = (u64, Arc<pbconsensus::QbftConsensusMsg>);
     type OutboundProtocol = ReadyUpgrade<StreamProtocol>;
     type ToBehaviour = FromHandler;
 
@@ -455,7 +460,7 @@ where
 #[derive(Debug)]
 struct PendingSend {
     request_id: u64,
-    msg: pbconsensus::QbftConsensusMsg,
+    msg: Arc<pbconsensus::QbftConsensusMsg>,
 }
 
 /// libp2p behaviour for QBFT consensus messages.
@@ -506,12 +511,10 @@ impl Behaviour {
 
     /// Returns whether the peer store has any live connection for the peer.
     fn is_connected(&self, peer_id: &PeerId) -> bool {
-        !self
-            .config
+        self.config
             .p2p_context
             .peer_store_lock()
-            .connections_to_peer(peer_id)
-            .is_empty()
+            .has_connection(peer_id)
     }
 
     /// Drains outbound broadcast commands queued through the public handle.
@@ -539,7 +542,7 @@ impl Behaviour {
                 peer_id,
                 PendingSend {
                     request_id: command.request_id,
-                    msg: command.msg.clone(),
+                    msg: Arc::clone(&command.msg),
                 },
             );
         }
@@ -945,6 +948,21 @@ mod tests {
         assert!(targets.contains(&peer_ids[0]));
         assert!(targets.contains(&peer_ids[2]));
         assert!(!targets.contains(&local_peer_id));
+
+        // The fan-out must share one `Arc<QbftConsensusMsg>` across all targets
+        // rather than deep-cloning the payload per peer.
+        let payloads = events
+            .iter()
+            .filter_map(|event| match event {
+                ToSwarm::NotifyHandler {
+                    event: Either::Left(ToHandler::Send { msg, .. }),
+                    ..
+                } => Some(msg.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(payloads.len(), 2);
+        assert!(Arc::ptr_eq(&payloads[0], &payloads[1]));
         Ok(())
     }
 

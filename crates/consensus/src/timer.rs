@@ -366,24 +366,33 @@ fn linear_round_timeout(round: i64) -> Result<Duration> {
 }
 
 /// Returns the reduced timeout used after linear round one.
+///
+/// Matches Charon v1.7.1 `core/consensus/timer/roundtimer.go:243`:
+/// `time.Duration(200*(round-1) + 200)`. The Go literal has no
+/// `* time.Millisecond`, and `time.Duration` is a nanosecond count, so the
+/// timeout is `200*(round-1) + 200` **nanoseconds** (e.g. round 2 = 400ns).
+///
+/// The Go inline comment claims "400 milliseconds"; that mismatch is the
+/// upstream bug tracked in ObolNetwork/charon#4537, which is NOT fixed at the
+/// pinned v1.7.1. When the Charon pin moves past #4537 (the fix adds
+/// `* time.Millisecond`), flip `Duration::from_nanos` back to
+/// `Duration::from_millis` here and update the literal-value tests below.
 fn linear_subsequent_round_timeout(round: i64) -> Result<Duration> {
     ensure_non_negative_round(round)?;
 
-    // Charon fixed the previous bare `time.Duration(...)` bug in
-    // ObolNetwork/charon#4537; subsequent linear rounds are milliseconds.
     let previous_round = round
         .checked_sub(1)
         .ok_or(Error::DurationOverflow { round })?;
-    let increment_millis = previous_round
+    let increment_nanos = previous_round
         .checked_mul(200)
         .ok_or(Error::DurationOverflow { round })?;
-    let timeout_millis = increment_millis
+    let timeout_nanos = increment_nanos
         .checked_add(200)
         .ok_or(Error::DurationOverflow { round })?;
-    let timeout_millis =
-        u64::try_from(timeout_millis).map_err(|_| Error::DurationOverflow { round })?;
+    let timeout_nanos =
+        u64::try_from(timeout_nanos).map_err(|_| Error::DurationOverflow { round })?;
 
-    Ok(Duration::from_millis(timeout_millis))
+    Ok(Duration::from_nanos(timeout_nanos))
 }
 
 /// Rejects negative consensus rounds before duration arithmetic.
@@ -499,9 +508,9 @@ mod tests {
     }
 
     #[test_case(1, Duration::from_millis(1_000) ; "round_1")]
-    #[test_case(2, Duration::from_millis(400) ; "round_2")]
-    #[test_case(3, Duration::from_millis(600) ; "round_3")]
-    #[test_case(4, Duration::from_millis(800) ; "round_4")]
+    #[test_case(2, Duration::from_nanos(400) ; "round_2")]
+    #[test_case(3, Duration::from_nanos(600) ; "round_3")]
+    #[test_case(4, Duration::from_nanos(800) ; "round_4")]
     #[tokio::test(start_paused = true)]
     async fn linear_round_timer(round: i64, want: Duration) {
         let timer = LinearRoundTimer::new();
@@ -513,7 +522,28 @@ mod tests {
         };
 
         assert_eq!(want, duration);
-        assert_fires_after(timeout, want, &format!("Timer(round {round}) did not fire")).await;
+        // Tokio's timer wheel has millisecond granularity, so the paused clock
+        // must advance by at least 1ms for the sub-millisecond (nanosecond)
+        // subsequent-round timeouts to fire.
+        let advance_by = want.max(Duration::from_millis(1));
+        assert_fires_after(
+            timeout,
+            advance_by,
+            &format!("Timer(round {round}) did not fire"),
+        )
+        .await;
+    }
+
+    #[test_case(0, Duration::ZERO ; "round_0")]
+    #[test_case(2, Duration::from_nanos(400) ; "round_2")]
+    #[test_case(3, Duration::from_nanos(600) ; "round_3")]
+    #[test_case(4, Duration::from_nanos(800) ; "round_4")]
+    #[test_case(11, Duration::from_nanos(2_200) ; "round_11")]
+    fn linear_subsequent_round_timeout_is_nanoseconds(round: i64, want: Duration) {
+        // Mirrors Charon v1.7.1 roundtimer.go:243 `time.Duration(200*(round-1)+200)`,
+        // which is nanoseconds (no `* time.Millisecond`). Flip to `from_millis`
+        // expectations only when the Charon pin moves past charon#4537.
+        assert_eq!(want, must_duration(linear_subsequent_round_timeout(round)));
     }
 
     #[test]
@@ -633,9 +663,16 @@ mod tests {
         .await;
 
         let timeout = must_timer(timer.timer(3));
-        let want = Duration::from_millis(600);
+        let want = Duration::from_nanos(600);
         assert_eq!(want, must_duration(linear_subsequent_round_timeout(3)));
-        assert_fires_after(timeout, want, "round 3 proposer timer did not fire").await;
+        // Advance a full millisecond: tokio's timer wheel granularity is 1ms,
+        // so the 600ns timeout cannot fire on a smaller advance.
+        assert_fires_after(
+            timeout,
+            Duration::from_millis(1),
+            "round 3 proposer timer did not fire",
+        )
+        .await;
     }
 
     #[test]

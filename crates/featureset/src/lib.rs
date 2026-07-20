@@ -44,16 +44,47 @@ pub enum Status {
     Enable = i32::MAX as isize,
 }
 
+impl Status {
+    /// Returns the string representation of the status.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Status::Disable => "disable",
+            Status::Alpha => "alpha",
+            Status::Beta => "beta",
+            Status::Stable => "stable",
+            Status::Sentinel => "sentinel",
+            Status::Enable => "enable",
+        }
+    }
+
+    /// Returns all statuses.
+    pub fn all() -> &'static [Status] {
+        &[
+            Status::Disable,
+            Status::Alpha,
+            Status::Beta,
+            Status::Stable,
+            Status::Sentinel,
+            Status::Enable,
+        ]
+    }
+}
+
 impl fmt::Display for Status {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Status::Disable => write!(f, "disable"),
-            Status::Alpha => write!(f, "alpha"),
-            Status::Beta => write!(f, "beta"),
-            Status::Stable => write!(f, "stable"),
-            Status::Sentinel => write!(f, "sentinel"),
-            Status::Enable => write!(f, "enable"),
-        }
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl std::convert::TryFrom<&str> for Status {
+    type Error = String;
+
+    fn try_from(value: &str) -> std::result::Result<Self, Self::Error> {
+        Status::all()
+            .iter()
+            .find(|status| value.eq_ignore_ascii_case(status.as_str()))
+            .copied()
+            .ok_or_else(|| format!("unknown status: {}", value))
     }
 }
 
@@ -329,6 +360,27 @@ mod tests {
         assert_eq!(Status::Stable.to_string(), "stable");
         assert_eq!(Status::Sentinel.to_string(), "sentinel");
         assert_eq!(Status::Enable.to_string(), "enable");
+    }
+
+    #[test]
+    fn status_try_from_round_trips_display() {
+        for status in Status::all() {
+            assert_eq!(Status::try_from(status.to_string().as_str()), Ok(*status));
+        }
+    }
+
+    #[test]
+    fn status_try_from_is_case_insensitive() {
+        assert_eq!(Status::try_from("ALPHA"), Ok(Status::Alpha));
+        assert_eq!(Status::try_from("Stable"), Ok(Status::Stable));
+    }
+
+    #[test]
+    fn status_try_from_rejects_unknown() {
+        assert_eq!(
+            Status::try_from("foo"),
+            Err("unknown status: foo".to_string())
+        );
     }
 
     #[test]

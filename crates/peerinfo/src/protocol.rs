@@ -34,6 +34,25 @@ static GIT_HASH_RE: LazyLock<Regex> =
 
 const PEERINFO_MAX_MESSAGE_SIZE: usize = 64 * 1024;
 
+/// Maximum length (in bytes) for a peer-supplied metric label value. Real
+/// Charon nicknames/versions are short; this bounds pathological input (e.g. a
+/// nickname or a `v1.2.3-<megabytes>` pre-release version that parses fine)
+/// without rejecting any legitimate peer.
+const MAX_METRIC_LABEL_LEN: usize = 64;
+
+/// Truncates a peer-supplied label value to [`MAX_METRIC_LABEL_LEN`] on a UTF-8
+/// char boundary so the resulting label stays valid.
+fn truncate_label(s: &str) -> String {
+    if s.len() <= MAX_METRIC_LABEL_LEN {
+        return s.to_string();
+    }
+    let mut end = MAX_METRIC_LABEL_LEN;
+    while end > 0 && !s.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    s[..end].to_string()
+}
+
 /// State of the protocol.
 pub struct ProtocolState {
     /// The peer ID.
@@ -206,11 +225,17 @@ impl ProtocolState {
     ) {
         let peer_name = pluto_p2p::name::peer_name(&self.peer_id);
 
+        // nickname/version are peer-supplied and unbounded in length; truncate at
+        // the metric boundary so a pathological value cannot blow up label memory.
+        // Reset the previous series under the SAME truncated form it was stored.
+        let nickname = truncate_label(nickname);
+
         // Reset previous peer nickname if it changed
         if let Some(prev) = prev_nickname {
-            PEERINFO_METRICS.nickname[&PeerNicknameLabels::new(&peer_name, prev)].set(0);
+            let prev = truncate_label(prev);
+            PEERINFO_METRICS.nickname[&PeerNicknameLabels::new(&peer_name, &prev)].set(0);
         }
-        PEERINFO_METRICS.nickname[&PeerNicknameLabels::new(&peer_name, nickname)].set(1);
+        PEERINFO_METRICS.nickname[&PeerNicknameLabels::new(&peer_name, &nickname)].set(1);
 
         // Clamp clock offset to [-1 hour, 1 hour]
         let one_hour = chrono::Duration::hours(1);
@@ -231,11 +256,11 @@ impl ProtocolState {
 
         // Handle version - use "unknown" if empty
         let version = if version.is_empty() {
-            "unknown"
+            "unknown".to_string()
         } else {
-            version
+            truncate_label(version)
         };
-        PEERINFO_METRICS.version[&PeerVersionLabels::new(&peer_name, version)].set(1);
+        PEERINFO_METRICS.version[&PeerVersionLabels::new(&peer_name, &version)].set(1);
 
         // Handle git hash - use "unknown" if empty
         let git_hash = if git_hash.is_empty() {
@@ -455,6 +480,30 @@ mod tests {
         let decoded = PeerInfo::decode(PEERINFO_EMPTY_OPTIONAL_FIELDS).unwrap();
         let expected = make_empty_optional_peerinfo();
         assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn truncate_label_short_unchanged() {
+        let s = "short-nickname";
+        assert_eq!(truncate_label(s), s);
+    }
+
+    #[test]
+    fn truncate_label_long_ascii() {
+        let s = "a".repeat(MAX_METRIC_LABEL_LEN + 100);
+        let out = truncate_label(&s);
+        assert_eq!(out.len(), MAX_METRIC_LABEL_LEN);
+    }
+
+    #[test]
+    fn truncate_label_multibyte_char_boundary() {
+        // Each 'é' is 2 bytes; a long run must truncate on a char boundary and
+        // stay valid UTF-8 (no panic).
+        let s = "é".repeat(MAX_METRIC_LABEL_LEN);
+        let out = truncate_label(&s);
+        assert!(out.len() <= MAX_METRIC_LABEL_LEN);
+        // Valid UTF-8: length is even (whole 'é' chars), never splitting one.
+        assert_eq!(out.len() % 2, 0);
     }
 
     #[test]

@@ -167,19 +167,43 @@ pub fn recover(hash: &[u8], sig: &[u8]) -> Result<PublicKey> {
         });
     }
 
-    let mut recovery_byte = sig[K1_REC_IDX];
+    let original_recovery_byte = sig[K1_REC_IDX];
 
-    if recovery_byte == 27 || recovery_byte == 28 {
-        recovery_byte = recovery_byte.wrapping_sub(27);
-    }
+    // Charon accepts only the Ethereum-format recovery ids {0, 1} and their
+    // Bitcoin-compact-format equivalents {27, 28}. Reject everything else
+    // (notably the x-reduced ids 2 and 3 that `RecoveryId::from_byte` would
+    // otherwise accept). See charon app/k1util/k1util.go Recover @ v1.7.1.
+    let recovery_byte = match original_recovery_byte {
+        0 | 1 => original_recovery_byte,
+        // 27/28 are the Bitcoin-compact-format equivalents of 0/1.
+        27 => 0,
+        28 => 1,
+        _ => {
+            return Err(K1UtilError::InvalidSignatureRecoveryId {
+                invalid_recovery_byte: original_recovery_byte,
+            });
+        }
+    };
 
-    let signature =
+    let mut signature =
         Signature::from_slice(&sig[..SIGNATURE_LEN - 1]).map_err(K1UtilError::InvalidSignature)?;
 
-    let recovery_id =
-        RecoveryId::from_byte(recovery_byte).ok_or(K1UtilError::InvalidSignatureRecoveryId {
-            invalid_recovery_byte: recovery_byte,
-        })?;
+    // `recovery_byte` is guaranteed to be 0 or 1 here, so `from_byte` is
+    // infallible.
+    let mut recovery_id = RecoveryId::from_byte(recovery_byte)
+        .expect("recovery byte is 0 or 1, which is always a valid recovery id");
+
+    // Charon's decred-backed `Recover` accepts high-S signatures — it only
+    // rejects `S == 0` and `S >= group order` (no low-S rule). k256's
+    // `recover_from_prehash` self-verifies and rejects high-S outright. Since
+    // negating S (mod n) and flipping the recovery-id parity recovers the
+    // *same* public key, canonicalizing to low-S here preserves Charon's
+    // acceptance domain without changing the recovered key.
+    if let Some(normalized) = signature.normalize_s() {
+        signature = normalized;
+        recovery_id = RecoveryId::from_byte(recovery_id.to_byte() ^ 1)
+            .expect("flipping the parity of a 0/1 recovery id stays in {0, 1}");
+    }
 
     let pubkey = ecdsa::VerifyingKey::recover_from_prehash(hash, &signature, recovery_id)
         .map_err(K1UtilError::InvalidSignature)?;
@@ -244,6 +268,7 @@ pub fn save(key: &SecretKey, file: &Path) -> Result<()> {
 mod tests {
     use k256::elliptic_curve::rand_core::OsRng;
     use std::io::Write;
+    use test_case::test_case;
 
     use super::*;
 
@@ -312,6 +337,73 @@ mod tests {
             recovered,
             key.public_key(),
             "Recovered public key should match"
+        );
+    }
+
+    // Charon accepts only the Ethereum-format recovery ids {0, 1} and their
+    // Bitcoin-compact equivalents {27, 28}. Everything else — including the
+    // x-reduced ids 2/3 that k256's `RecoveryId::from_byte` would accept — must
+    // be rejected with the original byte preserved in the error.
+    #[test_case(0, true ; "eth id 0 accepted")]
+    #[test_case(1, true ; "eth id 1 accepted")]
+    #[test_case(27, true ; "bitcoin-compact 27 accepted")]
+    #[test_case(28, true ; "bitcoin-compact 28 accepted")]
+    #[test_case(2, false ; "x-reduced id 2 rejected")]
+    #[test_case(3, false ; "x-reduced id 3 rejected")]
+    #[test_case(4, false ; "out-of-domain 4 rejected")]
+    #[test_case(26, false ; "out-of-domain 26 rejected")]
+    #[test_case(29, false ; "out-of-domain 29 rejected")]
+    #[test_case(255, false ; "out-of-domain 255 rejected")]
+    fn recover_recovery_id_domain(recovery_byte: u8, accepted: bool) {
+        // Produce a known-valid 65-byte signature (natural recovery byte 0 or
+        // 1), then override the recovery byte to exercise the domain.
+        let key = SecretKey::from_slice(&hex::decode(PRIV_KEY_1).unwrap()).unwrap();
+        let digest = hex::decode(DIGEST_1).unwrap();
+        let mut sig = sign(&key, &digest).unwrap();
+        sig[K1_REC_IDX] = recovery_byte;
+
+        let result = recover(&digest, &sig);
+        if accepted {
+            assert!(
+                result.is_ok(),
+                "recovery byte {recovery_byte} should be accepted"
+            );
+        } else {
+            assert!(
+                matches!(
+                    result,
+                    Err(K1UtilError::InvalidSignatureRecoveryId { invalid_recovery_byte })
+                        if invalid_recovery_byte == recovery_byte
+                ),
+                "recovery byte {recovery_byte} should be rejected with InvalidSignatureRecoveryId carrying the original byte, got {:?}",
+                result.map(|_| "Ok"),
+            );
+        }
+    }
+
+    #[test]
+    fn recover_accepts_high_s() {
+        // Charon's decred-backed `Recover` accepts high-S signatures; k256's
+        // recovery self-verification rejects them. Build the high-S
+        // malleability twin of a valid signature (s' = n - s, recovery-id
+        // parity flipped) and confirm it recovers the same public key.
+        let key = SecretKey::from_slice(&hex::decode(PRIV_KEY_1).unwrap()).unwrap();
+        let digest = hex::decode(DIGEST_1).unwrap();
+        let base_sig = sign(&key, &digest).unwrap();
+
+        let low_s = Signature::from_slice(&base_sig[..SIGNATURE_LEN_WITHOUT_V]).unwrap();
+        let (r, s) = low_s.split_scalars();
+        let high_s = Signature::from_scalars(r, -s).unwrap();
+
+        let mut sig = [0u8; SIGNATURE_LEN];
+        sig[..SIGNATURE_LEN_WITHOUT_V].copy_from_slice(&high_s.to_bytes());
+        sig[K1_REC_IDX] = base_sig[K1_REC_IDX] ^ 1;
+
+        let recovered = recover(&digest, &sig).unwrap();
+        assert_eq!(
+            recovered,
+            key.public_key(),
+            "high-S signature must recover the same key as its low-S twin"
         );
     }
 

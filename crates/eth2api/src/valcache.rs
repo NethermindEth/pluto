@@ -19,8 +19,11 @@ pub enum ValidatorCacheError {
 }
 
 /// Active validators as [`PubKey`] indexed by their validator index.
+///
+/// Internally an `Arc<HashMap<..>>` so cloning is a refcount bump, not a deep
+/// map copy — callers receive cheap clones from [`ValidatorCache`].
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct ActiveValidators(HashMap<ValidatorIndex, PubKey>);
+pub struct ActiveValidators(Arc<HashMap<ValidatorIndex, PubKey>>);
 
 impl std::ops::Deref for ActiveValidators {
     type Target = HashMap<ValidatorIndex, PubKey>;
@@ -31,8 +34,13 @@ impl std::ops::Deref for ActiveValidators {
 }
 
 /// Complete response of the Beacon node validators endpoint.
+///
+/// Internally an `Arc<HashMap<..>>` so cloning is a refcount bump, not a deep
+/// map copy.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct CompleteValidators(HashMap<ValidatorIndex, GetStateValidatorsResponseResponseDatum>);
+pub struct CompleteValidators(
+    Arc<HashMap<ValidatorIndex, GetStateValidatorsResponseResponseDatum>>,
+);
 
 impl std::ops::Deref for CompleteValidators {
     type Target = HashMap<ValidatorIndex, GetStateValidatorsResponseResponseDatum>;
@@ -47,7 +55,7 @@ impl ActiveValidators {
     /// Lets consumers outside this crate (e.g. test doubles of
     /// [`CachedValidatorsProvider`]) construct populated instances.
     pub fn new(validators: HashMap<ValidatorIndex, PubKey>) -> Self {
-        Self(validators)
+        Self(Arc::new(validators))
     }
 
     /// An [`Iterator`] of active validator indices.
@@ -90,11 +98,16 @@ impl CachedValidatorsProvider for ValidatorCache {
 
 /// A cache for active validators.
 #[derive(Clone)]
-pub struct ValidatorCache(Arc<RwLock<ValidatorCacheInner>>);
+pub struct ValidatorCache(Arc<ValidatorCacheInner>);
 
 struct ValidatorCacheInner {
     eth2_cl: EthBeaconNodeApiClient,
     pubkeys: Vec<PubKey>,
+    cached: RwLock<CachedValidators>,
+}
+
+#[derive(Default)]
+struct CachedValidators {
     active: Option<ActiveValidators>,
     complete: Option<CompleteValidators>,
 }
@@ -102,42 +115,48 @@ struct ValidatorCacheInner {
 impl ValidatorCache {
     /// Creates a new, empty validator cache.
     pub fn new(eth2_cl: EthBeaconNodeApiClient, pubkeys: Vec<PubKey>) -> Self {
-        Self(Arc::new(RwLock::new(ValidatorCacheInner {
+        Self(Arc::new(ValidatorCacheInner {
             eth2_cl,
             pubkeys,
-            active: None,
-            complete: None,
-        })))
+            cached: RwLock::new(CachedValidators::default()),
+        }))
     }
 
     /// Clears the cache. This should be called on epoch boundary.
     pub async fn trim(&self) {
-        let mut inner = self.0.write().await;
+        let mut cached = self.0.cached.write().await;
 
-        inner.active = None;
-        inner.complete = None;
+        cached.active = None;
+        cached.complete = None;
     }
 
     /// Returns the cached active validators and complete validators response,
     /// or fetches them if not available populating the cache.
     pub async fn get_by_head(&self) -> Result<(ActiveValidators, CompleteValidators)> {
-        let mut inner = self.0.write().await;
+        // Warm-cache fast path: a read lock is enough to serve cheap `Arc`
+        // clones without blocking concurrent readers.
+        {
+            let cached = self.0.cached.read().await;
+            if let (Some(active), Some(complete)) = (&cached.active, &cached.complete) {
+                return Ok((active.clone(), complete.clone()));
+            }
+        }
 
-        if let (Some(active), Some(complete)) = (&inner.active, &inner.complete) {
-            return Ok((active.clone(), complete.clone()));
-        };
-
+        // Cache miss: fetch without holding any lock so the round-trip does
+        // not block concurrent readers. A cold-start burst may issue more than
+        // one fetch; the re-check below keeps a single stored value.
         let request = PostStateValidatorsRequest {
             path: PostStateValidatorsRequestPath {
                 state_id: "head".into(),
             },
             body: ValidatorRequestBody {
-                ids: Some(inner.pubkeys.iter().map(format_pubkey).collect()),
+                ids: Some(self.0.pubkeys.iter().map(format_pubkey).collect()),
                 ..Default::default()
             },
         };
 
-        let response = inner
+        let response = self
+            .0
             .eth2_cl
             .post_state_validators(request)
             .await
@@ -149,8 +168,13 @@ impl ValidatorCache {
 
         let (active_validators, complete_validators) = validators_from_response(response)?;
 
-        inner.active = Some(active_validators.clone());
-        inner.complete = Some(complete_validators.clone());
+        let mut cached = self.0.cached.write().await;
+        if let (Some(active), Some(complete)) = (&cached.active, &cached.complete) {
+            return Ok((active.clone(), complete.clone()));
+        }
+
+        cached.active = Some(active_validators.clone());
+        cached.complete = Some(complete_validators.clone());
 
         Ok((active_validators, complete_validators))
     }
@@ -165,26 +189,29 @@ impl ValidatorCache {
         &self,
         slot: u64,
     ) -> Result<(ActiveValidators, CompleteValidators, bool)> {
-        let mut inner = self.0.write().await;
+        // Held across the fetch so concurrent slot refreshes serialize, as
+        // before. The immutable client/pubkeys are read off the lock.
+        let mut cached = self.0.cached.write().await;
 
         let mut request = PostStateValidatorsRequest {
             path: PostStateValidatorsRequestPath {
                 state_id: slot.to_string(),
             },
             body: ValidatorRequestBody {
-                ids: Some(inner.pubkeys.iter().map(format_pubkey).collect()),
+                ids: Some(self.0.pubkeys.iter().map(format_pubkey).collect()),
                 ..Default::default()
             },
         };
 
         let (response, refreshed_by_slot) =
-            match inner.eth2_cl.post_state_validators(request.clone()).await {
+            match self.0.eth2_cl.post_state_validators(request.clone()).await {
                 Ok(PostStateValidatorsResponse::Ok(response)) => (response, true),
                 _ => {
                     // Failed to fetch by slot, fall back to head state
                     request.path.state_id = "head".into();
 
-                    let response = inner
+                    let response = self
+                        .0
                         .eth2_cl
                         .post_state_validators(request)
                         .await
@@ -200,8 +227,8 @@ impl ValidatorCache {
 
         let (active_validators, complete_validators) = validators_from_response(response)?;
 
-        inner.active = Some(active_validators.clone());
-        inner.complete = Some(complete_validators.clone());
+        cached.active = Some(active_validators.clone());
+        cached.complete = Some(complete_validators.clone());
 
         Ok((active_validators, complete_validators, refreshed_by_slot))
     }
@@ -234,8 +261,8 @@ fn validators_from_response(
         .collect::<Result<HashMap<ValidatorIndex, PubKey>>>()?;
 
     Ok((
-        ActiveValidators(active_validators),
-        CompleteValidators(all_validators),
+        ActiveValidators(Arc::new(active_validators)),
+        CompleteValidators(Arc::new(all_validators)),
     ))
 }
 
@@ -312,14 +339,14 @@ mod tests {
         // Check cache is populated.
         let (actual_active, actual_complete) =
             cache.get_by_head().await.expect("`get_by_head` succeeds");
-        assert_eq!(actual_active.0, expected_active);
-        assert_eq!(actual_complete.0, expected_complete);
+        assert_eq!(*actual_active, expected_active);
+        assert_eq!(*actual_complete, expected_complete);
 
         // Check cache is used (no additional request).
         let (actual_active, actual_complete) =
             cache.get_by_head().await.expect("`get_by_head` succeeds");
-        assert_eq!(actual_active.0, expected_active);
-        assert_eq!(actual_complete.0, expected_complete);
+        assert_eq!(*actual_active, expected_active);
+        assert_eq!(*actual_complete, expected_complete);
 
         // Trim cache.
         cache.trim().await;
@@ -327,14 +354,69 @@ mod tests {
         // Check cache is populated again.
         let (actual_active, actual_complete) =
             cache.get_by_head().await.expect("`get_by_head` succeeds");
-        assert_eq!(actual_active.0, expected_active);
-        assert_eq!(actual_complete.0, expected_complete);
+        assert_eq!(*actual_active, expected_active);
+        assert_eq!(*actual_complete, expected_complete);
 
         // Check cache is used again (no additional request).
         let (actual_active, actual_complete) =
             cache.get_by_head().await.expect("`get_by_head` succeeds");
-        assert_eq!(actual_active.0, expected_active);
-        assert_eq!(actual_complete.0, expected_complete);
+        assert_eq!(*actual_active, expected_active);
+        assert_eq!(*actual_complete, expected_complete);
+    }
+
+    #[tokio::test]
+    async fn get_by_head_concurrent_miss_is_consistent() {
+        // Concurrent cache misses each return correct, identical data. Because
+        // the write lock is deliberately released across the beacon-node fetch
+        // (so a warm cache never blocks readers — see `get_by_head`), a burst
+        // of *cold* misses may each issue a fetch; the re-check after
+        // re-acquiring the write lock only guarantees a single stored value,
+        // not a single request. Once the cache is warm, further reads take the
+        // read-lock fast path and issue no request (see
+        // `get_by_head_successful_fetch`). In production `get_by_head` is driven
+        // by the scheduler's slot tick, so this cold-start burst does not occur.
+        const CONCURRENCY: u64 = 8;
+        let pubkeys = (0..3u8).map(test_pubkey).collect::<Vec<PubKey>>();
+        let datums = vec![
+            test_validator_datum(0, &pubkeys[0], ValidatorStatus::ActiveOngoing),
+            test_validator_datum(1, &pubkeys[1], ValidatorStatus::ActiveOngoing),
+            test_validator_datum(2, &pubkeys[2], ValidatorStatus::ActiveOngoing),
+        ];
+
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/eth/v1/beacon/states/head/validators"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_millis(50))
+                    .set_body_json(GetStateValidatorsResponseResponse {
+                        execution_optimistic: false,
+                        finalized: true,
+                        data: datums,
+                    }),
+            )
+            // At least one fetch, at most one per concurrent cold miss.
+            .expect(1..=CONCURRENCY)
+            .mount(&mock)
+            .await;
+
+        let cache = ValidatorCache::new(test_client(&mock), pubkeys.clone());
+
+        let mut handles = Vec::new();
+        for _ in 0..CONCURRENCY {
+            let cache = cache.clone();
+            handles.push(tokio::spawn(async move { cache.get_by_head().await }));
+        }
+
+        for handle in handles {
+            let (active, complete) = handle.await.expect("task joins").expect("get_by_head");
+            assert_eq!(active.len(), 3);
+            assert_eq!(complete.len(), 3);
+        }
+
+        // After warm-up, the read-lock fast path serves without any new request.
+        let (active, _) = cache.get_by_head().await.expect("warm read");
+        assert_eq!(active.len(), 3);
     }
 
     #[tokio::test]
@@ -350,9 +432,9 @@ mod tests {
 
         // Verify cache is initially empty
         {
-            let inner = cache.0.write().await;
-            assert!(inner.active.is_none());
-            assert!(inner.complete.is_none());
+            let cached = cache.0.cached.read().await;
+            assert!(cached.active.is_none());
+            assert!(cached.complete.is_none());
         }
 
         let result = cache.get_by_head().await;
@@ -360,9 +442,9 @@ mod tests {
 
         // Verify cache remains empty after failed request
         {
-            let inner = cache.0.write().await;
-            assert!(inner.active.is_none());
-            assert!(inner.complete.is_none());
+            let cached = cache.0.cached.read().await;
+            assert!(cached.active.is_none());
+            assert!(cached.complete.is_none());
         }
     }
 

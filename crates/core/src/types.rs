@@ -1070,6 +1070,135 @@ mod tests {
     }
 
     #[test]
+    fn duty_type_to_i32_literal_charon_numbers() {
+        // Numbers are the canonical Charon core/types.go @ v1.7.1 enum values
+        // and MUST NOT change (wire-compatibility).
+        let cases: [(DutyType, i32); 14] = [
+            (DutyType::Unknown, 0),
+            (DutyType::Proposer, 1),
+            (DutyType::Attester, 2),
+            (DutyType::Signature, 3),
+            (DutyType::Exit, 4),
+            (DutyType::BuilderProposer, 5),
+            (DutyType::BuilderRegistration, 6),
+            (DutyType::Randao, 7),
+            (DutyType::PrepareAggregator, 8),
+            (DutyType::Aggregator, 9),
+            (DutyType::SyncMessage, 10),
+            (DutyType::PrepareSyncContribution, 11),
+            (DutyType::SyncContribution, 12),
+            (DutyType::InfoSync, 13),
+        ];
+        for (dt, n) in &cases {
+            assert_eq!(i32::try_from(dt), Ok(*n), "encoding {dt:?}");
+        }
+    }
+
+    #[test]
+    fn duty_type_i32_round_trip_both_directions() {
+        // Intentionally a duplicate of the table above: the duplication is
+        // documentation of the wire contract.
+        let cases: [(DutyType, i32); 14] = [
+            (DutyType::Unknown, 0),
+            (DutyType::Proposer, 1),
+            (DutyType::Attester, 2),
+            (DutyType::Signature, 3),
+            (DutyType::Exit, 4),
+            (DutyType::BuilderProposer, 5),
+            (DutyType::BuilderRegistration, 6),
+            (DutyType::Randao, 7),
+            (DutyType::PrepareAggregator, 8),
+            (DutyType::Aggregator, 9),
+            (DutyType::SyncMessage, 10),
+            (DutyType::PrepareSyncContribution, 11),
+            (DutyType::SyncContribution, 12),
+            (DutyType::InfoSync, 13),
+        ];
+        for (dt, n) in &cases {
+            // i32 -> DutyType
+            let decoded = DutyType::try_from(*n).expect("decode known number");
+            assert_eq!(&decoded, dt, "decoding {n}");
+            // DutyType -> i32 -> DutyType round-trips back to the same number
+            let encoded = i32::try_from(&decoded).expect("re-encode");
+            assert_eq!(encoded, *n, "round-trip {dt:?}");
+        }
+    }
+
+    #[test]
+    fn duty_type_conversion_error_edges() {
+        // i32 -> DutyType: anything outside 0..=13 is InvalidDuty. 14 is
+        // Charon's private dutySentinel value and must never decode.
+        for bad in [14_i32, 15, 99, -1, i32::MAX, i32::MIN] {
+            assert!(
+                matches!(
+                    DutyType::try_from(bad),
+                    Err(ParSigExCodecError::InvalidDuty)
+                ),
+                "i32 {bad} should be rejected",
+            );
+        }
+
+        // &DutyType -> i32: the sentinel variant is the only encoding error.
+        assert_eq!(
+            i32::try_from(&DutyType::DutySentinel(Box::new(DutyType::Unknown))),
+            Err(DutyTypeError::InvalidDutyType),
+        );
+        assert_eq!(
+            i32::try_from(&DutyType::DutySentinel(Box::new(DutyType::Attester))),
+            Err(DutyTypeError::InvalidDutyType),
+        );
+        // Unknown encodes to 0 (not an error) in this direction.
+        assert_eq!(i32::try_from(&DutyType::Unknown), Ok(0));
+    }
+
+    #[test]
+    fn duty_proto_round_trip_and_asymmetry() {
+        // Valid duty types round-trip slot + type through the proto.
+        for dt in DutyType::all() {
+            let duty = Duty::new(SlotNumber::new(424_242), dt.clone());
+            let proto = pbcore::Duty::try_from(&duty).expect("encode valid duty");
+            assert_eq!(proto.slot, 424_242);
+            assert_eq!(proto.r#type, i32::try_from(&dt).unwrap());
+            let back = Duty::try_from(&proto).expect("decode valid duty");
+            assert_eq!(back, duty);
+        }
+
+        // Unknown: encodes to r#type 0 (Ok)...
+        let unknown = Duty::new(SlotNumber::new(7), DutyType::Unknown);
+        let proto_unknown = pbcore::Duty::try_from(&unknown).expect("Unknown encodes");
+        assert_eq!(proto_unknown.r#type, 0);
+        assert_eq!(proto_unknown.slot, 7);
+        // ...but the proto -> Duty direction rejects it (invalid duty type).
+        // ParSigExCodecError has no PartialEq, so match instead of assert_eq!.
+        assert!(matches!(
+            Duty::try_from(&proto_unknown),
+            Err(ParSigExCodecError::InvalidDuty),
+        ));
+
+        // Sentinel duty cannot be encoded at all.
+        let sentinel = Duty::new(
+            SlotNumber::new(7),
+            DutyType::DutySentinel(Box::new(DutyType::Unknown)),
+        );
+        assert_eq!(
+            pbcore::Duty::try_from(&sentinel),
+            Err(DutyTypeError::InvalidDutyType),
+        );
+
+        // Out-of-range proto r#type is rejected on decode.
+        for bad in [14_i32, 99] {
+            let proto = pbcore::Duty {
+                slot: 7,
+                r#type: bad,
+            };
+            assert!(matches!(
+                Duty::try_from(&proto),
+                Err(ParSigExCodecError::InvalidDuty),
+            ));
+        }
+    }
+
+    #[test]
     fn pub_key_from_bytes() {
         let bytes = [42u8; PK_LEN];
         let pk = PubKey::try_from(&bytes[..]).unwrap();
