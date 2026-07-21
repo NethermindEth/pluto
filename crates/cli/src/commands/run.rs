@@ -998,7 +998,7 @@ fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
     check_unsupported_flags(&config)?;
     warn_ignored_flags(&config);
 
-    let feature_config = build_feature_config(&config.feature)?;
+    let feature_config = parse_featureset_config(&config.feature)?;
     let validator_api_addr =
         parse_socket_addr("validator-api-address", &config.validator_api_addr)?;
     let monitoring_addr = parse_socket_addr("monitoring-address", &config.monitoring_addr)?;
@@ -1152,7 +1152,7 @@ fn warn_ignored_flags(config: &RunConfig) {
 }
 
 /// Parses the feature-set flags into a [`pluto_featureset::Config`].
-fn build_feature_config(feature: &FeatureConfig) -> Result<pluto_featureset::Config> {
+fn parse_featureset_config(feature: &FeatureConfig) -> Result<pluto_featureset::Config> {
     let min_status = Status::try_from(feature.min_status.as_str()).map_err(|_| {
         FeaturesetError::UnknownMinStatus {
             min_status: feature.min_status.clone(),
