@@ -29,16 +29,19 @@
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use pluto_app::node::wire::{
-    ParSigExReceived, ParSigExSeam, ValidatorInfo, WireInputs, wire_core_workflow,
+use pluto_app::node::{
+    AppError,
+    wire::{
+        ParSigExReceived, ParSigExSeam, SlotTickFn, ValidatorInfo, WireInputs, wire_core_workflow,
+    },
 };
 use pluto_consensus::qbft;
 use pluto_core::{
     aggsigdb::types::AggSigDB,
     sigagg::VerifyFn,
     types::{
-        Duty, DutyDefinition, DutyDefinitionSet, ParSignedDataSet, ProposerDutyDefinition, PubKey,
-        SignedData, SignedDataSet, SlotNumber,
+        Duty, DutyDefinition, DutyDefinitionSet, ParSignedData, ParSignedDataSet,
+        ProposerDutyDefinition, PubKey, SignedData, SignedDataSet, Slot, SlotNumber,
     },
 };
 use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
@@ -168,6 +171,38 @@ async fn count_posts(server: &MockServer, submit_path: &str) -> usize {
         .count()
 }
 
+/// Builds a partial-signature `ParSignedData` for a fixed slot-1 attestation,
+/// signed by `share` at index `share_idx`. The test verifier is a no-op, so the
+/// signed message is arbitrary — only the distinct share index and identical
+/// unsigned payload (so ParSigDB groups the partials) matter.
+fn attester_partial(share_idx: u64, share: &pluto_crypto::types::PrivateKey) -> ParSignedData {
+    let sig = BlstImpl.sign(share, &[42u8; 32]).expect("sign share");
+    let attestation = phase0::Attestation {
+        aggregation_bits: phase0::BitList::with_bits(8, &[0]),
+        data: phase0::AttestationData {
+            slot: 1,
+            index: 0,
+            beacon_block_root: [1u8; 32],
+            source: phase0::Checkpoint {
+                epoch: 0,
+                root: [0u8; 32],
+            },
+            target: phase0::Checkpoint {
+                epoch: 1,
+                root: [2u8; 32],
+            },
+        },
+        signature: sig,
+    };
+    let versioned_att = VersionedAttestation {
+        version: versioned::DataVersion::Deneb,
+        validator_index: Some(7),
+        attestation: Some(AttestationPayload::Deneb(attestation)),
+    };
+    pluto_core::signeddata::VersionedAttestation::new_partial(versioned_att, share_idx)
+        .expect("partial versioned attestation")
+}
+
 /// Builds the wiring inputs for a single-validator cluster with the given
 /// signature `threshold`, using a permissive SigAgg verifier (proves the sign
 /// path connects, not that BLS verification works).
@@ -179,8 +214,8 @@ fn wire_inputs(
     threshold: u64,
 ) -> WireInputs {
     // Permissive verifier: the partial sigs carry arbitrary payloads, so real
-    // eth2 verification is deliberately bypassed here (mirrors Charon's
-    // `TestConfig`). The bad-partial-signature test injects the real verifier.
+    // eth2 verification is deliberately bypassed here. The bad-partial-signature
+    // test injects the real verifier.
     let permissive_verifier: VerifyFn = Arc::new(|_pubkey, _data| Box::pin(async { Ok(()) }));
     wire_inputs_with(
         eth2_cl,
@@ -233,6 +268,7 @@ fn wire_inputs_with(
         electra_slot: 0,
         fetch_only_comm_idx0: false,
         seen_pubkeys: None,
+        slot_tick: None,
     }
 }
 
@@ -405,45 +441,7 @@ async fn wiring_connects_sign_path() {
     let mut rng = rand::thread_rng();
     let secret = tbls.generate_secret_key(&mut rng).expect("secret");
     let shares = tbls.threshold_split(&secret, 2, 2).expect("split");
-
-    // The two partial sigs must carry identical unsigned attestation data (so
-    // ParSigDB's threshold-matching groups them) but each signed with its own
-    // share. `set_signature` swaps only the signature, preserving the payload.
-    let base_attestation = phase0::Attestation {
-        aggregation_bits: phase0::BitList::with_bits(8, &[0]),
-        data: phase0::AttestationData {
-            slot: 1,
-            index: 0,
-            beacon_block_root: [1u8; 32],
-            source: phase0::Checkpoint {
-                epoch: 0,
-                root: [0u8; 32],
-            },
-            target: phase0::Checkpoint {
-                epoch: 1,
-                root: [2u8; 32],
-            },
-        },
-        signature: [0u8; 96],
-    };
     let attester_duty = Duty::new_attester_duty(SlotNumber::new(1));
-
-    let make_par = |share_idx: u64, share: &pluto_crypto::types::PrivateKey| {
-        // verify_fn is a no-op, so the message signed is arbitrary; what matters
-        // is that the two partial sigs are distinct valid threshold shares.
-        let sig = tbls.sign(share, &[42u8; 32]).expect("sign");
-        let attestation = phase0::Attestation {
-            signature: sig,
-            ..base_attestation.clone()
-        };
-        let versioned_att = VersionedAttestation {
-            version: versioned::DataVersion::Deneb,
-            validator_index: Some(7),
-            attestation: Some(AttestationPayload::Deneb(attestation)),
-        };
-        pluto_core::signeddata::VersionedAttestation::new_partial(versioned_att, share_idx)
-            .expect("partial versioned attestation")
-    };
 
     let mut share_iter = shares.into_iter();
     let (idx0, share0) = share_iter.next().expect("share 0");
@@ -453,7 +451,7 @@ async fn wiring_connects_sign_path() {
     // own VC): ParSigDB.store_internal -> store_external (threshold not yet met)
     // and -> internal subscriber -> loopback parsigex.broadcast.
     let mut internal_set = ParSignedDataSet::new();
-    internal_set.insert(pubkey, make_par(idx0, &share0));
+    internal_set.insert(pubkey, attester_partial(idx0, &share0));
     tokio::time::timeout(
         GUARD,
         wired.parsigdb.store_internal(&attester_duty, &internal_set),
@@ -467,7 +465,7 @@ async fn wiring_connects_sign_path() {
     // subscriber -> SigAgg.aggregate -> subscribers (AggSigDB.store +
     // Broadcaster.broadcast).
     let mut external_set = ParSignedDataSet::new();
-    external_set.insert(pubkey, make_par(idx1, &share1));
+    external_set.insert(pubkey, attester_partial(idx1, &share1));
     tokio::time::timeout(
         GUARD,
         wired.parsigdb.store_external(&attester_duty, &external_set),
@@ -823,11 +821,10 @@ async fn wiring_rejects_bad_partial_signature() {
 
 /// (d) `wire_core_workflow` seeds one pubkey-scoped validator cache into the
 /// scheduler's beacon client and the submission client (Charon shares a single
-/// cache across both: `app.go:481-482` and `app.go:598`; the validator API
-/// reuses the same instance). The mock's POST validators endpoint returns only
-/// validators whose pubkey appears in the request-body `ids`, so the unseeded
-/// (empty-pubkey) default cache would resolve zero validators — the regression
-/// this test guards against.
+/// cache across both; the validator API reuses the same instance). The mock's
+/// POST validators endpoint returns only validators whose pubkey appears in the
+/// request-body `ids`, so the unseeded (empty-pubkey) default cache would
+/// resolve zero validators — the regression this test guards against.
 #[tokio::test]
 async fn wiring_seeds_shared_validator_cache() {
     let ct = CancellationToken::new();
@@ -862,6 +859,159 @@ async fn wiring_seeds_shared_validator_cache() {
             "(d) the {name} client's cache should be seeded with the cluster pubkeys"
         );
     }
+
+    ct.cancel();
+}
+
+/// (e) A registered per-slot subscriber actually receives scheduler slot ticks.
+/// Guards the `subscribe_slot` wiring that drives the simnet validator mock:
+/// deleting that registration would otherwise leave every test green.
+#[tokio::test]
+async fn wiring_delivers_slot_ticks_to_subscriber() {
+    let ct = CancellationToken::new();
+    // 1s slots so a tick lands well within the guard.
+    let mock = BeaconMock::builder()
+        .slot_duration(Duration::from_secs(1))
+        .build()
+        .await
+        .expect("beacon mock");
+    let pubkey = PubKey::new([9u8; PK_LEN]);
+    let eth2_cl = mock.client().clone();
+    let beacon_client = BeaconNodeClient::new(eth2_cl.clone());
+    let consensus = build_consensus(&ct);
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<u64>(8);
+    let slot_tick: SlotTickFn = Arc::new(move |slot: &Slot| {
+        let tx = tx.clone();
+        let slot = u64::from(slot.slot);
+        Box::pin(async move {
+            let _ = tx.send(slot).await;
+            Ok::<(), AppError>(())
+        })
+    });
+
+    let mut inputs = wire_inputs(eth2_cl, beacon_client, pubkey, consensus, 1);
+    inputs.slot_tick = Some(slot_tick);
+
+    let _wired = tokio::time::timeout(GUARD, wire_core_workflow(inputs, ct.clone()))
+        .await
+        .expect("wire did not deadlock")
+        .expect("wire succeeded");
+
+    tokio::time::timeout(GUARD, rx.recv())
+        .await
+        .expect("(e) a slot tick must reach the subscriber within the guard")
+        .expect("(e) slot channel closed before any tick");
+
+    ct.cancel();
+}
+
+/// Registry of each node's inbound parsigex subscriber, indexed by node; filled
+/// as each node registers via its seam's `subscribe`.
+type ParSigReceivers = Arc<Mutex<Vec<Option<ParSigExReceived>>>>;
+
+/// Builds a parsigex seam for node `node_idx` that routes every outbound
+/// partial-signature broadcast to every OTHER node's inbound subscriber — the
+/// N-node analog of [`loopback_parsigex_seam`].
+fn routed_parsigex_seam(node_idx: usize, receivers: ParSigReceivers) -> ParSigExSeam {
+    let receivers_for_broadcast = Arc::clone(&receivers);
+    ParSigExSeam {
+        broadcast: Arc::new(move |duty, set| {
+            let receivers = Arc::clone(&receivers_for_broadcast);
+            // The broadcast future must be Send + Sync, but each inbound
+            // subscriber future is Send-only; bridge via a spawned task whose
+            // JoinHandle is Sync (as in the single-node loopback).
+            Box::pin(async move {
+                let peers: Vec<ParSigExReceived> = {
+                    let guard = receivers.lock().await;
+                    guard
+                        .iter()
+                        .enumerate()
+                        .filter(|(j, _)| *j != node_idx)
+                        .filter_map(|(_, sub)| sub.clone())
+                        .collect()
+                };
+                for sub in peers {
+                    let duty = duty.clone();
+                    let set = set.clone();
+                    let _ = tokio::spawn(async move { sub(duty, set).await }).await;
+                }
+                Ok(())
+            })
+        }),
+        subscribe: Box::new(move |sub| {
+            Box::pin(async move {
+                let mut guard = receivers.lock().await;
+                guard[node_idx] = Some(sub);
+            })
+        }),
+    }
+}
+
+/// (f) Multi-node partial-signature exchange reaches beacon submission.
+///
+/// Wires N core-workflow graphs sharing one `BeaconMock`, connected by a
+/// parsigex router (node i's broadcast -> every peer's `store_external`). Each
+/// node stores one real threshold-BLS partial for the same attester duty; the
+/// router fans it out so every node crosses the threshold, SigAgg reconstructs
+/// the group signature, and the broadcaster submits it. Asserts the shared
+/// mock's submit endpoint is hit, proving the cross-node exchange ->
+/// aggregation -> submission path through the real wired graph. (The
+/// single-node [`wiring_connects_sign_path`] stores both partials on one node;
+/// this exercises real N-node routing.)
+#[tokio::test]
+async fn multinode_parsig_exchange_reaches_submission() {
+    const N: usize = 3;
+    const THRESHOLD: u64 = 2;
+
+    let ct = CancellationToken::new();
+    let mock = BeaconMock::builder().build().await.expect("beacon mock");
+    mount_attestation_submit(mock.server()).await;
+    let pubkey = PubKey::new([5u8; PK_LEN]);
+
+    let receivers: ParSigReceivers = Arc::new(Mutex::new((0..N).map(|_| None).collect()));
+
+    // Wire N nodes against the shared mock, each with a router seam.
+    let mut nodes = Vec::with_capacity(N);
+    for i in 0..N {
+        let eth2_cl = mock.client().clone();
+        let beacon_client = BeaconNodeClient::new(eth2_cl.clone());
+        let consensus = build_consensus(&ct);
+        let mut inputs = wire_inputs(eth2_cl, beacon_client, pubkey, consensus, THRESHOLD);
+        inputs.parsigex = routed_parsigex_seam(i, Arc::clone(&receivers));
+        let wired = tokio::time::timeout(GUARD, wire_core_workflow(inputs, ct.clone()))
+            .await
+            .unwrap_or_else(|_| panic!("(f) node {i} wire did not deadlock"))
+            .unwrap_or_else(|e| panic!("(f) node {i} wire failed: {e}"));
+        nodes.push(wired);
+    }
+
+    // One real threshold-BLS keyset: N shares, any THRESHOLD reconstruct.
+    let tbls = BlstImpl;
+    let mut rng = rand::thread_rng();
+    let secret = tbls.generate_secret_key(&mut rng).expect("secret");
+    let shares = tbls
+        .threshold_split(&secret, N as u64, THRESHOLD)
+        .expect("split");
+    let attester_duty = Duty::new_attester_duty(SlotNumber::new(1));
+
+    // Each node stores its own partial internally; the router fans it out to
+    // peers so every node accumulates >= THRESHOLD distinct shares and submits.
+    for (i, (share_idx, share)) in shares.into_iter().enumerate() {
+        let mut set = ParSignedDataSet::new();
+        set.insert(pubkey, attester_partial(share_idx, &share));
+        tokio::time::timeout(
+            GUARD,
+            nodes[i].parsigdb.store_internal(&attester_duty, &set),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("(f) node {i} store_internal hung"))
+        .unwrap_or_else(|e| panic!("(f) node {i} store_internal failed: {e}"));
+    }
+
+    // The aggregated attestation must reach the shared mock's submit endpoint
+    // (the guard panics if it never arrives).
+    wait_for_post(mock.server(), "/eth/v2/beacon/pool/attestations").await;
 
     ct.cancel();
 }

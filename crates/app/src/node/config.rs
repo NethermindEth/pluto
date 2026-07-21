@@ -7,12 +7,11 @@ use pluto_p2p::config::P2PConfig;
 
 /// Application configuration for running a distributed-validator node.
 ///
-/// This is the Rust analog of Charon's `app.Config` (`app/app.go`), reduced to
-/// the minimal set required to wire and run the core duty workflow plus the
-/// monitoring API. Debug/pprof API, OTLP/Jaeger tracing and simnet/mock-only
-/// fields are intentionally omitted for the minimal-runnable wiring.
-// TODO(#402 part B): add debug/pprof addr, OTLP/Jaeger tracing config, simnet
-// (beacon/validator mock) and `TestConfig`-style overrides.
+/// Reduced to the minimal set required to wire and run the core duty workflow
+/// plus the monitoring API and simnet mocks. Debug/pprof API and OTLP/Jaeger
+/// tracing fields are intentionally omitted for the minimal-runnable wiring.
+// TODO(#402 part B): add debug/pprof addr, OTLP/Jaeger tracing config, and
+// test-injection overrides.
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     /// P2P networking configuration (listen/advertise addresses, relays, ...).
@@ -59,21 +58,41 @@ pub struct AppConfig {
     /// Execution-layer (eth1) JSON-RPC endpoint, used to verify operator
     /// signatures (including EIP-1271 smart-contract signatures) in the cluster
     /// lock. When `None`, lock verification runs without eth1 and such operator
-    /// signatures are not checked. Mirrors Charon's
-    /// `--execution-client-rpc-endpoint`.
+    /// signatures are not checked.
     pub eth1_endpoint: Option<String>,
 
     /// Graffiti included in proposed blocks. `None` gives every validator the
     /// default (client) graffiti; a single value applies to all validators; one
-    /// value per validator otherwise. Mirrors Charon's `--graffiti`.
+    /// value per validator otherwise.
     pub graffiti: Option<Vec<String>>,
 
-    /// Disable appending the client version/codex to graffiti. Mirrors Charon's
-    /// `--graffiti-disable-client-append`.
+    /// Disable appending the client version/codex to graffiti.
     pub graffiti_disable_client_append: bool,
 
     /// Feature set controlling optional/alpha behaviors (e.g.
     /// `FetchOnlyCommIdx0`, `ChainSplitHalt`). Resolved from the CLI
     /// feature flags (out of scope here).
     pub feature_set: Arc<FeatureSet>,
+
+    /// Enable the in-process simnet mock beacon node. When set, the beacon
+    /// clients target an internal `BeaconMock` seeded with the cluster's
+    /// validators instead of `beacon_node_addrs`, and empty beacon endpoints
+    /// are permitted.
+    pub simnet_beacon_mock: bool,
+
+    /// Enable the in-process simnet mock validator client. It loads share
+    /// keystores from [`Self::simnet_validator_keys_dir`] and drives this
+    /// node's own validator API. Requires [`Self::simnet_beacon_mock`].
+    pub simnet_validator_mock: bool,
+
+    /// Configure the simnet beacon mock to return fuzzed responses.
+    pub simnet_beacon_mock_fuzz: bool,
+
+    /// Slot duration for the simnet beacon mock (default: 1s).
+    pub simnet_slot_duration: Duration,
+
+    /// Directory containing the simnet validator key shares (EIP-2335
+    /// keystores plus their password files), loaded when
+    /// [`Self::simnet_validator_mock`] is set.
+    pub simnet_validator_keys_dir: PathBuf,
 }

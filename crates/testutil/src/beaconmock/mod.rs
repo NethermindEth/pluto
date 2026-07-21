@@ -85,6 +85,10 @@ impl BeaconMock {
         let effective_genesis_time = genesis_time.unwrap_or_else(default_genesis_time);
 
         if let Some(slot_duration) = slot_duration {
+            // `SECONDS_PER_SLOT` truncates to whole seconds, but the head ticker
+            // runs at the exact `slot_duration`. Clocks derived from
+            // `SECONDS_PER_SLOT` only stay aligned when callers pass whole
+            // seconds (the simnet path does, via `normalize_simnet_slot_duration`).
             set_object_field(
                 &mut spec,
                 "SECONDS_PER_SLOT",
