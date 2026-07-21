@@ -726,10 +726,9 @@ impl TryFrom<RunArgs> for RunConfig {
 
         let mut relays = Vec::with_capacity(p2p.relays.len());
         for relay in &p2p.relays {
-            // Charon's flag parser turns `--p2p-relays=""` into an empty list
-            // ("no relays"); clap's comma-delimited parser yields a single empty
-            // string instead, so skip empties to preserve that behavior (also
-            // covers stray empties like `--p2p-relays=a,,b`).
+            // Charon treats `--p2p-relays=""` as "no relays"; clap's comma parser
+            // yields a single empty string, so skip empties to match (also handles
+            // stray empties like `a,,b`).
             if relay.is_empty() {
                 continue;
             }
@@ -751,10 +750,8 @@ impl TryFrom<RunArgs> for RunConfig {
             ));
         }
 
-        // The simnet beacon mock does not yet produce blinded proposals, so the
-        // builder API cannot be exercised against it (Charon's beaconmock can;
-        // tracked as a follow-up). Reject the combination rather than silently
-        // serving unblinded blocks under `--builder-api`.
+        // The simnet beacon mock does not yet produce blinded proposals, so
+        // reject `--builder-api` rather than silently serving unblinded blocks.
         if general.builder_api && (general.simnet_beacon_mock || general.simnet_beacon_mock_fuzz) {
             return Err(CliError::Other(
                 "flag 'builder-api' is not yet supported with the simnet beacon mock \
@@ -763,9 +760,8 @@ impl TryFrom<RunArgs> for RunConfig {
             ));
         }
 
-        // The validator mock drives this node's own validator API, which is only
-        // usable when backed by the in-process beacon mock (Charon: "Requires
-        // simnet-beacon-mock").
+        // The validator mock drives this node's own validator API, only usable
+        // when backed by the in-process beacon mock.
         if general.simnet_validator_mock && !general.simnet_beacon_mock {
             return Err(CliError::Other(
                 "flag 'simnet-validator-mock' requires flag 'simnet-beacon-mock'".to_string(),
@@ -1079,10 +1075,9 @@ fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
     })
 }
 
-/// Rejects correctness-affecting flags the run workflow does not support yet:
-/// silently ignoring any of these would change duty or operator-facing
-/// behavior (e.g. `--synthetic-block-proposals` changes which proposal duties
-/// are generated, which the current simnet/real-beacon wiring does not honor).
+/// Rejects correctness-affecting flags the run workflow does not support
+/// yet: silently ignoring them would change duty or operator-facing behavior
+/// (e.g. `--synthetic-block-proposals` changes which proposal duties run).
 fn check_unsupported_flags(config: &RunConfig) -> Result<()> {
     let unsupported =
         |flag: &str| CliError::Other(format!("flag '{flag}' is not yet supported by pluto run"));
@@ -1494,8 +1489,8 @@ mod tests {
     #[test]
     fn run_empty_relays_flag_yields_no_relays() {
         // `--p2p-relays=""` must mean "no relays" (Charon parity): clap yields a
-        // single empty string, which the bridge filters out so P2P ends up with
-        // none (used by the simnet smoke test to run isolated, relay-free nodes).
+        // single empty string, which the bridge filters out (used by the simnet
+        // smoke test for isolated, relay-free nodes).
         let config = parse_run(&["--p2p-relays="]).expect("empty relays should parse");
         assert!(
             config.p2p.relays.is_empty(),

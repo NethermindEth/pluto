@@ -81,10 +81,9 @@ pub struct ParSigExSeam {
 
 /// Per-slot subscriber seam, registered on the scheduler's slot ticks.
 ///
-/// Like the parsigex / seen-pubkeys seams, this is a boxed callback so the core
-/// wiring stays decoupled from what drives it: production leaves it `None` (a
-/// real validator client drives the validator API), while simnet supplies a
-/// callback forwarding each tick to the in-process validator mock.
+/// A boxed callback so core wiring stays decoupled from what drives it:
+/// production leaves it `None` (a real validator client drives the validator
+/// API); simnet forwards each tick to the in-process validator mock.
 pub type SlotTickFn = Arc<dyn Fn(&Slot) -> BoxFuture<'static, Result<(), AppError>> + Send + Sync>;
 
 /// Per-validator data extracted from the cluster lock for this node.
@@ -151,9 +150,8 @@ pub struct WireInputs {
     /// references on the validator API, feeding the monitoring readiness
     /// checker. `None` disables the signal (e.g. tests).
     pub seen_pubkeys: Option<SeenPubkeysFn>,
-    /// Optional per-slot subscriber. When present, it is registered on the
-    /// scheduler so each slot tick drives duties; simnet wires the in-process
-    /// validator mock here. `None` in production and tests.
+    /// Optional per-slot subscriber; simnet wires the in-process validator
+    /// mock here. `None` in production and tests.
     pub slot_tick: Option<SlotTickFn>,
 }
 
@@ -225,10 +223,10 @@ pub async fn wire_core_workflow(
 
     // One pubkey-scoped validator cache shared by the scheduler's beacon
     // client, the submission client, and the validator API, so every consumer
-    // resolves the same cluster validator set. Charon seeds a single cache into
-    // both clients; without seeding, the scheduler would resolve duties against
-    // an empty (or unfiltered) set. `ValidatorCache` clones share state; the
-    // per-epoch trim + refresh subscriber is a planned follow-up.
+    // resolves the same cluster validator set. Without seeding, the scheduler
+    // would resolve duties against an empty (or unfiltered) set. `ValidatorCache`
+    // clones share state; the per-epoch trim + refresh subscriber is a planned
+    // follow-up.
     let validator_cache = ValidatorCache::new(eth2_cl.clone(), eth2_pubkeys);
     tokio::join!(
         beacon_client.set_validator_cache(validator_cache.clone()),
@@ -298,9 +296,8 @@ pub async fn wire_core_workflow(
             let deadline_calc = Arc::clone(&deadline_calc);
             Box::pin(async move {
                 let value = unsigneddata::unsigned_data_set_to_proto(&set)?;
-                // Bound consensus by the duty deadline: an instance that cannot
-                // decide has its ctx cancelled at the deadline (-> ConsensusTimeout)
-                // instead of running until component shutdown.
+                // Bound consensus by the duty deadline so a stuck instance is
+                // cancelled (-> ConsensusTimeout) instead of running until shutdown.
                 run_bounded_by_duty_deadline(
                     &deadline_calc,
                     &ct,
@@ -533,8 +530,7 @@ pub async fn wire_core_workflow(
             "consensus",
         );
     }
-    // Optional per-slot subscriber (simnet validator mock), registered on the
-    // builder before `.build()`.
+    // Optional per-slot subscriber (simnet validator mock).
     if let Some(slot_tick) = slot_tick {
         sched_builder.subscribe_slot(move |slot: &Slot| slot_tick(slot), "simnet.vmock");
     }

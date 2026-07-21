@@ -172,10 +172,9 @@ async fn count_posts(server: &MockServer, submit_path: &str) -> usize {
 }
 
 /// Builds a partial-signature `ParSignedData` for a fixed slot-1 attestation,
-/// signed by threshold `share` at index `share_idx`. The verifier in these
-/// tests is a no-op, so the signed message is arbitrary — only the distinct
-/// share index and the identical unsigned payload (so ParSigDB groups the
-/// partials) matter.
+/// signed by `share` at index `share_idx`. The test verifier is a no-op, so the
+/// signed message is arbitrary — only the distinct share index and identical
+/// unsigned payload (so ParSigDB groups the partials) matter.
 fn attester_partial(share_idx: u64, share: &pluto_crypto::types::PrivateKey) -> ParSignedData {
     let sig = BlstImpl.sign(share, &[42u8; 32]).expect("sign share");
     let attestation = phase0::Attestation {
@@ -951,15 +950,15 @@ fn routed_parsigex_seam(node_idx: usize, receivers: ParSigReceivers) -> ParSigEx
 
 /// (f) Multi-node partial-signature exchange reaches beacon submission.
 ///
-/// Wires N full core-workflow graphs sharing one `BeaconMock`, connected by a
+/// Wires N core-workflow graphs sharing one `BeaconMock`, connected by a
 /// parsigex router (node i's broadcast -> every peer's `store_external`). Each
-/// node contributes one real threshold-BLS partial for the same attester duty
-/// via its own `store_internal`; the router fans each partial out to peers, so
-/// every node crosses the threshold, SigAgg reconstructs the group signature,
-/// and the broadcaster submits it. Asserts the shared mock's submit endpoint is
-/// hit — proving the cross-node exchange -> aggregation -> submission path
-/// through the real wired graph. (The single-node [`wiring_connects_sign_path`]
-/// stores both partials on one node; this exercises the real N-node routing.)
+/// node stores one real threshold-BLS partial for the same attester duty; the
+/// router fans it out so every node crosses the threshold, SigAgg reconstructs
+/// the group signature, and the broadcaster submits it. Asserts the shared
+/// mock's submit endpoint is hit, proving the cross-node exchange ->
+/// aggregation -> submission path through the real wired graph. (The
+/// single-node [`wiring_connects_sign_path`] stores both partials on one node;
+/// this exercises real N-node routing.)
 #[tokio::test]
 async fn multinode_parsig_exchange_reaches_submission() {
     const N: usize = 3;
@@ -996,9 +995,8 @@ async fn multinode_parsig_exchange_reaches_submission() {
         .expect("split");
     let attester_duty = Duty::new_attester_duty(SlotNumber::new(1));
 
-    // Each node stores its own partial internally; its router broadcast fans the
-    // partial out to peers' store_external, so every node accumulates >=
-    // THRESHOLD distinct shares and submits.
+    // Each node stores its own partial internally; the router fans it out to
+    // peers so every node accumulates >= THRESHOLD distinct shares and submits.
     for (i, (share_idx, share)) in shares.into_iter().enumerate() {
         let mut set = ParSignedDataSet::new();
         set.insert(pubkey, attester_partial(share_idx, &share));
@@ -1011,8 +1009,8 @@ async fn multinode_parsig_exchange_reaches_submission() {
         .unwrap_or_else(|e| panic!("(f) node {i} store_internal failed: {e}"));
     }
 
-    // The cross-node aggregated attestation must reach the shared mock's submit
-    // endpoint (panics via the guard if it never arrives).
+    // The aggregated attestation must reach the shared mock's submit endpoint
+    // (the guard panics if it never arrives).
     wait_for_post(mock.server(), "/eth/v2/beacon/pool/attestations").await;
 
     ct.cancel();

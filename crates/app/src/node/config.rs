@@ -58,17 +58,15 @@ pub struct AppConfig {
     /// Execution-layer (eth1) JSON-RPC endpoint, used to verify operator
     /// signatures (including EIP-1271 smart-contract signatures) in the cluster
     /// lock. When `None`, lock verification runs without eth1 and such operator
-    /// signatures are not checked. Mirrors Charon's
-    /// `--execution-client-rpc-endpoint`.
+    /// signatures are not checked.
     pub eth1_endpoint: Option<String>,
 
     /// Graffiti included in proposed blocks. `None` gives every validator the
     /// default (client) graffiti; a single value applies to all validators; one
-    /// value per validator otherwise. Mirrors Charon's `--graffiti`.
+    /// value per validator otherwise.
     pub graffiti: Option<Vec<String>>,
 
-    /// Disable appending the client version/codex to graffiti. Mirrors Charon's
-    /// `--graffiti-disable-client-append`.
+    /// Disable appending the client version/codex to graffiti.
     pub graffiti_disable_client_append: bool,
 
     /// Feature set controlling optional/alpha behaviors (e.g.
@@ -79,26 +77,22 @@ pub struct AppConfig {
     /// Enable the in-process simnet mock beacon node. When set, the beacon
     /// clients target an internal `BeaconMock` seeded with the cluster's
     /// validators instead of `beacon_node_addrs`, and empty beacon endpoints
-    /// are permitted. Mirrors Charon's `--simnet-beacon-mock`.
+    /// are permitted.
     pub simnet_beacon_mock: bool,
 
     /// Enable the in-process simnet mock validator client. It loads share
     /// keystores from [`Self::simnet_validator_keys_dir`] and drives this
     /// node's own validator API. Requires [`Self::simnet_beacon_mock`].
-    /// Mirrors Charon's `--simnet-validator-mock`.
     pub simnet_validator_mock: bool,
 
-    /// Configure the simnet beacon mock to return fuzzed responses. Mirrors
-    /// Charon's `--simnet-beacon-mock-fuzz`.
+    /// Configure the simnet beacon mock to return fuzzed responses.
     pub simnet_beacon_mock_fuzz: bool,
 
-    /// Slot duration for the simnet beacon mock. Mirrors Charon's
-    /// `--simnet-slot-duration` (Charon default: 1s).
+    /// Slot duration for the simnet beacon mock (default: 1s).
     pub simnet_slot_duration: Duration,
 
     /// Directory containing the simnet validator key shares (EIP-2335
     /// keystores plus their password files), loaded when
-    /// [`Self::simnet_validator_mock`] is set. Mirrors Charon's
-    /// `--simnet-validator-keys-dir`.
+    /// [`Self::simnet_validator_mock`] is set.
     pub simnet_validator_keys_dir: PathBuf,
 }

@@ -214,9 +214,8 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         pluto_cluster::load::load_cluster_lock(&config.lock_file, config.no_verify, &eth1).await?;
     let threshold = lock.threshold;
     // TODO(#402 part B): honor `lock.target_gas_limit` once
-    // `validatorapi::Component::new` accepts a target-gas-limit parameter —
-    // Charon threads the lock value into validator registration, but Pluto's
-    // validator-registration path has no such input yet.
+    // `validatorapi::Component::new` accepts a target-gas-limit parameter (the
+    // registration path has no such input yet).
     let _ = lock.target_gas_limit;
 
     let key = pluto_k1util::load(&config.priv_key_file)?;
@@ -266,23 +265,15 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
 
     // ---- (2/3) eth2 clients ----
     //
-    // Simnet: when `--simnet-beacon-mock` is set, the beacon clients target an
-    // in-process `BeaconMock` seeded with the cluster's validators instead of a
-    // real endpoint. The mock owns its HTTP server + slot ticker; it is held in
-    // `simnet_beacon_mock` for the node's lifetime (RAII: dropping it tears the
-    // mock down).
+    // Simnet: the beacon clients target an in-process `BeaconMock` (seeded with
+    // the cluster's validators) instead of a real endpoint. The mock is held
+    // for the node's lifetime; dropping it tears down its HTTP server and ticker.
     //
-    // TODO(#402 part B): support multiple `beacon_node_addrs` with per-request
-    // fallback — `EthBeaconNodeApiClient` is single-endpoint, so a failover
-    // (multi-endpoint) client in pluto-eth2api is required first; for now the
-    // first address is used.
-    //
-    // Normalize a zero simnet slot duration to 1s (Charon parity) for both the
-    // beacon mock and the validator mock below.
+    // TODO(#402 part B): multi-endpoint fallback over `beacon_node_addrs`;
+    // `EthBeaconNodeApiClient` is single-endpoint, so only the first is used.
     let simnet_slot_duration = normalize_simnet_slot_duration(config.simnet_slot_duration);
-    // Fuzz mode takes precedence and enables the beacon mock on its own. CLI
-    // validation still requires an endpoint or `--simnet-beacon-mock`, matching
-    // Charon — `--simnet-beacon-mock-fuzz` on its own is not a valid invocation.
+    // Fuzz mode enables the beacon mock on its own (CLI validation still
+    // requires an endpoint or `--simnet-beacon-mock`, so fuzz alone is invalid).
     let simnet_beacon_mock = if config.simnet_beacon_mock || config.simnet_beacon_mock_fuzz {
         Some(
             build_simnet_beacon_mock(
@@ -339,11 +330,9 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     .await
     .map_err(AppError::Graffiti)?;
 
-    // The mock echoes the slot timing it was built with (fuzz mode uses its own
-    // 12s default rather than the CLI value), so the validator mock must use this
-    // fetched duration — not the configured one — to keep its slot ticker aligned
-    // with the mock (Charon's vmock likewise fetches timing from its beacon
-    // client). `slots_per_epoch` also feeds the Electra activation slot below.
+    // Use the mock's echoed slot timing, not the configured value: fuzz mode
+    // overrides it with a 12s default, and the validator mock's ticker must
+    // match the mock. `slots_per_epoch` also feeds the Electra activation slot.
     let (fetched_slot_duration, slots_per_epoch) = eth2_cl.fetch_slots_config().await?;
     let fork_config = eth2_cl.fetch_fork_config().await?;
     let electra_slot = fork_config
@@ -369,8 +358,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         Arc::clone(&deadline_calc),
     );
 
-    // TODO:
-    // The `Arc<OnceLock<Handle>>` pattern is a bit awkward; explore alternatives
+    // TODO: the `Arc<OnceLock<Handle>>` pattern is awkward; explore alternatives.
     let handle_slot = Arc::new(OnceLock::<qbft::p2p::Handle>::new());
     let broadcaster: qbft::Broadcaster = {
         let handle_slot = Arc::clone(&handle_slot);
@@ -455,10 +443,9 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     };
 
     // Simnet validator mock: drives this node's own validator API with the
-    // share keys. Built here — while `eth2_cl`/`validators` are still in scope —
-    // so `wire_core_workflow` can register its `slot_ticked` on the scheduler
-    // builder; the handle is also held past `run_lifecycle` for an explicit
-    // shutdown.
+    // share keys. Built here (while `eth2_cl`/`validators` are in scope) so
+    // `wire_core_workflow` can register its `slot_ticked`; held past
+    // `run_lifecycle` for an explicit shutdown.
     let vmock = if config.simnet_validator_mock {
         Some(
             build_simnet_validator_mock(
@@ -604,9 +591,8 @@ async fn run_lifecycle(
 
     let mut tasks: JoinSet<Result<(), AppError>> = JoinSet::new();
 
-    // Supervise the self-spawning scheduler actor alongside the other
-    // long-lived tasks so its exit triggers node shutdown. The actor returns
-    // `()` and only exits on cancellation.
+    // Supervise the scheduler actor alongside the other long-lived tasks so
+    // its exit triggers node shutdown (it only exits on cancellation).
     tasks.extend([async move {
         let _ = scheduler_task.await;
         Ok::<(), AppError>(())
@@ -635,8 +621,7 @@ async fn run_lifecycle(
     // spawn and close are guarded by the same `Option`.
     if let Some(svc) = &priv_key_lock {
         let svc = Arc::clone(svc);
-        // Propagate a lock-maintenance failure so it fails the run, matching
-        // Charon where a lock-maintenance failure triggers shutdown. A graceful
+        // A lock-maintenance failure fails the run (Charon parity); a graceful
         // `close()` returns `Ok`.
         tasks.spawn(async move { svc.run().await.map_err(AppError::PrivKeyLock) });
     }
@@ -715,8 +700,7 @@ async fn run_lifecycle(
     ));
 
     // Supervise: stop on cancellation or first task completion. A failed task
-    // fails the whole run, matching Charon where any start-hook error triggers
-    // shutdown.
+    // fails the whole run (Charon parity).
     let mut task_err: Option<AppError> = None;
     tokio::select! {
         () = ct.cancelled() => {
@@ -758,8 +742,7 @@ async fn run_lifecycle(
     // Stop dutydb (cancels its child token).
     dutydb.shutdown();
 
-    // Fail the run with the first task error, matching Charon which returns the
-    // first start-hook error.
+    // Fail the run with the first task error (Charon parity).
     task_err.map_or(Ok(()), Err)
 }
 
@@ -952,9 +935,8 @@ fn simnet_slot_tick(vmock: Arc<ValidatorMock>, ct: CancellationToken) -> SlotTic
 ///
 /// The beacon mock advertises `SECONDS_PER_SLOT` as an integer and every simnet
 /// clock derives from it (the mock's head ticker, the scheduler, and the
-/// validator mock), so a fractional or sub-second duration would desync the
-/// mock's head from its consumers. Truncating once here keeps them aligned
-/// (matching Charon).
+/// validator mock), so a fractional duration would desync the mock's head from
+/// its consumers. Truncating once here keeps them aligned.
 fn normalize_simnet_slot_duration(configured: Duration) -> Duration {
     let secs = configured.as_secs().max(1);
     let normalized = Duration::from_secs(secs);
@@ -1014,8 +996,7 @@ async fn build_simnet_beacon_mock(
 /// Builds the simnet validator mock: loads this node's BLS share secrets from
 /// `keys_dir`, targets this node's own validator API over HTTP, and aligns to
 /// the beacon mock's genesis so its scheduled duties line up with the node's
-/// scheduler. Charon validates every share pubkey has a matching key before
-/// starting.
+/// scheduler.
 async fn build_simnet_validator_mock(
     keys_dir: &std::path::Path,
     validator_api_addr: std::net::SocketAddr,
@@ -1103,9 +1084,7 @@ mod tests {
             normalize_simnet_slot_duration(Duration::from_millis(500)),
             Duration::from_secs(1)
         );
-        // Fractional durations truncate to whole seconds so the mock's head
-        // ticker and the integer `SECONDS_PER_SLOT` its consumers read stay
-        // aligned.
+        // Fractional durations truncate to whole seconds.
         assert_eq!(
             normalize_simnet_slot_duration(Duration::from_millis(1500)),
             Duration::from_secs(1)
@@ -1141,8 +1120,7 @@ mod tests {
         let ct = CancellationToken::new();
         ct.cancel();
 
-        // Graceful shutdown is a clean exit, mirroring Charon which swallows the
-        // server-closed error.
+        // Graceful shutdown is a clean exit (Charon parity).
         serve_validator_api(
             "127.0.0.1:0".parse().expect("addr"),
             axum::Router::new(),
