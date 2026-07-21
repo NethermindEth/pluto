@@ -213,10 +213,6 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     let lock =
         pluto_cluster::load::load_cluster_lock(&config.lock_file, config.no_verify, &eth1).await?;
     let threshold = lock.threshold;
-    // TODO(#402 part B): honor `lock.target_gas_limit` once
-    // `validatorapi::Component::new` accepts a target-gas-limit parameter (the
-    // registration path has no such input yet).
-    let _ = lock.target_gas_limit;
 
     let key = pluto_k1util::load(&config.priv_key_file)?;
 
