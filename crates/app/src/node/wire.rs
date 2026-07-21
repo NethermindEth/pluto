@@ -40,7 +40,7 @@ use pluto_core::{
 use pluto_eth2api::{
     BeaconNodeClient, EthBeaconNodeApiClient,
     spec::{bellatrix::ExecutionAddress, phase0::BLSPubKey},
-    valcache::ValidatorCache,
+    valcache::{ValidatorCache, ValidatorCacheError},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -177,6 +177,80 @@ pub struct WiredComponents {
     pub validator_api_router: axum::Router,
 }
 
+/// Per-epoch trim + refresh for the shared [`ValidatorCache`], the Rust analog
+/// of Charon's inline validator-cache refresh subscriber in `wireCoreWorkflow`.
+///
+/// Registered as a scheduler slot subscriber by [`wire_core_workflow`]. The
+/// seeded cache is otherwise frozen at startup; this refresher re-fetches the
+/// cluster validator set on each epoch's first slot so validators activating
+/// after startup get duties scheduled and exited validators stop being
+/// resolved.
+struct ValidatorCacheRefresher {
+    cache: ValidatorCache,
+    bookkeeping: tokio::sync::Mutex<RefreshBookkeeping>,
+}
+
+/// Mirrors the `firstValCacheRefresh` / `refreshedBySlot` locals in Charon's
+/// `wireCoreWorkflow`, which the refresh closure reads and writes under a lock.
+struct RefreshBookkeeping {
+    /// Whether the cache has never been refreshed. Forces the first tick to
+    /// refresh regardless of the slot's position in the epoch.
+    first_val_cache_refresh: bool,
+    /// Whether the previous refresh fetched by slot (`true`) or fell back to
+    /// the head state (`false`). A head fallback forces the next tick to
+    /// refresh and to re-fetch the epoch's first slot.
+    refresh_by_slot: bool,
+}
+
+impl ValidatorCacheRefresher {
+    fn new(cache: ValidatorCache) -> Self {
+        Self {
+            cache,
+            // Charon initializes both flags to `true`.
+            bookkeeping: tokio::sync::Mutex::new(RefreshBookkeeping {
+                first_val_cache_refresh: true,
+                refresh_by_slot: true,
+            }),
+        }
+    }
+
+    /// Trims and refreshes the cache for `slot` when required, mirroring
+    /// Charon's `shouldUpdateCache` gate and the `GetBySlot` head-fallback
+    /// re-fetch.
+    async fn refresh(&self, slot: &Slot) -> Result<(), ValidatorCacheError> {
+        let mut bk = self.bookkeeping.lock().await;
+
+        // shouldUpdateCache: skip mid-epoch slots once the cache has been
+        // refreshed at least once by slot.
+        if !slot.first_in_epoch() && !bk.first_val_cache_refresh && bk.refresh_by_slot {
+            return Ok(());
+        }
+
+        tracing::info!(
+            slot = %slot.slot,
+            first_refresh = bk.first_val_cache_refresh,
+            "Refreshing validator cache"
+        );
+
+        // If the previous refresh fell back to head, fetch the epoch's first
+        // slot rather than the current slot. `epoch * slots_per_epoch <= slot`,
+        // so the multiply never actually saturates.
+        let slot_to_fetch = if bk.refresh_by_slot {
+            slot.slot.inner()
+        } else {
+            slot.epoch().saturating_mul(slot.slots_per_epoch)
+        };
+
+        self.cache.trim().await;
+        let (_, _, refresh_by_slot) = self.cache.get_by_slot(slot_to_fetch).await?;
+
+        bk.refresh_by_slot = refresh_by_slot;
+        bk.first_val_cache_refresh = false;
+
+        Ok(())
+    }
+}
+
 /// Constructs and wires the ten core duty-workflow components.
 ///
 /// Reproduces the core duty-workflow data-flow graph. The 13 stitches and 3
@@ -225,8 +299,8 @@ pub async fn wire_core_workflow(
     // client, the submission client, and the validator API, so every consumer
     // resolves the same cluster validator set. Without seeding, the scheduler
     // would resolve duties against an empty (or unfiltered) set. `ValidatorCache`
-    // clones share state; the per-epoch trim + refresh subscriber is a planned
-    // follow-up.
+    // clones share state, so the per-epoch trim + refresh subscriber registered
+    // below refreshes every consumer at once.
     let validator_cache = ValidatorCache::new(eth2_cl.clone(), eth2_pubkeys);
     tokio::join!(
         beacon_client.set_validator_cache(validator_cache.clone()),
@@ -534,6 +608,20 @@ pub async fn wire_core_workflow(
     if let Some(slot_tick) = slot_tick {
         sched_builder.subscribe_slot(move |slot: &Slot| slot_tick(slot), "simnet.vmock");
     }
+    // Slot subscriber: per-epoch validator cache trim + refresh (Charon's
+    // `wireCoreWorkflow`).
+    {
+        let refresher = Arc::new(ValidatorCacheRefresher::new(validator_cache.clone()));
+        sched_builder.subscribe_slot(
+            move |slot: &Slot| {
+                let refresher = Arc::clone(&refresher);
+                let slot = slot.clone();
+                async move { refresher.refresh(&slot).await }
+            },
+            "validator_cache",
+        );
+    }
+
     let (scheduler, scheduler_task) = sched_builder
         .build(beacon_client, ct.clone())
         .await
@@ -803,5 +891,289 @@ mod deadline_bound_tests {
             !ran.load(Ordering::SeqCst),
             "consensus must not run when the deadline calculation fails"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pluto_core::types::SlotNumber;
+    use pluto_eth2api::{
+        BlindedBlock400Response, GetStateValidatorsResponseResponse,
+        GetStateValidatorsResponseResponseDatum, ValidatorResponseValidator, ValidatorStatus,
+    };
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
+
+    const FAR_FUTURE_EPOCH: &str = "18446744073709551615";
+
+    fn test_pubkey(seed: u8) -> BLSPubKey {
+        let mut bytes = [0u8; 48];
+        bytes[0] = seed;
+        bytes
+    }
+
+    fn format_pubkey(pubkey: &BLSPubKey) -> String {
+        format!("0x{}", hex::encode(pubkey))
+    }
+
+    fn test_datum(
+        index: u64,
+        pubkey: &BLSPubKey,
+        status: ValidatorStatus,
+    ) -> GetStateValidatorsResponseResponseDatum {
+        GetStateValidatorsResponseResponseDatum {
+            index: index.to_string(),
+            balance: "32000000000".to_string(),
+            status,
+            validator: ValidatorResponseValidator {
+                pubkey: format_pubkey(pubkey),
+                withdrawal_credentials:
+                    "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+                effective_balance: "32000000000".to_string(),
+                slashed: false,
+                activation_eligibility_epoch: "0".to_string(),
+                activation_epoch: "0".to_string(),
+                exit_epoch: FAR_FUTURE_EPOCH.to_string(),
+                withdrawable_epoch: FAR_FUTURE_EPOCH.to_string(),
+            },
+        }
+    }
+
+    /// An unmounted `POST /states/{state_id}/validators` mock returning `data`.
+    fn post_validators_ok(
+        state_id: impl AsRef<str>,
+        data: Vec<GetStateValidatorsResponseResponseDatum>,
+    ) -> Mock {
+        Mock::given(method("POST"))
+            .and(path(format!(
+                "/eth/v1/beacon/states/{}/validators",
+                state_id.as_ref()
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                GetStateValidatorsResponseResponse {
+                    execution_optimistic: false,
+                    finalized: true,
+                    data,
+                },
+            ))
+    }
+
+    /// An unmounted `POST /states/{state_id}/validators` mock returning 404, so
+    /// `get_by_slot` falls back to the head state.
+    fn post_validators_not_found(state_id: impl AsRef<str>) -> Mock {
+        Mock::given(method("POST"))
+            .and(path(format!(
+                "/eth/v1/beacon/states/{}/validators",
+                state_id.as_ref()
+            )))
+            .respond_with(
+                ResponseTemplate::new(404).set_body_json(BlindedBlock400Response {
+                    code: 404.0,
+                    message: "State not found".to_string(),
+                    stacktraces: None,
+                }),
+            )
+    }
+
+    fn test_cache(server: &MockServer, pubkeys: Vec<BLSPubKey>) -> ValidatorCache {
+        let client =
+            EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid mock server URL");
+        ValidatorCache::new(client, pubkeys)
+    }
+
+    /// A [`Slot`]. Only `slot`/`slots_per_epoch` matter to the refresher;
+    /// `time` and `slot_duration` are placeholders.
+    fn test_slot(slot: u64, slots_per_epoch: u64) -> Slot {
+        Slot {
+            slot: SlotNumber::new(slot),
+            time: chrono::Utc::now(),
+            slot_duration: chrono::Duration::seconds(12),
+            slots_per_epoch,
+        }
+    }
+
+    const SPE: u64 = 32;
+
+    /// A validator that is inactive at startup and activates later is picked up
+    /// on the next epoch's first slot.
+    #[tokio::test]
+    async fn refresh_observes_validator_activated_after_startup() {
+        let pk = test_pubkey(5);
+        let mock = MockServer::start().await;
+        // Startup epoch: still pending (not active).
+        post_validators_ok(
+            "0",
+            vec![test_datum(5, &pk, ValidatorStatus::PendingQueued)],
+        )
+        .mount(&mock)
+        .await;
+        // Next epoch: activated.
+        post_validators_ok(
+            "32",
+            vec![test_datum(5, &pk, ValidatorStatus::ActiveOngoing)],
+        )
+        .mount(&mock)
+        .await;
+
+        let cache = test_cache(&mock, vec![pk]);
+        let refresher = ValidatorCacheRefresher::new(cache.clone());
+
+        // First tick (epoch 0, first slot): fetches slot 0 — validator inactive.
+        refresher
+            .refresh(&test_slot(0, SPE))
+            .await
+            .expect("refresh slot 0");
+        let (active, _) = cache.get_by_head().await.expect("read cache");
+        assert!(
+            active.is_empty(),
+            "validator should be inactive at startup, got {active:?}"
+        );
+
+        // Next epoch's first slot: fetches slot 32 — validator now active.
+        refresher
+            .refresh(&test_slot(SPE, SPE))
+            .await
+            .expect("refresh slot 32");
+        let (active, _) = cache.get_by_head().await.expect("read cache");
+        assert_eq!(
+            active.len(),
+            1,
+            "activated validator should now be resolved"
+        );
+        assert!(active.contains_key(&5));
+    }
+
+    /// A validator that exits stops being resolved after the next epoch tick.
+    #[tokio::test]
+    async fn refresh_stops_resolving_exited_validator() {
+        let pk = test_pubkey(5);
+        let mock = MockServer::start().await;
+        post_validators_ok(
+            "0",
+            vec![test_datum(5, &pk, ValidatorStatus::ActiveOngoing)],
+        )
+        .mount(&mock)
+        .await;
+        post_validators_ok(
+            "32",
+            vec![test_datum(5, &pk, ValidatorStatus::ExitedUnslashed)],
+        )
+        .mount(&mock)
+        .await;
+
+        let cache = test_cache(&mock, vec![pk]);
+        let refresher = ValidatorCacheRefresher::new(cache.clone());
+
+        refresher
+            .refresh(&test_slot(0, SPE))
+            .await
+            .expect("refresh slot 0");
+        let (active, _) = cache.get_by_head().await.expect("read cache");
+        assert_eq!(active.len(), 1, "validator active at startup");
+
+        refresher
+            .refresh(&test_slot(SPE, SPE))
+            .await
+            .expect("refresh slot 32");
+        let (active, _) = cache.get_by_head().await.expect("read cache");
+        assert!(
+            active.is_empty(),
+            "exited validator should no longer be resolved, got {active:?}"
+        );
+    }
+
+    /// Once refreshed by slot, mid-epoch ticks are skipped
+    /// (`shouldUpdateCache`): slot 0 is fetched exactly once and no
+    /// mid-epoch re-fetch is issued.
+    #[tokio::test]
+    async fn refresh_skips_mid_epoch_slot_once_refreshed_by_slot() {
+        let pk = test_pubkey(5);
+        let mock = MockServer::start().await;
+        // Only slot 0 is served, and it must be hit exactly once. Slot 1 is left
+        // unmounted: any mid-epoch fetch would 404 → head fallback → error.
+        post_validators_ok(
+            "0",
+            vec![test_datum(5, &pk, ValidatorStatus::ActiveOngoing)],
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+        let cache = test_cache(&mock, vec![pk]);
+        let refresher = ValidatorCacheRefresher::new(cache.clone());
+
+        refresher
+            .refresh(&test_slot(0, SPE))
+            .await
+            .expect("refresh slot 0");
+
+        // Mid-epoch tick: skipped, so it returns Ok without any fetch and the
+        // cache is untouched.
+        refresher
+            .refresh(&test_slot(1, SPE))
+            .await
+            .expect("mid-epoch refresh is a skipped no-op");
+
+        let (active, _) = cache.get_by_head().await.expect("read cache");
+        assert_eq!(active.len(), 1, "cache retained the slot-0 set");
+    }
+
+    /// After a head fallback (`refresh_by_slot == false`), the next tick is
+    /// forced to refresh even mid-epoch, and it re-fetches the epoch's first
+    /// slot rather than the current slot.
+    #[tokio::test]
+    async fn refresh_refetches_epoch_first_slot_after_head_fallback() {
+        let pk = test_pubkey(1);
+        let mock = MockServer::start().await;
+        // First tick is at mid-epoch slot 5, fetched by slot; it 404s and falls
+        // back to head, which reports the validator as still pending.
+        post_validators_not_found("5").mount(&mock).await;
+        post_validators_ok(
+            "head",
+            vec![test_datum(1, &pk, ValidatorStatus::PendingQueued)],
+        )
+        .mount(&mock)
+        .await;
+        // The epoch's first slot (0) reports the validator active. Slot 6 (the
+        // current slot on the second tick) is deliberately left unmounted: were
+        // it fetched, it would 404 → head → empty active set, failing the assert.
+        post_validators_ok(
+            "0",
+            vec![test_datum(1, &pk, ValidatorStatus::ActiveOngoing)],
+        )
+        .mount(&mock)
+        .await;
+
+        let cache = test_cache(&mock, vec![pk]);
+        let refresher = ValidatorCacheRefresher::new(cache.clone());
+
+        // First tick at slot 5: get_by_slot(5) 404s → head fallback (pending).
+        refresher
+            .refresh(&test_slot(5, SPE))
+            .await
+            .expect("refresh slot 5 via head fallback");
+        let (active, _) = cache.get_by_head().await.expect("read cache");
+        assert!(
+            active.is_empty(),
+            "head fallback reported pending validator"
+        );
+
+        // Second tick at mid-epoch slot 6: forced to refresh because the prior
+        // refresh fell back to head, and it fetches epoch-first slot 0 (active),
+        // not slot 6.
+        refresher
+            .refresh(&test_slot(6, SPE))
+            .await
+            .expect("refresh slot 6 refetches epoch-first slot");
+        let (active, _) = cache.get_by_head().await.expect("read cache");
+        assert_eq!(
+            active.len(),
+            1,
+            "refetched the epoch's first slot (0), where the validator is active"
+        );
+        assert!(active.contains_key(&1));
     }
 }
