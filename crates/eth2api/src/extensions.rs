@@ -404,9 +404,10 @@ impl EthBeaconNodeApiClient {
     }
 
     /// Fetches the `current_version` of every entry in the beacon node's fork
-    /// schedule (`/eth/v1/config/fork_schedule`), decoded and ordered
-    /// oldest-to-newest. The first entry is the genesis fork version, which
-    /// identifies the beacon node's network.
+    /// schedule (`/eth/v1/config/fork_schedule`), decoded and returned in the
+    /// order provided by the endpoint (oldest-to-newest per spec). The first
+    /// entry is the genesis fork version, which identifies the beacon node's
+    /// network.
     pub async fn fetch_fork_schedule_versions(
         &self,
     ) -> Result<Vec<phase0::Version>, EthBeaconNodeApiClientError> {
