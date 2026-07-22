@@ -56,7 +56,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use wiremock::{
     Mock, MockServer, Request, ResponseTemplate,
-    matchers::{method, path},
+    matchers::{method, path, path_regex},
 };
 
 const PK_LEN: usize = 48;
@@ -133,16 +133,16 @@ fn validator_datum(index: u64, pubkey: PubKey) -> GetStateValidatorsResponseResp
     }
 }
 
-/// Mounts POST `/eth/v1/beacon/states/head/validators` (the endpoint
-/// `ValidatorCache::get_by_head` queries) returning ONLY the datums whose
-/// pubkey appears in the request-body `ids` — so an unseeded (empty-pubkey)
-/// cache resolves zero validators.
+/// Mounts POST `/eth/v1/beacon/states/{state_id}/validators` returning ONLY the
+/// datums whose pubkey appears in the request-body `ids` — so an unseeded
+/// (empty-pubkey) cache resolves zero validators. Cover both `head` and slot
+/// state IDs because the scheduler refreshes the cache by slot immediately.
 async fn mount_filtered_post_validators(
     server: &MockServer,
     datums: Vec<GetStateValidatorsResponseResponseDatum>,
 ) {
     Mock::given(method("POST"))
-        .and(path("/eth/v1/beacon/states/head/validators"))
+        .and(path_regex(r"^/eth/v1/beacon/states/[^/]+/validators$"))
         .respond_with(move |request: &Request| {
             let body = String::from_utf8_lossy(&request.body);
             let data: Vec<_> = datums
