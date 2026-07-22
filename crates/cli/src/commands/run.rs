@@ -317,7 +317,7 @@ pub struct RunGeneralArgs {
         default_value_t = 0,
         help = "Genesis timestamp of the custom test network."
     )]
-    pub testnet_genesis_timestamp: i64,
+    pub testnet_genesis_timestamp: u64,
 
     #[arg(
         long = "testnet-capella-hard-fork",
@@ -573,7 +573,7 @@ pub struct TestnetConfig {
     /// Chain ID.
     pub chain_id: u64,
     /// Genesis timestamp (unix seconds).
-    pub genesis_timestamp: i64,
+    pub genesis_timestamp: u64,
     /// Capella hard fork version. Excluded from `is_non_zero`.
     pub capella_hard_fork: String,
 }
@@ -598,7 +598,7 @@ impl From<&TestnetConfig> for pluto_eth2util::network::Network {
             chain_id: testnet.chain_id,
             name: testnet.name.clone().leak(),
             genesis_fork_version_hex: testnet.genesis_fork_version_hex.clone().leak(),
-            genesis_timestamp: u64::try_from(testnet.genesis_timestamp).unwrap_or(0),
+            genesis_timestamp: testnet.genesis_timestamp,
             capella_hard_fork: testnet.capella_hard_fork.clone().leak(),
         }
     }
