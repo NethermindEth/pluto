@@ -605,7 +605,7 @@ impl From<&TestnetConfig> for pluto_eth2util::network::Network {
 
 /// Feature set configuration.
 #[derive(Debug, Clone, Default)]
-pub struct FeatureConfig {
+pub struct FeatureSetConfig {
     /// Minimum feature status to enable by default (alpha/beta/stable).
     pub min_status: String,
     /// Features to enable on top of the minimum set.
@@ -625,7 +625,7 @@ pub struct RunConfig {
     /// Tracing configuration built from [`RunLogArgs`]/[`RunLokiArgs`].
     pub log: pluto_tracing::TracingConfig,
     /// Feature set configuration.
-    pub feature: FeatureConfig,
+    pub feature_set: FeatureSetConfig,
     /// Path to the cluster lock file.
     pub lock_file: String,
     /// Path to the cluster manifest file.
@@ -814,7 +814,7 @@ impl TryFrom<RunArgs> for RunConfig {
         Ok(Self {
             p2p: p2p_config,
             log: log_config,
-            feature: FeatureConfig {
+            feature_set: FeatureSetConfig {
                 min_status: feature.feature_set,
                 enabled: feature.feature_set_enable,
                 disabled: feature.feature_set_disable,
@@ -998,7 +998,7 @@ fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
     check_unsupported_flags(&config)?;
     warn_ignored_flags(&config);
 
-    let feature_config = parse_featureset_config(&config.feature)?;
+    let feature_config = parse_featureset_config(&config.feature_set)?;
     let validator_api_addr =
         parse_socket_addr("validator-api-address", &config.validator_api_addr)?;
     let monitoring_addr = parse_socket_addr("monitoring-address", &config.monitoring_addr)?;
@@ -1016,7 +1016,7 @@ fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
     let RunConfig {
         p2p,
         log: _,
-        feature: _,
+        feature_set: _,
         lock_file,
         manifest_file: _,
         no_verify,
@@ -1076,7 +1076,7 @@ fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
         // validator" (`NewGraffitiBuilder`), matching `AppConfig`'s `None`.
         graffiti: (!graffiti.is_empty()).then_some(graffiti),
         graffiti_disable_client_append,
-        feature: feature_config,
+        feature_set: feature_config,
         simnet_beacon_mock,
         simnet_validator_mock,
         simnet_beacon_mock_fuzz,
@@ -1152,7 +1152,7 @@ fn warn_ignored_flags(config: &RunConfig) {
 }
 
 /// Parses the feature-set flags into a [`pluto_featureset::Config`].
-fn parse_featureset_config(feature: &FeatureConfig) -> Result<pluto_featureset::Config> {
+fn parse_featureset_config(feature: &FeatureSetConfig) -> Result<pluto_featureset::Config> {
     let min_status = Status::try_from(feature.min_status.as_str()).map_err(|_| {
         FeaturesetError::UnknownMinStatus {
             min_status: feature.min_status.clone(),
@@ -1723,9 +1723,9 @@ mod tests {
         assert_eq!(config.debug_addr, "127.0.0.1:9630");
         assert_eq!(config.p2p.relays.len(), 2);
         assert_eq!(config.p2p.tcp_addrs, vec!["0.0.0.0:9000".to_string()]);
-        assert_eq!(config.feature.min_status, "alpha");
+        assert_eq!(config.feature_set.min_status, "alpha");
         assert_eq!(
-            config.feature.enabled,
+            config.feature_set.enabled,
             vec!["feat_a".to_string(), "feat_b".to_string()]
         );
         // p2p_fuzz is never set on the safe `run` path.
@@ -1751,7 +1751,7 @@ mod tests {
     /// Resolves the forwarded feature config into a `FeatureSet`, as `App::run`
     /// does (the gnosis/chiado fork-version step is covered in the app crate).
     fn resolved_feature_set(config: &pluto_app::node::AppConfig) -> pluto_featureset::FeatureSet {
-        pluto_featureset::FeatureSet::from_config(config.feature.clone())
+        pluto_featureset::FeatureSet::from_config(config.feature_set.clone())
             .expect("feature config should resolve")
     }
 

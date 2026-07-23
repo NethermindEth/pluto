@@ -239,7 +239,10 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
 
     // Resolve the injectable feature set now that the lock's fork version is
     // known.
-    let feature_set = Arc::new(resolve_feature_set(&config.feature, &lock.fork_version)?);
+    let feature_set = Arc::new(resolve_feature_set(
+        &config.feature_set,
+        &lock.fork_version,
+    )?);
 
     let key = pluto_k1util::load(&config.priv_key_file)?;
 

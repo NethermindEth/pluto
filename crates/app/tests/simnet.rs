@@ -76,7 +76,7 @@ async fn simnet_single_node_boots_and_serves_validator_api() {
         eth1_endpoint: None,
         graffiti: None,
         graffiti_disable_client_append: false,
-        feature: pluto_featureset::Config::default(),
+        feature_set: pluto_featureset::Config::default(),
         simnet_beacon_mock: true,
         simnet_validator_mock: true,
         simnet_beacon_mock_fuzz: false,

@@ -68,10 +68,10 @@ pub struct AppConfig {
     /// Disable appending the client version/codex to graffiti.
     pub graffiti_disable_client_append: bool,
 
-    /// Feature set configuration controlling optional/alpha (e.g.
-    /// `FetchOnlyCommIdx0`, `ChainSplitHalt`) and chain specific behaviors
-    /// (ex. `GnosisBlockHotfix`) that gets resolved into a `FeatureSet`.
-    pub feature: pluto_featureset::Config,
+    /// Feature-set configuration for optional/alpha capabilities (e.g.
+    /// `FetchOnlyCommIdx0`, `ChainSplitHalt`) and chain-specific behavior
+    /// (e.g. `GnosisBlockHotfix`), resolved into a `FeatureSet`.
+    pub feature_set: pluto_featureset::Config,
 
     /// Enable the in-process simnet mock beacon node. When set, the beacon
     /// clients target an internal `BeaconMock` seeded with the cluster's
