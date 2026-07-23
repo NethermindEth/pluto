@@ -934,7 +934,7 @@ async fn verify_fork_schedule(
 ) -> Result<(), AppError> {
     let versions = eth2_cl.fetch_fork_schedule_versions().await?;
 
-    if versions.iter().any(|v| v[..] == *lock_fork_version) {
+    if versions.iter().any(|v| v.as_slice() == lock_fork_version) {
         return Ok(());
     }
 
@@ -952,10 +952,8 @@ async fn verify_fork_schedule(
 /// Resolves a fork version to its network name, falling back to `0x`-prefixed
 /// hex when it matches no known network.
 fn network_name_or_hex(fork_version: &[u8]) -> String {
-    pluto_eth2util::network::fork_version_to_network(fork_version).unwrap_or_else(|_| {
-        let bytes: &[u8] = fork_version;
-        format!("0x{}", hex::encode(bytes))
-    })
+    pluto_eth2util::network::fork_version_to_network(fork_version)
+        .unwrap_or_else(|_| format!("0x{}", hex::encode(fork_version)))
 }
 
 /// Builds an [`EthBeaconNodeApiClient`](pluto_eth2api::EthBeaconNodeApiClient)
