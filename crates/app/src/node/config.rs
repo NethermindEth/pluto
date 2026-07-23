@@ -74,6 +74,11 @@ pub struct AppConfig {
     /// feature flags (out of scope here).
     pub feature_set: Arc<FeatureSet>,
 
+    /// Fully-specified custom test network (from `--testnet-*`), registered
+    /// into the supported-networks allowlist before the node resolves the
+    /// cluster's network. `None` when running against a built-in network.
+    pub testnet: Option<pluto_eth2util::network::Network>,
+
     /// Enable the in-process simnet mock beacon node. When set, the beacon
     /// clients target an internal `BeaconMock` seeded with the cluster's
     /// validators instead of `beacon_node_addrs`, and empty beacon endpoints

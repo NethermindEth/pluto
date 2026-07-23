@@ -77,6 +77,7 @@ async fn simnet_single_node_boots_and_serves_validator_api() {
         graffiti: None,
         graffiti_disable_client_append: false,
         feature_set: Arc::new(pluto_featureset::FeatureSet::default()),
+        testnet: None,
         simnet_beacon_mock: true,
         simnet_validator_mock: true,
         simnet_beacon_mock_fuzz: false,

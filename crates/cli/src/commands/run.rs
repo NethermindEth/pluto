@@ -582,10 +582,9 @@ pub struct TestnetConfig {
     pub chain_id: u64,
     /// Genesis timestamp (unix seconds).
     pub genesis_timestamp: i64,
-    /// Capella hard fork version.
-    // Accepted for Charon flag parity, inert until custom testnets are
-    // supported (Go's `Network.IsNonZero` excludes it too).
-    #[allow(dead_code)]
+    /// Capella hard fork version. Excluded from
+    /// [`is_non_zero`](Self::is_non_zero) (Go's `Network.IsNonZero`
+    /// excludes it too).
     pub capella_hard_fork: String,
 }
 
@@ -1031,7 +1030,7 @@ fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
         synthetic_block_proposals: _,
         builder_api,
         simnet_beacon_mock_fuzz,
-        testnet: _,
+        testnet,
         proc_directory: _,
         consensus_protocol: _,
         nickname,
@@ -1044,6 +1043,23 @@ fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
         vc_tls_key_file: _,
         p2p_fuzz: _,
     } = config;
+
+    // A fully-specified custom testnet becomes a `Network` the node registers
+    // before resolving the cluster's fork version; partially-specified flags
+    // are ignored (Charon parity, `IsNonZero`-gated). `Box::leak` promotes the
+    // runtime strings to `'static` as required by `Network`; the leak is
+    // bounded (one custom testnet per process) and matches `create cluster`.
+    let testnet = testnet
+        .is_non_zero()
+        .then(|| pluto_eth2util::network::Network {
+            chain_id: testnet.chain_id,
+            name: Box::leak(testnet.name.clone().into_boxed_str()),
+            genesis_fork_version_hex: Box::leak(
+                testnet.genesis_fork_version_hex.clone().into_boxed_str(),
+            ),
+            genesis_timestamp: u64::try_from(testnet.genesis_timestamp).unwrap_or(0),
+            capella_hard_fork: Box::leak(testnet.capella_hard_fork.clone().into_boxed_str()),
+        });
 
     Ok(pluto_app::node::AppConfig {
         p2p,
@@ -1067,6 +1083,7 @@ fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
         graffiti: (!graffiti.is_empty()).then_some(graffiti),
         graffiti_disable_client_append,
         feature_set,
+        testnet,
         simnet_beacon_mock,
         simnet_validator_mock,
         simnet_beacon_mock_fuzz,
@@ -1087,11 +1104,6 @@ fn check_unsupported_flags(config: &RunConfig) -> Result<()> {
     }
     if config.p2p_fuzz {
         return Err(unsupported("--p2p-fuzz"));
-    }
-    // Partially-specified testnets are ignored, matching Charon's
-    // `IsNonZero`-gated registration.
-    if config.testnet.is_non_zero() {
-        return Err(unsupported("--testnet-*"));
     }
     if !config.beacon_node_headers.is_empty() {
         return Err(unsupported("--beacon-node-headers"));
@@ -1883,21 +1895,30 @@ mod tests {
     }
 
     #[test]
-    fn build_app_config_rejects_fully_specified_testnet() {
-        let err = app_config_err(&[
+    fn build_app_config_accepts_fully_specified_testnet() {
+        // A fully-specified custom testnet is threaded into `AppConfig` as a
+        // `Network` for the node to register (Charon parity).
+        let config = app_config(&[
             "--testnet-name=devnet",
             "--testnet-fork-version=0x10000910",
             "--testnet-chain-id=1234",
             "--testnet-genesis-timestamp=42",
-        ]);
-        assert!(err.contains("is not yet supported by pluto run"), "{err}");
+        ])
+        .expect("fully-specified testnet should be accepted");
+        let testnet = config.testnet.expect("testnet should be set");
+        assert_eq!(testnet.name, "devnet");
+        assert_eq!(testnet.genesis_fork_version_hex, "0x10000910");
+        assert_eq!(testnet.chain_id, 1234);
+        assert_eq!(testnet.genesis_timestamp, 42);
     }
 
     #[test]
     fn build_app_config_ignores_partial_testnet() {
         // Charon registers a custom testnet only when fully specified
-        // (`IsNonZero`); partial flags are silently ignored.
-        app_config(&["--testnet-name=devnet"]).expect("partial testnet should be ignored");
+        // (`IsNonZero`); partial flags are silently ignored (no `Network`).
+        let config =
+            app_config(&["--testnet-name=devnet"]).expect("partial testnet should be ignored");
+        assert!(config.testnet.is_none());
     }
 
     #[test]
