@@ -1,7 +1,7 @@
 use crate::{
-    ConsensusVersion, EthBeaconNodeApiClient, EventstreamRequestQueryTopic, GetGenesisRequest,
-    GetGenesisResponse, GetGenesisResponseResponseData, GetSpecRequest, GetSpecResponse,
-    ValidatorStatus, spec::phase0,
+    BeaconStateFork, ConsensusVersion, EthBeaconNodeApiClient, EventstreamRequestQueryTopic,
+    GetForkScheduleRequest, GetForkScheduleResponse, GetGenesisRequest, GetGenesisResponse,
+    GetGenesisResponseResponseData, GetSpecRequest, GetSpecResponse, ValidatorStatus, spec::phase0,
 };
 use chrono::{DateTime, Utc};
 use eventsource_stream::Eventsource;
@@ -224,25 +224,51 @@ pub fn resolve_fork_version(
     active_version
 }
 
-fn resolve_domain(
-    domain_type: phase0::DomainType,
-    voluntary_exit_domain_type: phase0::DomainType,
-    fork_schedule: &HashMap<ConsensusVersion, ForkSchedule>,
-    genesis_fork_version: phase0::Version,
-    genesis_validators_root: phase0::Root,
+/// Resolves the fork version active at `epoch` from the fork-schedule
+/// endpoint entries, mirroring go-eth2-client's `forkAtEpoch` (which backs
+/// Charon's `Domain()`): entries are scanned in server order, the last entry
+/// with `epoch <= target` wins, and before any entry activates the first
+/// entry is used.
+///
+/// Signing domains must come from `/eth/v1/config/fork_schedule` rather than
+/// the spec's `*_FORK_VERSION`/`*_FORK_EPOCH` keys: the two sources can
+/// disagree (Charon's beaconmock overrides the spec fork keys but serves its
+/// static fork schedule unchanged), and cross-client signature verification
+/// only works when both sides derive the fork version the same way.
+fn fork_version_from_schedule(
+    schedule: &[BeaconStateFork],
     epoch: phase0::Epoch,
-) -> phase0::Domain {
-    let fork_version = if domain_type == voluntary_exit_domain_type {
-        // EIP-7044: voluntary exits always use the Capella domain.
-        fork_schedule
-            .get(&ConsensusVersion::Capella)
-            .map(|fork| fork.version)
-            .unwrap_or(genesis_fork_version)
-    } else {
-        resolve_fork_version(epoch, genesis_fork_version, fork_schedule)
-    };
+) -> Result<phase0::Version, EthBeaconNodeApiClientError> {
+    let mut current = schedule.first().ok_or_else(|| {
+        EthBeaconNodeApiClientError::ParseError("empty fork schedule".to_string())
+    })?;
 
-    compute_domain(domain_type, fork_version, genesis_validators_root)
+    for fork in schedule {
+        let fork_epoch = fork.epoch.parse::<u64>().map_err(|_| {
+            EthBeaconNodeApiClientError::ParseError("parse fork schedule epoch".to_string())
+        })?;
+        if fork_epoch > epoch {
+            break;
+        }
+        current = fork;
+    }
+
+    decode_fixed_hex(&current.current_version, || {
+        "decode fork schedule current_version".to_string()
+    })
+}
+
+/// Returns the fork version for voluntary-exit domains: EIP-7044 pins them to
+/// the Capella fork (spec-derived), falling back to the genesis fork version
+/// when the spec has no Capella entry.
+fn voluntary_exit_fork_version(
+    spec_data: &serde_json::Value,
+    genesis_fork_version: phase0::Version,
+) -> Result<phase0::Version, EthBeaconNodeApiClientError> {
+    Ok(fork_schedule_from_spec(spec_data)?
+        .get(&ConsensusVersion::Capella)
+        .map(|fork| fork.version)
+        .unwrap_or(genesis_fork_version))
 }
 
 impl ValidatorStatus {
@@ -367,27 +393,62 @@ impl EthBeaconNodeApiClient {
         Ok(fork_version)
     }
 
+    /// Fetches the fork schedule entries from `/eth/v1/config/fork_schedule`.
+    async fn fetch_fork_schedule_data(
+        &self,
+    ) -> Result<Vec<BeaconStateFork>, EthBeaconNodeApiClientError> {
+        match self.get_fork_schedule(GetForkScheduleRequest {}).await? {
+            GetForkScheduleResponse::Ok(resp) => Ok(resp.data),
+            _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
+        }
+    }
+
+    /// Fetches the `current_version` of every entry in the beacon node's fork
+    /// schedule (`/eth/v1/config/fork_schedule`), decoded and returned in the
+    /// order provided by the endpoint (oldest-to-newest per spec). The first
+    /// entry is the genesis fork version, which identifies the beacon node's
+    /// network.
+    pub async fn fetch_fork_schedule_versions(
+        &self,
+    ) -> Result<Vec<phase0::Version>, EthBeaconNodeApiClientError> {
+        self.fetch_fork_schedule_data()
+            .await?
+            .iter()
+            .map(|fork| {
+                decode_fixed_hex(&fork.current_version, || {
+                    "decode fork schedule current_version".to_string()
+                })
+            })
+            .collect()
+    }
+
     /// Fetches the resolved beacon domain for the provided domain type and
-    /// epoch.
+    /// epoch. Non-exit domains resolve the fork version from the
+    /// fork-schedule endpoint (go-eth2-client parity, see
+    /// [`fork_version_from_schedule`]); voluntary exits stay pinned to the
+    /// Capella fork per EIP-7044.
     pub async fn fetch_domain(
         &self,
         domain_type: phase0::DomainType,
         epoch: phase0::Epoch,
     ) -> Result<phase0::Domain, EthBeaconNodeApiClientError> {
         let spec = self.fetch_spec_data().await?;
-        let fork_schedule = fork_schedule_from_spec(&spec)?;
         let genesis = self.fetch_genesis_data().await?;
         let (genesis_fork_version, genesis_validators_root) =
             parse_genesis_fork_version_and_validators_root(&genesis)?;
         let voluntary_exit_domain_type = resolve_domain_type(&spec, "DOMAIN_VOLUNTARY_EXIT")?;
 
-        Ok(resolve_domain(
+        let fork_version = if domain_type == voluntary_exit_domain_type {
+            voluntary_exit_fork_version(&spec, genesis_fork_version)?
+        } else {
+            let schedule = self.fetch_fork_schedule_data().await?;
+            fork_version_from_schedule(&schedule, epoch)?
+        };
+
+        Ok(compute_domain(
             domain_type,
-            voluntary_exit_domain_type,
-            &fork_schedule,
-            genesis_fork_version,
+            fork_version,
             genesis_validators_root,
-            epoch,
         ))
     }
 
@@ -532,31 +593,60 @@ mod tests {
     }
 
     #[test]
-    fn resolve_domain_uses_capella_for_voluntary_exit_domain_type() {
+    fn voluntary_exit_fork_version_pins_capella() {
         let spec = spec_fixture();
-        let fork_schedule = fork_schedule_from_spec(&spec).unwrap();
         let genesis_fork_version = [0x11, 0x22, 0x33, 0x44];
-        let genesis_validators_root = [0xEE; 32];
-        let voluntary_exit_domain_type =
-            resolve_domain_type(&spec, "DOMAIN_VOLUNTARY_EXIT").unwrap();
-
-        let domain = resolve_domain(
-            voluntary_exit_domain_type,
-            voluntary_exit_domain_type,
-            &fork_schedule,
-            genesis_fork_version,
-            genesis_validators_root,
-            1_000,
-        );
 
         assert_eq!(
-            domain,
-            compute_domain(
-                [0x04, 0x00, 0x00, 0x00],
-                [0x03, 0x04, 0x05, 0x06],
-                genesis_validators_root,
-            )
+            voluntary_exit_fork_version(&spec, genesis_fork_version).unwrap(),
+            [0x03, 0x04, 0x05, 0x06]
         );
+    }
+
+    /// Fork-schedule entries as served by Charon's beaconmock static.json:
+    /// versions differ from its (overridden) spec keys and the last entries
+    /// activate at capella=256 / deneb=29696.
+    fn schedule_fixture() -> Vec<BeaconStateFork> {
+        let entry = |prev: &str, cur: &str, epoch: &str| BeaconStateFork {
+            previous_version: prev.to_string(),
+            current_version: cur.to_string(),
+            epoch: epoch.to_string(),
+        };
+        vec![
+            entry("0x01017000", "0x01017000", "0"),
+            entry("0x01017000", "0x02017000", "0"),
+            entry("0x02017000", "0x03017000", "0"),
+            entry("0x03017000", "0x04017000", "256"),
+            entry("0x04017000", "0x05017000", "29696"),
+        ]
+    }
+
+    #[test]
+    fn fork_version_from_schedule_picks_last_activated_entry() {
+        let schedule = schedule_fixture();
+
+        // Same-epoch ties resolve to the last listed entry (server order).
+        assert_eq!(
+            fork_version_from_schedule(&schedule, 0).unwrap(),
+            [0x03, 0x01, 0x70, 0x00]
+        );
+        assert_eq!(
+            fork_version_from_schedule(&schedule, 300).unwrap(),
+            [0x04, 0x01, 0x70, 0x00]
+        );
+        // Far past the last fork: the final entry stays active.
+        assert_eq!(
+            fork_version_from_schedule(&schedule, 10_448_552).unwrap(),
+            [0x05, 0x01, 0x70, 0x00]
+        );
+    }
+
+    #[test]
+    fn fork_version_from_schedule_rejects_empty_schedule() {
+        assert!(matches!(
+            fork_version_from_schedule(&[], 0),
+            Err(EthBeaconNodeApiClientError::ParseError(_))
+        ));
     }
 
     #[tokio::test]

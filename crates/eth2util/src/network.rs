@@ -144,11 +144,25 @@ static SUPPORTED_NETWORKS: LazyLock<RwLock<Vec<Network>>> = LazyLock::new(|| {
 });
 
 /// Add a test network to the supported networks.
+///
+/// Registration is idempotent: if a network with the same genesis fork version
+/// is already registered the call is a no-op, so callers on different code
+/// paths (e.g. flag-driven registration and definition verification) can each
+/// register the same custom testnet without creating duplicates.
 pub fn add_test_network(network: Network) -> Result<()> {
-    SUPPORTED_NETWORKS
+    let mut networks = SUPPORTED_NETWORKS
         .write()
-        .map_err(|_| NetworkError::FailedToWriteSupportedNetworks)?
-        .push(network);
+        .map_err(|_| NetworkError::FailedToWriteSupportedNetworks)?;
+
+    let strip = |fv: &str| fv.strip_prefix("0x").unwrap_or(fv).to_string();
+    let already_registered = networks
+        .iter()
+        .any(|n| strip(n.genesis_fork_version_hex) == strip(network.genesis_fork_version_hex));
+
+    if !already_registered {
+        networks.push(network);
+    }
+
     Ok(())
 }
 
@@ -388,6 +402,35 @@ mod tests {
             }
             .is_non_zero()
         );
+    }
+
+    #[test]
+    fn add_test_network_accepts_custom_fork_version_and_is_idempotent() {
+        // A custom testnet fork version (e.g. a local kurtosis testnet) is not
+        // in the predefined allowlist and is rejected before registration.
+        let custom = Network {
+            chain_id: 3151908,
+            name: "kurtosis-idempotent-test",
+            genesis_fork_version_hex: "0x20000038",
+            genesis_timestamp: 1700000000,
+            capella_hard_fork: "0x20000038",
+        };
+        let fork_version = hex::decode("20000038").unwrap();
+
+        assert!(fork_version_to_chain_id(&fork_version).is_err());
+
+        // Registering it makes the fork version resolvable.
+        add_test_network(custom.clone()).unwrap();
+        assert_eq!(
+            fork_version_to_chain_id(&fork_version).unwrap(),
+            custom.chain_id
+        );
+
+        // Registering the same fork version again is a no-op (no duplicates).
+        let before = supported_networks().unwrap().len();
+        add_test_network(custom.clone()).unwrap();
+        let after = supported_networks().unwrap().len();
+        assert_eq!(before, after, "duplicate registration must be a no-op");
     }
 
     #[test]

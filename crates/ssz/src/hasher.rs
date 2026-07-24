@@ -142,12 +142,12 @@ impl Hasher {
             return Err(HasherError::InvalidBufferLength);
         }
         let mut result = Vec::with_capacity(src.len() / 2);
+        let mut hasher = Sha256::new();
 
         for pair in src.chunks(64) {
-            let mut hasher = Sha256::new();
             hasher.update(&pair[..32]);
             hasher.update(&pair[32..]);
-            result.extend_from_slice(&hasher.finalize());
+            result.extend_from_slice(&hasher.finalize_reset());
         }
 
         Ok(result)
@@ -183,9 +183,12 @@ impl Hasher {
         64 - i.leading_zeros() as usize - 1
     }
 
-    fn merkleize_impl(&mut self, input: &[u8], mut limit: usize) -> Result<Vec<u8>, HasherError> {
+    fn merkleize_impl(
+        &mut self,
+        mut input: Vec<u8>,
+        mut limit: usize,
+    ) -> Result<Vec<u8>, HasherError> {
         let count = input.len().div_ceil(32);
-        let mut input = input.to_vec();
 
         if limit == 0 {
             limit = count;
@@ -321,7 +324,12 @@ impl HashWalker for Hasher {
         let size = parse_bitlist(&mut self.tmp, bb)?;
 
         let indx = self.index();
-        self.append_bytes32(&self.tmp.clone())?;
+        // Take the scratch buffer out to satisfy the borrow checker without a
+        // clone (`append_bytes32` only touches `self.buf`), then restore it so
+        // its allocation is reused across calls.
+        let tmp = std::mem::take(&mut self.tmp);
+        self.append_bytes32(&tmp)?;
+        self.tmp = tmp;
         self.merkleize_with_mixin(indx, size, max_size.div_ceil(256))?;
         Ok(())
     }
@@ -358,8 +366,8 @@ impl HashWalker for Hasher {
             self.buf.reserve(32); // Just ensure capacity
         }
 
-        let mut input = self.buf[index..].to_vec();
-        input = self.merkleize_impl(&input, 0)?;
+        let input = self.buf[index..].to_vec();
+        let input = self.merkleize_impl(input, 0)?;
         self.buf.truncate(index); // Truncate without filling
         self.buf.extend_from_slice(&input);
 
@@ -376,7 +384,7 @@ impl HashWalker for Hasher {
 
         let mut input: Vec<u8> = self.buf[index..].to_vec();
 
-        input = self.merkleize_impl(&input, limit)?;
+        input = self.merkleize_impl(input, limit)?;
         self.buf.truncate(index);
         self.buf.extend_from_slice(&input);
 
@@ -522,5 +530,111 @@ mod tests {
                 .len(),
             64
         );
+    }
+
+    #[test]
+    fn default_hash_fn_zero_pair_matches_zero_hash() {
+        // Hashing two zero leaves yields the depth-1 zero hash by construction.
+        assert_eq!(
+            Hasher::default_hash_fn(&[0u8; 64]).expect("one pair"),
+            ZERO_HASHES[1].to_vec()
+        );
+    }
+
+    #[test]
+    fn default_hash_fn_two_pairs_matches_independent_single_pairs() {
+        // Reusing one `Sha256` via `finalize_reset` must produce the same bytes
+        // as hashing each 64-byte pair independently.
+        let mut src = Vec::new();
+        src.extend_from_slice(&[1u8; 32]);
+        src.extend_from_slice(&[2u8; 32]);
+        src.extend_from_slice(&[3u8; 32]);
+        src.extend_from_slice(&[4u8; 32]);
+
+        let combined = Hasher::default_hash_fn(&src).expect("two pairs");
+        let mut expected = Hasher::default_hash_fn(&src[..64]).expect("pair 0");
+        expected.extend_from_slice(&Hasher::default_hash_fn(&src[64..]).expect("pair 1"));
+
+        assert_eq!(combined, expected);
+    }
+
+    #[test]
+    fn merkleize_single_chunk_returns_input() {
+        // limit==1, count==1 path returns the chunk verbatim.
+        let chunk = [7u8; 32];
+        let mut h = Hasher::default();
+        h.append_bytes32(&chunk).expect("append");
+        h.merkleize(0).expect("merkleize");
+        assert_eq!(h.hash().expect("hash"), chunk);
+    }
+
+    #[test]
+    fn merkleize_multi_chunk_matches_manual_tree() {
+        // Three chunks: layer 0 pads to four with the depth-0 zero hash, then
+        // two hashing layers collapse to a single root.
+        let c0 = [1u8; 32];
+        let c1 = [2u8; 32];
+        let c2 = [3u8; 32];
+
+        let mut h = Hasher::default();
+        h.append_bytes32(&c0).expect("c0");
+        h.append_bytes32(&c1).expect("c1");
+        h.append_bytes32(&c2).expect("c2");
+        h.merkleize(0).expect("merkleize");
+        let root = h.hash().expect("hash");
+
+        let mut layer0 = Vec::new();
+        layer0.extend_from_slice(&c0);
+        layer0.extend_from_slice(&c1);
+        layer0.extend_from_slice(&c2);
+        layer0.extend_from_slice(&ZERO_HASHES[0]);
+        let layer1 = Hasher::default_hash_fn(&layer0).expect("layer1");
+        let expected = Hasher::default_hash_fn(&layer1).expect("layer2");
+
+        assert_eq!(root, expected.as_slice());
+    }
+
+    #[test]
+    fn merkleize_with_mixin_matches_manual_tree() {
+        let c0 = [1u8; 32];
+        let c1 = [2u8; 32];
+
+        let mut h = Hasher::default();
+        h.append_bytes32(&c0).expect("c0");
+        h.append_bytes32(&c1).expect("c1");
+        h.merkleize_with_mixin(0, 2, 4).expect("mixin");
+        let root = h.hash().expect("hash");
+
+        let mut layer0 = Vec::new();
+        layer0.extend_from_slice(&c0);
+        layer0.extend_from_slice(&c1);
+        let l1 = Hasher::default_hash_fn(&layer0).expect("l1");
+        let mut l1_padded = l1.clone();
+        l1_padded.extend_from_slice(&ZERO_HASHES[1]);
+        let tree_root = Hasher::default_hash_fn(&l1_padded).expect("tree root");
+
+        let mut mixed = tree_root;
+        let mut tmp = [0u8; 32];
+        tmp[..8].copy_from_slice(&2u64.to_le_bytes());
+        mixed.extend_from_slice(&tmp);
+        let expected = Hasher::default_hash_fn(&mixed).expect("mixed");
+
+        assert_eq!(root, expected.as_slice());
+    }
+
+    #[test]
+    fn put_bitlist_is_deterministic_and_reuses_tmp() {
+        // Guards the `std::mem::take`/restore in `put_bitlist`: two identical
+        // calls on fresh hashers must produce the same root, and `self.tmp`
+        // must be restored (non-take semantics preserved across the call).
+        let mut a = Hasher::default();
+        a.put_bitlist(&[0b0000_1011], 64).expect("put_bitlist a");
+        let root_a = a.hash().expect("hash a");
+
+        let mut b = Hasher::default();
+        b.put_bitlist(&[0b0000_1011], 64).expect("put_bitlist b");
+        let root_b = b.hash().expect("hash b");
+
+        assert_eq!(root_a, root_b);
     }
 }

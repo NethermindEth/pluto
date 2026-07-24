@@ -2260,7 +2260,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 2.0.118",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -5133,15 +5133,22 @@ dependencies = [
  "libp2p",
  "pluto-build-proto",
  "pluto-cluster",
+ "pluto-consensus",
  "pluto-core",
  "pluto-crypto",
+ "pluto-eth1wrap",
  "pluto-eth2api",
+ "pluto-eth2util",
+ "pluto-featureset",
  "pluto-k1util",
  "pluto-p2p",
+ "pluto-parsigex",
+ "pluto-peerinfo",
  "pluto-ssz",
  "pluto-testutil",
  "prost 0.14.4",
  "prost-types 0.14.4",
+ "rand 0.8.6",
  "regex",
  "reqwest 0.13.4",
  "serde",
@@ -5188,6 +5195,7 @@ dependencies = [
  "pluto-dkg",
  "pluto-eth1wrap",
  "pluto-eth2util",
+ "pluto-featureset",
  "pluto-k1util",
  "pluto-p2p",
  "pluto-relay-server",
@@ -5535,6 +5543,7 @@ dependencies = [
  "k256",
  "libp2p",
  "tempfile",
+ "test-case",
  "thiserror 2.0.18",
 ]
 
@@ -5713,12 +5722,10 @@ dependencies = [
  "pluto-crypto",
  "pluto-eth2api",
  "pluto-eth2util",
- "pluto-ssz",
  "rand 0.8.6",
  "reqwest 0.13.4",
  "serde",
  "serde_json",
- "serde_with",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
