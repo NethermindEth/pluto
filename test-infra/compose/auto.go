@@ -267,7 +267,7 @@ func NewRunnerFunc(topic string, dir string, up bool, runFunc RunFunc,
 
 		conf, err := LoadConfig(dir)
 		if errors.Is(err, fs.ErrNotExist) {
-			return TmplData{}, errors.New("compose config.json not found; maybe try `compose new` first", z.Str("dir", dir))
+			return TmplData{}, errors.New("compose config.json not found; write one with WriteConfig or New first", z.Str("dir", dir))
 		} else if err != nil {
 			return TmplData{}, err
 		}

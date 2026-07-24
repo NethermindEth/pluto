@@ -43,8 +43,8 @@ const defaultTimeout = 2 * time.Minute
 // broadcast/error alerts fire by design. Upstream charon runs lighthouse VCs
 // in these scenarios but never noticed because its alert gate matches a
 // state ("active") that Prometheus never reports. The real-VC compose
-// services remain available for manual runs via `compose new
-// --validator-types`.
+// service definitions remain in the harness (`static/`), but the tests
+// always run the mock VC.
 func smokeBaseConfig() compose.Config {
 	conf := compose.NewDefaultConfig()
 	conf.Monitoring = false
@@ -52,6 +52,14 @@ func smokeBaseConfig() compose.Config {
 	conf.ImageTag = charonImageTag
 	conf.InsecureKeys = true
 	conf.VCs = []compose.VCType{compose.VCMock}
+
+	// Route the cluster through an external relay (e.g. the public
+	// https://0.relay.obol.tech) instead of the local relay container. The
+	// local relay service still runs so its prometheus scrape target stays
+	// up; nothing dials it.
+	if url := os.Getenv("SMOKE_EXTERNAL_RELAY"); url != "" {
+		conf.ExternalRelay = url
+	}
 
 	return conf
 }
