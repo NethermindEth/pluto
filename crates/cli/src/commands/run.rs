@@ -19,19 +19,11 @@
 //! driven via [`pluto_app::node::App::run`] until cancelled.
 //!
 //! Not every accepted flag is honored yet. Correctness-affecting flags with no
-//! implementation (custom testnets, beacon-node headers, VC TLS, a preferred
-//! consensus protocol, synthetic block proposals) fail fast with a "not yet
-//! supported" error, while the remaining observability/availability flags with
-//! no implementation (debug/pprof address, OTLP, proc directory, fallback
-//! beacon endpoints) are ignored with a warning. Simnet mode
-//! (`--simnet-beacon-mock` / `--simnet-validator-mock`) and the monitoring API
-//! (`--monitoring-address`) are wired: the node runs the in-process beacon /
-//! validator mocks, and serves Prometheus `/metrics` plus `/livez` and
-//! `/readyz` on the monitoring address.
-//!
-//! Limitations:
-//! - `--log-format` and `--log-output-path` are accepted but not yet applied
-//!   (console and Loki output only).
+//! implementation (beacon-node headers, VC TLS, a preferred consensus protocol,
+//! synthetic block proposals) fail fast with a "not yet supported" error, while
+//! the remaining observability/availability flags with no implementation
+//! (debug/pprof address, OTLP, proc directory, fallback beacon endpoints) are
+//! ignored with a warning.
 
 use std::{
     collections::HashMap,
@@ -325,7 +317,7 @@ pub struct RunGeneralArgs {
         default_value_t = 0,
         help = "Genesis timestamp of the custom test network."
     )]
-    pub testnet_genesis_timestamp: i64,
+    pub testnet_genesis_timestamp: u64,
 
     #[arg(
         long = "testnet-capella-hard-fork",
@@ -581,11 +573,8 @@ pub struct TestnetConfig {
     /// Chain ID.
     pub chain_id: u64,
     /// Genesis timestamp (unix seconds).
-    pub genesis_timestamp: i64,
-    /// Capella hard fork version.
-    // Accepted for Charon flag parity, inert until custom testnets are
-    // supported (Go's `Network.IsNonZero` excludes it too).
-    #[allow(dead_code)]
+    pub genesis_timestamp: u64,
+    /// Capella hard fork version. Excluded from `is_non_zero`.
     pub capella_hard_fork: String,
 }
 
@@ -598,6 +587,20 @@ impl TestnetConfig {
             && self.chain_id != 0
             && self.genesis_timestamp != 0
             && !self.genesis_fork_version_hex.is_empty()
+    }
+}
+
+impl From<&TestnetConfig> for pluto_eth2util::network::Network {
+    /// Bridges a fully-specified CLI [`TestnetConfig`] into an
+    /// [`eth2util` network][pluto_eth2util::network::Network] for registration.
+    fn from(testnet: &TestnetConfig) -> Self {
+        pluto_eth2util::network::Network {
+            chain_id: testnet.chain_id,
+            name: testnet.name.clone().leak(),
+            genesis_fork_version_hex: testnet.genesis_fork_version_hex.clone().leak(),
+            genesis_timestamp: testnet.genesis_timestamp,
+            capella_hard_fork: testnet.capella_hard_fork.clone().leak(),
+        }
     }
 }
 
@@ -1001,6 +1004,14 @@ fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
         parse_socket_addr("validator-api-address", &config.validator_api_addr)?;
     let monitoring_addr = parse_socket_addr("monitoring-address", &config.monitoring_addr)?;
 
+    // Register a fully-specified custom testnet before the cluster lock is
+    // loaded in `App::run`, so the lock's custom genesis fork version resolves
+    // against the supported-networks registry during EIP-712 signature
+    // verification.
+    if config.testnet.is_non_zero() {
+        pluto_eth2util::network::add_test_network((&config.testnet).into())?;
+    }
+
     // Exhaustive destructure: adding a `RunConfig` field without deciding its
     // bridge behavior fails to compile instead of being silently dropped.
     let RunConfig {
@@ -1087,11 +1098,6 @@ fn check_unsupported_flags(config: &RunConfig) -> Result<()> {
     }
     if config.p2p_fuzz {
         return Err(unsupported("--p2p-fuzz"));
-    }
-    // Partially-specified testnets are ignored, matching Charon's
-    // `IsNonZero`-gated registration.
-    if config.testnet.is_non_zero() {
-        return Err(unsupported("--testnet-*"));
     }
     if !config.beacon_node_headers.is_empty() {
         return Err(unsupported("--beacon-node-headers"));
@@ -1883,21 +1889,59 @@ mod tests {
     }
 
     #[test]
-    fn build_app_config_rejects_fully_specified_testnet() {
-        let err = app_config_err(&[
-            "--testnet-name=devnet",
-            "--testnet-fork-version=0x10000910",
-            "--testnet-chain-id=1234",
-            "--testnet-genesis-timestamp=42",
-        ]);
-        assert!(err.contains("is not yet supported by pluto run"), "{err}");
+    fn build_app_config_registers_fully_specified_testnet() {
+        // A fully-specified `--testnet-*` config registers the custom network before
+        // the lock is loaded, so a cluster lock carrying this genesis fork
+        // version resolves during load (`verify_signatures` -> EIP-712 ->
+        // `fork_version_to_chain_id` looks it up in the supported-networks
+        // registry).
+        let fork_version = [0x00, 0x00, 0x05, 0x31];
+
+        // Not registered before the bridge runs.
+        assert!(
+            pluto_eth2util::network::fork_version_to_network(&fork_version).is_err(),
+            "fork version must be unregistered before the bridge runs",
+        );
+
+        app_config(&[
+            "--testnet-name=issue531-testnet",
+            "--testnet-fork-version=0x00000531",
+            "--testnet-chain-id=531",
+            "--testnet-genesis-timestamp=1700000000",
+            "--testnet-capella-hard-fork=0x03000531",
+        ])
+        .expect("fully-specified testnet is now supported");
+
+        // Registered: the lock's fork version now resolves to the custom network.
+        assert_eq!(
+            pluto_eth2util::network::fork_version_to_network(&fork_version)
+                .expect("custom fork version resolves after registration"),
+            "issue531-testnet",
+        );
+        assert_eq!(
+            pluto_eth2util::network::fork_version_to_chain_id(&fork_version)
+                .expect("custom fork version maps to its chain id"),
+            531,
+        );
     }
 
     #[test]
     fn build_app_config_ignores_partial_testnet() {
         // Charon registers a custom testnet only when fully specified
-        // (`IsNonZero`); partial flags are silently ignored.
-        app_config(&["--testnet-name=devnet"]).expect("partial testnet should be ignored");
+        // (`IsNonZero`); partial flags are silently ignored — neither rejected
+        // nor registered. This config omits chain-id and genesis-timestamp.
+        let fork_version = [0x00, 0x00, 0x05, 0x32];
+
+        app_config(&[
+            "--testnet-name=partial-testnet",
+            "--testnet-fork-version=0x00000532",
+        ])
+        .expect("partial testnet should be ignored, not rejected");
+
+        assert!(
+            pluto_eth2util::network::fork_version_to_network(&fork_version).is_err(),
+            "a partially-specified testnet must not be registered",
+        );
     }
 
     #[test]
