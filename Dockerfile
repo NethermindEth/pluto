@@ -1,64 +1,50 @@
 # syntax=docker/dockerfile:1
 
-# ── Base: system deps + cargo-chef + correct Rust toolchain ───────────────────
-# rust:slim-bookworm@sha256:e18a79... (2026-07-07)
-FROM rust:slim-bookworm@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3 AS chef
+# Digest pinned 2026-07-27.
+FROM rust:slim-bookworm@sha256:99e09cb2284e2ddbb73a995deee3e91783fd04d177602ccf6eab326d778ee777 AS chef
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-      pkg-config \
-      libssl-dev \
-      protobuf-compiler=3.21.12-3 && \
+    pkg-config \
+    libssl-dev \
+    protobuf-compiler=3.21.12-3 && \
     rm -rf /var/lib/apt/lists/*
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    cargo install cargo-chef --locked --version 0.1.77
+RUN cargo install cargo-chef --locked --version 0.1.77
 
 WORKDIR /build
 
-# Install the toolchain declared in rust-toolchain.toml (single source of truth).
-# This layer is cached until rust-toolchain.toml changes.
+# `rustup show` installs the toolchain pinned in rust-toolchain.toml.
 COPY rust-toolchain.toml .
 RUN rustup show
 
-# ── Planner: compute the dependency recipe from the full source tree ───────────
 FROM chef AS planner
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
-# ── Builder: compile deps then the binary ─────────────────────────────────────
 FROM chef AS builder
 
+RUN cargo install oas3-gen --locked --version 0.24.0
+
+# No cache mounts: compiled deps must live in image layers for CI's `cache-to: type=gha` to persist them (gha stores layers, not mounts).
+COPY --from=planner /build/recipe.json recipe.json
+RUN cargo chef cook --locked --release --package pluto-cli --recipe-path recipe.json
+
+# These change every commit; declared after the cook step so they don't invalidate the dependency layer above.
 ARG GIT_COMMIT_HASH_SHORT
 ENV GIT_COMMIT_HASH_SHORT=${GIT_COMMIT_HASH_SHORT}
 
 ARG SOURCE_DATE_EPOCH
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 
-# Build oas3-gen independently so it is cached unless the version changes.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    cargo install oas3-gen --locked --version 0.24.0
-
-# Cook dependencies only (re-runs only when Cargo.toml / Cargo.lock change).
-COPY --from=planner /build/recipe.json recipe.json
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/build/target \
-    cargo chef cook --locked --release --recipe-path recipe.json
-
-# Build the binary (only pluto source is recompiled on source changes).
 COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/build/target \
-    cargo build --locked --release --package pluto-cli && \
-    cp /build/target/release/pluto /usr/local/bin/pluto
+# `rm -rf target` keeps this per-commit layer at ~binary size in the gha cache.
+RUN cargo build --locked --release --package pluto-cli && \
+    cp /build/target/release/pluto /usr/local/bin/pluto && \
+    rm -rf /build/target
 
-# ── Runtime: minimal distroless image ─────────────────────────────────────────
-# gcr.io/distroless/cc-debian13@sha256:a017e7... (2026-07-07)
-FROM gcr.io/distroless/cc-debian13@sha256:a017e74bd2a12d98342dbecd33d121d2b160415ed777573dc1808969e989d94d AS app
+# Digest pinned 2026-07-27.
+FROM gcr.io/distroless/cc-debian13@sha256:ed7c407fd64eb0af9dddb9456b94cee188a40a7f53cf38c9836e1e9ae14fca02 AS app
 
 COPY --from=builder /usr/local/bin/pluto /app/bin/pluto
 
