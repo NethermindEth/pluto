@@ -9,7 +9,7 @@ pub use graffiti::{GraffitiBuilder, GraffitiError};
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, GetAggregatedAttestationV2Request,
+    BeaconNodeClient, EthBeaconNodeApiClientError, GetAggregatedAttestationV2Request,
     GetAggregatedAttestationV2Response, GetAggregatedAttestationV2ResponseResponseData,
     ProduceAttestationDataRequest, ProduceAttestationDataResponse, ProduceBlockV3Request,
     ProduceBlockV3Response, ProduceSyncCommitteeContributionRequest,
@@ -142,7 +142,7 @@ pub struct Fetcher {
     /// builder's `subscribe` method (zero or more times).
     #[builder(field)]
     subs: Vec<Subscriber>,
-    eth2_cl: EthBeaconNodeApiClient,
+    eth2_cl: BeaconNodeClient,
     fee_recipient: FeeRecipientFunc,
     agg_sig_db: AggSigDbFunc,
     await_att_data: AwaitAttDataFunc,
@@ -360,6 +360,7 @@ impl Fetcher {
 
             let response = match self
                 .eth2_cl
+                .api()
                 .produce_block_v3(request)
                 .await
                 .map_err(EthBeaconNodeApiClientError::RequestError)?
@@ -452,6 +453,7 @@ impl Fetcher {
 
         match self
             .eth2_cl
+            .api()
             .produce_attestation_data(request)
             .await
             .map_err(EthBeaconNodeApiClientError::RequestError)?
@@ -479,6 +481,7 @@ impl Fetcher {
 
         let ok = match self
             .eth2_cl
+            .api()
             .get_aggregated_attestation_v2(request)
             .await
             .map_err(EthBeaconNodeApiClientError::RequestError)?
@@ -513,6 +516,7 @@ impl Fetcher {
 
         match self
             .eth2_cl
+            .api()
             .produce_sync_committee_contribution(request)
             .await
             .map_err(EthBeaconNodeApiClientError::RequestError)?
@@ -1016,7 +1020,7 @@ mod tests {
 
         let captured: Captured = Arc::new(Mutex::new(None));
         let fetcher = Fetcher::builder()
-            .eth2_cl(mock.client().clone())
+            .eth2_cl(mock.beacon_client())
             .fee_recipient(stub_fee_recipient())
             .agg_sig_db(agg_sig_db)
             .await_att_data(stub_await_att_data())
@@ -1094,7 +1098,7 @@ mod tests {
 
         let captured: Captured = Arc::new(Mutex::new(None));
         let fetcher = Fetcher::builder()
-            .eth2_cl(mock.client().clone())
+            .eth2_cl(mock.beacon_client())
             .fee_recipient(stub_fee_recipient())
             .agg_sig_db(stub_agg_sig_db())
             .await_att_data(stub_await_att_data())
@@ -1309,7 +1313,7 @@ mod tests {
 
         let captured: Captured = Arc::new(Mutex::new(None));
         let fetch = Fetcher::builder()
-            .eth2_cl(mock.client().clone())
+            .eth2_cl(mock.beacon_client())
             .fee_recipient(stub_fee_recipient())
             .agg_sig_db(agg_sig_db)
             .await_att_data(await_att_data)
@@ -1364,7 +1368,7 @@ mod tests {
 
         let captured: Captured = Arc::new(Mutex::new(None));
         let fetch = Fetcher::builder()
-            .eth2_cl(mock.client().clone())
+            .eth2_cl(mock.beacon_client())
             .fee_recipient(stub_fee_recipient())
             .agg_sig_db(agg_sig_db)
             .await_att_data(await_att_data)
@@ -1410,7 +1414,7 @@ mod tests {
 
         let captured: Captured = Arc::new(Mutex::new(None));
         let fetcher = Fetcher::builder()
-            .eth2_cl(mock.client().clone())
+            .eth2_cl(mock.beacon_client())
             .fee_recipient(stub_fee_recipient())
             .agg_sig_db(agg_sig_db)
             .await_att_data(await_att_data)
@@ -1447,7 +1451,7 @@ mod tests {
         let (agg_sig_db, await_att_data) = aggregator_funcs(std::slice::from_ref(&att_a));
 
         let fetcher = Fetcher::builder()
-            .eth2_cl(mock.client().clone())
+            .eth2_cl(mock.beacon_client())
             .fee_recipient(stub_fee_recipient())
             .agg_sig_db(agg_sig_db)
             .await_att_data(await_att_data)
@@ -1548,7 +1552,7 @@ mod tests {
 
         let captured: Captured = Arc::new(Mutex::new(None));
         let fetcher = Fetcher::builder()
-            .eth2_cl(mock.client().clone())
+            .eth2_cl(mock.beacon_client())
             .fee_recipient(stub_fee_recipient())
             .agg_sig_db(agg_sig_db)
             .await_att_data(stub_await_att_data())
@@ -1621,7 +1625,7 @@ mod tests {
         });
 
         let fetcher = Fetcher::builder()
-            .eth2_cl(mock.client().clone())
+            .eth2_cl(mock.beacon_client())
             .fee_recipient(stub_fee_recipient())
             .agg_sig_db(agg_sig_db)
             .await_att_data(stub_await_att_data())
@@ -1657,7 +1661,7 @@ mod tests {
         });
 
         let fetcher = Fetcher::builder()
-            .eth2_cl(mock.client().clone())
+            .eth2_cl(mock.beacon_client())
             .fee_recipient(stub_fee_recipient())
             .agg_sig_db(agg_sig_db)
             .await_att_data(stub_await_att_data())

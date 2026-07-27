@@ -38,7 +38,7 @@ use pluto_core::{
     validatorapi::{self, Component, Handler, SeenPubkeysFn},
 };
 use pluto_eth2api::{
-    BeaconNodeClient, EthBeaconNodeApiClient,
+    BeaconNodeClient,
     spec::{bellatrix::ExecutionAddress, phase0::BLSPubKey},
     valcache::{ValidatorCache, ValidatorCacheError},
 };
@@ -109,10 +109,9 @@ pub struct WireInputs {
     pub threshold: u64,
     /// This node's 1-indexed share index.
     pub share_idx: u64,
-    /// Beacon node client used for scheduling.
+    /// Beacon node client used for scheduling, fetching, validatorapi, and
+    /// signing-domain resolution.
     pub beacon_client: BeaconNodeClient,
-    /// Beacon node API client used for fetching / dutydb / validatorapi.
-    pub eth2_cl: EthBeaconNodeApiClient,
     /// Submission beacon node client used for broadcasting.
     pub submission_client: BeaconNodeClient,
     /// Per-validator data for this node.
@@ -267,7 +266,6 @@ pub async fn wire_core_workflow(
         threshold,
         share_idx,
         beacon_client,
-        eth2_cl,
         submission_client,
         validators,
         consensus,
@@ -301,7 +299,7 @@ pub async fn wire_core_workflow(
     // would resolve duties against an empty (or unfiltered) set. `ValidatorCache`
     // clones share state, so the per-epoch trim + refresh subscriber registered
     // below refreshes every consumer at once.
-    let validator_cache = ValidatorCache::new(eth2_cl.clone(), eth2_pubkeys);
+    let validator_cache = ValidatorCache::new(beacon_client.api().clone(), eth2_pubkeys);
     tokio::join!(
         beacon_client.set_validator_cache(validator_cache.clone()),
         submission_client.set_validator_cache(validator_cache.clone()),
@@ -386,7 +384,7 @@ pub async fn wire_core_workflow(
 
     let fetcher = Arc::new(
         Fetcher::builder()
-            .eth2_cl(eth2_cl.clone())
+            .eth2_cl(beacon_client.clone())
             .fee_recipient(Arc::clone(&fee_recipient_fn))
             .agg_sig_db(agg_sig_db_fn)
             .await_att_data(await_att_data_fn)
@@ -623,7 +621,7 @@ pub async fn wire_core_workflow(
     }
 
     let (scheduler, scheduler_task) = sched_builder
-        .build(beacon_client, ct.clone())
+        .build(beacon_client.clone(), ct.clone())
         .await
         .map_err(AppError::Scheduler)?;
 
@@ -635,7 +633,7 @@ pub async fn wire_core_workflow(
     // agg-attestation / sync-contribution / pubkey-by-attestation lookups, and
     // the scheduler-backed duty-definition lookup.
     let mut vapi = Component::new(
-        Arc::new(eth2_cl.clone()),
+        beacon_client.clone(),
         Arc::clone(&dutydb),
         share_idx,
         pub_share_by_pubkey,
@@ -899,7 +897,7 @@ mod tests {
     use super::*;
     use pluto_core::types::SlotNumber;
     use pluto_eth2api::{
-        BlindedBlock400Response, GetStateValidatorsResponseResponse,
+        BlindedBlock400Response, EthBeaconNodeApiClient, GetStateValidatorsResponseResponse,
         GetStateValidatorsResponseResponseDatum, ValidatorResponseValidator, ValidatorStatus,
     };
     use wiremock::{

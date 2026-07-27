@@ -298,10 +298,14 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     let submission_api = build_api_client(&beacon_node_addr, config.beacon_node_submit_timeout)?;
     let submission_client = pluto_eth2api::BeaconNodeClient::new(submission_api);
 
+    // Warm both config caches before duty scheduling so signing-domain
+    // resolution never blocks on a live fetch; failure aborts startup.
+    tokio::try_join!(beacon_client.warm(), submission_client.warm())?;
+
     // ---- Beacon-derived duty-workflow inputs ----
 
     // Duty admission gate: validates duties against the beacon chain.
-    let duty_gater: DutyGaterFn = pluto_core::gater::DutyGater::new(&eth2_cl)
+    let duty_gater: DutyGaterFn = pluto_core::gater::DutyGater::new(&beacon_client)
         .await
         .map_err(AppError::Gater)?
         .into_fn();
@@ -309,7 +313,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     // Per-component deadline calculator, shared as an `Arc<dyn ...>` so a single
     // beacon-derived instance backs every component's deadliner.
     let deadline_calc: Arc<dyn pluto_core::deadline::DeadlineCalculator> = Arc::new(
-        pluto_core::deadline::DutyDeadlineCalculator::from_client(&eth2_cl)
+        pluto_core::deadline::DutyDeadlineCalculator::from_client(&beacon_client)
             .await
             .map_err(AppError::Deadline)?,
     );
@@ -329,8 +333,8 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     // Use the mock's echoed slot timing, not the configured value: fuzz mode
     // overrides it with a 12s default, and the validator mock's ticker must
     // match the mock. `slots_per_epoch` also feeds the Electra activation slot.
-    let (fetched_slot_duration, slots_per_epoch) = eth2_cl.fetch_slots_config().await?;
-    let fork_config = eth2_cl.fetch_fork_config().await?;
+    let (fetched_slot_duration, slots_per_epoch) = beacon_client.slots_config().await?;
+    let fork_config = beacon_client.fork_config().await?;
     let electra_slot = fork_config
         .get(&pluto_eth2api::ConsensusVersion::Electra)
         .map(|schedule| schedule.epoch)
@@ -397,7 +401,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         peers,
         Arc::clone(&consensus),
         Arc::clone(&duty_gater),
-        eth2_cl.clone(),
+        beacon_client.clone(),
         pub_shares_by_key,
         lock.lock_hash.clone(),
         config.builder_api,
@@ -417,10 +421,9 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
 
     // Aggregated-signature verifier: verifies the reconstructed group signature
     // against the beacon-node signing domain.
-    let sigagg_verifier = pluto_core::sigagg::new_verifier(Arc::new(eth2_cl.clone()));
+    let sigagg_verifier = pluto_core::sigagg::new_verifier(beacon_client.clone());
 
-    // The readiness checker uses its own beacon-client clone, taken before
-    // `eth2_cl` is moved into the workflow inputs below.
+    // The readiness checker uses its own beacon-client clone.
     let monitoring_beacon = eth2_cl.clone();
 
     // Readiness observes which DV root pubkeys the validator client references
@@ -464,7 +467,6 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             threshold,
             share_idx,
             beacon_client,
-            eth2_cl,
             submission_client,
             validators,
             consensus: Arc::clone(&consensus),
@@ -1055,7 +1057,7 @@ async fn build_simnet_validator_mock(
 
     Ok(Arc::new(
         ValidatorMock::builder()
-            .eth2_cl(vapi_client)
+            .eth2_cl(pluto_eth2api::BeaconNodeClient::new(vapi_client))
             .sign_func(signer)
             .pubkeys(pubshares)
             .meta(meta)

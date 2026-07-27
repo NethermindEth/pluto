@@ -9,7 +9,7 @@ use std::any::Any;
 
 use async_trait::async_trait;
 use pluto_crypto::types::PublicKey;
-use pluto_eth2api::{client::EthBeaconNodeApiClient, spec::phase0::Epoch};
+use pluto_eth2api::{BeaconNodeClient, spec::phase0::Epoch};
 use pluto_eth2util::{
     helpers::{self, HelperError},
     signing::{self, DomainName, SigningError},
@@ -53,21 +53,21 @@ pub trait Eth2SignedData: SignedData {
     fn domain_name(&self) -> DomainName;
 
     /// Returns the epoch at which the signing domain is resolved.
-    async fn epoch(&self, client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError>;
+    async fn epoch(&self, config: &BeaconNodeClient) -> Result<Epoch, Eth2SignedDataError>;
 }
 
 /// Verifies the eth2 signature associated with the given [`Eth2SignedData`].
 pub async fn verify_eth2_signed_data(
-    client: &EthBeaconNodeApiClient,
+    config: &BeaconNodeClient,
     data: &dyn Eth2SignedData,
     pubkey: &PublicKey,
 ) -> Result<(), Eth2SignedDataError> {
     let sig_root = data.message_root()?;
     let signature = data.signature()?;
-    let epoch = data.epoch(client).await?;
+    let epoch = data.epoch(config).await?;
 
     signing::verify(
-        client,
+        config,
         data.domain_name(),
         epoch,
         sig_root,
@@ -133,12 +133,12 @@ impl Eth2SignedData for VersionedSignedProposal {
         DomainName::BeaconProposer
     }
 
-    async fn epoch(&self, client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError> {
+    async fn epoch(&self, config: &BeaconNodeClient) -> Result<Epoch, Eth2SignedDataError> {
         if self.0.version == pluto_eth2api::versioned::DataVersion::Unknown {
             return Err(SignedDataError::UnknownVersion.into());
         }
 
-        Ok(helpers::epoch_from_slot(client, self.0.block.slot()).await?)
+        Ok(helpers::epoch_from_slot(config, self.0.block.slot()).await?)
     }
 }
 
@@ -148,7 +148,7 @@ impl Eth2SignedData for Attestation {
         DomainName::BeaconAttester
     }
 
-    async fn epoch(&self, _client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError> {
+    async fn epoch(&self, _config: &BeaconNodeClient) -> Result<Epoch, Eth2SignedDataError> {
         Ok(self.0.data.target.epoch)
     }
 }
@@ -159,7 +159,7 @@ impl Eth2SignedData for VersionedAttestation {
         DomainName::BeaconAttester
     }
 
-    async fn epoch(&self, _client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError> {
+    async fn epoch(&self, _config: &BeaconNodeClient) -> Result<Epoch, Eth2SignedDataError> {
         let version = self.0.version;
         if version == pluto_eth2api::versioned::DataVersion::Unknown {
             return Err(SignedDataError::UnknownVersion.into());
@@ -182,7 +182,7 @@ impl Eth2SignedData for SignedVoluntaryExit {
         DomainName::VoluntaryExit
     }
 
-    async fn epoch(&self, _client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError> {
+    async fn epoch(&self, _config: &BeaconNodeClient) -> Result<Epoch, Eth2SignedDataError> {
         Ok(self.0.message.epoch)
     }
 }
@@ -193,7 +193,7 @@ impl Eth2SignedData for VersionedSignedValidatorRegistration {
         DomainName::ApplicationBuilder
     }
 
-    async fn epoch(&self, _client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError> {
+    async fn epoch(&self, _config: &BeaconNodeClient) -> Result<Epoch, Eth2SignedDataError> {
         // Always use epoch 0 for DomainApplicationBuilder.
         Ok(0)
     }
@@ -205,7 +205,7 @@ impl Eth2SignedData for SignedRandao {
         DomainName::Randao
     }
 
-    async fn epoch(&self, _client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError> {
+    async fn epoch(&self, _config: &BeaconNodeClient) -> Result<Epoch, Eth2SignedDataError> {
         Ok(self.0.epoch)
     }
 }
@@ -216,8 +216,8 @@ impl Eth2SignedData for BeaconCommitteeSelection {
         DomainName::SelectionProof
     }
 
-    async fn epoch(&self, client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError> {
-        Ok(helpers::epoch_from_slot(client, self.0.slot).await?)
+    async fn epoch(&self, config: &BeaconNodeClient) -> Result<Epoch, Eth2SignedDataError> {
+        Ok(helpers::epoch_from_slot(config, self.0.slot).await?)
     }
 }
 
@@ -227,8 +227,8 @@ impl Eth2SignedData for SignedAggregateAndProof {
         DomainName::AggregateAndProof
     }
 
-    async fn epoch(&self, client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError> {
-        Ok(helpers::epoch_from_slot(client, self.0.message.aggregate.data.slot).await?)
+    async fn epoch(&self, config: &BeaconNodeClient) -> Result<Epoch, Eth2SignedDataError> {
+        Ok(helpers::epoch_from_slot(config, self.0.message.aggregate.data.slot).await?)
     }
 }
 
@@ -238,10 +238,10 @@ impl Eth2SignedData for VersionedSignedAggregateAndProof {
         DomainName::AggregateAndProof
     }
 
-    async fn epoch(&self, client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError> {
+    async fn epoch(&self, config: &BeaconNodeClient) -> Result<Epoch, Eth2SignedDataError> {
         let slot = self.0.slot().ok_or(SignedDataError::UnknownVersion)?;
 
-        Ok(helpers::epoch_from_slot(client, slot).await?)
+        Ok(helpers::epoch_from_slot(config, slot).await?)
     }
 }
 
@@ -251,8 +251,8 @@ impl Eth2SignedData for SignedSyncMessage {
         DomainName::SyncCommittee
     }
 
-    async fn epoch(&self, client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError> {
-        Ok(helpers::epoch_from_slot(client, self.0.slot).await?)
+    async fn epoch(&self, config: &BeaconNodeClient) -> Result<Epoch, Eth2SignedDataError> {
+        Ok(helpers::epoch_from_slot(config, self.0.slot).await?)
     }
 }
 
@@ -262,8 +262,8 @@ impl Eth2SignedData for SignedSyncContributionAndProof {
         DomainName::ContributionAndProof
     }
 
-    async fn epoch(&self, client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError> {
-        Ok(helpers::epoch_from_slot(client, self.0.message.contribution.slot).await?)
+    async fn epoch(&self, config: &BeaconNodeClient) -> Result<Epoch, Eth2SignedDataError> {
+        Ok(helpers::epoch_from_slot(config, self.0.message.contribution.slot).await?)
     }
 }
 
@@ -273,8 +273,8 @@ impl Eth2SignedData for SyncCommitteeSelection {
         DomainName::SyncCommitteeSelectionProof
     }
 
-    async fn epoch(&self, client: &EthBeaconNodeApiClient) -> Result<Epoch, Eth2SignedDataError> {
-        Ok(helpers::epoch_from_slot(client, self.0.slot).await?)
+    async fn epoch(&self, config: &BeaconNodeClient) -> Result<Epoch, Eth2SignedDataError> {
+        Ok(helpers::epoch_from_slot(config, self.0.slot).await?)
     }
 }
 
@@ -331,7 +331,7 @@ mod tests {
     /// Mirrors Go's `TestVerifyEth2SignedData`: resolve the epoch and message
     /// root, BLS-sign the signing-domain data root, inject the signature, and
     /// assert verification succeeds.
-    async fn assert_verifies<T>(client: &EthBeaconNodeApiClient, data: T)
+    async fn assert_verifies<T>(client: &BeaconNodeClient, data: T)
     where
         T: Eth2SignedData + Clone,
     {
@@ -360,7 +360,7 @@ mod tests {
         let mock = BeaconMock::builder().build().await.unwrap();
         let data: VersionedSignedProposal =
             load("TestJSONSerialisation_VersionedSignedProposal.json.golden");
-        assert_verifies(mock.client(), data).await;
+        assert_verifies(&mock.beacon_client(), data).await;
     }
 
     #[tokio::test]
@@ -368,14 +368,14 @@ mod tests {
         let mock = BeaconMock::builder().build().await.unwrap();
         let data: VersionedAttestation =
             load("TestJSONSerialisation_VersionedAttestation.json.golden");
-        assert_verifies(mock.client(), data).await;
+        assert_verifies(&mock.beacon_client(), data).await;
     }
 
     #[tokio::test]
     async fn verify_randao() {
         let mock = BeaconMock::builder().build().await.unwrap();
         let data: SignedRandao = load("TestJSONSerialisation_SignedRandao.json.golden");
-        assert_verifies(mock.client(), data).await;
+        assert_verifies(&mock.beacon_client(), data).await;
     }
 
     #[tokio::test]
@@ -383,7 +383,7 @@ mod tests {
         let mock = BeaconMock::builder().build().await.unwrap();
         let data: SignedVoluntaryExit =
             load("TestJSONSerialisation_SignedVoluntaryExit.json.golden");
-        assert_verifies(mock.client(), data).await;
+        assert_verifies(&mock.beacon_client(), data).await;
     }
 
     #[tokio::test]
@@ -391,7 +391,7 @@ mod tests {
         let mock = BeaconMock::builder().build().await.unwrap();
         let data: VersionedSignedValidatorRegistration =
             load("VersionedSignedValidatorRegistration.v1.json");
-        assert_verifies(mock.client(), data).await;
+        assert_verifies(&mock.beacon_client(), data).await;
     }
 
     #[tokio::test]
@@ -399,7 +399,7 @@ mod tests {
         let mock = BeaconMock::builder().build().await.unwrap();
         let data: BeaconCommitteeSelection =
             load("TestJSONSerialisation_BeaconCommitteeSelection.json.golden");
-        assert_verifies(mock.client(), data).await;
+        assert_verifies(&mock.beacon_client(), data).await;
     }
 
     #[tokio::test]
@@ -407,14 +407,14 @@ mod tests {
         let mock = BeaconMock::builder().build().await.unwrap();
         let data: VersionedSignedAggregateAndProof =
             load("TestJSONSerialisation_VersionedSignedAggregateAndProof.json.golden");
-        assert_verifies(mock.client(), data).await;
+        assert_verifies(&mock.beacon_client(), data).await;
     }
 
     #[tokio::test]
     async fn verify_phase0_attestation() {
         let mock = BeaconMock::builder().build().await.unwrap();
         let data = Attestation::new(sample_phase0_attestation());
-        assert_verifies(mock.client(), data).await;
+        assert_verifies(&mock.beacon_client(), data).await;
     }
 
     #[tokio::test]
@@ -428,14 +428,14 @@ mod tests {
             },
             signature: [0x66; 96],
         });
-        assert_verifies(mock.client(), data).await;
+        assert_verifies(&mock.beacon_client(), data).await;
     }
 
     #[tokio::test]
     async fn verify_sync_committee_message() {
         let mock = BeaconMock::builder().build().await.unwrap();
         let data: SignedSyncMessage = load("TestJSONSerialisation_SignedSyncMessage.json.golden");
-        assert_verifies(mock.client(), data).await;
+        assert_verifies(&mock.beacon_client(), data).await;
     }
 
     #[tokio::test]
@@ -443,7 +443,7 @@ mod tests {
         let mock = BeaconMock::builder().build().await.unwrap();
         let data: SignedSyncContributionAndProof =
             load("TestJSONSerialisation_SignedSyncContributionAndProof.json.golden");
-        assert_verifies(mock.client(), data).await;
+        assert_verifies(&mock.beacon_client(), data).await;
     }
 
     #[tokio::test]
@@ -451,13 +451,13 @@ mod tests {
         let mock = BeaconMock::builder().build().await.unwrap();
         let data: SyncCommitteeSelection =
             load("TestJSONSerialisation_SyncCommitteeSelection.json.golden");
-        assert_verifies(mock.client(), data).await;
+        assert_verifies(&mock.beacon_client(), data).await;
     }
 
     #[tokio::test]
     async fn verify_rejects_wrong_pubkey() {
         let mock = BeaconMock::builder().build().await.unwrap();
-        let client = mock.client();
+        let client = &mock.beacon_client();
         let data: SignedRandao = load("TestJSONSerialisation_SignedRandao.json.golden");
 
         let epoch = data.epoch(client).await.unwrap();
@@ -485,7 +485,7 @@ mod tests {
     #[tokio::test]
     async fn verify_rejects_zero_signature() {
         let mock = BeaconMock::builder().build().await.unwrap();
-        let client = mock.client();
+        let client = &mock.beacon_client();
         let data: SignedRandao = load("TestJSONSerialisation_SignedRandao.json.golden");
 
         let pubkey = [0x11; 48];

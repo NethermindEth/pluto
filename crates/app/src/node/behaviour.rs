@@ -21,7 +21,7 @@ use libp2p::{relay, swarm::NetworkBehaviour};
 use pluto_consensus::qbft;
 use pluto_core::{gater::DutyGaterFn, types::PubKey};
 use pluto_crypto::types::PublicKey;
-use pluto_eth2api::EthBeaconNodeApiClient;
+use pluto_eth2api::BeaconNodeClient;
 use pluto_p2p::{
     bootnode,
     force_direct::ForceDirectBehaviour,
@@ -80,7 +80,7 @@ pub(crate) async fn wire_p2p(
     peers: Vec<Peer>,
     consensus: Arc<qbft::Consensus>,
     duty_gater: DutyGaterFn,
-    eth2_cl: EthBeaconNodeApiClient,
+    eth2_cl: BeaconNodeClient,
     pub_shares_by_key: HashMap<PubKey, HashMap<u64, PublicKey>>,
     lock_hash: Vec<u8>,
     builder_enabled: bool,

@@ -111,6 +111,57 @@ pub(crate) fn decode_fixed_hex<const N: usize, F: Fn() -> String>(
         .map_err(|_| EthBeaconNodeApiClientError::ParseError(step()))
 }
 
+/// Genesis response data parsed into typed values (once, at fetch time, so
+/// malformed responses never enter the config cache).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GenesisInfo {
+    /// The genesis time.
+    pub time: DateTime<Utc>,
+    /// The genesis fork version.
+    pub fork_version: phase0::Version,
+    /// The genesis validators root.
+    pub validators_root: phase0::Root,
+}
+
+pub(crate) fn parse_genesis(
+    genesis: &GetGenesisResponseResponseData,
+) -> Result<GenesisInfo, EthBeaconNodeApiClientError> {
+    let (fork_version, validators_root) = parse_genesis_fork_version_and_validators_root(genesis)?;
+
+    Ok(GenesisInfo {
+        time: genesis_time_from_data(genesis)?,
+        fork_version,
+        validators_root,
+    })
+}
+
+/// Parses fork-schedule entries, preserving server order (which
+/// [`fork_version_from_schedule`] relies on). Empty schedules are rejected
+/// before they can enter the config cache; no fork version resolves from one.
+pub(crate) fn parse_fork_schedule(
+    entries: &[BeaconStateFork],
+) -> Result<Vec<ForkSchedule>, EthBeaconNodeApiClientError> {
+    if entries.is_empty() {
+        return Err(EthBeaconNodeApiClientError::ParseError(
+            "empty fork schedule".to_string(),
+        ));
+    }
+
+    entries
+        .iter()
+        .map(|fork| {
+            Ok(ForkSchedule {
+                version: decode_fixed_hex(&fork.current_version, || {
+                    "decode fork schedule current_version".to_string()
+                })?,
+                epoch: fork.epoch.parse::<u64>().map_err(|_| {
+                    EthBeaconNodeApiClientError::ParseError("parse fork schedule epoch".to_string())
+                })?,
+            })
+        })
+        .collect()
+}
+
 fn parse_genesis_fork_version_and_validators_root(
     genesis_data: &GetGenesisResponseResponseData,
 ) -> Result<(phase0::Version, phase0::Root), EthBeaconNodeApiClientError> {
@@ -124,7 +175,7 @@ fn parse_genesis_fork_version_and_validators_root(
     Ok((fork_version, validators_root))
 }
 
-fn fork_schedule_from_spec(
+pub(crate) fn fork_schedule_from_spec(
     spec_data: &serde_json::Value,
 ) -> Result<HashMap<ConsensusVersion, ForkSchedule>, EthBeaconNodeApiClientError> {
     fn fetch_fork(
@@ -236,7 +287,7 @@ pub fn resolve_fork_version(
 /// static fork schedule unchanged), and cross-client signature verification
 /// only works when both sides derive the fork version the same way.
 fn fork_version_from_schedule(
-    schedule: &[BeaconStateFork],
+    schedule: &[ForkSchedule],
     epoch: phase0::Epoch,
 ) -> Result<phase0::Version, EthBeaconNodeApiClientError> {
     let mut current = schedule.first().ok_or_else(|| {
@@ -244,18 +295,13 @@ fn fork_version_from_schedule(
     })?;
 
     for fork in schedule {
-        let fork_epoch = fork.epoch.parse::<u64>().map_err(|_| {
-            EthBeaconNodeApiClientError::ParseError("parse fork schedule epoch".to_string())
-        })?;
-        if fork_epoch > epoch {
+        if fork.epoch > epoch {
             break;
         }
         current = fork;
     }
 
-    decode_fixed_hex(&current.current_version, || {
-        "decode fork schedule current_version".to_string()
-    })
+    Ok(current.version)
 }
 
 /// Returns the fork version for voluntary-exit domains: EIP-7044 pins them to
@@ -271,6 +317,32 @@ fn voluntary_exit_fork_version(
         .unwrap_or(genesis_fork_version))
 }
 
+/// The single domain derivation, over already-fetched config: non-exit
+/// domains resolve the fork version from the fork-schedule entries (see
+/// [`fork_version_from_schedule`]); voluntary exits stay pinned to Capella
+/// per EIP-7044.
+pub(crate) fn domain_from_config(
+    spec: &serde_json::Value,
+    genesis: &GenesisInfo,
+    fork_schedule: &[ForkSchedule],
+    domain_type: phase0::DomainType,
+    epoch: phase0::Epoch,
+) -> Result<phase0::Domain, EthBeaconNodeApiClientError> {
+    let voluntary_exit_domain_type = resolve_domain_type(spec, "DOMAIN_VOLUNTARY_EXIT")?;
+
+    let fork_version = if domain_type == voluntary_exit_domain_type {
+        voluntary_exit_fork_version(spec, genesis.fork_version)?
+    } else {
+        fork_version_from_schedule(fork_schedule, epoch)?
+    };
+
+    Ok(compute_domain(
+        domain_type,
+        fork_version,
+        genesis.validators_root,
+    ))
+}
+
 impl ValidatorStatus {
     /// Returns true if the validator is in one of the active states.
     pub fn is_active(&self) -> bool {
@@ -283,15 +355,46 @@ impl ValidatorStatus {
     }
 }
 
+/// Parses the genesis time out of a genesis response.
+pub(crate) fn genesis_time_from_data(
+    genesis: &GetGenesisResponseResponseData,
+) -> Result<DateTime<Utc>, EthBeaconNodeApiClientError> {
+    genesis
+        .genesis_time
+        .parse()
+        .map_err(|_| EthBeaconNodeApiClientError::ParseError("parse genesis_time".into()))
+        .and_then(|timestamp| {
+            DateTime::from_timestamp(timestamp, 0).ok_or_else(|| {
+                EthBeaconNodeApiClientError::ParseError("convert genesis_time to timestamp".into())
+            })
+        })
+}
+
+/// Parses the slot duration and slots per epoch out of the chain spec.
+pub(crate) fn slots_config_from_spec(
+    spec: &serde_json::Value,
+) -> Result<(time::Duration, u64), EthBeaconNodeApiClientError> {
+    let slot_duration = time::Duration::from_secs(parse_u64_field(spec, "SECONDS_PER_SLOT")?);
+    let slots_per_epoch = parse_u64_field(spec, "SLOTS_PER_EPOCH")?;
+
+    if slot_duration == time::Duration::ZERO || slots_per_epoch == 0 {
+        return Err(EthBeaconNodeApiClientError::ZeroSlotDurationOrSlotsPerEpoch);
+    }
+
+    Ok((slot_duration, slots_per_epoch))
+}
+
 impl EthBeaconNodeApiClient {
-    async fn fetch_spec_data(&self) -> Result<serde_json::Value, EthBeaconNodeApiClientError> {
+    pub(crate) async fn fetch_spec_data(
+        &self,
+    ) -> Result<serde_json::Value, EthBeaconNodeApiClientError> {
         match self.get_spec(GetSpecRequest {}).await? {
             GetSpecResponse::Ok(spec) => Ok(spec.data),
             _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
         }
     }
 
-    async fn fetch_genesis_data(
+    pub(crate) async fn fetch_genesis_data(
         &self,
     ) -> Result<GetGenesisResponseResponseData, EthBeaconNodeApiClientError> {
         match self.get_genesis(GetGenesisRequest {}).await? {
@@ -303,26 +406,7 @@ impl EthBeaconNodeApiClient {
     /// Fetches the genesis time.
     pub async fn fetch_genesis_time(&self) -> Result<DateTime<Utc>, EthBeaconNodeApiClientError> {
         let genesis = self.fetch_genesis_data().await?;
-
-        genesis
-            .genesis_time
-            .parse()
-            .map_err(|_| EthBeaconNodeApiClientError::ParseError("parse genesis_time".into()))
-            .and_then(|timestamp| {
-                DateTime::from_timestamp(timestamp, 0).ok_or_else(|| {
-                    EthBeaconNodeApiClientError::ParseError(
-                        "convert genesis_time to timestamp".into(),
-                    )
-                })
-            })
-    }
-
-    /// Fetches the raw chain spec as a JSON object.
-    pub async fn fetch_spec(&self) -> Result<serde_json::Value, EthBeaconNodeApiClientError> {
-        match self.get_spec(GetSpecRequest {}).await? {
-            GetSpecResponse::Ok(resp) => Ok(resp.data),
-            _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
-        }
+        genesis_time_from_data(&genesis)
     }
 
     /// Fetches the slot duration and slots per epoch.
@@ -330,15 +414,7 @@ impl EthBeaconNodeApiClient {
         &self,
     ) -> Result<(time::Duration, u64), EthBeaconNodeApiClientError> {
         let spec = self.fetch_spec_data().await?;
-
-        let slot_duration = time::Duration::from_secs(parse_u64_field(&spec, "SECONDS_PER_SLOT")?);
-        let slots_per_epoch = parse_u64_field(&spec, "SLOTS_PER_EPOCH")?;
-
-        if slot_duration == time::Duration::ZERO || slots_per_epoch == 0 {
-            return Err(EthBeaconNodeApiClientError::ZeroSlotDurationOrSlotsPerEpoch);
-        }
-
-        Ok((slot_duration, slots_per_epoch))
+        slots_config_from_spec(&spec)
     }
 
     /// Fetches the fork schedule for all known forks.
@@ -349,88 +425,14 @@ impl EthBeaconNodeApiClient {
         fork_schedule_from_spec(&spec)
     }
 
-    /// Fetches the domain type with the provided config/spec key.
-    pub async fn fetch_domain_type(
-        &self,
-        spec_key: &str,
-    ) -> Result<phase0::DomainType, EthBeaconNodeApiClientError> {
-        let spec = self.fetch_spec_data().await?;
-        resolve_domain_type(&spec, spec_key)
-    }
-
-    /// Fetches the genesis domain for the provided domain type.
-    pub async fn fetch_genesis_domain(
-        &self,
-        domain_type: phase0::DomainType,
-    ) -> Result<phase0::Domain, EthBeaconNodeApiClientError> {
-        let genesis = self.fetch_genesis_data().await?;
-        let (genesis_fork_version, _) = parse_genesis_fork_version_and_validators_root(&genesis)?;
-
-        Ok(compute_domain(
-            domain_type,
-            genesis_fork_version,
-            phase0::Root::default(),
-        ))
-    }
-
-    /// Fetches the genesis validators root from the beacon node.
-    pub async fn fetch_genesis_validators_root(
-        &self,
-    ) -> Result<phase0::Root, EthBeaconNodeApiClientError> {
-        let genesis = self.fetch_genesis_data().await?;
-        let (_, validators_root) = parse_genesis_fork_version_and_validators_root(&genesis)?;
-
-        Ok(validators_root)
-    }
-
-    /// Fetches the genesis fork version from the beacon node.
-    pub async fn fetch_genesis_fork_version(
-        &self,
-    ) -> Result<phase0::Version, EthBeaconNodeApiClientError> {
-        let genesis = self.fetch_genesis_data().await?;
-        let (fork_version, _) = parse_genesis_fork_version_and_validators_root(&genesis)?;
-
-        Ok(fork_version)
-    }
-
     /// Fetches the fork schedule entries from `/eth/v1/config/fork_schedule`.
-    async fn fetch_fork_schedule_data(
+    pub(crate) async fn fetch_fork_schedule_data(
         &self,
     ) -> Result<Vec<BeaconStateFork>, EthBeaconNodeApiClientError> {
         match self.get_fork_schedule(GetForkScheduleRequest {}).await? {
             GetForkScheduleResponse::Ok(resp) => Ok(resp.data),
             _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
         }
-    }
-
-    /// Fetches the resolved beacon domain for the provided domain type and
-    /// epoch. Non-exit domains resolve the fork version from the
-    /// fork-schedule endpoint (go-eth2-client parity, see
-    /// [`fork_version_from_schedule`]); voluntary exits stay pinned to the
-    /// Capella fork per EIP-7044.
-    pub async fn fetch_domain(
-        &self,
-        domain_type: phase0::DomainType,
-        epoch: phase0::Epoch,
-    ) -> Result<phase0::Domain, EthBeaconNodeApiClientError> {
-        let spec = self.fetch_spec_data().await?;
-        let genesis = self.fetch_genesis_data().await?;
-        let (genesis_fork_version, genesis_validators_root) =
-            parse_genesis_fork_version_and_validators_root(&genesis)?;
-        let voluntary_exit_domain_type = resolve_domain_type(&spec, "DOMAIN_VOLUNTARY_EXIT")?;
-
-        let fork_version = if domain_type == voluntary_exit_domain_type {
-            voluntary_exit_fork_version(&spec, genesis_fork_version)?
-        } else {
-            let schedule = self.fetch_fork_schedule_data().await?;
-            fork_version_from_schedule(&schedule, epoch)?
-        };
-
-        Ok(compute_domain(
-            domain_type,
-            fork_version,
-            genesis_validators_root,
-        ))
     }
 
     /// Subscribes to the beacon node SSE stream (`GET /eth/v1/events`) for the
@@ -604,7 +606,7 @@ mod tests {
 
     #[test]
     fn fork_version_from_schedule_picks_last_activated_entry() {
-        let schedule = schedule_fixture();
+        let schedule = parse_fork_schedule(&schedule_fixture()).unwrap();
 
         // Same-epoch ties resolve to the last listed entry (server order).
         assert_eq!(

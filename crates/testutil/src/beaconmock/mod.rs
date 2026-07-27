@@ -180,6 +180,12 @@ impl BeaconMock {
         &self.client
     }
 
+    /// Returns a fresh beacon node client over this mock's client.
+    #[must_use]
+    pub fn beacon_client(&self) -> pluto_eth2api::BeaconNodeClient {
+        pluto_eth2api::BeaconNodeClient::new(self.client.clone())
+    }
+
     /// Returns the backing mock server for mounting test-specific endpoints.
     #[must_use]
     pub fn server(&self) -> &MockServer {

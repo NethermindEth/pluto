@@ -230,11 +230,12 @@ impl SchedulerBuilder {
             .await
             .ok_or(SchedulerError::Terminated)??;
 
-        // Cached once here since the node is synced at this point; see the
+        // Read once here since the node is synced at this point; see the
         // `slots_per_epoch` field on `SchedulerActor`.
-        let (_slot_duration, slots_per_epoch) = client.api().fetch_slots_config().await?;
+        let genesis_time = client.genesis_time().await?;
+        let (slot_duration, slots_per_epoch) = client.slots_config().await?;
 
-        let slot_rx = new_slot_ticker(&client, ct.clone()).await?;
+        let slot_rx = new_slot_ticker(genesis_time, slot_duration, slots_per_epoch, ct.clone());
 
         let actor = SchedulerActor {
             client: client.clone(),
@@ -298,10 +299,7 @@ impl SchedulerHandle {
 struct SchedulerActor {
     client: pluto_eth2api::BeaconNodeClient,
 
-    /// Cached chain constant: number of slots per epoch. Fetched once at build
-    /// time. Charon reads this from the memoized beacon-node spec; Pluto's
-    /// `fetch_slots_config` is not memoized, so we cache it here to avoid a
-    /// beacon-node round-trip on every duty lookup.
+    /// Chain constant, read once at build time from the memoized config.
     slots_per_epoch: u64,
 
     slot_broadcast: sync::broadcast::Sender<types::Slot>,
@@ -621,12 +619,12 @@ impl SchedulerActor {
 ///
 /// The production of slots is cancelled when the provided [`CancellationToken`]
 /// is cancelled.
-async fn new_slot_ticker(
-    client: &pluto_eth2api::BeaconNodeClient,
+fn new_slot_ticker(
+    genesis_time: chrono::DateTime<chrono::Utc>,
+    slot_duration: std::time::Duration,
+    slots_per_epoch: u64,
     ct: CancellationToken,
-) -> Result<sync::mpsc::Receiver<types::Slot>> {
-    let genesis_time = client.api().fetch_genesis_time().await?;
-    let (slot_duration, slots_per_epoch) = client.api().fetch_slots_config().await?;
+) -> sync::mpsc::Receiver<types::Slot> {
     let slot_duration = chrono::Duration::from_std(slot_duration).expect("within range");
 
     let current_slot = move || {
@@ -690,7 +688,7 @@ async fn new_slot_ticker(
         }
     });
 
-    Ok(rx)
+    rx
 }
 
 struct Validator {
@@ -789,7 +787,7 @@ async fn resolve_active_validators(
 
 /// Blocks until the beacon chain has started.
 async fn wait_chain_start(client: &pluto_eth2api::BeaconNodeClient) -> Result<()> {
-    let fetch = || client.api().fetch_genesis_time();
+    let fetch = || client.genesis_time();
     let backoff = crate::expbackoff::fast();
     let genesis_time = fetch
         .retry(backoff)

@@ -18,7 +18,7 @@ use std::{
 };
 
 use pluto_core::types::DutyType;
-use pluto_eth2api::{EthBeaconNodeApiClient, spec::phase0::BLSPubKey};
+use pluto_eth2api::{BeaconNodeClient, spec::phase0::BLSPubKey};
 use tokio::{
     sync::{Mutex, mpsc},
     task::JoinHandle,
@@ -61,7 +61,7 @@ pub struct Component {
 }
 
 struct Inner {
-    eth2_cl: EthBeaconNodeApiClient,
+    eth2_cl: BeaconNodeClient,
     sign_func: SignFunc,
     pubkeys: Vec<BLSPubKey>,
     meta: SpecMeta,
@@ -96,7 +96,7 @@ impl Component {
     /// `clock` defaults to [`SystemClock`] when omitted.
     #[builder]
     pub fn new(
-        eth2_cl: EthBeaconNodeApiClient,
+        eth2_cl: BeaconNodeClient,
         sign_func: SignFunc,
         pubkeys: Vec<BLSPubKey>,
         meta: SpecMeta,
@@ -213,7 +213,7 @@ impl Component {
     async fn start_attesters(&self, epoch: MetaEpoch) {
         for slot in epoch.slots() {
             let attester = Arc::new(SlotAttester::new(
-                Arc::new(self.inner.eth2_cl.clone()),
+                self.inner.eth2_cl.clone(),
                 slot.slot,
                 Arc::clone(&self.inner.sign_func),
                 self.inner.pubkeys.clone(),
@@ -548,7 +548,7 @@ mod tests {
             .await;
 
         let component = Component::builder()
-            .eth2_cl(mock.client().clone())
+            .eth2_cl(mock.beacon_client())
             .sign_func(Signer::arc(&[]).expect("empty signer"))
             .pubkeys(Vec::new())
             .meta(meta_at(genesis))
@@ -616,7 +616,7 @@ mod tests {
         let clock = FakeClock::new(genesis);
         let meta = meta_at(genesis);
         let component = Component::builder()
-            .eth2_cl(mock.client().clone())
+            .eth2_cl(mock.beacon_client())
             .sign_func(Signer::arc(&[]).expect("empty signer"))
             .pubkeys(Vec::new())
             .meta(meta)

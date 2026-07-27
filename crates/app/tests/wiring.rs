@@ -253,7 +253,6 @@ fn wire_inputs_with(
         threshold,
         share_idx: 1,
         beacon_client,
-        eth2_cl,
         submission_client,
         validators,
         consensus,
@@ -720,7 +719,8 @@ async fn wiring_rejects_bad_partial_signature() {
 
     // REAL eth2 verifier (mirrors production `run`): BeaconMock serves the
     // signing domain via `/eth/v1/config/spec` + `/eth/v1/beacon/genesis`.
-    let verifier: VerifyFn = pluto_core::sigagg::new_verifier(Arc::new(eth2_cl.clone()));
+    let verifier: VerifyFn =
+        pluto_core::sigagg::new_verifier(BeaconNodeClient::new(eth2_cl.clone()));
 
     const THRESHOLD: u64 = 2;
     let inputs = wire_inputs_with(

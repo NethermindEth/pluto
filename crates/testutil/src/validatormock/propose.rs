@@ -14,16 +14,16 @@
 //! Fulu range — and their blinded variants — is implemented in full.
 
 use pluto_eth2api::{
-    BlockRequestBody, BlockRequestBodyObject, BlockRequestBodyObject2, BlockRequestBodyObject3,
-    BlockRequestBodyObject4, BlockRequestBodyObject5, ConsensusVersion,
-    DenebSignedBlockContentsSignedBlock, EthBeaconNodeApiClient,
-    GetBlindedBlockResponseResponseData, GetBlindedBlockResponseResponseDataObject,
-    GetBlindedBlockResponseResponseDataObject2, GetBlindedBlockResponseResponseDataObject3,
-    GetBlindedBlockResponseResponseDataObject4, GetProposerDutiesRequest,
-    GetProposerDutiesResponse, ProduceBlockV3Request, ProduceBlockV3Response,
-    ProduceBlockV3ResponseResponse, PublishBlindedBlockV2Request, PublishBlockV2Request,
-    PublishBlockV2Response, RegisterValidatorRequest, RegisterValidatorRequestBodyItem,
-    RegisterValidatorResponse, SignedBlockContentsSignedBlock, SignedValidatorRegistrationMessage,
+    BeaconNodeClient, BlockRequestBody, BlockRequestBodyObject, BlockRequestBodyObject2,
+    BlockRequestBodyObject3, BlockRequestBodyObject4, BlockRequestBodyObject5, ConsensusVersion,
+    DenebSignedBlockContentsSignedBlock, GetBlindedBlockResponseResponseData,
+    GetBlindedBlockResponseResponseDataObject, GetBlindedBlockResponseResponseDataObject2,
+    GetBlindedBlockResponseResponseDataObject3, GetBlindedBlockResponseResponseDataObject4,
+    GetProposerDutiesRequest, GetProposerDutiesResponse, ProduceBlockV3Request,
+    ProduceBlockV3Response, ProduceBlockV3ResponseResponse, PublishBlindedBlockV2Request,
+    PublishBlockV2Request, PublishBlockV2Response, RegisterValidatorRequest,
+    RegisterValidatorRequestBodyItem, RegisterValidatorResponse, SignedBlockContentsSignedBlock,
+    SignedValidatorRegistrationMessage,
     spec::{
         BuilderVersion, bellatrix, capella, deneb, electra,
         phase0::{BLSPubKey, BLSSignature, Root, Slot},
@@ -59,14 +59,14 @@ pub type VersionedValidatorRegistration = VersionedSignedValidatorRegistration;
 /// [`super::sign`]; in production it wraps real BLS secrets, in tests a stub
 /// that copies the pubkey bytes into the signature suffices.
 pub async fn propose_block(
-    client: &EthBeaconNodeApiClient,
+    client: &BeaconNodeClient,
     signer: &super::SignFunc,
     slot: Slot,
 ) -> Result<()> {
     // Ensure active validators are queryable. Mirrors Go's
     // `eth2Cl.ActiveValidators` call: surfaces beacon-node errors before duty
     // lookups proceed.
-    let _ = active_validators(client).await?;
+    let _ = active_validators(client.api()).await?;
 
     let epoch = epoch_from_slot(client, slot).await?;
 
@@ -75,7 +75,7 @@ pub async fn propose_block(
         .build()
         .map_err(|err| Error::Malformed(format!("build proposer duties request: {err}")))?;
 
-    let duties = match client.get_proposer_duties(request).await {
+    let duties = match client.api().get_proposer_duties(request).await {
         Ok(GetProposerDutiesResponse::Ok(resp)) => resp.data,
         Ok(_) => return Err(Error::Malformed("proposer duties response".to_string())),
         Err(err) => return Err(Error::Malformed(format!("proposer duties: {err}"))),
@@ -107,7 +107,7 @@ pub async fn propose_block(
         .build()
         .map_err(|err| Error::Malformed(format!("build produce-block request: {err}")))?;
 
-    let proposal_resp = match client.produce_block_v3(proposal_request).await {
+    let proposal_resp = match client.api().produce_block_v3(proposal_request).await {
         Ok(ProduceBlockV3Response::Ok(resp)) => resp,
         Ok(_) => {
             return Err(Error::Malformed(
@@ -132,7 +132,7 @@ pub async fn propose_block(
             .build()
             .map_err(|err| Error::Malformed(format!("build blinded-publish request: {err}")))?;
 
-        match client.publish_blinded_block_v2(request).await {
+        match client.api().publish_blinded_block_v2(request).await {
             Ok(PublishBlockV2Response::Ok | PublishBlockV2Response::Accepted) => Ok(()),
             Ok(_) => Err(Error::Malformed(
                 "publish-blinded-block-v2 unexpected response".to_string(),
@@ -147,7 +147,7 @@ pub async fn propose_block(
             .build()
             .map_err(|err| Error::Malformed(format!("build publish-block request: {err}")))?;
 
-        match client.publish_block_v2(request).await {
+        match client.api().publish_block_v2(request).await {
             Ok(PublishBlockV2Response::Ok | PublishBlockV2Response::Accepted) => Ok(()),
             Ok(_) => Err(Error::Malformed(
                 "publish-block-v2 unexpected response".to_string(),
@@ -167,7 +167,7 @@ pub async fn propose_block(
 /// any non-V1 variant lands here we surface [`Error::UnsupportedVariant`]
 /// instead of mis-tagging the signed payload.
 pub async fn register(
-    client: &EthBeaconNodeApiClient,
+    client: &BeaconNodeClient,
     signer: &super::SignFunc,
     registration: &VersionedValidatorRegistration,
     pubshare: BLSPubKey,
@@ -200,7 +200,7 @@ pub async fn register(
                 .build()
                 .map_err(|err| Error::Malformed(format!("build register request: {err}")))?;
 
-            match client.register_validator(request).await {
+            match client.api().register_validator(request).await {
                 Ok(RegisterValidatorResponse::Ok) => Ok(()),
                 Ok(_) => Err(Error::Malformed(
                     "register-validator unexpected response".to_string(),
@@ -216,7 +216,7 @@ async fn build_block_body(
     resp: &ProduceBlockV3ResponseResponse,
     pubkey: &BLSPubKey,
     signer: &super::SignFunc,
-    client: &EthBeaconNodeApiClient,
+    client: &BeaconNodeClient,
     epoch: u64,
 ) -> Result<BlockRequestBody> {
     let block_value = serde_json::to_value(&resp.data)
@@ -294,7 +294,7 @@ async fn build_blinded_body(
     resp: &ProduceBlockV3ResponseResponse,
     pubkey: &BLSPubKey,
     signer: &super::SignFunc,
-    client: &EthBeaconNodeApiClient,
+    client: &BeaconNodeClient,
     epoch: u64,
 ) -> Result<GetBlindedBlockResponseResponseData> {
     let block_value = serde_json::to_value(&resp.data)
@@ -356,7 +356,7 @@ async fn build_blinded_body(
 async fn sign_with_proposer(
     signer: &super::SignFunc,
     pubkey: &BLSPubKey,
-    client: &EthBeaconNodeApiClient,
+    client: &BeaconNodeClient,
     epoch: u64,
     message_root: Root,
 ) -> Result<BLSSignature> {
@@ -684,7 +684,7 @@ mod tests {
         )
         .await;
 
-        propose_block(mock.client(), &stub_signer(), slot)
+        propose_block(&mock.beacon_client(), &stub_signer(), slot)
             .await
             .expect("propose_block");
 
@@ -738,7 +738,7 @@ mod tests {
         )
         .await;
 
-        propose_block(mock.client(), &stub_signer(), slot)
+        propose_block(&mock.beacon_client(), &stub_signer(), slot)
             .await
             .expect("propose_block blinded");
 
@@ -801,7 +801,7 @@ mod tests {
         )
         .await;
 
-        propose_block(mock.client(), &stub_signer(), slot)
+        propose_block(&mock.beacon_client(), &stub_signer(), slot)
             .await
             .expect("propose_block fulu");
 
@@ -826,7 +826,7 @@ mod tests {
             .mount(mock.server())
             .await;
 
-        propose_block(mock.client(), &stub_signer(), slot)
+        propose_block(&mock.beacon_client(), &stub_signer(), slot)
             .await
             .expect("propose_block must be a no-op when not the slot proposer");
     }
@@ -857,7 +857,7 @@ mod tests {
         )
         .await;
 
-        register(mock.client(), &stub_signer(), &registration, pubkey)
+        register(&mock.beacon_client(), &stub_signer(), &registration, pubkey)
             .await
             .expect("register");
 

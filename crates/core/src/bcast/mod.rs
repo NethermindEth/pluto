@@ -8,8 +8,8 @@ use std::{any::Any, error::Error as StdError};
 use chrono::{DateTime, Duration, Utc};
 use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
 use pluto_eth2api::{
-    AttesterDuty, BeaconNodeClient, EthBeaconNodeApiClient,
-    GetStateValidatorsResponseResponseDatum, ValidatorStatus, data_version_is_before_electra,
+    AttesterDuty, BeaconNodeClient, GetStateValidatorsResponseResponseDatum, ValidatorStatus,
+    data_version_is_before_electra,
     spec::{altair, phase0},
     versioned,
 };
@@ -229,24 +229,20 @@ pub struct Broadcaster {
 impl Broadcaster {
     /// Creates a new broadcaster.
     pub async fn new(client: BeaconNodeClient) -> Result<Self> {
-        let genesis_time =
-            client
-                .api()
-                .fetch_genesis_time()
-                .await
-                .map_err(|source| Error::Client {
-                    context: "fetch genesis time",
-                    source: Box::new(source),
-                })?;
-        let (slot_duration, _) =
-            client
-                .api()
-                .fetch_slots_config()
-                .await
-                .map_err(|source| Error::Client {
-                    context: "fetch slots config",
-                    source: Box::new(source),
-                })?;
+        let genesis_time = client
+            .genesis_time()
+            .await
+            .map_err(|source| Error::Client {
+                context: "fetch genesis time",
+                source: Box::new(source),
+            })?;
+        let (slot_duration, _) = client
+            .slots_config()
+            .await
+            .map_err(|source| Error::Client {
+                context: "fetch slots config",
+                source: Box::new(source),
+            })?;
         let slot_duration =
             Duration::from_std(slot_duration).map_err(|_| Error::ArithmeticOverflow {
                 context: "slot duration",
@@ -277,7 +273,7 @@ impl Broadcaster {
                 // Use first slot in current epoch for accurate delay calculations while
                 // submitting builder registrations. This is because builder
                 // registrations are submitted in first slot of every epoch.
-                duty.slot = first_slot_in_current_epoch(self.client.api()).await?;
+                duty.slot = first_slot_in_current_epoch(&self.client).await?;
                 self.broadcast_builder_registration(&duty, &set).await?;
             }
             DutyType::Exit => self.broadcast_exits(&duty, &set).await?,
@@ -526,15 +522,16 @@ impl Broadcaster {
                 context: "fetch attester duties",
                 source: Box::new(source),
             })?;
-        let domain = self
-            .client
-            .api()
-            .fetch_beacon_attester_domain(epoch)
-            .await
-            .map_err(|source| Error::Client {
-                context: "fetch beacon attester domain",
-                source: Box::new(source),
-            })?;
+        let domain = pluto_eth2util::signing::get_domain(
+            &self.client,
+            pluto_eth2util::signing::DomainName::BeaconAttester,
+            epoch,
+        )
+        .await
+        .map_err(|source| Error::Client {
+            context: "fetch beacon attester domain",
+            source: Box::new(source),
+        })?;
 
         // Try to find the matching attester duty and attestation by verifying the full
         // aggregated signature of the attestation with the pubkey found in the attester
@@ -717,10 +714,10 @@ fn attestation_matches_duty(
 }
 
 async fn first_slot_in_current_epoch(
-    client: &EthBeaconNodeApiClient,
+    client: &BeaconNodeClient,
 ) -> Result<crate::types::SlotNumber> {
     let genesis_time = client
-        .fetch_genesis_time()
+        .genesis_time()
         .await
         .map_err(|source| Error::Client {
             context: "fetch genesis time",
@@ -728,7 +725,7 @@ async fn first_slot_in_current_epoch(
         })?;
     let (slot_duration, slots_per_epoch) =
         client
-            .fetch_slots_config()
+            .slots_config()
             .await
             .map_err(|source| Error::Client {
                 context: "fetch slots config",
@@ -1231,11 +1228,13 @@ mod tests {
             .build()
             .await
             .expect("beacon mock");
-        let domain = beacon
-            .client()
-            .fetch_beacon_attester_domain(3)
-            .await
-            .expect("domain");
+        let domain = pluto_eth2util::signing::get_domain(
+            &beacon.beacon_client(),
+            pluto_eth2util::signing::DomainName::BeaconAttester,
+            3,
+        )
+        .await
+        .expect("domain");
         let client = cached_client(
             &beacon,
             vec![validator_datum(
@@ -1270,14 +1269,6 @@ mod tests {
                 validator_index: 99,
                 pubkey: public_key,
             }]
-        );
-        assert_eq!(
-            beacon
-                .client()
-                .fetch_beacon_attester_domain(3)
-                .await
-                .expect("domain"),
-            domain
         );
         let broadcaster = Broadcaster::new(client).await.expect("broadcaster");
 

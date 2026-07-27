@@ -4,7 +4,7 @@ use pluto_crypto::{
     types::{PublicKey, Signature},
 };
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, EthBeaconNodeApiClientError,
+    BeaconNodeClient, EthBeaconNodeApiClientError,
     spec::phase0::{Domain, Epoch, Root, SigningData},
     versioned::VersionedSignedAggregateAndProof,
 };
@@ -103,23 +103,23 @@ pub(crate) fn compute_signing_root(message_root: Root, domain: Domain) -> Root {
 
 /// Returns the beacon domain for the provided type.
 pub async fn get_domain(
-    client: &EthBeaconNodeApiClient,
+    client: &BeaconNodeClient,
     name: DomainName,
     epoch: Epoch,
 ) -> Result<Domain> {
-    let domain_type = client.fetch_domain_type(name.as_spec_key()).await?;
+    let domain_type = client.domain_type(name.as_spec_key()).await?;
 
     if name == DomainName::ApplicationBuilder {
-        return Ok(client.fetch_genesis_domain(domain_type).await?);
+        return Ok(client.genesis_domain(domain_type).await?);
     }
 
-    Ok(client.fetch_domain(domain_type, epoch).await?)
+    Ok(client.domain(domain_type, epoch).await?)
 }
 
 /// Wraps the message root with the resolved domain and returns the signing-data
 /// root.
 pub async fn get_data_root(
-    client: &EthBeaconNodeApiClient,
+    client: &BeaconNodeClient,
     name: DomainName,
     epoch: Epoch,
     root: Root,
@@ -132,7 +132,7 @@ pub async fn get_data_root(
 
 /// Verifies a signature against the resolved eth2 domain signing root.
 pub async fn verify(
-    client: &EthBeaconNodeApiClient,
+    client: &BeaconNodeClient,
     domain_name: DomainName,
     epoch: Epoch,
     message_root: Root,
@@ -173,7 +173,7 @@ pub fn verify_with_domain(
 
 /// Verifies the selection proof embedded in an aggregate-and-proof payload.
 pub async fn verify_aggregate_and_proof_selection(
-    client: &EthBeaconNodeApiClient,
+    client: &BeaconNodeClient,
     pubkey: &PublicKey,
     agg: &VersionedSignedAggregateAndProof,
 ) -> Result<()> {
@@ -282,9 +282,9 @@ mod tests {
     #[tokio::test]
     async fn get_domain_matches_builder_vector() {
         let mock = mock_beacon_client().await;
-        let client = mock.client();
+        let client = mock.beacon_client();
 
-        let domain = get_domain(client, DomainName::ApplicationBuilder, 1_000)
+        let domain = get_domain(&client, DomainName::ApplicationBuilder, 1_000)
             .await
             .unwrap();
 
@@ -297,9 +297,9 @@ mod tests {
     #[tokio::test]
     async fn get_domain_uses_capella_for_voluntary_exit() {
         let mock = mock_beacon_client().await;
-        let client = mock.client();
+        let client = mock.beacon_client();
 
-        let domain = get_domain(client, DomainName::VoluntaryExit, 1_000)
+        let domain = get_domain(&client, DomainName::VoluntaryExit, 1_000)
             .await
             .unwrap();
 
@@ -312,7 +312,7 @@ mod tests {
     #[tokio::test]
     async fn get_data_root_matches_registration_vector() {
         let mock = mock_beacon_client().await;
-        let client = mock.client();
+        let client = mock.beacon_client();
 
         let fee_recipient: ExecutionAddress =
             hex::decode("000000000000000000000000000000000000dead")
@@ -335,7 +335,7 @@ mod tests {
         };
 
         let signing_root = get_data_root(
-            client,
+            &client,
             DomainName::ApplicationBuilder,
             0,
             message.message_root(),
@@ -352,7 +352,7 @@ mod tests {
     #[tokio::test]
     async fn verify_accepts_valid_signature() {
         let mock = mock_beacon_client().await;
-        let client = mock.client();
+        let client = mock.beacon_client();
 
         let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
         let pubkey = BlstImpl.secret_to_public_key(&secret).unwrap();
@@ -369,13 +369,13 @@ mod tests {
             pubkey,
         };
         let message_root = message.message_root();
-        let signing_root = get_data_root(client, DomainName::ApplicationBuilder, 0, message_root)
+        let signing_root = get_data_root(&client, DomainName::ApplicationBuilder, 0, message_root)
             .await
             .unwrap();
         let signature = BlstImpl.sign(&secret, &signing_root).unwrap();
 
         verify(
-            client,
+            &client,
             DomainName::ApplicationBuilder,
             0,
             message_root,
@@ -389,10 +389,10 @@ mod tests {
     #[tokio::test]
     async fn verify_rejects_zero_signature() {
         let mock = mock_beacon_client().await;
-        let client = mock.client();
+        let client = mock.beacon_client();
         let pubkey = [0x11; 48];
         let err = verify(
-            client,
+            &client,
             DomainName::ApplicationBuilder,
             0,
             [0x22; 32],
@@ -408,12 +408,12 @@ mod tests {
     #[tokio::test]
     async fn verify_with_domain_accepts_valid_signature() {
         let mock = mock_beacon_client().await;
-        let client = mock.client();
+        let client = mock.beacon_client();
 
         let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
         let pubkey = BlstImpl.secret_to_public_key(&secret).unwrap();
         let message_root = [0x55; 32];
-        let domain = get_domain(client, DomainName::ApplicationBuilder, 0)
+        let domain = get_domain(&client, DomainName::ApplicationBuilder, 0)
             .await
             .unwrap();
         let signing_root = compute_signing_root(message_root, domain);
@@ -425,8 +425,8 @@ mod tests {
     #[tokio::test]
     async fn verify_with_domain_rejects_zero_signature() {
         let mock = mock_beacon_client().await;
-        let client = mock.client();
-        let domain = get_domain(client, DomainName::ApplicationBuilder, 0)
+        let client = mock.beacon_client();
+        let domain = get_domain(&client, DomainName::ApplicationBuilder, 0)
             .await
             .unwrap();
         let pubkey = [0x11; 48];
@@ -439,20 +439,20 @@ mod tests {
     #[tokio::test]
     async fn verify_rejects_wrong_pubkey() {
         let mock = mock_beacon_client().await;
-        let client = mock.client();
+        let client = mock.beacon_client();
 
         let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
         let wrong_secret =
             secret_key("01477d4bfbbcebe1fef8d4d6f624ecbb6e3178558bb1b0d6286c816c66842a6d");
         let pubkey = BlstImpl.secret_to_public_key(&wrong_secret).unwrap();
         let message_root = [0x55; 32];
-        let signing_root = get_data_root(client, DomainName::ApplicationBuilder, 0, message_root)
+        let signing_root = get_data_root(&client, DomainName::ApplicationBuilder, 0, message_root)
             .await
             .unwrap();
         let signature = BlstImpl.sign(&secret, &signing_root).unwrap();
 
         let err = verify(
-            client,
+            &client,
             DomainName::ApplicationBuilder,
             0,
             message_root,
@@ -468,14 +468,14 @@ mod tests {
     #[tokio::test]
     async fn verify_rejects_wrong_message_root() {
         let mock = mock_beacon_client().await;
-        let client = mock.client();
+        let client = mock.beacon_client();
 
         let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
         let pubkey = BlstImpl.secret_to_public_key(&secret).unwrap();
         let signed_message_root = [0x55; 32];
         let verified_message_root = [0x66; 32];
         let signing_root = get_data_root(
-            client,
+            &client,
             DomainName::ApplicationBuilder,
             0,
             signed_message_root,
@@ -485,7 +485,7 @@ mod tests {
         let signature = BlstImpl.sign(&secret, &signing_root).unwrap();
 
         let err = verify(
-            client,
+            &client,
             DomainName::ApplicationBuilder,
             0,
             verified_message_root,

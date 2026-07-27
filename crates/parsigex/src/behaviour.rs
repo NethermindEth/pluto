@@ -28,7 +28,7 @@ use pluto_core::{
     types::{Duty, ParSignedData, ParSignedDataSet, PubKey},
 };
 use pluto_crypto::types::PublicKey;
-use pluto_eth2api::EthBeaconNodeApiClient;
+use pluto_eth2api::BeaconNodeClient;
 use pluto_p2p::p2p_context::P2PContext;
 
 use super::{Handler, encode_message};
@@ -60,7 +60,7 @@ pub type Verifier =
 ///
 /// Ports Charon's `parsigex.NewEth2Verifier`
 pub fn new_eth2_verifier(
-    eth2_cl: EthBeaconNodeApiClient,
+    eth2_cl: BeaconNodeClient,
     pub_shares_by_key: HashMap<PubKey, HashMap<u64, PublicKey>>,
 ) -> Verifier {
     let pub_shares_by_key = Arc::new(pub_shares_by_key);
@@ -597,7 +597,7 @@ mod eth2_verifier_tests {
         tbls::Tbls,
         types::{Index, PrivateKey, PublicKey},
     };
-    use pluto_eth2api::{EthBeaconNodeApiClient, spec::phase0};
+    use pluto_eth2api::{BeaconNodeClient, spec::phase0};
     use pluto_eth2util::signing::{DomainName, get_data_root};
     use pluto_testutil::BeaconMock;
 
@@ -637,7 +637,7 @@ mod eth2_verifier_tests {
     /// Signs the eth2 signing root of `data` for the given domain/epoch with
     /// `secret`, returning a copy of `data` carrying that signature.
     async fn sign<T>(
-        client: &EthBeaconNodeApiClient,
+        client: &BeaconNodeClient,
         secret: &PrivateKey,
         data: &T,
         domain: DomainName,
@@ -674,7 +674,7 @@ mod eth2_verifier_tests {
     #[tokio::test]
     async fn accepts_partial_signature_against_correct_share() {
         let mock = BeaconMock::builder().build().await.unwrap();
-        let client = mock.client();
+        let client = mock.beacon_client();
 
         let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
         let group_pubkey = PubKey::new(BlstImpl.secret_to_public_key(&secret).unwrap());
@@ -684,7 +684,7 @@ mod eth2_verifier_tests {
         let share_idx: Index = 2;
         let att = sample_attestation(4);
         let signed = sign(
-            client,
+            &client,
             &shares[&share_idx],
             &att,
             DomainName::BeaconAttester,
@@ -705,7 +705,7 @@ mod eth2_verifier_tests {
     #[tokio::test]
     async fn rejects_partial_signature_against_wrong_share() {
         let mock = BeaconMock::builder().build().await.unwrap();
-        let client = mock.client();
+        let client = mock.beacon_client();
 
         let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
         let group_pubkey = PubKey::new(BlstImpl.secret_to_public_key(&secret).unwrap());
@@ -714,7 +714,7 @@ mod eth2_verifier_tests {
         // Sign with share 2's secret but claim share index 3, so the verifier
         // looks up share 3's public key and the signature fails to verify.
         let att = sample_attestation(4);
-        let signed = sign(client, &shares[&2], &att, DomainName::BeaconAttester, 4).await;
+        let signed = sign(&client, &shares[&2], &att, DomainName::BeaconAttester, 4).await;
         let par = ParSignedData::new(signed, 3);
 
         let mut pub_shares_by_key = HashMap::new();
@@ -731,14 +731,14 @@ mod eth2_verifier_tests {
     #[tokio::test]
     async fn rejects_unknown_pubkey() {
         let mock = BeaconMock::builder().build().await.unwrap();
-        let client = mock.client();
+        let client = mock.beacon_client();
 
         let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
         let group_pubkey = PubKey::new(BlstImpl.secret_to_public_key(&secret).unwrap());
         let (shares, _pub_shares) = split_shares(&secret);
 
         let att = sample_attestation(4);
-        let signed = sign(client, &shares[&1], &att, DomainName::BeaconAttester, 4).await;
+        let signed = sign(&client, &shares[&1], &att, DomainName::BeaconAttester, 4).await;
         let par = ParSignedData::new(signed, 1);
 
         // Empty map: the validator public key is not part of the cluster lock.
@@ -755,14 +755,14 @@ mod eth2_verifier_tests {
     #[tokio::test]
     async fn rejects_missing_share_index() {
         let mock = BeaconMock::builder().build().await.unwrap();
-        let client = mock.client();
+        let client = mock.beacon_client();
 
         let secret = secret_key("345768c0245f1dc702df9e50e811002f61ebb2680b3d5931527ef59f96cbaf9b");
         let group_pubkey = PubKey::new(BlstImpl.secret_to_public_key(&secret).unwrap());
         let (shares, pub_shares) = split_shares(&secret);
 
         let att = sample_attestation(4);
-        let signed = sign(client, &shares[&1], &att, DomainName::BeaconAttester, 4).await;
+        let signed = sign(&client, &shares[&1], &att, DomainName::BeaconAttester, 4).await;
         // Claim a share index that was never produced by the split.
         let par = ParSignedData::new(signed, TOTAL_SHARES + 1);
 

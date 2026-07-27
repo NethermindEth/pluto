@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use pluto_eth2api::{EthBeaconNodeApiClient, EthBeaconNodeApiClientError};
+use pluto_eth2api::{BeaconNodeClient, EthBeaconNodeApiClientError};
 
 use crate::{
     clock::{ChronoClock, Clock},
@@ -58,7 +58,7 @@ impl DutyGater {
     /// Builds a gater from a beacon node client using production defaults: a
     /// real wall clock and a `DEFAULT_ALLOWED_FUTURE_EPOCHS` future-epoch
     /// budget.
-    pub async fn new(client: &EthBeaconNodeApiClient) -> Result<Self> {
+    pub async fn new(client: &BeaconNodeClient) -> Result<Self> {
         Self::with_options(client, Box::new(ChronoClock), DEFAULT_ALLOWED_FUTURE_EPOCHS).await
     }
 
@@ -66,12 +66,12 @@ impl DutyGater {
     /// single fetch path shared with [`DutyGater::new`]; the overrides
     /// exist for tests.
     async fn with_options(
-        client: &EthBeaconNodeApiClient,
+        client: &BeaconNodeClient,
         clock: Box<dyn Clock>,
         allowed_future_epochs: u64,
     ) -> Result<Self> {
-        let genesis_time = client.fetch_genesis_time().await?;
-        let (slot_duration, slots_per_epoch) = client.fetch_slots_config().await?;
+        let genesis_time = client.genesis_time().await?;
+        let (slot_duration, slots_per_epoch) = client.slots_config().await?;
 
         // Work in whole milliseconds. `as_millis()` is u128 (SECONDS_PER_SLOT
         // keeps it tiny); reject a zero (sub-millisecond) or overflowing value
@@ -201,7 +201,7 @@ mod tests {
             .await
             .expect("build beacon mock");
 
-        let gater = DutyGater::with_options(bmock.client(), fixed_clock(now), 2)
+        let gater = DutyGater::with_options(&bmock.beacon_client(), fixed_clock(now), 2)
             .await
             .expect("build gater");
 
@@ -246,7 +246,9 @@ mod tests {
             .await
             .expect("build beacon mock");
 
-        let gater = DutyGater::new(bmock.client()).await.expect("build gater");
+        let gater = DutyGater::new(&bmock.beacon_client())
+            .await
+            .expect("build gater");
 
         assert!(gater.allows(&attester(0))); // current epoch
         assert!(gater.allows(&attester(95))); // epoch 2 (= budget)

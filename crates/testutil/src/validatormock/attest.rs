@@ -32,7 +32,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use pluto_eth2api::{
-    ConsensusVersion, ETH_CONSENSUS_VERSION, EthBeaconNodeApiClient, EthBeaconNodeApiClientError,
+    BeaconNodeClient, ConsensusVersion, ETH_CONSENSUS_VERSION, EthBeaconNodeApiClientError,
     GetAggregatedAttestationV2Request, GetAggregatedAttestationV2Response,
     GetAttesterDutiesRequest, GetAttesterDutiesResponse, ProduceAttestationDataRequest,
     ProduceAttestationDataResponse, SubmitBeaconCommitteeSelectionsRequest,
@@ -103,7 +103,7 @@ pub struct BeaconCommitteeSelection {
 /// `OnceCell`s (one per stage) acting as Go's `chan struct{}` ready signals.
 #[derive(Debug, Clone)]
 pub struct SlotAttester {
-    eth2_cl: Arc<EthBeaconNodeApiClient>,
+    eth2_cl: BeaconNodeClient,
     slot: Slot,
     #[allow(dead_code)] // matched against duties via the active-validator map
     pubkeys: Vec<BLSPubKey>,
@@ -129,7 +129,7 @@ impl SlotAttester {
     /// and safe to share between the scheduler tasks.
     #[must_use]
     pub fn new(
-        eth2_cl: Arc<EthBeaconNodeApiClient>,
+        eth2_cl: BeaconNodeClient,
         slot: Slot,
         sign_func: SignFunc,
         pubkeys: Vec<BLSPubKey>,
@@ -161,7 +161,7 @@ impl SlotAttester {
     /// already-closed channel only triggering an explicit panic; here we
     /// prefer idempotence.
     pub async fn prepare(&self) -> Result<()> {
-        let vals = super::validators::active_validators(&self.eth2_cl).await?;
+        let vals = super::validators::active_validators(self.eth2_cl.api()).await?;
 
         let duties = prepare_attesters(&self.eth2_cl, &vals, self.slot).await?;
         self.set_prepare_duties(vals, duties.clone()).await;
@@ -245,7 +245,7 @@ impl SlotAttester {
 // ---------------------------------------------------------------------------
 
 async fn prepare_attesters(
-    eth2_cl: &EthBeaconNodeApiClient,
+    eth2_cl: &BeaconNodeClient,
     vals: &ActiveValidators,
     slot: Slot,
 ) -> Result<Vec<AttesterDuty>> {
@@ -264,6 +264,7 @@ async fn prepare_attesters(
         .map_err(EthBeaconNodeApiClientError::RequestError)?;
 
     let response = eth2_cl
+        .api()
         .get_attester_duties(request)
         .await
         .map_err(EthBeaconNodeApiClientError::RequestError)?;
@@ -317,7 +318,7 @@ fn parse_duty(
 // ---------------------------------------------------------------------------
 
 async fn prepare_aggregators(
-    eth2_cl: &EthBeaconNodeApiClient,
+    eth2_cl: &BeaconNodeClient,
     sign_func: &SignFunc,
     _state: &Arc<Mutex<MutableState>>,
     duties: &[AttesterDuty],
@@ -353,6 +354,7 @@ async fn prepare_aggregators(
         .map_err(EthBeaconNodeApiClientError::RequestError)?;
 
     let response = eth2_cl
+        .api()
         .submit_beacon_committee_selections(request)
         .await
         .map_err(EthBeaconNodeApiClientError::RequestError)?;
@@ -392,7 +394,7 @@ async fn prepare_aggregators(
 // ---------------------------------------------------------------------------
 
 async fn attest(
-    eth2_cl: &EthBeaconNodeApiClient,
+    eth2_cl: &BeaconNodeClient,
     sign_func: &SignFunc,
     slot: Slot,
     duties: &[AttesterDuty],
@@ -429,6 +431,7 @@ async fn attest(
             .map_err(EthBeaconNodeApiClientError::RequestError)?;
 
         let response = eth2_cl
+            .api()
             .produce_attestation_data(request)
             .await
             .map_err(EthBeaconNodeApiClientError::RequestError)?;
@@ -477,7 +480,7 @@ async fn attest(
 // ---------------------------------------------------------------------------
 
 async fn aggregate(
-    eth2_cl: &EthBeaconNodeApiClient,
+    eth2_cl: &BeaconNodeClient,
     sign_func: &SignFunc,
     slot: Slot,
     vals: &ActiveValidators,
@@ -543,7 +546,7 @@ async fn aggregate(
 }
 
 async fn get_aggregate_attestation(
-    eth2_cl: &EthBeaconNodeApiClient,
+    eth2_cl: &BeaconNodeClient,
     datas: &[AttestationData],
     comm_idx: CommitteeIndex,
 ) -> Result<electra::Attestation> {
@@ -561,6 +564,7 @@ async fn get_aggregate_attestation(
             .map_err(EthBeaconNodeApiClientError::RequestError)?;
 
         let response = eth2_cl
+            .api()
             .get_aggregated_attestation_v2(request)
             .await
             .map_err(EthBeaconNodeApiClientError::RequestError)?;
@@ -600,7 +604,7 @@ async fn get_aggregate_attestation(
 const ERROR_BODY_TRUNCATE: usize = 1024;
 
 async fn submit_attestations(
-    eth2_cl: &EthBeaconNodeApiClient,
+    eth2_cl: &BeaconNodeClient,
     atts: &[electra::SingleAttestation],
 ) -> Result<()> {
     const ENDPOINT: &str = "/eth/v2/beacon/pool/attestations";
@@ -608,7 +612,7 @@ async fn submit_attestations(
 }
 
 async fn submit_aggregate_attestations(
-    eth2_cl: &EthBeaconNodeApiClient,
+    eth2_cl: &BeaconNodeClient,
     aggs: &[electra::SignedAggregateAndProof],
 ) -> Result<()> {
     const ENDPOINT: &str = "/eth/v2/validator/aggregate_and_proofs";
@@ -618,11 +622,11 @@ async fn submit_aggregate_attestations(
 }
 
 async fn submit_json<T: Serialize + ?Sized>(
-    eth2_cl: &EthBeaconNodeApiClient,
+    eth2_cl: &BeaconNodeClient,
     endpoint: &'static str,
     body: &T,
 ) -> Result<()> {
-    let mut url = eth2_cl.base_url.clone();
+    let mut url = eth2_cl.api().base_url.clone();
     {
         let mut segments = url.path_segments_mut().map_err(|()| {
             Error::Malformed(format!("base url has no path segments for {endpoint}"))
@@ -634,6 +638,7 @@ async fn submit_json<T: Serialize + ?Sized>(
     }
 
     let response = eth2_cl
+        .api()
         .client
         .post(url)
         // The v2 pool/aggregate submit endpoints require the consensus-version
@@ -788,12 +793,7 @@ mod tests {
             .expect("fetch slots config");
 
         let sign_func: SignFunc = Arc::new(PubkeyEchoSigner);
-        let attester = SlotAttester::new(
-            Arc::new(mock.client().clone()),
-            slots_per_epoch,
-            sign_func,
-            pubkeys,
-        );
+        let attester = SlotAttester::new(mock.beacon_client(), slots_per_epoch, sign_func, pubkeys);
 
         attester.prepare().await.expect("prepare");
         attester.attest().await.expect("attest");

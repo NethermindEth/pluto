@@ -4,7 +4,7 @@
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls, types::PublicKey};
-use pluto_eth2api::client::EthBeaconNodeApiClient;
+use pluto_eth2api::BeaconNodeClient;
 use tracing::{debug, error, info_span};
 
 use crate::{
@@ -255,7 +255,7 @@ impl Aggregator {
 
 /// Returns a [`VerifyFn`] that verifies the aggregated signature against the
 /// beacon chain.
-pub fn new_verifier(eth2_cl: Arc<EthBeaconNodeApiClient>) -> VerifyFn {
+pub fn new_verifier(eth2_cl: BeaconNodeClient) -> VerifyFn {
     Arc::new(move |pubkey: &PubKey, data: &dyn SignedData| {
         let eth2_cl = eth2_cl.clone();
         // The future must be `'static`, so clone the borrowed inputs out of the
@@ -300,7 +300,7 @@ mod tests {
     #[tokio::test]
     async fn new_verifier_rejects_non_eth2_data() {
         let mock = pluto_testutil::BeaconMock::builder().build().await.unwrap();
-        let eth2_cl = Arc::new(mock.client().clone());
+        let eth2_cl = mock.beacon_client();
         let verify = new_verifier(eth2_cl);
 
         let data = MockSignedData {

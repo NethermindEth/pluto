@@ -9,7 +9,7 @@ use std::{any::Any, collections::HashMap, future::Future, pin::Pin, sync::Arc, t
 use async_trait::async_trait;
 use axum::http::StatusCode;
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, GetAttesterDutiesRequest, GetAttesterDutiesResponse,
+    BeaconNodeClient, GetAttesterDutiesRequest, GetAttesterDutiesResponse,
     GetProposerDutiesRequest, GetProposerDutiesResponse, GetStateValidatorsResponseResponse,
     GetSyncCommitteeDutiesRequest, GetSyncCommitteeDutiesResponse, PostStateValidatorsRequest,
     PostStateValidatorsRequestPath, PostStateValidatorsResponse, ValidatorRequestBody,
@@ -162,8 +162,9 @@ const PROPOSAL_TIMEOUT: Duration = Duration::from_secs(24);
 /// validator client, and emits partial-signed-data to subscribers on submit
 /// endpoints.
 pub struct Component {
-    /// Upstream beacon-node API client.
-    eth2_cl: Arc<EthBeaconNodeApiClient>,
+    /// Upstream beacon-node API client with cached static chain config
+    /// (spec, genesis, fork schedule) for signing-domain resolution.
+    eth2_cl: BeaconNodeClient,
     /// Per-epoch active-validators cache. Submit handlers consult this to
     /// translate a validator-client-supplied `validator_index` into the
     /// cluster's DV root public key.
@@ -209,7 +210,7 @@ pub struct Component {
 impl Component {
     /// Builds a new component.
     pub fn new(
-        eth2_cl: Arc<EthBeaconNodeApiClient>,
+        eth2_cl: BeaconNodeClient,
         dutydb: Arc<MemDB>,
         share_idx: u64,
         pub_share_by_pubkey: HashMap<BLSPubKey, BLSPubKey>,
@@ -241,7 +242,7 @@ impl Component {
     /// to bypass signature checks.
     #[cfg(test)]
     pub fn new_insecure(
-        eth2_cl: Arc<EthBeaconNodeApiClient>,
+        eth2_cl: BeaconNodeClient,
         dutydb: Arc<MemDB>,
         share_idx: u64,
         validator_cache: Arc<dyn CachedValidatorsProvider>,
@@ -450,8 +451,7 @@ impl Component {
                     "unknown validator public key for partial signature",
                 ),
                 VerifyPartialSigError::Signing(inner) => {
-                    ApiError::new(StatusCode::BAD_REQUEST, "invalid partial signature")
-                        .with_source(inner)
+                    signing_error_to_api_error(inner, "invalid partial signature")
                 }
             })
     }
@@ -746,11 +746,10 @@ impl Component {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("{endpoint}: unknown validator public key"),
                 ),
-                VerifyPartialSigError::Signing(inner) => ApiError::new(
-                    StatusCode::BAD_REQUEST,
+                VerifyPartialSigError::Signing(inner) => signing_error_to_api_error(
+                    inner,
                     format!("{endpoint}: invalid partial signature"),
-                )
-                .with_source(inner),
+                ),
             })
     }
 
@@ -915,7 +914,7 @@ impl Handler for Component {
 
         let response = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            self.eth2_cl.get_proposer_duties(request),
+            self.eth2_cl.api().get_proposer_duties(request),
         )
         .await
         .map_err(|_| upstream_timeout("proposer duties"))?
@@ -965,7 +964,7 @@ impl Handler for Component {
 
         let response = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            self.eth2_cl.get_attester_duties(request),
+            self.eth2_cl.api().get_attester_duties(request),
         )
         .await
         .map_err(|_| upstream_timeout("attester duties"))?
@@ -1018,7 +1017,7 @@ impl Handler for Component {
 
         let response = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            self.eth2_cl.get_sync_committee_duties(request),
+            self.eth2_cl.api().get_sync_committee_duties(request),
         )
         .await
         .map_err(|_| upstream_timeout("sync committee duties"))?
@@ -1363,11 +1362,10 @@ impl Handler for Component {
                 signing::verify_aggregate_and_proof_selection(&self.eth2_cl, eth2_pubkey, &agg.0)
                     .await
                     .map_err(|err| {
-                        ApiError::new(
-                            StatusCode::BAD_REQUEST,
+                        signing_error_to_api_error(
+                            err,
                             "aggregate selection proof verification failed",
                         )
-                        .with_source(err)
                     })?;
             }
 
@@ -1643,7 +1641,7 @@ impl Handler for Component {
 
         let response = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            self.eth2_cl.post_state_validators(request),
+            self.eth2_cl.api().post_state_validators(request),
         )
         .await
         .map_err(|_| upstream_timeout("validators"))?
@@ -1726,12 +1724,12 @@ impl Handler for Component {
         // so we resolve it once here too rather than letting
         // `verify_partial_sig` fan out 2N domain-lookup calls.
         let (slot_duration, _) =
-            tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.fetch_slots_config())
+            tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.slots_config())
                 .await
                 .map_err(|_| upstream_timeout("slots config"))?
                 .map_err(|err| upstream_call_failed("slots config", err.into()))?;
         let genesis_time =
-            tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.fetch_genesis_time())
+            tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.genesis_time())
                 .await
                 .map_err(|_| upstream_timeout("genesis time"))?
                 .map_err(|err| upstream_call_failed("genesis time", err.into()))?;
@@ -1766,7 +1764,7 @@ impl Handler for Component {
 
         // Duty slot = slots_per_epoch * epoch.
         let (_, slots_per_epoch) =
-            tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.fetch_slots_config())
+            tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.slots_config())
                 .await
                 .map_err(|_| upstream_timeout("slots config"))?
                 .map_err(|err| upstream_call_failed("slots config", err.into()))?;
@@ -1910,11 +1908,7 @@ impl Handler for Component {
                 )
                 .await
                 .map_err(|err| {
-                    ApiError::new(
-                        StatusCode::BAD_REQUEST,
-                        "invalid sync committee selection proof",
-                    )
-                    .with_source(err)
+                    signing_error_to_api_error(err, "invalid sync committee selection proof")
                 })?;
             }
 
@@ -2268,11 +2262,37 @@ fn pubkey_to_bls(pk: &PubKey) -> BLSPubKey {
     out
 }
 
-/// Maps a [`VerifyPartialSigError`] into the `ApiError` returned to the
-/// client. `UnknownPubKey` is a misconfiguration (500), `Signing` is a
-/// validator-client mistake (400) — both keep the underlying error as a
-/// `source` so the debug log retains it while the client sees a generic
-/// message.
+/// Maps a [`SigningError`] to the client-facing `ApiError`: upstream
+/// beacon-node failures are 502 (no signature was checked, so 400 would
+/// mislead the VC); failures attributable to the submitted signature are 400
+/// with `invalid_msg`; anything else — e.g. a public key from the cluster
+/// lock or validator cache that is not a valid BLS point — is server-side
+/// state, so 500.
+fn signing_error_to_api_error(err: SigningError, invalid_msg: impl Into<String>) -> ApiError {
+    use pluto_crypto::types::Error as CryptoError;
+
+    match err {
+        SigningError::BeaconNode(_) | SigningError::Helper(_) => ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            "beacon node lookup failed during signature verification",
+        )
+        .with_source(err),
+        SigningError::ZeroSignature
+        | SigningError::UnknownAggregateAndProofVersion
+        | SigningError::Verification(
+            CryptoError::InvalidSignature(_) | CryptoError::VerificationFailed(_),
+        ) => ApiError::new(StatusCode::BAD_REQUEST, invalid_msg).with_source(err),
+        _ => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal error during signature verification",
+        )
+        .with_source(err),
+    }
+}
+
+/// Maps a [`VerifyPartialSigError`] to the client-facing `ApiError`:
+/// `UnknownPubKey` is a misconfiguration (500), `Signing` follows
+/// [`signing_error_to_api_error`].
 fn verify_partial_sig_error(err: VerifyPartialSigError) -> ApiError {
     match err {
         VerifyPartialSigError::UnknownPubKey => ApiError::new(
@@ -2280,11 +2300,9 @@ fn verify_partial_sig_error(err: VerifyPartialSigError) -> ApiError {
             "unknown public key for partial signature verification",
         )
         .with_source(err),
-        VerifyPartialSigError::Signing(_) => ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "partial signature verification failed",
-        )
-        .with_source(err),
+        VerifyPartialSigError::Signing(inner) => {
+            signing_error_to_api_error(inner, "partial signature verification failed")
+        }
     }
 }
 
@@ -2708,10 +2726,13 @@ mod tests {
 
     use chrono::{DateTime, Utc};
     use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
-    use pluto_eth2api::spec::altair::{
-        ContributionAndProof, SignedContributionAndProof as AltairSignedContributionAndProof,
-        SyncCommitteeContribution as AltairSyncCommitteeContribution,
-        SyncCommitteeMessage as AltairSyncCommitteeMessage,
+    use pluto_eth2api::{
+        EthBeaconNodeApiClient,
+        spec::altair::{
+            ContributionAndProof, SignedContributionAndProof as AltairSignedContributionAndProof,
+            SyncCommitteeContribution as AltairSyncCommitteeContribution,
+            SyncCommitteeMessage as AltairSyncCommitteeMessage,
+        },
     };
     use pluto_ssz::BitVector;
     use pluto_testutil::BeaconMock;
@@ -2788,8 +2809,7 @@ mod tests {
         // `evict_rx` doesn't observe a closed channel.
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl =
-            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
+        let eth2_cl = dummy_beacon_client();
         let component =
             Component::new_insecure(eth2_cl, Arc::clone(&dutydb), 1, TestValidatorCache::empty());
         (component, dutydb)
@@ -3031,8 +3051,7 @@ mod tests {
             DeadlinerTask::start(cancel.clone(), "validatorapi-tests", FarFutureCalculator);
         let (trim_tx, trim_rx) = channel::<Duty>(8);
         let dutydb = Arc::new(MemDB::new(deadliner, trim_rx, &cancel));
-        let eth2_cl =
-            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
+        let eth2_cl = dummy_beacon_client();
         let component =
             Component::new_insecure(eth2_cl, Arc::clone(&dutydb), 1, TestValidatorCache::empty());
 
@@ -3199,6 +3218,16 @@ mod tests {
     // Plumbing tests — Subscribe / Register* / verify_partial_sig
     // ====================================================================
 
+    /// Beacon client over the given (mock server) URL.
+    fn beacon_client_at(url: &str) -> BeaconNodeClient {
+        BeaconNodeClient::new(EthBeaconNodeApiClient::with_base_url(url).unwrap())
+    }
+
+    /// Beacon client pinned to an unroutable endpoint.
+    fn dummy_beacon_client() -> BeaconNodeClient {
+        beacon_client_at("http://127.0.0.1:0")
+    }
+
     fn dv_pubkey(byte: u8) -> BLSPubKey {
         [byte; 48]
     }
@@ -3218,8 +3247,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl =
-            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
+        let eth2_cl = dummy_beacon_client();
         Component::new(eth2_cl, dutydb, 1, map, false, TestValidatorCache::empty())
     }
 
@@ -3458,7 +3486,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = beacon_client_at(&mock.uri());
         let component = Component::new(eth2_cl, dutydb, 1, map, false, TestValidatorCache::empty());
         (component, mock)
     }
@@ -3485,10 +3513,14 @@ mod tests {
 
         // Compute the signing root the same way `signing::verify` does, then
         // sign it with the share's secret.
-        let signing_root =
-            pluto_eth2util::signing::get_data_root(mock.client(), domain, epoch, message_root)
-                .await
-                .unwrap();
+        let signing_root = pluto_eth2util::signing::get_data_root(
+            &mock.beacon_client(),
+            domain,
+            epoch,
+            message_root,
+        )
+        .await
+        .unwrap();
         let good_signature = BlstImpl.sign(&secret, &signing_root).unwrap();
 
         component
@@ -3540,8 +3572,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl =
-            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
+        let eth2_cl = dummy_beacon_client();
         let component = Component::new_insecure(eth2_cl, dutydb, 1, TestValidatorCache::empty());
 
         component
@@ -3554,6 +3585,93 @@ mod tests {
             )
             .await
             .expect("insecure_test mode skips verification");
+    }
+
+    /// A beacon-node failure during domain resolution must map to 502, not
+    /// the 400 the VC would misread as an invalid signature.
+    #[tokio::test]
+    async fn beacon_outage_during_verification_maps_to_502_not_400() {
+        let secret = BlstImpl
+            .generate_insecure_secret(rand::rngs::OsRng)
+            .unwrap();
+        let pubshare = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let dv_root = dv_pubkey(0xAB);
+
+        // Unroutable beacon node: domain resolution fails before any BLS
+        // verification. Non-zero signature avoids the zero-sig short-circuit.
+        let cancel = CancellationToken::new();
+        let (deadliner, _deadliner_rx) = DeadlinerTask::start(
+            cancel.clone(),
+            "validatorapi-outage-tests",
+            FarFutureCalculator,
+        );
+        let (_evict_tx, evict_rx) = mpsc::channel(1);
+        let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
+        let eth2_cl = dummy_beacon_client();
+        let component = Component::new(
+            eth2_cl,
+            dutydb,
+            1,
+            HashMap::from([(dv_root, pubshare)]),
+            false,
+            TestValidatorCache::empty(),
+        );
+
+        let err = component
+            .verify_partial_sig(
+                &dv_root,
+                DomainName::BeaconAttester,
+                0,
+                [0x42; 32],
+                &[0x11; 96],
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                VerifyPartialSigError::Signing(SigningError::BeaconNode(_))
+            ),
+            "expected upstream signing error, got {err:?}"
+        );
+        assert_eq!(
+            verify_partial_sig_error(err).status_code,
+            StatusCode::BAD_GATEWAY
+        );
+    }
+
+    /// Genuine signature failures keep mapping to 400.
+    #[test]
+    fn verify_partial_sig_error_maps_signature_failures_to_400() {
+        let err = VerifyPartialSigError::Signing(SigningError::ZeroSignature);
+        assert_eq!(
+            verify_partial_sig_error(err).status_code,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    /// A configured pubshare that is not a valid BLS point comes from the
+    /// cluster lock, not the VC, so it must map to 500 rather than 400.
+    #[tokio::test]
+    async fn invalid_configured_pubshare_maps_to_500_not_400() {
+        let dv_root = dv_pubkey(0xAC);
+        let bad_share: BLSPubKey = [0x11; 48];
+        let (component, _mock) = make_verify_component(HashMap::from([(dv_root, bad_share)])).await;
+
+        let err = component
+            .verify_partial_sig(
+                &dv_root,
+                DomainName::BeaconAttester,
+                0,
+                [0x42; 32],
+                &[0x11; 96],
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            verify_partial_sig_error(err).status_code,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 
     // CachedValidatorsProvider plumbing
@@ -3571,8 +3689,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl =
-            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
+        let eth2_cl = dummy_beacon_client();
 
         let expected = HashMap::from([(1u64, dv_pubkey(0xA1)), (7u64, dv_pubkey(0xA7))]);
         let component = Component::new_insecure(
@@ -3619,8 +3736,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl =
-            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
+        let eth2_cl = dummy_beacon_client();
         let component = Component::new_insecure(eth2_cl, dutydb, 1, Arc::new(FailingCache));
 
         let err = component.fetch_active_validators().await.unwrap_err();
@@ -3665,7 +3781,7 @@ mod tests {
             DeadlinerTask::start(cancel.clone(), "selections-tests", FarFutureCalculator);
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = beacon_client_at(&mock.uri());
         let component = Component::new_insecure(
             eth2_cl,
             dutydb,
@@ -3698,7 +3814,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = beacon_client_at(&mock.uri());
         let component = Component::new(
             eth2_cl,
             dutydb,
@@ -4195,7 +4311,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = beacon_client_at(&mock.uri());
         let mut component = Component::new(
             eth2_cl,
             dutydb,
@@ -4351,7 +4467,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = beacon_client_at(&mock.uri());
         let component = Component::new(
             eth2_cl,
             dutydb,
@@ -4483,7 +4599,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = beacon_client_at(&mock.uri());
         let component = Component::new(eth2_cl, dutydb, 1, map, true, TestValidatorCache::empty());
 
         let reg = make_signed_registration(dv_root, 24, [0x42; 96]);
@@ -4520,8 +4636,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl =
-            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
+        let eth2_cl = dummy_beacon_client();
         let mut component =
             Component::new_insecure(eth2_cl, dutydb, 7, TestValidatorCache::arc(active));
 
@@ -4788,8 +4903,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl =
-            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
+        let eth2_cl = dummy_beacon_client();
         let component = Component::new_insecure(eth2_cl, dutydb, 1, Arc::new(FailingCache));
 
         let err = component
@@ -4864,7 +4978,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = beacon_client_at(&mock.uri());
         // Empty share map: lookup for `dv_root` will return
         // `VerifyPartialSigError::UnknownPubKey`, which the handler maps
         // to 400.
@@ -4903,7 +5017,7 @@ mod tests {
         // Resolve the same signing root the handler will compute (epoch=0
         // since slot/SLOTS_PER_EPOCH=1/16=0).
         let signing_root = pluto_eth2util::signing::get_data_root(
-            mock.client(),
+            &mock.beacon_client(),
             DomainName::SyncCommittee,
             0,
             beacon_block_root,
@@ -4921,7 +5035,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = beacon_client_at(&mock.uri());
         let active: HashMap<ValidatorIndex, BLSPubKey> = HashMap::from([(7, dv_root)]);
         let mut component = Component::new(
             eth2_cl,
@@ -4979,12 +5093,12 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = beacon_client_at(&mock.uri());
         let component = Component::new(eth2_cl, dutydb, 1, map, false, TestValidatorCache::empty());
 
         let message_root: Root = [0xCD; 32];
         let signing_root = pluto_eth2util::signing::get_data_root(
-            mock.client(),
+            &mock.beacon_client(),
             DomainName::SyncCommittee,
             0,
             message_root,
@@ -5011,7 +5125,12 @@ mod tests {
     /// `verify_partial_sig_for` is reached for the contribution path too.
     #[tokio::test]
     async fn submit_sync_committee_contributions_rejects_invalid_partial_sig() {
-        let dv_root = [0xCD_u8; 48];
+        // A valid BLS point: an unparseable root pubkey would map to 500
+        // (server-side state), not the 400 under test.
+        let secret = BlstImpl
+            .generate_insecure_secret(rand::rngs::OsRng)
+            .unwrap();
+        let dv_root = BlstImpl.secret_to_public_key(&secret).unwrap();
         let mock = mock_beacon_for_signing().await;
         let cancel = CancellationToken::new();
         let (deadliner, _deadliner_rx) = DeadlinerTask::start(
@@ -5021,7 +5140,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = beacon_client_at(&mock.uri());
         // `insecure_test = false` but no share registered for `dv_root`. The
         // inner selection-proof verify runs first; because the selection
         // proof is a zero-byte signature here it will be rejected with 400
@@ -5036,9 +5155,8 @@ mod tests {
             TestValidatorCache::arc(active),
         );
 
-        // The dummy fixture's `selection_proof` is `[0x50; 96]` — a random
-        // non-zero garbage signature, so `signing::verify` returns
-        // `VerifyFailed`, which we map to 400.
+        // The dummy fixture's `selection_proof` is `[0x50; 96]` — non-zero
+        // garbage, so `signing::verify` rejects it and maps to 400.
         let err = component
             .submit_sync_committee_contributions(vec![dummy_signed_contribution_and_proof(1, 7, 0)])
             .await
@@ -5089,7 +5207,7 @@ mod tests {
         }
         .selection_proof_message_root();
         let selection_proof_signing_root = pluto_eth2util::signing::get_data_root(
-            mock.client(),
+            &mock.beacon_client(),
             DomainName::SyncCommitteeSelectionProof,
             0,
             selection_proof_root,
@@ -5114,7 +5232,7 @@ mod tests {
         }
         .message_root();
         let outer_signing_root = pluto_eth2util::signing::get_data_root(
-            mock.client(),
+            &mock.beacon_client(),
             DomainName::ContributionAndProof,
             0,
             outer_root,
@@ -5132,7 +5250,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = beacon_client_at(&mock.uri());
         let active: HashMap<ValidatorIndex, BLSPubKey> =
             HashMap::from([(aggregator_index, root_pubkey)]);
         let mut component = Component::new(
@@ -5228,7 +5346,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = beacon_client_at(&mock.uri());
         let component =
             Component::new_insecure(eth2_cl, Arc::clone(&dutydb), 1, TestValidatorCache::empty());
         (component, mock)
@@ -5891,7 +6009,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = beacon_client_at(&mock.uri());
         let mut component = Component::new(
             eth2_cl,
             Arc::clone(&dutydb),
@@ -6075,7 +6193,7 @@ mod tests {
             DeadlinerTask::start(cancel.clone(), "validatorapi-tests", FarFutureCalculator);
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(server.uri()).unwrap());
+        let eth2_cl = beacon_client_at(&server.uri());
         Component::new(
             eth2_cl,
             dutydb,
@@ -6535,7 +6653,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
+        let eth2_cl = beacon_client_at(&mock.uri());
         let component = Component {
             eth2_cl,
             dutydb,
