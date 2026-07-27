@@ -330,9 +330,10 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         verify_fork_schedule(&beacon_client, &lock.fork_version).await?;
     }
 
-    // Warm both config caches before duty scheduling so signing-domain
-    // resolution never blocks on a live fetch; failure aborts startup. The
-    // network check above already filled `beacon_client`'s schedule slot.
+    // Warm both config caches before duty scheduling so duty-path config
+    // reads start served from cache (refetched at most once per TTL);
+    // failure aborts startup. The network check above already filled
+    // `beacon_client`'s schedule slot.
     tokio::try_join!(beacon_client.warm(), submission_client.warm())?;
 
     // ---- Beacon-derived duty-workflow inputs ----
@@ -946,6 +947,8 @@ async fn verify_fork_schedule(
     Err(AppError::ForkScheduleMismatch {
         lock_network: network_name_or_hex(lock_fork_version),
         lock_fork_version: format!("0x{}", hex::encode(lock_fork_version)),
+        // Defensive: `fork_schedule()` rejects empty schedules, so `first()`
+        // cannot be `None` here.
         beacon_node_network: schedule
             .first()
             .map(|fork| network_name_or_hex(&fork.version))

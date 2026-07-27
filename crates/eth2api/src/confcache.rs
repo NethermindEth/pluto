@@ -37,7 +37,12 @@ impl<T> Default for ConfigEntry<T> {
 impl<T> ConfigEntry<T> {
     /// Returns the cached value, fetching when absent or older than `ttl`.
     /// The fetch runs under the write lock, so concurrent cold callers
-    /// coalesce into one request; failures are never cached.
+    /// coalesce into one request (a caller cancelled mid-fetch releases the
+    /// lock and the next caller retries). Failures are never cached — and
+    /// never masked by an expired value, which caps how stale the config can
+    /// get (a stale fork schedule would derive wrong signing domains across
+    /// a fork activation) — so the error propagates and the next caller
+    /// retries.
     async fn get_or_fetch<F, Fut>(&self, ttl: Duration, fetch: F) -> Result<Arc<T>>
     where
         F: FnOnce() -> Fut,
@@ -219,8 +224,9 @@ mod tests {
         client.fork_config().await.unwrap();
         client.genesis_time().await.unwrap();
 
-        // Fork version at epoch 20 comes from the second schedule entry.
-        assert_eq!(first[..4], [0x01, 0x00, 0x00, 0x00]);
+        // Fork selection: epoch 5 resolves the first schedule entry, epoch 20
+        // the second, so the domains differ.
+        assert_ne!(client.domain(attester, 5).await.unwrap(), first);
     }
 
     #[tokio::test]
@@ -318,5 +324,32 @@ mod tests {
         }
 
         assert_eq!(fetches.load(Ordering::SeqCst), 2);
+    }
+
+    /// A failed refresh propagates the error rather than serving the expired
+    /// value, capping config staleness at one TTL; the next call retries.
+    #[tokio::test]
+    async fn refresh_failure_propagates_and_next_call_retries() {
+        let entry = ConfigEntry::<u8>::default();
+
+        entry
+            .get_or_fetch(Duration::ZERO, || async { Ok(7) })
+            .await
+            .unwrap();
+
+        // Expired (zero TTL) and the refresh fails: the error surfaces.
+        entry
+            .get_or_fetch(Duration::ZERO, || async {
+                Err(EthBeaconNodeApiClientError::UnexpectedResponse)
+            })
+            .await
+            .unwrap_err();
+
+        // The failure was not cached: the next call fetches again.
+        let value = entry
+            .get_or_fetch(Duration::ZERO, || async { Ok(8) })
+            .await
+            .unwrap();
+        assert_eq!(*value, 8);
     }
 }

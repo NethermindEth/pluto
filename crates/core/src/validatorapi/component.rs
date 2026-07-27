@@ -18,7 +18,7 @@ use pluto_eth2api::{
     versioned::{DataVersion, SignedBlindedProposalBlock, SignedProposalBlock},
 };
 use pluto_eth2util::{
-    helpers::epoch_from_slot,
+    helpers::{HelperError, epoch_from_slot},
     signing::{self, DomainName, SigningError},
 };
 use tokio::time::error::Elapsed;
@@ -2272,11 +2272,13 @@ fn signing_error_to_api_error(err: SigningError, invalid_msg: impl Into<String>)
     use pluto_crypto::types::Error as CryptoError;
 
     match err {
-        SigningError::BeaconNode(_) | SigningError::Helper(_) => ApiError::new(
-            StatusCode::BAD_GATEWAY,
-            "beacon node lookup failed during signature verification",
-        )
-        .with_source(err),
+        SigningError::BeaconNode(_) | SigningError::Helper(HelperError::GettingSpec(_)) => {
+            ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                "beacon node lookup failed during signature verification",
+            )
+            .with_source(err)
+        }
         SigningError::ZeroSignature
         | SigningError::UnknownAggregateAndProofVersion
         | SigningError::Verification(
