@@ -80,7 +80,9 @@ impl BeaconNodeClient {
     }
 
     /// Returns the parsed fork-schedule entries, in server order (cached).
-    pub(crate) async fn fork_schedule(&self) -> ConfigResult<Arc<Vec<ForkSchedule>>> {
+    /// The first entry is the genesis fork version, which identifies the
+    /// beacon node's network.
+    pub async fn fork_schedule(&self) -> ConfigResult<Arc<Vec<ForkSchedule>>> {
         self.0.config.fork_schedule(&self.0.api).await
     }
 

@@ -313,6 +313,11 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     };
     let eth2_cl = build_api_client(&beacon_node_addr, config.beacon_node_timeout)?;
 
+    let beacon_client = pluto_eth2api::BeaconNodeClient::new(eth2_cl.clone());
+    // Broadcasting uses a separate client with the (distinct) submit timeout.
+    let submission_api = build_api_client(&beacon_node_addr, config.beacon_node_submit_timeout)?;
+    let submission_client = pluto_eth2api::BeaconNodeClient::new(submission_api);
+
     // Fail fast if the beacon node is on a different network than the cluster
     // lock (Charon's `configureEth2Client`, app.go:1022-1053). Both eth2
     // clients here target the same endpoint, so a single check suffices —
@@ -322,16 +327,12 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     // fork version (`build_simnet_beacon_mock`), so a network mismatch is
     // impossible by construction.
     if simnet_beacon_mock.is_none() {
-        verify_fork_schedule(&eth2_cl, &lock.fork_version).await?;
+        verify_fork_schedule(&beacon_client, &lock.fork_version).await?;
     }
 
-    let beacon_client = pluto_eth2api::BeaconNodeClient::new(eth2_cl.clone());
-    // Broadcasting uses a separate client with the (distinct) submit timeout.
-    let submission_api = build_api_client(&beacon_node_addr, config.beacon_node_submit_timeout)?;
-    let submission_client = pluto_eth2api::BeaconNodeClient::new(submission_api);
-
     // Warm both config caches before duty scheduling so signing-domain
-    // resolution never blocks on a live fetch; failure aborts startup.
+    // resolution never blocks on a live fetch; failure aborts startup. The
+    // network check above already filled `beacon_client`'s schedule slot.
     tokio::try_join!(beacon_client.warm(), submission_client.warm())?;
 
     // ---- Beacon-derived duty-workflow inputs ----
@@ -925,14 +926,19 @@ fn parse_execution_address(s: &str) -> Option<[u8; 20]> {
 /// Fails fast when the beacon node is on a different network than the cluster
 /// lock.
 ///
-/// Mirrors Charon's `configureEth2Client` fork-schedule guard.
+/// Mirrors Charon's `configureEth2Client` fork-schedule guard. Reads the
+/// schedule through the client's config cache, so the startup warm-up reuses
+/// this fetch.
 async fn verify_fork_schedule(
-    eth2_cl: &pluto_eth2api::EthBeaconNodeApiClient,
+    client: &pluto_eth2api::BeaconNodeClient,
     lock_fork_version: &[u8],
 ) -> Result<(), AppError> {
-    let versions = eth2_cl.fetch_fork_schedule_versions().await?;
+    let schedule = client.fork_schedule().await?;
 
-    if versions.iter().any(|v| v.as_slice() == lock_fork_version) {
+    if schedule
+        .iter()
+        .any(|fork| fork.version.as_slice() == lock_fork_version)
+    {
         return Ok(());
     }
 
@@ -940,9 +946,9 @@ async fn verify_fork_schedule(
     Err(AppError::ForkScheduleMismatch {
         lock_network: network_name_or_hex(lock_fork_version),
         lock_fork_version: format!("0x{}", hex::encode(lock_fork_version)),
-        beacon_node_network: versions
+        beacon_node_network: schedule
             .first()
-            .map(|v| network_name_or_hex(v))
+            .map(|fork| network_name_or_hex(&fork.version))
             .unwrap_or_else(|| "unknown".to_string()),
     })
 }
@@ -1302,7 +1308,7 @@ mod tests {
             .await
             .expect("beacon mock");
 
-        verify_fork_schedule(mock.client(), &HOLESKY_FORK_VERSION)
+        verify_fork_schedule(&mock.beacon_client(), &HOLESKY_FORK_VERSION)
             .await
             .expect("matching fork version should pass the startup guard");
     }
@@ -1317,7 +1323,7 @@ mod tests {
             .await
             .expect("beacon mock");
 
-        let err = verify_fork_schedule(mock.client(), &MAINNET_FORK_VERSION)
+        let err = verify_fork_schedule(&mock.beacon_client(), &MAINNET_FORK_VERSION)
             .await
             .expect_err("mismatched fork version should fail the startup guard");
 
