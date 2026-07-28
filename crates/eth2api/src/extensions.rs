@@ -1,12 +1,17 @@
 use crate::{
     BeaconStateFork, ConsensusVersion, EthBeaconNodeApiClient, EventstreamRequestQueryTopic,
     GetForkScheduleRequest, GetForkScheduleResponse, GetGenesisRequest, GetGenesisResponse,
-    GetGenesisResponseResponseData, GetSpecRequest, GetSpecResponse, ValidatorStatus, spec::phase0,
+    GetGenesisResponseResponseData, GetProposerDutiesRequest, GetProposerDutiesResponse,
+    GetProposerDutiesResponseResponseDatum, GetSpecRequest, GetSpecResponse, ValidatorStatus,
+    spec::phase0,
 };
 use chrono::{DateTime, Utc};
 use eventsource_stream::Eventsource;
 use futures::{Stream, StreamExt};
-use std::{collections::HashMap, time};
+use std::{
+    collections::{HashMap, HashSet},
+    time,
+};
 use tree_hash::TreeHash;
 
 /// Error that can occur when using the
@@ -33,6 +38,15 @@ pub enum EthBeaconNodeApiClientError {
     /// Zero slot duration or slots per epoch in network spec
     #[error("Zero slot duration or slots per epoch in network spec")]
     ZeroSlotDurationOrSlotsPerEpoch,
+
+    /// A duty was returned for a slot outside the epoch it was requested for.
+    #[error("Received duty for slot {slot} outside of requested epoch {epoch}")]
+    DutySlotOutsideEpoch {
+        /// Slot the beacon node reported the duty for.
+        slot: phase0::Slot,
+        /// Epoch the duties were requested for.
+        epoch: phase0::Epoch,
+    },
 
     /// Domain type not found in the beacon spec response
     #[error("Domain type not found: {0}")]
@@ -339,6 +353,69 @@ impl EthBeaconNodeApiClient {
         }
 
         Ok((slot_duration, slots_per_epoch))
+    }
+
+    /// Fetches the proposer duties for `epoch`, keeping only the duties that
+    /// belong to `indices`. An empty `indices` returns them all.
+    ///
+    /// The endpoint takes no validator parameter — it always answers with the
+    /// proposer of every slot in the epoch — so narrowing it is the client's
+    /// job.
+    pub async fn fetch_proposer_duties(
+        &self,
+        epoch: phase0::Epoch,
+        slots_per_epoch: u64,
+        indices: &HashSet<phase0::ValidatorIndex>,
+    ) -> Result<Vec<GetProposerDutiesResponseResponseDatum>, EthBeaconNodeApiClientError> {
+        if slots_per_epoch == 0 {
+            return Err(EthBeaconNodeApiClientError::ZeroSlotDurationOrSlotsPerEpoch);
+        }
+
+        let request = GetProposerDutiesRequest::builder()
+            .epoch(epoch.to_string())
+            .build()
+            .map_err(EthBeaconNodeApiClientError::RequestError)?;
+
+        let duties = match self.get_proposer_duties(request).await? {
+            GetProposerDutiesResponse::Ok(response) => response.data,
+            _ => return Err(EthBeaconNodeApiClientError::UnexpectedResponse),
+        };
+
+        // Validate every duty before dropping any: filtering first would
+        // silently discard a malformed duty that happens to belong to a
+        // validator we did not ask about.
+        let mut validated = Vec::with_capacity(duties.len());
+        for duty in duties {
+            let index = duty
+                .validator_index
+                .parse::<phase0::ValidatorIndex>()
+                .map_err(|_| {
+                    EthBeaconNodeApiClientError::ParseError("proposer duty validator_index".into())
+                })?;
+            let slot = duty.slot.parse::<phase0::Slot>().map_err(|_| {
+                EthBeaconNodeApiClientError::ParseError("proposer duty slot".into())
+            })?;
+            let _: phase0::BLSPubKey =
+                decode_fixed_hex(&duty.pubkey, || "decode proposer duty pubkey".to_string())?;
+
+            // Reject duties outside the requested epoch. Comparing epochs
+            // avoids the slot-bound multiplication overflowing on a bogus
+            // epoch.
+            let duty_epoch = slot
+                .checked_div(slots_per_epoch)
+                .ok_or(EthBeaconNodeApiClientError::ZeroSlotDurationOrSlotsPerEpoch)?;
+            if duty_epoch != epoch {
+                return Err(EthBeaconNodeApiClientError::DutySlotOutsideEpoch { slot, epoch });
+            }
+
+            validated.push((index, duty));
+        }
+
+        Ok(validated
+            .into_iter()
+            .filter(|(index, _)| indices.is_empty() || indices.contains(index))
+            .map(|(_, duty)| duty)
+            .collect())
     }
 
     /// Fetches the fork schedule for all known forks.
@@ -690,5 +767,122 @@ mod tests {
             .expect("ok event");
         assert_eq!(second.topic, "chain_reorg");
         assert_eq!(second.data, r#"{"slot":"20","depth":"2"}"#);
+    }
+
+    /// Slots per epoch used by the proposer-duty tests.
+    const TEST_SLOTS_PER_EPOCH: u64 = 8;
+
+    /// A well-formed proposer duty for `index`, proposing at `slot`.
+    fn proposer_duty(index: u64, slot: u64) -> serde_json::Value {
+        serde_json::json!({
+            "pubkey": format!("0x{:096x}", index),
+            "slot": slot.to_string(),
+            "validator_index": index.to_string(),
+        })
+    }
+
+    /// Serves `data` from the epoch-0 proposer-duties endpoint.
+    async fn serve_proposer_duties(data: Vec<serde_json::Value>) -> wiremock::MockServer {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/eth/v1/validator/duties/proposer/0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "dependent_root": format!("0x{:064x}", 0),
+                "execution_optimistic": false,
+                "data": data,
+            })))
+            .mount(&server)
+            .await;
+
+        server
+    }
+
+    /// An epoch of duties, one per slot, for validators `0..count`.
+    async fn proposer_duties_server(count: u64) -> wiremock::MockServer {
+        serve_proposer_duties((0..count).map(|i| proposer_duty(i, i)).collect()).await
+    }
+
+    #[tokio::test]
+    async fn fetch_proposer_duties_keeps_only_requested_indices() {
+        let server = proposer_duties_server(5).await;
+        let client = EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid url");
+
+        let duties = client
+            .fetch_proposer_duties(0, TEST_SLOTS_PER_EPOCH, &HashSet::from([1, 3]))
+            .await
+            .expect("fetch duties");
+
+        assert_eq!(
+            duties
+                .iter()
+                .map(|duty| duty.validator_index.as_str())
+                .collect::<Vec<_>>(),
+            ["1", "3"],
+        );
+    }
+
+    /// An empty index set must still yield the whole epoch's proposers.
+    #[tokio::test]
+    async fn fetch_proposer_duties_without_indices_is_unfiltered() {
+        let server = proposer_duties_server(5).await;
+        let client = EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid url");
+
+        let duties = client
+            .fetch_proposer_duties(0, TEST_SLOTS_PER_EPOCH, &HashSet::new())
+            .await
+            .expect("fetch duties");
+
+        assert_eq!(duties.len(), 5);
+    }
+
+    /// A malformed duty fails the response even when it belongs to a validator
+    /// the caller did not ask about.
+    #[tokio::test]
+    async fn fetch_proposer_duties_rejects_malformed_unrequested_duty() {
+        let mut data = vec![proposer_duty(1, 1)];
+        data.push(serde_json::json!({
+            "pubkey": "0xnot-a-pubkey",
+            "slot": "2",
+            "validator_index": "2",
+        }));
+
+        let server = serve_proposer_duties(data).await;
+        let client = EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid url");
+
+        // Index 2 is filtered out, but its malformed pubkey must still surface.
+        let err = client
+            .fetch_proposer_duties(0, TEST_SLOTS_PER_EPOCH, &HashSet::from([1]))
+            .await
+            .expect_err("malformed duty should fail the response");
+
+        assert!(
+            matches!(err, EthBeaconNodeApiClientError::ParseError(_)),
+            "expected parse error, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_proposer_duties_rejects_duty_outside_requested_epoch() {
+        // Epoch 0 spans slots 0..=7, so slot 9 belongs to another epoch.
+        let server = serve_proposer_duties(vec![proposer_duty(1, 1), proposer_duty(2, 9)]).await;
+        let client = EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid url");
+
+        let err = client
+            .fetch_proposer_duties(0, TEST_SLOTS_PER_EPOCH, &HashSet::from([1]))
+            .await
+            .expect_err("out-of-epoch duty should fail the response");
+
+        assert!(
+            matches!(
+                err,
+                EthBeaconNodeApiClientError::DutySlotOutsideEpoch { slot: 9, epoch: 0 }
+            ),
+            "expected out-of-epoch error, got {err:?}"
+        );
     }
 }
