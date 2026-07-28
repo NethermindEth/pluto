@@ -11,7 +11,7 @@
 //! duty-submission path is covered by
 //! `multinode_parsig_exchange_reaches_submission` in `tests/wiring.rs`.
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, time::Duration};
 
 use pluto_app::node::{App, AppConfig};
 use tokio_util::sync::CancellationToken;
@@ -76,8 +76,7 @@ async fn simnet_single_node_boots_and_serves_validator_api() {
         eth1_endpoint: None,
         graffiti: None,
         graffiti_disable_client_append: false,
-        feature_set: Arc::new(pluto_featureset::FeatureSet::default()),
-        testnet: None,
+        feature_set: pluto_featureset::Config::default(),
         simnet_beacon_mock: true,
         simnet_validator_mock: true,
         simnet_beacon_mock_fuzz: false,

@@ -47,6 +47,12 @@ pub struct MonitoringMetrics {
     /// Gauge set to this binary's start time in unix seconds. Mirrors Charon's
     /// `app_start_time_secs`.
     pub start_time_secs: Gauge<i64>,
+
+    /// Constant gauge labelled with each custom-enabled feature flag, set to 1.
+    /// Mirrors Charon's `app_feature_flags` (one series per
+    /// `featureset.CustomEnabledAll()` entry).
+    #[metrics(labels = ["feature_flags"])]
+    pub feature_flags: LabeledFamily<String, Gauge<i64>>,
 }
 
 /// Global monitoring metrics.
@@ -68,34 +74,64 @@ pub struct ClusterMetrics {
     /// Number of validators in the cluster lock. Mirrors Charon's
     /// `cluster_validators`.
     pub validators: Gauge<i64>,
+
+    /// Constant gauge labelled with the current network (chain), set to 1.
+    /// Mirrors Charon's `cluster_network`; `"unknown"` when the cluster's fork
+    /// version matches no known network.
+    #[metrics(labels = ["network"])]
+    pub network: LabeledFamily<String, Gauge<i64>>,
 }
 
 /// Global cluster metrics.
 #[vise::register]
 pub static CLUSTER_METRICS: Global<ClusterMetrics> = Global::new();
 
-/// Sets the constant startup gauges — version, peer name, git commit, start
-/// time — and the cluster-lock gauges, mirroring Charon's `initStartupMetrics`.
-///
-/// The version/peer-name/git-commit gauges are constant series (value 1) whose
-/// single purpose is to expose their label; the dashboard reads those labels.
-pub fn init_startup_metrics(
-    version: &str,
-    peer_name: &str,
-    git_hash: &str,
-    start_time_secs: i64,
-    threshold: i64,
-    operators: i64,
-    validators: i64,
-) {
-    MONITORING_METRICS.version[&version.to_owned()].set(1);
-    MONITORING_METRICS.peer_name[&peer_name.to_owned()].set(1);
-    MONITORING_METRICS.git_commit[&git_hash.to_owned()].set(1);
-    MONITORING_METRICS.start_time_secs.set(start_time_secs);
+/// Inputs for [`init_startup_metrics`], mirroring the arguments of Charon's
+/// `initStartupMetrics`.
+pub struct StartupMetrics<'a> {
+    /// App version string (`app_version` label).
+    pub version: &'a str,
+    /// This node's cluster peer name (`app_peer_name` label).
+    pub peer_name: &'a str,
+    /// Build git commit hash, short form (`app_git_commit` label).
+    pub git_hash: &'a str,
+    /// Binary start time in unix seconds (`app_start_time_secs`).
+    pub start_time_secs: i64,
+    /// Aggregation threshold from the cluster lock (`cluster_threshold`).
+    pub threshold: i64,
+    /// Number of operators in the cluster lock (`cluster_operators`).
+    pub operators: i64,
+    /// Number of validators in the cluster lock (`cluster_validators`).
+    pub validators: i64,
+    /// Network the cluster's fork version resolves to, or `"unknown"`
+    /// (`cluster_network` label).
+    pub network: &'a str,
+    /// Custom-enabled feature flags (one `app_feature_flags` series each).
+    pub feature_flags: &'a [&'a str],
+}
 
-    CLUSTER_METRICS.threshold.set(threshold);
-    CLUSTER_METRICS.operators.set(operators);
-    CLUSTER_METRICS.validators.set(validators);
+/// Sets the constant startup gauges — version, peer name, git commit, start
+/// time, network, and custom feature flags — and the cluster-lock gauges,
+/// mirroring Charon's `initStartupMetrics`.
+///
+/// The version/peer-name/git-commit/network/feature-flag gauges are constant
+/// series (value 1) whose single purpose is to expose their label; the
+/// dashboard reads those labels. `network` is `"unknown"` when the cluster's
+/// fork version matches no known network, matching Charon.
+pub fn init_startup_metrics(m: &StartupMetrics<'_>) {
+    MONITORING_METRICS.version[&m.version.to_owned()].set(1);
+    MONITORING_METRICS.peer_name[&m.peer_name.to_owned()].set(1);
+    MONITORING_METRICS.git_commit[&m.git_hash.to_owned()].set(1);
+    MONITORING_METRICS.start_time_secs.set(m.start_time_secs);
+
+    for flag in m.feature_flags {
+        MONITORING_METRICS.feature_flags[&(*flag).to_owned()].set(1);
+    }
+
+    CLUSTER_METRICS.threshold.set(m.threshold);
+    CLUSTER_METRICS.operators.set(m.operators);
+    CLUSTER_METRICS.validators.set(m.validators);
+    CLUSTER_METRICS.network[&m.network.to_owned()].set(1);
 }
 
 /// Records the Ethereum validator stack components and their CLI parameters in
@@ -142,5 +178,35 @@ mod tests {
         stack_components(&[("test-teku".to_owned(), "--network=mainnet".to_owned())]);
         assert_eq!(gauge("test-teku", "--network=mainnet"), 1);
         assert_eq!(gauge("test-lighthouse", "--debug"), 0);
+    }
+
+    #[test]
+    fn init_startup_metrics_sets_network_and_feature_flags() {
+        // Labels are unique to this test so it does not collide with other tests
+        // mutating the global gauges.
+        init_startup_metrics(&StartupMetrics {
+            version: "v-test",
+            peer_name: "peer-test",
+            git_hash: "abc1234",
+            start_time_secs: 42,
+            threshold: 2,
+            operators: 3,
+            validators: 4,
+            network: "test-network-xyz",
+            feature_flags: &["test-feature-a", "test-feature-b"],
+        });
+
+        assert_eq!(
+            CLUSTER_METRICS.network[&"test-network-xyz".to_owned()].get(),
+            1,
+        );
+        assert_eq!(
+            MONITORING_METRICS.feature_flags[&"test-feature-a".to_owned()].get(),
+            1,
+        );
+        assert_eq!(
+            MONITORING_METRICS.feature_flags[&"test-feature-b".to_owned()].get(),
+            1,
+        );
     }
 }
