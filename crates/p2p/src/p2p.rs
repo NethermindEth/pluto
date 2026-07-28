@@ -576,6 +576,11 @@ impl<B: NetworkBehaviour> Node<B> {
         self.swarm.add_external_address(addr);
     }
 
+    /// Removes a previously added external address from the peer store.
+    pub fn remove_external_address(&mut self, addr: &Multiaddr) {
+        self.swarm.remove_external_address(addr);
+    }
+
     /// Returns the global context.
     pub fn p2p_context(&self) -> &P2PContext {
         &self.p2p_context

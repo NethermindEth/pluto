@@ -77,6 +77,15 @@ pub async fn run_relay_p2p_node(
     let mut external_addrs = external_tcp_multiaddrs(&config.p2p_config)?;
     external_addrs.extend(external_udp_multiaddrs(&config.p2p_config)?);
 
+    // Advertise the manually configured external addresses to libp2p so they
+    // are folded into the circuit reservations we hand out. Without at least
+    // one reachable address, rust-libp2p relay clients reject the reservation
+    // with `NoAddressesInReservation`; auto-detected listen addresses are
+    // added below as they are confirmed.
+    for addr in &external_addrs {
+        node.add_external_address(addr.clone());
+    }
+
     let enr_server_handle = tokio::spawn(enr_server(
         server_errors.clone(),
         config.clone(),
@@ -120,15 +129,23 @@ pub async fn run_relay_p2p_node(
             event = node.select_next_some() => {
                 let address_update = handle_swarm_event(&event, config.filter_private_addrs);
 
-                // Update listener address list
+                // Keep the ENR listener list and the libp2p external addresses
+                // (which back the circuit reservations we issue) in sync, so
+                // reserving clients always receive at least one reachable
+                // address for the same set we advertise over `/enr`.
                 match address_update {
                     AddrUpdate::Add(address) => {
+                        node.add_external_address(address.clone());
                         listeners.write().await.push(address);
                     }
                     AddrUpdate::Remove(address) => {
+                        node.remove_external_address(&address);
                         listeners.write().await.retain(|a| *a != address);
                     }
                     AddrUpdate::RemoveAll(addresses) => {
+                        for address in &addresses {
+                            node.remove_external_address(address);
+                        }
                         listeners
                             .write()
                             .await
