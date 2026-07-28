@@ -1,7 +1,9 @@
 use crate::{
     BeaconStateFork, ConsensusVersion, EthBeaconNodeApiClient, EventstreamRequestQueryTopic,
     GetForkScheduleRequest, GetForkScheduleResponse, GetGenesisRequest, GetGenesisResponse,
-    GetGenesisResponseResponseData, GetSpecRequest, GetSpecResponse, ValidatorStatus, spec::phase0,
+    GetGenesisResponseResponseData, GetSpecRequest, GetSpecResponse, PrepareBeaconProposerRequest,
+    PrepareBeaconProposerRequestBodyItem, PrepareBeaconProposerResponse, ValidatorStatus,
+    spec::{bellatrix, phase0},
 };
 use chrono::{DateTime, Utc};
 use eventsource_stream::Eventsource;
@@ -57,6 +59,19 @@ pub struct BeaconNodeEvent {
     pub topic: String,
     /// The raw JSON data payload.
     pub data: String,
+}
+
+/// A single proposal preparation submitted to the beacon node
+/// (`prepare_beacon_proposer`), associating a validator index with the fee
+/// recipient the node should use when building blocks for it.
+///
+/// Mirrors go-eth2-client's `eth2v1.ProposalPreparation`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProposalPreparation {
+    /// Index of the validator the preparation applies to.
+    pub validator_index: phase0::ValidatorIndex,
+    /// Execution-layer address that should receive block rewards.
+    pub fee_recipient: bellatrix::ExecutionAddress,
 }
 
 // Ordered oldest-to-newest. `resolve_fork_version` relies on this order to
@@ -502,6 +517,35 @@ impl EthBeaconNodeApiClient {
 
         Ok(stream)
     }
+
+    /// Submits proposal preparations to the beacon node
+    /// (`POST /eth/v1/validator/prepare_beacon_proposer`).
+    ///
+    /// Each preparation tells the beacon node which fee recipient to use when
+    /// it builds a block for the given validator. The information persists for
+    /// the epoch of submission plus the following two epochs, so callers resend
+    /// it periodically (e.g. once per epoch). Mirrors go-eth2-client's
+    /// `SubmitProposalPreparations`.
+    pub async fn submit_proposal_preparations(
+        &self,
+        preparations: &[ProposalPreparation],
+    ) -> Result<(), EthBeaconNodeApiClientError> {
+        let body = preparations
+            .iter()
+            .map(|preparation| PrepareBeaconProposerRequestBodyItem {
+                validator_index: preparation.validator_index.to_string(),
+                fee_recipient: format!("0x{}", hex::encode(preparation.fee_recipient)),
+            })
+            .collect();
+
+        match self
+            .prepare_beacon_proposer(PrepareBeaconProposerRequest { body })
+            .await?
+        {
+            PrepareBeaconProposerResponse::Ok => Ok(()),
+            _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -690,5 +734,82 @@ mod tests {
             .expect("ok event");
         assert_eq!(second.topic, "chain_reorg");
         assert_eq!(second.data, r#"{"slot":"20","depth":"2"}"#);
+    }
+
+    #[tokio::test]
+    async fn submit_proposal_preparations_posts_expected_body() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{body_json, method, path},
+        };
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/eth/v1/validator/prepare_beacon_proposer"))
+            .and(body_json(json!([
+                {
+                    "validator_index": "1",
+                    "fee_recipient": "0x0101010101010101010101010101010101010101"
+                },
+                {
+                    "validator_index": "42",
+                    "fee_recipient": "0x2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a"
+                }
+            ])))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid url");
+        client
+            .submit_proposal_preparations(&[
+                ProposalPreparation {
+                    validator_index: 1,
+                    fee_recipient: [0x01; 20],
+                },
+                ProposalPreparation {
+                    validator_index: 42,
+                    fee_recipient: [0x2a; 20],
+                },
+            ])
+            .await
+            .expect("submit succeeds");
+        // The mock's `.expect(1)` verifies on drop that the posted body
+        // matched.
+    }
+
+    #[tokio::test]
+    async fn submit_proposal_preparations_surfaces_error_status() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/eth/v1/validator/prepare_beacon_proposer"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+                "code": 500,
+                "message": "internal error"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid url");
+        let error = client
+            .submit_proposal_preparations(&[ProposalPreparation {
+                validator_index: 1,
+                fee_recipient: [0x01; 20],
+            }])
+            .await
+            .expect_err("a 500 response must surface as an error");
+
+        assert!(matches!(
+            error,
+            EthBeaconNodeApiClientError::UnexpectedResponse
+        ));
     }
 }
