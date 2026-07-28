@@ -1,5 +1,3 @@
-use std::str::FromStr;
-
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use percent_encoding::percent_decode_str;
 use tracing_loki::{BackgroundTask, BackgroundTaskController, url::Url};
@@ -44,10 +42,13 @@ pub struct LokiInit {
 
 /// Initializes the tracing subscriber.
 pub fn init(config: &TracingConfig) -> Result<Option<LokiInit>> {
-    let env_filter = if let Some(override_env_filter) = config.override_env_filter.as_ref() {
-        EnvFilter::from_str(override_env_filter).unwrap_or_else(|_| default_env_filter())
-    } else {
-        EnvFilter::try_from_env("RUST_LOG").unwrap_or_else(|_| default_env_filter())
+    let rust_log = std::env::var("RUST_LOG").ok();
+    let env_filter = match resolve_filter_directive(
+        rust_log.as_deref(),
+        config.override_env_filter.as_deref(),
+    ) {
+        Some(directive) => EnvFilter::try_new(&directive).unwrap_or_else(|_| default_env_filter()),
+        None => default_env_filter(),
     };
 
     let console_config = config.console.clone().unwrap_or_default();
@@ -125,9 +126,60 @@ fn default_env_filter() -> EnvFilter {
     EnvFilter::new("info")
 }
 
+/// Selects the tracing filter directive using this precedence:
+///
+/// 1. `RUST_LOG` from the environment — the standard runtime escape hatch for
+///    fine-grained, per-target filtering (e.g. `info,pluto_p2p=debug`) — when
+///    set to a non-empty value;
+/// 2. the config override, populated from `--log-level` / `CHARON_LOG_LEVEL`;
+/// 3. `None`, meaning the caller should fall back to [`default_env_filter`].
+///
+/// `RUST_LOG` intentionally wins over `--log-level` so operators can crank up
+/// specific targets without rebuilding or changing the flag the process was
+/// launched with. Takes the `RUST_LOG` value as an argument rather than reading
+/// the environment directly so the precedence logic is unit-testable.
+fn resolve_filter_directive(
+    rust_log: Option<&str>,
+    override_env_filter: Option<&str>,
+) -> Option<String> {
+    if let Some(rust_log) = rust_log
+        && !rust_log.trim().is_empty()
+    {
+        return Some(rust_log.to_string());
+    }
+
+    override_env_filter.map(str::to_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rust_log_takes_precedence_over_override() {
+        assert_eq!(
+            resolve_filter_directive(Some("info,pluto_p2p=debug"), Some("warn")),
+            Some("info,pluto_p2p=debug".to_string())
+        );
+    }
+
+    #[test]
+    fn override_used_when_rust_log_absent_or_blank() {
+        assert_eq!(
+            resolve_filter_directive(None, Some("debug")),
+            Some("debug".to_string())
+        );
+        assert_eq!(
+            resolve_filter_directive(Some("   "), Some("debug")),
+            Some("debug".to_string())
+        );
+    }
+
+    #[test]
+    fn none_when_neither_set() {
+        assert_eq!(resolve_filter_directive(None, None), None);
+        assert_eq!(resolve_filter_directive(Some(""), None), None);
+    }
 
     #[test]
     fn basic_auth_extracted_from_user_and_password() {

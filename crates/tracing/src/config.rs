@@ -14,8 +14,10 @@ pub struct TracingConfig {
     /// Enables metrics logging. If not - no metrics logging is enabled.
     pub metrics: bool,
 
-    /// Overrides the environment filter. If not - the environment filter is
-    /// used.
+    /// Filter directive applied unless `RUST_LOG` is set in the environment,
+    /// which always takes precedence. When neither is set, the built-in
+    /// default (`info`) is used. Populated from `--log-level` /
+    /// `CHARON_LOG_LEVEL` by the CLI.
     pub override_env_filter: Option<String>,
 }
 
