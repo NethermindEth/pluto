@@ -50,6 +50,62 @@ func SkipUnlessPluto(t *testing.T) string {
 	return bin
 }
 
+// StartPlutoRelay launches `pluto relay` as a subprocess and returns its HTTP
+// ENR endpoint (the same `http://host:port` form charon's relay exposes), for
+// use as a `--p2p-relays` value by both pluto and charon nodes.
+//
+// `--p2p-advertise-private-addresses` is required: the relay binds loopback in
+// the harness, and without advertising private addresses the circuit
+// reservations it issues carry no address, which rust-libp2p relay clients
+// reject with `NoAddressesInReservation`.
+func StartPlutoRelay(t *testing.T, ctx context.Context, bin string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	httpAddr := testutil.AvailableAddr(t).String()
+
+	args := []string{
+		"relay",
+		"--data-dir=" + dir,
+		"--http-address=" + httpAddr,
+		"--p2p-tcp-address=" + testutil.AvailableAddr(t).String(),
+		"--p2p-advertise-private-addresses",
+	}
+
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Dir = dir
+
+	stdout, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+
+	cmd.Stderr = cmd.Stdout
+
+	go logLines(t, "pluto[relay]", stdout)
+
+	require.NoError(t, cmd.Start(), "start pluto relay")
+
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	// Wait for the ENR HTTP endpoint to accept connections before returning.
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) && ctx.Err() == nil {
+		conn, err := net.DialTimeout("tcp", httpAddr, time.Second)
+		if err == nil {
+			_ = conn.Close()
+			return "http://" + httpAddr
+		}
+
+		time.Sleep(250 * time.Millisecond)
+	}
+
+	t.Fatalf("pluto relay HTTP endpoint %s not ready", httpAddr)
+
+	return ""
+}
+
 // PlutoNode is a pluto node running as a subprocess of the pluto binary.
 type PlutoNode struct {
 	Idx      int

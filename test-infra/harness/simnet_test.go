@@ -83,7 +83,17 @@ func runSimnet(t *testing.T, s scenario) {
 	defer cancel()
 
 	fixture := NewFixture(t, n, s.threshold, numVals, simnetSeed)
-	relayAddr := relay.StartRelay(ctx, t)
+
+	// Pluto's rust-libp2p relay client rejects the empty-address circuit
+	// reservations that a loopback-bound go-libp2p (charon) relay issues, so
+	// scenarios involving pluto nodes use a pluto relay, which advertises its
+	// loopback address. All-charon scenarios keep the charon relay.
+	var relayAddr string
+	if s.plutoNodes > 0 {
+		relayAddr = StartPlutoRelay(t, ctx, plutoBin)
+	} else {
+		relayAddr = relay.StartRelay(ctx, t)
+	}
 
 	var bnet *BeaconNet
 
