@@ -332,6 +332,12 @@ pub struct DistValidatorV1x8orLater {
     pub pub_shares: Vec<Vec<u8>>,
 
     /// Deposit data defines the deposit data to activate a validator.
+    ///
+    /// Charon serializes this field with `omitempty`, so a lock created
+    /// without deposit data (e.g. simnet fixtures) omits it entirely.
+    /// Default to an empty list to stay compatible, matching charon's
+    /// deserializer which tolerates the absent field.
+    #[serde(default)]
     pub partial_deposit_data: Vec<DepositData>,
 
     /// Builder registration is the pre-generated signed validator builder
