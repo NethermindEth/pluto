@@ -965,18 +965,13 @@ async fn fetch_proposer_duties(
         .iter()
         .map(|v| v.v_idx)
         .collect::<std::collections::HashSet<_>>();
-    let duties: Vec<pluto_eth2api::GetProposerDutiesResponseResponseDatum> = client
+    let pro_duties: Vec<types::ProposerDutyDefinition> = client
         .api()
         .fetch_proposer_duties(slot.epoch(), slot.slots_per_epoch, &indices)
-        .await?;
-
-    let pro_duties: Vec<types::ProposerDutyDefinition> = duties
+        .await?
         .into_iter()
-        .map(|d| {
-            d.try_into()
-                .map_err(|_| pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse)
-        })
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+        .map(types::ProposerDutyDefinition::from)
+        .collect();
 
     let mut result = vec![];
     for pro_duty in pro_duties.into_iter() {

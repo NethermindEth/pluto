@@ -2,8 +2,7 @@ use crate::{
     BeaconStateFork, ConsensusVersion, EthBeaconNodeApiClient, EventstreamRequestQueryTopic,
     GetForkScheduleRequest, GetForkScheduleResponse, GetGenesisRequest, GetGenesisResponse,
     GetGenesisResponseResponseData, GetProposerDutiesRequest, GetProposerDutiesResponse,
-    GetProposerDutiesResponseResponseDatum, GetSpecRequest, GetSpecResponse, ValidatorStatus,
-    spec::phase0,
+    GetSpecRequest, GetSpecResponse, ValidatorStatus, spec::phase0,
 };
 use chrono::{DateTime, Utc};
 use eventsource_stream::Eventsource;
@@ -92,6 +91,17 @@ pub struct ForkSchedule {
     pub version: phase0::Version,
     /// The epoch at which the fork activates.
     pub epoch: phase0::Epoch,
+}
+
+/// A proposer duty with its fields decoded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProposerDuty {
+    /// The proposer's BLS public key.
+    pub pubkey: phase0::BLSPubKey,
+    /// Index of the proposer in the validator registry.
+    pub validator_index: phase0::ValidatorIndex,
+    /// The slot at which the validator must propose a block.
+    pub slot: phase0::Slot,
 }
 
 fn required_str_field<'a>(
@@ -366,7 +376,7 @@ impl EthBeaconNodeApiClient {
         epoch: phase0::Epoch,
         slots_per_epoch: u64,
         indices: &HashSet<phase0::ValidatorIndex>,
-    ) -> Result<Vec<GetProposerDutiesResponseResponseDatum>, EthBeaconNodeApiClientError> {
+    ) -> Result<Vec<ProposerDuty>, EthBeaconNodeApiClientError> {
         if slots_per_epoch == 0 {
             return Err(EthBeaconNodeApiClientError::ZeroSlotDurationOrSlotsPerEpoch);
         }
@@ -386,7 +396,7 @@ impl EthBeaconNodeApiClient {
         // validator we did not ask about.
         let mut validated = Vec::with_capacity(duties.len());
         for duty in duties {
-            let index = duty
+            let validator_index = duty
                 .validator_index
                 .parse::<phase0::ValidatorIndex>()
                 .map_err(|_| {
@@ -395,7 +405,7 @@ impl EthBeaconNodeApiClient {
             let slot = duty.slot.parse::<phase0::Slot>().map_err(|_| {
                 EthBeaconNodeApiClientError::ParseError("proposer duty slot".into())
             })?;
-            let _: phase0::BLSPubKey =
+            let pubkey =
                 decode_fixed_hex(&duty.pubkey, || "decode proposer duty pubkey".to_string())?;
 
             // Reject duties outside the requested epoch. Comparing epochs
@@ -408,13 +418,16 @@ impl EthBeaconNodeApiClient {
                 return Err(EthBeaconNodeApiClientError::DutySlotOutsideEpoch { slot, epoch });
             }
 
-            validated.push((index, duty));
+            validated.push(ProposerDuty {
+                pubkey,
+                validator_index,
+                slot,
+            });
         }
 
         Ok(validated
             .into_iter()
-            .filter(|(index, _)| indices.is_empty() || indices.contains(index))
-            .map(|(_, duty)| duty)
+            .filter(|duty| indices.is_empty() || indices.contains(&duty.validator_index))
             .collect())
     }
 
@@ -820,9 +833,9 @@ mod tests {
         assert_eq!(
             duties
                 .iter()
-                .map(|duty| duty.validator_index.as_str())
+                .map(|duty| duty.validator_index)
                 .collect::<Vec<_>>(),
-            ["1", "3"],
+            [1, 3],
         );
     }
 
