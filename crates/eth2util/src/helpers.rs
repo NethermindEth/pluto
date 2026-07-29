@@ -157,9 +157,12 @@ pub fn slot_from_timestamp(
 }
 
 /// Returns epoch calculated from given slot.
-pub async fn epoch_from_slot(client: &pluto_eth2api::BeaconNodeClient, slot: u64) -> Result<u64> {
+pub async fn epoch_from_slot(
+    client: &pluto_eth2api::client::EthBeaconNodeApiClient,
+    slot: u64,
+) -> Result<u64> {
     let (_, slots_per_epoch) = client
-        .slots_config()
+        .fetch_slots_config()
         .await
         .map_err(|e| HelperError::GettingSpec(e.to_string()))?;
 

@@ -11,10 +11,10 @@
 //!     deadline::{AddOutcome, DeadlinerTask, DutyDeadlineCalculator},
 //!     types::{Duty, SlotNumber},
 //! };
-//! use pluto_eth2api::BeaconNodeClient;
+//! use pluto_eth2api::EthBeaconNodeApiClient;
 //! use tokio_util::sync::CancellationToken;
 //!
-//! # async fn example(client: &BeaconNodeClient) -> anyhow::Result<()> {
+//! # async fn example(client: &EthBeaconNodeApiClient) -> anyhow::Result<()> {
 //! let cancel_token = CancellationToken::new();
 //! let calculator = DutyDeadlineCalculator::from_client(client).await?;
 //! let (deadliner, mut rx) = DeadlinerTask::start(cancel_token, "example", calculator);
@@ -599,9 +599,9 @@ mod tests {
 
         let mock =
             create_mock_beacon_client(genesis_time, slot_duration_secs, slots_per_epoch).await;
-        let client = mock.beacon_client();
+        let client = mock.client();
 
-        let calculator = DutyDeadlineCalculator::from_client(&client).await?;
+        let calculator = DutyDeadlineCalculator::from_client(client).await?;
 
         let duty = Duty::new(SlotNumber::new(100), duty_type);
         let result = calculator.deadline(&duty)?;
@@ -628,7 +628,7 @@ mod tests {
 
         let mock =
             create_mock_beacon_client(genesis_time, slot_duration_secs, slots_per_epoch).await;
-        let client = mock.beacon_client();
+        let client = mock.client();
 
         let slot_duration = Duration::from_secs(slot_duration_secs);
         let margin = slot_duration.checked_div(12).context("margin overflow")?;
@@ -648,7 +648,7 @@ mod tests {
                 .context("slot_start overflow")?
         };
 
-        let calculator = DutyDeadlineCalculator::from_client(&client).await?;
+        let calculator = DutyDeadlineCalculator::from_client(client).await?;
 
         let expected_duration = match duty_type {
             DutyType::Proposer | DutyType::Randao => slot_duration

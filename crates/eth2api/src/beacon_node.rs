@@ -1,19 +1,11 @@
 use crate::{
-    ConsensusVersion, EthBeaconNodeApiClient, EthBeaconNodeApiClientError,
-    confcache::ConfigCache,
-    extensions::{
-        self, ForkSchedule, GenesisInfo, compute_builder_domain, domain_from_config,
-        fork_schedule_from_spec, resolve_domain_type,
-    },
-    spec::phase0,
+    EthBeaconNodeApiClient,
     valcache::{ActiveValidators, CompleteValidators, ValidatorCache, ValidatorCacheError},
 };
-use chrono::{DateTime, Utc};
-use std::{collections::HashMap, fmt, sync::Arc, time::Duration};
+use std::sync::Arc;
 use tokio::sync::RwLock;
 
 type Result<T> = std::result::Result<T, BeaconNodeClientError>;
-type ConfigResult<T> = std::result::Result<T, EthBeaconNodeApiClientError>;
 
 /// Errors returned by [`BeaconNodeClient`].
 #[derive(Debug, thiserror::Error)]
@@ -23,120 +15,34 @@ pub enum BeaconNodeClientError {
     ValidatorCache(#[from] ValidatorCacheError),
 }
 
-/// Shared state behind every [`BeaconNodeClient`] clone.
-struct Inner {
+/// Beacon node client with Charon/Pluto convenience state layered on top of the
+/// generated Beacon API client.
+#[derive(Clone)]
+pub struct BeaconNodeClient {
     api: EthBeaconNodeApiClient,
-    config: ConfigCache,
     // TODO: Find the concrete usages of the `validator_cache` and consider if we can make it
     // immutable, that is, set it once at construction and not have to deal with the possibility of
     // it being unset later.
-    validator_cache: RwLock<ValidatorCache>,
-}
-
-/// Beacon node client layering a per-epoch validator cache and the static
-/// chain-config cache (backing signing-domain resolution) over the generated
-/// API client. Clones share one `Arc`.
-#[derive(Clone)]
-pub struct BeaconNodeClient(Arc<Inner>);
-
-impl fmt::Debug for BeaconNodeClient {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BeaconNodeClient")
-            .field("base_url", &self.0.api.base_url.as_str())
-            .finish_non_exhaustive()
-    }
+    validator_cache: Arc<RwLock<ValidatorCache>>,
 }
 
 impl BeaconNodeClient {
     /// Creates a new beacon node client.
     pub fn new(api: EthBeaconNodeApiClient) -> Self {
-        Self(Arc::new(Inner {
-            config: ConfigCache::default(),
-            validator_cache: RwLock::new(ValidatorCache::new(api.clone(), Vec::new())),
-            api,
-        }))
+        Self {
+            api: api.clone(),
+            validator_cache: Arc::new(RwLock::new(ValidatorCache::new(api, Vec::new()))),
+        }
     }
 
     /// Returns the generated Beacon API client.
     pub fn api(&self) -> &EthBeaconNodeApiClient {
-        &self.0.api
-    }
-
-    /// Warms the static-config cache (spec, genesis, fork schedule). Called
-    /// at startup, before duty scheduling, failing fast.
-    pub async fn warm(&self) -> ConfigResult<()> {
-        tokio::try_join!(self.spec(), self.genesis(), self.fork_schedule())?;
-        Ok(())
-    }
-
-    /// Returns the chain spec as a JSON object (cached).
-    pub async fn spec(&self) -> ConfigResult<Arc<serde_json::Value>> {
-        self.0.config.spec(&self.0.api).await
-    }
-
-    /// Returns the parsed genesis data (cached).
-    pub(crate) async fn genesis(&self) -> ConfigResult<Arc<GenesisInfo>> {
-        self.0.config.genesis(&self.0.api).await
-    }
-
-    /// Returns the parsed fork-schedule entries, in server order (cached).
-    /// The first entry is the genesis fork version, which identifies the
-    /// beacon node's network.
-    pub async fn fork_schedule(&self) -> ConfigResult<Arc<Vec<ForkSchedule>>> {
-        self.0.config.fork_schedule(&self.0.api).await
-    }
-
-    /// Returns the genesis time (cached).
-    pub async fn genesis_time(&self) -> ConfigResult<DateTime<Utc>> {
-        Ok(self.genesis().await?.time)
-    }
-
-    /// Returns the slot duration and slots per epoch (cached).
-    pub async fn slots_config(&self) -> ConfigResult<(Duration, u64)> {
-        let spec = self.spec().await?;
-        extensions::slots_config_from_spec(&spec)
-    }
-
-    /// Returns the spec-derived fork schedule for all known forks (cached).
-    pub async fn fork_config(&self) -> ConfigResult<HashMap<ConsensusVersion, ForkSchedule>> {
-        let spec = self.spec().await?;
-        fork_schedule_from_spec(&spec)
-    }
-
-    /// Returns the domain type with the provided config/spec key (cached).
-    pub async fn domain_type(&self, spec_key: &str) -> ConfigResult<phase0::DomainType> {
-        let spec = self.spec().await?;
-        resolve_domain_type(&spec, spec_key)
-    }
-
-    /// Returns the genesis (builder) domain for the provided domain type
-    /// (cached).
-    pub async fn genesis_domain(
-        &self,
-        domain_type: phase0::DomainType,
-    ) -> ConfigResult<phase0::Domain> {
-        let genesis = self.genesis().await?;
-
-        Ok(compute_builder_domain(domain_type, genesis.fork_version))
-    }
-
-    /// Returns the resolved beacon domain for the provided domain type and
-    /// epoch (cached); see [`domain_from_config`] for the derivation rules.
-    pub async fn domain(
-        &self,
-        domain_type: phase0::DomainType,
-        epoch: phase0::Epoch,
-    ) -> ConfigResult<phase0::Domain> {
-        let spec = self.spec().await?;
-        let genesis = self.genesis().await?;
-        let schedule = self.fork_schedule().await?;
-
-        domain_from_config(&spec, &genesis, &schedule, domain_type, epoch)
+        &self.api
     }
 
     /// Sets the validator cache used by cached validator methods.
     pub async fn set_validator_cache(&self, validator_cache: ValidatorCache) {
-        *self.0.validator_cache.write().await = validator_cache;
+        *self.validator_cache.write().await = validator_cache;
     }
 
     /// Returns active validators for `head`.
@@ -153,7 +59,7 @@ impl BeaconNodeClient {
 
     /// Get the validator cache.
     pub async fn validator_cache(&self) -> ValidatorCache {
-        self.0.validator_cache.read().await.clone()
+        self.validator_cache.read().await.clone()
     }
 }
 

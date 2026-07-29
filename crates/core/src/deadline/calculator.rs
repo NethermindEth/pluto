@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
-use pluto_eth2api::BeaconNodeClient;
+use pluto_eth2api::EthBeaconNodeApiClient;
 
 use crate::types::{Duty, DutyType, SlotNumber};
 
@@ -35,9 +35,9 @@ impl DutyDeadlineCalculator {
     /// # Errors
     ///
     /// Returns an error if fetching genesis time or slots config fails.
-    pub async fn from_client(client: &BeaconNodeClient) -> Result<Self> {
-        let genesis_time = client.genesis_time().await?;
-        let slots_config = client.slots_config().await?;
+    pub async fn from_client(client: &EthBeaconNodeApiClient) -> Result<Self> {
+        let genesis_time = client.fetch_genesis_time().await?;
+        let slots_config = client.fetch_slots_config().await?;
         let (slot_duration, _slots_per_epoch) = slots_config;
         let slot_duration = to_chrono_duration(slot_duration)?;
         Ok(Self {

@@ -36,10 +36,6 @@ pub mod v1;
 /// Versioned wrappers for signeddata-related payloads.
 pub mod versioned;
 
-/// Cache of static chain configuration retrieved from the Beacon node.
-/// Internal: exposed through [`BeaconNodeClient`]'s cached config methods.
-mod confcache;
-
 /// Cache of Validators retrieved from the Beacon node.
 pub mod valcache;
 

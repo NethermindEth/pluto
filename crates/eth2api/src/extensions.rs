@@ -6,7 +6,13 @@ use crate::{
 use chrono::{DateTime, Utc};
 use eventsource_stream::Eventsource;
 use futures::{Stream, StreamExt};
-use std::{collections::HashMap, time};
+use reqwest::Url;
+use std::{
+    collections::HashMap,
+    sync::{Arc, LazyLock, Mutex},
+    time,
+};
+use tokio::sync::OnceCell;
 use tree_hash::TreeHash;
 
 /// Error that can occur when using the
@@ -111,57 +117,6 @@ pub(crate) fn decode_fixed_hex<const N: usize, F: Fn() -> String>(
         .map_err(|_| EthBeaconNodeApiClientError::ParseError(step()))
 }
 
-/// Genesis response data parsed into typed values (once, at fetch time, so
-/// malformed responses never enter the config cache).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct GenesisInfo {
-    /// The genesis time.
-    pub time: DateTime<Utc>,
-    /// The genesis fork version.
-    pub fork_version: phase0::Version,
-    /// The genesis validators root.
-    pub validators_root: phase0::Root,
-}
-
-pub(crate) fn parse_genesis(
-    genesis: &GetGenesisResponseResponseData,
-) -> Result<GenesisInfo, EthBeaconNodeApiClientError> {
-    let (fork_version, validators_root) = parse_genesis_fork_version_and_validators_root(genesis)?;
-
-    Ok(GenesisInfo {
-        time: genesis_time_from_data(genesis)?,
-        fork_version,
-        validators_root,
-    })
-}
-
-/// Parses fork-schedule entries, preserving server order (which
-/// [`fork_version_from_schedule`] relies on). Empty schedules are rejected
-/// before they can enter the config cache; no fork version resolves from one.
-pub(crate) fn parse_fork_schedule(
-    entries: &[BeaconStateFork],
-) -> Result<Vec<ForkSchedule>, EthBeaconNodeApiClientError> {
-    if entries.is_empty() {
-        return Err(EthBeaconNodeApiClientError::ParseError(
-            "empty fork schedule".to_string(),
-        ));
-    }
-
-    entries
-        .iter()
-        .map(|fork| {
-            Ok(ForkSchedule {
-                version: decode_fixed_hex(&fork.current_version, || {
-                    "decode fork schedule current_version".to_string()
-                })?,
-                epoch: fork.epoch.parse::<u64>().map_err(|_| {
-                    EthBeaconNodeApiClientError::ParseError("parse fork schedule epoch".to_string())
-                })?,
-            })
-        })
-        .collect()
-}
-
 fn parse_genesis_fork_version_and_validators_root(
     genesis_data: &GetGenesisResponseResponseData,
 ) -> Result<(phase0::Version, phase0::Root), EthBeaconNodeApiClientError> {
@@ -175,7 +130,7 @@ fn parse_genesis_fork_version_and_validators_root(
     Ok((fork_version, validators_root))
 }
 
-pub(crate) fn fork_schedule_from_spec(
+fn fork_schedule_from_spec(
     spec_data: &serde_json::Value,
 ) -> Result<HashMap<ConsensusVersion, ForkSchedule>, EthBeaconNodeApiClientError> {
     fn fetch_fork(
@@ -287,7 +242,7 @@ pub fn resolve_fork_version(
 /// static fork schedule unchanged), and cross-client signature verification
 /// only works when both sides derive the fork version the same way.
 fn fork_version_from_schedule(
-    schedule: &[ForkSchedule],
+    schedule: &[BeaconStateFork],
     epoch: phase0::Epoch,
 ) -> Result<phase0::Version, EthBeaconNodeApiClientError> {
     let mut current = schedule.first().ok_or_else(|| {
@@ -295,13 +250,18 @@ fn fork_version_from_schedule(
     })?;
 
     for fork in schedule {
-        if fork.epoch > epoch {
+        let fork_epoch = fork.epoch.parse::<u64>().map_err(|_| {
+            EthBeaconNodeApiClientError::ParseError("parse fork schedule epoch".to_string())
+        })?;
+        if fork_epoch > epoch {
             break;
         }
         current = fork;
     }
 
-    Ok(current.version)
+    decode_fixed_hex(&current.current_version, || {
+        "decode fork schedule current_version".to_string()
+    })
 }
 
 /// Returns the fork version for voluntary-exit domains: EIP-7044 pins them to
@@ -317,32 +277,6 @@ fn voluntary_exit_fork_version(
         .unwrap_or(genesis_fork_version))
 }
 
-/// The single domain derivation, over already-fetched config: non-exit
-/// domains resolve the fork version from the fork-schedule entries (see
-/// [`fork_version_from_schedule`]); voluntary exits stay pinned to Capella
-/// per EIP-7044.
-pub(crate) fn domain_from_config(
-    spec: &serde_json::Value,
-    genesis: &GenesisInfo,
-    fork_schedule: &[ForkSchedule],
-    domain_type: phase0::DomainType,
-    epoch: phase0::Epoch,
-) -> Result<phase0::Domain, EthBeaconNodeApiClientError> {
-    let voluntary_exit_domain_type = resolve_domain_type(spec, "DOMAIN_VOLUNTARY_EXIT")?;
-
-    let fork_version = if domain_type == voluntary_exit_domain_type {
-        voluntary_exit_fork_version(spec, genesis.fork_version)?
-    } else {
-        fork_version_from_schedule(fork_schedule, epoch)?
-    };
-
-    Ok(compute_domain(
-        domain_type,
-        fork_version,
-        genesis.validators_root,
-    ))
-}
-
 impl ValidatorStatus {
     /// Returns true if the validator is in one of the active states.
     pub fn is_active(&self) -> bool {
@@ -355,58 +289,104 @@ impl ValidatorStatus {
     }
 }
 
-/// Parses the genesis time out of a genesis response.
-pub(crate) fn genesis_time_from_data(
-    genesis: &GetGenesisResponseResponseData,
-) -> Result<DateTime<Utc>, EthBeaconNodeApiClientError> {
-    genesis
-        .genesis_time
-        .parse()
-        .map_err(|_| EthBeaconNodeApiClientError::ParseError("parse genesis_time".into()))
-        .and_then(|timestamp| {
-            DateTime::from_timestamp(timestamp, 0).ok_or_else(|| {
-                EthBeaconNodeApiClientError::ParseError("convert genesis_time to timestamp".into())
-            })
-        })
+/// Cached static chain config for one beacon endpoint: spec, genesis, and
+/// fork schedule. These are constant for the lifetime of a beacon-node
+/// process, but fetching them live put up to four sequential HTTP round-trips
+/// on every signature verification.
+///
+/// Cached for the lifetime of *this* process: picking up a fork schedule
+/// changed by a beacon-node upgrade requires a pluto restart. Request
+/// failures are never cached (the `OnceCell` stays empty and the next caller
+/// retries); a successful response is cached as-is, so a malformed 200 body
+/// persists until restart.
+///
+/// TODO(#563): interim process-global cache — the generated client cannot
+/// hold state. Moves into the client when eth2api is redesigned.
+#[derive(Default)]
+struct ChainConfigCache {
+    spec: OnceCell<Arc<serde_json::Value>>,
+    genesis: OnceCell<Arc<GetGenesisResponseResponseData>>,
+    fork_schedule: OnceCell<Arc<Vec<BeaconStateFork>>>,
 }
 
-/// Parses the slot duration and slots per epoch out of the chain spec.
-pub(crate) fn slots_config_from_spec(
-    spec: &serde_json::Value,
-) -> Result<(time::Duration, u64), EthBeaconNodeApiClientError> {
-    let slot_duration = time::Duration::from_secs(parse_u64_field(spec, "SECONDS_PER_SLOT")?);
-    let slots_per_epoch = parse_u64_field(spec, "SLOTS_PER_EPOCH")?;
+/// Keyed by endpoint, so every client for one beacon node (e.g. the
+/// scheduling and submission clients) shares the same entries.
+///
+/// TODO(#563): removed with the eth2api redesign.
+static CONFIG_CACHES: LazyLock<Mutex<HashMap<Url, Arc<ChainConfigCache>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
-    if slot_duration == time::Duration::ZERO || slots_per_epoch == 0 {
-        return Err(EthBeaconNodeApiClientError::ZeroSlotDurationOrSlotsPerEpoch);
-    }
+/// Returns the config cache for `base_url`. The map lock is only held to
+/// get-or-insert the entry, never across a fetch.
+fn config_cache_for(base_url: &Url) -> Arc<ChainConfigCache> {
+    let mut caches = CONFIG_CACHES.lock().expect("config cache mutex poisoned");
+    Arc::clone(caches.entry(base_url.clone()).or_default())
+}
 
-    Ok((slot_duration, slots_per_epoch))
+/// Removes the cached chain config for `base_url`.
+///
+/// Test support: wiremock pools listeners, so mock servers reuse ports within
+/// one test process and a later test would inherit an earlier test's cached
+/// config for the same URL. Production never needs this.
+#[doc(hidden)]
+pub fn purge_chain_config_cache(base_url: &Url) {
+    CONFIG_CACHES
+        .lock()
+        .expect("config cache mutex poisoned")
+        .remove(base_url);
 }
 
 impl EthBeaconNodeApiClient {
-    pub(crate) async fn fetch_spec_data(
-        &self,
-    ) -> Result<serde_json::Value, EthBeaconNodeApiClientError> {
-        match self.get_spec(GetSpecRequest {}).await? {
-            GetSpecResponse::Ok(spec) => Ok(spec.data),
-            _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
-        }
+    async fn fetch_spec_data(&self) -> Result<Arc<serde_json::Value>, EthBeaconNodeApiClientError> {
+        let cache = config_cache_for(&self.base_url);
+        cache
+            .spec
+            .get_or_try_init(|| async {
+                match self.get_spec(GetSpecRequest {}).await? {
+                    GetSpecResponse::Ok(spec) => Ok(Arc::new(spec.data)),
+                    _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
+                }
+            })
+            .await
+            .map(Arc::clone)
     }
 
-    pub(crate) async fn fetch_genesis_data(
+    async fn fetch_genesis_data(
         &self,
-    ) -> Result<GetGenesisResponseResponseData, EthBeaconNodeApiClientError> {
-        match self.get_genesis(GetGenesisRequest {}).await? {
-            GetGenesisResponse::Ok(genesis) => Ok(genesis.data),
-            _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
-        }
+    ) -> Result<Arc<GetGenesisResponseResponseData>, EthBeaconNodeApiClientError> {
+        let cache = config_cache_for(&self.base_url);
+        cache
+            .genesis
+            .get_or_try_init(|| async {
+                match self.get_genesis(GetGenesisRequest {}).await? {
+                    GetGenesisResponse::Ok(genesis) => Ok(Arc::new(genesis.data)),
+                    _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
+                }
+            })
+            .await
+            .map(Arc::clone)
     }
 
     /// Fetches the genesis time.
     pub async fn fetch_genesis_time(&self) -> Result<DateTime<Utc>, EthBeaconNodeApiClientError> {
         let genesis = self.fetch_genesis_data().await?;
-        genesis_time_from_data(&genesis)
+
+        genesis
+            .genesis_time
+            .parse()
+            .map_err(|_| EthBeaconNodeApiClientError::ParseError("parse genesis_time".into()))
+            .and_then(|timestamp| {
+                DateTime::from_timestamp(timestamp, 0).ok_or_else(|| {
+                    EthBeaconNodeApiClientError::ParseError(
+                        "convert genesis_time to timestamp".into(),
+                    )
+                })
+            })
+    }
+
+    /// Fetches the raw chain spec as a JSON object (cached per endpoint).
+    pub async fn fetch_spec(&self) -> Result<Arc<serde_json::Value>, EthBeaconNodeApiClientError> {
+        self.fetch_spec_data().await
     }
 
     /// Fetches the slot duration and slots per epoch.
@@ -414,7 +394,15 @@ impl EthBeaconNodeApiClient {
         &self,
     ) -> Result<(time::Duration, u64), EthBeaconNodeApiClientError> {
         let spec = self.fetch_spec_data().await?;
-        slots_config_from_spec(&spec)
+
+        let slot_duration = time::Duration::from_secs(parse_u64_field(&spec, "SECONDS_PER_SLOT")?);
+        let slots_per_epoch = parse_u64_field(&spec, "SLOTS_PER_EPOCH")?;
+
+        if slot_duration == time::Duration::ZERO || slots_per_epoch == 0 {
+            return Err(EthBeaconNodeApiClientError::ZeroSlotDurationOrSlotsPerEpoch);
+        }
+
+        Ok((slot_duration, slots_per_epoch))
     }
 
     /// Fetches the fork schedule for all known forks.
@@ -425,14 +413,115 @@ impl EthBeaconNodeApiClient {
         fork_schedule_from_spec(&spec)
     }
 
-    /// Fetches the fork schedule entries from `/eth/v1/config/fork_schedule`.
-    pub(crate) async fn fetch_fork_schedule_data(
+    /// Fetches the domain type with the provided config/spec key.
+    pub async fn fetch_domain_type(
         &self,
-    ) -> Result<Vec<BeaconStateFork>, EthBeaconNodeApiClientError> {
-        match self.get_fork_schedule(GetForkScheduleRequest {}).await? {
-            GetForkScheduleResponse::Ok(resp) => Ok(resp.data),
-            _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
-        }
+        spec_key: &str,
+    ) -> Result<phase0::DomainType, EthBeaconNodeApiClientError> {
+        let spec = self.fetch_spec_data().await?;
+        resolve_domain_type(&spec, spec_key)
+    }
+
+    /// Fetches the genesis domain for the provided domain type.
+    pub async fn fetch_genesis_domain(
+        &self,
+        domain_type: phase0::DomainType,
+    ) -> Result<phase0::Domain, EthBeaconNodeApiClientError> {
+        let genesis = self.fetch_genesis_data().await?;
+        let (genesis_fork_version, _) = parse_genesis_fork_version_and_validators_root(&genesis)?;
+
+        Ok(compute_domain(
+            domain_type,
+            genesis_fork_version,
+            phase0::Root::default(),
+        ))
+    }
+
+    /// Fetches the genesis validators root from the beacon node.
+    pub async fn fetch_genesis_validators_root(
+        &self,
+    ) -> Result<phase0::Root, EthBeaconNodeApiClientError> {
+        let genesis = self.fetch_genesis_data().await?;
+        let (_, validators_root) = parse_genesis_fork_version_and_validators_root(&genesis)?;
+
+        Ok(validators_root)
+    }
+
+    /// Fetches the genesis fork version from the beacon node.
+    pub async fn fetch_genesis_fork_version(
+        &self,
+    ) -> Result<phase0::Version, EthBeaconNodeApiClientError> {
+        let genesis = self.fetch_genesis_data().await?;
+        let (fork_version, _) = parse_genesis_fork_version_and_validators_root(&genesis)?;
+
+        Ok(fork_version)
+    }
+
+    /// Fetches the fork schedule entries from `/eth/v1/config/fork_schedule`
+    /// (cached per endpoint).
+    async fn fetch_fork_schedule_data(
+        &self,
+    ) -> Result<Arc<Vec<BeaconStateFork>>, EthBeaconNodeApiClientError> {
+        let cache = config_cache_for(&self.base_url);
+        cache
+            .fork_schedule
+            .get_or_try_init(|| async {
+                match self.get_fork_schedule(GetForkScheduleRequest {}).await? {
+                    GetForkScheduleResponse::Ok(resp) => Ok(Arc::new(resp.data)),
+                    _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
+                }
+            })
+            .await
+            .map(Arc::clone)
+    }
+
+    /// Fetches the `current_version` of every entry in the beacon node's fork
+    /// schedule (`/eth/v1/config/fork_schedule`), decoded and returned in the
+    /// order provided by the endpoint (oldest-to-newest per spec). The first
+    /// entry is the genesis fork version, which identifies the beacon node's
+    /// network.
+    pub async fn fetch_fork_schedule_versions(
+        &self,
+    ) -> Result<Vec<phase0::Version>, EthBeaconNodeApiClientError> {
+        self.fetch_fork_schedule_data()
+            .await?
+            .iter()
+            .map(|fork| {
+                decode_fixed_hex(&fork.current_version, || {
+                    "decode fork schedule current_version".to_string()
+                })
+            })
+            .collect()
+    }
+
+    /// Fetches the resolved beacon domain for the provided domain type and
+    /// epoch. Non-exit domains resolve the fork version from the
+    /// fork-schedule endpoint (go-eth2-client parity, see
+    /// [`fork_version_from_schedule`]); voluntary exits stay pinned to the
+    /// Capella fork per EIP-7044.
+    pub async fn fetch_domain(
+        &self,
+        domain_type: phase0::DomainType,
+        epoch: phase0::Epoch,
+    ) -> Result<phase0::Domain, EthBeaconNodeApiClientError> {
+        let spec = self.fetch_spec_data().await?;
+        let genesis = self.fetch_genesis_data().await?;
+        let (genesis_fork_version, genesis_validators_root) =
+            parse_genesis_fork_version_and_validators_root(&genesis)?;
+        let voluntary_exit_domain_type = resolve_domain_type(&spec, "DOMAIN_VOLUNTARY_EXIT")?;
+
+        let fork_version = if domain_type == voluntary_exit_domain_type {
+            voluntary_exit_fork_version(&spec, genesis_fork_version)?
+        } else {
+            let schedule = self.fetch_fork_schedule_data().await?;
+            fork_version_from_schedule(&schedule, epoch)?
+        };
+
+        Ok(compute_domain(
+            domain_type,
+            fork_version,
+            genesis_validators_root,
+        ))
     }
 
     /// Subscribes to the beacon node SSE stream (`GET /eth/v1/events`) for the
@@ -491,6 +580,156 @@ impl EthBeaconNodeApiClient {
 mod tests {
     use super::*;
     use serde_json::json;
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
+
+    const SPEC_PATH: &str = "/eth/v1/config/spec";
+    const GENESIS_PATH: &str = "/eth/v1/beacon/genesis";
+    const FORK_SCHEDULE_PATH: &str = "/eth/v1/config/fork_schedule";
+
+    fn genesis_body() -> serde_json::Value {
+        json!({ "data": {
+            "genesis_time": "1606824023",
+            "genesis_validators_root":
+                "0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95",
+            "genesis_fork_version": "0x00000000",
+        }})
+    }
+
+    fn fork_schedule_body() -> serde_json::Value {
+        json!({ "data": [
+            {
+                "previous_version": "0x00000000",
+                "current_version": "0x00000000",
+                "epoch": "0"
+            },
+            {
+                "previous_version": "0x00000000",
+                "current_version": "0x01000000",
+                "epoch": "10"
+            },
+        ]})
+    }
+
+    fn cache_spec_body() -> serde_json::Value {
+        let mut spec = spec_fixture();
+        spec["SECONDS_PER_SLOT"] = json!("12");
+        spec["SLOTS_PER_EPOCH"] = json!("32");
+        spec["DOMAIN_BEACON_ATTESTER"] = json!("0x01000000");
+        json!({ "data": spec })
+    }
+
+    fn test_client(server: &MockServer) -> EthBeaconNodeApiClient {
+        let client =
+            EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid mock server URL");
+        // The pooled port may have served an earlier test.
+        purge_chain_config_cache(&client.base_url);
+        client
+    }
+
+    /// Every config-derived lookup after the first is served from the
+    /// process-global cache — including from a second client for the same
+    /// endpoint (the submission client in production). Enforced by the
+    /// `.expect(1)` mocks on drop.
+    #[tokio::test]
+    async fn config_fetches_are_cached_per_endpoint() {
+        let server = MockServer::start().await;
+        for (endpoint, body) in [
+            (SPEC_PATH, cache_spec_body()),
+            (GENESIS_PATH, genesis_body()),
+            (FORK_SCHEDULE_PATH, fork_schedule_body()),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(endpoint))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let client = test_client(&server);
+
+        let domain_type = client
+            .fetch_domain_type("DOMAIN_BEACON_ATTESTER")
+            .await
+            .unwrap();
+        let first = client.fetch_domain(domain_type, 20).await.unwrap();
+        assert_eq!(first, client.fetch_domain(domain_type, 20).await.unwrap());
+        // Fork selection across the epoch-10 boundary yields distinct domains.
+        assert_ne!(first, client.fetch_domain(domain_type, 5).await.unwrap());
+        client.fetch_slots_config().await.unwrap();
+        client.fetch_fork_config().await.unwrap();
+        client.fetch_genesis_time().await.unwrap();
+        client.fetch_fork_schedule_versions().await.unwrap();
+
+        // Constructed directly (`test_client` purges): a second client for
+        // the same endpoint shares the already-warmed entries.
+        let second_client = EthBeaconNodeApiClient::with_base_url(server.uri()).unwrap();
+        second_client.fetch_slots_config().await.unwrap();
+        second_client.fetch_genesis_time().await.unwrap();
+
+        purge_chain_config_cache(&client.base_url);
+    }
+
+    /// Concurrent cold lookups coalesce into one upstream request.
+    #[tokio::test]
+    async fn concurrent_cold_fetches_coalesce() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(SPEC_PATH))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(cache_spec_body())
+                    // Force overlap with the first in-flight fetch.
+                    .set_delay(std::time::Duration::from_millis(100)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = test_client(&server);
+
+        // Spawn all tasks before awaiting any (a lazy `map` would run them
+        // sequentially) so they race on the cold cache.
+        let lookups: Vec<_> = (0..16)
+            .map(|_| {
+                let client = client.clone();
+                tokio::spawn(async move { client.fetch_slots_config().await })
+            })
+            .collect();
+        for lookup in lookups {
+            lookup.await.unwrap().unwrap();
+        }
+
+        purge_chain_config_cache(&client.base_url);
+    }
+
+    /// Request failures are never cached: the next call retries and succeeds
+    /// once the endpoint recovers.
+    #[tokio::test]
+    async fn config_fetch_failures_are_not_cached() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(GENESIS_PATH))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server);
+        client.fetch_genesis_time().await.unwrap_err();
+
+        Mock::given(method("GET"))
+            .and(path(GENESIS_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(genesis_body()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        client.fetch_genesis_time().await.unwrap();
+
+        purge_chain_config_cache(&client.base_url);
+    }
 
     fn spec_fixture() -> serde_json::Value {
         json!({
@@ -606,7 +845,7 @@ mod tests {
 
     #[test]
     fn fork_version_from_schedule_picks_last_activated_entry() {
-        let schedule = parse_fork_schedule(&schedule_fixture()).unwrap();
+        let schedule = schedule_fixture();
 
         // Same-epoch ties resolve to the last listed entry (server order).
         assert_eq!(

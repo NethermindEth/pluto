@@ -23,7 +23,7 @@ use std::{
 };
 
 use pluto_eth2api::{
-    BeaconNodeClient, EthBeaconNodeApiClientError, GetBlockRootRequest, GetBlockRootResponse,
+    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, GetBlockRootRequest, GetBlockRootResponse,
     GetSyncCommitteeDutiesRequest, GetSyncCommitteeDutiesResponse,
     GetSyncCommitteeDutiesResponseResponseDatum, PrepareSyncCommitteeSubnetsRequest,
     ProduceSyncCommitteeContributionRequest, ProduceSyncCommitteeContributionResponse,
@@ -92,7 +92,7 @@ struct Mutable {
 /// [`SyncCommMember::aggregate`].
 pub struct SyncCommMember {
     // Immutable state.
-    eth2_cl: BeaconNodeClient,
+    eth2_cl: EthBeaconNodeApiClient,
     epoch: Epoch,
     #[allow(dead_code)]
     pubkeys: Vec<BLSPubKey>,
@@ -108,7 +108,7 @@ impl SyncCommMember {
     /// `NewSyncCommMember`.
     #[must_use]
     pub fn new(
-        eth2_cl: BeaconNodeClient,
+        eth2_cl: EthBeaconNodeApiClient,
         epoch: Epoch,
         sign_func: SignFunc,
         pubkeys: Vec<BLSPubKey>,
@@ -219,7 +219,7 @@ impl SyncCommMember {
     /// Resolves sync committee duties for this epoch and submits subscriptions
     /// covering the next epoch.
     pub async fn prepare_epoch(&self) -> Result<()> {
-        let vals = active_validators(self.eth2_cl.api()).await?;
+        let vals = active_validators(&self.eth2_cl).await?;
         let duties = prepare_sync_comm_duties(&self.eth2_cl, &vals, self.epoch).await?;
         self.set_duties(vals, duties.clone());
         subscribe_sync_comm_subnets(&self.eth2_cl, self.epoch, &duties).await?;
@@ -282,7 +282,7 @@ impl SyncCommMember {
 // -- helper functions (mirror the lowercase Go helpers). --
 
 async fn prepare_sync_comm_duties(
-    client: &BeaconNodeClient,
+    client: &EthBeaconNodeApiClient,
     vals: &ActiveValidators,
     epoch: Epoch,
 ) -> Result<Vec<SyncCommitteeDuty>> {
@@ -298,7 +298,6 @@ async fn prepare_sync_comm_duties(
         .map_err(|e| Error::Malformed(format!("build sync committee duties request: {e}")))?;
 
     let response = client
-        .api()
         .get_sync_committee_duties(request)
         .await
         .map_err(EthBeaconNodeApiClientError::RequestError)?;
@@ -350,7 +349,7 @@ fn parse_pubkey(s: &str) -> Result<BLSPubKey> {
 }
 
 async fn subscribe_sync_comm_subnets(
-    client: &BeaconNodeClient,
+    client: &EthBeaconNodeApiClient,
     epoch: Epoch,
     duties: &[SyncCommitteeDuty],
 ) -> Result<()> {
@@ -380,7 +379,6 @@ async fn subscribe_sync_comm_subnets(
         .map_err(|e| Error::Malformed(format!("build sync committee subscriptions: {e}")))?;
 
     client
-        .api()
         .prepare_sync_committee_subnets(request)
         .await
         .map_err(EthBeaconNodeApiClientError::RequestError)?;
@@ -391,7 +389,7 @@ async fn subscribe_sync_comm_subnets(
 }
 
 async fn prepare_sync_selections(
-    client: &BeaconNodeClient,
+    client: &EthBeaconNodeApiClient,
     sign_func: &SignFunc,
     duties: &[SyncCommitteeDuty],
     slot: Slot,
@@ -436,7 +434,6 @@ async fn prepare_sync_selections(
         .map_err(|e| Error::Malformed(format!("build sync committee selections: {e}")))?;
 
     let response = client
-        .api()
         .submit_sync_committee_selections(request)
         .await
         .map_err(EthBeaconNodeApiClientError::RequestError)?;
@@ -520,10 +517,10 @@ fn hex_0x(bytes: impl AsRef<[u8]>) -> String {
 /// `getSubcommittees`: `idx / (SYNC_COMMITTEE_SIZE /
 /// SYNC_COMMITTEE_SUBNET_COUNT)`.
 pub(crate) async fn get_subcommittees(
-    client: &BeaconNodeClient,
+    client: &EthBeaconNodeApiClient,
     duty: &SyncCommitteeDuty,
 ) -> Result<Vec<u64>> {
-    let spec = client.spec().await.map_err(Error::BeaconNode)?;
+    let spec = client.fetch_spec().await.map_err(Error::BeaconNode)?;
 
     let comm_size = spec_u64(&spec, "SYNC_COMMITTEE_SIZE")?;
     let subnet_count = spec_u64(&spec, "SYNC_COMMITTEE_SUBNET_COUNT")?;
@@ -557,14 +554,13 @@ fn spec_u64(spec: &serde_json::Value, field: &str) -> Result<u64> {
         .map_err(|_| Error::Malformed(format!("parse spec field {field}")))
 }
 
-async fn fetch_head_block_root(client: &BeaconNodeClient) -> Result<Root> {
+async fn fetch_head_block_root(client: &EthBeaconNodeApiClient) -> Result<Root> {
     let request = GetBlockRootRequest::builder()
         .block_id("head".to_string())
         .build()
         .map_err(|e| Error::Malformed(format!("build block root request: {e}")))?;
 
     let response = client
-        .api()
         .get_block_root(request)
         .await
         .map_err(EthBeaconNodeApiClientError::RequestError)?;
@@ -579,7 +575,7 @@ async fn fetch_head_block_root(client: &BeaconNodeClient) -> Result<Root> {
 }
 
 async fn submit_sync_messages(
-    client: &BeaconNodeClient,
+    client: &EthBeaconNodeApiClient,
     slot: Slot,
     block_root: Root,
     sign_func: &SignFunc,
@@ -617,7 +613,6 @@ async fn submit_sync_messages(
         .map_err(|e| Error::Malformed(format!("build sync committee messages: {e}")))?;
 
     client
-        .api()
         .submit_pool_sync_committee_signatures(request)
         .await
         .map_err(EthBeaconNodeApiClientError::RequestError)?;
@@ -628,7 +623,7 @@ async fn submit_sync_messages(
 }
 
 async fn agg_contributions(
-    client: &BeaconNodeClient,
+    client: &EthBeaconNodeApiClient,
     sign_func: &SignFunc,
     slot: Slot,
     vals: &ActiveValidators,
@@ -653,7 +648,6 @@ async fn agg_contributions(
             .map_err(|e| Error::Malformed(format!("build produce contribution: {e}")))?;
 
         let response = client
-            .api()
             .produce_sync_committee_contribution(request)
             .await
             .map_err(EthBeaconNodeApiClientError::RequestError)?;
@@ -721,7 +715,6 @@ async fn agg_contributions(
         .map_err(|e| Error::Malformed(format!("build contribution and proofs request: {e}")))?;
 
     client
-        .api()
         .publish_contribution_and_proofs(request)
         .await
         .map_err(EthBeaconNodeApiClientError::RequestError)?;
@@ -771,7 +764,7 @@ mod tests {
             validator_sync_committee_indices: vec![75, 133, 289, 491],
         };
 
-        let subcommittees = get_subcommittees(&mock.beacon_client(), &duty)
+        let subcommittees = get_subcommittees(mock.client(), &duty)
             .await
             .expect("get_subcommittees");
 

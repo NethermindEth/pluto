@@ -9,7 +9,7 @@ use std::{any::Any, collections::HashMap, future::Future, pin::Pin, sync::Arc, t
 use async_trait::async_trait;
 use axum::http::StatusCode;
 use pluto_eth2api::{
-    BeaconNodeClient, GetAttesterDutiesRequest, GetAttesterDutiesResponse,
+    EthBeaconNodeApiClient, GetAttesterDutiesRequest, GetAttesterDutiesResponse,
     GetProposerDutiesRequest, GetProposerDutiesResponse, GetStateValidatorsResponseResponse,
     GetSyncCommitteeDutiesRequest, GetSyncCommitteeDutiesResponse, PostStateValidatorsRequest,
     PostStateValidatorsRequestPath, PostStateValidatorsResponse, ValidatorRequestBody,
@@ -162,9 +162,8 @@ const PROPOSAL_TIMEOUT: Duration = Duration::from_secs(24);
 /// validator client, and emits partial-signed-data to subscribers on submit
 /// endpoints.
 pub struct Component {
-    /// Upstream beacon-node API client with cached static chain config
-    /// (spec, genesis, fork schedule) for signing-domain resolution.
-    eth2_cl: BeaconNodeClient,
+    /// Upstream beacon-node API client.
+    eth2_cl: Arc<EthBeaconNodeApiClient>,
     /// Per-epoch active-validators cache. Submit handlers consult this to
     /// translate a validator-client-supplied `validator_index` into the
     /// cluster's DV root public key.
@@ -210,7 +209,7 @@ pub struct Component {
 impl Component {
     /// Builds a new component.
     pub fn new(
-        eth2_cl: BeaconNodeClient,
+        eth2_cl: Arc<EthBeaconNodeApiClient>,
         dutydb: Arc<MemDB>,
         share_idx: u64,
         pub_share_by_pubkey: HashMap<BLSPubKey, BLSPubKey>,
@@ -242,7 +241,7 @@ impl Component {
     /// to bypass signature checks.
     #[cfg(test)]
     pub fn new_insecure(
-        eth2_cl: BeaconNodeClient,
+        eth2_cl: Arc<EthBeaconNodeApiClient>,
         dutydb: Arc<MemDB>,
         share_idx: u64,
         validator_cache: Arc<dyn CachedValidatorsProvider>,
@@ -914,7 +913,7 @@ impl Handler for Component {
 
         let response = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            self.eth2_cl.api().get_proposer_duties(request),
+            self.eth2_cl.get_proposer_duties(request),
         )
         .await
         .map_err(|_| upstream_timeout("proposer duties"))?
@@ -964,7 +963,7 @@ impl Handler for Component {
 
         let response = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            self.eth2_cl.api().get_attester_duties(request),
+            self.eth2_cl.get_attester_duties(request),
         )
         .await
         .map_err(|_| upstream_timeout("attester duties"))?
@@ -1017,7 +1016,7 @@ impl Handler for Component {
 
         let response = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            self.eth2_cl.api().get_sync_committee_duties(request),
+            self.eth2_cl.get_sync_committee_duties(request),
         )
         .await
         .map_err(|_| upstream_timeout("sync committee duties"))?
@@ -1641,7 +1640,7 @@ impl Handler for Component {
 
         let response = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            self.eth2_cl.api().post_state_validators(request),
+            self.eth2_cl.post_state_validators(request),
         )
         .await
         .map_err(|_| upstream_timeout("validators"))?
@@ -1724,12 +1723,12 @@ impl Handler for Component {
         // so we resolve it once here too rather than letting
         // `verify_partial_sig` fan out 2N domain-lookup calls.
         let (slot_duration, _) =
-            tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.slots_config())
+            tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.fetch_slots_config())
                 .await
                 .map_err(|_| upstream_timeout("slots config"))?
                 .map_err(|err| upstream_call_failed("slots config", err.into()))?;
         let genesis_time =
-            tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.genesis_time())
+            tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.fetch_genesis_time())
                 .await
                 .map_err(|_| upstream_timeout("genesis time"))?
                 .map_err(|err| upstream_call_failed("genesis time", err.into()))?;
@@ -1764,7 +1763,7 @@ impl Handler for Component {
 
         // Duty slot = slots_per_epoch * epoch.
         let (_, slots_per_epoch) =
-            tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.slots_config())
+            tokio::time::timeout(UPSTREAM_REQUEST_TIMEOUT, self.eth2_cl.fetch_slots_config())
                 .await
                 .map_err(|_| upstream_timeout("slots config"))?
                 .map_err(|err| upstream_call_failed("slots config", err.into()))?;
@@ -2728,13 +2727,10 @@ mod tests {
 
     use chrono::{DateTime, Utc};
     use pluto_crypto::{blst_impl::BlstImpl, tbls::Tbls};
-    use pluto_eth2api::{
-        EthBeaconNodeApiClient,
-        spec::altair::{
-            ContributionAndProof, SignedContributionAndProof as AltairSignedContributionAndProof,
-            SyncCommitteeContribution as AltairSyncCommitteeContribution,
-            SyncCommitteeMessage as AltairSyncCommitteeMessage,
-        },
+    use pluto_eth2api::spec::altair::{
+        ContributionAndProof, SignedContributionAndProof as AltairSignedContributionAndProof,
+        SyncCommitteeContribution as AltairSyncCommitteeContribution,
+        SyncCommitteeMessage as AltairSyncCommitteeMessage,
     };
     use pluto_ssz::BitVector;
     use pluto_testutil::BeaconMock;
@@ -2811,7 +2807,8 @@ mod tests {
         // `evict_rx` doesn't observe a closed channel.
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = dummy_beacon_client();
+        let eth2_cl =
+            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
         let component =
             Component::new_insecure(eth2_cl, Arc::clone(&dutydb), 1, TestValidatorCache::empty());
         (component, dutydb)
@@ -3053,7 +3050,8 @@ mod tests {
             DeadlinerTask::start(cancel.clone(), "validatorapi-tests", FarFutureCalculator);
         let (trim_tx, trim_rx) = channel::<Duty>(8);
         let dutydb = Arc::new(MemDB::new(deadliner, trim_rx, &cancel));
-        let eth2_cl = dummy_beacon_client();
+        let eth2_cl =
+            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
         let component =
             Component::new_insecure(eth2_cl, Arc::clone(&dutydb), 1, TestValidatorCache::empty());
 
@@ -3220,16 +3218,6 @@ mod tests {
     // Plumbing tests — Subscribe / Register* / verify_partial_sig
     // ====================================================================
 
-    /// Beacon client over the given (mock server) URL.
-    fn beacon_client_at(url: &str) -> BeaconNodeClient {
-        BeaconNodeClient::new(EthBeaconNodeApiClient::with_base_url(url).unwrap())
-    }
-
-    /// Beacon client pinned to an unroutable endpoint.
-    fn dummy_beacon_client() -> BeaconNodeClient {
-        beacon_client_at("http://127.0.0.1:0")
-    }
-
     fn dv_pubkey(byte: u8) -> BLSPubKey {
         [byte; 48]
     }
@@ -3249,7 +3237,8 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = dummy_beacon_client();
+        let eth2_cl =
+            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
         Component::new(eth2_cl, dutydb, 1, map, false, TestValidatorCache::empty())
     }
 
@@ -3488,7 +3477,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = beacon_client_at(&mock.uri());
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
         let component = Component::new(eth2_cl, dutydb, 1, map, false, TestValidatorCache::empty());
         (component, mock)
     }
@@ -3515,14 +3504,10 @@ mod tests {
 
         // Compute the signing root the same way `signing::verify` does, then
         // sign it with the share's secret.
-        let signing_root = pluto_eth2util::signing::get_data_root(
-            &mock.beacon_client(),
-            domain,
-            epoch,
-            message_root,
-        )
-        .await
-        .unwrap();
+        let signing_root =
+            pluto_eth2util::signing::get_data_root(mock.client(), domain, epoch, message_root)
+                .await
+                .unwrap();
         let good_signature = BlstImpl.sign(&secret, &signing_root).unwrap();
 
         component
@@ -3574,7 +3559,8 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = dummy_beacon_client();
+        let eth2_cl =
+            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
         let component = Component::new_insecure(eth2_cl, dutydb, 1, TestValidatorCache::empty());
 
         component
@@ -3609,7 +3595,8 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = dummy_beacon_client();
+        let eth2_cl =
+            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
         let component = Component::new(
             eth2_cl,
             dutydb,
@@ -3691,7 +3678,8 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = dummy_beacon_client();
+        let eth2_cl =
+            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
 
         let expected = HashMap::from([(1u64, dv_pubkey(0xA1)), (7u64, dv_pubkey(0xA7))]);
         let component = Component::new_insecure(
@@ -3738,7 +3726,8 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = dummy_beacon_client();
+        let eth2_cl =
+            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
         let component = Component::new_insecure(eth2_cl, dutydb, 1, Arc::new(FailingCache));
 
         let err = component.fetch_active_validators().await.unwrap_err();
@@ -3783,7 +3772,7 @@ mod tests {
             DeadlinerTask::start(cancel.clone(), "selections-tests", FarFutureCalculator);
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = beacon_client_at(&mock.uri());
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
         let component = Component::new_insecure(
             eth2_cl,
             dutydb,
@@ -3816,7 +3805,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = beacon_client_at(&mock.uri());
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
         let component = Component::new(
             eth2_cl,
             dutydb,
@@ -4313,7 +4302,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = beacon_client_at(&mock.uri());
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
         let mut component = Component::new(
             eth2_cl,
             dutydb,
@@ -4469,7 +4458,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = beacon_client_at(&mock.uri());
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
         let component = Component::new(
             eth2_cl,
             dutydb,
@@ -4601,7 +4590,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = beacon_client_at(&mock.uri());
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
         let component = Component::new(eth2_cl, dutydb, 1, map, true, TestValidatorCache::empty());
 
         let reg = make_signed_registration(dv_root, 24, [0x42; 96]);
@@ -4638,7 +4627,8 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = dummy_beacon_client();
+        let eth2_cl =
+            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
         let mut component =
             Component::new_insecure(eth2_cl, dutydb, 7, TestValidatorCache::arc(active));
 
@@ -4905,7 +4895,8 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = dummy_beacon_client();
+        let eth2_cl =
+            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
         let component = Component::new_insecure(eth2_cl, dutydb, 1, Arc::new(FailingCache));
 
         let err = component
@@ -4980,7 +4971,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = beacon_client_at(&mock.uri());
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
         // Empty share map: lookup for `dv_root` will return
         // `VerifyPartialSigError::UnknownPubKey`, which the handler maps
         // to 400.
@@ -5019,7 +5010,7 @@ mod tests {
         // Resolve the same signing root the handler will compute (epoch=0
         // since slot/SLOTS_PER_EPOCH=1/16=0).
         let signing_root = pluto_eth2util::signing::get_data_root(
-            &mock.beacon_client(),
+            mock.client(),
             DomainName::SyncCommittee,
             0,
             beacon_block_root,
@@ -5037,7 +5028,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = beacon_client_at(&mock.uri());
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
         let active: HashMap<ValidatorIndex, BLSPubKey> = HashMap::from([(7, dv_root)]);
         let mut component = Component::new(
             eth2_cl,
@@ -5095,12 +5086,12 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = beacon_client_at(&mock.uri());
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
         let component = Component::new(eth2_cl, dutydb, 1, map, false, TestValidatorCache::empty());
 
         let message_root: Root = [0xCD; 32];
         let signing_root = pluto_eth2util::signing::get_data_root(
-            &mock.beacon_client(),
+            mock.client(),
             DomainName::SyncCommittee,
             0,
             message_root,
@@ -5142,7 +5133,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = beacon_client_at(&mock.uri());
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
         // `insecure_test = false` but no share registered for `dv_root`. The
         // inner selection-proof verify runs first; because the selection
         // proof is a zero-byte signature here it will be rejected with 400
@@ -5209,7 +5200,7 @@ mod tests {
         }
         .selection_proof_message_root();
         let selection_proof_signing_root = pluto_eth2util::signing::get_data_root(
-            &mock.beacon_client(),
+            mock.client(),
             DomainName::SyncCommitteeSelectionProof,
             0,
             selection_proof_root,
@@ -5234,7 +5225,7 @@ mod tests {
         }
         .message_root();
         let outer_signing_root = pluto_eth2util::signing::get_data_root(
-            &mock.beacon_client(),
+            mock.client(),
             DomainName::ContributionAndProof,
             0,
             outer_root,
@@ -5252,7 +5243,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = beacon_client_at(&mock.uri());
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
         let active: HashMap<ValidatorIndex, BLSPubKey> =
             HashMap::from([(aggregator_index, root_pubkey)]);
         let mut component = Component::new(
@@ -5348,7 +5339,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = beacon_client_at(&mock.uri());
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
         let component =
             Component::new_insecure(eth2_cl, Arc::clone(&dutydb), 1, TestValidatorCache::empty());
         (component, mock)
@@ -6011,7 +6002,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = beacon_client_at(&mock.uri());
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
         let mut component = Component::new(
             eth2_cl,
             Arc::clone(&dutydb),
@@ -6195,7 +6186,7 @@ mod tests {
             DeadlinerTask::start(cancel.clone(), "validatorapi-tests", FarFutureCalculator);
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = beacon_client_at(&server.uri());
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(server.uri()).unwrap());
         Component::new(
             eth2_cl,
             dutydb,
@@ -6655,7 +6646,7 @@ mod tests {
         );
         let (_evict_tx, evict_rx) = mpsc::channel(1);
         let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
-        let eth2_cl = beacon_client_at(&mock.uri());
+        let eth2_cl = Arc::new(EthBeaconNodeApiClient::with_base_url(mock.uri()).unwrap());
         let component = Component {
             eth2_cl,
             dutydb,

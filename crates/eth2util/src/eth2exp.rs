@@ -1,7 +1,9 @@
 //! Aggregator selection for attestation and sync committee duties.
 
 use k256::sha2::{Digest, Sha256};
-use pluto_eth2api::{BeaconNodeClient, EthBeaconNodeApiClientError, spec::phase0::BLSSignature};
+use pluto_eth2api::{
+    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, spec::phase0::BLSSignature,
+};
 
 /// Error type for aggregator selection operations.
 #[derive(Debug, thiserror::Error)]
@@ -45,11 +47,11 @@ pub enum Eth2ExpError {
 /// Returns true if the validator is the attestation aggregator for the given
 /// committee. Refer: <https://github.com/ethereum/consensus-specs/blob/0fe57a94ca543f02cb5eee4d8aab8495e36c0b86/specs/phase0/validator.md#aggregation-selection>
 pub async fn is_att_aggregator(
-    client: &BeaconNodeClient,
+    client: &EthBeaconNodeApiClient,
     comm_len: u64,
     slot_sig: BLSSignature,
 ) -> Result<bool, Eth2ExpError> {
-    let spec = client.spec().await?;
+    let spec = client.fetch_spec().await?;
 
     let aggs_per_comm = spec
         .as_object()
@@ -69,10 +71,10 @@ pub async fn is_att_aggregator(
 /// Returns true if the validator is the aggregator for the provided sync
 /// subcommittee. Refer: <https://github.com/ethereum/consensus-specs/blob/0fe57a94ca543f02cb5eee4d8aab8495e36c0b86/specs/altair/validator.md#aggregation-selection>
 pub async fn is_sync_comm_aggregator(
-    client: &BeaconNodeClient,
+    client: &EthBeaconNodeApiClient,
     sig: BLSSignature,
 ) -> Result<bool, Eth2ExpError> {
-    let spec = client.spec().await?;
+    let spec = client.fetch_spec().await?;
 
     let comm_size = spec
         .as_object()
@@ -150,7 +152,7 @@ mod tests {
     #[tokio::test]
     async fn is_att_aggregator() {
         let mock = default_client().await;
-        let client = &mock.beacon_client();
+        let client = mock.client();
         // comm_len=3, TARGET_AGGREGATORS_PER_COMMITTEE=16 → modulo=max(3/16,1)=1 →
         // always true
         assert!(
@@ -163,7 +165,7 @@ mod tests {
     #[tokio::test]
     async fn is_not_att_aggregator() {
         let mock = default_client().await;
-        let client = &mock.beacon_client();
+        let client = mock.client();
         // comm_len=64, TARGET_AGGREGATORS_PER_COMMITTEE=16 → modulo=4 → false
         assert!(
             !super::is_att_aggregator(client, 64, decode_sig(ATT_SIG_HEX))
@@ -185,7 +187,7 @@ mod tests {
     #[tokio::test]
     async fn is_sync_comm_aggregator(sig_hex: &str, expected: bool) {
         let mock = default_client().await;
-        let client = &mock.beacon_client();
+        let client = mock.client();
         let result = super::is_sync_comm_aggregator(client, decode_sig(sig_hex))
             .await
             .unwrap();

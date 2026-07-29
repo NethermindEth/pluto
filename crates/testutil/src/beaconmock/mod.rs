@@ -47,10 +47,17 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct BeaconMock {
     server: MockServer,
     client: EthBeaconNodeApiClient,
-    beacon_client: pluto_eth2api::BeaconNodeClient,
     state: Arc<MockState>,
     // Held to keep the slot ticker alive; dropped with `BeaconMock`.
     _head_producer: HeadProducer,
+}
+
+impl Drop for BeaconMock {
+    fn drop(&mut self) {
+        // The pooled port may be reused by the next test's server; don't
+        // leak this mock's cached chain config to it.
+        pluto_eth2api::purge_chain_config_cache(&self.client.base_url);
+    }
 }
 
 #[bon]
@@ -166,12 +173,13 @@ impl BeaconMock {
         }
 
         let client = EthBeaconNodeApiClient::with_base_url(server.uri()).map_err(Error::Client)?;
-        let beacon_client = pluto_eth2api::BeaconNodeClient::new(client.clone());
+        // Wiremock pools listeners, so this port may have served an earlier
+        // test; drop any chain config cached for it.
+        pluto_eth2api::purge_chain_config_cache(&client.base_url);
 
         Ok(Self {
             server,
             client,
-            beacon_client,
             state,
             _head_producer: head_producer,
         })
@@ -181,13 +189,6 @@ impl BeaconMock {
     #[must_use]
     pub fn client(&self) -> &EthBeaconNodeApiClient {
         &self.client
-    }
-
-    /// Returns the beacon node client over this mock's client. Clones share
-    /// one cache, so repeated calls do not shard cached state.
-    #[must_use]
-    pub fn beacon_client(&self) -> pluto_eth2api::BeaconNodeClient {
-        self.beacon_client.clone()
     }
 
     /// Returns the backing mock server for mounting test-specific endpoints.

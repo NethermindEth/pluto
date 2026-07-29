@@ -70,6 +70,21 @@ impl EthBeaconNodeApiClient {
         }
     }
 
+    /// Fetches the beacon attester signing domain.
+    pub async fn fetch_beacon_attester_domain(
+        &self,
+        epoch: phase0::Epoch,
+    ) -> Result<phase0::Domain> {
+        let domain_type = self
+            .fetch_domain_type("DOMAIN_BEACON_ATTESTER")
+            .await
+            .map_err(error_message)?;
+
+        self.fetch_domain(domain_type, epoch)
+            .await
+            .map_err(error_message)
+    }
+
     /// Submits signed attestations to the beacon node.
     pub async fn submit_attestations(
         &self,
