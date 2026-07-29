@@ -100,11 +100,50 @@ struct ErrorBody {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        // The `source` never reaches the client (it can carry internal detail),
+        // but it is the only place the underlying cause is recorded — e.g. which
+        // field an SSZ/JSON body failed to decode. Log it here, on the single
+        // path every error response takes, otherwise it is silently dropped.
+        if let Some(source) = &self.source {
+            if self.status_code.is_server_error() {
+                tracing::warn!(
+                    status = self.status_code.as_u16(),
+                    message = %self.message,
+                    source = %DisplayChain(source.as_ref()),
+                    "validator api error"
+                );
+            } else {
+                tracing::debug!(
+                    status = self.status_code.as_u16(),
+                    message = %self.message,
+                    source = %DisplayChain(source.as_ref()),
+                    "validator api error"
+                );
+            }
+        }
+
         let body = ErrorBody {
             code: self.status_code.as_u16(),
             message: self.message,
         };
 
         (self.status_code, Json(body)).into_response()
+    }
+}
+
+/// Renders an error together with its `source()` chain, so a wrapped cause
+/// (such as the inner `ssz::DecodeError` behind a decode failure) is not
+/// truncated to just the outermost message.
+struct DisplayChain<'a>(&'a (dyn std::error::Error + 'static));
+
+impl fmt::Display for DisplayChain<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)?;
+        let mut current = self.0.source();
+        while let Some(err) = current {
+            write!(f, ": {err}")?;
+            current = err.source();
+        }
+        Ok(())
     }
 }
