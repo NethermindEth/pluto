@@ -292,7 +292,10 @@ async fn queue_relay_update_no_op_when_relay_already_connected() {
 async fn on_connection_established_relay_promotes_to_established_and_queues_listen() {
     let mut mgr = manager();
     let relay_id = PeerId::random();
-    let relay_addrs = vec![addr("/ip4/10.0.0.1/tcp/9000")];
+    let relay_addrs = vec![
+        addr("/ip4/10.0.0.1/tcp/9000"),
+        addr("/ip4/10.0.0.1/udp/9000/quic-v1"),
+    ];
 
     mgr.queue_relay_update(relay_peer(relay_id, relay_addrs.clone()));
     mgr.events.clear();
@@ -308,7 +311,10 @@ async fn on_connection_established_relay_promotes_to_established_and_queues_list
         .iter()
         .filter(|e| matches!(e, ToSwarm::ListenOn { .. }))
         .count();
-    assert_eq!(listen_count, relay_addrs.len());
+    // Exactly one circuit listener regardless of how many transport addrs the
+    // relay has: libp2p keeps a single reservation per relay connection, so
+    // additional listeners would displace each other.
+    assert_eq!(listen_count, 1);
     let relay_connected = mgr.events.iter().any(|e| {
         matches!(
             e,
@@ -377,17 +383,23 @@ async fn on_new_listen_addr_promotes_established_to_reserved() {
 // ---- state machine: on_expired_listen_addr -------------------------
 
 #[tokio::test]
-async fn on_expired_listen_addr_demotes_reserved_and_emits_reservation_lost() {
+async fn on_expired_listen_addr_demotes_when_last_confirmed_circuit_expires() {
     let mut mgr = manager();
     let relay_id = PeerId::random();
     mgr.connection_states
-        .insert(relay_id, RelayConnectionState::Reserved);
+        .insert(relay_id, RelayConnectionState::Established);
     mgr.relay_addrs
         .insert(relay_id, vec![addr("/ip4/10.0.0.1/tcp/9000")]);
 
     let circuit = addr(&format!(
         "/ip4/10.0.0.1/tcp/9000/p2p/{relay_id}/p2p-circuit"
     ));
+    mgr.on_new_listen_addr(&circuit);
+    assert_eq!(
+        mgr.connection_states.get(&relay_id),
+        Some(&RelayConnectionState::Reserved)
+    );
+
     mgr.on_expired_listen_addr(&circuit);
 
     assert_eq!(
@@ -405,6 +417,59 @@ async fn on_expired_listen_addr_demotes_reserved_and_emits_reservation_lost() {
 }
 
 #[tokio::test]
+async fn on_expired_listen_addr_ignores_unconfirmed_sibling_listener_expiry() {
+    // Regression for the boot race: one circuit listener confirms
+    // (NewListenAddr) and a sibling listener that never confirmed expires
+    // moments later. The relay must stay Reserved and keep routing peers —
+    // demoting here partitioned the node for a full watchdog cycle.
+    let mut mgr = manager();
+    let relay_id = PeerId::random();
+    let target = PeerId::random();
+    mgr.connection_states
+        .insert(relay_id, RelayConnectionState::Established);
+    mgr.relay_addrs.insert(
+        relay_id,
+        vec![
+            addr("/ip4/10.0.0.1/tcp/9000"),
+            addr("/ip4/10.0.0.1/udp/9000/quic-v1"),
+        ],
+    );
+
+    let confirmed = addr(&format!(
+        "/ip4/10.0.0.1/tcp/9000/p2p/{relay_id}/p2p-circuit"
+    ));
+    let unconfirmed = addr(&format!(
+        "/ip4/10.0.0.1/udp/9000/quic-v1/p2p/{relay_id}/p2p-circuit"
+    ));
+    mgr.on_new_listen_addr(&confirmed);
+    // A peer routing campaign armed through the reserved relay.
+    mgr.upsert_peer_dial(target);
+    assert!(mgr.dial_states.contains_key(&target));
+
+    mgr.on_expired_listen_addr(&unconfirmed);
+
+    assert_eq!(
+        mgr.connection_states.get(&relay_id),
+        Some(&RelayConnectionState::Reserved),
+        "expiry of a never-confirmed listener must not demote the relay"
+    );
+    assert!(
+        mgr.dial_states.contains_key(&target),
+        "peer routing campaigns must survive the sibling-listener expiry"
+    );
+    let lost = mgr.events.iter().any(|e| {
+        matches!(
+            e,
+            ToSwarm::GenerateEvent(RelayManagerEvent::RelayReservationLost(_))
+        )
+    });
+    assert!(
+        !lost,
+        "no ReservationLost while a confirmed circuit remains"
+    );
+}
+
+#[tokio::test]
 async fn on_expired_listen_addr_drops_peer_dials_with_no_route_left() {
     let mut mgr = manager();
     let relay_id = PeerId::random();
@@ -412,9 +477,13 @@ async fn on_expired_listen_addr_drops_peer_dials_with_no_route_left() {
 
     // Single reserved relay supporting a peer-routing dial.
     mgr.connection_states
-        .insert(relay_id, RelayConnectionState::Reserved);
+        .insert(relay_id, RelayConnectionState::Established);
     mgr.relay_addrs
         .insert(relay_id, vec![addr("/ip4/10.0.0.1/tcp/9000")]);
+    let circuit = addr(&format!(
+        "/ip4/10.0.0.1/tcp/9000/p2p/{relay_id}/p2p-circuit"
+    ));
+    mgr.on_new_listen_addr(&circuit);
     mgr.dial_states.insert(
         target,
         RelayDialState::new(
@@ -426,14 +495,37 @@ async fn on_expired_listen_addr_drops_peer_dials_with_no_route_left() {
         ),
     );
 
-    let circuit = addr(&format!(
-        "/ip4/10.0.0.1/tcp/9000/p2p/{relay_id}/p2p-circuit"
-    ));
     mgr.on_expired_listen_addr(&circuit);
 
     assert!(
         !mgr.dial_states.contains_key(&target),
         "peer dial state must be dropped once no reserved relay can route to it"
+    );
+}
+
+#[tokio::test]
+async fn redial_relay_clears_confirmed_circuits() {
+    // The transport connection dropping kills every circuit listener; stale
+    // confirmed addrs must not keep a future Reserved state alive across
+    // reconnects.
+    let mut mgr = manager();
+    let relay_id = PeerId::random();
+    mgr.connection_states
+        .insert(relay_id, RelayConnectionState::Established);
+    mgr.relay_addrs
+        .insert(relay_id, vec![addr("/ip4/10.0.0.1/tcp/9000")]);
+    let circuit = addr(&format!(
+        "/ip4/10.0.0.1/tcp/9000/p2p/{relay_id}/p2p-circuit"
+    ));
+    mgr.on_new_listen_addr(&circuit);
+
+    mgr.on_connection_closed(relay_id);
+
+    assert!(
+        mgr.reserved_addrs
+            .get(&relay_id)
+            .is_none_or(HashSet::is_empty),
+        "confirmed circuit addrs must be cleared on relay disconnect"
     );
 }
 
@@ -505,8 +597,47 @@ fn skipped_dial_error() -> DialError {
     )
 }
 
+/// Records an active connection to `peer` in the manager's peer store, as
+/// `conn_logger` would on `ConnectionEstablished`.
+fn record_connection(mgr: &RelayManager, peer: PeerId) {
+    mgr.p2p_context
+        .peer_store_write_lock()
+        .add_peer(crate::p2p_context::Peer {
+            id: peer,
+            connection_id: libp2p::swarm::ConnectionId::new_unchecked(1),
+            remote_addr: addr("/ip4/10.0.0.9/tcp/9000"),
+        });
+}
+
 #[tokio::test]
-async fn on_dial_failure_skipped_cluster_peer_drops_dial_state() {
+async fn on_dial_failure_skipped_connected_cluster_peer_drops_dial_state() {
+    let mut mgr = manager();
+    let target = PeerId::random();
+    record_connection(&mgr, target);
+    mgr.dial_states.insert(
+        target,
+        RelayDialState::new(
+            RelayDialType::ClusterPeer,
+            target,
+            vec![addr("/ip4/10.0.0.1/tcp/9000")],
+        ),
+    );
+
+    mgr.on_dial_failure(Some(target), &skipped_dial_error());
+
+    assert!(
+        !mgr.dial_states.contains_key(&target),
+        "cluster-peer dial state must be dropped on Skipped while connected"
+    );
+}
+
+#[tokio::test]
+async fn on_dial_failure_skipped_disconnected_cluster_peer_keeps_campaign() {
+    // Regression for the boot-race wedge: dial #2 of a campaign is rejected
+    // with DialPeerConditionFalse because dial #1 is still negotiating its
+    // relay circuit. Dropping the campaign here orphans the peer if dial #1
+    // then fails (a never-established connection produces no
+    // ConnectionClosed, and force-direct skips zero-connection peers).
     let mut mgr = manager();
     let target = PeerId::random();
     mgr.dial_states.insert(
@@ -521,8 +652,8 @@ async fn on_dial_failure_skipped_cluster_peer_drops_dial_state() {
     mgr.on_dial_failure(Some(target), &skipped_dial_error());
 
     assert!(
-        !mgr.dial_states.contains_key(&target),
-        "cluster-peer dial state must be dropped on Skipped"
+        mgr.dial_states.contains_key(&target),
+        "campaign must stay armed while the peer has no active connection"
     );
 }
 
@@ -635,5 +766,112 @@ async fn upsert_peer_dial_drops_stale_state_when_no_route_left() {
     assert!(
         !mgr.dial_states.contains_key(&target),
         "no reserved relay can reach target: stale dial state must be dropped"
+    );
+}
+
+// ---- sweep_disconnected_peers --------------------------------------
+
+/// Manager with one reserved relay and the given known cluster peers.
+fn manager_with_reserved_relay(known: Vec<PeerId>) -> RelayManager {
+    let mut mgr = RelayManager::new(Vec::new(), P2PContext::new(known));
+    let relay = PeerId::random();
+    mgr.connection_states
+        .insert(relay, RelayConnectionState::Reserved);
+    mgr.relay_addrs
+        .insert(relay, vec![addr("/ip4/10.0.0.1/tcp/9000")]);
+    mgr
+}
+
+#[tokio::test]
+async fn sweep_rearms_known_peer_with_no_connection_and_no_campaign() {
+    // Regression for the boot-race wedge's terminal state: a known peer with
+    // zero connections and no dial campaign must be picked up by the sweep.
+    let target = PeerId::random();
+    let mut mgr = manager_with_reserved_relay(vec![target]);
+
+    mgr.sweep_disconnected_peers();
+
+    assert!(
+        mgr.dial_states.contains_key(&target),
+        "sweep must re-arm a circuit dial for the unrouted peer"
+    );
+}
+
+#[tokio::test]
+async fn sweep_skips_connected_peers_and_in_flight_campaigns_and_self() {
+    let connected = PeerId::random();
+    let campaigning = PeerId::random();
+    let local = PeerId::random();
+    let mut mgr = manager_with_reserved_relay(vec![connected, campaigning, local]);
+    mgr.p2p_context.set_local_peer_id(local);
+    record_connection(&mgr, connected);
+    mgr.dial_states.insert(
+        campaigning,
+        RelayDialState::new(
+            RelayDialType::ClusterPeer,
+            campaigning,
+            vec![addr("/ip4/10.0.0.1/tcp/9000")],
+        ),
+    );
+    let campaign_retry_count = 3;
+    if let Some(s) = mgr.dial_states.get_mut(&campaigning) {
+        s.retry_count = campaign_retry_count;
+    }
+
+    mgr.sweep_disconnected_peers();
+
+    assert!(
+        !mgr.dial_states.contains_key(&connected),
+        "connected peer must not get a dial campaign"
+    );
+    assert!(
+        !mgr.dial_states.contains_key(&local),
+        "self must never be dialed"
+    );
+    assert_eq!(
+        mgr.dial_states.get(&campaigning).map(|s| s.retry_count),
+        Some(campaign_retry_count),
+        "existing campaign (and its backoff) must be left untouched"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn poll_fires_swept_peer_dial_within_the_same_watchdog_pass() {
+    // The sweep runs on the watchdog tick inside poll(); the dial state it
+    // inserts must be polled in the same pass. If it isn't, no waker is
+    // registered for it and — with nothing else waking the swarm — the dial
+    // waits a full extra watchdog tick.
+    let target = PeerId::random();
+    let mut mgr = manager_with_reserved_relay(vec![target]);
+    let waker = futures::task::noop_waker();
+    let mut cx = Context::from_waker(&waker);
+
+    // Drain until Pending: initialises the watchdog.
+    while mgr.poll(&mut cx).is_ready() {}
+
+    tokio::time::advance(ESTABLISHED_WATCHDOG_TICK).await;
+
+    let mut saw_dial = false;
+    while let Poll::Ready(ev) = mgr.poll(&mut cx) {
+        if matches!(ev, ToSwarm::Dial { .. }) {
+            saw_dial = true;
+        }
+    }
+    assert!(
+        saw_dial,
+        "the swept peer's dial must fire in the same watchdog pass"
+    );
+}
+
+#[tokio::test]
+async fn sweep_is_noop_without_reserved_relays() {
+    let target = PeerId::random();
+    let mut mgr = RelayManager::new(Vec::new(), P2PContext::new(vec![target]));
+
+    mgr.sweep_disconnected_peers();
+
+    assert!(
+        !mgr.dial_states.contains_key(&target),
+        "no reserved relay: nothing to arm"
     );
 }

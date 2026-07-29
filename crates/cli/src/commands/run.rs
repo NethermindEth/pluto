@@ -19,29 +19,22 @@
 //! driven via [`pluto_app::node::App::run`] until cancelled.
 //!
 //! Not every accepted flag is honored yet. Correctness-affecting flags with no
-//! implementation (simnet mocks, custom testnets, beacon-node headers, VC TLS,
-//! a preferred consensus protocol, synthetic block proposals) fail fast with a
-//! "not yet supported" error, while the remaining observability/availability
-//! flags with no implementation (debug/pprof address, OTLP, proc directory,
-//! fallback beacon endpoints) are ignored with a warning. The monitoring API
-//! (`--monitoring-address`) is wired: the node serves Prometheus `/metrics`
-//! plus `/livez` and `/readyz` there.
-//!
-//! Limitations:
-//! - `--log-format` and `--log-output-path` are accepted but not yet applied
-//!   (console and Loki output only).
+//! implementation (beacon-node headers, VC TLS, a preferred consensus protocol,
+//! synthetic block proposals) fail fast with a "not yet supported" error, while
+//! the remaining observability/availability flags with no implementation
+//! (debug/pprof address, OTLP, proc directory, fallback beacon endpoints) are
+//! ignored with a warning.
 
 use std::{
     collections::HashMap,
     net::{SocketAddr, ToSocketAddrs},
     path::{Path, PathBuf},
-    sync::Arc,
     time::Duration as StdDuration,
 };
 
 use libp2p::multiaddr::Protocol;
 use pluto_eth2util::helpers::validate_http_headers;
-use pluto_featureset::{Feature, FeatureSet, FeaturesetError, Status};
+use pluto_featureset::{Feature, FeaturesetError, Status};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
@@ -62,8 +55,7 @@ const MAX_NICKNAME_BYTES: usize = 32;
 const LOKI_FLUSH_TIMEOUT: StdDuration = StdDuration::from_secs(3);
 /// Default `--monitoring-address`.
 const DEFAULT_MONITORING_ADDR: &str = "127.0.0.1:3620";
-/// Default `--simnet-validator-keys-dir`; shared by the flag definition and
-/// the unsupported-flag check so they cannot drift.
+/// Default `--simnet-validator-keys-dir` (matches Charon).
 const DEFAULT_SIMNET_KEYS_DIR: &str = ".charon/validator_keys";
 
 /// Arguments for the `run` command.
@@ -324,7 +316,7 @@ pub struct RunGeneralArgs {
         default_value_t = 0,
         help = "Genesis timestamp of the custom test network."
     )]
-    pub testnet_genesis_timestamp: i64,
+    pub testnet_genesis_timestamp: u64,
 
     #[arg(
         long = "testnet-capella-hard-fork",
@@ -580,11 +572,8 @@ pub struct TestnetConfig {
     /// Chain ID.
     pub chain_id: u64,
     /// Genesis timestamp (unix seconds).
-    pub genesis_timestamp: i64,
-    /// Capella hard fork version.
-    // Accepted for Charon flag parity, inert until custom testnets are
-    // supported (Go's `Network.IsNonZero` excludes it too).
-    #[allow(dead_code)]
+    pub genesis_timestamp: u64,
+    /// Capella hard fork version. Excluded from `is_non_zero`.
     pub capella_hard_fork: String,
 }
 
@@ -600,9 +589,23 @@ impl TestnetConfig {
     }
 }
 
+impl From<&TestnetConfig> for pluto_eth2util::network::Network {
+    /// Bridges a fully-specified CLI [`TestnetConfig`] into an
+    /// [`eth2util` network][pluto_eth2util::network::Network] for registration.
+    fn from(testnet: &TestnetConfig) -> Self {
+        pluto_eth2util::network::Network {
+            chain_id: testnet.chain_id,
+            name: testnet.name.clone().leak(),
+            genesis_fork_version_hex: testnet.genesis_fork_version_hex.clone().leak(),
+            genesis_timestamp: testnet.genesis_timestamp,
+            capella_hard_fork: testnet.capella_hard_fork.clone().leak(),
+        }
+    }
+}
+
 /// Feature set configuration.
 #[derive(Debug, Clone, Default)]
-pub struct FeatureConfig {
+pub struct FeatureSetConfig {
     /// Minimum feature status to enable by default (alpha/beta/stable).
     pub min_status: String,
     /// Features to enable on top of the minimum set.
@@ -622,7 +625,7 @@ pub struct RunConfig {
     /// Tracing configuration built from [`RunLogArgs`]/[`RunLokiArgs`].
     pub log: pluto_tracing::TracingConfig,
     /// Feature set configuration.
-    pub feature: FeatureConfig,
+    pub feature_set: FeatureSetConfig,
     /// Path to the cluster lock file.
     pub lock_file: String,
     /// Path to the cluster manifest file.
@@ -670,9 +673,6 @@ pub struct RunConfig {
     /// Directory containing simnet validator key shares.
     pub simnet_validator_keys_dir: String,
     /// Simnet beacon mock slot duration.
-    // Accepted for Charon flag parity, inert until simnet is supported (the
-    // simnet mode flags themselves fail fast in `check_unsupported_flags`).
-    #[allow(dead_code)]
     pub simnet_slot_duration: StdDuration,
     /// Enables additional synthetic block proposal duties.
     pub synthetic_block_proposals: bool,
@@ -728,6 +728,13 @@ impl TryFrom<RunArgs> for RunConfig {
 
         let mut relays = Vec::with_capacity(p2p.relays.len());
         for relay in &p2p.relays {
+            // Charon treats `--p2p-relays=""` as "no relays"; clap's comma parser
+            // yields a single empty string, so skip empties to match (also handles
+            // stray empties like `a,,b`).
+            if relay.is_empty() {
+                continue;
+            }
+
             let multiaddr = parse_relay_addr(relay)?;
 
             if multiaddr.iter().any(|protocol| protocol == Protocol::Http) {
@@ -742,6 +749,24 @@ impl TryFrom<RunArgs> for RunConfig {
             return Err(CliError::Other(
                 "either flag 'beacon-node-endpoints' or flag 'simnet-beacon-mock=true' must be specified"
                     .to_string(),
+            ));
+        }
+
+        // The simnet beacon mock does not yet produce blinded proposals, so
+        // reject `--builder-api` rather than silently serving unblinded blocks.
+        if general.builder_api && (general.simnet_beacon_mock || general.simnet_beacon_mock_fuzz) {
+            return Err(CliError::Other(
+                "flag 'builder-api' is not yet supported with the simnet beacon mock \
+                 ('simnet-beacon-mock' / 'simnet-beacon-mock-fuzz')"
+                    .to_string(),
+            ));
+        }
+
+        // The validator mock drives this node's own validator API, only usable
+        // when backed by the in-process beacon mock.
+        if general.simnet_validator_mock && !general.simnet_beacon_mock {
+            return Err(CliError::Other(
+                "flag 'simnet-validator-mock' requires flag 'simnet-beacon-mock'".to_string(),
             ));
         }
 
@@ -789,7 +814,7 @@ impl TryFrom<RunArgs> for RunConfig {
         Ok(Self {
             p2p: p2p_config,
             log: log_config,
-            feature: FeatureConfig {
+            feature_set: FeatureSetConfig {
                 min_status: feature.feature_set,
                 enabled: feature.feature_set_enable,
                 disabled: feature.feature_set_disable,
@@ -973,17 +998,25 @@ fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
     check_unsupported_flags(&config)?;
     warn_ignored_flags(&config);
 
-    let feature_set = build_feature_set(&config.feature)?;
+    let feature_config = parse_featureset_config(&config.feature_set)?;
     let validator_api_addr =
         parse_socket_addr("validator-api-address", &config.validator_api_addr)?;
     let monitoring_addr = parse_socket_addr("monitoring-address", &config.monitoring_addr)?;
+
+    // Register a fully-specified custom testnet before the cluster lock is
+    // loaded in `App::run`, so the lock's custom genesis fork version resolves
+    // against the supported-networks registry during EIP-712 signature
+    // verification.
+    if config.testnet.is_non_zero() {
+        pluto_eth2util::network::add_test_network((&config.testnet).into())?;
+    }
 
     // Exhaustive destructure: adding a `RunConfig` field without deciding its
     // bridge behavior fails to compile instead of being silently dropped.
     let RunConfig {
         p2p,
         log: _,
-        feature: _,
+        feature_set: _,
         lock_file,
         manifest_file: _,
         no_verify,
@@ -1001,13 +1034,14 @@ fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
         otlp_headers: _,
         otlp_insecure: _,
         otlp_service_name: _,
-        simnet_beacon_mock: _,
-        simnet_validator_mock: _,
-        simnet_validator_keys_dir: _,
-        simnet_slot_duration: _,
+        simnet_beacon_mock,
+        simnet_validator_mock,
+        simnet_validator_keys_dir,
+        simnet_slot_duration,
         synthetic_block_proposals: _,
         builder_api,
-        simnet_beacon_mock_fuzz: _,
+        simnet_beacon_mock_fuzz,
+        // Registered directly in `run` before the lock loads; not part of `AppConfig`.
         testnet: _,
         proc_directory: _,
         consensus_protocol: _,
@@ -1043,40 +1077,27 @@ fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
         // validator" (`NewGraffitiBuilder`), matching `AppConfig`'s `None`.
         graffiti: (!graffiti.is_empty()).then_some(graffiti),
         graffiti_disable_client_append,
-        feature_set,
+        feature_set: feature_config,
+        simnet_beacon_mock,
+        simnet_validator_mock,
+        simnet_beacon_mock_fuzz,
+        simnet_slot_duration,
+        simnet_validator_keys_dir: PathBuf::from(simnet_validator_keys_dir),
     })
 }
 
-/// Rejects correctness-affecting flags the run workflow does not support yet:
-/// silently ignoring any of these would change duty or operator-facing
-/// behavior (e.g. `--simnet-beacon-mock` permits empty beacon endpoints, which
-/// the real beacon client cannot handle).
+/// Rejects correctness-affecting flags the run workflow does not support
+/// yet: silently ignoring them would change duty or operator-facing behavior
+/// (e.g. `--synthetic-block-proposals` changes which proposal duties run).
 fn check_unsupported_flags(config: &RunConfig) -> Result<()> {
     let unsupported =
         |flag: &str| CliError::Other(format!("flag '{flag}' is not yet supported by pluto run"));
 
-    if config.simnet_beacon_mock {
-        return Err(unsupported("--simnet-beacon-mock"));
-    }
-    if config.simnet_validator_mock {
-        return Err(unsupported("--simnet-validator-mock"));
-    }
-    if config.simnet_beacon_mock_fuzz {
-        return Err(unsupported("--simnet-beacon-mock-fuzz"));
-    }
-    if config.simnet_validator_keys_dir != DEFAULT_SIMNET_KEYS_DIR {
-        return Err(unsupported("--simnet-validator-keys-dir"));
-    }
     if config.synthetic_block_proposals {
         return Err(unsupported("--synthetic-block-proposals"));
     }
     if config.p2p_fuzz {
         return Err(unsupported("--p2p-fuzz"));
-    }
-    // Partially-specified testnets are ignored, matching Charon's
-    // `IsNonZero`-gated registration.
-    if config.testnet.is_non_zero() {
-        return Err(unsupported("--testnet-*"));
     }
     if !config.beacon_node_headers.is_empty() {
         return Err(unsupported("--beacon-node-headers"));
@@ -1131,14 +1152,8 @@ fn warn_ignored_flags(config: &RunConfig) {
     }
 }
 
-/// Resolves the feature-set flags into an injectable [`FeatureSet`].
-///
-/// Matches Charon's `featureset.Init`: an unknown min status is a hard error,
-/// while unknown enabled/disabled feature names are warned about and ignored.
-fn build_feature_set(feature: &FeatureConfig) -> Result<Arc<FeatureSet>> {
-    // `Status::try_from` also parses statuses like "enable" that are not valid
-    // *min* statuses; `FeatureSet::from_config` rejects those below, so both
-    // paths surface Charon's "unknown min status" error.
+/// Parses the feature-set flags into a [`pluto_featureset::Config`].
+fn parse_featureset_config(feature: &FeatureSetConfig) -> Result<pluto_featureset::Config> {
     let min_status = Status::try_from(feature.min_status.as_str()).map_err(|_| {
         FeaturesetError::UnknownMinStatus {
             min_status: feature.min_status.clone(),
@@ -1156,13 +1171,11 @@ fn build_feature_set(feature: &FeatureConfig) -> Result<Arc<FeatureSet>> {
             .collect()
     };
 
-    let feature_set = FeatureSet::from_config(pluto_featureset::Config {
+    Ok(pluto_featureset::Config {
         min_status,
         enabled: parse_features(&feature.enabled, "enabled"),
         disabled: parse_features(&feature.disabled, "disabled"),
-    })?;
-
-    Ok(Arc::new(feature_set))
+    })
 }
 
 /// Parses an HTTP listen address flag (`flag` names it for errors). Unlike a
@@ -1472,6 +1485,19 @@ mod tests {
     }
 
     #[test]
+    fn run_empty_relays_flag_yields_no_relays() {
+        // `--p2p-relays=""` must mean "no relays" (Charon parity): clap yields a
+        // single empty string, which the bridge filters out (used by the simnet
+        // smoke test for isolated, relay-free nodes).
+        let config = parse_run(&["--p2p-relays="]).expect("empty relays should parse");
+        assert!(
+            config.p2p.relays.is_empty(),
+            "expected no relays, got {:?}",
+            config.p2p.relays
+        );
+    }
+
+    #[test]
     fn run_simnet_beacon_mock_satisfies_beacon_requirement() {
         let cli = Cli::try_parse_from(["pluto", "run", "--simnet-beacon-mock"])
             .expect("run command should parse");
@@ -1698,9 +1724,9 @@ mod tests {
         assert_eq!(config.debug_addr, "127.0.0.1:9630");
         assert_eq!(config.p2p.relays.len(), 2);
         assert_eq!(config.p2p.tcp_addrs, vec!["0.0.0.0:9000".to_string()]);
-        assert_eq!(config.feature.min_status, "alpha");
+        assert_eq!(config.feature_set.min_status, "alpha");
         assert_eq!(
-            config.feature.enabled,
+            config.feature_set.enabled,
             vec!["feat_a".to_string(), "feat_b".to_string()]
         );
         // p2p_fuzz is never set on the safe `run` path.
@@ -1721,6 +1747,13 @@ mod tests {
         app_config(extra)
             .expect_err("expected bridge error")
             .to_string()
+    }
+
+    /// Resolves the forwarded feature config into a `FeatureSet`, as `App::run`
+    /// does (the gnosis/chiado fork-version step is covered in the app crate).
+    fn resolved_feature_set(config: &pluto_app::node::AppConfig) -> pluto_featureset::FeatureSet {
+        pluto_featureset::FeatureSet::from_config(config.feature_set.clone())
+            .expect("feature config should resolve")
     }
 
     #[test]
@@ -1780,14 +1813,15 @@ mod tests {
             "127.0.0.1:3600".parse::<SocketAddr>().expect("socket addr")
         );
         // The default feature set enables stable features only.
-        assert!(config.feature_set.enabled(Feature::EagerDoubleLinear));
-        assert!(!config.feature_set.enabled(Feature::MockAlpha));
+        let feature_set = resolved_feature_set(&config);
+        assert!(feature_set.enabled(Feature::EagerDoubleLinear));
+        assert!(!feature_set.enabled(Feature::MockAlpha));
     }
 
     #[test]
     fn build_app_config_resolves_hostname_validator_api_addr() {
-        // Charon accepts hostnames here (it defers to Go's net.Listen), so the
-        // bridge must resolve them instead of requiring a literal IP.
+        // Charon accepts hostnames here, so the bridge must resolve them instead
+        // of requiring a literal IP.
         let config =
             app_config(&["--validator-api-address=localhost:3600"]).expect("hostname resolves");
         assert_eq!(config.validator_api_addr.port(), 3600);
@@ -1796,11 +1830,7 @@ mod tests {
     #[test]
     fn build_app_config_rejects_unsupported_flags() {
         for flags in [
-            ["--simnet-beacon-mock"].as_slice(),
-            &["--simnet-validator-mock"],
-            &["--simnet-beacon-mock-fuzz"],
-            &["--simnet-validator-keys-dir=/custom/keys"],
-            &["--synthetic-block-proposals"],
+            ["--synthetic-block-proposals"].as_slice(),
             &["--consensus-protocol=qbft"],
             &["--beacon-node-headers=key1=value1"],
         ] {
@@ -1813,21 +1843,105 @@ mod tests {
     }
 
     #[test]
-    fn build_app_config_rejects_fully_specified_testnet() {
-        let err = app_config_err(&[
-            "--testnet-name=devnet",
-            "--testnet-fork-version=0x10000910",
-            "--testnet-chain-id=1234",
-            "--testnet-genesis-timestamp=42",
-        ]);
-        assert!(err.contains("is not yet supported by pluto run"), "{err}");
+    fn build_app_config_threads_simnet_flags() {
+        // Simnet flags are now supported and must reach `AppConfig` unchanged.
+        let config = app_config(&[
+            "--simnet-beacon-mock",
+            "--simnet-validator-mock",
+            "--simnet-beacon-mock-fuzz",
+            "--simnet-slot-duration=2s",
+            "--simnet-validator-keys-dir=/custom/keys",
+        ])
+        .expect("simnet flags are supported");
+        assert!(config.simnet_beacon_mock);
+        assert!(config.simnet_validator_mock);
+        assert!(config.simnet_beacon_mock_fuzz);
+        assert_eq!(config.simnet_slot_duration, StdDuration::from_secs(2));
+        assert_eq!(
+            config.simnet_validator_keys_dir,
+            std::path::PathBuf::from("/custom/keys")
+        );
+    }
+
+    #[test]
+    fn run_simnet_validator_mock_requires_beacon_mock() {
+        let err = run_err(&["--simnet-validator-mock"]);
+        assert!(err.contains("requires flag 'simnet-beacon-mock'"), "{err}");
+    }
+
+    #[test]
+    fn run_builder_api_rejected_with_simnet_beacon_mock() {
+        let err = run_err(&["--simnet-beacon-mock", "--builder-api"]);
+        assert!(err.contains("'builder-api' is not yet supported"), "{err}");
+        // The fuzz beacon mock is rejected the same way.
+        let fuzz_err = run_err(&["--simnet-beacon-mock-fuzz", "--builder-api"]);
+        assert!(
+            fuzz_err.contains("'builder-api' is not yet supported"),
+            "{fuzz_err}"
+        );
+    }
+
+    #[test]
+    fn run_fuzz_beacon_mock_allowed_with_endpoint() {
+        // Charon gives `--simnet-beacon-mock-fuzz` precedence when an endpoint is
+        // present; it must not additionally require `--simnet-beacon-mock`.
+        parse_run(&["--simnet-beacon-mock-fuzz"]).expect("fuzz + endpoint is valid");
+    }
+
+    #[test]
+    fn build_app_config_registers_fully_specified_testnet() {
+        // A fully-specified `--testnet-*` config registers the custom network before
+        // the lock is loaded, so a cluster lock carrying this genesis fork
+        // version resolves during load (`verify_signatures` -> EIP-712 ->
+        // `fork_version_to_chain_id` looks it up in the supported-networks
+        // registry).
+        let fork_version = [0x00, 0x00, 0x05, 0x31];
+
+        // Not registered before the bridge runs.
+        assert!(
+            pluto_eth2util::network::fork_version_to_network(&fork_version).is_err(),
+            "fork version must be unregistered before the bridge runs",
+        );
+
+        app_config(&[
+            "--testnet-name=issue531-testnet",
+            "--testnet-fork-version=0x00000531",
+            "--testnet-chain-id=531",
+            "--testnet-genesis-timestamp=1700000000",
+            "--testnet-capella-hard-fork=0x03000531",
+        ])
+        .expect("fully-specified testnet is now supported");
+
+        // Registered: the lock's fork version now resolves to the custom network.
+        assert_eq!(
+            pluto_eth2util::network::fork_version_to_network(&fork_version)
+                .expect("custom fork version resolves after registration"),
+            "issue531-testnet",
+        );
+        assert_eq!(
+            pluto_eth2util::network::fork_version_to_chain_id(&fork_version)
+                .expect("custom fork version maps to its chain id"),
+            531,
+        );
     }
 
     #[test]
     fn build_app_config_ignores_partial_testnet() {
         // Charon registers a custom testnet only when fully specified
-        // (`IsNonZero`); partial flags are silently ignored.
-        app_config(&["--testnet-name=devnet"]).expect("partial testnet should be ignored");
+        // (`IsNonZero`); partial flags are silently ignored — neither rejected
+        // nor registered. This config omits chain-id and genesis-timestamp.
+        let fork_version = [0x00, 0x00, 0x05, 0x32];
+
+        app_config(&[
+            "--testnet-name=partial-testnet",
+            "--testnet-fork-version=0x00000532",
+        ])
+        .expect("partial testnet should be ignored, not rejected");
+
+        assert!(
+            pluto_eth2util::network::fork_version_to_network(&fork_version).is_err(),
+            "a partially-specified testnet must not be registered",
+        );
     }
 
     #[test]
@@ -1920,7 +2034,7 @@ mod tests {
 
     #[test]
     fn build_app_config_rejects_unknown_min_status_verbatim() {
-        // Charon's exact error string (featureset.Init).
+        // Charon's exact error string.
         assert_eq!(
             app_config_err(&["--feature-set=foo"]),
             "unknown min status: foo"
@@ -1928,18 +2042,21 @@ mod tests {
     }
 
     #[test]
-    fn build_app_config_resolves_feature_set() {
+    fn build_app_config_forwards_feature_config() {
+        // The bridge forwards a `featureset::Config`; `App::run` resolves it.
+        // Assert on the resolved set to keep the semantics observable here.
+
         // Min status is parsed case-insensitively, like Charon.
         let config = app_config(&["--feature-set=ALPHA"]).expect("alpha min status");
-        assert!(config.feature_set.enabled(Feature::MockAlpha));
+        assert!(resolved_feature_set(&config).enabled(Feature::MockAlpha));
 
         let config =
             app_config(&["--feature-set-enable=chain_split_halt"]).expect("explicit enable");
-        assert!(config.feature_set.enabled(Feature::ChainSplitHalt));
+        assert!(resolved_feature_set(&config).enabled(Feature::ChainSplitHalt));
 
         let config =
             app_config(&["--feature-set-disable=eager_double_linear"]).expect("explicit disable");
-        assert!(!config.feature_set.enabled(Feature::EagerDoubleLinear));
+        assert!(!resolved_feature_set(&config).enabled(Feature::EagerDoubleLinear));
 
         // Unknown feature names are warned about and ignored, like Charon.
         app_config(&["--feature-set-enable=not_a_feature"]).expect("unknown feature ignored");
