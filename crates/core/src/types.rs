@@ -557,29 +557,13 @@ pub struct ProposerDutyDefinition {
     pub slot: SlotNumber,
 }
 
-impl TryFrom<pluto_eth2api::types::GetProposerDutiesResponseResponseDatum>
-    for ProposerDutyDefinition
-{
-    type Error = pluto_eth2api::EthBeaconNodeApiClientError;
-
-    fn try_from(
-        value: pluto_eth2api::types::GetProposerDutiesResponseResponseDatum,
-    ) -> Result<ProposerDutyDefinition, Self::Error> {
-        let pubkey = PubKey::try_from(value.pubkey.as_str())
-            .map_err(|_| pluto_eth2api::EthBeaconNodeApiClientError::ParseError("pubkey".into()))?;
-        let v_idx = value.validator_index.parse::<u64>().map_err(|_| {
-            pluto_eth2api::EthBeaconNodeApiClientError::ParseError("validator_index".into())
-        })?;
-        let slot =
-            SlotNumber::from(value.slot.parse::<u64>().map_err(|_| {
-                pluto_eth2api::EthBeaconNodeApiClientError::ParseError("slot".into())
-            })?);
-
-        Ok(ProposerDutyDefinition {
-            pubkey,
-            v_idx,
-            slot,
-        })
+impl From<pluto_eth2api::ProposerDuty> for ProposerDutyDefinition {
+    fn from(value: pluto_eth2api::ProposerDuty) -> ProposerDutyDefinition {
+        ProposerDutyDefinition {
+            pubkey: PubKey::from(value.pubkey),
+            v_idx: value.validator_index,
+            slot: SlotNumber::from(value.slot),
+        }
     }
 }
 
