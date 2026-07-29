@@ -39,6 +39,9 @@ mod readiness;
 mod router;
 
 pub use checker::{quorum_peers_connected, start_ready_checker};
-pub use metrics::{MONITORING_METRICS, MonitoringMetrics, stack_components};
+pub use metrics::{
+    CLUSTER_METRICS, ClusterMetrics, MONITORING_METRICS, MonitoringMetrics, StartupMetrics,
+    init_startup_metrics, stack_components,
+};
 pub use readiness::{ReadinessCheck, ReadinessError, ReadyResult, ReadyState};
 pub use router::{MonitoringState, router, router_with_state};

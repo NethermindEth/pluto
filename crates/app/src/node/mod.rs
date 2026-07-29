@@ -289,6 +289,34 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     let monitoring_pubkeys: Vec<PubKey> = validators.iter().map(|v| v.pubkey).collect();
     let num_validators = validators.len();
 
+    // Global labels stamped onto every exported metric (Charon parity).
+    let monitoring_labels = monitoring_labels(&lock, &config, &local_peer_id);
+
+    // Network the cluster's fork version resolves to (or `"unknown"`), reused
+    // for the `cluster_network` gauge and matching the global label.
+    let cluster_network = pluto_eth2util::network::fork_version_to_network(&lock.fork_version)
+        .unwrap_or_else(|_| "unknown".to_owned());
+    // Custom-enabled feature flags for the `app_feature_flags` gauge (Charon's
+    // `featureset.CustomEnabledAll()`).
+    let feature_flags: Vec<&str> = feature_set
+        .custom_enabled_all()
+        .iter()
+        .map(|f| f.as_str())
+        .collect();
+
+    // Constant startup + cluster gauges (Charon parity: `initStartupMetrics`).
+    monitoringapi::init_startup_metrics(&monitoringapi::StartupMetrics {
+        version: &pluto_core::version::VERSION.to_string(),
+        peer_name: &pluto_p2p::name::peer_name(&local_peer_id),
+        git_hash: &pluto_core::version::git_commit_hash_short(),
+        start_time_secs: chrono::Utc::now().timestamp(),
+        threshold: i64::try_from(lock.threshold).unwrap_or(i64::MAX),
+        operators: i64::try_from(lock.operators.len()).unwrap_or(i64::MAX),
+        validators: i64::try_from(lock.distributed_validators.len()).unwrap_or(i64::MAX),
+        network: &cluster_network,
+        feature_flags: &feature_flags,
+    });
+
     // ---- (2/3) eth2 clients ----
     //
     // Simnet: the beacon clients target an in-process `BeaconMock` (seeded with
@@ -541,6 +569,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             num_peers,
             quorum_peers,
             seen_pubkeys,
+            labels: monitoring_labels,
         },
         ct,
     )
@@ -565,6 +594,40 @@ struct MonitoringInputs {
     /// Shared, deduped set of DV root pubkeys observed on the validator API,
     /// drained each slot by the readiness checker.
     seen_pubkeys: Arc<Mutex<HashSet<PubKey>>>,
+    /// Global labels stamped onto every metric in the `/metrics` exposition.
+    labels: Vec<(String, String)>,
+}
+
+/// Builds the global metric labels stamped onto every series in the monitoring
+/// API's `/metrics` exposition (Charon parity: see `charon/app/app.go`).
+///
+/// `cluster_network` falls back to `"unknown"` when the cluster's fork version
+/// is not a recognised network, matching Charon.
+fn monitoring_labels(
+    lock: &pluto_cluster::lock::Lock,
+    config: &AppConfig,
+    local_peer_id: &libp2p::PeerId,
+) -> Vec<(String, String)> {
+    let network = pluto_eth2util::network::fork_version_to_network(&lock.fork_version)
+        .unwrap_or_else(|_| "unknown".to_owned());
+
+    vec![
+        (
+            "charon_version".to_owned(),
+            pluto_core::version::VERSION.to_string(),
+        ),
+        (
+            "cluster_hash".to_owned(),
+            crate::utils::hex_7(&lock.lock_hash),
+        ),
+        ("cluster_name".to_owned(), lock.name.clone()),
+        ("cluster_network".to_owned(), network),
+        (
+            "cluster_peer".to_owned(),
+            pluto_p2p::name::peer_name(local_peer_id),
+        ),
+        ("nickname".to_owned(), config.nickname.clone()),
+    ]
 }
 
 /// Builds the production parsigex seam from the real `parsigex::Handle`.
@@ -676,6 +739,7 @@ async fn run_lifecycle(
         num_peers,
         quorum_peers,
         seen_pubkeys,
+        labels: monitoring_labels,
     } = monitoring;
 
     // Every validator-API request feeds the readiness checker's "vc connected"
@@ -732,7 +796,9 @@ async fn run_lifecycle(
     // Monitoring HTTP server (metrics + livez + readyz).
     tasks.spawn(serve_monitoring_api(
         monitoring_addr,
-        monitoringapi::router_with_state(monitoringapi::MonitoringState::new(readiness)),
+        monitoringapi::router_with_state(
+            monitoringapi::MonitoringState::new(readiness).with_labels(monitoring_labels),
+        ),
         ct.clone(),
     ));
 
@@ -1251,9 +1317,10 @@ mod tests {
         // A ready readiness state so `/readyz` returns 200, and a touched gauge
         // so `/metrics` has a series to expose.
         monitoringapi::MONITORING_METRICS.monitoring_readyz.set(1);
-        let router = monitoringapi::router_with_state(monitoringapi::MonitoringState::new(
-            monitoringapi::ReadyState::ready(),
-        ));
+        let router = monitoringapi::router_with_state(
+            monitoringapi::MonitoringState::new(monitoringapi::ReadyState::ready())
+                .with_labels([("cluster_network".to_owned(), "sepolia".to_owned())]),
+        );
 
         let ct = CancellationToken::new();
         let server = tokio::spawn(serve_monitoring_api(addr, router, ct.clone()));
@@ -1304,13 +1371,14 @@ mod tests {
             content_type.contains("openmetrics-text"),
             "unexpected content-type: {content_type}"
         );
+        let metrics_body = metrics.text().await.expect("metrics body");
         assert!(
-            metrics
-                .text()
-                .await
-                .expect("metrics body")
-                .contains("app_monitoring_readyz"),
+            metrics_body.contains("app_monitoring_readyz"),
             "metrics exposition missing readyz gauge"
+        );
+        assert!(
+            metrics_body.contains("cluster_network=\"sepolia\""),
+            "metrics exposition missing global cluster_network label"
         );
 
         ct.cancel();
