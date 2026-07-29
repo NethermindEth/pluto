@@ -9,6 +9,7 @@ mod fuzzer;
 mod gorand;
 mod headproducer;
 mod options;
+mod proposal;
 mod state;
 
 use std::{sync::Arc, time::Duration};
@@ -156,6 +157,7 @@ impl BeaconMock {
 
         mount_defaults(&server, Arc::clone(&state)).await;
         attestation::mount(&server, Arc::clone(&state)).await;
+        proposal::mount(&server, Arc::clone(&state)).await;
 
         let head_producer =
             HeadProducer::spawn(&server, effective_genesis_time, effective_slot_duration).await;
