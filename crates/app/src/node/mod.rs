@@ -123,6 +123,10 @@ pub enum AppError {
     #[error("consensus p2p: {0}")]
     ConsensusP2P(#[from] qbft::p2p::Error),
 
+    /// Priority protocol component construction failed.
+    #[error("priority: {0}")]
+    Priority(#[from] pluto_priority::Error),
+
     /// A beacon node API request failed.
     #[error("beacon node api: {0}")]
     BeaconApi(#[from] pluto_eth2api::EthBeaconNodeApiClientError),
@@ -378,12 +382,21 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         .into_fn();
 
     // Per-component deadline calculator, shared as an `Arc<dyn ...>` so a single
-    // beacon-derived instance backs every component's deadliner.
+    // beacon-derived instance backs every component's deadliner. The concrete
+    // instance is kept so the priority protocol (which needs an owned
+    // `DutyDeadlineCalculator`) can be given a clone of the same config.
     let deadline_calc: Arc<dyn pluto_core::deadline::DeadlineCalculator> = Arc::new(
         pluto_core::deadline::DutyDeadlineCalculator::from_client(&eth2_cl)
             .await
             .map_err(AppError::Deadline)?,
     );
+    // Priority needs an owned `DutyDeadlineCalculator` (it is not `Clone`), so
+    // build a second instance from the same client. The calculator is stateless
+    // beacon-derived config, so this is identical to the one above.
+    let priority_deadline_calc =
+        pluto_core::deadline::DutyDeadlineCalculator::from_client(&eth2_cl)
+            .await
+            .map_err(AppError::Deadline)?;
 
     // Per-validator graffiti for proposed blocks.
     let graffiti_pubkeys: Vec<pluto_core::types::PubKey> =
@@ -465,6 +478,12 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         config.p2p.clone(),
         peers,
         Arc::clone(&consensus),
+        // Priority's `min_required` is the cluster signing threshold (Charon's
+        // `int(cluster.GetThreshold())`): a priority survives only if proposed
+        // by at least this many peers.
+        i64::try_from(threshold).unwrap_or(i64::MAX),
+        priority_deadline_calc,
+        Arc::clone(&feature_set),
         Arc::clone(&duty_gater),
         eth2_cl.clone(),
         pub_shares_by_key,
@@ -547,6 +566,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             fetch_only_comm_idx0,
             seen_pubkeys: Some(seen_pubkeys_observer),
             slot_tick: vmock.clone().map(|v| simnet_slot_tick(v, ct.clone())),
+            infosync: Some(Arc::clone(&handles.infosync)),
         },
         ct.clone(),
     )
@@ -688,6 +708,23 @@ async fn run_lifecycle(
 
     // Self-spawning actor: consensus expired-duty pruner.
     let _consensus_task = consensus.start(ct.clone());
+
+    // Priority protocol state-cleanup loop, driven by its deadliner's
+    // expired-duty receiver. The receiver is move-only, so this runs once.
+    // The per-epoch infosync trigger that proposes into this component is
+    // registered as a scheduler slot subscriber in `wire_core_workflow`.
+    handles
+        .priority
+        .start(handles.priority_expired_rx, ct.clone());
+
+    // TODO(#402 part B): consume the decided infosync result. Charon's
+    // `wirePrioritise` registers a second priority subscriber that reads the
+    // agreed "protocol" topic and calls
+    // `ConsensusController::set_current_consensus_for_protocol` to swap the
+    // duty-consensus implementation. Wiring that requires routing the duty path
+    // through a `ConsensusController` (today it is the raw QBFT consensus); it
+    // is deferred because the switch is a functional no-op while QBFTv2 is the
+    // only consensus protocol.
 
     let mut tasks: JoinSet<Result<(), AppError>> = JoinSet::new();
 

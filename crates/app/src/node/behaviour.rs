@@ -54,6 +54,8 @@ pub(crate) struct CoreBehaviour {
     pub consensus: qbft::p2p::Behaviour,
     /// Peer metadata exchange.
     pub peerinfo: peerinfo::Behaviour,
+    /// Priority protocol request/response transport (backs infosync).
+    pub priority: pluto_priority::p2p::Behaviour,
 }
 
 /// Async handles for driving the composed behaviour from the core workflow.
@@ -65,6 +67,14 @@ pub struct CoreHandles {
     /// Shared P2P runtime context (known peers + live connections), used by the
     /// monitoring API's readiness checker to compute quorum connectivity.
     pub p2p_context: P2PContext,
+    /// Priority protocol component. Held so the caller can start it and hand it
+    /// to the per-epoch infosync trigger.
+    pub priority: Arc<pluto_priority::Component>,
+    /// Expired-duty receiver paired with `priority`, drained by
+    /// `pluto_priority::Component::start`. Taken (moved) once at start.
+    pub priority_expired_rx: tokio::sync::mpsc::Receiver<pluto_core::types::Duty>,
+    /// Infosync component driving the per-epoch cluster-wide priority exchange.
+    pub infosync: Arc<pluto_infosync::Component>,
 }
 
 /// Composes the core behaviours and builds the libp2p [`Node`].
@@ -79,6 +89,9 @@ pub(crate) async fn wire_p2p(
     p2p_config: pluto_p2p::config::P2PConfig,
     peers: Vec<Peer>,
     consensus: Arc<qbft::Consensus>,
+    min_required: i64,
+    deadline_calc: pluto_core::deadline::DutyDeadlineCalculator,
+    feature_set: Arc<pluto_featureset::FeatureSet>,
     duty_gater: DutyGaterFn,
     eth2_cl: EthBeaconNodeApiClient,
     pub_shares_by_key: HashMap<PubKey, HashMap<u64, PublicKey>>,
@@ -123,6 +136,12 @@ pub(crate) async fn wire_p2p(
     );
     let (parsigex_comp, parsigex_handle) = parsigex::Behaviour::new(parsigex_config);
 
+    // Priority protocol rides the same QBFT consensus instance and shares the
+    // node-wide `p2p_context`; clone both before they move into the QBFT
+    // behaviour below.
+    let priority_consensus: Arc<dyn pluto_priority::Consensus> = consensus.clone();
+    let priority_cancellation = cancellation.clone();
+
     // QBFT consensus transport. `Behaviour::new` errors if the local peer id is
     // not present in the configured cluster peer list.
     let (consensus_comp, consensus_handle) = qbft::p2p::Behaviour::new(qbft::p2p::Config {
@@ -146,6 +165,52 @@ pub(crate) async fn wire_p2p(
     .with_peers(peer_ids.clone());
     let peerinfo_comp = peerinfo::Behaviour::new(local_peer_id, peerinfo_config);
 
+    // Priority protocol + infosync: cluster-wide, per-epoch negotiation of the
+    // supported versions/protocols/proposal types, run over the shared QBFT
+    // consensus. `new_component` fails fast if any peer is absent from the
+    // shared `p2p_context`. The 6s exchange timeout (half a slot) matches the
+    // reference implementation.
+    let (priority_comp, priority_behaviour, priority_expired_rx) = pluto_priority::new_component(
+        peer_ids.clone(),
+        min_required,
+        priority_consensus,
+        std::time::Duration::from_secs(6),
+        key.clone(),
+        deadline_calc,
+        p2p_context.clone(),
+        priority_cancellation,
+    )?;
+    let priority_comp = Arc::new(priority_comp);
+
+    // Local proposal types in precedence order (builder first when enabled,
+    // full always last as the fallback).
+    let mut proposal_types = Vec::new();
+    if builder_enabled {
+        proposal_types.push(pluto_core::types::ProposalType::Builder);
+    }
+    proposal_types.push(pluto_core::types::ProposalType::Full);
+
+    // Local supported protocols advertised on the infosync "protocol" topic, in
+    // precedence order: consensus, then parsigex, peerinfo, priority.
+    // TODO(#402 part B): reorder by the cluster-preferred / CLI consensus
+    // protocol once those inputs exist (pluto has neither yet), matching Go's
+    // `PrioritizeProtocolsByName` passes.
+    let local_protocols: Vec<String> = pluto_consensus::protocols::protocols()
+        .iter()
+        .map(|p| p.to_string())
+        .chain(pluto_parsigex::protocols().iter().map(|p| p.to_string()))
+        .chain(pluto_peerinfo::protocols().iter().map(|p| p.to_string()))
+        .chain(pluto_priority::protocols().iter().map(|p| p.to_string()))
+        .collect();
+
+    let infosync = Arc::new(pluto_infosync::Component::new(
+        Arc::clone(&priority_comp),
+        pluto_core::version::SUPPORTED.to_vec(),
+        local_protocols,
+        proposal_types,
+        &feature_set,
+    ));
+
     // Clone the context before it is moved into the node so the readiness
     // checker observes the same shared peer/connection state the swarm updates.
     let p2p_context_for_handle = p2p_context.clone();
@@ -164,6 +229,7 @@ pub(crate) async fn wire_p2p(
                 parsigex: parsigex_comp,
                 consensus: consensus_comp,
                 peerinfo: peerinfo_comp,
+                priority: priority_behaviour,
             })
         },
     )?;
@@ -172,6 +238,9 @@ pub(crate) async fn wire_p2p(
         parsigex: parsigex_handle,
         consensus: consensus_handle,
         p2p_context: p2p_context_for_handle,
+        priority: priority_comp,
+        priority_expired_rx,
+        infosync,
     };
 
     Ok((node, handles))

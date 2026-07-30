@@ -269,6 +269,7 @@ fn wire_inputs_with(
         fetch_only_comm_idx0: false,
         seen_pubkeys: None,
         slot_tick: None,
+        infosync: None,
     }
 }
 
