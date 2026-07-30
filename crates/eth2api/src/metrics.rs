@@ -102,3 +102,41 @@ mod tests {
         assert!(output.contains(r#"app_eth2_errors_total{endpoint="test_err"} 1"#));
     }
 }
+
+#[cfg(test)]
+mod exposition {
+    use vise::{Format, MetricsCollection};
+
+    use super::*;
+
+    // Pins the exact `/metrics` exposition the beacon-node health Grafana panel
+    // depends on: the OpenMetrics-for-Prometheus series names, the `endpoint`
+    // label (used to exclude `submit_validator_registrations`), and the global
+    // `cluster_*` labels the monitoring API stamps onto every series.
+    #[tokio::test]
+    async fn matches_beacon_health_dashboard_contract() {
+        instrument::<_, std::convert::Infallible, _>("dashboard_probe", async { Ok(()) })
+            .await
+            .unwrap();
+        let _: Result<(), &str> = instrument("dashboard_probe", async { Err("x") }).await;
+
+        let registry = MetricsCollection::default()
+            .with_labels([("cluster_peer".to_string(), "p0".to_string())])
+            .collect();
+        let mut output = String::new();
+        registry
+            .encode(&mut output, Format::OpenMetricsForPrometheus)
+            .unwrap();
+
+        // Series names the dashboard query references, exactly as exposed.
+        assert!(output.contains("app_eth2_errors_total{"));
+        assert!(output.contains("app_eth2_latency_seconds_count{"));
+        assert!(output.contains("app_eth2_latency_seconds_bucket{"));
+        // OpenMetrics counter suffixing must not double the `_total`.
+        assert!(!output.contains("app_eth2_errors_total_total"));
+        // `endpoint` label present for the dashboard's endpoint filter, and the
+        // monitoring API's global labels stamped onto the series.
+        assert!(output.contains(r#"endpoint="dashboard_probe""#));
+        assert!(output.contains(r#"cluster_peer="p0""#));
+    }
+}
