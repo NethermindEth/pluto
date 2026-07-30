@@ -4,7 +4,6 @@ package compose
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/obolnetwork/charon/app/errors"
@@ -263,35 +262,6 @@ func (c Config) ImageOverride(impl NodeImpl) string {
 	}
 
 	return ""
-}
-
-// flagsCommand renders a bracketed docker-compose command with the key-values
-// as explicit command-line flags. Pluto's `create cluster` and `create dkg`
-// commands do not read CHARON_* env vars like charon does (missing clap env
-// bindings), so pluto keygen containers get their configuration as flags.
-func flagsCommand(cmd string, kvs []kv) string {
-	args := strings.Split(strings.Trim(cmd, "[]"), ",")
-
-	for _, kv := range kvs {
-		val := strings.Trim(kv.Value, `"`)
-		flag := "--" + strings.ReplaceAll(kv.Key, "_", "-")
-
-		switch val {
-		case "", "false": // Omit empty values and false bools (bool flags take no value).
-			continue
-		case "true":
-			args = append(args, flag)
-		default:
-			arg := flag + "=" + val
-			if strings.Contains(arg, ",") {
-				arg = "'" + arg + "'" // Quote args with commas so the YAML flow sequence stays intact.
-			}
-
-			args = append(args, arg)
-		}
-	}
-
-	return "[" + strings.Join(args, ",") + "]"
 }
 
 // UsesPluto returns true if any node or keygen step runs pluto.

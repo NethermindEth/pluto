@@ -49,9 +49,6 @@ func Lock(ctx context.Context, dir string, conf Config) (TmplData, error) {
 		}
 
 		n := TmplNode{Image: conf.ImageOverride(conf.KeygenImpl()), EnvVars: kvs}
-		if conf.KeygenImpl() == ImplPluto {
-			n.Command = flagsCommand(cmdCreateCluster, kvs)
-		}
 
 		data = TmplData{
 			ComposeDir:     dir,

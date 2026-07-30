@@ -131,6 +131,7 @@ pub struct TestnetConfig {
     /// Chain ID of the custom test network
     #[arg(
         long = "testnet-chain-id",
+        env = "CHARON_TESTNET_CHAIN_ID",
         help = "Chain ID of the custom test network."
     )]
     pub chain_id: Option<u64>,
@@ -138,6 +139,7 @@ pub struct TestnetConfig {
     /// Genesis fork version of the custom test network (in hex)
     #[arg(
         long = "testnet-fork-version",
+        env = "CHARON_TESTNET_FORK_VERSION",
         help = "Genesis fork version of the custom test network (in hex)."
     )]
     pub fork_version: Option<String>,
@@ -145,12 +147,17 @@ pub struct TestnetConfig {
     /// Genesis timestamp of the custom test network
     #[arg(
         long = "testnet-genesis-timestamp",
+        env = "CHARON_TESTNET_GENESIS_TIMESTAMP",
         help = "Genesis timestamp of the custom test network."
     )]
     pub genesis_timestamp: Option<u64>,
 
     /// Name of the custom test network
-    #[arg(long = "testnet-name", help = "Name of the custom test network.")]
+    #[arg(
+        long = "testnet-name",
+        env = "CHARON_TESTNET_NAME",
+        help = "Name of the custom test network."
+    )]
     pub testnet_name: Option<String>,
 }
 
@@ -160,6 +167,7 @@ pub struct CreateClusterArgs {
     /// The target folder to create the cluster in.
     #[arg(
         long = "cluster-dir",
+        env = "CHARON_CLUSTER_DIR",
         default_value = "./",
         help = "The target folder to create the cluster in."
     )]
@@ -168,6 +176,7 @@ pub struct CreateClusterArgs {
     /// Enable compounding rewards for validators
     #[arg(
         long = "compounding",
+        env = "CHARON_COMPOUNDING",
         help = "Enable compounding rewards for validators by using 0x02 withdrawal credentials."
     )]
     pub compounding: bool,
@@ -175,6 +184,7 @@ pub struct CreateClusterArgs {
     /// Preferred consensus protocol name for the cluster
     #[arg(
         long = "consensus-protocol",
+        env = "CHARON_CONSENSUS_PROTOCOL",
         help = "Preferred consensus protocol name for the cluster. Selected automatically when not specified."
     )]
     pub consensus_protocol: Option<String>,
@@ -182,6 +192,7 @@ pub struct CreateClusterArgs {
     /// Path to a cluster definition file or HTTP URL
     #[arg(
         long = "definition-file",
+        env = "CHARON_DEFINITION_FILE",
         help = "Optional path to a cluster definition file or an HTTP URL. This overrides all other configuration flags."
     )]
     pub definition_file: Option<String>,
@@ -189,6 +200,7 @@ pub struct CreateClusterArgs {
     /// List of partial deposit amounts (integers) in ETH
     #[arg(
         long = "deposit-amounts",
+        env = "CHARON_DEPOSIT_AMOUNTS",
         value_delimiter = ',',
         help = "List of partial deposit amounts (integers) in ETH. Values must sum up to at least 32ETH."
     )]
@@ -197,6 +209,7 @@ pub struct CreateClusterArgs {
     /// The address of the execution engine JSON-RPC API
     #[arg(
         long = "execution-client-rpc-endpoint",
+        env = "CHARON_EXECUTION_CLIENT_RPC_ENDPOINT",
         help = "The address of the execution engine JSON-RPC API."
     )]
     pub execution_engine_addr: Option<String>,
@@ -204,6 +217,7 @@ pub struct CreateClusterArgs {
     /// Comma separated list of fee recipient addresses
     #[arg(
         long = "fee-recipient-addresses",
+        env = "CHARON_FEE_RECIPIENT_ADDRESSES",
         value_delimiter = ',',
         help = "Comma separated list of Ethereum addresses of the fee recipient for each validator. Either provide a single fee recipient address or fee recipient addresses for each validator."
     )]
@@ -212,6 +226,7 @@ pub struct CreateClusterArgs {
     /// Generates insecure keystore files (testing only)
     #[arg(
         long = "insecure-keys",
+        env = "CHARON_INSECURE_KEYS",
         help = "Generates insecure keystore files. This should never be used. It is not supported on mainnet."
     )]
     pub insecure_keys: bool,
@@ -219,6 +234,7 @@ pub struct CreateClusterArgs {
     /// Comma separated list of keymanager URLs
     #[arg(
         long = "keymanager-addresses",
+        env = "CHARON_KEYMANAGER_ADDRESSES",
         value_delimiter = ',',
         help = "Comma separated list of keymanager URLs to import validator key shares to. Note that multiple addresses are required, one for each node in the cluster."
     )]
@@ -227,22 +243,28 @@ pub struct CreateClusterArgs {
     /// Authentication bearer tokens for keymanager URLs
     #[arg(
         long = "keymanager-auth-tokens",
+        env = "CHARON_KEYMANAGER_AUTH_TOKENS",
         value_delimiter = ',',
         help = "Authentication bearer tokens to interact with the keymanager URLs. Don't include the \"Bearer\" symbol, only include the api-token."
     )]
     pub keymanager_auth_tokens: Vec<String>,
 
     /// The cluster name
-    #[arg(long = "name")]
+    #[arg(long = "name", env = "CHARON_NAME")]
     pub name: Option<String>,
 
     /// Ethereum network to create validators for
-    #[arg(long = "network", help = "Ethereum network to create validators for.")]
+    #[arg(
+        long = "network",
+        env = "CHARON_NETWORK",
+        help = "Ethereum network to create validators for."
+    )]
     pub network: Option<Network>,
 
     /// The number of charon nodes in the cluster
     #[arg(
         long = "nodes",
+        env = "CHARON_NODES",
         default_value = "0",
         help = "The number of charon nodes in the cluster. Minimum is 3."
     )]
@@ -251,18 +273,24 @@ pub struct CreateClusterArgs {
     /// The number of distributed validators needed in the cluster
     #[arg(
         long = "num-validators",
+        env = "CHARON_NUM_VALIDATORS",
         default_value = "0",
         help = "The number of distributed validators needed in the cluster."
     )]
     pub num_validators: u64,
 
     /// Publish lock file to obol-api
-    #[arg(long = "publish", help = "Publish lock file to obol-api.")]
+    #[arg(
+        long = "publish",
+        env = "CHARON_PUBLISH",
+        help = "Publish lock file to obol-api."
+    )]
     pub publish: bool,
 
     /// The URL to publish the lock file to
     #[arg(
         long = "publish-address",
+        env = "CHARON_PUBLISH_ADDRESS",
         default_value = "https://api.obol.tech/v1",
         help = "The URL to publish the lock file to."
     )]
@@ -271,6 +299,7 @@ pub struct CreateClusterArgs {
     /// Split an existing validator's private key
     #[arg(
         long = "split-existing-keys",
+        env = "CHARON_SPLIT_EXISTING_KEYS",
         help = "Split an existing validator's private key into a set of distributed validator private key shares. Does not re-create deposit data for this key."
     )]
     pub split_keys: bool,
@@ -278,6 +307,7 @@ pub struct CreateClusterArgs {
     /// Directory containing keys to split
     #[arg(
         long = "split-keys-dir",
+        env = "CHARON_SPLIT_KEYS_DIR",
         help = "Directory containing keys to split. Expects keys in keystore-*.json and passwords in keystore-*.txt. Requires --split-existing-keys."
     )]
     pub split_keys_dir: Option<PathBuf>,
@@ -285,6 +315,7 @@ pub struct CreateClusterArgs {
     /// Preferred target gas limit for transactions
     #[arg(
         long = "target-gas-limit",
+        env = "CHARON_TARGET_GAS_LIMIT",
         default_value = "60000000",
         help = "Preferred target gas limit for transactions."
     )]
@@ -297,6 +328,7 @@ pub struct CreateClusterArgs {
     /// Optional override of threshold
     #[arg(
         long = "threshold",
+        env = "CHARON_THRESHOLD",
         help = "Optional override of threshold required for signature reconstruction. Defaults to ceil(n*2/3) if zero. Warning, non-default values decrease security."
     )]
     pub threshold: Option<u64>,
@@ -304,6 +336,7 @@ pub struct CreateClusterArgs {
     /// Comma separated list of withdrawal addresses
     #[arg(
         long = "withdrawal-addresses",
+        env = "CHARON_WITHDRAWAL_ADDRESSES",
         value_delimiter = ',',
         help = "Comma separated list of Ethereum addresses to receive the returned stake and accrued rewards for each validator. Either provide a single withdrawal address or withdrawal addresses for each validator."
     )]
@@ -312,6 +345,7 @@ pub struct CreateClusterArgs {
     /// Create a tar archive compressed with gzip
     #[arg(
         long = "zipped",
+        env = "CHARON_ZIPPED",
         help = "Create a tar archive compressed with gzip of the cluster directory after creation."
     )]
     pub zipped: bool,
@@ -2823,5 +2857,37 @@ mod tests {
         std::fs::remove_file(cluster_dir.path().join("cluster.tar.gz")).unwrap();
 
         app_utils::compare_directories(backup_dir.path(), unzipped_dir.path()).unwrap();
+    }
+
+    /// Every `create cluster` flag must read its Charon-compatible
+    /// `CHARON_*` env var. Charon binds env for all commands generically
+    /// (viper `SetEnvPrefix`+`AutomaticEnv`), so tooling that configures a
+    /// cluster purely through the environment — the compose harness in
+    /// `test-infra/compose` — works against charon and pluto alike.
+    #[test]
+    fn create_cluster_flags_use_charon_env_prefix() {
+        use clap::CommandFactory as _;
+
+        let create = crate::cli::Cli::command()
+            .get_subcommands()
+            .find(|sub| sub.get_name() == "create")
+            .expect("create subcommand")
+            .clone();
+        let cluster = create
+            .get_subcommands()
+            .find(|sub| sub.get_name() == "cluster")
+            .expect("create cluster subcommand")
+            .clone();
+
+        for arg in cluster.get_arguments() {
+            let Some(long) = arg.get_long() else { continue };
+            if long == "help" {
+                continue;
+            }
+
+            let expected = format!("CHARON_{}", long.replace('-', "_").to_uppercase());
+            let actual = arg.get_env().map(|env| env.to_string_lossy().into_owned());
+            assert_eq!(actual.as_deref(), Some(expected.as_str()), "flag --{long}");
+        }
     }
 }

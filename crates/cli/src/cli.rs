@@ -186,3 +186,189 @@ pub enum CreateCommands {
     )]
     Cluster(Box<CreateClusterArgs>),
 }
+
+/// Builds the fully-configured root command.
+///
+/// Use this instead of [`Cli::command`] anywhere the command is rendered or
+/// parsed, so every entrypoint gets the same hardening.
+pub fn build_command() -> clap::Command {
+    build_command_with(&|name| std::env::var_os(name))
+}
+
+/// [`build_command`] with an injectable environment lookup.
+///
+/// Tests build through this so they exercise the real assembly pipeline —
+/// including the empty-env handling and help hardening — rather than calling a
+/// single transform in isolation, which would still pass if a transform were
+/// dropped from the pipeline.
+fn build_command_with(
+    lookup: &impl Fn(&std::ffi::OsStr) -> Option<std::ffi::OsString>,
+) -> clap::Command {
+    let cmd =
+        crate::commands::test::update_test_cases_help(<Cli as clap::CommandFactory>::command());
+
+    hide_env_values(ignore_empty_env_with(cmd, lookup))
+}
+
+/// Treats a `CHARON_*` variable that is set but empty as unset, for every flag
+/// in the tree.
+///
+/// Charon's CLI resolves env vars through Viper, whose `getEnv` returns
+/// "not found" for an empty value unless `AllowEmptyEnv` is set — which charon
+/// does not set. clap instead treats `VAR=` as the literal value `""`, which
+/// diverges in three ways an operator hits with common empty placeholders
+/// (`CHARON_X=` in a compose file or CI matrix):
+///   - numeric flags fail parsing outright ("cannot parse integer from empty
+///     string") where charon falls back to the default;
+///   - comma-delimited list flags become a single empty element rather than an
+///     empty list;
+///   - string flags silently take `""` instead of their default, which can
+///     select a different code path.
+///
+/// Resolved centrally here so it holds for every command and every value type,
+/// rather than per-flag at each use site.
+fn ignore_empty_env_with(
+    cmd: clap::Command,
+    lookup: &impl Fn(&std::ffi::OsStr) -> Option<std::ffi::OsString>,
+) -> clap::Command {
+    cmd.mut_args(|arg| {
+        let is_empty = arg
+            .get_env()
+            .is_some_and(|name| lookup(name).is_some_and(|value| value.is_empty()));
+
+        if is_empty {
+            arg.env(clap::builder::Resettable::Reset)
+        } else {
+            arg
+        }
+    })
+    .mut_subcommands(|sub| ignore_empty_env_with(sub, lookup))
+}
+
+/// Suppresses environment variable *values* in `--help`, recursively for every
+/// subcommand.
+///
+/// clap renders `[env: VAR=value]` by default, which prints the caller's actual
+/// value — including secrets like `CHARON_KEYMANAGER_AUTH_TOKEN(S)` — into
+/// terminals, CI logs and support captures. With this applied help shows only
+/// `[env: VAR]`. Charon does not expose env values in its help either (its
+/// viper env binding is invisible to cobra's help renderer), so this is also
+/// the parity behaviour.
+fn hide_env_values(cmd: clap::Command) -> clap::Command {
+    cmd.mut_args(|arg| arg.hide_env_values(true))
+        .mut_subcommands(hide_env_values)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_command;
+
+    /// Recursively visits every command in the tree.
+    fn for_each_command(cmd: &clap::Command, path: &str, f: &mut impl FnMut(&clap::Command, &str)) {
+        f(cmd, path);
+        for sub in cmd.get_subcommands() {
+            let child = format!("{path} {}", sub.get_name());
+            for_each_command(sub, &child, f);
+        }
+    }
+
+    /// `--help` must never print the VALUE of an env var: clap's default
+    /// `[env: VAR=value]` rendering would leak secrets (e.g. the keymanager
+    /// bearer tokens) into terminals, CI logs and support captures.
+    ///
+    /// Asserted structurally over the whole command tree — rather than by
+    /// setting a sentinel env var, which this crate cannot do (`unsafe_code`
+    /// is forbidden, and `std::env::set_var` is unsafe since Rust 2024) — so a
+    /// new subcommand or flag cannot reintroduce the leak.
+    #[test]
+    fn every_env_bound_flag_hides_its_env_value() {
+        let root = build_command();
+        let mut checked = 0usize;
+
+        for_each_command(&root, "pluto", &mut |cmd, path| {
+            for arg in cmd.get_arguments() {
+                if arg.get_env().is_none() {
+                    continue;
+                }
+
+                checked += 1;
+                assert!(
+                    arg.is_hide_env_values_set(),
+                    "`{path}` flag --{} renders its env value in help",
+                    arg.get_long().unwrap_or("<positional>"),
+                );
+            }
+        });
+
+        assert!(checked > 0, "expected env-bound flags; the walk is broken");
+    }
+    /// An empty `CHARON_*` value must be stripped from the arg's env binding by
+    /// the assembly pipeline, so clap never sees `""` as a provided value.
+    ///
+    /// This is the fast structural half of the check; the behavioural half
+    /// (numeric/bool/list/string actually parsing to their defaults) lives in
+    /// `tests/empty_env.rs`, which spawns the binary so a real environment
+    /// reaches clap. Both are needed: this one catches the transform being
+    /// dropped from the pipeline, that one catches it not working.
+    #[test]
+    fn empty_env_strips_bindings_across_the_whole_tree() {
+        let empty_env = |_: &std::ffi::OsStr| Some(std::ffi::OsString::new());
+        let root = super::build_command_with(&empty_env);
+        let mut checked = 0usize;
+
+        for_each_command(&root, "pluto", &mut |cmd, path| {
+            for arg in cmd.get_arguments() {
+                checked += 1;
+                assert!(
+                    arg.get_env().is_none(),
+                    "`{path}` flag --{} kept its env binding for an empty value",
+                    arg.get_long().unwrap_or("<positional>"),
+                );
+            }
+        });
+
+        assert!(checked > 0, "expected flags; the walk is broken");
+    }
+
+    /// A non-empty env value must keep its binding, so the empty-value handling
+    /// does not disable env support altogether.
+    #[test]
+    fn non_empty_env_binding_is_retained() {
+        let set_env = |_: &std::ffi::OsStr| Some(std::ffi::OsString::from("value"));
+        let cmd = super::build_command_with(&set_env);
+        let cluster = cmd
+            .find_subcommand("create")
+            .expect("create")
+            .find_subcommand("cluster")
+            .expect("cluster")
+            .clone();
+
+        let bound = cluster
+            .get_arguments()
+            .filter(|a| a.get_env().is_some())
+            .count();
+        assert!(bound > 0, "non-empty env values must keep their bindings");
+    }
+
+    /// Hiding values must not hide which env var configures a flag: the names
+    /// stay in help output.
+    #[test]
+    fn help_still_documents_env_var_names() {
+        let create = build_command()
+            .find_subcommand("create")
+            .expect("create subcommand")
+            .clone();
+        let help = create
+            .find_subcommand("cluster")
+            .expect("create cluster subcommand")
+            .clone()
+            .render_long_help()
+            .to_string();
+
+        assert!(
+            help.contains("[env: CHARON_KEYMANAGER_AUTH_TOKENS]"),
+            "{help}"
+        );
+        assert!(help.contains("[env: CHARON_CLUSTER_DIR]"), "{help}");
+    }
+}

@@ -7,7 +7,7 @@
   {
    "Image": "pluto:local",
    "Entrypoint": "",
-   "Command": "[create,cluster,--name=compose-4-1,--threshold=3,--nodes=4,--cluster-dir=/compose,--num-validators=1,--withdrawal-addresses=0x0000000000000000000000000000000000000000,--fee-recipient-addresses=0x0000000000000000000000000000000000000000,--network=goerli]",
+   "Command": "",
    "EnvVars": [
     {
      "Key": "name",
