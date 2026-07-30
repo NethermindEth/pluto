@@ -1041,6 +1041,7 @@ fn build_app_config(config: RunConfig) -> Result<pluto_app::node::AppConfig> {
         synthetic_block_proposals: _,
         builder_api,
         simnet_beacon_mock_fuzz,
+        // Registered directly in `run` before the lock loads; not part of `AppConfig`.
         testnet: _,
         proc_directory: _,
         consensus_protocol: _,
