@@ -887,9 +887,7 @@ async fn fetch_attester_duties(
         .body(validators.iter().map(|v| v.v_idx.to_string()).collect())
         .build()
         .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?;
-    let resp = client
-        .api()
-        .get_attester_duties(req)
+    let resp = pluto_eth2api::instrument("attester_duties", client.api().get_attester_duties(req))
         .await
         .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?;
 

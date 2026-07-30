@@ -963,7 +963,7 @@ impl Handler for Component {
 
         let response = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            self.eth2_cl.get_attester_duties(request),
+            pluto_eth2api::instrument("attester_duties", self.eth2_cl.get_attester_duties(request)),
         )
         .await
         .map_err(|_| upstream_timeout("attester duties"))?
