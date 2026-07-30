@@ -106,7 +106,7 @@ impl IntoResponse for ApiError {
         // path every error response takes, otherwise it is silently dropped.
         if let Some(source) = &self.source {
             if self.status_code.is_server_error() {
-                tracing::warn!(
+                tracing::error!(
                     status = self.status_code.as_u16(),
                     message = %self.message,
                     source = %DisplayChain(source.as_ref()),
