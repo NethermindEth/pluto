@@ -529,7 +529,7 @@ impl Component {
         self.dutydb
             .await_proposal(slot)
             .await
-            .map_err(map_dutydb_error)
+            .map_err(|err| map_dutydb_error("proposal", err))
     }
 
     /// Resolves the validator index for a VC-submitted attestation.
@@ -1067,7 +1067,7 @@ impl Handler for Component {
                 "attestation data not available before deadline",
             )
         })?
-        .map_err(map_dutydb_error)?;
+        .map_err(|err| map_dutydb_error("attestation", err))?;
 
         Ok(AttestationDataResponse { data })
     }
@@ -2045,20 +2045,27 @@ fn upstream_unexpected<R: std::fmt::Debug>(endpoint: &'static str, response: R) 
 }
 
 /// Maps a [`crate::dutydb::Error`] into the `ApiError` returned to the client
-/// when an `attestation_data` await fails. `Shutdown` propagates as 503 so the
-/// VC can retry; `AwaitDutyExpired` propagates as 408 — same as a timeout —
-/// since the duty is gone and the data will never arrive. Anything else is a
-/// programming error here and becomes 500.
-fn map_dutydb_error(err: DutyDbError) -> ApiError {
+/// when a duty-data await fails. `Shutdown` propagates as 503 so the VC can
+/// retry; `AwaitDutyExpired` propagates as 408 — same as a timeout — since the
+/// duty is gone and the data will never arrive. Anything else is a programming
+/// error here and becomes 500.
+///
+/// `duty` names the duty being awaited (e.g. `"attestation"`, `"proposal"`) so
+/// the client-visible message matches the request that produced it; this mapper
+/// is shared by more than one endpoint.
+fn map_dutydb_error(duty: &'static str, err: DutyDbError) -> ApiError {
     let (status, message) = match err {
-        DutyDbError::Shutdown => (StatusCode::SERVICE_UNAVAILABLE, "dutydb is shutting down"),
+        DutyDbError::Shutdown => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "dutydb is shutting down".to_string(),
+        ),
         DutyDbError::AwaitDutyExpired => (
             StatusCode::REQUEST_TIMEOUT,
-            "attestation duty expired before data was stored",
+            format!("{duty} duty expired before data was stored"),
         ),
         _ => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            "await attestation failed",
+            format!("await {duty} failed"),
         ),
     };
     ApiError::new(status, message).with_source(err)
@@ -3169,16 +3176,32 @@ mod tests {
     #[test]
     fn map_dutydb_error_status_codes() {
         assert_eq!(
-            map_dutydb_error(DutyDbError::Shutdown).status_code,
+            map_dutydb_error("attestation", DutyDbError::Shutdown).status_code,
             StatusCode::SERVICE_UNAVAILABLE
         );
         assert_eq!(
-            map_dutydb_error(DutyDbError::AwaitDutyExpired).status_code,
+            map_dutydb_error("attestation", DutyDbError::AwaitDutyExpired).status_code,
             StatusCode::REQUEST_TIMEOUT
         );
         assert_eq!(
-            map_dutydb_error(DutyDbError::UnsupportedDutyType).status_code,
+            map_dutydb_error("attestation", DutyDbError::UnsupportedDutyType).status_code,
             StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    /// The expiry message names the duty that was awaited: the mapper is shared
+    /// by `attestation_data` and `await_proposal`, and previously reported
+    /// every timeout — including a missed block proposal — as an
+    /// attestation.
+    #[test]
+    fn map_dutydb_error_message_names_the_duty() {
+        assert_eq!(
+            map_dutydb_error("proposal", DutyDbError::AwaitDutyExpired).message,
+            "proposal duty expired before data was stored"
+        );
+        assert_eq!(
+            map_dutydb_error("attestation", DutyDbError::AwaitDutyExpired).message,
+            "attestation duty expired before data was stored"
         );
     }
 

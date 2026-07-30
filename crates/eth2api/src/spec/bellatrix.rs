@@ -22,9 +22,22 @@ pub const MAX_BYTES_PER_TRANSACTION: usize = 1_073_741_824;
 pub type BaseFeePerGas = U256;
 
 /// Raw execution transaction bytes.
+///
+/// Spec: `Transaction = ByteList[MAX_BYTES_PER_TRANSACTION]` — a bare SSZ list,
+/// not a container. `struct_behaviour = "transparent"` is therefore required:
+/// without it `ssz_derive` frames every transaction as a single-field container
+/// (a spurious 4-byte offset prefix), which makes any block carrying at least
+/// one transaction fail to decode. Charon models the same type as a plain
+/// `type Transaction []byte`.
+///
+/// `TreeHash` intentionally keeps the derived container behaviour: merkleizing
+/// a one-field container yields the single leaf unchanged, so the root already
+/// equals the bare list's root (locked in by the `*_beacon_block_body_root`
+/// spec-vector tests, whose fixtures carry transactions).
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TreeHash, Serialize, Deserialize)]
 #[serde(transparent)]
+#[ssz(struct_behaviour = "transparent")]
 pub struct Transaction {
     /// Transaction bytes.
     #[serde_as(as = "pluto_ssz::serde_utils::Hex0x")]
@@ -357,5 +370,54 @@ mod tests {
     )]
     fn json_matches_vector(actual: serde_json::Value, expected_json: &'static str) {
         test_fixtures::assert_json_eq(actual, expected_json);
+    }
+
+    /// `Transaction` is `ByteList[MAX_BYTES_PER_TRANSACTION]`, so its SSZ form
+    /// is the raw transaction bytes with no framing. Without
+    /// `struct_behaviour = "transparent"` the derive emitted a leading 4-byte
+    /// offset, which made every block carrying a transaction undecodable.
+    #[test]
+    fn transaction_ssz_is_the_bare_byte_list() {
+        use ssz::{Decode, Encode};
+
+        // A realistic type-3 (blob) transaction prefix: the first four bytes are
+        // not a valid container offset, which is exactly why container framing
+        // broke decoding.
+        let raw = vec![0x03, 0xf8, 0xb9, 0x83, 0xde, 0xad, 0xbe, 0xef];
+        let tx = super::Transaction::from(raw.clone());
+
+        assert_eq!(tx.as_ssz_bytes(), raw, "encoding must not add framing");
+        assert_eq!(tx.ssz_bytes_len(), raw.len());
+        assert_eq!(
+            super::Transaction::from_ssz_bytes(&raw).expect("raw bytes decode"),
+            tx
+        );
+        // Empty transactions are a valid zero-length list.
+        assert!(super::Transaction::from_ssz_bytes(&[]).is_ok());
+    }
+
+    /// An execution payload carrying transactions must survive an SSZ round
+    /// trip. Previously the fixtures only exercised `TreeHash` and JSON, so
+    /// the broken SSZ framing went unnoticed.
+    #[test]
+    fn execution_payload_with_transactions_ssz_round_trips() {
+        use ssz::{Decode, Encode};
+
+        let payload = test_fixtures::bellatrix_execution_payload_fixture();
+        assert!(
+            !payload.transactions.0.is_empty(),
+            "fixture must carry transactions for this to be meaningful"
+        );
+
+        let bytes = payload.as_ssz_bytes();
+        let decoded =
+            super::ExecutionPayload::from_ssz_bytes(&bytes).expect("payload round trips via ssz");
+        assert_eq!(decoded, payload);
+
+        // The transactions list is `List[Transaction, N]`: a 4-byte offset per
+        // element followed by each element's bare bytes.
+        let txs = &payload.transactions.0;
+        let expected_len = txs.len() * 4 + txs.iter().map(|tx| tx.bytes.0.len()).sum::<usize>();
+        assert_eq!(payload.transactions.as_ssz_bytes().len(), expected_len);
     }
 }
