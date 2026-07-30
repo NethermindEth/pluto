@@ -1,12 +1,21 @@
 use crate::{
     BeaconStateFork, ConsensusVersion, EthBeaconNodeApiClient, EventstreamRequestQueryTopic,
     GetForkScheduleRequest, GetForkScheduleResponse, GetGenesisRequest, GetGenesisResponse,
-    GetGenesisResponseResponseData, GetSpecRequest, GetSpecResponse, ValidatorStatus, spec::phase0,
+    GetGenesisResponseResponseData, GetProposerDutiesRequest, GetProposerDutiesResponse,
+    GetSpecRequest, GetSpecResponse, PrepareBeaconProposerRequest,
+    PrepareBeaconProposerRequestBodyItem, PrepareBeaconProposerResponse, ValidatorStatus,
+    spec::{bellatrix, phase0},
 };
 use chrono::{DateTime, Utc};
 use eventsource_stream::Eventsource;
 use futures::{Stream, StreamExt};
-use std::{collections::HashMap, time};
+use reqwest::Url;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, LazyLock, Mutex},
+    time,
+};
+use tokio::sync::OnceCell;
 use tree_hash::TreeHash;
 
 /// Error that can occur when using the
@@ -34,6 +43,15 @@ pub enum EthBeaconNodeApiClientError {
     #[error("Zero slot duration or slots per epoch in network spec")]
     ZeroSlotDurationOrSlotsPerEpoch,
 
+    /// A duty was returned for a slot outside the epoch it was requested for.
+    #[error("Received duty for slot {slot} outside of requested epoch {epoch}")]
+    DutySlotOutsideEpoch {
+        /// Slot the beacon node reported the duty for.
+        slot: phase0::Slot,
+        /// Epoch the duties were requested for.
+        epoch: phase0::Epoch,
+    },
+
     /// Domain type not found in the beacon spec response
     #[error("Domain type not found: {0}")]
     DomainTypeNotFound(String),
@@ -59,6 +77,19 @@ pub struct BeaconNodeEvent {
     pub data: String,
 }
 
+/// A single proposal preparation submitted to the beacon node
+/// (`prepare_beacon_proposer`), associating a validator index with the fee
+/// recipient the node should use when building blocks for it.
+///
+/// Mirrors go-eth2-client's `eth2v1.ProposalPreparation`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProposalPreparation {
+    /// Index of the validator the preparation applies to.
+    pub validator_index: phase0::ValidatorIndex,
+    /// Execution-layer address that should receive block rewards.
+    pub fee_recipient: bellatrix::ExecutionAddress,
+}
+
 // Ordered oldest-to-newest. `resolve_fork_version` relies on this order to
 // break equal-epoch ties (the latest fork wins), so keep it chronological.
 const FORKS: [ConsensusVersion; 6] = [
@@ -78,6 +109,17 @@ pub struct ForkSchedule {
     pub version: phase0::Version,
     /// The epoch at which the fork activates.
     pub epoch: phase0::Epoch,
+}
+
+/// A proposer duty with its fields decoded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProposerDuty {
+    /// The proposer's BLS public key.
+    pub pubkey: phase0::BLSPubKey,
+    /// Index of the proposer in the validator registry.
+    pub validator_index: phase0::ValidatorIndex,
+    /// The slot at which the validator must propose a block.
+    pub slot: phase0::Slot,
 }
 
 fn required_str_field<'a>(
@@ -283,21 +325,82 @@ impl ValidatorStatus {
     }
 }
 
+/// Cached static chain config for one beacon endpoint: spec, genesis, and
+/// fork schedule. These are constant for the lifetime of a beacon-node
+/// process, but fetching them live put up to four sequential HTTP round-trips
+/// on every signature verification.
+///
+/// Cached for the lifetime of *this* process: picking up a fork schedule
+/// changed by a beacon-node upgrade requires a pluto restart. Request
+/// failures are never cached (the `OnceCell` stays empty and the next caller
+/// retries); a successful response is cached as-is, so a malformed 200 body
+/// persists until restart.
+///
+/// TODO(#563): interim process-global cache — the generated client cannot
+/// hold state. Moves into the client when eth2api is redesigned.
+#[derive(Default)]
+struct ChainConfigCache {
+    spec: OnceCell<Arc<serde_json::Value>>,
+    genesis: OnceCell<Arc<GetGenesisResponseResponseData>>,
+    fork_schedule: OnceCell<Arc<Vec<BeaconStateFork>>>,
+}
+
+/// Keyed by endpoint, so every client for one beacon node (e.g. the
+/// scheduling and submission clients) shares the same entries.
+///
+/// TODO(#563): removed with the eth2api redesign.
+static CONFIG_CACHES: LazyLock<Mutex<HashMap<Url, Arc<ChainConfigCache>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Returns the config cache for `base_url`. The map lock is only held to
+/// get-or-insert the entry, never across a fetch.
+fn config_cache_for(base_url: &Url) -> Arc<ChainConfigCache> {
+    let mut caches = CONFIG_CACHES.lock().expect("config cache mutex poisoned");
+    Arc::clone(caches.entry(base_url.clone()).or_default())
+}
+
+/// Removes the cached chain config for `base_url`.
+///
+/// Test support: wiremock pools listeners, so mock servers reuse ports within
+/// one test process and a later test would inherit an earlier test's cached
+/// config for the same URL. Production never needs this.
+#[doc(hidden)]
+pub fn purge_chain_config_cache(base_url: &Url) {
+    CONFIG_CACHES
+        .lock()
+        .expect("config cache mutex poisoned")
+        .remove(base_url);
+}
+
 impl EthBeaconNodeApiClient {
-    async fn fetch_spec_data(&self) -> Result<serde_json::Value, EthBeaconNodeApiClientError> {
-        match crate::instrument("spec", self.get_spec(GetSpecRequest {})).await? {
-            GetSpecResponse::Ok(spec) => Ok(spec.data),
-            _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
-        }
+    async fn fetch_spec_data(&self) -> Result<Arc<serde_json::Value>, EthBeaconNodeApiClientError> {
+        let cache = config_cache_for(&self.base_url);
+        cache
+            .spec
+            .get_or_try_init(|| async {
+                match crate::instrument("spec", self.get_spec(GetSpecRequest {})).await? {
+                    GetSpecResponse::Ok(spec) => Ok(Arc::new(spec.data)),
+                    _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
+                }
+            })
+            .await
+            .map(Arc::clone)
     }
 
     async fn fetch_genesis_data(
         &self,
-    ) -> Result<GetGenesisResponseResponseData, EthBeaconNodeApiClientError> {
-        match crate::instrument("genesis", self.get_genesis(GetGenesisRequest {})).await? {
-            GetGenesisResponse::Ok(genesis) => Ok(genesis.data),
-            _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
-        }
+    ) -> Result<Arc<GetGenesisResponseResponseData>, EthBeaconNodeApiClientError> {
+        let cache = config_cache_for(&self.base_url);
+        cache
+            .genesis
+            .get_or_try_init(|| async {
+                match crate::instrument("genesis", self.get_genesis(GetGenesisRequest {})).await? {
+                    GetGenesisResponse::Ok(genesis) => Ok(Arc::new(genesis.data)),
+                    _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
+                }
+            })
+            .await
+            .map(Arc::clone)
     }
 
     /// Fetches the genesis time.
@@ -317,12 +420,9 @@ impl EthBeaconNodeApiClient {
             })
     }
 
-    /// Fetches the raw chain spec as a JSON object.
-    pub async fn fetch_spec(&self) -> Result<serde_json::Value, EthBeaconNodeApiClientError> {
-        match crate::instrument("spec", self.get_spec(GetSpecRequest {})).await? {
-            GetSpecResponse::Ok(resp) => Ok(resp.data),
-            _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
-        }
+    /// Fetches the raw chain spec as a JSON object (cached per endpoint).
+    pub async fn fetch_spec(&self) -> Result<Arc<serde_json::Value>, EthBeaconNodeApiClientError> {
+        self.fetch_spec_data().await
     }
 
     /// Fetches the slot duration and slots per epoch.
@@ -339,6 +439,73 @@ impl EthBeaconNodeApiClient {
         }
 
         Ok((slot_duration, slots_per_epoch))
+    }
+
+    /// Fetches the proposer duties for `epoch`, keeping only the duties that
+    /// belong to `indices`. An empty `indices` returns them all.
+    ///
+    /// The endpoint takes no validator parameter — it always answers with the
+    /// proposer of every slot in the epoch — so narrowing it is the client's
+    /// job.
+    pub async fn fetch_proposer_duties(
+        &self,
+        epoch: phase0::Epoch,
+        slots_per_epoch: u64,
+        indices: &HashSet<phase0::ValidatorIndex>,
+    ) -> Result<Vec<ProposerDuty>, EthBeaconNodeApiClientError> {
+        if slots_per_epoch == 0 {
+            return Err(EthBeaconNodeApiClientError::ZeroSlotDurationOrSlotsPerEpoch);
+        }
+
+        let request = GetProposerDutiesRequest::builder()
+            .epoch(epoch.to_string())
+            .build()
+            .map_err(EthBeaconNodeApiClientError::RequestError)?;
+
+        let duties =
+            match crate::instrument("proposer_duties", self.get_proposer_duties(request)).await? {
+                GetProposerDutiesResponse::Ok(response) => response.data,
+                _ => return Err(EthBeaconNodeApiClientError::UnexpectedResponse),
+            };
+
+        // Validate every duty before dropping any: filtering first would
+        // silently discard a malformed duty that happens to belong to a
+        // validator we did not ask about.
+        let mut validated = Vec::with_capacity(duties.len());
+        for duty in duties {
+            let validator_index = duty
+                .validator_index
+                .parse::<phase0::ValidatorIndex>()
+                .map_err(|_| {
+                    EthBeaconNodeApiClientError::ParseError("proposer duty validator_index".into())
+                })?;
+            let slot = duty.slot.parse::<phase0::Slot>().map_err(|_| {
+                EthBeaconNodeApiClientError::ParseError("proposer duty slot".into())
+            })?;
+            let pubkey =
+                decode_fixed_hex(&duty.pubkey, || "decode proposer duty pubkey".to_string())?;
+
+            // Reject duties outside the requested epoch. Comparing epochs
+            // avoids the slot-bound multiplication overflowing on a bogus
+            // epoch.
+            let duty_epoch = slot
+                .checked_div(slots_per_epoch)
+                .ok_or(EthBeaconNodeApiClientError::ZeroSlotDurationOrSlotsPerEpoch)?;
+            if duty_epoch != epoch {
+                return Err(EthBeaconNodeApiClientError::DutySlotOutsideEpoch { slot, epoch });
+            }
+
+            validated.push(ProposerDuty {
+                pubkey,
+                validator_index,
+                slot,
+            });
+        }
+
+        Ok(validated
+            .into_iter()
+            .filter(|duty| indices.is_empty() || indices.contains(&duty.validator_index))
+            .collect())
     }
 
     /// Fetches the fork schedule for all known forks.
@@ -393,19 +560,46 @@ impl EthBeaconNodeApiClient {
         Ok(fork_version)
     }
 
-    /// Fetches the fork schedule entries from `/eth/v1/config/fork_schedule`.
+    /// Fetches the fork schedule entries from `/eth/v1/config/fork_schedule`
+    /// (cached per endpoint).
     async fn fetch_fork_schedule_data(
         &self,
-    ) -> Result<Vec<BeaconStateFork>, EthBeaconNodeApiClientError> {
-        match crate::instrument(
-            "fork_schedule",
-            self.get_fork_schedule(GetForkScheduleRequest {}),
-        )
-        .await?
-        {
-            GetForkScheduleResponse::Ok(resp) => Ok(resp.data),
-            _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
-        }
+    ) -> Result<Arc<Vec<BeaconStateFork>>, EthBeaconNodeApiClientError> {
+        let cache = config_cache_for(&self.base_url);
+        cache
+            .fork_schedule
+            .get_or_try_init(|| async {
+                match crate::instrument(
+                    "fork_schedule",
+                    self.get_fork_schedule(GetForkScheduleRequest {}),
+                )
+                .await?
+                {
+                    GetForkScheduleResponse::Ok(resp) => Ok(Arc::new(resp.data)),
+                    _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
+                }
+            })
+            .await
+            .map(Arc::clone)
+    }
+
+    /// Fetches the `current_version` of every entry in the beacon node's fork
+    /// schedule (`/eth/v1/config/fork_schedule`), decoded and returned in the
+    /// order provided by the endpoint (oldest-to-newest per spec). The first
+    /// entry is the genesis fork version, which identifies the beacon node's
+    /// network.
+    pub async fn fetch_fork_schedule_versions(
+        &self,
+    ) -> Result<Vec<phase0::Version>, EthBeaconNodeApiClientError> {
+        self.fetch_fork_schedule_data()
+            .await?
+            .iter()
+            .map(|fork| {
+                decode_fixed_hex(&fork.current_version, || {
+                    "decode fork schedule current_version".to_string()
+                })
+            })
+            .collect()
     }
 
     /// Fetches the resolved beacon domain for the provided domain type and
@@ -488,12 +682,191 @@ impl EthBeaconNodeApiClient {
 
         Ok(stream)
     }
+
+    /// Submits proposal preparations to the beacon node
+    /// (`POST /eth/v1/validator/prepare_beacon_proposer`).
+    ///
+    /// Each preparation tells the beacon node which fee recipient to use when
+    /// it builds a block for the given validator. The information persists for
+    /// the epoch of submission plus the following two epochs, so callers resend
+    /// it periodically (e.g. once per epoch). Mirrors go-eth2-client's
+    /// `SubmitProposalPreparations`.
+    pub async fn submit_proposal_preparations(
+        &self,
+        preparations: &[ProposalPreparation],
+    ) -> Result<(), EthBeaconNodeApiClientError> {
+        let body = preparations
+            .iter()
+            .map(|preparation| PrepareBeaconProposerRequestBodyItem {
+                validator_index: preparation.validator_index.to_string(),
+                fee_recipient: format!("0x{}", hex::encode(preparation.fee_recipient)),
+            })
+            .collect();
+
+        match self
+            .prepare_beacon_proposer(PrepareBeaconProposerRequest { body })
+            .await?
+        {
+            PrepareBeaconProposerResponse::Ok => Ok(()),
+            _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
+
+    const SPEC_PATH: &str = "/eth/v1/config/spec";
+    const GENESIS_PATH: &str = "/eth/v1/beacon/genesis";
+    const FORK_SCHEDULE_PATH: &str = "/eth/v1/config/fork_schedule";
+
+    fn genesis_body() -> serde_json::Value {
+        json!({ "data": {
+            "genesis_time": "1606824023",
+            "genesis_validators_root":
+                "0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95",
+            "genesis_fork_version": "0x00000000",
+        }})
+    }
+
+    fn fork_schedule_body() -> serde_json::Value {
+        json!({ "data": [
+            {
+                "previous_version": "0x00000000",
+                "current_version": "0x00000000",
+                "epoch": "0"
+            },
+            {
+                "previous_version": "0x00000000",
+                "current_version": "0x01000000",
+                "epoch": "10"
+            },
+        ]})
+    }
+
+    fn cache_spec_body() -> serde_json::Value {
+        let mut spec = spec_fixture();
+        spec["SECONDS_PER_SLOT"] = json!("12");
+        spec["SLOTS_PER_EPOCH"] = json!("32");
+        spec["DOMAIN_BEACON_ATTESTER"] = json!("0x01000000");
+        json!({ "data": spec })
+    }
+
+    fn test_client(server: &MockServer) -> EthBeaconNodeApiClient {
+        let client =
+            EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid mock server URL");
+        // The pooled port may have served an earlier test.
+        purge_chain_config_cache(&client.base_url);
+        client
+    }
+
+    /// Every config-derived lookup after the first is served from the
+    /// process-global cache — including from a second client for the same
+    /// endpoint (the submission client in production). Enforced by the
+    /// `.expect(1)` mocks on drop.
+    #[tokio::test]
+    async fn config_fetches_are_cached_per_endpoint() {
+        let server = MockServer::start().await;
+        for (endpoint, body) in [
+            (SPEC_PATH, cache_spec_body()),
+            (GENESIS_PATH, genesis_body()),
+            (FORK_SCHEDULE_PATH, fork_schedule_body()),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(endpoint))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let client = test_client(&server);
+
+        let domain_type = client
+            .fetch_domain_type("DOMAIN_BEACON_ATTESTER")
+            .await
+            .unwrap();
+        let first = client.fetch_domain(domain_type, 20).await.unwrap();
+        assert_eq!(first, client.fetch_domain(domain_type, 20).await.unwrap());
+        // Fork selection across the epoch-10 boundary yields distinct domains.
+        assert_ne!(first, client.fetch_domain(domain_type, 5).await.unwrap());
+        client.fetch_slots_config().await.unwrap();
+        client.fetch_fork_config().await.unwrap();
+        client.fetch_genesis_time().await.unwrap();
+        client.fetch_fork_schedule_versions().await.unwrap();
+
+        // Constructed directly (`test_client` purges): a second client for
+        // the same endpoint shares the already-warmed entries.
+        let second_client = EthBeaconNodeApiClient::with_base_url(server.uri()).unwrap();
+        second_client.fetch_slots_config().await.unwrap();
+        second_client.fetch_genesis_time().await.unwrap();
+
+        purge_chain_config_cache(&client.base_url);
+    }
+
+    /// Concurrent cold lookups coalesce into one upstream request.
+    #[tokio::test]
+    async fn concurrent_cold_fetches_coalesce() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(SPEC_PATH))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(cache_spec_body())
+                    // Force overlap with the first in-flight fetch.
+                    .set_delay(std::time::Duration::from_millis(100)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = test_client(&server);
+
+        // Spawn all tasks before awaiting any (a lazy `map` would run them
+        // sequentially) so they race on the cold cache.
+        let lookups: Vec<_> = (0..16)
+            .map(|_| {
+                let client = client.clone();
+                tokio::spawn(async move { client.fetch_slots_config().await })
+            })
+            .collect();
+        for lookup in lookups {
+            lookup.await.unwrap().unwrap();
+        }
+
+        purge_chain_config_cache(&client.base_url);
+    }
+
+    /// Request failures are never cached: the next call retries and succeeds
+    /// once the endpoint recovers.
+    #[tokio::test]
+    async fn config_fetch_failures_are_not_cached() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(GENESIS_PATH))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server);
+        client.fetch_genesis_time().await.unwrap_err();
+
+        Mock::given(method("GET"))
+            .and(path(GENESIS_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(genesis_body()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        client.fetch_genesis_time().await.unwrap();
+
+        purge_chain_config_cache(&client.base_url);
+    }
 
     fn spec_fixture() -> serde_json::Value {
         json!({
@@ -676,5 +1049,199 @@ mod tests {
             .expect("ok event");
         assert_eq!(second.topic, "chain_reorg");
         assert_eq!(second.data, r#"{"slot":"20","depth":"2"}"#);
+    }
+
+    /// Slots per epoch used by the proposer-duty tests.
+    const TEST_SLOTS_PER_EPOCH: u64 = 8;
+
+    /// A well-formed proposer duty for `index`, proposing at `slot`.
+    fn proposer_duty(index: u64, slot: u64) -> serde_json::Value {
+        serde_json::json!({
+            "pubkey": format!("0x{:096x}", index),
+            "slot": slot.to_string(),
+            "validator_index": index.to_string(),
+        })
+    }
+
+    /// Serves `data` from the epoch-0 proposer-duties endpoint.
+    async fn serve_proposer_duties(data: Vec<serde_json::Value>) -> wiremock::MockServer {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/eth/v1/validator/duties/proposer/0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "dependent_root": format!("0x{:064x}", 0),
+                "execution_optimistic": false,
+                "data": data,
+            })))
+            .mount(&server)
+            .await;
+
+        server
+    }
+
+    /// An epoch of duties, one per slot, for validators `0..count`.
+    async fn proposer_duties_server(count: u64) -> wiremock::MockServer {
+        serve_proposer_duties((0..count).map(|i| proposer_duty(i, i)).collect()).await
+    }
+
+    #[tokio::test]
+    async fn fetch_proposer_duties_keeps_only_requested_indices() {
+        let server = proposer_duties_server(5).await;
+        let client = EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid url");
+
+        let duties = client
+            .fetch_proposer_duties(0, TEST_SLOTS_PER_EPOCH, &HashSet::from([1, 3]))
+            .await
+            .expect("fetch duties");
+
+        assert_eq!(
+            duties
+                .iter()
+                .map(|duty| duty.validator_index)
+                .collect::<Vec<_>>(),
+            [1, 3],
+        );
+    }
+
+    /// An empty index set must still yield the whole epoch's proposers.
+    #[tokio::test]
+    async fn fetch_proposer_duties_without_indices_is_unfiltered() {
+        let server = proposer_duties_server(5).await;
+        let client = EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid url");
+
+        let duties = client
+            .fetch_proposer_duties(0, TEST_SLOTS_PER_EPOCH, &HashSet::new())
+            .await
+            .expect("fetch duties");
+
+        assert_eq!(duties.len(), 5);
+    }
+
+    /// A malformed duty fails the response even when it belongs to a validator
+    /// the caller did not ask about.
+    #[tokio::test]
+    async fn fetch_proposer_duties_rejects_malformed_unrequested_duty() {
+        let mut data = vec![proposer_duty(1, 1)];
+        data.push(serde_json::json!({
+            "pubkey": "0xnot-a-pubkey",
+            "slot": "2",
+            "validator_index": "2",
+        }));
+
+        let server = serve_proposer_duties(data).await;
+        let client = EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid url");
+
+        // Index 2 is filtered out, but its malformed pubkey must still surface.
+        let err = client
+            .fetch_proposer_duties(0, TEST_SLOTS_PER_EPOCH, &HashSet::from([1]))
+            .await
+            .expect_err("malformed duty should fail the response");
+
+        assert!(
+            matches!(err, EthBeaconNodeApiClientError::ParseError(_)),
+            "expected parse error, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_proposer_duties_rejects_duty_outside_requested_epoch() {
+        // Epoch 0 spans slots 0..=7, so slot 9 belongs to another epoch.
+        let server = serve_proposer_duties(vec![proposer_duty(1, 1), proposer_duty(2, 9)]).await;
+        let client = EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid url");
+
+        let err = client
+            .fetch_proposer_duties(0, TEST_SLOTS_PER_EPOCH, &HashSet::from([1]))
+            .await
+            .expect_err("out-of-epoch duty should fail the response");
+
+        assert!(
+            matches!(
+                err,
+                EthBeaconNodeApiClientError::DutySlotOutsideEpoch { slot: 9, epoch: 0 }
+            ),
+            "expected out-of-epoch error, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_proposal_preparations_posts_expected_body() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{body_json, method, path},
+        };
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/eth/v1/validator/prepare_beacon_proposer"))
+            .and(body_json(json!([
+                {
+                    "validator_index": "1",
+                    "fee_recipient": "0x0101010101010101010101010101010101010101"
+                },
+                {
+                    "validator_index": "42",
+                    "fee_recipient": "0x2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a"
+                }
+            ])))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid url");
+        client
+            .submit_proposal_preparations(&[
+                ProposalPreparation {
+                    validator_index: 1,
+                    fee_recipient: [0x01; 20],
+                },
+                ProposalPreparation {
+                    validator_index: 42,
+                    fee_recipient: [0x2a; 20],
+                },
+            ])
+            .await
+            .expect("submit succeeds");
+        // The mock's `.expect(1)` verifies on drop that the posted body
+        // matched.
+    }
+
+    #[tokio::test]
+    async fn submit_proposal_preparations_surfaces_error_status() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/eth/v1/validator/prepare_beacon_proposer"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+                "code": 500,
+                "message": "internal error"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = EthBeaconNodeApiClient::with_base_url(server.uri()).expect("valid url");
+        let error = client
+            .submit_proposal_preparations(&[ProposalPreparation {
+                validator_index: 1,
+                fee_recipient: [0x01; 20],
+            }])
+            .await
+            .expect_err("a 500 response must surface as an error");
+
+        assert!(matches!(
+            error,
+            EthBeaconNodeApiClientError::UnexpectedResponse
+        ));
     }
 }

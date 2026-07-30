@@ -131,6 +131,25 @@ pub enum AppError {
     #[error("invalid beacon node url: {0}")]
     BeaconUrl(#[from] url::ParseError),
 
+    /// The beacon node's fork schedule does not contain the cluster lock's fork
+    /// version — the beacon node is on a different network than the cluster.
+    #[error(
+        "mismatch between lock file fork version and beacon node fork schedule: \
+         lock file is for network {lock_network} (fork version {lock_fork_version}), \
+         but the beacon node is on network {beacon_node_network}; \
+         ensure the beacon node is on the correct network"
+    )]
+    ForkScheduleMismatch {
+        /// Network the cluster lock's fork version resolves to (or its hex
+        /// representation if it matches no known network).
+        lock_network: String,
+        /// The cluster lock's fork version, `0x`-prefixed hex.
+        lock_fork_version: String,
+        /// Network the beacon node's genesis fork version resolves to (or its
+        /// hex representation if it matches no known network).
+        beacon_node_network: String,
+    },
+
     /// Beacon node client construction failed.
     #[error("beacon client: {0}")]
     BeaconClient(#[source] anyhow::Error),
@@ -174,6 +193,10 @@ pub enum AppError {
     /// Simnet (beacon/validator mock) setup failed.
     #[error("simnet: {0}")]
     Simnet(String),
+
+    /// Feature set resolution failed (invalid minimum status).
+    #[error("feature set: {0}")]
+    FeatureSet(#[from] pluto_featureset::FeaturesetError),
 }
 
 /// A wired, runnable distributed-validator node.
@@ -213,10 +236,13 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     let lock =
         pluto_cluster::load::load_cluster_lock(&config.lock_file, config.no_verify, &eth1).await?;
     let threshold = lock.threshold;
-    // TODO(#402 part B): honor `lock.target_gas_limit` once
-    // `validatorapi::Component::new` accepts a target-gas-limit parameter (the
-    // registration path has no such input yet).
-    let _ = lock.target_gas_limit;
+
+    // Resolve the injectable feature set now that the lock's fork version is
+    // known.
+    let feature_set = Arc::new(resolve_feature_set(
+        &config.feature_set,
+        &lock.fork_version,
+    )?);
 
     let key = pluto_k1util::load(&config.priv_key_file)?;
 
@@ -263,6 +289,34 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     let monitoring_pubkeys: Vec<PubKey> = validators.iter().map(|v| v.pubkey).collect();
     let num_validators = validators.len();
 
+    // Global labels stamped onto every exported metric (Charon parity).
+    let monitoring_labels = monitoring_labels(&lock, &config, &local_peer_id);
+
+    // Network the cluster's fork version resolves to (or `"unknown"`), reused
+    // for the `cluster_network` gauge and matching the global label.
+    let cluster_network = pluto_eth2util::network::fork_version_to_network(&lock.fork_version)
+        .unwrap_or_else(|_| "unknown".to_owned());
+    // Custom-enabled feature flags for the `app_feature_flags` gauge (Charon's
+    // `featureset.CustomEnabledAll()`).
+    let feature_flags: Vec<&str> = feature_set
+        .custom_enabled_all()
+        .iter()
+        .map(|f| f.as_str())
+        .collect();
+
+    // Constant startup + cluster gauges (Charon parity: `initStartupMetrics`).
+    monitoringapi::init_startup_metrics(&monitoringapi::StartupMetrics {
+        version: &pluto_core::version::VERSION.to_string(),
+        peer_name: &pluto_p2p::name::peer_name(&local_peer_id),
+        git_hash: &pluto_core::version::git_commit_hash_short(),
+        start_time_secs: chrono::Utc::now().timestamp(),
+        threshold: i64::try_from(lock.threshold).unwrap_or(i64::MAX),
+        operators: i64::try_from(lock.operators.len()).unwrap_or(i64::MAX),
+        validators: i64::try_from(lock.distributed_validators.len()).unwrap_or(i64::MAX),
+        network: &cluster_network,
+        feature_flags: &feature_flags,
+    });
+
     // ---- (2/3) eth2 clients ----
     //
     // Simnet: the beacon clients target an in-process `BeaconMock` (seeded with
@@ -297,6 +351,19 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             .unwrap_or_default(),
     };
     let eth2_cl = build_api_client(&beacon_node_addr, config.beacon_node_timeout)?;
+
+    // Fail fast if the beacon node is on a different network than the cluster
+    // lock (Charon's `configureEth2Client`, app.go:1022-1053). Both eth2
+    // clients here target the same endpoint, so a single check suffices —
+    // unlike Charon, which checks each independently-constructed client.
+    //
+    // Skipped for the in-process simnet mock: it is derived from the lock's own
+    // fork version (`build_simnet_beacon_mock`), so a network mismatch is
+    // impossible by construction.
+    if simnet_beacon_mock.is_none() {
+        verify_fork_schedule(&eth2_cl, &lock.fork_version).await?;
+    }
+
     let beacon_client = pluto_eth2api::BeaconNodeClient::new(eth2_cl.clone());
     // Broadcasting uses a separate client with the (distinct) submit timeout.
     let submission_api = build_api_client(&beacon_node_addr, config.beacon_node_submit_timeout)?;
@@ -341,8 +408,6 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         .unwrap_or(0)
         .saturating_mul(slots_per_epoch);
 
-    // Feature set drives optional/alpha behaviors.
-    let feature_set = Arc::clone(&config.feature_set);
     let fetch_only_comm_idx0 = feature_set.enabled(pluto_featureset::Feature::FetchOnlyCommIdx0);
 
     // ---- Consensus (built directly; shared with p2p behaviour + core stitch) ----
@@ -504,6 +569,7 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             num_peers,
             quorum_peers,
             seen_pubkeys,
+            labels: monitoring_labels,
         },
         ct,
     )
@@ -528,6 +594,40 @@ struct MonitoringInputs {
     /// Shared, deduped set of DV root pubkeys observed on the validator API,
     /// drained each slot by the readiness checker.
     seen_pubkeys: Arc<Mutex<HashSet<PubKey>>>,
+    /// Global labels stamped onto every metric in the `/metrics` exposition.
+    labels: Vec<(String, String)>,
+}
+
+/// Builds the global metric labels stamped onto every series in the monitoring
+/// API's `/metrics` exposition (Charon parity: see `charon/app/app.go`).
+///
+/// `cluster_network` falls back to `"unknown"` when the cluster's fork version
+/// is not a recognised network, matching Charon.
+fn monitoring_labels(
+    lock: &pluto_cluster::lock::Lock,
+    config: &AppConfig,
+    local_peer_id: &libp2p::PeerId,
+) -> Vec<(String, String)> {
+    let network = pluto_eth2util::network::fork_version_to_network(&lock.fork_version)
+        .unwrap_or_else(|_| "unknown".to_owned());
+
+    vec![
+        (
+            "charon_version".to_owned(),
+            pluto_core::version::VERSION.to_string(),
+        ),
+        (
+            "cluster_hash".to_owned(),
+            crate::utils::hex_7(&lock.lock_hash),
+        ),
+        ("cluster_name".to_owned(), lock.name.clone()),
+        ("cluster_network".to_owned(), network),
+        (
+            "cluster_peer".to_owned(),
+            pluto_p2p::name::peer_name(local_peer_id),
+        ),
+        ("nickname".to_owned(), config.nickname.clone()),
+    ]
 }
 
 /// Builds the production parsigex seam from the real `parsigex::Handle`.
@@ -639,6 +739,7 @@ async fn run_lifecycle(
         num_peers,
         quorum_peers,
         seen_pubkeys,
+        labels: monitoring_labels,
     } = monitoring;
 
     // Every validator-API request feeds the readiness checker's "vc connected"
@@ -695,7 +796,9 @@ async fn run_lifecycle(
     // Monitoring HTTP server (metrics + livez + readyz).
     tasks.spawn(serve_monitoring_api(
         monitoring_addr,
-        monitoringapi::router_with_state(monitoringapi::MonitoringState::new(readiness)),
+        monitoringapi::router_with_state(
+            monitoringapi::MonitoringState::new(readiness).with_labels(monitoring_labels),
+        ),
         ct.clone(),
     ));
 
@@ -890,6 +993,59 @@ fn parse_execution_address(s: &str) -> Option<[u8; 20]> {
     let s = s.strip_prefix("0x").unwrap_or(s);
     let bytes = hex::decode(s).ok()?;
     bytes.try_into().ok()
+}
+
+/// Fails fast when the beacon node is on a different network than the cluster
+/// lock.
+///
+/// Mirrors Charon's `configureEth2Client` fork-schedule guard.
+async fn verify_fork_schedule(
+    eth2_cl: &pluto_eth2api::EthBeaconNodeApiClient,
+    lock_fork_version: &[u8],
+) -> Result<(), AppError> {
+    let versions = eth2_cl.fetch_fork_schedule_versions().await?;
+
+    if versions.iter().any(|v| v.as_slice() == lock_fork_version) {
+        return Ok(());
+    }
+
+    // Best-effort network names for the operator-facing error.
+    Err(AppError::ForkScheduleMismatch {
+        lock_network: network_name_or_hex(lock_fork_version),
+        lock_fork_version: format!("0x{}", hex::encode(lock_fork_version)),
+        beacon_node_network: versions
+            .first()
+            .map(|v| network_name_or_hex(v))
+            .unwrap_or_else(|| "unknown".to_string()),
+    })
+}
+
+/// Resolves a fork version to its network name, falling back to `0x`-prefixed
+/// hex when it matches no known network.
+fn network_name_or_hex(fork_version: &[u8]) -> String {
+    pluto_eth2util::network::fork_version_to_network(fork_version)
+        .unwrap_or_else(|_| format!("0x{}", hex::encode(fork_version)))
+}
+
+/// Resolves the injectable feature set from its config and the cluster's fork
+/// version.
+///
+/// Performs the Rust analogs of Charon's `featureset.Init` and, for
+/// gnosis/chiado, `EnableGnosisBlockHotfixIfNotDisabled`.
+fn resolve_feature_set(
+    config: &pluto_featureset::Config,
+    fork_version: &[u8],
+) -> Result<pluto_featureset::FeatureSet, AppError> {
+    let mut feature_set = pluto_featureset::FeatureSet::from_config(config.clone())?;
+
+    if let Ok(network) = pluto_eth2util::network::fork_version_to_network(fork_version)
+        && (network == pluto_eth2util::network::GNOSIS.name
+            || network == pluto_eth2util::network::CHIADO.name)
+    {
+        feature_set.enable_gnosis_block_hotfix_if_not_disabled(config);
+    }
+
+    Ok(feature_set)
 }
 
 /// Builds an [`EthBeaconNodeApiClient`](pluto_eth2api::EthBeaconNodeApiClient)
@@ -1161,9 +1317,10 @@ mod tests {
         // A ready readiness state so `/readyz` returns 200, and a touched gauge
         // so `/metrics` has a series to expose.
         monitoringapi::MONITORING_METRICS.monitoring_readyz.set(1);
-        let router = monitoringapi::router_with_state(monitoringapi::MonitoringState::new(
-            monitoringapi::ReadyState::ready(),
-        ));
+        let router = monitoringapi::router_with_state(
+            monitoringapi::MonitoringState::new(monitoringapi::ReadyState::ready())
+                .with_labels([("cluster_network".to_owned(), "sepolia".to_owned())]),
+        );
 
         let ct = CancellationToken::new();
         let server = tokio::spawn(serve_monitoring_api(addr, router, ct.clone()));
@@ -1214,16 +1371,135 @@ mod tests {
             content_type.contains("openmetrics-text"),
             "unexpected content-type: {content_type}"
         );
+        let metrics_body = metrics.text().await.expect("metrics body");
         assert!(
-            metrics
-                .text()
-                .await
-                .expect("metrics body")
-                .contains("app_monitoring_readyz"),
+            metrics_body.contains("app_monitoring_readyz"),
             "metrics exposition missing readyz gauge"
+        );
+        assert!(
+            metrics_body.contains("cluster_network=\"sepolia\""),
+            "metrics exposition missing global cluster_network label"
         );
 
         ct.cancel();
         let _ = server.await;
+    }
+
+    // The default `BeaconMock` serves a Holesky fork schedule (genesis fork
+    // version `0x01017000`).
+    const HOLESKY_FORK_VERSION: [u8; 4] = [0x01, 0x01, 0x70, 0x00];
+    const MAINNET_FORK_VERSION: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
+
+    // A lock on the same network as the beacon node passes the startup guard.
+    #[tokio::test]
+    async fn verify_fork_schedule_accepts_matching_network() {
+        let mock = pluto_testutil::BeaconMock::builder()
+            .build()
+            .await
+            .expect("beacon mock");
+
+        verify_fork_schedule(mock.client(), &HOLESKY_FORK_VERSION)
+            .await
+            .expect("matching fork version should pass the startup guard");
+    }
+
+    // A lock on a different network than the beacon node fails the startup
+    // guard, naming both the lock's fork version/network and the beacon node's
+    // network (Charon `configureEth2Client`, app.go:1022-1053).
+    #[tokio::test]
+    async fn verify_fork_schedule_rejects_wrong_network() {
+        let mock = pluto_testutil::BeaconMock::builder()
+            .build()
+            .await
+            .expect("beacon mock");
+
+        let err = verify_fork_schedule(mock.client(), &MAINNET_FORK_VERSION)
+            .await
+            .expect_err("mismatched fork version should fail the startup guard");
+
+        match err {
+            AppError::ForkScheduleMismatch {
+                lock_network,
+                lock_fork_version,
+                beacon_node_network,
+            } => {
+                assert_eq!(lock_network, "mainnet");
+                assert_eq!(lock_fork_version, "0x00000000");
+                assert_eq!(beacon_node_network, "holesky");
+            }
+            other => panic!("expected ForkScheduleMismatch, got {other:?}"),
+        }
+    }
+
+    /// Decodes a predefined network's genesis fork version into raw bytes.
+    fn fork_version_bytes(hex_str: &str) -> Vec<u8> {
+        hex::decode(hex_str.strip_prefix("0x").unwrap_or(hex_str)).expect("valid fork version hex")
+    }
+
+    #[test]
+    fn resolve_feature_set_auto_enables_gnosis_hotfix_for_gnosis_and_chiado() {
+        use pluto_eth2util::network::{CHIADO, GNOSIS};
+        use pluto_featureset::{Config, Feature};
+
+        // Default config leaves GnosisBlockHotfix at alpha (off under the stable
+        // minimum), so the auto-enable is what flips it on.
+        for network in [GNOSIS, CHIADO] {
+            let feature_set = resolve_feature_set(
+                &Config::default(),
+                &fork_version_bytes(network.genesis_fork_version_hex),
+            )
+            .expect("resolve should succeed");
+            assert!(
+                feature_set.enabled(Feature::GnosisBlockHotfix),
+                "GnosisBlockHotfix should be auto-enabled for {}",
+                network.name
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_feature_set_leaves_other_networks_untouched() {
+        use pluto_eth2util::network::MAINNET;
+        use pluto_featureset::{Config, Feature};
+
+        let feature_set = resolve_feature_set(
+            &Config::default(),
+            &fork_version_bytes(MAINNET.genesis_fork_version_hex),
+        )
+        .expect("resolve should succeed");
+
+        assert!(!feature_set.enabled(Feature::GnosisBlockHotfix));
+    }
+
+    #[test]
+    fn resolve_feature_set_respects_explicit_gnosis_hotfix_disable() {
+        use pluto_eth2util::network::GNOSIS;
+        use pluto_featureset::{Config, Feature, Status};
+
+        // Explicitly disabling the feature must win even on gnosis, matching
+        // Charon's `EnableGnosisBlockHotfixIfNotDisabled`.
+        let config = Config {
+            min_status: Status::Stable,
+            enabled: vec![],
+            disabled: vec![Feature::GnosisBlockHotfix],
+        };
+        let feature_set = resolve_feature_set(
+            &config,
+            &fork_version_bytes(GNOSIS.genesis_fork_version_hex),
+        )
+        .expect("resolve should succeed");
+
+        assert!(!feature_set.enabled(Feature::GnosisBlockHotfix));
+    }
+
+    #[test]
+    fn resolve_feature_set_skips_unrecognized_fork_version() {
+        use pluto_featureset::{Config, Feature};
+
+        // An unknown fork version must not panic and must not auto-enable.
+        let feature_set = resolve_feature_set(&Config::default(), &[0x01, 0x02, 0x03, 0x04])
+            .expect("resolve should succeed");
+
+        assert!(!feature_set.enabled(Feature::GnosisBlockHotfix));
     }
 }
