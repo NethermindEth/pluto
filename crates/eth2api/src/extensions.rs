@@ -378,7 +378,7 @@ impl EthBeaconNodeApiClient {
         cache
             .spec
             .get_or_try_init(|| async {
-                match self.get_spec(GetSpecRequest {}).await? {
+                match crate::instrument("spec", self.get_spec(GetSpecRequest {})).await? {
                     GetSpecResponse::Ok(spec) => Ok(Arc::new(spec.data)),
                     _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
                 }
@@ -394,7 +394,7 @@ impl EthBeaconNodeApiClient {
         cache
             .genesis
             .get_or_try_init(|| async {
-                match self.get_genesis(GetGenesisRequest {}).await? {
+                match crate::instrument("genesis", self.get_genesis(GetGenesisRequest {})).await? {
                     GetGenesisResponse::Ok(genesis) => Ok(Arc::new(genesis.data)),
                     _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
                 }
@@ -462,10 +462,11 @@ impl EthBeaconNodeApiClient {
             .build()
             .map_err(EthBeaconNodeApiClientError::RequestError)?;
 
-        let duties = match self.get_proposer_duties(request).await? {
-            GetProposerDutiesResponse::Ok(response) => response.data,
-            _ => return Err(EthBeaconNodeApiClientError::UnexpectedResponse),
-        };
+        let duties =
+            match crate::instrument("proposer_duties", self.get_proposer_duties(request)).await? {
+                GetProposerDutiesResponse::Ok(response) => response.data,
+                _ => return Err(EthBeaconNodeApiClientError::UnexpectedResponse),
+            };
 
         // Validate every duty before dropping any: filtering first would
         // silently discard a malformed duty that happens to belong to a
@@ -568,7 +569,12 @@ impl EthBeaconNodeApiClient {
         cache
             .fork_schedule
             .get_or_try_init(|| async {
-                match self.get_fork_schedule(GetForkScheduleRequest {}).await? {
+                match crate::instrument(
+                    "fork_schedule",
+                    self.get_fork_schedule(GetForkScheduleRequest {}),
+                )
+                .await?
+                {
                     GetForkScheduleResponse::Ok(resp) => Ok(Arc::new(resp.data)),
                     _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
                 }

@@ -913,7 +913,7 @@ impl Handler for Component {
 
         let response = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            self.eth2_cl.get_proposer_duties(request),
+            pluto_eth2api::instrument("proposer_duties", self.eth2_cl.get_proposer_duties(request)),
         )
         .await
         .map_err(|_| upstream_timeout("proposer duties"))?
@@ -963,7 +963,7 @@ impl Handler for Component {
 
         let response = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            self.eth2_cl.get_attester_duties(request),
+            pluto_eth2api::instrument("attester_duties", self.eth2_cl.get_attester_duties(request)),
         )
         .await
         .map_err(|_| upstream_timeout("attester duties"))?
@@ -1016,7 +1016,10 @@ impl Handler for Component {
 
         let response = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            self.eth2_cl.get_sync_committee_duties(request),
+            pluto_eth2api::instrument(
+                "sync_committee_duties",
+                self.eth2_cl.get_sync_committee_duties(request),
+            ),
         )
         .await
         .map_err(|_| upstream_timeout("sync committee duties"))?
@@ -1640,7 +1643,7 @@ impl Handler for Component {
 
         let response = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            self.eth2_cl.post_state_validators(request),
+            pluto_eth2api::instrument("validators", self.eth2_cl.post_state_validators(request)),
         )
         .await
         .map_err(|_| upstream_timeout("validators"))?

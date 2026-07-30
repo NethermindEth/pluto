@@ -5442,6 +5442,7 @@ dependencies = [
  "tree_hash",
  "tree_hash_derive",
  "validator",
+ "vise",
  "wiremock",
 ]
 
