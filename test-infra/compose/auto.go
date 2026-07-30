@@ -4,6 +4,7 @@ package compose
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -104,7 +105,7 @@ func Auto(ctx context.Context, conf AutoConfig) error {
 	}
 
 	// Ensure everything is clean before we start with alert test.
-	_ = execDown(ctx, conf.Dir)
+	_ = execDown(ctx, conf.Dir, conf.SudoPerms)
 
 	_, _ = w.Write([]byte("===== run step: docker compose up --no-start --build =====\n"))
 
@@ -123,7 +124,7 @@ func Auto(ctx context.Context, conf AutoConfig) error {
 	alerts := startAlertCollector(ctx, conf.Dir)
 
 	defer func() {
-		_ = execDown(context.Background(), conf.Dir)
+		_ = execDown(context.Background(), conf.Dir, conf.SudoPerms)
 	}()
 
 	_, _ = w.Write([]byte("===== run step: docker compose up =====\n"))
@@ -172,28 +173,46 @@ func printDockerCompose(ctx context.Context, dir string) error {
 	return nil
 }
 
-// fixPerms fixes file permissions as a workaround for linux docker by removing
-// all restrictions using sudo chmod.
+// fixPerms makes the compose artefacts writable and owned by the current user,
+// a workaround for linux docker: containers run as root, so the files they
+// create in the compose dir are root-owned and an unprivileged CI runner cannot
+// clean them up afterwards.
+//
+// Charon hardcodes `sudo chown -R runner:docker`, which only resolves on its
+// own GitHub Actions runner — elsewhere it fails with "illegal group name".
+// Using the current uid:gid works on any runner and locally. Both commands need
+// sudo, so this only runs under -sudo-perms; without it a local run is never
+// prompted for a password.
 func fixPerms(ctx context.Context, dir string) error {
-	cmd := exec.CommandContext(ctx, "sudo", "chmod", "-R", "a+wrX", ".")
-	cmd.Dir = dir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	owner := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 
-	err := cmd.Run()
-	if err != nil {
-		return errors.Wrap(err, "exec sudo chmod")
+	for _, args := range [][]string{
+		{"chown", "-R", owner, "."},
+		{"chmod", "-R", "a+wrX", "."},
+	} {
+		cmd := exec.CommandContext(ctx, "sudo", args...)
+		cmd.Dir = dir
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		if err := cmd.Run(); err != nil {
+			return errors.Wrap(err, "exec sudo "+args[0])
+		}
 	}
 
 	return nil
 }
 
 // execDown executes `docker compose down`.
-func execDown(ctx context.Context, dir string) error {
-	// Charon runs `sudo chown -R runner:docker` here to fix file ownership on
-	// its GitHub Actions runner. Dropped: `runner:docker` only exists in CI, so
-	// locally it just prompts for a sudo password and errors ("illegal group
-	// name"). Use -sudo-perms if a real permission fix is ever needed.
+func execDown(ctx context.Context, dir string, sudoPerms bool) error {
+	// Reclaim root-owned container artefacts before teardown (charon chowns
+	// here too); see fixPerms for why this is gated behind -sudo-perms.
+	if sudoPerms {
+		if err := fixPerms(ctx, dir); err != nil {
+			return err
+		}
+	}
+
 	log.Info(ctx, "Executing docker compose down")
 
 	cmd := exec.CommandContext(ctx, "docker", "compose", "down",

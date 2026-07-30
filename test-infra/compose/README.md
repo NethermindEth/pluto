@@ -33,10 +33,13 @@ pointing at the pluto repo.
 (`create cluster` / `create dkg`); it defaults to node0's implementation.
 - The relay always runs the charon node-base image.
 
-Pluto accepts `CHARON_`* env vars and charon-compatible flags by design (CLI parity),
+Pluto accepts `CHARON_*` env vars and charon-compatible flags by design (CLI parity),
 so the generated docker-compose.yml services are identical for both implementations
-apart from the image. All node roles are supported for both implementations: keygen
-(`create cluster`, `create dkg`, `dkg`) and run.
+apart from the image — no per-implementation command construction. All node roles are
+supported for both implementations: keygen (`create cluster`, `create dkg`, `dkg`) and
+run. Env parity includes charon's empty-value semantics: a `CHARON_*` variable that is
+set but empty counts as unset, as Viper does, so an empty placeholder falls back to the
+flag default instead of being parsed as `""`.
 
 Implementation names are validated when configs are written and loaded; anything
 other than `charon` or `pluto` is rejected.
