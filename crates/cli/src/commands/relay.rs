@@ -108,7 +108,6 @@ impl TryInto<pluto_relay_server::config::Config> for RelayArgs {
             .data_dir(self.data_dir.data_dir)
             .http_addr(self.relay.http_address)
             .auto_p2p_key(self.relay.auto_p2p_key)
-            .libp2p_log_level(self.relay.p2p_relay_log_level)
             .max_res_per_peer(self.relay.max_res_per_peer)
             .max_conns(self.relay.max_conns)
             // Invert p2p-advertise-private-addresses flag boolean:
