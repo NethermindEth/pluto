@@ -12,6 +12,8 @@ use tracing::{error, info};
 /// once `BackgroundTaskController::shutdown` has been signalled.
 const LOKI_FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// Adds a `libp2p_relay` directive to the `base` env filter, which `EnvFilter`
+/// prefix-matches against every `libp2p_relay::*` target.
 fn relay_filter(base: &str, relay_level: &str) -> String {
     if relay_level.is_empty() {
         base.to_string()
