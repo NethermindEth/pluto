@@ -393,8 +393,8 @@ mod tests {
     use std::{str::FromStr, time};
     use tokio::net;
     use tokio_util::sync::CancellationToken;
-
-    use crate::commands::relay::relay_filter;
+    use tracing::{Level, enabled};
+    use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _};
 
     #[tokio::test]
     async fn run_bootnode() {
@@ -654,9 +654,24 @@ mod tests {
             .build();
         request.retry(&mut backoff).await
     }
+
+    /// Runs `f` with a subscriber that only lets `filter` through.
+    fn with_filter(filter: &str, f: impl FnOnce()) {
+        let filter = EnvFilter::from_str(filter).expect("relay filter should be a valid EnvFilter");
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(filter), f);
+    }
+
     #[test]
-    fn relay_filter_works() {
-        assert_eq!(relay_filter("info", ""), "info");
-        assert_eq!(relay_filter("debug", "warn"), "debug,libp2p_relay=warn");
+    fn relay_filter_scopes_upstream_relay_logs() {
+        // An empty relay level leaves the base filter alone.
+        with_filter(&super::relay_filter("info", ""), || {
+            assert!(enabled!(target: "libp2p_relay::behaviour::handler", Level::WARN));
+        });
+
+        // A relay level silences the upstream relay crate but not our own logs.
+        with_filter(&super::relay_filter("info", "error"), || {
+            assert!(!enabled!(target: "libp2p_relay::behaviour::handler", Level::WARN));
+            assert!(enabled!(target: "pluto_relay_server::p2p", Level::INFO));
+        });
     }
 }
