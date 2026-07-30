@@ -53,6 +53,14 @@ pub struct BeaconMock {
     _head_producer: HeadProducer,
 }
 
+impl Drop for BeaconMock {
+    fn drop(&mut self) {
+        // The pooled port may be reused by the next test's server; don't
+        // leak this mock's cached chain config to it.
+        pluto_eth2api::purge_chain_config_cache(&self.client.base_url);
+    }
+}
+
 #[bon]
 impl BeaconMock {
     /// Builds a beacon mock with charon-compatible defaults, overriding any
@@ -167,6 +175,9 @@ impl BeaconMock {
         }
 
         let client = EthBeaconNodeApiClient::with_base_url(server.uri()).map_err(Error::Client)?;
+        // Wiremock pools listeners, so this port may have served an earlier
+        // test; drop any chain config cached for it.
+        pluto_eth2api::purge_chain_config_cache(&client.base_url);
 
         Ok(Self {
             server,

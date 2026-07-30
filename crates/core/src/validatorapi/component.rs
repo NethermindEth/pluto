@@ -18,7 +18,7 @@ use pluto_eth2api::{
     versioned::{DataVersion, SignedBlindedProposalBlock, SignedProposalBlock},
 };
 use pluto_eth2util::{
-    helpers::epoch_from_slot,
+    helpers::{HelperError, epoch_from_slot},
     signing::{self, DomainName, SigningError},
 };
 use tokio::time::error::Elapsed;
@@ -450,8 +450,7 @@ impl Component {
                     "unknown validator public key for partial signature",
                 ),
                 VerifyPartialSigError::Signing(inner) => {
-                    ApiError::new(StatusCode::BAD_REQUEST, "invalid partial signature")
-                        .with_source(inner)
+                    signing_error_to_api_error(inner, "invalid partial signature")
                 }
             })
     }
@@ -530,7 +529,7 @@ impl Component {
         self.dutydb
             .await_proposal(slot)
             .await
-            .map_err(map_dutydb_error)
+            .map_err(|err| map_dutydb_error("proposal", err))
     }
 
     /// Resolves the validator index for a VC-submitted attestation.
@@ -746,11 +745,10 @@ impl Component {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("{endpoint}: unknown validator public key"),
                 ),
-                VerifyPartialSigError::Signing(inner) => ApiError::new(
-                    StatusCode::BAD_REQUEST,
+                VerifyPartialSigError::Signing(inner) => signing_error_to_api_error(
+                    inner,
                     format!("{endpoint}: invalid partial signature"),
-                )
-                .with_source(inner),
+                ),
             })
     }
 
@@ -915,7 +913,7 @@ impl Handler for Component {
 
         let response = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            self.eth2_cl.get_proposer_duties(request),
+            pluto_eth2api::instrument("proposer_duties", self.eth2_cl.get_proposer_duties(request)),
         )
         .await
         .map_err(|_| upstream_timeout("proposer duties"))?
@@ -965,7 +963,7 @@ impl Handler for Component {
 
         let response = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            self.eth2_cl.get_attester_duties(request),
+            pluto_eth2api::instrument("attester_duties", self.eth2_cl.get_attester_duties(request)),
         )
         .await
         .map_err(|_| upstream_timeout("attester duties"))?
@@ -1018,7 +1016,10 @@ impl Handler for Component {
 
         let response = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            self.eth2_cl.get_sync_committee_duties(request),
+            pluto_eth2api::instrument(
+                "sync_committee_duties",
+                self.eth2_cl.get_sync_committee_duties(request),
+            ),
         )
         .await
         .map_err(|_| upstream_timeout("sync committee duties"))?
@@ -1069,7 +1070,7 @@ impl Handler for Component {
                 "attestation data not available before deadline",
             )
         })?
-        .map_err(map_dutydb_error)?;
+        .map_err(|err| map_dutydb_error("attestation", err))?;
 
         Ok(AttestationDataResponse { data })
     }
@@ -1363,11 +1364,10 @@ impl Handler for Component {
                 signing::verify_aggregate_and_proof_selection(&self.eth2_cl, eth2_pubkey, &agg.0)
                     .await
                     .map_err(|err| {
-                        ApiError::new(
-                            StatusCode::BAD_REQUEST,
+                        signing_error_to_api_error(
+                            err,
                             "aggregate selection proof verification failed",
                         )
-                        .with_source(err)
                     })?;
             }
 
@@ -1643,7 +1643,7 @@ impl Handler for Component {
 
         let response = tokio::time::timeout(
             UPSTREAM_REQUEST_TIMEOUT,
-            self.eth2_cl.post_state_validators(request),
+            pluto_eth2api::instrument("validators", self.eth2_cl.post_state_validators(request)),
         )
         .await
         .map_err(|_| upstream_timeout("validators"))?
@@ -1910,11 +1910,7 @@ impl Handler for Component {
                 )
                 .await
                 .map_err(|err| {
-                    ApiError::new(
-                        StatusCode::BAD_REQUEST,
-                        "invalid sync committee selection proof",
-                    )
-                    .with_source(err)
+                    signing_error_to_api_error(err, "invalid sync committee selection proof")
                 })?;
             }
 
@@ -2052,20 +2048,27 @@ fn upstream_unexpected<R: std::fmt::Debug>(endpoint: &'static str, response: R) 
 }
 
 /// Maps a [`crate::dutydb::Error`] into the `ApiError` returned to the client
-/// when an `attestation_data` await fails. `Shutdown` propagates as 503 so the
-/// VC can retry; `AwaitDutyExpired` propagates as 408 — same as a timeout —
-/// since the duty is gone and the data will never arrive. Anything else is a
-/// programming error here and becomes 500.
-fn map_dutydb_error(err: DutyDbError) -> ApiError {
+/// when a duty-data await fails. `Shutdown` propagates as 503 so the VC can
+/// retry; `AwaitDutyExpired` propagates as 408 — same as a timeout — since the
+/// duty is gone and the data will never arrive. Anything else is a programming
+/// error here and becomes 500.
+///
+/// `duty` names the duty being awaited (e.g. `"attestation"`, `"proposal"`) so
+/// the client-visible message matches the request that produced it; this mapper
+/// is shared by more than one endpoint.
+fn map_dutydb_error(duty: &'static str, err: DutyDbError) -> ApiError {
     let (status, message) = match err {
-        DutyDbError::Shutdown => (StatusCode::SERVICE_UNAVAILABLE, "dutydb is shutting down"),
+        DutyDbError::Shutdown => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "dutydb is shutting down".to_string(),
+        ),
         DutyDbError::AwaitDutyExpired => (
             StatusCode::REQUEST_TIMEOUT,
-            "attestation duty expired before data was stored",
+            format!("{duty} duty expired before data was stored"),
         ),
         _ => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            "await attestation failed",
+            format!("await {duty} failed"),
         ),
     };
     ApiError::new(status, message).with_source(err)
@@ -2268,11 +2271,39 @@ fn pubkey_to_bls(pk: &PubKey) -> BLSPubKey {
     out
 }
 
-/// Maps a [`VerifyPartialSigError`] into the `ApiError` returned to the
-/// client. `UnknownPubKey` is a misconfiguration (500), `Signing` is a
-/// validator-client mistake (400) — both keep the underlying error as a
-/// `source` so the debug log retains it while the client sees a generic
-/// message.
+/// Maps a [`SigningError`] to the client-facing `ApiError`: upstream
+/// beacon-node failures are 502 (no signature was checked, so 400 would
+/// mislead the VC); failures attributable to the submitted signature are 400
+/// with `invalid_msg`; anything else — e.g. a public key from the cluster
+/// lock or validator cache that is not a valid BLS point — is server-side
+/// state, so 500.
+fn signing_error_to_api_error(err: SigningError, invalid_msg: impl Into<String>) -> ApiError {
+    use pluto_crypto::types::Error as CryptoError;
+
+    match err {
+        SigningError::BeaconNode(_) | SigningError::Helper(HelperError::GettingSpec(_)) => {
+            ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                "beacon node lookup failed during signature verification",
+            )
+            .with_source(err)
+        }
+        SigningError::ZeroSignature
+        | SigningError::UnknownAggregateAndProofVersion
+        | SigningError::Verification(
+            CryptoError::InvalidSignature(_) | CryptoError::VerificationFailed(_),
+        ) => ApiError::new(StatusCode::BAD_REQUEST, invalid_msg).with_source(err),
+        _ => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal error during signature verification",
+        )
+        .with_source(err),
+    }
+}
+
+/// Maps a [`VerifyPartialSigError`] to the client-facing `ApiError`:
+/// `UnknownPubKey` is a misconfiguration (500), `Signing` follows
+/// [`signing_error_to_api_error`].
 fn verify_partial_sig_error(err: VerifyPartialSigError) -> ApiError {
     match err {
         VerifyPartialSigError::UnknownPubKey => ApiError::new(
@@ -2280,11 +2311,9 @@ fn verify_partial_sig_error(err: VerifyPartialSigError) -> ApiError {
             "unknown public key for partial signature verification",
         )
         .with_source(err),
-        VerifyPartialSigError::Signing(_) => ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "partial signature verification failed",
-        )
-        .with_source(err),
+        VerifyPartialSigError::Signing(inner) => {
+            signing_error_to_api_error(inner, "partial signature verification failed")
+        }
     }
 }
 
@@ -3150,16 +3179,32 @@ mod tests {
     #[test]
     fn map_dutydb_error_status_codes() {
         assert_eq!(
-            map_dutydb_error(DutyDbError::Shutdown).status_code,
+            map_dutydb_error("attestation", DutyDbError::Shutdown).status_code,
             StatusCode::SERVICE_UNAVAILABLE
         );
         assert_eq!(
-            map_dutydb_error(DutyDbError::AwaitDutyExpired).status_code,
+            map_dutydb_error("attestation", DutyDbError::AwaitDutyExpired).status_code,
             StatusCode::REQUEST_TIMEOUT
         );
         assert_eq!(
-            map_dutydb_error(DutyDbError::UnsupportedDutyType).status_code,
+            map_dutydb_error("attestation", DutyDbError::UnsupportedDutyType).status_code,
             StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    /// The expiry message names the duty that was awaited: the mapper is shared
+    /// by `attestation_data` and `await_proposal`, and previously reported
+    /// every timeout — including a missed block proposal — as an
+    /// attestation.
+    #[test]
+    fn map_dutydb_error_message_names_the_duty() {
+        assert_eq!(
+            map_dutydb_error("proposal", DutyDbError::AwaitDutyExpired).message,
+            "proposal duty expired before data was stored"
+        );
+        assert_eq!(
+            map_dutydb_error("attestation", DutyDbError::AwaitDutyExpired).message,
+            "attestation duty expired before data was stored"
         );
     }
 
@@ -3554,6 +3599,94 @@ mod tests {
             )
             .await
             .expect("insecure_test mode skips verification");
+    }
+
+    /// A beacon-node failure during domain resolution must map to 502, not
+    /// the 400 the VC would misread as an invalid signature.
+    #[tokio::test]
+    async fn beacon_outage_during_verification_maps_to_502_not_400() {
+        let secret = BlstImpl
+            .generate_insecure_secret(rand::rngs::OsRng)
+            .unwrap();
+        let pubshare = BlstImpl.secret_to_public_key(&secret).unwrap();
+        let dv_root = dv_pubkey(0xAB);
+
+        // Unroutable beacon node: domain resolution fails before any BLS
+        // verification. Non-zero signature avoids the zero-sig short-circuit.
+        let cancel = CancellationToken::new();
+        let (deadliner, _deadliner_rx) = DeadlinerTask::start(
+            cancel.clone(),
+            "validatorapi-outage-tests",
+            FarFutureCalculator,
+        );
+        let (_evict_tx, evict_rx) = mpsc::channel(1);
+        let dutydb = Arc::new(MemDB::new(deadliner, evict_rx, &cancel));
+        let eth2_cl =
+            Arc::new(EthBeaconNodeApiClient::with_base_url("http://127.0.0.1:0").unwrap());
+        let component = Component::new(
+            eth2_cl,
+            dutydb,
+            1,
+            HashMap::from([(dv_root, pubshare)]),
+            false,
+            TestValidatorCache::empty(),
+        );
+
+        let err = component
+            .verify_partial_sig(
+                &dv_root,
+                DomainName::BeaconAttester,
+                0,
+                [0x42; 32],
+                &[0x11; 96],
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                VerifyPartialSigError::Signing(SigningError::BeaconNode(_))
+            ),
+            "expected upstream signing error, got {err:?}"
+        );
+        assert_eq!(
+            verify_partial_sig_error(err).status_code,
+            StatusCode::BAD_GATEWAY
+        );
+    }
+
+    /// Genuine signature failures keep mapping to 400.
+    #[test]
+    fn verify_partial_sig_error_maps_signature_failures_to_400() {
+        let err = VerifyPartialSigError::Signing(SigningError::ZeroSignature);
+        assert_eq!(
+            verify_partial_sig_error(err).status_code,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    /// A configured pubshare that is not a valid BLS point comes from the
+    /// cluster lock, not the VC, so it must map to 500 rather than 400.
+    #[tokio::test]
+    async fn invalid_configured_pubshare_maps_to_500_not_400() {
+        let dv_root = dv_pubkey(0xAC);
+        let bad_share: BLSPubKey = [0x11; 48];
+        let (component, _mock) = make_verify_component(HashMap::from([(dv_root, bad_share)])).await;
+
+        let err = component
+            .verify_partial_sig(
+                &dv_root,
+                DomainName::BeaconAttester,
+                0,
+                [0x42; 32],
+                &[0x11; 96],
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            verify_partial_sig_error(err).status_code,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 
     // CachedValidatorsProvider plumbing
@@ -5011,7 +5144,12 @@ mod tests {
     /// `verify_partial_sig_for` is reached for the contribution path too.
     #[tokio::test]
     async fn submit_sync_committee_contributions_rejects_invalid_partial_sig() {
-        let dv_root = [0xCD_u8; 48];
+        // A valid BLS point: an unparseable root pubkey would map to 500
+        // (server-side state), not the 400 under test.
+        let secret = BlstImpl
+            .generate_insecure_secret(rand::rngs::OsRng)
+            .unwrap();
+        let dv_root = BlstImpl.secret_to_public_key(&secret).unwrap();
         let mock = mock_beacon_for_signing().await;
         let cancel = CancellationToken::new();
         let (deadliner, _deadliner_rx) = DeadlinerTask::start(
@@ -5036,9 +5174,8 @@ mod tests {
             TestValidatorCache::arc(active),
         );
 
-        // The dummy fixture's `selection_proof` is `[0x50; 96]` — a random
-        // non-zero garbage signature, so `signing::verify` returns
-        // `VerifyFailed`, which we map to 400.
+        // The dummy fixture's `selection_proof` is `[0x50; 96]` — non-zero
+        // garbage, so `signing::verify` rejects it and maps to 400.
         let err = component
             .submit_sync_committee_contributions(vec![dummy_signed_contribution_and_proof(1, 7, 0)])
             .await
