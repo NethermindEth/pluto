@@ -285,7 +285,7 @@ impl ValidatorStatus {
 
 impl EthBeaconNodeApiClient {
     async fn fetch_spec_data(&self) -> Result<serde_json::Value, EthBeaconNodeApiClientError> {
-        match self.get_spec(GetSpecRequest {}).await? {
+        match crate::instrument("spec", self.get_spec(GetSpecRequest {})).await? {
             GetSpecResponse::Ok(spec) => Ok(spec.data),
             _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
         }
@@ -294,7 +294,7 @@ impl EthBeaconNodeApiClient {
     async fn fetch_genesis_data(
         &self,
     ) -> Result<GetGenesisResponseResponseData, EthBeaconNodeApiClientError> {
-        match self.get_genesis(GetGenesisRequest {}).await? {
+        match crate::instrument("genesis", self.get_genesis(GetGenesisRequest {})).await? {
             GetGenesisResponse::Ok(genesis) => Ok(genesis.data),
             _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
         }
@@ -319,7 +319,7 @@ impl EthBeaconNodeApiClient {
 
     /// Fetches the raw chain spec as a JSON object.
     pub async fn fetch_spec(&self) -> Result<serde_json::Value, EthBeaconNodeApiClientError> {
-        match self.get_spec(GetSpecRequest {}).await? {
+        match crate::instrument("spec", self.get_spec(GetSpecRequest {})).await? {
             GetSpecResponse::Ok(resp) => Ok(resp.data),
             _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
         }
@@ -397,7 +397,12 @@ impl EthBeaconNodeApiClient {
     async fn fetch_fork_schedule_data(
         &self,
     ) -> Result<Vec<BeaconStateFork>, EthBeaconNodeApiClientError> {
-        match self.get_fork_schedule(GetForkScheduleRequest {}).await? {
+        match crate::instrument(
+            "fork_schedule",
+            self.get_fork_schedule(GetForkScheduleRequest {}),
+        )
+        .await?
+        {
             GetForkScheduleResponse::Ok(resp) => Ok(resp.data),
             _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
         }

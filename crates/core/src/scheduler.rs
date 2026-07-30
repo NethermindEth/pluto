@@ -812,9 +812,12 @@ async fn wait_chain_start(client: &pluto_eth2api::BeaconNodeClient) -> Result<()
 /// Blocks until the beacon node is synced.
 async fn wait_beacon_sync(client: &pluto_eth2api::BeaconNodeClient) -> Result<()> {
     let fetch = || {
-        client
-            .api()
-            .get_syncing_status(pluto_eth2api::GetSyncingStatusRequest {})
+        pluto_eth2api::instrument(
+            "node_syncing",
+            client
+                .api()
+                .get_syncing_status(pluto_eth2api::GetSyncingStatusRequest {}),
+        )
     };
     let fetch_backoff = crate::expbackoff::fast();
 
@@ -963,9 +966,7 @@ async fn fetch_proposer_duties(
         .epoch(slot.epoch().to_string())
         .build()
         .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?;
-    let resp = client
-        .api()
-        .get_proposer_duties(req)
+    let resp = pluto_eth2api::instrument("proposer_duties", client.api().get_proposer_duties(req))
         .await
         .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?;
 
@@ -1027,11 +1028,12 @@ async fn fetch_sync_committee_duties(
         .body(validators.iter().map(|v| v.v_idx.to_string()).collect())
         .build()
         .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?;
-    let resp = client
-        .api()
-        .get_sync_committee_duties(req)
-        .await
-        .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?;
+    let resp = pluto_eth2api::instrument(
+        "sync_committee_duties",
+        client.api().get_sync_committee_duties(req),
+    )
+    .await
+    .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?;
 
     let sync_duties: Vec<types::SyncCommitteeDutyDefinition> = match resp {
         pluto_eth2api::GetSyncCommitteeDutiesResponse::Ok(duties) => duties
