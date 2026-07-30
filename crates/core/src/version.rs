@@ -61,6 +61,44 @@ pub fn git_commit() -> (String, String) {
     (hash, timestamp)
 }
 
+/// Placeholder short git hash used when no valid build hash is available. Seven
+/// lowercase-hex chars so it satisfies Charon's peerinfo git-hash validation.
+const GIT_HASH_FALLBACK: &str = "0000000";
+
+/// Short git commit hash coerced into the `^[0-9a-f]{7}$` form Charon requires
+/// in the peerinfo protocol.
+///
+/// Charon validates every peer's git hash against that regex and drops the
+/// peer's *entire* peerinfo record (version, uptime, clock offset, ...) when it
+/// fails. Release builds stamp a real 7-char hex hash, but builds without git
+/// metadata (e.g. Docker builds lacking a `.git` dir) yield `""` or `"unknown"`
+/// — both of which Charon rejects, hiding pluto peers from the cluster
+/// dashboard. This normalises whatever the build produced (lowercasing, keeping
+/// hex digits, and truncating to seven) and falls back to [`GIT_HASH_FALLBACK`]
+/// so pluto always advertises a well-formed hash and interoperates with Charon
+/// normally.
+pub fn git_commit_hash_short() -> String {
+    let (raw, _) = git_commit();
+    coerce_git_hash(&raw)
+}
+
+/// Coerces a raw build git hash into Charon's `^[0-9a-f]{7}$` form: lowercase,
+/// keep hex digits, truncate to seven, else [`GIT_HASH_FALLBACK`].
+fn coerce_git_hash(raw: &str) -> String {
+    let normalized: String = raw
+        .to_ascii_lowercase()
+        .chars()
+        .filter(char::is_ascii_hexdigit)
+        .take(7)
+        .collect();
+
+    if normalized.len() == 7 {
+        normalized
+    } else {
+        GIT_HASH_FALLBACK.to_owned()
+    }
+}
+
 /// Logs pluto version information along with the provided message.
 pub fn log_info(msg: &str) {
     let (git_hash, git_timestamp) = git_commit();
@@ -255,6 +293,26 @@ mod tests {
             let ver_b = SemVer::parse(b).unwrap();
             assert_eq!(ver_a.partial_cmp(&ver_b).unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn coerce_git_hash_normalizes_and_falls_back() {
+        use super::{GIT_HASH_FALLBACK, coerce_git_hash};
+
+        // A valid short hash passes through unchanged.
+        assert_eq!(coerce_git_hash("749d2d7"), "749d2d7");
+        // Uppercase is lowered.
+        assert_eq!(coerce_git_hash("ABCDEF0"), "abcdef0");
+        // A full-length hash is truncated to seven.
+        assert_eq!(coerce_git_hash("749d2d7abcdef0123456"), "749d2d7");
+        // Non-hex sentinels and empty strings fall back.
+        assert_eq!(coerce_git_hash(""), GIT_HASH_FALLBACK);
+        assert_eq!(coerce_git_hash("unknown"), GIT_HASH_FALLBACK);
+        // Too few hex digits also falls back (must be exactly seven).
+        assert_eq!(coerce_git_hash("abc"), GIT_HASH_FALLBACK);
+        // The fallback itself is a valid 7-char lowercase-hex string.
+        assert_eq!(GIT_HASH_FALLBACK.len(), 7);
+        assert!(GIT_HASH_FALLBACK.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]

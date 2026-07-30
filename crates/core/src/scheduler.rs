@@ -959,27 +959,19 @@ async fn fetch_proposer_duties(
     client: &pluto_eth2api::BeaconNodeClient,
 ) -> Result<Vec<types::ProposerDutyDefinition>> {
     let validators = validators.as_ref();
-    let req = pluto_eth2api::GetProposerDutiesRequest::builder()
-        .epoch(slot.epoch().to_string())
-        .build()
-        .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?;
-    let resp = client
+    // The endpoint covers every slot in the epoch, so the client narrows the
+    // response to our validators before the loop below sees it.
+    let indices = validators
+        .iter()
+        .map(|v| v.v_idx)
+        .collect::<std::collections::HashSet<_>>();
+    let pro_duties: Vec<types::ProposerDutyDefinition> = client
         .api()
-        .get_proposer_duties(req)
-        .await
-        .map_err(pluto_eth2api::EthBeaconNodeApiClientError::RequestError)?;
-
-    let pro_duties: Vec<types::ProposerDutyDefinition> = match resp {
-        pluto_eth2api::GetProposerDutiesResponse::Ok(duties) => duties
-            .data
-            .into_iter()
-            .map(|d| {
-                d.try_into()
-                    .map_err(|_| pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse)
-            })
-            .collect::<std::result::Result<Vec<_>, _>>(),
-        _ => Err(pluto_eth2api::EthBeaconNodeApiClientError::UnexpectedResponse),
-    }?;
+        .fetch_proposer_duties(slot.epoch(), slot.slots_per_epoch, &indices)
+        .await?
+        .into_iter()
+        .map(types::ProposerDutyDefinition::from)
+        .collect();
 
     let mut result = vec![];
     for pro_duty in pro_duties.into_iter() {
@@ -993,6 +985,7 @@ async fn fetch_proposer_duties(
             .find(|v| v.v_idx == pro_duty.v_idx)
             .map(|v| v.pubkey)
         else {
+            // Unreachable unless the client's filter let something through.
             tracing::warn!(
                 vidx = pro_duty.v_idx,
                 slot = %slot.slot,

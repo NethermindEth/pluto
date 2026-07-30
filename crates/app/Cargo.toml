@@ -18,6 +18,7 @@ pluto-consensus.workspace = true
 pluto-eth1wrap.workspace = true
 pluto-featureset.workspace = true
 pluto-eth2api.workspace = true
+pluto-eth2util.workspace = true
 pluto-p2p.workspace = true
 pluto-parsigex.workspace = true
 pluto-peerinfo.workspace = true
@@ -50,7 +51,6 @@ pluto-ssz.workspace = true
 # `--simnet-validator-mock`), mirroring Charon which always compiles its mocks
 # into the binary.
 pluto-testutil.workspace = true
-pluto-eth2util.workspace = true
 
 [build-dependencies]
 pluto-build-proto.workspace = true
