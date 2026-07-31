@@ -1,0 +1,88 @@
+name: Compose smoke tests
+
+# Manual only: each scenario stands up a full docker-compose cluster (N nodes +
+# relay + prometheus) and observes it for 2-3 minutes, so the full matrix takes
+# ~30 minutes on top of a from-source pluto image build. Too heavy to attach to
+# push or pull_request.
+on:
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: "Scenario filter (go test -run regex). Empty runs the full matrix."
+        type: string
+        default: ""
+      go_timeout:
+        description: "go test -timeout. Must exceed the sum of the selected scenarios."
+        type: string
+        default: "35m"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  smoke:
+    name: Compose smoke tests
+    runs-on: ubuntu-24.04
+    # Covers the pluto image build (release build of pluto-cli inside docker,
+    # uncached on a fresh runner) plus the scenario matrix.
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: test-infra/compose/go.mod
+          cache-dependency-path: test-infra/compose/go.sum
+
+      - name: Run smoke tests
+        working-directory: test-infra/compose
+        # Inputs are passed as env vars, never interpolated into the script:
+        # `${{ inputs.* }}` inside `run:` is substituted before the shell sees
+        # it, so a crafted value would execute as shell.
+        env:
+          # The pluto image is built from this checkout during the define step.
+          PLUTO_REPO: ${{ github.workspace }}
+          SCENARIOS: ${{ inputs.scenarios }}
+          GO_TIMEOUT: ${{ inputs.go_timeout }}
+          LOG_DIR: ${{ runner.temp }}/smoke-logs
+        run: |
+          mkdir -p "$LOG_DIR"
+
+          args=(
+            ./smoke -v -integration
+            "-timeout=$GO_TIMEOUT"
+            "-log-dir=$LOG_DIR"
+            # Containers run as root, so the artefacts they leave in the compose
+            # dir are root-owned; without this the runner cannot clean them up.
+            -sudo-perms
+          )
+          if [ -n "$SCENARIOS" ]; then
+            args+=(-run "$SCENARIOS")
+          fi
+
+          go test "${args[@]}"
+
+      - name: Upload scenario logs
+        # Always: a passing run's logs are the baseline for triaging the next
+        # failure, and these clusters are expensive to reproduce.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs-${{ github.run_id }}
+          path: ${{ runner.temp }}/smoke-logs
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Collect container state on failure
+        if: failure()
+        run: |
+          docker ps -a || true
+          docker images || true
