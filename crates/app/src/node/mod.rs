@@ -382,21 +382,13 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         .into_fn();
 
     // Per-component deadline calculator, shared as an `Arc<dyn ...>` so a single
-    // beacon-derived instance backs every component's deadliner. The concrete
-    // instance is kept so the priority protocol (which needs an owned
-    // `DutyDeadlineCalculator`) can be given a clone of the same config.
+    // beacon-derived instance backs every component's deadliner (priority
+    // included — it takes a clone of this same `Arc`).
     let deadline_calc: Arc<dyn pluto_core::deadline::DeadlineCalculator> = Arc::new(
         pluto_core::deadline::DutyDeadlineCalculator::from_client(&eth2_cl)
             .await
             .map_err(AppError::Deadline)?,
     );
-    // Priority needs an owned `DutyDeadlineCalculator` (it is not `Clone`), so
-    // build a second instance from the same client. The calculator is stateless
-    // beacon-derived config, so this is identical to the one above.
-    let priority_deadline_calc =
-        pluto_core::deadline::DutyDeadlineCalculator::from_client(&eth2_cl)
-            .await
-            .map_err(AppError::Deadline)?;
 
     // Per-validator graffiti for proposed blocks.
     let graffiti_pubkeys: Vec<pluto_core::types::PubKey> =
@@ -473,25 +465,25 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     let pub_shares_by_key = build_pub_shares_by_key(&lock)?;
 
     // ---- P2P behaviours (relay + parsigex + qbft + peerinfo) ----
-    let (node, handles) = behaviour::wire_p2p(
-        key.clone(),
-        config.p2p.clone(),
+    let (node, handles) = behaviour::wire_p2p(behaviour::WireP2PParams {
+        key: key.clone(),
+        p2p_config: config.p2p.clone(),
         peers,
-        Arc::clone(&consensus),
+        consensus: Arc::clone(&consensus),
         // Priority's `min_required` is the cluster signing threshold (Charon's
         // `int(cluster.GetThreshold())`): a priority survives only if proposed
         // by at least this many peers.
-        i64::try_from(threshold).unwrap_or(i64::MAX),
-        priority_deadline_calc,
-        Arc::clone(&feature_set),
-        Arc::clone(&duty_gater),
-        eth2_cl.clone(),
+        min_required: i64::try_from(threshold).unwrap_or(i64::MAX),
+        deadline_calc: Arc::clone(&deadline_calc),
+        feature_set: Arc::clone(&feature_set),
+        duty_gater: Arc::clone(&duty_gater),
+        eth2_cl: eth2_cl.clone(),
         pub_shares_by_key,
-        lock.lock_hash.clone(),
-        config.builder_api,
-        config.nickname.clone(),
-        ct.clone(),
-    )
+        lock_hash: lock.lock_hash.clone(),
+        builder_enabled: config.builder_api,
+        nickname: config.nickname.clone(),
+        cancellation: ct.clone(),
+    })
     .await?;
     // Complete the broadcaster<->behaviour cycle.
     handle_slot

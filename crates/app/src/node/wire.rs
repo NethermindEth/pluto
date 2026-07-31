@@ -615,7 +615,7 @@ pub async fn wire_core_workflow(
     }
     // Per-epoch infosync trigger: on the last slot of each epoch, run the
     // cluster-wide priority exchange for the next epoch. A trigger failure is
-    // logged and swallowed — a missed info_sync must not fail the node.
+    // logged by `subscribe_slot` and does not fail the node.
     if let Some(infosync) = infosync {
         let ct = ct.clone();
         sched_builder.subscribe_slot(
@@ -624,10 +624,8 @@ pub async fn wire_core_workflow(
                 let ct = ct.clone();
                 let slot = slot.clone();
                 async move {
-                    if slot.last_in_epoch()
-                        && let Err(err) = infosync.trigger(ct.child_token(), slot.slot).await
-                    {
-                        tracing::warn!(%err, slot = ?slot.slot, "infosync trigger failed");
+                    if slot.last_in_epoch() {
+                        infosync.trigger(ct.child_token(), slot.slot).await?;
                     }
                     Ok::<(), AppError>(())
                 }

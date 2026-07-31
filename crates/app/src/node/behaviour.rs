@@ -77,29 +77,47 @@ pub struct CoreHandles {
     pub infosync: Arc<pluto_infosync::Component>,
 }
 
+/// Inputs to [`wire_p2p`], grouped to keep the aggregating call site readable.
+pub(crate) struct WireP2PParams {
+    pub key: k256::SecretKey,
+    pub p2p_config: pluto_p2p::config::P2PConfig,
+    pub peers: Vec<Peer>,
+    pub consensus: Arc<qbft::Consensus>,
+    pub min_required: i64,
+    pub deadline_calc: Arc<dyn pluto_core::deadline::DeadlineCalculator>,
+    pub feature_set: Arc<pluto_featureset::FeatureSet>,
+    pub duty_gater: DutyGaterFn,
+    pub eth2_cl: EthBeaconNodeApiClient,
+    pub pub_shares_by_key: HashMap<PubKey, HashMap<u64, PublicKey>>,
+    pub lock_hash: Vec<u8>,
+    pub builder_enabled: bool,
+    pub nickname: String,
+    pub cancellation: CancellationToken,
+}
+
 /// Composes the core behaviours and builds the libp2p [`Node`].
 // TODO(#402 part B): QUIC transport (featureset-gated off at v1.7.1) and
 // bandwidth metrics.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "wireP2P aggregates independent inputs; a config struct is deferred to part B when priority inputs are added"
-)]
 pub(crate) async fn wire_p2p(
-    key: k256::SecretKey,
-    p2p_config: pluto_p2p::config::P2PConfig,
-    peers: Vec<Peer>,
-    consensus: Arc<qbft::Consensus>,
-    min_required: i64,
-    deadline_calc: pluto_core::deadline::DutyDeadlineCalculator,
-    feature_set: Arc<pluto_featureset::FeatureSet>,
-    duty_gater: DutyGaterFn,
-    eth2_cl: EthBeaconNodeApiClient,
-    pub_shares_by_key: HashMap<PubKey, HashMap<u64, PublicKey>>,
-    lock_hash: Vec<u8>,
-    builder_enabled: bool,
-    nickname: String,
-    cancellation: CancellationToken,
+    params: WireP2PParams,
 ) -> Result<(Node<CoreBehaviour>, CoreHandles), AppError> {
+    let WireP2PParams {
+        key,
+        p2p_config,
+        peers,
+        consensus,
+        min_required,
+        deadline_calc,
+        feature_set,
+        duty_gater,
+        eth2_cl,
+        pub_shares_by_key,
+        lock_hash,
+        builder_enabled,
+        nickname,
+        cancellation,
+    } = params;
+
     let peer_ids = peers.iter().map(|peer| peer.id).collect::<Vec<_>>();
     let local_peer_id = peer::peer_id_from_key(key.public_key())?;
 
@@ -182,32 +200,11 @@ pub(crate) async fn wire_p2p(
     )?;
     let priority_comp = Arc::new(priority_comp);
 
-    // Local proposal types in precedence order (builder first when enabled,
-    // full always last as the fallback).
-    let mut proposal_types = Vec::new();
-    if builder_enabled {
-        proposal_types.push(pluto_core::types::ProposalType::Builder);
-    }
-    proposal_types.push(pluto_core::types::ProposalType::Full);
-
-    // Local supported protocols advertised on the infosync "protocol" topic, in
-    // precedence order: consensus, then parsigex, peerinfo, priority.
-    // TODO(#402 part B): reorder by the cluster-preferred / CLI consensus
-    // protocol once those inputs exist (pluto has neither yet), matching Go's
-    // `PrioritizeProtocolsByName` passes.
-    let local_protocols: Vec<String> = pluto_consensus::protocols::protocols()
-        .iter()
-        .map(|p| p.to_string())
-        .chain(pluto_parsigex::protocols().iter().map(|p| p.to_string()))
-        .chain(pluto_peerinfo::protocols().iter().map(|p| p.to_string()))
-        .chain(pluto_priority::protocols().iter().map(|p| p.to_string()))
-        .collect();
-
     let infosync = Arc::new(pluto_infosync::Component::new(
         Arc::clone(&priority_comp),
         pluto_core::version::SUPPORTED.to_vec(),
-        local_protocols,
-        proposal_types,
+        local_protocols(),
+        local_proposal_types(builder_enabled),
         &feature_set,
     ));
 
@@ -244,4 +241,72 @@ pub(crate) async fn wire_p2p(
     };
 
     Ok((node, handles))
+}
+
+/// Local proposal types advertised on the infosync "proposal" topic, in
+/// precedence order: builder first when enabled, full always last as the
+/// fallback.
+fn local_proposal_types(builder_enabled: bool) -> Vec<pluto_core::types::ProposalType> {
+    let mut proposal_types = Vec::new();
+    if builder_enabled {
+        proposal_types.push(pluto_core::types::ProposalType::Builder);
+    }
+    proposal_types.push(pluto_core::types::ProposalType::Full);
+    proposal_types
+}
+
+/// Local supported protocols advertised on the infosync "protocol" topic, in
+/// precedence order: consensus, then parsigex, peerinfo, priority.
+// TODO(#402 part B): reorder by the cluster-preferred / CLI consensus protocol
+// once those inputs exist (pluto has neither yet), matching Go's
+// `PrioritizeProtocolsByName` passes.
+fn local_protocols() -> Vec<String> {
+    pluto_consensus::protocols::protocols()
+        .iter()
+        .map(|p| p.to_string())
+        .chain(pluto_parsigex::protocols().iter().map(|p| p.to_string()))
+        .chain(pluto_peerinfo::protocols().iter().map(|p| p.to_string()))
+        .chain(pluto_priority::protocols().iter().map(|p| p.to_string()))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use pluto_core::types::ProposalType;
+
+    use super::{local_proposal_types, local_protocols};
+
+    #[test]
+    fn proposal_types_put_builder_first_only_when_enabled() {
+        assert_eq!(local_proposal_types(false), vec![ProposalType::Full]);
+        assert_eq!(
+            local_proposal_types(true),
+            vec![ProposalType::Builder, ProposalType::Full],
+        );
+    }
+
+    #[test]
+    fn protocols_are_advertised_in_component_precedence_order() {
+        // The advertised order (consensus, then parsigex, peerinfo, priority) is
+        // what makes pluto's info_sync result byte-identical to Charon's.
+        let got = local_protocols();
+
+        // Every component's protocols must be present, priority included — its
+        // absence is exactly the bug this wiring fixes (Charon otherwise logs
+        // "protocols not supported: [charon/priority/2.0.0]").
+        let index_of = |head: String| {
+            got.iter()
+                .position(|p| *p == head)
+                .expect("protocol advertised")
+        };
+        let consensus = index_of(pluto_consensus::protocols::protocols()[0].to_string());
+        let parsigex = index_of(pluto_parsigex::protocols()[0].to_string());
+        let peerinfo = index_of(pluto_peerinfo::protocols()[0].to_string());
+        let priority = index_of(pluto_priority::protocols()[0].to_string());
+
+        // Precedence: consensus < parsigex < peerinfo < priority.
+        assert!(consensus < parsigex);
+        assert!(parsigex < peerinfo);
+        assert!(peerinfo < priority);
+    }
 }
