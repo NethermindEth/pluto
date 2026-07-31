@@ -153,6 +153,9 @@ pub struct WireInputs {
     /// Optional per-slot subscriber; simnet wires the in-process validator
     /// mock here. `None` in production and tests.
     pub slot_tick: Option<SlotTickFn>,
+    /// Infosync component, triggered on each epoch's last slot to run the
+    /// cluster-wide priority exchange. `None` in tests.
+    pub infosync: Option<Arc<pluto_infosync::Component>>,
 }
 
 /// The wired components and long-lived handles produced by
@@ -281,6 +284,7 @@ pub async fn wire_core_workflow(
         fetch_only_comm_idx0,
         seen_pubkeys,
         slot_tick,
+        infosync,
     } = inputs;
 
     // ---- Derived validator maps ----
@@ -607,6 +611,25 @@ pub async fn wire_core_workflow(
     // Optional per-slot subscriber (simnet validator mock).
     if let Some(slot_tick) = slot_tick {
         sched_builder.subscribe_slot(move |slot: &Slot| slot_tick(slot), "simnet.vmock");
+    }
+    // Per-epoch infosync trigger, fired on each epoch's last slot. A failure is
+    // logged by `subscribe_slot` and does not fail the node.
+    if let Some(infosync) = infosync {
+        let ct = ct.clone();
+        sched_builder.subscribe_slot(
+            move |slot: &Slot| {
+                let infosync = Arc::clone(&infosync);
+                let ct = ct.clone();
+                let slot = slot.clone();
+                async move {
+                    if slot.last_in_epoch() {
+                        infosync.trigger(ct.child_token(), slot.slot).await?;
+                    }
+                    Ok::<(), AppError>(())
+                }
+            },
+            "infosync",
+        );
     }
     // Slot subscriber: per-epoch validator cache trim + refresh (Charon's
     // `wireCoreWorkflow`).
