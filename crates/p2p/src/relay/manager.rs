@@ -26,6 +26,8 @@ use super::{
     event::{RelayDialError, RelayDialType, RelayManagerEvent},
 };
 use crate::{
+    metrics::P2P_METRICS,
+    name::peer_name,
     p2p_context::P2PContext,
     peer::{MutablePeer, Peer},
 };
@@ -195,7 +197,8 @@ impl RelayManager {
         self.set_relay_state(relay.id, RelayConnectionState::Dialing);
     }
 
-    /// Updates the connection state for a relay, logging the transition and
+    /// Updates the connection state for a relay, logging the transition,
+    /// reporting reservation availability on `p2p_relay_connections`, and
     /// maintaining the `established_at` watchdog timestamp.
     fn set_relay_state(&mut self, relay_id: PeerId, next: RelayConnectionState) {
         let prev = self.connection_states.insert(relay_id, next);
@@ -207,6 +210,7 @@ impl RelayManager {
                 "Relay connection state transition"
             );
         }
+        Self::report_relay_connection(relay_id, matches!(next, RelayConnectionState::Reserved));
         match next {
             // Entering or refreshing the no-reservation-yet state: start (or
             // restart, on demote from Reserved) the stuck-Established timer.
@@ -221,6 +225,19 @@ impl RelayManager {
                 self.established_at.remove(&relay_id);
             }
         }
+    }
+
+    /// Reports a relay's reservation availability on `p2p_relay_connections`.
+    ///
+    /// Charon parity: the gauge tracks whether a relay *reservation* is
+    /// currently held, not how many transport connections exist — it is set to
+    /// `0` before each reserve attempt and to `1` once the circuit is reserved
+    /// (`charon/p2p/relay.go:40-44,60-101`). A transport count would not fit
+    /// the metric anyway: it carries only a `peer` label while a relay can hold
+    /// both a tcp and a quic connection, so per-transport writes would be
+    /// last-writer-wins.
+    fn report_relay_connection(relay_id: PeerId, reserved: bool) {
+        P2P_METRICS.relay_connections[&peer_name(&relay_id)].set(i64::from(reserved));
     }
 
     /// Polls every active dial state once, queuing a `ToSwarm::Dial` event for
@@ -714,6 +731,9 @@ impl RelayManager {
                 "Relay closed but addresses no longer tracked; cannot redial"
             );
             self.connection_states.remove(&relay_id);
+            // The only path that drops a relay's state without going through
+            // `set_relay_state`, so clear the reservation gauge here.
+            Self::report_relay_connection(relay_id, false);
             return;
         };
         tracing::debug!(

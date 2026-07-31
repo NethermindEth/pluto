@@ -89,6 +89,7 @@
 use std::{
     pin::Pin,
     task::{Context, Poll},
+    time::Duration,
 };
 
 use futures::{Stream, StreamExt, stream::FusedStream};
@@ -608,17 +609,7 @@ impl<B: NetworkBehaviour> Node<B> {
             SwarmEvent::Behaviour(PlutoBehaviourEvent::Ping(ping::Event {
                 peer, result, ..
             })) => {
-                let peer_label = peer_name(peer);
-                match result {
-                    Ok(duration) => {
-                        P2P_METRICS.ping_latency_secs[&peer_label].observe(duration.as_secs_f64());
-                        P2P_METRICS.ping_success[&peer_label].set(1);
-                    }
-                    Err(_) => {
-                        P2P_METRICS.ping_error_total[&peer_label].inc();
-                        P2P_METRICS.ping_success[&peer_label].set(0);
-                    }
-                }
+                record_ping_metrics(&self.p2p_context, peer, result);
             }
 
             // AutoNAT reachability status
@@ -697,6 +688,45 @@ impl<B: NetworkBehaviour> FusedStream for Node<B> {
     }
 }
 
+/// Records the outcome of a ping, gated to known cluster peers.
+///
+/// Charon pings an explicit allowlist of cluster operator peers
+/// (`manifest.ClusterPeerIDs` wired into `p2p.NewPingService`,
+/// `charon/app/app.go:390`, `charon/p2p/ping.go:35-65`), so relays never appear
+/// in `p2p_ping_*`. Pluto instead uses libp2p's ping behaviour, which pings
+/// every connected peer — relay servers included, since they are ordinary
+/// transport peers — so the allowlist is applied here, at emission time.
+/// Without it a relay shows up as a phantom peer on the dashboard's peer
+/// panels (`max(p2p_ping_success) by (peer)`) and inflates the
+/// `insufficient_connected_peers` health check, which counts non-zero
+/// `p2p_ping_success` labels.
+///
+/// A relay server node tracks no cluster peers at all
+/// ([`P2PContext::default`], `pluto_relay_server::p2p`), so it deliberately
+/// publishes no `p2p_ping_*` series: Charon's relay likewise never starts a
+/// ping service, and this keeps the label set of a public relay bounded.
+fn record_ping_metrics(
+    ctx: &P2PContext,
+    peer: &PeerId,
+    result: &std::result::Result<Duration, ping::Failure>,
+) {
+    if !ctx.is_known_peer(peer) {
+        return;
+    }
+
+    let peer_label = peer_name(peer);
+    match result {
+        Ok(duration) => {
+            P2P_METRICS.ping_latency_secs[&peer_label].observe(duration.as_secs_f64());
+            P2P_METRICS.ping_success[&peer_label].set(1);
+        }
+        Err(_) => {
+            P2P_METRICS.ping_error_total[&peer_label].inc();
+            P2P_METRICS.ping_success[&peer_label].set(0);
+        }
+    }
+}
+
 /// Stores identify-reported listen addresses for a peer, gated to known cluster
 /// peers only. Addresses from unknown peers are dropped (and not cloned), since
 /// the only consumers of `peer_addresses` look up known peers exclusively — so
@@ -712,6 +742,8 @@ fn store_identify_addrs(ctx: &P2PContext, peer_id: &PeerId, addrs: &[Multiaddr])
 
 #[cfg(test)]
 mod tests {
+    use vise::{Counter, Gauge};
+
     use super::*;
 
     fn random_peer_id() -> PeerId {
@@ -750,6 +782,57 @@ mod tests {
         store_identify_addrs(&ctx, &unknown, &addrs(3));
 
         assert!(ctx.peer_store_lock().peer_addresses(&unknown).is_none());
+    }
+
+    #[test]
+    fn ping_metrics_recorded_for_known_peer() {
+        let known = random_peer_id();
+        let ctx = P2PContext::new([known]);
+        let label = peer_name(&known);
+
+        record_ping_metrics(&ctx, &known, &Ok(Duration::from_millis(20)));
+
+        assert_eq!(
+            P2P_METRICS.ping_success.get(&label).map(Gauge::get),
+            Some(1)
+        );
+        assert!(
+            P2P_METRICS.ping_latency_secs.contains(&label),
+            "latency must be observed for a known cluster peer"
+        );
+
+        record_ping_metrics(&ctx, &known, &Err(ping::Failure::Timeout));
+
+        assert_eq!(
+            P2P_METRICS.ping_success.get(&label).map(Gauge::get),
+            Some(0)
+        );
+        assert_eq!(
+            P2P_METRICS.ping_error_total.get(&label).map(Counter::get),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn ping_metrics_skipped_for_relay_or_unknown_peer() {
+        let known = random_peer_id();
+        // A relay server is an ordinary transport peer that libp2p pings, but
+        // it is not a cluster peer, so it must not reach `p2p_ping_*`.
+        let relay = random_peer_id();
+        let ctx = P2PContext::new([known]);
+        let label = peer_name(&relay);
+
+        record_ping_metrics(&ctx, &relay, &Ok(Duration::from_millis(20)));
+        record_ping_metrics(&ctx, &relay, &Err(ping::Failure::Timeout));
+
+        // Read with `get` (not indexing) so the assertions don't create the
+        // very series they are checking for.
+        assert!(!P2P_METRICS.ping_success.contains(&label));
+        assert!(!P2P_METRICS.ping_latency_secs.contains(&label));
+        assert!(
+            !P2P_METRICS.ping_error_total.contains(&label),
+            "the error path must be gated too, not just success/latency"
+        );
     }
 
     #[test]
