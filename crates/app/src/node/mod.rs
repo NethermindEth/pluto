@@ -381,9 +381,8 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         .map_err(AppError::Gater)?
         .into_fn();
 
-    // Per-component deadline calculator, shared as an `Arc<dyn ...>` so a single
-    // beacon-derived instance backs every component's deadliner (priority
-    // included — it takes a clone of this same `Arc`).
+    // Shared `Arc<dyn ...>` so one beacon-derived instance backs every
+    // component's deadliner (priority included).
     let deadline_calc: Arc<dyn pluto_core::deadline::DeadlineCalculator> = Arc::new(
         pluto_core::deadline::DutyDeadlineCalculator::from_client(&eth2_cl)
             .await
@@ -470,9 +469,8 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
         p2p_config: config.p2p.clone(),
         peers,
         consensus: Arc::clone(&consensus),
-        // Priority's `min_required` is the cluster signing threshold (Charon's
-        // `int(cluster.GetThreshold())`): a priority survives only if proposed
-        // by at least this many peers.
+        // Priority quorum = cluster signing threshold (Charon's
+        // `int(cluster.GetThreshold())`).
         min_required: i64::try_from(threshold).unwrap_or(i64::MAX),
         deadline_calc: Arc::clone(&deadline_calc),
         feature_set: Arc::clone(&feature_set),
@@ -701,22 +699,16 @@ async fn run_lifecycle(
     // Self-spawning actor: consensus expired-duty pruner.
     let _consensus_task = consensus.start(ct.clone());
 
-    // Priority protocol state-cleanup loop, driven by its deadliner's
-    // expired-duty receiver. The receiver is move-only, so this runs once.
-    // The per-epoch infosync trigger that proposes into this component is
-    // registered as a scheduler slot subscriber in `wire_core_workflow`.
+    // Priority state-cleanup loop; the per-epoch infosync trigger is registered
+    // as a slot subscriber in `wire_core_workflow`.
     handles
         .priority
         .start(handles.priority_expired_rx, ct.clone());
 
     // TODO(#402 part B): consume the decided infosync result. Charon's
-    // `wirePrioritise` registers a second priority subscriber that reads the
-    // agreed "protocol" topic and calls
-    // `ConsensusController::set_current_consensus_for_protocol` to swap the
-    // duty-consensus implementation. Wiring that requires routing the duty path
-    // through a `ConsensusController` (today it is the raw QBFT consensus); it
-    // is deferred because the switch is a functional no-op while QBFTv2 is the
-    // only consensus protocol.
+    // `wirePrioritise` swaps the duty-consensus implementation via
+    // `ConsensusController::set_current_consensus_for_protocol`; deferred because
+    // it is a no-op while QBFTv2 is the only consensus protocol.
 
     let mut tasks: JoinSet<Result<(), AppError>> = JoinSet::new();
 

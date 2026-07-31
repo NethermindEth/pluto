@@ -67,13 +67,12 @@ pub struct CoreHandles {
     /// Shared P2P runtime context (known peers + live connections), used by the
     /// monitoring API's readiness checker to compute quorum connectivity.
     pub p2p_context: P2PContext,
-    /// Priority protocol component. Held so the caller can start it and hand it
-    /// to the per-epoch infosync trigger.
+    /// Priority protocol component; started by the caller.
     pub priority: Arc<pluto_priority::Component>,
-    /// Expired-duty receiver paired with `priority`, drained by
-    /// `pluto_priority::Component::start`. Taken (moved) once at start.
+    /// Expired-duty receiver for `priority`; move-only, consumed once by
+    /// `Component::start`.
     pub priority_expired_rx: tokio::sync::mpsc::Receiver<pluto_core::types::Duty>,
-    /// Infosync component driving the per-epoch cluster-wide priority exchange.
+    /// Infosync component driving the per-epoch priority exchange.
     pub infosync: Arc<pluto_infosync::Component>,
 }
 
@@ -154,9 +153,8 @@ pub(crate) async fn wire_p2p(
     );
     let (parsigex_comp, parsigex_handle) = parsigex::Behaviour::new(parsigex_config);
 
-    // Priority protocol rides the same QBFT consensus instance and shares the
-    // node-wide `p2p_context`; clone both before they move into the QBFT
-    // behaviour below.
+    // Priority rides the same QBFT consensus; clone before it moves into the
+    // QBFT behaviour below.
     let priority_consensus: Arc<dyn pluto_priority::Consensus> = consensus.clone();
     let priority_cancellation = cancellation.clone();
 
@@ -183,11 +181,10 @@ pub(crate) async fn wire_p2p(
     .with_peers(peer_ids.clone());
     let peerinfo_comp = peerinfo::Behaviour::new(local_peer_id, peerinfo_config);
 
-    // Priority protocol + infosync: cluster-wide, per-epoch negotiation of the
-    // supported versions/protocols/proposal types, run over the shared QBFT
-    // consensus. `new_component` fails fast if any peer is absent from the
-    // shared `p2p_context`. The 6s exchange timeout (half a slot) matches the
-    // reference implementation.
+    // Priority + infosync: per-epoch negotiation of supported
+    // versions/protocols/proposal types. The 6s exchange timeout (half a slot)
+    // matches Charon; `new_component` fails fast on a peer missing from the
+    // shared `p2p_context`.
     let (priority_comp, priority_behaviour, priority_expired_rx) = pluto_priority::new_component(
         peer_ids.clone(),
         min_required,
@@ -243,9 +240,8 @@ pub(crate) async fn wire_p2p(
     Ok((node, handles))
 }
 
-/// Local proposal types advertised on the infosync "proposal" topic, in
-/// precedence order: builder first when enabled, full always last as the
-/// fallback.
+/// Advertised proposal types in precedence order: builder first when enabled,
+/// full always last as the fallback.
 fn local_proposal_types(builder_enabled: bool) -> Vec<pluto_core::types::ProposalType> {
     let mut proposal_types = Vec::new();
     if builder_enabled {
@@ -255,11 +251,10 @@ fn local_proposal_types(builder_enabled: bool) -> Vec<pluto_core::types::Proposa
     proposal_types
 }
 
-/// Local supported protocols advertised on the infosync "protocol" topic, in
-/// precedence order: consensus, then parsigex, peerinfo, priority.
+/// Advertised protocols in precedence order: consensus, parsigex, peerinfo,
+/// priority.
 // TODO(#402 part B): reorder by the cluster-preferred / CLI consensus protocol
-// once those inputs exist (pluto has neither yet), matching Go's
-// `PrioritizeProtocolsByName` passes.
+// once those inputs exist, matching Go's `PrioritizeProtocolsByName`.
 fn local_protocols() -> Vec<String> {
     pluto_consensus::protocols::protocols()
         .iter()
@@ -287,13 +282,10 @@ mod tests {
 
     #[test]
     fn protocols_are_advertised_in_component_precedence_order() {
-        // The advertised order (consensus, then parsigex, peerinfo, priority) is
-        // what makes pluto's info_sync result byte-identical to Charon's.
+        // This ordering is what keeps pluto's info_sync result byte-identical
+        // to Charon's; priority's absence is the bug this wiring fixes.
         let got = local_protocols();
 
-        // Every component's protocols must be present, priority included — its
-        // absence is exactly the bug this wiring fixes (Charon otherwise logs
-        // "protocols not supported: [charon/priority/2.0.0]").
         let index_of = |head: String| {
             got.iter()
                 .position(|p| *p == head)
@@ -304,7 +296,6 @@ mod tests {
         let peerinfo = index_of(pluto_peerinfo::protocols()[0].to_string());
         let priority = index_of(pluto_priority::protocols()[0].to_string());
 
-        // Precedence: consensus < parsigex < peerinfo < priority.
         assert!(consensus < parsigex);
         assert!(parsigex < peerinfo);
         assert!(peerinfo < priority);

@@ -153,9 +153,8 @@ pub struct WireInputs {
     /// Optional per-slot subscriber; simnet wires the in-process validator
     /// mock here. `None` in production and tests.
     pub slot_tick: Option<SlotTickFn>,
-    /// Optional infosync component. When `Some`, it is triggered on the last
-    /// slot of each epoch to run the cluster-wide priority exchange (supported
-    /// versions/protocols/proposal types) for the next epoch. `None` in tests.
+    /// Infosync component, triggered on each epoch's last slot to run the
+    /// cluster-wide priority exchange. `None` in tests.
     pub infosync: Option<Arc<pluto_infosync::Component>>,
 }
 
@@ -613,8 +612,7 @@ pub async fn wire_core_workflow(
     if let Some(slot_tick) = slot_tick {
         sched_builder.subscribe_slot(move |slot: &Slot| slot_tick(slot), "simnet.vmock");
     }
-    // Per-epoch infosync trigger: on the last slot of each epoch, run the
-    // cluster-wide priority exchange for the next epoch. A trigger failure is
+    // Per-epoch infosync trigger, fired on each epoch's last slot. A failure is
     // logged by `subscribe_slot` and does not fail the node.
     if let Some(infosync) = infosync {
         let ct = ct.clone();
