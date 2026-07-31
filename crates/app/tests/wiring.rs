@@ -35,7 +35,7 @@ use pluto_app::node::{
         ParSigExReceived, ParSigExSeam, SlotTickFn, ValidatorInfo, WireInputs, wire_core_workflow,
     },
 };
-use pluto_consensus::qbft;
+use pluto_consensus::{qbft, wrapper::ConsensusWrapper};
 use pluto_core::{
     aggsigdb::types::AggSigDB,
     sigagg::VerifyFn,
@@ -210,7 +210,7 @@ fn wire_inputs(
     eth2_cl: EthBeaconNodeApiClient,
     beacon_client: BeaconNodeClient,
     pubkey: PubKey,
-    consensus: Arc<qbft::Consensus>,
+    consensus: Arc<ConsensusWrapper>,
     threshold: u64,
 ) -> WireInputs {
     // Permissive verifier: the partial sigs carry arbitrary payloads, so real
@@ -234,7 +234,7 @@ fn wire_inputs_with(
     eth2_cl: EthBeaconNodeApiClient,
     beacon_client: BeaconNodeClient,
     pubkey: PubKey,
-    consensus: Arc<qbft::Consensus>,
+    consensus: Arc<ConsensusWrapper>,
     threshold: u64,
     sigagg_verifier: VerifyFn,
 ) -> WireInputs {
@@ -281,7 +281,7 @@ fn pubkey_to_eth2(pk: PubKey) -> phase0::BLSPubKey {
 /// Builds a minimal single-node QBFT consensus component (not driven; only used
 /// to satisfy the wiring — its subscribe/propose are wired but not exercised in
 /// this test).
-fn build_consensus(ct: &CancellationToken) -> Arc<qbft::Consensus> {
+fn build_consensus(ct: &CancellationToken) -> Arc<ConsensusWrapper> {
     let key = k256::SecretKey::random(&mut rand::thread_rng());
     let (deadliner, expired_rx) = pluto_core::deadline::DeadlinerTask::start(
         ct.clone(),
@@ -294,7 +294,7 @@ fn build_consensus(ct: &CancellationToken) -> Arc<qbft::Consensus> {
         public_key: key.public_key(),
     };
     let feature_set = Arc::new(pluto_featureset::FeatureSet::new());
-    Arc::new(
+    let consensus = Arc::new(
         qbft::Consensus::new(qbft::Config {
             peers: vec![peer],
             local_peer_idx: 0,
@@ -309,7 +309,8 @@ fn build_consensus(ct: &CancellationToken) -> Arc<qbft::Consensus> {
             timer_func: pluto_consensus::timer::get_round_timer_func(feature_set),
         })
         .expect("consensus"),
-    )
+    );
+    Arc::new(ConsensusWrapper::new(consensus))
 }
 
 /// (a) Fetcher → AggSigDB back-edge (proposer/RANDAO) and

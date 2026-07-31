@@ -9,8 +9,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    debugger::Debugger,
-    qbft,
+    qbft::{self, SnifferSink},
     timer::RoundTimerFunc,
     wrapper::{Consensus, ConsensusWrapper},
 };
@@ -46,8 +45,8 @@ pub struct Config {
     pub duty_gater: DutyGaterFn,
     /// External message broadcaster.
     pub broadcaster: qbft::Broadcaster,
-    /// Consensus debugger.
-    pub debugger: Debugger,
+    /// Completed sniffer sink.
+    pub sniffer: SnifferSink,
     /// Enables attestation value comparison.
     pub compare_attestations: bool,
     /// Round timer factory.
@@ -58,8 +57,12 @@ pub struct Config {
 
 /// Controls the active consensus protocol implementation.
 pub struct ConsensusController {
+    /// Same instance as `default_consensus`, kept concrete because the QBFT p2p
+    /// behaviour and the priority protocol bind to the concrete type. Go has no
+    /// equivalent: `qbft.NewConsensus` registers its own stream handler.
+    default_qbft: Arc<qbft::Consensus>,
     default_consensus: Arc<dyn Consensus>,
-    wrapped_consensus: ConsensusWrapper,
+    wrapped_consensus: Arc<ConsensusWrapper>,
 }
 
 impl ConsensusController {
@@ -73,15 +76,16 @@ impl ConsensusController {
             expired_rx: config.expired_rx,
             duty_gater: config.duty_gater,
             broadcaster: config.broadcaster,
-            sniffer: config.debugger.sniffer(),
+            sniffer: config.sniffer,
             compare_attestations: config.compare_attestations,
             timer_func: config.timer_func,
             feature_set: config.feature_set,
         })?);
-        let default_consensus: Arc<dyn Consensus> = qbft;
+        let default_consensus: Arc<dyn Consensus> = Arc::clone(&qbft) as Arc<dyn Consensus>;
 
         Ok(Self {
-            wrapped_consensus: ConsensusWrapper::new(default_consensus.clone()),
+            default_qbft: qbft,
+            wrapped_consensus: Arc::new(ConsensusWrapper::new(default_consensus.clone())),
             default_consensus,
         })
     }
@@ -96,9 +100,15 @@ impl ConsensusController {
         Arc::clone(&self.default_consensus)
     }
 
+    /// Returns the concrete default QBFT implementation, for wiring the QBFT
+    /// p2p behaviour and the priority protocol.
+    pub fn default_qbft(&self) -> Arc<qbft::Consensus> {
+        Arc::clone(&self.default_qbft)
+    }
+
     /// Returns the current consensus wrapper.
-    pub fn current_consensus(&self) -> &ConsensusWrapper {
-        &self.wrapped_consensus
+    pub fn current_consensus(&self) -> Arc<ConsensusWrapper> {
+        Arc::clone(&self.wrapped_consensus)
     }
 
     /// Sets the current consensus implementation for `protocol`.
@@ -131,7 +141,7 @@ mod tests {
         types::DutyType,
     };
 
-    use crate::{debugger::Debugger, protocols::QBFT_V2_PROTOCOL_ID, timer::get_round_timer_func};
+    use crate::{protocols::QBFT_V2_PROTOCOL_ID, timer::get_round_timer_func};
 
     use super::*;
 
@@ -148,6 +158,12 @@ mod tests {
             controller.current_consensus().protocol_id(),
             QBFT_V2_PROTOCOL_ID
         );
+        // Must be one instance: otherwise p2p would feed a different impl than
+        // the one driving duties.
+        assert!(Arc::ptr_eq(
+            &(controller.default_qbft() as Arc<dyn Consensus>),
+            &default_consensus
+        ));
 
         controller
             .set_current_consensus_for_protocol(QBFT_V2_PROTOCOL_ID)
@@ -174,7 +190,7 @@ mod tests {
             expired_rx,
             duty_gater: Arc::new(|duty| duty.duty_type == DutyType::Attester),
             broadcaster: Arc::new(|_, _| Box::pin(async { Ok(()) })),
-            debugger: Debugger::new(),
+            sniffer: Arc::new(|_| {}),
             compare_attestations: false,
             timer_func: get_round_timer_func(fs.clone()),
             feature_set: fs,
