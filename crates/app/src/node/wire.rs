@@ -46,7 +46,7 @@ use pluto_eth2api::{
     spec::{bellatrix::ExecutionAddress, phase0::BLSPubKey},
     valcache::{ValidatorCache, ValidatorCacheError},
 };
-use pluto_featureset::FeatureSet;
+use pluto_featureset::{Feature, FeatureSet, Status};
 use tokio_util::sync::CancellationToken;
 
 use crate::node::AppError;
@@ -178,6 +178,28 @@ impl DeadlineCalculator for OffsetCalculator {
     }
 }
 
+/// Feature set the tracker subsystem runs under.
+///
+/// The networked inclusion checker only resolves proposer inclusion; the
+/// attestation-inclusion path (attester/aggregator) is a follow-up, and its
+/// core panics if fed those submissions. So mask the (alpha, off-by-default)
+/// `AttestationInclusion` feature off until that path lands, keeping the
+/// analyser and the checker consistent.
+fn tracker_feature_set(feature_set: &Arc<FeatureSet>) -> Arc<FeatureSet> {
+    if !feature_set.enabled(Feature::AttestationInclusion) {
+        return Arc::clone(feature_set);
+    }
+
+    tracing::warn!(
+        "Feature attestation_inclusion is enabled but not yet supported by the \
+         inclusion checker; disabling it for duty tracking"
+    );
+    let mut fs = (**feature_set).clone();
+    fs.state
+        .insert(Feature::AttestationInclusion, Status::Disable);
+    Arc::new(fs)
+}
+
 /// Returns the slot to start tracking from, which suppresses noisy failed
 /// duties at startup caused by a validator client that is still coming up.
 ///
@@ -300,6 +322,9 @@ pub struct WiredComponents {
     pub aggsigdb: MemoryDBHandle,
     /// The fetcher (driven via scheduler subscriptions).
     pub fetcher: Arc<Fetcher>,
+    /// Networked inclusion checker; its `run` loop is spawned and supervised by
+    /// the caller.
+    pub inclusion_checker: Arc<InclusionChecker>,
     /// The validator API axum router, ready to be served.
     pub validator_api_router: axum::Router,
 }
@@ -483,6 +508,8 @@ pub async fn wire_core_workflow(
         )),
     );
 
+    let tracker_feature_set = tracker_feature_set(&feature_set);
+
     let track_from = calculate_tracker_delay(&eth2_cl, slot_duration).await?;
     let tracker = TrackerService::start(
         ct.clone(),
@@ -492,13 +519,13 @@ pub async fn wire_core_workflow(
         DeleterRx(tracker_deleter_rx),
         peers,
         track_from,
-        Arc::clone(&feature_set),
+        Arc::clone(&tracker_feature_set),
     );
 
-    // The inclusion checker resolves the terminal `ChainInclusion` step for
-    // tracked duties; without it every duty with an inclusion step would stall
-    // unresolved and be reported as failed at that step.
-    let inclusion = {
+    // Resolves the terminal `ChainInclusion` step; without it every duty with an
+    // inclusion step would stall unresolved and be reported as failed. Spawned
+    // and supervised by `run_lifecycle`.
+    let inclusion_checker = {
         let tracker = Arc::clone(&tracker);
         Arc::new(
             InclusionChecker::new(
@@ -506,20 +533,18 @@ pub async fn wire_core_workflow(
                 Box::new(move |duty: &Duty, pubkey: PubKey, err| {
                     let tracker = Arc::clone(&tracker);
                     let duty = duty.clone();
-                    // `inclusion_checked` is async but the core's callback is
-                    // sync, so hand the event to the runtime rather than block
-                    // the checker's tick.
+                    // The core's callback is sync but `inclusion_checked` is
+                    // async, so hand the event to the runtime.
                     tokio::spawn(async move {
                         tracker.inclusion_checked(duty, pubkey, err).await;
                     });
                 }),
-                Arc::clone(&feature_set),
+                Arc::clone(&tracker_feature_set),
             )
             .await
             .map_err(AppError::BeaconApi)?,
         )
     };
-    tokio::spawn(Arc::clone(&inclusion).run(ct.clone()));
 
     // ---- (4) AggSigDB (built before fetcher: agg_sig_db back-edge target) ----
     let aggsigdb = MemoryDBHandle::new(aggsigdb_deadliner, aggsigdb_deadliner_rx, ct.clone());
@@ -729,7 +754,7 @@ pub async fn wire_core_workflow(
     {
         let broadcaster = Arc::clone(&broadcaster);
         let tracker = Arc::clone(&tracker);
-        let inclusion = Arc::clone(&inclusion);
+        let inclusion = Arc::clone(&inclusion_checker);
         aggregator.subscribe(Arc::new(move |duty: &Duty, set: &SignedDataSet| {
             let broadcaster = Arc::clone(&broadcaster);
             let tracker = Arc::clone(&tracker);
@@ -1065,6 +1090,7 @@ pub async fn wire_core_workflow(
         parsigdb_deadliner_rx,
         aggsigdb,
         fetcher,
+        inclusion_checker,
         validator_api_router,
     })
 }
@@ -1500,5 +1526,35 @@ mod tests {
             "refetched the epoch's first slot (0), where the validator is active"
         );
         assert!(active.contains_key(&1));
+    }
+
+    fn feature_set(enabled: Vec<Feature>) -> Arc<FeatureSet> {
+        Arc::new(
+            FeatureSet::from_config(pluto_featureset::Config {
+                enabled,
+                ..Default::default()
+            })
+            .expect("valid featureset"),
+        )
+    }
+
+    /// `AttestationInclusion` is masked off for the tracker so the
+    /// proposer-only inclusion checker is never fed attester/aggregator
+    /// submissions.
+    #[test]
+    fn tracker_feature_set_masks_attestation_inclusion() {
+        let fs = feature_set(vec![Feature::AttestationInclusion]);
+        assert!(fs.enabled(Feature::AttestationInclusion));
+
+        let tracker_fs = tracker_feature_set(&fs);
+        assert!(!tracker_fs.enabled(Feature::AttestationInclusion));
+    }
+
+    /// Without the feature the set is passed through untouched (same `Arc`).
+    #[test]
+    fn tracker_feature_set_is_passthrough_when_disabled() {
+        let fs = feature_set(vec![]);
+        let tracker_fs = tracker_feature_set(&fs);
+        assert!(Arc::ptr_eq(&fs, &tracker_fs));
     }
 }

@@ -322,14 +322,8 @@ impl InclusionCore {
             .iter()
             .filter_map(|(key, sub)| match sub.duty.duty_type {
                 DutyType::Proposer => (sub.duty.slot.inner() == slot).then(|| key.clone()),
-                // Parity: charon core/tracker/inclusion.go:289-291 @ v1.7.1
-                // panics with "bug: unexpected type" here — CheckBlock (the
-                // non-attestation path) is only ever fed proposer submissions.
-                // `unreachable!` reproduces that panic with the same message.
-                // Accepted divergence in panic *site* only: Go panics while
-                // iterating the offending submission; Rust panics inside the
-                // `filter_map` closure on the same element — observably
-                // identical.
+                // CheckBlock is only ever fed proposer submissions. Parity:
+                // charon core/tracker/inclusion.go panics identically here.
                 _ => unreachable!("bug: unexpected type"),
             })
             .collect();
@@ -658,9 +652,8 @@ impl InclusionChecker {
     /// Records a duty submitted to the beacon node, stamping each entry with
     /// the delay between slot start and broadcast.
     ///
-    /// Synchronous so it can be called from the broadcaster stitch point
-    /// without awaiting; the core is I/O-free so the lock is never held
-    /// across an await.
+    /// Synchronous (the core is I/O-free) so the broadcaster stitch point can
+    /// call it without awaiting.
     pub fn submitted(&self, duty: &Duty, set: &SignedDataSet) -> Result<(), InclusionError> {
         let delay = self.delay_since_slot_start(duty.slot.inner());
 
@@ -772,13 +765,12 @@ impl InclusionChecker {
 }
 
 /// Errors raised by the networked [`InclusionChecker`] while talking to the
-/// beacon node. Logged and skipped rather than propagated: a failed check just
-/// means this slot is retried on the next tick.
+/// beacon node. Logged and skipped rather than propagated: the slot is just
+/// retried on the next tick.
 #[derive(Debug, thiserror::Error)]
 pub enum InclusionCheckerError {
-    /// The beacon-node request failed or could not be built. Boxed rather than
-    /// typed: the generated client surfaces `anyhow::Error`, which `pluto-core`
-    /// does not depend on.
+    /// The beacon-node request failed or could not be built. Boxed because the
+    /// generated client surfaces `anyhow::Error`, which `pluto-core` avoids.
     #[error("beacon node request failed: {0}")]
     Request(#[source] Box<dyn std::error::Error + Send + Sync>),
     /// The beacon node returned a status the checker does not handle.

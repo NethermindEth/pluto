@@ -695,6 +695,7 @@ async fn run_lifecycle(
         parsigdb_deadliner_rx,
         aggsigdb: _aggsigdb,
         fetcher: _fetcher,
+        inclusion_checker,
         validator_api_router,
     } = wired;
 
@@ -724,6 +725,16 @@ async fn run_lifecycle(
         let parsigdb = Arc::clone(&parsigdb);
         tasks.spawn(async move {
             parsigdb.trim(parsigdb_deadliner_rx).await;
+            Ok(())
+        });
+    }
+
+    // Networked inclusion checker: polls the beacon node once per due slot and
+    // resolves each tracked duty's on-chain inclusion step.
+    {
+        let ct = ct.clone();
+        tasks.spawn(async move {
+            inclusion_checker.run(ct).await;
             Ok(())
         });
     }
