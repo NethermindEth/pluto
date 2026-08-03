@@ -266,6 +266,16 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
     let peers = lock.peers()?;
     pluto_p2p::peer::verify_p2p_key(&peers, &key)?;
 
+    // Tracker view of the cluster, captured before `peers` moves into the P2P
+    // wiring. Share indices are 1-indexed, matching partial-signature share ids.
+    let tracker_peers: Vec<pluto_core::tracker::PeerInfo> = peers
+        .iter()
+        .map(|peer| pluto_core::tracker::PeerInfo {
+            name: peer.name.clone(),
+            share_idx: usize::try_from(peer.index.saturating_add(1)).unwrap_or(usize::MAX),
+        })
+        .collect();
+
     // Cluster size + quorum for the health-checker metadata, captured before
     // `peers` is moved into the P2P wiring.
     let num_peers = i64::try_from(peers.len()).unwrap_or(i64::MAX);
@@ -556,6 +566,8 @@ async fn run(config: AppConfig, ct: CancellationToken) -> Result<(), AppError> {
             fetch_only_comm_idx0,
             seen_pubkeys: Some(seen_pubkeys_observer),
             slot_tick: vmock.clone().map(|v| simnet_slot_tick(v, ct.clone())),
+            peers: tracker_peers,
+            feature_set: Arc::clone(&feature_set),
             infosync: Some(Arc::clone(&handles.infosync)),
         },
         ct.clone(),
@@ -693,6 +705,7 @@ async fn run_lifecycle(
         parsigdb_deadliner_rx,
         aggsigdb: _aggsigdb,
         fetcher: _fetcher,
+        inclusion_checker,
         validator_api_router,
     } = wired;
 
@@ -733,6 +746,16 @@ async fn run_lifecycle(
         let parsigdb = Arc::clone(&parsigdb);
         tasks.spawn(async move {
             parsigdb.trim(parsigdb_deadliner_rx).await;
+            Ok(())
+        });
+    }
+
+    // Networked inclusion checker: polls the beacon node once per due slot and
+    // resolves each tracked duty's on-chain inclusion step.
+    {
+        let ct = ct.clone();
+        tasks.spawn(async move {
+            inclusion_checker.run(ct).await;
             Ok(())
         });
     }

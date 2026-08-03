@@ -269,6 +269,13 @@ fn wire_inputs_with(
         fetch_only_comm_idx0: false,
         seen_pubkeys: None,
         slot_tick: None,
+        // Single-node wiring test: one peer at share index 1, default features
+        // (so only proposers carry an on-chain inclusion step).
+        peers: vec![pluto_core::tracker::PeerInfo {
+            name: "test".to_string(),
+            share_idx: 1,
+        }],
+        feature_set: Arc::new(pluto_featureset::FeatureSet::default()),
         infosync: None,
     }
 }
