@@ -121,10 +121,31 @@ impl EnrEntry {
     fn apply(self, kvs: &mut HashMap<String, Vec<u8>>) {
         let _ = match self {
             Self::Ipv4(ip) => kvs.insert(KEY_IP.to_string(), ip.octets().to_vec()),
-            Self::Tcp(tcp) => kvs.insert(KEY_TCP.to_string(), tcp.to_be_bytes().to_vec()),
-            Self::Udp(udp) => kvs.insert(KEY_UDP.to_string(), udp.to_be_bytes().to_vec()),
+            // Ports are stored as minimal big-endian integers (leading zeros
+            // stripped), so a port < 256 occupies a single byte. This matches
+            // the sequence-number field above and keeps records byte-identical
+            // to peers that encode ports the same way.
+            Self::Tcp(tcp) => kvs.insert(KEY_TCP.to_string(), utils::to_big_endian(tcp.into())),
+            Self::Udp(udp) => kvs.insert(KEY_UDP.to_string(), utils::to_big_endian(udp.into())),
         };
     }
+}
+
+/// Decodes a minimal big-endian port integer into a `u16`.
+///
+/// Ports are stored with leading zeros stripped, so the value may be shorter
+/// than 2 bytes (a port < 256 is 1 byte, and port 0 is empty). The bytes are
+/// left-padded before decoding. Returns `None` if the value is wider than a
+/// `u16`.
+fn port_from_be_bytes(bytes: &[u8]) -> Option<u16> {
+    if bytes.len() > 2 {
+        return None;
+    }
+
+    let mut buf = [0u8; 2];
+    let start = 2usize.saturating_sub(bytes.len());
+    buf[start..].copy_from_slice(bytes);
+    Some(u16::from_be_bytes(buf))
 }
 
 impl Record {
@@ -171,8 +192,7 @@ impl Record {
     /// Returns None if the TCP port is not set.
     pub fn tcp(&self) -> Option<u16> {
         let value = self.kvs.get(KEY_TCP)?;
-        let bytes = value.as_slice().try_into().ok()?;
-        Some(u16::from_be_bytes(bytes))
+        port_from_be_bytes(value)
     }
 
     /// Returns the UDP port of the record.
@@ -180,8 +200,7 @@ impl Record {
     /// Returns None if the UDP port is not set.
     pub fn udp(&self) -> Option<u16> {
         let value = self.kvs.get(KEY_UDP)?;
-        let bytes = value.as_slice().try_into().ok()?;
-        Some(u16::from_be_bytes(bytes))
+        port_from_be_bytes(value)
     }
 }
 
@@ -420,6 +439,35 @@ mod tests {
 
         let udp = r2.udp().expect("UDP port should be set");
         assert_eq!(udp, expect_udp);
+    }
+
+    #[test]
+    fn ports_below_256_are_minimally_encoded_and_roundtrip() {
+        let secret_key: SecretKey<Secp256k1> = generate_insecure_k1_key(0);
+
+        // Ports < 256 have a zero high byte.
+        let r1 = Record::new(&secret_key, vec![EnrEntry::Tcp(80), EnrEntry::Udp(9)])
+            .expect("Failed to create record");
+
+        // Stored minimally (single byte), matching a charon-produced record;
+        // the old `to_be_bytes` encoding would keep a leading `0x00`.
+        assert_eq!(r1.kvs.get(KEY_TCP).unwrap().as_slice(), &[0x50]);
+        assert_eq!(r1.kvs.get(KEY_UDP).unwrap().as_slice(), &[0x09]);
+
+        // Such a record must round-trip through the serialized form rather than
+        // dropping the port (the old fixed 2-byte decode returned `None` here).
+        let r2 = Record::try_from(r1.to_string().as_str()).expect("Failed to parse record");
+        assert_eq!(r2.tcp(), Some(80));
+        assert_eq!(r2.udp(), Some(9));
+    }
+
+    #[test]
+    fn port_from_be_bytes_is_length_tolerant() {
+        assert_eq!(port_from_be_bytes(&[]), Some(0));
+        assert_eq!(port_from_be_bytes(&[0x50]), Some(80));
+        assert_eq!(port_from_be_bytes(&[0x0e, 0x1a]), Some(3610));
+        // Wider than a u16 is rejected rather than silently truncated.
+        assert_eq!(port_from_be_bytes(&[0x01, 0x00, 0x00]), None);
     }
 
     #[test]

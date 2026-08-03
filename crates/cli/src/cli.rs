@@ -9,6 +9,7 @@ use crate::commands::{
     dkg::DkgArgs,
     enr::EnrArgs,
     relay::RelayArgs,
+    run::{RunArgs, RunUnsafeArgs},
     test::{
         all::TestAllArgs, beacon::TestBeaconArgs, infra::TestInfraArgs, mev::TestMevArgs,
         peers::TestPeersArgs, validator::TestValidatorArgs,
@@ -65,6 +66,36 @@ pub enum Commands {
         long_about = "Alpha subcommands represent features that are currently under development. They're not yet released for general use, but offer a glimpse into future functionalities planned for the distributed cluster system."
     )]
     Alpha(AlphaArgs),
+
+    #[command(
+        about = "Run the pluto middleware client",
+        long_about = "Starts the long-running Pluto middleware process to perform distributed validator duties."
+    )]
+    Run(Box<RunArgs>),
+
+    #[command(
+        hide = true,
+        about = "Unsafe subcommands provides regular pluto commands for testing purposes",
+        long_about = "Unsafe subcommands is a group of subcommands that includes both normal and test flags. It is intended for internal testing of the Pluto client and should be used with caution."
+    )]
+    Unsafe(UnsafeArgs),
+}
+
+/// Arguments for the hidden unsafe command.
+#[derive(clap::Args)]
+pub struct UnsafeArgs {
+    #[command(subcommand)]
+    pub command: UnsafeCommands,
+}
+
+/// Unsafe subcommands (hidden; for internal testing).
+#[derive(Subcommand)]
+pub enum UnsafeCommands {
+    #[command(
+        about = "Run the pluto middleware client",
+        long_about = "Starts the long-running Pluto middleware process to perform distributed validator duties."
+    )]
+    Run(Box<RunUnsafeArgs>),
 }
 
 /// Arguments for the alpha command
@@ -154,4 +185,47 @@ pub enum CreateCommands {
         long_about = "Creates a local charon cluster configuration including validator keys, charon p2p keys, cluster-lock.json and deposit-data.json file(s). See flags for supported features."
     )]
     Cluster(Box<CreateClusterArgs>),
+}
+
+/// Builds the fully-configured root command.
+///
+/// Use this instead of [`Cli::command`] anywhere the command is rendered or
+/// parsed, so every entrypoint gets the same hardening.
+pub fn build_command() -> clap::Command {
+    let cmd =
+        crate::commands::test::update_test_cases_help(<Cli as clap::CommandFactory>::command());
+
+    hide_env_values(ignore_empty_env(cmd))
+}
+
+/// Treats a `CHARON_*` variable that is set but empty as unset.
+///
+/// Charon resolves env vars through Viper, which reports an empty value as
+/// absent (it does not enable `AllowEmptyEnv`). clap instead binds the literal
+/// `""`, so a common empty placeholder would fail numeric parsing, turn a
+/// comma-delimited list into one blank element, or flip an `Option` flag from
+/// `None` to `Some("")`.
+fn ignore_empty_env(cmd: clap::Command) -> clap::Command {
+    cmd.mut_args(|arg| {
+        let is_empty = arg
+            .get_env()
+            .is_some_and(|name| std::env::var_os(name).is_some_and(|value| value.is_empty()));
+
+        if is_empty {
+            arg.env(clap::builder::Resettable::Reset)
+        } else {
+            arg
+        }
+    })
+    .mut_subcommands(ignore_empty_env)
+}
+
+/// Suppresses environment variable *values* in `--help`.
+///
+/// clap renders `[env: VAR=value]` by default, printing the caller's actual
+/// value — including secrets such as `CHARON_KEYMANAGER_AUTH_TOKEN(S)` — into
+/// terminals, CI logs and support captures. The variable names stay documented.
+fn hide_env_values(cmd: clap::Command) -> clap::Command {
+    cmd.mut_args(|arg| arg.hide_env_values(true))
+        .mut_subcommands(hide_env_values)
 }

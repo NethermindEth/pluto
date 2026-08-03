@@ -100,6 +100,18 @@ struct VersionedRawAggregateAndProofJson<T> {
     aggregate_and_proof: T,
 }
 
+/// Raw JSON wrapper for the unsigned Deneb+ block contents
+/// (`{block, kzg_proofs, blobs}`). `kzg_proofs`/`blobs` are optional and
+/// tolerate `null` (matching charon's optional fields).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct UnsignedBlockContentsJson<B> {
+    block: B,
+    #[serde(default)]
+    kzg_proofs: Option<Vec<deneb::KZGProof>>,
+    #[serde(default)]
+    blobs: Option<Vec<deneb::Blob>>,
+}
+
 /// Converts an ETH2 signature to a core signature.
 pub fn sig_from_eth2(sig: phase0::BLSSignature) -> Signature {
     sig
@@ -1372,6 +1384,92 @@ impl VersionedProposal {
     /// Returns the tree-hash root of the proposal block.
     pub fn root(&self) -> phase0::Root {
         self.block.root()
+    }
+}
+
+impl<'de> Deserialize<'de> for VersionedProposal {
+    /// Mirrors charon's `VersionedProposal.UnmarshalJSON`: dispatches the raw
+    /// `block` JSON to the per-fork [`ProposalBlock`] variant selected by
+    /// `(version, blinded)`. Shares the `{version, block, blinded}` raw wrapper
+    /// with [`VersionedSignedProposal`]. Block reward values are not present in
+    /// the JSON form and default to zero (the validatorapi overrides them).
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = VersionedRawBlockJson::<serde_json::Value>::deserialize(deserializer)?;
+        let version = raw.version;
+        let blinded = raw.blinded;
+
+        let block_contents = |value: serde_json::Value| {
+            serde_json::from_value::<UnsignedBlockContentsJson<serde_json::Value>>(value)
+        };
+
+        let block = match (version, blinded) {
+            (versioned::DataVersion::Phase0, false) => {
+                serde_json::from_value(raw.block).map(ProposalBlock::Phase0)
+            }
+            (versioned::DataVersion::Altair, false) => {
+                serde_json::from_value(raw.block).map(ProposalBlock::Altair)
+            }
+            (versioned::DataVersion::Bellatrix, false) => {
+                serde_json::from_value(raw.block).map(ProposalBlock::Bellatrix)
+            }
+            (versioned::DataVersion::Bellatrix, true) => {
+                serde_json::from_value(raw.block).map(ProposalBlock::BellatrixBlinded)
+            }
+            (versioned::DataVersion::Capella, false) => {
+                serde_json::from_value(raw.block).map(ProposalBlock::Capella)
+            }
+            (versioned::DataVersion::Capella, true) => {
+                serde_json::from_value(raw.block).map(ProposalBlock::CapellaBlinded)
+            }
+            (versioned::DataVersion::Deneb, false) => block_contents(raw.block).and_then(|c| {
+                Ok(ProposalBlock::Deneb {
+                    block: Box::new(serde_json::from_value(c.block)?),
+                    kzg_proofs: c.kzg_proofs.unwrap_or_default(),
+                    blobs: c.blobs.unwrap_or_default(),
+                })
+            }),
+            (versioned::DataVersion::Deneb, true) => {
+                serde_json::from_value(raw.block).map(ProposalBlock::DenebBlinded)
+            }
+            (versioned::DataVersion::Electra, false) => block_contents(raw.block).and_then(|c| {
+                Ok(ProposalBlock::Electra {
+                    block: Box::new(serde_json::from_value(c.block)?),
+                    kzg_proofs: c.kzg_proofs.unwrap_or_default(),
+                    blobs: c.blobs.unwrap_or_default(),
+                })
+            }),
+            (versioned::DataVersion::Electra, true) => {
+                serde_json::from_value(raw.block).map(ProposalBlock::ElectraBlinded)
+            }
+            (versioned::DataVersion::Fulu, false) => block_contents(raw.block).and_then(|c| {
+                Ok(ProposalBlock::Fulu {
+                    block: Box::new(serde_json::from_value(c.block)?),
+                    kzg_proofs: c.kzg_proofs.unwrap_or_default(),
+                    blobs: c.blobs.unwrap_or_default(),
+                })
+            }),
+            (versioned::DataVersion::Fulu, true) => {
+                serde_json::from_value(raw.block).map(ProposalBlock::FuluBlinded)
+            }
+            (versioned::DataVersion::Phase0 | versioned::DataVersion::Altair, true) => {
+                return Err(serde::de::Error::custom(
+                    "pre-merge block cannot be blinded",
+                ));
+            }
+            (versioned::DataVersion::Unknown, _) => {
+                return Err(serde::de::Error::custom(SignedDataError::UnknownVersion));
+            }
+        }
+        .map_err(serde::de::Error::custom)?;
+
+        Ok(VersionedProposal {
+            block,
+            consensus_block_value: U256::ZERO,
+            execution_payload_value: U256::ZERO,
+        })
     }
 }
 

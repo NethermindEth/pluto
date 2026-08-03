@@ -126,6 +126,15 @@ pub enum CliError {
     #[error("MEV test error: {0}")]
     MevTest(#[from] MevTestError),
 
+    /// Featureset resolution error.
+    // Verbatim message so `unknown min status: ...` matches Charon's output.
+    #[error("{0}")]
+    Featureset(#[from] pluto_featureset::FeaturesetError),
+
+    /// App (run workflow) error.
+    #[error("{0}")]
+    App(#[from] pluto_app::node::AppError),
+
     /// Generic error with message.
     #[error("{0}")]
     Other(String),
@@ -141,6 +150,10 @@ pub enum MevTestError {
     /// Unexpected HTTP error status code.
     #[error("status code {0}")]
     HttpStatus(u16),
+
+    /// Response body exceeded the allowed size.
+    #[error("response body exceeds {0} bytes")]
+    BodyTooLarge(usize),
 
     /// Beacon node endpoint required but not provided.
     #[error("beacon-node-endpoint required when load-test enabled")]

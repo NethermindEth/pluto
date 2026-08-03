@@ -1,6 +1,10 @@
 //! Error types for the partial signature exchange protocol.
 
-use pluto_core::{ParSigExCodecError, types::DutyTypeError};
+use pluto_core::{
+    ParSigExCodecError,
+    eth2signeddata::Eth2SignedDataError,
+    types::{Duty, DutyTypeError},
+};
 
 /// Result type for partial signature exchange.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -53,9 +57,16 @@ pub enum VerifyError {
     /// Invalid signed-data family for the duty.
     #[error("invalid eth2 signed data")]
     InvalidSignedDataFamily,
-    /// Generic verification error.
-    #[error("{0}")]
-    Other(String),
+    /// The eth2 BLS signature failed to verify against the sender's public
+    /// share.
+    #[error("invalid signature for duty {duty}: {source}")]
+    InvalidSignature {
+        /// Duty whose partial signature failed verification.
+        duty: Duty,
+        /// Underlying verification failure.
+        #[source]
+        source: Eth2SignedDataError,
+    },
 }
 
 /// Error type for partial signature exchange operations.

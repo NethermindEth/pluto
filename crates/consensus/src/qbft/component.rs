@@ -32,6 +32,15 @@ use super::{
     runner,
 };
 
+/// Maximum justification entries accepted per inbound consensus message,
+/// expressed as a multiple of the cluster node count. Honest QBFT produces at
+/// most one justification per peer per justified transition, so a small
+/// multiple of `node_count()` is a strict superset of every legitimate set
+/// while bounding per-message secp256k1 recovery work. Charon has no explicit
+/// cap (it is implicitly bounded by quorum/peer count + transport size); this
+/// is defensive hardening that cannot reject a legitimate justification set.
+const MAX_JUSTIFICATIONS_PER_NODE: usize = 4;
+
 /// Result returned by outbound QBFT broadcasting.
 pub type BroadcastResult = std::result::Result<(), Box<dyn StdError + Send + Sync + 'static>>;
 
@@ -164,6 +173,15 @@ pub enum Error {
     #[error("qbft justification duty differs from message duty")]
     JustificationDutyDiffers,
 
+    /// Inbound message carried more justifications than the per-message cap.
+    #[error("too many justifications: {count} exceeds maximum {max}")]
+    TooManyJustifications {
+        /// Number of justifications in the message.
+        count: usize,
+        /// The enforced maximum (MAX_JUSTIFICATIONS_PER_NODE * node_count()).
+        max: usize,
+    },
+
     /// Inbound Any could not be decoded.
     #[error("unmarshal any")]
     UnmarshalAny,
@@ -186,16 +204,16 @@ pub enum Error {
 }
 
 /// Canonicalizes inbound `Any` values into the hash map used by QBFT messages.
-pub(crate) fn values_by_hash(values: &[Any]) -> Result<ValueMap> {
+pub(crate) fn values_by_hash(values: Vec<Any>) -> Result<ValueMap> {
     let mut out = ValueMap::new();
 
     for value in values {
-        let decoded = decode_supported_any(value)?;
+        let decoded = decode_supported_any(&value)?;
         let hash = match decoded {
             DecodedValue::UnsignedDataSet(inner) => msg::hash_proto(&inner)?,
             DecodedValue::PriorityResult(inner) => msg::hash_proto(&inner)?,
         };
-        out.insert(hash, value.clone());
+        out.insert(hash, value);
     }
 
     Ok(out)
@@ -343,16 +361,27 @@ impl Consensus {
     /// Validates, wraps, and queues an inbound QBFT consensus message.
     pub async fn handle(
         &self,
-        pb_msg: pbconsensus::QbftConsensusMsg,
+        mut pb_msg: pbconsensus::QbftConsensusMsg,
         ct: &CancellationToken,
     ) -> Result<()> {
-        let msg = pb_msg.msg.as_ref().ok_or(Error::InvalidConsensusMessage)?;
+        let inner = pb_msg.msg.as_ref().ok_or(Error::InvalidConsensusMessage)?;
 
-        self.verify_msg(msg)?;
-        let duty = duty_from_msg(msg)?;
+        self.verify_msg(inner)?;
+        let duty = duty_from_msg(inner)?;
 
         if !(self.duty_gater)(&duty) {
             return Err(Error::InvalidDuty);
+        }
+
+        // Bound the number of justifications before any secp256k1 recovery runs:
+        // a 32MB message could otherwise pack a huge number of small entries,
+        // each forcing a recovery. Honest QBFT never exceeds O(node_count).
+        let max_justifications = MAX_JUSTIFICATIONS_PER_NODE.saturating_mul(self.node_count());
+        if pb_msg.justification.len() > max_justifications {
+            return Err(Error::TooManyJustifications {
+                count: pb_msg.justification.len(),
+                max: max_justifications,
+            });
         }
 
         for justification in &pb_msg.justification {
@@ -366,8 +395,10 @@ impl Consensus {
             }
         }
 
-        let values = values_by_hash(&pb_msg.values)?;
-        let wrapped = msg::Msg::new(msg.clone(), pb_msg.justification.clone(), Arc::new(values))?;
+        let msg = pb_msg.msg.take().ok_or(Error::InvalidConsensusMessage)?;
+        let justification = std::mem::take(&mut pb_msg.justification);
+        let values = values_by_hash(std::mem::take(&mut pb_msg.values))?;
+        let wrapped = msg::Msg::new(msg, justification, Arc::new(values))?;
 
         if ct.is_cancelled() {
             return Err(Error::ReceiveCancelledDuringVerification);
@@ -930,9 +961,54 @@ pub(crate) mod tests {
         assert_eq!(recv_rx.try_recv().unwrap().justification().len(), 1);
     }
 
+    #[tokio::test]
+    async fn handle_rejects_too_many_justifications() {
+        let consensus = consensus(0, true);
+        let max = MAX_JUSTIFICATIONS_PER_NODE * consensus.node_count();
+
+        let mut justification = unsigned_msg(0);
+        justification.r#type = i64::from(qbft::MSG_ROUND_CHANGE);
+        justification.value_hash = Bytes::new();
+        let signed = sign_for_peer(justification, 0);
+
+        let mut outer = valid_consensus_msg(0);
+        outer.justification = std::iter::repeat_n(signed, max + 1).collect();
+
+        let err = consensus
+            .handle(outer, &CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::TooManyJustifications { .. }));
+        assert!(err.to_string().contains("too many justifications"));
+    }
+
+    #[tokio::test]
+    async fn handle_accepts_max_justifications() {
+        // Exactly `max` justifications must not trip the cap (guards `>` vs `>=`).
+        let consensus = consensus(0, true);
+        let inst = consensus.get_instance_io(duty());
+        let max = MAX_JUSTIFICATIONS_PER_NODE * consensus.node_count();
+
+        let mut justification = unsigned_msg(0);
+        justification.r#type = i64::from(qbft::MSG_ROUND_CHANGE);
+        justification.value_hash = Bytes::new();
+        let signed = sign_for_peer(justification, 0);
+
+        let mut outer = valid_consensus_msg(0);
+        outer.justification = std::iter::repeat_n(signed, max).collect();
+
+        consensus
+            .handle(outer, &CancellationToken::new())
+            .await
+            .unwrap();
+
+        let mut recv_rx = inst.take_recv_rx().unwrap();
+        assert_eq!(recv_rx.try_recv().unwrap().justification().len(), max);
+    }
+
     #[test]
     fn values_by_hash_rejects_invalid_type_url() {
-        let err = values_by_hash(&[Any {
+        let err = values_by_hash(vec![Any {
             type_url: "type.googleapis.com/unknown.Type".to_string(),
             value: vec![],
         }])
@@ -943,7 +1019,7 @@ pub(crate) mod tests {
 
     #[test]
     fn values_by_hash_rejects_malformed_any_value() {
-        let err = values_by_hash(&[Any {
+        let err = values_by_hash(vec![Any {
             type_url: pbcore::UnsignedDataSet::type_url(),
             value: b"not-protobuf".to_vec(),
         }])
@@ -955,7 +1031,7 @@ pub(crate) mod tests {
     #[test]
     fn values_by_hash_hashes_decoded_inner_message() {
         let any = unsigned_any("a", b"first");
-        let values = values_by_hash(std::slice::from_ref(&any)).unwrap();
+        let values = values_by_hash(vec![any.clone()]).unwrap();
         let decoded = pbcore::UnsignedDataSet::decode(any.value.as_slice()).unwrap();
         let hash = msg::hash_proto(&decoded).unwrap();
 
@@ -976,42 +1052,59 @@ pub(crate) mod tests {
         assert_eq!(err.to_string(), "value hash not found in values");
     }
 
+    // Parity with charon core/consensus/qbft/msg.go newMsg @ v1.7.1: an
+    // absent, all-zero, or non-32-byte value hash is admitted and collapses to
+    // the nil hash. Whether a nil value is acceptable for a given message type
+    // is decided by the generic core's justification rules, not at receive
+    // time.
     #[test_case(vec![] ; "empty")]
     #[test_case(vec![0; 32] ; "zero")]
     #[test_case(vec![1; 31] ; "short")]
     #[test_case(vec![1; 33] ; "long")]
     #[tokio::test]
-    async fn handle_rejects_invalid_value_hash(hash: Vec<u8>) {
+    async fn handle_admits_malformed_value_hash_as_nil(hash: Vec<u8>) {
+        let consensus = consensus(0, true);
         let mut msg = unsigned_msg(0);
         msg.value_hash = hash.into();
         let msg = sign_for_peer(msg, 0);
+        let inst = consensus.get_instance_io(duty());
 
-        let err = consensus(0, true)
+        consensus
             .handle(consensus_msg(msg), &CancellationToken::new())
             .await
-            .unwrap_err();
+            .unwrap();
 
-        assert_eq!(err.to_string(), "invalid value hash");
+        let mut recv_rx = inst.take_recv_rx().unwrap();
+        assert_eq!(recv_rx.try_recv().unwrap().value(), [0u8; 32]);
     }
 
+    // Parity with charon newMsg @ v1.7.1: the prepared hash is admitted on the
+    // same rule as value_hash and is independent of prepared_round, so even a
+    // ROUND-CHANGE claiming `prepared_round > 0` with a malformed prepared
+    // hash is received with the nil prepared value.
     #[test_case(vec![] ; "empty")]
     #[test_case(vec![0; 32] ; "zero")]
     #[test_case(vec![1; 31] ; "short")]
     #[test_case(vec![1; 33] ; "long")]
     #[tokio::test]
-    async fn handle_rejects_invalid_prepared_round_change_hash(hash: Vec<u8>) {
+    async fn handle_admits_malformed_prepared_round_change_hash_as_nil(hash: Vec<u8>) {
+        let consensus = consensus(0, true);
         let mut msg = unsigned_msg(0);
         msg.r#type = i64::from(qbft::MSG_ROUND_CHANGE);
         msg.prepared_round = 1;
         msg.prepared_value_hash = hash.into();
         let msg = sign_for_peer(msg, 0);
+        let inst = consensus.get_instance_io(duty());
 
-        let err = consensus(0, true)
+        consensus
             .handle(consensus_msg(msg), &CancellationToken::new())
             .await
-            .unwrap_err();
+            .unwrap();
 
-        assert_eq!(err.to_string(), "invalid prepared value hash");
+        let mut recv_rx = inst.take_recv_rx().unwrap();
+        let received = recv_rx.try_recv().unwrap();
+        assert_eq!(received.prepared_round(), 1);
+        assert_eq!(received.prepared_value(), [0u8; 32]);
     }
 
     #[tokio::test]

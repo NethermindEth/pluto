@@ -94,6 +94,7 @@ impl TryFrom<&crate::GetBlockAttestationsV2ResponseResponseDataArray> for Attest
         value: &crate::GetBlockAttestationsV2ResponseResponseDataArray,
     ) -> Result<Self, Self::Error> {
         const COMMITTEE_BITS_FIELD: &str = "attestation.committee_bits";
+        const AGGREGATION_BITS_FIELD: &str = "attestation.aggregation_bits";
         let committee_bits = <BitVector<64> as ssz::Decode>::from_ssz_bytes(&decode_hex_var(
             &value.committee_bits,
             COMMITTEE_BITS_FIELD,
@@ -101,12 +102,16 @@ impl TryFrom<&crate::GetBlockAttestationsV2ResponseResponseDataArray> for Attest
         .map_err(|_| ConversionError::DecodeHex {
             field: COMMITTEE_BITS_FIELD,
         })?;
+        let aggregation_bits = BitList::from_ssz_bytes(decode_hex_var(
+            &value.aggregation_bits,
+            AGGREGATION_BITS_FIELD,
+        )?)
+        .map_err(|_| ConversionError::DecodeHex {
+            field: AGGREGATION_BITS_FIELD,
+        })?;
 
         Ok(Self {
-            aggregation_bits: BitList::from_ssz_bytes(decode_hex_var(
-                &value.aggregation_bits,
-                "attestation.aggregation_bits",
-            )?),
+            aggregation_bits,
             data: phase0::AttestationData::try_from(&value.data)?,
             signature: decode_hex_fixed(&value.signature, "attestation.signature")?,
             committee_bits,

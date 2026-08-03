@@ -9,7 +9,7 @@ use crate::{
     exchanger::{SIG_DEPOSIT_DATA, SigType},
     frostp2p, sync,
 };
-use libp2p::{Multiaddr, multiaddr::Protocol, relay, swarm::NetworkBehaviour};
+use libp2p::{relay, swarm::NetworkBehaviour};
 use pluto_core::{
     types::{Duty, DutyType},
     version,
@@ -60,7 +60,7 @@ pub(crate) async fn setup_p2p(
 
     verify_p2p_key(peers, &key)?;
 
-    let relay_addrs = relay_addrs_for_resolution(&conf.p2p.relays);
+    let relay_addrs = bootnode::relay_addrs_for_resolution(&conf.p2p.relays);
     let relays = bootnode::new_relays(ct, &relay_addrs, &hex::encode(&def_hash)).await?;
 
     let conn_gater = gater::ConnGater::new_conn_gater(peer_ids.clone(), relays.clone());
@@ -160,51 +160,4 @@ pub(crate) async fn setup_p2p(
     };
 
     Ok((node, handlers))
-}
-
-fn relay_addrs_for_resolution(relays: &[Multiaddr]) -> Vec<String> {
-    relays.iter().map(relay_addr_for_resolution).collect()
-}
-
-fn relay_addr_for_resolution(relay: &Multiaddr) -> String {
-    let mut scheme = None;
-    let mut host = None;
-    let mut port = None;
-
-    for protocol in relay.iter() {
-        match protocol {
-            Protocol::Http => scheme = Some("http"),
-            Protocol::Https => scheme = Some("https"),
-            Protocol::Dns(name)
-            | Protocol::Dns4(name)
-            | Protocol::Dns6(name)
-            | Protocol::Dnsaddr(name)
-                if host.is_none() =>
-            {
-                host = Some(name.to_string());
-            }
-            Protocol::Ip4(ip) if host.is_none() => {
-                host = Some(ip.to_string());
-            }
-            Protocol::Ip6(ip) if host.is_none() => {
-                host = Some(format!("[{ip}]"));
-            }
-            Protocol::Tcp(tcp_port) => port = Some(tcp_port),
-            _ => {}
-        }
-    }
-
-    if let (Some(scheme), Some(host)) = (scheme, host) {
-        let default_port = match scheme {
-            "https" => 443,
-            _ => 80,
-        };
-
-        return match port {
-            Some(port) if port != default_port => format!("{scheme}://{host}:{port}"),
-            _ => format!("{scheme}://{host}"),
-        };
-    }
-
-    relay.to_string()
 }

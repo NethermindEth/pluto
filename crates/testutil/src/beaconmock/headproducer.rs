@@ -1,9 +1,7 @@
 //! Slot-driven head producer for the beacon mock.
 //!
-//! Mirrors Charon's `headProducer` (Go) — see
-//! `charon/testutil/beaconmock/headproducer.go` — by ticking on every slot,
-//! generating deterministic block/state roots, and exposing the resulting
-//! head over `/eth/v1/events` (SSE) and
+//! Ticks on every slot, generating deterministic block/state roots and
+//! exposing the resulting head over `/eth/v1/events` (SSE) and
 //! `/eth/v1/beacon/blocks/{block_id}/root`.
 //!
 //! Note on SSE: wiremock buffers a response body before sending, so events
@@ -12,9 +10,8 @@
 //! the current head. Subscribers should poll the endpoint to keep receiving
 //! events.
 //!
-//! The block-root endpoint matches Charon: it answers with the current head's
-//! block root when `block_id` is `head` or matches the current head's slot,
-//! and 400 otherwise.
+//! The block-root endpoint answers with the current head's block root when
+//! `block_id` is `head` or matches the current head's slot, and 400 otherwise.
 //!
 //! [`HeadProducer::spawn`] synchronously publishes the initial head before
 //! returning, so handlers never observe a `None` current head once the
@@ -26,9 +23,9 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use super::gorand::GoRand;
 use chrono::{DateTime, Utc};
 use pluto_eth2api::spec::phase0::{Root, Slot};
-use rand::{RngCore, SeedableRng, rngs::StdRng};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 use wiremock::{
@@ -43,10 +40,9 @@ const TOPIC_BLOCK: &str = "block";
 
 /// Deterministic head event derived from a slot.
 ///
-/// Charon's Go reference has a typo in `headproducer.go` that renders
-/// `PreviousDutyDependentRoot` from `currentHead.CurrentDutyDependentRoot`,
-/// so only one dependent root is meaningful. We mirror that and keep a single
-/// `duty_dependent_root` field rather than carrying two identical values.
+/// Only one dependent root is meaningful, so we keep a single
+/// `duty_dependent_root` field rather than carry two identical values: the
+/// current and previous dependent roots are rendered from the same value.
 #[derive(Clone, Debug)]
 struct HeadEvent {
     slot: Slot,
@@ -211,14 +207,13 @@ fn update_head(state: &SharedState, slot: Slot) {
     state.set_current_head(pseudo_random_head_event(slot));
 }
 
-// Charon's `pseudoRandomHeadEvent` seeds Go's `math/rand` LCG with the slot
-// number and draws four roots. We deliberately use ChaCha-based `StdRng`
-// instead — the byte sequences differ from Charon, but Pluto does not assert
-// on any specific head/state/dependent root value and ChaCha is portable and
-// well-tested. The head event JSON shape and seeding-per-slot determinism are
-// preserved.
+// Draws the head roots from one slot-seeded byte stream: block, state, and
+// duty_dependent_root are the first three 32-byte reads. The stream has to be
+// byte-identical across a mixed charon/pluto cluster or sync signatures don't
+// aggregate — see `gorand`.
 fn pseudo_random_head_event(slot: Slot) -> HeadEvent {
-    let mut rng = StdRng::seed_from_u64(slot);
+    // Seed is the slot reinterpreted as i64 (two's-complement), as Go does.
+    let mut rng = GoRand::new(slot.cast_signed());
     HeadEvent {
         slot,
         block: random_root(&mut rng),
@@ -227,9 +222,9 @@ fn pseudo_random_head_event(slot: Slot) -> HeadEvent {
     }
 }
 
-fn random_root(rng: &mut StdRng) -> Root {
+fn random_root(rng: &mut GoRand) -> Root {
     let mut root = Root::default();
-    rng.fill_bytes(&mut root);
+    rng.read(&mut root);
     root
 }
 
@@ -283,6 +278,7 @@ async fn mount_block_root(server: &MockServer, state: Arc<SharedState>) {
 
             ResponseTemplate::new(200).set_body_json(json!({
                 "execution_optimistic": false,
+                "finalized": false,
                 "data": { "root": hex_0x(head.block) }
             }))
         })
@@ -325,7 +321,7 @@ fn head_event_json(head: &HeadEvent) -> Value {
         "block": hex_0x(head.block),
         "state": hex_0x(head.state),
         "epoch_transition": false,
-        // Charon renders the same value for both fields; see HeadEvent docs.
+        // Both fields render the same value; see HeadEvent docs.
         "current_duty_dependent_root": hex_0x(head.duty_dependent_root),
         "previous_duty_dependent_root": hex_0x(head.duty_dependent_root),
         "execution_optimistic": false,

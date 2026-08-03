@@ -16,6 +16,27 @@ use subtle::ConstantTimeEq;
 use zeroize::Zeroize;
 
 /// BLS12-381 scalar field element. Wrapper around `blst_fr` in Montgomery form.
+///
+/// # Secret material & zeroization
+///
+/// `Scalar` is used to hold secret key material (DKG polynomial coefficients,
+/// signing shares). It implements [`Zeroize`] but intentionally **retains
+/// `Copy`** rather than deriving `Drop`/`ZeroizeOnDrop`:
+///
+/// - `Drop`/`ZeroizeOnDrop` are mutually exclusive with `Copy`, and `Scalar` is
+///   consumed by value throughout this crate (the arithmetic operators take
+///   `self`, `to_scalar()` returns by value). Removing `Copy` would ripple
+///   across every call site for no real guarantee, because the inner `blst_fr`
+///   is itself a `Copy` C struct — moves bit-copy it regardless.
+/// - Secret-holding wrapper types ([`crate::SigningShare`],
+///   [`crate::KeyPackage`], [`crate::kryptology::ShamirShare`]) derive
+///   `ZeroizeOnDrop`, which wipes their inner `Scalar`/bytes via this `Zeroize`
+///   impl on drop.
+/// - Bare secret `Scalar` locals (the DKG nonce and reconstructed key in
+///   `kryptology::round1`/`round2`) are wiped explicitly with
+///   [`Zeroize::zeroize`].
+///
+/// Zeroization here is best-effort defense-in-depth, not an absolute guarantee.
 #[derive(Copy, Clone, Default, PartialEq, Eq)]
 pub struct Scalar(pub(crate) blst_fr);
 

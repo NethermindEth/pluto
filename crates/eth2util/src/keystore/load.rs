@@ -11,6 +11,13 @@ use super::{
     store::Keystore,
 };
 
+/// Maximum number of keystore files decrypted concurrently.
+///
+/// Mirrors Charon's `loadStoreWorkers` (`eth2util/keystore/keystore.go`),
+/// bounding the blocking key-derivation work so a directory containing many
+/// keystore files cannot saturate the async runtime / blocking thread pool.
+const LOAD_STORE_WORKERS: usize = 10;
+
 /// Wraps a list of key files with convenience functions.
 #[derive(Debug)]
 pub struct KeyFiles(Vec<KeyFile>);
@@ -84,6 +91,10 @@ pub struct KeyFile {
 pub async fn load_files_unordered(dir: impl AsRef<Path>) -> Result<KeyFiles> {
     let mut read_dir = tokio::fs::read_dir(dir.as_ref()).await?;
     let mut set = tokio::task::JoinSet::new();
+    // Cap concurrency at LOAD_STORE_WORKERS (matching Charon's loadStoreWorkers).
+    // Acquire an owned permit *before* spawning so we never park thousands of
+    // tasks up front for a large directory.
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(LOAD_STORE_WORKERS));
 
     while let Some(entry) = read_dir.next_entry().await? {
         let path = entry.path();
@@ -95,13 +106,27 @@ pub async fn load_files_unordered(dir: impl AsRef<Path>) -> Result<KeyFiles> {
             continue;
         }
 
+        // `Semaphore` is never closed, so acquire cannot fail.
+        let permit = std::sync::Arc::clone(&sem)
+            .acquire_owned()
+            .await
+            .expect("semaphore not closed");
+
         set.spawn(async move {
+            let _permit = permit; // released when this task completes
+
             let b = tokio::fs::read_to_string(&path).await?;
             let store: Keystore = serde_json::from_str(&b)?;
-
             let password = super::store::load_password(&path).await?;
-            let private_key = super::store::decrypt(&store, &password)?;
             let file_index = extract_file_index(path.to_string_lossy())?;
+
+            // `decrypt` runs scrypt/PBKDF2 (CPU- and memory-heavy); run it on the
+            // blocking pool so it never blocks an async reactor thread.
+            let (private_key, path) = tokio::task::spawn_blocking(move || {
+                let key = super::store::decrypt(&store, &password)?;
+                Ok::<_, KeystoreError>((key, path))
+            })
+            .await??;
 
             Ok::<KeyFile, KeystoreError>(KeyFile {
                 private_key,
@@ -181,9 +206,10 @@ pub async fn load_files_recursively(dir: impl AsRef<Path>) -> Result<KeyFiles> {
         passwords_map.insert(filepath.clone(), b);
     }
 
-    // Step 4: Decrypt keystores concurrently.
+    // Step 4: Decrypt keystores concurrently, capped at LOAD_STORE_WORKERS.
     let mut set = tokio::task::JoinSet::new();
     let passwords_map = std::sync::Arc::new(passwords_map);
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(LOAD_STORE_WORKERS));
 
     for filepath in valid_files {
         let store =
@@ -197,9 +223,18 @@ pub async fn load_files_recursively(dir: impl AsRef<Path>) -> Result<KeyFiles> {
         let password_file = filepath.with_extension("txt");
         let passwords = std::sync::Arc::clone(&passwords_map);
 
+        // Acquire a permit before spawning so no more than LOAD_STORE_WORKERS
+        // blocking KDF tasks are in flight at once. `Semaphore` is never closed,
+        // so acquire cannot fail.
+        let permit = std::sync::Arc::clone(&sem)
+            .acquire_owned()
+            .await
+            .expect("semaphore not closed");
+
         // `decrypt` is CPU-intensive (key derivation), so use `spawn_blocking` to avoid
         // blocking the async runtime. The closure has no `.await` calls.
         set.spawn_blocking(move || {
+            let _permit = permit; // released when this blocking task finishes
             // First try the password file that matches the keystore file.
             let mut err = None;
 
@@ -518,6 +553,46 @@ mod tests {
 
         let actual = result.expect("test should have succeeded");
         assert_eq!(expected, actual, "keys mismatch");
+    }
+
+    #[tokio::test]
+    async fn load_unordered_many_files_capped() {
+        // More files than LOAD_STORE_WORKERS exercises the semaphore-gated path.
+        let dir = TempDir::new().unwrap();
+        let mut expected = std::collections::HashSet::new();
+        for i in 0..25usize {
+            let target = dir.path().join(format!("keystore-{i}.json"));
+            expected.insert(store_new_key_for_test(&target).await);
+        }
+        let key_files = load_files_unordered(dir.path()).await.unwrap();
+        assert_eq!(key_files.len(), 25);
+        for kf in key_files.iter() {
+            assert!(expected.contains(&kf.private_key));
+        }
+    }
+
+    #[tokio::test]
+    async fn load_recursively_many_files_capped() {
+        // More files than LOAD_STORE_WORKERS, spread across nested dirs.
+        let dir = TempDir::new().unwrap();
+        let nested = dir.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+
+        let mut expected = std::collections::HashSet::new();
+        for i in 0..15usize {
+            let target = if i % 2 == 0 {
+                dir.path().join(format!("keystore-{i}.json"))
+            } else {
+                nested.join(format!("keystore-{i}.json"))
+            };
+            expected.insert(store_new_key_for_test(&target).await);
+        }
+
+        let key_files = load_files_recursively(dir.path()).await.unwrap();
+        assert_eq!(key_files.len(), 15);
+        for kf in key_files.iter() {
+            assert!(expected.contains(&kf.private_key));
+        }
     }
 
     #[tokio::test]

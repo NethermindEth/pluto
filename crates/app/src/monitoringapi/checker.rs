@@ -1,6 +1,10 @@
 //! Background readiness checker for `/readyz`.
 
-use std::{collections::HashSet, time::Duration};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use chrono::{DateTime, Utc};
 use pluto_cluster::helpers;
@@ -45,14 +49,16 @@ struct ChainConfig {
 /// Starts the background readiness checker and returns the shared readiness
 /// state served by `/readyz`.
 ///
-/// `seen_pubkeys` should receive validator public keys observed through the
-/// validator API. `validator_api_calls` should receive one item for each
-/// validator API call. The checker consumes both receivers until cancellation.
+/// `seen_pubkeys` is a shared, deduped set of DV root pubkeys the validator
+/// client has referenced through the validator API; the checker drains it each
+/// slot, so it stays bounded by the validator count regardless of request
+/// volume. `validator_api_calls` should receive one item for each validator API
+/// call. The checker consumes both until cancellation.
 pub fn start_ready_checker(
     p2p_context: P2PContext,
     beacon_node: EthBeaconNodeApiClient,
     pubkeys: Vec<PubKey>,
-    seen_pubkeys: mpsc::Receiver<PubKey>,
+    seen_pubkeys: Arc<Mutex<HashSet<PubKey>>>,
     validator_api_calls: mpsc::Receiver<()>,
     ct: CancellationToken,
 ) -> ReadyState {
@@ -105,26 +111,52 @@ async fn set_beacon_node_version(beacon_node: &EthBeaconNodeApiClient) {
         }
     };
 
+    // The BN version string is upstream-controlled and unbounded in length;
+    // truncate it for the metric label (a hostile/buggy BN could return a
+    // multi-MB string). The reset loop compares against the same truncated form
+    // so the stale series is cleared correctly.
+    let label = truncate_label(&version);
+
     // Emulate Charon's `beaconNodeVersionGauge.Reset`: vise's `Family` cannot
     // delete series, so clear any previously-reported version before setting the
     // current one.
     for (previous, gauge) in MONITORING_METRICS.beacon_node_version.to_entries() {
-        if previous != version {
+        if previous != label {
             gauge.set(0);
         }
     }
-    MONITORING_METRICS.beacon_node_version[&version].set(1);
+    MONITORING_METRICS.beacon_node_version[&label].set(1);
 
+    // The semantic compatibility check uses the FULL (untruncated) version.
     check_beacon_node_version(&version);
+}
+
+/// Maximum length (in bytes) for the upstream-supplied beacon-node version
+/// metric label. A real BN version (e.g. "Lighthouse/v5.1.3-...") is short.
+const MAX_METRIC_LABEL_LEN: usize = 64;
+
+/// Truncates a label value to [`MAX_METRIC_LABEL_LEN`] on a UTF-8 char
+/// boundary.
+fn truncate_label(s: &str) -> String {
+    if s.len() <= MAX_METRIC_LABEL_LEN {
+        return s.to_string();
+    }
+    let mut end = MAX_METRIC_LABEL_LEN;
+    while end > 0 && !s.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    s[..end].to_string()
 }
 
 async fn fetch_node_version(
     beacon_node: &EthBeaconNodeApiClient,
 ) -> Result<String, ReadyCheckerError> {
-    match beacon_node
-        .get_node_version(GetNodeVersionRequest {})
-        .await
-        .map_err(ReadyCheckerError::BeaconNode)?
+    match pluto_eth2api::instrument(
+        "node_version",
+        beacon_node.get_node_version(GetNodeVersionRequest {}),
+    )
+    .await
+    .map_err(ReadyCheckerError::BeaconNode)?
     {
         GetNodeVersionResponse::Ok(response) => Ok(response.data.version),
         GetNodeVersionResponse::InternalServerError(_) | GetNodeVersionResponse::Unknown => {
@@ -137,7 +169,7 @@ async fn run_ready_checker(
     p2p_context: P2PContext,
     beacon_node: EthBeaconNodeApiClient,
     pubkeys: Vec<PubKey>,
-    mut seen_pubkeys: mpsc::Receiver<PubKey>,
+    seen_pubkeys: Arc<Mutex<HashSet<PubKey>>>,
     mut validator_api_calls: mpsc::Receiver<()>,
     ct: CancellationToken,
     readiness: ReadyState,
@@ -160,7 +192,6 @@ async fn run_ready_checker(
     slot_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut peer_count_interval = tokio::time::interval(PEER_COUNT_PERIOD);
     peer_count_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut seen_pubkeys_open = true;
     let mut validator_api_calls_open = true;
 
     slot_interval.tick().await;
@@ -182,6 +213,13 @@ async fn run_ready_checker(
                         None
                     }
                 };
+                // Fold in the pubkeys the VC referenced since the last tick.
+                // The set is deduped and drained every slot, so it stays
+                // bounded by the validator count regardless of request volume.
+                let observed = std::mem::take(&mut *seen_pubkeys.lock().expect("seen pubkeys mutex"));
+                for pubkey in observed {
+                    checker.observe_pubkey(pubkey);
+                }
                 let evaluated_epoch = current_epoch(&config, Utc::now());
                 let status = checker.evaluate_round(
                     quorum_peers_connected(&p2p_context),
@@ -192,12 +230,6 @@ async fn run_ready_checker(
                 match status {
                     Ok(()) => readiness.set_ready(),
                     Err(error) => readiness.set_error(error),
-                }
-            }
-            pubkey = seen_pubkeys.recv(), if seen_pubkeys_open => {
-                match pubkey {
-                    Some(pubkey) => checker.observe_pubkey(pubkey),
-                    None => seen_pubkeys_open = false,
                 }
             }
             call = validator_api_calls.recv(), if validator_api_calls_open => {
@@ -247,10 +279,12 @@ async fn update_beacon_node_peer_count(
 }
 
 async fn fetch_peer_count(beacon_node: &EthBeaconNodeApiClient) -> Result<u64, ReadyCheckerError> {
-    match beacon_node
-        .get_peer_count(GetPeerCountRequest {})
-        .await
-        .map_err(ReadyCheckerError::BeaconNode)?
+    match pluto_eth2api::instrument(
+        "node_peer_count",
+        beacon_node.get_peer_count(GetPeerCountRequest {}),
+    )
+    .await
+    .map_err(ReadyCheckerError::BeaconNode)?
     {
         GetPeerCountResponse::Ok(response) => {
             parse_u64_field("connected", &response.data.connected)
@@ -264,10 +298,12 @@ async fn fetch_peer_count(beacon_node: &EthBeaconNodeApiClient) -> Result<u64, R
 async fn fetch_sync_status(
     beacon_node: &EthBeaconNodeApiClient,
 ) -> Result<BeaconNodeSyncStatus, ReadyCheckerError> {
-    match beacon_node
-        .get_syncing_status(GetSyncingStatusRequest {})
-        .await
-        .map_err(ReadyCheckerError::BeaconNode)?
+    match pluto_eth2api::instrument(
+        "node_syncing",
+        beacon_node.get_syncing_status(GetSyncingStatusRequest {}),
+    )
+    .await
+    .map_err(ReadyCheckerError::BeaconNode)?
     {
         GetSyncingStatusResponse::Ok(response) => {
             let sync_distance = parse_u64_field("sync_distance", &response.data.sync_distance)?;
@@ -307,7 +343,7 @@ pub fn quorum_peers_connected(p2p_context: &P2PContext) -> bool {
     let connected = known_peers
         .iter()
         .filter(|peer_id| **peer_id != local_peer_id)
-        .filter(|peer_id| !peer_store.connections_to_peer(peer_id).is_empty())
+        .filter(|peer_id| peer_store.has_connection(peer_id))
         .count();
 
     connected >= required
@@ -447,6 +483,16 @@ mod tests {
 
     fn peer_id() -> PeerId {
         Keypair::generate_secp256k1().public().to_peer_id()
+    }
+
+    #[test]
+    fn truncate_label_bounds_length() {
+        assert_eq!(truncate_label("Lighthouse/v5.1.3"), "Lighthouse/v5.1.3");
+        let long = "x".repeat(MAX_METRIC_LABEL_LEN + 500);
+        assert_eq!(truncate_label(&long).len(), MAX_METRIC_LABEL_LEN);
+        // Multibyte input truncates on a char boundary without panicking.
+        let mb = "é".repeat(MAX_METRIC_LABEL_LEN);
+        assert!(truncate_label(&mb).len() <= MAX_METRIC_LABEL_LEN);
     }
 
     fn pubkey(byte: u8) -> PubKey {

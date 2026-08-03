@@ -62,6 +62,18 @@ pub enum Error {
         total: Index,
     },
 
+    /// The threshold value does not fit into the platform `usize`.
+    ///
+    /// `Index` is a `u64`; on 32-bit targets a sufficiently large threshold
+    /// cannot be used as a `Vec` capacity. This is a platform/overflow
+    /// condition, distinct from a caller-supplied out-of-range threshold
+    /// (`InvalidThreshold`).
+    #[error("Threshold {threshold} does not fit into usize on this platform")]
+    ThresholdOverflow {
+        /// The threshold value that failed to convert.
+        threshold: Index,
+    },
+
     /// Failed to verify a BLS signature.
     ///
     /// This error occurs when signature verification fails, indicating either

@@ -410,11 +410,16 @@ impl TryFrom<&crate::GetBlockAttestationsV2ResponseResponseDataArray2> for Attes
     fn try_from(
         value: &crate::GetBlockAttestationsV2ResponseResponseDataArray2,
     ) -> Result<Self, Self::Error> {
+        const AGGREGATION_BITS_FIELD: &str = "attestation.aggregation_bits";
+        let aggregation_bits = BitList::from_ssz_bytes(decode_hex_var(
+            &value.aggregation_bits,
+            AGGREGATION_BITS_FIELD,
+        )?)
+        .map_err(|_| ConversionError::DecodeHex {
+            field: AGGREGATION_BITS_FIELD,
+        })?;
         Ok(Self {
-            aggregation_bits: BitList::from_ssz_bytes(decode_hex_var(
-                &value.aggregation_bits,
-                "attestation.aggregation_bits",
-            )?),
+            aggregation_bits,
             data: AttestationData::try_from(&value.data)?,
             signature: decode_hex_fixed(&value.signature, "attestation.signature")?,
         })

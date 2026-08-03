@@ -9,7 +9,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::{MemDB, get_threshold_matching, threshold_subscriber};
+use super::{MemDB, MemDBError, get_threshold_matching, threshold_subscriber};
 use crate::{
     deadline::{DeadlinerTask, NeverExpiringCalculator},
     signeddata::{BeaconCommitteeSelection, SignedSyncMessage, VersionedAttestation},
@@ -78,7 +78,6 @@ async fn test_get_threshold_matching(input: Vec<usize>, output: Vec<usize>) {
         }
 
         let out = get_threshold_matching(&DutyType::SyncMessage, &data, threshold)
-            .await
             .expect("threshold matching should succeed");
         let expect: Vec<_> = output.iter().map(|idx| data[*idx].clone()).collect();
         let expected_out = if expect.is_empty() {
@@ -171,4 +170,83 @@ async fn memdb_threshold() {
     trim_handle
         .await
         .expect("trim task should shut down cleanly");
+}
+
+/// Builds a `MemDB` (with a real never-expiring deadliner) and a shared
+/// threshold-subscriber call counter.
+fn memdb_with_counter(threshold: u64) -> (Arc<MemDB>, Arc<Mutex<usize>>, CancellationToken) {
+    let cancel = CancellationToken::new();
+    let (deadliner, _drop_rx) =
+        DeadlinerTask::start(cancel.clone(), "memdb_test", NeverExpiringCalculator);
+    let db = Arc::new(MemDB::new(cancel.clone(), threshold, deadliner));
+    (db, Arc::new(Mutex::new(0usize)), cancel)
+}
+
+#[tokio::test]
+async fn store_external_ignores_duplicate() {
+    const THRESHOLD: u64 = 3;
+
+    let (db, times_called, cancel) = memdb_with_counter(THRESHOLD);
+    db.subscribe_threshold(threshold_subscriber({
+        let times_called = times_called.clone();
+        move |_duty, _data| {
+            let times_called = times_called.clone();
+            async move {
+                *times_called.lock().await += 1;
+                Ok(())
+            }
+        }
+    }))
+    .await;
+
+    let pubkey = random_core_pub_key();
+    let attestation = testutil::random_deneb_versioned_attestation();
+    let duty = Duty::new_attester_duty(SlotNumber::new(123));
+
+    let partial = VersionedAttestation::new_partial(attestation.clone(), 1)
+        .expect("versioned attestation should be valid");
+    let mut set = ParSignedDataSet::new();
+    set.insert(pubkey, partial);
+
+    // Store the identical partial twice: neither reaches the threshold and the
+    // duplicate must not error nor fire the subscriber.
+    db.store_external(&duty, &set).await.expect("first store");
+    db.store_external(&duty, &set)
+        .await
+        .expect("duplicate store is not an error");
+
+    assert_eq!(0, *times_called.lock().await);
+    cancel.cancel();
+}
+
+#[tokio::test]
+async fn store_external_rejects_share_index_mismatch() {
+    const THRESHOLD: u64 = 3;
+
+    let (db, _times_called, cancel) = memdb_with_counter(THRESHOLD);
+
+    let pubkey = random_core_pub_key();
+    let duty = Duty::new_attester_duty(SlotNumber::new(123));
+
+    // Two different partials that both claim share index 1 for the same key.
+    let first =
+        VersionedAttestation::new_partial(testutil::random_deneb_versioned_attestation(), 1)
+            .expect("versioned attestation should be valid");
+    let second =
+        VersionedAttestation::new_partial(testutil::random_deneb_versioned_attestation(), 1)
+            .expect("versioned attestation should be valid");
+
+    let mut set1 = ParSignedDataSet::new();
+    set1.insert(pubkey, first);
+    db.store_external(&duty, &set1).await.expect("first store");
+
+    let mut set2 = ParSignedDataSet::new();
+    set2.insert(pubkey, second);
+    let err = db
+        .store_external(&duty, &set2)
+        .await
+        .expect_err("conflicting share index must be rejected");
+    assert!(matches!(err, MemDBError::ParsigDataMismatch { .. }));
+
+    cancel.cancel();
 }

@@ -4,7 +4,7 @@
 
 mod graffiti;
 
-use graffiti::GraffitiBuilder;
+pub use graffiti::{GraffitiBuilder, GraffitiError};
 
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
@@ -358,15 +358,14 @@ impl Fetcher {
                 .build()
                 .map_err(EthBeaconNodeApiClientError::RequestError)?;
 
-            let response = match self
-                .eth2_cl
-                .produce_block_v3(request)
-                .await
-                .map_err(EthBeaconNodeApiClientError::RequestError)?
-            {
-                ProduceBlockV3Response::Ok(resp) => resp,
-                _ => return Err(FetcherError::UnexpectedResponse),
-            };
+            let response =
+                match pluto_eth2api::instrument("proposal", self.eth2_cl.produce_block_v3(request))
+                    .await
+                    .map_err(EthBeaconNodeApiClientError::RequestError)?
+                {
+                    ProduceBlockV3Response::Ok(resp) => resp,
+                    _ => return Err(FetcherError::UnexpectedResponse),
+                };
 
             let proposal = VersionedProposal::try_from(&response)?;
 
@@ -450,11 +449,12 @@ impl Fetcher {
             .build()
             .map_err(EthBeaconNodeApiClientError::RequestError)?;
 
-        match self
-            .eth2_cl
-            .produce_attestation_data(request)
-            .await
-            .map_err(EthBeaconNodeApiClientError::RequestError)?
+        match pluto_eth2api::instrument(
+            "attestation_data",
+            self.eth2_cl.produce_attestation_data(request),
+        )
+        .await
+        .map_err(EthBeaconNodeApiClientError::RequestError)?
         {
             ProduceAttestationDataResponse::Ok(ok) => {
                 Ok(phase0::AttestationData::try_from(&ok.data)?)
@@ -477,11 +477,12 @@ impl Fetcher {
             .build()
             .map_err(EthBeaconNodeApiClientError::RequestError)?;
 
-        let ok = match self
-            .eth2_cl
-            .get_aggregated_attestation_v2(request)
-            .await
-            .map_err(EthBeaconNodeApiClientError::RequestError)?
+        let ok = match pluto_eth2api::instrument(
+            "aggregate_attestation",
+            self.eth2_cl.get_aggregated_attestation_v2(request),
+        )
+        .await
+        .map_err(EthBeaconNodeApiClientError::RequestError)?
         {
             GetAggregatedAttestationV2Response::Ok(ok) => ok,
             // Some beacon nodes return nil if the root is not found; surface a
@@ -511,11 +512,12 @@ impl Fetcher {
             .build()
             .map_err(EthBeaconNodeApiClientError::RequestError)?;
 
-        match self
-            .eth2_cl
-            .produce_sync_committee_contribution(request)
-            .await
-            .map_err(EthBeaconNodeApiClientError::RequestError)?
+        match pluto_eth2api::instrument(
+            "sync_committee_contribution",
+            self.eth2_cl.produce_sync_committee_contribution(request),
+        )
+        .await
+        .map_err(EthBeaconNodeApiClientError::RequestError)?
         {
             ProduceSyncCommitteeContributionResponse::Ok(payload) => {
                 Ok(altair::SyncCommitteeContribution::try_from(&payload.data)?)

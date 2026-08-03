@@ -422,7 +422,7 @@ async fn replay_sniffed_instance_decides(instance: pbconsensus::SniffedConsensus
     for sniffed in instance.msgs {
         let outer = sniffed.msg.expect("sniffed entry has outer message");
         let raw = outer.msg.expect("sniffed outer message has inner message");
-        let values = component::values_by_hash(&outer.values).expect("sniffed values decode");
+        let values = component::values_by_hash(outer.values).expect("sniffed values decode");
         let wrapped = msg::Msg::new(raw, outer.justification, Arc::new(values))
             .expect("sniffed message wraps");
         let wrapped: qbft::Msg<ConsensusQbftTypes> = Arc::new(wrapped);

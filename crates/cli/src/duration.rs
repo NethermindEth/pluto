@@ -7,6 +7,8 @@ const NANOSECOND: u64 = 1;
 const MICROSECOND: u64 = 1000 * NANOSECOND;
 const MILLISECOND: u64 = 1000 * MICROSECOND;
 const SECOND: u64 = 1000 * MILLISECOND;
+const MINUTE: u64 = 60 * SECOND;
+const HOUR: u64 = 60 * MINUTE;
 
 /// Custom Duration wrapper with JSON serialization.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,15 +86,183 @@ impl std::str::FromStr for Duration {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // Try parsing as integer (nanoseconds)
+        // Try parsing as integer (nanoseconds), mirroring Charon's
+        // `UnmarshalText` `strconv.ParseInt` branch.
         if let Ok(nanos) = s.parse::<u64>() {
             return Ok(Self::new(StdDuration::from_nanos(nanos)));
         }
 
-        // Use humantime for duration string parsing
-        humantime::parse_duration(s)
-            .map(Self::new)
-            .map_err(|e| e.to_string())
+        parse_go_duration(s).map(Self::new)
+    }
+}
+
+/// Maximum duration representable by Go's `time.Duration` (`1<<63 - 1` ns).
+const GO_MAX_DURATION_NANOS: u64 = (1 << 63) - 1;
+
+/// Parses a duration string the way Go's `time.ParseDuration` does.
+///
+/// Accepted units: `ns`, `us`/`µs`/`μs`, `ms`, `s`, `m`, `h`. Multiple
+/// `<number><unit>` segments concatenate (`1h30m`), numbers may be
+/// fractional (`1.5h`), a leading `+` is allowed, and the bare string `"0"`
+/// is a special case with no unit required.
+// PARITY: Go time.ParseDuration, used by charon v1.7.1 cmd/duration.go
+// UnmarshalText for all CLI duration flags. Deviation: a leading `-` is
+// rejected (Go accepts negative durations) because `std::time::Duration`
+// is unsigned and every flag using this parser is a non-negative
+// timeout/delay.
+pub fn parse_go_duration(s: &str) -> Result<StdDuration, String> {
+    let orig = s;
+    let mut rest = s;
+
+    // Consume [-+]?
+    let mut neg = false;
+    if let Some(stripped) = rest.strip_prefix(['-', '+']) {
+        neg = rest.starts_with('-');
+        rest = stripped;
+    }
+
+    // Special case: if all that is left is "0", this is zero.
+    if rest == "0" {
+        return Ok(StdDuration::ZERO);
+    }
+
+    if rest.is_empty() {
+        return Err(format!("invalid duration {orig:?}"));
+    }
+
+    if neg {
+        return Err(format!("negative durations are not supported: {orig}"));
+    }
+
+    let mut total: u64 = 0;
+    while !rest.is_empty() {
+        // The next character must be [0-9.]
+        if !rest.starts_with(|c: char| c == '.' || c.is_ascii_digit()) {
+            return Err(format!("invalid duration {orig:?}"));
+        }
+
+        // Consume [0-9]*
+        let (v, after_int) =
+            leading_int(rest).map_err(|()| format!("invalid duration {orig:?}"))?;
+        let pre = after_int.len() != rest.len();
+        rest = after_int;
+
+        // Consume (\.[0-9]*)?
+        let mut frac: u64 = 0;
+        let mut scale: f64 = 1.0;
+        let mut post = false;
+        if let Some(after_dot) = rest.strip_prefix('.') {
+            let (f, sc, after_frac) = leading_fraction(after_dot);
+            frac = f;
+            scale = sc;
+            post = after_frac.len() != after_dot.len();
+            rest = after_frac;
+        }
+
+        if !pre && !post {
+            // No digits (e.g. ".s").
+            return Err(format!("invalid duration {orig:?}"));
+        }
+
+        // Consume unit: everything up to the next digit or '.'.
+        let unit_len = rest
+            .find(|c: char| c == '.' || c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if unit_len == 0 {
+            return Err(format!("missing unit in duration {orig:?}"));
+        }
+        let unit_str = &rest[..unit_len];
+        rest = &rest[unit_len..];
+        let unit = unit_scale(unit_str)
+            .ok_or_else(|| format!("unknown unit {unit_str:?} in duration {orig:?}"))?;
+
+        let mut nanos = v
+            .checked_mul(unit)
+            .filter(|&n| n <= GO_MAX_DURATION_NANOS)
+            .ok_or_else(|| format!("invalid duration {orig:?}"))?;
+        if frac > 0 {
+            // Match Go: float64 is nanosecond-accurate for fractions of the
+            // largest unit (hours).
+            #[allow(
+                clippy::cast_precision_loss,
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss
+            )]
+            let frac_nanos = (frac as f64 * (unit as f64 / scale)) as u64;
+            nanos = nanos
+                .checked_add(frac_nanos)
+                .filter(|&n| n <= GO_MAX_DURATION_NANOS)
+                .ok_or_else(|| format!("invalid duration {orig:?}"))?;
+        }
+
+        total = total
+            .checked_add(nanos)
+            .filter(|&t| t <= GO_MAX_DURATION_NANOS)
+            .ok_or_else(|| format!("invalid duration {orig:?}"))?;
+    }
+
+    Ok(StdDuration::from_nanos(total))
+}
+
+/// Consumes leading `[0-9]*` from `s`. Errors on overflow.
+fn leading_int(s: &str) -> Result<(u64, &str), ()> {
+    let mut x: u64 = 0;
+    let mut end = 0;
+    for (i, &b) in s.as_bytes().iter().enumerate() {
+        if !b.is_ascii_digit() {
+            break;
+        }
+        x = x
+            .checked_mul(10)
+            .and_then(|y| y.checked_add(u64::from(b.saturating_sub(b'0'))))
+            .filter(|&y| y <= GO_MAX_DURATION_NANOS)
+            .ok_or(())?;
+        end = i.saturating_add(1);
+    }
+    Ok((x, &s[end..]))
+}
+
+/// Consumes leading `[0-9]*` from `s` as the value and scale of its decimal
+/// fraction. Ignores digits beyond the overflow point, like Go.
+fn leading_fraction(s: &str) -> (u64, f64, &str) {
+    let mut x: u64 = 0;
+    let mut scale: f64 = 1.0;
+    let mut overflow = false;
+    let mut end = 0;
+    for (i, &b) in s.as_bytes().iter().enumerate() {
+        if !b.is_ascii_digit() {
+            break;
+        }
+        end = i.saturating_add(1);
+        if overflow {
+            continue;
+        }
+        match x
+            .checked_mul(10)
+            .and_then(|y| y.checked_add(u64::from(b.saturating_sub(b'0'))))
+            .filter(|&y| y <= GO_MAX_DURATION_NANOS)
+        {
+            Some(y) => {
+                x = y;
+                scale *= 10.0;
+            }
+            None => overflow = true,
+        }
+    }
+    (x, scale, &s[end..])
+}
+
+/// Returns the nanosecond scale of a Go duration unit, or `None` if unknown.
+/// Go accepts both the micro sign `µ` (U+00B5) and the Greek mu `μ` (U+03BC).
+fn unit_scale(unit: &str) -> Option<u64> {
+    match unit {
+        "ns" => Some(NANOSECOND),
+        "us" | "\u{00b5}s" | "\u{03bc}s" => Some(MICROSECOND),
+        "ms" => Some(MILLISECOND),
+        "s" => Some(SECOND),
+        "m" => Some(MINUTE),
+        "h" => Some(HOUR),
+        _ => None,
     }
 }
 
@@ -344,9 +514,58 @@ mod tests {
     }
 
     #[test_case("second"; "text_string")]
+    #[test_case("1d"; "days_unit")]
+    #[test_case("1w"; "weeks_unit")]
     fn test_from_str_error(input: &str) {
         let result = input.parse::<Duration>();
         assert!(result.is_err());
+    }
+
+    #[test_case("1ns", StdDuration::from_nanos(1); "one_nanosecond")]
+    #[test_case("1us", StdDuration::from_micros(1); "one_microsecond_ascii")]
+    #[test_case("1µs", StdDuration::from_micros(1); "one_microsecond_micro_sign")]
+    #[test_case("1\u{03bc}s", StdDuration::from_micros(1); "one_microsecond_greek_mu")]
+    #[test_case("1ms", StdDuration::from_millis(1); "one_millisecond")]
+    #[test_case("1s", StdDuration::from_secs(1); "one_second")]
+    #[test_case("2m", StdDuration::from_secs(120); "two_minutes")]
+    #[test_case("1h", StdDuration::from_secs(3600); "one_hour")]
+    #[test_case("1m0s", StdDuration::from_secs(60); "multi_segment_dkg_default")]
+    #[test_case("1h30m", StdDuration::from_secs(5400); "multi_segment_hour_minute")]
+    #[test_case("24h0m0s", StdDuration::from_secs(24 * 3600); "charon_round_trip")]
+    #[test_case("1.5h", StdDuration::from_secs(5400); "fractional_hours")]
+    #[test_case("2.5s", StdDuration::from_millis(2500); "fractional_seconds")]
+    #[test_case("0.5s", StdDuration::from_millis(500); "fraction_below_one")]
+    #[test_case(".5s", StdDuration::from_millis(500); "fraction_no_integer_part")]
+    #[test_case("100ns", StdDuration::from_nanos(100); "hundred_nanoseconds")]
+    #[test_case("+5s", StdDuration::from_secs(5); "leading_plus")]
+    #[test_case("0", StdDuration::ZERO; "bare_zero_special_case")]
+    #[test_case("-0", StdDuration::ZERO; "negative_zero_special_case")]
+    #[test_case("0s", StdDuration::ZERO; "zero_seconds")]
+    fn test_parse_go_duration(input: &str, expected: StdDuration) {
+        assert_eq!(parse_go_duration(input).unwrap(), expected);
+    }
+
+    #[test_case("1d", "unknown unit"; "days_rejected")]
+    #[test_case("1w", "unknown unit"; "weeks_rejected")]
+    #[test_case("1y", "unknown unit"; "years_rejected")]
+    #[test_case("1M", "unknown unit"; "months_rejected")]
+    #[test_case("5sec", "unknown unit"; "humantime_spelling_rejected")]
+    #[test_case("-5s", "negative durations"; "negative_seconds")]
+    #[test_case("-1h", "negative durations"; "negative_hours")]
+    #[test_case("1", "missing unit"; "unitless_integer")]
+    #[test_case("1.5", "missing unit"; "unitless_fraction")]
+    #[test_case("s", "invalid duration"; "unit_without_number")]
+    #[test_case("", "invalid duration"; "empty")]
+    #[test_case(".s", "invalid duration"; "dot_without_digits")]
+    #[test_case("abc", "invalid duration"; "letters")]
+    #[test_case("not-a-duration", "invalid duration"; "dashed_text")]
+    #[test_case("9999999999999999999h", "invalid duration"; "overflow")]
+    fn test_parse_go_duration_error(input: &str, expected_msg: &str) {
+        let err = parse_go_duration(input).unwrap_err();
+        assert!(
+            err.contains(expected_msg),
+            "error {err:?} does not contain {expected_msg:?}"
+        );
     }
 
     #[test_case(StdDuration::from_micros(15151), StdDuration::from_millis(15); "15_151_milliseconds")]

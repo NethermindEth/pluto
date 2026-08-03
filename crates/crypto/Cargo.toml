@@ -13,6 +13,7 @@ pluto-eth2api.workspace = true
 rand.workspace = true
 rand_core.workspace = true
 thiserror.workspace = true
+zeroize.workspace = true
 
 [lints.rust]
 # Allow unsafe code for blst C bindings (overrides workspace forbid)

@@ -236,7 +236,12 @@ pub(crate) fn hash_definition_legacy<H: HashWalker>(
     }
 
     // Field (10) 'timestamp' (optional for backwards compatibility)
-    if config_only && !definition.timestamp.is_empty() || definition.version != V1_0 {
+    if config_only {
+        if !definition.timestamp.is_empty() {
+            hh.put_bytes(definition.timestamp.as_bytes())
+                .map_err(SSZError::<H>::HashWalkerError)?;
+        }
+    } else if definition.version != V1_0 {
         hh.put_bytes(definition.timestamp.as_bytes())
             .map_err(SSZError::<H>::HashWalkerError)?;
     }
@@ -787,7 +792,7 @@ pub(crate) fn hash_lock_legacy<H: HashWalker>(lock: &Lock, hh: &mut H) -> Result
     // Field (1) 'ValidatorAddresses'
     {
         let sub_idx = hh.index();
-        let num = lock.validator_addresses.len();
+        let num = lock.distributed_validators.len();
 
         for validator in &lock.distributed_validators {
             hash_validator_legacy(validator, hh)?;

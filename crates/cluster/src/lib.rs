@@ -17,6 +17,8 @@ pub mod distvalidator;
 pub mod eip712sigs;
 /// General helper utilities.
 pub mod helpers;
+/// Loading and verification of a cluster [`Lock`](lock::Lock) from disk.
+pub mod load;
 /// `Lock` type representing the finalized cluster configuration, including
 /// distributed validators and node signatures.
 pub mod lock;

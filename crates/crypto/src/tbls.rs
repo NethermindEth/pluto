@@ -35,6 +35,15 @@ pub trait Tbls {
     ///
     /// Maximum of 255 shares (total <= 255) due to underlying BLS library
     /// constraints.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidThreshold`] if `threshold < 2` or
+    /// `threshold > total`. (Charon only enforces `threshold > 1`; Pluto
+    /// additionally rejects `threshold > total` as an unrecoverable, always-bug
+    /// configuration.) Returns [`Error::InvalidSecretKey`] if `secret_key` is
+    /// not a valid BLS scalar, and [`Error::ThresholdOverflow`] if `threshold`
+    /// does not fit in `usize` on this platform.
     fn threshold_split_insecure(
         &self,
         secret_key: &PrivateKey,
@@ -54,6 +63,15 @@ pub trait Tbls {
     ///
     /// Maximum of 255 shares (total <= 255) due to underlying BLS library
     /// constraints.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidThreshold`] if `threshold < 2` or
+    /// `threshold > total`. (Charon only enforces `threshold > 1`; Pluto
+    /// additionally rejects `threshold > total` as an unrecoverable, always-bug
+    /// configuration.) Returns [`Error::InvalidSecretKey`] if `secret_key` is
+    /// not a valid BLS scalar, and [`Error::ThresholdOverflow`] if `threshold`
+    /// does not fit in `usize` on this platform.
     fn threshold_split(
         &self,
         secret_key: &PrivateKey,

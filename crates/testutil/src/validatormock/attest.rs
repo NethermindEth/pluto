@@ -12,34 +12,31 @@
 //!
 //! ## Wire-format note
 //!
-//! Charon's Go validator mock sends `*eth2spec.VersionedAttestation` and
-//! `*eth2spec.VersionedSignedAggregateAndProof` JSON to the beacon node.
-//! The Rust [`pluto_eth2api`] generated client encodes attestations using the
-//! `SingleAttestation` shape (Electra+) which is incompatible with the Go
-//! payload shape captured in the goldens. We therefore bypass the typed client
-//! for the two submit endpoints (`POST /eth/v2/beacon/pool/attestations` and
-//! `POST /eth/v2/validator/aggregate_and_proofs`) and submit raw JSON whose
-//! structure matches the Go `eth2spec.VersionedAttestation` /
-//! `*SubmitAggregateAttestationsOpts` serializations. All other beacon-node
-//! interactions use the generated client.
+//! The two submit endpoints bypass the generated typed client and send raw
+//! JSON, because their wire shape differs from Pluto's internal spec types:
 //!
-//! The byte-for-byte parity with the Go goldens is what current consumers
-//! (Charon-as-beacon-node fakes in the DV test harness) expect. The shape has
-//! NOT been validated end-to-end against a real beacon node — if a future
-//! integration needs that, either the typed client must learn the
-//! `VersionedAttestation` wire shape or we switch to the spec-conformant
-//! `SingleAttestation` payload and regenerate the goldens. On non-success
-//! responses [`submit_json`] surfaces the HTTP status and response body so a
-//! mismatch against a real beacon node would show up directly in the error
+//! - `POST /eth/v2/beacon/pool/attestations` sends the Electra+
+//!   `SingleAttestation` wire format, not the internal `VersionedAttestation`.
+//! - `POST /eth/v2/validator/aggregate_and_proofs` sends a bare
+//!   `[SignedAggregateAndProof]` array (fork selected by the
+//!   `Eth-Consensus-Version` header), not a `SubmitAggregateAttestationsOpts`
+//!   envelope.
+//!
+//! Both match go-eth2-client's transport and what a real Electra+ beacon node
+//! accepts, and are exercised against Pluto's own validator-API router; the
+//! goldens capture the exact bytes. All other beacon-node interactions use the
+//! generated client. On non-success responses [`submit_json`] surfaces the HTTP
+//! status and response body, so a shape mismatch shows up directly in the error
 //! message rather than as a silent reqwest failure.
 
 use std::{collections::HashMap, sync::Arc};
 
 use pluto_eth2api::{
-    EthBeaconNodeApiClient, EthBeaconNodeApiClientError, GetAggregatedAttestationV2Request,
-    GetAggregatedAttestationV2Response, GetAttesterDutiesRequest, GetAttesterDutiesResponse,
-    ProduceAttestationDataRequest, ProduceAttestationDataResponse,
-    SubmitBeaconCommitteeSelectionsRequest, SubmitBeaconCommitteeSelectionsResponse,
+    ConsensusVersion, ETH_CONSENSUS_VERSION, EthBeaconNodeApiClient, EthBeaconNodeApiClientError,
+    GetAggregatedAttestationV2Request, GetAggregatedAttestationV2Response,
+    GetAttesterDutiesRequest, GetAttesterDutiesResponse, ProduceAttestationDataRequest,
+    ProduceAttestationDataResponse, SubmitBeaconCommitteeSelectionsRequest,
+    SubmitBeaconCommitteeSelectionsResponse,
     spec::{
         electra,
         phase0::{AttestationData, BLSPubKey, BLSSignature, Root, Slot, ValidatorIndex},
@@ -50,9 +47,7 @@ use pluto_eth2util::{
     helpers::epoch_from_slot,
     signing::{DomainName, get_data_root},
 };
-use pluto_ssz::{BitList, BitVector};
 use serde::Serialize;
-use serde_with::serde_as;
 use tokio::sync::Mutex;
 use tree_hash::TreeHash;
 
@@ -419,7 +414,7 @@ async fn attest(
             .push(duty);
     }
 
-    let mut atts: Vec<VersionedAttestationJson> = Vec::new();
+    let mut atts: Vec<electra::SingleAttestation> = Vec::new();
     let mut datas: Vec<AttestationData> = Vec::new();
 
     for comm_idx in &comm_order {
@@ -457,27 +452,17 @@ async fn attest(
         for duty in duty_list {
             let sig = sign_func.sign(&duty.pubkey, &sig_data)?;
 
-            let agg_bits = BitList::<131_072>::with_bits(
-                usize_from_u64(duty.committee_length)?,
-                &[usize_from_u64(duty.validator_committee_index)?],
-            );
-            let comm_bits = BitVector::<64>::with_bits(&[usize_from_u64(duty.committee_index)?]);
-
-            atts.push(VersionedAttestationJson {
-                version: "fulu",
-                validator_index: duty.validator_index,
-                phase0: None,
-                altair: None,
-                bellatrix: None,
-                capella: None,
-                deneb: None,
-                electra: None,
-                fulu: Some(electra::Attestation {
-                    aggregation_bits: agg_bits,
-                    data: data.clone(),
-                    signature: sig,
-                    committee_bits: comm_bits,
-                }),
+            // Electra+ beacon nodes accept the wire-format `SingleAttestation`
+            // on `POST /eth/v2/beacon/pool/attestations` — go-eth2-client (and
+            // hence Charon) converts the internal versioned attestation to this
+            // before POSTing (`ToSingleAttestation`): committee index from the
+            // assigned committee, attester index from the validator, carrying the
+            // data + signature (aggregation bits are dropped for a single).
+            atts.push(electra::SingleAttestation {
+                committee_index: duty.committee_index,
+                attester_index: duty.validator_index,
+                data: data.clone(),
+                signature: sig,
             });
         }
     }
@@ -511,7 +496,7 @@ async fn aggregate(
         .map(|duty| (duty.validator_index, duty.committee_index))
         .collect();
 
-    let mut aggs: Vec<VersionedSignedAggregateAndProofJson> = Vec::new();
+    let mut aggs: Vec<electra::SignedAggregateAndProof> = Vec::new();
     let mut atts_by_comm: HashMap<CommitteeIndex, electra::Attestation> = HashMap::new();
 
     for selection in selections {
@@ -543,18 +528,12 @@ async fn aggregate(
 
         let proof_sig = sign_func.sign(pubkey, &sig_data)?;
 
-        aggs.push(VersionedSignedAggregateAndProofJson {
-            version: "fulu",
-            phase0: None,
-            altair: None,
-            bellatrix: None,
-            capella: None,
-            deneb: None,
-            electra: None,
-            fulu: Some(electra::SignedAggregateAndProof {
-                message: proof_message,
-                signature: proof_sig,
-            }),
+        // Electra+ beacon nodes take a bare `[SignedAggregateAndProof]` array on
+        // `/eth/v2/validator/aggregate_and_proofs` (go-eth2-client unwraps the
+        // opts before POST); the versioned envelope is not the wire shape.
+        aggs.push(electra::SignedAggregateAndProof {
+            message: proof_message,
+            signature: proof_sig,
         });
     }
 
@@ -608,13 +587,12 @@ async fn get_aggregate_attestation(
 // Raw POST helpers
 // ---------------------------------------------------------------------------
 //
-// These submit the Go `*eth2spec.VersionedAttestation` /
-// `*SubmitAggregateAttestationsOpts` JSON shape, NOT the typed-client
-// `SingleAttestation` shape that the generated `submit_pool_attestations_v2`
-// would produce. See the module-level docstring for the rationale and the
-// follow-up tracked there. Errors surface the HTTP status AND response body
-// (via [`Error::SubmitStatus`]) so beacon-node validation failures are visible
-// — matching the diagnostic richness of Go's typed `SubmitAttestations` error.
+// These submit the Electra+ `SingleAttestation` array and the bare
+// `SignedAggregateAndProof` array wire shapes directly, bypassing the generated
+// typed client (see the module-level docstring for why). Errors surface the
+// HTTP status AND response body (via [`Error::SubmitStatus`]) so beacon-node
+// validation failures are visible — matching the diagnostic richness of Go's
+// typed `SubmitAttestations` error.
 
 /// Maximum number of bytes of an HTTP error response body to keep in the
 /// surfaced error. Keeps log lines readable without dropping the useful prefix
@@ -623,7 +601,7 @@ const ERROR_BODY_TRUNCATE: usize = 1024;
 
 async fn submit_attestations(
     eth2_cl: &EthBeaconNodeApiClient,
-    atts: &[VersionedAttestationJson],
+    atts: &[electra::SingleAttestation],
 ) -> Result<()> {
     const ENDPOINT: &str = "/eth/v2/beacon/pool/attestations";
     submit_json(eth2_cl, ENDPOINT, atts).await
@@ -631,14 +609,12 @@ async fn submit_attestations(
 
 async fn submit_aggregate_attestations(
     eth2_cl: &EthBeaconNodeApiClient,
-    aggs: &[VersionedSignedAggregateAndProofJson],
+    aggs: &[electra::SignedAggregateAndProof],
 ) -> Result<()> {
     const ENDPOINT: &str = "/eth/v2/validator/aggregate_and_proofs";
-    let body = SubmitAggregateAttestationsOptsJson {
-        common: CommonOpts::default(),
-        signed_aggregate_and_proofs: aggs,
-    };
-    submit_json(eth2_cl, ENDPOINT, &body).await
+    // Bare array on the wire (fork from the `Eth-Consensus-Version` header),
+    // matching the validator-API router and a real beacon node.
+    submit_json(eth2_cl, ENDPOINT, aggs).await
 }
 
 async fn submit_json<T: Serialize + ?Sized>(
@@ -660,6 +636,12 @@ async fn submit_json<T: Serialize + ?Sized>(
     let response = eth2_cl
         .client
         .post(url)
+        // The v2 pool/aggregate submit endpoints require the consensus-version
+        // header; the validator API rejects the request without it (400
+        // "missing consensus version header"). The mock originates Fulu-fork
+        // payloads (like Charon's vmock, which hardcodes DataVersionFulu), so
+        // send that fork.
+        .header(ETH_CONSENSUS_VERSION, ConsensusVersion::Fulu.to_string())
         .json(body)
         .send()
         .await
@@ -692,78 +674,6 @@ async fn submit_json<T: Serialize + ?Sized>(
 }
 
 // ---------------------------------------------------------------------------
-// Go-shaped JSON payloads
-// ---------------------------------------------------------------------------
-
-/// JSON shape matching Go's `*eth2spec.VersionedAttestation`.
-///
-/// Field names use Go's `PascalCase` for the version envelope, with
-/// per-fork inner payloads keyed by the fork name. The inner
-/// `electra::Attestation` serializes with snake_case fields
-/// (`aggregation_bits`, `committee_bits`, `data`, `signature`) which matches
-/// the Go output.
-#[serde_as]
-#[derive(Debug, Serialize)]
-struct VersionedAttestationJson {
-    #[serde(rename = "Version")]
-    version: &'static str,
-    #[serde(rename = "ValidatorIndex")]
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    validator_index: ValidatorIndex,
-    #[serde(rename = "Phase0")]
-    phase0: Option<()>,
-    #[serde(rename = "Altair")]
-    altair: Option<()>,
-    #[serde(rename = "Bellatrix")]
-    bellatrix: Option<()>,
-    #[serde(rename = "Capella")]
-    capella: Option<()>,
-    #[serde(rename = "Deneb")]
-    deneb: Option<()>,
-    #[serde(rename = "Electra")]
-    electra: Option<electra::Attestation>,
-    #[serde(rename = "Fulu")]
-    fulu: Option<electra::Attestation>,
-}
-
-/// JSON shape matching Go's `*eth2spec.VersionedSignedAggregateAndProof`.
-#[derive(Debug, Serialize)]
-struct VersionedSignedAggregateAndProofJson {
-    #[serde(rename = "Version")]
-    version: &'static str,
-    #[serde(rename = "Phase0")]
-    phase0: Option<()>,
-    #[serde(rename = "Altair")]
-    altair: Option<()>,
-    #[serde(rename = "Bellatrix")]
-    bellatrix: Option<()>,
-    #[serde(rename = "Capella")]
-    capella: Option<()>,
-    #[serde(rename = "Deneb")]
-    deneb: Option<()>,
-    #[serde(rename = "Electra")]
-    electra: Option<electra::SignedAggregateAndProof>,
-    #[serde(rename = "Fulu")]
-    fulu: Option<electra::SignedAggregateAndProof>,
-}
-
-/// JSON shape matching Go's `*eth2api.SubmitAggregateAttestationsOpts`.
-#[derive(Debug, Serialize)]
-struct SubmitAggregateAttestationsOptsJson<'a> {
-    #[serde(rename = "Common")]
-    common: CommonOpts,
-    #[serde(rename = "SignedAggregateAndProofs")]
-    signed_aggregate_and_proofs: &'a [VersionedSignedAggregateAndProofJson],
-}
-
-/// JSON shape matching Go's `eth2api.CommonOpts` (timeout in nanoseconds).
-#[derive(Debug, Serialize, Default)]
-struct CommonOpts {
-    #[serde(rename = "Timeout")]
-    timeout: u64,
-}
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -787,10 +697,6 @@ fn parse_signature(s: &str) -> Result<BLSSignature> {
 
 fn parse_u64(s: &str) -> Option<u64> {
     s.parse::<u64>().ok()
-}
-
-fn usize_from_u64(value: u64) -> Result<usize> {
-    usize::try_from(value).map_err(|_| malformed(format!("usize from u64 overflow: {value}")))
 }
 
 fn malformed(s: impl Into<String>) -> Error {
@@ -894,11 +800,9 @@ mod tests {
         let ok = attester.aggregate().await.expect("aggregate");
         assert_eq!(expect_aggregations > 0, ok);
 
-        // The SUT issues exactly one POST to each endpoint. The body for
-        // attestations is a JSON array of `VersionedAttestation`s; the body for
-        // aggregate_and_proofs is a single `SubmitAggregateAttestationsOpts`
-        // object whose `SignedAggregateAndProofs` array holds the
-        // `VersionedSignedAggregateAndProof`s.
+        // The SUT issues exactly one POST to each endpoint. Both bodies are bare
+        // JSON arrays: `SingleAttestation`s for attestations, and
+        // `SignedAggregateAndProof`s for aggregate_and_proofs.
         let atts_bodies = atts_capture.take();
         assert_eq!(atts_bodies.len(), 1, "expected one POST to attestations");
         let mut atts_array = atts_bodies[0]
@@ -912,17 +816,15 @@ mod tests {
             1,
             "expected one POST to aggregate_and_proofs"
         );
-        let mut aggs_body = aggs_bodies[0].clone();
-        let aggs_array = aggs_body
-            .get_mut("SignedAggregateAndProofs")
-            .and_then(Value::as_array_mut)
-            .expect("SignedAggregateAndProofs must be an array");
+        let mut aggs_array = aggs_bodies[0]
+            .as_array()
+            .cloned()
+            .expect("aggregate_and_proofs body is JSON array");
 
         assert_eq!(atts_array.len(), expect_attestations);
         assert_eq!(aggs_array.len(), expect_aggregations);
 
-        // Match Go's TestAttest deterministic ordering: sort by data.index
-        // (ascending, numeric).
+        // Match Go's TestAttest deterministic ordering: sort by index.
         atts_array.sort_by_key(index_of_attestation);
         aggs_array.sort_by_key(index_of_aggregate);
 
@@ -931,9 +833,10 @@ mod tests {
             .expect("parse attestations golden");
         assert_json_eq!(atts_value, golden_atts);
 
+        let aggs_value = Value::Array(aggs_array);
         let golden_aggs: Value = serde_json::from_str(golden(duty_factor, "aggregations"))
             .expect("parse aggregations golden");
-        assert_json_eq!(aggs_body, golden_aggs);
+        assert_json_eq!(aggs_value, golden_aggs);
     }
 
     fn golden(duty_factor: u64, kind: &str) -> &'static str {
@@ -947,10 +850,10 @@ mod tests {
     }
 
     fn index_of_attestation(value: &Value) -> u64 {
+        // `SingleAttestation` is the wire shape; sort by attester index for a
+        // deterministic order.
         value
-            .get("Fulu")
-            .and_then(|f| f.get("data"))
-            .and_then(|d| d.get("index"))
+            .get("attester_index")
             .and_then(Value::as_str)
             .and_then(|s| s.parse().ok())
             .unwrap_or(u64::MAX)
@@ -958,8 +861,7 @@ mod tests {
 
     fn index_of_aggregate(value: &Value) -> u64 {
         value
-            .get("Fulu")
-            .and_then(|f| f.get("message"))
+            .get("message")
             .and_then(|m| m.get("aggregate"))
             .and_then(|a| a.get("data"))
             .and_then(|d| d.get("index"))

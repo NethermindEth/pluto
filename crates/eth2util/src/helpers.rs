@@ -24,7 +24,7 @@ pub enum HelperError {
     InvalidHexAddress(String),
 
     /// Invalid HTTP header format
-    #[error("HTTP headers must be comma separated values formatted as header=value")]
+    #[error("http headers must be comma separated values formatted as header=value")]
     InvalidHTTPHeader,
 
     /// Failed to get the beacon node spec
