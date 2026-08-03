@@ -25,10 +25,19 @@
 //! message types, while invalid duty wire values project to
 //! [`DutyType::Unknown`].
 
-use std::{any, collections::HashMap, fmt, sync};
+use std::{
+    any,
+    collections::{BTreeMap, HashMap},
+    fmt, sync,
+};
 
 use k256::{PublicKey, SecretKey};
 use pluto_ssz::{HashRoot, HashWalker, Hasher, HasherError};
+use prost::{
+    Message as _, Name as _,
+    bytes::Bytes,
+    encoding::{WireType, encode_key, encode_varint},
+};
 use prost_types::Any;
 
 use pluto_core::{
@@ -90,6 +99,10 @@ pub enum Error {
     /// Protobuf marshal failed.
     #[error("marshal proto: {0}")]
     MarshalProto(#[source] prost::EncodeError),
+
+    /// Protobuf unmarshal failed while re-encoding for charon parity.
+    #[error("unmarshal proto: {0}")]
+    UnmarshalProto(#[source] prost::DecodeError),
 
     /// SSZ hash failed.
     #[error("hash proto: {0}")]
@@ -280,7 +293,52 @@ where
     let mut encoded = Vec::with_capacity(msg.encoded_len());
     msg.encode(&mut encoded).map_err(Error::MarshalProto)?;
 
+    // prost omits a map entry's key or value field when it equals the protobuf
+    // default (empty string / empty bytes), but charon's Go marshaler always
+    // emits both. `UnsignedDataSet` is the only map-bearing message hashed in
+    // consensus, so re-encode it the charon way to keep value hashes identical
+    // across implementations. See [`encode_unsigned_data_set`].
+    if M::PACKAGE == pbcore::UnsignedDataSet::PACKAGE && M::NAME == pbcore::UnsignedDataSet::NAME {
+        let decoded =
+            pbcore::UnsignedDataSet::decode(encoded.as_slice()).map_err(Error::UnmarshalProto)?;
+        encoded.clear();
+        encode_unsigned_data_set(&decoded.set, &mut encoded);
+    }
+
     hash_proto_bytes(&encoded)
+}
+
+/// Encodes an [`UnsignedDataSet`](pbcore::UnsignedDataSet) to charon-compatible
+/// deterministic protobuf bytes.
+///
+/// prost skips a map entry's key or value field when it holds the protobuf
+/// default (empty string / empty bytes), whereas charon's Go marshaler
+/// (`proto.MarshalOptions{Deterministic: true}`) always emits both fields.
+/// That divergence changes the encoded bytes — and therefore the consensus
+/// value hash — for any entry with an empty key or empty value. Such entries
+/// never occur in normal operation (keys are validator pubkeys, values are
+/// serialized duty data), but can arrive via adversarial or malformed wire
+/// input; reproducing charon's encoding keeps a mixed cluster in agreement.
+///
+/// `BTreeMap` iterates in key-sorted order, matching Go's deterministic map
+/// ordering, so the emitted entries are byte-identical to charon's.
+fn encode_unsigned_data_set(set: &BTreeMap<String, Bytes>, buf: &mut Vec<u8>) {
+    for (key, value) in set {
+        // Map entry message: field 1 = key (string), field 2 = value (bytes).
+        // Both are length-delimited and always emitted, even when empty.
+        let mut entry = Vec::new();
+        encode_key(1, WireType::LengthDelimited, &mut entry);
+        encode_varint(key.len() as u64, &mut entry);
+        entry.extend_from_slice(key.as_bytes());
+        encode_key(2, WireType::LengthDelimited, &mut entry);
+        encode_varint(value.len() as u64, &mut entry);
+        entry.extend_from_slice(value);
+
+        // `set` field 1: one length-delimited map entry per key.
+        encode_key(1, WireType::LengthDelimited, buf);
+        encode_varint(entry.len() as u64, buf);
+        buf.append(&mut entry);
+    }
 }
 
 /// Returns the consensus hash for deterministic inner-protobuf bytes.
@@ -467,6 +525,77 @@ mod tests {
         let hash = hash_proto(&pbcore::UnsignedDataSet { set }).unwrap();
 
         assert_eq!(hex::encode(hash), UNSIGNED_DATASET_HASH);
+    }
+
+    /// Builds an [`UnsignedDataSet`] from `(key, value)` pairs.
+    fn unsigned_data_set(entries: &[(&str, &[u8])]) -> pbcore::UnsignedDataSet {
+        let mut set = BTreeMap::new();
+        for (k, v) in entries {
+            set.insert((*k).to_owned(), Bytes::copy_from_slice(v));
+        }
+        pbcore::UnsignedDataSet { set }
+    }
+
+    /// charon's Go marshaler always emits a map entry's key and value fields,
+    /// even when empty. These byte vectors were reproduced by running charon's
+    /// deterministic proto marshal over the same entries.
+    #[test]
+    fn encode_unsigned_data_set_matches_charon_empty_fields() {
+        let encode = |entries: &[(&str, &[u8])]| {
+            let mut buf = Vec::new();
+            encode_unsigned_data_set(&unsigned_data_set(entries).set, &mut buf);
+            buf
+        };
+
+        // empty key -> emits `0a00` for the key field.
+        assert_eq!(
+            encode(&[("", b"val")]),
+            [0x0a, 0x07, 0x0a, 0x00, 0x12, 0x03, b'v', b'a', b'l'],
+        );
+        // empty value -> emits `1200` for the value field.
+        assert_eq!(
+            encode(&[("key", b"")]),
+            [0x0a, 0x07, 0x0a, 0x03, b'k', b'e', b'y', 0x12, 0x00],
+        );
+        // both empty -> emits both empty fields.
+        assert_eq!(encode(&[("", b"")]), [0x0a, 0x04, 0x0a, 0x00, 0x12, 0x00]);
+    }
+
+    /// For entries with non-default key and value, prost and charon already
+    /// agree, so the charon encoder must reproduce prost's bytes exactly.
+    #[test]
+    fn encode_unsigned_data_set_matches_prost_for_nonempty_entries() {
+        let set = unsigned_data_set(&[("key", b"val"), ("alpha", b"beta")]);
+
+        let mut charon = Vec::new();
+        encode_unsigned_data_set(&set.set, &mut charon);
+
+        assert_eq!(charon, set.encode_to_vec());
+        // Sorted by key: "alpha" entry precedes "key" entry.
+        assert_eq!(
+            charon,
+            [
+                0x0a, 0x0d, 0x0a, 0x05, b'a', b'l', b'p', b'h', b'a', 0x12, 0x04, b'b', b'e', b't',
+                b'a', 0x0a, 0x0a, 0x0a, 0x03, b'k', b'e', b'y', 0x12, 0x03, b'v', b'a', b'l',
+            ]
+        );
+    }
+
+    /// `hash_proto` must hash the charon-compatible bytes, not prost's, for an
+    /// `UnsignedDataSet` carrying an empty-key or empty-value entry.
+    #[test]
+    fn hash_proto_uses_charon_map_encoding_for_empty_fields() {
+        let set = unsigned_data_set(&[("", b"val")]);
+
+        // prost drops the empty key field; charon keeps it, so the two encodings
+        // — and their hashes — differ.
+        let prost_bytes = set.encode_to_vec();
+        let charon_bytes = [0x0a, 0x07, 0x0a, 0x00, 0x12, 0x03, b'v', b'a', b'l'];
+        assert_ne!(prost_bytes.as_slice(), charon_bytes.as_slice());
+
+        let hashed = hash_proto(&set).unwrap();
+        assert_eq!(hashed, hash_proto_bytes(&charon_bytes).unwrap());
+        assert_ne!(hashed, hash_proto_bytes(&prost_bytes).unwrap());
     }
 
     #[test]
