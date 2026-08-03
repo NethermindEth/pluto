@@ -49,3 +49,5 @@ FROM gcr.io/distroless/cc-debian13@sha256:ed7c407fd64eb0af9dddb9456b94cee188a40a
 COPY --from=builder /usr/local/bin/pluto /app/bin/pluto
 
 ENTRYPOINT ["/app/bin/pluto"]
+# Default to `run` command
+CMD ["run"]
