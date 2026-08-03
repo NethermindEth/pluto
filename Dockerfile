@@ -51,3 +51,10 @@ COPY --from=builder /usr/local/bin/pluto /app/bin/pluto
 ENTRYPOINT ["/app/bin/pluto"]
 # Default to `run` command
 CMD ["run"]
+
+# Image metadata
+LABEL org.opencontainers.image.source="https://github.com/NethermindEth/pluto"
+LABEL org.opencontainers.image.title="pluto"
+LABEL org.opencontainers.image.description="Proof of Stake Ethereum Distributed Validator Client"
+LABEL org.opencontainers.image.licenses="BUSL-1.1"
+LABEL org.opencontainers.image.documentation="https://docs.obol.org/"
