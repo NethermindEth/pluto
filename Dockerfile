@@ -48,8 +48,8 @@ FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    ca-certificates && \
-    fio && \
+    ca-certificates \
+    fio \
     wget && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
