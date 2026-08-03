@@ -276,6 +276,7 @@ fn wire_inputs_with(
             share_idx: 1,
         }],
         feature_set: Arc::new(pluto_featureset::FeatureSet::default()),
+        infosync: None,
     }
 }
 

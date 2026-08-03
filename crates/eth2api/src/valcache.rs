@@ -155,16 +155,14 @@ impl ValidatorCache {
             },
         };
 
-        let response = self
-            .0
-            .eth2_cl
-            .post_state_validators(request)
-            .await
-            .map_err(EthBeaconNodeApiClientError::RequestError)
-            .and_then(|response| match response {
-                PostStateValidatorsResponse::Ok(response) => Ok(response),
-                _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
-            })?;
+        let response =
+            crate::instrument("validators", self.0.eth2_cl.post_state_validators(request))
+                .await
+                .map_err(EthBeaconNodeApiClientError::RequestError)
+                .and_then(|response| match response {
+                    PostStateValidatorsResponse::Ok(response) => Ok(response),
+                    _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
+                })?;
 
         let (active_validators, complete_validators) = validators_from_response(response)?;
 
@@ -203,17 +201,19 @@ impl ValidatorCache {
             },
         };
 
-        let (response, refreshed_by_slot) =
-            match self.0.eth2_cl.post_state_validators(request.clone()).await {
-                Ok(PostStateValidatorsResponse::Ok(response)) => (response, true),
-                _ => {
-                    // Failed to fetch by slot, fall back to head state
-                    request.path.state_id = "head".into();
+        let (response, refreshed_by_slot) = match crate::instrument(
+            "validators",
+            self.0.eth2_cl.post_state_validators(request.clone()),
+        )
+        .await
+        {
+            Ok(PostStateValidatorsResponse::Ok(response)) => (response, true),
+            _ => {
+                // Failed to fetch by slot, fall back to head state
+                request.path.state_id = "head".into();
 
-                    let response = self
-                        .0
-                        .eth2_cl
-                        .post_state_validators(request)
+                let response =
+                    crate::instrument("validators", self.0.eth2_cl.post_state_validators(request))
                         .await
                         .map_err(EthBeaconNodeApiClientError::RequestError)
                         .and_then(|response| match response {
@@ -221,9 +221,9 @@ impl ValidatorCache {
                             _ => Err(EthBeaconNodeApiClientError::UnexpectedResponse),
                         })?;
 
-                    (response, false)
-                }
-            };
+                (response, false)
+            }
+        };
 
         let (active_validators, complete_validators) = validators_from_response(response)?;
 

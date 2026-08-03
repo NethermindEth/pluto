@@ -5140,10 +5140,12 @@ dependencies = [
  "pluto-eth2api",
  "pluto-eth2util",
  "pluto-featureset",
+ "pluto-infosync",
  "pluto-k1util",
  "pluto-p2p",
  "pluto-parsigex",
  "pluto-peerinfo",
+ "pluto-priority",
  "pluto-ssz",
  "pluto-testutil",
  "prost 0.14.4",
@@ -5442,6 +5444,7 @@ dependencies = [
  "tree_hash",
  "tree_hash_derive",
  "validator",
+ "vise",
  "wiremock",
 ]
 

@@ -151,10 +151,12 @@ fn truncate_label(s: &str) -> String {
 async fn fetch_node_version(
     beacon_node: &EthBeaconNodeApiClient,
 ) -> Result<String, ReadyCheckerError> {
-    match beacon_node
-        .get_node_version(GetNodeVersionRequest {})
-        .await
-        .map_err(ReadyCheckerError::BeaconNode)?
+    match pluto_eth2api::instrument(
+        "node_version",
+        beacon_node.get_node_version(GetNodeVersionRequest {}),
+    )
+    .await
+    .map_err(ReadyCheckerError::BeaconNode)?
     {
         GetNodeVersionResponse::Ok(response) => Ok(response.data.version),
         GetNodeVersionResponse::InternalServerError(_) | GetNodeVersionResponse::Unknown => {
@@ -277,10 +279,12 @@ async fn update_beacon_node_peer_count(
 }
 
 async fn fetch_peer_count(beacon_node: &EthBeaconNodeApiClient) -> Result<u64, ReadyCheckerError> {
-    match beacon_node
-        .get_peer_count(GetPeerCountRequest {})
-        .await
-        .map_err(ReadyCheckerError::BeaconNode)?
+    match pluto_eth2api::instrument(
+        "node_peer_count",
+        beacon_node.get_peer_count(GetPeerCountRequest {}),
+    )
+    .await
+    .map_err(ReadyCheckerError::BeaconNode)?
     {
         GetPeerCountResponse::Ok(response) => {
             parse_u64_field("connected", &response.data.connected)
@@ -294,10 +298,12 @@ async fn fetch_peer_count(beacon_node: &EthBeaconNodeApiClient) -> Result<u64, R
 async fn fetch_sync_status(
     beacon_node: &EthBeaconNodeApiClient,
 ) -> Result<BeaconNodeSyncStatus, ReadyCheckerError> {
-    match beacon_node
-        .get_syncing_status(GetSyncingStatusRequest {})
-        .await
-        .map_err(ReadyCheckerError::BeaconNode)?
+    match pluto_eth2api::instrument(
+        "node_syncing",
+        beacon_node.get_syncing_status(GetSyncingStatusRequest {}),
+    )
+    .await
+    .map_err(ReadyCheckerError::BeaconNode)?
     {
         GetSyncingStatusResponse::Ok(response) => {
             let sync_distance = parse_u64_field("sync_distance", &response.data.sync_distance)?;
