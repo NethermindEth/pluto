@@ -1,7 +1,7 @@
 //! The [`RelayManager`] behaviour: reservation lifecycle and peer routing.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     convert::Infallible,
     pin::Pin,
     task::{Context, Poll},
@@ -84,6 +84,18 @@ pub struct RelayManager {
     /// waiting for another `MutablePeer` update.
     relay_addrs: HashMap<PeerId, Vec<Multiaddr>>,
 
+    /// Circuit listen addresses the swarm has confirmed per relay.
+    ///
+    /// Each relay gets one `ListenOn` per transport address, and every
+    /// circuit listener confirms (`NewListenAddr`) or dies
+    /// (`ExpiredListenAddr`) independently — commonly a mix of both from the
+    /// same relay within milliseconds at boot, since concurrent listeners
+    /// race to reserve. A relay therefore only leaves `Reserved` when its
+    /// *last* confirmed address expires; reacting to any single expiry would
+    /// tear down peer routing while a sibling listener still holds a live
+    /// reservation.
+    reserved_addrs: HashMap<PeerId, HashSet<Multiaddr>>,
+
     /// Tracks when each relay last entered `Established` without having since
     /// reached `Reserved`. The watchdog uses this to identify relays whose
     /// reservation never confirmed (or whose refresh was denied so libp2p's
@@ -117,6 +129,7 @@ impl RelayManager {
             dial_states: HashMap::new(),
             connection_states: HashMap::new(),
             relay_addrs: HashMap::new(),
+            reserved_addrs: HashMap::new(),
             established_at: HashMap::new(),
             watchdog: None,
             p2p_context,
@@ -221,7 +234,8 @@ impl RelayManager {
         }
     }
 
-    /// Watchdog for relays stuck in `Established`.
+    /// Periodic recovery watchdog: relays stuck in `Established` and cluster
+    /// peers left with no connection and no dial campaign.
     ///
     /// Libp2p's relay client owns reservation refresh; if a relay denies a
     /// refresh (overloaded, quota exhausted, version mismatch), the client
@@ -233,7 +247,8 @@ impl RelayManager {
     /// [`ESTABLISHED_STUCK_THRESHOLD`] gets a `ToSwarm::CloseConnection`; the
     /// resulting `FromSwarm::ConnectionClosed` drives `on_connection_closed`
     /// → `redial_relay`, mirroring Charon's "no relay connection,
-    /// reconnecting" recovery path (`charon/p2p/relay.go:73-92`).
+    /// reconnecting" recovery path (`charon/p2p/relay.go:73-92`). The tick
+    /// then runs [`Self::sweep_disconnected_peers`].
     fn process_established_watchdog(&mut self, cx: &mut Context<'_>) {
         let watchdog = self.watchdog.get_or_insert_with(|| {
             let deadline = Instant::now()
@@ -275,6 +290,8 @@ impl RelayManager {
             });
         }
 
+        self.sweep_disconnected_peers();
+
         let next_deadline = now
             .checked_add(ESTABLISHED_WATCHDOG_TICK)
             .unwrap_or_else(Instant::now);
@@ -282,6 +299,43 @@ impl RelayManager {
         // initialised or polled it above.
         if let Some(watchdog) = self.watchdog.as_mut() {
             watchdog.as_mut().reset(next_deadline);
+        }
+    }
+
+    /// Re-arms circuit dial campaigns for known cluster peers that have
+    /// neither an active connection nor an in-flight campaign.
+    ///
+    /// Campaign teardown is edge-triggered (`ConnectionEstablished` or a
+    /// `DialPeerConditionFalse` rejection), so a lost race can strand a peer:
+    /// a campaign torn down for a connection that never actually establishes
+    /// gets no `ConnectionClosed` to re-arm it, and force-direct skips
+    /// zero-connection peers. Charon is immune by construction — it re-adds
+    /// relay addrs to the peerstore on a ticker and every send dials — so
+    /// this periodic sweep is the campaign-model equivalent of that loop.
+    fn sweep_disconnected_peers(&mut self) {
+        let local = self.p2p_context.local_peer_id();
+        let targets: Vec<PeerId> = {
+            let store = self.p2p_context.peer_store_lock();
+            self.p2p_context
+                .known_peers()
+                .iter()
+                .copied()
+                .filter(|id| Some(*id) != local)
+                .filter(|id| !self.dial_states.contains_key(id))
+                .filter(|id| !store.has_connection(id))
+                .collect()
+        };
+
+        for target in targets {
+            self.upsert_peer_dial(target);
+            // upsert is a no-op while no relay is reserved (no circuit addrs);
+            // only report actual re-arms.
+            if self.dial_states.contains_key(&target) {
+                tracing::info!(
+                    peer_id = %target,
+                    "Cluster peer had no connection and no dial campaign; re-armed circuit dial"
+                );
+            }
         }
     }
 
@@ -397,7 +451,21 @@ impl RelayManager {
                     )));
                 self.set_relay_state(peer_id, RelayConnectionState::Established);
 
-                for circuit_addr in Self::circuit_addrs(peer_id, &dial_state.addrs) {
+                // Request exactly ONE circuit listener per relay. libp2p's
+                // relay client holds a single reservation per relay
+                // connection and routes `ListenOn` to the existing connection
+                // by peer id, so every additional listener displaces the
+                // previous listener's reservation: N listeners race each
+                // other at boot (confirm/expire churn) and can settle with no
+                // live reservation at all. One listener reserves once,
+                // cleanly. Dialers don't depend on which transport address is
+                // embedded in our advertised circuit address — both pluto and
+                // charon construct a target's circuit addresses from the
+                // relay's own transport addresses.
+                if let Some(circuit_addr) = Self::circuit_addrs(peer_id, &dial_state.addrs)
+                    .into_iter()
+                    .next()
+                {
                     tracing::debug!(
                         relay_peer_id = %peer_id,
                         %circuit_addr,
@@ -421,8 +489,9 @@ impl RelayManager {
     }
 
     /// Reacts to a new listen address. If it's a circuit address for one of
-    /// our relays, promotes that relay's state to `Reserved` and re-routes
-    /// known peers through the updated set of reserved relays.
+    /// our relays, records it as confirmed and promotes that relay's state to
+    /// `Reserved`, re-routing known peers through the updated set of reserved
+    /// relays.
     fn on_new_listen_addr(&mut self, addr: &Multiaddr) {
         let Some(relay_id) = Self::relay_id_from_circuit_addr(addr) else {
             return;
@@ -439,7 +508,12 @@ impl RelayManager {
                 );
             }
             RelayConnectionState::Reserved => {
-                // Second circuit address from the same relay — already routed.
+                // Additional circuit address from the same relay — already
+                // routed, just record it.
+                self.reserved_addrs
+                    .entry(relay_id)
+                    .or_default()
+                    .insert(addr.clone());
             }
             RelayConnectionState::Established => {
                 tracing::info!(
@@ -447,6 +521,10 @@ impl RelayManager {
                     listen_addr = %addr,
                     "Relay reservation confirmed; routing known peers via this relay"
                 );
+                self.reserved_addrs
+                    .entry(relay_id)
+                    .or_default()
+                    .insert(addr.clone());
                 self.set_relay_state(relay_id, RelayConnectionState::Reserved);
                 self.events
                     .push_back(ToSwarm::GenerateEvent(RelayManagerEvent::RelayReserved(
@@ -457,11 +535,16 @@ impl RelayManager {
         }
     }
 
-    /// Reacts to a circuit listen address expiring. If the relay was in
-    /// `Reserved`, demote it to `Established` so we stop routing peers through
-    /// it. libp2p's circuit-client will normally refresh the reservation and
-    /// emit `NewListenAddr` again, which promotes us back. If the transport
-    /// connection also drops, `on_connection_closed` will handle the redial.
+    /// Reacts to a circuit listen address expiring. The relay is demoted to
+    /// `Established` (stop routing peers through it) only when its *last*
+    /// confirmed circuit address expires: expiries of never-confirmed or
+    /// sibling listeners are routine — the swarm runs one circuit listener
+    /// per relay transport address and they race to reserve, so a losing
+    /// listener's expiry regularly arrives moments after a winning one's
+    /// confirmation. After a genuine demote, libp2p's circuit-client will
+    /// normally refresh the reservation and emit `NewListenAddr` again, which
+    /// promotes us back. If the transport connection also drops,
+    /// `on_connection_closed` will handle the redial.
     fn on_expired_listen_addr(&mut self, addr: &Multiaddr) {
         let Some(relay_id) = Self::relay_id_from_circuit_addr(addr) else {
             return;
@@ -469,11 +552,28 @@ impl RelayManager {
         let Some(state) = self.connection_states.get(&relay_id).copied() else {
             return;
         };
+
+        let confirmed_remain = match self.reserved_addrs.get_mut(&relay_id) {
+            Some(confirmed) => {
+                confirmed.remove(addr);
+                !confirmed.is_empty()
+            }
+            None => false,
+        };
+
         if matches!(state, RelayConnectionState::Reserved) {
+            if confirmed_remain {
+                tracing::debug!(
+                    relay_peer_id = %relay_id,
+                    listen_addr = %addr,
+                    "Relay circuit listener expired; other confirmed circuits remain, staying Reserved"
+                );
+                return;
+            }
             tracing::info!(
                 relay_peer_id = %relay_id,
                 listen_addr = %addr,
-                "Relay circuit listener expired; demoting to Established"
+                "Last confirmed relay circuit listener expired; demoting to Established"
             );
             self.set_relay_state(relay_id, RelayConnectionState::Established);
             self.events.push_back(ToSwarm::GenerateEvent(
@@ -523,10 +623,18 @@ impl RelayManager {
     /// refused the dial because we're already connected to (or dialing) the
     /// target. Behaviour depends on the dial type:
     ///
-    /// - [`RelayDialType::ClusterPeer`]: libp2p owns the existing direct
-    ///   connection. Drop the dial state and rely on
+    /// - [`RelayDialType::ClusterPeer`] with an active connection: libp2p owns
+    ///   the existing connection. Drop the dial state and rely on
     ///   [`Self::on_connection_closed`] → [`Self::reroute_peer`] to re-arm the
     ///   dial once the existing connection actually closes.
+    /// - [`RelayDialType::ClusterPeer`] without an active connection: the
+    ///   condition failed because an earlier dial (typically this campaign's
+    ///   own previous attempt, still negotiating a relay circuit) is in flight.
+    ///   Keep the campaign armed: if that in-flight dial fails — e.g. the relay
+    ///   has no reservation for the target yet during the boot race — no
+    ///   `ConnectionClosed` ever fires for a connection that never established,
+    ///   so a dropped campaign would leave the peer permanently unrouted
+    ///   (force-direct skips zero-connection peers).
     /// - [`RelayDialType::RelayServer`]: dropping the dial state here would
     ///   wedge `connection_states` in `Dialing` forever — no
     ///   `on_connection_closed` will fire if libp2p already has the transport
@@ -547,14 +655,24 @@ impl RelayManager {
         if skipped {
             match target {
                 RelayDialType::ClusterPeer => {
-                    tracing::debug!(
-                        peer_id = %peer_id,
-                        dial_type = ?target,
-                        retry_count,
-                        %error,
-                        "Dial skipped (already connected or dialing); dropping dial state"
-                    );
-                    self.dial_states.remove(&peer_id);
+                    if self.p2p_context.peer_store_lock().has_connection(&peer_id) {
+                        tracing::debug!(
+                            peer_id = %peer_id,
+                            dial_type = ?target,
+                            retry_count,
+                            %error,
+                            "Dial skipped (already connected); dropping dial state"
+                        );
+                        self.dial_states.remove(&peer_id);
+                    } else {
+                        tracing::debug!(
+                            peer_id = %peer_id,
+                            dial_type = ?target,
+                            retry_count,
+                            %error,
+                            "Dial skipped while a dial is still in flight; keeping campaign armed"
+                        );
+                    }
                 }
                 RelayDialType::RelayServer => {
                     tracing::debug!(
@@ -587,6 +705,9 @@ impl RelayManager {
 
     /// Schedules a re-dial for a relay whose last connection just dropped.
     fn redial_relay(&mut self, relay_id: PeerId) {
+        // The transport connection is gone, so every circuit listener through
+        // this relay is dead regardless of expiry events seen so far.
+        self.reserved_addrs.remove(&relay_id);
         let Some(addrs) = self.relay_addrs.get(&relay_id).cloned() else {
             tracing::warn!(
                 relay_peer_id = %relay_id,
@@ -690,8 +811,12 @@ impl NetworkBehaviour for RelayManager {
             self.queue_relay_update(peer);
         }
 
-        self.process_relay_dials(cx);
+        // Watchdog first: its sweep can insert immediately-ready dial states,
+        // and `process_relay_dials` must poll them in this same pass so their
+        // dials fire (and their sleeps register wakers) without waiting for
+        // the next tick.
         self.process_established_watchdog(cx);
+        self.process_relay_dials(cx);
 
         if let Some(event) = self.events.pop_front() {
             return Poll::Ready(event);

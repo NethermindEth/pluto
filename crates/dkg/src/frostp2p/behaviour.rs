@@ -174,11 +174,7 @@ impl FrostP2PBehaviour {
     }
 
     fn is_connected(&self, peer_id: &PeerId) -> bool {
-        !self
-            .p2p_context
-            .peer_store_lock()
-            .connections_to_peer(peer_id)
-            .is_empty()
+        self.p2p_context.peer_store_lock().has_connection(peer_id)
     }
 
     fn drain_commands(&mut self, cx: &mut Context<'_>) {

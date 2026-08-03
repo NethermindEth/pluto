@@ -2,6 +2,7 @@
 
 use std::{
     collections::VecDeque,
+    sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
@@ -34,8 +35,8 @@ pub enum ToHandler {
     Send {
         /// Request identifier used to correlate broadcast completions.
         request_id: u64,
-        /// Encoded protobuf payload.
-        payload: Vec<u8>,
+        /// Encoded protobuf payload, shared across all broadcast targets.
+        payload: Arc<[u8]>,
     },
 }
 
@@ -71,8 +72,9 @@ pub struct PendingOpen {
     /// [`FromHandler::OutboundSuccess`] and [`FromHandler::OutboundError`]
     /// events back to the originating broadcast.
     request_id: u64,
-    /// Encoded protobuf payload to send once the stream is ready.
-    payload: Vec<u8>,
+    /// Encoded protobuf payload to send once the stream is ready, shared
+    /// across all broadcast targets.
+    payload: Arc<[u8]>,
 }
 
 type ActiveFuture = BoxFuture<'static, Option<FromHandler>>;
@@ -267,7 +269,7 @@ async fn do_recv(
     Ok((duty, data_set))
 }
 
-async fn do_send(mut stream: libp2p::swarm::Stream, payload: Vec<u8>) -> Result<(), Failure> {
+async fn do_send(mut stream: libp2p::swarm::Stream, payload: Arc<[u8]>) -> Result<(), Failure> {
     protocol::send_message(&mut stream, &payload)
         .await
         .map_err(Failure::Io)

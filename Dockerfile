@@ -56,6 +56,12 @@ RUN apt-get update && \
 
 COPY --from=builder /usr/local/bin/pluto /app/bin/pluto
 
+# Match charon's working directory so that relative paths passed to flags such
+# as `--split-keys-dir` / `--cluster-dir` resolve under /opt/charon, keeping
+# pluto a drop-in replacement for charon. (The distroless base has no shell, so
+# WORKDIR is used to create the directory rather than a `RUN mkdir`.)
+WORKDIR /opt/charon
+
 ENTRYPOINT ["/app/bin/pluto"]
 # Default to `run` command
 CMD ["run"]

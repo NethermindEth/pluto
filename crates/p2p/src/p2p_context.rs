@@ -193,6 +193,14 @@ impl PeerStore {
         self.inactive_peers.len()
     }
 
+    /// Returns whether there is any active connection to the given peer.
+    ///
+    /// Equivalent to `!connections_to_peer(peer_id).is_empty()` but does not
+    /// allocate, since it short-circuits on the first match.
+    pub fn has_connection(&self, peer_id: &PeerId) -> bool {
+        self.active_peers.iter().any(|p| &p.id == peer_id)
+    }
+
     /// Returns all active connections to a specific peer.
     pub fn connections_to_peer(&self, peer_id: &PeerId) -> Vec<&Peer> {
         self.active_peers
@@ -352,5 +360,69 @@ mod tests {
         assert_eq!(store.remove_peer_addresses(&peer), Some(addrs));
         assert!(store.peer_addresses(&peer).is_none());
         assert_eq!(store.remove_peer_addresses(&peer), None);
+    }
+
+    fn peer(id: PeerId, connection_id: usize) -> Peer {
+        Peer {
+            id,
+            connection_id: ConnectionId::new_unchecked(connection_id),
+            remote_addr: Multiaddr::empty(),
+        }
+    }
+
+    #[test]
+    fn has_connection_empty_store_is_false() {
+        let store = PeerStore::default();
+        assert!(!store.has_connection(&PeerId::random()));
+    }
+
+    #[test]
+    fn has_connection_reflects_added_peer() {
+        let a = PeerId::random();
+        let b = PeerId::random();
+        let mut store = PeerStore::default();
+        store.add_peer(peer(a, 1));
+
+        assert!(store.has_connection(&a));
+        assert!(!store.has_connection(&b));
+    }
+
+    #[test]
+    fn has_connection_true_with_multiple_connections() {
+        let a = PeerId::random();
+        let mut store = PeerStore::default();
+        store.add_peer(peer(a, 1));
+        store.add_peer(peer(a, 2));
+
+        assert!(store.has_connection(&a));
+    }
+
+    #[test]
+    fn has_connection_matches_connections_to_peer() {
+        let a = PeerId::random();
+        let b = PeerId::random();
+        let c = PeerId::random();
+        let mut store = PeerStore::default();
+        store.add_peer(peer(a, 1));
+        store.add_peer(peer(b, 1));
+
+        for id in [a, b, c] {
+            assert_eq!(
+                store.has_connection(&id),
+                !store.connections_to_peer(&id).is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn has_connection_false_after_remove() {
+        let a = PeerId::random();
+        let mut store = PeerStore::default();
+        let conn = peer(a, 1);
+        store.add_peer(conn.clone());
+        assert!(store.has_connection(&a));
+
+        store.remove_peer(conn, &HashSet::new());
+        assert!(!store.has_connection(&a));
     }
 }

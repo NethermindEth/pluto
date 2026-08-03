@@ -204,16 +204,16 @@ pub enum Error {
 }
 
 /// Canonicalizes inbound `Any` values into the hash map used by QBFT messages.
-pub(crate) fn values_by_hash(values: &[Any]) -> Result<ValueMap> {
+pub(crate) fn values_by_hash(values: Vec<Any>) -> Result<ValueMap> {
     let mut out = ValueMap::new();
 
     for value in values {
-        let decoded = decode_supported_any(value)?;
+        let decoded = decode_supported_any(&value)?;
         let hash = match decoded {
             DecodedValue::UnsignedDataSet(inner) => msg::hash_proto(&inner)?,
             DecodedValue::PriorityResult(inner) => msg::hash_proto(&inner)?,
         };
-        out.insert(hash, value.clone());
+        out.insert(hash, value);
     }
 
     Ok(out)
@@ -361,13 +361,13 @@ impl Consensus {
     /// Validates, wraps, and queues an inbound QBFT consensus message.
     pub async fn handle(
         &self,
-        pb_msg: pbconsensus::QbftConsensusMsg,
+        mut pb_msg: pbconsensus::QbftConsensusMsg,
         ct: &CancellationToken,
     ) -> Result<()> {
-        let msg = pb_msg.msg.as_ref().ok_or(Error::InvalidConsensusMessage)?;
+        let inner = pb_msg.msg.as_ref().ok_or(Error::InvalidConsensusMessage)?;
 
-        self.verify_msg(msg)?;
-        let duty = duty_from_msg(msg)?;
+        self.verify_msg(inner)?;
+        let duty = duty_from_msg(inner)?;
 
         if !(self.duty_gater)(&duty) {
             return Err(Error::InvalidDuty);
@@ -395,8 +395,10 @@ impl Consensus {
             }
         }
 
-        let values = values_by_hash(&pb_msg.values)?;
-        let wrapped = msg::Msg::new(msg.clone(), pb_msg.justification.clone(), Arc::new(values))?;
+        let msg = pb_msg.msg.take().ok_or(Error::InvalidConsensusMessage)?;
+        let justification = std::mem::take(&mut pb_msg.justification);
+        let values = values_by_hash(std::mem::take(&mut pb_msg.values))?;
+        let wrapped = msg::Msg::new(msg, justification, Arc::new(values))?;
 
         if ct.is_cancelled() {
             return Err(Error::ReceiveCancelledDuringVerification);
@@ -1006,7 +1008,7 @@ pub(crate) mod tests {
 
     #[test]
     fn values_by_hash_rejects_invalid_type_url() {
-        let err = values_by_hash(&[Any {
+        let err = values_by_hash(vec![Any {
             type_url: "type.googleapis.com/unknown.Type".to_string(),
             value: vec![],
         }])
@@ -1017,7 +1019,7 @@ pub(crate) mod tests {
 
     #[test]
     fn values_by_hash_rejects_malformed_any_value() {
-        let err = values_by_hash(&[Any {
+        let err = values_by_hash(vec![Any {
             type_url: pbcore::UnsignedDataSet::type_url(),
             value: b"not-protobuf".to_vec(),
         }])
@@ -1029,7 +1031,7 @@ pub(crate) mod tests {
     #[test]
     fn values_by_hash_hashes_decoded_inner_message() {
         let any = unsigned_any("a", b"first");
-        let values = values_by_hash(std::slice::from_ref(&any)).unwrap();
+        let values = values_by_hash(vec![any.clone()]).unwrap();
         let decoded = pbcore::UnsignedDataSet::decode(any.value.as_slice()).unwrap();
         let hash = msg::hash_proto(&decoded).unwrap();
 

@@ -126,6 +126,15 @@ pub enum CliError {
     #[error("MEV test error: {0}")]
     MevTest(#[from] MevTestError),
 
+    /// Featureset resolution error.
+    // Verbatim message so `unknown min status: ...` matches Charon's output.
+    #[error("{0}")]
+    Featureset(#[from] pluto_featureset::FeaturesetError),
+
+    /// App (run workflow) error.
+    #[error("{0}")]
+    App(#[from] pluto_app::node::AppError),
+
     /// Generic error with message.
     #[error("{0}")]
     Other(String),
