@@ -129,7 +129,17 @@ func Auto(ctx context.Context, conf AutoConfig) error {
 
 	_, _ = w.Write([]byte("===== run step: docker compose up =====\n"))
 
-	if err = execUp(ctx, conf.Dir, w); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+	err = execUp(ctx, conf.Dir, w)
+
+	switch {
+	case err == nil && conf.AlertTimeout > 0:
+		// `docker compose up --abort-on-container-exit` exits 0 when a container
+		// stops cleanly, taking the whole cluster down with it. Returning here
+		// before the observation window elapsed means nothing was actually
+		// observed, so treat it as a failure rather than reporting "no alerts
+		// detected" on a cluster that was not running.
+		return errors.New("cluster stopped before the observation window elapsed")
+	case err != nil && !errors.Is(err, context.DeadlineExceeded):
 		return err
 	}
 
@@ -147,7 +157,7 @@ func Auto(ctx context.Context, conf AutoConfig) error {
 	}
 
 	if !alertSuccess {
-		return errors.New("alerts couldn't be polled")
+		return errors.New("prometheus was not polled successfully through the end of the observation window")
 	} else if len(alertMsgs) > 0 {
 		return errors.New("alerts detected", z.Any("alerts", alertMsgs))
 	}

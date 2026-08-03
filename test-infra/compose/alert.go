@@ -71,30 +71,47 @@ func startAlertCollector(ctx context.Context, dir string) chan string {
 		log.Info(ctx, "Prometheus ready, collecting alerts",
 			z.Str("warmup", alertWarmup.String()))
 
-		resp <- alertsPolled // Push initial "fake alert" so logic can fail if no alerts polled.
-
 		warmupEnd := readyAt.Add(alertWarmup)
 
 		var (
 			reported = make(map[string]bool)
 			ignored  = make(map[string]bool)
+			// The oracle is only satisfied if polling was still working when
+			// the window closed. A single early success is not enough: if
+			// prometheus (or the whole stack) dies mid-run, every later poll
+			// fails and an "at least once" signal would report a clean pass on
+			// a cluster nobody observed.
+			lastPollOK       bool
+			postWarmupPollOK bool
 		)
 
 		for ; ctx.Err() == nil; time.Sleep(iterSleep) { // Sleep for iterSleep before next iteration.
 			alerts, err := queryAlerts(ctx, dir)
 			if ctx.Err() != nil {
-				return
+				// The window closed mid-poll; that failure is expected and must
+				// not count against the verdict.
+				break
 			} else if err != nil {
+				lastPollOK = false
+
 				log.Error(ctx, "Poll prometheus alerts", err)
+
 				continue
 			}
 
 			if alerts.Status != "success" {
+				lastPollOK = false
 				resp <- "non success status from prometheus alerts: " + alerts.Status
+
 				continue
 			}
 
+			lastPollOK = true
+
 			inWarmup := time.Now().Before(warmupEnd)
+			if !inWarmup {
+				postWarmupPollOK = true
+			}
 
 			for _, active := range getActiveAlerts(alerts) {
 				if inWarmup && startupTransientRules[active.Rule] {
@@ -116,6 +133,12 @@ func startAlertCollector(ctx context.Context, dir string) chan string {
 
 				resp <- active.Description
 			}
+		}
+
+		// Only now can the run be called observed: polling reached past the
+		// warmup window and was still succeeding when the window closed.
+		if postWarmupPollOK && lastPollOK {
+			resp <- alertsPolled
 		}
 	}()
 
