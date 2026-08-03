@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-# Digest pinned 2026-07-27.
+# Digest pinned 2026-08-03.
 FROM rust:slim-bookworm@sha256:99e09cb2284e2ddbb73a995deee3e91783fd04d177602ccf6eab326d778ee777 AS chef
 
 RUN apt-get update && \
@@ -8,7 +8,7 @@ RUN apt-get update && \
     pkg-config \
     libssl-dev \
     protobuf-compiler=3.21.12-3 && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 RUN cargo install cargo-chef --locked --version 0.1.77
 
@@ -43,8 +43,15 @@ RUN cargo build --locked --release --package pluto-cli && \
     cp /build/target/release/pluto /usr/local/bin/pluto && \
     rm -rf /build/target
 
-# Digest pinned 2026-07-27.
-FROM gcr.io/distroless/cc-debian13@sha256:ed7c407fd64eb0af9dddb9456b94cee188a40a7f53cf38c9836e1e9ae14fca02 AS app
+# Digest pinned 2026-08-03.
+FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd as app
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    ca-certificates && \
+    fio && \
+    wget && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 COPY --from=builder /usr/local/bin/pluto /app/bin/pluto
 
