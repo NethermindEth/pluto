@@ -15,6 +15,19 @@ pub struct TrackerMetrics {
     #[metrics(labels = ["duty", "peer"])]
     pub participation_success_total: LabeledFamily<(String, String), Counter, 2>,
 
+    /// Deprecated duplicate of [`TrackerMetrics::participation_success_total`],
+    /// written with the same labels and value.
+    ///
+    /// Charon parity: `participationSuccessLegacy`
+    /// (`charon/core/tracker/metrics.go:19-24`). Charon's own
+    /// `dash_charon_overview` still queries `core_tracker_participation_total`
+    /// for its per-duty participation panels, so omitting it leaves those
+    /// panels blank. Charon carries a `TODO(corver): Remove in v0.17` on the
+    /// field (still present in v1.7.1) — drop this one when Charon drops
+    /// theirs.
+    #[metrics(labels = ["duty", "peer"])]
+    pub participation_total: LabeledFamily<(String, String), Counter, 2>,
+
     /// Total number of missed participations by peer and duty type.
     #[metrics(labels = ["duty", "peer"])]
     pub participation_missed_total: LabeledFamily<(String, String), Counter, 2>,

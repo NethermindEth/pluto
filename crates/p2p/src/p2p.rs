@@ -283,6 +283,7 @@ impl<B: NetworkBehaviour> Node<B> {
     {
         let keypair = utils::keypair_from_secret_key(key)?;
         Self::bind_local_peer_id(&p2p_context, keypair.public().to_peer_id())?;
+        init_ping_metrics(&p2p_context);
 
         let mut node = match node_type {
             NodeType::TCP => Self::build_tcp_client(keypair, p2p_context, behaviour_fn),
@@ -324,6 +325,8 @@ impl<B: NetworkBehaviour> Node<B> {
     {
         let keypair = utils::keypair_from_secret_key(key)?;
         Self::bind_local_peer_id(&p2p_context, keypair.public().to_peer_id())?;
+        // No-op for a relay server, which tracks no cluster peers.
+        init_ping_metrics(&p2p_context);
 
         let mut node = match node_type {
             NodeType::TCP => Self::build_tcp_server(keypair, p2p_context, bandwidth, behaviour_fn),
@@ -612,6 +615,18 @@ impl<B: NetworkBehaviour> Node<B> {
                 record_ping_metrics(&self.p2p_context, peer, result);
             }
 
+            // Losing the last connection to a peer is the only signal that it
+            // went away: libp2p drops the ping handler along with the
+            // connection, so an orderly disconnect produces no ping failure and
+            // `ping_success` would sit at 1 indefinitely.
+            SwarmEvent::ConnectionClosed {
+                peer_id,
+                num_established: 0,
+                ..
+            } => {
+                clear_ping_success(&self.p2p_context, peer_id);
+            }
+
             // AutoNAT reachability status
             SwarmEvent::Behaviour(PlutoBehaviourEvent::Autonat(
                 autonat::Event::StatusChanged { new, .. },
@@ -727,6 +742,41 @@ fn record_ping_metrics(
     }
 }
 
+/// Publishes `p2p_ping_success{peer}=0` for every known cluster peer except
+/// this node.
+///
+/// Charon starts one ping loop per cluster peer at node start and records the
+/// outcome whether or not the peer is reachable (`charon/p2p/ping.go:35-80`),
+/// so an unreachable peer reads as a flat `0` there. Pluto writes only on a
+/// libp2p ping event, which requires a live connection, so without this seeding
+/// a peer that never connects has no series at all — a gap instead of a zero
+/// line on `max(p2p_ping_success) by (peer)`.
+fn init_ping_metrics(ctx: &P2PContext) {
+    let local = ctx.local_peer_id();
+    for peer in ctx.known_peers() {
+        // Charon's ping service skips self (`charon/p2p/ping.go:50-55`).
+        if Some(*peer) == local {
+            continue;
+        }
+        P2P_METRICS.ping_success[&peer_name(peer)].set(0);
+    }
+}
+
+/// Marks a known cluster peer as unreachable on `p2p_ping_success`.
+///
+/// Charon's ping loop keeps pinging a disconnected peer and records the error
+/// (`pingPeer` retries until the context is cancelled,
+/// `charon/p2p/ping.go:68-80`), so `0` while disconnected is the parity
+/// behaviour. Gated on the cluster allowlist for the same reason as
+/// [`record_ping_metrics`]: a relay must not gain a series here either.
+fn clear_ping_success(ctx: &P2PContext, peer: &PeerId) {
+    if !ctx.is_known_peer(peer) {
+        return;
+    }
+
+    P2P_METRICS.ping_success[&peer_name(peer)].set(0);
+}
+
 /// Stores identify-reported listen addresses for a peer, gated to known cluster
 /// peers only. Addresses from unknown peers are dropped (and not cloned), since
 /// the only consumers of `peer_addresses` look up known peers exclusively — so
@@ -832,6 +882,68 @@ mod tests {
         assert!(
             !P2P_METRICS.ping_error_total.contains(&label),
             "the error path must be gated too, not just success/latency"
+        );
+    }
+
+    /// An orderly disconnect emits no ping failure — libp2p drops the ping
+    /// handler with the connection — so the gauge has to be cleared from the
+    /// connection lifecycle or it stays at 1 forever.
+    #[test]
+    fn ping_success_cleared_when_last_connection_closes() {
+        let known = random_peer_id();
+        let ctx = P2PContext::new([known]);
+        let label = peer_name(&known);
+
+        record_ping_metrics(&ctx, &known, &Ok(Duration::from_millis(20)));
+        assert_eq!(
+            P2P_METRICS.ping_success.get(&label).map(Gauge::get),
+            Some(1)
+        );
+
+        clear_ping_success(&ctx, &known);
+
+        assert_eq!(
+            P2P_METRICS.ping_success.get(&label).map(Gauge::get),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn ping_success_not_cleared_for_relay_or_unknown_peer() {
+        let known = random_peer_id();
+        let relay = random_peer_id();
+        let ctx = P2PContext::new([known]);
+        let label = peer_name(&relay);
+
+        clear_ping_success(&ctx, &relay);
+
+        assert!(
+            !P2P_METRICS.ping_success.contains(&label),
+            "clearing must not create a series for a non-cluster peer"
+        );
+    }
+
+    /// Cluster peers must read `0` before they are ever pinged, so an offline
+    /// peer shows a zero line rather than no line at all.
+    #[test]
+    fn ping_success_seeded_for_known_peers_except_self() {
+        let local = random_peer_id();
+        let peer = random_peer_id();
+        let ctx = P2PContext::new([local, peer]);
+        ctx.set_local_peer_id(local);
+
+        init_ping_metrics(&ctx);
+
+        assert_eq!(
+            P2P_METRICS
+                .ping_success
+                .get(&peer_name(&peer))
+                .map(Gauge::get),
+            Some(0)
+        );
+        assert!(
+            !P2P_METRICS.ping_success.contains(&peer_name(&local)),
+            "Charon's ping service skips self, so no self series"
         );
     }
 

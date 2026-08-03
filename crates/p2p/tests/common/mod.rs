@@ -36,13 +36,19 @@ pub async fn spawn_relay_server(key: SecretKey) -> (PeerId, Multiaddr, JoinHandl
         P2PContext::default(),
         None,
         |builder, keypair| {
-            // Start from the rust-libp2p defaults so the per-peer and per-IP
-            // reservation / circuit rate limiters survive: an exhaustive struct
-            // literal drops them, which is the bug fixed in
-            // `pluto_relay_server::config::create_relay_config`.
             builder.with_inner(relay::Behaviour::new(
                 keypair.public().to_peer_id(),
-                relay::Config::default(),
+                relay::Config {
+                    // Room for a circuit to carry a real payload; the default
+                    // (128 KiB) would cap one confusingly mid-transfer.
+                    max_circuit_bytes: 32 << 20,
+                    // Everything else stays at the rust-libp2p defaults so the
+                    // per-peer and per-IP reservation / circuit rate limiters
+                    // survive: an exhaustive struct literal drops them, which
+                    // is the bug fixed in
+                    // `pluto_relay_server::config::create_relay_config`.
+                    ..relay::Config::default()
+                },
             ))
         },
     )
